@@ -13,7 +13,8 @@ Mutations this file catches (R7):
 * The rule pick reads a blank answer as "no rule fits", and burns the
   watermark. It must raise ``LLMUnavailable``, so the mail is tried again.
 * The template fill writes the raw ``{{...}}`` text on a blank answer.
-* The self-anneal reply sends ``""``.
+* The self-anneal finishes the run with ``""`` or a stock reply. A blank
+  recovery must return None, so the first error is raised.
 * The graphiti gate drops the episode on a blank answer, or logs no warning.
   A blank answer is uncertain, and the gate keeps what is uncertain.
 * Custom Apps answers 200 with ``""``.
@@ -216,8 +217,12 @@ async def test_the_sender_pin_prompt_says_json_and_names_its_job() -> None:
 # ── orchestrator: the self-anneal reply ─────────────────────────────────────
 
 
-@pytest.mark.parametrize("content", ["", "   "])
-async def test_a_blank_recovery_reply_sends_the_fixed_apology(monkeypatch, content) -> None:
+@pytest.mark.parametrize(("content", "recovered"), [("", False), ("   ", False),
+                                                    ("Sorry, try again.", True)])
+async def test_a_blank_recovery_reply_is_no_recovery(monkeypatch, content, recovered) -> None:
+    """A blank recovery answer returns None. The caller then goes on to the
+    self-mutation step and raises the first error with its class, rather than
+    finish the run with a blank or a stock reply (repair round 1)."""
     import acb_llm
     from orchestrator import executor
 
@@ -231,11 +236,26 @@ async def test_a_blank_recovery_reply_sends_the_fixed_apology(monkeypatch, conte
     with structlog.testing.capture_logs() as caps:
         out = await executor._llm_recovery(
             "projects-assistant", {"message": "hi"}, RuntimeError("x"), "")
-    assert out == {"result": {"role": "assistant",
-                              "content": executor._ANNEAL_EMPTY_REPLY}}
-    assert executor._ANNEAL_EMPTY_REPLY.strip()
+    if recovered:
+        assert out == {"result": {"role": "assistant", "content": content}}
+    else:
+        assert out is None
+        assert "self_anneal.llm_recovery_empty" in [c["event"] for c in caps]
     assert seen["job"] == "writing"
-    assert "self_anneal.llm_recovery_empty" in [c["event"] for c in caps]
+
+
+def test_the_caller_raises_the_first_error_when_recovery_is_none() -> None:
+    """Structural: the batch path returns a recovery only when it is not None,
+    then raises ``AgentRunError`` with ``original=exc``."""
+    import inspect
+
+    from orchestrator import executor
+
+    src = inspect.getsource(executor)
+    at = src.index("recovery = await _self_anneal(")
+    tail = src[at:at + 3000]
+    assert "if recovery is not None:\n            return recovery" in tail
+    assert "raise AgentRunError(" in tail and "original=exc" in tail
 
 
 # ── memory: the graphiti worthiness gate ────────────────────────────────────

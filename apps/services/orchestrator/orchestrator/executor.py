@@ -8575,11 +8575,6 @@ def _fix_encoding_in_dir(agent_dir: str | None) -> bool:
     return fixed_any
 
 
-#: The recovery reply when the recovery model gives no text (task 1128).
-_ANNEAL_EMPTY_REPLY = (
-    "Sorry, something went wrong on my side. Please try your request again.")
-
-
 async def _self_anneal(
     *,
     agent_name: str,
@@ -8784,10 +8779,11 @@ async def _llm_recovery(
             job="writing",
         )
         if not (content or "").strip():
-            # Never send a blank reply (task 1128). The member reads a short
-            # fixed apology, and the log says why.
+            # No recovery text (task 1128). Send no blank reply and no stock
+            # apology as a finished run. None makes the caller go on to the
+            # self-mutation step and raise the first error, with its class.
             _log.warning("self_anneal.llm_recovery_empty", agent=agent_name)
-            return {"result": {"role": "assistant", "content": _ANNEAL_EMPTY_REPLY}}
+            return None
         _log.info("self_anneal.llm_recovery_success", agent=agent_name)
         return {"result": {"role": "assistant", "content": content}}
     except Exception as llm_exc:
