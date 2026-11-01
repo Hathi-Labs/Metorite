@@ -39,7 +39,9 @@ import FencedText from "@/components/FencedText";
 import GenUiText from "@/components/GenUiText";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import SandboxedHtml from "@/components/SandboxedHtml";
+import { EmptyState } from "@/components/EmptyState";
 import Button from "@/components/ui/Button";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { CollapsibleCardBody, CollapsibleCardHeader, useCardFold } from "@/components/ui/Collapsible";
 import SandboxedReact from "@/components/SandboxedReact";
 import { OWN_HEAD_TEMPLATES, renderTemplate } from "@/components/genUITemplates";
@@ -48,6 +50,12 @@ import { isEmptyNode } from "@/lib/genUiFallback";
 import { plainTitle } from "@/lib/fencedText";
 import { tableCells, tableColumns, text } from "@/lib/genUiText";
 import { resolveIcon } from "@/lib/icons";
+import {
+  StudioDataContext, actionDisabled, boundView, bindsSource, gridData, parseAction, parseSource, pressAction, sourceKey,
+  type BoundView, type Row, type StudioDataDoor,
+} from "@/lib/studio/dataDoor";
+import { TypedActionButton } from "@/lib/studio/TypedActionButton";
+import { useCachedResource } from "@/lib/useCachedResource";
 import { type AccentHue, accentForHue } from "@/lib/statusAccent";
 
 // ─── Schema ────────────────────────────────────────────────────────────────
@@ -118,6 +126,78 @@ export function GenUiMarkdown({ content }: { content: string }) {
 /** Re-exported for its test. The component lives in `GenUiText.tsx`. */
 export { GenUiText };
 
+/**
+ * A node whose rows come from the page's door (STU-D1, `ai_studio.md` §5.2).
+ * A component of its own, because `Node` calls hooks before its guards and a
+ * conditional hook is unsafe. `Node` mounts it only when a door exists.
+ */
+/** The loading, error and empty states of a bound block. Words are plain. */
+export function BoundStatus({
+  view, onRetry, title,
+}: {
+  view: BoundView;
+  onRetry: () => void;
+  title?: string;
+}): React.ReactElement | null {
+  if (view === "loading") {
+    return (
+      <div className="space-y-2" aria-busy="true">
+        <Skeleton className="h-6 w-full" />
+        <Skeleton className="h-6 w-5/6" />
+        <Skeleton className="h-6 w-4/6" />
+      </div>
+    );
+  }
+  if (view === "error") {
+    return (
+      <div className="flex items-center gap-2 text-xs text-destructive" role="alert">
+        <span>Could not load this list.</span>
+        <Button type="button" variant="secondary" size="sm" onClick={onRetry}>Try again</Button>
+      </div>
+    );
+  }
+  if (view === "empty") {
+    return <EmptyState icon="Inbox" message={title ? `No ${title} yet` : "Nothing to show yet"} />;
+  }
+  return null;
+}
+
+function BoundSource({
+  node, door, onAction, answered, onDecline, depth,
+}: {
+  node: GenUINode;
+  door: StudioDataDoor;
+  onAction?: (action: string) => void;
+  answered?: string;
+  onDecline?: () => void;
+  depth: number;
+}): React.ReactElement | null {
+  const props = (node.props ?? {}) as Record<string, unknown>;
+  const source = parseSource(props.source);
+  const { data, loading, error, refresh } = useCachedResource<Row[]>(
+    source ? sourceKey(door, source) : null,
+    () => door.read(source as NonNullable<typeof source>),
+  );
+  const view = boundView({ data, loading, error });
+  if (view !== "rows") {
+    const title = s(props.title ?? (props.data as Record<string, unknown> | undefined)?.title, "");
+    return <BoundStatus view={view} onRetry={refresh} title={title} />;
+  }
+  const rows = data as Row[];
+  const { source: _drop, ...rest } = props;
+  void _drop;
+  const bound: GenUINode = s(node.type) === "template"
+    ? {
+      ...node,
+      props: {
+        ...rest,
+        data: gridData((rest.data ?? {}) as Record<string, unknown>, rows),
+      },
+    }
+    : { ...node, props: { ...rest, rows } };
+  return <Node node={bound} onAction={onAction} answered={answered} onDecline={onDecline} depth={depth} />;
+}
+
 function Node({
   node, onAction, answered, onDecline, depth = 0,
 }: {
@@ -132,14 +212,25 @@ function Node({
   // The chat card this tree draws in, if it folds (`components/RollupCard`).
   // Read before the guards below, so the hook runs on every render.
   const fold = useCardFold();
+  // The page's data door, or null in chat. Read before the guards, for the
+  // same reason (STU-D1).
+  const door = useContext(StudioDataContext);
   // Depth guard — a pathological/looping tree can't blow the stack.
   if (depth > 20) return null;
   if (!node || typeof node !== "object") return null;
   // A node that holds nothing draws nothing: no frame, no gap, no bar
   // (`lib/genUiFallback.ts`). An empty callout drew a lone accent bar.
-  if (isEmptyNode(node)) return null;
   const type = s(node.type);
   const props = (node.props ?? {}) as Record<string, unknown>;
+  // With a door, a bound node draws its loading, empty and error states, so
+  // it is not "empty" for want of rows.
+  if (door && bindsSource(type, props)) {
+    return (
+      <BoundSource node={node} door={door} onAction={onAction} answered={answered}
+        onDecline={onDecline} depth={depth} />
+    );
+  }
+  if (isEmptyNode(node)) return null;
   const kids = Array.isArray(node.children) ? node.children : [];
 
   const renderKids = () =>
@@ -315,20 +406,26 @@ function Node({
     }
 
     case "button": {
-      const action = s(props.action);
+      // A string action is a sentence for the agent. An object action is typed
+      // (`{ id, args?, message? }`): a page runs it through its door, and chat
+      // sends `message ?? id` as the sentence (`generative_ui_2.md` §3).
+      const action = parseAction(props.action);
       const label = s(props.label, "Action");
       const tone = s(props.tone, "default");
       // The one control primitive (DESIGN_SYSTEM.md rule 3), so the button
       // wears the theme's focus ring and state layer in both modes.
       const variant =
         tone === "primary" ? "primary" : tone === "danger" ? "destructive" : "secondary";
+      if (door && action?.kind === "typed") {
+        return <TypedActionButton door={door} action={action} label={label} variant={variant} />;
+      }
       return (
         <Button
           type="button"
           variant={variant}
           size="sm"
-          disabled={!action || !onAction}
-          onClick={() => action && onAction?.(action)}
+          disabled={actionDisabled(action, door, onAction)}
+          onClick={() => pressAction(action, door, onAction)}
         >
           {label}
         </Button>

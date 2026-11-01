@@ -41,6 +41,7 @@ import { inAppPathname } from "@/lib/inAppLink";
 import type { NavPane, NavSection } from "@/lib/nav";
 import { chatKey, truncateAtWord, type ChatSession } from "@/lib/sessions";
 import { onClear } from "@/lib/dataCache";
+import { GENERATED_ALSO_SERVES } from "@/lib/shell/gates.generated";
 import { isLivePhase, type RunPhase } from "@/lib/runStatus";
 
 // ── The agent ────────────────────────────────────────────────────────────────
@@ -835,14 +836,13 @@ export function paneForDelegate(name: string | null | undefined, sections: reado
  * The other apps a specialist serves, where the page must stay. Projects, My
  * Tasks and Calendar are one task store (D52, D53, D54), and the orchestrator
  * sends their work to the Projects specialist. A question asked in My Tasks
- * or Calendar must not throw the member into Projects. The manifest cannot
- * say this, because two panes may not name one agent (`runActivity.test.ts`).
+ * or Calendar must not throw the member into Projects. The `agent` key of the manifest
+ * cannot say this, because two panes may not name one agent (`runActivity.test.ts`).
  * task-manager is not here: it runs on the retired Copilot runtime, so it is
  * no specialist of the orchestrator (D84, D92) and no run moves the page to it.
+ * The map comes from the `also_serves` entries of `shell/projects.json` (WS-PKG, PKG-3a).
  */
-export const ALSO_SERVES: Readonly<Record<string, readonly string[]>> = {
-  "projects-assistant": ["/tasks", "/calendar"],
-};
+export const ALSO_SERVES: Readonly<Record<string, readonly string[]>> = GENERATED_ALSO_SERVES;
 
 /**
  * Where the page should move, or null. It moves when the run names the

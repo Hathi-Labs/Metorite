@@ -257,6 +257,9 @@ class _FakeDB:
         #: WS-63 PZ-9: the statements that forget a removed member's
         #: assistant profile, in order, with the address each one names.
         self.profile_clears: list[tuple[str, str]] = []
+        #: WS-63 PZ-33a: the clears of the chat summaries by a purge, with
+        #: the address each one names.
+        self.summary_clears: list[tuple[str, str]] = []
         #: Audit calls, in order, as ``(action, target)``. Ordered because the
         #: purge must record BEFORE it commits, and a set cannot show that.
         self.audit: list[tuple[str, str]] = []
@@ -862,6 +865,13 @@ class _FakeDB:
         # `test_assistant_profile_offboarding_r8.py` (R8).
         if s.startswith("UPDATE user_settings SET assistant_profile = NULL"):
             self.profile_clears.append((s, str(p.get("email") or "")))
+            return _Rows([], rowcount=0)
+
+        # WS-63 PZ-33a: a purge clears the chat summaries of the member. The
+        # fake records the statement and the address. What it does to real
+        # rows is proven on a real Postgres in `test_chat_summary_r8.py` (R8).
+        if s.startswith("UPDATE chat_session AS s SET member_summary"):
+            self.summary_clears.append((s, str(p.get("member") or "")))
             return _Rows([], rowcount=0)
 
         raise AssertionError(f"unhandled SQL in fake: {s}")

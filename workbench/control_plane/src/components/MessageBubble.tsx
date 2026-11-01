@@ -40,6 +40,7 @@ import { buildLinkChipIndex } from "@/lib/linkChips";
 import { pillsForTurn, taskRefModeForTurn } from "@/lib/projectsAgent";
 import { useRevalidateOnTools } from "@/lib/taskRefs";
 import AnswerDetails from "@/components/AnswerDetails";
+import { profileMarkShown } from "@/lib/profileMark";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
 import { cardAnswerOf, cardAnswerText } from "@/lib/cardAnswer";
@@ -821,6 +822,20 @@ function MessageBubble({
               sessionId={sessionId}
               onRetry={onRetryMessage ? () => onRetryMessage(message) : undefined}
             />
+          )}
+          {profileMarkShown(message, viewerEmail) && (
+            <Button
+              variant="ghost"
+              size="none"
+              layout="inline-flex items-center"
+              href="/settings/assistant"
+              data-profile-mark=""
+              title="Your profile was used in this answer. Open Assistant settings."
+              className="gap-0.5 px-1 py-0.5 text-[10px]"
+            >
+              <Icon name="UserRound" size={11} />
+              Profile
+            </Button>
           )}
           {tierLabel && <AnswerDetails tierLabel={tierLabel} />}
           <div className="text-[10px] text-muted-foreground">{timestamp}</div>

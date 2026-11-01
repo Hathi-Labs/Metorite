@@ -1474,3 +1474,17 @@ DROP POLICY IF EXISTS brief_claims_tenant_isolation ON brief_claims;
 CREATE POLICY brief_claims_tenant_isolation ON brief_claims
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE studio_skills ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_skills FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_skills_tenant_isolation ON studio_skills;
+CREATE POLICY studio_skills_tenant_isolation ON studio_skills
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE studio_skill_versions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE studio_skill_versions FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS studio_skill_versions_tenant_isolation ON studio_skill_versions;
+CREATE POLICY studio_skill_versions_tenant_isolation ON studio_skill_versions
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

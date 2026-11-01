@@ -842,3 +842,11 @@ ALTER TABLE brief_runs
 ALTER TABLE brief_claims
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE studio_skills
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE studio_skill_versions
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;
