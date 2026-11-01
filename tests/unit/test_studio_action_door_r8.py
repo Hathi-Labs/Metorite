@@ -33,8 +33,12 @@ d. Class B and class C get 403 ``approval_required``, and nothing changes.
 e. A class A action with no executor gets 403 ``source_not_open``.
 f. An App Workshop app is not a package, so its id is 404.
 g. A record of another package of the same member is 404.
-h. A body that names another org changes nothing.
+h. A body that names another org or another package changes nothing.
 i. With the switch off, each call is 404 and writes no audit row.
+j. An action that is not an A2 action id is 404, and writes no row.
+k. An object that the package lacks is 404 ``object_missing``, and a record
+   id that names nothing is 404 ``Not found``. The audit row tells them apart.
+l. A catalog that fails is 503 ``catalog_unavailable``, and the row lands.
 
 **The mutations (R7).** Commit before each, and restore with git after.
 Each result below was run on 2026-11-01, with both B2a suites.
@@ -45,8 +49,8 @@ Each result below was run on 2026-11-01, with both B2a suites.
 * M2. ``packages_store._GET_SQL``: drop ``AND owner_email = :m``.
   ``test_r8_another_member_of_the_org_gets_404`` goes red. The fake session
   of the hermetic half filters on the member itself, so only R8 sees it.
-* M3. ``invoke.invoke_action``: take the path as the ``uses`` of an action
-  that the manifest does not declare.
+* M3. ``invoke._declared``: answer the first entry for each id, so the
+  declaration check passes each action.
   ``test_r8_an_undeclared_action_is_403_and_audited`` and
   ``test_an_undeclared_action_is_403_not_declared`` go red.
 * M4. ``invoke.refusal_for``: drop the class X refusal.
@@ -67,9 +71,17 @@ Each result below was run on 2026-11-01, with both B2a suites.
   test of the door goes red, because the door reads the object by its name
   in the package first. C1's
   ``test_r8_a_record_call_names_its_package_and_its_object`` goes red.
-* M7b. ``invoke._run_object_get``: call ``get_record`` with no
-  ``package_id``. The owner test, ``test_r8_a_record_of_another_package_is_404``
-  and ``test_a_get_reads_with_the_package_id`` go red, with 11 more.
+* M7b. ``invoke._run_object_get``: take the package id of the object read
+  and the record read from the body key ``package_id``, the id of ANOTHER
+  package of the same member. ``test_r8_a_record_of_another_package_is_404``
+  and ``test_a_get_reads_with_the_package_id`` go red: the door reads the
+  record of the other package.
+* M10 (fix round 1). ``invoke.invoke_action``: parse the body before the
+  switch check. ``test_a_malformed_body_from_an_org_outside_the_switch_is_404``
+  of the hermetic half goes red.
+* M11 (fix round 1). ``invoke.invoke_action``: drop the ``try`` around the
+  catalog read. ``test_r8_a_catalog_that_fails_is_503_and_audited`` and
+  ``test_a_catalog_that_fails_is_503_and_audited`` go red.
 * M8. ``invoke.invoke_action``: answer 403 for a package that
   ``get_package`` does not find. ``test_r8_another_member_of_the_org_gets_404``,
   ``test_r8_org_b_gets_404_also_with_the_same_email``,
@@ -145,13 +157,23 @@ def _user(org: str, email: str) -> UserContext:
                        access=build_access(["feature:workflows"]), organization_id=org)
 
 
+class _Request:
+    """The one part of a request that the handler reads: the body bytes."""
+
+    def __init__(self, payload: Any) -> None:
+        self._raw = b"" if payload is None else json.dumps(payload).encode("utf-8")
+
+    async def body(self) -> bytes:
+        return self._raw
+
+
 async def _call(org: str, email: str, pid: str, action: str,
                 payload: Any = None) -> tuple[int, Any]:
     """Call the real handler with *org* bound, as the auth layer binds it.
     Answers the status and the answer, or the detail of a refusal."""
     token = bind_tenant(org)
     try:
-        found = await invoke.invoke_action(pid, action, payload=payload,
+        found = await invoke.invoke_action(pid, action, request=_Request(payload),
                                            user=_user(org, email))
         return 200, found
     except HTTPException as exc:
@@ -217,6 +239,8 @@ def world(promoted, monkeypatch):  # noqa: F811
         w.pkg2 = await _package(w.a, ANA, manifest)
         w.pkg_ben = await _package(w.a, BEN, manifest)
         w.pkg_b = await _package(w.b, ANA, manifest)
+        # A package of Ana with no object in the registry.
+        w.pkg_empty = await _package(w.a, ANA, manifest)
         w.obj, w.rec = await _object_with_record(w.a, w.pkg)
         w.obj2, w.rec2 = await _object_with_record(w.a, w.pkg2)
         w.obj_ben, w.rec_ben = await _object_with_record(w.a, w.pkg_ben)
@@ -225,7 +249,7 @@ def world(promoted, monkeypatch):  # noqa: F811
     _run(w, setup)
     yield w
     with p.admin_engine.begin() as c:
-        ids = [w.pkg, w.pkg2, w.pkg_ben, w.pkg_b, w.code_app]
+        ids = [w.pkg, w.pkg2, w.pkg_ben, w.pkg_b, w.pkg_empty, w.code_app]
         c.execute(text("DELETE FROM app_audit WHERE app_id = ANY(CAST(:ids AS uuid[]))"),
                   {"ids": ids})
         c.execute(text("DELETE FROM studio_objects WHERE package_id = ANY(CAST(:ids AS uuid[]))"),
@@ -322,7 +346,7 @@ def test_r8_org_b_gets_404_also_with_the_same_email(world) -> None:
 def test_r8_an_undeclared_action_is_403_and_audited(world) -> None:
     async def go() -> list[tuple[int, Any]]:
         return [await _call(world.a, ANA, world.pkg, a, {"id": world.rec})
-                for a in ("peek_all", "object:visit.get")]
+                for a in ("peek_all", "peek2")]
 
     for status, detail in _run(world, go):
         assert (status, detail["code"]) == (403, "not_declared")
@@ -377,6 +401,49 @@ def test_r8_a_source_that_is_not_an_object_never_runs(world) -> None:
 # ── f, g and h. The package, the record and the body ───────────────────────
 
 
+def test_r8_an_action_that_is_not_an_id_is_404_and_writes_no_row(world) -> None:
+    """An action of 20,000 characters, or a `uses` value in the path, names no
+    A2 action id. The door reads nothing for it and writes no audit row."""
+    async def go() -> list[tuple[int, Any]]:
+        return [await _call(world.a, ANA, world.pkg, a, {"id": world.rec})
+                for a in ("a" * 20000, "object:visit.get", "a" * 49)]
+
+    assert _run(world, go) == [(404, NOT_FOUND)] * 3
+    assert _audits(world, world.pkg) == []
+
+
+def test_r8_an_object_that_the_package_lacks_is_object_missing(world) -> None:
+    """The manifest declares `visit`, and the registry of this package holds no
+    such object. A record id that names nothing is a plain 404."""
+    async def go() -> list[tuple[int, Any]]:
+        return [await _call(world.a, ANA, world.pkg_empty, "peek", {"id": world.rec}),
+                await _call(world.a, ANA, world.pkg, "peek", {"id": str(uuid.uuid4())})]
+
+    no_object, no_record = _run(world, go)
+    assert no_object == (404, {"code": "object_missing", "message": invoke.NO_OBJECT})
+    assert no_record == (404, NOT_FOUND)
+    assert [r[3] for r in _audits(world, world.pkg_empty)] == [{
+        "action": "peek", "uses": "object:visit.get", "class": "A",
+        "outcome": "not_found", "reason": "object_missing"}]
+    assert [r[3] for r in _audits(world, world.pkg)] == [{
+        "action": "peek", "uses": "object:visit.get", "class": "A",
+        "outcome": "not_found"}]
+
+
+def test_r8_a_catalog_that_fails_is_503_and_audited(world, monkeypatch) -> None:
+    async def _fails() -> list[dict[str, Any]]:
+        raise RuntimeError("the catalog session failed")
+
+    monkeypatch.setattr(invoke.actions, "catalog_rows", _fails)
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "flow",
+                                               {"id": world.rec}))
+    assert (status, detail) == (503, {"code": "catalog_unavailable",
+                                      "message": invoke.CATALOG_DOWN})
+    assert _audits(world, world.pkg) == [(world.a, ANA, "action", {
+        "action": "flow", "uses": f"workflow:{world.wf_a}", "class": None,
+        "outcome": "failed", "reason": "catalog_unavailable"})]
+
+
 def test_r8_a_code_app_is_404(world) -> None:
     status, detail = _run(world, lambda: _call(world.a, ANA, world.code_app, "peek",
                                                {"id": world.rec}))
@@ -387,10 +454,15 @@ def test_r8_a_code_app_is_404(world) -> None:
 def test_r8_a_record_of_another_package_is_404(world) -> None:
     """Both packages of Ana hold an object `visit`. The door reads the object
     of the package in the path, so a record of the other package is 404."""
-    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "peek",
-                                               {"id": world.rec2}))
-    assert (status, detail) == (404, NOT_FOUND)
-    assert _audits(world, world.pkg)[0][3]["outcome"] == "not_found"
+    async def go() -> list[tuple[int, Any]]:
+        # The second body names the other package. The door reads the package
+        # of the path only, so the key changes nothing (M7b).
+        return [await _call(world.a, ANA, world.pkg, "peek", body)
+                for body in ({"id": world.rec2},
+                             {"id": world.rec2, "package_id": world.pkg2})]
+
+    assert _run(world, go) == [(404, NOT_FOUND)] * 2
+    assert [r[3]["outcome"] for r in _audits(world, world.pkg)] == ["not_found"] * 2
 
 
 def test_r8_a_body_that_names_another_org_changes_nothing(world) -> None:

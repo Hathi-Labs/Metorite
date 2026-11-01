@@ -14,25 +14,34 @@ writer are patched too.
 
 This file proves:
 
-- the switch: a not-listed org gets 404, and opens no session;
-- the order of the checks: the switch, the package, the declaration, the
-  class, then the executor;
-- the org and the member come from the session, never from the request;
+- the switch: a not-listed org gets 404 for each body, and opens no session;
+- the order of the checks: the switch, the shape of the action, the
+  package, the declaration, the class, then the executor;
+- the org, the member and the package come from the session and the path,
+  never from the body;
 - each refusal code, and that a refused call reads no record;
-- the one executor, ``object:<name>.get``, reads with the package id;
-- one audit row for each call that reaches a package, with no record data;
+- the one executor, ``object:<name>.get``, parses the body and reads with
+  the package id;
+- a catalog that fails is 503, and an object that the package lacks is 404
+  ``object_missing``;
+- one audit row for each call that reaches a package, with no record data
+  and each text capped;
 - the object verb table holds the five verbs of the A2 grammar.
 
 **The mutations (R7).** The R8 suite holds the full list and each result.
 These turn a test of this file red:
 
 * M1. Drop the switch check. ``test_a_not_listed_org_gets_404_and_opens_no_session``.
-* M3. Skip the declaration check. ``test_an_undeclared_action_is_403_not_declared``.
+* M3. ``_declared`` answers the first entry. ``test_an_undeclared_action_is_403_not_declared``.
 * M4. Drop the class X refusal. ``test_a_class_x_row_is_403_class_x``.
 * M5. Drop the class B and C refusal. ``test_each_write_verb_is_403_approval_required``.
 * M6a. Take the org from the body. ``test_the_session_takes_no_org_from_the_request``.
-* M7b. Call ``get_record`` with no ``package_id``. ``test_a_get_reads_with_the_package_id``.
+* M7b. Take the package id from the body. ``test_a_get_reads_with_the_package_id``.
 * M8. 403 for a package of another member. ``test_a_package_of_another_member_or_org_is_404``.
+* M10. Parse the body before the switch.
+  ``test_a_malformed_body_from_an_org_outside_the_switch_is_404``.
+* M11. Drop the ``try`` around the catalog read.
+  ``test_a_catalog_that_fails_is_503_and_audited``.
 """
 
 from __future__ import annotations
@@ -180,7 +189,8 @@ def _record(w: Any, obj: str, data: dict[str, Any] | None = None) -> str:
 @pytest.fixture
 def world(monkeypatch):
     w = SimpleNamespace(org=None, packages={}, objects=[], records=[], statements=[],
-                        log=[], session_args=[], audits=[], catalog=list(CATALOG))
+                        log=[], session_args=[], audits=[], catalog=list(CATALOG),
+                        catalog_fails=False)
 
     @asynccontextmanager
     async def _session(*args: Any):
@@ -193,6 +203,8 @@ def world(monkeypatch):
 
     async def _catalog_rows() -> list[dict[str, Any]]:
         w.log.append("catalog")
+        if w.catalog_fails:
+            raise RuntimeError("the catalog session failed")
         return list(w.catalog)
 
     async def _audit(**kw: Any) -> None:
@@ -253,6 +265,20 @@ class TestTheSwitch:
         _open(monkeypatch, OTHER)
         r = _call(_client(world), pid, "peek", {"id": rid})
         assert (r.status_code, r.json()) == (404, NOT_FOUND)
+        assert world.log == [] and world.statements == [] and world.audits == []
+
+    @pytest.mark.parametrize("content", ["{not json", "[" * 20000, "\x00\xff", ""],
+                             ids=["not_json", "deep", "bytes", "empty"])
+    def test_a_malformed_body_from_an_org_outside_the_switch_is_404(
+            self, monkeypatch, world, content):
+        """FastAPI parses no body before the switch: the route takes the raw
+        request. So a body that is not JSON gets 404, never 422."""
+        pid, _, _ = _setup(world)
+        _open(monkeypatch, OTHER)
+        for action in ("peek", "add", "no_such_action"):
+            r = _client(world).post(f"/studio/apps/{pid}/actions/{action}", content=content,
+                                    headers={"content-type": "application/json"})
+            assert (r.status_code, r.json()) == (404, NOT_FOUND), (action, r.text)
         assert world.log == [] and world.statements == [] and world.audits == []
 
     def test_empty_opens_no_org(self, monkeypatch, world):
@@ -318,9 +344,20 @@ class TestThePackage:
 
 
 class TestTheChecks:
+    @pytest.mark.parametrize("action", ["object:visit.get", "visit.get", "Peek", "9peek",
+                                        "a" * 49, "a" * 20000],
+                             ids=["uses", "dotted", "upper", "digit", "49", "20000"])
+    def test_an_action_that_is_not_an_id_is_404_before_any_read(self, world, action):
+        """An action that is not an A2 action id names nothing. It gets 404
+        before the session opens, so no audit row holds it."""
+        pid, _, rid = _setup(world)
+        r = _call(_client(world), pid, action, {"id": rid})
+        assert (r.status_code, r.json()) == (404, NOT_FOUND)
+        assert world.log == [] and world.audits == []
+
     def test_an_undeclared_action_is_403_not_declared(self, world):
         pid, _, rid = _setup(world)
-        for action in ("peek_all", "object:visit.get", "visit.get"):
+        for action in ("peek_all", "peek2", "a" * 48):
             r = _call(_client(world), pid, action, {"id": rid})
             assert r.status_code == 403, action
             assert r.json()["detail"] == {"code": "not_declared",
@@ -357,6 +394,18 @@ class TestTheChecks:
         assert (r.status_code, _code(r)) == (403, code)
         assert [sql for sql, _ in world.statements] == [packages_store._GET_SQL]
         assert world.audits[0]["detail"]["class"] == cls
+
+    def test_a_catalog_that_fails_is_503_and_audited(self, world):
+        pid, _, rid = _setup(world)
+        world.catalog_fails = True
+        r = _call(_client(world), pid, "flow", {"id": rid})
+        assert r.status_code == 503, r.text
+        assert r.json()["detail"] == {"code": "catalog_unavailable",
+                                      "message": invoke.CATALOG_DOWN}
+        assert world.audits[0]["detail"] == {
+            "action": "flow", "uses": f"workflow:{WORKFLOW}", "class": None,
+            "outcome": "failed", "reason": "catalog_unavailable"}
+        assert world.log == ["open", "close", "catalog", "audit"]
 
     def test_a_class_x_row_is_403_class_x(self, world):
         pid, _, rid = _setup(world)
@@ -395,7 +444,8 @@ class TestTheGet:
 
     def test_a_get_reads_with_the_package_id(self, world):
         pid, oid, rid = _setup(world)
-        _call(_client(world), pid, "peek", {"id": rid})
+        other = _package(world)
+        _call(_client(world), pid, "peek", {"id": rid, "package_id": other})
         by_name = [p for sql, p in world.statements
                    if sql == objects_store._OBJECT_BY_NAME_SQL]
         assert by_name == [{"pid": pid, "name": "visit"}]
@@ -406,15 +456,30 @@ class TestTheGet:
         _object(world, mine)
         other = _package(world)
         theirs = _record(world, _object(world, other))
-        r = _call(_client(world), mine, "peek", {"id": theirs})
-        assert (r.status_code, r.json()) == (404, NOT_FOUND)
-        assert world.audits[0]["detail"]["outcome"] == "not_found"
+        for body in ({"id": theirs}, {"id": theirs, "package_id": other}):
+            r = _call(_client(world), mine, "peek", body)
+            assert (r.status_code, r.json()) == (404, NOT_FOUND)
+        assert [a["detail"]["outcome"] for a in world.audits] == ["not_found"] * 2
+        assert all("reason" not in a["detail"] for a in world.audits)
 
-    def test_an_object_that_the_registry_lacks_is_404(self, world):
+    def test_an_object_that_the_registry_lacks_is_404_object_missing(self, world):
+        """The caller owns the package, so the code leaks nothing."""
         pid = _package(world)
         r = _call(_client(world), pid, "peek", {"id": str(uuid.uuid4())})
-        assert (r.status_code, r.json()) == (404, NOT_FOUND)
+        assert r.status_code == 404
+        assert r.json()["detail"] == {"code": "object_missing", "message": invoke.NO_OBJECT}
         assert _record_reads(world) == []
+        assert world.audits[0]["detail"] == {
+            "action": "peek", "uses": "object:visit.get", "class": "A",
+            "outcome": "not_found", "reason": "object_missing"}
+
+    def test_a_record_that_names_nothing_is_404_not_found(self, world):
+        pid, _, _ = _setup(world)
+        r = _call(_client(world), pid, "peek", {"id": str(uuid.uuid4())})
+        assert (r.status_code, r.json()) == (404, NOT_FOUND)
+        assert world.audits[0]["detail"] == {
+            "action": "peek", "uses": "object:visit.get", "class": "A",
+            "outcome": "not_found"}
 
     @pytest.mark.parametrize("body", [None, {}, {"id": 7}, {"id": "not-a-uuid"},
                                       ["a", "list"], "text"])
@@ -428,12 +493,21 @@ class TestTheGet:
             "action": "peek", "uses": "object:visit.get", "class": "A",
             "outcome": "refused", "reason": "bad_input"}
 
-    def test_a_body_too_deep_to_parse_is_never_500(self, world):
+    @pytest.mark.parametrize("content", ["[" * 20000 + "]" * 20000, "{not json",
+                                         "\x00\xff"], ids=["deep", "not_json", "bytes"])
+    def test_a_body_that_does_not_parse_is_422_never_500(self, world, content):
         pid, _, _ = _setup(world)
-        deep = "[" * 20000 + "]" * 20000
-        r = _client(world).post(f"/studio/apps/{pid}/actions/peek", content=deep,
+        r = _client(world).post(f"/studio/apps/{pid}/actions/peek", content=content,
                                 headers={"content-type": "application/json"})
-        assert r.status_code in (400, 422), r.text
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"] == invoke.BAD_RECORD_ID
+        assert world.audits[0]["detail"]["reason"] == "bad_input"
+
+    def test_a_write_action_never_parses_the_body(self, world):
+        pid, _, _ = _setup(world)
+        r = _client(world).post(f"/studio/apps/{pid}/actions/add", content="{not json",
+                                headers={"content-type": "application/json"})
+        assert (r.status_code, _code(r)) == (403, "approval_required")
 
 
 # ── The audit ──────────────────────────────────────────────────────────────
@@ -461,6 +535,14 @@ class TestTheAudit:
         text = json.dumps(world.audits)
         for value in RECORD_DATA.values():
             assert value not in text
+
+    def test_each_audit_text_is_capped(self):
+        long = "a" * 20000
+        out = invoke._Outcome(action=long, uses=long, cls=long, refusal="not_declared")
+        detail = invoke._audit_detail(out)
+        for key in ("action", "uses", "class"):
+            assert len(detail[key]) == invoke.MAX_AUDIT_TEXT, key
+        assert len(json.dumps(detail)) < 1000
 
     def test_the_audit_runs_after_the_session_closes(self, world):
         pid, _, rid = _setup(world)
@@ -502,7 +584,9 @@ class TestTheTables:
     def test_each_refusal_is_one_short_sentence(self):
         assert set(invoke.REFUSALS) == {"not_declared", "class_x", "not_in_catalog",
                                         "approval_required", "source_not_open"}
-        for code, message in invoke.REFUSALS.items():
+        messages = {**invoke.REFUSALS, "catalog_unavailable": invoke.CATALOG_DOWN,
+                    "object_missing": invoke.NO_OBJECT, "bad_input": invoke.BAD_RECORD_ID}
+        for code, message in messages.items():
             assert re.fullmatch(r"[a-z_]+", code)
             assert message.endswith(".") and message.count(". ") == 0, code
             assert len(message.split()) <= 25, code
