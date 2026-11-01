@@ -166,7 +166,8 @@ Constraints and indexes of `package_install`:
 - `UNIQUE (organization_id, id)`, the target of the child FK.
 - `UNIQUE (organization_id, app_id, scope_kind, scope_subject)`. One app has one install at each scope.
 - CHECK `version IS NOT NULL OR scope_kind = 'private'`. Only the owner runs a draft.
-- CHECK on `scope_subject`: `org` for `org`, a `group:` prefix for `group`, and a lower-case address with no prefix for `private`.
+- CHECK on `scope_subject`: `org` for `org`, a `group:` prefix for `group`, and a lower-case address for `private`. The address has the email shape of the CHECK in `272_knowledge_pages.sql`: one `@` and no whitespace. It has no `group:` prefix.
+- CHECK `scope_kind <> 'private' OR installed_by = scope_subject`. The owner of a private install made it, so the purge finds each row of a member.
 - A partial index on `(organization_id, ends_at) WHERE ends_at IS NOT NULL`, for the expiry job.
 
 **`package_contribution`**: one row for each claim of one install at one point (§4).
@@ -193,7 +194,7 @@ Five decisions that the columns carry:
 2. **The scope grammar is D12's.** The code that writes a row (PKG-5 and later) passes each `scope_subject` through `normalize_grant_subject`. That function is in `acb_auth/permissions.py`. Do not copy it.
 3. **A share with named people stays `private`.** The people get rows in `app_grants`, the sharing table of `114_custom_apps.sql`. So `apps.visibility = people` maps to a private install plus grants. The resolve (PKG-5) shows a private install to its owner and to each grantee.
 4. **A duplicate claim is refused in code, not by an index.** Some points allow many claims (`triggers`, `slot`), and a private claim conflicts only with what its owner sees. PKG-5 checks the claims of §4 in the install transaction, under `pg_advisory_xact_lock` on the organization.
-5. **A purge deletes the member's private installs.** Their contributions go by the cascade. An org or group install that the member made stays, and the purge counts it. This follows the rule of `routes/admin/members.py`: "purge the person, keep their work".
+5. **A purge deletes a private install of the member only when nobody else sees it.** Nobody else sees it when no `app_grants` row of its app names another subject. Its contributions go by the cascade. A private install that the member shared with named people stays, and the purge counts it (decision 3). An org or group install that the member made stays too, and the purge counts it. This follows the rule of `routes/admin/members.py`: "purge the person, keep their work".
 
 ### 5.2 One resolve call
 

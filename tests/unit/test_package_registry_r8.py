@@ -36,13 +36,17 @@ f. A delete of an install deletes its contributions. A delete of an app
    deletes its installs and their contributions.
 g. Each CHECK of §5.1 refuses a bad row, and a good row at each edge passes:
    the scope kinds, the shape of each scope subject, a lower-case
-   ``installed_by``, a NULL version only for ``private``, ``archived_at`` with
-   the state, the 13 points of §4 and the payload size.
+   ``installed_by``, the owner as the installer of a private install, a NULL
+   version only for ``private``, ``archived_at`` with the state, the 13
+   points of §4 and the payload size. The private address takes each value
+   that ``normalize_grant_subject`` gives, as the CHECK of 272 does.
 h. One app has one install at each scope.
-i. The member purge deletes the member's private installs of this org and
-   their contributions. It keeps and counts the group and org installs that
-   the member made. The rows of another member and of another org stay, also
-   as the superuser.
+i. The member purge deletes the member's private installs of this org that
+   nobody else sees, and their contributions. It keeps and counts a private
+   install of an app that the member shared with another person (decision
+   3), and the group and org installs that the member made. The three
+   clauses split the member's rows with no overlap and no gap. The rows of
+   another member and of another org stay, also as the superuser.
 
 **R7: red first, then mutate.** Each case below was red before its object
 existed. Commit before each mutation, and restore with git after.
@@ -73,6 +77,10 @@ existed. Commit before each mutation, and restore with git after.
   ``private_app_installs`` row. The ``superuser`` case of the purge test
   goes red, because org B's private install of the same address goes too.
   The ``app`` case stays green, because RLS still binds the app role.
+* M5. ``routes/admin/members.py``: drop ``AND NOT {_OTHERS_SEE_THE_APP}``
+  from the ``private_app_installs`` row. Both cases of
+  ``test_r8_a_private_install_that_she_shared_stays_and_is_counted`` go
+  red: the delete counts 2, and the shared install is gone.
 
 Each mutation ran on 2026-11-01 and gave the result above.
 """
@@ -289,6 +297,12 @@ def test_the_migration_holds_the_keys_the_checks_and_the_rls() -> None:
     assert points == _spec_points()
     assert len(points) == 13
     assert "octet_length(payload::text) <= 65536" in code
+    # The owner of a private install is its installer, so the purge finds
+    # each row of a member (finding 2 of the PKG-4 review).
+    assert "scope_kind <> 'private' OR installed_by = scope_subject" in code
+    # The address shape of 272, which normalize_grant_subject matches.
+    assert "scope_subject ~ '^[^@[:space:]]+@[^@[:space:]]+$'" in code
+    assert "scope_subject !~ '^group:'" in code
     assert "gtd_" not in code
 
 
@@ -561,13 +575,18 @@ def test_r8_deleting_an_app_deletes_its_installs_and_their_contributions(world) 
     ({"kind": "group", "subject": "group:"}, "package_install_scope_subject"),
     ({"kind": "group", "subject": "group: ops"}, "package_install_scope_subject"),
     ({"kind": "group", "subject": "group:Ops"}, "package_install_scope_subject"),
-    ({"kind": "private", "subject": "Ana@PKG4.test"}, "package_install_scope_subject"),
-    ({"kind": "private", "subject": "group:ana@pkg4.test"}, "package_install_scope_subject"),
-    ({"kind": "private", "subject": "org"}, "package_install_scope_subject"),
-    ({"kind": "private", "subject": "not-an-address"}, "package_install_scope_subject"),
-    ({"kind": "private", "subject": "ana @pkg4.test"}, "package_install_scope_subject"),
-    ({"kind": "private", "subject": "a@b@pkg4.test"}, "package_install_scope_subject"),
+    # A private row names its owner as its installer here, so only the
+    # subject CHECK can refuse it. An upper-case subject breaks a second
+    # CHECK too, so `test_r8_the_subject_check_alone_holds_each_shape` holds it.
+    *(({"kind": "private", "subject": s, "by": s}, "package_install_scope_subject")
+      for s in ("group:ana@pkg4.test", "group:x@y", "org", "not-an-address",
+                "ana @pkg4.test", "ana\t@pkg4.test", "a@b@pkg4.test", "@pkg4.test",
+                "ana@")),
     ({"by": "Ana@PKG4.test"}, "package_install_installed_by"),
+    # Finding 2 of the PKG-4 review: a private install of Ben that Ana made.
+    ({"kind": "private", "subject": BEN, "by": ANA}, "package_install_private_installer"),
+    ({"kind": "private", "subject": BEN, "by": ANA, "v": None},
+     "package_install_private_installer"),
     ({"v": None}, "package_install_draft_private"),
     ({"v": None, "kind": "group", "subject": "group:ops"}, "package_install_draft_private"),
     ({"state": "deleted"}, "package_install_state"),
@@ -583,8 +602,13 @@ def test_r8_the_install_checks_refuse_a_bad_row(world, params, constraint) -> No
 
 
 @pytest.mark.parametrize("params", [
-    {"kind": "private", "subject": "ana@pkg4.test", "v": None},
-    {"kind": "private", "subject": "ana@pkg4.test", "v": 3},
+    {"kind": "private", "subject": "ana@pkg4.test", "by": "ana@pkg4.test", "v": None},
+    {"kind": "private", "subject": "ana@pkg4.test", "by": "ana@pkg4.test", "v": 3},
+    # Finding 3 of the PKG-4 review: normalize_grant_subject and the CHECK
+    # of 272 take a colon in the local part, so this CHECK takes it too.
+    {"kind": "private", "subject": "a:b@x.test", "by": "a:b@x.test"},
+    # A group or an org install names its installer, who is any member.
+    {"kind": "group", "subject": "group:ops", "by": BEN},
     {"kind": "group", "subject": "group:ops"},
     {"kind": "group", "subject": "group:field-visits"},
     {"kind": "org", "subject": "org"},
@@ -595,6 +619,91 @@ def test_r8_a_good_install_at_each_edge_passes(world, params) -> None:
     install = _go(world.p.app_url, lambda: _install(world.p.org_a, world.apps["a1"], **params))
     assert _admin_scalar(world, "SELECT organization_id::text FROM package_install "
                                 "WHERE id = CAST(:i AS uuid)", {"i": install}) == world.p.org_a
+
+
+def _subject_check_passes(world: Any, kind: str, subject: str) -> bool:
+    """The stored expression of ``package_install_scope_subject``, run on one
+    pair of values, with no other CHECK in the way.
+
+    The expression comes from ``pg_get_constraintdef``, so this tests what
+    Postgres holds, never a copy. It runs on the DBAPI cursor: SQLAlchemy's
+    ``text()`` reads ``[:space:]`` as a bind parameter."""
+    with world.p.admin_engine.connect() as c, c.connection.dbapi_connection.cursor() as cur:
+        cur.execute(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'package_install'::regclass "
+            "AND conname = 'package_install_scope_subject'")
+        definition = cur.fetchone()[0]
+        assert definition.startswith("CHECK (") and definition.endswith(")"), definition
+        cur.execute(
+            f"SELECT {definition[len('CHECK '):]} FROM (VALUES (%s::text, %s::text)) "
+            "AS t(scope_kind, scope_subject)", (kind, subject))
+        return bool(cur.fetchone()[0])
+
+
+@pytest.mark.parametrize(("kind", "subject", "passes"), [
+    # Finding 3 of the PKG-4 review: one `@`, no whitespace, lower case.
+    ("private", "a:b@x.test", True),
+    ("private", "ana@pkg4.test", True),
+    ("private", "group:x@y", False),
+    ("private", "org", False),
+    ("private", "Ana@PKG4.test", False),
+    ("private", "ana@PKG4.test", False),
+    ("private", "ana @pkg4.test", False),
+    ("private", "a@b@pkg4.test", False),
+    ("group", "group:ops", True),
+    ("group", "group:Ops", False),
+    ("org", "org", True),
+    ("org", "ana@pkg4.test", False),
+])
+def test_r8_the_subject_check_alone_holds_each_shape(world, kind, subject, passes) -> None:
+    assert _subject_check_passes(world, kind, subject) is passes
+
+
+#: Real shapes that a member types, and that a writer (PKG-5) hands to
+#: ``normalize_grant_subject`` first (§5.1 decision 2).
+_REAL_SUBJECTS = (
+    "Ana+Sales@Example.COM",          # a plus sign, and upper case
+    "user42@42.example",              # digits
+    "Ünal@Bücher.Example",            # an IDN domain, in Unicode
+    "mary-jane@my-firm.example",      # a dash on each side
+    "o'neil@pkg4.test",               # an apostrophe
+    "a:b@x.test",                     # a colon in the local part
+    "  Ravi@Fracktal.IN  ",           # spaces around the value
+    "group:Field-Visits",             # a dash in a group slug
+    "group: Ops",                     # a space after the prefix
+    "org",
+)
+
+
+def test_r8_each_value_of_normalize_grant_subject_passes_the_check(world) -> None:
+    """Finding 3 of the PKG-4 review. A value that ``normalize_grant_subject``
+    gives must pass the CHECK, or PKG-5 answers 500 where it owes 422. Each
+    value goes in as a real row, as the app role, with its owner as its
+    installer for a private one."""
+    from acb_auth.permissions import normalize_grant_subject
+
+    org, app = world.p.org_a, world.apps["a1"]
+    rows: dict[str, str] = {}
+    for raw in _REAL_SUBJECTS:
+        value = normalize_grant_subject(raw)
+        kind = ("org" if value == "org"
+                else "group" if value.startswith("group:") else "private")
+        rows[value] = kind
+        assert _subject_check_passes(world, kind, value), (raw, value)
+
+    async def go() -> None:
+        for value, kind in rows.items():
+            await _install(org, app, kind=kind, subject=value,
+                           by=value if kind == "private" else ANA)
+
+    _go(world.p.app_url, go)
+    with world.p.admin_engine.connect() as c:
+        stored = dict(c.execute(text(
+            "SELECT scope_subject, scope_kind FROM package_install "
+            "WHERE app_id = CAST(:a AS uuid)"), {"a": app}).all())
+    assert stored == rows
+    assert "ünal@bücher.example" in stored and "a:b@x.test" in stored
 
 
 def _payload_of_text_size(size: int) -> str:
@@ -643,7 +752,7 @@ def test_r8_one_app_has_one_install_at_each_scope(world) -> None:
 
     async def go() -> None:
         await _install(a, world.apps["a1"], kind="private", subject=ANA, v=None)
-        await _install(a, world.apps["a1"], kind="private", subject=BEN, v=None)
+        await _install(a, world.apps["a1"], kind="private", subject=BEN, by=BEN, v=None)
         await _install(a, world.apps["a2"])
 
     _go(world.p.app_url, go)
@@ -661,13 +770,10 @@ def test_r8_one_app_has_one_install_at_each_scope(world) -> None:
 def test_r8_the_member_purge_takes_private_installs_and_keeps_shared_ones(
     world, role: str,
 ) -> None:
-    """The two clauses of ``package_install`` in ``members.py`` on a real
+    """The clauses of ``package_install`` in ``members.py`` on a real
     database. The superuser run skips RLS, so only the org predicate of each
-    clause keeps org B's rows out there."""
-    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS, _purge_params
-
-    [gone] = [r for r in _PURGE_DELETES if r.table == "package_install"]
-    [kept] = [r for r in _PURGE_KEEPS if r.table == "package_install"]
+    clause keeps org B's rows out there. No app here has a grant, so each
+    private install of Ana goes."""
     ids = {
         # Org A: Ana's private install, the org and group installs she made,
         # and Ben's private install and his org install.
@@ -685,21 +791,120 @@ def test_r8_the_member_purge_takes_private_installs_and_keeps_shared_ones(
     }
     url = world.p.app_url if role == "app" else world.p.admin_engine.url
 
-    async def purge() -> tuple[int, int, int]:
-        params = _purge_params(gone, uid=str(uuid.uuid4()), email=ANA)
-        async with tenant_session(world.p.org_a) as db:
-            counted = (await db.execute(text(gone.count_sql), params)).scalar_one()
-            stays = (await db.execute(text(kept.count_sql), _purge_params(
-                kept, uid=str(uuid.uuid4()), email=ANA))).scalar_one()
-            deleted = (await db.execute(text(gone.delete_sql), params)).rowcount
-        return int(counted), int(stays), int(deleted)
-
-    assert _go(url, purge) == (1, 2, 1)
-    with world.p.admin_engine.connect() as c:
-        left = set(c.execute(text(
-            "SELECT id::text FROM package_install WHERE id = ANY(CAST(:i AS uuid[]))"),
-            {"i": list(ids.values())}).scalars().all())
-    assert left == set(ids.values()) - {ids["ana_private"]}
+    out = _go(url, lambda: _purge_installs(world.p.org_a))
+    assert out.counts == {"private_app_installs": 1, "shared_app_installs": 2,
+                          "shared_private_app_installs": 0}
+    assert out.deleted == 1
+    assert _left(world, ids) == set(ids.values()) - {ids["ana_private"]}
     assert _contributions_of(world, ids["ana_private"]) == 0
     assert _contributions_of(world, ids["ana_org"]) == 1
     assert _contributions_of(world, ids["b_private"]) == 2
+
+
+@pytest.mark.parametrize("role", ["app", "superuser"])
+def test_r8_a_private_install_that_she_shared_stays_and_is_counted(
+    world, role: str,
+) -> None:
+    """Finding 1 of the PKG-4 review (decisions 3 and 5). Ana shared app a2
+    with Ben, so Ben holds an ``app_grants`` row on it, and the resolve shows
+    him her private install. The purge of Ana keeps that install and counts
+    it. Her private install of a1 has only her own grant, so it goes.
+
+    The purge runs in its own order: each count first, then the delete of
+    her grants, then the delete of her installs. The three clauses split
+    her rows of org A with no overlap and no gap."""
+    a, b = world.p.org_a, world.p.org_b
+    ids = {
+        "ana_alone": _seed(world, "a", kind="private", subject=ANA, v=None),
+        "ana_shared": _go(world.p.app_url, lambda: _install(
+            a, world.apps["a2"], kind="private", subject=ANA)),
+        "ana_org": _go(world.p.app_url, lambda: _install(a, world.apps["a2"])),
+        # Ben's private install of a1, where Ana holds a grant. It is his.
+        "ben_private": _go(world.p.app_url, lambda: _install(
+            a, world.apps["a1"], kind="private", subject=BEN, by=BEN)),
+        # Org B: the same address, on an app that Ben holds a grant on.
+        "b_shared": _seed(world, "b", kind="private", subject=ANA, v=None),
+    }
+    _go(world.p.app_url, lambda: _contrib(a, ids["ana_shared"]))
+
+    async def grants() -> None:
+        await _grant(a, world.apps["a1"], ANA)
+        await _grant(a, world.apps["a2"], BEN)
+        await _grant(b, world.apps["b1"], BEN)
+
+    _go(world.p.app_url, grants)
+    url = world.p.app_url if role == "app" else world.p.admin_engine.url
+    # Each row of org A that names Ana, read as the superuser before the purge.
+    with world.p.admin_engine.connect() as c:
+        hers = set(c.execute(text(
+            "SELECT id::text FROM package_install WHERE organization_id = CAST(:o AS uuid) "
+            "AND (lower(scope_subject) = :e OR lower(installed_by) = :e)"),
+            {"o": a, "e": ANA}).scalars().all())
+    assert hers == {ids["ana_alone"], ids["ana_shared"], ids["ana_org"]}
+
+    out = _go(url, lambda: _purge_installs(a))
+
+    assert out.counts == {"private_app_installs": 1, "shared_app_installs": 1,
+                          "shared_private_app_installs": 1}
+    assert out.deleted == 1
+    # No overlap and no gap: each of her rows is on exactly one side.
+    assert out.rows["private_app_installs"] == {ids["ana_alone"]}
+    assert out.rows["shared_private_app_installs"] == {ids["ana_shared"]}
+    assert out.rows["shared_app_installs"] == {ids["ana_org"]}
+    assert set().union(*out.rows.values()) == hers
+    assert sum(len(v) for v in out.rows.values()) == len(hers)
+    assert _left(world, ids) == set(ids.values()) - {ids["ana_alone"]}
+    assert _contributions_of(world, ids["ana_alone"]) == 0
+    assert _contributions_of(world, ids["ana_shared"]) == 1
+    # Her own grant went. Ben's grants stay.
+    assert _grants_of(world, ANA) == 0
+    assert _grants_of(world, BEN) == 2
+
+
+async def _grant(org: str, app: str, subject: str) -> None:
+    """One ``app_grants`` row as the app role, bound to *org*."""
+    async with tenant_session(org) as db:
+        await db.execute(text(
+            "INSERT INTO app_grants (app_id, subject, granted_by) "
+            "VALUES (CAST(:app AS uuid), :s, :by)"), {"app": app, "s": subject, "by": ANA})
+
+
+def _grants_of(world: Any, subject: str) -> int:
+    return int(_admin_scalar(
+        world, "SELECT count(*) FROM app_grants g JOIN apps a ON a.id = g.app_id "
+               "WHERE a.slug LIKE :s AND g.subject = :e", {"s": _SLUG_LIKE, "e": subject}))
+
+
+def _left(world: Any, ids: dict[str, str]) -> set[str]:
+    with world.p.admin_engine.connect() as c:
+        return set(c.execute(text(
+            "SELECT id::text FROM package_install WHERE id = ANY(CAST(:i AS uuid[]))"),
+            {"i": list(ids.values())}).scalars().all())
+
+
+async def _purge_installs(org: str) -> SimpleNamespace:
+    """The ``package_install`` half of ``purge_member_rows``, in its order.
+
+    It counts each row and reads its ids first, then deletes Ana's grants
+    through the ``app_grants`` row, then her installs. It uses the rows of
+    ``members.py``, never a copy."""
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS, _purge_params
+
+    rows = {r.key: r for r in (*_PURGE_DELETES, *_PURGE_KEEPS)
+            if r.table in ("package_install", "app_grants")}
+    uid = str(uuid.uuid4())
+    out = SimpleNamespace(counts={}, rows={}, deleted=0)
+    async with tenant_session(org) as db:
+        for key, row in rows.items():
+            if row.table != "package_install":
+                continue
+            params = _purge_params(row, uid=uid, email=ANA)
+            out.counts[key] = int((await db.execute(text(row.count_sql), params)).scalar_one())
+            out.rows[key] = {str(i) for i in (await db.execute(text(
+                f"SELECT id FROM package_install WHERE {row.where}"), params)).scalars()}
+        grants = rows["app_grants"]
+        await db.execute(text(grants.delete_sql), _purge_params(grants, uid=uid, email=ANA))
+        gone = rows["private_app_installs"]
+        out.deleted = (await db.execute(text(gone.delete_sql), _purge_params(
+            gone, uid=uid, email=ANA))).rowcount
+    return out

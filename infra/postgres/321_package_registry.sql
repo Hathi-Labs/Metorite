@@ -59,9 +59,14 @@
 -- 4. A duplicate claim is refused in code (PKG-5), not by an index, because
 --    some points take many claims. The primary key of a contribution only
 --    keeps one claim of one install at one point and key.
--- 5. The member purge (gateway/routes/admin/members.py) deletes the member's
---    private installs of the bound org, and their contributions by cascade.
---    It keeps and counts the group and org installs that the member made.
+-- 5. The member purge (gateway/routes/admin/members.py) deletes a private
+--    install of the member in the bound org only when nobody else sees it:
+--    no `app_grants` row of its app names another subject. Its
+--    contributions go by cascade. The purge keeps and counts a private
+--    install that the member shared with named people (decision 3), and the
+--    group and org installs that the member made. The CHECK
+--    `package_install_private_installer` makes the owner of a private
+--    install its installer, so the two sides find each row of the member.
 --
 -- The number is taken at build time (R1). On 2026-11-01 origin/main held 320,
 -- and no open pull request claimed 321. Check it again at merge. Pinned by
@@ -122,17 +127,26 @@ CREATE TABLE IF NOT EXISTS package_install (
         REFERENCES apps (organization_id, id) ON DELETE CASCADE,
     CONSTRAINT package_install_scope_kind CHECK (
         scope_kind IN ('private', 'group', 'org')),
-    -- The shape of each kind. A private address has no `<kind>:` prefix, so
-    -- `group:x@y` is not an address. Each value is lower case, as D12 stores it.
+    -- The shape of each kind. Each value is lower case, as D12 stores it.
+    -- A private address is the email shape of the CHECK of 272: one `@`
+    -- and no whitespace. normalize_grant_subject accepts the same shape, so
+    -- `a:b@x.test` is an address. A `group:` value is a group, never an
+    -- address. `org` has no `@`, so the address shape refuses it.
     CONSTRAINT package_install_scope_subject CHECK (
         (scope_kind = 'org' AND scope_subject = 'org')
         OR (scope_kind = 'group'
             AND scope_subject ~ '^group:\S'
             AND scope_subject = lower(scope_subject))
         OR (scope_kind = 'private'
-            AND scope_subject ~ '^[^@\s:]+@[^@\s]+$'
-            AND scope_subject = lower(scope_subject))),
+            AND scope_subject = lower(scope_subject)
+            AND scope_subject !~ '^group:'
+            AND scope_subject ~ '^[^@[:space:]]+@[^@[:space:]]+$')),
     CONSTRAINT package_install_installed_by CHECK (installed_by = lower(installed_by)),
+    -- The owner of a private install made it. The purge finds a private
+    -- install by its owner, so it puts each row that names the leaver on
+    -- one side: deleted or kept, and counted.
+    CONSTRAINT package_install_private_installer CHECK (
+        scope_kind <> 'private' OR installed_by = scope_subject),
     -- Only the owner runs a draft.
     CONSTRAINT package_install_draft_private CHECK (
         version IS NOT NULL OR scope_kind = 'private'),
