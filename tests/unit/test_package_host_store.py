@@ -315,6 +315,15 @@ def test_only_the_store_writes_an_install_or_a_claim() -> None:
     assert "package_install" in members and not _WRITE.search(members)
 
 
+def test_the_store_reads_apps_and_never_writes_it() -> None:
+    """Settle 2 of the PKG-5b audit. ``studio/packages_store.py`` owns the
+    rows of a Studio package, so the install store only reads one."""
+    source = (_ROOT / "apps/services/gateway/gateway/package_host/store.py").read_text(
+        encoding="utf-8")
+    assert not re.search(r"\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+apps\b", source, re.I)
+    assert "SELECT 1 FROM apps " in store._APP_SQL
+
+
 def test_the_r8_twin_is_named_in_the_ci_skip_guard() -> None:
     """The `--must-run` list of pr-check.yml is kept by hand. Without the
     entry, the R8 twin skips in CI with no database and the job stays green."""
