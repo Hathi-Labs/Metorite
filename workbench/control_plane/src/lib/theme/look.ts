@@ -1,5 +1,5 @@
 /**
- * The look (D146, `project-docs/specs/glass_look.md` §4).
+ * The look (D149, `project-docs/specs/glass_look.md` §4).
  *
  * Glass is the only look. It applies through ONE attribute on <html>, which
  * the server renders on every page. No build flag, no member choice and no

@@ -30,7 +30,7 @@ own theme names. The contrast gate measures them. It is a mirror, and
 `themes.test.ts` fails if it drifts from the stylesheet. Change a value in
 both, or in neither.)*
 
-### 0a. The one look is glass (D143, D146, 2026-10-31)
+### 0a. The one look is glass (D143, D149, 2026-10-31)
 
 The owner chose Aroh's design language, **glass**, as the look. On 2026-10-31
 the owner ended the trial: "We confirm that we want to be on the new UI ...

@@ -133,7 +133,7 @@ export function subscribeLook(onChange: () => void): () => void {
 
 /**
  * The look the document carries, kept current: a component reads it as the
- * CSS does. The server renders glass on every page (D146), so the server
+ * CSS does. The server renders glass on every page (D149), so the server
  * snapshot is glass and a server render matches the client.
  */
 export function useDocumentLook(): Look {

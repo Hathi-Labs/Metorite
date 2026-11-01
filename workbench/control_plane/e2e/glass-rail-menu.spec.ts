@@ -14,7 +14,7 @@ import { gotoAndSettle, stubApi } from "./visual/harness";
  * both of those: the menu must reach past the rail, and it must be the
  * topmost element there.
  *
- * Glass is the only look (D146), so the page already carries the attribute.
+ * Glass is the only look (D149), so the page already carries the attribute.
  * The menu has two frames: the
  * account foot ("Account and settings", with the shell flags of production)
  * and the older footer ("Accounts", the CI default, which needs the account

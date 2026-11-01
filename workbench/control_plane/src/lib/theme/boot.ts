@@ -43,7 +43,7 @@ import {
  * The script source. Generated rather than hand-written so the density scale
  * and storage keys stay in lockstep with the modules that own them.
  *
- * The look (D146): glass is the only look, and the server renders it. The
+ * The look (D149): glass is the only look, and the server renders it. The
  * script holds no look code, so it cannot add or remove the attribute. It
  * only clears the `cc-look` key that the old Design switch left behind.
  * `glassLook.test.ts` fences both.

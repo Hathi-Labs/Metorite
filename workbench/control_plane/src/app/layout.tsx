@@ -66,7 +66,7 @@ const fontVariables = [geistSans.variable, geistMono.variable, inter.variable]
   .filter(Boolean)
   .join(" ");
 
-// Glass is the only look (D146), so the server renders the attribute on
+// Glass is the only look (D149), so the server renders the attribute on
 // every page and nothing takes it off.
 const lookAttributes = { [LOOK_ATTRIBUTE]: GLASS_LOOK };
 

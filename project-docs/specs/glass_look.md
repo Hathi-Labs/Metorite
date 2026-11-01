@@ -1,10 +1,10 @@
 # The glass look — Aroh's design language across Metorite
 
 **Status: ACTIVE, 2026-10-31. Verified against code on 2026-10-31.** Owner
-directive of 2026-10-31. Decisions **D143** and **D146**. Board row **WS-UX** (phase GL).
+directive of 2026-10-31. Decisions **D143** and **D149**. Board row **WS-UX** (phase GL).
 Metorite task #1125, under epic 492.
 
-**GL-Z1 is BUILT, 2026-10-31 (D146).** Glass is the only look. The owner
+**GL-Z1 is BUILT, 2026-10-31 (D149).** Glass is the only look. The owner
 said: "We confirm that we want to be on the new UI ... We don't need to keep
 the switch." The server always renders `data-look="glass"`. The gate, the
 Design switch and the stored `cc-look` choice are gone. The classic token
@@ -67,7 +67,7 @@ Ask field. Its `data-glow` is `rest`, `live` or `waiting`.
 
 ## 0. The answer in one screen
 
-> **GL-Z1 (D146) ended the trial.** The gate, the Design switch and the revert
+> **GL-Z1 (D149) ended the trial.** The gate, the Design switch and the revert
 > paths below are history. Glass is the only look, and no setting turns
 > classic back on. The text keeps the record of how the trial worked.
 
@@ -192,7 +192,7 @@ multi-tenant.
 
 ## 4. The mechanism
 
-### 4.1 The gate (REMOVED by GL-Z1, D146)
+### 4.1 The gate (REMOVED by GL-Z1, D149)
 
 **GL-Z1 removed the gate.** `look.ts` no longer reads `NEXT_PUBLIC_UI_LOOK`, and
 `layout.tsx` renders the attribute with no check. A box that still sets the
@@ -224,7 +224,7 @@ deletes a line. Production has no `NEXT_PUBLIC_UI_LOOK` line, so staging keeps
 its own. ⚠️ Never write `NEXT_PUBLIC_UI_LOOK=classic` on production. The
 nightly refresh would copy it onto staging and turn glass off there.
 
-### 4.2 The attribute and the member's switch (switch REMOVED by GL-Z1, D146)
+### 4.2 The attribute and the member's switch (switch REMOVED by GL-Z1, D149)
 
 **GL-Z1 removed the switch.** `layout.tsx` renders `data-look="glass"` on every
 page. The boot script holds no look code, except one line that clears the
@@ -285,7 +285,7 @@ it with `preload: false` and adds its variable only when the gate is on. A
 browser downloads a font only when text uses it, so classic does not pay for
 Inter.
 
-### 4.5 The revert paths (ended by GL-Z1, D146)
+### 4.5 The revert paths (ended by GL-Z1, D149)
 
 **There is no revert path in the product now.** The owner chose to keep one
 look. The only way back is `git revert` of the GL-Z1 pull request, and GL-Z2
@@ -468,7 +468,7 @@ on srv1914284 (backup `.env.local.bak-20261031T050134Z`) and dispatched
 `deploy.yml`. `api.metorite.com/version` serves `997ea6e0a` as `applied_sha`,
 and `app.metorite.com/signin` renders `data-look="glass"`.
 
-### GL-Z1 · The runtime half — BUILT 2026-10-31 (D146)
+### GL-Z1 · The runtime half — BUILT 2026-10-31 (D149)
 
 The owner said the word on 2026-10-31. The server always renders
 `data-look="glass"`. `look.ts` loses the gate. The boot script, the store and
@@ -499,7 +499,7 @@ behind `glass:`") retire in the same change.
 | Rule | Fence |
 |---|---|
 | The classic token values do not change | `src/lib/theme/themes.test.ts` (exists). The manifest mirrors classic |
-| Nothing turns classic on: no gate, no switch, no stored choice, and the boot script never touches the attribute (D146) | `src/lib/theme/glassLook.test.ts` (GL-Z1). It retires in GL-Z2 |
+| Nothing turns classic on: no gate, no switch, no stored choice, and the boot script never touches the attribute (D149) | `src/lib/theme/glassLook.test.ts` (GL-Z1). It retires in GL-Z2 |
 | A glass-only utility appears only behind `glass:`, or in a glass-only file | `glassLook.test.ts` (GL-1) |
 | The glass block defines no token that classic lacks, except the §4.3 list | `glassLook.test.ts` (GL-1) |
 | Each glass text pair passes AA, on the page, the card, a muted panel and its 10 % chip | `src/lib/theme/glassLook.test.ts` (GL-1), which reads the glass blocks of `globals.css` |

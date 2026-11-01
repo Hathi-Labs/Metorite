@@ -2293,11 +2293,21 @@ html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-rail-row] > .
   left: 1.625rem;
   right: auto;
 }
-/* A wide count (Needs you, "26+") sits on the icon's top-right corner inside
-   the rail, as an app icon's badge does, so the rail's edge never cuts it
-   (owner, 2026-11-01). A ring in the rail's tone parts it from the icon. */
+/* A count sits on the icon's top-right corner, and it may cross the rail's
+   edge (owner, 2026-11-01: "the color number bubble ... on top of the bar's
+   boundaries"). At rest the folded rail does not clip, and its list reaches
+   8 px past the rail, over the frame's gap, so a wide count ("26+") draws
+   whole. A ring in the rail's tone parts it from the icon. A peek clips
+   again: there the count fades and the row's trailing pill shows it. */
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek]) {
+  overflow: visible;
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"] > nav {
+  margin-right: -0.5rem;
+  padding-right: 0.5rem;
+}
 html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-rail-row] > [data-rail-corner] {
-  left: 1.125rem;
+  left: 1.25rem;
   top: 0.125rem;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--background-grouped) 30%, var(--card));
 }

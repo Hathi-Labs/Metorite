@@ -1,7 +1,7 @@
 /**
- * The glass look's fences (D143, D146, `project-docs/specs/glass_look.md` §6).
+ * The glass look's fences (D143, D149, `project-docs/specs/glass_look.md` §6).
  *
- * Glass is the only look (D146, GL-Z1). The classic token blocks stay in
+ * Glass is the only look (D149, GL-Z1). The classic token blocks stay in
  * `globals.css` until GL-Z2 folds them away. These tests hold the rules:
  *
  *   1. Nothing can turn classic back on. The server renders the attribute,
@@ -68,7 +68,7 @@ const GLASS_ONLY_TOKENS = [
   ...[1, 2, 3, 4, 5].map((n) => `--glow-${n}`),
 ];
 
-// ── 1. Glass is the only look (D146) ─────────────────────────────────────────
+// ── 1. Glass is the only look (D149) ─────────────────────────────────────────
 
 describe("glass is the only look", () => {
   it("leaves no gate, no resolver and no setter in look.ts", () => {
