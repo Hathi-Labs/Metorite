@@ -330,10 +330,10 @@ async def run_lifecycle_sweep(
     ``SELECT * FROM pm_projects WHERE parent_project_id IS NULL`` with no
     predicate at all, which is one schedule archiving and closing **every
     customer's** work. A blank tenant raises :class:`TenantUnbound` rather than
-    sweeping wider; the caller
-    (``routes/workflows/service._pm_lifecycle_sweeper``) resolves it from the
-    workflow owner's ``app_user`` row — a stored fact, never request input
-    (R11) — and binds it on the session it hands in.
+    sweeping wider. The caller
+    (``routes/workflows/service._pm_lifecycle_sweeper``) takes it from the run
+    — a stored fact, never request input (R11) — and binds it on the session
+    it hands in.
 
     For each ROOT project **in that organization** with a policy enabled (both
     columns NULL — the default — means the project is never touched):

@@ -427,12 +427,12 @@ class TestTheWorkflowStep:
         # Fix round 1 review, P1: the step records nothing and never fails.
         from gateway.routes.workflows import service
 
-        async def owner(wid):
+        async def owner(wid, org):
             return ORG, "owner@org.test"
 
         monkeypatch.setattr(service, "_workflow_owner", owner)
         told.status[0] = status
-        run = service.build_node_services("owner@org.test", "wf-1").run_tool
+        run = service.build_node_services("owner@org.test", "wf-1", ORG).run_tool
         got = await run("notify.whatsapp", {"title": "x"}, "owner@org.test")
         assert got == {"recorded": False, "reason": reason}
         assert list(told) == []
@@ -440,7 +440,7 @@ class TestTheWorkflowStep:
     async def test_a_full_backlog_never_fails_the_run(self, monkeypatch, told):
         from gateway.routes.workflows import service
 
-        async def owner(wid):
+        async def owner(wid, org):
             return ORG, "owner@org.test"
 
         async def refuse(org, member, **kw):
@@ -448,7 +448,7 @@ class TestTheWorkflowStep:
 
         monkeypatch.setattr(service, "_workflow_owner", owner)
         monkeypatch.setattr(requests, "tell_me", refuse)
-        run = service.build_node_services("owner@org.test", "wf-1").run_tool
+        run = service.build_node_services("owner@org.test", "wf-1", ORG).run_tool
         got = await run("notify.whatsapp", {"title": "x"}, "owner@org.test")
         assert got == {"recorded": False, "reason": "backlog_full"}
 
@@ -456,12 +456,12 @@ class TestTheWorkflowStep:
             self, monkeypatch, told):
         from gateway.routes.workflows import service
 
-        async def owner(wid):
-            assert wid == "wf-1"
+        async def owner(wid, org):
+            assert (wid, org) == ("wf-1", ORG)
             return ORG, "owner@org.test"
 
         monkeypatch.setattr(service, "_workflow_owner", owner)
-        run = service.build_node_services("someone@else.test", "wf-1").run_tool
+        run = service.build_node_services("someone@else.test", "wf-1", ORG).run_tool
         got = await run("notify.whatsapp", {"title": "Nightly sync failed",
                                             "urgency": "urgent"}, "someone@else.test")
         assert got == {"recorded": True, "request_id": "r"}
@@ -486,7 +486,7 @@ class TestTheWorkflowStep:
         from gateway.routes.workflows.engine.handlers import NodeExecutionError
 
         with pytest.raises(NodeExecutionError):
-            await service.build_node_services("a", "").run_tool(
+            await service.build_node_services("a", "", ORG).run_tool(
                 "notify.whatsapp", {"title": "x"}, "a")
         assert told == []
 

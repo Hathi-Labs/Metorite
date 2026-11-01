@@ -175,6 +175,8 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - The webhook trigger is public by token. `core.hook_url()` builds the hook URL. The browser must NEVER build one from `window.location`. A duplicate always gets a new hook token.
    - **Schedules are DB rows.** The claim is a CAS that commits BEFORE `start_run`, so each exit path calls `service.record_skipped_run()`. ⚠️ `_claim_baseline` arms a new schedule, because `compute_due_fire` only looks forward.
    - A resume replays with stored outputs, so no side effect repeats. At startup `reconcile_orphaned_runs()` runs BEFORE the scheduler. Auto-disable counts only `UNATTENDED_TRIGGERS`.
+   - ⚠️ **A run's nodes bind the run's org** (H-328 part (a)). `service.build_node_services` takes a required `organization_id` from the run, never from the ambient tenant or node input. The module read and the `pm_task` write open `_run_session(org)`. The sweep and the `notify.whatsapp` owner read open `_tenant_session(org)`. A run with no org keeps the old path until H4 slice 6c. Fence: `test_workflows_lifecycle_rls_r8.py`.
+   - ⚠️ **A task node has no member check.** `pm_task` and `pm_lifecycle` write `pm_tasks` by primary key, and `load_visible_task` never runs. So `run_published_workflow` refuses such a workflow, and `resume_run` closes a run that would reach such a node. Each refusal stays until a run checks a verified member. A new start path with an org must answer that question first. Fence: `test_workflows_lifecycle_rls_r8.py`.
    - Fences: `test_workflows_tool_contract.py`, `evals/trajectories/test_workflow_engine_trajectory.py`, `test_workflow_fixtures.py`.
 16. agents.json -- **The dynamic agent registry**, beside `pyproject.toml`.
 17. routes/signin.py + routes/signup.py + routes/seats.py + routes/admin/members.py -- **The Customer Console seam.** `acb_auth.console_resolve` is the ONE Console client, and the only reader of `CUSTOMER_CONSOLE_URL` and `CUSTOMER_CONSOLE_DEPLOYMENT_KEY`. The browser never holds the key.
@@ -375,8 +377,8 @@ breaking it — **plus R11, which bites here hardest:**
 > explicitly, and refuse if the resolution finds nothing**: two sessions in that
 > order, the first deciding the tenant and writing nothing. Three built
 > examples, three stored facts: `routes/crm/auto_lead` (the mailbox owner's
-> org), `routes/workflows/service._pm_lifecycle_sweeper` (the workflow owner's
-> org — `workflows` has no `organization_id` column until H3 phase 1) and
+> org), `routes/workflows/service._pm_lifecycle_sweeper` (the run's org, or the
+> workflow owner's org for a run with no org until H4 slice 6c) and
 > `routes/projects/agent_dispatch` (the task's own org, carried **on the event
 > payload**, because an event consumer has nowhere legitimate to look one up —
 > the emitter stamps it inside its bound session). A consumer that refuses
