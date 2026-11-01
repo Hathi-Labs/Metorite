@@ -150,9 +150,8 @@ from fastapi import Body, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from gateway.assistant_summaries import (
     clear_for_member,
+    clear_one_for_member,
     list_for_member,
-    turn_off_all_for_member,
-    turn_off_for_member,
 )
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.admin.me import me_router
@@ -583,6 +582,8 @@ def _check_caps(stored: Any) -> None:
 
 #: The 422 of a chat write that asks to forget the whole profile.
 FORGET_ALL_IN_SETTINGS = "forget everything in Settings, not from the chat"
+#: The 422 of a summary delete from the chat (PZ-35).
+SUMMARIES_IN_SETTINGS = "delete chat summaries in Settings, not from the chat"
 
 
 def _last(record: dict[str, Any]) -> str:
@@ -927,13 +928,13 @@ async def export_assistant_profile(
     member with no profile gets the empty profile, never a 404. A failed
     read answers 503, never the empty profile.
     """
-    from acb_common.assistant_profile import render_export
+    from acb_common.assistant_profile import EXPORT_EMPTY, render_export
 
     uid = _member(user)
     try:
         async with _tenant_session() as db:
             row = await _read(db, uid)
-            listed = await list_for_member(db, uid, SUMMARIES_MAX)
+            listed = await list_for_member(db, uid, SUMMARIES_MAX + 1)
     except Exception as exc:
         logger.warning("auth.assistant_profile.export_failed",
                        extra={"error": type(exc).__name__})
@@ -941,15 +942,20 @@ async def export_assistant_profile(
     raw = row[0] if row is not None else None
     text = render_export(raw)
     shown = [_summary_json(one) for one in listed[:SUMMARIES_MAX]]
+    if shown and text == EXPORT_EMPTY:
+        # A member with no profile but with summaries: the empty line would
+        # say "keeps nothing" and then list summaries.
+        text = ""
     name, media = EXPORT_FILES[format]
     if format == "text":
-        content = text + _summaries_text(shown) + "\n"
+        content = (text + _summaries_text(shown)).lstrip("\n") + "\n"
     else:
         content = json.dumps({
             "exported_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "member": uid,
             "profile": stored_profile(raw),
             "summaries": shown,
+            "more": len(listed) > SUMMARIES_MAX,
             "text": text,
         }, ensure_ascii=False, indent=2) + "\n"
     return Response(content=content, media_type=media, headers={
@@ -1067,13 +1073,17 @@ async def list_chat_summaries(
 async def delete_chat_summary(
     session_id: str,
     user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
 ) -> Response:
-    """The chat reads ``off``, so no new summary comes. A chat of another
-    member answers 404 and stays as it was."""
+    """The summary goes, and a new one may come after a new message (owner
+    decision of 2026-11-02). A chat of another member answers 404 and stays
+    as it was. A chat write (``X-Profile-Via``) is a 422, as for Forget."""
     uid = _member(user)
+    if _via(x_profile_via) is not None:
+        raise _refuse(SUMMARIES_IN_SETTINGS)
 
     async def _run(db: Any) -> None:
-        if not await turn_off_for_member(db, session_id, uid):
+        if not await clear_one_for_member(db, session_id, uid):
             raise HTTPException(status_code=404, detail="Not found")
 
     await _write(uid, "summary_delete", _run)
@@ -1085,11 +1095,16 @@ async def delete_chat_summary(
                   summary="Delete every chat summary of the caller (PZ-35)")
 async def delete_chat_summaries(
     user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
 ) -> Response:
+    """Delete all: each summary goes, as Delete does for one. A chat write
+    (``X-Profile-Via``) is a 422."""
     uid = _member(user)
+    if _via(x_profile_via) is not None:
+        raise _refuse(SUMMARIES_IN_SETTINGS)
 
     async def _run(db: Any) -> None:
-        await turn_off_all_for_member(db, uid)
+        await clear_for_member(db, uid)
 
     await _write(uid, "summary_delete_all", _run)
     return Response(status_code=204)

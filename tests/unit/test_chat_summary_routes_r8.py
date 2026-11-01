@@ -111,20 +111,58 @@ async def _seed(db, *, user: str = ALICE, org: str | None = None, subjects=None,
 # ── Delete ──────────────────────────────────────────────────────────────────
 
 
-async def test_delete_turns_one_chat_off_and_the_job_cannot_write_again(db) -> None:
+async def test_delete_removes_the_summary_and_a_new_one_may_come_later(db) -> None:
+    """Owner decision of 2026-11-02: Delete does not write ``off``. The chat
+    keeps a waterline, so only a newer row lets a new summary in."""
+    from gateway.routes.admin import assistant_profile as ap
+
+    sid = await _seed(db)
+    at = datetime(2026, 11, 1, tzinfo=UTC)
+    async with tenant_engine_scope(_app_dsn(db)):
+        assert [s["id"] for s in await _list(db)] == [sid]
+        with _tenant(db.org_a):
+            res = await ap.delete_chat_summary(session_id=sid, user=_user(ALICE),
+                                               x_profile_via=None)
+        assert res.status_code == 204
+        assert await _list(db) == []
+        stored = _row(db, sid)["member_summary"]
+        assert "off" not in stored, "Delete must not write off"
+        assert stored == {"v": 1, "through": "m1", "through_ms": 100}
+        # The old waterline: no mark, so the old write changes nothing.
+        old = await _in(db.org_a, summaries.write_marked, sid, ANSWER,
+                        through="m1", through_ms=100, at=at)
+        # A new row comes, and the job marks and writes again.
+        _message(db, org=db.org_a, sid=sid, mid="m2", ts=200)
+        assert await _in(db.org_a, summaries.mark, sid, through="m2", at=at)
+        old_after_mark = await _in(db.org_a, summaries.write_marked, sid, ANSWER,
+                                   through="m1", through_ms=100, at=at)
+        new = await _in(db.org_a, summaries.write_marked, sid, ANSWER,
+                        through="m2", through_ms=200, at=at)
+        assert [s["id"] for s in await _list(db)] == [sid]
+    assert old is False and old_after_mark is False and new is True
+
+
+async def test_a_delete_keeps_an_off_chat_off(db) -> None:
     from gateway.routes.admin import assistant_profile as ap
 
     sid = await _seed(db)
     async with tenant_engine_scope(_app_dsn(db)):
-        assert [s["id"] for s in await _list(db)] == [sid]
+        assert await _in(db.org_a, summaries.turn_off, sid)
         with _tenant(db.org_a):
-            res = await ap.delete_chat_summary(session_id=sid, user=_user(ALICE))
-        assert res.status_code == 204
-        assert await _list(db) == []
-        wrote = await _in(db.org_a, summaries.write_marked, sid, ANSWER,
-                          through="m1", through_ms=1, at=datetime(2026, 11, 1, tzinfo=UTC))
+            await ap.delete_chat_summary(session_id=sid, user=_user(ALICE), x_profile_via=None)
     assert _row(db, sid)["member_summary"] == {"v": 1, "off": True}
-    assert wrote is False
+
+
+async def test_the_delete_routes_refuse_a_chat_write(db) -> None:
+    from gateway.routes.admin import assistant_profile as ap
+
+    with _tenant(db.org_a):
+        for call in (lambda: ap.delete_chat_summary(session_id="x", user=_user(ALICE),
+                                                    x_profile_via="chat"),
+                     lambda: ap.delete_chat_summaries(user=_user(ALICE), x_profile_via="chat")):
+            with pytest.raises(HTTPException) as err:
+                await call()
+            assert err.value.status_code == 422
 
 
 async def test_a_chat_of_another_member_gives_404_and_stays(db) -> None:
@@ -134,7 +172,8 @@ async def test_a_chat_of_another_member_gives_404_and_stays(db) -> None:
     before = _row(db, bobs)["member_summary"]
     async with tenant_engine_scope(_app_dsn(db)):
         with _tenant(db.org_a), pytest.raises(HTTPException) as err:
-            await ap.delete_chat_summary(session_id=bobs, user=_user(ALICE))
+            await ap.delete_chat_summary(session_id=bobs, user=_user(ALICE),
+                                        x_profile_via=None)
         assert err.value.status_code == 404
         assert await _list(db, ALICE) == []
         assert [s["id"] for s in await _list(db, BOB)] == [bobs]
@@ -184,15 +223,15 @@ async def test_delete_all_clears_the_member_only_and_off_stays_off(db) -> None:
     async with tenant_engine_scope(_app_dsn(db)):
         assert await _in(db.org_a, summaries.turn_off, w["off"])
         with _tenant(db.org_a):
-            res = await ap.delete_chat_summaries(user=_user(ALICE))
+            res = await ap.delete_chat_summaries(user=_user(ALICE), x_profile_via=None)
         assert res.status_code == 204
         assert await _list(db) == []
         mine = [await _read(db.org_a, w[k]) for k in ("mine", "also")]
         off = await _read(db.org_a, w["off"])
         bobs = await _read(db.org_a, w["bobs"])
         other = await _read(db.org_b, w["elsewhere"])
-    assert all(s == summaries.Stored(off=True) for s in mine)
-    assert off == summaries.Stored(off=True)
+    assert all(s == summaries.Stored(through="m1", through_ms=100) for s in mine)
+    assert off == summaries.Stored(off=True), "an off chat stays off"
     assert bobs.text == ANSWER.text and other.text == ANSWER.text
 
 
@@ -271,8 +310,12 @@ async def test_the_export_holds_the_summaries_in_json_and_text(db) -> None:
             as_text = await ap.export_assistant_profile(user=_user(ALICE), format="text")
     body = json.loads(as_json.body)
     assert [s["id"] for s in body["summaries"]] == [sid]
+    assert body["more"] is False
+    # No profile, but a summary: no line that says the assistant keeps nothing.
+    assert body["text"] == ""
     assert body["summaries"][0]["text"] == ANSWER.text
     out = as_text.body.decode()
+    assert "keeps nothing" not in out and out.startswith("Recent chats")
     assert "Recent chats" in out and ANSWER.text in out and ANSWER.follow_ups[0] in out
 
 

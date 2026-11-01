@@ -71,8 +71,8 @@ IMPORTERS: dict[Path, frozenset[str]] = {
     GATEWAY / "routes" / "admin" / "members.py": frozenset({"clear_for_member"}),
     # PZ-35 (Settings): the routes of "Recent chats", Forget and the export.
     GATEWAY / "routes" / "admin" / "assistant_profile.py": frozenset({
-        "list_for_member", "turn_off_for_member",
-        "turn_off_all_for_member", "clear_for_member"}),
+        "list_for_member", "clear_one_for_member",
+        "clear_for_member"}),
 }
 #: The trees that (c) reads: all code of the platform.
 PLATFORM = (ROOT / "apps", ROOT / "packages")

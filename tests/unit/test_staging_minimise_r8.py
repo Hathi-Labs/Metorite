@@ -186,6 +186,25 @@ def test_the_assistant_profile_is_blanked(clone) -> None:
     assert row == (None, "international")
 
 
+def test_a_chat_summary_is_blanked(clone) -> None:
+    """WS-63 PZ-35 (``personalization.md`` §15.5): the summary of a chat is
+    the member's own words, shortened, and no copy holds it. The chat row
+    and its other columns stay. Mutation: drop the UPDATE in ``minimise.sql``."""
+    with clone.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_session (id, user_id, agent_name, title, created_at, "
+            "updated_at, visibility, organization_id, member_summary) "
+            "VALUES ('pz35-keep', 'pz35@h3rls.test', 'orchestrator', 'Q3 deck', now(), now(), "
+            "'private', :o, CAST(:s AS jsonb))"),
+            {"o": clone.org_a, "s": '{"v": 1, "text": "Planned the Q3 deck."}'})
+    res = _run(clone, "h3rls-a")
+    assert res.returncode == 0, res.stdout + res.stderr
+    with clone.connect() as c:
+        row = c.execute(text(
+            "SELECT member_summary, title FROM chat_session WHERE id = 'pz35-keep'")).one()
+    assert row == (None, "Q3 deck")
+
+
 def test_a_varchar_credential_refuses(clone) -> None:
     """format_type prints `character varying(255)`, so a type-name match missed it."""
     with clone.begin() as c:

@@ -588,19 +588,13 @@ LIST_FOR_MEMBER_SQL = (
     + " ORDER BY s.updated_at DESC, s.id DESC LIMIT :lim"
 )
 
-#: The Delete of one chat, with the member in the WHERE. Another member's id
-#: finds no row.
-OFF_FOR_MEMBER_SQL = (
-    f"UPDATE chat_session AS s SET member_summary = jsonb_build_object("
-    f"'v', {VERSION}, 'off', true)"
+#: The Delete of one chat (owner decision of 2026-11-02): the summary goes,
+#: and the chat keeps a waterline at its newest row, as a Forget leaves it.
+#: So no new summary comes until a new row comes. A chat that reads `off`
+#: stays `off`. The member is in the WHERE, so another member's id finds no row.
+CLEAR_ONE_FOR_MEMBER_SQL = (
+    f"UPDATE chat_session AS s SET member_summary = {_CLEARED}"
     + _MINE + "   AND s.id = :sid RETURNING s.id"
-)
-
-#: Delete all: each listed chat of the member.
-OFF_ALL_FOR_MEMBER_SQL = (
-    f"UPDATE chat_session AS s SET member_summary = jsonb_build_object("
-    f"'v', {VERSION}, 'off', true)"
-    + _MINE + _HAS_SUMMARY + " RETURNING s.id"
 )
 
 #: The most chats that Settings lists.
@@ -642,21 +636,14 @@ async def list_for_member(db: Any, member: str, limit: int = LIST_MAX) -> list[L
     return out
 
 
-async def turn_off_for_member(db: Any, session_id: str, member: str) -> bool:
-    """The Delete of a member: the chat reads ``{"v": 1, "off": true}``.
+async def clear_one_for_member(db: Any, session_id: str, member: str) -> bool:
+    """The Delete of a member: the summary of one chat goes, and the chat
+    keeps a waterline at its newest row. A new row may start a new summary.
     The member is in the WHERE, so a chat of another member gives False and
     stays as it was. The route answers 404 for False."""
-    row = (await db.execute(text(OFF_FOR_MEMBER_SQL),
+    row = (await db.execute(text(CLEAR_ONE_FOR_MEMBER_SQL),
                             {"sid": session_id, "member": _member_key(member)})).first()
     return row is not None
-
-
-async def turn_off_all_for_member(db: Any, member: str) -> int:
-    """Delete all: each listed summary of *member* reads ``off``. Answers
-    the count."""
-    rows = (await db.execute(text(OFF_ALL_FOR_MEMBER_SQL),
-                             {"member": _member_key(member)})).fetchall()
-    return len(rows)
 
 
 async def read(db: Any, session_id: str) -> Stored | None:
