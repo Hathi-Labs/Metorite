@@ -70,6 +70,7 @@ APPS: dict[str, str] = {
     "settings": "Settings and the assistant profile",
     "admin": "Admin, members and billing",
     "integrations": "Integrations",
+    "studio": "AI Studio",
 }
 
 #: A BFF path prefix -> its app. The longest prefix that matches wins.
@@ -119,6 +120,8 @@ APP_OF: tuple[tuple[str, str], ...] = (
     ("/api/signup", "admin"),
     ("/api/integrations", "integrations"),
     ("/api/agent-access", "integrations"),
+    # WS-STU. The gateway serves `/studio` (STU-B1). No UI request reaches it yet.
+    ("/api/studio", "studio"),
 )
 
 
@@ -143,6 +146,7 @@ WAVES: dict[str, tuple[str, tuple[str, ...]]] = {
     "P-6": ("Workflows, Custom Apps and the Agent Registry", ("workflows", "apps", "agents")),
     "P-7": ("Chat threads and the shell", ("chat", "shell")),
     "P-8": ("Settings, Admin and Integrations", ("settings", "admin", "integrations")),
+    "P-9": ("AI Studio", ("studio",)),
 }
 
 #: The kinds of a request that is not a member's act. An exemption names one.
