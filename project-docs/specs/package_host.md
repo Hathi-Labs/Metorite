@@ -1,7 +1,7 @@
 # Package host — every app is a package, arranged around the person (WS-PKG)
 
 > **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. None of them changes what a member sees. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is next. The rest of this spec is not built.
+> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. The rest of this spec is not built.
 > **Verified against code on 2026-11-01 at `f59a636b5`.** Each path in §12 was read on that commit.
 > **Board:** WS-PKG in `work_plan.md` §2.1. **Decision:** D147. D12, D49, D87, D89, D111, D127, D136, D141 and D146 bind it.
 > **Metorite:** project "Package Host", epic 1234, this spec task 1236. The slices PKG-1 to PKG-20 are tasks 1239 to 1258, in order.
@@ -342,7 +342,7 @@ Mode, density and accent live in the browser only today (`lib/theme/storage.ts`)
 | **PKG-1** | The manifest folder, its loader and the TypeScript generator (§3.3). Move the ⌘K jobs into it: one source for `registry.ts` `JOBS` and `intent.py` `JOBS` | Both lists come from the files. The `TestOneJobList` assertions pass, with their TypeScript parser pointed at the generated copy or the loader. A new test fails when the generated copy is stale. No job changes its id, label, link, gate or order | STD | AGENT-SAFE |
 | **PKG-2** | Move the panes, the presets and the cards into the files: `SHELL_PANES`, `SHELL_PRESETS` and `SHELL_CARDS` derive from them | `test_auth_me_shell.py::TestOneVocabulary` passes. `nav.test.ts` still counts 14 live panes | STD | AGENT-SAFE |
 | **PKG-3a** | Move `SCOPE_APPS` and `ALSO_SERVES` into the files, with `load_gates()` and `gates.generated.ts`. **Built.** | `test_shell_manifests.py` fails when either map is written by hand, or when the generated copy is stale. The values equal a frozen copy. The search, dock and eval tests pass unchanged | STD | AGENT-SAFE |
-| **PKG-3b** | Move `HREF_FEATURES` and `ALWAYS_ALLOWED` into the files (task 1308) | A test fails when either map is written by hand. Fail-open pins hold: an unknown href stays open, and an `ALWAYS_ALLOWED` href stays open to every member. The access tests pass unchanged | STD | AGENT-SAFE |
+| **PKG-3b** | Move `HREF_FEATURES` and `ALWAYS_ALLOWED` into the files (task 1308). **Built.** The `CENTERS` rows stay in code (D49). | A test fails when either map is written by hand. Fail-open pins hold: an unknown href stays open, and an `ALWAYS_ALLOWED` href stays open to every member. The access tests pass unchanged | STD | AGENT-SAFE |
 
 The `CENTERS` rows of `HREF_FEATURES` stay in code (D49).
 

@@ -25,7 +25,8 @@
     ],
     "nav": [
       {
-        "href": "/whatsapp"
+        "href": "/whatsapp",
+        "feature": "whatsapp"
       }
     ]
   }

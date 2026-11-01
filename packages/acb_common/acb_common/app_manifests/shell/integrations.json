@@ -69,6 +69,18 @@
     ],
     "nav": [
       {
+        "href": "/integrations",
+        "feature": "integrations"
+      }
+    ],
+    "gates": [
+      {
+        "href": "/apis",
+        "feature": "integrations"
+      }
+    ],
+    "always_allowed": [
+      {
         "href": "/integrations"
       }
     ]

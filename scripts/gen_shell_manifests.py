@@ -7,7 +7,8 @@ Run after editing a file under ``packages/acb_common/acb_common/app_manifests/sh
 
 It writes ``workbench/control_plane/src/lib/shell/jobs.generated.ts`` and
 ``vocabulary.generated.ts`` (the pane links, preset ids and card keys, PKG-2) and
-``gates.generated.ts`` (``ALSO_SERVES``, PKG-3a).
+``gates.generated.ts`` (``ALSO_SERVES`` in PKG-3a, ``HREF_FEATURES`` and
+``ALWAYS_ALLOWED`` in PKG-3b).
 ``tests/unit/test_shell_manifests.py`` renders the file again and fails if the
 committed copy is stale (WS-PKG, PKG-1; ``project-docs/specs/package_host.md`` §4).
 """
@@ -91,6 +92,16 @@ def render_gates_ts(gates) -> str:
     for agent, hrefs in gates.also_serves.items():
         out.append(f"  {_q(agent)}: [{', '.join(_q(h) for h in hrefs)}]," + nl)
     out.append("};" + nl)
+    out.append(
+        nl + "export const GENERATED_HREF_FEATURES: ReadonlyArray<readonly [string, string]> = [" + nl
+    )
+    for href, feature in gates.href_features:
+        out.append(f"  [{_q(href)}, {_q(feature)}]," + nl)
+    out.append("];" + nl)
+    out.append(nl + "export const GENERATED_ALWAYS_ALLOWED: readonly string[] = [" + nl)
+    for href in gates.always_allowed:
+        out.append(f"  {_q(href)}," + nl)
+    out.append("];" + nl)
     return "".join(out)
 
 
@@ -111,7 +122,8 @@ def main() -> int:
     GATES_OUT.write_text(render_gates_ts(gates), encoding="utf-8", newline="\n")
     print(
         f"wrote {GATES_OUT.relative_to(REPO_ROOT)} "
-        f"({len(gates.also_serves)} agent)"
+        f"({len(gates.also_serves)} agent, {len(gates.href_features)} gated routes, "
+        f"{len(gates.always_allowed)} always-allowed)"
     )
     return 0
 
