@@ -5,7 +5,7 @@ and §15.9. Migration: ``infra/postgres/319_chat_session_member_summary.sql``
 (319 at the merge, R1: 318 went to WS-66 RE-9b first).
 
 A summary covers one solo chat with Mira on the web, and only its member
-sees it. This module has two parts.
+sees it. This module has three parts.
 
 **The store.** :func:`read`, :func:`mark`, :func:`write_marked`,
 :func:`turn_off`, :func:`clear_for_member` and :func:`clear_on_share` are the
@@ -16,7 +16,8 @@ the column, and when a module that is not on its list imports this one.
 * Each function takes a session that the caller opened with
   ``acb_common.db.tenant_session(org)``, so RLS binds each statement to that
   tenant. :func:`clear_on_share` takes the sync ``acb_graph`` session of the
-  room routes. No function takes an org, opens a session or commits (R5).
+  room routes. No store function takes an org, opens a session or commits
+  (R5). The one exception is :func:`seed`, below.
 * Each caller checks the member. A statement finds the chat by its id only,
   and RLS binds the tenant only. So a caller that acts for a member checks
   that the chat is that member's own before it calls. The job of PZ-33b
@@ -65,7 +66,16 @@ the column, and when a module that is not on its list imports this one.
   not a letter joins two digits, and a run of 6 digits or more must be a run
   that the member typed. Digits of each script count, after NFKD.
 
-The module imports no litellm and no streamed completion. PZ-33b makes the
+**The seed and the reads of the job (PZ-33b).** :func:`seed` is the
+``worker.seed_hooks`` hook of the job queue, as ``brief/planner.seed`` is. It
+takes the org from the worker and opens its own short sessions, because a
+seed hook must. It reads the idle chats with :data:`IDLE_SQL`, and it
+enqueues the kind :data:`KIND` with the payload ``{session_id, through}``
+only. :func:`read_job_chat` is the read of the handler. Both SQL texts name
+the column, so they live here. The handler, the prompt and the model call
+live in ``gateway/chat_summary_job.py``.
+
+The module imports no litellm and no streamed completion. The job makes the
 one model call through ``acb_llm.context.acompletion_with_fallback`` with the
 Router on (§15.3). Fences: ``tests/unit/test_chat_summary.py``,
 ``tests/unit/test_chat_summary_private.py`` and
@@ -74,22 +84,30 @@ Router on (§15.3). Fences: ``tests/unit/test_chat_summary.py``,
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from acb_common import get_logger
 from acb_common.assistant_profile import (
+    APP_PREFERENCES,
+    APP_READ_SQL,
     CONFIRM_DIGITS,
+    MEMBERS_APP_SQL,
+    TYPED_MAX,
+    chat_summary_for,
     confirm_form_without_token,
     fold,
     grounded,
     is_sensitive,
     needs_confirm,
     sensitive_terms,
+    stored_app_prefs,
     typed_text,
 )
 from acb_common.pg_text import storable
@@ -729,3 +747,280 @@ def clear_on_share(s: Any, session_id: str) -> bool:
     ``off`` stays ``off``. Answers True when a summary was cleared.
     """
     return s.execute(text(CLEAR_ON_SHARE_SQL), {"sid": session_id}).first() is not None
+
+
+# ── The job of PZ-33b: the kind, the seed and the read of the handler ────────
+#
+# Spec: personalization.md §15.3 ("When a chat is idle", "Which job writes
+# it") and docs/job_queue.md §5a and §5c. The handler, the prompt and the
+# model call are in gateway/chat_summary_job.py, which registers the kind
+# and adds :func:`seed` to ``worker.seed_hooks``.
+
+_log = get_logger("assistant.chat_summary")
+
+#: The kind of the job queue that writes a summary (§15.3).
+KIND = "assistant.chat_summary"
+#: The tries of one job. A retry is safe, because the handler reads its mark
+#: first and makes no second call (``docs/job_queue.md`` §5a).
+ATTEMPTS = 3
+#: A chat is idle this long after its newest row (D-PZ-26).
+IDLE = timedelta(minutes=30)
+#: The seed reads only the chats with a row in this window (§15.3).
+WINDOW = timedelta(days=7)
+#: The most jobs that one seed enqueues for one org (§15.3).
+SUMMARY_SEED_MAX = 20
+#: The most candidate chats that one seed reads. The typed-row rule runs in
+#: Python, so the SQL reads more chats than the cap.
+SEED_SCAN_MAX = 3 * SUMMARY_SEED_MAX
+#: The newest short rows of the member that the seed reads for each chat.
+SEED_ROWS = 20
+#: The fewest typed rows of the member that a chat needs (§15.3).
+TYPED_ROWS_MIN = 2
+#: The most rows of one chat that the handler reads, the newest first.
+JOB_ROWS_MAX = 400
+#: The app and the key of the member's switch, "Keep chat summaries"
+#: (PZ-35, §15.5). A missing value reads as on.
+SWITCH_APP = "chat"
+SWITCH_KEY = "summaries"
+
+#: True when the chat `s` is one that a summary may cover: a chat of the
+#: bound org with Mira on the web, not archived, not deleted by the member
+#: (`off`), and solo (`rooms.SOLO_ROOM_SQL`). It binds no parameter.
+ELIGIBLE_SQL = f"""(
+        s.organization_id = {_BOUND_ORG}
+        AND s.agent_name = 'orchestrator'
+        AND s.channel IS NULL
+        AND s.archived_at IS NULL
+        AND NOT COALESCE(s.member_summary @> jsonb_build_object('off', true), false)
+        AND {SOLO_ROOM_SQL}
+    )"""
+
+#: True when an agent row of the chat `s` is not sealed: a run is open
+#: (migration 220, `run_final_at`).
+OPEN_RUN_SQL = """EXISTS (
+        SELECT 1 FROM chat_message o
+         WHERE o.session_id = s.id AND o.role = 'assistant'
+           AND o.run_final_at IS NULL)"""
+
+#: The idle chats of the bound org that need a summary, the newest first.
+#: The newest row is between `:since_ms` and `:idle_ms`, no run is open, the
+#: newest row id is neither `through` nor `mark.through`, and the chat holds
+#: `:typed_min` short user rows or more. The seed then counts the typed rows
+#: of the member in Python (`member_texts`).
+IDLE_SQL = f"""
+SELECT s.id, s.user_id, newest.id AS newest_id, newest.timestamp_ms AS newest_ms
+  FROM chat_session s
+ CROSS JOIN LATERAL (
+       SELECT m.id, m.timestamp_ms FROM chat_message m
+        WHERE m.session_id = s.id
+        ORDER BY m.timestamp_ms DESC, m.id DESC
+        LIMIT 1) AS newest
+ WHERE {ELIGIBLE_SQL}
+   AND newest.timestamp_ms BETWEEN :since_ms AND :idle_ms
+   AND newest.id IS DISTINCT FROM (s.member_summary ->> 'through')
+   AND newest.id IS DISTINCT FROM (s.member_summary -> 'mark' ->> 'through')
+   AND NOT {OPEN_RUN_SQL}
+   AND (SELECT count(*) FROM chat_message u
+         WHERE u.session_id = s.id AND u.role = 'user'
+           AND length(u.content) <= :typed_max) >= :typed_min
+ ORDER BY newest.timestamp_ms DESC, s.id
+ LIMIT :scan
+"""
+
+#: The newest short user rows of each chat in `:sids`, `:rows` for each
+#: chat at most. RLS binds the tenant.
+SEED_ROWS_SQL = """
+SELECT r.session_id, r.id, r.role, r.content, r.author_kind, r.author_email
+  FROM (SELECT m.session_id, m.id, m.role, m.content, m.author_kind, m.author_email,
+               row_number() OVER (PARTITION BY m.session_id
+                                  ORDER BY m.timestamp_ms DESC, m.id DESC) AS k
+          FROM chat_message m
+         WHERE m.session_id = ANY(CAST(:sids AS text[])) AND m.role = 'user'
+           AND length(m.content) <= :typed_max) AS r
+ WHERE r.k <= :rows
+"""
+
+#: The chat of one job: its member, the stored summary, and the two rules
+#: as booleans. A chat of another org gives no row (RLS and the bound org).
+JOB_CHAT_SQL = f"""
+SELECT s.user_id, s.member_summary, {ELIGIBLE_SQL} AS eligible,
+       {OPEN_RUN_SQL} AS open_run
+  FROM chat_session s
+ WHERE s.id = :sid
+   AND s.organization_id = {_BOUND_ORG}
+"""
+
+#: The newest `:rows` rows of one chat, oldest first, with the columns that
+#: the answer checks read and nothing else.
+JOB_ROWS_SQL = """
+SELECT t.id, t.role, t.content, t.author_kind, t.author_email, t.timestamp_ms
+  FROM (SELECT m.id, m.role, m.content, m.author_kind, m.author_email, m.timestamp_ms
+          FROM chat_message m
+         WHERE m.session_id = :sid
+         ORDER BY m.timestamp_ms DESC, m.id DESC
+         LIMIT :rows) AS t
+ ORDER BY t.timestamp_ms, t.id
+"""
+
+
+def _ms(moment: datetime) -> int:
+    return int(moment.timestamp() * 1000)
+
+
+def dedupe_key(session_id: str, through: str) -> str:
+    """``summary:<session_id>:<through>`` (§15.3). A key longer than the queue
+    takes (``queue.DEDUPE_CHARS``) becomes ``summary:`` and a SHA-256 of the
+    pair, so the same pair always gives the same key."""
+    from gateway.jobs.queue import DEDUPE_CHARS
+
+    key = f"summary:{session_id}:{through}"
+    if len(key) <= DEDUPE_CHARS:
+        return key
+    return "summary:" + hashlib.sha256(f"{session_id}\n{through}".encode()).hexdigest()
+
+
+def switch_on(stored: Any) -> bool:
+    """The member's switch "Keep chat summaries" in the stored ``apps.chat``
+    object of the profile. A missing value or a value of the wrong type reads
+    as on. When the profile declares the key (PZ-35, ``APP_PREFERENCES``),
+    its reader and its default decide."""
+    if SWITCH_KEY in APP_PREFERENCES.get(SWITCH_APP, {}):
+        return stored_app_prefs(stored, SWITCH_APP)[SWITCH_KEY] is True
+    if isinstance(stored, str):
+        try:
+            stored = json.loads(stored)
+        except ValueError:
+            return True
+    return not (isinstance(stored, dict) and stored.get(SWITCH_KEY) is False)
+
+
+async def member_switch_on(db: Any, org: str, member: str) -> bool:
+    """The switch of *member* in *org*, read through the one row rule of the
+    profile (``assistant_profile.APP_READ_SQL``). The caller resolved the
+    member from ``chat_session.user_id``, never from a payload."""
+    row = (await db.execute(text(APP_READ_SQL), {
+        "app": SWITCH_APP, "org": org, "m": member})).first()
+    return switch_on(None if row is None else row[1])
+
+
+async def member_switches(db: Any, org: str) -> dict[str, bool]:
+    """The switch of each ACTIVE member of *org*, by address in lower case
+    (``assistant_profile.MEMBERS_APP_SQL``). A member who is not active is
+    not in the map."""
+    rows = (await db.execute(text(MEMBERS_APP_SQL), {"app": SWITCH_APP, "org": org})).all()
+    return {_key(r[0]): switch_on(r[1]) for r in rows}
+
+
+@dataclass(frozen=True)
+class JobChat:
+    """The chat of one job, as :func:`read_job_chat` reads it."""
+
+    member: str
+    stored: Stored | None
+    #: :data:`ELIGIBLE_SQL`: Mira on the web, not archived, not ``off``, solo.
+    eligible: bool
+    #: :data:`OPEN_RUN_SQL`: an agent row of the chat is not sealed.
+    open_run: bool
+    #: The newest rows of the chat, oldest first (:data:`JOB_ROWS_MAX`).
+    rows: tuple[Mapping[str, Any], ...]
+
+    @property
+    def newest_id(self) -> str | None:
+        return str(self.rows[-1]["id"]) if self.rows else None
+
+    @property
+    def newest_ms(self) -> int | None:
+        return int(self.rows[-1]["timestamp_ms"]) if self.rows else None
+
+
+async def read_job_chat(db: Any, session_id: str, *,
+                        rows: int = JOB_ROWS_MAX) -> JobChat | None:
+    """The chat *session_id* for the job, or None when the bound org has no
+    such chat. The member is ``chat_session.user_id``, with no outer space and
+    in lower case."""
+    head = (await db.execute(text(JOB_CHAT_SQL), {"sid": session_id})).first()
+    if head is None:
+        return None
+    found = (await db.execute(text(JOB_ROWS_SQL), {"sid": session_id, "rows": rows})).all()
+    return JobChat(
+        member=_key(head.user_id),
+        stored=stored(head.member_summary),
+        eligible=bool(head.eligible),
+        open_run=bool(head.open_run),
+        rows=tuple(dict(r._mapping) for r in found),
+    )
+
+
+async def _gone(org: str, member: str) -> bool:
+    """True when *member* left *org* (``my_day_loop.departed``). A failed read
+    skips the member for this tick, and the next tick reads again."""
+    from gateway.my_day_loop import departed
+
+    try:
+        return await departed(org, member) is not None
+    except Exception as exc:  # a failed read does not say that they left
+        _log.warning("assistant.chat_summary_member_check_failed", error=type(exc).__name__)
+        return True
+
+
+async def seed(org: str, now: datetime) -> None:
+    """The ``worker.seed_hooks`` hook of PZ-33b (§15.3, "Which job writes it").
+
+    It runs once for each org and 15-minute bucket. It enqueues one job of
+    :data:`KIND` for each idle chat, :data:`SUMMARY_SEED_MAX` at most, with
+    the payload ``{session_id, through}`` and the dedupe key of
+    :func:`dedupe_key`. It enqueues nothing when the flag is off for the org
+    (``chat_summary_for``), and nothing when ``acb_llm.routed.routing_is_on()``
+    is False: a call off the Router writes no usage row and draws no credit.
+
+    A chat gets a job when :data:`IDLE_SQL` selects it, its member is active
+    with the switch on (:func:`member_switches`), the newest short rows hold
+    :data:`TYPED_ROWS_MIN` typed rows of the member (:func:`member_texts`),
+    and ``my_day_loop.departed`` says that the member did not leave."""
+    from acb_common.db import tenant_session
+    from acb_llm import routed
+
+    from gateway.jobs import queue
+
+    if not chat_summary_for(org) or not routed.routing_is_on():
+        return
+    async with tenant_session(org) as db:
+        found = (await db.execute(text(IDLE_SQL), {
+            "since_ms": _ms(now - WINDOW), "idle_ms": _ms(now - IDLE),
+            "typed_max": TYPED_MAX, "typed_min": TYPED_ROWS_MIN,
+            "scan": SEED_SCAN_MAX})).all()
+        if not found:
+            return
+        typed: dict[str, list[Any]] = {}
+        for row in (await db.execute(text(SEED_ROWS_SQL), {
+                "sids": [str(c.id) for c in found], "typed_max": TYPED_MAX,
+                "rows": SEED_ROWS})).all():
+            typed.setdefault(str(row.session_id), []).append(row)
+        switches = await member_switches(db, org)
+    picked: list[Any] = []
+    left: dict[str, bool] = {}
+    for chat in found:
+        member = _key(chat.user_id)
+        newest = str(chat.newest_id)
+        if "@" not in member or not switches.get(member, False) or len(newest) > THROUGH_MAX:
+            continue
+        if len(member_texts(typed.get(str(chat.id), []), member)) < TYPED_ROWS_MIN:
+            continue
+        if member not in left:
+            left[member] = await _gone(org, member)
+        if left[member]:
+            continue
+        picked.append(chat)
+        if len(picked) >= SUMMARY_SEED_MAX:
+            break
+    if not picked:
+        return
+    new = 0
+    async with tenant_session(org) as db:
+        for chat in picked:
+            sid, through = str(chat.id), str(chat.newest_id)
+            out = await queue.enqueue(db, KIND, {"session_id": sid, "through": through},
+                                      dedupe_key=dedupe_key(sid, through),
+                                      max_attempts=ATTEMPTS, now=now)
+            new += int(out.created)
+    _log.info("assistant.chat_summary_seeded", chats=len(picked), new=new)
