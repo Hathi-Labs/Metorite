@@ -43,6 +43,7 @@ import { useOverflowTip } from "@/components/ui/OverflowTip";
 import { LEGEND, parseTaskRows, taskRowFacts, type ProjectTaskRow } from "@/lib/projectToolRows";
 import { statusAccent } from "@/lib/statusAccent";
 import { noteReminderReceipt } from "@/lib/shell/reminderOpen";
+import { glassToneFrame } from "@/components/glassCard";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
 
@@ -550,7 +551,7 @@ function ProjectEvidenceBody({ event: e }: { event: ToolEvent }) {
   const link = body.match(/^\s*link:\s*(\/projects\?[\w=&-]+)\s*$/m)?.[1] ?? "";
   const isList = LIST_TOOLS.has(e.name) || !(e.name in INFO_META);
   return (
-    <div className="rounded-md border border-border/60 bg-card/60 px-2.5 py-2 min-w-0 text-[11px]">
+    <div className="rounded-md border border-border/60 bg-card/60 px-2.5 py-2 min-w-0 text-[11px] glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:px-3 glass:text-footnote">
       <ShowMore className="-mx-1 px-1">
         {isList && rows.length > 0 ? (
           <>
@@ -841,7 +842,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
       receipt={outcome === "done" || outcome === "cancelled"}
       header="own"
     >
-    <div className={`rounded-lg border px-2.5 py-2 ${tone}`}>
+    <div className={`rounded-lg border px-2.5 py-2 ${tone} ${glassToneFrame(tone)}`}>
       <RollupHeader aside={aside ? <FencedText text={aside} pills={false} links={false} /> : undefined} />
       <RollupBody>
         {tasks.length > 0 ? (
@@ -1077,7 +1078,7 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
       receipt={outcome === "done" || outcome === "cancelled"}
       header="own"
     >
-    <div className={`rounded-lg border px-2.5 py-2 ${toneFor(outcome, e.name)}`}>
+    <div className={`rounded-lg border px-2.5 py-2 ${toneFor(outcome, e.name)} ${glassToneFrame(toneFor(outcome, e.name))}`}>
       <RollupHeader aside={aside ? <FencedText text={aside} pills={false} links={false} /> : undefined} />
       <RollupBody>
           {head && !aside && (outcome !== "done" || rows.length === 0) && (
