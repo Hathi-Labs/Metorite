@@ -33,6 +33,7 @@ Note: `config.json` names the app `workflows` because the `/studio` pane is not 
 - Pass the `questions` text of the result to `ask_questions`. Do not ask a second round.
 - When the manifest is valid, call `studio_plan` once. It shows one card and returns a `decision`.
 - On `approved`, go on. On `revised`, read the chat, change the manifest and call `studio_plan` again.
-- On `stopped`, stop. Call no more `studio_patch`. Say that nothing was built.
+- On `stopped`, the member pressed Stop. Stop. Call no more `studio_patch`. Say that nothing was built.
 - The card shows the count of parts and no price. Never state a price or a credit number.
-- A chat with no cards gets the plan as the `context` text. Write it in the reply.
+- On `no_card`, the chat shows no card. Write the `context` text in the reply as the plan.
+- Then ask the member to answer in words. Build nothing until the member says yes.

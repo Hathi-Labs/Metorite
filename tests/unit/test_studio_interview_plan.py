@@ -166,6 +166,7 @@ def card(monkeypatch):
         return box["answer"]
 
     monkeypatch.setattr(ask_tools, "request_confirmation", fake)
+    monkeypatch.setattr(ask_tools, "confirmation_channel_open", lambda: True)
     return calls, box
 
 
@@ -185,6 +186,23 @@ async def test_a_valid_plan_shows_one_card_and_approve_goes_on(catalog, card) ->
     assert default == "deny" and steer is True
     for word in ("Objects", "Actions", "Views", "Workflows", "Skill", "Connections"):
         assert word in context, word
+
+
+async def test_a_real_stop_in_a_run_with_a_card_channel_is_stopped(
+        catalog, card, monkeypatch) -> None:
+    """A denial with a live channel is a Stop. Mutation: map it to ``no_card`` -> red."""
+    _calls, box = card
+    monkeypatch.setattr(ask_tools, "confirmation_channel_open", lambda: True)
+    box["answer"] = False
+    assert (await st.studio_plan(await _valid()))["decision"] == "stopped"
+    monkeypatch.setattr(ask_tools, "confirmation_channel_open", lambda: False)
+    assert (await st.studio_plan(await _valid()))["decision"] == "no_card"
+
+
+async def test_the_card_binds_the_runs_own_member(catalog, card) -> None:
+    calls, _ = card
+    await st.studio_plan(await _valid())
+    assert calls[0][5].get("responder") == MEMBER
 
 
 async def test_the_edit_steer_and_the_stop_decisions(catalog, card) -> None:
@@ -311,10 +329,12 @@ def test_the_card_text_is_deterministic_and_fits_the_card() -> None:
 
 
 async def test_a_run_with_no_card_channel_still_returns_the_plan_text(catalog) -> None:
-    """The real ``request_confirmation`` denies with no channel. The text stays."""
+    """The real ``request_confirmation`` denies with no channel. The decision is
+    ``no_card``, not ``stopped``, and the text stays.
+    Mutation: map ``no_card`` back to ``stopped`` -> red."""
     with ask_tools.refuse_cards():
         out = await st.studio_plan(await _valid())
-    assert out["ok"] is True and out["decision"] == "stopped"
+    assert out["ok"] is True and out["decision"] == "no_card"
     assert out["context"].startswith("App ") and "Parts: 0" in out["context"]
 
 

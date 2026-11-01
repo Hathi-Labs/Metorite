@@ -20,7 +20,8 @@ model holds the manifest in the chat turn and sends it back on each call.
 * :func:`studio_plan` (G2) checks a manifest and shows ONE plan card with
   ``request_confirmation``. The model cannot call ``request_confirmation``,
   so this tool parks on the card itself, as the CRM write tools do. A stop, a
-  refusal and a run with no card channel all write nothing. The tool makes no
+  refusal and a run with no card channel all write nothing. A run with no card
+  channel gets the decision ``no_card``, and the plan text stays in ``context``. The tool makes no
   write call, and G1 keeps no store.
 
 **One result shape.** Each manifest tool returns ``{ok, errors, diff,
@@ -628,7 +629,7 @@ async def studio_plan(manifest: dict[str, Any]) -> dict[str, Any]:
 
     The card lists the objects, views, workflows, skill, connections and
     actions. The answer has a "decision": approved, revised (the member wrote
-    in the chat) or stopped. After "stopped", write nothing and call no more
+    in the chat), stopped, or no_card (the chat shows no card). After "stopped", write nothing and call no more
     patch. An invalid manifest shows no card. The text of the card is in
     "context", for a chat that cannot show cards.
     """
@@ -643,12 +644,19 @@ async def studio_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     context = plan_card_text(doc)
     from acb_skills import ask_tools
 
+    # The run's own member may answer, and no other (PZ-32). The member is the
+    # run's, never an input.
     answer = await ask_tools.request_confirmation(
-        title, detail, context, non_interactive_default="deny", close_on_steer=True)
+        title, detail, context, non_interactive_default="deny", close_on_steer=True,
+        responder=_current_user_email() or None)
     if answer is True:
         decision = "approved"
     elif answer is ask_tools.REVISED:
         decision = "revised"
+    elif not ask_tools.confirmation_channel_open():
+        # A denial AFTER a read of the channel, as ``knowledge_tools`` does: a
+        # run with no card shows nothing, and no member pressed Stop.
+        decision = "no_card"
     else:
         decision = "stopped"
     return _result(True, [], [], None, title=title, detail=detail, context=context,

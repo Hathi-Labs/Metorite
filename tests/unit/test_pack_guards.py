@@ -1206,7 +1206,9 @@ CHILD_TOOLS: dict[str, frozenset[str]] = {
 #: panel. A tool that reaches one draws something in the member's chat. The
 #: last two are the direct push that `todo_tools` and `ask_tools` use.
 _DISPLAY_EMITTERS = frozenset({"emit_generative_ui", "emit_frontend_tool", "resolve_run_queue",
-                               "_active_run_queue", "_push_sse_to_stream"})
+                               "_active_run_queue", "_push_sse_to_stream",
+                               # STU-G2: a tool that awaits the confirmation card
+                               "request_confirmation"})
 #: The packages whose functions the scan follows. A call into any other
 #: package (httpx, the standard library) is never a display emitter.
 _SCAN_ROOTS = ("skill_projects", "acb_skills", "acb_common", "orchestrator",
@@ -1409,6 +1411,10 @@ def test_each_pack_tool_that_draws_is_a_display_tool() -> None:
             if path:
                 draws[tool_name(fn)] = path
     read_draws = {n for n in draws if sc.annotated_read_only(n)}
+    # STU-G2: ``studio_plan`` awaits a card. Mutation: take it out of
+    # ``DISPLAY_TOOLS`` -> ``loose`` below holds it -> red.
+    assert "studio_plan" in read_draws, f"non-vacuity: the scan finds the plan card {draws}"
+    assert "studio_interview" not in draws  # it returns text for ask_questions, draws nothing
     assert {"render_board", "render_tasks", "render_timeline", "open_in_app",
             "show_view"} <= read_draws, f"non-vacuity: the scan finds the views {draws}"
     loose = {n: draws[n] for n in read_draws - sc.DISPLAY_TOOLS - sc.MEMBER_TOOLS}

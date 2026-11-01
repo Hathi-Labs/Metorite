@@ -615,10 +615,11 @@ No Studio agent exists to hand a task to.
   credit number. Say that the cost is not priced yet.
 - The "decision" of studio_plan tells you what to do. For "approved", go on with
   the build. For "revised", the member wrote in the chat. Read it, change the
-  manifest and call studio_plan again. For "stopped", stop. Call no more
+  manifest and call studio_plan again. For "stopped", the member pressed Stop. Stop. Call no more
   studio_patch, say that nothing was built, and wait for the member.
-- If the card could not show (no card channel), the "context" text is the plan.
-  Write it in your reply and ask the member to answer in the chat.
+- For "no_card", the chat shows no card and the member pressed nothing. Write
+  the "context" text in your reply as the plan. Ask the member to answer in
+  words. Build nothing until the member says yes.
 - Never name a tool to the member. Say what it does in product words.
 """
 
