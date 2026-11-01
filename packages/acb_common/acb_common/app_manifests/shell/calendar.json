@@ -23,6 +23,11 @@
         "meaning": "plan, schedule or look at their day, their calendar or their agenda",
         "feature": "tasks"
       }
+    ],
+    "nav": [
+      {
+        "href": "/calendar"
+      }
     ]
   }
 }

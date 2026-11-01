@@ -41,6 +41,14 @@
         "meaning": "change their own profile, skills, CV or working hours",
         "feature": null
       }
+    ],
+    "nav": [
+      {
+        "href": "/people"
+      },
+      {
+        "href": "/people/me"
+      }
     ]
   }
 }

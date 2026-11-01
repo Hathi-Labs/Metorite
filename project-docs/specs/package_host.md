@@ -1,7 +1,7 @@
 # Package host — every app is a package, arranged around the person (WS-PKG)
 
 > **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 📐 **SPEC ONLY (PKG-0).** Nothing in this spec is built.
+> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs) and PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) are built, with no change a member can see. The rest of this spec is not built.
 > **Verified against code on 2026-11-01 at `f59a636b5`.** Each path in §12 was read on that commit.
 > **Board:** WS-PKG in `work_plan.md` §2.1. **Decision:** D147. D12, D49, D87, D89, D111, D127, D136, D141 and D146 bind it.
 > **Metorite:** project "Package Host", epic 1234, this spec task 1236. The slices PKG-1 to PKG-20 are tasks 1239 to 1258, in order.

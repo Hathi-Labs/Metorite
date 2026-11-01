@@ -85,6 +85,11 @@
         "feature": "knowledge",
         "note": "WS-61 KC-8e. Opens the KC-8d Add a topic form. The layout listens for the ?do= and does nothing for a member with no space to write in. No fields: the form saves nothing."
       }
+    ],
+    "nav": [
+      {
+        "href": "/knowledge"
+      }
     ]
   }
 }

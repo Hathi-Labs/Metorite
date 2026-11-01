@@ -1,0 +1,50 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "home",
+  "contributes": {
+    "presets": [
+      {
+        "id": "founder"
+      },
+      {
+        "id": "sales-manager"
+      },
+      {
+        "id": "marketing-lead"
+      },
+      {
+        "id": "finance-manager"
+      },
+      {
+        "id": "operations-manager"
+      },
+      {
+        "id": "engineer"
+      },
+      {
+        "id": "accounts-assistant"
+      },
+      {
+        "id": "new-hire"
+      }
+    ],
+    "cards": [
+      {
+        "key": "needs"
+      },
+      {
+        "key": "today"
+      },
+      {
+        "key": "next"
+      },
+      {
+        "key": "team-pulse"
+      },
+      {
+        "key": "out-today"
+      }
+    ]
+  }
+}

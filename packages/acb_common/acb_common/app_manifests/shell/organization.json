@@ -23,6 +23,11 @@
         "admin": true,
         "note": "Admin only, as its pane is. The bar shows a job only when the member holds its pane, and visibleSections holds Organisation for an admin. WARNING: not the words members or seat. Those name the roster, so an admin who types them and presses Enter must open Organisation, not the invite form."
       }
+    ],
+    "nav": [
+      {
+        "href": "/settings/organization"
+      }
     ]
   }
 }
