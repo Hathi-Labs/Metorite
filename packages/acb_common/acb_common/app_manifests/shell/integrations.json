@@ -1,0 +1,71 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "integrations",
+  "contributes": {
+    "jobs": [
+      {
+        "id": "add-mcp",
+        "label": "Add an MCP server",
+        "position": 110,
+        "words": [
+          "mcp",
+          "server",
+          "tool",
+          "tools",
+          "connect",
+          "integration",
+          "integrations"
+        ],
+        "icon": "Server",
+        "app": "/integrations",
+        "href": "/integrations?do=add-mcp",
+        "meaning": "connect a new MCP server, a tool source for the agents",
+        "feature": "integrations",
+        "bar_feature": "integrations",
+        "note": "IN-2. Opens the MCP server form of the Integrations console. It saves nothing. The pane is open to every member since D-EA-9 (2026-10-14), so this job carries its own bar_feature integrations: a member without the grant is not offered it. A holder without integrations:manage can still follow the link. The page then opens no form (it mounts the job only for a manager and only when the list exists), so the link is dead and harmless. The gateway refuses the write anyway."
+      },
+      {
+        "id": "review-integrations",
+        "label": "Review connections",
+        "position": 120,
+        "words": [
+          "connections",
+          "review",
+          "integrations",
+          "reconnect",
+          "health",
+          "status"
+        ],
+        "icon": "Plug",
+        "app": "/integrations",
+        "href": "/integrations",
+        "meaning": "review the connections the company has made and their health",
+        "feature": "integrations",
+        "bar_feature": "integrations",
+        "note": "IN-2. A link job: the list of connections is where the work waits."
+      },
+      {
+        "id": "connect-agent",
+        "label": "Connect an AI agent",
+        "position": 130,
+        "words": [
+          "agent",
+          "agents",
+          "claude",
+          "mcp",
+          "connect",
+          "cursor",
+          "ai",
+          "revoke"
+        ],
+        "icon": "Bot",
+        "app": "/integrations",
+        "href": "/integrations?view=agents",
+        "meaning": "connect an outside AI agent such as Claude Code to Metorite, or see and revoke their agents",
+        "feature": null,
+        "note": "WS-55 EA-4b (D-EA-9). A link job to the AI agents view of Integrations: the connect card and the member's own agents. Every member holds it, so it needs no feature. The two jobs above keep integrations."
+      }
+    ]
+  }
+}

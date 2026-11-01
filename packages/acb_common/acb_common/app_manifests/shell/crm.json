@@ -1,0 +1,84 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "crm",
+  "contributes": {
+    "jobs": [
+      {
+        "id": "new-lead",
+        "label": "New lead",
+        "position": 70,
+        "words": [
+          "lead",
+          "prospect",
+          "crm",
+          "sales",
+          "enquiry",
+          "inquiry"
+        ],
+        "icon": "UserPlus",
+        "app": "/crm",
+        "href": "/crm?do=new-lead",
+        "meaning": "add a new sales lead or prospect to the CRM",
+        "feature": "crm",
+        "note": "CRM-L2 builds one of the four jobs of crm_platform.md section 11. It opens the quick-create form and never saves."
+      },
+      {
+        "id": "new-deal",
+        "label": "New deal",
+        "position": 80,
+        "words": [
+          "deal",
+          "deals",
+          "opportunity",
+          "pipeline",
+          "sale"
+        ],
+        "icon": "Handshake",
+        "app": "/crm",
+        "href": "/crm?do=new-deal",
+        "meaning": "add a new deal or sales opportunity to the CRM",
+        "feature": "crm",
+        "note": "CRM-X2 (crm_platform.md section 19.6). Opens a form or a list in the CRM, and saves nothing. WARNING: not the word contact (Find a colleague owns it). Not crm or sales (New lead owns them)."
+      },
+      {
+        "id": "log-call",
+        "label": "Log a call",
+        "position": 90,
+        "words": [
+          "call",
+          "phone",
+          "rang",
+          "dial",
+          "spoke",
+          "log"
+        ],
+        "icon": "PhoneCall",
+        "app": "/crm",
+        "href": "/crm?do=log-call",
+        "meaning": "log a phone call with a lead, a contact or a customer in the CRM",
+        "feature": "crm",
+        "note": "CRM-X2 (crm_platform.md section 19.6). Opens a form in the CRM, and saves nothing."
+      },
+      {
+        "id": "find-record",
+        "label": "Find a record",
+        "position": 100,
+        "words": [
+          "record",
+          "records",
+          "company",
+          "companies",
+          "account",
+          "lookup"
+        ],
+        "icon": "Search",
+        "app": "/crm",
+        "href": "/crm?do=find-record",
+        "meaning": "find a lead, a deal, a contact or a company in the CRM",
+        "feature": "crm",
+        "note": "CRM-X2 (crm_platform.md section 19.6). Opens a list in the CRM, and saves nothing."
+      }
+    ]
+  }
+}

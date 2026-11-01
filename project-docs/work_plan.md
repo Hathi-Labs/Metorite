@@ -158,7 +158,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-TO | **Trust and Operations**: enforced controls, restore, compliance | 🟢 active · M1 | `specs/box_hardening.md` | Metorite: epic 521 (Platform & CI/CD) · SBX-0 decided (D130, `specs/agent_sandbox.md`) · next WS-1e, WS-3, BH-3 with SBX-1, the WS-37 spec (D119.4) |
 | WS-PL | **Platform and CI**: delivery, staging, branch protection | 🟢 active · M1 | `specs/development_and_delivery_framework.md` · the local loop LD-7 to LD-10: `specs/engineering_practice.md` §1.3 (D145) | Metorite: project Platform & CI/CD, and epic 1100 in Developer Workflow · next LD-8c (the backup verify fails each night), LD-8a, LD-8b, LD-9, LD-10, then WS-38a, WS-38e, WS-5a |
 | WS-PT | **Projects and Tasks** | 🟢 active · M1 | `specs/project_management_app.md` · `specs/one_projects_app.md` | Metorite: project Projects/Tasks App · no P0 or P1 · next H-257, H-387 |
-| WS-CAL | **Calendar**: events, reminders, external sync | 🟢 active · M1 | `specs/calendar_focus_os.md` · `specs/calendar_events_reminders.md` | Metorite: project Calendar App · CE-0 decided (D138, 2026-10-29) · RE-9b BUILT 2026-10-31 (migration 318). Not dark: it sends wherever `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` are on (production: both on) · CE-4 BUILT, dark (2026-10-31, migration 319, `CALENDAR_EVENTS` off) · next CE-1, CE-3, CE-5, then CE-10 with CE-11 |
+| WS-CAL | **Calendar**: events, reminders, external sync | 🟢 active · M1 | `specs/calendar_focus_os.md` · `specs/calendar_events_reminders.md` | Metorite: project Calendar App · CE-0 decided (D138, 2026-10-29) · RE-9b BUILT 2026-10-31 (migration 318). Not dark: it sends wherever `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` are on (production: both on) · CE-4 BUILT, dark (2026-10-31, migration 321, `CALENDAR_EVENTS` off) · next CE-1, CE-3, CE-5, then CE-10 with CE-11 |
 | WS-PP | **People and Profile** | 🟢 active · M1 | `specs/people_center_app.md` | Metorite: project My Profile · next E-58 |
 | WS-EM | **Email** | 🟢 active · M0 | `specs/email_app_master_plan.md` · `specs/shared_mailbox.md` | Metorite: project My Email · Gmail in test mode (D122.4) · next E-05, E-09, E-11 |
 | WS-CRM | **CRM**: native mode, the Zoho mirror, and the cutover from one to the other | 🟢 active · M1 | `specs/crm_platform.md` | Metorite: epic 477, cutover sub-epic CRM-Z10 · CRM-Z10f decided (D133) · next H-333, CRM-Z10a to Z10e (the switch, owner ask 2026-10-28), CRM-U13, the whole-app UX batch, H-366 |
@@ -166,7 +166,9 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-KB | **Knowledge** | 🟢 active · M2 | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | Metorite: project Knowledge · no P0 or P1 · next H-401, KC-1 |
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_graph.md` · `specs/knowledge_base.md` §20 · `specs/company_context.md` | Metorite: epic 783 (Knowledge) · D128, D132 · 2026-10-29: KG-0 written, KG-1, KG-2 and KG-3a built · next KG-4 and KG-9, then KG-3b after the KG-2 backfill |
 | WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a |
-| WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · milestone is STU-Q6 | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141 · STU-0 spec merged with this row · next B1 (the read-only action catalog), then the Stage 1 slices of §15 as the owner answers STU-Q1 and STU-Q2 |
+| WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · Stage 1 in M1, Stage 2 in M2 (D146) | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141, D146 · STU-0 merged · next B1 (the read-only action catalog), then the Stage 1 slices of §15 |
+| WS-PKG | **Package host**: every app is a package, and Metorite reshapes itself around the organization and the person | 🟢 active · started 2026-11-01 (D147) · M1 | `specs/package_host.md` | Metorite: project "Package Host", epic 1234 · D89, D127, D136, D141, D146, D147 · Studio H1, H2, J2, J3 and M1 run on this registry · next PKG-1 (one manifest source for the ⌘K jobs, no behaviour change), then PKG-2, PKG-3 and PKG-4 |
+| WS-WEB | **Web research**: search, read any page or file, crawl, browse and research jobs for Mira, on open-source parts | 🟢 active · started 2026-11-01 (D148) · M1 | `specs/web_research.md` | Metorite: project "Agent Tooling", epic 1235 · D85, D117, D139, D148 · WS-43 CA-4 (task 1032) calls this service · gates WEB-Q1 (SearXNG) for WEB-5 · next WEB-1 (the fetch guard, a security fix), then WEB-2, WEB-3 and WEB-4 |
 | WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) · `specs/glass_look.md` (phase GL, D143) | Metorite: epic 492, sub-epic UX-D, task 1125 (GL) · UI-G1 is built · **GL (owner, 2026-10-31): Aroh's glass look, LIVE in production since 2026-10-31 05:38 UTC behind `NEXT_PUBLIC_UI_LOOK` (GL-9 done on the owner's word; staging no longer exists). GL-0 to GL-4 built (gate and tokens, primitives, shell, chat). Next GL-5 (the tint) and GL-6 (one pass per app)** · then UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
 | WS-CHAT | **AI chat**: Mira, the one assistant | 🟢 active · M1 | `specs/one_assistant_context.md` · `specs/chat_first_surface.md` | Metorite: project AI Chat Interface, epic 470 · a parallel session owns it · next #469 with BR-5, #471, WS-58, SUB-1 (the sub-agent policy for OA-9) |
@@ -4932,6 +4934,64 @@ The owner also approved, the same day, that production's nightly reduced copy li
 7. **The home server takes the same scripts later.** They run on Linux unchanged.
 
 `specs/engineering_practice.md` §1.3 owns the loop.
+
+### D146 — Studio apps are layered, their records live in a typed object store, and Metorite ships inventory, procurement and MRP templates (2026-10-31)
+
+The owner answered six questions of `ai_studio.md` §12 on 2026-10-31, in chat. Board: **WS-STU**. Owning spec: `specs/ai_studio.md` §3.1, §3.7 and §14. Metorite: epic 491. It extends D127 and D141, and changes none of their rules. For STU-Q1 the owner asked for the option with "the most flexibility and security" for "full-blown integrated apps", and named inventory, procurement, manufacturing resources, manufacturing flows and several product lines. The owner then chose the layered model.
+
+1. **Layered apps (STU-Q1).** Four layers, each with its own containment: the manifest, rules, logic modules and a custom UI block. Every layer reaches data only through the one action door. A first-party logic module is reviewed repo code. A member-authored logic module and the code block run only on the off-box sandbox (D127.2).
+2. **The library shows Apps, Workflows and Skills (STU-Q2).** "Skill" is the member's name for a D127 tool pack.
+3. **Company apps sit under Apps, after the built-in apps (STU-Q3).** Never a Center (D49).
+4. **A typed object store now (STU-Q5).** An object registry, JSONB records on shared tables with FORCE RLS, indexed hot fields, multi-record transactions and constraints. No per-tenant DDL. `app_data` stays for code-format apps.
+5. **Stage 1 dark in M1, Stage 2 to the pilots in M2 (STU-Q6).** Neither moves an M0 item.
+6. **First-party templates (STU-Q10).** Inventory and procurement (K3), and MRP-lite with the production schedule (K4), built on Studio. Accounting stays in Tally and Zoho Books, reached through connectors.
+
+**What stays open.** STU-Q4 (who may build), Q7 (price), Q8 (map tiles) and Q9 (a build from any chat).
+
+### D147 — Every app is a package, and Metorite reshapes itself around the organization and the person (2026-11-01)
+
+Owner directive, 2026-11-01, in chat. Board: **WS-PKG**. Owning spec: `specs/package_host.md`. Metorite: project "Package Host", epic 1234, spec task 1236. It extends D89, D141 and D146, and changes none of their rules.
+
+```text
+"Metorite can actually, over time, mutate around the person and the
+organization and keep mutating as the organization grows and the
+requirements grow. The organization can build ephemeral apps, subapps,
+modify existing apps, etc."
+```
+
+The owner read the proposal of the same day and answered "okay, fine". That accepts each recommendation of `package_host.md` §15.
+
+1. **Every app is a package** (PKG-Q1). Built-in apps declare their contributions in the Studio manifest shape. Their views stay code.
+2. **One run-time registry.** The shell, the assistant, ⌘K, the bell, Home and search read installed packages, not lists in code.
+3. **An install has a scope and an optional end date.** Removal or expiry deletes every contribution of the install at once. Scopes reuse the D12 grammar, plus `system`.
+4. **An app made in chat lives 30 days unless kept** (PKG-Q2). Then it stays 30 days in the archive, and then the expiry job deletes it.
+5. **Company apps may fill declared slots in built-in pages** (PKG-Q3), with declarative content only.
+6. **The product suggests and never moves** a stable region (PKG-Q4). Each suggestion gives its reason.
+7. **The DeepSeek Harness lessons go first in this order** (PKG-Q5): replay tests with logged model inputs, then the goal record. `specs/web_research.md` §8 carries them.
+
+### D148 — Mira researches the web on open-source parts, through one fetch guard (2026-11-01)
+
+Owner directive, 2026-11-01, in chat. Board: **WS-WEB**. Owning spec: `specs/web_research.md`. Metorite: project "Agent Tooling", epic 1235, spec task 1237. It extends D139 to the chat's web tools, and changes none of its rules.
+
+```text
+"I want to see if you were able to add in functionality for the chat
+interface as well, from the Deepseek harness for browser use, for web
+search, for scraping ... everything that would otherwise be possible to do
+via the GitHub Copilot SDK by using open-source tools."
+
+"Web search comes from Serp API, which I might not necessarily use. Is
+there anything open source that I can use for web search, searching HTML
+pages, or efficiently reading HTML pages and returning Markdown?"
+```
+
+1. **One web service.** Search, page and file reading, crawling and browsing share one service in `acb_skills/web/`. The chat, AI Studio and the coding session (CA-4) call it.
+2. **One fetch guard.** Every web read checks each address and each redirect hop, and marks the output as untrusted outside text.
+3. **Open-source parts that we run.** SearXNG, Trafilatura, MarkItDown, Crawl4AI, Docling and Playwright. SerpAPI stays as an option when a key is set.
+4. **No AGPL code in our process.** An AGPL tool runs only as its own unmodified service.
+5. **A browse write asks every time.** A form submit is class C (D124).
+6. **The coding half stays in WS-43** (CA-1 to CA-15, D139).
+
+**What stays open.** WEB-Q1 to WEB-Q4 (`web_research.md` §15). WEB-5, the SearXNG container, waits on WEB-Q1 and WEB-Q4.
 
 
 ## 4. Single-owner registry (who owns duplicated work)

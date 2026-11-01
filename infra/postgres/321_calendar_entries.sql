@@ -1,5 +1,5 @@
 -- ============================================================================
--- 319_calendar_entries.sql — the event store of the Calendar (WS-CAL CE-4,
+-- 321_calendar_entries.sql — the event store of the Calendar (WS-CAL CE-4,
 -- D138).
 --
 -- What: two new tables. `calendar_entries` holds one time that is not a
@@ -44,8 +44,9 @@
 -- it delete the connection. An organization delete cascades through both
 -- tables in one statement, so it still works.
 --
--- The number is taken at build time (R1). On 2026-10-31 origin/main held 317
--- at the top and branch ws66-re9b-push held 318. Check it again at merge.
+-- The number is taken at build time (R1). It was 319 at first. On 2026-11-01
+-- origin/main took 319 (chat_session_member_summary) and 320 (studio_skills),
+-- so this file moved to 321 before merge. Check it again at merge.
 -- Pinned by tests/unit/test_calendar_entries_r8.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================

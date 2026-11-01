@@ -1,0 +1,30 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "artifacts",
+  "contributes": {
+    "jobs": [
+      {
+        "id": "find-chat-file",
+        "label": "Find a file from a chat",
+        "position": 220,
+        "words": [
+          "file",
+          "files",
+          "artifact",
+          "artifacts",
+          "download",
+          "report",
+          "document",
+          "documents"
+        ],
+        "icon": "FolderOpen",
+        "app": "/artifacts",
+        "href": "/artifacts",
+        "meaning": "find a file, report or document the assistant made in a chat",
+        "feature": "artifacts",
+        "note": "A link job (D99, NS-6 slice 6c): Artifacts has no form to open, so the job opens the app on the member's chats and their files."
+      }
+    ]
+  }
+}

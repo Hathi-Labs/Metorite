@@ -135,6 +135,8 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     # ── her two calendar entries, and her seat on a colleague's event (CE-4) ──
     fake.seed_rows("calendar_entries", {"owner_email": PRIYA}, {"owner_email": PRIYA})
     fake.seed_rows("calendar_entry_attendees", {"member_email": PRIYA})
+    # ── her one private AI Studio skill (WS-STU F1) ──
+    fake.seed_rows("studio_skills", {"owner_email": PRIYA})
     return fake
 
 
@@ -484,6 +486,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "reminders": 2,
         # WS-BRIEF BR-4: the fake holds no brief of the member.
         "brief_runs": 0,
+        # WS-STU F1: her one private skill. The versions go by cascade.
+        "studio_skills": 1,
         # WS-63 PZ-9: her settings row of this org, with the profile.
         "member_settings": 1,
         # WS-66 PN-1: the fake holds no push device of the member.
@@ -730,10 +734,10 @@ def test_the_calendar_entries_of_this_org_go_before_any_connection() -> None:
     Only the owner changes an entry, so an entry that a purge left behind
     could never be deleted. Both clauses name the bound org, because the same
     address may hold entries in another org. The attendee rows of the
-    member's own entries go by the cascade of migration 319, so the seat
+    member's own entries go by the cascade of migration 321, so the seat
     clause leaves them out, and no row is counted twice.
 
-    ⚠️ ``calendar_entries.connection_id`` has NO cascade (migration 319). A
+    ⚠️ ``calendar_entries.connection_id`` has NO cascade (migration 321). A
     connection delete fails while an entry names it. So the delete loop of
     ``_PURGE_DELETES`` must run before ``purge_knowledge_member``, the one
     connection delete of the purge, and the registry must not cascade to the
@@ -768,6 +772,32 @@ def test_the_calendar_entries_of_this_org_go_before_any_connection() -> None:
     body = inspect.getsource(members.purge_member_rows)
     deletes = body.index("text(rows.delete_sql)")
     assert deletes < body.index("purge_knowledge_member(")
+
+
+def test_the_skills_of_this_org_go_and_their_versions_by_cascade() -> None:
+    """WS-STU F1: the purge deletes the member's AI Studio skills.
+
+    In F1 a skill is private, and only its owner reads it, so a purge leaves
+    none behind. The clause names the owner and the bound org, because the
+    same address may hold skills in another org. ``studio_skill_versions``
+    is not a row of the list: its foreign key cascades from
+    ``studio_skills``, and the schema must keep it so.
+
+    ⚠️ Mutation-checked: dropping the entry fails here and in the count dict
+    above, and ``test_studio_skills_r8.py`` fails on the real database.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    from tests.unit._schema_cascade import cascade_closure
+
+    [rows] = [r for r in _PURGE_DELETES if r.table == "studio_skills"]
+    assert rows.key == "studio_skills"
+    assert rows.where == f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("studio_skills") < keys.index("member_record")
+    assert "studio_skill_versions" in cascade_closure("studio_skills")
+    assert "studio_skill_versions" not in {r.table for r in _PURGE_DELETES}
 
 
 def test_the_two_halves_of_chat_session_partition_it() -> None:
