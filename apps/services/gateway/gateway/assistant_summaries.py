@@ -183,20 +183,40 @@ def is_brief_row(row: Any) -> bool:
     return BRIEF_ROW.match(str(_field(row, "id") or "")) is not None
 
 
-def _is_member_row(row: Any, member: Any) -> bool:
-    """True when *row* is a turn of *member*. In a solo chat only the member
-    writes a ``user`` row. A row that names another author never counts.
-
-    A card answer never counts. Its text quotes the question of the card,
-    which the model wrote, so it grounds nothing (``routes/agent.py``)."""
+def _is_member_turn(row: Any, member: Any) -> bool:
+    """True when *row* is a ``user`` row of *member*, a card answer too. In a
+    solo chat only the member writes a ``user`` row. A row that names another
+    author never counts."""
     if _field(row, "role") != "user" or is_brief_row(row):
-        return False
-    if is_card_answer_text(str(_field(row, "content") or "").strip()):
         return False
     if _field(row, "author_kind") not in (None, "", "human"):
         return False
     author = _key(_field(row, "author_email"))
     return not author or author == _key(member)
+
+
+def _is_card_answer(row: Any) -> bool:
+    return is_card_answer_text(str(_field(row, "content") or "").strip())
+
+
+def _is_member_row(row: Any, member: Any) -> bool:
+    """True when *row* is a turn of *member* that can hold typed words.
+
+    A card answer never counts. Its text quotes the question of the card,
+    which the model wrote, so it grounds nothing (``routes/agent.py``)."""
+    return _is_member_turn(row, member) and not _is_card_answer(row)
+
+
+def new_turn(rows: Iterable[Any], member: Any) -> bool:
+    """True when *rows* hold a new turn of *member*: a typed row or a card
+    answer. A card answer moves the chat on, so a stored follow-up can go
+    stale without one more summary. It still stays out of the typed words
+    (:func:`member_words`) and of the prompt (:func:`prompt_rows`)."""
+    for row in rows:
+        if _is_member_turn(row, member) and (
+                _is_card_answer(row) or typed_text(_field(row, "content")).strip()):
+            return True
+    return False
 
 
 def _is_mira_row(row: Any) -> bool:
@@ -1030,9 +1050,10 @@ def _ms(moment: datetime) -> int:
 
 def rows_after(rows: Iterable[Any], through_ms: int | None) -> list[Any]:
     """The rows of *rows* that the waterline *through_ms* does not cover. A
-    summary, a Delete and a Forget each leave one. With no waterline, each
-    row. A chat with no typed row of the member here has nothing new, such as
-    a brief or a reminder that came after a Delete. So it gets no call."""
+    summary, a Delete, a Forget and a paid call each leave one. With no
+    waterline, each row. A chat with no new turn of the member here has
+    nothing new, such as a brief or a reminder that came after a Delete. So
+    it gets no call (:func:`new_turn`)."""
     if through_ms is None:
         return list(rows)
     return [r for r in rows if int(_field(r, "timestamp_ms") or 0) > through_ms]
@@ -1184,7 +1205,7 @@ async def seed(org: str, now: datetime) -> None:
     A chat gets a job when :data:`IDLE_SQL` selects it, its member is active
     with the switch on (:func:`member_switches`), the newest short rows hold
     :data:`TYPED_ROWS_MIN` typed rows of the member (:func:`member_texts`),
-    and one of them is after the waterline (:func:`rows_after`). Then
+    and a new turn is after the waterline (:func:`new_turn`). Then
     ``my_day_loop.departed`` must say that the member did not leave, and the
     mark of the chat must be clear (:func:`mail_state`). The first fault of
     that read ends the loop for this tick, so a hung Redis costs one read and
@@ -1219,7 +1240,7 @@ async def seed(org: str, now: datetime) -> None:
         rows = typed.get(str(chat.id), [])
         if len(member_texts(rows, member)) < TYPED_ROWS_MIN:
             continue
-        if not member_texts(rows_after(rows, _waterline(chat.through_ms, chat.mark_ms)), member):
+        if not new_turn(rows_after(rows, _waterline(chat.through_ms, chat.mark_ms)), member):
             continue
         if member not in left:
             left[member] = await _gone(org, member)

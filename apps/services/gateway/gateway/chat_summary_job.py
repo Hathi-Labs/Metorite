@@ -23,11 +23,12 @@ with the id of a chat of another org finds no row.
 2. The flag of the org (``chat_summary_for``). Off, the job is ``done``.
 3. One short ``tenant_session(org)``: the chat, its newest rows, the stored
    summary and the member's switch (``assistant_summaries.read_job_chat``).
-4. The rules: Mira on the web with no other agent, solo, not archived, not
-   ``off``, the newest row is ``through``, no open run, idle, 2 typed rows of
-   the member or more, and a typed row after the waterline. A chat that fails
-   one is ``done`` with no call. ``through`` stored already is ``done`` too,
-   and that is what a Delete leaves.
+4. The rules: Mira on the web with no other agent, no mail tool in the tool
+   events, solo, not archived, not ``off``, the newest row is ``through``, no
+   open run, idle, 2 typed rows of the member or more, and a new turn of the
+   member after the waterline (a typed row or a card answer). A chat that
+   fails one is ``done`` with no call. ``through`` stored already is ``done``
+   too, and that is what a Delete leaves.
 5. ``my_day_loop.departed``. A member who left is ``done``. A failed read
    raises, and the queue tries again, because no mark exists yet. Then
    ``assistant_summaries.holds_mail``: a chat with the mail mark is ``done``
@@ -80,6 +81,7 @@ from gateway.assistant_summaries import (
     member_switch_on,
     member_texts,
     member_words,
+    new_turn,
     prompt_rows,
     read,
     read_job_chat,
@@ -163,6 +165,12 @@ async def _give_up(org: str, claim: queue.Claim, reason: str, now: datetime) -> 
         await queue.give_up(db, claim, reason, now=now)
 
 
+def _uncovered(chat: JobChat) -> list[Any]:
+    """The rows that no stored summary covers. A paid call that stored nothing
+    covers none of them, so its rows go to the next try."""
+    return rows_after(chat.rows, chat.stored.through_ms if chat.stored is not None else None)
+
+
 def _why_not(chat: JobChat | None, through: str, switch: bool, now: datetime) -> str | None:
     """Why the chat gets no model call now, or None. Each reason settles the
     job ``done`` with no call and no mark."""
@@ -183,7 +191,10 @@ def _why_not(chat: JobChat | None, through: str, switch: bool, now: datetime) ->
     if len(member_texts(chat.rows, chat.member)) < TYPED_ROWS_MIN:
         return "few_typed_rows"
     after = chat.stored.waterline if chat.stored is not None else None
-    if not member_texts(rows_after(chat.rows, after), chat.member):
+    if not new_turn(rows_after(chat.rows, after), chat.member):
+        return "nothing_new"
+    # A card answer stays out of the prompt, so a turn alone can leave it empty.
+    if not prompt_rows(_uncovered(chat), chat.member):
         return "nothing_new"
     if not switch:
         return "switch_off"
@@ -194,11 +205,9 @@ def messages_for(chat: JobChat) -> list[dict[str, str]]:
     """The prompt: :data:`SYSTEM`, then one JSON object with the earlier
     summary and the rows after it (``prompt_rows``: the typed rows of the
     member and the text of each reply of the assistant, nothing else)."""
-    after = chat.stored.through_ms if chat.stored is not None else None
-    rows = rows_after(chat.rows, after)
     body: dict[str, Any] = {
         "rows": [{"who": "member" if who == "member" else "assistant", "text": words}
-                 for who, words in prompt_rows(rows, chat.member)],
+                 for who, words in prompt_rows(_uncovered(chat), chat.member)],
     }
     if chat.stored is not None and (chat.stored.text or chat.stored.follow_ups):
         body["earlier_note"] = {"text": chat.stored.text,

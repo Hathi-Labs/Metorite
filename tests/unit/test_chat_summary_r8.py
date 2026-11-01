@@ -1362,6 +1362,36 @@ async def test_4_a_paid_call_that_stores_nothing_needs_a_new_typed_row(job, bad)
     assert _summary(job, sid)["through"] == "m10"
 
 
+async def test_4_a_card_answer_after_the_waterline_counts_as_new(job) -> None:
+    """A card answer closes a follow-up, so a stored summary must not keep it.
+    The next summary reads the reply of Mira, and never the quoted question."""
+    from gateway.chat_recovery import compose_card_answer
+
+    sid, _newest = _job_chat(job, org=job.org_a)
+    assert await _tick(job, job.org_a) == Counter(done=1)
+    question = "Send the reply to ravi.k@vendor.example now?"
+    _row_at(job, job.org_a, sid, "m11", "user", compose_card_answer(question, "APPROVE"),
+            T + timedelta(minutes=5))
+    _row_at(job, job.org_a, sid, "a4", "assistant", "Sent.", T + timedelta(minutes=6))
+    assert await _tick(job, job.org_a, T + timedelta(hours=1)) == Counter(done=1)
+    assert len(job.console.calls) == 2
+    prompt = json.dumps(job.console.calls[1]["payload"]["messages"])
+    assert "Sent." in prompt and "ravi.k" not in prompt
+    assert _summary(job, sid)["through"] == "a4"
+
+
+async def test_4_a_card_answer_alone_buys_no_call_with_an_empty_prompt(job) -> None:
+    """A turn with no reply of Mira leaves the prompt with no row."""
+    from gateway.chat_recovery import compose_card_answer
+
+    sid, _newest = _job_chat(job, org=job.org_a)
+    assert await _tick(job, job.org_a) == Counter(done=1)
+    _row_at(job, job.org_a, sid, "m11", "user", compose_card_answer("Send it?", "APPROVE"),
+            T + timedelta(minutes=5))
+    assert await _tick(job, job.org_a, T + timedelta(hours=1)) == Counter(done=1)
+    assert len(job.console.calls) == 1
+
+
 async def test_4_a_stored_switch_on_and_no_switch_read_as_on(job) -> None:
     """``apps.chat.summaries`` false turns the member's summaries off (above).
     True and a missing value read as on (PZ-35 declares the key later)."""

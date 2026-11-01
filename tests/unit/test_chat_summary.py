@@ -706,6 +706,24 @@ def test_pz33b_the_dedupe_key_names_the_chat_and_its_newest_row() -> None:
 # ── Review round 1, P1-c: a card answer is not a typed row ──────────────────
 
 
+def test_pz33b_a_card_answer_is_a_new_turn_and_no_typed_row() -> None:
+    """It moves the chat on, so a stored follow-up can go stale. It stays out
+    of the typed words, so it still grounds nothing."""
+    from gateway.chat_recovery import compose_card_answer
+
+    card = _row("m9", "user", compose_card_answer("Send the deck to Priya?", "APPROVE"),
+                author_email=MEMBER)
+    assert summaries.new_turn([card], MEMBER) is True
+    assert summaries.member_texts([card], MEMBER) == []
+    assert summaries.member_words([card], MEMBER) == ""
+    assert summaries.prompt_rows([card], MEMBER) == []
+    other = _row("m8", "user", card["content"], author_email="bob@pz33.test")
+    pasted = _row("m7", "user", _pasted_mail(), author_email=MEMBER)
+    mira = _row("a1", "assistant", "Done.", author_kind="agent", author_email="orchestrator")
+    assert summaries.new_turn([other, pasted, mira], MEMBER) is False
+    assert summaries.new_turn([_row("m6", "user", "Book it.", author_email=MEMBER)], MEMBER)
+
+
 def test_a_card_answer_is_not_a_typed_row() -> None:
     from gateway.chat_recovery import compose_card_answer
 

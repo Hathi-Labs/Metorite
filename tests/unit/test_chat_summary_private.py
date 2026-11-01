@@ -78,7 +78,7 @@ IMPORTERS: dict[Path, frozenset[str]] = {
 JOB_MODULE = GATEWAY / "chat_summary_job.py"
 IMPORTERS[JOB_MODULE] = frozenset({
     "IDLE", "KIND", "TYPED_ROWS_MIN", "JobChat", "check_answer", "holds_mail",
-    "mark", "member_switch_on", "member_texts", "member_words", "prompt_rows",
+    "mark", "member_switch_on", "member_texts", "member_words", "new_turn", "prompt_rows",
     "read", "read_job_chat", "rows_after", "seed", "write_marked",
 })
 #: The trees that (c) reads: all code of the platform.
