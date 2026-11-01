@@ -8,7 +8,14 @@
  * a little bit to the side in slight angle and then comes back like a
  * spring … almost like Tinder", and the same motion for every app's stack.
  *
- * - A banner counts the cards, with a dot for each one.
+ * - A row of tabs names the cards, one capsule each with its kind and a
+ *   short name (owner, 2026-11-01: "some sort of tab-based mechanism to
+ *   change between the multiple cards"). It is the stack's one switcher: a
+ *   click or an arrow key shows a card, and the card holds no pager of its
+ *   own while it is stacked.
+ * - A change of card moves as a deck does (`swapStackCard`): forward, the
+ *   card left is thrown to the side and the next rises from the deck; back
+ *   is the mirror.
  * - The cards behind peek out: offset, smaller, a little turned.
  * - On a touch screen a sideways drag tilts the top card and lifts the card
  *   behind; past one step it moves to the next or previous card, and short
@@ -20,7 +27,7 @@
  * `lib/cardStack.ts`; `ConfirmationQueue` is the first user.
  */
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import Icon from "@/components/Icon";
 import Button from "@/components/ui/Button";
@@ -32,6 +39,7 @@ import {
   stackDepth,
   swipeStep,
 } from "@/lib/cardStack";
+import { prefersReducedMotion, swapStackCard } from "@/lib/panelMotion";
 
 /** A drag that starts on a control is the control's, not a swipe. */
 const NO_SWIPE_FROM = "input, textarea, select, button, a, label, [contenteditable='true']";
@@ -44,6 +52,16 @@ export function resetCardStackNudgeForTests(): void {
   nudgedThisPage = false;
 }
 
+/** One card's tab. */
+export interface CardStackTab {
+  /** A stable key for the card. */
+  key: string;
+  /** The tab's words: the card's short name. The tab cuts a long one. */
+  label: string;
+  /** The card's kind, as an icon name. */
+  icon: string;
+}
+
 export interface CardStackProps {
   /** The number of cards in the stack. With one card the stack draws none
    *  of its chrome. */
@@ -52,19 +70,24 @@ export interface CardStackProps {
   index: number;
   /** Show the card at this index. */
   onGo: (index: number) => void;
-  /** A stable key for each card, for the dots. */
-  keys: readonly string[];
-  /** The banner's noun, plural: "approvals" by default. */
+  /** One tab for each card, in the stack's order. */
+  tabs: readonly CardStackTab[];
+  /** The tab row's noun, plural: "approvals" by default. */
   noun?: string;
   /** The shown card. */
   children: ReactNode;
 }
 
-export default function CardStack({ total, index, onGo, keys, noun, children }: CardStackProps) {
+export default function CardStack({ total, index, onGo, tabs, noun, children }: CardStackProps) {
   const many = total > 1;
   const [dragX, setDragX] = useState(0);
   const [settling, setSettling] = useState(false);
   const drag = useRef<{ x: number; y: number; id: number; live: boolean } | null>(null);
+  const topRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const uid = useId();
+  const tabId = (i: number) => `${uid}-tab-${i}`;
+  const panelId = `${uid}-card`;
   const [nudge, setNudge] = useState(false);
   useEffect(() => {
     if (!many || nudgedThisPage) return;
@@ -73,10 +96,59 @@ export default function CardStack({ total, index, onGo, keys, noun, children }: 
     const t = setTimeout(() => setNudge(false), 1800);
     return () => clearTimeout(t);
   }, [many]);
+  // A row wider than its room fades at the edge where more tabs wait, so a
+  // cut tab reads as "scroll", not as a broken one.
+  const [fade, setFade] = useState<{ left: boolean; right: boolean }>({ left: false, right: false });
+  const measure = () => {
+    const list = listRef.current;
+    if (!list) return;
+    const left = list.scrollLeft > 2;
+    const right = list.scrollLeft + list.clientWidth < list.scrollWidth - 2;
+    setFade((f) => (f.left === left && f.right === right ? f : { left, right }));
+  };
+  useEffect(() => {
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [total]);
+  // The shown tab stays in view when the row scrolls. Only the row moves:
+  // `scrollIntoView` would scroll the page under the member too.
+  useEffect(() => {
+    const list = listRef.current;
+    const tab = list?.querySelector<HTMLElement>(`[data-card-stack-tab="${index}"]`);
+    if (!list || !tab) return;
+    const left = tab.offsetLeft - list.offsetLeft;
+    const right = left + tab.offsetWidth;
+    const to = left < list.scrollLeft ? left - 8 : right > list.scrollLeft + list.clientWidth ? right - list.clientWidth + 8 : null;
+    if (to !== null) list.scrollTo({ left: to, behavior: prefersReducedMotion() ? "auto" : "smooth" });
+  }, [index]);
 
   if (!many) return <>{children}</>;
   const depth = stackDepth(total);
   const reveal = revealOf(dragX);
+
+  /** Show card `to`, moving as a deck does. `first` runs inside the change. */
+  const go = (to: number, first?: () => void) => {
+    if (to === index || to < 0 || to >= total) {
+      first?.();
+      return;
+    }
+    swapStackCard(topRef.current, to > index ? "next" : "prev", () => {
+      first?.();
+      onGo(to);
+    });
+  };
+
+  const onTabKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const to =
+      e.key === "ArrowRight" ? index + 1 : e.key === "ArrowLeft" ? index - 1 : e.key === "Home" ? 0 : e.key === "End" ? total - 1 : null;
+    if (to === null) return;
+    e.preventDefault();
+    const next = Math.min(Math.max(to, 0), total - 1);
+    go(next);
+    // The focus follows the shown card's tab, as a tab list does.
+    requestAnimationFrame(() => document.getElementById(tabId(next))?.focus());
+  };
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.pointerType === "mouse") return;
@@ -108,11 +180,18 @@ export default function CardStack({ total, index, onGo, keys, noun, children }: 
       return;
     }
     const step = swipeStep(e.clientX - d.x, index, total);
-    // Release: the card springs home (the transition below), and a full
-    // step shows the next or previous card.
+    if (step !== 0) {
+      // A full step: the card leaves from where the finger let it go, and
+      // the next one comes in at rest, with no spring.
+      go(index + step, () => {
+        setSettling(false);
+        setDragX(0);
+      });
+      return;
+    }
+    // Short of a step: the card springs home (the transition below).
     setSettling(true);
     setDragX(0);
-    if (step !== 0) onGo(index + step);
   };
 
   const dragging = dragX !== 0;
@@ -124,28 +203,44 @@ export default function CardStack({ total, index, onGo, keys, noun, children }: 
 
   return (
     <div data-card-stack={total} className="space-y-2">
-      <div
-        role="status"
-        data-card-stack-banner=""
-        className="flex min-w-0 items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-2.5 py-1.5 text-xs text-primary glass:rounded-[10px] glass:border-transparent glass:bg-primary/12 glass:px-3 glass:text-footnote"
-      >
-        <Icon name="Layers" size={14} className="shrink-0" />
-        <span className="min-w-0 flex-1 font-medium">{stackBanner(total, noun)}</span>
-        <span className="flex shrink-0 items-center" aria-label={`Card ${index + 1} of ${total}`}>
-          {keys.map((k, i) => (
+      {/* The stack's one switcher: a capsule for each card, with its kind
+          and its name. The count leads, so a stack never reads as one card. */}
+      <div data-card-stack-banner="" className="flex min-w-0 items-center gap-2">
+        <span className="shrink-0 text-xs font-medium tabular-nums text-muted-foreground glass:text-footnote" aria-hidden>
+          {total} waiting
+        </span>
+        <div
+          ref={listRef}
+          role="tablist"
+          aria-label={stackBanner(total, noun)}
+          onKeyDown={onTabKey}
+          onScroll={measure}
+          data-fade={fade.left && fade.right ? "both" : fade.left ? "left" : fade.right ? "right" : undefined}
+          className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden data-[fade=both]:[mask-image:linear-gradient(to_right,transparent,#000_24px,#000_calc(100%-24px),transparent)] data-[fade=left]:[mask-image:linear-gradient(to_right,transparent,#000_24px)] data-[fade=right]:[mask-image:linear-gradient(to_right,#000_calc(100%-24px),transparent)]"
+        >
+          {tabs.map((t, i) => (
             <Button
-              key={k}
-              type="button"
+              key={t.key}
+              id={tabId(i)}
+              role="tab"
+              aria-selected={i === index}
+              aria-controls={panelId}
+              tabIndex={i === index ? 0 : -1}
+              // The shown card's tab is the one filled. The others are quiet
+              // words, as a segmented control draws them.
               variant="ghost"
-              size="icon-xs"
-              aria-label={`Show card ${i + 1} of ${total}`}
-              aria-current={i === index ? "true" : undefined}
-              onClick={() => onGo(i)}
+              size="sm"
+              selected={i === index}
+              title={t.label}
+              data-card-stack-tab={i}
+              onClick={() => go(i)}
+              className={`max-w-[15rem] shrink-0 ${i === index ? "" : "text-muted-foreground"}`}
             >
-              <span className={`block h-2 w-2 rounded-full ${i === index ? "bg-primary" : "bg-primary/30"}`} />
+              <Icon name={t.icon} size={13} className="shrink-0" />
+              <span className="min-w-0 truncate">{t.label}</span>
             </Button>
           ))}
-        </span>
+        </div>
       </div>
       <div
         className="relative isolate"
@@ -179,6 +274,11 @@ export default function CardStack({ total, index, onGo, keys, noun, children }: 
           );
         })}
         <div
+          ref={topRef}
+          id={panelId}
+          role="tabpanel"
+          aria-labelledby={tabId(index)}
+          data-card-stack-top=""
           className={`relative rounded-lg bg-background glass:rounded-[16px] ${nudge ? "card-stack-nudge" : ""}`}
           data-nudge={nudge ? "" : undefined}
           style={topStyle}

@@ -1440,8 +1440,9 @@ def test_the_contract_fixtures_are_long_and_hide_the_two_facts() -> None:
 
 def test_the_fixture_fetch_cuts_like_the_real_tool() -> None:
     """The real ``fetch_page`` (web_tools.py) cuts at ``max_chars`` (default 8000,
-    floor 500, no upper cap) and adds a marker. A default fetch of a contract
-    holds no fact, and a fetch with enough ``max_chars`` holds both.
+    floor 500, ceiling 100,000) and adds a marker. A default fetch of a contract
+    holds no fact, and a fetch with enough ``max_chars`` holds both. The fixture
+    gives the framed shape of the real tool (WEB-1), with the same helper.
     Mutation: make the fixture ignore ``max_chars`` → the cut cases go red."""
     import asyncio
 
@@ -1463,6 +1464,9 @@ def test_the_fixture_fetch_cuts_like_the_real_tool() -> None:
     assert f"within {days} days" in whole and f"penalty of {percent} percent" in whole
     assert "truncated" not in whole
     assert "[... truncated at 500 chars]" in tiny
+    from acb_skills.untrusted import has_marker_shape
+
+    assert all(has_marker_shape(out) and "WEB PAGE" in out for out in (short, whole, tiny))
 
 
 def _swapped(sc):

@@ -66,10 +66,9 @@ import {
   launcherGroups,
   shellNavOn,
   shellSidebar,
-  strayCount,
 } from "@/lib/shell/shellNav";
 import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
-import { addAppsName, rowMeta, rowName } from "@/lib/shell/navNeeds";
+import { rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
 import { shouldPollWorkspace } from "@/lib/access";
 import { useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
@@ -510,8 +509,8 @@ function MobileBottomNavInner({
   // The same gate as the desktop sidebar: no workspace, no read.
   const navNeeds = useNavNeeds(shellNav && shouldPollWorkspace(access, accessLoading), heldHrefs);
   const appNeeds = navNeeds.counts;
-  const strayNeeds = strayCount(appNeeds, drawerHrefs);
-  const strayFloor = [...navNeeds.floors].some((href) => !drawerHrefs.has(href));
+  // "Add apps" carries no count (owner, 2026-11-01): My Day counts what
+  // waits in an app the drawer does not show, as on the desktop sidebar.
 
   const menuContent = (
     <>
@@ -633,7 +632,6 @@ function MobileBottomNavInner({
                 setLauncherOpen(true);
               }}
               aria-haspopup="dialog"
-              aria-label={strayNeeds > 0 ? addAppsName(strayNeeds, undefined, strayFloor) : undefined}
               data-nav-add-apps=""
               className="cc-link flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
             >
@@ -641,10 +639,6 @@ function MobileBottomNavInner({
                 <AppIcon name="Plus" size={15} />
               </span>
               <span className="text-sm">Add apps</span>
-              {(() => {
-                const meta = rowMeta(undefined, strayNeeds, strayFloor);
-                return meta?.kind === "needs" ? <NeedsCount text={meta.text} /> : null;
-              })()}
             </button>
           </div>
         )}

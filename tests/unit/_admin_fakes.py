@@ -55,12 +55,28 @@ _PERSON_ADDR = re.compile(r"lower\((\w+)\) = :(email|actor)")
 _PERSON_ADDR_CS = re.compile(r"(?<!lower\()\b(\w+) = :(email|actor)")
 #: ``<col> = CAST(:uid AS uuid)``
 _PERSON_UID = re.compile(r"(\w+) = CAST\(:uid AS uuid\)")
-#: ``visibility = 'private'`` / ``visibility <> 'private'``
-_PERSON_VIS = re.compile(r"visibility (=|<>) 'private'")
+#: ``visibility = 'private'`` / ``visibility <> 'private'``, and the same split
+#: on ``scope_kind`` (``package_install``, WS-PKG PKG-4). The column comes from
+#: the statement, so a clause that drops the split changes the answer.
+_PERSON_VIS = re.compile(r"\b(visibility|scope_kind) (=|<>) 'private'")
 #: ``<col> IS NULL`` / ``<col> IS NOT NULL`` — how the GTD store's LOCAL half
 #: is told from its SYNCED half (`account_id`). Read from the statement like
 #: everything else here, so a clause that drops the filter changes the answer.
 _PERSON_NULL = re.compile(r"(\w+) IS (NOT )?NULL")
+#: ``[NOT] EXISTS (SELECT 1 FROM <t> AS <a> WHERE <tests>)``: does a row of
+#: ``<t>`` pass each test against this row? ``members._OTHERS_SEE_THE_APP``
+#: (WS-PKG PKG-4 and PKG-5b, ``package_host/sharing.py``) asks it of
+#: ``app_grants``. :meth:`_FakeDB._others_test` reads each test from the
+#: statement, so a clause that drops a test changes the answer. A test that
+#: the fake cannot read is an error. ``EXISTS(`` with no space or with more
+#: space is the same SQL, so the pattern and :data:`_ANY_EXISTS` take any
+#: spacing.
+_PERSON_OTHERS = re.compile(
+    r"(NOT\s+)?\bEXISTS\s*\(SELECT 1 FROM (\w+) AS (\w+) WHERE ((?:[^()]|\([^()]*\))*)\)")
+#: Each ``EXISTS (`` of a statement, at any spacing. When this count and the
+#: count of :data:`_PERSON_OTHERS` differ, the fake cannot read a subquery,
+#: and that is an error, never a pass.
+_ANY_EXISTS = re.compile(r"\bEXISTS\s*\(", re.I)
 
 
 class _Scalars:
@@ -332,14 +348,44 @@ class _FakeDB:
             raise AssertionError(f"unscoped person clause in fake: {s}")
         vis = _PERSON_VIS.search(s)
         if vis:
-            wants_private = vis.group(1) == "="
+            vis_col, wants_private = vis.group(1), vis.group(2) == "="
             found = [
-                r for r in found if (r.get("visibility", "private") == "private") is wants_private
+                r for r in found if (r.get(vis_col, "private") == "private") is wants_private
             ]
         for nul in _PERSON_NULL.finditer(s):
             col, negated = nul.group(1), bool(nul.group(2))
             found = [r for r in found if (r.get(col) is not None) is negated]
+        others = list(_PERSON_OTHERS.finditer(s))
+        if len(_ANY_EXISTS.findall(s)) != len(others):
+            raise AssertionError(f"unreadable EXISTS clause in fake: {s}")
+        for ex in others:
+            negated, inner = bool(ex.group(1)), self.rows.get(ex.group(2), [])
+            passes = self._others_test(ex.group(3), table, ex.group(4))
+            found = [r for r in found if any(passes(g, r) for g in inner) is not negated]
         return found
+
+    @staticmethod
+    def _others_test(alias: str, table: str, body: str) -> Any:
+        """One test of a row ``g`` of the subquery against a row ``r`` of
+        *table*, read from the conjuncts of *body*. Postgres compares text
+        byte for byte, and so does this. A conjunct that this cannot read is
+        an error, never a pass."""
+        a, o = re.escape(alias), re.escape(table)
+        tests: list[Any] = []
+        for part in body.split(" AND "):
+            if m := re.fullmatch(rf"{a}\.(\w+) = {o}\.(\w+)", part):
+                tests.append(lambda g, r, k=m[1], c=m[2]: g.get(k) == r.get(c))
+            elif m := re.fullmatch(rf"strpos\({a}\.(\w+), '@'\) > 0", part):
+                tests.append(lambda g, r, k=m[1]: "@" in str(g.get(k, "")))
+            elif m := re.fullmatch(rf"lower\({a}\.(\w+)\) <> {o}\.(\w+)", part):
+                tests.append(
+                    lambda g, r, k=m[1], c=m[2]: str(g.get(k, "")).lower() != r.get(c))
+            elif m := re.fullmatch(rf"lower\({a}\.(\w+)\) = {o}\.(\w+)", part):
+                tests.append(
+                    lambda g, r, k=m[1], c=m[2]: str(g.get(k, "")).lower() == r.get(c))
+            else:
+                raise AssertionError(f"unreadable EXISTS test in fake: {part}")
+        return lambda g, r: all(t(g, r) for t in tests)
 
     def _person_delete(self, table: str, matched: list[dict[str, Any]]) -> None:
         if table == "app_user":
