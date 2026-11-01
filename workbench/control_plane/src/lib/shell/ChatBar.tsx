@@ -28,7 +28,7 @@
  * drawer opens the modal (`AppShell.tsx`).
  */
 
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSession } from "next-auth/react";
 
@@ -36,9 +36,10 @@ import { useAccess } from "@/components/AccessProvider";
 import Icon from "@/components/Icon";
 import { useRunActivity } from "@/hooks/useActiveSessions";
 import { shouldPollWorkspace } from "@/lib/access";
-import { openActivity } from "./ActivityControl";
 import { visibleSections } from "@/lib/nav";
 
+import { closeActivity, openActivity, useActivityOpen } from "./ActivityControl";
+import { AskSheet, useAskSheetHost } from "./AskSheet";
 import { ChatNudge } from "./ChatNudge";
 import { ResultList, resultOptionId, useBarResults } from "./CommandBar";
 import { heldPanes } from "./registry";
@@ -157,19 +158,29 @@ function AskBar() {
   const st = useAssistant();
   const pathname = usePathname();
   if (st.open || pathname?.startsWith("/chat")) return null;
+  return <AskBarFoot />;
+}
+
+/** The mounted bar: it holds the runs list (`AskSheet.tsx`). */
+function AskBarFoot() {
+  const barRef = useRef<HTMLDivElement>(null);
+  const sheet = useActivityOpen();
+  useAskSheetHost(barRef, sheet);
   return (
     <div data-ask-bar="" className="pointer-events-none absolute inset-x-0 bottom-5 z-30 flex justify-center px-6">
-      <div className="pointer-events-auto w-full max-w-[36rem]">
-        <AskField placement="foot" />
+      <div ref={barRef} className="pointer-events-auto w-full max-w-[36rem]">
+        <AskField placement="foot" sheet={sheet} />
       </div>
     </div>
   );
 }
 
 /** The one field: in the shell bar, or at the foot of the page (`placement`). */
-export function AskField({ placement = "bar" }: { placement?: "bar" | "foot" } = {}) {
+export function AskField({
+  placement = "bar",
+  sheet = false,
+}: { placement?: "bar" | "foot"; sheet?: boolean } = {}) {
   const foot = placement === "foot";
-  const router = useRouter();
   // At the foot the bar shows live runs, only while there are some: the AI's
   // work in progress, where the member talks to the AI (owner, 2026-11-01).
   const { access: runAccess, loading: runLoading } = useAccess();
@@ -273,7 +284,7 @@ export function AskField({ placement = "bar" }: { placement?: "bar" | "foot" } =
     >
       {/* At the foot: two starts for this app, while the field has focus and
           no words. A start is a whole question, and a click asks it. */}
-      {foot && focused && !text ? (
+      {foot && focused && !text && !sheet ? (
         <div data-ask-starts="" className="absolute inset-x-0 bottom-full mb-2 flex flex-wrap justify-center gap-1.5">
           {(ASK_STARTS[here?.href ?? ""] ?? ASK_STARTS_ANY).map((s) => (
             <button
@@ -294,15 +305,30 @@ export function AskField({ placement = "bar" }: { placement?: "bar" | "foot" } =
       {/* Glass only (GL-10b): the colour edge round the field, at rest. A
           SIBLING of the field, never its ancestor, so the blur holds. */}
       <div className="relative">
-      <div aria-hidden data-testid="ask-glow" data-glow="rest" data-glow-focus={focused ? "true" : "false"} className="hidden glass:block glass:glass-working-glow absolute -inset-1 rounded-full">
+      <div aria-hidden data-testid="ask-glow" data-glow="rest" data-glow-focus={focused ? "true" : "false"} className={`hidden glass:block glass:glass-working-glow absolute -inset-1 ${foot ? "rounded-[24px]" : "rounded-full"}`}>
         <div className="glass:glass-glow-ring" />
       </div>
+      {/* At the foot the bar is a surface that grows: the sheet rises above
+          the field (`AskSheet.tsx`), and the colour edge runs round both. Its
+          corner stays 22 px, the capsule's own, so it grows and never morphs. */}
+      <div
+        data-ask-surface={foot ? "" : undefined}
+        data-sheet={foot && sheet ? "runs" : undefined}
+        className={
+          foot
+            ? `relative z-10 flex flex-col overflow-hidden rounded-[22px] border border-border bg-card shadow-lg transition-[background-color] duration-300 glass:border-transparent glass:glass-spectrum-edge ${
+                sheet ? "glass:glass-menu" : "glass:glass-chrome"
+              }`
+            : "contents"
+        }
+      >
+      {foot ? <AskSheet open={sheet} /> : null}
       <div
         onFocusCapture={() => setFocused(true)}
         onBlurCapture={() => setFocused(false)}
         className={
           foot
-            ? "flex h-11 items-center gap-2 rounded-full border border-border bg-card pl-4 pr-2 shadow-lg tech-transition glass:relative glass:z-10 glass:border-transparent glass:glass-chrome glass:focus-within:border-transparent glass:glass-spectrum-edge"
+            ? "flex h-11 shrink-0 items-center gap-2 pl-4 pr-2"
             : "flex h-8 items-center gap-2 rounded-lg border border-border bg-background px-3 tech-transition focus-within:border-primary/50 hover:border-primary/40 glass:relative glass:z-10 glass:rounded-full glass:border-transparent glass:bg-transparent glass:glass-chrome glass:focus-within:border-transparent glass:glass-spectrum-edge"
         }
       >
@@ -317,6 +343,8 @@ export function AskField({ placement = "bar" }: { placement?: "bar" | "foot" } =
             setText(e.target.value);
             setActiveKey(null);
             setShowing(e.target.value.trim().length > 0);
+            // Words mean ask or search: the sheet folds away for the results.
+            if (sheet && e.target.value.trim()) closeActivity();
           }}
           onKeyDown={onKeyDown}
           onBlur={() => {
@@ -346,31 +374,41 @@ export function AskField({ placement = "bar" }: { placement?: "bar" | "foot" } =
           <button
             type="button"
             data-ask-running=""
+            aria-expanded={sheet}
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => openActivity()}
-            title="See the runs"
-            className="flex shrink-0 items-center gap-1.5 rounded-full bg-success/15 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-success glass:text-caption"
+            onClick={() => (sheet ? closeActivity() : openActivity())}
+            title={sheet ? "Hide the runs" : "See the runs"}
+            className={`flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold tabular-nums tech-transition glass:text-caption ${
+              sheet ? "bg-success text-success-foreground" : "bg-success/15 text-success hover:bg-success/25"
+            }`}
           >
-            <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-success motion-safe:animate-pulse" />
+            <span aria-hidden className={`h-1.5 w-1.5 rounded-full motion-safe:animate-pulse ${sheet ? "bg-success-foreground" : "bg-success"}`} />
             {running} running
           </button>
         ) : null}
         {foot ? (
+          // The side panel alone, with no words (owner, 2026-11-01: "what if
+          // I want to open only the sidebar?"). Its own header has the full
+          // view, and the sidebar's Chat row opens the full chat.
           <button
             type="button"
-            aria-label="Open the full chat"
-            title="Full chat"
+            aria-label="Open the chat beside the page"
+            title={`Chat beside the page (${keyLabel.replace("K", "J")})`}
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => router.push("/chat")}
+            onClick={() => {
+              closeActivity();
+              openAssistant({ mode: "dock" });
+            }}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
           >
-            <Icon name="Maximize2" size={14} />
+            <Icon name="PanelRight" size={15} />
           </button>
         ) : (
           <kbd className="shrink-0 rounded border border-border px-1.5 py-0.5 font-sans text-[10px] text-muted-foreground">
             {keyLabel}
           </kbd>
         )}
+      </div>
       </div>
       </div>
 
