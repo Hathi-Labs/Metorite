@@ -10870,6 +10870,11 @@ holds no Gmail mailbox, and D-EM-35 keeps the Gmail connect hidden on a box with
 > off. The sweep, the deep sync, the import and the seed do not change: a rate limit there still
 > fails the sync. The amendment binds when EM-G4b-f1 merges.
 
+> **Item 9 amended again (2026-11-01, EM-G4b-f3, §12.3.12.9).** A rate limit in a first import, a
+> sweep or the seed stops the cycle and shows no error, while the cycles read mail. After
+> `RATE_LIMIT_MAX_MISSES` cycles in a row that read nothing, it fails the sync again. A deep sync
+> keeps its error.
+
 **The rules of the helper (the dispatch of 2026-10-05).**
 
 - **One seam.** The helper sits at the client seam, `_get_client` in `gmail.py`, beside
@@ -11045,6 +11050,10 @@ most (§12.3.5.2).
 
 **Status.** ✅ MERGED #632 (2026-10-05). The as-built notes and
 the mutation table are at the end of this section.
+
+> **Later slices.** §12.3.12.8 (EM-G4b-f2) makes the first sweep go on after a rate limit.
+> §12.3.12.9 (EM-G4b-f3) paces each cycle under the quota of Google, and a rate limit stops being a
+> sync failure while the cycles read mail.
 
 **Gate.** 🟢 AGENT-SAFE · R8, because the cursor write is SQL. No migration:
 `email_accounts.last_history_id` holds the cursor.
@@ -13620,6 +13629,125 @@ fails.
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email src/app/api/email src/lib/theme
 cd ../.. && uv run pytest tests/unit/test_email_oauth_authorize_wiring.py -v
 ```
+
+#### 12.3.12.8 EM-G4b-f2 — the first sweep goes on after a rate limit
+
+**Status.** 🔨 Built on branch `mt-87552e7e-gmail-sweep`, not merged. Task 1223.
+
+**Gate.** 🟢 AGENT-SAFE. No migration and no flag. The sweep cursor is text in
+`email_accounts.last_history_id`.
+
+**Why.** Account `dd476e81` connected on 2026-10-30 and never stored a mail. The sweep with no
+cursor read each label as one unit. One rate limit lost the mail of each finished label, so the
+next cycle started again.
+
+**Decisions.**
+
+- **D-G4b-f2-1. The sweep reads INBOX, SENT and DRAFT first.** User labels come next, and SPAM and
+  TRASH come last. The member sees the mail that matters first.
+- **D-G4b-f2-2. A rate limit after a finished label keeps the finished labels.** The result sets
+  `rate_limited`, and the cursor is `{"v":1,"seed":...,"sweep":[[label,canon],...]}`.
+- **D-G4b-f2-3. A sweep cursor resumes at the label that the limit cut.** That cycle reads no seed
+  and no label list. The last label writes the plain seed.
+- **D-G4b-f2-4. The `gmail.rate_limit_gave_up` line names the reason and the message of Google.**
+  The line holds at most 200 characters of the message, and it names no mail.
+
+**Acceptance.** `tests/unit/test_gmail_history_cursor.py`, section EM-G4b-f2, has the fences:
+
+1. The sweep reads the system labels before the user labels.
+2. A rate limit keeps the finished labels, and `gmail.sweep_partial` counts them.
+3. The next cycle sends `/messages` first, with no `/profile` and no `/history`.
+4. A resumed sweep that a limit cuts again keeps its seed.
+5. A cut sweep with no seed keeps its mail and writes no cursor.
+6. Text that is no sweep cursor reaches the history read unchanged.
+7. The give-up line ends with `reason=` and `message=`.
+8. Phase (d) writes the mail and the sweep cursor, and the sync log gets NULL for that cursor.
+9. A rate limit on the first label writes no cursor.
+
+#### 12.3.12.9 EM-G4b-f3 — each cycle stays under the quota of Google
+
+**Status.** 🔨 Built on branch `mt-87552e7e-gmail-sweep`, not merged. Task 1223.
+
+**Gate.** 🟢 AGENT-SAFE. No migration and no flag. This slice repairs a sync that fails for each
+new large mailbox, so it has no off state.
+
+**The quota.** The [usage limits of Google](https://developers.google.com/workspace/gmail/api/reference/quota)
+set **6,000 quota units for each user, each project and each minute**. The limit binds a project
+created on or after 2026-05-01, and `metorite-mail-511519` was created on 2026-10-14. A
+`messages.get` with `format=full`, `raw` or `html` costs 60 units, so one mailbox gets 100 full
+reads in a minute. Other reads cost 20 units. The page says nothing about verified apps, so Google
+verification does not raise this limit.
+
+**The evidence (production, 2026-11-01).** Account `3c8bbcad` stored exactly 100 mails in each cycle
+at 15:23, 17:24, 18:24 and 19:24 UTC. `IMPORT_BATCH_SIZE` is 100, and ten fetches run at once. The
+batch landed at 18:24:33, and the first 403 came at 18:24:37. The next batch failed, so the import
+lost that batch and backed off for an hour. The back-offs of 1 and 2 seconds could not clear a
+window of one minute.
+
+**Decisions.**
+
+- **D-G4b-f3-1. One meter for each mailbox, at the seam.** `GmailBearer` books each call on
+  `_book_units` and waits for its slot. No call site changes. The pace is 4,800 units a minute,
+  which is 80 full reads. The slots are evenly spaced, so a burst cannot fill a window.
+- **D-G4b-f3-2. Only a cycle waits.** `_sync_cycle` sets `provider.quota_mailbox`. The call of a
+  member builds no cycle, so it never waits behind an import. It spends the 1,200 units that the
+  pace leaves free.
+- **D-G4b-f3-3. The meter spans cycles.** One provider serves one cycle, and the quota does not
+  stop at a cycle. `_gmail_next_slot` is a dict in the process. One uvicorn worker runs acb-gateway,
+  as the mailbox locks of the scheduler assume.
+- **D-G4b-f3-4. One cycle reads at most `IMPORT_CYCLE_MAILS` (400).** Each mailbox has its own loop
+  task, so pacing holds up no other mailbox. A paced cycle does hold the mailbox lock, and a member
+  act waits at most `SYNC_LOCK_WAIT_SECS` (600) for it. 400 reads take 300 seconds. Then the cycle
+  stops, the recurring sweep runs, and the next cycle resumes at `import_reached_at`. The first
+  sweep stops at a label in the same way, unless it has no seed.
+- **D-G4b-f3-5. A deep sync does not stop at the share.** It has no resume point. It reads to the
+  end at the pace, and a rate limit keeps its error.
+- **D-G4b-f3-6. A rate limit only delays the mailbox while the cycles read mail.** Such a cycle
+  writes `sync_status = 'idle'`, so the banner of the Email app stays away. The loop comes back
+  after `SYNC_RESUME_SECS` (60), because one minute clears the window of Google. The doubling to
+  3,600 seconds stays for a real failure.
+- **D-G4b-f3-7. A refusal that does not end still shows.** After `RATE_LIMIT_MAX_MISSES` (10)
+  cycles in a row that read nothing, the rate limit is a failure again. The account shows the error,
+  and the loop backs off. A cycle that reads mail clears the count. The email sync log keeps the
+  error of each cycle.
+
+**Acceptance.** `tests/unit/test_gmail_rate_limits.py` and
+`tests/unit/test_gmail_history_cursor.py`, each in a section EM-G4b-f3, have the fences:
+
+1. Each call that a sync sends costs the units of the table of Google. The pace stays under 6,000.
+2. 200 paced reads leave no window of 60 seconds above the pace. Parallel fetches each book a slot,
+   a new provider waits for the slot of the last one, and two mailboxes have two meters.
+3. A cycle sets `quota_mailbox`. A call of a member never waits, also with a full meter.
+4. An import and a first sweep stop after the share of a cycle. One share takes less time than
+   `SYNC_LOCK_WAIT_SECS`. A sweep with no seed reads on.
+5. A rate limit in a first import shows no error, keeps the finished page and leaves the import open.
+6. A deep sync reads past the share, and a rate limit keeps its error.
+7. A refusal that reads nothing shows the error at the last miss. A cycle that reads mail clears
+   the count.
+8. The loop sleeps `SYNC_RESUME_SECS` after an early stop, and the doubling stays for a failure.
+
+**The mutations.** Each mutation broke the code, a fence went red, and the code came back:
+
+| Mutation | Fence that failed |
+|---|---|
+| See the pull request | The pull request lists each mutation with its result |
+
+**Known limits.**
+
+- A large import takes time. It reads about 66 mails a minute, which is about 4,000 an hour.
+- A deep sync holds the mailbox lock for its whole read. 10,000 mails take about 2 hours.
+- A call of a member and a hook of the new-mail pipeline do not book on the meter. They spend the
+  free 1,200 units, and a heavy burst of them can still get a 403.
+- A restart empties the meter. The first calls after it can get a 403, and the next cycle goes on.
+
+**Verify on production, after the release.**
+
+```bash
+ssh metorite "sudo -n journalctl -u acb-gateway --since '1 hour ago' --no-pager | grep -E 'gmail.rate_limit_gave_up|sync.import_paused|sync.rate_limit_miss'"
+```
+
+`sync.import_paused` lines and a rising message count show the fix. A `gmail.rate_limit_gave_up`
+line now names the reason of Google.
 
 #### 12.3.13 EM-G11 — Google verification readiness of the Gmail app (2026-10-14)
 

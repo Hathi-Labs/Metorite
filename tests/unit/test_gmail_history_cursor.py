@@ -522,11 +522,12 @@ async def test_a_rate_limit_on_a_later_page_keeps_the_finished_pages(
 
 
 @pytest.mark.parametrize("where", ["history", "fetch"])
-async def test_a_rate_limit_on_the_first_page_fails_the_sync(
+async def test_a_rate_limit_on_the_first_page_stops_the_cycle(
         fake: _Gmail, cycle: SimpleNamespace, where: str) -> None:
     """Acceptance 2 (D-G4b-f1-3). A rate limit on page 1, from
     ``history.list`` or from a fetch of page 1, raises. No page finished,
-    so the cycle fails and phase (d) writes no cursor."""
+    so phase (d) writes no cursor. The account shows no error, and the next
+    cycle comes soon (EM-G4b-f3)."""
     if where == "history":
         fake.history = [_limit_on(1, *_three_pages())]
     else:
@@ -538,8 +539,9 @@ async def test_a_rate_limit_on_the_first_page_fails_the_sync(
         await _provider().sync_messages(history_id="100")
     res = await cycle.run(_row(last_history_id="100"))
 
-    assert "error" in res, res
+    assert res == {"synced": 0, "resume_soon": True}
     assert cycle.phase_d() == []
+    assert _shows_no_error(cycle)
 
 
 async def test_each_page_is_fetched_before_the_next_page_is_read(
@@ -1041,6 +1043,9 @@ def cycle(monkeypatch: pytest.MonkeyPatch, fake: _Gmail) -> SimpleNamespace:
     monkeypatch.setattr(sched, "run_label_learn_hook", _noop)
     monkeypatch.setattr(sched, "_catch_up_misses", {})
     monkeypatch.setattr(sched, "_catch_up_abandoned", set())
+    monkeypatch.setattr(sched, "_rate_limit_misses", {})
+    monkeypatch.setattr(gmail_mod, "_gmail_next_slot", {})
+    providers: list[GmailProvider] = []
 
     async def _run(row: SimpleNamespace, **kw: Any) -> dict[str, Any]:
         @asynccontextmanager
@@ -1053,6 +1058,7 @@ def cycle(monkeypatch: pytest.MonkeyPatch, fake: _Gmail) -> SimpleNamespace:
             yield _Db()
 
         provider = _provider()
+        providers.append(provider)
         monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
         monkeypatch.setattr(sched, "tenant_session", _ts)
         return await sched._sync_account("acc-1", organization_id=ORG, **kw)
@@ -1060,7 +1066,8 @@ def cycle(monkeypatch: pytest.MonkeyPatch, fake: _Gmail) -> SimpleNamespace:
     def _phase_d() -> list[dict[str, Any]]:
         return [p for sql, p in log if "last_history_id = COALESCE" in sql]
 
-    return SimpleNamespace(run=_run, log=log, upserts=upserts, phase_d=_phase_d)
+    return SimpleNamespace(run=_run, log=log, upserts=upserts, phase_d=_phase_d,
+                           providers=providers)
 
 
 async def test_the_first_import_seeds_before_it_imports(
@@ -1156,20 +1163,21 @@ async def test_a_complete_reset_sweep_writes_the_seed(
                for r in caplog.records)
 
 
-async def test_a_spent_rate_limit_on_the_seed_fails_the_cycle_before_the_import(
+async def test_a_spent_rate_limit_on_the_seed_stops_the_cycle_before_the_import(
         fake: _Gmail, cycle: SimpleNamespace) -> None:
     """M25 (review round 1 F2). A 429 on each of the 3 tries of the seed is
-    no failed seed. The cycle fails before the import sends a request, and
-    phase (d) writes nothing (EM-G4a item 9)."""
+    no failed seed. The cycle stops before the import sends a request, and
+    phase (d) writes nothing (EM-G4a item 9). The next cycle comes soon
+    (EM-G4b-f3)."""
     fake.profile = [_refuse(429, "rateLimitExceeded")]
     fake.listing = _by_label(INBOX=["m1"])
 
     res = await cycle.run(_row(initial_sync_done=False, last_synced_at=None))
 
-    assert "error" in res, res
+    assert res == {"synced": 0, "resume_soon": True}
     assert [path for _, path, _ in fake.seen] == ["/profile"] * 3
     assert cycle.phase_d() == []
-    assert any("sync_status = 'error'" in sql for sql, _ in cycle.log)
+    assert _shows_no_error(cycle)
 
 
 async def test_a_failed_reseed_logs_the_mailbox_and_backs_the_loop_off(
@@ -1465,6 +1473,7 @@ async def test_a_cut_first_sweep_writes_its_mail_and_the_sweep_cursor(
 
     assert "error" not in first, first
     assert first.get("catch_up_incomplete") is True
+    assert first.get("resume_soon") is True
     assert json.loads(stored)["seed"] == "500"
     assert "error" not in second and "catch_up_incomplete" not in second, second
     assert [w["history_id"] for w in cycle.phase_d()] == [stored, "500"]
@@ -1474,14 +1483,244 @@ async def test_a_cut_first_sweep_writes_its_mail_and_the_sweep_cursor(
 
 async def test_a_rate_limit_on_the_first_label_writes_no_cursor(
         fake: _Gmail, cycle: SimpleNamespace) -> None:
-    """Acceptance 9. A rate limit before a finished label fails the cycle,
+    """Acceptance 9. A rate limit before a finished label stops the cycle,
     as a rate limit on the first history page does (D-G4b-f1-3)."""
     fake.listing = _limit_label("INBOX")
 
     res = await cycle.run(_row(), from_loop=True)
 
-    assert "error" in res, res
+    assert res == {"synced": 0, "resume_soon": True}
     assert cycle.phase_d() == []
+
+
+# ── EM-G4b-f3: a cycle stops early, and the next one goes on (§12.3.12.9) ───
+
+
+def _shows_no_error(cycle: SimpleNamespace) -> bool:
+    """True when the cycle wrote no ``error`` status to the account, and it
+    ended ``idle``. The banner of the Email app reads that status."""
+    sqls = [sql for sql, _ in cycle.log if "UPDATE email_accounts" in sql]
+    return (not any("sync_status = 'error'" in sql for sql in sqls)
+            and any("sync_status = 'idle'" in sql for sql in sqls))
+
+
+def _import_pages(*pages: list[str]) -> Answer:
+    """``messages.list`` of the import, with one page of ids for each token."""
+    def _answer(request: httpx.Request) -> httpx.Response:
+        token = request.url.params.get("pageToken")
+        index = int(token) if token else 0
+        body: dict[str, Any] = {"messages": [{"id": i} for i in pages[index]]}
+        if index + 1 < len(pages):
+            body["nextPageToken"] = str(index + 1)
+        return httpx.Response(200, json=body)
+    return _answer
+
+
+REFUSED = _refuse(429, "rateLimitExceeded")
+FIRST_IMPORT = {"initial_sync_done": False, "last_synced_at": None}
+
+
+def _import_done(cycle: SimpleNamespace) -> bool:
+    return any("import_phase = 'done'" in sql for sql, _ in cycle.log)
+
+
+async def test_a_cycle_paces_its_calls_and_a_bare_provider_does_not(
+        fake: _Gmail, cycle: SimpleNamespace) -> None:
+    """A cycle of the scheduler names the mailbox, so its calls wait on the
+    meter. A provider that a member's call builds names none (acceptance 3)."""
+    await cycle.run(_row(last_history_id="100"))
+
+    assert cycle.providers[0].quota_mailbox == "acc-1"
+    assert _provider().quota_mailbox is None
+
+
+async def test_a_rate_limit_in_a_first_import_shows_no_error_while_it_reads(
+        fake: _Gmail, cycle: SimpleNamespace) -> None:
+    """Acceptance 5. This is the case of account 3c8bbcad: the page that a
+    limit cut is lost, and the finished page stays. The cycle shows no error,
+    the import stays open, and the watermark stays NULL."""
+    fake.listing = _import_pages(["m1"], ["m2"])
+    _serve(fake, "m1")
+    fake.message("m2", REFUSED)
+
+    res = await cycle.run(_row(**FIRST_IMPORT), from_loop=True)
+
+    assert "error" not in res, res
+    assert res["resume_soon"] is True
+    assert [m.provider_message_id for m in cycle.upserts] == ["m1"]
+    assert _shows_no_error(cycle)
+    assert not _import_done(cycle)
+    assert [p["keep_watermark"] for p in cycle.phase_d()] == [True]
+
+
+async def test_an_import_stops_after_its_share_of_a_cycle(
+        fake: _Gmail, cycle: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture) -> None:
+    """Acceptance 4. The import gives the mailbox lock back after
+    ``IMPORT_CYCLE_MAILS``, so a member act waits less than
+    ``SYNC_LOCK_WAIT_SECS``. The recurring sweep still runs, the import stays
+    open, and the next cycle comes soon."""
+    monkeypatch.setattr(GmailProvider, "IMPORT_CYCLE_MAILS", 2)
+    fake.listing = _import_pages(["m1", "m2"], ["m3"])
+    _serve(fake, "m1", "m2")
+
+    with caplog.at_level(logging.INFO, logger=SCHED_LOGGER):
+        res = await cycle.run(_row(**FIRST_IMPORT), from_loop=True)
+
+    assert res["resume_soon"] is True
+    assert "error" not in res, res
+    assert fake.requests("/messages/m3") == []
+    assert fake.requests("/history"), "the sweep did not run"
+    assert not _import_done(cycle)
+    assert [p["keep_watermark"] for p in cycle.phase_d()] == [True]
+    assert "sync.import_paused account=acc-1 read=2" in [
+        r.getMessage() for r in caplog.records]
+
+
+async def test_the_share_of_a_cycle_is_longer_than_no_lock_wait() -> None:
+    """Acceptance 4. At the paced rate one share takes less time than a
+    member act waits for the mailbox lock."""
+    per_read = 60 * 60 / gmail_mod.GMAIL_PACED_UNITS_PER_MINUTE
+    assert GmailProvider.IMPORT_CYCLE_MAILS * per_read < sched.SYNC_LOCK_WAIT_SECS
+
+
+async def test_a_deep_sync_reads_past_the_share_and_keeps_its_error(
+        fake: _Gmail, cycle: SimpleNamespace, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Acceptance 6. A deep sync of a member act has no resume point. It
+    reads past the share, and a rate limit keeps its error."""
+    monkeypatch.setattr(GmailProvider, "IMPORT_CYCLE_MAILS", 1)
+    fake.listing = _import_pages(["m1"], ["m2"], ["m3"])
+    _serve(fake, "m1", "m2")
+    fake.message("m3", REFUSED)
+
+    res = await cycle.run(_row(last_history_id="100"), deep=True)
+
+    assert "Gmail rate limit" in res["error"]
+    assert "resume_soon" not in res
+    assert [m.provider_message_id for m in cycle.upserts] == ["m1", "m2"]
+    assert any("sync_status = 'error'" in sql for sql, _ in cycle.log)
+
+
+async def test_a_refusal_that_reads_nothing_shows_the_error_at_the_last_miss(
+        fake: _Gmail, cycle: SimpleNamespace) -> None:
+    """Acceptance 7. A long refusal cannot stay out of sight: the last miss
+    and each cycle after it are failures, so the loop backs off."""
+    fake.history = [REFUSED]
+
+    first = [await cycle.run(_row(last_history_id="100"))
+             for _ in range(sched.RATE_LIMIT_MAX_MISSES - 1)]
+    assert all(r == {"synced": 0, "resume_soon": True} for r in first)
+    assert _shows_no_error(cycle)
+
+    last = await cycle.run(_row(last_history_id="100"))
+    after = await cycle.run(_row(last_history_id="100"))
+
+    assert "error" in last and "error" in after
+    assert any("sync_status = 'error'" in sql for sql, _ in cycle.log)
+
+
+@pytest.mark.parametrize("partial", [False, True])
+async def test_a_cycle_that_reads_mail_clears_the_count(
+        fake: _Gmail, cycle: SimpleNamespace, partial: bool) -> None:
+    """Acceptance 7. A clean cycle clears the misses. So does a cycle that a
+    limit cut after it read mail, because the mailbox moves."""
+    sched._rate_limit_misses[sched._lock_key("acc-1")] = 9
+    if partial:
+        fake.history = [_limit_on(2, *_three_pages())]
+        _serve(fake, "m1", "m1b")
+    else:
+        fake.history = [_ok({"historyId": "510"})]
+
+    res = await cycle.run(_row(last_history_id="100"))
+
+    assert "error" not in res, res
+    assert res.get("resume_soon") is (True if partial else None)
+    assert sched._rate_limit_misses == {}
+
+
+def _loop_sleeps(monkeypatch: pytest.MonkeyPatch,
+                 results: list[dict[str, Any]]) -> Callable[[], Any]:
+    """Run the loop over *results*, and return the sleep after each one."""
+    class _Stop(BaseException):
+        pass
+
+    sleeps: list[float] = []
+    queue = list(results)
+
+    async def _sync(account_id: str, **_kw: Any) -> dict[str, Any]:
+        return queue.pop(0)
+
+    async def _sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if not queue:
+            raise _Stop
+
+    async def _hook(*_a: Any, **_k: Any) -> None:
+        return None
+
+    async def _interval(*_a: Any) -> int:
+        return 300
+
+    monkeypatch.setattr(sched, "_sync_account", _sync)
+    monkeypatch.setattr(sched, "run_hook", _hook)
+    monkeypatch.setattr(sched, "_get_account_sync_interval", _interval)
+    monkeypatch.setattr(sched.asyncio, "sleep", _sleep)
+
+    async def _run() -> list[float]:
+        with pytest.raises(_Stop):
+            await sched._account_sync_loop("acc-1", 300, organization_id=ORG)
+        return sleeps
+    return _run
+
+
+async def test_the_loop_comes_back_soon_after_an_early_stop(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Acceptance 8. Before this fix a limit doubled the sleep to the cap of
+    an hour, and an import of a large mailbox took days. The doubling stays
+    for a real failure, and an early stop resets it."""
+    soon = sched.SYNC_RESUME_SECS
+    run = _loop_sleeps(monkeypatch, [
+        {"synced": 100, "resume_soon": True},
+        {"synced": 3, "resume_soon": True, "catch_up_incomplete": True},
+        {"error": "refused"},
+        {"error": "refused"},
+        {"synced": 0, "resume_soon": True},
+        {"synced": 0},
+    ])
+
+    assert await run() == [soon, soon, 600, 1200, soon, 300]
+
+
+async def test_a_first_sweep_gives_the_lock_back_after_its_share(
+        fake: _Gmail, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Acceptance 4. The sweep stops at a label after its share, and the
+    cursor holds the labels left. Each label read so far stays."""
+    monkeypatch.setattr(GmailProvider, "IMPORT_CYCLE_MAILS", 2)
+    fake.listing = _by_label(INBOX=["m1", "m2"], SENT=["m3"])
+    _serve(fake, "m1", "m2", "m3")
+
+    result = await _provider().sync_messages(history_id=None)
+
+    assert _swept(fake) == ["INBOX"]
+    assert _ids(result) == ["m1", "m2"]
+    assert result.rate_limited is True
+    assert json.loads(result.new_history_id)["sweep"][0] == ["SENT", None]
+
+
+async def test_a_first_sweep_with_no_seed_reads_past_its_share(
+        fake: _Gmail, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Acceptance 4. A cursor cannot hold the labels left with no seed, so a
+    stop would read the same labels in each cycle."""
+    monkeypatch.setattr(GmailProvider, "IMPORT_CYCLE_MAILS", 1)
+    fake.profile = [_refuse(500)]
+    fake.listing = _by_label(INBOX=["m1"], SENT=["m2"])
+    _serve(fake, "m1", "m2")
+
+    result = await _provider().sync_messages(history_id=None)
+
+    assert result.rate_limited is False
+    assert _ids(result) == ["m1", "m2"]
 
 
 # ── R8: the cursor on a real database ───────────────────────────────────────

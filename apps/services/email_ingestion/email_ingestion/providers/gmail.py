@@ -16,6 +16,7 @@ import mimetypes
 import random
 import re
 import secrets
+import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timezone
 from email import encoders, message_from_bytes
@@ -336,10 +337,36 @@ _REPEATABLE_METHODS = frozenset({"GET", "HEAD", "PUT", "DELETE"})
 #: The POST actions that set a state, so a second try changes nothing.
 _REPEATABLE_POST_ACTIONS = ("/modify", "/batchModify", "/trash", "/untrash")
 
+# -- The quota of a mailbox (WS-17 EM-G4b-f3) ---------------------------------
+# ``email_app_master_plan.md`` §12.3.12.9. Fence: test_gmail_rate_limits.py.
+# The numbers come from the usage limits of Google:
+# https://developers.google.com/workspace/gmail/api/reference/quota
+
+#: The limit of one mailbox in one project, in quota units for each minute.
+#: A project created after 2026-05-01 gets this limit.
+GMAIL_USER_UNITS_PER_MINUTE = 6000
+#: The units that a sync cycle spends in a minute, which is 80 full reads. The
+#: other units stay free for the member, who opens mail and sends with no wait.
+GMAIL_PACED_UNITS_PER_MINUTE = GMAIL_USER_UNITS_PER_MINUTE * 4 // 5
+#: The formats that make a read cost ``_GMAIL_FULL_READ_UNITS``.
+_GMAIL_FULL_FORMATS = frozenset({"full", "raw", "html"})
+_GMAIL_FULL_READ_UNITS = 60
+_GMAIL_READ_UNITS = 20
+_GMAIL_SEND_UNITS = 100
+_GMAIL_LIST_UNITS = 5
+_GMAIL_HISTORY_UNITS = 2
+#: ``getProfile`` and ``labels.list``.
+_GMAIL_SMALL_READ_UNITS = 1
+#: The time at which the next paced call of each mailbox can go. One uvicorn
+#: worker runs acb-gateway, so a dict in this process sees each cycle, as the
+#: mailbox locks of the scheduler do. A second process would need Redis.
+_gmail_next_slot: dict[str, float] = {}
+
 
 class GmailRateLimited(httpx.HTTPStatusError, ProviderRateLimited):
     """Gmail refused a request for a rate limit, and the helper sends it no
-    more (EM-G4a item 9). A sync that gets it fails, and the loop backs off.
+    more (EM-G4a item 9). The scheduler stops the cycle, and the next cycle
+    comes soon (EM-G4b-f3).
 
     It is an ``httpx.HTTPStatusError``, so each caller that handles an HTTP
     failure handles it too. It is a ``ProviderRateLimited``, so the
@@ -435,6 +462,45 @@ def _raise_rate_limit(exc: BaseException) -> None:
 async def _wait(seconds: float) -> None:
     """Wait for a rate limit. The tests replace it, so no test sleeps."""
     await asyncio.sleep(seconds)
+
+
+def _clock() -> float:
+    """The time of the meter. The tests replace it, with ``_wait``."""
+    return time.monotonic()
+
+
+def _quota_units(request: httpx.Request) -> int:
+    """The quota units of one Gmail call, from the table of Google.
+
+    A read with no ``format`` is a full read, because Google sets ``full``
+    by default. A call with no line here is a write of 5 units."""
+    parts = request.url.path.split("/users/me/", 1)[-1].split("/")
+    if request.method != "GET":
+        return _GMAIL_SEND_UNITS if parts[-1] == "send" else _GMAIL_LIST_UNITS
+    if parts[0] in ("profile", "labels"):
+        return _GMAIL_SMALL_READ_UNITS
+    if parts[0] == "history":
+        return _GMAIL_HISTORY_UNITS
+    if len(parts) == 1:
+        return _GMAIL_LIST_UNITS
+    if "attachments" in parts:
+        return _GMAIL_READ_UNITS
+    fmt = request.url.params.get("format", "full")
+    return (_GMAIL_FULL_READ_UNITS if fmt in _GMAIL_FULL_FORMATS
+            else _GMAIL_READ_UNITS)
+
+
+def _book_units(mailbox: str, units: int) -> float:
+    """Book *units* on the meter of *mailbox*, and return the seconds to wait.
+
+    The calls go one after the other, evenly spaced at
+    ``GMAIL_PACED_UNITS_PER_MINUTE``, so a burst cannot fill a window. The
+    function has no await, so the parallel fetches of a page each get their
+    own slot."""
+    now = _clock()
+    slot = max(now, _gmail_next_slot.get(mailbox, now))
+    _gmail_next_slot[mailbox] = slot + units * 60 / GMAIL_PACED_UNITS_PER_MINUTE
+    return slot - now
 
 
 # ── The history cursor (WS-17 EM-G4b, spec §12.3.5.2) ─────────────────────────
@@ -761,6 +827,9 @@ class GmailBearer(RefreshingBearer):
       its answer. So a send never goes out twice.
     * Each try runs the flow of :class:`RefreshingBearer`, so a 401 still
       refreshes once. A rate limit and a 401 in one call cost one refresh.
+    * A provider with a ``quota_mailbox`` waits for its slot before each try
+      (EM-G4b-f3). Only a cycle of the scheduler sets it, so only the sync
+      waits. The call of a member never waits behind an import.
     """
 
     def __init__(self, provider: Any) -> None:
@@ -785,6 +854,11 @@ class GmailBearer(RefreshingBearer):
         tries = 0
         while True:
             tries += 1
+            mailbox = getattr(self._provider, "quota_mailbox", None)
+            if mailbox is not None:
+                slot_wait = _book_units(mailbox, _quota_units(request))
+                if slot_wait > 0:
+                    await _wait(slot_wait)
             # One try: the flow of RefreshingBearer, with its one refresh.
             flow = super().async_auth_flow(request)
             try:
@@ -1159,6 +1233,9 @@ class GmailProvider(BaseEmailProvider):
         #: ``IMPORT_MAX_PAGES``. The scheduler then runs no reconcile, because
         #: the mail below the cap stays unread (WS-17 EM-G5b item 12, C5).
         self.import_capped = False
+        #: The mailbox whose meter this instance waits on (EM-G4b-f3). The
+        #: scheduler sets it for a cycle. It stays None for a member's call.
+        self.quota_mailbox: str | None = None
 
     def credentials_dirty(self) -> bool:
         return self._creds_dirty
@@ -2385,6 +2462,10 @@ class GmailProvider(BaseEmailProvider):
     #: list that never ends. At the cap the import ends and logs
     #: ``gmail.import_capped``. The model is ``OutlookProvider.IMPORT_MAX_PAGES``.
     IMPORT_MAX_PAGES = 5000
+    #: The mail that one cycle reads before it gives the mailbox lock back
+    #: (EM-G4b-f3). At the paced rate this is about 5 minutes, which is less
+    #: than ``SYNC_LOCK_WAIT_SECS``. The next cycle goes on from there.
+    IMPORT_CYCLE_MAILS = 400
     #: The import reads all mail back to the floor, so the deep sync of a
     #: member act reconciles the deletions from it (WS-17 EM-G5b item 7).
     #: ``message_gone`` confirms each candidate by its id before a trash.
@@ -2768,7 +2849,11 @@ class GmailProvider(BaseEmailProvider):
         *resume*, and reads no seed and no label list. Before that fix, the
         sweep kept nothing, and a mailbox whose sweep took more than one
         rate-limit window never synced. A rate limit before a finished label
-        raises, so the cycle fails and the stored cursor stays."""
+        raises, so the cycle fails and the stored cursor stays.
+
+        The sweep also ends in this way after ``IMPORT_CYCLE_MAILS`` mails
+        (EM-G4b-f3), so a paced sweep gives the mailbox lock back. With no
+        seed it reads on, because a cursor could not hold the labels left."""
         if resume is None:
             seed = await self._try_seed()
             plan = await self._sweep_plan()
@@ -2788,25 +2873,37 @@ class GmailProvider(BaseEmailProvider):
             except GmailRateLimited:
                 if not done:
                     raise
-                left = plan[done:]
-                logger.warning("gmail.sweep_partial labels=%d left=%d",
-                               done, len(left))
-                return SyncResult(
-                    messages_synced=len(messages),
-                    messages=messages,
-                    new_history_id=_format_sweep(seed, left) if seed else None,
-                    errors=self.fetch_failures[first_failure:],
-                    rate_limited=True,
-                )
+                return self._cut_sweep(messages, seed, plan, done, first_failure)
             except Exception:
                 continue
             messages.extend(found)
+            finished = done + 1
+            if (seed and finished < len(plan)
+                    and len(messages) >= self.IMPORT_CYCLE_MAILS):
+                return self._cut_sweep(
+                    messages, seed, plan, finished, first_failure)
 
         return SyncResult(
             messages_synced=len(messages),
             messages=messages,
             new_history_id=seed,
             errors=self.fetch_failures[first_failure:],
+        )
+
+    def _cut_sweep(
+        self, messages: list[EmailMessage], seed: str | None,
+        plan: list[SweepLabel], finished: int, first_failure: int,
+    ) -> SyncResult:
+        """The result of a first sweep that stops after *finished* labels."""
+        left = plan[finished:]
+        logger.warning("gmail.sweep_partial labels=%d left=%d",
+                       finished, len(left))
+        return SyncResult(
+            messages_synced=len(messages),
+            messages=messages,
+            new_history_id=_format_sweep(seed, left) if seed else None,
+            errors=self.fetch_failures[first_failure:],
+            rate_limited=True,
         )
 
     async def _sweep_plan(self) -> list[SweepLabel]:

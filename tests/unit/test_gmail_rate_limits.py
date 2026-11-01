@@ -40,6 +40,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
+from itertools import pairwise
 from typing import Any
 
 import email_ingestion.providers.gmail as gmail_mod
@@ -50,6 +51,8 @@ from email_ingestion.providers.base import RefreshingBearer
 from email_ingestion.providers.gmail import (
     GMAIL_MAX_TRIES,
     GMAIL_MAX_WAIT_SECS,
+    GMAIL_PACED_UNITS_PER_MINUTE,
+    GMAIL_USER_UNITS_PER_MINUTE,
     GMAIL_WAIT_BUDGET_SECS,
     GmailBearer,
     GmailProvider,
@@ -92,6 +95,9 @@ class _Gmail:
         self.n = 1
         #: Each wait that ``gmail._wait`` was asked for, in seconds.
         self.waits: list[float] = []
+        #: The time of the fake clock, and the time of each entry of ``seen``.
+        self.now = 0.0
+        self.sent_at: list[float] = []
 
     def on(self, method: str, path: str, *answers: Answer) -> None:
         self.scripts[(method, API + path)] = list(answers)
@@ -118,6 +124,7 @@ class _Gmail:
             path = API + path.removeprefix(UPLOAD)
             self.uploads.append((request.method, path))
         self.seen.append((request.method, path, bearer))
+        self.sent_at.append(self.now)
         if bearer not in self.valid:
             return httpx.Response(401, json={"error": {"code": 401}})
         answers = self.scripts.get((request.method, path))
@@ -701,3 +708,146 @@ async def test_a_batch_modify_5xx_still_falls_back_per_message(
     assert fake.calls("POST", BATCH) == 2
     assert applied == [ids[1000:]]
     assert failed == []
+
+
+# ── EM-G4b-f3: the meter of a mailbox (§12.3.12.9) ──────────────────────────
+
+
+@pytest.fixture()
+def clock(fake: _Gmail, monkeypatch: pytest.MonkeyPatch) -> _Gmail:
+    """A clock that only ``gmail._wait`` moves, and an empty meter."""
+    async def _advance(seconds: float) -> None:
+        fake.waits.append(seconds)
+        fake.now += seconds
+
+    monkeypatch.setattr(gmail_mod, "_wait", _advance)
+    monkeypatch.setattr(gmail_mod, "_clock", lambda: fake.now)
+    monkeypatch.setattr(gmail_mod, "_gmail_next_slot", {})
+    return fake
+
+
+def _read_times(fake: _Gmail) -> list[float]:
+    """The time of each read of a message, in order."""
+    return [at for (_, path, _), at in zip(fake.seen, fake.sent_at, strict=True)
+            if "/messages/m" in path]
+
+
+def _paced(mailbox: str = "box-1") -> GmailProvider:
+    provider = _provider()
+    provider.quota_mailbox = mailbox
+    return provider
+
+
+def _call(method: str, path: str, **params: str) -> httpx.Request:
+    return httpx.Request(method, f"https://gmail.googleapis.com{path}",
+                         params=params)
+
+
+@pytest.mark.parametrize(("method", "path", "params", "units"), [
+    ("GET", f"{API}/messages/m1", {"format": "full"}, 60),
+    ("GET", f"{API}/messages/m1", {"format": "raw"}, 60),
+    ("GET", f"{API}/messages/m1", {}, 60),
+    ("GET", f"{API}/messages/m1", {"format": "metadata"}, 20),
+    ("GET", f"{API}/messages/m1", {"format": "minimal"}, 20),
+    ("GET", f"{API}/messages/m1/attachments/a1", {}, 20),
+    ("GET", f"{API}/messages", {}, 5),
+    ("GET", f"{API}/history", {}, 2),
+    ("GET", f"{API}/labels", {}, 1),
+    ("GET", f"{API}/profile", {}, 1),
+    ("POST", f"{API}/messages/m1/modify", {}, 5),
+    ("POST", f"{API}/messages/send", {}, 100),
+    ("POST", f"{API}/drafts/send", {}, 100),
+    ("POST", "/upload/gmail/v1/users/me/messages/send", {}, 100),
+])
+def test_each_call_costs_the_units_of_google(
+        method: str, path: str, params: dict[str, str], units: int) -> None:
+    """Acceptance 1. The table of Google, for each call that a sync sends."""
+    assert gmail_mod._quota_units(_call(method, path, **params)) == units
+
+
+def test_the_pace_leaves_room_under_the_limit_of_google() -> None:
+    """Acceptance 1. Google refuses past 6,000. The pace stays under it, so a
+    member's call has room beside an import."""
+    assert GMAIL_USER_UNITS_PER_MINUTE == 6000
+    assert GMAIL_PACED_UNITS_PER_MINUTE == 4800
+
+
+async def test_a_cycle_never_passes_the_pace_in_any_minute(
+        clock: _Gmail) -> None:
+    """Acceptance 2. This is the failure of 2026-11-01: 100 full reads went
+    in a few seconds, and the next read got a 403. 200 paced reads spread
+    out, and no window of 60 seconds holds more than the pace."""
+    clock.on("GET", "/messages/m1", _ok(_message("m1")))
+    provider = _paced()
+
+    for _ in range(200):
+        await provider.get_message("m1")
+
+    reads = _read_times(clock)
+    busiest = max(sum(1 for at in reads if start <= at < start + 60)
+                  for start in reads)
+    assert len(reads) == 200
+    assert busiest <= GMAIL_PACED_UNITS_PER_MINUTE // 60 + 1
+    assert reads[-1] - reads[0] >= 199 * 0.75
+
+
+async def test_a_parallel_page_gets_one_slot_for_each_read(
+        fake: _Gmail, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Acceptance 2. The ten fetches at once of a page book in turn, so they
+    cannot burst. The clock stands still, so the waits are the slots."""
+    monkeypatch.setattr(gmail_mod, "_clock", lambda: 0.0)
+    monkeypatch.setattr(gmail_mod, "_gmail_next_slot", {})
+    for index in range(10):
+        fake.on("GET", f"/messages/m{index}", _ok(_message(f"m{index}")))
+
+    await _paced()._fetch_page([f"m{index}" for index in range(10)])
+
+    slots = sorted(fake.waits)
+    assert all(after - before >= 0.01 for before, after in pairwise(slots))
+    assert slots[-1] >= 9 * 0.75
+
+
+async def test_the_meter_spans_the_providers_of_a_mailbox(clock: _Gmail) -> None:
+    """Acceptance 2. One provider serves one cycle, and the quota of Google
+    spans cycles. A new provider waits for the slot of the one before it."""
+    clock.on("GET", "/messages/m1", _ok(_message("m1")))
+
+    await _paced().get_message("m1")
+    await _paced().get_message("m1")
+
+    first, second = _read_times(clock)
+    assert second - first >= 0.75
+
+
+async def test_two_mailboxes_have_two_meters(clock: _Gmail) -> None:
+    """Acceptance 2. Google counts for each user, so one mailbox does not
+    slow the next one."""
+    clock.on("GET", "/messages/m1", _ok(_message("m1")))
+
+    await _paced("box-1").get_message("m1")
+    await _paced("box-2").get_message("m1")
+
+    first, second = _read_times(clock)
+    assert second - first < 0.75
+
+
+async def test_a_call_of_a_member_never_waits_behind_a_cycle(
+        clock: _Gmail) -> None:
+    """Acceptance 3. A member who opens a mail during an import gets it at
+    once, and spends the units that the pace leaves free."""
+    clock.on("GET", "/messages/m1", _ok(_message("m1")))
+    gmail_mod._gmail_next_slot["box-1"] = 10_000.0
+
+    await _provider().get_message("m1")
+
+    assert clock.waits == []
+
+
+async def test_a_paced_try_books_a_slot_of_its_own(clock: _Gmail) -> None:
+    """Acceptance 2. A second try costs units too, so it books a new slot."""
+    clock.on("GET", "/messages/m1", _rate_limited("5"), _ok(_message("m1")))
+
+    await _paced().get_message("m1")
+
+    assert 5.0 in clock.waits
+    assert gmail_mod._gmail_next_slot["box-1"] >= 5.75

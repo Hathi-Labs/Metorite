@@ -39,7 +39,7 @@ import os
 import time
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import aclosing, asynccontextmanager
+from contextlib import aclosing, asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from typing import Any, NamedTuple
 
@@ -123,6 +123,24 @@ _catch_up_abandoned: set[str] = set()
 #: the watermark moves on, so one folder that always fails cannot stall the
 #: mailbox (fix rounds 3 and 4).
 CATCH_UP_MAX_MISSES = 6
+
+#: The sleep of the loop after a cycle that stopped early and can go on: an
+#: import that read its share, or a rate limit (WS-17 EM-G4b-f3, §12.3.12.9).
+#: Google counts its limit in windows of one minute, so one minute clears it.
+SYNC_RESUME_SECS = 60
+
+#: Rate-limited cycles in a row that read no mail, for each mailbox
+#: (EM-G4b-f3). It lives in this process, as ``_catch_up_misses`` does.
+_rate_limit_misses: dict[str, int] = {}
+
+#: After this many such cycles the mailbox shows the error and the loop backs
+#: off as for a failure, so a long refusal cannot stay out of sight. With
+#: ``SYNC_RESUME_SECS`` this is about 10 minutes.
+RATE_LIMIT_MAX_MISSES = 10
+
+#: Why a first import stopped early. The next cycle resumes it in both cases.
+_IMPORT_PAUSED = "paused"
+_IMPORT_RATE_LIMITED = "rate_limited"
 
 #: How long a caller that waits (the deep downloads of cleanup and Process
 #: past) waits for the sync that holds the mailbox. In production, the
@@ -320,6 +338,14 @@ _IMPORT_ERROR_ACCOUNT = text(
        WHERE id = :id"""
 )
 
+#: The end of a cycle that a rate limit stopped (EM-G4b-f3). The next cycle
+#: comes soon, so the member sees no provider failure.
+_RATE_LIMITED_ACCOUNT = text(
+    """UPDATE email_accounts
+       SET sync_status = 'idle', sync_error = NULL, updated_at = now()
+       WHERE id = :id"""
+)
+
 _IMPORT_ERROR_LOG = text(
     """UPDATE email_sync_log
        SET status = 'error', error_message = :import_error
@@ -383,6 +409,22 @@ def _next_backoff(current: int, interval: int, *, failed: bool) -> int:
     if not failed:
         return 0
     return min(current * 2 if current else interval * 2, _MAX_SYNC_BACKOFF_SECS)
+
+
+def _rate_limit_is_soft(account_id: str, *, progress: bool) -> bool:
+    """True when a rate limit only delays this mailbox (EM-G4b-f3).
+
+    A cycle that read mail clears the count. A cycle that read nothing adds
+    one. From ``RATE_LIMIT_MAX_MISSES`` the limit is a failure, until a cycle
+    reads mail, so the member sees a refusal that does not end."""
+    key = _lock_key(account_id)
+    if progress:
+        _rate_limit_misses.pop(key, None)
+        return True
+    misses = _rate_limit_misses.get(key, 0) + 1
+    _rate_limit_misses[key] = misses
+    logger.info("sync.rate_limit_miss account=%s misses=%d", account_id, misses)
+    return misses < RATE_LIMIT_MAX_MISSES
 
 
 async def _close_orphaned_syncs(db: Any, organization_id: str) -> None:
@@ -637,14 +679,15 @@ def _abandon_note(folders: str) -> str:
 
 def _watermark_outcome(
     account_id: str, sync_result: Any, row: Any, import_error: str | None,
-    *, from_loop: bool = False,
+    *, from_loop: bool = False, import_open: bool = False,
 ) -> _CatchUp:
     """What phase (d) does with the watermark, and the ``sync_error`` note of
     a short catch-up (fix rounds 3 and 4).
 
     * A failed import on a mailbox that never finished a sync keeps
       ``last_synced_at`` NULL. The next sweep then reads back to
-      ``created_at``, so the mail since the connect still lands.
+      ``created_at``, so the mail since the connect still lands. An import
+      that stopped early (``import_open``, EM-G4b-f3) keeps it NULL too.
     * A complete cycle reads every folder back to the watermark. It clears
       the count and the abandon, whoever called it.
     * A short cycle keeps the watermark and writes a note with the folder
@@ -667,7 +710,8 @@ def _watermark_outcome(
     The note reaches the API only. ``sync_status`` stays ``idle``, and the
     UI shows ``sync_error`` only for ``error`` (spec §10.4.7 EM-T6b).
     """
-    keep_null = import_error is not None and getattr(row, "last_synced_at", None) is None
+    keep_null = ((import_error is not None or import_open)
+                 and getattr(row, "last_synced_at", None) is None)
     key = _lock_key(account_id)
     if not getattr(sync_result, "catch_up_incomplete", False):
         _catch_up_misses.pop(key, None)
@@ -695,6 +739,7 @@ def _watermark_outcome(
 def _cycle_result(
     synced: int, history_id: Any, import_error: str | None, catch_up: _CatchUp,
     *, limit: bool = False, changed: int | None = None,
+    resume_soon: bool = False,
 ) -> dict[str, Any]:
     """The result of a sync cycle. A failed import is an error for each
     caller, after the new mail landed. A short catch-up is a soft failure:
@@ -703,12 +748,15 @@ def _cycle_result(
     (fix round 4). ``limit`` is true when the storage limit stopped the
     import (WS-17 EM-T6c item 5), and the result then holds ``limit: true``.
     ``changed`` counts the rows the cycle really wrote. ``synced`` counts
-    every message it listed, written or not."""
+    every message it listed, written or not. ``resume_soon`` tells the loop
+    to come back after ``SYNC_RESUME_SECS`` (EM-G4b-f3)."""
     result: dict[str, Any] = {"synced": synced, "history_id": history_id}
     if changed is not None:
         result["changed"] = changed
     if limit:
         result["limit"] = True
+    if resume_soon:
+        result["resume_soon"] = True
     if catch_up.back_off:
         result["catch_up_incomplete"] = True
     elif catch_up.note:
@@ -716,6 +764,26 @@ def _cycle_result(
     if import_error:
         result["error"] = import_error
     return result
+
+
+def _early_stop(
+    account_id: str, sync_result: Any, imported: int,
+    import_error: str | None, import_stop: str | None,
+) -> tuple[str | None, bool]:
+    """The import error of a cycle, and whether the loop comes back soon
+    (EM-G4b-f3).
+
+    An import that read its share goes on soon. A rate limit only delays the
+    mailbox while the cycles read mail, so such a cycle shows no error and
+    the loop does not back off. Each other cycle clears the count."""
+    if (import_stop == _IMPORT_RATE_LIMITED
+            or getattr(sync_result, "rate_limited", False) is True):
+        progress = imported > 0 or bool(sync_result.messages)
+        if _rate_limit_is_soft(account_id, progress=progress):
+            return None, True
+        return import_error, False
+    _rate_limit_misses.pop(_lock_key(account_id), None)
+    return import_error, import_stop == _IMPORT_PAUSED
 
 
 def _next_cursor(
@@ -898,24 +966,33 @@ async def _reconcile_import(
 async def _import_in_batches(
     org: str, account_id: str, provider: Any, row: Any, *,
     floor: datetime, progress: bool,
-) -> tuple[int, str | None, bool]:
-    """Run the import. Return the rows that it wrote, its error, and whether
-    the storage limit stopped it.
+) -> tuple[int, str | None, bool, str | None]:
+    """Run the import. Return the rows that it wrote, its error, whether the
+    storage limit stopped it, and why a first import stopped early.
 
     The error is ``None`` when the import ended. A failed import does not
     raise (fix round 2): the cycle still runs the recurring sweep, so new mail
     lands (owner answer Q2), and then records the error. The next cycle
     resumes the import. The third value is true when the meter reached the
-    limit after a batch (WS-17 EM-T6c item 5)."""
-    tally: dict[str, Any] = {"written": 0, "limit": False}
+    limit after a batch (WS-17 EM-T6c item 5).
+
+    The fourth value is ``_IMPORT_PAUSED`` after ``IMPORT_CYCLE_MAILS`` mails,
+    or ``_IMPORT_RATE_LIMITED`` when a rate limit stopped a first import
+    (EM-G4b-f3). A rate limit still returns its error, and the cycle decides
+    with ``_rate_limit_is_soft`` whether the error stays. A deep sync gets no
+    fourth value, because it has no resume point and its error must show."""
+    tally: dict[str, Any] = {"written": 0, "limit": False, "paused": False}
     try:
         await _run_import(org, account_id, provider, row, floor=floor,
                           progress=progress, tally=tally)
     except Exception as exc:
         logger.warning("sync.import_failed account=%s written=%d error=%s",
                        account_id, tally["written"], str(exc)[:200])
-        return tally["written"], str(exc), tally["limit"]
-    return tally["written"], None, tally["limit"]
+        stop = (_IMPORT_RATE_LIMITED
+                if progress and isinstance(exc, ProviderRateLimited) else None)
+        return tally["written"], str(exc), tally["limit"], stop
+    return (tally["written"], None, tally["limit"],
+            _IMPORT_PAUSED if tally["paused"] else None)
 
 
 async def _run_import(
@@ -963,12 +1040,20 @@ async def _run_import(
     12, C5). Gmail sets ``import_capped`` when its import reaches
     ``IMPORT_MAX_PAGES``, so the mail below the cap stays unread. The log
     says ``sync.import_reconcile_skipped`` with ``reason=capped``, as it
-    says ``reason=limit`` at the storage limit."""
+    says ``reason=limit`` at the storage limit.
+
+    A first import stops after the ``IMPORT_CYCLE_MAILS`` of its provider
+    (EM-G4b-f3). A paced Gmail read takes 0.75 seconds, so the cycle gives
+    the mailbox lock back, the recurring sweep gets its turn, and the next
+    cycle resumes. The log says ``sync.import_paused``. A deep sync has no
+    resume point, so it reads to the end."""
     snapshot: list[tuple[str, str, Any]] | None = (
         [] if not progress and getattr(provider, "import_full_snapshot", False)
         else None)
     until = getattr(row, "import_reached_at", None) if progress else None
     count = (getattr(row, "import_count", None) or 0) if until is not None else 0
+    cycle_mails = getattr(provider, "IMPORT_CYCLE_MAILS", None) if progress else None
+    read = 0
     on_estimate = None
     if progress:
         async with tenant_session(org) as db:
@@ -1007,6 +1092,14 @@ async def _run_import(
                 logger.info("sync.import_stopped_at_limit account=%s stored=%d "
                             "written=%d", account_id, stored, tally["written"])
                 break
+            read += len(batch)
+            if isinstance(cycle_mails, int) and read >= cycle_mails:
+                tally["paused"] = True
+                logger.info("sync.import_paused account=%s read=%d",
+                            account_id, read)
+                break
+    if tally.get("paused"):
+        return
     if snapshot is not None and tally["limit"]:
         logger.info("sync.import_reconcile_skipped account=%s reason=limit",
                     account_id)
@@ -1358,6 +1451,44 @@ async def _apply_resync(
     return cursor
 
 
+async def _record_cycle_failure(
+    org: str, account_id: str, sync_log_id: Any, error: str, *,
+    soft: bool, creds_blob: str | None,
+) -> None:
+    """Write the end of a cycle that raised, in one new block.
+
+    A ``soft`` cycle stopped for a rate limit, so the account shows no error
+    (EM-G4b-f3). The log row keeps the error in both cases."""
+    async with tenant_session(org) as db:
+        if soft:
+            await db.execute(_RATE_LIMITED_ACCOUNT, {"id": account_id})
+        else:
+            await db.execute(
+                text(
+                    """UPDATE email_accounts
+                       SET sync_status = 'error', sync_error = :error,
+                           updated_at = now()
+                       WHERE id = :id"""
+                ),
+                {"id": account_id, "error": error},
+            )
+        if sync_log_id is not None:
+            await db.execute(
+                text(
+                    """UPDATE email_sync_log
+                       SET status = 'error', completed_at = now(),
+                           error_message = :error
+                       WHERE id = :log_id"""
+                ),
+                {"log_id": sync_log_id, "error": error},
+            )
+        # Keep the rotated tokens. Microsoft revokes the old refresh
+        # token on use, so losing the new one forces a reconnect.
+        if creds_blob is not None:
+            await db.execute(_WRITE_CREDENTIALS,
+                             {"id": account_id, "creds": creds_blob})
+
+
 async def _sync_cycle(
     account_id: str, *, organization_id: str | None = None,
     deep: bool | None = None, since: datetime | None = None,
@@ -1434,6 +1565,9 @@ async def _sync_cycle(
     # during the sync rotated (EM-T4c).
     provider: Any = None
     store: Any = None
+    # The error path reads this one, to tell a delay from a stalled mailbox
+    # (EM-G4b-f3).
+    imported = 0
     try:
         # ── (a) the account row, the 'syncing' status and the log row ──────
         async with tenant_session(org) as db:
@@ -1487,6 +1621,9 @@ async def _sync_cycle(
         # Instantiate provider (raises ValueError for an unknown provider,
         # surfaced as a sync failure by the outer handler).
         provider = build_provider(provider_name, creds)
+        # A cycle runs in the background, so it paces its Gmail calls. The
+        # call of a member builds no cycle, so it never waits (EM-G4b-f3).
+        provider.quota_mailbox = account_id
 
         if not await provider.authenticate():
             raise RuntimeError("Provider authentication failed")
@@ -1521,7 +1658,9 @@ async def _sync_cycle(
         # newest first, and only the first import writes progress (EM-T6b
         # items 4 to 8). A caller forces a deep sync with ``deep=True``.
         first_import = deep is None and not getattr(row, "initial_sync_done", False)
-        imported, import_error, stopped_at_limit = 0, None, False
+        import_error: str | None = None
+        stopped_at_limit = False
+        import_stop: str | None = None
         if first_import or deep:
             # With no cursor, the seed comes BEFORE the import, so the sweep
             # below reads each change made during the import (EM-G4b E-B3).
@@ -1530,9 +1669,10 @@ async def _sync_cycle(
             # A failed import does not raise. Phase (d) records its error,
             # and the next cycle resumes it (fix round 2). The storage limit
             # stops it after a batch (EM-T6c item 5).
-            imported, import_error, stopped_at_limit = await _import_in_batches(
-                org, account_id, provider, row, floor=floor,
-                progress=first_import)
+            imported, import_error, stopped_at_limit, import_stop = (
+                await _import_in_batches(
+                    org, account_id, provider, row, floor=floor,
+                    progress=first_import))
 
         # The recurring sweep runs in every call, after an import too, and
         # after a failed import, so new mail always syncs (owner answer Q2,
@@ -1557,11 +1697,14 @@ async def _sync_cycle(
             delta_shadow=delta_shadow,
         )
         _log_delta_shadow(account_id, sync_result)
+        import_error, resume_soon = _early_stop(
+            account_id, sync_result, imported, import_error, import_stop)
         # Fix rounds 3 and 4: whether phase (d) keeps the watermark, the note
         # of a short catch-up, and whether the loop backs off. Only a loop
         # cycle counts toward the abandon (``_watermark_outcome``).
         catch_up = _watermark_outcome(
-            account_id, sync_result, row, import_error, from_loop=from_loop)
+            account_id, sync_result, row, import_error, from_loop=from_loop,
+            import_open=import_stop is not None)
         # The cursor of phase (d). After a stale Gmail cursor, an abandoned
         # catch-up writes the fresh seed (EM-G4b E-B1). A failed reseed
         # backs the loop off (review round 1 F6).
@@ -1680,13 +1823,18 @@ async def _sync_cycle(
         )
         return _cycle_result(persisted_count, cursor,
                              import_error, catch_up, limit=stopped_at_limit,
-                             changed=changed_count)
+                             changed=changed_count, resume_soon=resume_soon)
 
     except Exception as exc:
         logger.warning(
             "sync.account_failed account_id=%s error=%s",
             account_id, str(exc),
         )
+
+        # A rate limit only delays the mailbox (EM-G4b-f3). The log row below
+        # keeps the error, and the account shows none.
+        soft = (isinstance(exc, ProviderRateLimited)
+                and _rate_limit_is_soft(account_id, progress=imported > 0))
 
         # A refresh during the sync may have rotated the tokens (EM-T4c).
         # Encrypt them BEFORE the block opens, so a failure here cannot roll
@@ -1695,35 +1843,13 @@ async def _sync_cycle(
 
         # Mark account as error, in a NEW session: the phase that failed has
         # already rolled back.
-        try:
-            async with tenant_session(org) as db:
-                await db.execute(
-                    text(
-                        """UPDATE email_accounts
-                           SET sync_status = 'error', sync_error = :error,
-                               updated_at = now()
-                           WHERE id = :id"""
-                    ),
-                    {"id": account_id, "error": str(exc)},
-                )
-                if sync_log_id is not None:
-                    await db.execute(
-                        text(
-                            """UPDATE email_sync_log
-                               SET status = 'error', completed_at = now(),
-                                   error_message = :error
-                               WHERE id = :log_id"""
-                        ),
-                        {"log_id": sync_log_id, "error": str(exc)},
-                    )
-                # Keep the rotated tokens. Microsoft revokes the old refresh
-                # token on use, so losing the new one forces a reconnect.
-                if creds_blob is not None:
-                    await db.execute(_WRITE_CREDENTIALS,
-                                     {"id": account_id, "creds": creds_blob})
-        except Exception:
-            pass
+        with suppress(Exception):
+            await _record_cycle_failure(
+                org, account_id, sync_log_id, str(exc),
+                soft=soft, creds_blob=creds_blob)
 
+        if soft:
+            return {"synced": imported, "resume_soon": True}
         return {"error": str(exc)}
 
 
@@ -1788,6 +1914,7 @@ async def _account_sync_loop(
         last_pipeline_at: float | None = None  # monotonic; None = never ran
         while True:
             sync_failed = False
+            resume_soon = False
             try:
                 result = await _sync_account(
                     account_id, organization_id=organization_id,
@@ -1804,8 +1931,13 @@ async def _account_sync_loop(
                 # round 3), and its new mail still goes through the pipeline.
                 # An abandoned catch-up is not, so it polls at the interval
                 # (fix round 4).
-                sync_failed = (not isinstance(result, dict) or "error" in result
-                               or bool(result.get("catch_up_incomplete")))
+                # A cycle that stopped early and can go on is no failure, so
+                # it comes back soon (EM-G4b-f3).
+                resume_soon = isinstance(result, dict) and bool(
+                    result.get("resume_soon"))
+                sync_failed = not resume_soon and (
+                    not isinstance(result, dict) or "error" in result
+                    or bool(result.get("catch_up_incomplete")))
                 new_mail = _pipeline_due(result, last_pipeline_at)
                 # Process new mail through the shared pipeline — auto-run
                 # rules, categorize senders, classify threads (Reply Zero),
@@ -1896,7 +2028,10 @@ async def _account_sync_loop(
             if backoff_secs:
                 logger.info("sync.backoff account_id=%s next_in=%s",
                             account_id, backoff_secs)
-            await asyncio.sleep(backoff_secs or interval_secs)
+            if resume_soon:
+                await asyncio.sleep(min(SYNC_RESUME_SECS, interval_secs))
+            else:
+                await asyncio.sleep(backoff_secs or interval_secs)
     finally:
         release_tenant(token)
 
