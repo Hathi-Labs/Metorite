@@ -1268,10 +1268,12 @@ async def write_must_show_card(ctx: Mapping[str, Any] | None = None) -> bool:
     it to read the context of this frame. No request field reaches this
     function. Fence: ``tests/unit/test_reminder_acts_at_once.py``.
     """
+    from acb_skills.write_artifact import DELIVER_TO
+
     if no_egress_for_this_run():
         return True
     bound = _bound_context() if ctx is None else ctx
-    if not _card_can_show(bound) or bound.get("deliver_to"):
+    if not _card_can_show(bound) or bound.get(DELIVER_TO):
         return True
     if _session_of(ctx) is None:
         return True
