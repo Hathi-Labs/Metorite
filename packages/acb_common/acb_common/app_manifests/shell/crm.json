@@ -82,7 +82,8 @@
     ],
     "nav": [
       {
-        "href": "/crm"
+        "href": "/crm",
+        "feature": "crm"
       }
     ],
     "scope": [

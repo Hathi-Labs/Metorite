@@ -11,7 +11,10 @@ model prompt both depend on it.
 
 PKG-2 adds :func:`load_vocabulary`: the pane links, the preset ids and the card
 keys (spec §3.3). PKG-3a adds :func:`load_gates`: the search scope map and the
-``ALSO_SERVES`` map. The files are data, so nothing here is code. ``tests/unit/test_shell_manifests.py``
+``ALSO_SERVES`` map. PKG-3b adds two more maps to :class:`Gates`: ``href_features``
+(route to feature slug) and ``always_allowed`` (routes open to every signed-in
+member). The ``always_allowed`` match is EXACT, never a prefix. A path under an
+entry is NOT allowed. The files are data, so nothing here is code. ``tests/unit/test_shell_manifests.py``
 is the fence.
 """
 
@@ -120,7 +123,9 @@ def _job(raw: Any, source: str) -> JobSpec:
     )
 
 
-_CONTRIBUTES_KEYS = {"jobs", "nav", "presets", "cards", "scope", "also_serves"}
+_CONTRIBUTES_KEYS = {
+    "jobs", "nav", "presets", "cards", "scope", "also_serves", "gates", "always_allowed",
+}
 #: Presets and cards belong to the home page, so only this file may name them.
 _HOME_ONLY = {"presets", "cards"}
 _HOME_FILE = "home"
@@ -188,6 +193,20 @@ def _names(entries: list[Any], key: str, source: str, kind: str) -> list[str]:
     return names
 
 
+def _nav_entries(entries: list[Any], source: str) -> list[tuple[str, str | None]]:
+    """Each nav entry as ``(href, feature)``. An entry holds ``href`` and an optional ``feature``."""
+    out: list[tuple[str, str | None]] = []
+    for raw in entries:
+        if not isinstance(raw, dict) or "href" not in raw or set(raw) - {"href", "feature"}:
+            raise ShellManifestError(
+                f"{source}: a nav entry must hold 'href' and an optional 'feature' only"
+            )
+        href = _str(raw["href"], f"{source}: nav href")
+        feature = _str(raw["feature"], f"{source}: nav feature") if "feature" in raw else None
+        out.append((href, feature))
+    return out
+
+
 def load_vocabulary(directory: Path | None = None) -> Vocabulary:
     """The panes, presets and cards of every ``shell/*.json`` file.
 
@@ -198,7 +217,7 @@ def load_vocabulary(directory: Path | None = None) -> Vocabulary:
     presets: list[str] = []
     cards: list[str] = []
     for name, contributes in _read(directory or SHELL_DIR):
-        for href in _names(contributes.get("nav", []), "href", name, "nav"):
+        for href, _feature in _nav_entries(contributes.get("nav", []), name):
             if not href.startswith("/") or "?" in href:
                 raise ShellManifestError(f"{name}: nav href {href!r} must be a path with no '?'")
             panes.append(href)
@@ -217,10 +236,16 @@ class Gates:
 
     ``scope`` maps a scope href to a search SOURCE key (not a feature slug).
     ``also_serves`` maps an agent to the other panes it serves, in file order.
+    ``href_features`` pairs a route with the feature slug that guards it (PKG-3b).
+    It comes from the nav ``feature`` of each pane, then from the ``gates`` entries.
+    ``always_allowed`` lists the routes any signed-in member may open. The match is
+    EXACT, so ``/integrations`` does not allow ``/integrations/x``.
     """
 
     scope: dict[str, str]
     also_serves: dict[str, tuple[str, ...]]
+    href_features: tuple[tuple[str, str], ...] = ()
+    always_allowed: tuple[str, ...] = ()
 
 
 def _pairs(entries: list[Any], keys: tuple[str, str], source: str, kind: str) -> list[tuple[str, str]]:
@@ -242,11 +267,31 @@ def _check_href(href: str, source: str, kind: str) -> None:
 def load_gates(directory: Path | None = None) -> Gates:
     """The ``scope`` and ``also_serves`` entries of every ``shell/*.json`` file.
 
-    A scope href is unique. An (agent, href) pair is unique.
+    A scope href is unique. An (agent, href) pair is unique. A route has one feature
+    at most, whether it comes from a nav entry or from ``gates``. An ``always_allowed``
+    route is unique and is matched EXACTLY.
     """
     scope: dict[str, str] = {}
     served: dict[str, list[str]] = {}
+    features: dict[str, str] = {}
+    allowed: list[str] = []
     for name, contributes in _read(directory or SHELL_DIR):
+        for href, feature in _nav_entries(contributes.get("nav", []), name):
+            if feature is not None:
+                _check_href(href, name, "nav")
+                if href in features:
+                    raise ShellManifestError(f"duplicate gate href: {href!r}")
+                features[href] = feature
+        for href, feature in _pairs(contributes.get("gates", []), ("href", "feature"), name, "gates"):
+            _check_href(href, name, "gates")
+            if href in features:
+                raise ShellManifestError(f"duplicate gate href: {href!r}")
+            features[href] = feature
+        for href in _names(contributes.get("always_allowed", []), "href", name, "always_allowed"):
+            _check_href(href, name, "always_allowed")
+            if href in allowed:
+                raise ShellManifestError(f"duplicate always_allowed href: {href!r}")
+            allowed.append(href)
         for href, src in _pairs(contributes.get("scope", []), ("href", "source"), name, "scope"):
             _check_href(href, name, "scope")
             if href in scope:
@@ -260,4 +305,9 @@ def load_gates(directory: Path | None = None) -> Gates:
             if href in hrefs:
                 raise ShellManifestError(f"duplicate also_serves pair: {(agent, href)!r}")
             hrefs.append(href)
-    return Gates(scope, {a: tuple(h) for a, h in served.items()})
+    return Gates(
+        scope,
+        {a: tuple(h) for a, h in served.items()},
+        tuple(features.items()),
+        tuple(allowed),
+    )
