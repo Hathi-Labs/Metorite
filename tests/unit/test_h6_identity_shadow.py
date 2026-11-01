@@ -1459,6 +1459,22 @@ def _reset_identity_read_flag():
     access_mod._identity_read_failed.reset(token)
 
 
+@pytest.fixture(autouse=True)
+def _access_tables_present(monkeypatch):
+    """Every test here starts with ``access._tables_missing`` OFF.
+
+    The latch is process-wide. An earlier suite that resolved access against a
+    database with no access tables sets it, and then ``resolve_access`` returns
+    ``is_active=False`` with no query. ``TestFlagOnAndFlagOffAgree`` then
+    reads "the OFF path did not admit the member" (task 1332, pr-check run
+    41305223510). ``tests/conftest.py`` clears it for every test too. This
+    suite states its own precondition all the same.
+    """
+    import acb_auth.access as access_mod
+
+    monkeypatch.setattr(access_mod, "_tables_missing", False)
+
+
 class TestAFailedReadIsNotNoMembership:
     """🔴 These two were ONE return value, and a member paid for it.
 
