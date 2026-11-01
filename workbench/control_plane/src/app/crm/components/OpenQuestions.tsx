@@ -132,6 +132,9 @@ import { Card } from "./SettingsCards";
 import { SuggestionPanel, useSuggestionActions, useSuggestions } from "./Suggestions";
 import { ProposalList } from "./ProposalList";
 import { SumDialog } from "./SumPicker";
+
+/** A Modal that asked for a write: how it closes, and where a failure shows. */
+type InModal = { close: () => void; fail: (text: string) => void };
 import AnalysisRerun from "./AnalysisRerun";
 
 // One copy, shared with the picker of a sum (CRM-Q32-8).
@@ -682,6 +685,8 @@ export default function OpenQuestionsCard() {
   const [batch, setBatch] = useState<string[] | null>(null);
   // CRM-Q32-9b: the question whose picker of a sum is open, and where it came from.
   const [sum, setSum] = useState<{ q: Question; from: "card" | "answers" } | null>(null);
+  /** The reason that a refused write of the picker shows inside it. */
+  const [sumError, setSumError] = useState<string | null>(null);
   const answers = useAnswers(tab === "answers");
   // The slot whose panel is open. The panel draws the suggestion of the
   // newest read, with the read of the click as a fallback (CRM-Q20-2).
@@ -716,17 +721,19 @@ export default function OpenQuestionsCard() {
   }
 
   /**
-   * `closeFirst` closes the Modal that asked (CRM-U17a). It runs before any
-   * toast, so no toast rises over an open Modal (`components/ui/Toast.tsx`).
+   * `inModal` is set when a Modal asked (CRM-U17a). On success it closes the
+   * Modal before the toast. On a failure the Modal stays open with the pick
+   * and shows the reason inside, and no toast rises over it
+   * (`components/ui/Toast.tsx`, DESIGN_SYSTEM.md section 12 beat 4).
    */
-  async function answer(q: Question, value: AnswerValue, closeFirst?: () => void): Promise<boolean> {
+  async function answer(q: Question, value: AnswerValue, inModal?: InModal): Promise<boolean> {
     const key = `crm-question:${q.id}`;
     setBusy(q.id);
     try {
       // A stage answer commits the plan, so it names the version it read.
       const done = await api.answerQuestion(q.id, value, q.kind === "stage_value" ? plan : null);
       const undo = undoOf(q, done, value);
-      closeFirst?.();
+      inModal?.close();
       toast.show({
         key,
         variant: "success",
@@ -735,8 +742,8 @@ export default function OpenQuestionsCard() {
       });
       return true;
     } catch (err) {
-      closeFirst?.();
-      fail(key, err, "That answer did not save.");
+      if (inModal) inModal.fail(questionError(err, "That answer did not save."));
+      else fail(key, err, "That answer did not save.");
       return false;
     } finally {
       setBusy(null);
@@ -828,7 +835,7 @@ export default function OpenQuestionsCard() {
   }
 
   /** A correction to a value: a pick, or the list of a sum. Undo puts back the part before. */
-  async function correctTo(q: Question, value: AnswerValue, closeFirst?: () => void): Promise<boolean> {
+  async function correctTo(q: Question, value: AnswerValue, inModal?: InModal): Promise<boolean> {
     const target = correctionTarget(q);
     if (!target) return false;
     const key = `crm-answer:${q.id}`;
@@ -836,7 +843,7 @@ export default function OpenQuestionsCard() {
     setBusy(q.id);
     try {
       await api.putCatalogue(target.module, { [target.part]: value });
-      closeFirst?.();
+      inModal?.close();
       toast.show({
         key,
         variant: "success",
@@ -849,8 +856,8 @@ export default function OpenQuestionsCard() {
       });
       return true;
     } catch (err) {
-      closeFirst?.();
-      fail(key, err, "That change did not save.");
+      if (inModal) inModal.fail(questionError(err, "That change did not save."));
+      else fail(key, err, "That change did not save.");
       return false;
     } finally {
       setBusy(null);
@@ -859,19 +866,22 @@ export default function OpenQuestionsCard() {
 
   /** Save the picker of a sum: an answer from a card, a correction from "Your answers". */
   /** Confirm of a proposal in the picker of a sum: one field, or none. */
+  const sumModal: InModal = { close: () => setSum(null), fail: setSumError };
+
   async function confirmInSum(value: string | null) {
     if (!sum) return;
-    // The picker closes before the toast of the write (CRM-U17a).
-    const closeFirst = () => setSum(null);
-    if (sum.from === "card") await answer(sum.q, value, closeFirst);
-    else await correctTo(sum.q, value, closeFirst);
+    // The picker closes before the toast of a write that worked. A failure
+    // stays in the picker, next to its button (CRM-U17a).
+    setSumError(null);
+    if (sum.from === "card") await answer(sum.q, value, sumModal);
+    else await correctTo(sum.q, value, sumModal);
   }
 
   async function saveSum(keys: string[]) {
     if (!sum) return;
-    const closeFirst = () => setSum(null);
-    if (sum.from === "card") await answer(sum.q, keys, closeFirst);
-    else await correctTo(sum.q, keys, closeFirst);
+    setSumError(null);
+    if (sum.from === "card") await answer(sum.q, keys, sumModal);
+    else await correctTo(sum.q, keys, sumModal);
   }
 
   return (
@@ -919,7 +929,11 @@ export default function OpenQuestionsCard() {
         <SumDialog
           q={sum.q}
           busy={busy === sum.q.id}
-          onClose={() => setSum(null)}
+          error={sumError}
+          onClose={() => {
+            setSum(null);
+            setSumError(null);
+          }}
           onSave={(keys) => void saveSum(keys)}
           onConfirm={(p) => void confirmInSum(p.value)}
         />
@@ -929,7 +943,11 @@ export default function OpenQuestionsCard() {
           suggestion={previewing}
           listLabel={labelOf(SLOT_SLUG[preview.slot])}
           busy={suggestionActions.busy === preview.slot}
-          onClose={() => setPreview(null)}
+          error={suggestionActions.modalError}
+          onClose={() => {
+            setPreview(null);
+            suggestionActions.clearError();
+          }}
           onUse={() => {
             void suggestionActions.apply(previewing, () => setPreview(null));
           }}

@@ -16,10 +16,12 @@ vi.mock("../lib/api", async (importOriginal) => ({
 }));
 
 import * as api from "../lib/api";
-import { typeLabel } from "../lib/fieldStudio";
+import { draftOf, typeLabel, type FieldDraft } from "../lib/fieldStudio";
+import type { FieldDef } from "../lib/fields";
 import { moduleLabel, moduleRailRows, type CrmModule } from "../lib/modules";
 import { validateOverlayProbability, validateStatusDraft, vocabularyShows } from "../lib/settings";
 import { useCrmStore } from "../lib/store";
+import { FieldFormBody } from "./FieldStudioFieldDialog";
 import PipelineSettings, { NativeStageForm } from "./PipelineSettings";
 import type { Status } from "../lib/types";
 
@@ -256,30 +258,106 @@ describe("one layer at a time (done-when 5)", () => {
     expect(source).toContain("setDeleteRefused(true);");
   });
 
-  it("the field dialog closes before the retire confirm opens", () => {
+  it("the field dialog closes before the retire confirm opens, and Cancel brings its edits back", () => {
     const studio = read("./FieldStudio.tsx");
-    expect(studio).toContain('setConfirm({ kind: "retire", def, back: fieldForm });\n          setFieldForm(null);');
-    expect(studio).toContain("if (confirm?.kind === \"retire\") setFieldForm(confirm.back);");
+    expect(studio).toContain('setConfirm({ kind: "retire", def, back: fieldForm, draft: draftRef.current });\n          setFieldForm(null);');
+    expect(studio).toContain("setRestored(confirm.draft);\n            setFieldForm(confirm.back);");
+    expect(studio).toContain("startDraft={restored}");
     expect(read("./FieldStudioFieldDialog.tsx")).not.toContain("ConfirmDialog");
   });
 
-  it("the sum picker and the suggestion preview close before a toast", () => {
+  it("an edited label survives Retire then Cancel", () => {
+    const field: FieldDef = {
+      key: "tier", label: "Tier", type: "text", options: null, position: 0, visible: true,
+      source: "native", api_name: null, section_id: null, required: false, help_text: null,
+      default_value: null, lookup_target: null, is_system: false,
+    } as FieldDef;
+    const html = (startDraft: FieldDraft | null) =>
+      renderToStaticMarkup(
+        createElement(FieldFormBody, {
+          form: { mode: "edit", def: field },
+          sections: [],
+          onClose: noop,
+          onSave: async () => undefined,
+          onRetire: noop,
+          startDraft,
+        }),
+      );
+    // The dialog reports its draft, the studio keeps it, and a Cancel opens the dialog on it.
+    const typed = { ...draftOf(field), label: "Customer tier" };
+    expect(html(null)).not.toContain('value="Customer tier"');
+    expect(html(typed)).toContain('value="Customer tier"');
+    expect(read("./FieldStudioFieldDialog.tsx")).toContain("useEffect(() => onDraft?.(draft), [draft, onDraft]);");
+  });
+
+  it("Delete then Cancel on a stage brings the typed value back", () => {
+    const initial = useCrmStore.getInitialState();
+    initial.settingsDrafts = {
+      [`status:deal:${OPEN.id}`]: { base: OPEN, value: { ...OPEN, name: "Typed draft" } },
+    };
+    try {
+      // The Edit dialog closes (its form unmounts) and the store keeps the draft. The Cancel mounts it again on the same row.
+      const reopened = renderToStaticMarkup(
+        createElement(NativeStageForm, {
+          kind: "deal", status: OPEN, saving: false, onSave: noop, onAdd: noop,
+          onRemove: () => undefined, onCancel: () => undefined,
+        }),
+      );
+      expect(reopened).toContain('value="Typed draft"');
+    } finally {
+      initial.settingsDrafts = {};
+    }
+    const source = read("./PipelineSettings.tsx");
+    // Asking to delete clears no draft, and Cancel opens the Edit dialog again.
+    expect(source).toContain("onClick={onRemove}");
+    expect(source).toContain("setEditing(confirmingDelete);\n          setConfirmingDelete(null);");
+  });
+
+  it("a write that worked closes its Modal, then toasts", () => {
     const questions = read("./OpenQuestions.tsx");
     for (const fn of ["async function answer(", "async function correctTo("]) {
       const at = questions.indexOf(fn);
       const body = questions.slice(at, questions.indexOf("\n  }\n", at));
-      expect(body.indexOf("closeFirst?.();"), fn).toBeGreaterThan(0);
-      expect(body.indexOf("closeFirst?.();"), fn).toBeLessThan(body.indexOf("toast.show("));
-      expect(body.indexOf("closeFirst?.();"), fn).toBeLessThan(body.indexOf("fail("));
+      expect(body.indexOf("inModal?.close();"), fn).toBeGreaterThan(0);
+      expect(body.indexOf("inModal?.close();"), fn).toBeLessThan(body.indexOf("toast.show("));
     }
-    expect(questions).toContain("apply(previewing, () => setPreview(null))");
     const suggestions = read("./Suggestions.tsx");
     const at = suggestions.indexOf("async function apply(");
     const apply = suggestions.slice(at, suggestions.indexOf("\n  }\n", at));
+    expect(apply.indexOf("closeFirst?.();")).toBeGreaterThan(0);
     expect(apply.indexOf("closeFirst?.();")).toBeLessThan(apply.indexOf("toast.show("));
-    expect(apply.lastIndexOf("closeFirst?.();")).toBeLessThan(apply.lastIndexOf("toast.show("));
+    expect(questions).toContain("apply(previewing, () => setPreview(null))");
     expect(suggestions).toContain("actions.apply(suggestion, () => setOpen(false))");
     expect(suggestions).toContain("actions.apply(s, () => setPreviewingSlot(null))");
+  });
+
+  it("a write that failed keeps its Modal open, shows the reason inside it, and raises no toast", () => {
+    const questions = read("./OpenQuestions.tsx");
+    for (const fn of ["async function answer(", "async function correctTo("]) {
+      const at = questions.indexOf(fn);
+      const body = questions.slice(at, questions.indexOf("\n  }\n", at));
+      const caught = body.slice(body.indexOf("} catch (err) {"));
+      // Inside a Modal the failure goes to the Modal, and only a write with no Modal toasts.
+      expect(caught, fn).toContain("if (inModal) inModal.fail(");
+      expect(caught, fn).toContain("else fail(");
+      expect(caught, fn).not.toContain("close(");
+    }
+    // The picker keeps its pick (its state is local) and draws the reason next to Save.
+    expect(questions).toContain("error={sumError}");
+    const picker = read("./SumPicker.tsx");
+    expect(picker.indexOf("{error && (")).toBeGreaterThan(0);
+    expect(picker.indexOf("{error && (")).toBeLessThan(picker.indexOf("onClick={() => onSave(picked)}"));
+    // The preview does the same.
+    const suggestions = read("./Suggestions.tsx");
+    const at = suggestions.indexOf("async function apply(");
+    const apply = suggestions.slice(at, suggestions.indexOf("\n  }\n", at));
+    const caught = apply.slice(apply.indexOf("} catch (err) {"));
+    expect(caught).toContain("if (closeFirst) setModalError(");
+    expect(caught).not.toContain("closeFirst?.()");
+    expect(caught).toContain("else toast.show(");
+    expect(suggestions.indexOf("{error && (")).toBeLessThan(suggestions.indexOf("onClick={onUse}"));
+    expect(suggestions.match(/error=\{actions\.modalError\}/g)).toHaveLength(2);
+    expect(questions).toContain("error={suggestionActions.modalError}");
   });
 });
 
