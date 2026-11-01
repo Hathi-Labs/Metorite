@@ -101,11 +101,13 @@ export function useSuggestionActions(listLabel: (slug: EntitySlug) => string) {
     }
   }
 
-  async function apply(s: Suggestion): Promise<boolean> {
+  /** `closeFirst` closes the preview Modal before any toast rises (CRM-U17a). */
+  async function apply(s: Suggestion, closeFirst?: () => void): Promise<boolean> {
     const label = listLabel(SLOT_SLUG[s.slot]);
     setBusy(s.slot);
     try {
       await api.approveSuggestion(s.slot, s.version);
+      closeFirst?.();
       toast.show({
         key: `crm-suggest:${s.slot}`,
         variant: "success",
@@ -114,6 +116,7 @@ export function useSuggestionActions(listLabel: (slug: EntitySlug) => string) {
       });
       return true;
     } catch (err) {
+      closeFirst?.();
       toast.show({ key: `crm-suggest:${s.slot}`, variant: "error", title: message(err, "That did not save.") });
       return false;
     } finally {
@@ -360,7 +363,7 @@ export function SlotSuggestionArea({
           busy={actions.busy === suggestion.slot}
           onClose={() => setOpen(false)}
           onUse={() => {
-            void actions.apply(suggestion).then((done) => done && setOpen(false));
+            void actions.apply(suggestion, () => setOpen(false));
           }}
         />
       )}
@@ -403,7 +406,7 @@ export default function SuggestionsCard() {
           onClose={() => setPreviewingSlot(null)}
           onUse={() => {
             const s = previewing;
-            void actions.apply(s).then((done) => done && setPreviewingSlot(null));
+            void actions.apply(s, () => setPreviewingSlot(null));
           }}
         />
       )}

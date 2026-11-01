@@ -1134,7 +1134,8 @@ describe("the picker of a sum (CRM-Q32-9b)", () => {
 
   it("saves the list: an answer from the card, a correction from Your answers", () => {
     const comp = read("./OpenQuestions.tsx");
-    expect(comp).toContain('const done = sum.from === "card" ? await answer(sum.q, keys) : await correctTo(sum.q, keys);');
+    expect(comp).toContain('if (sum.from === "card") await answer(sum.q, keys, closeFirst);');
+    expect(comp).toContain("else await correctTo(sum.q, keys, closeFirst);");
     expect(comp).toContain("onSave={(keys) => void saveSum(keys)}");
     expect(read("./SumPicker.tsx")).toContain("onClick={() => onSave(picked)}");
   });

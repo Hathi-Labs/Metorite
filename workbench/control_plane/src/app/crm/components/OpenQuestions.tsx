@@ -715,13 +715,18 @@ export default function OpenQuestionsCard() {
     }
   }
 
-  async function answer(q: Question, value: AnswerValue): Promise<boolean> {
+  /**
+   * `closeFirst` closes the Modal that asked (CRM-U17a). It runs before any
+   * toast, so no toast rises over an open Modal (`components/ui/Toast.tsx`).
+   */
+  async function answer(q: Question, value: AnswerValue, closeFirst?: () => void): Promise<boolean> {
     const key = `crm-question:${q.id}`;
     setBusy(q.id);
     try {
       // A stage answer commits the plan, so it names the version it read.
       const done = await api.answerQuestion(q.id, value, q.kind === "stage_value" ? plan : null);
       const undo = undoOf(q, done, value);
+      closeFirst?.();
       toast.show({
         key,
         variant: "success",
@@ -730,6 +735,7 @@ export default function OpenQuestionsCard() {
       });
       return true;
     } catch (err) {
+      closeFirst?.();
       fail(key, err, "That answer did not save.");
       return false;
     } finally {
@@ -822,7 +828,7 @@ export default function OpenQuestionsCard() {
   }
 
   /** A correction to a value: a pick, or the list of a sum. Undo puts back the part before. */
-  async function correctTo(q: Question, value: AnswerValue): Promise<boolean> {
+  async function correctTo(q: Question, value: AnswerValue, closeFirst?: () => void): Promise<boolean> {
     const target = correctionTarget(q);
     if (!target) return false;
     const key = `crm-answer:${q.id}`;
@@ -830,6 +836,7 @@ export default function OpenQuestionsCard() {
     setBusy(q.id);
     try {
       await api.putCatalogue(target.module, { [target.part]: value });
+      closeFirst?.();
       toast.show({
         key,
         variant: "success",
@@ -842,6 +849,7 @@ export default function OpenQuestionsCard() {
       });
       return true;
     } catch (err) {
+      closeFirst?.();
       fail(key, err, "That change did not save.");
       return false;
     } finally {
@@ -853,14 +861,17 @@ export default function OpenQuestionsCard() {
   /** Confirm of a proposal in the picker of a sum: one field, or none. */
   async function confirmInSum(value: string | null) {
     if (!sum) return;
-    const done = sum.from === "card" ? await answer(sum.q, value) : await correctTo(sum.q, value);
-    if (done) setSum(null);
+    // The picker closes before the toast of the write (CRM-U17a).
+    const closeFirst = () => setSum(null);
+    if (sum.from === "card") await answer(sum.q, value, closeFirst);
+    else await correctTo(sum.q, value, closeFirst);
   }
 
   async function saveSum(keys: string[]) {
     if (!sum) return;
-    const done = sum.from === "card" ? await answer(sum.q, keys) : await correctTo(sum.q, keys);
-    if (done) setSum(null);
+    const closeFirst = () => setSum(null);
+    if (sum.from === "card") await answer(sum.q, keys, closeFirst);
+    else await correctTo(sum.q, keys, closeFirst);
   }
 
   return (
@@ -920,7 +931,7 @@ export default function OpenQuestionsCard() {
           busy={suggestionActions.busy === preview.slot}
           onClose={() => setPreview(null)}
           onUse={() => {
-            void suggestionActions.apply(previewing).then((done) => done && setPreview(null));
+            void suggestionActions.apply(previewing, () => setPreview(null));
           }}
         />
       ) : null}

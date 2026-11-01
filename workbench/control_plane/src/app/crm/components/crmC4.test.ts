@@ -457,7 +457,7 @@ describe("retire and restore (done-when 6)", () => {
 
   it("a retire asks first, in a ConfirmDialog", () => {
     const source = SOURCE_OF("./FieldStudio.tsx");
-    expect(source).toMatch(/onRetire=\{\(def\) => setConfirm\(\{ kind: "retire", def \}\)\}/);
+    expect(source).toMatch(/setConfirm\(\{ kind: "retire", def, back: fieldForm \}\)/);
     expect(source).toMatch(/retireField\(entity, def\.key\)/);
   });
 });

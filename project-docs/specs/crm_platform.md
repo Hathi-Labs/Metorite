@@ -12171,7 +12171,7 @@ Left out on purpose: the duplicate warning (CRM-S5), "Create another", and a com
 
 ### 20.21 CRM-U17: one way to save, one set of words, and three defects (2026-11-01)
 
-**Status.** 📝 Specified 2026-11-01. Owner choice, 2026-11-01: point 6 of the CRM UX brainstorm and the three defects come first. Metorite task #1318, under the CRM epic.
+**Status.** CRM-U17a is built on branch `crm-ux-save-words-mt-6b2c2bd8` (2026-11-01), not merged. CRM-U17b is specified and not built. Owner choice, 2026-11-01: point 6 of the CRM UX brainstorm and the three defects come first. Metorite task #1318, under the CRM epic.
 
 **Gate.** AGENT-SAFE. No flag and no migration. One gateway change: the label of one system field (`routes/crm/core.py:706`). Everything else is frontend.
 

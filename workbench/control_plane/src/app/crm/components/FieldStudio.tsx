@@ -471,7 +471,8 @@ function FieldRow({
 }
 
 type Confirm =
-  | { kind: "retire"; def: FieldDef }
+  // `back` is the field dialog that closed to make room (CRM-U17a).
+  | { kind: "retire"; def: FieldDef; back: FieldForm | null }
   | { kind: "delete-section"; section: FieldSection; count: number }
   | null;
 
@@ -582,7 +583,11 @@ export default function FieldStudio({ entities }: { entities: readonly StudioEnt
               : patchField(entity, form.def.key, body),
           )
         }
-        onRetire={(def) => setConfirm({ kind: "retire", def })}
+        onRetire={(def) => {
+          // The field dialog closes first. No dialog opens over another one.
+          setConfirm({ kind: "retire", def, back: fieldForm });
+          setFieldForm(null);
+        }}
         readOptions={(key) => readFieldOptions(entity, key)}
         onLateError={setNotice}
       />
@@ -605,7 +610,11 @@ export default function FieldStudio({ entities }: { entities: readonly StudioEnt
         confirmLabel="Retire"
         icon="Archive"
         busy={busy}
-        onCancel={() => setConfirm(null)}
+        onCancel={() => {
+          // Back to the field dialog, as it was opened.
+          if (confirm?.kind === "retire") setFieldForm(confirm.back);
+          setConfirm(null);
+        }}
         onConfirm={() => {
           if (confirm?.kind !== "retire") return;
           const def = confirm.def;
