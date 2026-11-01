@@ -24,10 +24,38 @@ and the sandbox `--cc-*` values now draw in glass. Each class sits behind `glass
 stays byte for byte. `glassCards.test.ts` holds the classic hashes. `glassTokens.test.ts`
 fences the glass sandbox values against `globals.css`.
 
-**GL-10c is BUILT, 2026-10-31 (task #1233).** In glass, the rail is always
-folded and 4.75rem wide, as in ClickUp. Each item is an icon with its label
-below. The page is one rounded card on the frame. The fold button and the
-Sidebar choice in Settings are hidden in glass. Classic is unchanged.
+**GL-10c was BUILT, 2026-10-31, and GL-11 replaces its rail.** The page is
+one rounded card on the frame, and that stays. The always-folded rail with
+labels under the icons is gone: the owner asked for the collapsible sidebar
+back on 2026-11-01.
+
+**GL-11 is BUILT, 2026-11-01 (task #1233).** The owner reviewed the preview
+live and asked for these changes the same day.
+- **Desktop proportions.** The glass text styles are desktop sizes: body
+  15 px, labels 13 to 14 px, the 12 px floor stays. Corners are 16 px for a
+  card and the page, and 10 px for a row. A control is 28 px. Touch sizes
+  apply only below a 1024 px window, because a touch laptop reports a coarse
+  pointer and no hover.
+- **One surface.** The page card is the card colour. An app root that
+  paints the page colour takes the card. The title bar has no band and no
+  hairline.
+- **Raised chat cards.** A chat card is the `glass-raised` surface, one step
+  above the page. A card that waits on the member has a hairline in the tint.
+  My Day's cards take the same surface.
+- **The sidebar.** It runs the full height and owns its head: the
+  organization's lockup and the fold control. Ctrl+\ folds it. A folded
+  rail widens over the page on hover, and nothing moves: each icon holds its
+  place, the page holds its place, and the material keeps its colour.
+  Section caps keep Personal Center, Across teams and Admin. One Needs you
+  row holds the count. Appearance is a sidebar app that a member stars on or
+  off. `navigation_shell.md` §3 has the frame.
+- **Chat.** Enter sends and Shift+Enter is a new line. The assistant panel
+  sits beside the page from a 1024 px window, and a tight window folds the
+  sidebar once.
+
+Fences: `glassLook.test.ts` (one surface, the rail fades, the colour edge),
+`assistant.test.ts` (`dockFoldsNav`), `chatSteer.test.ts` (`enterSends`),
+`nav.test.ts`, `shellNav.test.ts`, `presets.test.ts` and the shell e2e specs.
 
 **GL-10b is BUILT on its branch, 2026-10-31, not yet merged** (task #1233). It
 takes the rest of the chat into glass: the session list, the empty state, the
