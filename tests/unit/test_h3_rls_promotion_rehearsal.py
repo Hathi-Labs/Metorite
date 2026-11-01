@@ -241,6 +241,20 @@ def app_engine(promoted):
         eng.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _access_tables_present(monkeypatch):
+    """Every test here starts with ``access._tables_missing`` OFF.
+
+    The latch is process-wide. An earlier suite that resolved access against a
+    database with no access tables sets it, and then ``resolve_access`` returns
+    ``is_active=False`` with no query. The admit tests below then fail on a
+    member they just seeded (task 1332, pr-check run 41305223510), and the RED
+    tests pass for the wrong reason. ``tests/conftest.py`` clears it for every
+    test too. This suite states its own precondition all the same.
+    """
+    monkeypatch.setattr(access_mod, "_tables_missing", False)
+
+
 # ==========================================================================
 # The OWED two-org isolation fixture (MT-1i / work_plan.md §2 WS-14a).
 # ==========================================================================
