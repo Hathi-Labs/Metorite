@@ -51,6 +51,7 @@ describe("readReminderReceipt", () => {
     expect(r.fireAt).toBe("2099-10-31T11:30:00+00:00");
     expect(r.fireMs).toBe(Date.parse("2099-10-31T11:30:00Z"));
     expect(r.zone).toBe("Asia/Kolkata");
+    expect(r.zoneName).toBe("IST");
     expect(r.taskId).toBe(TASK);
     expect(r.undo).toBe("drop");
   });
@@ -149,6 +150,12 @@ describe("the words of a time", () => {
     expect(exactWhen(Date.parse("2026-11-07T03:30:00Z"), zone, NOW)).toMatch(/^Sat,? 7 Nov|^Sat, Nov 7/);
     // 23:30 UTC on 2 Nov is 05:00 on 3 Nov in Kolkata: tomorrow, not today.
     expect(exactWhen(Date.parse("2026-11-02T23:30:00Z"), zone, NOW)).toMatch(/^Tomorrow, 5:00\s[Aa][Mm]/);
+  });
+
+  it("the zone reads as the server names it, not as the browser's GMT+5:30", () => {
+    const text = exactWhen(Date.parse("2026-11-02T11:30:00Z"), zone, NOW, "IST");
+    expect(text).toMatch(/^Today, 5:00\s[Pp][Mm] IST$/);
+    expect(text).not.toContain("GMT");
   });
 
   it("the relative time uses minutes, hours or days, and says ago for the past", () => {

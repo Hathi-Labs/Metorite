@@ -39,6 +39,8 @@ export interface ReminderReceipt {
   fireAt: string;
   fireMs: number;
   zone: string | null;
+  /** The zone as the member reads it ("IST"), from the first line of the receipt. Null when there is none. */
+  zoneName: string | null;
   taskId: string | null;
   undo: UndoKind | null;
   was: { title?: string; kind?: string; fireAt?: string; zone?: string };
@@ -78,6 +80,7 @@ export function readReminderReceipt(tool: string, result: string): ReminderRecei
     fireAt,
     fireMs,
     zone: line(result, "zone"),
+    zoneName: result.split(String.fromCharCode(10))[0].match(/ at .* ([A-Z]{2,5})[.]?$/)?.[1] ?? null,
     taskId: task && new RegExp(`^${UUID}$`, "i").test(task) ? task.toLowerCase() : null,
     undo: undo === "drop" || undo === "reschedule" || undo === "patch" ? undo : null,
     was,

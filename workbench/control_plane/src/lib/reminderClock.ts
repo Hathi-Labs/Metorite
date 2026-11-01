@@ -196,17 +196,21 @@ function addDays(date: string, days: number): string {
 /**
  * The exact time in the member's words: "Today, 5:00 PM IST", "Tomorrow, 9:00
  * AM IST", or "Sat 7 Nov, 9:00 AM IST". The day is the day on the wall of
- * `zone`, and the zone name is the one the browser gives for it.
+ * `zone`. The zone name is `abbr` when the caller has one, else the one the
+ * browser gives for it.
  */
-export function exactWhen(ms: number, zone: string, nowMs: number = Date.now()): string {
+export function exactWhen(ms: number, zone: string, nowMs: number = Date.now(), abbr?: string | null): string {
   const today = wallDate(nowMs, zone);
   const day = wallDate(ms, zone);
-  const clock = new Intl.DateTimeFormat(undefined, {
+  // The browser names a zone in its own locale ("GMT+5:30"). The server names
+  // it as the member knows it ("IST"), so a receipt passes that name in `abbr`.
+  const base = new Intl.DateTimeFormat(undefined, {
     timeZone: zone,
     hour: "numeric",
     minute: "2-digit",
-    timeZoneName: "short",
+    ...(abbr ? {} : { timeZoneName: "short" as const }),
   }).format(new Date(ms));
+  const clock = abbr ? `${base} ${abbr}` : base;
   if (day === today) return `Today, ${clock}`;
   if (day === addDays(today, 1)) return `Tomorrow, ${clock}`;
   if (day === addDays(today, -1)) return `Yesterday, ${clock}`;

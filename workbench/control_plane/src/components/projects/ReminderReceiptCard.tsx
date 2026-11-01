@@ -107,7 +107,7 @@ export default function ReminderReceiptCard({
     setFireMs(ms);
     setPicking(false);
     setUndone(true); // The old Undo no longer fits the new time.
-    setSaid(`Moved to ${exactWhen(ms, zone)}.`);
+    setSaid(`Moved to ${exactWhen(ms, zone, Date.now(), receipt.zoneName)}.`);
   };
 
   const saveTime = () => {
@@ -119,7 +119,7 @@ export default function ReminderReceiptCard({
     void moveTo(check.when.iso, check.when.ms);
   };
 
-  const summary = `${title} · ${exactWhen(fireMs, zone, now)}`;
+  const summary = `${title} · ${exactWhen(fireMs, zone, now, receipt.zoneName)}`;
 
   return (
     <RollupCard id={`tool:${id}`} title={label} icon="Bell" summary={summary} header="own">
@@ -138,7 +138,7 @@ export default function ReminderReceiptCard({
                 {title || "Reminder"}
               </div>
               <div className={`text-xs ${dropped ? "text-muted-foreground line-through" : "text-foreground"}`} data-reminder-exact="">
-                {exactWhen(fireMs, zone, now)}
+                {exactWhen(fireMs, zone, now, receipt.zoneName)}
               </div>
               <div className="text-[10px] text-muted-foreground" data-reminder-relative="">
                 {dropped ? "Dropped" : relativeWhen(fireMs, now)} · private, only you see it
