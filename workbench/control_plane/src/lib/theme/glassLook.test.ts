@@ -290,9 +290,12 @@ describe("one surface for each app", () => {
     // Owner, 2026-10-31: the title bar and the app are one block.
     const shell = readFileSync(join(SRC, "components", "AppShell.tsx"), "utf8");
     expect(shell).toMatch(/const FULL_MAIN =\s*"[^"]*glass:rounded-2xl glass:bg-card glass:shadow-card"/);
-    expect(GLOBALS).toMatch(/html\[data-look="glass"\] main \.h-full\.bg-background:not\(aside\) \{\s*background-color: transparent;/);
+    expect(GLOBALS).toMatch(
+      /html\[data-look="glass"\] main \.h-full\.bg-background:not\(aside\):not\(\[class\*="glass:bg-"\]\) \{\s*background-color: transparent;/,
+    );
     // A panel over the page is no app root: the task panel stays opaque, or
-    // the board's text shows through it (owner, 2026-11-01).
+    // the board's text shows through it (owner, 2026-11-01). An element that
+    // names its own glass fill keeps it.
     const panel = readFileSync(join(SRC, "app", "projects", "components", "TaskPanel.tsx"), "utf8");
     expect(panel).toMatch(/<aside\s+className=\{`[^`]*bg-background glass:bg-card`\}/);
     // The title bar hangs no fade and no fill: they drew the band. It keeps
