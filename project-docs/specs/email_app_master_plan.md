@@ -13734,11 +13734,13 @@ window of one minute.
   cycle reads no seed and reads on with `before:`, as the import does. The end writes the seed of the
   first cycle, so the history read gets each change made during the sweep. A rate limit after a
   finished page ends the sweep in the same way.
-- **D-G4b-f3-13. A short reset sweep does not move.** A page that fails, or a fetch that a later
-  cycle can fix, writes no new point. So the stored cursor stays, the page reads again, and
-  `CATCH_UP_MAX_MISSES` still abandons a page that always fails. A page whose mail all has one second
-  cannot move the bound, so it counts as short too. With no seed the sweep reads on, because a cursor
-  could not hold its point.
+- **D-G4b-f3-13. A failed fetch holds the bound and does not lift the share.** The list runs newest
+  first, so the bound stays at the mail before the first failed fetch, and the next cycle reads the
+  failed mail again. The first build lifted the share after one 503, and that sweep read 15 of 16
+  mails under the lock. A sweep that cannot move its bound counts as short, and the stored cursor
+  stays. That is a failed fetch at the top of the read, a page that fails, or a page whose mail all
+  has one second. `CATCH_UP_MAX_MISSES` then abandons the sweep, so a mail that always fails cannot
+  stop it from ending. With no seed the sweep reads on, because a cursor could not hold its point.
 - **D-G4b-f3-14. An early stop runs no rerun.** The next cycle comes soon, so `_rerun_once` would
   only hold the lock for a second share.
 
@@ -13748,11 +13750,15 @@ at a boundary:
 
 | Cycle | Reads at the worst | Time |
 |---|---|---|
-| First import, one history page, 25 bodies | 499 + 100 + 25 | About 470 s |
+| First import, one history page, 25 bodies | 499 + 100 + 25, and about 699 at the most | About 470 s, and about 525 s at the most |
 | History read, 25 bodies | 499 + 25 | About 395 s |
 | Reset sweep or first sweep, 25 bodies | 499 + 25 | About 395 s |
 | A full cycle with no early stop, then a rerun | 399 + 25 + 499 + 25 | About 710 s |
 | Deep sync | No bound | A member chose it |
+
+A history page holds 100 records, and one mail in each record gives 100 reads. A record can name more
+than one mail, so 699 reads is the figure to plan with. Phase (e) runs after the sweeps, and no share
+check runs after it. Its 25 bodies are the batch size and not a measured bound.
 
 The rerun row passes the wait, and this slice leaves it. It needs a webhook during a cycle of almost
 one share, and then a second full share of new mail. The waiter then gets a busy result, and its job
@@ -13774,19 +13780,21 @@ this rare case is worth.
    open. A real import error stays on both routes.
 6. A deep sync reads past the share and keeps its error, also when the sweep after it raises.
 7. Twelve fast cycles stay soft. A refusal shows the error after `RATE_LIMIT_SOFT_SECS`, on the
-   raised route and on the result route. A sweep that rereads one INBOX is no progress. A cycle that
-   moves clears the clock.
+   raised route and on the result route. A sweep that rereads one INBOX is no progress, and an
+   unchanged cursor is no progress. A cycle that moves clears the clock.
 8. The loop sleeps `SYNC_RESUME_SECS` after an early stop, and the doubling stays for a failure.
-9. A reset sweep stops at its share, goes on with no seed read, and ends with the first seed. It
-   keeps its finished pages at a limit, and a limit on page 1 raises. A short sweep writes no new
-   point. A bound that cannot move counts as short. With no seed it reads on. Other cursor forms
-   do not read a reset cursor.
+9. A reset sweep stops at its share, with the exact bound stored and the exact `before:` query in
+   the next cycle. It goes on with no seed read, and it ends with the first seed. It keeps its
+   finished pages at a limit, and a limit on page 1 raises. A failed fetch does not lift the share.
+   The bound stays above the first failed fetch, also at a limit, and the next cycle reads that
+   mail. A mail that always fails ends in the abandon. A bound that cannot move counts as short.
+   With no seed it reads on. Other cursor forms do not read a reset cursor.
 10. A seed survives a sweep that raises, in a hermetic test and on real SQL.
 
-**The mutations.** Each mutation broke one rule, a fence went red, and the code came back. All 53
+**The mutations.** Each mutation broke one rule, a fence went red, and the code came back. All 60
 went red. M1 to M8, M11 to M13, M15 to M18 and M23 to M25 ran at `73769de26`, and neither their code
-nor their fence changed. The others ran on the fix round. `test_gmail_rate_limits.py` is R, and
-`test_gmail_history_cursor.py` is H.
+nor their fence changed. The others ran on the two fix rounds. `test_gmail_rate_limits.py` is R,
+and `test_gmail_history_cursor.py` is H.
 
 | Mutation | Fence that failed |
 |---|---|
@@ -13833,16 +13841,23 @@ nor their fence changed. The others ran on the fix round. `test_gmail_rate_limit
 | M41 A rerun follows an early stop | H `test_a_rerun_waits_for_the_next_cycle_after_an_early_stop` |
 | M42 The reset sweep has no share | H `test_a_reset_sweep_stops_at_its_share_and_goes_on` |
 | M43 A reset with no seed stops | H `test_a_reset_sweep_with_no_seed_reads_on` |
-| M44 A short reset moves the point | H `test_a_short_reset_sweep_writes_no_new_point` |
-| M45 A limit loses the reset pages | H `test_a_limit_keeps_the_finished_pages_of_a_reset_sweep` |
+| M44 A failed fetch moves the bound | H `test_a_failed_fetch_does_not_lift_the_share` |
+| M45 A limit loses the reset pages | H `test_a_limit_keeps_the_bound_above_a_failed_fetch` |
 | M46 A limit on page 1 cuts the reset | H `test_a_limit_on_the_first_reset_page_raises` |
 | M47 A resumed reset seeds again | H `test_a_reset_sweep_stops_at_its_share_and_goes_on` |
 | M48 The reset cursor stays unread | H `test_a_reset_sweep_stops_at_its_share_and_goes_on` |
 | M49 A bound that cannot move loops | H `test_a_reset_sweep_that_cannot_move_counts_as_short` |
-| M50 The stopped page stays in the result | H `test_a_limit_keeps_the_finished_pages_of_a_reset_sweep` |
+| M50 The stopped page stays in the result | H `test_a_limit_keeps_the_bound_above_a_failed_fetch` |
 | M51 The seed waits for phase (d) | H `test_a_seed_survives_a_sweep_that_raises` |
 | M52 A read is not counted | H `test_the_sweep_after_a_spent_share_reads_one_page` |
 | M53 The reset rereads from the newest mail | H `test_a_reset_sweep_stops_at_its_share_and_goes_on` |
+| M54 A failed fetch lifts the share | H `test_a_failed_fetch_does_not_lift_the_share` |
+| M55 A limit steps past a failed fetch | H `test_a_limit_keeps_the_bound_above_a_failed_fetch` |
+| M56 The index of the failure is late | H `test_a_failed_fetch_does_not_lift_the_share` |
+| M57 A later failure moves the hold | H `test_the_bound_stays_above_the_first_failed_fetch` |
+| Q1 The bound is one hour too old | H `test_a_reset_sweep_stops_at_its_share_and_goes_on` |
+| P1 An unchanged cursor counts as moved | H `test_an_unchanged_cursor_is_no_progress` |
+| P2 The bound is the newest mail | H `test_a_reset_sweep_stops_at_its_share_and_goes_on` |
 
 **Known limits.**
 
@@ -13857,8 +13872,12 @@ nor their fence changed. The others ran on the fix round. `test_gmail_rate_limit
 - The table in `_quota_units` covers the calls of a cycle only. `trash`, `batchModify`, `insert`,
   `import`, `watch` and `threads` have no price, because a member's provider sends them and sets no
   `quota_mailbox`.
-- A restart empties the meter and the clock. The first calls after it can get a 403, and the next
-  cycle goes on.
+- A restart empties the meter and the clock, because both live in the process. The first calls after
+  it can get a 403, and the next cycle goes on.
+- A mail that always fails at the top of a read ends the sweep in the abandon. The mail below that
+  point stays unread, and a Resync recovers it.
+- An older process reads a reset cursor as no cursor. It then sweeps again from the start, and it
+  drops the point that the sweep reached.
 
 **Verify on production, after the release.**
 

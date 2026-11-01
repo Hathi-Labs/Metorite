@@ -1798,7 +1798,7 @@ async def test_the_bound_stays_above_the_first_failed_fetch(
     mails = _dated_mail(fake, m1=1, m2=2, m3=3, m4=4, m5=5)
     fake.message("m2", _refuse(503, "backendError"))
     fake.message("m4", _refuse(503, "backendError"))
-    fake.listing = _dated_list(mails, size=4)
+    fake.listing = _dated_list(mails, size=2)
 
     result = await _provider().sync_messages(history_id="100")
 
