@@ -184,7 +184,9 @@ The primary key is `(organization_id, install_id, point, key)`.
 
 **Both tables** take the ENABLE, FORCE and policy block of `312_jobs.sql`, in DO blocks, through the `get_db()` seam (R5).
 
-**`apps` gains one key.** The migration adds `UNIQUE (organization_id, id)` to `apps`, so that the composite FK can point at it. `id` is the primary key already, so no row can break it. This is an expand step (R6). A fresh ladder database has no `apps.organization_id`, because only the generated phases add it (H-104). So the migration first adds the column to a database that does not have it, as 209 and 223 do. Production has the column, and that step does nothing there.
+**`apps` gains one key.** The migration adds `UNIQUE (organization_id, id)` to `apps`, so that the composite FK can point at it. `id` is the primary key already, so no row can break it. This is an expand step (R6).
+
+**`apps.organization_id` joins the numbered ladder.** A fresh ladder database has no `apps.organization_id`, because only the generated phases add it (H-104). So the migration first adds the column to a database that does not have it, as 209 and 223 do. Production has the column, and that step does nothing there.
 
 Five decisions that the columns carry:
 1. **`needs_setup` is not stored.** The resolve computes it from the needs (§5.2 step 4), so it can never be stale.
