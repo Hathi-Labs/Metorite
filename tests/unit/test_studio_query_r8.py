@@ -41,7 +41,8 @@ g. On 50,000 records, EXPLAIN of the SQL of ``build_query`` shows the hot
 * Q2. ``objects_store._QUERY_BASE``: drop ``r.object_id = CAST(:oid AS uuid)``.
   ``test_r8_a_query_reads_its_own_object_only`` goes red.
 * Q3 is hermetic: ``test_studio_query.py``.
-* Q4. ``objects_store._q_text_eq``: return the first branch for each length.
+* Q4. ``objects_store._q_text_eq``: for a value of 256 or more, drop the
+  check ``AND r.data ->> ... = ...`` and keep the test of ``v_text``.
   ``test_r8_a_long_text_match_is_checked_against_data`` goes red. In
   ``_q_contains``, drop the second branch: the same test goes red.
 * Q5. ``objects_store._time_limit``: drop the ``set_config`` of the timeout.
@@ -49,7 +50,7 @@ g. On 50,000 records, EXPLAIN of the SQL of ``build_query`` shows the hot
 * Q6. ``objects_store._time_limit``: drop ``begin_nested()``, or drop the
   restore in ``finally``. ``test_r8_a_query_past_the_timeout_stops_with_query_timeout``
   or ``test_r8_the_old_timeout_is_back_after_a_query`` goes red.
-* Q7. ``objects_store._check_hot_or_small``: drop the ``raise``.
+* Q7. ``objects_store._check_hot_or_small``: ``return`` before the ``raise``.
   ``test_r8_a_cold_filter_on_more_than_5000_records_is_refused`` goes red.
 * Q8. ``objects_store.build_query``: drop ``, r.id{dirn}`` from the ORDER BY.
   ``test_r8_a_sort_pages_each_record_once_in_order`` goes red.

@@ -5,8 +5,8 @@ Spec: ``project-docs/specs/ai_studio.md`` §3.1 and the §14 C2a row. Code:
 ``gateway/studio/objects_store.py`` (the SQL). ``test_studio_query_r8.py``
 runs the SQL on a real Postgres.
 
-**The mutation Q3 (R7).** In ``objects_store._q_hot_row``, write the key into
-the SQL: ``h{i}.field_key = '{cond.field.key}'`` (pass ``cond`` in).
+**The mutation Q3 (R7).** In ``objects_store._q_hot``, write the key into
+the SQL: ``row = _q_hot_row(i).replace(f"CAST(:fk{i} AS text)", f"'{cond.field.key}'")``.
 ``test_no_fstring_in_the_query_sql_takes_a_value`` and
 ``test_a_hostile_key_or_value_never_reaches_the_sql`` go red.
 """
