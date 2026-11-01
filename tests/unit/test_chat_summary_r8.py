@@ -68,6 +68,7 @@ answer with no ``check_answer`` (item 1, the sensitive line).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import uuid
@@ -640,10 +641,13 @@ class _Console:
         self.answer: dict[str, Any] = dict(SUMMARY)
         self.content: str | None = None
         self.finish = "stop"
+        self.hang = False
 
     async def __call__(self, payload: dict[str, Any], **attribution: Any) -> tuple[int, Any]:
         self.calls.append({"payload": payload, "attribution": attribution,
                            "checked_out": _checked_out()})
+        if self.hang:
+            await asyncio.sleep(60)
         if self.fault is not None:
             raise self.fault
         if self.status != 200:
@@ -1013,6 +1017,19 @@ async def test_3_a_402_gives_up_out_of_credits_and_the_mark_stays(job) -> None:
 async def test_3_another_fault_gives_up_summary_failed_and_the_mark_stays(job) -> None:
     sid, newest = _job_chat(job, org=job.org_a)
     job.console.fault = RuntimeError("the Console is down")
+    assert await _tick(job, job.org_a) == Counter(failed=1)
+    _given_up(job, sid, "SummaryFailed")
+    assert _summary(job, sid)["mark"]["through"] == newest
+
+
+async def test_3_a_call_over_the_limit_gives_up_and_the_mark_stays(job, monkeypatch) -> None:
+    """A slow vendor must not hold the shared worker for the 120 s of the
+    Console client (the review of PZ-33b)."""
+    from gateway import chat_summary_job
+
+    monkeypatch.setattr(chat_summary_job, "CALL_TIMEOUT_S", 0.05)
+    sid, newest = _job_chat(job, org=job.org_a)
+    job.console.hang = True
     assert await _tick(job, job.org_a) == Counter(failed=1)
     _given_up(job, sid, "SummaryFailed")
     assert _summary(job, sid)["mark"]["through"] == newest

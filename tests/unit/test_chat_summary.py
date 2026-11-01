@@ -564,6 +564,21 @@ def test_pz33b_the_boundary_a_letter_splits_a_number(text: str) -> None:
     assert summaries.check_answer(_answer(text), words) is None
 
 
+# ── PZ-33b: the bound on the shared worker ─────────────────────────────────
+
+
+def test_pz33b_one_org_holds_the_shared_worker_for_a_bounded_time() -> None:
+    """The worker runs the orgs in turn and one job at a time, so the summary
+    jobs of one org must not start the brief of another org late."""
+    from gateway import chat_summary_job
+    from gateway.jobs import worker
+
+    assert summaries.SUMMARY_SEED_MAX == 5
+    assert chat_summary_job.CALL_TIMEOUT_S == 30
+    assert summaries.SUMMARY_SEED_MAX * chat_summary_job.CALL_TIMEOUT_S <= 150
+    assert chat_summary_job.CALL_TIMEOUT_S < worker.HANDLER_TIMEOUT
+
+
 # ── PZ-33b: the member's switch and the dedupe key ─────────────────────────
 
 

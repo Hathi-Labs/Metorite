@@ -37,9 +37,10 @@ with the id of a chat of another org finds no row.
 8. The model call, with no session open, as the member
    (``acb_common._log.job_member_scope``, app ``chat``), with
    ``feature="assistant.chat_summary"`` and with no reasoning
-   (:data:`NO_THINKING`). A Router refusal for credits (402) gives up with
-   ``OutOfCredits``. Any other fault gives up with ``SummaryFailed``. The
-   mark stays, so the seed does not try these rows again.
+   (:data:`NO_THINKING`), for at most :data:`CALL_TIMEOUT_S` seconds. A
+   Router refusal for credits (402) gives up with ``OutOfCredits``. Any other
+   fault gives up with ``SummaryFailed``. The mark stays, so the seed does
+   not try these rows again.
 9. ``check_answer`` checks the answer. An answer that keeps nothing is
    ``done`` with no write. An empty or cut answer logs
    ``assistant.chat_summary_bad_answer`` at warning.
@@ -90,6 +91,11 @@ FEATURE = "assistant.chat_summary"
 MODEL = "tier-fast"
 #: The most tokens of the answer (§15.3).
 ANSWER_TOKENS = 300
+#: The seconds that the model call may take. The Console client waits 120 s,
+#: and the shared worker runs one job at a time. So a slow vendor must not hold
+#: the worker from the jobs of another org. An answer of 300 tokens with no
+#: reasoning needs far less. A call over the limit gives up ``SummaryFailed``.
+CALL_TIMEOUT_S = 30.0
 #: The reasoning budget of the call: none. ``tier-fast`` binds a DeepSeek
 #: model that thinks by default, and the vendor counts the reasoning tokens
 #: in the cap. With no such field the model spends the 300 tokens on
@@ -201,10 +207,11 @@ async def _ask(member: str, messages: list[dict[str, str]]) -> Any:
     from acb_llm import context
 
     with job_member_scope(member, app="chat"):
-        resp, _used = await context.acompletion_with_fallback(
-            model=MODEL, messages=messages, max_tokens=ANSWER_TOKENS, temperature=0.2,
-            source="chat", feature=FEATURE, response_format={"type": "json_object"},
-            thinking=dict(NO_THINKING))
+        async with asyncio.timeout(CALL_TIMEOUT_S):
+            resp, _used = await context.acompletion_with_fallback(
+                model=MODEL, messages=messages, max_tokens=ANSWER_TOKENS, temperature=0.2,
+                source="chat", feature=FEATURE, response_format={"type": "json_object"},
+                thinking=dict(NO_THINKING))
     choice = resp.choices[0]
     content = choice.message.content
     finish = getattr(choice, "finish_reason", None)

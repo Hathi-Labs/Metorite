@@ -776,11 +776,15 @@ ATTEMPTS = 3
 IDLE = timedelta(minutes=30)
 #: The seed reads only the chats with a row in this window (§15.3).
 WINDOW = timedelta(days=7)
-#: The most jobs that one seed enqueues for one org (§15.3).
-SUMMARY_SEED_MAX = 20
-#: The most candidate chats that one seed reads. The typed-row rule runs in
-#: Python, so the SQL reads more chats than the cap.
-SEED_SCAN_MAX = 3 * SUMMARY_SEED_MAX
+#: The most jobs that one seed enqueues for one org (§15.3). The worker runs
+#: the orgs in turn, and one job at a time (``jobs/worker.py``). So 20 slow
+#: calls of one org would hold the worker for minutes, and the ``brief.run``
+#: of another org would start late. With ``chat_summary_job.CALL_TIMEOUT_S``,
+#: 5 chats hold the worker for at most 150 seconds in a tick.
+SUMMARY_SEED_MAX = 5
+#: The most candidate chats that one seed reads. The typed-row rule and the
+#: mail mark run in Python, so the SQL reads more chats than the cap.
+SEED_SCAN_MAX = 60
 #: The newest short rows of the member that the seed reads for each chat.
 SEED_ROWS = 20
 #: The fewest typed rows of the member that a chat needs (§15.3).
