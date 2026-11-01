@@ -42,6 +42,11 @@ class LLMUnavailable(Exception):
     processed forever and the mail is never looked at again."""
 
 
+#: The reason of an ``LLMUnavailable`` for an answer with no text (task
+#: 1128). A blank answer is no verdict, so it must not burn the watermark.
+EMPTY_RULE_ANSWER = "the classifier model gave no answer"
+
+
 def _addr_emails(field: Any) -> set[str]:
     """Lowercased email set from a JSONB ``[{name,email}]`` list (str-tolerant)."""
     try:
@@ -900,10 +905,14 @@ async def _llm_pick_rule(
                 _log.warning("email.llm_pick_rule_unparseable",
                              model=_used, sample=content[:200])
             elif not content.strip():
-                # The model gave no text. The log must not read as "no rule
-                # fits" (task 1128).
+                # The model gave no text (task 1128). That is no verdict, so
+                # it is not "no rule fits". It raises as an outage does, and
+                # the watermark stays, so a later run classifies the mail.
                 _log.warning("email.llm_pick_rule_empty", model=_used)
+                raise LLMUnavailable(EMPTY_RULE_ANSWER)
             return None
+        except LLMUnavailable:
+            raise
         except Exception as exc:  # noqa: BLE001
             # The call failed (gateway/network/timeout) — NOT a no-match. Signal it
             # so the watermark isn't burned on mail the classifier never saw.
@@ -1001,9 +1010,13 @@ async def _llm_pick_rules(
                 _log.warning("email.llm_pick_rules_unparseable",
                              model=_used, sample=content[:200])
             elif not content.strip():
-                # No text at all: not "no rules apply" (task 1128).
+                # No text at all is no verdict, not "no rules apply" (task
+                # 1128). It raises, so the watermark stays (see above).
                 _log.warning("email.llm_pick_rules_empty", model=_used)
+                raise LLMUnavailable(EMPTY_RULE_ANSWER)
             return out
+        except LLMUnavailable:
+            raise
         except Exception as exc:  # noqa: BLE001
             # The call failed — NOT "no rules apply". Signal it (see _llm_pick_rule).
             _log.warning("email.llm_pick_rules_failed", error=str(exc)[:200])

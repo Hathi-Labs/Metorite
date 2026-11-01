@@ -10,7 +10,8 @@ and the WhatsApp draft and nudge keep their tests beside their other tests:
 Mutations this file catches (R7):
 
 * The consult plan reads a blank answer as "no specialist needed" again.
-* The rule pick logs nothing for a blank answer, so it reads as "no rule fits".
+* The rule pick reads a blank answer as "no rule fits", and burns the
+  watermark. It must raise ``LLMUnavailable``, so the mail is tried again.
 * The template fill writes the raw ``{{...}}`` text on a blank answer.
 * The self-anneal reply sends ``""``.
 * The graphiti gate reads a blank answer as YES.
@@ -89,23 +90,41 @@ _RULES = [{"id": "r1", "name": "Newsletter", "instructions": "newsletters"}]
     ("_llm_pick_rule", "email.llm_pick_rule_empty"),
     ("_llm_pick_rules", "email.llm_pick_rules_empty"),
 ])
-async def test_a_blank_rule_pick_logs_that_it_was_blank(monkeypatch, pick, event) -> None:
+async def test_a_blank_rule_pick_is_an_outage_not_no_match(monkeypatch, pick, event) -> None:
+    """A blank answer raises ``LLMUnavailable``, as a failed call does. The
+    runner then keeps the watermark, and a later run classifies the mail.
+    "No rule fits" would burn the watermark for good (repair round 1)."""
     from gateway.routes.email.automation import engine
 
     seen: dict[str, Any] = {}
 
     async def llm(*_a: Any, **kw: Any) -> tuple[Any, str, str]:
         seen.update(kw)
-        return None, "", "deepseek/deepseek-flash"
+        return None, "  ", "deepseek/deepseek-flash"
 
     monkeypatch.setattr(engine, "_llm_json", llm)
-    with structlog.testing.capture_logs() as caps:
-        out = await getattr(engine, pick)(_EMAIL, _RULES)
-    assert out in (None, [])
+    with structlog.testing.capture_logs() as caps, \
+            pytest.raises(engine.LLMUnavailable, match=engine.EMPTY_RULE_ANSWER):
+        await getattr(engine, pick)(_EMAIL, _RULES)
     assert seen["job"] == "structured"
     events = [c["event"] for c in caps]
     assert event in events
-    assert not any(e.endswith("_unparseable") for e in events)
+    assert not any(e.endswith(("_unparseable", "_failed")) for e in events)
+
+
+@pytest.mark.parametrize(("pick", "verdict", "expected"), [
+    ("_llm_pick_rule", {"index": -1}, None),
+    ("_llm_pick_rules", {"matches": []}, []),
+])
+async def test_a_real_no_match_still_returns_no_match(
+        monkeypatch, pick, verdict, expected) -> None:
+    from gateway.routes.email.automation import engine
+
+    async def llm(*_a: Any, **_k: Any) -> tuple[Any, str, str]:
+        return verdict, "{}", "m"
+
+    monkeypatch.setattr(engine, "_llm_json", llm)
+    assert await getattr(engine, pick)(_EMAIL, _RULES) == expected
 
 
 # ── email: the template fill ────────────────────────────────────────────────
