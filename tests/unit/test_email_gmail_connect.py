@@ -1138,12 +1138,25 @@ async def test_gmail_authorize_needs_the_disclosure(monkeypatch) -> None:
     assert len(signed) == 1
 
 
+def test_the_route_reads_disclosure_from_the_query() -> None:
+    """A direct call cannot prove the binding. FastAPI must read this name from
+    the query, or each real Gmail connect answers 400."""
+    from gateway.routes.email.core import router
+
+    routes = [
+        r for r in router.routes
+        if getattr(r, "path", "").endswith("/oauth/{provider}/authorize")
+    ]
+    assert len(routes) == 1
+    assert "disclosure" in [p.name for p in routes[0].dependant.query_params]
+
+
 def test_the_disclosure_check_comes_before_the_state_is_signed() -> None:
     """The auditor's correction of item 6. The check sits after the dark gate
     and before ``sign_oauth_state``, not in the code that builds ``params``."""
     src = inspect.getsource(oauth.oauth_authorize)
     dark = src.index("gmail_connect_allowed(user)")
-    check = src.index("disclosure != GMAIL_DISCLOSURE_VERSION")
+    check = src.index("_require_disclosure(")
     sign = src.index("sign_oauth_state(")
     build = src.index("params = {")
     assert dark < check < sign < build
@@ -1248,12 +1261,11 @@ async def test_a_refused_connect_logs_no_ack_and_no_address(monkeypatch) -> None
     try:
         with structlog.testing.capture_logs(
             processors=[structlog.contextvars.merge_contextvars],
-        ) as lines:
-            with pytest.raises(HTTPException):
-                await oauth.oauth_authorize(
-                    "gmail", user=_member(), redirect_after="",
-                    disclosure="evil\ninjected@example.com",
-                )
+        ) as lines, pytest.raises(HTTPException):
+            await oauth.oauth_authorize(
+                "gmail", user=_member(), redirect_after="",
+                disclosure="evil\ninjected@example.com",
+            )
     finally:
         structlog.contextvars.unbind_contextvars("user")
     assert [e["event"] for e in lines] == ["email.oauth_disclosure_refused"]
@@ -1277,10 +1289,9 @@ async def test_a_mailbox_limit_logs_no_ack(monkeypatch) -> None:
         return True
 
     monkeypatch.setattr(oauth, "_mailbox_limit_reached", _full)
-    with structlog.testing.capture_logs() as lines:
-        with pytest.raises(HTTPException) as exc:
-            await oauth.oauth_authorize(
-                "gmail", user=_member(), redirect_after="", disclosure=ACK,
-            )
+    with structlog.testing.capture_logs() as lines, pytest.raises(HTTPException) as exc:
+        await oauth.oauth_authorize(
+            "gmail", user=_member(), redirect_after="", disclosure=ACK,
+        )
     assert exc.value.status_code == 409
     assert not [e for e in lines if e["event"] == "email.oauth_disclosure_ack"]

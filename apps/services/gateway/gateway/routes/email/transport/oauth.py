@@ -247,6 +247,34 @@ def _log_disclosure(event: str, provider: str, organization_id: str,
                   **fields)
 
 
+def _require_disclosure(
+    provider: str, disclosure: str | None, organization_id: str,
+) -> None:
+    """Refuse a Gmail connect that skipped the disclosure (EM-G11a item 6).
+
+    The caller runs this before ``sign_oauth_state``, so no state exists for
+    such a connect. The value is request input, so the line does not log it.
+    Microsoft needs no value (item 4).
+    """
+    if provider != "gmail" or disclosure == GMAIL_DISCLOSURE_VERSION:
+        return
+    _log_disclosure("email.oauth_disclosure_refused", provider, organization_id)
+    raise HTTPException(status_code=400, detail=DISCLOSURE_REQUIRED)
+
+
+def _record_disclosure_ack(
+    provider: str, disclosure: str | None, organization_id: str,
+) -> None:
+    """Write the CASA evidence for the current words (EM-G11a item 7).
+
+    An old or an absent value writes no line, because no line may name words
+    that the member did not see. Never add an address to this line.
+    """
+    if disclosure == GMAIL_DISCLOSURE_VERSION:
+        _log_disclosure("email.oauth_disclosure_ack", provider, organization_id,
+                        version=GMAIL_DISCLOSURE_VERSION)
+
+
 @router.get("/oauth/{provider}/authorize")
 async def oauth_authorize(
     provider: str,
@@ -310,13 +338,7 @@ async def oauth_authorize(
         # the same answer. A `login_hint` never widens the list.
         _log.info("email.oauth_gmail_dark", leg="authorize")
         raise HTTPException(status_code=400, detail=_NOT_CONFIGURED["gmail"])
-    if provider == "gmail" and disclosure != GMAIL_DISCLOSURE_VERSION:
-        # EM-G11a item 6. Before `sign_oauth_state`, so no state exists for a
-        # connect that skipped the step. The value is request input, so this
-        # line does not log it.
-        _log_disclosure("email.oauth_disclosure_refused", provider,
-                        str(user.organization_id))
-        raise HTTPException(status_code=400, detail=DISCLOSURE_REQUIRED)
+    _require_disclosure(provider, disclosure, str(user.organization_id))
     if len(redirect_after) > _MAX_REDIRECT_AFTER:
         raise HTTPException(status_code=400, detail="redirect_after is too long.")
     months = DEFAULT_IMPORT_MONTHS
@@ -401,12 +423,9 @@ async def oauth_authorize(
         params["login_hint"] = hint
     auth_url = f"{base}?{urlencode(params)}"
 
-    if disclosure == GMAIL_DISCLOSURE_VERSION:
-        # EM-G11a item 7, the CASA evidence. It logs last, so each line is a
-        # member who reached the provider. Never add an address to this line.
-        _log_disclosure("email.oauth_disclosure_ack", provider,
-                        str(user.organization_id),
-                        version=GMAIL_DISCLOSURE_VERSION)
+    # EM-G11a item 7. It logs last, so each line is a member who reached the
+    # provider.
+    _record_disclosure_ack(provider, disclosure, str(user.organization_id))
 
     # ⚠️ No `response_mode=form_post`. The provider would then POST the code
     # cross-site, and the browser drops the Lax session cookie on that POST, so

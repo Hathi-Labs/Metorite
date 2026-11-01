@@ -13967,10 +13967,11 @@ cleared it GO-NARROWED at risk tier HIGH, with no migration.
 **This version is a draft.** Gmail connect is live on production. `EMAIL_GMAIL_CONNECT` is true, no
 member list is set, and production holds 4 Gmail mailboxes (measured 2026-11-02). So a member sees
 this step on the day it ships, and the gateway check binds that member at once. The words must be
-true for a live member today. The Google submission waits for the owner's final words and a final
-`DISCLOSURE_VERSION`. The owner approves the words in a preview. Task
-`33204727-33db-4295-955e-eac30f9e58dd` moves Gmail text off direct DeepSeek. That change is a new
-`DISCLOSURE_VERSION`, because the words live in one constant.
+true for a live member today.
+
+The Google submission waits for the owner's final words and a final `DISCLOSURE_VERSION`. The owner
+approves the words in a preview. Task `33204727-33db-4295-955e-eac30f9e58dd` moves Gmail text off
+direct DeepSeek. That change is a new `DISCLOSURE_VERSION`, because the words live in one constant.
 
 **Gates, item by item.**
 
@@ -14084,10 +14085,9 @@ uv run ruff check apps/services/gateway/gateway/routes/email/transport/oauth.py
 
 ###### 12.3.13.4.1 The disclosure text, draft for the owner (Q-GM-7)
 
-Product copy is not bound by STE (`docs/style_ste.md` §1). `DISCLOSURE_COPY` in
+STE does not bind product copy (`docs/style_ste.md` §1). `DISCLOSURE_COPY` in
 `src/app/email/lib/connect.ts` is the one copy of these words, and this section mirrors it.
-The privacy page of the parallel PR must agree with these words before the Google submission. See
-the disagreement below.
+The privacy page of the parallel PR must agree with these words before the Google submission.
 
 **The sub-processors, measured 2026-11-02.** These are the live bindings on production.
 
@@ -14176,9 +14176,10 @@ Read our privacy policy
 
 **The Outlook words.** They take the same shape, with these differences. The title is "Before you
 connect Outlook", and the lead names Microsoft. The second permission is "Manage your mailbox
-settings", because `MailboxSettings.ReadWrite` covers Outlook rules and categories. The disconnect
-paragraph says that Microsoft keeps Metorite in the list of apps of the account, because Microsoft
-has no revoke for one delegated grant (`teardown.py`). The button is the shared primary `Button`,
+settings", because `MailboxSettings.ReadWrite` covers Outlook rules and categories.
+
+Microsoft has no revoke for one delegated grant (`teardown.py`). So the disconnect paragraph says
+that Metorite stays in the list of apps of the account. The button is the shared `Button`,
 "Continue to Microsoft". `DISCLOSURE_COPY.microsoft` holds the words.
 
 ##### 12.3.13.5 EM-G11b — one set of Gmail scopes (PR-G2)
