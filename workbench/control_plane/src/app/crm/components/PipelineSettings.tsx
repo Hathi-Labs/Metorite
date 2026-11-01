@@ -711,6 +711,7 @@ export function StageList({
           if (!id || !onRemove) return;
           if (await onRemove(kind, id)) {
             useCrmStore.getState().setSettingsDraft(`status:${kind}:${id}`, null);
+            setDeleteRefused(false);
           } else {
             setDeleteRefused(true);
             setEditing(id);
@@ -732,6 +733,7 @@ export function StageList({
         }}
         onAskRemove={(statusId) => {
           setEditing(null);
+          setDeleteRefused(false);
           setConfirmingDelete(statusId);
         }}
         onAdd={async (body) => {

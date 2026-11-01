@@ -252,10 +252,19 @@ describe("one layer at a time (done-when 5)", () => {
 
   it("a stage delete closes the Edit dialog, then asks", () => {
     const source = read("./PipelineSettings.tsx");
-    expect(source).toContain("setEditing(null);\n          setConfirmingDelete(statusId);");
+    expect(source).toContain(
+      "setEditing(null);\n          setDeleteRefused(false);\n          setConfirmingDelete(statusId);",
+    );
     // A cancel goes back to the dialog, and a refusal opens it again with the reason.
     expect(source).toContain("setEditing(confirmingDelete);");
     expect(source).toContain("setDeleteRefused(true);");
+  });
+
+  it("a delete that worked clears the refusal, so the next dialog opens clean", () => {
+    const source = read("./PipelineSettings.tsx");
+    expect(source).toContain(
+      "setSettingsDraft(`status:${kind}:${id}`, null);\n            setDeleteRefused(false);",
+    );
   });
 
   it("the field dialog closes before the retire confirm opens, and Cancel brings its edits back", () => {
