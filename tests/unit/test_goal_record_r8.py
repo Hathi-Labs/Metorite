@@ -39,12 +39,15 @@ g. The member purge deletes the member's goals of the bound org only.
   the_rls_and_the_trigger`` and ``test_r8_the_table_has_enable_and_force_rls``
   go red.
 * M1b. Drop the ENABLE and the FORCE lines, in both files.
-  ``test_r8_org_b_reads_and_writes_nothing_of_org_a`` goes red.
+  ``test_r8_org_b_reads_and_writes_nothing_of_org_a`` and
+  ``test_r8_the_table_has_enable_and_force_rls`` go red.
 * M2. ``goal_store._UPDATE_SQL``: drop ``AND version = :v``.
   ``test_r8_two_racing_updates_give_one_winner`` and
   ``test_r8_many_racing_updates_give_one_winner`` go red.
 * M3. ``goal_store.cap_block``: use ``>`` in place of ``>=``.
-  ``test_r8_the_round_cap_stops_the_job_with_cap_reached`` goes red.
+  ``test_cap_block_is_the_one_cap_rule``,
+  ``test_r8_the_round_cap_stops_the_job_with_cap_reached`` and
+  ``test_r8_a_round_that_meets_the_cost_cap_exactly_stops_the_job`` go red.
 * M4. The migration: drop the CHECK ``goal_records_active_under_caps``.
   The ``active_at_round_cap`` and ``active_at_cost_cap`` cases of
   ``test_r8_the_checks_refuse_a_bad_row`` go red.
@@ -54,8 +57,10 @@ g. The member purge deletes the member's goals of the bound org only.
 * M6. ``routes/admin/members.py``: drop the ``goal_records`` row of
   ``_PURGE_DELETES``. ``test_r8_a_member_purge_removes_the_goals_of_this_org_only``
   goes red, and so do two tests of ``test_admin_member_purge.py``.
-* M7. ``goal_store._check_changes``: drop the ``objective`` refusal.
-  ``test_the_store_refuses_a_bad_write_before_the_db`` goes red.
+* M7. ``goal_store._check_changes``: drop the ``objective`` refusal. The
+  general refusal of an unknown field still refuses it, with another text.
+  ``test_r8_the_store_refuses_an_objective_change_and_the_row_stays`` goes
+  red.
 """
 
 from __future__ import annotations
