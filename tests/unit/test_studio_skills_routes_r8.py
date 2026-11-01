@@ -29,17 +29,29 @@ d. The catalog check reads the bound org: an action that the catalog does
    org A.
 e. A publish needs a version, and a new version of a published skill
    returns it to ``draft``.
+f. Two moves at once give one 200 and one 409, and the skill ends in a state
+   that ``skills.TRANSITIONS`` allows. The move reads the row ``FOR UPDATE``,
+   so the second move reads the state that the first move wrote.
+g. A slug, a name or a description that Postgres refuses (a final newline,
+   a NUL, a lone surrogate) is 422, never 500. It writes no row, and the
+   text does not echo the value.
 
-**The mutation (R7).** In ``skills._check_body``, comment out the catalog
-check (the ``_catalog_problem`` call).
-``test_r8_an_unknown_action_writes_nothing`` and
-``test_r8_a_workflow_of_another_org_is_not_an_action`` go red, and so does
-``test_an_unknown_action_is_422_with_its_path`` of the hermetic suite.
+**The mutations (R7).**
+
+* M1. In ``skills._check_body``, comment out the catalog check (the
+  ``_catalog_problem`` call). ``test_r8_an_unknown_action_writes_nothing``
+  and ``test_r8_a_workflow_of_another_org_is_not_an_action`` go red, and so
+  does ``test_an_unknown_action_is_422_with_its_path`` of the hermetic suite.
+* M2. In ``skills.set_skill_state``, drop ``for_update=True`` from the first
+  read. ``test_r8_two_moves_at_once_give_one_200_and_one_409`` goes red, and
+  so does ``test_a_move_reads_the_skill_with_its_row_lock`` of the hermetic
+  suite.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -53,6 +65,7 @@ from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant
 from fastapi import HTTPException
 from gateway.routes.studio import actions, skills
+from gateway.studio import skills_store as store
 from sqlalchemy import text
 
 from tests.unit._tenant_ladder import tenant_engine_scope
@@ -247,7 +260,7 @@ def test_r8_the_slug_is_unique_for_each_member(world) -> None:
 
     got = _run(world, go)
     assert [s for s, _ in got] == [200, 409, 200, 200]
-    assert got[1][1] == "You already have a skill with this name"
+    assert got[1][1] == "You already have a skill with this name. Choose another name."
     assert TAG not in got[1][1]
 
 
@@ -342,3 +355,103 @@ def test_r8_a_new_version_of_a_published_skill_returns_it_to_draft(world) -> Non
     assert read[1]["skill"]["state"] == "draft"
     assert read[1]["version"]["body"]["actions"] == [A2]
     assert _row(world, sid) == (world.org_a, ANA, "draft", "private", 2, 2)
+
+
+# ── f. Two moves at once ───────────────────────────────────────────────────
+
+
+def test_r8_two_moves_at_once_give_one_200_and_one_409(world, monkeypatch) -> None:
+    """A paused skill gets an archive and a publish at once. The archive moves
+    first, and it holds the row until the publish has read the row, or for one
+    second. With the row lock, the publish read waits for the archive to
+    commit, reads ``archived`` and gets 409. Without the lock, the publish
+    reads ``paused``, and its UPDATE writes ``published`` over the archive."""
+    a = world.org_a
+    real_get, real_set = store.get_skill, store.set_state
+
+    async def go() -> tuple[str, tuple[int, Any], tuple[int, Any]]:
+        sid = (await _create(a, body=_body()))["skill"]["id"]
+        for state in ("published", "paused"):
+            status, got = await _call(a, ANA, skills.set_skill_state, sid,
+                                      payload={"state": state})
+            assert status == 200, got
+        archive_holds = asyncio.Event()
+        read_starts = asyncio.Event()
+        read_ends = asyncio.Event()
+
+        def _in_publish() -> bool:
+            task = asyncio.current_task()
+            return task is not None and task.get_name() == "publish"
+
+        async def get_skill(db: Any, member: str, skill_id: str, **kw: Any) -> Any:
+            if _in_publish():
+                read_starts.set()
+            found = await real_get(db, member, skill_id, **kw)
+            if _in_publish():
+                read_ends.set()
+            return found
+
+        async def set_state(db: Any, member: str, skill_id: str, state: str) -> bool:
+            moved = await real_set(db, member, skill_id, state)
+            if state == "archived":
+                archive_holds.set()
+                # Hold the row until the publish has read it. With the lock,
+                # that read waits for this commit, so stop after one second.
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(read_starts.wait(), timeout=10)
+                    await asyncio.wait_for(read_ends.wait(), timeout=1)
+            return moved
+
+        monkeypatch.setattr(store, "get_skill", get_skill)
+        monkeypatch.setattr(store, "set_state", set_state)
+
+        async def publish() -> tuple[int, Any]:
+            await archive_holds.wait()
+            return await _call(a, ANA, skills.set_skill_state, sid,
+                               payload={"state": "published"})
+
+        archived, published = await asyncio.gather(
+            asyncio.create_task(_call(a, ANA, skills.set_skill_state, sid,
+                                      payload={"state": "archived"}), name="archive"),
+            asyncio.create_task(publish(), name="publish"))
+        return sid, archived, published
+
+    sid, archived, published = _run(world, go)
+    assert archived[0] == 200 and archived[1]["skill"]["state"] == "archived"
+    assert published == (409, "The skill is archived. It cannot move to published.")
+    # The skill ends in a state that the table allows from paused.
+    assert _row(world, sid) == (world.org_a, ANA, "archived", "private", 1, 1)
+    assert "archived" in skills.TRANSITIONS["paused"]
+
+
+# ── g. Text that Postgres refuses ──────────────────────────────────────────
+
+#: The bad texts of the review. Each value holds the suite tag, so a test can
+#: prove that the refusal does not echo it.
+_BAD_TEXT = {
+    "slug_final_newline": ("slug", f"quotes-{TAG}\n"),
+    "name_nul": ("name", f"Quotes {TAG}\x00"),
+    "description_nul": ("description", f"Prices {TAG}\x00 and terms"),
+    "name_lone_surrogate": ("name", f"Quotes {TAG} \ud83d"),
+    "description_lone_surrogate": ("description", f"Half {TAG} \ud83d of a pair"),
+}
+
+
+@pytest.mark.parametrize(("field", "value"), list(_BAD_TEXT.values()), ids=list(_BAD_TEXT))
+def test_r8_text_that_postgres_refuses_is_422_and_writes_nothing(world, field, value) -> None:
+    """Python's ``$`` matches before a final newline, and Postgres refuses a
+    NUL and a lone surrogate. The store refuses each first. So the route
+    answers 422, and no DBAPIError gives a 500 with the value in its log."""
+    a = world.org_a
+
+    async def go() -> tuple[int, Any]:
+        payload: dict[str, Any] = {"name": "Quotes", "slug": f"text-{TAG}",
+                                   "description": "", "body": _body()}
+        payload[field] = value
+        return await _call(a, ANA, skills.create_skill, payload=payload)
+
+    status, detail = _run(world, go)
+    assert status == 422, detail
+    assert TAG not in detail
+    assert not any(ch in detail for ch in ("\x00", "\ud83d", "\n"))
+    assert _count(world) == 0

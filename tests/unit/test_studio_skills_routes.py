@@ -17,12 +17,20 @@ This file proves:
 - the org and the member come from the session, never from the request;
 - the three body checks, in order, before the store session opens;
 - the slug rule and the 409 of a slug that the member holds;
+- a slug, a name or a description that Postgres refuses is 422, and the
+  store writes nothing;
 - the state table, each legal and each illegal move, and the return to
-  ``draft`` of a published skill that gets a new version.
+  ``draft`` of a published skill that gets a new version;
+- a move reads the skill ``FOR UPDATE``. The R8 suite runs two moves at once.
 
-**The mutation (R7).** In ``skills._check_body``, comment out the catalog
-check (the ``_catalog_problem`` call). ``test_an_unknown_action_is_422_with_its_path``
-goes red, and so does the R8 test of an unknown action.
+**The mutations (R7).**
+
+* In ``skills._check_body``, comment out the catalog check (the
+  ``_catalog_problem`` call). ``test_an_unknown_action_is_422_with_its_path``
+  goes red, and so does the R8 test of an unknown action.
+* In ``skills.set_skill_state``, drop ``for_update=True``.
+  ``test_a_move_reads_the_skill_with_its_row_lock`` goes red, and so does the
+  R8 test of two moves at once.
 """
 
 from __future__ import annotations
@@ -74,6 +82,8 @@ class _Tables:
     def __init__(self) -> None:
         self.skills: dict[str, dict[str, Any]] = {}
         self.versions: list[dict[str, Any]] = []
+        #: The skill ids that a read took ``FOR UPDATE``, in order.
+        self.locks: list[str] = []
         self.clock = datetime(2026, 11, 1, tzinfo=UTC)
 
     def tick(self) -> datetime:
@@ -120,7 +130,9 @@ class _FakeDB:
                    "created_at": now, "updated_at": now}
             t.skills[row["id"]] = row
             return _Result([_skill_row(row)])
-        if sql == store._GET_SQL:
+        if sql in (store._GET_SQL, store._GET_SQL + " FOR UPDATE"):
+            if sql.endswith(" FOR UPDATE"):
+                t.locks.append(p["id"])
             row = self._mine(p["m"], p["id"])
             return _Result([_skill_row(row)] if row else [])
         if sql == store._LIST_SQL:
@@ -540,9 +552,30 @@ class TestTheSlug:
         r = c.post("/studio/skills", json={"name": "Again", "slug": "secret-layoff-plan",
                                            "body": _body()})
         assert r.status_code == 409
-        assert r.json() == {"detail": "You already have a skill with this name"}
+        assert r.json() == {
+            "detail": "You already have a skill with this name. Choose another name."}
         assert "secret" not in r.text and "layoff" not in r.text
         assert len(world.tables.skills) == 1 and world.tables.versions == []
+
+    @pytest.mark.parametrize(("field", "value"), [
+        ("slug", "quotes\n"),
+        ("name", "Quotes\x00"),
+        ("description", "Prices\x00 and terms"),
+        ("name", "Quotes \ud83d"),
+        ("description", "Half \ud83d of a pair"),
+    ], ids=["slug_final_newline", "name_nul", "description_nul", "name_lone_surrogate",
+            "description_lone_surrogate"])
+    def test_text_that_postgres_refuses_is_422_and_writes_nothing(self, world, field, value):
+        """The fake session runs no CHECK, so only the store's own refusal
+        makes this 422. The R8 suite proves the 500 that it prevents."""
+        payload = {"name": "Quotes", "slug": "quotes", "description": "", field: value}
+        # json.dumps escapes the NUL and the surrogate, as a browser does.
+        r = _client(world).post("/studio/skills", content=json.dumps(payload),
+                                headers={"content-type": "application/json"})
+        assert r.status_code == 422, r.text
+        assert field in r.json()["detail"]
+        assert "Quotes" not in r.text and "Prices" not in r.text and "Half" not in r.text
+        assert world.tables.skills == {} and world.tables.versions == []
 
     def test_another_member_may_hold_the_same_slug(self, world):
         _create(_client(world), name="Quotes")
@@ -583,6 +616,29 @@ class TestTheStates:
             assert r.status_code == 409, r.text
             assert world.tables.skills[sid]["state"] == start
         assert world.tables.skills[sid]["visibility"] == "private"
+
+    @pytest.mark.parametrize(("start", "target", "detail"), [
+        ("archived", "published", "The skill is archived. It cannot move to published."),
+        ("draft", "paused", "The skill is a draft. It cannot move to paused."),
+        ("published", "draft", "The skill is published. It cannot move to draft."),
+    ])
+    def test_an_illegal_move_names_the_state(self, world, start, target, detail):
+        c = _client(world)
+        sid = _create(c, body=_body())["skill"]["id"]
+        world.tables.skills[sid]["state"] = start
+        r = c.patch(f"/studio/skills/{sid}/state", json={"state": target})
+        assert r.status_code == 409 and r.json() == {"detail": detail}
+
+    def test_a_move_reads_the_skill_with_its_row_lock(self, world):
+        """The first read of a move takes the row ``FOR UPDATE``. So a second
+        move waits, then reads the state that the first move wrote. The R8
+        suite runs the two moves at once."""
+        c = _client(world)
+        sid = _create(c, body=_body())["skill"]["id"]
+        assert world.tables.locks == []
+        r = c.patch(f"/studio/skills/{sid}/state", json={"state": "published"})
+        assert r.status_code == 200, r.text
+        assert world.tables.locks == [sid]
 
     def test_the_same_state_is_a_no_op(self, world):
         c = _client(world)

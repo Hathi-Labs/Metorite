@@ -35,6 +35,10 @@ same state is a no-op. A publish needs a version, and it runs the catalog
 check again on the newest version. A new version of a published skill
 returns the skill to ``draft`` in the same transaction. No route changes the
 visibility, so each skill stays ``private`` (J2 owns the share).
+
+**Two moves at once.** A move reads the skill ``FOR UPDATE``. So a second
+move waits for the first to commit, then reads the new state, and
+:data:`TRANSITIONS` decides on that state.
 """
 
 from __future__ import annotations
@@ -72,6 +76,15 @@ TRANSITIONS: dict[str, frozenset[str]] = {
 
 ADD_A_VERSION = "Add a version first"
 CHANGED = "The skill changed while it moved. Load it again, then try again."
+
+#: A state as the 409 of an illegal move says it.
+_STATE_WORDS = {"draft": "a draft"}
+
+
+def _cannot_move(state: str, target: str) -> str:
+    """The text of an illegal move, for example "The skill is archived. It
+    cannot move to published." """
+    return f"The skill is {_STATE_WORDS.get(state, state)}. It cannot move to {target}."
 
 _NOT_SLUG = re.compile(r"[^a-z0-9]+")
 _NUMBER = re.compile(r"[0-9]{1,9}")
@@ -368,13 +381,16 @@ async def set_skill_state(
     known = await _catalog_ids() if target == "published" else frozenset()
     async with _tenant_session() as db:
         with _store_errors():
-            skill = await store.get_skill(db, user.email, sid)
+            # The row lock holds until the commit. A second move waits here,
+            # then reads the state that this move wrote, so two moves at
+            # once cannot both pass TRANSITIONS.
+            skill = await store.get_skill(db, user.email, sid, for_update=True)
             if skill is None:
                 raise HTTPException(status_code=404, detail=NOT_FOUND)
             if skill.state == target:
                 return {"skill": _skill_out(skill)}
             if target not in TRANSITIONS.get(skill.state, frozenset()):
-                raise _refuse(409, f"A {skill.state} skill cannot move to {target}")
+                raise _refuse(409, _cannot_move(skill.state, target))
             if target == "published":
                 newest = None
                 if skill.current_version:
@@ -386,8 +402,9 @@ async def set_skill_state(
                 if problem is not None:
                     raise _refuse(422, problem)
             await store.set_state(db, user.email, sid, target)
-            # The UPDATE holds the row lock now. A version that came in after
-            # the first read is not the version this move checked.
+            # The first read holds the row lock, so no version can come in
+            # before the commit. This check is a second guard: a version that
+            # came in after the first read is not the version this move checked.
             after = await store.get_skill(db, user.email, sid)
             if after is None or after.current_version != skill.current_version:
                 raise _refuse(409, CHANGED)
