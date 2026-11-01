@@ -43,6 +43,12 @@ export interface OrgBranding {
    * which reads as "same".
    */
   darkStyle?: "same" | "white" | "plate" | "own";
+  /**
+   * The square mark, for the folded sidebar (owner, 2026-11-01). The admin's
+   * own, or the one the editor made. Absent on a logo saved before it
+   * existed: the shell then draws one from the logo (`logoMark.ts`).
+   */
+  logoMark?: OrgLogo | null;
   updatedBy: string;
   updatedAt: string;
 }

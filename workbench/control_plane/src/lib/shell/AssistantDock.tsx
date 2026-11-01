@@ -500,6 +500,47 @@ function ChatTitle({ session }: { session: ChatSession | null }) {
   );
 }
 
+/**
+ * The title as the chat switcher (owner, 2026-11-01): the chat's name with a
+ * chevron, as ChatGPT and Claude draw it. A press opens the list of chats.
+ * It says what it does, where a clock icon did not.
+ */
+function ChatSwitcher({
+  session,
+  open,
+  onToggle,
+  className = "",
+}: {
+  session: ChatSession | null;
+  open: boolean;
+  onToggle: () => void;
+  className?: string;
+}) {
+  const title = session ? sessionTitle(session) : ASSISTANT_NAME;
+  return (
+    <h2 className="min-w-0 flex-1">
+      <Button
+        variant="ghost"
+        size="sm"
+        layout="flex items-center"
+        aria-label={open ? "Hide your chats" : `Your chats. This one: ${title}`}
+        aria-expanded={open}
+        title="Switch chat"
+        data-chat-switcher=""
+        onClick={onToggle}
+        className={`max-w-full min-w-0 gap-1 px-2 text-sm font-semibold text-foreground ${className}`}
+      >
+        <span className="min-w-0 truncate text-foreground">{title}</span>
+        <Icon
+          name="ChevronDown"
+          size={14}
+          className={`shrink-0 text-muted-foreground tech-transition ${open ? "rotate-180" : ""}`}
+        />
+      </Button>
+    </h2>
+  );
+}
+
 // ── The panel's drag edge ────────────────────────────────────────────────────
 
 function ResizeEdge({ width }: { width: number }) {
@@ -1052,43 +1093,54 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         className={strip ? "assistant-peek-body invisible absolute inset-x-0 flex flex-col" : "flex min-h-0 flex-1 flex-col"}
       >
       {phone && chatFirst ? <SheetHandle onPeek={toPeek} /> : null}
+      {/* The header says what each control does (owner, 2026-11-01): the
+          title switches chats, "New" starts one, Files shows this chat's
+          files, and the window controls sit apart, after a rule. */}
       <header className="flex h-11 shrink-0 items-center gap-1 border-b border-border glass:border-transparent px-2">
+        {columnForm ? (
+          // The full view lists the chats in a column: this shows or hides it.
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            icon="PanelLeft"
+            aria-label={pickerShown ? "Hide your chats" : "Your chats"}
+            aria-expanded={pickerShown}
+            title={pickerShown ? "Hide your chats" : "Show your chats"}
+            onClick={() => setListOpen((o) => !o)}
+          />
+        ) : null}
+        {columnForm ? (
+          <ChatTitle session={active} />
+        ) : (
+          <ChatSwitcher session={active} open={pickerShown} onToggle={() => setPickerOpen((o) => !o)} className={phoneTap} />
+        )}
         <Button
-          variant="ghost"
-          size="icon-sm"
-          icon="History"
-          aria-label={pickerShown ? "Hide your chats" : "Your chats"}
-          aria-expanded={pickerShown}
-          title="Your chats"
-          className={phoneTap}
-          onClick={() => {
-            if (columnForm) setListOpen((o) => !o);
-            else setPickerOpen((o) => !o);
-          }}
-        />
-        <ChatTitle session={active} />
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          icon="SquarePen"
+          variant="secondary"
+          size={phone ? "icon-sm" : "sm"}
+          icon="Plus"
           aria-label="New chat"
-          title="New chat"
+          title="Start a new chat"
+          data-chat-new=""
           className={phoneTap}
           onClick={() => {
             setPickerOpen(false);
             openAssistant({ fresh: true });
           }}
-        />
+        >
+          {phone ? null : "New"}
+        </Button>
         {columnForm ? (
           <Button
             variant="ghost"
-            size="icon-sm"
-            icon="FolderOpen"
+            size="sm"
+            icon="Files"
             aria-label={filesOpen ? "Hide this chat's files" : "Show this chat's files"}
             aria-pressed={filesOpen}
-            title="Files"
+            title={filesOpen ? "Hide files in this chat" : "Files in this chat"}
             onClick={() => setFilesOpen((o) => !o)}
-          />
+          >
+            Files
+          </Button>
         ) : chat.activeId && !phoneChrome ? (
           // The side panel and the phone have no room for a files column. The
           // chat's files open in Artifacts, and on a desktop the chat stays
@@ -1096,23 +1148,27 @@ function AssistantSurface({ phone }: { phone: boolean }) {
           // on, the phone offers it in the chat's "…" control (CF-8).
           <Button
             variant="ghost"
-            size="icon-sm"
-            icon="FolderOpen"
+            size={phone ? "icon-sm" : "sm"}
+            icon="Files"
             aria-label="Open this chat's files in Artifacts"
-            title="Files"
+            title="Files in this chat"
             onClick={() => {
               if (phone) closeAssistant();
               router.push(chatFilesHref(chat.activeId));
             }}
-          />
+          >
+            {phone ? null : "Files"}
+          </Button>
         ) : null}
+        {/* The window controls, apart from the chat's own. */}
+        <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" />
         {canDock ? (
           <Button
             variant="ghost"
             size="icon-sm"
             icon={form === "full" ? "Minimize2" : "Maximize2"}
             aria-label={form === "full" ? "Show as a side panel" : "Show full screen"}
-            title={form === "full" ? "Side panel" : "Full screen"}
+            title={form === "full" ? "Back to the side panel" : "Full screen"}
             onClick={() => {
               setPickerOpen(false);
               const next = form === "full" ? "dock" : "full";
