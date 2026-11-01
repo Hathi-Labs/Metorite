@@ -57,10 +57,16 @@ shape, the ops of each type and the caps. This module holds the SQL, because
 it is the one module with SQL of the four tables. :func:`build_query` and
 :func:`build_count` are pure, and they bind each field key and each value.
 The SQL text takes a column name and an operator from a constant map only.
-A filter or a sort on a hot field reads ``studio_record_hot``. A filter on a
-field that is not hot reads ``data``, and only on at most
-:data:`~acb_common.studio_query.SMALL_OBJECT` candidate records
-(``hot_or_small``). The statements of a query run in a SAVEPOINT, each under a
+One statement reads a page and its total, so one snapshot serves both. The
+candidates of each part are the hot rows of one hot condition, or the
+records of the object by the records index. Each other condition tests the
+candidate id. A condition that reads ``data`` runs after a lookup of the
+record by its primary key, so it runs only on the candidates that the hot
+conditions keep. With a filter on a field that is not hot, the guard
+``hot_or_small`` first counts those candidates (at most
+:data:`~acb_common.studio_query.SMALL_OBJECT`). A MATERIALIZED CTE then holds
+them, and the count and the page read it. The whole call has one deadline.
+Its statements run in a SAVEPOINT, and each gets the time that is left as a
 LOCAL ``statement_timeout``. A timeout rolls back the SAVEPOINT only, so the
 caller's transaction stays usable, and the old timeout comes back.
 ⚠️ ``v_num`` takes no index condition as the app role, because no ``numeric``
@@ -77,6 +83,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -709,10 +716,29 @@ async def delete_record(db: Any, object_id: str, record_id: str, *,
 
 # --- the query (C2a) --------------------------------------------------------
 #
-# ⚠️ An f-string below takes only an int index `i`, a module constant, or a
-# local that holds SQL built here. A field key and a value are always binds.
+# ⚠️ An f-string below takes only an int index, a module constant, or a local
+# that holds SQL built here. A field key and a value are always binds.
 # `test_studio_query.py` reads the source of each `_q_*` and `build_*`
 # function, and fails on any other name in an f-string.
+#
+# The shape of one page statement (one snapshot serves the page and its total):
+#
+#   t     the count of the records that match, up to the cap
+#   p     the ids of the page: the candidates, then each condition, then the
+#         order and the page. A sort reads the head (the records with a value,
+#         in the order of the hot index) and the tail (the records with no
+#         value, in the order of the id). `hc` counts the head, so the tail
+#         reads only the rows that the page needs, and none when the head
+#         fills the page.
+#   r     each record of the page, by its primary key
+#
+# The candidates of a part are the hot rows of one condition (`d`), or the
+# records of the object (`r0`). Each other condition tests the candidate id.
+# A condition that reads `data` reads it after a lookup of the record by its
+# key (`LATERAL ... OFFSET 0`), so it runs only on the candidates that the
+# hot conditions keep. With a filter on a field that is not hot, the
+# candidates go into the MATERIALIZED CTE `m` once, and the count and the
+# page read `m` (at most SMALL_OBJECT records, by the guard).
 
 #: The object of a query, of the package that the caller names. No lock.
 _QUERY_OBJECT_SQL = (
@@ -721,17 +747,17 @@ _QUERY_OBJECT_SQL = (
     "AND package_id = CAST(:pid AS uuid)"
 )
 
+#: The org and the object of each alias of the two record tables. One
+#: constant each, so each part of a query names the same org and object.
+_OF_ORG = f"organization_id = {_BOUND_ORG}"
+_OF_OBJECT = "object_id = CAST(:oid AS uuid)"
+
 #: The columns of a record, in the order that `_record` reads them.
 _QUERY_COLUMNS = (
     "r.id::text, r.object_id::text, r.data, r.created_by, r.updated_by, "
     "r.created_at, r.updated_at"
 )
-
-#: Each statement of a query reads the records of one object of one package.
-_QUERY_BASE = (
-    f"r.organization_id = {_BOUND_ORG} AND r.object_id = CAST(:oid AS uuid) "
-    f"AND {_IN_PACKAGE}"
-)
+_RECORD_ROW = "r.id, r.object_id, r.data, r.created_by, r.updated_by, r.created_at, r.updated_at"
 
 #: The value column of `studio_record_hot` for each type of the op table.
 _HOT_COLUMN: Mapping[str, str] = {
@@ -753,6 +779,10 @@ _TIMEOUT_READ_SQL = "SELECT current_setting('statement_timeout')"
 _TIMEOUT_SQL = "SELECT set_config('statement_timeout', :ms, true)"
 #: The SQLSTATE of a statement that the timeout cancelled.
 _QUERY_CANCELED = "57014"
+_TIMEOUT_MESSAGE = "The query took too long. Narrow the filter."
+
+#: The clock of the deadline. A test replaces it.
+_clock = time.monotonic
 
 
 @dataclass(frozen=True)
@@ -772,12 +802,40 @@ class RecordPage:
     line: str
 
 
-def _q_hot_row(i: int) -> str:
-    """The hot row of the field of condition *i*, for the record ``r``."""
+def _needs_row(cond: Condition) -> bool:
+    """True when the SQL of *cond* reads ``data``: each condition on a field
+    that is not hot, ``contains``, and a text of 256 characters or more."""
+    if not cond.field.hot:
+        return True
+    if cond.op == "contains":
+        return True
+    if _HOT_COLUMN[cond.field.type] == "v_text" and cond.op in ("eq", "ne"):
+        return len(cond.value) >= HOT_TEXT_CHARS
+    if _HOT_COLUMN[cond.field.type] == "v_text" and cond.op == "in":
+        return any(len(v) >= HOT_TEXT_CHARS for v in cond.value)
+    return False
+
+
+def _drive_rank(cond: Condition) -> int | None:
+    """How well the hot rows of *cond* serve as the candidates: 0 for an
+    index condition (a text match, a time), 1 for a scan of the field, 2 for
+    any value. None when *cond* cannot give the candidates."""
+    if not cond.field.hot or _needs_row(cond):
+        return None
+    if cond.op == "is_empty":
+        return None if cond.value else 2
+    col = _HOT_COLUMN[cond.field.type]
+    if col == "v_ts" or (col == "v_text" and cond.op in ("eq", "in")):
+        return 0
+    return 1
+
+
+def _q_hot_row(i: int, rid: str) -> str:
+    """The hot row of the field of condition *i*, for the record id *rid*."""
     return (
         f"SELECT 1 FROM studio_record_hot h{i} "
-        f"WHERE h{i}.organization_id = {_BOUND_ORG} AND h{i}.object_id = CAST(:oid AS uuid) "
-        f"AND h{i}.field_key = CAST(:fk{i} AS text) AND h{i}.record_id = r.id"
+        f"WHERE h{i}.{_OF_ORG} AND h{i}.{_OF_OBJECT} "
+        f"AND h{i}.field_key = CAST(:fk{i} AS text) AND h{i}.record_id = {rid}"
     )
 
 
@@ -817,58 +875,63 @@ def _q_compare(expr: str, i: int, cond: Condition, params: dict[str, Any]) -> st
     return f"{expr} {cmp} CAST(:v{i} AS {kind})"
 
 
-def _q_text_eq(i: int, value: str, params: dict[str, Any]) -> str:
-    """Text eq on a hot field. ``v_text`` holds the first 256 characters, so a
-    value of 256 or more is checked against ``data`` too."""
+def _q_text_eq(h: str, i: int, value: str, params: dict[str, Any]) -> str:
+    """Text eq on the hot row *h*. ``v_text`` holds the first 256 characters,
+    so a value of 256 or more is checked against ``data`` too."""
     params[f"v{i}"] = value
     if len(value) < HOT_TEXT_CHARS:
-        return f"h{i}.v_text = CAST(:v{i} AS text)"
+        return f"{h}.v_text = CAST(:v{i} AS text)"
     params[f"p{i}"] = value[:HOT_TEXT_CHARS]
-    return (f"h{i}.v_text = CAST(:p{i} AS text) "
+    return (f"{h}.v_text = CAST(:p{i} AS text) "
             f"AND r.data ->> CAST(:fk{i} AS text) = CAST(:v{i} AS text)")
 
 
-def _q_text_in(i: int, values: Sequence[str], params: dict[str, Any]) -> str:
-    """Text ``in`` on a hot field, with the check of :func:`_q_text_eq`."""
+def _q_text_in(h: str, i: int, values: Sequence[str], params: dict[str, Any]) -> str:
+    """Text ``in`` on the hot row *h*, with the check of :func:`_q_text_eq`."""
     longs = [v for v in values if len(v) >= HOT_TEXT_CHARS]
     params[f"v{i}"] = [v for v in values if len(v) < HOT_TEXT_CHARS]
-    frag = f"h{i}.v_text = ANY(CAST(:v{i} AS text[]))"
+    frag = f"{h}.v_text = ANY(CAST(:v{i} AS text[]))"
     if not longs:
         return frag
     params[f"p{i}"] = [v[:HOT_TEXT_CHARS] for v in longs]
     params[f"l{i}"] = longs
-    return (f"({frag} OR (h{i}.v_text = ANY(CAST(:p{i} AS text[])) "
+    return (f"({frag} OR ({h}.v_text = ANY(CAST(:p{i} AS text[])) "
             f"AND r.data ->> CAST(:fk{i} AS text) = ANY(CAST(:l{i} AS text[]))))")
 
 
-def _q_contains(i: int, pattern: str, params: dict[str, Any]) -> str:
-    """Text ``contains`` on a hot field. A ``v_text`` of 256 characters may
-    hold a cut text, so the test then reads ``data``."""
+def _q_contains(h: str, i: int, pattern: str, params: dict[str, Any]) -> str:
+    """Text ``contains`` on the hot row *h*. A ``v_text`` of 256 characters
+    may hold a cut text, so the test then reads ``data``."""
     params[f"v{i}"] = pattern
-    return (f"((char_length(h{i}.v_text) < {HOT_TEXT_CHARS} "
-            f"AND h{i}.v_text ILIKE CAST(:v{i} AS text) ESCAPE '\\') "
-            f"OR (char_length(h{i}.v_text) = {HOT_TEXT_CHARS} "
+    return (f"((char_length({h}.v_text) < {HOT_TEXT_CHARS} "
+            f"AND {h}.v_text ILIKE CAST(:v{i} AS text) ESCAPE '\\') "
+            f"OR (char_length({h}.v_text) = {HOT_TEXT_CHARS} "
             f"AND r.data ->> CAST(:fk{i} AS text) ILIKE CAST(:v{i} AS text) ESCAPE '\\'))")
 
 
-def _q_hot(i: int, cond: Condition, params: dict[str, Any]) -> str:
+def _q_frag(h: str, i: int, cond: Condition, params: dict[str, Any]) -> str:
+    """The test of the value of condition *i* on the hot row *h*."""
+    col = _HOT_COLUMN[cond.field.type]
+    if col == "v_text" and cond.op == "eq":
+        return _q_text_eq(h, i, cond.value, params)
+    if col == "v_text" and cond.op == "ne":
+        return f"NOT ({_q_text_eq(h, i, cond.value, params)})"
+    if col == "v_text" and cond.op == "in":
+        return _q_text_in(h, i, cond.value, params)
+    if cond.op == "contains":
+        return _q_contains(h, i, cond.value, params)
+    hcol = f"{h}.{col}"
+    return _q_compare(hcol, i, cond, params)
+
+
+def _q_hot(i: int, cond: Condition, params: dict[str, Any], rid: str) -> str:
     """Condition *i* on a hot field: a test of its hot row ``h<i>``. A record
     with no value has no hot row, so only ``is_empty`` matches it."""
     params[f"fk{i}"] = cond.field.key
-    row = _q_hot_row(i)
+    row = _q_hot_row(i, rid)
     if cond.op == "is_empty":
         return f"NOT EXISTS ({row})" if cond.value else f"EXISTS ({row})"
-    col = _HOT_COLUMN[cond.field.type]
-    if col == "v_text" and cond.op == "eq":
-        frag = _q_text_eq(i, cond.value, params)
-    elif col == "v_text" and cond.op == "ne":
-        frag = f"NOT ({_q_text_eq(i, cond.value, params)})"
-    elif col == "v_text" and cond.op == "in":
-        frag = _q_text_in(i, cond.value, params)
-    elif cond.op == "contains":
-        frag = _q_contains(i, cond.value, params)
-    else:
-        frag = _q_compare(f"h{i}.{col}", i, cond, params)
+    frag = _q_frag(f"h{i}", i, cond, params)
     return f"EXISTS ({row} AND {frag})"
 
 
@@ -887,46 +950,144 @@ def _q_cold(i: int, cond: Condition, params: dict[str, Any]) -> str:
     return _q_compare(expr, i, cond, params)
 
 
-def _q_where(conditions: Sequence[Condition], params: dict[str, Any]) -> str:
-    parts = [_QUERY_BASE]
+def _q_lookup(rid: str) -> str:
+    """The record of the id *rid*, by its primary key. ``OFFSET 0`` keeps it
+    a lookup for each candidate, so the planner cannot scan the table."""
+    return (f"CROSS JOIN LATERAL (SELECT {_RECORD_ROW} FROM studio_records r "
+            f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND r.id = {rid} OFFSET 0) r")
+
+
+def _q_where(conditions: Sequence[Condition], params: dict[str, Any], rid: str,
+             skip: int | None = None) -> str:
+    parts = [_IN_PACKAGE]
     for i, cond in enumerate(conditions):
-        parts.append(_q_hot(i, cond, params) if cond.field.hot else _q_cold(i, cond, params))
+        if i != skip:
+            parts.append(_q_hot(i, cond, params, rid) if cond.field.hot else _q_cold(i, cond, params))
     return " AND ".join(parts)
+
+
+def _q_source(conditions: Sequence[Condition], params: dict[str, Any]) -> tuple[str, int | None]:
+    """The candidates ``c`` of a part, and the condition that they meet
+    already: the hot rows of the best condition, or the records of the object."""
+    ranked = sorted((rank, j) for j, cond in enumerate(conditions)
+                    if (rank := _drive_rank(cond)) is not None)
+    if not ranked:
+        # In the order of the id: the records index `(org, object, id)` gives
+        # it, so a LIMIT stops on the index and no plan scans the table.
+        return (f"(SELECT r0.id FROM studio_records r0 "
+                f"WHERE r0.{_OF_ORG} AND r0.{_OF_OBJECT} ORDER BY r0.id) c"), None
+    j = ranked[0][1]
+    cond = conditions[j]
+    params[f"fk{j}"] = cond.field.key
+    frag = "TRUE" if cond.op == "is_empty" else _q_frag("d", j, cond, params)
+    return (f"(SELECT d.record_id AS id FROM studio_record_hot d "
+            f"WHERE d.{_OF_ORG} AND d.{_OF_OBJECT} AND d.field_key = CAST(:fk{j} AS text) "
+            f"AND {frag}) c"), j
+
+
+def _q_filtered(conditions: Sequence[Condition], params: dict[str, Any], what: str) -> str:
+    """``SELECT what`` from the candidates ``c`` that meet each condition."""
+    source, skip = _q_source(conditions, params)
+    lookup = f" {_q_lookup('c.id')}" if any(_needs_row(c) for c in conditions) else ""
+    where = _q_where(conditions, params, "c.id", skip)
+    return f"SELECT {what} FROM {source}{lookup} WHERE {where}"
+
+
+def _q_head(query: Query, params: dict[str, Any], what: str) -> str:
+    """``SELECT what`` from the records with a value of the sort field that
+    meet each condition, driven by the hot rows ``s`` of the sort field."""
+    assert query.sort is not None
+    params["sk"] = query.sort.field.key
+    lookup = f" {_q_lookup('s.record_id')}" if any(_needs_row(c) for c in query.conditions) else ""
+    where = _q_where(query.conditions, params, "s.record_id")
+    return (f"SELECT {what} FROM studio_record_hot s{lookup} "
+            f"WHERE s.{_OF_ORG} AND s.{_OF_OBJECT} AND s.field_key = CAST(:sk AS text) "
+            f"AND {where}")
+
+
+def _q_sorted_ids(query: Query, params: dict[str, Any]) -> str:
+    """The ids of the page of a sort, as the head and then the tail. ``hc``
+    is the count of the head up to the end of the page."""
+    assert query.sort is not None
+    col = _HOT_COLUMN[query.sort.field.type]
+    kind = _SQL_TYPE[col]
+    dirn = " DESC" if query.sort.desc else ""
+    head = _q_head(query, params, f"0 AS part, s.{col} AS k, s.record_id AS id")
+    no_value = Condition(query.sort.field, "is_empty", True)
+    tail = _q_filtered((*query.conditions, no_value), params,
+                       f"1 AS part, CAST(NULL AS {kind}) AS k, c.id AS id")
+    return (f"({head} ORDER BY s.{col}{dirn}, s.record_id{dirn} "
+            "LIMIT :lim OFFSET :off) "
+            f"UNION ALL ({tail} ORDER BY c.id "
+            "LIMIT (SELECT greatest(0, CAST(:lim AS bigint) "
+            "- least(CAST(:lim AS bigint), greatest(0, hc.n - :off))) FROM hc) "
+            "OFFSET (SELECT greatest(0, CAST(:off AS bigint) - hc.n) FROM hc))")
+
+
+def _q_small_ids(query: Query, params: dict[str, Any]) -> str:
+    """The ids of the page from ``m``, the candidates of a filter on a field
+    that is not hot. ``m`` holds at most SMALL_OBJECT records, so the order
+    is a sort in memory."""
+    if query.sort is None:
+        return ("SELECT 0 AS part, CAST(NULL AS text) AS k, m.id AS id FROM m "
+                "ORDER BY m.id LIMIT :lim OFFSET :off")
+    params["sk"] = query.sort.field.key
+    col = _HOT_COLUMN[query.sort.field.type]
+    dirn = " DESC" if query.sort.desc else ""
+    return ("SELECT CASE WHEN s.k IS NULL THEN 1 ELSE 0 END AS part, s.k AS k, m.id AS id "
+            f"FROM m LEFT JOIN LATERAL (SELECT s.{col} AS k FROM studio_record_hot s "
+            f"WHERE s.{_OF_ORG} AND s.{_OF_OBJECT} AND s.field_key = CAST(:sk AS text) "
+            "AND s.record_id = m.id OFFSET 0) s ON true "
+            f"ORDER BY 1, 2{dirn}, (CASE WHEN s.k IS NULL THEN NULL ELSE m.id END){dirn}, 3 "
+            "LIMIT :lim OFFSET :off")
 
 
 def build_query(query: Query, *, object_id: str, package_id: str, limit: int,
                 offset: int) -> tuple[str, dict[str, Any]]:
-    """The page statement of *query*, as its SQL and its binds. Pure.
+    """The one statement of a page of *query*: its SQL and its binds. Pure.
 
-    With no sort, the records come in the order of their id. With a sort, the
-    statement reads the hot rows of the sort field in the order of the index,
-    then the record id. A record with no value of the sort field has no hot
-    row, so it is not in this statement. :func:`query_records` reads those
-    records after the others, in the order of their id.
+    Each row holds the total (``t.n``) and one record. A page past the end
+    gives one row with the total and no record. With no sort, the records
+    come in the order of their id. With a sort, the records with a value come
+    first, in the order of the hot index and then the id, both in the
+    direction of the sort. The records with no value come after, in the
+    ascending order of their id.
     """
-    params: dict[str, Any] = {"oid": object_id, "pid": package_id, "lim": limit, "off": offset}
-    where = _q_where(query.conditions, params)
-    if query.sort is None:
-        return (f"SELECT {_QUERY_COLUMNS} FROM studio_records r WHERE {where} "
-                "ORDER BY r.id LIMIT :lim OFFSET :off"), params
-    params["sk"] = query.sort.field.key
-    col = _HOT_COLUMN[query.sort.field.type]
-    dirn = " DESC" if query.sort.desc else ""
-    return (f"SELECT {_QUERY_COLUMNS} FROM studio_record_hot s JOIN studio_records r "
-            "ON r.organization_id = s.organization_id AND r.object_id = s.object_id "
-            "AND r.id = s.record_id "
-            f"WHERE s.organization_id = {_BOUND_ORG} AND s.object_id = CAST(:oid AS uuid) "
-            f"AND s.field_key = CAST(:sk AS text) AND {where} "
-            f"ORDER BY s.{col}{dirn}, r.id{dirn} LIMIT :lim OFFSET :off"), params
+    params: dict[str, Any] = {"oid": object_id, "pid": package_id, "lim": limit,
+                              "off": offset, "cap": studio_query.TOTAL_CAP}
+    dirn = " DESC" if query.sort is not None and query.sort.desc else ""
+    if query.cold():
+        found = _q_filtered(query.conditions, params, "c.id AS id")
+        with_sql = f"WITH m AS MATERIALIZED ({found}), "
+        total = "SELECT count(*) AS n FROM (SELECT 1 FROM m LIMIT :cap) x"
+        ids = _q_small_ids(query, params)
+    elif query.sort is not None:
+        count_head = _q_head(query, params, "1")
+        with_sql = ("WITH hc AS MATERIALIZED (SELECT count(*) AS n FROM "
+                    f"({count_head} LIMIT CAST(:lim AS bigint) + CAST(:off AS bigint)) x), ")
+        counted = _q_filtered(query.conditions, params, "1")
+        total = f"SELECT count(*) AS n FROM ({counted} LIMIT :cap) x"
+        ids = _q_sorted_ids(query, params)
+    else:
+        with_sql = "WITH "
+        counted = _q_filtered(query.conditions, params, "1")
+        total = f"SELECT count(*) AS n FROM ({counted} LIMIT :cap) x"
+        page = _q_filtered(query.conditions, params,
+                           "0 AS part, CAST(NULL AS text) AS k, c.id AS id")
+        ids = f"{page} ORDER BY c.id LIMIT :lim OFFSET :off"
+    return (f"{with_sql}t AS ({total}), p AS ({ids}) "
+            f"SELECT t.n, {_QUERY_COLUMNS} FROM t LEFT JOIN (p {_q_lookup('p.id')}) ON true "
+            f"ORDER BY p.part, p.k{dirn}, (CASE WHEN p.part = 0 THEN p.id END){dirn}, p.id"), params
 
 
 def build_count(conditions: Sequence[Condition], *, object_id: str, package_id: str,
                 cap: int) -> tuple[str, dict[str, Any]]:
-    """The count of the records that meet *conditions*, up to *cap*. Pure."""
+    """The count of the records that meet *conditions*, up to *cap*, on the
+    candidates of :func:`build_query`. Pure. The guard ``hot_or_small``
+    counts the hot conditions with it."""
     params: dict[str, Any] = {"oid": object_id, "pid": package_id, "cap": cap}
-    where = _q_where(conditions, params)
-    return (f"SELECT count(*) FROM (SELECT 1 FROM studio_records r WHERE {where} "
-            "LIMIT :cap) c"), params
+    counted = _q_filtered(conditions, params, "1")
+    return f"SELECT count(*) FROM ({counted} LIMIT :cap) x", params
 
 
 def _is_timeout(exc: DBAPIError) -> bool:
@@ -937,39 +1098,36 @@ def _is_timeout(exc: DBAPIError) -> bool:
 
 
 @asynccontextmanager
-async def _time_limit(db: Any) -> AsyncIterator[None]:
-    """Run the statements of a query in a SAVEPOINT, each under a LOCAL
-    ``statement_timeout`` of :data:`~acb_common.studio_query.TIMEOUT_MS`.
+async def _time_limit(db: Any, deadline: float) -> AsyncIterator[Any]:
+    """Run the statements of a query in a SAVEPOINT, under one deadline.
 
-    A timeout aborts the SAVEPOINT only, so the caller's transaction stays
-    usable (C1b joins several store calls in one). The old timeout comes back
-    after each query, also after a success.
+    It yields ``run(sql, params)``. Before each statement, ``run`` sets the
+    LOCAL ``statement_timeout`` to the time that is left, and it refuses with
+    ``query_timeout`` when none is left. A timeout aborts the SAVEPOINT only,
+    so the caller's transaction stays usable (C1b joins several store calls
+    in one). The old timeout comes back after each query, also after a success.
     """
     old = str((await db.execute(text(_TIMEOUT_READ_SQL))).scalar_one())
+
+    async def run(sql: str, params: dict[str, Any]) -> Any:
+        left = deadline - _clock()
+        if left <= 0:
+            raise QueryError(studio_query.TIMEOUT, _TIMEOUT_MESSAGE)
+        await db.execute(text(_TIMEOUT_SQL), {"ms": str(max(1, int(left * 1000)))})
+        return await db.execute(text(sql), params)
+
     try:
         async with db.begin_nested():
-            await db.execute(text(_TIMEOUT_SQL), {"ms": str(studio_query.TIMEOUT_MS)})
-            yield
+            yield run
     except DBAPIError as exc:
         if _is_timeout(exc):
-            raise QueryError(studio_query.TIMEOUT, "The query took too long. Narrow the filter.") from None
+            raise QueryError(studio_query.TIMEOUT, _TIMEOUT_MESSAGE) from None
         raise
     finally:
         await db.execute(text(_TIMEOUT_SQL), {"ms": old})
 
 
-async def _count(db: Any, conditions: Sequence[Condition], oid: str, pid: str, cap: int) -> int:
-    sql, params = build_count(conditions, object_id=oid, package_id=pid, cap=cap)
-    return int((await db.execute(text(sql), params)).scalar_one())
-
-
-async def _rows(db: Any, query: Query, oid: str, pid: str, limit: int,
-                offset: int) -> list[Record]:
-    sql, params = build_query(query, object_id=oid, package_id=pid, limit=limit, offset=offset)
-    return [_record(r) for r in (await db.execute(text(sql), params)).all()]
-
-
-async def _check_hot_or_small(db: Any, query: Query, oid: str, pid: str) -> None:
+async def _check_hot_or_small(run: Any, query: Query, oid: str, pid: str) -> None:
     """``hot_or_small``: a filter on a field that is not hot reads ``data``,
     so it runs only when the hot filters leave at most
     :data:`~acb_common.studio_query.SMALL_OBJECT` records."""
@@ -977,27 +1135,13 @@ async def _check_hot_or_small(db: Any, query: Query, oid: str, pid: str) -> None
     if not cold:
         return
     small = studio_query.SMALL_OBJECT
-    if await _count(db, query.hot_only(), oid, pid, small + 1) > small:
+    sql, params = build_count(query.hot_only(), object_id=oid, package_id=pid, cap=small + 1)
+    if int((await run(sql, params)).scalar_one()) > small:
         key = cold[0].field.key
         raise QueryError(
             studio_query.NOT_INDEXED,
             f"Field `{key}` is not hot, and the filter leaves more than {small} records to "
             "check. Turn it hot, or add a filter on a hot field.", key)
-
-
-async def _tail(db: Any, query: Query, oid: str, pid: str, size: int, start: int,
-                head: Sequence[Record]) -> list[Record]:
-    """The records with no value of the sort field. They come after the
-    records with a value, in the order of their id."""
-    assert query.sort is not None
-    skip = 0
-    if not head and start > 0:
-        # The head page is empty, so at most `start` records hold a value.
-        has_value = Condition(query.sort.field, "is_empty", False)
-        skip = start - await _count(db, (*query.conditions, has_value), oid, pid, start)
-    no_value = Condition(query.sort.field, "is_empty", True)
-    return await _rows(db, Query((*query.conditions, no_value)), oid, pid,
-                       size - len(head), skip)
 
 
 async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any = None,
@@ -1009,10 +1153,14 @@ async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any
 
     ``acb_common.studio_query`` checks the input. A refusal raises
     :class:`~acb_common.studio_query.QueryError`, and the session stays
-    usable. A record with no value of the sort field comes after the records
-    with a value. The total is exact below
+    usable. The whole call has one deadline of
+    :data:`~acb_common.studio_query.TIMEOUT_MS`. One statement reads the
+    page and its total, so a write between two statements cannot put a
+    record on the page twice. A record with no value of the sort field comes
+    after the records with a value. The total is exact below
     :data:`~acb_common.studio_query.TOTAL_CAP`.
     """
+    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     oid = _uuid(object_id, "object_id")
     pid = _uuid(package_id, "package_id")
     start, size = studio_query.page_bounds(offset, limit)
@@ -1020,19 +1168,19 @@ async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any
     if (await db.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})).first() is None:
         return None
     query = studio_query.parse_query(await _fields(db, oid), filter, sort)
-    async with _time_limit(db):
-        await _check_hot_or_small(db, query, oid, pid)
-        count = await _count(db, query.conditions, oid, pid, studio_query.TOTAL_CAP)
-        exact = count < studio_query.TOTAL_CAP
-        rows = await _rows(db, query, oid, pid, size, start)
-        if query.sort is not None and len(rows) < size and (not exact or start + len(rows) < count):
-            rows += await _tail(db, query, oid, pid, size, start, rows)
-    shown = len(rows)
+    async with _time_limit(db, deadline) as run:
+        await _check_hot_or_small(run, query, oid, pid)
+        sql, params = build_query(query, object_id=oid, package_id=pid, limit=size, offset=start)
+        rows = (await run(sql, params)).all()
+    count = int(rows[0][0]) if rows else 0
+    records = tuple(_record(row[1:]) for row in rows if row[1] is not None)
+    exact = count < studio_query.TOTAL_CAP
+    shown = len(records)
     reach = studio_query.MAX_OFFSET
     if exact:
         line = page_line(count, start, shown, noun="records", reach=reach)
     else:
         line = page_line(None, start, shown, more=shown == size, noun="records", reach=reach)
-    return RecordPage(records=tuple(rows), total=count if exact else None,
+    return RecordPage(records=records, total=count if exact else None,
                       total_at_least=None if exact else count, offset=start, limit=size,
                       line=line)

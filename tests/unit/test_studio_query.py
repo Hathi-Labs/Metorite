@@ -6,7 +6,7 @@ Spec: ``project-docs/specs/ai_studio.md`` §3.1 and the §14 C2a row. Code:
 runs the SQL on a real Postgres.
 
 **The mutation Q3 (R7).** In ``objects_store._q_hot``, write the key into
-the SQL: ``row = _q_hot_row(i).replace(f"CAST(:fk{i} AS text)", f"'{cond.field.key}'")``.
+the SQL: ``row = _q_hot_row(i, rid).replace(f"CAST(:fk{i} AS text)", f"'{cond.field.key}'")``.
 ``test_no_fstring_in_the_query_sql_takes_a_value`` and
 ``test_a_hostile_key_or_value_never_reaches_the_sql`` go red.
 """
@@ -264,27 +264,78 @@ _MIX = [
 ]
 
 
-def test_each_statement_holds_the_org_the_object_and_the_package() -> None:
-    page, _ = _sql(_MIX, {"field": "hours", "dir": "desc"})
-    count, _ = store.build_count(_parse(_MIX).conditions, object_id="o", package_id="p", cap=9)
+_HOT_MIX = [c for c in _MIX if c["field"] != "note"]
+
+#: Each alias of the two record tables in a statement.
+_ALIAS = re.compile(r"(?:FROM|JOIN) studio_record(?:s|_hot) (\w+)")
+
+
+@pytest.mark.parametrize(("filter", "sort", "parts"), [
+    (None, None, 2), (_HOT_MIX, None, 2), (None, {"field": "hours"}, 4),
+    (_HOT_MIX, {"field": "hours", "dir": "desc"}, 4), (_MIX, None, 1),
+    (_MIX, {"field": "hours", "dir": "desc"}, 1),
+])
+def test_each_statement_holds_the_org_the_object_and_the_package(filter: Any, sort: Any,
+                                                                 parts: int) -> None:
+    """Each alias of `studio_records` and `studio_record_hot` names the bound
+    org and the object, and each part that reads candidates checks the package."""
+    page, _ = _sql(filter, sort)
+    count, _ = store.build_count(_parse(filter).hot_only(), object_id="o", package_id="p", cap=9)
     for sql in (page, count):
-        assert "r." + _ORG in sql and "r.object_id = CAST(:oid AS uuid)" in sql
-        assert "o.package_id = CAST(:pid AS uuid)" in sql
-        hot = re.findall(r"FROM studio_record_hot (h\d+)", sql)
-        assert len(hot) == 5
-        for alias in hot:
-            assert f"{alias}.{_ORG}" in sql
-            assert f"{alias}.object_id = CAST(:oid AS uuid)" in sql
-    assert "s." + _ORG in page and "s.object_id = CAST(:oid AS uuid)" in page
+        aliases = set(_ALIAS.findall(sql))
+        assert aliases
+        for alias in aliases:
+            assert f"{alias}.{_ORG}" in sql, alias
+            assert f"{alias}.object_id = CAST(:oid AS uuid)" in sql, alias
+    assert page.count("o.package_id = CAST(:pid AS uuid)") == parts
+    assert count.count("o.package_id = CAST(:pid AS uuid)") == 1
 
 
-def test_a_hot_sort_reads_the_hot_rows_in_order_then_the_id() -> None:
+def test_one_statement_reads_the_page_and_its_total() -> None:
+    for filter, sort in ((None, None), (_HOT_MIX, {"field": "hours"}), (_MIX, {"field": "at"})):
+        sql, _ = _sql(filter, sort)
+        assert sql.startswith("WITH ") and sql.count("SELECT t.n, ") == 1
+        assert "t AS (SELECT count(*) AS n FROM " in sql
+
+
+def test_a_hot_sort_reads_the_head_then_the_tail_in_one_statement() -> None:
+    """The head reads the hot rows of the sort field in index order, then the
+    id. `hc` counts the head, so the tail reads only what the page needs."""
     sql, params = _sql(sort={"field": "hours", "dir": "desc"})
-    assert "FROM studio_record_hot s JOIN studio_records r" in sql
-    assert sql.endswith("ORDER BY s.v_num DESC, r.id DESC LIMIT :lim OFFSET :off")
+    assert "FROM studio_record_hot s WHERE s." in sql
+    assert "ORDER BY s.v_num DESC, s.record_id DESC LIMIT :lim OFFSET :off" in sql
+    assert "WITH hc AS MATERIALIZED (SELECT count(*) AS n FROM (SELECT 1 FROM studio_record_hot s" in sql
+    assert "ORDER BY c.id LIMIT (SELECT greatest(0, CAST(:lim AS bigint) - least(" in sql
+    assert sql.endswith(
+        "ORDER BY p.part, p.k DESC, (CASE WHEN p.part = 0 THEN p.id END) DESC, p.id")
     assert params["sk"] == "hours"
     sql, _ = _sql()
-    assert sql.endswith("ORDER BY r.id LIMIT :lim OFFSET :off")
+    assert "ORDER BY c.id LIMIT :lim OFFSET :off" in sql and "hc" not in sql
+
+
+def test_a_cold_filter_reads_data_only_after_the_hot_filters() -> None:
+    """The candidates come from the hot rows, then each record by its key, and
+    only then the test of `data`. The CTE holds them once."""
+    sql, _ = _sql([{"field": "hours", "op": "gte", "value": 2},
+                   {"field": "note", "op": "contains", "value": "kit"}], {"field": "at"})
+    m = sql[:sql.index("), t AS (")]
+    assert m.startswith("WITH m AS MATERIALIZED (SELECT c.id AS id FROM (SELECT d.record_id AS id "
+                        "FROM studio_record_hot d WHERE ")
+    lookup = m.index("CROSS JOIN LATERAL (SELECT r.id")
+    assert m.index("OFFSET 0) r WHERE") > lookup
+    assert m.index("(r.data ->> CAST(:fk1 AS text)) ILIKE") > m.index("OFFSET 0) r WHERE")
+    assert "LEFT JOIN LATERAL (SELECT s.v_ts AS k FROM studio_record_hot s" in sql
+
+
+def test_the_candidates_come_from_an_index_condition_first() -> None:
+    """A time or a text match drives the candidates. A number range has no
+    index condition for the app role, so it comes later."""
+    sql, _ = _sql([{"field": "hours", "op": "gte", "value": 2},
+                   {"field": "day", "op": "eq", "value": "2026-01-05"}])
+    assert "AND d.field_key = CAST(:fk1 AS text) AND d.v_ts >= CAST(:v1 AS timestamptz)" in sql
+    assert "EXISTS (SELECT 1 FROM studio_record_hot h0 " in sql
+    sql, _ = _sql([{"field": "note", "op": "eq", "value": "kit"}, {"field": "mail", "op": "is_empty"}])
+    assert "(SELECT r0.id FROM studio_records r0 WHERE r0." in sql
 
 
 def test_text_eq_reads_data_only_from_256_characters() -> None:
@@ -343,8 +394,10 @@ def test_a_hostile_key_or_value_never_reaches_the_sql() -> None:
 #: The names that an f-string of the query SQL may take: the index, a module
 #: constant, or a local that holds SQL built in these functions.
 _SQL_NAMES = frozenset({
-    "i", "_BOUND_ORG", "_IN_PACKAGE", "_QUERY_BASE", "_QUERY_COLUMNS", "HOT_TEXT_CHARS",
-    "kref", "kind", "expr", "cmp", "col", "frag", "row", "where", "dirn",
+    "i", "j", "_BOUND_ORG", "_IN_PACKAGE", "_OF_ORG", "_OF_OBJECT", "_QUERY_COLUMNS",
+    "_RECORD_ROW", "HOT_TEXT_CHARS", "kref", "kind", "expr", "cmp", "col", "hcol", "h",
+    "rid", "frag", "row", "where", "dirn", "what", "source", "lookup", "head", "tail",
+    "found", "total", "ids", "page", "counted", "count_head", "with_sql",
 })
 
 
@@ -361,8 +414,10 @@ def test_no_fstring_in_the_query_sql_takes_a_value() -> None:
     from SQL built here, and a review checks a new one."""
     funcs = _query_functions()
     assert {f.name for f in funcs} >= {"_q_hot_row", "_q_data", "_q_compare", "_q_text_eq",
-                                      "_q_text_in", "_q_contains", "_q_hot", "_q_cold",
-                                      "_q_where", "build_query", "build_count"}
+                                      "_q_text_in", "_q_contains", "_q_frag", "_q_hot",
+                                      "_q_cold", "_q_lookup", "_q_where", "_q_source",
+                                      "_q_filtered", "_q_head", "_q_sorted_ids",
+                                      "_q_small_ids", "build_query", "build_count"}
     bad: list[str] = []
     for func in funcs:
         for node in ast.walk(func):

@@ -293,14 +293,21 @@ def test_the_store_holds_no_route_and_no_transaction() -> None:
 
     The one exception is the SAVEPOINT of the query (C2a): `_time_limit`
     opens it with `begin_nested()`, and it ends nothing of the caller's
-    transaction. No other function opens one."""
+    transaction. The scan reads each node of the module, so a method of a
+    class or a lambda counts too. Exactly one `begin_nested` exists, and it
+    is in `_time_limit`."""
     src = _STORE.read_text(encoding="utf-8")
     assert "APIRouter" not in src and "gateway.routes" not in src
     found: list[str] = []
     tree = ast.parse(src)
-    nested = [f.name for f in tree.body if isinstance(f, ast.FunctionDef | ast.AsyncFunctionDef)
-              for n in ast.walk(f) if isinstance(n, ast.Attribute) and n.attr == "begin_nested"]
-    assert nested == ["_time_limit"], nested
+    everywhere = [n for n in ast.walk(tree)
+                  if isinstance(n, ast.Attribute) and n.attr == "begin_nested"]
+    limits = [f for f in ast.walk(tree)
+              if isinstance(f, ast.AsyncFunctionDef) and f.name == "_time_limit"]
+    assert len(limits) == 1, "one `_time_limit`"
+    inside = [n for n in ast.walk(limits[0])
+              if isinstance(n, ast.Attribute) and n.attr == "begin_nested"]
+    assert len(everywhere) == 1 and everywhere == inside, [n.lineno for n in everywhere]
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and node.attr in ("commit", "rollback", "begin"):
             found.append(node.attr)
