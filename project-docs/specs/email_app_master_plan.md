@@ -14964,8 +14964,8 @@ Email app is not held (below), but a run that it calls can be.
 **A held run.** A run that binds `no_egress` is a held run. Two causes set it: a covered
 Projects run above it (H-236), or a chat session that read stranger mail (EM-G11d). A held run
 keeps only the delegation tools, the sandbox tools and the tools that say `open_world=False`.
-D150 adds the first-party writes of `egress.HELD_CARD_WRITE_TOOLS`, each behind its own card,
-and it takes the other Projects and CRM writes out of a held chat.
+D150 adds the first-party writes of `egress.HELD_CARD_WRITE_TOOLS`, each behind its own card.
+It takes the other Projects and CRM writes out of a held chat.
 
 **The three classes.** The audit sorts each tool by what its code does, not by its name.
 
