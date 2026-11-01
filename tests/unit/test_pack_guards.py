@@ -1139,11 +1139,11 @@ async def test_the_crm_held_drop_follows_is_egress(monkeypatch) -> None:
     assert open_build.dropped == () and len(open_build.tools) == 9
 
 
-async def test_a_marked_mail_chat_holds_the_crm_pack_and_shows_no_card(monkeypatch) -> None:
-    """The chat read mail (``email`` pack), then the member asks for a CRM
-    write. The CRM pack builds held: no write tool is on the list, so no card
-    shows, the owner's or the untrusted one. Mutation: build the pack open in
-    a marked chat -> ``create_lead`` is on the list -> red."""
+async def test_a_marked_mail_chat_holds_the_crm_pack_with_its_writes(monkeypatch) -> None:
+    """RX-1 (D150). The chat read mail (``email`` pack), then the member asks
+    for a CRM write. The CRM pack builds held, and each write stays, because its
+    own card is the guard. The build shows no card. Mutation: take ``create_lead``
+    off ``HELD_CARD_WRITE_TOOLS`` -> the held pack drops it -> red."""
     _mode(monkeypatch, "live")
     cards: list[str] = []
 
@@ -1155,8 +1155,8 @@ async def test_a_marked_mail_chat_holds_the_crm_pack_and_shows_no_card(monkeypat
     with _run():
         await eg.mark_untrusted_session(EA)  # what an email pack call does first
         build = await _build("crm-records", _crm_module())
-    assert build.held is True and "create_lead" not in {t.__name__ for t in build.tools}
-    assert cards == []
+    assert build.held is True and "create_lead" in {t.__name__ for t in build.tools}
+    assert cards == [], "a build shows no card"
 
 
 async def test_a_crm_pack_run_with_no_user_refuses() -> None:
