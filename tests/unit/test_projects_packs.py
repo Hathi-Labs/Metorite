@@ -201,16 +201,18 @@ async def test_each_built_pack_holds_exactly_its_familys_names(store) -> None:
         assert build.dropped == () and build.skipped == (), slug
 
 
-async def test_a_held_pack_drops_nothing_because_no_projects_tool_is_egress(store) -> None:
-    """Parity with the owner's own run: the held set of the Projects assistant
-    is ``web_search``, ``fetch_page``, ``save_memory`` and ``save_note``, and
-    none of them is a Projects tool. Mutation: a Projects tool that says
-    ``open_world=True`` -> the held pack drops it -> red."""
+async def test_a_held_pack_drops_exactly_the_held_off_writes(store) -> None:
+    """RX-1 (D150). No Projects tool is an egress tool, and parity with the
+    owner's own held run stands: a held pack drops the class C writes that a
+    held chat does not hold, and each other tool stays. Mutation: a Projects
+    tool that says ``open_world=True`` -> the held pack drops it -> red."""
     for slug in SLUGS:
         build, _key = await _build(slug, no_egress=True)
         assert build is not None and build.held is True, slug
-        assert build.dropped == (), (slug, build.dropped)
-        assert [_name(t) for t in build.tools] == list(_family(slug)), slug
+        off = [name for name in _family(slug) if eg.is_held_off_write(name)]
+        assert list(build.dropped) == off, slug
+        assert [_name(t) for t in build.tools] == [n for n in _family(slug) if n not in off], slug
+        assert not [n for n in _family(slug) if ti._is_egress(n)], slug
 
 
 async def test_a_built_tool_keeps_the_owners_class_and_its_strict_schema(store) -> None:

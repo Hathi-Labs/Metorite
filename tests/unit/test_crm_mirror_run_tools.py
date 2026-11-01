@@ -142,12 +142,20 @@ def test_the_dropped_set_keeps_log_activity() -> None:
     assert Path(crm_tools.__file__).name == "crm_tools.py"
 
 
-async def test_a_no_egress_run_reads_nothing(monkeypatch) -> None:
-    """H-236: a covered run sends no request it does not need. Its egress
-    control drops the three writes anyway, as each says open_world=True."""
+async def test_a_held_run_reads_the_mode_because_it_keeps_the_writes(monkeypatch) -> None:
+    """RX-1 (D150): a held chat keeps the record writes behind their cards. So
+    the Mirror drop runs in a held run too, or a write would reach Zoho. Each
+    write still says open_world=True, because the list keeps it, never a
+    claim. Mutation: skip the read in a no_egress run -> the writes stay in
+    Mirror mode -> red."""
+    from acb_skills.tool_annotations import TOOL_ANNOTATIONS
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
     calls = _gateway(monkeypatch, {"mode": "mirror"})
     agents = _M.build_agents()
-    await ti._drop_mirror_record_writes(agents, no_egress=True)
-    assert calls == []
-    from acb_skills.tool_annotations import TOOL_ANNOTATIONS
+    with artifact_context_scope():
+        bind_artifact_context(no_egress=True)
+        await ti._drop_mirror_record_writes(agents)
+    assert len(calls) == 1
+    assert not _names(agents) & _WRITES
     assert all(TOOL_ANNOTATIONS[name]["open_world"] for name in _WRITES)

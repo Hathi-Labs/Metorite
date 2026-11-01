@@ -1105,18 +1105,24 @@ async def test_a_live_org_or_a_failed_mode_read_keeps_the_writes(monkeypatch, mo
     assert {t.__name__ for t in build.tools} == CRM_NINE and build.dropped == ()
 
 
-async def test_a_held_crm_pack_drops_the_four_writes_and_reads_no_mode(monkeypatch) -> None:
-    """A held pack (the chat read mail) drops each egress tool: the four
-    writes. It reads nothing for the Mirror drop. Mutation: read the mode in a
-    held build -> ``calls`` is not empty -> red."""
+@pytest.mark.parametrize(("mode", "gone"), [
+    ("live", frozenset()), ("mirror", ti.MIRROR_RECORD_WRITES),
+], ids=["native", "mirror"])
+async def test_a_held_crm_pack_keeps_the_writes_and_mirror_still_takes_three(
+    monkeypatch, mode: str, gone: frozenset[str],
+) -> None:
+    """RX-1 (D150). A held pack keeps the four writes behind their cards. The
+    Mirror drop runs in a held build too, or a held write would reach Zoho.
+    Mutation: skip the read of the mode in a held build -> the three writes
+    stay in Mirror mode -> red."""
     calls: list[str] = []
-    _mode(monkeypatch, "mirror", calls)
+    _mode(monkeypatch, mode, calls)
     with _run():
         await eg.mark_untrusted_answer()  # the chat read mail on an earlier turn
         build = await _build("crm-records", _crm_module())
-    assert build.held is True and calls == []
-    assert set(build.dropped) == CRM_WRITES
-    assert {t.__name__ for t in build.tools} == CRM_NINE - CRM_WRITES
+    assert build.held is True and calls == ["read"]
+    assert set(build.dropped) == gone
+    assert {t.__name__ for t in build.tools} == CRM_NINE - gone
 
 
 async def test_the_crm_held_drop_follows_is_egress(monkeypatch) -> None:
@@ -1125,7 +1131,7 @@ async def test_the_crm_held_drop_follows_is_egress(monkeypatch) -> None:
     _mode(monkeypatch, "live")
     module = _crm_module()
     with _run(no_egress=True):
-        assert set((await _build("crm-records", module)).dropped) == CRM_WRITES
+        assert (await _build("crm-records", module)).dropped == ()
         monkeypatch.setattr(ti, "_is_egress", lambda t: ti._tool_name(t) == "get_record")
         assert (await _build("crm-records", module)).dropped == ("get_record",)
         monkeypatch.setattr(ti, "_is_egress", lambda t: False)
