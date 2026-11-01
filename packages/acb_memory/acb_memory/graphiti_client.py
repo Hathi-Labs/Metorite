@@ -296,8 +296,11 @@ async def _is_episode_worthy(content: str) -> bool:
     bare confirmations. Conservative — returns True on any error or ambiguity
     so the worst case is the pre-filter behaviour (record everything).
 
-    An EMPTY answer is NO (task 1128). It is no verdict, so the gate fails
-    closed and records nothing.
+    An EMPTY answer is no verdict, so it is uncertain, and the gate records
+    the episode (task 1128, repair round 1). It logs a warning, because a
+    blank answer means the model could not answer. Dropping the episode would
+    lose memory with no sign, for example when a chain step cannot turn
+    thinking off.
     """
     text = (content or "").strip()
     if len(text) < 20:
@@ -328,8 +331,8 @@ async def _is_episode_worthy(content: str) -> bool:
         )
         answer = (verdict or "").strip().lower()
         if not answer:
-            _log.info("graphiti.worthiness_gate_empty")
-            return False
+            _log.warning("graphiti.worthiness_gate_empty")
+            return True
         return "no" not in answer[:4]
     except Exception as exc:
         _log.debug("graphiti.worthiness_gate_failed", error=str(exc)[:120])

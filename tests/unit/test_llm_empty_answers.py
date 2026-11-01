@@ -14,7 +14,8 @@ Mutations this file catches (R7):
   watermark. It must raise ``LLMUnavailable``, so the mail is tried again.
 * The template fill writes the raw ``{{...}}`` text on a blank answer.
 * The self-anneal reply sends ``""``.
-* The graphiti gate reads a blank answer as YES.
+* The graphiti gate drops the episode on a blank answer, or logs no warning.
+  A blank answer is uncertain, and the gate keeps what is uncertain.
 * Custom Apps answers 200 with ``""``.
 * The tier test passes on a blank answer.
 * The sender pin prompt loses the word "JSON".
@@ -240,9 +241,13 @@ async def test_a_blank_recovery_reply_sends_the_fixed_apology(monkeypatch, conte
 # ── memory: the graphiti worthiness gate ────────────────────────────────────
 
 
-@pytest.mark.parametrize(("verdict", "worthy"), [
-    ("", False), ("  ", False), ("NO", False), ("YES", True)])
-async def test_a_blank_worthiness_verdict_is_no(monkeypatch, verdict, worthy) -> None:
+@pytest.mark.parametrize(("verdict", "worthy", "warned"), [
+    ("", True, True), ("  ", True, True), ("NO", False, False), ("YES", True, False)])
+async def test_a_blank_worthiness_verdict_records_and_warns(
+        monkeypatch, verdict, worthy, warned) -> None:
+    """The gate keeps what is uncertain (its docstring and its call site say
+    so), and a blank answer is uncertain. Dropping it would lose memory with
+    no sign (repair round 1)."""
     import acb_llm
     from acb_memory import graphiti_client
 
@@ -254,8 +259,11 @@ async def test_a_blank_worthiness_verdict_is_no(monkeypatch, verdict, worthy) ->
 
     monkeypatch.setattr(acb_llm, "complete", fake_complete)
     text = "We agreed to ship 40 units to Acme on 12 March."
-    assert await graphiti_client._is_episode_worthy(text) is worthy
+    with structlog.testing.capture_logs() as caps:
+        assert await graphiti_client._is_episode_worthy(text) is worthy
     assert seen["job"] == "structured" and seen["max_tokens"] == 8
+    lines = [c for c in caps if c["event"] == "graphiti.worthiness_gate_empty"]
+    assert [c["log_level"] for c in lines] == (["warning"] if warned else [])
 
 
 # ── settings: the tier test ─────────────────────────────────────────────────
