@@ -2631,9 +2631,12 @@ NO_ZONE = (
     "of your browser. Or give the time with its offset, for example "
     "2026-10-31T09:00:00+05:30."
 )
-#: The fallback that both gates name: a private task with a block on the
-#: member's calendar is the nearest act that works today.
-FALLBACK = "Make a private task with a block instead (create_personal_task)."
+#: What both gates tell the model. A task is a different object, so a refused
+#: reminder never turns into one by itself. The member chooses (owner, 2026-11-01).
+FALLBACK = (
+    "Say that plainly. Do not make a task in its place. "
+    "Make a task only when the member asks for one."
+)
 #: The flag ``CALENDAR_REMINDERS`` is off: every reminder route answers 404.
 REMINDERS_OFF = "Reminders are not on for this organization yet."
 #: A run with no card channel (WhatsApp) cannot ask the member, and a
@@ -2751,7 +2754,7 @@ def no_card_channel(tool: str) -> str:
     A WhatsApp run, or any run inside ``ask_tools.refuse_cards``, has nobody
     who can see a card. There a card is denied, or parked when the tool is in
     ``whatsapp_acts.ALLOWED_ACTS``. No reminder act is there until RM-9, so
-    the tool refuses before its card and names the fallback. When RM-9 adds
+    the tool refuses before its card and says so. When RM-9 adds
     the act, this check lets it through with no change here.
     """
     try:

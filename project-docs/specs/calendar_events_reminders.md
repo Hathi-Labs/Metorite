@@ -969,9 +969,9 @@ is `tests/unit/test_reminder_tools.py`.
   answer 404, so the tool refuses and says that reminders are not on. A
   WhatsApp run, or any run with no card channel, cannot confirm a reminder
   until RM-9 adds the acts to `whatsapp_acts.ALLOWED_ACTS`. So the tool
-  refuses there too. Both refusals send the model to a private task with a
-  block (`create_personal_task`). `list_reminders` says the same when the
-  flag is off.
+  refuses there too. Both refusals tell the member plainly, and the tool
+  tells the model to make no task in place of a reminder (owner, 2026-11-01,
+  task 1228). `list_reminders` says the same when the flag is off.
 - **Time.** The tool resolves the time itself. `at` is ISO 8601 with an
   offset, or a wall time with no offset, such as `2026-10-31 17:00`. The tool
   reads a wall time in the member's saved zone, `user_settings.timezone`,
