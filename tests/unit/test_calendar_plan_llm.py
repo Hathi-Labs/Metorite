@@ -106,6 +106,19 @@ def test_a_good_answer_gives_the_ordered_plan(fake_llm):
     assert notes == "calls after 8"
 
 
+def test_the_rank_is_bounded_inside_the_proxy_limit():
+    """A stalled model must not outrun the 30 s of the BFF proxy.
+
+    Mutation: remove the `asyncio.wait_for`, and this test fails.
+    """
+    import inspect
+
+    assert cal.PLAN_RANK_BOUND_S <= 20
+    src = inspect.getsource(cal._replan_core)
+    assert "asyncio.wait_for(" in src and "PLAN_RANK_BOUND_S" in src
+    assert "the AI model took too long" in src
+
+
 def test_the_note_reaches_the_model(fake_llm):
     _rank("reschedule all calls after 8 am")
     user_msg = fake_llm.calls[0]["messages"][1]["content"]
