@@ -17,6 +17,7 @@
       "tests/unit/test_byok_disabled.py",
       "tests/unit/test_caddy_auth_gate.py",
       "tests/unit/test_chat_hardening.py",
+      "tests/unit/test_chat_parity.py",
       "tests/unit/test_chat_payload_identity_claims.py",
       "tests/unit/test_ci_unit_guard.py",
       "tests/unit/test_client_route_contract.py",
@@ -88,7 +89,6 @@
       "tests/unit/test_worktree_remove.py"
     ],
     "process": [
-      "tests/unit/test_chat_parity.py",
       "tests/unit/test_chat_placement_classes.py",
       "tests/unit/test_chat_placement_instructions.py",
       "tests/unit/test_ci_pc.py",

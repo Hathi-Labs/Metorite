@@ -5,6 +5,9 @@
 holds each request of the control plane to one decision. Today's gaps sit in
 a debt list, so CI passes. P-1 (Calendar and Tasks) is the next slice.
 
+**The fence blocks every pull request** (owner decision, 2026-11-01). It is a
+SAFETY fence in `tests/fences.json`, so it blocks in build mode too.
+
 **Epic:** Metorite task 1238. Written 2026-11-01.
 
 **Owner rule, 2026-11-01, in chat.** The words are the owner's, so they sit
@@ -60,10 +63,16 @@ sense. `EXEMPT_KINDS` holds the kinds:
 
 A new kind needs the owner. Do not add a kind to make a row pass.
 
+**Secrets stay in the UI** (owner decision, 2026-11-01). A member types a
+password, a key or a token only in the form of the app. No chat tool takes
+one. So the `secret` kind stays, and its rows are not debt.
+
 ## 3. The fence and the ratchet (R7)
 
 **Fence:** `tests/unit/test_chat_parity.py`. Its reader is
-`tests/unit/_chat_parity_reader.py`. It runs no node and no gateway.
+`tests/unit/_chat_parity_reader.py`. It runs no node and no gateway. It sits
+in the `safety` list of `tests/fences.json`. The pr-check shards run each
+safety fence and block on it, with no `harden` label.
 
 1. The reader reads each request of the UI from the TypeScript source, with
    the tokenizer of F3. It follows a literal path, a constant, an object of
