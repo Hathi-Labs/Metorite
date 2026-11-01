@@ -68,9 +68,15 @@ _PERSON_NULL = re.compile(r"(\w+) IS (NOT )?NULL")
 #: (WS-PKG PKG-4 and PKG-5b, ``package_host/sharing.py``) asks it of
 #: ``app_grants``. :meth:`_FakeDB._others_test` reads each test from the
 #: statement, so a clause that drops a test changes the answer. A test that
-#: the fake cannot read is an error.
+#: the fake cannot read is an error. ``EXISTS(`` with no space or with more
+#: space is the same SQL, so the pattern and :data:`_ANY_EXISTS` take any
+#: spacing.
 _PERSON_OTHERS = re.compile(
-    r"(NOT )?EXISTS \(SELECT 1 FROM (\w+) AS (\w+) WHERE ((?:[^()]|\([^()]*\))*)\)")
+    r"(NOT\s+)?\bEXISTS\s*\(SELECT 1 FROM (\w+) AS (\w+) WHERE ((?:[^()]|\([^()]*\))*)\)")
+#: Each ``EXISTS (`` of a statement, at any spacing. When this count and the
+#: count of :data:`_PERSON_OTHERS` differ, the fake cannot read a subquery,
+#: and that is an error, never a pass.
+_ANY_EXISTS = re.compile(r"\bEXISTS\s*\(", re.I)
 
 
 class _Scalars:
@@ -350,7 +356,7 @@ class _FakeDB:
             col, negated = nul.group(1), bool(nul.group(2))
             found = [r for r in found if (r.get(col) is not None) is negated]
         others = list(_PERSON_OTHERS.finditer(s))
-        if s.count("EXISTS (") != len(others):
+        if len(_ANY_EXISTS.findall(s)) != len(others):
             raise AssertionError(f"unreadable EXISTS clause in fake: {s}")
         for ex in others:
             negated, inner = bool(ex.group(1)), self.rows.get(ex.group(2), [])

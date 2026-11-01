@@ -13,11 +13,25 @@ tests hold:
    of the install. The CHECK ``package_install_private_installer`` makes the
    owner of a private install its installer.
 
-Test 3 refuses the consent row. ``routes/apps/grants.py`` writes a row with
-the address of the member who consents, and that member is ``granted_by``
-too. So a colleague who sees an org app and consents to it gets such a row.
-If that row counted, the colleague would see the owner's private install.
-Test 3 also refuses a share that another owner of the app made.
+**No route writes an ``app_grants`` row for a Studio package today.**
+``routes/apps/grants.py`` serves App Workshop apps only. Its
+``get_app_or_404`` calls ``load_app``, which skips ``format = 'manifest'``,
+so each grant route answers 404 for a Studio package. PKG-11, the promotion
+path of ``ai_studio.md`` J2, owns the writer of a share.
+
+Test 3 refuses each row that the owner did not make. One is a consent row:
+the App Workshop consent route writes the address of the member who
+consents as the subject and as ``granted_by``. If such a row counted, a
+colleague who consents would see the owner's private install. Test 3 also
+refuses a share that another owner of the app made.
+
+⚠️ **A requirement on the writer of PKG-11.** ``upsert_app_grant`` of
+``grants.py`` runs ``ON CONFLICT (app_id, subject) DO UPDATE SET role =
+excluded.role``, so it keeps the first ``granted_by``. A share by the owner
+that lands on an existing row then fails test 3. That row can be the consent
+row of the colleague, or the grant of another editor. So the writer of
+PKG-11 sets ``granted_by`` to the sharer on a conflict, or the rule changes
+in the same slice. ``project-docs/hardening_backlog.md`` PK-7 holds it.
 
 Two callers use the rule: the member purge (``routes/admin/members.py``,
 decision 5) and the resolve of PKG-5b part 2. Do not copy the SQL. The

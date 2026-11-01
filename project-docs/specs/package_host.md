@@ -140,12 +140,17 @@ Each point keeps the seam that owns it today. Only the place where the seam read
 
 **Claim overlap.** Two claims on the same point and key conflict when their scopes overlap:
 - An `org` claim conflicts with every other claim on the same key.
-- A `group:g` claim conflicts with the claims of group g, with org claims, and with the private claims of the members of g.
+- A `group:g` claim conflicts with the claims of group g and with org claims. It also conflicts with the private claims of the members of g.
 - A private claim of member u conflicts with the private claims of u, with org claims, and with claims of the groups of u.
 - Any claim conflicts with a key that a system package holds.
 - `triggers` allows many claims. `slot` allows many claims in PKG-5b, and PKG-14 enforces the limit that the host declares.
+- Two claims of installs of the same app never conflict, at any scope. Ben can install the app Q privately, and an admin can then install Q for the org. The resolve shows one of the two (§5.2).
+
+**A member of a group is an active member.** The rule is the one group query, `_MY_GROUPS_SQL` in `routes/projects/core.py`. It counts a row of `org_group_member` only when `app_user.status = 'active'`. The remove route keeps those rows for a removed member. So the private claim of a removed member does not block a group install. The store reuses that query and keeps no copy.
 
 Overlap is one relation, so each rule holds from both sides. A private claim of u and a claim of a group of u conflict in either order of install. Each claim that exists holds its key, also a claim of a paused or archived install, until the disposal of §5.3 deletes it.
+
+**The store checks these rules at install time only.** A later group join or a later share can still put two claims of one key in front of one viewer. §5.2 picks one winner. PKG-Q6 (§15) is open: a private claim of another app blocks an org install today.
 
 ---
 
@@ -192,7 +197,7 @@ Constraints and indexes of `package_install`:
 
 The primary key is `(organization_id, install_id, point, key)`.
 
-**`app_grants` is tenant-scoped.** The generated phases scope it: lines 106 to 108 of `infra/postgres/generated/04_policies.sql` enable and force row level security on it and add the policy `app_grants_tenant_isolation`. `tests/unit/test_package_host_store_r8.py` confirms it on a real database (PKG-5b part 1).
+**`app_grants` is tenant-scoped.** The generated phases scope it. Lines 106 and 107 of `infra/postgres/generated/04_policies.sql` enable and force row level security on it. Line 109 adds the policy `app_grants_tenant_isolation`. `tests/unit/test_package_host_store_r8.py` confirms it on a real database (PKG-5b part 1).
 
 **The install store.** `gateway/package_host/store.py` is the one writer of both tables (PKG-5b part 1). It checks only that the app exists in the bound org, has `format = 'manifest'`, and is not archived. It reads that row of `apps` and never writes `apps`, because `gateway/studio/packages_store.py` owns those rows. The check "may this member use this app" belongs to the install routes of PKG-8 and PKG-12.
 
@@ -208,7 +213,13 @@ Five decisions that the columns carry:
 3. **A share with named people stays `private`.** The people get rows in `app_grants`, the sharing table of `114_custom_apps.sql`. So `apps.visibility = people` maps to a private install plus grants. The resolve (PKG-5b) shows a private install to its owner and to each grantee. `gateway/package_host/sharing.py` holds the one rule of a grantee. A grant counts only when all three tests hold:
    - Its subject is an email address, with an `@`. So a grant to `agent:<name>` or `agents:*` shares nothing.
    - Its subject is not the owner, in any case.
-   - The owner made it: `lower(granted_by) = installed_by`. A consent row of `routes/apps/grants.py` names the member who consents as `granted_by`. So a consent row shares nothing, and a share by another owner of the app shares nothing.
+   - The owner made it: `lower(granted_by) = installed_by`. A consent row names the member who consents as `granted_by`. So a consent row shares nothing, and a share by another owner of the app shares nothing.
+
+   **No route writes an `app_grants` row for a Studio package today.** `routes/apps/grants.py` serves App Workshop apps only. Its `get_app_or_404` calls `load_app`, which skips `format = 'manifest'`, so each grant route answers 404 for a Studio package. PKG-11, the promotion path of `ai_studio.md` J2, owns the writer of a share.
+
+   **A requirement on that writer.** `upsert_app_grant` of `grants.py` runs `ON CONFLICT (app_id, subject) DO UPDATE SET role = excluded.role`. So it keeps the first `granted_by`. A share by the owner that lands on an existing row then fails the third test. That row can be a consent row of a colleague, or a grant of another editor.
+
+   So the writer of PKG-11 sets `granted_by` to the sharer on a conflict, or the rule changes in the same slice. `hardening_backlog.md` PK-7 tracks it.
 4. **A duplicate claim is refused in code, not by an index.** Some points allow many claims (`triggers`, `slot`), and a private claim conflicts only with what its owner sees. PKG-5b checks the claims of §4 in the install transaction, under `pg_advisory_xact_lock` on the organization.
 5. **A purge deletes a private install of the member only when nobody else sees it.** Nobody else sees it when no `app_grants` row of its app passes the three tests of decision 3. A consent row of a colleague fails test 3, so it keeps no install. Its contributions go by the cascade. A private install that the member shared with named people stays, and the purge counts it (decision 3). An org or group install that the member made stays too, and the purge counts it. This follows the rule of `routes/admin/members.py`: "purge the person, keep their work".
 
@@ -232,7 +243,11 @@ The workbench caches the answer through `useCachedResource`. A change to an inst
 
 **Step 2.** The resolve drops a paused, archived or expired install (`ends_at` in the past). It also drops each install whose app has `apps.status = 'archived'`. A draft install (`version IS NULL`) shows to its owner only.
 
-**Step 2, private installs.** A private install shows to its owner and to each `app_grants` grantee that passes the three tests of §5.1 decision 3. It still shows to the grantees after its owner leaves the org.
+**Step 2, private installs.** A private install shows to its owner. It also shows to each `app_grants` grantee that passes the three tests of §5.1 decision 3. It still shows to the grantees after its owner leaves the org.
+
+**Step 2, one app.** One viewer can see two installs of the same app, because their claims never conflict (§4). The resolve shows one of them: the install of the widest scope. Org comes first, then group, then private. Two installs of one kind, such as two groups, follow the order of the next paragraph.
+
+**Step 2, one key.** One viewer can also see two claims of one key by two different apps. Four paths reach this: a member in two groups, a grantee of a shared install, a later group join, and a later share. The store checks §4 only at install time, so the resolve must still pick one winner. The order is org, then group, then private. Then the older `created_at` of the install wins, and then the lower `id`.
 
 **Step 3.** A contribution names its feature in `payload.feature`. A contribution with no feature shows to every member, as an unknown href does in the system gates.
 
@@ -392,7 +407,7 @@ The `CENTERS` rows of `HREF_FEATURES` stay in code (D49).
 | **PKG-5b** | `GET /shell/manifest`, the resolve of §5.2, and the install store function (no route). PKG-8 adds the install route for Studio apps, and PKG-12 adds it for apps made in chat. **Part 1 is built:** the install store (`gateway/package_host/store.py`), the share rule (`gateway/package_host/sharing.py`) and `load_contributes()`. The store checks only that the app exists in the bound org, has `format = 'manifest'`, and is not archived. The PKG-8 and PKG-12 routes check that the member may use the app. Part 2 is the resolve and the route | R8: a private install shows for its owner and for each named grantee, a group install for its members only, an org install for its org only. A contribution with a feature the viewer lacks never shows. A paused, archived or expired install shows nothing. A duplicate claim makes the store function raise. Part 1: `tests/unit/test_package_host_store_r8.py` (a duplicate claim, the overlap of §4, two installs at once, a scope that is a 422) | HIGH | AGENT-SAFE |
 | **PKG-6** | The workbench reads the resolved manifest behind the flag | With the flag off, the shell is byte-for-byte as before. With it on, an org install shows in the sidebar, ⌘K and the bell. Visual review in four contexts | STD | AGENT-SAFE |
 | **PKG-7** | Features from installs pass the one entitlement seam | A feature that only an install declares is visible to a holder of `*`. The `FEATURES` tuple stays the system list | HIGH | AGENT-SAFE |
-| **PKG-8** | Studio H1 and H2 use this path. `ai_studio.md` §14 points here | An installed Studio app reaches every point of §4 through the registry. No Studio-only list exists | STD | AGENT-SAFE |
+| **PKG-8** | Studio H1 and H2 use this path. `ai_studio.md` §14 points here. PKG-8 decides the open question PKG-Q6 (§15) first | An installed Studio app reaches every point of §4 through the registry. No Studio-only list exists | STD | AGENT-SAFE |
 
 ### Phase P2 — Lifetimes and promotion
 
@@ -463,8 +478,9 @@ Each path was read on `787269f0a`. The PKG-5b part 1 files are new on its branch
 - `routes/shell/intent.py` (`JOBS`), `routes/shell/needs.py` (`REGISTRY`, `register`), `routes/shell/search.py` (`PROVIDERS`, `SCOPE_APPS`)
 - `routes/admin/me.py` (`SHELL_PRESETS`, `SHELL_CARDS`, `SHELL_PANES`)
 - `retrieval/sources.py` (`REGISTRY`)
-- `routes/apps/grants.py` (`is_valid_subject`, the consent row), `studio/packages_store.py` (the rows of a Studio package)
-- New with PKG-5b part 1: `package_host/store.py` (`install`, `ClaimTaken`, `ScopeRefused`), `package_host/sharing.py` (`OTHERS_SEE_THE_INSTALL`)
+- `routes/apps/grants.py` (`is_valid_subject`, the consent row, `upsert_app_grant`), `studio/packages_store.py` (the rows of a Studio package, `first_bad_value`)
+- `routes/projects/core.py` (`_MY_GROUPS_SQL`, the one group query)
+- New with PKG-5b part 1: `package_host/store.py` (`install`, `ClaimTaken`, `ScopeRefused`, `InstallError.detail_for`), `package_host/sharing.py` (`OTHERS_SEE_THE_INSTALL`)
 
 **Eval and CI**
 - `evals/routing/shell.py` (`also_serves()` reads `load_gates()`), `.github/workflows/skill-eval.yml` (the path filter)
@@ -515,6 +531,8 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | Only the install store writes an install or a claim | New with PKG-5b part 1: `tests/unit/test_package_host_store.py` |
 | The store refuses a duplicate claim under one lock for each org | New with PKG-5b part 1: `tests/unit/test_package_host_store_r8.py` |
 | Only a share by the owner keeps a private install | `tests/unit/test_admin_member_purge.py`, `tests/unit/test_package_host_store_r8.py` |
+| Two installs of one app never conflict, and a group counts its active members only | `tests/unit/test_package_host_store_r8.py`, `tests/unit/test_package_host_store.py` |
+| A refusal never names the private install of another member | `tests/unit/test_package_host_store.py`, `tests/unit/test_package_host_store_r8.py` |
 | Removal leaves no contribution | New with PKG-9: `tests/unit/test_package_disposal_r8.py` |
 | A stable region moves only on a member action | New with PKG-18: `src/lib/shell/arrangement.test.ts` |
 
@@ -531,3 +549,8 @@ The owner accepted PKG-Q1 to PKG-Q5 as recommended on 2026-11-01 (D147).
 | PKG-Q3 | May a company app add a panel or a button to a built-in page? | **Yes**, T1 only, into declared slots (§8) |
 | PKG-Q4 | How far may the product rearrange itself for each person? | **It suggests and never moves** a stable region (§9.2) |
 | PKG-Q5 | Which harness lessons go first? | **Replay tests and logged model inputs**, then the goal record. `web_research.md` §8 carries them |
+| PKG-Q6 | May the private claim of a member, for a DIFFERENT app, block an org install? | **OPEN.** PKG-8 decides it before its install route ships. The two options are below |
+
+**PKG-Q6 in detail.** Today the private claim blocks the org install, because an org claim conflicts with every claim (§4). So a member can squat on a key, and no route removes the install before PKG-9. PKG-8 picks one of two options:
+1. **The org wins.** The org install goes in, and the resolve shows the org claim in place of the private claim (§5.2).
+2. **An admin disposes.** The store still refuses the org install. An admin route disposes of the blocking install first.

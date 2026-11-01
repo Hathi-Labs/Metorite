@@ -8,8 +8,10 @@ Spec: ``project-docs/specs/package_host.md`` §4, §5.1 and the PKG-5b row of
 The rows live on a phase-4 promoted scratch database: the full ladder, then
 the four generated phases. Each install runs as the app role, through
 ``acb_common.db.tenant_session``, so RLS binds each statement. Two
-organizations. Org A has three members and two groups: Ana and Ben are in
-``ops``, and Cat is in ``eng``.
+organizations. Org A has four members and two groups: Ana, Ben and Dan are
+in ``ops``, and Cat is in ``eng``. The ``app_user`` row of Dan has a
+mixed-case address, so each ``lower(au.email)`` of the group query has a
+fence.
 
 Run (a PRIVATE ladder database, one R8 suite at a time, because the
 ``promoted`` fixture drops ``<db>_h3rls``)::
@@ -31,7 +33,8 @@ b. A duplicate claim raises ``ClaimTaken`` with the point, the key and the
    A key that a system package holds is refused. A claim of org B never
    conflicts with org A.
 c. Two installs of one key at once give one winner and one ``ClaimTaken``.
-   The second install waits on the advisory lock of the org.
+   The second install waits on the advisory lock of the org. Two installs
+   of one key in two orgs at once both pass, and neither waits.
 d. ``GROUP:x@y.test`` asked for as private, a ``scope_kind`` that does not
    agree, and a private scope of another member each raise ``ScopeRefused``
    (a 422), never a database error.
@@ -39,6 +42,11 @@ e. The store installs only a Studio package of the bound org that is not
    archived, one install at each scope. An unbound session writes nothing.
 f. ``sharing.OTHERS_SEE_THE_INSTALL`` holds its three tests in SQL.
 g. ``app_grants`` is tenant-scoped (§5.1, "Check app_grants first").
+h. Two installs of the same app never conflict, at any scope.
+i. A group counts its active members only, as ``_MY_GROUPS_SQL`` does.
+j. ``ClaimTaken.detail_for`` hides the private install of another member.
+k. A transaction of ``tenant_session`` is READ COMMITTED, and the store
+   refuses REPEATABLE READ.
 
 **R7: red first, then mutate.** Commit before each mutation, and restore
 with git after. Each mutation ran on 2026-11-01 and gave the result below.
@@ -60,6 +68,24 @@ with git after. Each mutation ran on 2026-11-01 and gave the result below.
   ``ops`` then ``ana`` of the overlap test goes red. Drop the private rule of
   a new group claim instead, and the cases ``ana`` then ``ops`` and ``cat``
   then ``eng`` go red.
+
+Repair round 1 (2026-11-01) adds these. The results are in the report of
+the round.
+
+* M6. ``store.py``: drop ``SAME_APP_EXEMPT`` from ``_HELD_SQL``. Each case
+  of ``test_r8_two_installs_of_one_app_never_conflict`` with a shared scope
+  goes red, and so does the same-app case of the hermetic twin.
+* M7. ``routes/projects/core.py``: drop ``AND au.status = 'active'`` from
+  ``_MY_GROUPS_SQL``. ``test_r8_a_removed_member_is_in_no_group`` goes red.
+* M8. ``routes/projects/core.py``: drop the ``lower()`` of ``au.email`` in
+  ``_MY_GROUPS_SQL``. The cases ``dan`` then ``ops`` and ``ops`` then
+  ``dan`` of the overlap test go red.
+* M9. ``store.py``: make ``holder_for`` answer the whole holder.
+  ``test_r8_the_409_hides_the_private_install_of_another_member`` goes red.
+* M10. ``store.py``: lock ``package_install`` with no org in the key.
+  ``test_r8_two_orgs_install_one_key_at_once_and_neither_waits`` goes red.
+* M11. ``store.py``: drop the check of the isolation level.
+  ``test_r8_the_store_refuses_repeatable_read`` goes red.
 """
 
 from __future__ import annotations
@@ -101,6 +127,9 @@ TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@pkg5b.test"
 BEN = f"ben.{TAG}@pkg5b.test"
 CAT = f"cat.{TAG}@pkg5b.test"
+#: Mixed case in ``app_user``. The store folds it, and the group query must
+#: fold it too.
+DAN = f"Dan.{TAG}@pkg5b.test"
 OPS = f"group:ops{TAG}"
 ENG = f"group:eng{TAG}"
 _SLUG_LIKE = f"pkg5b-{TAG}-%"
@@ -117,7 +146,7 @@ def _dsn(url: Any) -> str:
 @pytest.fixture
 def world(promoted):  # noqa: F811
     """Org A: nine Studio packages, an archived one, an App Workshop app,
-    three members and two groups. Org B: one Studio package. Seeded as the
+    four members and two groups. Org B: one Studio package. Seeded as the
     superuser. Teardown deletes the apps, and the installs, the claims and
     the grants go by cascade."""
     p = promoted
@@ -140,12 +169,12 @@ def world(promoted):  # noqa: F811
         app(c, "code", p.org_a, fmt="code")
         app(c, "b1", p.org_b)
         users: dict[str, str] = {}
-        for email in (ANA, BEN, CAT):
+        for email in (ANA, BEN, CAT, DAN):
             users[email] = str(c.execute(text(
                 "INSERT INTO app_user (email, display_name, role, status, organization_id) "
                 "VALUES (:e, :e, 'employee', 'active', :org) RETURNING id"),
                 {"e": email, "org": p.org_a}).scalar_one())
-        for group, members in ((OPS, (ANA, BEN)), (ENG, (CAT,))):
+        for group, members in ((OPS, (ANA, BEN, DAN)), (ENG, (CAT,))):
             gid = str(c.execute(text(
                 "INSERT INTO org_group (organization_id, slug, display_name) "
                 "VALUES (:org, :s, :s) RETURNING id"),
@@ -285,10 +314,12 @@ def test_r8_a_duplicate_claim_names_the_point_the_key_and_the_holder(world) -> N
 
 #: The scopes of the overlap cases by name, so each test id is the same in
 #: each process. The values carry the tag of the run.
-_SCOPES = {"org": "org", "ops": OPS, "eng": ENG, "ana": ANA, "ben": BEN, "cat": CAT}
+_SCOPES = {"org": "org", "ops": OPS, "eng": ENG, "ana": ANA, "ben": BEN, "cat": CAT,
+           "dan": DAN}
 
 #: (the scope of the claim that exists, the scope of the new claim, conflict).
-#: Ana and Ben are in ops, and Cat is in eng (the world fixture).
+#: Ana, Ben and Dan are in ops, and Cat is in eng (the world fixture). The
+#: two cases of Dan fold a mixed-case address in each direction (M8).
 _OVERLAP = [
     ("org", "org", True),
     ("org", "ops", True),
@@ -304,6 +335,8 @@ _OVERLAP = [
     ("ana", "ops", True),
     ("ana", "eng", False),
     ("cat", "eng", True),
+    ("dan", "ops", True),
+    ("ops", "dan", True),
 ]
 
 
@@ -424,6 +457,56 @@ def test_r8_two_installs_of_one_key_at_once_give_one_winner(world) -> None:
     assert isinstance(out.two, ClaimTaken), out.two
     assert out.two.holder.install_id == out.one.id
     assert _installs_of(world, "p1") == 1 and _installs_of(world, "p2") == 0
+
+
+def test_r8_two_orgs_install_one_key_at_once_and_neither_waits(world) -> None:
+    """The lock key names the org. Install 1 in org A takes its lock and keeps
+    its transaction open. Install 2 in org B claims the same key, and it must
+    end while install 1 still holds the lock. A lock with no org in the key
+    makes install 2 wait (M10)."""
+    a, b = world.p.org_a, world.p.org_b
+
+    async def go() -> SimpleNamespace:
+        written, release, started = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        pid: dict[str, int] = {}
+
+        async def first() -> Any:
+            async with tenant_session(a) as db:
+                got = await store.install(db, **_args(world, "p1", contributions=[
+                    _claim("race")]))
+                written.set()
+                await release.wait()
+                return got
+
+        async def second() -> Any:
+            try:
+                async with tenant_session(b) as db:
+                    pid["pid"] = int((await db.execute(text(
+                        "SELECT pg_backend_pid()"))).scalar_one())
+                    started.set()
+                    return await store.install(db, **_args(world, "b1", contributions=[
+                        _claim("race")]))
+            except store.InstallError as exc:
+                return exc
+
+        one = asyncio.create_task(first())
+        await asyncio.wait_for(written.wait(), 30)
+        two = asyncio.create_task(second())
+        await asyncio.wait_for(started.wait(), 30)
+        state = ""
+        end = time.monotonic() + 30
+        while not state and time.monotonic() < end:
+            state = await asyncio.to_thread(_waits_on_the_lock, world, pid["pid"], two)
+            if not state:
+                await asyncio.sleep(0.02)
+        release.set()
+        return SimpleNamespace(state=state, one=await one, two=await two)
+
+    out = _go(world.p.app_url, go)
+    assert out.state == "done", "the install of org B waited on the lock of org A"
+    assert isinstance(out.one, store.Install), out.one
+    assert isinstance(out.two, store.Install), out.two
+    assert _installs_of(world, "p1") == 1 and _installs_of(world, "b1") == 1
 
 
 # ── d. The scope is a 422, never a database error ──────────────────────────
@@ -555,3 +638,102 @@ def test_r8_app_grants_is_tenant_scoped(world) -> None:
     assert _go(world.p.app_url, go) == 0
     assert len(_admin(world, "SELECT 1 FROM app_grants WHERE app_id = CAST(:a AS uuid)",
                       {"a": world.apps["p1"]})) == 1
+
+
+# ── h. Two installs of the same app ────────────────────────────────────────
+
+
+#: (the scope of the first install of p1, the scope of the second install of
+#: p1). Each pair overlaps under §4. Ben holds p1 privately before Ana
+#: installs it for the org, and Ana holds it privately before she installs
+#: it for the org or for ops.
+_SAME_APP = [
+    ("ben", "org"),
+    ("ana", "org"),
+    ("org", "ana"),
+    ("ana", "ops"),
+    ("ops", "ana"),
+    ("ops", "org"),
+]
+
+
+@pytest.mark.parametrize(("first", "second"), _SAME_APP)
+def test_r8_two_installs_of_one_app_never_conflict(world, first: str, second: str) -> None:
+    """§4: a claim of an install of the same app is no conflict, at any
+    scope. The resolve of part 2 shows one of them (§5.2). Without the
+    exemption, the second install raises ``ClaimTaken`` against the app
+    itself (M6)."""
+    one = _run(world, **_args(world, "p1", contributions=[_claim("q")],
+                              **_scope(_SCOPES[first])))
+    two = _run(world, **_args(world, "p1", contributions=[_claim("q")],
+                              **_scope(_SCOPES[second])))
+    assert isinstance(one, store.Install) and isinstance(two, store.Install), (one, two)
+    assert _installs_of(world, "p1") == 2
+    other = _run(world, **_args(world, "p2", contributions=[_claim("q")]))
+    assert isinstance(other, ClaimTaken), other
+
+
+# ── i. A group counts its active members only ──────────────────────────────
+
+
+def test_r8_a_removed_member_is_in_no_group(world) -> None:
+    """The remove route keeps the rows of ``org_group_member`` and sets
+    ``app_user.status`` to ``removed``. The one group query then puts Ben in
+    no group, and so does the store. His private claim does not block an
+    install for ops (M7)."""
+    ben = _run(world, **_args(world, "p1", contributions=[_claim("k")], **_scope(BEN)))
+    assert isinstance(ben, store.Install), ben
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE app_user SET status = 'removed' WHERE email = :e"), {"e": BEN})
+    got = _run(world, **_args(world, "p2", contributions=[_claim("k")], **_scope(OPS)))
+    assert isinstance(got, store.Install), got
+
+
+# ── j. What a route may send ───────────────────────────────────────────────
+
+
+def test_r8_the_409_hides_the_private_install_of_another_member(world) -> None:
+    """Ben holds the key privately, and Ana's org install meets it. The view
+    for Ana names the point, the key and a private install. It never names
+    Ben, his app or his install. The view for Ben names them (M9)."""
+    ben = _run(world, **_args(world, "p1", contributions=[_claim("k")], **_scope(BEN)))
+    taken = _run(world, **_args(world, "p2", contributions=[_claim("k")]))
+    assert isinstance(taken, ClaimTaken), taken
+    seen = json.dumps(taken.detail_for(ANA))
+    for secret in (BEN, world.apps["p1"], ben.id):
+        assert secret not in seen and secret not in str(taken)
+    assert taken.detail_for(ANA)["holder"] == {"source": "private"}
+    assert taken.detail_for(BEN.upper())["holder"] == {
+        "source": "private", "package": world.apps["p1"], "install_id": ben.id,
+        "scope_subject": BEN}
+
+
+# ── k. READ COMMITTED ──────────────────────────────────────────────────────
+
+
+def test_r8_the_store_refuses_repeatable_read(world) -> None:
+    """A ``tenant_session`` is READ COMMITTED. Under REPEATABLE READ the
+    snapshot comes before the lock, so the store refuses that level before
+    the lock and writes nothing (M11)."""
+    async def go() -> tuple[str, Any]:
+        async with tenant_session(world.p.org_a) as db:
+            level = str((await db.execute(text("SHOW transaction_isolation"))).scalar_one())
+        session = get_session_factory()()
+        try:
+            await session.begin()
+            await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+            await session.execute(text("SELECT set_config('app.tenant_id', :t, true)"),
+                                  {"t": world.p.org_a})
+            try:
+                await store.install(session, **_args(world, "p1"))
+            except RuntimeError as exc:
+                return level, exc
+            return level, None
+        finally:
+            await session.rollback()
+            await session.close()
+
+    level, refused = _go(world.p.app_url, go)
+    assert level == store.ISOLATION
+    assert isinstance(refused, RuntimeError) and "read committed" in str(refused), refused
+    assert _suite_installs(world) == 0

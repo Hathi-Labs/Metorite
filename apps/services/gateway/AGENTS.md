@@ -230,7 +230,9 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
     - ⚠️ `store.install` is the ONE `INSERT INTO package_install` and the ONE `INSERT INTO package_contribution` of `apps/` and `packages/`. It takes a session that the caller opened with `tenant_session(org)`, and no function takes an org. `installed_by` is the session member, never request input.
     - ⚠️ The store checks only that the app is a Studio package of the bound org that is not archived. It reads `apps` and never writes it, because `studio/packages_store.py` owns those rows. The install routes check that the member may use the app.
     - ⚠️ The store takes the scope kind from the value that `normalize_grant_subject` gives, never from the raw text. A `scope_kind` that does not agree raises `ScopeRefused` (422) before the first statement.
-    - ⚠️ One lock order: the read of the bound org, then `pg_advisory_xact_lock` on `package_install:<org>`, then each read that decides the write. A duplicate claim of §4 raises `ClaimTaken` with the point, the key and the holder.
+    - ⚠️ One lock order: the read of the bound org, then `pg_advisory_xact_lock` on `package_install:<org>`, then each read that decides the write. A duplicate claim of §4 raises `ClaimTaken` with the point, the key and the holder. ⚠️ The conflict reads need READ COMMITTED, so the store refuses another level before the lock.
+    - Two claims of installs of the same app never conflict. A group counts its active members only: the store reuses `routes/projects/core._MY_GROUPS_SQL` and keeps no copy. The value check of a payload is `studio/packages_store.first_bad_value`, the one copy.
+    - ⚠️ A route answers a refusal with `exc.detail_for(user.email)` only. It never sends `ClaimTaken.holder`, because that can name the private install of another member.
     - `sharing.py` is the ONE share rule of a private install: an address, not the owner, and made by the owner. The member purge and the resolve read it. Do not copy the SQL.
     - Fences: `test_package_host_store.py`, `test_package_host_store_r8.py`, `test_admin_member_purge.py`.
 

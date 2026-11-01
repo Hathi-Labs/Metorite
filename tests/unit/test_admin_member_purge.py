@@ -922,6 +922,39 @@ async def test_her_private_install_goes_and_her_shared_installs_stay(
     assert db.rows["app_grants"] == [RAVI_GRANT]
 
 
+@pytest.mark.parametrize("spacing", ["EXISTS (", "EXISTS(", "EXISTS  ("],
+                         ids=["one-space", "no-space", "two-spaces"])
+def test_the_fake_reads_an_exists_clause_at_any_spacing(spacing: str) -> None:
+    """``EXISTS(`` with no space is the same SQL as ``EXISTS (``. The fake
+    reads each form, so a body with no space can never get past it. A form
+    that the fake cannot read, here a subquery with no ``AS``, is an error,
+    never a pass. Before this test, the guard counted ``"EXISTS ("`` only,
+    so ``NOT EXISTS(`` got past the guard and the regex, and the clause was
+    ignored (PKG-5b repair round 1)."""
+    from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL
+
+    fake = _FakeDB()
+    fake.rows["package_install"] = [
+        {"app_id": "app-shared", "scope_kind": "private", "scope_subject": PRIYA,
+         "installed_by": PRIYA},
+        {"app_id": "app-mine", "scope_kind": "private", "scope_subject": PRIYA,
+         "installed_by": PRIYA}]
+    fake.rows["app_grants"] = [RAVI_GRANT]
+    private = "scope_kind = 'private' AND lower(scope_subject) = :email"
+    term = OTHERS_SEE_THE_INSTALL.replace("EXISTS (", spacing)
+    assert term.count(spacing) == 1
+
+    kept = fake._person_rows(f"{private} AND {term}", "package_install", {"email": PRIYA})
+    gone = fake._person_rows(f"{private} AND NOT {term}", "package_install", {"email": PRIYA})
+    assert [r["app_id"] for r in kept] == ["app-shared"]
+    assert [r["app_id"] for r in gone] == ["app-mine"]
+
+    unreadable = term.replace("app_grants AS g", "app_grants g")
+    with pytest.raises(AssertionError, match="unreadable EXISTS clause"):
+        fake._person_rows(f"{private} AND NOT {unreadable}", "package_install",
+                          {"email": PRIYA})
+
+
 #: (app, grant subject, granted by, the install stays). ``routes/apps/grants.py``
 #: (``is_valid_subject``) takes an address, ``agent:<name>`` and
 #: ``agents:*``, and the consent route writes the address of the member who

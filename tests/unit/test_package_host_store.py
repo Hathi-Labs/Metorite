@@ -16,6 +16,12 @@ c. A key that a system package holds is refused (``load_contributes``).
 d. Only ``store.py`` writes an install or a claim (a source scan of
    ``apps/`` and ``packages/``).
 e. The R8 twin is named in the CI skip guard.
+f. A claim of an install of the same app is no conflict. The groups come
+   from the one group query, which counts active members only.
+g. A route sends ``detail_for``, which hides the private install of another
+   member.
+h. The store refuses a transaction that is not READ COMMITTED. The value
+   check of a payload is the one copy in ``studio/packages_store.py``.
 """
 
 from __future__ import annotations
@@ -47,8 +53,9 @@ ANA = "ana@x.test"
 
 
 class _Result:
-    def __init__(self, value: Any) -> None:
+    def __init__(self, value: Any, row: tuple[Any, ...] | None = None) -> None:
         self._value = value
+        self._row = row
 
     def scalar(self) -> Any:
         return self._value
@@ -58,25 +65,47 @@ class _Result:
         return self._value
 
     def first(self) -> Any:
+        if self._row is not None:
+            return self._row
         return None if self._value is None else (self._value,)
 
 
-class _FakeDb:
-    """Records each statement. Answers the bound org, a live app, no install
-    at the scope, no held claim, and the id of the new install."""
+#: A held claim, as the held read answers it: (point, key, install id, app
+#: id, scope kind, scope subject).
+HeldRow = tuple[str, str, str, str, str, str]
 
-    def __init__(self, org: str | None = ORG, app: bool = True) -> None:
+
+class _FakeDb:
+    """Records each statement. Answers the bound org and the isolation
+    level, a live app, no install at the scope, the held claims of *held*,
+    and the id of the new install.
+
+    The held read answers the first row of *held* on a key of the request.
+    It drops a row of the same app only when the statement holds
+    ``store.SAME_APP_EXEMPT``. So a statement that drops the exemption
+    changes the answer here."""
+
+    def __init__(self, org: str | None = ORG, app: bool = True,
+                 level: str = "read committed", held: tuple[HeldRow, ...] = ()) -> None:
         self.calls: list[tuple[str, Any]] = []
         self.org = org
         self.app = app
+        self.level = level
+        self.held = held
 
     async def execute(self, stmt: Any, params: Any = None) -> _Result:
         sql = str(stmt)
         self.calls.append((sql, params))
         if sql.startswith("SELECT CAST(CAST(NULLIF"):
-            return _Result(self.org)
+            return _Result(self.org, row=(self.org, self.level))
         if sql.startswith("SELECT 1 FROM apps"):
             return _Result(1 if self.app else None)
+        if sql.startswith("SELECT c.point, c.key,"):
+            wanted = set(zip(params["points"], params["keys"], strict=True))
+            rows = [r for r in self.held if (r[0], r[1]) in wanted]
+            if store.SAME_APP_EXEMPT in sql:
+                rows = [r for r in rows if r[3] != params["app"]]
+            return _Result(None, row=rows[0] if rows else None)
         if sql.startswith("INSERT INTO package_install"):
             return _Result("install-1")
         return _Result(None)
@@ -229,6 +258,8 @@ def test_the_lock_comes_before_each_read_that_decides_the_write() -> None:
     assert db.calls[1][1] == {"key": f"package_install:{ORG}"}
     # A claim on `triggers` is never checked, and every claim is written.
     assert db.calls[4][1]["points"] == ["jobs"] and db.calls[4][1]["keys"] == ["quote"]
+    # The held read exempts the claims of the app itself.
+    assert db.calls[4][1]["app"] == APP and store.SAME_APP_EXEMPT in db.calls[4][0]
     rows = db.calls[6][1]
     assert [(r["point"], r["key"], r["payload"], r["position"]) for r in rows] == [
         ("jobs", "quote", '{"label": "Q"}', 3), ("triggers", "crm.lead.created", "{}", 0)]
@@ -237,7 +268,7 @@ def test_the_lock_comes_before_each_read_that_decides_the_write() -> None:
 def test_each_read_names_the_bound_org_and_no_insert_names_an_org() -> None:
     bound = "NULLIF(current_setting('app.tenant_id', true), '')"
     for sql in (store._APP_SQL, store._SCOPE_TAKEN_SQL, store._HELD_SQL,
-                store._GROUPS_OF_MEMBER, store._MEMBERS_OF_GROUP):
+                store._GROUPS_OF_MEMBER, store._GROUPS_OF_HOLDER):
         assert f"organization_id = CAST({bound} AS uuid)" in sql, sql
     for sql in (store._INSERT_INSTALL_SQL, store._INSERT_CONTRIBUTION_SQL):
         assert "organization_id" not in sql
@@ -251,11 +282,56 @@ def test_the_overlap_of_each_kind_reads_both_sides() -> None:
     assert store.OVERLAP["org"] == "TRUE"
     assert "i.scope_kind = 'org'" in store.OVERLAP["group"]
     assert "i.scope_kind = 'group' AND i.scope_subject = :subject" in store.OVERLAP["group"]
-    assert store._MEMBERS_OF_GROUP in store.OVERLAP["group"]
+    assert f":subject IN ({store._GROUPS_OF_HOLDER})" in store.OVERLAP["group"]
     assert "i.scope_kind = 'org'" in store.OVERLAP["private"]
     assert "i.scope_kind = 'private' AND i.scope_subject = :subject" in store.OVERLAP["private"]
-    assert store._GROUPS_OF_MEMBER in store.OVERLAP["private"]
+    assert f"i.scope_subject IN ({store._GROUPS_OF_MEMBER})" in store.OVERLAP["private"]
     assert {"triggers", "slot"} == store.MANY_CLAIMS
+
+
+# ── f. The same app and the groups ─────────────────────────────────────────
+
+
+def test_the_groups_are_the_one_group_query_with_active_members_only() -> None:
+    """§4: a member of a group is an active member. The store reuses
+    ``_MY_GROUPS_SQL`` in both directions and keeps no copy, so the rule
+    ``au.status = 'active'`` and the fold ``lower(au.email)`` have one home.
+    The R8 twin holds the behaviour: a removed member and a mixed-case
+    address."""
+    from gateway.routes.projects.core import _MY_GROUPS_SQL
+
+    one = _MY_GROUPS_SQL.strip()
+    assert "lower(au.email) = :email AND au.status = 'active'" in one
+    bound = f"g.organization_id = {store._BOUND_ORG}"
+    of_member = f"{one.replace(':email', ':subject')} AND {bound}"
+    of_holder = f"{one.replace(':email', 'i.scope_subject')} AND {bound}"
+    assert (of_member, of_holder) == (store._GROUPS_OF_MEMBER, store._GROUPS_OF_HOLDER)
+    source = (_ROOT / "apps/services/gateway/gateway/package_host/store.py").read_text(
+        encoding="utf-8")
+    assert not re.search(r"\b(FROM|JOIN)\s+org_group", source), (
+        "the store must not copy the group query")
+
+
+#: A claim of the key ``quote`` by another install.
+_HELD_QUOTE = ("jobs", "quote", "install-0")
+
+
+@pytest.mark.parametrize(("kind", "subject"), [
+    ("org", "org"), ("group", "group:ops"), ("private", ANA)])
+def test_a_claim_of_the_same_app_is_no_conflict_at_any_scope(kind: str, subject: str) -> None:
+    """§4: two installs of one app never conflict. Ben holds the app Q
+    privately, and an install of Q at each scope passes. An install of
+    another app on the same key is still refused. The R8 twin holds the
+    same cases on a real database."""
+    claim = [Contribution("jobs", "quote")]
+    same = _FakeDb(held=((*_HELD_QUOTE, APP, "private", "ben@x.test"),))
+    got = _run(store.install(same, **_args(scope_subject=subject, scope_kind=kind,
+                                           contributions=claim)))
+    assert got.id == "install-1"
+    other = _FakeDb(held=((*_HELD_QUOTE, str(uuid.uuid4()), "private", "ben@x.test"),))
+    with pytest.raises(ClaimTaken):
+        _run(store.install(other, **_args(scope_subject=subject, scope_kind=kind,
+                                          contributions=claim)))
 
 
 def test_an_unbound_session_takes_no_lock_and_writes_nothing() -> None:
@@ -337,3 +413,72 @@ def test_an_install_records_its_end_date() -> None:
     got = _run(store.install(db, **_args(scope_subject=ANA, scope_kind="private",
                                          version=None, ends_at=ends)))
     assert (got.ends_at, got.version) == (ends, None)
+
+
+# ── g. What a route may send ───────────────────────────────────────────────
+
+
+_BEN = "ben@x.test"
+_Q = str(uuid.uuid4())
+
+
+def _taken(source: str, subject: str | None, package: str = _Q) -> ClaimTaken:
+    return ClaimTaken("nav", "/studio/q", store.Holder(
+        source=source, package=package, install_id="install-9", scope_subject=subject))
+
+
+def test_another_members_private_install_shows_as_a_private_install_only() -> None:
+    """``get_app_or_404`` hides a private app behind a 404. So the 409 for
+    Ana names the point, the key and "a private install", and never Ben's
+    address, the app id or the install id."""
+    err = _taken("private", _BEN)
+    seen = err.detail_for(ANA)
+    assert seen == {"code": "claim_taken", "point": "nav", "key": "/studio/q",
+                    "holder": {"source": "private"},
+                    "message": "The nav key '/studio/q' is taken by a private install."}
+    for secret in (_BEN, _Q, "install-9"):
+        assert secret not in repr(seen) and secret not in str(err)
+    assert err.holder_for("") == {"source": "private"}
+
+
+def test_the_owner_and_a_shared_scope_see_the_holder_whole() -> None:
+    whole = {"source": "private", "package": _Q, "install_id": "install-9",
+             "scope_subject": _BEN}
+    assert _taken("private", _BEN).detail_for(" Ben@X.test ")["holder"] == whole
+    assert _taken("org", "org").holder_for(ANA) == {
+        "source": "org", "package": _Q, "install_id": "install-9", "scope_subject": "org"}
+    assert _taken("group", "group:ops").holder_for(ANA)["scope_subject"] == "group:ops"
+    system = ClaimTaken("jobs", "capture", store.Holder(source="system", package="projects"))
+    assert system.detail_for(ANA)["holder"] == {
+        "source": "system", "package": "projects", "install_id": None, "scope_subject": None}
+
+
+def test_each_refusal_has_a_detail_for_the_route() -> None:
+    err = ScopeRefused("bad_scope", "The scope must be org, group:<slug> or an address.")
+    assert err.detail_for(ANA) == {"code": "bad_scope", "message": str(err)}
+    assert "detail_for" in (InstallError.__doc__ or "")
+
+
+# ── h. READ COMMITTED and the one value check ──────────────────────────────
+
+
+@pytest.mark.parametrize("level", ["repeatable read", "serializable"])
+def test_a_transaction_that_is_not_read_committed_is_refused_before_the_lock(
+        level: str) -> None:
+    """Under REPEATABLE READ the snapshot comes before the lock, so a second
+    install would miss the commit of the first one."""
+    db = _FakeDb(level=level)
+    with pytest.raises(RuntimeError, match="read committed"):
+        _run(store.install(db, **_args()))
+    assert len(db.calls) == 1
+
+
+def test_the_value_check_of_a_payload_is_the_one_copy() -> None:
+    """The store calls ``packages_store.first_bad_value`` and keeps no copy."""
+    from gateway.studio import packages_store
+
+    assert store.first_bad_value is packages_store.first_bad_value
+    assert not hasattr(store, "MAX_FLOAT") and not hasattr(store, "_first_bad_value")
+    source = (_ROOT / "apps/services/gateway/gateway/package_host/store.py").read_text(
+        encoding="utf-8")
+    assert "float.__repr__" not in source and "isfinite" not in source
