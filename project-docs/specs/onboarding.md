@@ -1,9 +1,9 @@
 # Onboarding — the first hour of a founder and of a member
 
-**Status: PROPOSED, 2026-11-02.** Verified against code on 2026-11-02, at
+**Status: ACTIVE, 2026-11-02.** Verified against code on 2026-11-02, at
 `origin/main` `a5cbbdee2`. Board row: **WS-OB** (`work_plan.md` §2). Metorite:
-the Onboarding project, epic 669. OB-0 is built on a branch. The owner decides
-§9 before OB-2 and OB-1b merge.
+the Onboarding project, epic 669. OB-0 is built on a branch. The owner accepted
+§9 on 2026-11-02, recorded as **D150**.
 
 **Source.** Owner report, 2026-11-01. The owner said that the first-run
 onboarding fails from the start. The founder's welcome dialog did not
@@ -179,9 +179,9 @@ already per member and per org (`239_user_settings_per_org.sql`).
 | **OB-0b** | Signup invalidates the access cache of the new owner (§2 row 2). Task 1339 | A route test with the real access resolve reads `/auth/me` within the TTL and gets the owner's features. It fails with the call removed | AGENT-SAFE · HIGH (auth) |
 | **OB-0c** | The invite copy tells the truth (§2 rows 6 and 7) | The dialog names the email. The email's button opens `/signin` with the address filled. `inviteEmail.test.ts` holds it | AGENT-SAFE · LOW |
 | **OB-1a** | `setup_status` and `GET /shell/setup`, with the steps of §4 and §5 | A test per step shows `open`, then `done` after its row lands. R8: a real database | AGENT-SAFE · MEDIUM |
-| **OB-1b** | The Get started card on My Day (§6), and the `setup` prefs key (§7.2) | A vitest test per rule of §6. An e2e test: hide, reload, still hidden | AGENT-SAFE · MEDIUM · after §9 |
+| **OB-1b** | The Get started card on My Day (§6), and the `setup` prefs key (§7.2) | A vitest test per rule of §6. An e2e test: hide, reload, still hidden | AGENT-SAFE · MEDIUM |
 | **OB-1c** | Invite on the card. One `InviteForm`, moved out of `OrganizationAdmin.tsx`, serves the card and Settings | One component in both places, with `lib/inviteSeat.ts` unchanged. An e2e test sends from the card | AGENT-SAFE · MEDIUM |
-| **OB-2** | One welcome dialog (F2, M2). The invite step leaves it, because the card does that now | A founder sees one dialog, then My Day with the card. The welcome e2e cases change in the same PR | AGENT-SAFE · LOW · after §9 |
+| **OB-2** | One welcome dialog (F2, M2). The invite step leaves it, because the card does that now | A founder sees one dialog, then My Day with the card. The welcome e2e cases change in the same PR | AGENT-SAFE · LOW |
 | **OB-3** | Help → Get started opens the card again. It joins HLP-1 (task 673) | Clears `hidden_at`. One e2e test | AGENT-SAFE · LOW |
 | **OB-4** | The empty state of each live app teaches (P8), through `components/EmptyState.tsx` | Each live pane has one first act and one "Ask the assistant how". A source test lists the panes | AGENT-SAFE · LOW |
 | **OB-5** | The chat reads `setup_status`, and opens each step's form filled | A tool test per step. The chat never sends an invite itself (D89 jobs, D-PM-40) | AGENT-SAFE · MEDIUM |
@@ -196,9 +196,9 @@ HLP-1 (673). OB-4 to OB-7 are 1345 to 1348. The design tasks 177 (the organizati
 OB-8 (the phone push prompt) stays in `calendar_events_reminders.md` §10.4.
 The `phone_push` step reads its result and adds no second prompt.
 
-## 9. Decisions for the owner
+## 9. Decisions
 
-Each has a default. The default holds when the owner accepts it.
+The owner accepted each default on 2026-11-02, recorded as **D150**.
 
 1. **D-OB-1. The first visit skips "Choose the apps for your sidebar".** The
    answer's defaults apply, and "+ Add apps" changes them later. *Why:* a person
