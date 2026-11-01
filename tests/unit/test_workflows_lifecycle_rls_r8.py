@@ -18,7 +18,14 @@ BYPASSRLS. Nothing here patches ``_get_db`` or ``tenant_session``.
 * a module node and a Projects node run to the end in the run's own org;
 * org B's run never reads org A's workflow, module or task;
 * the ambient tenant never chooses the org of a node;
-* a run with no org keeps the old path, and inherits nothing.
+* a run with no org keeps the old path, and inherits nothing;
+* an agent reaches no Projects node, at the start or through a resume.
+
+**The Projects nodes enter at ``start_run``.** ``run_published_workflow`` refuses
+them (:func:`service._member_blind_write_nodes`), because a run writes a task by
+primary key with no member check. So the cases that prove the binding of those
+nodes go one step below that refusal. The refusal has its own cases, and they
+use the real ``run_workflow`` tool.
 
 Mutations this suite catches (R7):
 
@@ -26,7 +33,15 @@ Mutations this suite catches (R7):
 * the task write back on ``_get_db()``: the task node cases go red;
 * the sweep or the owner read back on the resolver: its node case goes red;
 * ``_execute_run`` passes no org: every node case goes red;
-* a session with no explicit org: the ambient cases go red.
+* a session with no explicit org: the ambient cases go red;
+* the refusal in ``run_published_workflow`` removed: the agent cases go red,
+  and the failure shows the changed task row;
+* the refusal in ``resume_run`` removed: the approval cases go red, and the
+  failure shows the changed task row;
+* ``_execute_run`` falls back to ``current_tenant()``: the ambient case of
+  section 5 goes red;
+* the org read from the trigger payload: the payload case goes red;
+* ``resume_run`` passes the caller's org: the row org case goes red.
 
 ⚠️ **R8.** The subject is a policy. A Python fake agrees with whatever SQL it
 is handed. The gate is ``TENANT_LADDER_DATABASE_URL``, never ``DATABASE_URL``.
@@ -45,6 +60,7 @@ import os
 import sys
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -55,7 +71,7 @@ from acb_common.db import bind_tenant, release_tenant
 from fastapi import HTTPException
 from gateway.routes.workflows import service
 from gateway.routes.workflows.engine import handlers
-from gateway.routes.workflows.engine.graph import compile_graph
+from gateway.routes.workflows.engine.graph import NODE_TYPES, compile_graph
 from gateway.routes.workflows.engine.handlers import NodeExecutionError
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
@@ -90,7 +106,11 @@ pytestmark = _DB_GATE
 _APP_ROLE = "acb_app_wflife"
 _APP_PW = "wflife_scratch_pw"
 
-_OWNERS = {"A": "owner@a.wflife.test", "B": "owner@b.wflife.test"}
+_OWNERS = {
+    "A": "owner@a.wflife.test",
+    "B": "owner@b.wflife.test",
+    "C": "owner@c.wflife.test",
+}
 
 
 def _module_source(tag: str) -> str:
@@ -115,6 +135,23 @@ def _one_step(ntype: str, config: dict, *, gate: bool = False) -> dict:
     edges.append({"id": f"{prev}->step", "source": prev, "target": "step"})
     nodes.append(_node("done", "output", {"value": "end"}))
     edges.append({"id": "step->done", "source": "step", "target": "done"})
+    return compile_graph({"nodes": nodes, "edges": edges})
+
+
+def _write_then_gate(write: dict, after: dict) -> dict:
+    """trigger -> task -> approval -> module -> output."""
+    nodes = [
+        _node("start", "trigger", {"kind": "manual"}),
+        _node("write", "pm_task", write),
+        _node("gate", "approval", {}),
+        _node("step", "module", after),
+        _node("done", "output", {"value": "end"}),
+    ]
+    edges = [
+        {"id": f"{a}->{b}", "source": a, "target": b}
+        for a, b in (("start", "write"), ("write", "gate"),
+                     ("gate", "step"), ("step", "done"))
+    ]
     return compile_graph({"nodes": nodes, "edges": edges})
 
 
@@ -229,19 +266,25 @@ def promoted():
             _exec_sql_file(conn, (_GENERATED / phase).read_text(encoding="utf-8"))
     _grant_app_role(ded_admin_url, dedicated)
 
-    org_a, org_b = str(uuid.uuid4()), str(uuid.uuid4())
+    org_a, org_b, org_c = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    orgs = {"A": org_a, "B": org_b, "C": org_c}
     wf: dict[str, str] = {}
     with eng.begin() as conn:
-        for oid, slug in ((org_a, "wflife-a"), (org_b, "wflife-b")):
+        for oid, slug in ((org_a, "wflife-a"), (org_b, "wflife-b"), (org_c, "wflife-c")):
             conn.execute(text(
                 "INSERT INTO organization (id, slug, display_name) "
                 "VALUES (:id, :slug, :name)"),
                 {"id": oid, "slug": slug, "name": slug})
         work_a = _seed_org_work(conn, org_a, "A")
         work_b = _seed_org_work(conn, org_b, "B")
+        # Org C holds the refusal cases, so no other case moves their rows.
+        work_c = _seed_org_work(conn, org_c, "C")
         second_task = _seed_task(conn, work_a["project"], str(conn.execute(text(
             "SELECT status_id FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
             {"t": work_a["task"]}).scalar_one()), org_a, "Second open in A")
+        before_gate = _seed_task(conn, work_c["project"], str(conn.execute(text(
+            "SELECT status_id FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
+            {"t": work_c["task"]}).scalar_one()), org_c, "Before the gate in C")
 
         steps: dict[str, tuple[str, str, dict]] = {
             "Module in A": ("A", "module", {"module_id": work_a["module"]}),
@@ -262,13 +305,34 @@ def promoted():
             "Reach A task from B": ("B", "pm_task", {
                 "task_id": work_a["stale"], "fields": {"title": "Stolen by B"},
             }),
+            "Module in C": ("C", "module", {"module_id": work_c["module"]}),
+            "Picked task in C": ("C", "pm_task", {
+                "task_id": "{{trigger.task_id}}",
+                "fields": {"title": "Changed by an agent"},
+            }),
+            "Fixed task in C": ("C", "pm_task", {
+                "task_id": work_c["task"],
+                "fields": {"title": "Changed by an agent"},
+            }),
+            "Sweep in C": ("C", "pm_lifecycle", {}),
         }
         for name, (tag, ntype, config) in steps.items():
-            wf[name] = _seed_workflow(
-                conn, org_a if tag == "A" else org_b, tag, name, _one_step(ntype, config))
-        wf["Gated module in A"] = _seed_workflow(
-            conn, org_a, "A", "Gated module in A",
-            _one_step("module", {"module_id": work_a["module"]}, gate=True))
+            wf[name] = _seed_workflow(conn, orgs[tag], tag, name, _one_step(ntype, config))
+        gated: dict[str, tuple[str, dict]] = {
+            "Gated module in A": ("A", _one_step(
+                "module", {"module_id": work_a["module"]}, gate=True)),
+            "Gated task in C": ("C", _one_step("pm_task", {
+                "task_id": work_c["task"],
+                "fields": {"title": "Changed after the gate"},
+            }, gate=True)),
+            "Gated sweep in C": ("C", _one_step("pm_lifecycle", {}, gate=True)),
+            "Task before the gate in C": ("C", _write_then_gate(
+                {"task_id": before_gate, "fields": {"title": "Written before the gate"}},
+                {"module_id": work_c["module"]},
+            )),
+        }
+        for name, (tag, serialized) in gated.items():
+            wf[name] = _seed_workflow(conn, orgs[tag], tag, name, serialized)
 
     class _NS:
         pass
@@ -278,9 +342,10 @@ def promoted():
     ns.app_dsn = admin_url.set(
         database=dedicated, username=_APP_ROLE, password=_APP_PW,
     ).render_as_string(hide_password=False)
-    ns.org_a, ns.org_b = org_a, org_b
-    ns.work_a, ns.work_b = work_a, work_b
+    ns.org_a, ns.org_b, ns.org_c = org_a, org_b, org_c
+    ns.work_a, ns.work_b, ns.work_c = work_a, work_b, work_c
     ns.second_task = second_task
+    ns.before_gate = before_gate
     ns.wf = wf
     yield ns
 
@@ -345,6 +410,15 @@ def _on_app_role(promoted, ambient: str | None, body):
     return asyncio.run(_go())
 
 
+def _serialized_of(promoted, name: str) -> dict:
+    with promoted.admin_engine.connect() as c:
+        serialized = c.execute(text(
+            "SELECT serialized FROM workflow_versions "
+            "WHERE workflow_id = CAST(:w AS uuid)"),
+            {"w": promoted.wf[name]}).scalar_one()
+    return json.loads(serialized) if isinstance(serialized, str) else serialized
+
+
 def _run_row(promoted, run_id: str):
     with promoted.admin_engine.connect() as c:
         return c.execute(text(
@@ -353,13 +427,29 @@ def _run_row(promoted, run_id: str):
             "FROM workflow_runs WHERE id = CAST(:r AS uuid)"), {"r": run_id}).fetchone()
 
 
+def _run_count(promoted, name: str) -> int:
+    with promoted.admin_engine.connect() as c:
+        return c.execute(text(
+            "SELECT count(*) FROM workflow_runs WHERE workflow_id = CAST(:w AS uuid)"),
+            {"w": promoted.wf[name]}).scalar_one()
+
+
+def _pause_statuses(promoted, run_id: str) -> list[str]:
+    with promoted.admin_engine.connect() as c:
+        return list(c.execute(text(
+            "SELECT status FROM workflow_run_pauses WHERE run_id = CAST(:r AS uuid)"),
+            {"r": run_id}).scalars())
+
+
 def _step_result(row) -> dict:
     results = row.node_results
     results = json.loads(results) if isinstance(results, str) else results
     return results["step"]
 
 
-def _run_published(promoted, name: str, org: str, *, ambient: str | None = None):
+def _run_published(
+    promoted, name: str, org: str, *, ambient: str | None = None, payload: dict | None = None,
+):
     """Start one published workflow in *org* and wait for its end.
 
     The context binds *ambient*, so by default no tenant is in the context.
@@ -367,11 +457,38 @@ def _run_published(promoted, name: str, org: str, *, ambient: str | None = None)
 
     async def body():
         return await service.run_published_workflow(
-            name, {}, started_by="h328", organization_id=org)
+            name, payload or {}, started_by="h328", organization_id=org)
 
     started = _on_app_role(promoted, ambient, body)
     assert "run_id" in started, started
     return _run_row(promoted, started["run_id"])
+
+
+def _start_at_the_seam(promoted, name: str, org: str, *, ambient: str | None = None) -> str:
+    """Start one workflow at ``start_run``, under the agent door's refusal.
+
+    Nothing live starts a Projects node with an org. This call proves what the
+    node does once a run reaches it, and it builds a run that paused before
+    the refusal existed."""
+    serialized = _serialized_of(promoted, name)
+
+    async def body():
+        return await service.start_run(
+            workflow_id=promoted.wf[name],
+            workflow_name=name,
+            version=1,
+            serialized=serialized,
+            trigger_kind="api",
+            trigger_payload={},
+            started_by="h328",
+            organization_id=org,
+        )
+
+    return _on_app_role(promoted, ambient, body)
+
+
+def _run_at_the_seam(promoted, name: str, org: str, *, ambient: str | None = None):
+    return _run_row(promoted, _start_at_the_seam(promoted, name, org, ambient=ambient))
 
 
 def _task_row(promoted, task_id: str):
@@ -477,7 +594,7 @@ def test_a_resumed_run_binds_its_org_for_the_nodes_after_the_gate(promoted):
 
 
 def test_a_task_node_writes_and_commits_in_the_runs_org(promoted):
-    row = _run_published(promoted, "Task in A", promoted.org_a)
+    row = _run_at_the_seam(promoted, "Task in A", promoted.org_a)
     assert (row.status, row.error, row.org) == ("succeeded", None, promoted.org_a)
     output = _step_result(row)["output"]
     assert output["changed"] == ["title", "status"] and output["status"] == "Done"
@@ -492,7 +609,7 @@ def test_a_task_node_writes_and_commits_in_the_runs_org(promoted):
 def test_a_run_of_another_org_never_reads_the_task(promoted):
     target = promoted.work_a["stale"]
     before = _task_row(promoted, target), _activities(promoted, target)
-    row = _run_published(promoted, "Reach A task from B", promoted.org_b)
+    row = _run_at_the_seam(promoted, "Reach A task from B", promoted.org_b)
     assert row.status == "failed"
     step = _step_result(row)
     assert step["status"] == "error" and "Task not found" in step["error"]
@@ -500,7 +617,7 @@ def test_a_run_of_another_org_never_reads_the_task(promoted):
 
 
 def test_the_task_write_ignores_the_ambient_tenant(promoted):
-    row = _run_published(promoted, "Second task in A", promoted.org_a, ambient=promoted.org_b)
+    row = _run_at_the_seam(promoted, "Second task in A", promoted.org_a, ambient=promoted.org_b)
     assert (row.status, row.org) == ("succeeded", promoted.org_a)
     assert _task_row(promoted, promoted.second_task).title == "Renamed under B"
 
@@ -509,14 +626,14 @@ def test_the_task_write_ignores_the_ambient_tenant(promoted):
 
 
 def test_a_sweep_node_sweeps_only_the_runs_org(promoted):
-    row = _run_published(promoted, "Sweep in A", promoted.org_a)
+    row = _run_at_the_seam(promoted, "Sweep in A", promoted.org_a)
     assert (row.status, row.error, row.org) == ("succeeded", None, promoted.org_a)
     assert _step_result(row)["output"]["archived"] == 1
     assert _task_row(promoted, promoted.work_a["stale"]).archived_at is not None
     assert _task_row(promoted, promoted.work_b["stale"]).archived_at is None
 
     # The mirror: a sweep that matched nothing would pass the line above.
-    row = _run_published(promoted, "Sweep in B", promoted.org_b)
+    row = _run_at_the_seam(promoted, "Sweep in B", promoted.org_b)
     assert row.status == "succeeded"
     assert _task_row(promoted, promoted.work_b["stale"]).archived_at is not None
 
@@ -569,7 +686,176 @@ def test_a_run_with_no_org_keeps_the_old_path_and_inherits_nothing(promoted):
     assert _task_row(promoted, promoted.work_a["task"]).title != "Unbound"
 
 
-# ── 6. CI must run this suite ────────────────────────────────────────────────
+def test_execute_run_never_gives_a_run_the_ambient_tenant(promoted):
+    """The case above calls the seam. This one is the line in ``_execute_run``
+    that feeds it. Org A is bound in the context and the run has no org, so
+    org A's module stays out of reach."""
+    run_id = str(uuid.uuid4())
+    serialized = _serialized_of(promoted, "Module in A")
+
+    async def body():
+        service._HUBS[run_id] = service.RunHub()
+        await service._execute_run(
+            run_id=run_id,
+            workflow_id=promoted.wf["Module in A"],
+            workflow_name="Module in A",
+            serialized=serialized,
+            trigger_payload={},
+            variables={},
+            started_by="h328",
+            trigger_kind="manual",
+        )
+        return service._HUBS.pop(run_id).events
+
+    events = _on_app_role(promoted, promoted.org_a, body)
+    step = [e["status"] for e in events if e.get("node_id") == "step"]
+    assert "error" in step and "ok" not in step, events
+    assert "module-A" not in json.dumps(events, default=str)
+
+
+def test_a_payload_never_chooses_the_org_of_a_run(promoted):
+    """The payload is the agent's input, and each key here names org B."""
+    claims = dict.fromkeys(
+        ("organization_id", "org", "org_id", "tenant_id"), promoted.org_b)
+    row = _run_published(promoted, "Module in A", promoted.org_a, payload=claims)
+    assert (row.status, row.error, row.org) == ("succeeded", None, promoted.org_a)
+    assert _step_result(row)["output"] == {"marker": "module-A"}
+
+
+# ── 6. An agent reaches no Projects node ─────────────────────────────────────
+
+
+def _agent_run(promoted, name: str, payload: dict) -> str:
+    """The real ``run_workflow`` tool, as a member's agent calls it in org C."""
+    from orchestrator import workflow_tools
+
+    async def body():
+        return await workflow_tools.run_workflow(name, json.dumps(payload), wait_seconds=20)
+
+    return _on_app_role(promoted, promoted.org_c, body)
+
+
+def test_each_projects_node_type_is_refused():
+    """A new ``pm_*`` node type joins the refusal, or this case goes red."""
+    assert {t for t in NODE_TYPES if t.startswith("pm_")} == service._MEMBER_BLIND_WRITE_TYPES
+
+
+@pytest.mark.parametrize("name", ["Picked task in C", "Fixed task in C"])
+def test_an_agent_cannot_run_a_task_node(promoted, name):
+    """The agent picks the target through the payload, or a fixed id holds it.
+
+    The rows come first. A mutation that removes the refusal then fails on the
+    changed task, which is the defect itself."""
+    target = promoted.work_c["task"]
+    before = _task_row(promoted, target), _activities(promoted, target)
+    out = _agent_run(promoted, name, {"task_id": target})
+    assert (_task_row(promoted, target), _activities(promoted, target)) == before
+    assert out.startswith("Could not start workflow") and "Projects tasks" in out, out
+    assert target not in out and "Open in C" not in out, out
+    assert _run_count(promoted, name) == 0
+
+
+def test_an_agent_cannot_run_a_sweep_node(promoted):
+    target = promoted.work_c["stale"]
+    out = _agent_run(promoted, "Sweep in C", {})
+    assert _task_row(promoted, target).archived_at is None
+    assert out.startswith("Could not start workflow") and "Projects tasks" in out, out
+    assert _run_count(promoted, "Sweep in C") == 0
+
+
+def test_an_agent_still_runs_a_workflow_with_only_a_module_node(promoted):
+    out = _agent_run(promoted, "Module in C", {"task_id": promoted.work_c["task"]})
+    assert "succeeded" in out, out
+    row = _run_row(promoted, out.split("Run ", 1)[1].split(" ", 1)[0])
+    assert _step_result(row)["output"] == {"marker": "module-C"}
+
+
+# ── 7. An approval never resumes a run into a Projects node ──────────────────
+
+
+def _pause_at_the_gate(promoted, name: str) -> str:
+    """A paused run in org C. The refusal stops an agent from starting one
+    now, so this is a run that paused before the refusal existed."""
+    run_id = _start_at_the_seam(promoted, name, promoted.org_c)
+    assert _run_row(promoted, run_id).status == "paused"
+    return run_id
+
+
+def _approve(promoted, run_id: str) -> dict:
+    """The real broker handler, with the approver's org bound."""
+    from gateway.routes.workflows.broker_handlers import _resume_run_handler
+
+    async def body():
+        return await _resume_run_handler(SimpleNamespace(payload={"run_id": run_id}))
+
+    return _on_app_role(promoted, promoted.org_c, body)
+
+
+def _assert_refused(promoted, run_id: str, result: dict) -> None:
+    assert result["ok"] is False and "Projects tasks" in result["error"], result
+    row = _run_row(promoted, run_id)
+    assert (row.status, row.org) == ("cancelled", promoted.org_c)
+    assert "Projects tasks" in row.error and promoted.work_c["task"] not in row.error
+    assert _pause_statuses(promoted, run_id) == ["rejected"]
+
+
+def test_an_approval_never_resumes_a_run_into_a_task_node(promoted):
+    target = promoted.work_c["task"]
+    before = _task_row(promoted, target), _activities(promoted, target)
+    run_id = _pause_at_the_gate(promoted, "Gated task in C")
+    result = _approve(promoted, run_id)
+    assert (_task_row(promoted, target), _activities(promoted, target)) == before
+    _assert_refused(promoted, run_id, result)
+
+
+def test_an_approval_never_resumes_a_run_into_a_sweep_node(promoted):
+    target = promoted.work_c["stale"]
+    run_id = _pause_at_the_gate(promoted, "Gated sweep in C")
+    result = _approve(promoted, run_id)
+    assert _task_row(promoted, target).archived_at is None
+    _assert_refused(promoted, run_id, result)
+
+
+def test_an_approval_resumes_past_a_task_node_that_already_ran(promoted):
+    """The replay does not run the node again, so the run has no write left."""
+    target = promoted.before_gate
+    run_id = _pause_at_the_gate(promoted, "Task before the gate in C")
+    assert _task_row(promoted, target).title == "Written before the gate"
+    written = len(_activities(promoted, target))
+
+    assert _approve(promoted, run_id)["ok"] is True
+    row = _run_row(promoted, run_id)
+    assert (row.status, row.error, row.org) == ("succeeded", None, promoted.org_c)
+    assert _step_result(row)["output"] == {"marker": "module-C"}
+    assert len(_activities(promoted, target)) == written
+
+
+def test_a_resumed_run_takes_its_org_from_the_run_row(promoted, monkeypatch):
+    """RLS makes the caller's org equal the stored org, so only the spelling
+    can differ. The resumed run must carry the row's value, not the caller's."""
+
+    async def start():
+        return await service.run_published_workflow(
+            "Gated module in A", {}, started_by="h328", organization_id=promoted.org_a)
+
+    run_id = _on_app_role(promoted, None, start)["run_id"]
+    seen: dict[str, Any] = {}
+    real = service._execute_run
+
+    async def _spy(**kw: Any) -> None:
+        seen.update(kw)
+        await real(**kw)
+
+    monkeypatch.setattr(service, "_execute_run", _spy)
+
+    async def approve():
+        return await service.resume_run(run_id, organization_id=promoted.org_a.upper())
+
+    assert _on_app_role(promoted, None, approve)["ok"] is True
+    assert seen["organization_id"] == promoted.org_a
+
+
+# ── 8. CI must run this suite ────────────────────────────────────────────────
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard():

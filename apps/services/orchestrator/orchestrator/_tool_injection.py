@@ -2420,8 +2420,10 @@ def _inject_agent_tools(
     # ── Published workflows as tools (workflows_app.md F13) ────────────────
     # Same stance as app tools: org-internal governed automations, always
     # offered (list/run/status trio, not one tool per workflow), gated
-    # through the same _gate_injected_tool pipeline below. Any write inside
-    # a workflow is already broker-gated / approval-noded.
+    # through the same _gate_injected_tool pipeline below. A `tool` node that
+    # writes outward is broker-gated and approval-noded. A `pm_task` or
+    # `pm_lifecycle` node has no such gate, so `run_workflow` refuses a
+    # workflow that holds one (`service._member_blind_write_nodes`).
     #
     # The trio is appended AFTER scope filtering, so the S2 skill toggle is
     # honored HERE: an explicit admin disable of the 'workflows' family

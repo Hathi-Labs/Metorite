@@ -65,9 +65,16 @@ from typing import Any
 # that carries an organization binds it for the module read, the `pm_task`
 # write, the lifecycle sweep and the `notify.whatsapp` owner read
 # (`build_node_services`). The org is the run's own stored fact, never the
-# ambient tenant and never input. A run with no org keeps the old path until
-# H4 slice 6c. That path is `_run_session(None)` for the module read and the
-# task write, and the unbound owner resolver for the other two.
+# ambient tenant and never input. ONE EXCEPTION: the approval door opens its
+# read with the approver's `current_tenant()` (`resume_run`). RLS makes that
+# org equal the stored org, and the resumed nodes take the org from the run
+# row. A run with no org keeps the old path until H4 slice 6c. That path is
+# `_run_session(None)` for the module read and the task write, and the unbound
+# owner resolver for the other two.
+#
+# ⚠️ A task write has no member check (`_member_blind_write_nodes`). So
+# `run_published_workflow` and `resume_run` refuse a `pm_task` or `pm_lifecycle`
+# node, and each stays refused until a run checks a verified member.
 # Fence: `tests/unit/test_workflows_lifecycle_rls_r8.py`.
 from acb_common.db import TenantUnbound
 from gateway.routes.workflows.core import (
@@ -343,9 +350,12 @@ async def _workflow_organization(db: Any, workflow_id: str) -> str:
     """The tenant of a run with no organization, from the workflow's owner.
 
     ⚠️ **This is the old path (H-328).** A run that carries an organization
-    never comes here. Under FORCE RLS this join reads zero rows on an unbound
-    session, so it raises, and that run fails its sweep or notify node. H4
-    slice 6c deletes this function with its last caller.
+    never comes here. Under FORCE RLS an unbound session cannot read this join.
+    A fresh connection reads zero rows, so this function raises. A used
+    connection holds an empty ``app.tenant_id``, so the policy cast raises
+    ``DBAPIError`` (``invalid input syntax for type uuid: ""``). Either way,
+    that run fails its sweep or notify node. H4 slice 6c deletes this function
+    with its last caller.
 
     The owner goes through ``app_user``, as
     `routes/crm/auto_lead._owner_organization` resolves the mailbox owner's.
@@ -499,11 +509,14 @@ async def _run_session(organization_id: str | None) -> Any:
     ``_tenant_session(organization_id)``, for its run rows and for the module
     read and the task write of its nodes. Only the F13 agent entry points
     start such a run, with the org of the agent run. The org is never
-    inherited from the ambient context, which is what H4 forbids.
+    inherited from the ambient context, which is what H4 forbids. The one
+    exception is the read at the approval door (:func:`resume_run`).
 
     A run with no organization keeps the unbound ``_get_db()`` (the H4 note at
-    the top of this module). Under FORCE RLS that read finds no row and that
-    write fails, and H4 slice 6c owns the conversion.
+    the top of this module). Under FORCE RLS that read finds no row on a fresh
+    connection, and raises ``DBAPIError`` on a used one (``invalid input syntax
+    for type uuid: ""``). That write fails on both. H4 slice 6c owns the
+    conversion.
     """
     if organization_id:
         async with _tenant_session(organization_id) as db:
@@ -538,6 +551,41 @@ def _long_wait_nodes(serialized: dict[str, Any]) -> list[str]:
         if seconds > WAIT_INLINE_MAX_SECONDS:
             out.append(str(block.get("id")))
     return out
+
+
+#: The node types that write ``pm_tasks`` with no member check.
+_MEMBER_BLIND_WRITE_TYPES = frozenset({"pm_task", "pm_lifecycle"})
+
+#: Why such a node does not run. It names no task, so it tells no one that a
+#: private task exists.
+_MEMBER_BLIND_REASON = "A run does not check which tasks a member can see."
+#: What a run row and the approver read when a resume stops at such a node.
+_RESUME_REFUSED = (
+    "This run stopped at its gate, because a later node can change Projects "
+    f"tasks. {_MEMBER_BLIND_REASON}"
+)
+
+
+def _member_blind_write_nodes(serialized: dict[str, Any]) -> list[str]:
+    """Ids of the nodes in *serialized* that write tasks with no member check.
+
+    A ``pm_task`` or ``pm_lifecycle`` node writes ``pm_tasks`` by primary key
+    in the run's org. No step asks what the run's starter can see, and RLS
+    binds only the tenant. So a member's agent could name another member's
+    private task in the trigger payload, and the run would change that task.
+    A fixed task id has the same gap, because the agent still picks the
+    workflow. The sweep has it too, and it archives and closes tasks.
+
+    :func:`run_published_workflow` and :func:`resume_run` refuse these nodes,
+    whether the task id is a template or fixed. The refusal stays until a run
+    checks a verified member. Parts (b) and (c) of H-328 must decide which
+    member that is (``workflows_app.md``).
+    """
+    return [
+        str(block.get("id"))
+        for block in serialized.get("blocks") or []
+        if str(block.get("type") or "") in _MEMBER_BLIND_WRITE_TYPES
+    ]
 
 
 def _require_org(organization_id: str | None) -> str:
@@ -1155,11 +1203,26 @@ async def resume_run(
     ``reason`` decides which gate is cleared — an elapsed wait must not also
     clear an approval further down the graph.
 
-    *organization_id* binds the read, the claim and the resumed run
-    (:func:`_run_session`). The broker handler passes the approver's org.
-    Under FORCE RLS a run of another org is not visible, so it reads as
-    ``no run`` and nothing resumes. The schedule scanner passes no org yet
-    (H4 slice 6c), so the agent entry point refuses a long wait.
+    *organization_id* binds the read and the claim (:func:`_run_session`).
+    The broker handler passes the approver's org. Under FORCE RLS a run of
+    another org is not visible, so it reads as ``no run`` and nothing resumes.
+    The schedule scanner passes no org yet (H4 slice 6c), so the agent entry
+    point refuses a long wait.
+
+    ⚠️ **The approval door is the one exception to "never the ambient tenant"
+    and to "part (a) wakes nothing".** The handler takes the approver's
+    ``current_tenant()`` for any paused run, whatever started it. RLS makes
+    that org equal the stored org, so no run of another org leaks. The resumed
+    run takes its org from the run row. So an approver who clears a run that
+    paused before RLS now runs its module and notify nodes. A person approved
+    that run, and nothing wakes without one.
+
+    ⚠️ **A resume never reaches a task write.** A node of
+    :func:`_member_blind_write_nodes` that has not run closes the run as
+    ``cancelled`` and the pause as ``rejected``, as a rejected approval does.
+    That is not ``failed``: the platform stopped the run, so the auto-disable
+    policy does not count it. A node that already ran stays replayed, so a
+    resume past it goes on.
     """
     global _ACTIVE_TOTAL
     async with _run_session(organization_id) as db:
@@ -1187,28 +1250,59 @@ async def resume_run(
         if pause is None:
             return {"ok": False, "error": f"run {run_id} has no pending pause"}
         snapshot = parse_jsonb(pause.snapshot, {}) or {}
-        await db.execute(
-            text(
-                "UPDATE workflow_run_pauses SET status = 'resolved', "
-                "resolved_at = now() WHERE id = :id"
-            ),
-            {"id": str(pause.id)},
-        )
-        await db.execute(
-            text("UPDATE workflow_runs SET status = 'running' WHERE id = :id"),
-            {"id": run_id},
-        )
+        serialized = snapshot.get("serialized") or {}
         node_results = parse_jsonb(run.node_results, {}) or {}
+        precomputed = {
+            nid: res.get("output")
+            for nid, res in node_results.items()
+            if isinstance(res, dict) and res.get("status") == "ok"
+        }
+        blind = [n for n in _member_blind_write_nodes(serialized) if n not in precomputed]
+        if blind:
+            await db.execute(
+                text(
+                    "UPDATE workflow_run_pauses SET status = 'rejected', "
+                    "resolved_at = now() WHERE id = :id"
+                ),
+                {"id": str(pause.id)},
+            )
+            await db.execute(
+                text(
+                    "UPDATE workflow_runs SET status = 'cancelled', "
+                    "error = :error, finished_at = now() WHERE id = :id"
+                ),
+                {"id": run_id, "error": _RESUME_REFUSED},
+            )
+        else:
+            await db.execute(
+                text(
+                    "UPDATE workflow_run_pauses SET status = 'resolved', "
+                    "resolved_at = now() WHERE id = :id"
+                ),
+                {"id": str(pause.id)},
+            )
+            await db.execute(
+                text("UPDATE workflow_runs SET status = 'running' WHERE id = :id"),
+                {"id": run_id},
+            )
 
     gate_node = str(pause.node_id)
     is_wait = str(getattr(pause, "reason", "approval") or "approval") == "wait"
-    serialized = snapshot.get("serialized") or {}
-    precomputed = {
-        nid: res.get("output")
-        for nid, res in node_results.items()
-        if isinstance(res, dict) and res.get("status") == "ok"
-    }
     workflow_id = str(snapshot.get("workflow_id") or run.workflow_id)
+    workflow_name = str(snapshot.get("workflow_name") or run.workflow_name)
+    if blind:
+        _log.warning("workflows.resume_refused", run_id=run_id, nodes=blind)
+        publish_workflow_activity(
+            workflow_id,
+            workflow_name,
+            user=resumed_by,
+            phase="end",
+            run_id=run_id,
+            status="cancelled",
+            reason=_RESUME_REFUSED,
+        )
+        return {"ok": False, "error": _RESUME_REFUSED, "run_id": run_id, "node_id": gate_node}
+    run_org = getattr(run, "organization_id", None)
     _HUBS[run_id] = RunHub()
     _ACTIVE_TOTAL += 1
     _ACTIVE_BY_WORKFLOW[workflow_id] = _ACTIVE_BY_WORKFLOW.get(workflow_id, 0) + 1
@@ -1216,7 +1310,7 @@ async def resume_run(
         _execute_run(
             run_id=run_id,
             workflow_id=workflow_id,
-            workflow_name=str(snapshot.get("workflow_name") or run.workflow_name),
+            workflow_name=workflow_name,
             serialized=serialized,
             trigger_payload=snapshot.get("trigger_payload") or {},
             variables=snapshot.get("variables") or {},
@@ -1228,7 +1322,7 @@ async def resume_run(
             precomputed=precomputed,
             resolved_approvals=set() if is_wait else {gate_node},
             elapsed_waits={gate_node} if is_wait else set(),
-            organization_id=organization_id,
+            organization_id=str(run_org) if run_org else None,
         ),
         name=f"workflow-resume:{run_id}",
     )
@@ -1278,7 +1372,8 @@ async def run_published_workflow(
     concurrency caps, trigger kind ``api``. Returns ``{run_id, …}`` or
     ``{error}`` (ambiguous/unknown refs are reported, never guessed). The
     name match is case-insensitive. The run carries the org, so its writes
-    bind it too (:func:`_run_session`).
+    bind it too (:func:`_run_session`). A workflow that holds a node of
+    :func:`_member_blind_write_nodes` is refused, so an agent writes no task.
     """
     org = _require_org(organization_id)
     async with _tenant_session(org) as db:
@@ -1303,6 +1398,11 @@ async def run_published_workflow(
         serialized = await load_version_serialized(db, str(row.id), int(row.latest_version))
     if serialized is None:
         return {"error": f"published version missing for workflow '{row.name}'"}
+    if _member_blind_write_nodes(serialized):
+        return {
+            "error": f"workflow '{row.name}' can change Projects tasks, so an "
+            f"agent cannot start it yet. {_MEMBER_BLIND_REASON} Nothing ran."
+        }
     long_waits = _long_wait_nodes(serialized)
     if long_waits:
         return {

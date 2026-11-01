@@ -34,6 +34,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - Calls go in-process to `gateway.routes.workflows.service`, so the approval gates bind an agent run too.
    - The trio binds the run's org from `executor._current_run_org()`. No tool takes an org argument. With no org, a tool returns `NO_ORG` and reads nothing.
    - `run_workflow` refuses a workflow with a wait that can pause. Fence: `test_workflows_tool_rls_r8.py`.
+   - `run_workflow` refuses a workflow with a `pm_task` or `pm_lifecycle` node. A run writes those by primary key with no member check. Fence: `test_workflows_lifecycle_rls_r8.py`.
 9. Run correlation binds in **two** places in run_agent_stream, on purpose (spec `observability_e2.md` §7).
    - `bind_run_context(...)` runs at the run boundary, BEFORE `load_agent`, so a load failure is still correlated. `_bind_run_instance(instance, run_id)` tops up `instance` after the load.
    - Do not "simplify" this into one bind. The single `clear_run_context()` in the `finally` unbinds every key.

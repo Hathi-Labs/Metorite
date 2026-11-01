@@ -21,9 +21,12 @@ async def _resume_run_handler(proposal: Any) -> dict[str, Any]:
     **The org is the approver's (2026-10-15).** ``broker.approve`` runs in the
     approver's request, so ``current_tenant()`` is the org that the auth
     dependency bound from the session. It never comes from the proposal or
-    its payload (R5, R11). ``resume_run`` reads and writes in that org, so a
-    run of another org reads as ``no run``. With no bound org this refuses
-    and reads nothing. Fence: ``tests/unit/test_workflows_tool_rls_r8.py``.
+    its payload (R5, R11). ``resume_run`` reads and claims the run in that org,
+    so a run of another org reads as ``no run``. With no bound org this refuses
+    and reads nothing. The resumed run takes its org from the run row, and
+    ``resume_run`` refuses a task node that has not run. Fences:
+    ``tests/unit/test_workflows_tool_rls_r8.py``,
+    ``tests/unit/test_workflows_lifecycle_rls_r8.py``.
     """
     from acb_common.db import current_tenant
     from gateway.routes.workflows.service import resume_run
