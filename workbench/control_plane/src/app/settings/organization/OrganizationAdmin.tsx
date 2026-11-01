@@ -784,13 +784,13 @@ function MemberRow({
       <div className="flex flex-wrap items-center gap-2">
         <Link
           href={`/settings/members/${encodeURIComponent(member.email)}`}
-          className="whitespace-nowrap rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground"
+          className="whitespace-nowrap rounded-lg border border-border px-2.5 py-1.5 text-[11px] text-muted-foreground tech-transition hover:border-primary/30 hover:text-foreground glass:rounded-full glass:px-3"
         >
           Manage access
         </Link>
         {actions.isSelf && (
           <span
-            className="whitespace-nowrap rounded-lg border border-dashed border-border px-2.5 py-1.5 text-[11px] text-muted-foreground"
+            className="whitespace-nowrap rounded-lg border border-dashed border-border px-2.5 py-1.5 text-[11px] text-muted-foreground glass:rounded-full glass:px-3"
             title="You cannot suspend or remove your own access. Another owner or admin can."
           >
             This is you
@@ -809,7 +809,7 @@ function MemberRow({
         {actions.canRemove && (
           <button
             onClick={() => onRemove(member)}
-            className="flex items-center gap-1 whitespace-nowrap rounded-lg border border-destructive/30 px-2.5 py-1.5 text-[11px] text-destructive tech-transition hover:bg-destructive/10"
+            className="flex items-center gap-1 whitespace-nowrap rounded-lg border border-destructive/30 px-2.5 py-1.5 text-[11px] text-destructive tech-transition hover:bg-destructive/10 glass:rounded-full glass:px-3"
           >
             <Icon name="UserMinus" size={12} />
             {actions.removeLabel}
@@ -822,7 +822,7 @@ function MemberRow({
           <button
             onClick={() => onPurge(member)}
             title="Delete this person and every credential and access grant they hold. Their work and the audit trail are kept."
-            className="flex items-center gap-1 whitespace-nowrap rounded-lg bg-destructive px-2.5 py-1.5 text-[11px] font-medium text-destructive-foreground tech-transition hover:opacity-90"
+            className="flex items-center gap-1 whitespace-nowrap rounded-lg bg-destructive px-2.5 py-1.5 text-[11px] font-medium text-destructive-foreground tech-transition hover:opacity-90 glass:rounded-full glass:bg-destructive/15 glass:px-3 glass:text-destructive glass:hover:bg-destructive/25 glass:hover:opacity-100"
           >
             <Icon name="Trash2" size={12} />
             Delete permanently

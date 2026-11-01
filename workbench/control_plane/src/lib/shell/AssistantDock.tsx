@@ -115,6 +115,7 @@ import {
 import { markChatFirstMessage } from "./shellPrefs";
 import {
   dockFloats,
+  dockFoldsNav,
   ASSISTANT_AGENT,
   ASSISTANT_NAME,
   ASSISTANT_PERSONA,
@@ -157,6 +158,11 @@ import {
 import { surfaceOfPane } from "./surface";
 import { chatFilesHref, mergeFileEntry, sessionTitle } from "./chatHistory";
 import { SessionPicker } from "./SessionPicker";
+import { useDocumentLook } from "@/lib/theme/glassTokens";
+import { useOptionalSidebarFold } from "@/components/SidebarFold";
+
+/** The gap round a glass card on the grouped frame: `FULL_MAIN`'s 8 px margins. */
+const GLASS_CARD_INSET = 8;
 
 /** How long a first visit waits for the server's list before it starts a chat. */
 const MERGE_WAIT_MS = 3_000;
@@ -686,6 +692,15 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   // page instead of sitting beside it (owner, 2026-10-14).
   const canDock = !phone;
   const floats = dockFloats(vw, phone);
+  // A tight window gives the page its room: the side panel opens beside it,
+  // and the app sidebar folds to its rail (owner, 2026-11-01). Once per
+  // opening, so the member's own toggle wins after it.
+  const fold = useOptionalSidebarFold();
+  const docked = st.open && form === "dock" && !floats;
+  useEffect(() => {
+    if (docked && dockFoldsNav(vw, phone) && fold && !fold.collapsed) fold.foldForWork();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the panel docks
+  }, [docked]);
   const chat = useAssistantChat(st.open, { phone, chatFirst });
   const pathname = usePathname();
   const router = useRouter();
@@ -924,12 +939,24 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         "assistant-peek-bottom fixed inset-x-0 z-40 overflow-hidden border-t border-border bg-card"
       : "fixed inset-0 z-50 flex flex-col bg-background glass:bg-card pt-safe pb-safe"
     : form === "full"
-      ? "absolute inset-0 z-20 flex flex-col bg-background glass:bg-card"
+      ? // In glass the full view is the page's content card (`AppShell`'s
+        // FULL_MAIN): the same 8 px inset, corners and shadow. It takes the
+        // chat's own surface, so its header and the chat are one block. It clips to
+        // its corners, since the chat inside paints a square surface (owner,
+        // 2026-10-31: the bottom of the panel had no edge).
+        "absolute inset-0 z-20 flex flex-col bg-background glass:top-2 glass:right-2 glass:bottom-2 glass:rounded-2xl glass:bg-card glass:shadow-card glass:overflow-hidden"
       : floats
         ? // A narrow desktop: the same panel, over the right of the page.
-          "absolute inset-y-0 right-0 z-20 flex max-w-[90%] flex-col border-l border-border bg-card shadow-xl glass:glass-menu-flat glass:border-transparent"
+          // In glass it is a card too, 8 px in from the window's edge.
+          "absolute inset-y-0 right-0 z-20 flex max-w-[90%] flex-col border-l border-border bg-card shadow-xl glass:glass-menu-flat glass:border-transparent glass:top-2 glass:right-2 glass:bottom-2 glass:rounded-2xl glass:overflow-hidden"
         : // A wide desktop: the panel sits over the spacer, beside the page.
-          "absolute inset-y-0 right-0 z-20 flex flex-col border-l border-border bg-card glass:border-transparent glass:glass-surface";
+          // In glass it is a second card, 8 px in from the window's edge,
+          // clipped to its corners as the full view is.
+          "absolute inset-y-0 right-0 z-20 flex flex-col border-l border-border bg-card glass:border-transparent glass:glass-surface glass:top-2 glass:right-2 glass:bottom-2 glass:rounded-2xl glass:shadow-card glass:overflow-hidden";
+  // The glass card is 8 px narrower than the spacer, so its left edge stays
+  // where the spacer begins and the gap to the page card is 8 px too.
+  const glassLook = useDocumentLook() === "glass";
+  const dockWidth = glassLook && !floats ? st.width - GLASS_CARD_INSET : st.width;
 
   // ⚠️ The spacer is what the page reflows around, as it does for the
   // sidebar's fold. It keeps the side panel's width under the full view too,
@@ -948,7 +975,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   // at 390 px, and six would leave 90, so Files moves into the chat's "…"
   // control (`chat_first_surface.md` §4.8).
   const phoneChrome = phone && chatFirst;
-  const phoneTap = phoneChrome ? "h-11 w-11" : "";
+  const phoneTap = phoneChrome ? "h-11 w-11 glass:h-11 glass:w-11 glass:pointer-coarse:h-11 glass:pointer-coarse:w-11" : "";
   const moreActs = useMemo(
     () =>
       phoneChrome && chat.activeId
@@ -1003,7 +1030,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       aria-label={`${ASSISTANT_NAME} assistant`}
       inert={phase === "closed"}
       className={`assistant-panel ${shape}`}
-      style={form === "dock" && !phone ? { width: st.width } : undefined}
+      style={form === "dock" && !phone ? { width: dockWidth } : undefined}
       onTransitionEnd={(e) => {
         if (e.target === e.currentTarget && (e.propertyName === "transform" || e.propertyName === "opacity")) {
           settle();

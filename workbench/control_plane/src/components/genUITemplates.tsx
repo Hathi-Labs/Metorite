@@ -109,13 +109,44 @@ import { TYPE } from "@/lib/typeScale";
 
 type Data = Record<string, unknown>;
 
+/**
+ * The glass card language for a template (GL-10a, `glass_look.md` GL-4),
+ * copied from ConfirmationCard and ToolCardShell: a 22 px surface with a
+ * hairline and no border, and a solid icon tile for the title's icon
+ * (the card-tile utility of globals.css). A template draws its frame as an inline style, which
+ * beats a class, so each glass utility carries `!`. Under classic the
+ * variant matches nothing and the markup is what it was
+ * (`glassCards.test.ts`).
+ *
+ * Never the chrome or menu material here: a card holds non-portalled `fixed` children.
+ */
+const G_FRAME = "glass:glass-card-tile glass:rounded-[16px]! glass:border-transparent! glass:glass-raised! glass:p-4!";
+/** The frame of a card that waits on the member: the raised card with a
+ *  hairline in the tint. A wash of the tint read as navy on the dark page. */
+const G_FRAME_ASK = "glass:glass-card-tile glass:rounded-[16px]! glass:border-primary/35! glass:glass-raised! glass:p-4!";
+/** A frame whose children bring their own padding (a table, a comparison). */
+const G_FRAME_FLUSH = "glass:glass-card-tile glass:rounded-[16px]! glass:border-transparent! glass:glass-raised!";
+/** An inner group: a rounded block on the card, with no border. */
+const G_BLOCK = "glass:rounded-[10px]! glass:border-transparent! glass:bg-secondary!";
+/** A field of a form: a rounded fill with no border. */
+const G_FIELD = "glass:rounded-[10px]! glass:border-transparent! glass:bg-field!";
+/** The solid tile's colour, one per kind of card. */
+const T_BLUE = "glass:[--tile:var(--system-blue)]";
+const T_TEAL = "glass:[--tile:var(--system-teal)]";
+const T_GREEN = "glass:[--tile:var(--system-green)]";
+const T_ORANGE = "glass:[--tile:var(--system-orange)]";
+const T_INDIGO = "glass:[--tile:var(--system-indigo)]";
+const T_PURPLE = "glass:[--tile:var(--system-purple)]";
+const T_PINK = "glass:[--tile:var(--system-pink)]";
+
 /** Small inline Lucide icon for templates (optional `icon` fields). */
-function TIcon({ name, size = 16, color }: { name?: unknown; size?: number; color?: string }) {
+function TIcon({ name, size = 16, color, className }: { name?: unknown; size?: number; color?: string; className?: string }) {
   if (!name || typeof name !== "string") return null;
   // createElement (not <Icon/>) so the resolved component isn't flagged as
   // declared-during-render (react-hooks/static-components).
   return createElement(resolveIcon(name), {
     size, strokeWidth: 1.75, color: color ?? "currentColor", "aria-hidden": true,
+    ...(className ? { className } : {}),
   });
 }
 
@@ -419,7 +450,7 @@ function WeatherCard({ data }: { data: Data }) {
   const animated = useCountUp(temp);
   const forecast = arr(data.forecast);
   return (
-    <div style={{
+    <div className={`${G_FRAME} ${T_TEAL} glass:bg-none!`} style={{
       borderRadius: 14, padding: 16, border: "1px solid var(--border)",
       background: "linear-gradient(135deg, color-mix(in srgb, var(--primary) 12%, var(--card)), var(--card))",
     }}>
@@ -529,7 +560,7 @@ function StatTile({ s, dense = false }: { s: Data; dense?: boolean }) {
   // formatter. The browser's locale grouped it before (WS-47 follow-up).
   const numbering = useNumberSystem();
   return (
-    <div data-stat-tile={dense ? "dense" : ""} style={{
+    <div data-stat-tile={dense ? "dense" : ""} className={G_BLOCK} style={{
       flex: 1, minWidth: dense ? 0 : 110, padding: dense ? "6px 8px" : 12, borderRadius: dense ? 8 : 12,
       border: "1px solid var(--border)", background: "var(--card)",
       animation: "ccFadeUp .4s ease both",
@@ -560,7 +591,7 @@ function StatDashboard({ data }: { data: Data }) {
   // holds the header and the tiles, as the other chat templates draw.
   const fold = useCardFold();
   return (
-    <div style={fold ? CARD_BOX : undefined}>
+    <div className={fold ? `${G_FRAME} ${T_BLUE}` : undefined} style={fold ? CARD_BOX : undefined}>
       <TemplateHead icon="layout-dashboard" title={data.title != null ? str(data.title) : null} />
       <TemplateBody>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
@@ -603,7 +634,7 @@ function SparkTrend({ data }: { data: Data }) {
   const fold = useCardFold();
   const label = templateTitle("sparkTrend", data);
   return (
-    <div style={{ padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
+    <div className={`${G_FRAME} ${T_GREEN}`} style={{ padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
     <TemplateHead icon="trending-up" title={label || null} foldOnly />
     <TemplateBody>
     <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
@@ -636,7 +667,7 @@ function Comparison({ data }: { data: Data }) {
   // card folds even with no title, so the toggle has its place.
   const fold = useCardFold();
   return (
-    <div style={{ borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
+    <div className={`${G_FRAME_FLUSH} ${T_INDIGO}`} style={{ borderRadius: 12, border: "1px solid var(--border)", overflow: "hidden" }}>
       {(data.title != null || fold?.toggle) && (
         <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)", background: "var(--card)" }}>
           <TemplateHead icon="scale" title={data.title != null ? str(data.title) : null} gap={0} />
@@ -646,7 +677,8 @@ function Comparison({ data }: { data: Data }) {
       <div style={{ display: "grid", gridTemplateColumns: `140px repeat(${options.length}, 1fr)` }}>
         <div style={{ background: "var(--card)" }} />
         {options.map((o, i) => (
-          <div key={i} style={{
+          // Glass: the badge is the tint, so the column takes the tint too.
+          <div key={i} className={o.recommended ? "glass:bg-primary/[0.10]!" : undefined} style={{
             padding: "8px 10px", fontSize: TYPE.xs, fontWeight: 600, textAlign: "center",
             color: "var(--foreground)",
             // The highlight family of the Recommended badge, so the column
@@ -661,14 +693,14 @@ function Comparison({ data }: { data: Data }) {
         ))}
         {rowLabels.map((label, ri) => (
           <div key={label} style={{ display: "contents" }}>
-            <div style={{ padding: "8px 10px", fontSize: TYPE.caption, color: "var(--muted-foreground)",
+            <div className="glass:bg-transparent!" style={{ padding: "8px 10px", fontSize: TYPE.caption, color: "var(--muted-foreground)",
               borderTop: "1px solid var(--border)", background: ri % 2 ? "var(--secondary)" : "transparent" }}>
               {label}
             </div>
             {options.map((o, ci) => {
               const row = arr(o.rows).map((r) => (r ?? {}) as Data).find((r) => str(r.label) === label);
               return (
-                <div key={ci} style={{ padding: "8px 10px", fontSize: TYPE.xs, textAlign: "center",
+                <div key={ci} className={o.recommended ? "glass:bg-primary/[0.06]!" : "glass:bg-transparent!"} style={{ padding: "8px 10px", fontSize: TYPE.xs, textAlign: "center",
                   color: "var(--foreground)", borderTop: "1px solid var(--border)", borderLeft: "1px solid var(--border)",
                   background: o.recommended ? "color-mix(in srgb, var(--warning) 6%, transparent)" : (ri % 2 ? "var(--secondary)" : "transparent") }}>
                   {row ? str(row.value) : "—"}
@@ -688,7 +720,7 @@ function ProgressTracker({ data }: { data: Data }) {
   const done = steps.filter((s) => str(s.state) === "done").length;
   const pct = steps.length ? (done / steps.length) * 100 : 0;
   return (
-    <div style={{ padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
+    <div className={`${G_FRAME} ${T_GREEN}`} style={{ padding: 14, borderRadius: 12, border: "1px solid var(--border)", background: "var(--card)" }}>
       <TemplateHead icon="gauge" title={data.title != null ? str(data.title) : null} gap={10} />
       <TemplateBody>
       <div style={{ height: 6, borderRadius: 3, background: "var(--secondary)", overflow: "hidden", marginBottom: 12 }}>
@@ -754,7 +786,7 @@ function RecipeCard({ data }: { data: Data }) {
   );
   const hasIntro = data.description != null || meta.length > 0;
   return (
-    <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", overflow: "hidden" }}>
+    <div className={`${G_FRAME_FLUSH} ${T_ORANGE}`} style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", overflow: "hidden" }}>
       <div style={{
         padding: "14px 16px", borderBottom: "1px solid var(--border)",
         background: "linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, var(--card)), var(--card))",
@@ -866,7 +898,7 @@ function FlightStatus({ data }: { data: Data }) {
   const pct = Math.max(0, Math.min(100, num(data.progressPct,
     status === "landed" ? 100 : status === "in-air" ? 50 : 0)));
   return (
-    <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
+    <div className={`${G_FRAME} ${T_BLUE}`} style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
       <TemplateHead icon="plane" title={templateTitle("flightStatus", data)} gap={12}
         aside={data.date != null ? str(data.date) : undefined} end={<StatusBadge status={status} />} />
       <TemplateBody>
@@ -904,7 +936,7 @@ function TrainStatus({ data }: { data: Data }) {
   const stops = arr(data.stops).map((s) => (s ?? {}) as Data);
   const delay = num(data.delayMin);
   return (
-    <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
+    <div className={`${G_FRAME} ${T_BLUE}`} style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
       <TemplateHead icon="train-front" title={templateTitle("trainStatus", data)} gap={12} end={
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           {delay > 0 && (
@@ -1009,7 +1041,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
     exit.current.decline(off);
   };
   return (
-    <div style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
+    <div className={`${locked ? G_FRAME : G_FRAME_ASK} ${T_ORANGE}`} style={{ borderRadius: 14, border: "1px solid var(--border)", background: "var(--card)", padding: 16 }}>
       <TemplateHead icon="clipboard-list" rich gap={4} title={data.title != null ? str(data.title) : null}
         actions={canDecline ? <NotNowClose onClick={decline} /> : undefined} />
       <TemplateBody>
@@ -1054,7 +1086,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                 )}
               </span>
               {type === "select" ? (
-                <select value={str(v)} disabled={locked} style={FIELD_INPUT_STYLE}
+                <select value={str(v)} disabled={locked} className={G_FIELD} style={FIELD_INPUT_STYLE}
                   onChange={(e) => set(name, e.target.value)}>
                   <option value="" disabled>{str(f.placeholder, "Choose…")}</option>
                   {arr(f.options).map((o) => (
@@ -1063,7 +1095,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                 </select>
               ) : type === "textarea" ? (
                 <textarea value={str(v)} disabled={locked} rows={3} placeholder={str(f.placeholder)}
-                  style={{ ...FIELD_INPUT_STYLE, resize: "vertical" }}
+                  className={G_FIELD} style={{ ...FIELD_INPUT_STYLE, resize: "vertical" }}
                   onChange={(e) => set(name, e.target.value)} />
               ) : type === "toggle" ? (
                 <button type="button" disabled={locked} onClick={() => set(name, !v)}
@@ -1071,7 +1103,8 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                   style={{ width: 40, height: 22, borderRadius: 999, border: "1px solid var(--border)",
                     background: v ? "var(--primary)" : "var(--secondary)", position: "relative",
                     cursor: locked ? "default" : "pointer", transition: "background 0.2s var(--cc-ease, ease)" }}>
-                  <span style={{ position: "absolute", top: 2, left: v ? 20 : 2, width: 16, height: 16,
+                  {/* Glass: the knob is white in both states, as a system switch. */}
+                  <span className="glass:bg-white! glass:shadow-sm" style={{ position: "absolute", top: 2, left: v ? 20 : 2, width: 16, height: 16,
                     borderRadius: "50%", background: v ? "var(--primary-foreground)" : "var(--foreground)",
                     transition: "left 0.2s var(--cc-ease, ease)" }} />
                 </button>
@@ -1084,7 +1117,7 @@ function FormCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
                 <input type={type === "number" ? "number" : type === "date" ? "date" : "text"}
                   value={str(v)} disabled={locked} placeholder={str(f.placeholder)}
                   min={f.min != null ? num(f.min) : undefined} max={f.max != null ? num(f.max) : undefined}
-                  style={FIELD_INPUT_STYLE}
+                  className={G_FIELD} style={FIELD_INPUT_STYLE}
                   onChange={(e) => set(name, type === "number" && e.target.value !== ""
                     ? parseFloat(e.target.value) : e.target.value)} />
               )}
@@ -1175,7 +1208,7 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
     setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
   };
   return (
-    <div style={CARD_BOX}>
+    <div className={`${locked ? G_FRAME : G_FRAME_ASK} ${T_ORANGE}`} style={CARD_BOX}>
       <TemplateHead icon="list-checks" gap={4} rich title={data.title != null ? str(data.title) : null}
         actions={canDecline ? <NotNowClose onClick={decline} /> : undefined} />
       <TemplateBody>
@@ -1190,6 +1223,7 @@ function OptionPicker({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           return (
             <button key={id} type="button" onClick={() => toggle(id)} disabled={locked}
               aria-pressed={active}
+              className={`glass:rounded-[10px]! ${active ? "glass:bg-primary/[0.12]!" : "glass:border-transparent! glass:bg-secondary!"}`}
               // A column from the top: a button centres its content, so an
               // option with a Recommended badge set the row height and the
               // titles beside it sat lower (follow-up 5 of #766).
@@ -1329,12 +1363,12 @@ function TemplateHead({ icon, title, href = null, rich = false, aside, end, acti
       <div className="flex min-w-0 items-center gap-1.5">
         <div className="min-w-0 flex-1">
           <CollapsibleCardHeader
-            lead={<TIcon name={icon} size={14} color="var(--primary)" />}
+            lead={<TIcon name={icon} size={14} color="var(--primary)" className="glass:stroke-current" />}
             title={title === null ? undefined : plainTitle(title)}
             quiet={title === null}
             aside={aside}
             className="text-sm"
-            titleClassName="font-semibold text-foreground"
+            titleClassName="font-semibold text-foreground glass:text-subhead"
           />
         </div>
         {end != null && <div data-template-end="" className="flex shrink-0 items-center">{end}</div>}
@@ -1410,7 +1444,7 @@ function Timeline({ data }: { data: Data }) {
           // its hue is information, so a semantic tone (AGENTS.md rule 7).
           : MILESTONE_TONE[type] ?? "var(--border)";
   return (
-    <div style={CARD_BOX}>
+    <div className={`${G_FRAME} ${T_INDIGO}`} style={CARD_BOX}>
       <TemplateHead icon="history" title={str(data.title, "Timeline")} href={taskHref(data.taskId)}
         aside={data.total != null ? `${rows.length} of ${num(data.total)}` : undefined} />
       <TemplateBody>
@@ -1478,7 +1512,7 @@ function TaskChip({ t }: { t: Data }) {
   // wrapped one word per line. The chip now sits in the facts row under it,
   // with the assignees as person chips and the due date.
   const body = (
-    <div data-board-card="" style={{ borderRadius: 10, border: "1px solid var(--border)", background: "var(--secondary)",
+    <div data-board-card="" className={G_BLOCK} style={{ borderRadius: 10, border: "1px solid var(--border)", background: "var(--secondary)",
       padding: "6px 8px", marginBottom: 6, opacity: t.done ? 0.6 : 1 }}>
       <div style={{ ...CELL, overflowWrap: "anywhere" }}>
         {t.number != null && <span style={{ ...MUTED, marginRight: 4 }}>#{str(t.number)}</span>}
@@ -1518,7 +1552,7 @@ function TaskBoard({ data }: { data: Data }) {
     };
   }, [columns.length]);
   return (
-    <div style={CARD_BOX}>
+    <div className={`${G_FRAME} ${T_PURPLE}`} style={CARD_BOX}>
       <TemplateHead icon="kanban" title={str(data.title, "Board")} gap={10}
         aside={data.total != null ? `${num(data.total)} tasks` : undefined} />
       <TemplateBody>
@@ -1678,7 +1712,7 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
   };
   const lead = shown.find((c) => c.role === "lead");
   return (
-    <div ref={boxRef} data-grid-layout={mode} style={CARD_BOX}>
+    <div ref={boxRef} data-grid-layout={mode} className={`${G_FRAME} ${T_BLUE}`} style={CARD_BOX}>
       <TemplateHead icon="table-2" title={data.title != null ? str(data.title) : null} />
       <TemplateBody>
       {mode === "stacked" ? (
@@ -1714,7 +1748,7 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
         </div>
       ) : (
         <>
-          <div ref={scrollRef} style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
+          <div ref={scrollRef} className="glass:rounded-[10px] glass:ring-1 glass:ring-border" style={{ overflowX: "auto", maxHeight: 420, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>
@@ -1787,7 +1821,7 @@ function ReportCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   // 2026-10-13). Elsewhere it is the column it always was.
   const fold = useCardFold();
   return (
-    <div style={fold ? CARD_BOX : undefined} data-report-pills={pills.length > 0 ? "" : undefined}>
+    <div className={fold ? `${G_FRAME} ${T_INDIGO}` : undefined} style={fold ? CARD_BOX : undefined} data-report-pills={pills.length > 0 ? "" : undefined}>
       {/* The one address builder of Reports (`projects_reports.md` §6.5 item 18). */}
       <TemplateHead icon="file-text" gap={10} title={str(data.title, "Report")} href={pills.length > 0 ? null : reportLink()}
         aside={data.period != null ? str(data.period) : undefined} />
@@ -1819,7 +1853,7 @@ function ReportCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
  */
 function PlanCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   return (
-    <div data-plan-card="" className="@container min-w-0" style={CARD_BOX}>
+    <div data-plan-card="" className={`@container min-w-0 ${ctx?.answered ? G_FRAME : G_FRAME_ASK} ${T_ORANGE}`} style={CARD_BOX}>
       <TemplateHead icon="list-todo" title="Plan" gap={8} />
       <TemplateBody>
         <PlanCardBody data={data} onAction={ctx?.onAction} answered={ctx?.answered ?? ""} onDecline={ctx?.onDecline} />
@@ -1864,7 +1898,7 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   };
   const fold = useCardFold();
   return (
-    <div style={fold ? CARD_BOX : undefined} data-reminder-card="" aria-busy={busy || undefined}>
+    <div className={fold ? `${G_FRAME} ${T_PINK}` : undefined} style={fold ? CARD_BOX : undefined} data-reminder-card="" aria-busy={busy || undefined}>
       <TemplateHead icon="bell" title={str(data.title, "Reminder") || "Reminder"} aside={str(data.when) || undefined} />
       <TemplateBody>
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -2238,7 +2272,7 @@ function ReportTemplate({ data }: { data: Data }) {
   // The card is its own size container: its acts drop their words, and its
   // tiles set their row, by the card's width and not the window's.
   return (
-    <div data-report-card="" className="@container min-w-0" style={CARD_BOX}>
+    <div data-report-card="" className={`@container min-w-0 ${G_FRAME} ${T_INDIGO}`} style={CARD_BOX}>
       <TemplateHead icon="file-chart-column" gap={10} title={report.title}
         actions={open || pdfUrl ? <ReportCardActions onOpen={open} pdf={pdfUrl ? pdf : null} pdfName={pdfName} /> : undefined} />
       <TemplateBody>
@@ -2262,7 +2296,7 @@ function ChartCard({ spec }: { spec: Data }) {
   const subtitle = str(spec.subtitle).trim();
   const bare: Data = { ...spec, title: undefined, subtitle: undefined };
   return (
-    <div style={CARD_BOX}>
+    <div className={`${G_FRAME} ${T_PURPLE}`} style={CARD_BOX}>
       <TemplateHead icon="chart-column" title={title || null} aside={subtitle || undefined} />
       <TemplateBody>
         <LiveChart spec={bare} bare />

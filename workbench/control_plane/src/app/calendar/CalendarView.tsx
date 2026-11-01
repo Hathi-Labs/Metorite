@@ -726,7 +726,7 @@ export function CalendarView() {
       {/* Startup ritual offer — once per local day, dismissible. Habits form
           around rituals; the banner invites, it never ambushes. */}
       {startupOffered && !startupOpen && !dayClosed && (
-        <div className="flex items-center gap-2 border-b border-border bg-warning/5 px-4 py-2 text-xs">
+        <div className="flex items-center gap-2 border-b border-border bg-warning/5 px-4 py-2 text-xs glass:mx-3 glass:mt-2 glass:rounded-xl glass:border-0">
           <Icon name="Sun" className="h-4 w-4 shrink-0 text-warning" />
           <span className="min-w-0 flex-1 text-foreground">
             Start your day — breathe · review · commit the One Thing.
@@ -748,7 +748,7 @@ export function CalendarView() {
       )}
 
       {overdueCount > 0 && (
-        <div className="flex items-center gap-2 border-b border-warning/40 bg-warning/10 px-4 py-2 text-xs">
+        <div className="flex items-center gap-2 border-b border-warning/40 bg-warning/10 px-4 py-2 text-xs glass:mx-3 glass:mt-2 glass:rounded-xl glass:border-0">
           <Icon name="AlertTriangle" className="h-4 w-4 shrink-0 text-warning" />
           <span className="min-w-0 flex-1 text-foreground">
             {overdueCount} unfinished task{overdueCount === 1 ? "" : "s"} from

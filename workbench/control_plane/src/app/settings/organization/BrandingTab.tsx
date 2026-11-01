@@ -206,7 +206,7 @@ export default function BrandingTab() {
         <SettingsHeader
           title="Organization"
           subtitle="How your company appears to everyone in it"
-          backHref="/settings/models"
+          backHref="/settings/organization"
           backLabel="Back to settings"
         />
       </div>
