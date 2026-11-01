@@ -790,6 +790,17 @@ def _import_query(since: datetime | None, until: datetime | None) -> str | None:
     return " ".join(terms) or None
 
 
+def _index_of_failure(
+    messages: list[EmailMessage], start: int, ids: list[str], failed_id: str,
+) -> int:
+    """The index in *messages* of the first mail that the list named at or
+    after *failed_id*. *ids* is the list of the page that starts at *start*.
+    The mail before that index is newer than the failed mail."""
+    tail = set(ids[ids.index(failed_id):])
+    return next((index for index in range(start, len(messages))
+                 if messages[index].provider_message_id in tail), len(messages))
+
+
 def _in_import_window(
     msg: EmailMessage, since: datetime | None, until: datetime | None,
 ) -> bool:
@@ -2844,10 +2855,11 @@ class GmailProvider(BaseEmailProvider):
         limit on the first page raises.
 
         After a finished page, the share of the cycle or a rate limit ends
-        the sweep through ``_cut_reset`` (EM-G4b-f3). A short sweep does not
-        end in this way, so the stored cursor stays and the failed page
-        reads again. With no seed the sweep reads on, because a cursor could
-        not hold the point that it reached."""
+        the sweep through ``_cut_reset`` (EM-G4b-f3). A fetch that a later
+        cycle can fix does not lift the share. The list runs newest first, so
+        ``held_at`` keeps the bound at the mail before the failed one, and
+        the next cycle reads the failed mail again. With no seed the sweep
+        reads on, because a cursor could not hold the point that it reached."""
         client = await self._get_client()
         params: dict[str, Any] = {"maxResults": max_results,
                                   "includeSpamTrash": "true"}
@@ -2856,6 +2868,7 @@ class GmailProvider(BaseEmailProvider):
             params["q"] = query
         first = len(result.messages)
         complete = True
+        held_at: int | None = None
         for page in range(self.DEEP_SYNC_MAX_PAGES):
             kept = (len(result.messages), result.messages_synced,
                     len(result.errors))
@@ -2865,49 +2878,56 @@ class GmailProvider(BaseEmailProvider):
                 data = resp.json()
                 ids = [ref["id"] for ref in data.get("messages") or []
                        if ref.get("id")]
-                if await self._fetch_into(ids, result):
-                    complete = False
+                failed = await self._fetch_into(ids, result)
             except GmailRateLimited:
-                if not page or not complete or seed is None:
+                if not page or seed is None:
                     raise
                 del result.messages[kept[0]:]
                 result.messages_synced = kept[1]
                 del result.errors[kept[2]:]
-                return self._cut_reset(seed, after, until, first, result)
+                return self._cut_reset(seed, after, until,
+                                       result.messages[first:held_at], result)
             except Exception as exc:
                 logger.warning("gmail.reset_sweep_failed error=%s status=%s",
                                type(exc).__name__, getattr(
                                    getattr(exc, "response", None),
                                    "status_code", None))
                 return False
+            if failed:
+                complete = False
+                if held_at is None:
+                    held_at = _index_of_failure(result.messages, kept[0], ids,
+                                                failed[0])
             token = data.get("nextPageToken")
             if not token:
                 return complete
-            if self._share_spent() and complete and seed is not None:
-                return self._cut_reset(seed, after, until, first, result)
+            if self._share_spent() and seed is not None:
+                return self._cut_reset(seed, after, until,
+                                       result.messages[first:held_at], result)
             params["pageToken"] = token
         return False
 
     def _cut_reset(
         self, seed: str, after: datetime | None, until: datetime | None,
-        first: int, result: SyncResult,
+        read: list[EmailMessage], result: SyncResult,
     ) -> bool:
-        """Stop a reset sweep at the oldest mail that it read, and return
-        False for a sweep that did not move.
+        """Stop a reset sweep at the oldest mail of *read*, and return False
+        for a sweep that did not move.
 
         The bound is the whole second of that mail, and the next cycle reads
-        that second again, so the upsert makes the overlap harmless. A page
-        whose mail all has one second cannot move the bound, so that sweep
-        counts as short and the scheduler abandons it after its tries."""
-        dates = [m.received_at for m in result.messages[first:]
-                 if m.received_at is not None]
+        that second again, so the upsert makes the overlap harmless. A sweep
+        that cannot move the bound counts as short, and the stored cursor
+        stays. That is a page whose mail all has one second, or a failed
+        fetch at the top of the read. The scheduler abandons the sweep after
+        ``CATCH_UP_MAX_MISSES``, so a mail that always fails cannot stop it
+        from ending."""
+        dates = [m.received_at for m in read if m.received_at is not None]
         oldest = min(dates, default=until)
         if oldest is None or (until is not None
                               and int(_utc(oldest).timestamp())
                               >= int(_utc(until).timestamp())):
             return False
-        logger.warning("gmail.reset_partial read=%d",
-                       len(result.messages) - first)
+        logger.warning("gmail.reset_partial read=%d", len(read))
         result.new_history_id = _format_reset(seed, after, oldest)
         result.rate_limited = True
         return True

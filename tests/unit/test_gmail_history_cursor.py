@@ -1676,38 +1676,172 @@ def _old_or_new(new: Answer, old: Answer) -> Answer:
     return _answer
 
 
+def _dated_mail(fake: _Gmail, **hours_ago: float) -> dict[str, dict[str, Any]]:
+    """Serve each mail of *hours_ago*, and return each message by id."""
+    mails = {mid: _message(mid, "INBOX", hours_ago=age)
+             for mid, age in hours_ago.items()}
+    for mid, mail in mails.items():
+        fake.message(mid, _ok(mail))
+    return mails
+
+
+def _second(mail: dict[str, Any]) -> int:
+    return int(mail["internalDate"]) // 1000
+
+
+def _dated_list(mails: dict[str, dict[str, Any]], size: int) -> Answer:
+    """``messages.list`` as Gmail answers a reset sweep: newest first, in
+    pages of *size*, and with ``after:`` and ``before:`` applied."""
+    def _answer(request: httpx.Request) -> httpx.Response:
+        terms = dict(term.split(":") for term in
+                     request.url.params.get("q", "").split())
+        low, high = int(terms.get("after", 0)), int(terms.get("before", 10 ** 12))
+        ids = [mid for mid, mail in sorted(
+            mails.items(), key=lambda item: -_second(item[1]))
+            if low < _second(mail) < high]
+        offset = int(request.url.params.get("pageToken") or 0)
+        body: dict[str, Any] = {
+            "messages": [{"id": mid} for mid in ids[offset:offset + size]]}
+        if offset + size < len(ids):
+            body["nextPageToken"] = str(offset + size)
+        return httpx.Response(200, json=body)
+    return _answer
+
+
 async def test_a_reset_sweep_stops_at_its_share_and_goes_on(
         fake: _Gmail, cycle: SimpleNamespace,
         monkeypatch: pytest.MonkeyPatch) -> None:
     """Acceptance 9. Before this slice a reset sweep held the lock for its
-    whole read. It now stops after its share. The next cycle reads no seed
-    and no history, and it reads on from the oldest mail that it reached.
-    The end writes the seed of the first cycle, so the history read gets
-    each change made during the sweep."""
+    whole read. It now stops after its share, with the oldest mail that it
+    read as the bound. The next cycle reads no seed and no history, and it
+    reads that second again and goes on. The end writes the seed of the
+    first cycle, so the history read gets each change made during the
+    sweep."""
     monkeypatch.setattr(GmailProvider, "IMPORT_CYCLE_MAILS", 2)
     _stale_history(fake)
-    fake.listing = _old_or_new(_import_pages(["m1", "m2"], ["m3"]),
-                               _import_pages(["m3"]))
-    fake.message("m1", _ok(_message("m1", "INBOX", hours_ago=1)))
-    fake.message("m2", _ok(_message("m2", "INBOX", hours_ago=2)))
-    fake.message("m3", _ok(_message("m3", "INBOX", hours_ago=3)))
+    mails = _dated_mail(fake, m1=1, m2=2, m3=3)
+    fake.listing = _dated_list(mails, size=2)
 
     first = await cycle.run(_row(last_history_id="100"), from_loop=True)
     stored = cycle.phase_d()[0]["history_id"]
     second = await cycle.run(_row(last_history_id=stored), from_loop=True)
 
+    point = json.loads(stored)
+    bound = _second(mails["m2"])
     assert first["resume_soon"] is True
     assert "error" not in first and "catch_up_incomplete" in first, first
-    assert json.loads(stored)["seed"] == "500"
+    assert point["seed"] == "500"
+    assert point["reset"][1] == bound
+    assert [p["q"][0] for p in fake.requests("/messages")] == [
+        f"after:{point['reset'][0]}",
+        f"after:{point['reset'][0]} before:{bound + 1}"]
     assert [p["keep_watermark"] for p in cycle.phase_d()] == [True, False]
     assert "error" not in second and "resume_soon" not in second, second
     assert [p["history_id"] for p in cycle.phase_d()] == [stored, "500"]
     assert len(fake.requests("/profile")) == 1
     assert len(fake.requests("/history")) == 1
-    assert [m.provider_message_id for m in cycle.upserts] == ["m1", "m2", "m3"]
-    queries = [p["q"][0] for p in fake.requests("/messages")]
-    assert queries[0].startswith("after:") and "before:" not in queries[0]
-    assert queries[-1].startswith("after:") and "before:" in queries[-1]
+    assert [m.provider_message_id for m in cycle.upserts] == [
+        "m1", "m2", "m2", "m3"]
+
+
+async def test_a_failed_fetch_does_not_lift_the_share(
+        fake: _Gmail, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Acceptance 9. One 503 used to lift the share for the whole sweep, so
+    the sweep read 15 of 16 mails under the mailbox lock. It now stops after
+    its page."""
+    monkeypatch.setattr(GmailProvider, "IMPORT_CYCLE_MAILS", 2)
+    _stale_history(fake)
+    ids = [f"m{index}" for index in range(16)]
+    fake.listing = _import_pages(*[ids[at:at + 2] for at in range(0, 16, 2)])
+    _serve(fake, *ids)
+    fake.message("m0", _refuse(503, "backendError"))
+
+    result = await _provider().sync_messages(history_id="100")
+
+    assert len(fake.requests("/messages")) == 1
+    assert _ids(result) == ["m1"]
+    assert result.rate_limited is False
+    assert result.catch_up_incomplete is True
+    assert result.new_history_id is None
+
+
+async def test_the_cut_bound_stays_above_a_failed_fetch(
+        fake: _Gmail, cycle: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Acceptance 9. ``m2`` fails, and ``m3`` is older and read. The bound
+    stays at ``m1``, so the next cycle lists ``m2`` again and reads it."""
+    monkeypatch.setattr(GmailProvider, "IMPORT_CYCLE_MAILS", 3)
+    _stale_history(fake)
+    mails = _dated_mail(fake, m1=1, m2=2, m3=3, m4=4)
+    fake.message("m2", _refuse(503, "backendError"), _ok(mails["m2"]))
+    fake.listing = _dated_list(mails, size=3)
+
+    await cycle.run(_row(last_history_id="100"), from_loop=True)
+    stored = cycle.phase_d()[-1]["history_id"]
+    await cycle.run(_row(last_history_id=stored), from_loop=True)
+    moved = cycle.phase_d()[-1]["history_id"]
+    await cycle.run(_row(last_history_id=moved), from_loop=True)
+
+    assert json.loads(stored)["reset"][1] == _second(mails["m1"])
+    assert json.loads(moved)["reset"][1] == _second(mails["m3"])
+    assert cycle.phase_d()[-1]["history_id"] == "500"
+    assert {m.provider_message_id for m in cycle.upserts} == {
+        "m1", "m2", "m3", "m4"}
+
+
+async def test_the_bound_stays_above_the_first_failed_fetch(
+        fake: _Gmail, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Acceptance 9. A second failed fetch cannot move the hold past the
+    first one."""
+    monkeypatch.setattr(GmailProvider, "IMPORT_CYCLE_MAILS", 4)
+    _stale_history(fake)
+    mails = _dated_mail(fake, m1=1, m2=2, m3=3, m4=4, m5=5)
+    fake.message("m2", _refuse(503, "backendError"))
+    fake.message("m4", _refuse(503, "backendError"))
+    fake.listing = _dated_list(mails, size=4)
+
+    result = await _provider().sync_messages(history_id="100")
+
+    assert result.rate_limited is True
+    assert json.loads(result.new_history_id)["reset"][1] == _second(mails["m1"])
+
+
+async def test_a_limit_keeps_the_bound_above_a_failed_fetch(
+        fake: _Gmail) -> None:
+    """Acceptance 9. A rate limit after a page with a failed fetch keeps the
+    finished pages, and the bound stays above the failed mail."""
+    _stale_history(fake)
+    mails = _dated_mail(fake, m1=1, m2=2, m3=3, m4=4, m5=5)
+    fake.message("m2", _refuse(503, "backendError"))
+    fake.message("m5", REFUSED)
+    fake.listing = _dated_list(mails, size=3)
+
+    result = await _provider().sync_messages(history_id="100")
+
+    assert result.rate_limited is True
+    assert _ids(result) == ["m1", "m3"]
+    assert json.loads(result.new_history_id)["reset"][1] == _second(mails["m1"])
+
+
+async def test_a_mail_that_fails_for_good_cannot_stop_the_reset_sweep(
+        fake: _Gmail, cycle: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Acceptance 9. The newest mail fails in each cycle, so the bound cannot
+    move. Each cycle reads one page and counts as short. At
+    ``CATCH_UP_MAX_MISSES`` the scheduler abandons the sweep, and the seed
+    goes to the row, so the history read starts again."""
+    monkeypatch.setattr(GmailProvider, "IMPORT_CYCLE_MAILS", 2)
+    _stale_history(fake)
+    mails = _dated_mail(fake, m1=1, m2=2, m3=3)
+    fake.message("m1", _refuse(503, "backendError"))
+    fake.listing = _dated_list(mails, size=2)
+
+    for _ in range(sched.CATCH_UP_MAX_MISSES):
+        await cycle.run(_row(last_history_id="100"), from_loop=True)
+
+    written = [p["history_id"] for p in cycle.phase_d()]
+    assert written == [None] * (sched.CATCH_UP_MAX_MISSES - 1) + ["500"]
+    assert len(fake.requests("/messages")) == sched.CATCH_UP_MAX_MISSES
 
 
 async def test_a_reset_sweep_with_no_seed_reads_on(
@@ -1750,23 +1884,6 @@ async def test_a_limit_on_the_first_reset_page_raises(fake: _Gmail) -> None:
 
     with pytest.raises(GmailRateLimited):
         await _provider().sync_messages(history_id="100")
-
-
-async def test_a_short_reset_sweep_writes_no_new_point(
-        fake: _Gmail, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Acceptance 9. A fetch that a later cycle can fix must read again, so
-    the sweep cannot move past it."""
-    monkeypatch.setattr(GmailProvider, "IMPORT_CYCLE_MAILS", 1)
-    _stale_history(fake)
-    fake.listing = _import_pages(["m1", "m1b"], ["m2"])
-    _serve(fake, "m1", "m2")
-    fake.message("m1b", _refuse(503, "backendError"))
-
-    result = await _provider().sync_messages(history_id="100")
-
-    assert result.rate_limited is False
-    assert result.new_history_id is None
-    assert result.catch_up_incomplete is True
 
 
 async def test_a_reset_sweep_that_cannot_move_counts_as_short(
@@ -1940,6 +2057,20 @@ async def test_a_cycle_that_moves_clears_the_clock(
     assert "error" not in res, res
     assert res.get("resume_soon") is (True if partial else None)
     assert sched._rate_limit_since == {}
+
+
+async def test_an_unchanged_cursor_is_no_progress(
+        fake: _Gmail, cycle: SimpleNamespace) -> None:
+    """Acceptance 7. A limit cut the read after an empty page, so the cursor
+    did not move. That starts the clock, and it does not clear it."""
+    empty = {"historyId": MAILBOX_ID, "history": []}
+    fake.history = [_limit_on(2, empty, empty)]
+
+    res = await cycle.run(_row(last_history_id="100"))
+
+    assert cycle.phase_d()[-1]["history_id"] == "100"
+    assert res["resume_soon"] is True
+    assert sched._lock_key("acc-1") in sched._rate_limit_since
 
 
 async def test_a_limit_after_the_import_wrote_mail_clears_the_clock(
