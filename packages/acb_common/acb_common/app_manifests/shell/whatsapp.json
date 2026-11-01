@@ -22,6 +22,11 @@
         "feature": "whatsapp",
         "note": "A link job: the app has no form to open, so the job opens the app where the work waits (owner decision, 2026-10-09). WARNING: not the words chat or message (New chat and Write an email own them)."
       }
+    ],
+    "nav": [
+      {
+        "href": "/whatsapp"
+      }
     ]
   }
 }

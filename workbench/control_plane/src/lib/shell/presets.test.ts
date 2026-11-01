@@ -44,6 +44,7 @@ import {
 } from "./presets";
 import { JOBS, buildItems, heldPanes, rank } from "./registry";
 import { shellSidebar } from "./shellNav";
+import { GENERATED_CARD_KEYS, GENERATED_PANE_HREFS, GENERATED_PRESET_IDS } from "./vocabulary.generated";
 
 const ALL = PANES.map((p) => p.feature).filter((f): f is string => !!f);
 
@@ -390,5 +391,21 @@ describe("card order", () => {
     expect(orderCards(["needs", "today", "next"], ["today", "next"])).toEqual(["today", "next", "needs"]);
     // A card that is not built (Team pulse, NS-5) draws nothing.
     expect(orderCards(["needs", "today"], ["needs", "today", "team-pulse"])).toEqual(["needs", "today"]);
+  });
+});
+
+describe("the vocabulary comes from the shell manifests (WS-PKG PKG-2)", () => {
+  it("lists the same panes as nav.ts", () => {
+    // The /centers/... panes are withdrawn from the surface (D49) and are not in the vocabulary.
+    const hrefs = PANES.map((p) => p.href).filter((h) => !h.startsWith("/centers/"));
+    expect([...new Set(hrefs)].sort()).toEqual([...GENERATED_PANE_HREFS].sort());
+  });
+
+  it("lists the same preset ids as presets.ts, in order", () => {
+    expect([...PRESET_IDS]).toEqual([...GENERATED_PRESET_IDS]);
+  });
+
+  it("lists the same card keys as presets.ts, in order", () => {
+    expect([...CARD_KEYS]).toEqual([...GENERATED_CARD_KEYS]);
   });
 });
