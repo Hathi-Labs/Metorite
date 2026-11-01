@@ -880,16 +880,29 @@ def _a_chat_upload(monkeypatch) -> None:
     stub_chat_upload(monkeypatch)
 
 
+#: WS-66 RX-2: these five reminder writes act at once in a run that may send.
+#: They keep their one card in a HELD run (``no_egress=True``), so each card
+#: test below binds a held run for them. ``test_reminder_acts_at_once.py`` holds
+#: the open-run behaviour. ``promote_reminder`` is class C and always asks.
+ACT_AT_ONCE = frozenset({
+    "set_reminder", "update_reminder", "resolve_reminder", "reopen_reminder",
+    "reschedule_reminder",
+})
+
+
 @pytest.fixture(autouse=True)
-def _an_open_run() -> Any:
+def _an_open_run(request: pytest.FixtureRequest) -> Any:
     """Each tool runs inside a run, as in production. This run may send
     (``no_egress=False``). H-236 reads a frame with no run as ``no_egress``,
     and then ``assign`` refuses the ``agent:`` assignee of the cases above.
-    ``test_delegation_no_egress.py`` covers the refusal."""
+    ``test_delegation_no_egress.py`` covers the refusal. A tool of
+    ``ACT_AT_ONCE`` runs held, so it shows the card these tests count."""
     from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
 
+    callspec = getattr(request.node, "callspec", None)
+    tool = (callspec.params.get("tool") if callspec else None) or ""
     with artifact_context_scope():
-        bind_artifact_context(agent_name="projects-assistant", no_egress=False)
+        bind_artifact_context(agent_name="projects-assistant", no_egress=tool in ACT_AT_ONCE)
         yield
 
 
@@ -1032,6 +1045,7 @@ def test_every_class_b_tool_awaits_the_one_confirm_door() -> None:
     tree = ast.parse(source)
     assert source.count("def _confirm(") == 1, "a second card door"
     delegates = {"edit_task": "update_task", "edit_project": "update_project"}
+    delegates.update({t: "_ask_reminder" for t in ACT_AT_ONCE})
     # The one-card batches (2026-10-18) share `_ask_batch`, which is itself
     # a caller of `_confirm`, so it is no second door.
     shared = next(
@@ -1052,6 +1066,23 @@ def test_every_class_b_tool_awaits_the_one_confirm_door() -> None:
         assert "_confirm" in awaited or delegates.get(fn.name) in awaited, (
             f"{fn.name} never awaits _confirm"
         )
+    # WS-66 RX-2: the five reminder writes reach `_confirm` through the ONE
+    # small reader `_ask_reminder`, which acts at once only in a run that may
+    # send. Nothing else may use it, and it must keep the card for a held run.
+    ask = next(
+        fn for fn in ast.walk(tree)
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "_ask_reminder"
+    )
+    assert "_confirm" in {getattr(n.func, "id", "") for n in ast.walk(ask)
+                          if isinstance(n, ast.Call)}
+    users = {
+        fn.name for fn in ast.walk(tree)
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name != "_ask_reminder"
+        and "_ask_reminder" in {getattr(n.func, "id", "") for n in ast.walk(fn)
+                                if isinstance(n, ast.Call)}
+    }
+    assert users == ACT_AT_ONCE, f"act-at-once reminder tools changed: {users ^ ACT_AT_ONCE}"
+    assert not (users & _class_c_built()), "a class C tool must always show its card"
 
 
 # ── 4 and 5. The wire, and the manifest ─────────────────────────────────────
