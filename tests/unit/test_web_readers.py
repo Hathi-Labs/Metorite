@@ -496,6 +496,15 @@ async def test_a_date_that_the_page_only_mentions_gives_no_line(monkeypatch, nam
     assert not any(line.startswith("Date:") for line in inside), inside[:4]
 
 
+@pytest.mark.parametrize("name", ["a copyright class", "a copyright line", "founded in"])
+def test_the_search_of_the_prose_stays_off(monkeypatch, name: str) -> None:
+    """Two nets stop a guess, and each one must hold alone. Here the check of
+    the stated date is out, so only ``_DATE_PARAMS`` stops the year."""
+    monkeypatch.setattr(web_reader_worker, "_stated", lambda _date, _html: True)
+    page = web_reader_worker._extract_markdown(_GUESSES[name])
+    assert page is not None and page["date"] == "", page
+
+
 @pytest.mark.parametrize("name", sorted(_STATED))
 async def test_a_date_that_the_page_states_gives_its_line(monkeypatch, name: str) -> None:
     page, date = _STATED[name]
@@ -748,7 +757,7 @@ def _loop_stop(gap: float, spent: list[float]) -> float:
 
     ``asyncio`` calls ``Popen`` on the event loop, and no other part of a read
     holds the loop. On Linux, where the gateway runs, the call takes about
-    2 ms, so the whole gap counts. On Windows ``CreateProcess`` took from 7 ms
+    1 ms, so the whole gap counts. On Windows ``CreateProcess`` took from 7 ms
     to 1.2 s on a loaded dev PC, so that time comes out. A stop after the
     spawn, as from a regex that holds the GIL, stays in on each system."""
     return gap - sum(spent) if sys.platform == "win32" else gap

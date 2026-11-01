@@ -295,8 +295,9 @@ _DECODE_STEP = 64 * 1024
 #: protect the event loop. It bounds the work of one child.
 MAX_LOCAL_HTML_BYTES = 192 * 1024
 #: Seconds that one reader child lives. Then the parent kills it, and the
-#: strip reads. One read costs about 1.3 s on the dev PC, nearly all of it the
-#: start of Python and the import of Trafilatura (measured on 2026-11-02).
+#: strip reads. One read costs about 0.25 s on Linux and 1.2 s on the dev PC,
+#: nearly all of it the start of Python and the import of Trafilatura
+#: (measured on 2026-11-02).
 READER_TIMEOUT_S = 8.0
 #: The reader children that live at one time in the process, and the children
 #: of one org. A child runs on one thread at a low priority. So four children
