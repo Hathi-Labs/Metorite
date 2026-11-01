@@ -563,12 +563,13 @@ def test_a_held_chat_at_the_cap_sets_the_reminder_in_that_turn(store, monkeypatc
 
 
 def test_a_model_load_at_the_cap_works_in_a_real_run(store, monkeypatch) -> None:
-    """The words load no pack, so the model asks. Before this slice the run held
-    no ``load_skill_tools`` at 3 packs. Mutation: keep ``pool = ()`` at the cap
-    -> the first request has no load tool -> red."""
+    """The words load no pack, so the model asks. Three sticky packs that fit
+    the real base stay in the first request. Before this slice the run held no
+    ``load_skill_tools`` at 3 packs. Mutation: keep ``pool = ()`` at the cap ->
+    the first request has no load tool -> red."""
     _flag(monkeypatch, True)
     _projects_real(monkeypatch)
-    _seed("email", "email-setup", "crm-records")
+    _seed("crm-records", "projects-bulk", "projects")
     model = ScriptedModel([
         tool_turn(tp.LOAD_TOOL, json.dumps({"pack": REMINDERS}), call_id="c-load"),
         text_turn("Done."),
@@ -577,5 +578,7 @@ def test_a_model_load_at_the_cap_works_in_a_real_run(store, monkeypatch) -> None
     assert [e.get("type") for e in events][-1] == "RUN_FINISHED", events
     first, second = _tool_names(model.bodies[0]), _tool_names(model.bodies[1])
     assert first[-1] == tp.LOAD_TOOL and "set_reminder" not in first
-    assert "set_reminder" in second and "read_email" in first and "read_email" not in second
-    assert "To make room" in _tool_result(model.bodies[1], "c-load")
+    assert "search_crm" in first, "non-vacuity: the run held three packs"
+    assert "set_reminder" in second and "search_crm" not in second
+    assert "find_tasks" in second, "only the oldest sticky pack left"
+    assert "To make room, the CRM records tools left" in _tool_result(model.bodies[1], "c-load")
