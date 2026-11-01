@@ -52,7 +52,8 @@ describe("Enter asks, unless the member chose a result", () => {
   });
 
   it("Enter on an empty field opens the assistant", () => {
-    expect(field).toMatch(/if \(!words\) \{\s*openAssistant\(\);\s*return;/);
+    // At the foot the bar's box becomes the composer as it opens (`morphAskBox`).
+    expect(field).toMatch(/if \(!words\) \{\s*toChat\(\(\) => openAssistant\(\)\);\s*return;/);
   });
 
   it("the results carry no Ask row of the engine: the field's own ask row leads them", () => {
