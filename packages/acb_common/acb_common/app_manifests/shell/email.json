@@ -1,0 +1,36 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "email",
+  "contributes": {
+    "jobs": [
+      {
+        "id": "compose",
+        "label": "Write an email",
+        "position": 20,
+        "words": [
+          "email",
+          "mail",
+          "compose",
+          "send",
+          "message",
+          "write"
+        ],
+        "icon": "PenSquare",
+        "app": "/email",
+        "href": "/email?do=compose",
+        "meaning": "write, send or reply to an email",
+        "fields": {
+          "to": "who the email goes to: a name or an email address",
+          "subject": "a short subject line for the email"
+        },
+        "feature": "email"
+      }
+    ],
+    "nav": [
+      {
+        "href": "/email"
+      }
+    ]
+  }
+}

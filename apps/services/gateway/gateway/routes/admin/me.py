@@ -20,6 +20,7 @@ from typing import Any, Literal
 from acb_auth import UserContext, get_current_user
 from acb_auth.permissions import CAPABILITIES
 from acb_common import get_logger
+from acb_common.app_manifests.shell_manifest import load_vocabulary
 from fastapi import APIRouter, Body, Depends, HTTPException
 from gateway.routes.admin._common import _tenant_session, get_org_id
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -251,33 +252,23 @@ async def get_me(user: UserContext = Depends(get_current_user)) -> dict[str, Any
 #
 # What the gateway checks is the VOCABULARY, not the content. `presets.ts`
 # holds what each preset arranges, and the role's default is the client's to
-# apply (`presetForRole`). So one rule lives in one place. These sets are
-# mirrors, and `tests/unit/test_auth_me_shell.py::TestOneVocabulary` fails when
-# a mirror drifts from the workbench.
+# apply (`presetForRole`). So one rule lives in one place. These sets come from
+# the shell manifests, and `tests/unit/test_auth_me_shell.py::TestOneVocabulary`
+# fails when the workbench drifts from them.
 
-#: The eight presets of §8.1, by id. The content is in `presets.ts`.
-SHELL_PRESETS: frozenset[str] = frozenset({
-    "founder", "sales-manager", "marketing-lead", "finance-manager",
-    "operations-manager", "engineer", "accounts-assistant", "new-hire",
-})
+#: The names come from the shell manifests (`load_vocabulary`, WS-PKG PKG-2).
+#: The eight presets of §8.1 are by id, and the content is in `presets.ts`.
+#: The cards are the My Day cards a preset may order. Team pulse and Out today
+#: wait on NS-5, and a key for a card that is not built draws nothing.
+#: The panes are every `href` that `src/lib/nav.ts` declares. A star
+#: (``pins``) and a ``known`` entry each name one of these. A preview pane
+#: (CRM) may be stored, and it draws when it goes live.
+_VOCABULARY = load_vocabulary()
+SHELL_PRESETS: frozenset[str] = frozenset(_VOCABULARY.presets)
+SHELL_CARDS: frozenset[str] = frozenset(_VOCABULARY.cards)
+SHELL_PANES: frozenset[str] = frozenset(_VOCABULARY.panes)
 
-#: The My Day cards a preset may order. Team pulse and Out today wait on NS-5,
-#: and a key for a card that is not built draws nothing.
-SHELL_CARDS: frozenset[str] = frozenset({
-    "needs", "today", "next", "team-pulse", "out-today",
-})
-
-#: Every pane `src/lib/nav.ts` declares by a literal `href`. A star (``pins``)
-#: and a ``known`` entry each name one of these. A preview pane (CRM) may be stored, and it draws when it goes live.
-SHELL_PANES: frozenset[str] = frozenset({
-    "/tasks", "/calendar", "/people/me", "/dashboard", "/email", "/whatsapp",
-    "/notes", "/memory", "/artifacts", "/projects", "/crm", "/people", "/chat",
-    "/workflows", "/build/apps", "/build/agents", "/approvals",
-    "/settings/organization", "/settings/appearance", "/agents",
-    "/integrations", "/observability", "/knowledge",
-})
-
-#: Caps on each list. There are 23 panes, 5 cards and 11 jobs today.
+#: Caps on each list. There are 23 panes, 5 cards and 23 jobs today.
 MAX_PINS = 24
 MAX_CARDS = 8
 MAX_JOBS = 16

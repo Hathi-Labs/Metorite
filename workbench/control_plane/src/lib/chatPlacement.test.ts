@@ -177,6 +177,10 @@ describe("the owner's turn (2026-10-08)", () => {
 });
 
 describe("a picker, a form and a button are asks", () => {
+  it("a card with only a typed-action button has a control", () => {
+    expect(genUiPlacement({ type: "card", children: [{ type: "button", props: { label: "Go", action: { id: "task.complete" } } }] })).toBe("ask");
+  });
+
   it("reads the spec, never the tool name", () => {
     expect(genUiPlacement(OWNER_PICKER)).toBe("ask");
     expect(genUiPlacement({ type: "template", props: { name: "formCard", data: {} } })).toBe("ask");

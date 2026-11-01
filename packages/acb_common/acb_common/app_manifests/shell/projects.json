@@ -1,0 +1,60 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "projects",
+  "contributes": {
+    "jobs": [
+      {
+        "id": "capture",
+        "label": "New task",
+        "position": 10,
+        "words": [
+          "task",
+          "todo",
+          "to-do",
+          "capture",
+          "add",
+          "remind",
+          "reminder",
+          "note"
+        ],
+        "icon": "CirclePlus",
+        "app": "/projects",
+        "href": "/projects?do=capture",
+        "meaning": "add a task, a to-do or a reminder for themselves",
+        "fields": {
+          "title": "the task itself, in the member's own words, without 'remind me to'"
+        },
+        "feature": "projects",
+        "fallback": {
+          "feature": "tasks",
+          "href": "/tasks?do=capture"
+        },
+        "note": "The owning pane is Projects since the OP-4 flip (2026-10-25): My Tasks left the nav, and its inbox is the My work section of Projects. WS-64: a member who lacks feature:projects but holds feature:tasks gets the job at /tasks?do=capture (the fallback)."
+      },
+      {
+        "id": "new-project",
+        "label": "New space",
+        "position": 40,
+        "words": [
+          "space",
+          "project",
+          "workspace",
+          "department",
+          "board"
+        ],
+        "icon": "FolderPlus",
+        "app": "/projects",
+        "href": "/projects?do=new-project",
+        "meaning": "start a new space, project or department board in Projects",
+        "feature": "projects",
+        "note": "A root node in Projects is a SPACE (the tree grammar of migration 193), so the label names what opens: the New space row in the tree."
+      }
+    ],
+    "nav": [
+      {
+        "href": "/projects"
+      }
+    ]
+  }
+}

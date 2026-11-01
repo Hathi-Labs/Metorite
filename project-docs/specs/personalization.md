@@ -1621,7 +1621,8 @@ D-PZ-20, and a check of `origin/main` at merge confirms them (R1).
 
 ## 15. Recent chats and open loops (ACCEPTED, 2026-10-30)
 
-**Status: ACCEPTED, 2026-10-30 (D142). Nothing is built.** Verified
+**Status: ACCEPTED, 2026-10-30 (D142). PZ-33a is BUILT 2026-10-31, dark
+(§15.9, "As built, PZ-33a"). The other slices are not built.** Verified
 against code on 2026-10-31, at `origin/main` `ce57cf0c2`. The Metorite epic
 is task 1129, "Recent chats and open loops". Task 1130 is this section. The
 spec audit of 2026-10-31 split PZ-33 into PZ-33a and PZ-33b (§15.9).
@@ -1731,8 +1732,8 @@ model call and the R8 tests of the job. §15.9 holds the acceptance of each.
 
 **Where a summary lives (D-PZ-25).** One nullable JSONB column,
 `chat_session.member_summary`. It takes the next free migration number at
-build time. That is 318 today, because 317 is the newest file. Take the
-number at build, and check it again at merge (R1, `scripts/premerge.sh`).
+build time. It is 319: 318 went to WS-66 RE-9b first, at merge (R1). Take
+the number at build, and check it again at merge (R1, `scripts/premerge.sh`).
 
 The migration is expand only (R6). It uses `ADD COLUMN IF NOT EXISTS`, with
 no default and no backfill. It starts with `SET lock_timeout = '5s';`, as
@@ -2060,13 +2061,22 @@ section shows only when the flag is on for the org.
 **Forget and offboarding (owner call 3).**
 
 - "Forget everything" (`DELETE /auth/me/assistant-profile`,
-  `apps/services/gateway/gateway/routes/admin/assistant_profile.py:926`) sets `member_summary` to NULL on
-  each chat of the member in the bound org.
+  `apps/services/gateway/gateway/routes/admin/assistant_profile.py:926`) calls
+  `assistant_summaries.clear_for_member` for the member in the bound org.
+  It does not write NULL. Each summary loses its text, its follow-ups and
+  its mark. A chat that the member deleted stays `off`, so it does not come
+  back. Each other chat keeps a waterline: `through` names its newest row.
+  So the job writes no summary of an old chat again until a new row comes
+  (review round 1 of PZ-33a, P2-a).
 - A removal does the same. PZ-35 adds a call of
   `assistant_summaries.clear_for_member` to `members.forget_member_profile`
   (`members.py:97`).
 - A purge deletes the member's private chats (`members.py:773-774`), and
-  each summary goes with its chat.
+  each summary goes with its chat. A shared room of the member stays, so
+  the purge calls `clear_for_member` too (PZ-33a, P2-b).
+- A chat that stops being solo loses its summary. The room routes call
+  `assistant_summaries.clear_on_share` after a participant joins and after
+  the visibility changes (PZ-33a, P2-b).
 - The export (`apps/services/gateway/gateway/routes/admin/assistant_profile.py:826`) adds the summaries.
 - The staging copy blanks the column, as it blanks the profile
   (`infra/staging/minimise.sql:124`).
@@ -2186,8 +2196,9 @@ feature off.
   Router on (§15.3). With either off, no summary comes. The flip of
   `JOB_QUEUE` is gate `enforcement-flip` too.
 
-**Who may flip (D-PZ-35).** Each flip on staging, and the production flip
-of PZ-34 and PZ-36, is gate `enforcement-flip`. The production flip of
+**Who may flip (D-PZ-35).** Staging is retired (D144), so no flip of §15
+goes to a staging box. The production flip of PZ-34 and PZ-36 is gate
+`enforcement-flip`. The production flip of
 `ASSISTANT_CHAT_SUMMARY_ORGS` is owner-only (`work_plan.md` §6 D4), and the
 §3a window does not open it. Its job sends chat text to a model and spends
 the org's credits with no request of the member, as `EMAIL_INSIGHTS_ORGS`
@@ -2202,13 +2213,55 @@ Each slice is one PR, and each lands dark. The tier follows
 
 | Slice | What | Done when | Gate · tier |
 |---|---|---|---|
-| **PZ-33a** · task 1131 | The store. Migration 318 at build (R1): nullable JSONB `chat_session.member_summary`, `ADD COLUMN IF NOT EXISTS`, no default, no backfill, and `SET lock_timeout = '5s'` as in migration 220. `gateway/assistant_summaries.py`, the only reader and writer, with the pure answer checks: the 400-character cap, at most 3 follow-ups of 120 characters, the drop of a sensitive line, an address or a long number that the member did not type, and no write for an answer that does not parse. `SOLO_ROOM_SQL` beside `SESSION_VISIBLE_SQL`, and its parity test. `chat_summary_for(org)`. The flag in `settings.py`, in `PLATFORM_ENV_NAMES`, in `ALLOWED_KEYS` with the comment that it spends credits, in `test_acb_staging_flag.py` and in the staging README. The purge test and the private fence | Items 6 to 11 of the PZ-33 list below pass | AGENT-SAFE · **HIGH** (a migration, tenancy) |
-| **PZ-33b** · task 1131 | The job. The seed hook `assistant_summaries.seed(org, now)`, modelled on `gateway/brief/planner.py`. The detached, idempotent kind `assistant.chat_summary`. The model call and the rule of the Router off. The import beside `import gateway.brief.run` in `gateway/main.py`. The R8 tests of the job. The idle rule: 30 minutes after the newest row, no open run, and 2 or more typed rows of the member | Items 1 to 5 of the PZ-33 list below pass | AGENT-SAFE · **HIGH** (money, tenancy). The flip of `ASSISTANT_CHAT_SUMMARY_ORGS` for a real org waits for PZ-35. The production flip is **OWNER-GATE** (§15.8) |
+| **PZ-33a** · task 1131 · **BUILT 2026-10-31, dark** | The store. Migration 319 at the merge (R1, 318 went to RE-9b): nullable JSONB `chat_session.member_summary`, `ADD COLUMN IF NOT EXISTS`, no default, no backfill, and `SET lock_timeout = '5s'` as in migration 220. `gateway/assistant_summaries.py`, the only reader and writer, with the pure answer checks: the 400-character cap, at most 3 follow-ups of 120 characters, the drop of a sensitive line, an address or a long number that the member did not type, and no write for an answer that does not parse. `SOLO_ROOM_SQL` beside `SESSION_VISIBLE_SQL`, and its parity test. `chat_summary_for(org)`. The flag in `settings.py`, in `PLATFORM_ENV_NAMES`, in `ALLOWED_KEYS` with the comment that it spends credits, in `test_acb_staging_flag.py` and in the staging README. The purge test and the private fence | Items 6 and 8 to 11 of the PZ-33 list below pass. Item 7 passes for pastes, tool events, the brief row and sensitive terms, but not for every long-number form (see "Open" under "As built, PZ-33a") | AGENT-SAFE · **HIGH** (a migration, tenancy) |
+| **PZ-33b** · task 1131 | The job. The seed hook `assistant_summaries.seed(org, now)`, modelled on `gateway/brief/planner.py`. The detached, idempotent kind `assistant.chat_summary`. The model call and the rule of the Router off. The import beside `import gateway.brief.run` in `gateway/main.py`. The R8 tests of the job. The idle rule: 30 minutes after the newest row, no open run, and 2 or more typed rows of the member. **First, the strict digit rule of `check_answer`** (see "Open" under "As built, PZ-33a"), with the probes of the PZ-33a reviews as tests | Items 1 to 5 of the PZ-33 list below pass, and item 7 passes for every long-number probe of the PZ-33a reviews | AGENT-SAFE · **HIGH** (money, tenancy). The flip of `ASSISTANT_CHAT_SUMMARY_ORGS` for a real org waits for PZ-35. The production flip is **OWNER-GATE** (§15.8) |
 | **PZ-35** · task 1133 | The switch `apps.chat.summaries`, the three routes, the Settings section, the relays, Forget, removal, export and the staging blank | An R8 test: Delete turns the chat `off`, and the next tick writes nothing. Delete all, Forget everything and a removal clear the member's summaries in one org only. A chat of another member is a 404. The export holds the summaries. A vitest test covers the section and the confirm. The UI gate passes: four captures and a `Visual review:` line | AGENT-SAFE · STANDARD |
 | **PZ-34** · task 1132 | `_prime_member_briefing`, `_member_briefing_block`, the Redis store of the block, `BRIEFING_MAX` and the flag | A unit test: the block shows in a solo web run. It does not show in a shared room, a delegated run, a run with no member, a WhatsApp run or with the flag off. No block above it moves. Two turns of one chat get the same bytes. The block sheds tasks first, then the oldest chat, and stays at 1,500 characters or less. It never holds the current chat. An R8 test: the tasks come from `my_due_tasks`, and a chat or a task of another member never shows | AGENT-SAFE · **HIGH** (it puts the member's other chats into a run) |
 | **PZ-36** · task 1134 | `offer` on `create_personal_task`, the shared offer helper, the card text, the persona line and the flag | A test: an approved card makes one private task in the member's personal project. A decline, a second offer in the chat, a pasted mail, a Continue turn, WhatsApp, the flag off and the pack off each make no task. A refusal before the card draws nothing. A sensitive title asks twice. `test_profile_pz32.py` stays green with the shared helper | AGENT-SAFE · STANDARD (the one card guards the write, and the task is private) |
 | **PZ-22** grows · task 317 | `since` and `superseded_by` (§15.7) | A test: a replace keeps the old fact, the block hides it, and Undo restores it. The cap of 40 superseded facts holds. An edit in Settings stays in place | AGENT-SAFE · STANDARD |
 | **MEM-2** · task 821 | The full-text search of past chats, with the summaries (§15.7). Its design is MEM-2's own | An R8 test: a search finds a summary and a message of the member's own chat. It finds nothing of another member's private chat and nothing of another org | AGENT-SAFE · **HIGH** (a read across chats) |
+
+**As built, PZ-33a (2026-10-31, dark).** Items 6 to 11 below pass. No
+caller reads the flag yet, and `ASSISTANT_CHAT_SUMMARY_ORGS` is empty on
+each box.
+
+- The migration is `infra/postgres/319_chat_session_member_summary.sql`.
+  It was 318 at build. WS-66 RE-9b took 318 on `origin/main` first, so it
+  moved to 319 at the merge (R1).
+- `apps/services/gateway/gateway/assistant_summaries.py` holds the store:
+  `read`, `mark`, `write_marked` (the write with the mark in its WHERE),
+  `turn_off` (the Delete, `off`), `clear_for_member` and `clear_on_share`.
+  It has no plain write. Each caller checks the member, because a
+  statement finds the chat by its id and RLS binds only the tenant.
+- Review round 1 (2026-10-31): the stored text as one string must pass
+  the line rule, so a number or an address in words that crosses the end
+  of a line writes nothing. A sensitive line needs each sensitive term in
+  the typed words (`assistant_profile.sensitive_terms`). A line with a
+  form that `grounded` cannot match drops
+  (`assistant_profile.confirm_form_without_token`). A card answer is not
+  a typed row.
+- The same module holds the pure checks. `member_texts`, `member_words` and
+  `prompt_rows` choose what may reach the model. `check_answer` applies the
+  caps and the drops. The `Answer` type refuses a value over the caps.
+- `rooms.SOLO_ROOM_SQL` sits beside `SESSION_VISIBLE_SQL`.
+  `assistant_profile.chat_summary_for` sits beside `card_writes_for`.
+- Fences: `test_chat_summary.py`, `test_chat_summary_private.py` and
+  `test_chat_summary_r8.py`. The first two are in the `safety` list of
+  `tests/fences.json`. Fence (c) of the private test is an allow list of
+  the importers of the module: today the room routes and the purge.
+- ⚠️ **Open, blocks PZ-33b and the flag.** After three review rounds, the
+  number rule of `check_answer` still stores a long number that the member
+  did not type in rare forms, for example `98450!!!!12345` or
+  `98450 , , 12345`. The wider rule of round 3 also drops a time range or a
+  lakh price that the member did not type. Each fix of the punctuation
+  between digit groups found a new form, so round 3 is the last patch of
+  that kind. Today no code reaches `check_answer`: fence (c) lets only the
+  room routes and the purge import the module, and only for the two clear
+  functions. **PZ-33b replaces the rule before any caller:** a line drops
+  when its digits, read across any characters that are not letters, form a
+  run of 6 or more that the member did not type. A time range or a price
+  that the member did not type then drops too. The agent accepts that cost
+  for a private summary of two or three lines, and the owner may overrule it.
 
 **The PZ-33 list.** Each item names its slice and its test file. The R8
 file sets `pytestmark = _DB_GATE`, as `tests/unit/test_job_queue.py:119`

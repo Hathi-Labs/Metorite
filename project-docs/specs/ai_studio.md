@@ -325,9 +325,9 @@ The renderer is `components/GenerativeUINode.tsx`, grown, not a second one. Toda
 1. **Data binding.** A node may carry `source`. The renderer resolves it through `useCachedResource` and the catalog door (B2), and passes the rows to the block.
 2. **Page state.** The selected record, the filters and the tab live in the URL, so a link opens the same view.
 3. **Typed actions.** A button names a catalog action, not a sentence. In chat, a typed action still reaches the member's card.
-4. **Lockstep.** `GENUI_NODE_TYPES` in `write_artifact.py` and the front end stay one list, under `test_genui_catalog_lockstep.py`.
+4. **Lockstep.** `GENUI_NODE_TYPES` in `write_artifact.py` and the front end stay one list, under `test_genui_catalog_lockstep.py`. `source` and the typed action are props of existing nodes, so no set changes. `genui_refusal` refuses `source` in chat.
 
-**Single owner.** `generative_ui_2.md` owns the catalog and the HITL rules of chat UI. D1 extends it and changes none of its rules. D1 takes its Phase 3 item "typed TEMPLATE_CATALOG generated into the backend", and the same PR updates that spec's §3 table and §6 phase list.
+**Single owner.** `generative_ui_2.md` owns the catalog and the HITL rules of chat UI. D1 extends it and changes none of its rules. D1 closes its Phase 3 item "typed TEMPLATE_CATALOG" as test-held, not generated, and the same PR updates that spec's §3 and §6.
 
 ### 5.3 Layout
 
@@ -540,7 +540,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **D1** | Data binding, page state and typed actions in `GenerativeUINode` (§5.2) | A node with `source` renders rows from a mocked door, with the default loading, empty and error states. A button sends its action id. The lockstep test passes | STD | AGENT-SAFE |
+| **D1** | Data binding, page state and typed actions in `GenerativeUINode` (§5.2) | A node with `source` renders rows from a mocked door, with the default loading, empty and error states. A button sends its action id. The lockstep test passes. **Built 2026-11-01 (STU-D1):** `table` and `dataGrid` bind, through `lib/studio/dataDoor.tsx`. **Narrowed:** page state is a pure encode and decode helper (`lib/studio/pageState.ts`), and the URL wiring waits for D11, since no Studio page mounts a bound node yet. Other blocks bind in D2 to D5 | STD | AGENT-SAFE |
 | **D2** | The Table, Form and Detail blocks, from the §3.1 field types | Each field type renders and validates in the form. Inline edit in the table calls the update action. Visual review in four contexts | STD | AGENT-SAFE |
 | **D3** | The Board block on `components/board/` | A drag between columns calls the update action once. A refused update puts the card back | STD | AGENT-SAFE |
 | **D4** | The Chart and Stat blocks on `lib/charts/kinds.mjs`, fed by an aggregate query | Each of the 13 kinds renders from a C2 result | LOW | AGENT-SAFE |
@@ -550,7 +550,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **D8** | The Process flow block: a read-only workflow graph with run state | A running workflow's nodes show their state from the run console stream | STD | AGENT-SAFE |
 | **D9** | The Checklist block: playbook steps, each human step a task | Ticking a step completes its task in the one store | STD | AGENT-SAFE |
 | **D10** | The Map block | Records with a geo field show as pins. Visual review at 390 px | STD | **OWNER-GATE** for a paid tile key (STU-Q8). Otherwise AGENT-SAFE |
-| **D11** | The page layout: grid, tabs, side panel and the phone layout | Each block passes visual review at four widths down to 390 px | STD | AGENT-SAFE |
+| **D11** | The page layout: grid, tabs, side panel and the phone layout. Wire `pageState` to the URL | Each block passes visual review at four widths down to 390 px. A round-trip test shows `pageState` survives a reload through the URL | STD | AGENT-SAFE |
 | **D12** | The manifest conformance fence | A manifest with a colour, a pixel size or an unknown block fails to publish | LOW | AGENT-SAFE |
 
 ### Group E — Workflows in Studio
@@ -591,6 +591,8 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **G7** | The builder on the CA-14 harness profile `app_builder`, for the code block | Needs CA-14 (#1042) | HIGH | AGENT-SAFE. After CA-14 |
 
 ### Group H — The shell
+
+**Since D147, H1 and H2 run on the package-host registry.** `package_host.md` owns the registry, the scopes, the lifetimes and the slots. PKG-8 moves H1 and H2 onto it, and J2, J3 and M1 share its install path (PKG-9 to PKG-12).
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|

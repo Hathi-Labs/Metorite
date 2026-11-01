@@ -1,0 +1,33 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "calendar",
+  "contributes": {
+    "jobs": [
+      {
+        "id": "plan-day",
+        "label": "Plan my day",
+        "position": 30,
+        "words": [
+          "calendar",
+          "schedule",
+          "plan",
+          "day",
+          "timebox",
+          "today",
+          "agenda"
+        ],
+        "icon": "CalendarClock",
+        "app": "/calendar",
+        "href": "/calendar",
+        "meaning": "plan, schedule or look at their day, their calendar or their agenda",
+        "feature": "tasks"
+      }
+    ],
+    "nav": [
+      {
+        "href": "/calendar"
+      }
+    ]
+  }
+}

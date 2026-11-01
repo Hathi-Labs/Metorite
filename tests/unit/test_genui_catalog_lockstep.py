@@ -175,6 +175,24 @@ def test_an_unknown_kind_deep_in_the_tree_is_refused_with_its_path() -> None:
     assert res["error"].startswith("ui.children[1].children[0]:"), res["error"]
 
 
+def test_a_source_prop_is_refused_in_chat_with_its_path() -> None:
+    """STU-D1. ``source`` binds a node to a Studio page's data door. Chat has
+    none, so the tool refuses the key instead of letting it do nothing."""
+    res = _emit(
+        '{"type":"card","children":[{"type":"table",'
+        '"props":{"source":{"action":"tasks.list"},"columns":["a"]}}]}'
+    )
+    assert res["ok"] is False
+    assert res["error"].startswith("ui.children[0].props.source:"), res["error"]
+    assert "Studio page only" in res["error"]
+    plain = '{"type":"table","props":{"columns":["a"],"rows":[["x"]]}}'
+    caption = '{"type":"text","props":{"text":"a","source":"Q3 board deck"}}'
+    assert _wa().genui_refusal(__import__("json").loads(caption)) is None
+    bad = '{"type":"table","props":{"source":{"action":"t.list"}}}'
+    assert _wa().genui_refusal(__import__("json").loads(bad)) is not None
+    assert _wa().genui_refusal(__import__("json").loads(plain)) is None
+
+
 def test_an_unknown_template_is_refused_and_a_wrapped_root_is_read() -> None:
     res = _emit('{"surface":"panel","root":{"type":"template","props":{"name":"ganttChart"}}}')
     assert res["ok"] is False

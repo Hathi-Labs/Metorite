@@ -1,0 +1,32 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "whatsapp",
+  "contributes": {
+    "jobs": [
+      {
+        "id": "whatsapp-reply",
+        "label": "Reply on WhatsApp",
+        "position": 210,
+        "words": [
+          "whatsapp",
+          "wa",
+          "reply",
+          "customer",
+          "customers"
+        ],
+        "icon": "MessageCircle",
+        "app": "/whatsapp",
+        "href": "/whatsapp",
+        "meaning": "answer the customers who wrote to the business on WhatsApp",
+        "feature": "whatsapp",
+        "note": "A link job: the app has no form to open, so the job opens the app where the work waits (owner decision, 2026-10-09). WARNING: not the words chat or message (New chat and Write an email own them)."
+      }
+    ],
+    "nav": [
+      {
+        "href": "/whatsapp"
+      }
+    ]
+  }
+}

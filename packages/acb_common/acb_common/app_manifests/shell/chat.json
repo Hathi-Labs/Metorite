@@ -1,0 +1,32 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "chat",
+  "contributes": {
+    "jobs": [
+      {
+        "id": "new-chat",
+        "label": "New chat",
+        "position": 50,
+        "words": [
+          "chat",
+          "conversation",
+          "assistant",
+          "ai",
+          "talk",
+          "thread"
+        ],
+        "icon": "MessageSquarePlus",
+        "app": "/chat",
+        "href": "/chat?do=new-chat",
+        "meaning": "start a new conversation with the AI assistant",
+        "feature": "chat"
+      }
+    ],
+    "nav": [
+      {
+        "href": "/chat"
+      }
+    ]
+  }
+}

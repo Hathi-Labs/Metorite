@@ -74,8 +74,9 @@ describe("both apps render it", () => {
 
   it("both view headings use Projects' scale", () => {
     // The project name in Projects, the view name in My Tasks.
+    // OP-12b put the name in a truncating <span> beside the lock icon.
     expect(read("app/projects/page.tsx")).toMatch(
-      /<h2 className="min-w-0 truncate text-sm font-medium text-foreground"(?: title=\{title\})?>\s*\{title\}/,
+      /<h2\s+className="[^"]*truncate text-sm font-medium text-foreground"(?:\s+title=\{title\})?\s*>\s*(?:<span className="min-w-0 truncate">)?\{title\}/,
     );
     expect(read("app/tasks/components/ItemList.tsx")).toMatch(
       /<h2 className="whitespace-nowrap text-sm font-medium text-foreground">/,
