@@ -30,9 +30,11 @@ const LITELLM_BASE_URL =
   "http://127.0.0.1:8080/v1";
 const LITELLM_KEY =
   process.env.LITELLM_MASTER_KEY ?? "";
-// The body sends no `thinking` (task 1128). `deepseek/deepseek-chat` does not
-// think, and the gateway's local `/v1` path forwards named fields only, so the
-// field would reach no model.
+// The body sends no `thinking` (task 1128), because `deepseek/deepseek-chat`
+// does not think. Off the Router, the gateway's local `/v1` path forwards named
+// fields only, so the field would reach no model. With the Router on, the
+// gateway forwards the whole body, and the Console filters the field for each
+// step of the chain.
 const COMPACT_MODEL = process.env.SUGGESTION_MODEL ?? "deepseek/deepseek-chat";
 
 /** The answer when no summary came back: nothing is removed. */

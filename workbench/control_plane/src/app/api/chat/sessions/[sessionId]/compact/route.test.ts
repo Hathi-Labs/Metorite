@@ -6,8 +6,9 @@
 // so the agent lost them. A failed call dropped them too. Now both answer 502
 // with `compacted: false` and the messages as sent.
 //
-// The body sends no `thinking`: `deepseek/deepseek-chat` does not think, and
-// the gateway's local `/v1` path forwards named fields only.
+// The body sends no `thinking`, because `deepseek/deepseek-chat` does not
+// think. Off the Router, the gateway's local `/v1` path forwards named fields
+// only. With the Router on, the gateway forwards the whole body.
 //
 // Mutations: put back the `??` fallback, and the blank test fails. Drop the
 // messages in the catch again, and the failure test fails.

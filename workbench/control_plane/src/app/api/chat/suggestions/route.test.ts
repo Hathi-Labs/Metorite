@@ -1,9 +1,11 @@
 // `/api/chat/suggestions` reads three short lines, and a blank reply is none.
 //
-// The body sends no `thinking` (task 1128). `deepseek/deepseek-chat` does not
-// think, and the gateway's local `/v1` path forwards named fields only, so the
-// field would reach no model. If `SUGGESTION_MODEL` ever names a thinking
-// tier, that path must forward `thinking` first (through `params_for_model`).
+// The body sends no `thinking` (task 1128), because `deepseek/deepseek-chat`
+// does not think. Off the Router, the gateway's local `/v1` path forwards named
+// fields only, so the field would reach no model. With the Router on, the
+// gateway forwards the whole body, and the Console filters the field for each
+// step of the chain. If `SUGGESTION_MODEL` ever names a thinking tier, the
+// local path must forward `thinking` first (through `params_for_model`).
 //
 // Mutation: send a `thinking` field again, and the first test fails.
 import { beforeEach, describe, expect, it, vi } from "vitest";
