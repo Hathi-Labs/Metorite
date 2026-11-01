@@ -55,12 +55,22 @@ _PERSON_ADDR = re.compile(r"lower\((\w+)\) = :(email|actor)")
 _PERSON_ADDR_CS = re.compile(r"(?<!lower\()\b(\w+) = :(email|actor)")
 #: ``<col> = CAST(:uid AS uuid)``
 _PERSON_UID = re.compile(r"(\w+) = CAST\(:uid AS uuid\)")
-#: ``visibility = 'private'`` / ``visibility <> 'private'``
-_PERSON_VIS = re.compile(r"visibility (=|<>) 'private'")
+#: ``visibility = 'private'`` / ``visibility <> 'private'``, and the same split
+#: on ``scope_kind`` (``package_install``, WS-PKG PKG-4). The column comes from
+#: the statement, so a clause that drops the split changes the answer.
+_PERSON_VIS = re.compile(r"\b(visibility|scope_kind) (=|<>) 'private'")
 #: ``<col> IS NULL`` / ``<col> IS NOT NULL`` — how the GTD store's LOCAL half
 #: is told from its SYNCED half (`account_id`). Read from the statement like
 #: everything else here, so a clause that drops the filter changes the answer.
 _PERSON_NULL = re.compile(r"(\w+) IS (NOT )?NULL")
+#: ``[NOT] EXISTS (SELECT 1 FROM <t> AS <a> WHERE <a>.<key> = <outer>.<col>
+#: AND lower(<a>.<subject>) <> :email)``: does a row of ``<t>`` for this row
+#: name a person other than the member? ``members._OTHERS_SEE_THE_APP``
+#: (WS-PKG PKG-4) asks it of ``app_grants``. The tables and the columns come
+#: from the statement, so a clause that drops the test changes the answer.
+_PERSON_OTHERS = re.compile(
+    r"(NOT )?EXISTS \(SELECT 1 FROM (\w+) AS (\w+) WHERE \3\.(\w+) = \w+\.(\w+)"
+    r" AND lower\(\3\.(\w+)\) <> :email\)")
 
 
 class _Scalars:
@@ -332,13 +342,22 @@ class _FakeDB:
             raise AssertionError(f"unscoped person clause in fake: {s}")
         vis = _PERSON_VIS.search(s)
         if vis:
-            wants_private = vis.group(1) == "="
+            vis_col, wants_private = vis.group(1), vis.group(2) == "="
             found = [
-                r for r in found if (r.get("visibility", "private") == "private") is wants_private
+                r for r in found if (r.get(vis_col, "private") == "private") is wants_private
             ]
         for nul in _PERSON_NULL.finditer(s):
             col, negated = nul.group(1), bool(nul.group(2))
             found = [r for r in found if (r.get(col) is not None) is negated]
+        for ex in _PERSON_OTHERS.finditer(s):
+            negated, inner = bool(ex.group(1)), self.rows.get(ex.group(2), [])
+            key, col, subject = ex.group(4), ex.group(5), ex.group(6)
+            me = str(p["email"]).lower()
+            found = [
+                r for r in found
+                if any(g.get(key) == r.get(col) and str(g.get(subject, "")).lower() != me
+                       for g in inner) is not negated
+            ]
         return found
 
     def _person_delete(self, table: str, matched: list[dict[str, Any]]) -> None:
