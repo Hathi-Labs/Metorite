@@ -111,6 +111,8 @@ CALL_TIMEOUT_S = 30.0
 #: nothing is stored. ``tests/unit/test_tasks_ai_no_thinking.py`` measured 19
 #: of 20 calls that stopped at the cap. ``routes/email/automation/replyzero.py``
 #: measured 98%. The Router forwards the field (``acb_llm.routed._FORWARDABLE``).
+#: ⚠️ Rank 2 of ``tier-fast`` refuses the field, so a failover to it gives up
+#: ``SummaryFailed``. This module does not change the routing.
 NO_THINKING: dict[str, str] = {"type": "disabled"}
 
 #: The named reasons of a give-up (``docs/job_queue.md`` §5a). The log line
@@ -186,7 +188,7 @@ def _why_not(chat: JobChat | None, through: str, switch: bool, now: datetime) ->
         return "summarised"
     if chat.open_run:
         return "open_run"
-    if chat.newest_ms is None or chat.newest_ms > int((now - IDLE).timestamp() * 1000):
+    if (chat.newest_ms or 0) > int((now - IDLE).timestamp() * 1000):
         return "not_idle"
     if len(member_texts(chat.rows, chat.member)) < TYPED_ROWS_MIN:
         return "few_typed_rows"

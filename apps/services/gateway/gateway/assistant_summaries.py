@@ -537,8 +537,9 @@ def check_answer(raw: Any, words: Any) -> Answer | None:
       fails, a form crosses the end of a line, and the answer gives None.
     * With no text and no follow-up left, the answer gives None.
 
-    It never raises on an answer of the model: a value that the caps of
-    :class:`Answer` refuse gives None.
+    It never raises on an answer of the model. :func:`sentences` cuts the
+    text before these steps, and each kept line holds no sentence end, so the
+    joined text holds as many sentences as lines, and :class:`Answer` takes it.
     """
     data = _parse(raw)
     if data is None:
@@ -568,10 +569,7 @@ def check_answer(raw: Any, words: Any) -> Answer | None:
     text_out = " ".join(kept)
     if not text_out and not follow:
         return None
-    try:
-        return Answer(text=text_out, follow_ups=tuple(follow))
-    except SummaryShapeError:
-        return None
+    return Answer(text=text_out, follow_ups=tuple(follow))
 
 
 # ── The stored value ─────────────────────────────────────────────────────────
