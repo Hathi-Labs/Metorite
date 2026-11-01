@@ -25,7 +25,8 @@
     ],
     "nav": [
       {
-        "href": "/approvals"
+        "href": "/approvals",
+        "feature": "approvals"
       }
     ]
   }

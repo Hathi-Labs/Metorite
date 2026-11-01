@@ -44,7 +44,22 @@
     ],
     "nav": [
       {
-        "href": "/people"
+        "href": "/people",
+        "feature": "people"
+      },
+      {
+        "href": "/people/me"
+      }
+    ],
+    "scope": [
+      {
+        "href": "/people",
+        "source": "people"
+      }
+    ],
+    "always_allowed": [
+      {
+        "href": "/people/access"
       },
       {
         "href": "/people/me"

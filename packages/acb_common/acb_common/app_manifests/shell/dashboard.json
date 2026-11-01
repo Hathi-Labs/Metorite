@@ -5,7 +5,8 @@
   "contributes": {
     "nav": [
       {
-        "href": "/dashboard"
+        "href": "/dashboard",
+        "feature": "dashboard"
       }
     ]
   }
