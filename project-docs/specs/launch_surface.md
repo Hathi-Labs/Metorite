@@ -218,6 +218,8 @@ launch: "live" | "preview"   // src/lib/nav.ts, NavPane
 
 ## 4. Pricing — flat, per user, plus AI credits (D49)
 
+⚠️ **WS-PLN replaces this offer at launch (D152, `seat_plans.md`).** This section stays the live offer until PLN-50 flips. Build no new seat, checkout or signup work against it.
+
 ### 4.1 The shape
 
 **One sellable seat: ₹500 per user per month, and it carries everything that is
