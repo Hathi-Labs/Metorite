@@ -1697,7 +1697,9 @@ describe("disclosure-names-each-data-class-the-ai-and-each-sub-processor", () =>
     // `dispatch.py`: G1 drafts from Gmail, and Outlook sends with no click.
     expect(wordsOf("gmail")).toContain("Metorite saves that email as a draft");
     expect(wordsOf("gmail")).not.toContain("with no further step from you");
-    expect(wordsOf("microsoft")).toContain("sends it from your default mailbox, with no further step from you");
+    expect(wordsOf("microsoft")).toContain(
+      "AI writes that email and Metorite sends it from your default mailbox, with no further step from you",
+    );
   });
 
   it("names the Note Taker setting that stops it, in the words of its screen", () => {
