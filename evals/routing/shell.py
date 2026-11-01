@@ -4,8 +4,8 @@ The browser builds the page context of a turn in
 ``workbench/control_plane/src/lib/shell/assistant.ts`` (``surfaceContext``,
 ``ASSISTANT_PERSONA``), and ``AssistantDock.tsx`` sends
 ``persona + "\\n\\n" + context`` as ``system_context`` to ``orchestrator``.
-This module reads the persona, the pane labels and ``ALSO_SERVES`` from the
-TypeScript files, so the eval sends what the dock sends. It ports
+This module reads the persona and the pane labels from the TypeScript files,
+and ``ALSO_SERVES`` from the shell manifests, so the eval sends what the dock sends. It ports
 ``surfaceContext`` to Python, and :func:`drift` fails when a line of that
 function changes in the TypeScript. Then the port must change too.
 
@@ -102,14 +102,19 @@ def persona() -> str:
 
 @lru_cache(maxsize=1)
 def also_serves() -> dict[str, tuple[str, ...]]:
-    """``ALSO_SERVES``: the other panes whose questions an agent answers."""
-    text = _read(ASSISTANT_TS)
-    block = re.search(r"export const ALSO_SERVES[^=]*=\s*\{(.*?)\};", text, re.S)
-    if block is None:
-        raise ValueError("assistant.ts: ALSO_SERVES moved")
-    out: dict[str, tuple[str, ...]] = {}
-    for m in re.finditer(r'"([^"]+)"\s*:\s*\[([^\]]*)\]', block.group(1)):
-        out[m.group(1)] = tuple(re.findall(r'"([^"]+)"', m.group(2)))
+    """``ALSO_SERVES``: the other panes whose questions an agent answers.
+
+    It reads the shell manifests (PKG-3a), the source of ``gates.generated.ts``.
+    A malformed file raises, so the eval cannot read an empty map in silence.
+    """
+    import sys
+
+    sys.path.insert(0, str(REPO_ROOT / "packages" / "acb_common"))
+    from acb_common.app_manifests.shell_manifest import load_gates
+
+    out = dict(load_gates().also_serves)
+    if not out:
+        raise ValueError("the shell manifests hold no also_serves entry")
     return out
 
 

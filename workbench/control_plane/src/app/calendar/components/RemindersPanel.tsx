@@ -215,14 +215,14 @@ export function RemindersPanel({ rows, total, zone, onNew, fill = false, ...act 
     <aside
       aria-label="Reminders"
       className={[
-        "flex w-64 min-h-0 flex-col border-l border-border bg-card",
+        "flex w-64 min-h-0 flex-col border-l border-border bg-card glass:w-72",
         fill ? "flex-1" : `shrink-0 border-b ${all ? "max-h-[70%]" : "max-h-[50%]"}`,
       ].join(" ")}
     >
       <div className="flex shrink-0 items-center gap-1.5 border-b border-border px-3 py-2">
         <Icon name="Bell" className="h-3.5 w-3.5 text-primary" />
-        <span className="flex-1 text-xs font-semibold text-foreground">Reminders</span>
-        <Button variant="secondary" size="sm" icon="Plus" onClick={onNew}>
+        <span className="min-w-0 flex-1 truncate text-xs font-semibold text-foreground">Reminders</span>
+        <Button variant="secondary" size="sm" icon="Plus" onClick={onNew} className="shrink-0 whitespace-nowrap">
           New reminder
         </Button>
       </div>

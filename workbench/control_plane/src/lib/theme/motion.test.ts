@@ -167,6 +167,7 @@ const RAW_MOTION = /cubic-bezier\(|duration-\[\d/g;
 const RAW_MOTION_EXEMPT: Record<string, string> = {
   "lib/panelMotion.ts": "the script mirror of --panel-easing. panelMotion.test.ts holds it to globals.css",
   "lib/theme/themes.ts": "the data mirror of globals.css. themes.test.ts holds it",
+  "lib/theme/glassTokens.ts": "the sandbox mirror of the glass --motion-easing. glassTokens.test.ts holds it to globals.css",
 };
 
 const RAW_MOTION_DEBT: Record<string, number> = {

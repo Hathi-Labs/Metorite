@@ -5,7 +5,14 @@
   "contributes": {
     "nav": [
       {
-        "href": "/tasks"
+        "href": "/tasks",
+        "feature": "tasks"
+      }
+    ],
+    "scope": [
+      {
+        "href": "/tasks",
+        "source": "tasks"
       }
     ]
   }

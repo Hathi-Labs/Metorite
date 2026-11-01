@@ -32,7 +32,7 @@ describe("the sidebar holds places to work, by team", () => {
       // Knowledge since 2026-10-18 (WS-61 KB-12), when its pane went live.
       ["across", ["/projects", "/crm", "/people", "/knowledge"]],
       ["studio", ["/chat"]],
-      ["admin", ["/approvals", "/settings/organization", "/integrations"]],
+      ["admin", ["/approvals", "/settings/organization", "/settings/appearance", "/integrations"]],
     ]);
   });
 
@@ -55,12 +55,13 @@ describe("the sidebar holds places to work, by team", () => {
     // the AI agents view, so Admin holds it and nothing else.
     expect(shape(shellSidebar(visibleSections(["tasks", "email"], false)))).toEqual([
       ["personal", ["/calendar", "/email"]],
-      ["admin", ["/integrations"]],
+      ["admin", ["/settings/appearance", "/integrations"]],
     ]);
   });
 
   it("for a member who holds nothing: Integrations only (D-EA-9)", () => {
-    expect(shape(shellSidebar(visibleSections([], false)))).toEqual([["admin", ["/integrations"]]]);
+    // Appearance is an ungated app since 2026-11-01 (owner).
+    expect(shape(shellSidebar(visibleSections([], false)))).toEqual([["admin", ["/settings/appearance", "/integrations"]]]);
   });
 
   it("for an unresolved viewer: nothing, never everything (§8.1)", () => {
@@ -279,13 +280,13 @@ describe("All apps lists every app the member holds, never a preference", () => 
       // Knowledge since 2026-10-18 (WS-61 KB-12), when its pane went live.
       ["across", ["/projects", "/crm", "/people", "/knowledge"]],
       ["studio", ["/chat"]],
-      ["admin", ["/approvals", "/settings/organization", "/integrations"]],
+      ["admin", ["/approvals", "/settings/organization", "/settings/appearance", "/integrations"]],
     ]);
   });
 
   it("for a member who holds nothing: Integrations only (D-EA-9)", () => {
     const groups = launcherGroups(visibleSections([], false));
-    expect(groups.flatMap((g) => g.items.map((p) => p.href))).toEqual(["/integrations"]);
+    expect(groups.flatMap((g) => g.items.map((p) => p.href))).toEqual(["/settings/appearance", "/integrations"]);
   });
 
   it("gives every app it shows a purpose to print", () => {

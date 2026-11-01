@@ -29,7 +29,20 @@
     ],
     "nav": [
       {
-        "href": "/email"
+        "href": "/email",
+        "feature": "email"
+      }
+    ],
+    "scope": [
+      {
+        "href": "/email",
+        "source": "email"
+      }
+    ],
+    "gates": [
+      {
+        "href": "/inbox",
+        "feature": "email"
       }
     ]
   }
