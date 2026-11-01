@@ -722,3 +722,34 @@ def test_the_object_caps_of_c1_hold():
     d["objects"] = [{"name": f"o{i}"} for i in range(studio_fields.MAX_OBJECTS_PER_PACKAGE + 1)]
     d.update(actions=[], views=[], workflows=[], skill=None, shell=None)
     one(d, "$.objects", contains=f"at most {studio_fields.MAX_OBJECTS_PER_PACKAGE} objects")
+
+
+def test_a_package_with_more_hot_fields_than_an_org_holds_is_refused():
+    """C1 fix round 1: an org holds 24 hot fields in all, so a package with 28
+    installs on no org. Each object holds 7, below the cap of an object."""
+    from acb_common import studio_fields
+
+    d = copy.deepcopy(EXAMPLE)
+    d.update(actions=[], views=[], workflows=[], skill=None, shell=None)
+    d["objects"] = [
+        {"name": f"o{i}", "fields": [{"key": f"n{j}", "type": "number", "hot": True}
+                                     for j in range(7)]}
+        for i in range(4)
+    ]
+    one(d, "$.objects", contains=f"at most {studio_fields.MAX_HOT_PER_ORG} hot fields")
+    d["objects"] = d["objects"][:3]  # 21 hot fields
+    assert validate_manifest(d) == []
+
+
+def test_an_object_label_holds_at_most_the_store_cap():
+    from acb_common import studio_fields
+
+    cap = studio_fields.MAX_LABEL_CHARS
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["label"] = "v" * cap
+    assert validate_manifest(d) == []
+    d["objects"][0]["label"] = "v" * (cap + 1)
+    one(d, "$.objects[0].label", contains=str(cap))
+    schema = Manifest.model_json_schema()
+    label = schema["$defs"]["ObjectDef"]["properties"]["label"]
+    assert {"maxLength": cap, "type": "string"} in label["anyOf"]

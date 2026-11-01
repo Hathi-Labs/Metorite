@@ -176,6 +176,7 @@
         "label": {
           "anyOf": [
             {
+              "maxLength": 120,
               "type": "string"
             },
             {

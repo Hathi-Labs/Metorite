@@ -31,6 +31,8 @@ from acb_common.studio_fields import (
     FIELD_TYPES,
     MAX_FIELDS_PER_OBJECT,
     MAX_HOT_PER_OBJECT,
+    MAX_HOT_PER_ORG,
+    MAX_LABEL_CHARS,
     MAX_OBJECTS_PER_PACKAGE,
     NAME_PATTERN,
     validate_field_spec,
@@ -123,7 +125,8 @@ class FieldDef(_Strict):
 
 class ObjectDef(_Strict):
     name: str = Field(pattern=rf"^{_NAME}$")
-    label: str | None = None
+    #: The CHECK `studio_objects_label` of C1 holds the same cap.
+    label: str | None = Field(default=None, max_length=MAX_LABEL_CHARS)
     fields: list[FieldDef] = Field(default_factory=list)
 
 
@@ -502,6 +505,10 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
     that the object store runs too. This adds the JSON path and the caps."""
     if len(m.objects) > MAX_OBJECTS_PER_PACKAGE:
         out.append(_err("$.objects", f"A package holds at most {MAX_OBJECTS_PER_PACKAGE} objects."))
+    # An org holds this many hot fields in all, so a package with more installs nowhere.
+    if sum(f.hot for o in m.objects for f in o.fields) > MAX_HOT_PER_ORG:
+        out.append(_err(
+            "$.objects", f"A package holds at most {MAX_HOT_PER_ORG} hot fields, the budget of an org."))
     for oi, o in enumerate(m.objects):
         base = f"$.objects[{oi}].fields"
         _dupes([f.key for f in o.fields], base, "field key", out)

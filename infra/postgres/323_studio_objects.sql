@@ -31,10 +31,11 @@
 -- `generated/01_add_columns.sql` declares `apps.organization_id`, and the
 -- ladder never replays `generated/` (H-104). So a fresh ladder database has
 -- no column for the key, and the block adds it, as 209 and 223 do. Production
--- has the column, and ADD COLUMN IF NOT EXISTS skips the whole clause there.
--- ADD CONSTRAINT builds the index under ACCESS EXCLUSIVE, so the file sets
--- lock_timeout first. The table is small, and the runner tries the whole
--- file again on a lock timeout.
+-- has the column. There, the IF NOT EXISTS guard skips the change, but the
+-- ALTER TABLE still takes the ACCESS EXCLUSIVE lock of `apps` first. ADD
+-- CONSTRAINT builds the index under the same lock. So the file sets
+-- lock_timeout first, and the timeout covers both statements. The table is
+-- small, and the runner tries the whole file again on a lock timeout.
 --
 -- Tenant-scoped (R5): each new table has `organization_id` with ENABLE and
 -- FORCE row level security and one policy with USING and WITH CHECK, in the

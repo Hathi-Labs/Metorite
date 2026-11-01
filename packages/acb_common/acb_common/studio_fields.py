@@ -191,9 +191,18 @@ def _type_list() -> str:
     return f"{', '.join(FIELD_TYPES[:-1])} or {FIELD_TYPES[-1]}"
 
 
+_SELECT_TYPES = ("select", "multiSelect")
+
+
+def _no_options(kind: str, options: Any) -> bool:
+    """A type that is not a select takes no options. An empty list counts as
+    no options, because a model often writes ``"options": []``."""
+    return kind not in _SELECT_TYPES and (options is None or options == [])
+
+
 def _check_options(kind: str, options: Any, out: list[SpecProblem]) -> None:
-    if kind not in ("select", "multiSelect"):
-        if options is not None:
+    if kind not in _SELECT_TYPES:
+        if not _no_options(kind, options):
             out.append(SpecProblem("options", "Only a select or multiSelect field takes `options`."))
         return
     if not options:
@@ -206,6 +215,7 @@ def _check_options(kind: str, options: Any, out: list[SpecProblem]) -> None:
         out.append(SpecProblem("options", f"A select field holds at most {MAX_OPTIONS} options."))
         return
     seen: set[str] = set()
+    folded: set[str] = set()
     for i, opt in enumerate(options):
         if (not isinstance(opt, str) or not opt.strip() or len(opt) > MAX_OPTION_CHARS
                 or not storable_text(opt)):
@@ -214,8 +224,13 @@ def _check_options(kind: str, options: Any, out: list[SpecProblem]) -> None:
                 f"Each option is text of 1 to {MAX_OPTION_CHARS} characters, with no NUL."))
         elif opt in seen:
             out.append(SpecProblem(f"options[{i}]", "This option is listed twice. Each must be unique."))
+        elif opt.casefold() in folded:
+            # "Open" and "open" look the same to a member, who cannot pick one.
+            out.append(SpecProblem(
+                f"options[{i}]", "This option differs from another only by case. Make it differ."))
         else:
             seen.add(opt)
+            folded.add(opt.casefold())
 
 
 def _check_to(kind: str, to: Any, objects: Collection[str] | None,
@@ -245,11 +260,26 @@ def _check_flags(kind: str, spec: Mapping[str, Any], out: list[SpecProblem]) -> 
         out.append(SpecProblem(
             "many", f"A {kind} field takes no `many`, because it holds one value or one list."))
     if spec.get("hot") is True:
-        if kind not in HOT_TYPES:
-            out.append(SpecProblem(
-                "hot", f"This field type cannot be hot. Use {', '.join(HOT_TYPES)}.", kind))
-        elif many:
-            out.append(SpecProblem("hot", "A field with `many` cannot be hot."))
+        problem = _hot_problem(kind, many)
+        if problem is not None:
+            out.append(problem)
+
+
+def _hot_problem(kind: str, many: bool) -> SpecProblem | None:
+    """The one rule of a hot field: a type of :data:`HOT_TYPES`, and no ``many``."""
+    if kind not in HOT_TYPES:
+        return SpecProblem("hot", f"This field type cannot be hot. Use {', '.join(HOT_TYPES)}.", kind)
+    if many:
+        return SpecProblem("hot", "A field with `many` cannot be hot.")
+    return None
+
+
+def check_can_be_hot(field: FieldSpec) -> None:
+    """Raise :class:`FieldError` when *field* cannot turn hot. The store calls it
+    when a stored field turns hot, so no other rule of the spec runs again."""
+    problem = _hot_problem(field.type, field.many)
+    if problem is not None:
+        raise FieldError(field.key, f"Field `{field.key}` (`hot`): {problem.message}")
 
 
 def validate_field_spec(spec: Mapping[str, Any], *,
@@ -301,13 +331,26 @@ def parse_field_spec(spec: Mapping[str, Any], *,
     return FieldSpec(
         key=spec["key"], type=spec["type"], label=spec.get("label"),
         required=spec.get("required") is True, many=spec.get("many") is True,
-        options=None if options is None else tuple(options), to=spec.get("to"),
-        hot=spec.get("hot") is True)
+        options=None if _no_options(spec["type"], options) else tuple(options),
+        to=spec.get("to"), hot=spec.get("hot") is True)
 
 
 def stored_field(key: str, kind: str, spec: Mapping[str, Any], hot: bool) -> FieldSpec:
-    """A :class:`FieldSpec` from the columns of one ``studio_object_fields`` row."""
-    return parse_field_spec({**dict(spec), "key": key, "type": kind, "hot": hot})
+    """A :class:`FieldSpec` from the columns of one ``studio_object_fields`` row.
+
+    ⚠️ It runs no authoring check. A rule that a later slice makes stricter
+    binds a new spec only, so an object stored before that rule still reads and
+    writes. The CHECKs of the table hold the stored facts: the key, the type
+    and the hot type.
+    """
+    options = spec.get("options")
+    return FieldSpec(
+        key=key, type=kind,
+        label=spec.get("label") if isinstance(spec.get("label"), str) else None,
+        required=spec.get("required") is True, many=spec.get("many") is True,
+        options=tuple(options) if isinstance(options, list) else None,
+        to=spec.get("to") if isinstance(spec.get("to"), str) else None,
+        hot=hot is True)
 
 
 # --- the values -------------------------------------------------------------
@@ -445,6 +488,10 @@ def _url(f: FieldSpec, v: Any) -> str:
         raise FieldError(f.key, message) from None
     if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
         raise FieldError(f.key, message)
+    if parts.username is not None or parts.password is not None:
+        # A credential in a record is a secret that every reader of it sees.
+        raise FieldError(
+            f.key, f"Field `{f.key}` takes an address with no user name or password in it.")
     return v
 
 

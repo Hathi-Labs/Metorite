@@ -53,6 +53,14 @@ h. A deleted package or object leaves no record and no hot row.
   ``test_r8_a_hot_field_fills_its_row_on_each_write`` goes red.
 * M6. The migration: drop the CHECK ``studio_records_data_size``.
   ``test_r8_an_oversize_record_is_refused`` goes red.
+* M10. ``objects_store._locked_fields``: drop ``await _lock_org(db)``, the old
+  lock order. ``test_r8_joined_calls_in_two_sessions_never_deadlock`` goes red
+  with "deadlock detected".
+* M11. ``objects_store``: drop the package filter from ``_SHARE_OBJECT_SQL``
+  and from ``_IN_PACKAGE``. ``test_r8_a_record_call_names_its_package_and_its_object``
+  goes red.
+* M12. ``studio_fields.stored_field``: return ``parse_field_spec(...)`` again.
+  ``test_r8_an_older_stored_spec_still_reads_and_writes`` goes red.
 """
 
 from __future__ import annotations
@@ -170,9 +178,9 @@ async def _define(org: str, pkg: str, name: str = "visit",
     return made
 
 
-async def _create(org: str, oid: str, data: dict[str, Any]) -> store.Record:
+async def _create(org: str, obj: store.StudioObject, data: dict[str, Any]) -> store.Record:
     async with tenant_session(org) as db:
-        rec = await store.create_record(db, ANA, oid, data)
+        rec = await store.create_record(db, ANA, obj.id, data, package_id=obj.package_id)
     assert rec is not None
     return rec
 
@@ -340,7 +348,7 @@ def test_r8_a_required_field_cannot_join_an_object_with_records(world) -> None:
         async with tenant_session(world.a) as db:
             assert await store.add_field(db, made.id, {
                 "key": "must", "type": "text", "required": True}) is not None
-        await _create(world.a, made.id, {"must": "x"})
+        await _create(world.a, made, {"must": "x"})
         async with tenant_session(world.a) as db:
             with pytest.raises(store.ObjectStoreError):
                 await store.add_field(db, made.id, {
@@ -406,14 +414,16 @@ def test_r8_org_b_reads_and_writes_nothing_of_org_a(world) -> None:
 
     async def go() -> dict[str, Any]:
         made = await _define(a, world.pkg_a)
-        rec = await _create(a, made.id, _RECORD)
+        rec = await _create(a, made, _RECORD)
         out: dict[str, Any] = {"object": made, "record": rec}
         async with tenant_session(b) as db:
             out["get_object"] = await store.get_object(db, made.id)
-            out["get_record"] = await store.get_record(db, made.id, rec.id)
-            out["create"] = await store.create_record(db, ANA, made.id, _RECORD)
-            out["update"] = await store.update_record(db, ANA, made.id, rec.id, {"hours": 9})
-            out["delete"] = await store.delete_record(db, made.id, rec.id)
+            pkg = made.package_id
+            out["get_record"] = await store.get_record(db, made.id, rec.id, package_id=pkg)
+            out["create"] = await store.create_record(db, ANA, made.id, _RECORD, package_id=pkg)
+            out["update"] = await store.update_record(db, ANA, made.id, rec.id, {"hours": 9},
+                                                      package_id=pkg)
+            out["delete"] = await store.delete_record(db, made.id, rec.id, package_id=pkg)
             out["add_field"] = await store.add_field(db, made.id, {"key": "x", "type": "text"})
             out["hot"] = await store.set_field_hot(db, made.id, "notes", True)
             out["drop"] = await store.drop_object(db, made.id)
@@ -450,8 +460,8 @@ def test_r8_a_foreign_key_cannot_cross_an_org(world, case: str) -> None:
         theirs = await _define(world.b, world.pkg_b, fields=_number_fields(2, 1))
         return {
             "mine": mine, "other": other, "theirs": theirs,
-            "my_rec": await _create(world.a, mine.id, {"n0": 1}),
-            "their_rec": await _create(world.b, theirs.id, {"n0": 1}),
+            "my_rec": await _create(world.a, mine, {"n0": 1}),
+            "their_rec": await _create(world.b, theirs, {"n0": 1}),
         }
 
     s = _go(world, seed)
@@ -491,21 +501,25 @@ def test_r8_a_foreign_key_cannot_cross_an_org(world, case: str) -> None:
 def test_r8_a_bad_value_is_refused_with_its_key_and_writes_nothing(world) -> None:
     async def go() -> dict[str, Any]:
         made = await _define(world.a, world.pkg_a)
-        rec = await _create(world.a, made.id, _RECORD)
+        rec = await _create(world.a, made, _RECORD)
         out: dict[str, Any] = {"made": made, "rec": rec, "errors": []}
         async with tenant_session(world.a) as db:
             for bad in ({"hours": True}, {"status": "cancelled"}, {"engineer": "Ben@x.test"},
                         {"fee": {"minor": 5, "currency": "inr"}}, {"site": {"lat": 91, "lng": 0}},
                         {"colour": "red"}, {"customer": None}):
                 with pytest.raises(FieldError) as refused:
-                    await store.create_record(db, ANA, made.id, {**_RECORD, **bad})
+                    await store.create_record(db, ANA, made.id, {**_RECORD, **bad},
+                                              package_id=made.package_id)
                 out["errors"].append(refused.value.field)
                 with pytest.raises(FieldError):
-                    await store.update_record(db, ANA, made.id, rec.id, bad)
+                    await store.update_record(db, ANA, made.id, rec.id, bad,
+                                              package_id=made.package_id)
             with pytest.raises(RecordError):
-                await store.create_record(db, ANA, made.id, ["not", "an", "object"])
+                await store.create_record(db, ANA, made.id, ["not", "an", "object"],
+                                          package_id=made.package_id)
             # A failed statement would end the transaction, and this read would raise.
-            out["after"] = await store.get_record(db, made.id, rec.id)
+            out["after"] = await store.get_record(db, made.id, rec.id,
+                                                  package_id=made.package_id)
         return out
 
     out = _go(world, go)
@@ -518,11 +532,12 @@ def test_r8_a_bad_value_is_refused_with_its_key_and_writes_nothing(world) -> Non
 def test_r8_a_record_round_trips_and_an_update_merges(world) -> None:
     async def go() -> tuple[store.Record, store.Record | None, store.Record | None]:
         made = await _define(world.a, world.pkg_a)
-        rec = await _create(world.a, made.id, _RECORD)
+        rec = await _create(world.a, made, _RECORD)
         async with tenant_session(world.a) as db:
             changed = await store.update_record(db, f"Ben.{TAG}@STUC1.test", made.id, rec.id,
-                                                {"status": "done", "notes": None})
-            got = await store.get_record(db, made.id, rec.id)
+                                                {"status": "done", "notes": None},
+                                                package_id=made.package_id)
+            got = await store.get_record(db, made.id, rec.id, package_id=made.package_id)
         return rec, changed, got
 
     rec, changed, got = _go(world, go)
@@ -534,18 +549,35 @@ def test_r8_a_record_round_trips_and_an_update_merges(world) -> None:
     assert changed.updated_by == f"ben.{TAG}@stuc1.test" and changed.created_by == ANA
 
 
-def test_r8_a_record_read_names_its_object(world) -> None:
-    """A door of one package cannot read a record of another package by id."""
-    async def go() -> tuple[Any, Any, Any]:
+def test_r8_a_record_call_names_its_package_and_its_object(world) -> None:
+    """A door of package A2 cannot reach a record of package A in the same
+    org. It may pass the true object id of A, but with its own package id the
+    record calls read, write and delete nothing. Another object of the right
+    package reaches nothing either."""
+    async def go() -> dict[str, Any]:
         mine = await _define(world.a, world.pkg_a, fields=_number_fields(1, 0))
         other = await _define(world.a, world.pkg_a2, fields=_number_fields(1, 0))
-        rec = await _create(world.a, mine.id, {"n0": 1})
+        rec = await _create(world.a, mine, {"n0": 1})
+        out: dict[str, Any] = {"rec": rec}
         async with tenant_session(world.a) as db:
-            return (await store.get_record(db, other.id, rec.id),
-                    await store.update_record(db, ANA, other.id, rec.id, {"n0": 2}),
-                    await store.delete_record(db, other.id, rec.id))
+            for name, oid, pid in (("wrong_package", mine.id, world.pkg_a2),
+                                   ("wrong_object", other.id, world.pkg_a2)):
+                out[name] = (
+                    await store.get_record(db, oid, rec.id, package_id=pid),
+                    await store.update_record(db, ANA, oid, rec.id, {"n0": 2}, package_id=pid),
+                    await store.delete_record(db, oid, rec.id, package_id=pid),
+                    await store.create_record(db, ANA, oid, {"n0": 3}, package_id=pid)
+                    if oid == mine.id else None,
+                )
+            out["right"] = await store.get_record(db, mine.id, rec.id, package_id=world.pkg_a)
+        return out
 
-    assert _go(world, go) == (None, None, False)
+    out = _go(world, go)
+    assert out["wrong_package"] == (None, None, False, None)
+    assert out["wrong_object"] == (None, None, False, None)
+    assert out["right"] == out["rec"] and out["right"].data == {"n0": 1}
+    assert _admin_one(world, "SELECT count(*) FROM studio_records WHERE organization_id = "
+                      "CAST(:o AS uuid)", {"o": world.a}) == 1
 
 
 # ── d. The hot rows ────────────────────────────────────────────────────────
@@ -557,14 +589,15 @@ def test_r8_a_hot_field_fills_its_row_on_each_write(world) -> None:
     async def go() -> dict[str, Any]:
         made = await _define(world.a, world.pkg_a, fields=[
             *_VISIT, {"key": "title", "type": "text", "hot": True}])
-        rec = await _create(world.a, made.id, {**_RECORD, "title": long_text})
+        rec = await _create(world.a, made, {**_RECORD, "title": long_text})
         out: dict[str, Any] = {"rec": rec, "created": _hot_rows(world, rec.id)}
         async with tenant_session(world.a) as db:
             await store.update_record(db, ANA, made.id, rec.id,
-                                      {"hours": 4, "status": None, "paid": True})
+                                      {"hours": 4, "status": None, "paid": True},
+                                      package_id=made.package_id)
         out["updated"] = _hot_rows(world, rec.id)
         async with tenant_session(world.a) as db:
-            assert await store.delete_record(db, made.id, rec.id)
+            assert await store.delete_record(db, made.id, rec.id, package_id=made.package_id)
         out["deleted"] = _hot_rows(world, rec.id)
         return out
 
@@ -595,7 +628,7 @@ def test_r8_a_field_that_turns_hot_backfills_and_one_that_turns_cold_empties(
     async def go() -> dict[str, Any]:
         made = await _define(world.a, world.pkg_a, fields=[
             {"key": "label", "type": "text"}, {"key": "n", "type": "number"}])
-        recs = [await _create(world.a, made.id, {"label": f"L{i}", **({"n": i} if i % 2 else {})})
+        recs = [await _create(world.a, made, {"label": f"L{i}", **({"n": i} if i % 2 else {})})
                 for i in range(10)]
         out: dict[str, Any] = {"made": made, "recs": recs}
         async with tenant_session(world.a) as db:
@@ -652,7 +685,7 @@ def test_r8_a_record_write_waits_for_a_field_that_turns_hot(world) -> None:
         async def write() -> tuple[str, float]:
             await locked.wait()
             started = time.monotonic()
-            rec = await _create(world.a, made.id, {"n": 7})
+            rec = await _create(world.a, made, {"n": 7})
             return rec.id, time.monotonic() - started
 
         _, (rid, waited) = await asyncio.gather(turn_hot(), write())
@@ -672,7 +705,8 @@ def test_r8_a_field_that_turns_hot_waits_for_an_open_record_write(world) -> None
 
         async def write() -> str:
             async with tenant_session(world.a) as db:
-                rec = await store.create_record(db, ANA, made.id, {"n": 8})
+                rec = await store.create_record(db, ANA, made.id, {"n": 8},
+                                                package_id=made.package_id)
                 locked.set()
                 await asyncio.sleep(hold)
             assert rec is not None
@@ -836,11 +870,12 @@ def test_r8_an_oversize_record_is_refused(world) -> None:
 
     async def go() -> tuple[store.StudioObject, store.Record]:
         made = await _define(world.a, world.pkg_a, fields=fields)
-        rec = await _create(world.a, made.id, exact)
+        rec = await _create(world.a, made, exact)
         async with tenant_session(world.a) as db:
             with pytest.raises(RecordError):
-                await store.create_record(db, ANA, made.id, over)
-            assert await store.get_record(db, made.id, rec.id) == rec
+                await store.create_record(db, ANA, made.id, over, package_id=made.package_id)
+            assert await store.get_record(db, made.id, rec.id,
+                                          package_id=made.package_id) == rec
         return made, rec
 
     made, rec = _go(world, go)
@@ -909,8 +944,8 @@ def test_r8_a_dropped_object_and_a_deleted_package_leave_nothing(world) -> None:
     async def go() -> tuple[str, str]:
         one = await _define(world.a, world.pkg_a)
         two = await _define(world.a, world.pkg_a2)
-        await _create(world.a, one.id, _RECORD)
-        await _create(world.a, two.id, _RECORD)
+        await _create(world.a, one, _RECORD)
+        await _create(world.a, two, _RECORD)
         async with tenant_session(world.a) as db:
             assert await store.drop_object(db, one.id) is True
             assert await store.drop_object(db, one.id) is False
@@ -924,3 +959,82 @@ def test_r8_a_dropped_object_and_a_deleted_package_leave_nothing(world) -> None:
         c.execute(text("DELETE FROM apps WHERE id = CAST(:p AS uuid)"), {"p": world.pkg_a2})
     assert _counts(world, world.a) == dict.fromkeys(_TABLES, 0)
     assert two
+
+
+# ── Fix round 1: the lock order and an older stored spec ───────────────────
+
+
+def test_r8_joined_calls_in_two_sessions_never_deadlock(world) -> None:
+    """The verifier's interleaving, on two real connections. Session one writes
+    a record and holds its transaction. Session two then adds a field. Session
+    one then adds a field in the same transaction. Every write takes the org
+    lock first, so session two waits for session one, and both complete. With
+    the old order, session one held the object row and session two held the
+    org lock, and Postgres reported a deadlock."""
+    hold = 0.6
+
+    async def go() -> dict[str, Any]:
+        made = await _define(world.a, world.pkg_a, fields=[{"key": "n", "type": "number"}])
+        started = asyncio.Event()
+
+        async def first() -> Any:
+            async with tenant_session(world.a) as db:
+                rec = await store.create_record(db, ANA, made.id, {"n": 1},
+                                                package_id=made.package_id)
+                started.set()
+                await asyncio.sleep(hold)
+                added = await store.add_field(db, made.id, {"key": "one", "type": "text"})
+            return rec, added
+
+        async def second() -> Any:
+            await started.wait()
+            begun = time.monotonic()
+            async with tenant_session(world.a) as db:
+                added = await store.add_field(db, made.id, {"key": "two", "type": "text"})
+            return added, time.monotonic() - begun
+
+        (rec, one), (two, waited) = await asyncio.wait_for(
+            asyncio.gather(first(), second()), timeout=30)
+        async with tenant_session(world.a) as db:
+            after = await store.get_object(db, made.id)
+        return {"rec": rec, "one": one, "two": two, "waited": waited, "after": after}
+
+    out = _go(world, go)
+    assert out["rec"] is not None and out["one"] is not None and out["two"] is not None
+    assert out["waited"] >= 0.3, out["waited"]
+    assert [f.key for f in out["after"].fields] == ["n", "one", "two"]
+
+
+def test_r8_an_older_stored_spec_still_reads_and_writes(world) -> None:
+    """A rule that a later slice adds binds a new spec only. Here the stored
+    options differ only by case, which `parse_field_spec` now refuses. The row
+    goes in by SQL, as an older store wrote it. Reads and writes still work."""
+    made = _go(world, lambda: _define(world.a, world.pkg_a, fields=[
+        {"key": "n", "type": "number"}]))
+    old_spec = {"options": ["Open", "open"], "required": False, "many": False}
+    with pytest.raises(FieldError):
+        sf.parse_field_spec({"key": "state", "type": "select", **old_spec})
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO studio_object_fields (organization_id, object_id, key, type, spec, "
+            "position) VALUES (CAST(:org AS uuid), CAST(:o AS uuid), 'state', 'select', "
+            "CAST(:s AS jsonb), 1)"), {"org": world.a, "o": made.id, "s": json.dumps(old_spec)})
+
+    async def go() -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        async with tenant_session(world.a) as db:
+            out["object"] = await store.get_object(db, made.id)
+            rec = await store.create_record(db, ANA, made.id, {"n": 1, "state": "open"},
+                                            package_id=made.package_id)
+            out["rec"] = rec
+            assert rec is not None
+            out["got"] = await store.get_record(db, made.id, rec.id, package_id=made.package_id)
+            out["deleted"] = await store.delete_record(db, made.id, rec.id,
+                                                       package_id=made.package_id)
+        return out
+
+    out = _go(world, go)
+    [state] = [f for f in out["object"].fields if f.key == "state"]
+    assert state.options == ("Open", "open")
+    assert out["rec"].data == {"n": 1, "state": "open"} and out["got"] == out["rec"]
+    assert out["deleted"] is True

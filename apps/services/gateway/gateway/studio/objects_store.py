@@ -27,16 +27,26 @@ turns hot gets its rows for the records that exist (the backfill), in the
 caller's transaction, and only on an object of at most
 :data:`~acb_common.studio_fields.MAX_HOT_BACKFILL` records.
 
-**The locks, in one order.** A registry change takes the advisory lock of the
-org, then ``FOR UPDATE`` on the object row. A record write takes
-``FOR KEY SHARE`` on the object row, then reads the fields. So a field that
-turns hot waits for each open record write of the object, and a record write
-that starts later reads the field as hot. The trigger
-``studio_object_fields_hot_budget`` takes the advisory lock on the same key.
+**The locks, in one order.** Every write takes the advisory lock of the org
+first, and then the row lock of the object. A registry change takes
+``FOR UPDATE`` on the object row. A record write takes ``FOR KEY SHARE`` on it,
+and then reads the fields. So a field that turns hot waits for each open
+record write of the object, and a record write that starts later reads the
+field as hot. The trigger ``studio_object_fields_hot_budget`` takes the
+advisory lock on the same key. A read takes no lock.
 
-**Reads are by id only.** The list, the filter and the sort are C2. A record
-read names the object too, so a door of one package cannot read a record of
-another package by its id.
+The org lock is exclusive, so the writes of one org run one at a time, and
+each holds the lock until its transaction ends. So two joined transactions
+never wait for each other. A shared lock for record writes fails here. Two
+transactions each hold it, and then each waits for the other before it can
+take the exclusive lock of a registry change. That is a deadlock.
+``test_studio_objects_r8.py`` runs the interleaving that deadlocked before.
+
+**Reads are by id only.** The list, the filter and the sort are C2. Each record
+function names the package, the object and the record. A statement finds the
+record only when the object row of the bound org has that package. So a door
+of one package cannot read or write a record of another package, also with a
+true object id.
 
 ⚠️ The store does not authenticate. It only scopes. The actor of a write is
 an argument that the caller takes from the session, never from request input
@@ -49,7 +59,7 @@ import json
 import re
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -63,6 +73,7 @@ from acb_common.studio_fields import (
     MAX_OBJECTS_PER_PACKAGE,
     NAME_PATTERN,
     FieldSpec,
+    check_can_be_hot,
     hot_value,
     parse_field_spec,
     record_json,
@@ -133,10 +144,19 @@ _GET_OBJECT_SQL = (
 _LOCK_OBJECT_SQL = _GET_OBJECT_SQL + " FOR UPDATE"
 
 #: A record write takes the weakest lock that a registry change waits for.
-#: The foreign key check of the record takes the same lock.
+#: The foreign key check of the record takes the same lock. The object must be
+#: of the package that the caller names.
 _SHARE_OBJECT_SQL = (
     "SELECT id FROM studio_objects "
-    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) FOR KEY SHARE"
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
+    "AND package_id = CAST(:pid AS uuid) FOR KEY SHARE"
+)
+
+#: The object of a record statement is of the package that the caller names.
+_IN_PACKAGE = (
+    "EXISTS (SELECT 1 FROM studio_objects o "
+    f"WHERE o.organization_id = {_BOUND_ORG} AND o.id = CAST(:oid AS uuid) "
+    "AND o.package_id = CAST(:pid AS uuid))"
 )
 
 _FIELDS_SQL = (
@@ -222,7 +242,7 @@ _CREATE_RECORD_SQL = (
 _GET_RECORD_SQL = (
     f"SELECT {_RECORD_COLUMNS} FROM studio_records "
     f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
-    "AND id = CAST(:rid AS uuid)"
+    f"AND id = CAST(:rid AS uuid) AND {_IN_PACKAGE}"
 )
 
 #: The record and its hot rows, in one statement. The DELETE takes the hot
@@ -233,7 +253,7 @@ _UPDATE_RECORD_SQL = (
     "UPDATE studio_records SET data = CAST(:data AS jsonb), updated_by = :actor, "
     "updated_at = now() "
     f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
-    "AND id = CAST(:rid AS uuid) "
+    f"AND id = CAST(:rid AS uuid) AND {_IN_PACKAGE} "
     "RETURNING object_id, id, data, created_by, updated_by, created_at, updated_at), "
     "gone AS ("
     "DELETE FROM studio_record_hot h USING r "
@@ -257,7 +277,7 @@ _UPDATE_RECORD_SQL = (
 _DELETE_RECORD_SQL = (
     "DELETE FROM studio_records "
     f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
-    "AND id = CAST(:rid AS uuid) RETURNING id"
+    f"AND id = CAST(:rid AS uuid) AND {_IN_PACKAGE} RETURNING id"
 )
 
 
@@ -525,8 +545,10 @@ async def set_field_hot(db: Any, object_id: str, key: str, hot: bool) -> bool:
         await db.execute(text(_SET_HOT_SQL), {"oid": oid, "key": key, "hot": False})
         await db.execute(text(_UNHOT_SQL), {"oid": oid, "key": key})
         return True
-    # The type rules of a hot field are the rules of the field spec.
-    field = parse_field_spec({**_spec_of(current), "hot": True})
+    # The hot rule only. The other rules of a spec bind a new spec, never a
+    # stored one (see `studio_fields.stored_field`).
+    check_can_be_hot(current)
+    field = replace(current, hot=True)
     _check_hot_room(sum(f.hot for f in fields), await _org_hot(db))
     count = (await db.execute(text(_RECORD_COUNT_SQL), {
         "oid": oid, "cap": MAX_HOT_BACKFILL + 1})).scalar_one()
@@ -539,10 +561,6 @@ async def set_field_hot(db: Any, object_id: str, key: str, hot: bool) -> bool:
     return True
 
 
-def _spec_of(field: FieldSpec) -> dict[str, Any]:
-    return {**field.stored_spec(), "key": field.key, "type": field.type, "hot": field.hot}
-
-
 async def drop_object(db: Any, object_id: str) -> bool:
     """Delete the object *object_id*, with its fields, records and hot rows (by
     cascade). Answers False when the bound org holds no object of the id."""
@@ -551,19 +569,21 @@ async def drop_object(db: Any, object_id: str) -> bool:
     return (await db.execute(text(_DROP_OBJECT_SQL), {"oid": oid})).first() is not None
 
 
-async def _locked_fields(db: Any, oid: str) -> list[FieldSpec] | None:
-    """Lock the object row for a record write, then read its fields. None when
-    the bound org holds no object of the id."""
-    if (await db.execute(text(_SHARE_OBJECT_SQL), {"oid": oid})).first() is None:
+async def _locked_fields(db: Any, oid: str, pid: str) -> list[FieldSpec] | None:
+    """Take the org lock, then lock the object row for a record write, then
+    read its fields. None when the bound org holds no object of the id in the
+    package *pid*."""
+    await _lock_org(db)
+    if (await db.execute(text(_SHARE_OBJECT_SQL), {"oid": oid, "pid": pid})).first() is None:
         return None
     # A second statement, so its snapshot follows the lock (READ COMMITTED).
     return await _fields(db, oid)
 
 
-async def create_record(db: Any, actor: str, object_id: str,
-                        data: Mapping[str, Any]) -> Record | None:
-    """Create one record of the object *object_id*. Answers None when the
-    bound org holds no object of the id.
+async def create_record(db: Any, actor: str, object_id: str, data: Mapping[str, Any], *,
+                        package_id: str) -> Record | None:
+    """Create one record of the object *object_id* of the package *package_id*.
+    Answers None when the bound org holds no such object in that package.
 
     Each value is checked by ``studio_fields.validate_record``, and a bad one
     raises :class:`FieldError` with its field key. The record and its hot rows
@@ -571,7 +591,7 @@ async def create_record(db: Any, actor: str, object_id: str,
     """
     who = _actor(actor)
     oid = _uuid(object_id, "object_id")
-    fields = await _locked_fields(db, oid)
+    fields = await _locked_fields(db, oid, _uuid(package_id, "package_id"))
     if fields is None:
         return None
     clean = validate_record(fields, data)
@@ -581,17 +601,20 @@ async def create_record(db: Any, actor: str, object_id: str,
     return None if row is None else _record(row)
 
 
-async def get_record(db: Any, object_id: str, record_id: str) -> Record | None:
-    """The record *record_id* of the object *object_id*, or None."""
+async def get_record(db: Any, object_id: str, record_id: str, *,
+                     package_id: str) -> Record | None:
+    """The record *record_id* of the object *object_id* of the package
+    *package_id*, or None."""
     row = (await db.execute(text(_GET_RECORD_SQL), {
-        "oid": _uuid(object_id, "object_id"), "rid": _uuid(record_id, "record_id")})).first()
+        "oid": _uuid(object_id, "object_id"), "rid": _uuid(record_id, "record_id"),
+        "pid": _uuid(package_id, "package_id")})).first()
     return None if row is None else _record(row)
 
 
 async def update_record(db: Any, actor: str, object_id: str, record_id: str,
-                        changes: Mapping[str, Any]) -> Record | None:
-    """Change the record *record_id* of the object *object_id*. Answers None
-    when the bound org holds no such record.
+                        changes: Mapping[str, Any], *, package_id: str) -> Record | None:
+    """Change the record *record_id* of the object *object_id* of the package
+    *package_id*. Answers None when the bound org holds no such record.
 
     *changes* names the fields that change. A ``None`` value clears a field.
     The merged record is checked whole, so a required field stays filled.
@@ -600,30 +623,34 @@ async def update_record(db: Any, actor: str, object_id: str, record_id: str,
     who = _actor(actor)
     oid = _uuid(object_id, "object_id")
     rid = _uuid(record_id, "record_id")
+    pid = _uuid(package_id, "package_id")
     if not isinstance(changes, Mapping):
         raise ObjectStoreError("changes must be an object of field values")
-    fields = await _locked_fields(db, oid)
+    fields = await _locked_fields(db, oid, pid)
     if fields is None:
         return None
     current = (await db.execute(text(_GET_RECORD_SQL + " FOR NO KEY UPDATE"), {
-        "oid": oid, "rid": rid})).first()
+        "oid": oid, "rid": rid, "pid": pid})).first()
     if current is None:
         return None
     merged = {**_json(current[2]), **dict(changes)}
     clean = validate_record(fields, merged)
     row = (await db.execute(text(_UPDATE_RECORD_SQL), {
-        "oid": oid, "rid": rid, "data": record_json(clean), "actor": who,
+        "oid": oid, "rid": rid, "pid": pid, "data": record_json(clean), "actor": who,
         "hot": _hot_rows(fields, clean)})).first()
     return None if row is None else _record(row)
 
 
-async def delete_record(db: Any, object_id: str, record_id: str) -> bool:
-    """Delete the record *record_id* of the object *object_id*, and its hot
-    rows by cascade. Answers False when the bound org holds no such record."""
+async def delete_record(db: Any, object_id: str, record_id: str, *,
+                        package_id: str) -> bool:
+    """Delete the record *record_id* of the object *object_id* of the package
+    *package_id*, and its hot rows by cascade. Answers False when the bound org
+    holds no such record."""
     oid = _uuid(object_id, "object_id")
     rid = _uuid(record_id, "record_id")
-    if await _locked_fields(db, oid) is None:
+    pid = _uuid(package_id, "package_id")
+    if await _locked_fields(db, oid, pid) is None:
         return False
     return (await db.execute(text(_DELETE_RECORD_SQL), {
-        "oid": oid, "rid": rid})).first() is not None
+        "oid": oid, "rid": rid, "pid": pid})).first() is not None
 

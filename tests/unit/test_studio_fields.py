@@ -125,6 +125,8 @@ _BAD: list[tuple[str, str, Any]] = [
     ("url", "space", "https://example.com/a b"),
     ("url", "bad-port", "https://example.com:99999/"),
     ("url", "too-long", "https://example.com/" + "a" * sf.MAX_URL_CHARS),
+    ("url", "user-and-password", "https://ana:s3cret@example.com/a"),
+    ("url", "user", "https://ana@example.com/a"),
     ("email", "no-at", "ana.fracktal.test"),
     ("email", "too-long", "a" * 250 + "@x.test"),
     ("phone", "no-plus", "919876543210"),
@@ -293,6 +295,8 @@ def test_record_json_holds_at_most_the_cap() -> None:
     ({"type": "select", "options": ["a", " "]}, "options[1]", "1 to 80"),
     ({"type": "select", "options": ["a", "b\x00"]}, "options[1]", "NUL"),
     ({"type": "multiSelect", "options": ["a", "a"]}, "options[1]", "twice"),
+    ({"type": "select", "options": ["Open", "open"]}, "options[1]", "only by case"),
+    ({"type": "multiSelect", "options": ["Done", "x", "DONE"]}, "options[2]", "only by case"),
     ({"type": "text", "options": ["a"]}, "options", "Only a select"),
     ({"type": "text", "to": "crm.account"}, "to", "Only a relation"),
     ({"type": "relation"}, "to", "needs a `to`"),
@@ -448,3 +452,43 @@ def test_the_record_json_has_the_jsonb_separators() -> None:
     `:`. `record_json` writes the same, so its byte count is the CHECK's."""
     assert sf.record_json({"a": 1, "b": [1, 2]}) == json.dumps({"a": 1, "b": [1, 2]})
     assert sf.record_json({"a": 1, "b": [1, 2]}) == '{"a": 1, "b": [1, 2]}'
+
+
+# ── Fix round 1 ─────────────────────────────────────────────────────────────
+
+
+def test_an_empty_options_list_on_another_type_counts_as_none() -> None:
+    """A model often writes `"options": []`. On a type that is not a select it
+    means no options. A list with an option is still refused."""
+    assert sf.validate_field_spec({"key": "f", "type": "text", "options": []}) == []
+    field = sf.parse_field_spec({"key": "f", "type": "text", "options": []})
+    assert field.options is None and "options" not in field.stored_spec()
+    [problem] = sf.validate_field_spec({"key": "f", "type": "text", "options": ["a"]})
+    assert problem.path == "options"
+    # A select still needs at least one option.
+    [problem] = sf.validate_field_spec({"key": "f", "type": "select", "options": []})
+    assert "at least one option" in problem.message
+
+
+def test_a_stored_field_runs_no_authoring_check() -> None:
+    """A spec that a later rule refuses still reads, so an older object works."""
+    spec = {"options": ["Open", "open"], "required": False, "many": False}
+    with pytest.raises(FieldError):
+        sf.parse_field_spec({"key": "state", "type": "select", **spec})
+    field = sf.stored_field("state", "select", spec, False)
+    assert field.options == ("Open", "open")
+    assert sf.check_value(field, "open") == "open"
+
+
+def test_check_can_be_hot_holds_the_one_hot_rule() -> None:
+    sf.check_can_be_hot(_field("number", key="n"))
+    for field in (_field("longText", key="body"), _field("text", key="tags", many=True)):
+        with pytest.raises(FieldError) as refused:
+            sf.check_can_be_hot(field)
+        assert refused.value.field == field.key and f"`{field.key}`" in refused.value.message
+
+
+def test_a_url_with_no_credential_still_passes() -> None:
+    url = _field("url")
+    for good in ("https://example.com:8443/a?user=ana", "http://[::1]/x", "https://ex.com/@ana"):
+        assert sf.check_value(url, good) == good
