@@ -1778,8 +1778,10 @@ The shape:
 
 `text` holds at most 3 sentences and 400 characters. `follow_ups` holds at
 most 3 items of 120 characters each. `mark` is the intent mark of the job. A
-summary that the member deleted reads `{"v": 1, "off": true}`, and no job
-writes that chat again (§15.5).
+summary that the member deleted is gone, and the row keeps only a `through`
+waterline. A new message can then earn a new summary (§15.5, D-PZ-33).
+`{"v": 1, "off": true}` is a guard for a row that already holds it: no
+route or page writes it now.
 
 **One module names the column.**
 `apps/services/gateway/gateway/assistant_summaries.py` holds each read and
@@ -2235,7 +2237,8 @@ each box.
   moved to 319 at the merge (R1).
 - `apps/services/gateway/gateway/assistant_summaries.py` holds the store:
   `read`, `mark`, `write_marked` (the write with the mark in its WHERE),
-  `turn_off` (the Delete, `off`), `clear_for_member` and `clear_on_share`.
+  `turn_off` (it writes `off`, and no route calls it), `clear_one_for_member`
+(the Delete), `clear_for_member` and `clear_on_share`.
   It has no plain write. Each caller checks the member, because a
   statement finds the chat by its id and RLS binds only the tenant.
 - Review round 1 (2026-10-31): the stored text as one string must pass
@@ -2356,8 +2359,8 @@ decision are in this table:
 - **The owner saw and accepted these in chat** on 2026-10-30 ("go ahead with
   your recommendations"): D-PZ-24, D-PZ-31, D-PZ-32 and D-PZ-34.
 - **These are the agent's design defaults** under that blanket answer:
-  D-PZ-25 to D-PZ-30, D-PZ-33 and D-PZ-35. The owner did not see them one by
-  one, and may overrule any of them.
+  D-PZ-25 to D-PZ-30 and D-PZ-35. The owner did not see them one by one, and
+  may overrule any of them. The owner decided D-PZ-33 on 2026-11-02.
 
 | # | Question | Decision |
 |---|---|---|
