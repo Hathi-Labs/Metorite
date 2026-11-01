@@ -32,6 +32,11 @@ and 11, the audit rules E-B1 to E-B3, and the known limit EM-G4a-f2 of
   the end of the page before its page. Fix round 1: a full read ends at the
   larger of the last record id and the ``historyId`` of the FIRST answer,
   and a later page fetches again an id that an earlier page fetched.
+* **The first sweep goes on after a rate limit (EM-G4b-f2, §12.3.12.8).**
+  The sweep reads INBOX, SENT and DRAFT before the user labels. A rate limit
+  after a finished label keeps the finished labels and sets ``rate_limited``.
+  The cursor then holds the seed and the labels left, and the next cycle
+  goes on from there. A rate limit before a finished label still fails.
 
 These tests use ``httpx.MockTransport``, because an ``AsyncMock`` client skips
 the auth flow of the client seam. The provider makes no ``authenticate``
@@ -70,7 +75,12 @@ from acb_common.settings import get_settings
 from acb_llm import key_store
 from email_ingestion.persist import upsert_message
 from email_ingestion.providers.app_credentials import OAuthApp
-from email_ingestion.providers.base import Attachment, EmailMessage, SyncResult
+from email_ingestion.providers.base import (
+    Attachment,
+    EmailMessage,
+    SyncResult,
+    canonical_folder,
+)
 from email_ingestion.providers.gmail import (
     GMAIL_FETCH_HOLD_CYCLES,
     GMAIL_RESET_SWEEP_NAME,
@@ -1290,6 +1300,188 @@ async def test_a_short_cycle_of_a_member_act_does_not_count(
         await cycle.run(row)
 
     assert [w["history_id"] for w in cycle.phase_d()] == [None] * 6
+
+
+# ── EM-G4b-f2: the first sweep goes on after a rate limit (§12.3.12.8) ──────
+
+
+def _limit_label(refused: str, **ids: list[str]) -> Answer:
+    """``_by_label``, with a 429 on each try of the list of *refused*."""
+    answer = _by_label(**ids)
+
+    def _answer(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("labelIds") == refused:
+            return _refuse(429, "rateLimitExceeded")(request)
+        return answer(request)
+    return _answer
+
+
+def _swept(fake: _Gmail) -> list[str]:
+    """The label of each ``messages.list``, in order."""
+    return [p["labelIds"][0] for p in fake.requests("/messages")]
+
+
+WORK = canonical_folder("Work")
+HOME = canonical_folder("Home")
+
+
+async def test_the_first_sweep_reads_inbox_sent_and_draft_before_the_user_labels(
+        fake: _Gmail) -> None:
+    """Acceptance 1. The inbox fills first: INBOX, SENT and DRAFT, then each
+    user label, then SPAM and TRASH."""
+    fake.user_labels = [("Label_1", "Work")]
+    fake.listing = _by_label()
+
+    await _provider().sync_messages()
+
+    assert _swept(fake) == ["INBOX", "SENT", "DRAFT", "Label_1", "SPAM", "TRASH"]
+
+
+async def test_a_rate_limit_in_the_first_sweep_keeps_the_finished_labels(
+        fake: _Gmail, caplog: pytest.LogCaptureFixture) -> None:
+    """Acceptance 2. A rate limit on a user label keeps the mail of INBOX
+    and SENT and sets ``rate_limited``. The cursor holds the seed and the
+    labels left, from the label that the limit cut. The log line counts
+    labels and names no message."""
+    fake.user_labels = [("Label_1", "Work")]
+    fake.listing = _limit_label("Label_1", INBOX=["m1"], SENT=["m2"])
+    _serve(fake, "m1", "m2")
+
+    with caplog.at_level(logging.WARNING, logger=LOGGER):
+        result = await _provider().sync_messages()
+
+    assert _ids(result) == ["m1", "m2"]
+    assert result.messages_synced == 2
+    assert result.rate_limited is True
+    assert json.loads(result.new_history_id) == {
+        "v": 1, "seed": "500",
+        "sweep": [["Label_1", WORK], ["SPAM", None], ["TRASH", None]]}
+    lines = [r.getMessage() for r in caplog.records
+             if r.getMessage().startswith("gmail.sweep_partial")]
+    assert lines == ["gmail.sweep_partial labels=3 left=3"]
+
+
+async def test_the_next_cycle_goes_on_from_the_label_that_the_limit_cut(
+        fake: _Gmail) -> None:
+    """Acceptance 3. The next cycle reads no seed, no label list and no
+    history. It lists only the labels left, and returns the plain seed, so
+    the cycle after it reads the history."""
+    fake.listing = _by_label(Label_1=["m3"])
+    _serve(fake, "m3")
+    cursor = json.dumps({"v": 1, "seed": "500",
+                         "sweep": [["Label_1", WORK], ["SPAM", None]]})
+
+    result = await _provider().sync_messages(history_id=cursor)
+
+    assert _swept(fake) == ["Label_1", "SPAM"]
+    # The first request is the list of the cut label: no seed and no label
+    # list. The fetch then warms the cache of label names, as each fetch does.
+    assert fake.seen[0][1] == "/messages"
+    assert fake.requests("/profile") == []
+    assert fake.requests("/history") == []
+    assert _ids(result) == ["m3"]
+    assert result.new_history_id == "500"
+    assert result.rate_limited is False
+
+
+async def test_a_resumed_sweep_cut_again_keeps_its_seed(fake: _Gmail) -> None:
+    """Acceptance 4. A second cut keeps the first seed, so the history after
+    the sweep still reads each change made since the first cycle."""
+    fake.listing = _limit_label("Label_2", Label_1=["m3"])
+    _serve(fake, "m3")
+    cursor = json.dumps({"v": 1, "seed": "500", "sweep": [
+        ["Label_1", WORK], ["Label_2", HOME], ["TRASH", None]]})
+
+    result = await _provider().sync_messages(history_id=cursor)
+
+    assert _ids(result) == ["m3"]
+    assert json.loads(result.new_history_id) == {
+        "v": 1, "seed": "500", "sweep": [["Label_2", HOME], ["TRASH", None]]}
+
+
+async def test_a_cut_sweep_after_a_failed_seed_keeps_the_mail_and_no_cursor(
+        fake: _Gmail) -> None:
+    """Acceptance 5. With no seed there is no cursor to keep. The mail of
+    the finished labels still lands, and the next cycle seeds again."""
+    fake.profile = [_refuse(500, "backendError")]
+    fake.listing = _limit_label("SENT", INBOX=["m1"])
+    _serve(fake, "m1")
+
+    result = await _provider().sync_messages()
+
+    assert _ids(result) == ["m1"]
+    assert result.rate_limited is True
+    assert result.new_history_id is None
+
+
+@pytest.mark.parametrize("raw", [
+    '{"v": 1, "seed": "x1", "sweep": []}', '{"v": 1, "seed": "5"}',
+    '{"v": 1, "seed": "5", "sweep": 5}', '{"v": 1, "seed": "5", "sweep": [["a"]]}',
+    '{"v": 1, "seed": "١٢", "sweep": []}', "[1]", '"text"', "500",
+], ids=["seed_not_digits", "no_sweep", "sweep_not_a_list", "label_not_a_pair",
+        "arabic_indic_seed", "json_list", "json_text", "history_id"])
+def test_text_that_is_no_sweep_cursor(raw: str) -> None:
+    """Acceptance 6. Text that is not the sweep form gives no resume. The
+    sweep form is no history cursor, so an older process that meets it
+    sweeps again from the start."""
+    assert gmail_mod._parse_sweep(raw) is None
+    form = gmail_mod._format_sweep("500", [("Label_1", WORK), ("SPAM", None)])
+    assert gmail_mod._parse_sweep(form) == ("500", [("Label_1", WORK), ("SPAM", None)])
+    assert gmail_mod._parse_cursor(form) is None
+
+
+async def test_the_give_up_line_names_the_reason_and_the_message_of_google(
+        fake: _Gmail, caplog: pytest.LogCaptureFixture) -> None:
+    """Acceptance 7. The log line of a spent rate limit carries the reason
+    and the message of Google, so the next reader knows which limit it was."""
+    fake.listing = _limit_label("INBOX")
+
+    with caplog.at_level(logging.WARNING, logger=LOGGER), \
+            pytest.raises(GmailRateLimited):
+        await _provider().sync_messages()
+
+    [line] = [r.getMessage() for r in caplog.records
+              if r.getMessage().startswith("gmail.rate_limit_gave_up")]
+    assert line.endswith("reason=rateLimitExceeded message='refused'"), line
+
+
+async def test_a_cut_first_sweep_writes_its_mail_and_the_sweep_cursor(
+        fake: _Gmail, cycle: SimpleNamespace) -> None:
+    """Acceptance 8, hermetic. The cut cycle is no error: phase (d) writes
+    the mail and the sweep cursor, and the loop backs off. The next cycle
+    reads the stored cursor, finishes the sweep and writes the plain seed.
+    The sync log gets NULL for the sweep cursor, as for a held cursor."""
+    fake.user_labels = [("Label_1", "Work")]
+    refused = {"on": True}
+    cut = _limit_label("Label_1", INBOX=["m1"], Label_1=["m3"])
+    whole = _by_label(INBOX=["m1"], Label_1=["m3"])
+    fake.listing = lambda request: (cut if refused["on"] else whole)(request)
+    _serve(fake, "m1", "m3")
+
+    first = await cycle.run(_row(), from_loop=True)
+    stored = cycle.phase_d()[0]["history_id"]
+    refused["on"] = False
+    second = await cycle.run(_row(last_history_id=stored), from_loop=True)
+
+    assert "error" not in first, first
+    assert first.get("catch_up_incomplete") is True
+    assert json.loads(stored)["seed"] == "500"
+    assert "error" not in second and "catch_up_incomplete" not in second, second
+    assert [w["history_id"] for w in cycle.phase_d()] == [stored, "500"]
+    assert _log_writes(cycle.log) == [None, "500"]
+    assert [m.provider_message_id for m in cycle.upserts] == ["m1", "m3"]
+
+
+async def test_a_rate_limit_on_the_first_label_writes_no_cursor(
+        fake: _Gmail, cycle: SimpleNamespace) -> None:
+    """Acceptance 9. A rate limit before a finished label fails the cycle,
+    as a rate limit on the first history page does (D-G4b-f1-3)."""
+    fake.listing = _limit_label("INBOX")
+
+    res = await cycle.run(_row(), from_loop=True)
+
+    assert "error" in res, res
+    assert cycle.phase_d() == []
 
 
 # ── R8: the cursor on a real database ───────────────────────────────────────

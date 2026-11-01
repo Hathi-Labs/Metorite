@@ -539,16 +539,22 @@ def _rate_limit_one_label(label: str) -> Answer:
     return _answer
 
 
-def _sweep_user_label(fake: _Gmail) -> dict[str, Any]:
+def _sweep_first_label(fake: _Gmail) -> dict[str, Any]:
+    """The sweep reads INBOX first (EM-G4b-f2). A rate limit there is a rate
+    limit before a finished label, so it still fails the sync. A rate limit
+    on a later label keeps the finished labels:
+    ``test_gmail_history_cursor.py`` holds those cases."""
     fake.on("GET", "/labels", _labels(("Label_1", "Work")))
-    fake.on("GET", "/messages", _rate_limit_one_label("Label_1"))
+    fake.on("GET", "/messages", _rate_limit_one_label("INBOX"))
     return {}
 
 
-def _sweep_system_label(fake: _Gmail) -> dict[str, Any]:
+def _sweep_resumed_first_label(fake: _Gmail) -> dict[str, Any]:
+    """A resumed sweep whose first label is refused finished no label."""
     fake.on("GET", "/labels", _labels())
-    fake.on("GET", "/messages", _rate_limit_one_label("SENT"))
-    return {}
+    fake.on("GET", "/messages", _rate_limit_one_label("Label_1"))
+    return {"history_id": json.dumps(
+        {"v": 1, "seed": "500", "sweep": [["Label_1", "work"], ["SPAM", None]]})}
 
 
 def _sweep_label_list(fake: _Gmail) -> dict[str, Any]:
@@ -585,7 +591,7 @@ def _history_fetch(fake: _Gmail) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("arrange", [
-    _sweep_user_label, _sweep_system_label, _sweep_label_list,
+    _sweep_first_label, _sweep_resumed_first_label, _sweep_label_list,
     _deep_user_label, _deep_system_label, _deep_label_list, _history_fetch,
 ], ids=lambda f: f.__name__.lstrip("_"))
 async def test_a_rate_limit_past_the_tries_fails_the_sync(
