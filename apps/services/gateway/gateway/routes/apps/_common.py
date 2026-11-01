@@ -432,8 +432,13 @@ def check_bundle_size(data: bytes, cap: int = MAX_BUNDLE_BYTES) -> bytes:
 # ── Row loading + gating (shared by every feature module) ────────────────────
 
 async def load_app(db: Any, slug: str) -> Any:
+    """The App Workshop app *slug*, or None. A Studio package (format
+    'manifest', WS-STU A3) answers None, so each slug route gives 404 for
+    it. NULL reads as code. Fence: test_studio_packages_r8.py."""
     return (await db.execute(
-        text("SELECT * FROM apps WHERE slug = :slug"), {"slug": slug},
+        text("SELECT * FROM apps WHERE slug = :slug "
+             "AND format IS DISTINCT FROM 'manifest'"),
+        {"slug": slug},
     )).fetchone()
 
 

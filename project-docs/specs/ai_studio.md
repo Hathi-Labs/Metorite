@@ -1,8 +1,8 @@
 # AI Studio — skills, workflows and apps that a company builds for itself (WS-STU)
 
 > **Product:** Metorite · **Feature:** AI Studio (`/studio`) · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 🔨 **In build.** A2, B1, D1, F1 and F2a are built, and §14 holds the state of each slice. B1 and F2a are dark behind `STUDIO_ORGS`, which is empty on every box. The pieces it reuses are built, and §16 names each one.
-> **Verified against code on 2026-10-31 at `57b91f721`.** Each path in §16 was read on that commit.
+> **Status:** 🔨 **In build.** A2, A3, B1, D1, F1 and F2a are built, and §14 holds the state of each slice. B1 and F2a are dark behind `STUDIO_ORGS`, which is empty on every box. A3, the package store, has no route and no caller yet. The pieces it reuses are built, and §16 names each one.
+> **Verified against code on 2026-11-01 at `82157e5fd`.** Each path in §16 was read on that commit.
 > **Board:** WS-STU in `work_plan.md` §2. **Decisions:** D127 (one app, three kinds), D139 (one coding harness), **D141** (Studio starts now, and a skill creator replaces the agent creator), **D146** (the owner's answers of 2026-10-31: layered apps, a typed object store, first-party templates). D124, D130, D131 and D136 bind it too.
 > **Metorite:** project "AI Studio", umbrella epic #491, this spec task #1135. Each group of §14 has its own epic under #491.
 > **Gate summary:** every slice is AGENT-SAFE unless §14 says otherwise. The owner answered STU-Q1, Q2, Q3, Q5 and Q6 and the template question on 2026-10-31 (D146). Four questions stay open: Q4, Q7, Q8 and Q9 (§12).
@@ -443,7 +443,7 @@ The skill creator replaces the Agent Workshop (D141). A member does not build a 
 | Built piece | Fate |
 |---|---|
 | Workflow engine, editor, Copilot, Module Studio (`routes/workflows/`, `/workflows`) | **Keep.** The editor moves into Studio (A1). The engine does not change |
-| App Workshop tables (`apps`, `app_versions`, `app_grants`, `app_audit`, `app_templates`) | **Keep as the package store** (A3). No second app table |
+| App Workshop tables (`apps`, `app_versions`, `app_grants`, `app_audit`, `app_templates`) | **Keep as the package store** (A3, built). A package is a row of `apps` with `format = 'manifest'`, and its manifest lives in `apps.manifest`. No second app table |
 | `app_data` (the `window.cc` storage) | **Keep for code-format apps** (L2). Studio objects live in the typed object store of C1 (D146) |
 | App Workshop builder (Monaco, `SandboxedHtml`, `window.cc`) | **Becomes the code block** (L1). The code-first builder stops being the default |
 | `GenerativeUINode` and its templates | **Grows into the one renderer** (D1) |
@@ -524,7 +524,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 |---|---|---|---|---|
 | **A1** | The Studio pane at `/studio` (preview). One library lists apps (`apps`), workflows (`workflows`) and skills (F1, when it exists). `/workflows`, `/build/apps` and `/build/agents` redirect to it. `nav.ts` holds one preview pane in place of three | The three old routes answer 308 to `/studio`. `nav.test.ts` moves its preview count in the same PR. The library shows each kind with its owner and state. Visual review in four contexts | STD | AGENT-SAFE |
 | **A2** | 🔨 **BUILT (2026-11-01).** Enum tokens are camelCase (`longText`, `multiSelect`, `mindMap`, `processFlow`), as the genUI node types are, and keys stay snake_case. Caps: depth 20, a string of 20,000 characters, a list of 500 items, a document of 256 KiB. The validator never raises on any JSON value. Credential shapes come from one list, `acb_common/secret_shapes.py` (J5 points the older copies at it). The package manifest schema v1 and its one validator: `packages/acb_common/acb_common/studio_manifest.py` (pydantic, pure data, no gateway import), the committed export `studio_manifest.schema.json`, and hand-written TypeScript types in `workbench/control_plane/src/lib/studio/manifest.ts` held equal by a parity test (no code generator, as the genUI lockstep does). `validate_manifest(doc, *, catalog=None)` takes the catalog as an input: a map of action id to class. With no catalog it checks structure only. **The `uses` grammar:** `object:<name>.(list|get|create|update|delete)`, `<app>.<op>`, `integration:<action>` or `workflow:<uuid>` (B1's ids). An `object:` action is checked against the package's own objects. **Not yet in v1:** `rules`, a state machine (C6), a formula or roll-up (C7) and a code block (L1) are reserved keys, and each refusal names the slice that lifts it. A logic module (B4) needs no key: it is a catalog action | Each refusal of §3.7 has a test that fails with a JSON path and one sentence: an unknown block, an action the catalog does not serve, a class X action, a colour, a pixel size, a credential-shaped string, a field that a view names and the object lacks, an undeclared submit, skill action or card, a bad relation, a duplicate id, a select with no options. The §3.6 example validates with no catalog and with a fake one. The committed JSON Schema equals the live export. `test_studio_manifest_ts_parity.py` holds the TypeScript types equal | STD | AGENT-SAFE |
-| **A3** | The package store: `apps` gains a nullable `format` (`code` or `manifest`) and `manifest jsonb`. No second app table | An expand-only migration (R6). R8: org B reads none of A's packages. `test_tenant_coverage.py` passes | HIGH | AGENT-SAFE |
+| **A3** | 🔨 **BUILT, dark (2026-11-01).** Migration `322_apps_format.sql`. The package store: `apps` gains `format` only, because `apps.manifest` exists since 114. `format` is nullable with DEFAULT `code`, so an old row reads as `code` with no backfill. A reader takes NULL as `code` too. **Two CHECKs:** `apps_format` holds `code` and `manifest`. `apps_manifest_package` needs a package to hold an object with a number `studio`, in at most 262144 bytes of jsonb text. **A trigger**, `apps_format_fixed`, refuses each change of `format`, so a code app never becomes a package that skipped A2. **The writer** is `gateway/studio/packages_store.py`: `create_package`, `get_package`, `list_packages` and `update_manifest`, each over a session of `tenant_session(org)` and for one member. It runs `validate_manifest` before each write, then checks the JSON text itself. A new package is private, a draft, and has no files. **The slug** is `<manifest id>-<8 hex digits of the new id>`, because `apps.slug` is unique for all orgs. A taken slug writes nothing, and the store takes a new id. **Four readers skip a package:** `list_apps`, `load_app` (so each slug route is 404), `list_pinned_apps` and `orchestrator/app_tools.py`. No route, no UI and no publish. **For A4:** `app_versions` needs no new column. A version writes `bundle_html = ''` and `bundle_sha256` as the SHA-256 of the manifest JSON, because both columns are NOT NULL. **Later:** a slug key for each org is a contract step of its own | An expand-only migration (R6). R8: org B reads none of A's packages. `test_tenant_coverage.py` passes. `test_studio_packages_r8.py` (`pytestmark = _DB_GATE`): org B and an unbound session read none of org A's packages, and a member reads only their own. An INSERT of the old shape reads as `code`. Each CHECK refuses its case, and a package of exactly the store's limit passes. The format never changes, also for the superuser. An invalid manifest writes nothing. A slug clash with another org leaks nothing. The four readers skip a package and still return a code app. `test_studio_packages_store.py` (no database): validate before write, the size cap and the slug shape | HIGH | AGENT-SAFE |
 | **A4** | Publish, version, roll back and install, over `app_versions` | A rollback restores the older manifest in one call. An open workflow run keeps its version | STD | AGENT-SAFE |
 
 ### Group B — The action catalog
@@ -663,14 +663,16 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 ## 16. Current file paths
 
-Each path was read on `57b91f721`.
+Each path was read on `82157e5fd`.
 
 **Backend**
 
 - `apps/services/gateway/gateway/routes/workflows/` — `catalog.py` (`_integration_entries`, `_tool_entry`), `tools.py` (`WorkflowToolSpec`, `list_tools`), `core.py` (the router pattern), `search.py`, `triggers.py`, `scheduler.py`, `copilot.py`, `engine/graph.py`, `engine/runner.py`, `engine/handlers.py`, `engine/modules.py`
 - `apps/services/gateway/gateway/db.py` (`tenant_session`), `gateway/main.py` (the router mounts), `gateway/push/flags.py` (an `*_ORGS` reader)
-- `apps/services/gateway/gateway/studio/skills_store.py` — the F1 skill store, the one writer of `studio_skills` and `studio_skill_versions` (migration `infra/postgres/320_studio_skills.sql`). F1 added it after `57b91f721`
-- `apps/services/gateway/gateway/routes/studio/` — `actions.py` (B1, `GET /studio/actions` and `catalog_rows`), `flags.py` (the `STUDIO_ORGS` reader) and `skills.py` (F2a, the skill routes on the same router). B1 and F2a added them after `57b91f721`
+- `apps/services/gateway/gateway/studio/skills_store.py` — the F1 skill store, the one writer of `studio_skills` and `studio_skill_versions` (migration `infra/postgres/320_studio_skills.sql`)
+- `apps/services/gateway/gateway/studio/packages_store.py` — the A3 package store, the one writer of a Studio package in `apps` (migration `infra/postgres/322_apps_format.sql`). A3 added it after `82157e5fd`
+- `apps/services/gateway/gateway/routes/apps/_common.py` (`load_app`), `lifecycle.py` (`list_apps`), `pins.py` (`list_pinned_apps`) — the App Workshop readers that skip a package
+- `apps/services/gateway/gateway/routes/studio/` — `actions.py` (B1, `GET /studio/actions` and `catalog_rows`), `flags.py` (the `STUDIO_ORGS` reader) and `skills.py` (F2a, the skill routes on the same router)
 - `packages/acb_common/acb_common/settings.py`, `env_guard.py` — where an `*_ORGS` flag is declared and guarded
 - `packages/acb_common/acb_common/app_manifests/__init__.py` (`every_app`, `door_ops`)
 - `infra/postgres/132_workflows.sql` (`workflows`, `workflow_versions`)
@@ -722,3 +724,6 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | A manifest names no colour, px size, unknown block or class X action | New with A2 and D12: `tests/unit/test_studio_manifest.py` |
 | A package reaches data only through a declared catalog action | New with B2: `tests/unit/test_studio_action_door_r8.py` |
 | A catalog row never carries class X | New with B1: `tests/unit/test_studio_catalog.py` |
+| A package is private to its org and its owner, and its manifest passes A2 before each write | New with A3: `tests/unit/test_studio_packages_r8.py` (R8) and `tests/unit/test_studio_packages_store.py` |
+| The format of an app never changes | New with A3: the trigger `apps_format_fixed`, pinned by `tests/unit/test_studio_packages_r8.py` |
+| No App Workshop list, slug route, pin or agent tool shows a package | New with A3: `tests/unit/test_studio_packages_r8.py` and `tests/unit/test_studio_packages_store.py` |

@@ -294,8 +294,11 @@ async def list_apps(
 ) -> list[AppSummary]:
     """Every app the caller can see, newest-updated first."""
     async with _tenant_session() as db:
+        # A Studio package (format 'manifest', WS-STU A3) is not an App
+        # Workshop app. NULL reads as code. Fence: test_studio_packages_r8.py.
         rows = (await db.execute(
-            text("SELECT * FROM apps ORDER BY updated_at DESC"),
+            text("SELECT * FROM apps WHERE format IS DISTINCT FROM 'manifest' "
+                 "ORDER BY updated_at DESC"),
         )).fetchall()
         grant_rows = (await db.execute(
             text("SELECT app_id, subject, role FROM app_grants"),
