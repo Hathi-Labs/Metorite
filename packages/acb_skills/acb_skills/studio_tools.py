@@ -1,8 +1,8 @@
-"""The Studio builder tools for Mira (STU-G1).
+"""The Studio builder tools for Mira (STU-G1 and STU-G2).
 
-Spec: ``project-docs/specs/ai_studio.md`` sections 6.2 and 14 (G1).
+Spec: ``project-docs/specs/ai_studio.md`` sections 6.2 and 14 (G1 and G2).
 
-Five **stateless** tools. No draft store exists in G1 (A3 is Stage 2). The
+Seven **stateless** tools. No draft store exists in G1 (A3 is Stage 2). The
 model holds the manifest in the chat turn and sends it back on each call.
 
 * :func:`studio_draft` gives a minimal valid skeleton from a short brief.
@@ -12,8 +12,17 @@ model holds the manifest in the chat turn and sends it back on each call.
 * :func:`studio_validate` validates.
 * :func:`studio_outline` is a deterministic text with the counts and the names.
   :func:`outline_text` is the pure function behind it, and the plan card of G2
-  will use it.
+  uses it.
 * :func:`studio_list_actions` lists the action catalog.
+* :func:`studio_interview` (G2) checks the interview: at most five questions,
+  one topic each. It returns the text for ``ask_questions``. It does not wrap
+  that tool, because the executor finds ``ask_questions`` by its name.
+* :func:`studio_plan` (G2) checks a manifest and shows ONE plan card with
+  ``request_confirmation``. The model cannot call ``request_confirmation``,
+  so this tool parks on the card itself, as the CRM write tools do. A stop, a
+  refusal and a run with no card channel all write nothing. A run with no card
+  channel gets the decision ``no_card``, and the plan text stays in ``context``. The tool makes no
+  write call, and G1 keeps no store.
 
 **One result shape.** Each manifest tool returns ``{ok, errors, diff,
 manifest}``. ``errors`` holds the validator's errors verbatim, as ``path`` and
@@ -101,6 +110,28 @@ MAX_ACTION_ID_CHARS = 128
 #: Worst case: 30 x (60 + 2 x (128 + 80 + 3 x 40)) = 21,480.
 MAX_ACTION_TITLE_CHARS = 80
 MAX_ACTION_TAG_CHARS = 40
+
+#: The topics of the interview (``ai_studio.md`` section 6.2 step 1), and the
+#: most questions of one interview. A topic is asked once.
+INTERVIEW_TOPICS = ("who", "records", "next", "approver", "systems")
+MAX_INTERVIEW_QUESTIONS = 5
+
+#: The most options of one question. Option text is not cut here:
+#: ``ask_questions`` cuts the text it shows.
+MAX_INTERVIEW_OPTIONS = 6
+
+#: The header of a question that gives none.
+_TOPIC_HEADERS = {
+    "who": "Who uses it",
+    "records": "What it keeps",
+    "next": "What happens next",
+    "approver": "Who approves",
+    "systems": "Other systems",
+}
+
+#: The build cost line of the plan card. The cost is not priced yet (G2): no
+#: credit estimator exists, and a number here would be invented.
+COST_LINE = "Build cost: not priced yet. Credit limits come with a later release."
 
 CATALOG_PATH = "/studio/actions"
 
@@ -282,15 +313,22 @@ def _as_doc(manifest: Any) -> tuple[Any, dict[str, Any] | None]:
 # ── The outline (pure) ──────────────────────────────────────────────────────
 
 
-def _name(value: Any) -> str:
-    """One name of the outline: one line of at most :data:`MAX_OUTLINE_NAME_CHARS`."""
-    return _line_of(value, MAX_OUTLINE_NAME_CHARS)
+def _name(value: Any, fence: bool = False) -> str:
+    """One name of the outline: one line of at most :data:`MAX_OUTLINE_NAME_CHARS`.
+
+    With *fence*, the name is data from the manifest and shows inside « »,
+    without a « or » of its own (as ``knowledge_tools`` does)."""
+    text = _line_of(value, MAX_OUTLINE_NAME_CHARS)
+    if not fence:
+        return text
+    return "«" + text.replace("«", "").replace("»", "") + "»"
 
 
-def _names(items: Any, key: str) -> list[str]:
+def _names(items: Any, key: str, fence: bool = False) -> list[str]:
     if not isinstance(items, list):
         return []
-    return [_name(i[key]) for i in items if isinstance(i, dict) and isinstance(i.get(key), str)]
+    return [_name(i[key], fence) for i in items
+            if isinstance(i, dict) and isinstance(i.get(key), str)]
 
 
 def _line(label: str, names: list[str]) -> str:
@@ -312,13 +350,14 @@ def _line(label: str, names: list[str]) -> str:
     return head + ", ".join(shown) + (f", and {rest} more" if rest else "")
 
 
-def outline_text(manifest: Any) -> str:
+def outline_text(manifest: Any, fence: bool = False) -> str:
     """A deterministic text of the counts and the names in *manifest*.
 
     Pure: the same manifest gives the same text. It reads any value and never
     raises, so it also outlines a manifest that is not valid. It has seven
     lines, each of at most :data:`MAX_OUTLINE_LINE_CHARS` characters, also for
-    a manifest far over the cap.
+    a manifest far over the cap. With *fence*, each name from the manifest shows
+    inside « » (the plan card does this, because a name is free text).
     """
     if not isinstance(manifest, dict):
         return "Not a manifest."
@@ -328,7 +367,7 @@ def outline_text(manifest: Any) -> str:
         for o in objects:
             if isinstance(o, dict) and isinstance(o.get("name"), str):
                 count = len(o["fields"]) if isinstance(o.get("fields"), list) else 0
-                objs.append(f"{_name(o['name'])} ({count} fields)")
+                objs.append(f"{_name(o['name'], fence)} ({count} fields)")
     skill = manifest.get("skill")
     skill_line = "Skill: none"
     if isinstance(skill, dict):
@@ -336,14 +375,15 @@ def outline_text(manifest: Any) -> str:
         n = len(actions) if isinstance(actions, list) else 0
         skill_line = f"Skill: yes ({n} actions)"
     conns = manifest.get("connections")
-    conn_names = [_name(c) for c in conns] if isinstance(conns, list) else []
-    head = f"App {_name(manifest.get('id', '?'))}: {_name(manifest.get('name', '?'))}"
+    conn_names = [_name(c, fence) for c in conns] if isinstance(conns, list) else []
+    head = (f"App {_name(manifest.get('id', '?'), fence)}: "
+            f"{_name(manifest.get('name', '?'), fence)}")
     return "\n".join([
         head,
         _line("Objects", objs),
-        _line("Actions", _names(manifest.get("actions"), "id")),
-        _line("Views", _names(manifest.get("views"), "id")),
-        _line("Workflows", _names(manifest.get("workflows"), "id")),
+        _line("Actions", _names(manifest.get("actions"), "id", fence)),
+        _line("Views", _names(manifest.get("views"), "id", fence)),
+        _line("Workflows", _names(manifest.get("workflows"), "id", fence)),
         skill_line,
         _line("Connections", conn_names),
     ])
@@ -448,6 +488,202 @@ async def studio_outline(manifest: dict[str, Any]) -> dict[str, Any]:
                    size=_size(doc))
 
 
+# ── The interview and the plan card (STU-G2) ────────────────────────────────
+
+
+def _interview_refusal(message: str) -> dict[str, Any]:
+    return _result(False, _sentence(message, "$.questions"), [])
+
+
+def _topic_list(value: Any) -> tuple[list[str], str | None]:
+    """The topics in *value*, or a refusal sentence."""
+    if value is None:
+        return [], None
+    if not isinstance(value, list) or any(
+            not isinstance(t, str) or t not in INTERVIEW_TOPICS for t in value):
+        return [], ("The stated list must hold only these topics: "
+                    f"{', '.join(INTERVIEW_TOPICS)}.")
+    return list(value), None
+
+
+def _clean_options(raw: Any, index: int) -> tuple[list[dict[str, Any]] | None, str | None]:
+    if raw is None:
+        return None, None
+    if not isinstance(raw, list):
+        return None, f"Question {index} has options that are not a list."
+    if len(raw) > MAX_INTERVIEW_OPTIONS:
+        return None, (f"Question {index} has more than {MAX_INTERVIEW_OPTIONS} options. "
+                      "Use fewer options.")
+    out: list[dict[str, Any]] = []
+    for o in raw:
+        if not isinstance(o, dict) or not isinstance(o.get("label"), str) or not o["label"].strip():
+            return None, f"Question {index} has an option with no label."
+        row: dict[str, Any] = {"label": o["label"]}
+        if isinstance(o.get("description"), str) and o["description"].strip():
+            row["description"] = o["description"]
+        if o.get("recommended") is True:
+            row["recommended"] = True
+        out.append(row)
+    return out, None
+
+
+def _default_of(q: dict[str, Any]) -> str | None:
+    """The ``default`` of a question, by the rules of ``ask_questions``
+    (``ask_tools.card_default``): a text that is not blank, cut at a word. A
+    skip uses it, and the card shows it."""
+    from acb_skills import ask_tools
+
+    return ask_tools.card_default(q)
+
+
+def _clean_question(
+    q: Any, i: int, seen: list[str], known: list[str],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """One question of the interview, or a refusal sentence. It adds the topic
+    of a good question to *seen*."""
+    if not isinstance(q, dict):
+        return None, f"Question {i} is not an object."
+    topic = q.get("topic")
+    if not isinstance(topic, str) or topic not in INTERVIEW_TOPICS:
+        return None, f"Question {i} needs a topic. Use one of: {', '.join(INTERVIEW_TOPICS)}."
+    if topic in seen:
+        return None, f"Question {i} repeats the topic {topic}. Ask each topic once."
+    if topic in known:
+        return None, (f"Question {i} asks about {topic}, and the brief states it already. "
+                      "Ask only what the brief does not say.")
+    text = q.get("question")
+    if not isinstance(text, str) or not text.strip():
+        return None, f"Question {i} has no question text."
+    options, problem = _clean_options(q.get("options"), i)
+    if problem:
+        return None, problem
+    header = q.get("header")
+    entry: dict[str, Any] = {
+        "header": header if isinstance(header, str) and header.strip() else _TOPIC_HEADERS[topic],
+        "question": text,
+    }
+    if options:
+        entry["options"] = options
+    default = _default_of(q)
+    if default:
+        entry["default"] = default
+    for flag in ("multiSelect", "allowFreeformInput", "required"):
+        if isinstance(q.get(flag), bool):
+            entry[flag] = q[flag]
+    seen.append(topic)
+    return entry, None
+
+
+@annotate(read_only=True, idempotent=True, open_world=False)
+async def studio_interview(
+    questions: list[dict[str, Any]], stated: list[str] | None = None,
+) -> dict[str, Any]:
+    """Check the interview before you ask it: at most five questions, one topic each.
+
+    Each question has a "topic" (who, records, next, approver or systems), a
+    "question", and may have a "header" and "options". Put the topics that the
+    brief already states in "stated": a question on one of them is refused.
+    Pass the "questions" text of the answer to ask_questions.
+    """
+    doc, bad = _as_doc(questions)
+    if bad is not None:
+        return bad
+    if isinstance(doc, dict) and "questions" in doc:
+        doc = doc["questions"]
+    if not isinstance(doc, list) or not doc:
+        return _interview_refusal("Send a list of at least one question.")
+    if len(doc) > MAX_INTERVIEW_QUESTIONS:
+        return _interview_refusal(
+            f"An interview holds at most {MAX_INTERVIEW_QUESTIONS} questions. "
+            f"You sent {len(doc)}. Keep the ones that matter most.")
+    known, problem = _topic_list(stated)
+    if problem:
+        return _interview_refusal(problem)
+    seen: list[str] = []
+    cleaned: list[dict[str, Any]] = []
+    for i, q in enumerate(doc, start=1):
+        entry, problem = _clean_question(q, i, seen, known)
+        if problem or entry is None:
+            return _interview_refusal(problem or f"Question {i} is not valid.")
+        cleaned.append(entry)
+    body = json.dumps({"questions": cleaned}, ensure_ascii=False)
+    if len(body) > MAX_MANIFEST_CHARS:
+        return _interview_refusal("The interview text is too long. Use shorter questions.")
+    return _result(True, [], [f"{len(cleaned)} questions"], None, questions=body)
+
+
+def _count(manifest: dict[str, Any], key: str) -> int:
+    value = manifest.get(key)
+    return len(value) if isinstance(value, list) else 0
+
+
+def parts_count(manifest: Any) -> int:
+    """The parts of an app: objects, views, workflows, skill and connections.
+
+    Pure. It reads any value and never raises. The plan card shows this count
+    and no price, because no credit estimator exists yet (G2)."""
+    if not isinstance(manifest, dict):
+        return 0
+    skill = 1 if isinstance(manifest.get("skill"), dict) else 0
+    return (_count(manifest, "objects") + _count(manifest, "views")
+            + _count(manifest, "workflows") + skill + _count(manifest, "connections"))
+
+
+def plan_card_text(manifest: Any) -> str:
+    """The text of the plan card: the outline, the count of parts, the cost line.
+
+    Pure and deterministic. It holds the outline (seven lines, each of at most
+    :data:`MAX_OUTLINE_LINE_CHARS` characters) and three short lines, so the
+    text fits the context limit of the card (4,000 characters). It holds no
+    price and no turn count: no number stands next to "credit"."""
+    return "\n".join([
+        outline_text(manifest, fence=True),
+        f"Parts: {parts_count(manifest)}",
+        COST_LINE,
+        "Approve to start the build. Reject to build nothing. To change the plan, tell me in chat.",
+    ])
+
+
+@annotate(read_only=True, idempotent=True, open_world=False)
+async def studio_plan(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Check an app manifest, then show the member ONE plan card and wait.
+
+    The card lists the objects, views, workflows, skill, connections and
+    actions. The answer has a "decision": approved, revised (the member wrote
+    in the chat), stopped, or no_card (the chat shows no card). After "stopped", write nothing and call no more
+    patch. An invalid manifest shows no card. The text of the card is in
+    "context", for a chat that cannot show cards.
+    """
+    doc, bad = _as_doc(manifest)
+    if bad is not None:
+        return bad
+    checked = await _checked(doc, [])
+    if not checked["ok"]:
+        return _result(False, checked["errors"], [])  # no card for an invalid manifest
+    title = f"Build {_name(doc.get('name', '?'), True)}?"
+    detail = f"{parts_count(doc)} parts. {COST_LINE}"
+    context = plan_card_text(doc)
+    from acb_skills import ask_tools
+
+    # The run's own member may answer, and no other (PZ-32). The member is the
+    # run's, never an input.
+    answer = await ask_tools.request_confirmation(
+        title, detail, context, non_interactive_default="deny", close_on_steer=True,
+        responder=_current_user_email() or None, fenced=True)
+    if answer is True:
+        decision = "approved"
+    elif answer is ask_tools.REVISED:
+        decision = "revised"
+    elif not ask_tools.confirmation_channel_open():
+        # A denial AFTER a read of the channel, as ``knowledge_tools`` does: a
+        # run with no card shows nothing, and no member pressed Stop.
+        decision = "no_card"
+    else:
+        decision = "stopped"
+    return _result(True, [], [], None, title=title, detail=detail, context=context,
+                   decision=decision)
+
+
 def _tag(value: Any, limit: int) -> Any:
     """A text field of a row, cut to *limit* (:func:`_line_of`). None stays None."""
     return None if value is None else _line_of(value, limit)
@@ -486,16 +722,19 @@ async def studio_list_actions(query: str = "", offset: int = 0, limit: int = 0) 
             "total": page.total, "shown": len(page.items), "page": page.line}
 
 
-#: The five tools, in the order of the skill family ``studio``.
+#: The seven tools, in the order of the skill family ``studio``.
 STUDIO_TOOLS = (
     studio_draft,
+    studio_interview,
     studio_list_actions,
     studio_outline,
     studio_patch,
+    studio_plan,
     studio_validate,
 )
 
 __all__ = [
-    "MAX_ACTION_ROWS", "MAX_MANIFEST_CHARS", "STUDIO_TOOLS", "outline_text",
-    "studio_draft", "studio_list_actions", "studio_outline", "studio_patch", "studio_validate",
+    "MAX_ACTION_ROWS", "MAX_MANIFEST_CHARS", "STUDIO_TOOLS", "outline_text", "parts_count",
+    "plan_card_text", "studio_draft", "studio_interview", "studio_list_actions",
+    "studio_outline", "studio_patch", "studio_plan", "studio_validate",
 ]

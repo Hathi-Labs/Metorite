@@ -211,7 +211,11 @@ describe("the flag decides where the bell is", () => {
   });
 
   it("the sidebar head and the phone drawer draw the bell only with the flag on", () => {
-    expect(code(read("../../components/Sidebar.tsx"))).toMatch(/\{!barOn && dockOn \? <ShellBell \/> : null\}/);
+    // GL-12: the sidebar's Needs you row is the bell. It opens the list
+    // beside itself, and only with the flag on.
+    const side = code(read("../../components/Sidebar.tsx"));
+    expect(side).toMatch(/\{shellNav && dockOn \? <NeedsFlyout railRef=\{asideRef\}/);
+    expect(side).toMatch(/bell=\{dockOn\}/);
     const shell = code(read("../../components/AppShell.tsx"));
     expect(shell).toMatch(/\{dockOn \? <ShellBell onBeforeOpen=\{close\}/);
     expect(shell.match(/\{dockOn \? <ShellBellHost placement=/g)?.length).toBe(2);

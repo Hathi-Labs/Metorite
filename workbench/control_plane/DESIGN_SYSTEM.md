@@ -12,7 +12,7 @@ machine can check; the rest is here.
 
 ## 0. There is ONE look — read this first
 
-**Owner directive, 2026-08-31: the theming engine is retired.** Metorite
+**Owner directive, 2026-08-31: the theming engine is retired.** (Since 2026-10-31 the one look is glass. §0a says so.) Metorite
 shipped four switchable themes (RapidTool, Fluent, Material, Graphite) until
 that day. It now ships the Control Plane's original look, and every app and
 sub-app renders in it. `Fluent`, `Material`, `Graphite`, the `data-theme`
@@ -30,30 +30,27 @@ own theme names. The contrast gate measures them. It is a mirror, and
 `themes.test.ts` fails if it drifts from the stylesheet. Change a value in
 both, or in neither.)*
 
-### 0a. The one exception: the glass trial (D143, 2026-10-31)
+### 0a. The one look is glass (D143, D149, 2026-10-31)
 
-The owner chose Aroh's design language, **glass**, as the next look. Until the
-owner approved production on 2026-10-31 (GL-9), the look above stays beside
-it as Classic, one switch away. `project-docs/specs/glass_look.md` owns the
-trial.
+The owner chose Aroh's design language, **glass**, as the look. On 2026-10-31
+the owner ended the trial: "We confirm that we want to be on the new UI ...
+We don't need to keep the switch." Glass is the only look, for every member,
+in every build. `project-docs/specs/glass_look.md` owns it.
 
-- Glass applies only under `<html data-look="glass">`. The build gate
-  `NEXT_PUBLIC_UI_LOOK=glass` lets the server render that attribute.
-  Production has the gate since 2026-10-31. A build with no gate renders
-  classic.
-- `globals.css` holds the glass token blocks after the classic `:root` and
-  `.light` blocks. Do not edit the classic values for glass.
-- A glass difference in a component goes behind the `glass:` variant. For
-  example, `rounded-lg glass:rounded-full`. Under classic it matches nothing.
+- The server renders `<html data-look="glass">` on every page. No gate, no
+  switch and no stored choice turns classic on. `NEXT_PUBLIC_UI_LOOK` is dead.
+- ⚠️ GL-Z1 is built, and GL-Z2 is next. Until GL-Z2, `globals.css` still holds
+  the classic `:root` and `.light` blocks, and the glass token blocks come after
+  them. Do not edit the classic values. Edit the glass blocks.
+- A glass difference in a component still goes behind the `glass:` variant, for
+  example `rounded-lg glass:rounded-full`. GL-Z2 folds each one into a plain
+  class. Write for glass, and do not write a classic fallback.
 - The glass materials (`glass-chrome`, `glass-menu`, `glass-surface`,
   `glass-press`, `glass-scroll-edge`) and the glass type styles
   (`text-subhead`, `text-body` and the others) go only behind `glass:`.
-- `src/lib/theme/glassLook.test.ts` fences all three rules, and it measures
-  the contrast of the glass pairs.
-- Settings → Appearance → Design switches one member between New and Classic.
-
-GL-Z ends the trial. Then glass becomes the `:root` and `.light` values, every
-`glass:` class becomes a plain class, and this section goes.
+- `src/lib/theme/glassLook.test.ts` fences the rules, and it measures the
+  contrast of the glass pairs.
+- Settings → Appearance holds no Design switch.
 
 **What a member may still change**, at Settings → Appearance — these adjust the
 one look, they do not replace it:
