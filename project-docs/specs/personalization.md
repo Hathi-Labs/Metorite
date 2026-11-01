@@ -2357,7 +2357,7 @@ two exceptions are the probes with a real letter between the digit groups
   A new turn must be after the waterline (`new_turn`, `rows_after`). It reads the
   switch of each active member through `MEMBERS_APP_SQL`, and calls
   `my_day_loop.departed` once for each member. It then reads the mail mark
-  (`holds_mail`). It reads at most 60 candidates (`SEED_SCAN_MAX`) and
+  (`mail_state`). It reads at most 60 candidates (`SEED_SCAN_MAX`) and
   enqueues at most 5 jobs (`SUMMARY_SEED_MAX`).
 - **The durable mail rule.** `MAIL_EVENTS_SQL` is a term of `ELIGIBLE_SQL`, so
   the seed and the handler both read it. `MAIL_TOOLS` comes from the code:
