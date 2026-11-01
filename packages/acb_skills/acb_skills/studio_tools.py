@@ -54,6 +54,7 @@ import re
 from typing import Any
 
 import httpx
+from acb_common.paging import paged
 from acb_common.studio_manifest import STUDIO_VERSION, ManifestError, validate_manifest
 from acb_common.studio_patch import PatchError, apply_patch
 
@@ -465,8 +466,12 @@ def _row(r: dict[str, Any]) -> dict[str, Any]:
 
 
 @annotate(read_only=True, idempotent=True, open_world=False)
-async def studio_list_actions(query: str = "") -> dict[str, Any]:
-    """List the actions an app may use. The optional query filters by id and title."""
+async def studio_list_actions(query: str = "", offset: int = 0, limit: int = 0) -> dict[str, Any]:
+    """List the actions an app may use. The optional query filters by id and title.
+
+    One page holds at most 30 actions. The "page" line names the total and the offset
+    of the next page.
+    """
     try:
         rows = await _read_catalog()
     except _Refused as exc:
@@ -475,9 +480,10 @@ async def studio_list_actions(query: str = "") -> dict[str, Any]:
     if needle:
         rows = [r for r in rows
                 if needle in str(r.get("id", "")).lower() or needle in str(r.get("title", "")).lower()]
-    shown = rows[:MAX_ACTION_ROWS]
-    return {"ok": True, "errors": [], "diff": [], "actions": [_row(r) for r in shown],
-            "total": len(rows), "shown": len(shown)}
+    page = paged(rows, offset, limit, default=MAX_ACTION_ROWS, maximum=MAX_ACTION_ROWS,
+                 noun="actions")
+    return {"ok": True, "errors": [], "diff": [], "actions": [_row(r) for r in page.items],
+            "total": page.total, "shown": len(page.items), "page": page.line}
 
 
 #: The five tools, in the order of the skill family ``studio``.

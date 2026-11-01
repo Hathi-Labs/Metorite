@@ -524,6 +524,20 @@ async def test_list_actions_is_capped(monkeypatch) -> None:
     _serve(monkeypatch, body={"actions": rows})
     out = await st.studio_list_actions()
     assert out["shown"] == st.MAX_ACTION_ROWS and out["total"] == 80
+    assert "offset=30" in out["page"] and "80" in out["page"]
+
+
+async def test_list_actions_reaches_every_row_by_offset(monkeypatch) -> None:
+    rows = [{"id": f"a.op{i}", "title": "t", "class": "A"} for i in range(80)]
+    _serve(monkeypatch, body={"actions": rows})
+    ids = []
+    for offset in (0, 30, 60):
+        out = await st.studio_list_actions(offset=offset)
+        ids += [r["id"] for r in out["actions"]]
+    assert ids == [r["id"] for r in rows]
+    assert out["shown"] == 20 and out["total"] == 80
+    past = await st.studio_list_actions(offset=200)
+    assert past["actions"] == [] and past["page"]
 
 
 async def test_list_actions_reports_a_failed_read(monkeypatch) -> None:

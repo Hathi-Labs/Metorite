@@ -4,6 +4,8 @@ This agent owns the `studio` tool pack. It is not a second assistant.
 The member talks to Mira only. Mira loads these tools in a Studio turn and
 calls them directly. A hand-off to this agent is refused.
 
+Note: `config.json` names the app `workflows` because the `/studio` pane is not on main yet. Slice A1 changes it to `studio` when it replaces the pane.
+
 ## The tools
 
 - `studio_draft` makes a small valid manifest from a short brief.
