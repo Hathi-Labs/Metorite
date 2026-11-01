@@ -37,26 +37,43 @@ h. A body that names another org changes nothing.
 i. With the switch off, each call is 404 and writes no audit row.
 
 **The mutations (R7).** Commit before each, and restore with git after.
+Each result below was run on 2026-11-01, with both B2a suites.
 
 * M1. ``invoke.invoke_action``: drop the switch check.
-  ``test_r8_the_switch_off_is_404_and_writes_no_row`` goes red.
+  ``test_r8_the_switch_off_is_404_and_writes_no_row`` and three switch tests
+  of the hermetic half go red.
 * M2. ``packages_store._GET_SQL``: drop ``AND owner_email = :m``.
-  ``test_r8_another_member_of_the_org_gets_404`` goes red.
-* M3. ``invoke.invoke_action``: skip the declaration check (take the path as
-  the ``uses``). ``test_r8_an_undeclared_action_is_403_and_audited`` goes red.
-* M4. ``invoke.refusal_for``: let class X through.
+  ``test_r8_another_member_of_the_org_gets_404`` goes red. The fake session
+  of the hermetic half filters on the member itself, so only R8 sees it.
+* M3. ``invoke.invoke_action``: take the path as the ``uses`` of an action
+  that the manifest does not declare.
+  ``test_r8_an_undeclared_action_is_403_and_audited`` and
+  ``test_an_undeclared_action_is_403_not_declared`` go red.
+* M4. ``invoke.refusal_for``: drop the class X refusal.
   ``test_a_class_x_row_is_403_class_x`` of the hermetic half goes red. No
-  real catalog row is class X.
+  real catalog row is class X, so no R8 test can see it.
 * M5. ``invoke.refusal_for``: drop the class B and C refusal.
-  ``test_r8_each_write_verb_writes_nothing`` goes red.
-* M6. ``invoke.invoke_action``: open ``_tenant_session(payload["organization_id"])``.
-  ``test_r8_a_body_that_names_another_org_changes_nothing`` goes red.
-* M7. ``objects_store._GET_RECORD_SQL``: drop ``AND {_IN_PACKAGE}``, and
-  ``invoke._run_object_get``: read the object of the record id.
-  ``test_r8_a_record_of_another_package_is_404`` goes red.
+  ``test_r8_each_write_verb_writes_nothing``,
+  ``test_r8_a_source_that_is_not_an_object_never_runs`` and eight hermetic
+  tests go red.
+* M6a. ``invoke.invoke_action``: open ``_tenant_session`` with the
+  ``organization_id`` of the body.
+  ``test_r8_a_body_that_names_another_org_changes_nothing`` and
+  ``test_the_session_takes_no_org_from_the_request`` go red.
+* M6b. ``invoke.invoke_action``: open an unbound ``get_db()`` session. Seven
+  tests of this suite go red, the owner test first. (The hermetic half
+  hangs on a real engine, so run this one on R8 only.)
+* M7a. ``objects_store._GET_RECORD_SQL``: drop ``AND {_IN_PACKAGE}``. No
+  test of the door goes red, because the door reads the object by its name
+  in the package first. C1's
+  ``test_r8_a_record_call_names_its_package_and_its_object`` goes red.
+* M7b. ``invoke._run_object_get``: call ``get_record`` with no
+  ``package_id``. The owner test, ``test_r8_a_record_of_another_package_is_404``
+  and ``test_a_get_reads_with_the_package_id`` go red, with 11 more.
 * M8. ``invoke.invoke_action``: answer 403 for a package that
-  ``get_package`` does not find. ``test_r8_another_member_of_the_org_gets_404``
-  and ``test_r8_org_b_gets_404_also_with_the_same_email`` go red.
+  ``get_package`` does not find. ``test_r8_another_member_of_the_org_gets_404``,
+  ``test_r8_org_b_gets_404_also_with_the_same_email``,
+  ``test_r8_a_code_app_is_404`` and four hermetic tests go red.
 """
 
 from __future__ import annotations

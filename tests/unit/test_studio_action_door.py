@@ -23,15 +23,15 @@ This file proves:
 - one audit row for each call that reaches a package, with no record data;
 - the object verb table holds the five verbs of the A2 grammar.
 
-**The mutations (R7).** Each one turns a named test red. The R8 suite holds
-the same list.
+**The mutations (R7).** The R8 suite holds the full list and each result.
+These turn a test of this file red:
 
 * M1. Drop the switch check. ``test_a_not_listed_org_gets_404_and_opens_no_session``.
 * M3. Skip the declaration check. ``test_an_undeclared_action_is_403_not_declared``.
-* M4. Treat class X as runnable. ``test_a_class_x_row_is_403_class_x``.
-* M5. Run class B or C with no card. ``test_each_write_verb_is_403_approval_required``.
-* M6. Take the org from the body. ``test_the_session_takes_no_org_from_the_request``.
-* M7. Drop ``package_id`` from ``get_record``. ``test_a_get_reads_with_the_package_id``.
+* M4. Drop the class X refusal. ``test_a_class_x_row_is_403_class_x``.
+* M5. Drop the class B and C refusal. ``test_each_write_verb_is_403_approval_required``.
+* M6a. Take the org from the body. ``test_the_session_takes_no_org_from_the_request``.
+* M7b. Call ``get_record`` with no ``package_id``. ``test_a_get_reads_with_the_package_id``.
 * M8. 403 for a package of another member. ``test_a_package_of_another_member_or_org_is_404``.
 """
 
