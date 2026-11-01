@@ -51,9 +51,10 @@ import { plainTitle } from "@/lib/fencedText";
 import { tableCells, tableColumns, text } from "@/lib/genUiText";
 import { resolveIcon } from "@/lib/icons";
 import {
-  StudioDataContext, actionDisabled, boundView, bindsSource, gridData, parseAction, parseSource, pressAction, sourceKey,
+  actionDisabled, boundView, bindsSource, gridData, parseAction, parseSource, pressAction, sourceKey,
   type BoundView, type Row, type StudioDataDoor,
 } from "@/lib/studio/dataDoor";
+import { StudioDataContext } from "@/lib/studio/dataContext";
 import { TypedActionButton } from "@/lib/studio/TypedActionButton";
 import { useCachedResource } from "@/lib/useCachedResource";
 import { type AccentHue, accentForHue } from "@/lib/statusAccent";
