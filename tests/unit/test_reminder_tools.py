@@ -20,7 +20,7 @@ And more that this file holds:
 5. **Two gates before any card** (review round 1). With
    ``CALENDAR_REMINDERS`` off the routes answer 404, and a run with no card
    channel (WhatsApp) cannot ask. Either way the tool refuses before the card
-   and sends the model to a private task with a block.
+   and tells the model to make no task in place of the reminder.
 6. **A reminder is not a task.** Its receipt prints ``reminder_id:``, never
    ``full_id:``, because a ``full_id:`` line opens a task in the app. And the
    member's receipt shows no line meant for the model.
@@ -634,10 +634,20 @@ async def test_an_allowed_act_passes_the_card_gate(monkeypatch) -> None:
         assert R.no_card_channel("update_reminder") != ""
 
 
-def test_the_create_personal_task_description_takes_the_fallback() -> None:
-    """The gates send the model back to a private task with a block."""
-    doc = " ".join((skill_projects.create_personal_task.__doc__ or "").split())
-    assert "set_reminder" in doc and "block_start" in doc
+def test_a_refused_reminder_never_becomes_a_task() -> None:
+    """Owner, 2026-11-01: a task and a reminder are two different things.
+
+    Mutation: put "make a private task" back in ``FALLBACK`` or in the
+    ``set_reminder`` description, and this test fails.
+    """
+    told = " ".join(R.FALLBACK.split()).lower()
+    assert "create_personal_task" not in told
+    assert "do not make a task" in told
+    doc = " ".join((skill_projects.set_reminder.__doc__ or "").split()).lower()
+    assert "private task with a block" not in doc
+    assert "make no task in its place" in doc
+    task_doc = " ".join((skill_projects.create_personal_task.__doc__ or "").split())
+    assert "with or without a time: use set_reminder" in task_doc
 
 
 # ── 6. The read ────────────────────────────────────────────────────────────
