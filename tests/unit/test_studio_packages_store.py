@@ -22,6 +22,9 @@ f. ``update_manifest`` refuses a new manifest id, and only the store writes
    a package (a source scan of ``apps/`` and ``packages/``).
 g. A read of a row with no folder (``_to_detail``, ``_effective_manifest``)
    answers from the stored manifest, never 409 (fix round 2).
+h. Publish, versions and rollback (A4): the order of the statements, the
+   catalog check, the row lock, and a source scan that finds no UPDATE of
+   ``app_versions``, no review proposal and no ``record_app_audit``.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import copy
+import hashlib
 import inspect
 import json
 import re
@@ -539,3 +543,192 @@ def test_a_read_of_a_row_with_no_folder_answers_from_the_stored_manifest(
     assert lifecycle._to_detail(row, ana, []).manifest == {"name": "From the folder"}
     assert lifecycle._to_detail(row, ana, []).workspace_path == str(real)
     assert runtime._effective_manifest(row) == {"name": "From the folder"}
+
+
+# ── h. Publish, versions and rollback (A4) ──────────────────────────────────
+
+_CAT_MANIFEST_ACTION = {"id": "make_lead", "uses": "crm.create_lead", "set": {}}
+
+
+def _pkg_row(manifest: dict[str, Any], live: int | None = None) -> tuple[Any, ...]:
+    now = datetime.now(UTC)
+    return (str(uuid.uuid4()), "quotes-00000000", manifest["name"], manifest["purpose"],
+            "ana@x.test", "private", "draft", json.dumps(manifest), live, now, now)
+
+
+def _ver_row(manifest: dict[str, Any], n: int = 1) -> tuple[Any, ...]:
+    return (str(uuid.uuid4()), n, json.dumps(manifest), "sha", "notes", "ana@x.test",
+            datetime.now(UTC), "auto")
+
+
+def _verbs(db: _FakeDb) -> list[str]:
+    return [" ".join(c[0].split()[:3]) for c in db.calls]
+
+
+def test_publish_writes_the_version_the_pointer_and_the_audit_in_order() -> None:
+    doc = _manifest()
+    db = _FakeDb(_pkg_row(doc), _ver_row(doc, 1))
+    ver = _run(store.publish_version(db, "Ana@X.test", str(uuid.uuid4()), "First.", catalog={}))
+    assert ver is not None and ver.version == 1
+    assert _verbs(db) == ["SELECT id::text, slug,", "INSERT INTO app_versions",
+                          "UPDATE apps SET", "INSERT INTO app_audit"]
+    assert db.calls[0][0].rstrip().endswith("FOR UPDATE")
+    encoded = store.check_manifest(doc)
+    assert db.calls[1][1]["sha"] == hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    assert db.calls[1][1]["manifest"] == encoded
+    assert db.calls[1][1]["m"] == "ana@x.test"
+    sql = db.calls[1][0]
+    assert "bundle_html" in sql and "'', :sha" in sql and "'auto'" in sql
+    # The pointer and the status move. The draft stays as it is.
+    assert "manifest" not in db.calls[2][0].split("WHERE")[0]
+    assert "live_version = :v" in db.calls[2][0] and "status = 'live'" in db.calls[2][0]
+    assert json.loads(db.calls[3][1]["detail"])["version"] == 1
+    assert db.calls[3][1]["kind"] == "publish"
+
+
+def test_publish_refuses_an_action_the_catalog_does_not_serve() -> None:
+    doc = _manifest(actions=[*MANIFEST["actions"], _CAT_MANIFEST_ACTION])
+    assert studio_manifest.validate_manifest(doc) == []
+    db = _FakeDb(_pkg_row(doc))
+    with pytest.raises(store.PackageStoreError) as exc:
+        _run(store.publish_version(db, "ana@x.test", str(uuid.uuid4()), "", catalog={}))
+    assert any("catalog" in e.message for e in exc.value.errors)
+    assert _verbs(db) == ["SELECT id::text, slug,"]
+    # With the action in the catalog, the same draft publishes.
+    ok = _FakeDb(_pkg_row(doc), _ver_row(doc))
+    assert _run(store.publish_version(
+        ok, "ana@x.test", str(uuid.uuid4()), "", catalog={"crm.create_lead": "B"})) is not None
+    # Class X never publishes.
+    nope = _FakeDb(_pkg_row(doc))
+    with pytest.raises(store.PackageStoreError):
+        _run(store.publish_version(
+            nope, "ana@x.test", str(uuid.uuid4()), "", catalog={"crm.create_lead": "X"}))
+
+
+def test_publish_refuses_a_draft_that_fails_a2_and_writes_nothing() -> None:
+    bad = _manifest(views=[{"id": "list", "block": "table", "color": "#ff0000"}])
+    db = _FakeDb(_pkg_row(bad))
+    with pytest.raises(store.PackageStoreError) as exc:
+        _run(store.publish_version(db, "ana@x.test", str(uuid.uuid4()), "", catalog={}))
+    assert "$.views[0].color" in exc.value.paths
+    assert _verbs(db) == ["SELECT id::text, slug,"]
+
+
+def test_publish_of_a_missing_package_answers_none_and_writes_nothing() -> None:
+    db = _FakeDb()
+    assert _run(store.publish_version(db, "ana@x.test", str(uuid.uuid4()), "", catalog={})) is None
+    assert len(db.calls) == 1
+
+
+@pytest.mark.parametrize("notes", [None, 5, "a\x00b", "x" * (store.MAX_NOTES_CHARS + 1)])
+def test_bad_release_notes_are_refused_before_the_db(notes: Any) -> None:
+    db = _FakeDb()
+    with pytest.raises(store.PackageStoreError):
+        _run(store.publish_version(db, "ana@x.test", str(uuid.uuid4()), notes, catalog={}))
+    assert db.calls == []
+
+
+def test_rollback_copies_the_old_manifest_into_a_new_version_and_the_draft() -> None:
+    old = _manifest(name="Old name")
+    cur = _manifest(name="New name")
+    db = _FakeDb(_pkg_row(cur, live=2), _ver_row(old, 1), _ver_row(old, 3))
+    new = _run(store.rollback(db, "ana@x.test", str(uuid.uuid4()), 1))
+    assert new is not None and new.version == 3
+    assert _verbs(db) == ["SELECT id::text, slug,", "SELECT v.app_id::text, v.version,",
+                          "INSERT INTO app_versions", "UPDATE apps SET",
+                          "INSERT INTO app_audit"]
+    encoded = store.check_manifest(old)
+    assert db.calls[2][1]["manifest"] == encoded
+    point = db.calls[3]
+    assert point[1]["manifest"] == encoded and point[1]["name"] == "Old name"
+    assert "manifest = CAST" in point[0] and "live_version = :v" in point[0]
+    audit = json.loads(db.calls[4][1]["detail"])
+    assert (audit["to_version"], audit["new_version"], audit["from_version"]) == (1, 3, 2)
+    assert audit["draft_overwritten"] is True and db.calls[4][1]["kind"] == "rollback"
+
+
+def test_rollback_refuses_the_live_version_and_a_missing_one() -> None:
+    doc = _manifest()
+    live = _FakeDb(_pkg_row(doc, live=2), _ver_row(doc, 2))
+    with pytest.raises(store.PackageStoreError) as exc:
+        _run(store.rollback(live, "ana@x.test", str(uuid.uuid4()), 2))
+    assert str(exc.value) == store.ROLLBACK_LIVE
+    assert len(live.calls) == 2
+    missing = _FakeDb(_pkg_row(doc, live=2))
+    assert _run(store.rollback(missing, "ana@x.test", str(uuid.uuid4()), 9)) is None
+    assert len(missing.calls) == 2
+    none = _FakeDb()
+    assert _run(store.rollback(none, "ana@x.test", str(uuid.uuid4()), 1)) is None
+    assert len(none.calls) == 1
+
+
+@pytest.mark.parametrize("version", [0, -1, True, "1", None, 1.5])
+def test_rollback_refuses_a_bad_version_number_before_the_db(version: Any) -> None:
+    db = _FakeDb()
+    with pytest.raises(store.PackageStoreError):
+        _run(store.rollback(db, "ana@x.test", str(uuid.uuid4()), version))
+    assert db.calls == []
+
+
+@pytest.mark.parametrize("name", [
+    "_VERSION_LIST_SQL", "_VERSION_GET_SQL", "_PUBLISH_POINT_SQL", "_ROLLBACK_POINT_SQL"])
+def test_each_version_statement_filters_on_org_format_and_member(name: str) -> None:
+    sql = getattr(store, name)
+    assert "current_setting('app.tenant_id', true)" in sql
+    assert "format = 'manifest'" in sql and "owner_email = :m" in sql
+
+
+def test_the_version_insert_and_the_audit_name_no_org_and_publish_locks_the_row() -> None:
+    for sql in (store._VERSION_INSERT_SQL, store._AUDIT_SQL):
+        assert "organization_id" not in sql
+    assert "for_update=True" in inspect.getsource(store.publish_version)
+    assert "for_update=True" in inspect.getsource(store.rollback)
+
+
+def test_a_version_row_is_never_updated_or_deleted_and_no_review_is_proposed() -> None:
+    """A4 appends to `app_versions`. The review step of the App Workshop
+    (`app.publish_review`) never runs for a package, and `record_app_audit`
+    (it opens its own session) is not used. The store imports no route."""
+    source = (_ROOT / "apps" / "services" / "gateway" / "gateway" / "studio"
+              / "packages_store.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    scopes = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    docstrings = {id(n.body[0].value) for n in ast.walk(tree)
+                  if isinstance(n, scopes) and n.body and isinstance(n.body[0], ast.Expr)
+                  and isinstance(n.body[0].value, ast.Constant)}
+    code = [n for n in ast.walk(tree) if id(n) not in docstrings]
+    literals = [n.value for n in code if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    names = {n.id for n in code if isinstance(n, ast.Name)} | {
+        n.attr for n in code if isinstance(n, ast.Attribute)}
+    joined = "\n".join(literals)
+    assert not re.search(r"UPDATE\s+app_versions|DELETE\s+FROM\s+app_versions", joined, re.I)
+    assert "publish_review" not in joined and "propose" not in names
+    assert "record_app_audit" not in names
+    modules = {n.module or "" for n in code if isinstance(n, ast.ImportFrom)}
+    assert not any(m.startswith("gateway.routes") for m in modules)
+
+
+def test_the_a4_r8_suite_is_named_in_the_ci_skip_guard() -> None:
+    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
+    assert "tests/unit/test_studio_packages_versions_r8.py" in workflow
+
+
+def test_publish_and_rollback_run_check_manifest_on_the_stored_manifest(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+    real = store.check_manifest
+
+    def spy(doc: object) -> str:
+        seen.append(str(doc.get("name") if isinstance(doc, dict) else doc))
+        return real(doc)
+
+    monkeypatch.setattr(store, "check_manifest", spy)
+    doc = _manifest(name="Stored")
+    _run(store.publish_version(
+        _FakeDb(_pkg_row(doc), _ver_row(doc)), "ana@x.test", str(uuid.uuid4()), "", catalog={}))
+    assert seen == ["Stored"]
+    old = _manifest(name="Older")
+    _run(store.rollback(
+        _FakeDb(_pkg_row(doc, live=2), _ver_row(old, 1), _ver_row(old, 3)),
+        "ana@x.test", str(uuid.uuid4()), 1))
+    assert seen == ["Stored", "Older"]
