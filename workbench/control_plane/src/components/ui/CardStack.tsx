@@ -216,7 +216,10 @@ export default function CardStack({ total, index, onGo, tabs, noun, children }: 
           onKeyDown={onTabKey}
           onScroll={measure}
           data-fade={fade.left && fade.right ? "both" : fade.left ? "left" : fade.right ? "right" : undefined}
-          className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden data-[fade=both]:[mask-image:linear-gradient(to_right,transparent,#000_24px,#000_calc(100%-24px),transparent)] data-[fade=left]:[mask-image:linear-gradient(to_right,transparent,#000_24px)] data-[fade=right]:[mask-image:linear-gradient(to_right,#000_calc(100%-24px),transparent)]"
+          // ⚠️ A box that scrolls clips what leaves it, and the focus ring of
+          // a tab cut to two arcs (owner, 2026-11-01). The row keeps 4 px of
+          // room inside, and gives it back outside, so the ring fits whole.
+          className="-m-1 flex min-w-0 flex-1 items-center gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden data-[fade=both]:[mask-image:linear-gradient(to_right,transparent,#000_24px,#000_calc(100%-24px),transparent)] data-[fade=left]:[mask-image:linear-gradient(to_right,transparent,#000_24px)] data-[fade=right]:[mask-image:linear-gradient(to_right,#000_calc(100%-24px),transparent)]"
         >
           {tabs.map((t, i) => (
             <Button
