@@ -157,7 +157,7 @@ The table is tenant-scoped. WS-43 CA runs and Studio builds can use the same rec
 
 WEB-10 built the record and its store only. It added no route, no tool, no pack and no flag. WEB-11 is the first caller.
 
-- **Table.** `goal_records`, from the migration that creates it (324 at build). It has the tenant `organization_id` and FORCE RLS. The name is generic, because CA runs and Studio builds use it later.
+- **Table.** `goal_records`, from the migration that creates it (325). It has the tenant `organization_id` and FORCE RLS. The name is generic, because CA runs and Studio builds use it later.
 - **Columns.** `organization_id`, `id`, `member_email`, `kind` (default `research`), `objective` (1 to 2000 characters), `state`, `version`, `round_count`, `round_cap`, `cost_used_credits`, `cost_cap_credits`, `block_code`, `job_id`, `created_at`, `updated_at` and `finished_at`.
 - **`job_id`** names the `jobs` row that runs the goal. It has no foreign key. The goal is the state of the job, and the `jobs` queue stays as it is.
 - **States.** `active` and `blocked` are open. `done`, `failed` and `cancelled` are final. A goal in a final state does not change again, and its `finished_at` is set.
@@ -280,7 +280,7 @@ Each path was read on `f59a636b5`.
 
 WEB-10 added these two paths on 2026-11-01:
 
-- `infra/postgres/324_goal_records.sql` (the table `goal_records`)
+- `infra/postgres/325_goal_records.sql` (the table `goal_records`)
 - `packages/acb_common/acb_common/goal_store.py` (the one writer of `goal_records`)
 
 ---

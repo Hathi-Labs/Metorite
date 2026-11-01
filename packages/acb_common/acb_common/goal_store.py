@@ -1,7 +1,7 @@
 """The one writer of ``goal_records``, the goal record of a long job (WS-WEB WEB-10).
 
 Spec: ``project-docs/specs/web_research.md`` §6 and the §11 WEB-10 row.
-Table: migration ``goal_records`` (324 at build). ``tests/unit/test_goal_record_r8.py``
+Table: migration ``goal_records`` (324 at build, 325 at merge). ``tests/unit/test_goal_record_r8.py``
 runs this SQL on a real Postgres.
 
 **Why here.** The research job of WEB-11 runs in the orchestrator, and the

@@ -2,7 +2,7 @@
 
 Spec: ``project-docs/specs/web_research.md`` §6 and the §11 WEB-10 row. Code:
 ``packages/acb_common/acb_common/goal_store.py``. Migration: the file that
-creates ``goal_records`` (324 at build).
+creates ``goal_records`` (324 at build, 325 at merge).
 
 The store runs on a phase-4 promoted scratch database, as the non-privileged
 app role, so FORCE RLS binds. Two organizations, two members.

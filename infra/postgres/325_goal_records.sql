@@ -1,5 +1,5 @@
 -- ============================================================================
--- 324_goal_records.sql — the goal record of a long job (WS-WEB WEB-10,
+-- 325_goal_records.sql — the goal record of a long job (WS-WEB WEB-10,
 -- Metorite task 26607a5a).
 --
 -- What: one new table. `goal_records` holds one goal of one member: the
@@ -55,9 +55,10 @@
 -- Retention: no pruning yet. A later slice owns it. This file deletes nothing.
 -- The member purge (gateway/routes/admin/members.py) deletes the member's
 -- goals of the bound org.
--- The number is taken at build time (R1). On 2026-11-01 origin/main held 320,
--- 322 (322_apps_format.sql) and 323 (323_studio_objects.sql, STU-C1). An open
--- branch claimed 321 (PKG-4). Check it again at merge.
+-- The number was 324 at build time (R1). On 2026-11-01 origin/main held 320,
+-- 322 (322_apps_format.sql) and 323 (323_studio_objects.sql, STU-C1), and
+-- PKG-4 took 324 (324_package_registry.sql) at its merge. So this file took
+-- 325. Check it again at merge.
 -- Pinned by tests/unit/test_goal_record_r8.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================
