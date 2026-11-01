@@ -693,7 +693,7 @@ def test_the_call_time_refusal_holds_when_injection_misses_a_tool(
     sandbox, monkeypatch,  # noqa: F811
 ) -> None:
     _register_every_annotation()
-    monkeypatch.setattr(ti, "_withhold_egress_from_agent", lambda agent: [])
+    monkeypatch.setattr(ti, "_withhold_egress_from_agent", lambda agent, **_k: [])
     email = _email_turns()
     sent = _harness(monkeypatch, sandbox, {PA: _parent_calls(EMAIL), EMAIL: email})
     _run_parent(ORG_A)

@@ -142,6 +142,20 @@ def test_the_dropped_set_keeps_log_activity() -> None:
     assert Path(crm_tools.__file__).name == "crm_tools.py"
 
 
+async def test_a_run_in_a_covered_chain_reads_nothing(monkeypatch) -> None:
+    """H-236: a covered run sends no request it does not need. Its egress
+    control drops the three writes there anyway. Mutation: read the mode in a
+    covered chain -> ``calls`` is not empty -> red."""
+    from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
+
+    calls = _gateway(monkeypatch, {"mode": "mirror"})
+    agents = _M.build_agents()
+    with artifact_context_scope():
+        bind_artifact_context(no_egress=True, covered_chain=True)
+        await ti._drop_mirror_record_writes(agents)
+    assert calls == []
+
+
 async def test_a_held_run_reads_the_mode_because_it_keeps_the_writes(monkeypatch) -> None:
     """RX-1 (D150): a held chat keeps the record writes behind their cards. So
     the Mirror drop runs in a held run too, or a write would reach Zoho. Each

@@ -1668,10 +1668,16 @@ async def _drop_mirror_record_writes(agents: list[Any]) -> None:
     relay of the write tools is the fallback. A change in place holds for
     this run only (:func:`_own_tool_pools`).
 
-    RX-1: a ``no_egress`` run reads the mode too. The three writes are on
-    ``egress.HELD_CARD_WRITE_TOOLS``, so a held run keeps them, and in Mirror
-    mode a write would reach Zoho. An agent with none of them reads nothing.
+    RX-1: a held chat reads the mode too. The three writes are on
+    ``egress.HELD_CARD_WRITE_TOOLS``, so a held chat keeps them, and in Mirror
+    mode a write would reach Zoho. A run in a covered chain reads nothing: the
+    egress control drops the writes there (``egress.covered_chain``), and a
+    covered run sends no request that it does not need (H-236).
     """
+    from acb_skills.egress import covered_chain
+
+    if covered_chain():
+        return
     held = {
         _tool_name(t)
         for agent in agents for _attr, pool in _own_tool_pools(agent) for t in pool
