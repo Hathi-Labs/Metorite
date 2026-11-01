@@ -16,18 +16,25 @@ c. The slug is ``<manifest id>-<8 hex digits of the new id>``. A taken slug
    makes the store try a new id, and the last refusal names no slug.
 d. Each statement filters on the bound org, the format and the member, and no
    INSERT names an org.
-e. Each of the four App Workshop readers skips a package.
+e. Each of the five App Workshop readers skips a package. An empty
+   `workspace_path` never means the working directory.
+f. ``update_manifest`` refuses a new manifest id, and only the store writes
+   a package (a source scan of ``apps/`` and ``packages/``).
 """
 
 from __future__ import annotations
 
+import ast
+import contextlib
 import copy
 import inspect
 import json
 import re
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -340,12 +347,13 @@ def test_a_bad_package_id_is_refused_before_the_db(package_id: Any) -> None:
 def test_each_app_workshop_reader_skips_a_package() -> None:
     """Without the guard, a package shows in /apps, opens on a slug route,
     shows as a pin, or becomes an agent tool. The R8 twin runs each one."""
+    from gateway.routes import workspace
     from gateway.routes.apps import _common, lifecycle, pins
     from orchestrator import app_tools
 
     guard = "format IS DISTINCT FROM 'manifest'"
     for fn in (_common.load_app, lifecycle.list_apps, pins.list_pinned_apps,
-               app_tools._granted_live_apps):
+               app_tools._granted_live_apps, workspace._app_workspace_for):
         assert guard in inspect.getsource(fn), fn.__qualname__
 
 
@@ -355,3 +363,131 @@ def test_the_r8_twin_is_named_in_the_ci_skip_guard() -> None:
     This suite has no database gate, so it always reads the list."""
     workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
     assert "tests/unit/test_studio_packages_r8.py" in workflow
+
+
+def test_an_empty_workspace_path_is_never_the_working_directory() -> None:
+    """`Path('')` is `.`, the working directory of the process. A package
+    stores `workspace_path = ''`, so the one rule answers None for it."""
+    from fastapi import HTTPException
+    from gateway.routes.apps import _common
+
+    for value in ("", "   ", "\t", None):
+        assert _common.workspace_dir(value) is None, repr(value)
+        with pytest.raises(HTTPException) as exc:
+            _common.app_workspace(SimpleNamespace(workspace_path=value))
+        assert exc.value.status_code == 409
+    assert _common.workspace_dir("/srv/apps/quotes") == Path("/srv/apps/quotes")
+    assert _common.app_workspace({"workspace_path": "/srv/apps/quotes"}) == Path(
+        "/srv/apps/quotes")
+
+
+class _GraphSession:
+    """The sync session of ``acb_graph.tenant_session``: the apps read
+    answers *apps*, and each other read answers no row."""
+
+    def __init__(self, apps: list[Any]) -> None:
+        self.apps = apps
+
+    def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> Any:
+        rows = self.apps if "FROM apps" in str(stmt) else []
+        return SimpleNamespace(fetchall=lambda: list(rows))
+
+
+def _graph_with(monkeypatch: pytest.MonkeyPatch, apps: list[Any]) -> None:
+    import acb_graph
+
+    @contextlib.contextmanager
+    def _session(_org: Any) -> Iterator[_GraphSession]:
+        yield _GraphSession(apps)
+
+    monkeypatch.setattr(acb_graph, "tenant_session", _session)
+
+
+def test_app_workspace_for_refuses_an_empty_workspace_path(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An app row with `workspace_path = ''` never binds a session. Without
+    the guard, the path is the working directory, which holds every folder
+    below it, and the owner may write there."""
+    from gateway.routes.workspace import _app_workspace_for
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ben-app").mkdir()
+    inside_cwd = (tmp_path / "ben-app" / "index.html").resolve()
+    for blank in ("", "   "):
+        _graph_with(monkeypatch, [SimpleNamespace(
+            id="a1", owner_email="ana@x.test", workspace_path=blank)])
+        for write in (False, True):
+            assert _app_workspace_for(
+                inside_cwd, "ana@x.test", "org-a", write=write) is False, (blank, write)
+    # A real folder still binds, so the test is not empty.
+    real = tmp_path / "real-app"
+    real.mkdir()
+    _graph_with(monkeypatch, [SimpleNamespace(
+        id="a2", owner_email="ana@x.test", workspace_path=str(real))])
+    assert _app_workspace_for((real / "index.html").resolve(), "ana@x.test", "org-a",
+                              write=True) is True
+
+
+def _current_row(manifest: dict[str, Any]) -> tuple[Any, ...]:
+    now = datetime.now(UTC)
+    return (str(uuid.uuid4()), "quotes-00000000", manifest["name"], manifest["purpose"],
+            "ana@x.test", "private", "draft", json.dumps(manifest), None, now, now)
+
+
+def test_update_manifest_refuses_a_new_manifest_id() -> None:
+    """The slug holds the manifest id, so the id never changes. The store
+    reads the row with a lock, refuses, and runs no UPDATE."""
+    db = _FakeDb(_current_row(MANIFEST))
+    with pytest.raises(store.PackageStoreError) as exc:
+        _run(store.update_manifest(db, "ana@x.test", str(uuid.uuid4()),
+                                   _manifest(id="other-id")))
+    assert str(exc.value) == store.ID_FIXED
+    assert str(exc.value) == "The manifest id cannot change. Create a new package."
+    assert exc.value.paths == ["$.id"]
+    assert len(db.calls) == 1 and db.calls[0][0].endswith(" FOR UPDATE")
+    # The same id updates.
+    same = _FakeDb(_current_row(MANIFEST), _current_row(_manifest(name="Price quotes")))
+    got = _run(store.update_manifest(same, "ana@x.test", str(uuid.uuid4()),
+                                     _manifest(name="Price quotes")))
+    assert got is not None and got.name == "Price quotes"
+    assert [c[0].split()[0] for c in same.calls] == ["SELECT", "UPDATE"]
+
+
+_APPS_WRITE = re.compile(r"^\s*(?:INSERT\s+INTO|UPDATE)\s+apps\b", re.IGNORECASE)
+_NAMES_PACKAGE = re.compile(r"(?<![A-Za-z0-9_])format(?![A-Za-z0-9_])|'manifest'", re.IGNORECASE)
+#: A SET-list fragment that a caller joins into an UPDATE, as `sets` in
+#: routes/apps/publish.py: `format = ...` at the start or after a comma.
+_SETS_FORMAT = re.compile(r"(?:^|,)\s*format\s*=", re.IGNORECASE)
+
+
+def _strings(tree: ast.AST) -> Iterator[str]:
+    """Each string of a module. An f-string joins its text parts."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            yield node.value
+        elif isinstance(node, ast.JoinedStr):
+            yield "".join(v.value if isinstance(v, ast.Constant) else "{}" for v in node.values)
+
+
+def package_writers(root: Path = _ROOT) -> set[str]:
+    """Each module under apps/ and packages/ with a statement that writes a
+    package: an INSERT or UPDATE of `apps` that names `format` or
+    `'manifest'`, or a SET fragment of `format`."""
+    found: set[str] = set()
+    for top in ("apps", "packages"):
+        for path in (root / top).rglob("*.py"):
+            if ".venv" in path.parts or "__pycache__" in path.parts:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+            for s in _strings(tree):
+                if (_APPS_WRITE.match(s) and _NAMES_PACKAGE.search(s)) or _SETS_FORMAT.search(s):
+                    found.add(path.relative_to(root).as_posix())
+                    break
+    return found
+
+
+def test_only_the_package_store_writes_a_package() -> None:
+    """R7 for "only packages_store.py writes a package". The App Workshop
+    writers name no `format`, so each of their rows is `code`. The migration
+    and the tests are outside apps/ and packages/."""
+    assert package_writers() == {"apps/services/gateway/gateway/studio/packages_store.py"}

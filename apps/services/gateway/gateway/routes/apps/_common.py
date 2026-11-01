@@ -493,8 +493,27 @@ async def load_live_version_scopes(
     return manifest_scopes(parse_db_manifest(vrow.manifest)), (vrow.scope_set_hash or "")
 
 
+def workspace_dir(value: object) -> Path | None:
+    """The folder that an ``apps.workspace_path`` names, or None when it is
+    empty or blank.
+
+    ⚠️ ``Path('')`` is ``.``, so it resolves to the working directory of the
+    process. An empty path must never mean that folder. A Studio package
+    (WS-STU A3) stores ``workspace_path = ''``. Each reader of the column
+    goes through here. Fence: ``tests/unit/test_studio_packages_store.py``.
+    """
+    raw = "" if value is None else str(value)
+    return Path(raw) if raw.strip() else None
+
+
 def app_workspace(row: Any) -> Path:
-    return Path(str(_field(row, "workspace_path") or ""))
+    """The workspace folder of an App Workshop app. An app with no folder
+    (an empty or blank ``workspace_path``) answers 409, never the working
+    directory. See :func:`workspace_dir`."""
+    workspace = workspace_dir(_field(row, "workspace_path"))
+    if workspace is None:
+        raise HTTPException(status_code=409, detail="This app has no workspace.")
+    return workspace
 
 
 # ── Audit + activity (best-effort — never raise into the request path) ───────

@@ -34,7 +34,8 @@ refusal raises one :class:`PackageStoreError` that carries every path.
 never blocks a package of org B. When the slug is taken anyway, the INSERT
 writes nothing (``ON CONFLICT (slug) DO NOTHING``), and the store tries a new
 id. No refusal names the slug of another org. The slug never changes after
-the INSERT.
+the INSERT, and so the manifest id never changes either:
+:func:`update_manifest` refuses a new id.
 
 **Private and a draft.** A new package has ``visibility = 'private'``,
 ``status = 'draft'`` and ``workspace_path = ''``, because it has no files. No
@@ -68,6 +69,8 @@ MAX_FLOAT = 1e15
 SLUG_TRIES = 3
 #: The hex digits of the new id in the slug.
 SLUG_HEX = 8
+#: The refusal of an ``update_manifest`` that changes the manifest id.
+ID_FIXED = "The manifest id cannot change. Create a new package."
 
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 
@@ -317,10 +320,19 @@ async def update_manifest(db: Any, member: str, package_id: str,
     visibility, the status and the format do not change. Answers None when
     no package of the member has the id: then nothing changes. A manifest
     that fails :func:`check_manifest` raises before the database.
+
+    The manifest ``id`` cannot change, because the slug holds it. A new id
+    raises :class:`PackageStoreError` (:data:`ID_FIXED`) and writes nothing.
+    The read locks the row first, so a second writer reads the kept id.
     """
     m = _member(member)
     pid = _package_id(package_id)
     encoded = check_manifest(manifest)
+    current = await get_package(db, m, pid, for_update=True)
+    if current is None:
+        return None
+    if current.manifest.get("id") != manifest["id"]:
+        raise PackageStoreError(ID_FIXED, [ManifestError(path="$.id", message=ID_FIXED)])
     row = (await db.execute(text(_UPDATE_SQL), {
         "m": m, "id": pid, "manifest": encoded, "name": manifest["name"],
         "desc": manifest["purpose"]})).first()

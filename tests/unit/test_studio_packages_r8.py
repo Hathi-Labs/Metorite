@@ -33,8 +33,10 @@ f. Org B lists and reads none of org A's packages, and an unbound session
    reads none. A member reads only their own.
 g. Two orgs may hold one manifest id. A slug clash with another org leaks
    nothing, and the store takes a new id.
-h. `list_apps`, `load_app`, the pins and `app_tools` skip a package, and
-   still return a code app.
+h. `list_apps`, `load_app`, the pins, `app_tools` and the session-workspace
+   rule `_app_workspace_for` skip a package, and still return a code app.
+i. `update_manifest` refuses a new manifest id, and the row keeps its
+   manifest (fix round 1).
 
 **The mutations (R7).** Commit before each, and restore with git after.
 
@@ -66,6 +68,22 @@ Each result below was run on 2026-11-01, with both A3 suites.
 * M7. The migration: drop the trigger ``apps_format_fixed``. Both cases of
   ``test_r8_the_format_of_an_app_never_changes`` and the three schema tests
   go red.
+
+Fix round 1 (2026-11-01), with both A3 suites:
+
+* M8. ``routes/workspace._app_workspace_for``: drop the query guard
+  ``format IS DISTINCT FROM 'manifest'``.
+  ``test_r8_app_workspace_for_skips_a_package`` and
+  ``test_each_app_workshop_reader_skips_a_package`` go red.
+* M9. ``_app_workspace_for``: use ``Path(str(app.workspace_path))`` again in
+  place of ``workspace_dir``.
+  ``test_app_workspace_for_refuses_an_empty_workspace_path`` goes red.
+* M10. ``packages_store.update_manifest``: drop the check of the id.
+  ``test_r8_update_manifest_refuses_a_new_manifest_id`` and
+  ``test_update_manifest_refuses_a_new_manifest_id`` go red.
+* M11. A scratch copy of ``routes/apps/lifecycle.py`` whose INSERT writes
+  ``format = 'manifest'``. ``test_only_the_package_store_writes_a_package``
+  goes red.
 """
 
 from __future__ import annotations
@@ -186,13 +204,14 @@ _RAW_PACKAGE = (
     "VALUES (:slug, 'Raw', :m, CAST(:manifest AS jsonb), '', :format)")
 
 
-def _old_app(world: Any, org: str, slug: str, manifest: str = "{}") -> str:
+def _old_app(world: Any, org: str, slug: str, manifest: str = "{}",
+             workspace: str | None = None) -> str:
     """One code app of ANA, written as the App Workshop writes it."""
     async def go() -> str:
         async with tenant_session(org) as db:
             row = (await db.execute(text(_OLD_INSERT), {
                 "slug": slug, "m": ANA, "manifest": manifest,
-                "wp": f"/tmp/{slug}"})).one()
+                "wp": workspace or f"/tmp/{slug}"})).one()
         assert row[1] == "code"
         return str(row[0])
     return _go(world, go)
@@ -399,6 +418,25 @@ def test_r8_update_manifest_replaces_the_manifest_and_keeps_the_slug(world) -> N
     assert (updated.name, updated.description) == ("Price quotes", "Quotes and their prices.")
     assert (updated.id, updated.slug, updated.status) == (made.id, made.slug, "draft")
     assert updated.updated_at >= made.updated_at
+
+
+def test_r8_update_manifest_refuses_a_new_manifest_id(world) -> None:
+    """The slug holds the manifest id, so a new id is refused, and the row
+    keeps its manifest. The refusal runs no statement that fails, so the
+    session stays usable."""
+    a = world.p.org_a
+
+    async def go() -> tuple[store.Package, str, store.Package | None]:
+        made = await _create(a)
+        async with tenant_session(a) as db:
+            with pytest.raises(store.PackageStoreError) as exc:
+                await store.update_manifest(db, ANA, made.id, _manifest(mid="other-id"))
+            return made, str(exc.value), await store.get_package(db, ANA, made.id)
+
+    made, message, after = _go(world, go)
+    assert message == "The manifest id cannot change. Create a new package."
+    assert after is not None and after.manifest == _manifest()
+    assert after.slug == made.slug and after.slug.startswith(f"{MID}-")
 
 
 def test_r8_an_invalid_manifest_writes_nothing(world) -> None:
@@ -684,3 +722,36 @@ def test_r8_granted_live_apps_skips_a_package(graph_on_promoted) -> None:
         release_tenant(tok)
         clear_tenant()
     assert [slug for slug, _m in granted] == [code_slug]
+
+
+def test_r8_app_workspace_for_skips_a_package(graph_on_promoted, tmp_path, monkeypatch) -> None:
+    """The session-workspace rule (routes/workspace.py) never binds a session
+    through a package. Ana owns a package and a code app.
+
+    * The package as the store writes it, with `workspace_path = ''`, in a
+      working directory that holds a folder of Ben. Both guards close it.
+    * The same package with a real folder, as a bad row might hold. Only the
+      query guard skips it.
+    * The code app still binds, so the test is not empty."""
+    from gateway.routes.workspace import _app_workspace_for
+
+    world = graph_on_promoted
+    a = world.p.org_a
+    monkeypatch.chdir(tmp_path)
+    for name in ("ben-app", "code-app", "pkg-folder"):
+        (tmp_path / name).mkdir()
+    root = tmp_path.resolve()
+    _old_app(world, a, f"code-{TAG}", workspace=str(root / "code-app"))
+    pkg = _go(world, lambda: _create(a))
+
+    def binds(target: Path, write: bool) -> bool:
+        return _app_workspace_for(target, ANA, a, write=write)
+
+    for write in (False, True):
+        assert binds(root / "ben-app" / "index.html", write) is False, write
+        assert binds(root / "code-app" / "index.html", write) is True, write
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE apps SET workspace_path = :w WHERE id = CAST(:i AS uuid)"),
+                  {"w": str(root / "pkg-folder"), "i": pkg.id})
+    for write in (False, True):
+        assert binds(root / "pkg-folder" / "index.html", write) is False, write
