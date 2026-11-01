@@ -430,6 +430,23 @@ def test_the_studio_skill_tables_are_tenant_scoped(table: str) -> None:
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
 
 
+@pytest.mark.parametrize(
+    "table", ["studio_objects", "studio_object_fields", "studio_records", "studio_record_hot"],
+)
+def test_the_studio_object_tables_are_tenant_scoped(table: str) -> None:
+    """WS-STU C1 (``ai_studio.md`` §3.1). An object, its fields, its records
+    and their hot rows hold the data of one organization's apps. The tables
+    may not be exempt, and the committed policy phase must carry each (R5)."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_the_goal_record_table_is_tenant_scoped() -> None:
     """WS-WEB WEB-10 (``web_research.md`` §6). A goal record holds the
     objective of one member of one organization. The table may not be
