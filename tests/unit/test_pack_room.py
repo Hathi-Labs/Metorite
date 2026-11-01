@@ -38,6 +38,7 @@ from agent_framework import FunctionInvocationContext
 from orchestrator import _tool_injection as ti
 
 from tests.unit._egress_mark_store import install_memory_mark_store
+from tests.unit._native_maf_harness import ScriptedModel, text_turn, tool_turn
 from tests.unit.test_load_skill_tools import (
     CONFIG,
     MEMBER,
@@ -56,7 +57,6 @@ from tests.unit.test_load_skill_tools import (
     _tool_result,
     orchestrator,  # noqa: F401 - a pytest fixture
 )
-from tests.unit._native_maf_harness import ScriptedModel, text_turn, tool_turn
 
 EVERY = frozenset(sf.pack_slugs())
 REMIND = "remind me to call Ravi at 5"
