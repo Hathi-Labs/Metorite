@@ -311,6 +311,64 @@ def _sweep_scratch_organizations():
 
 
 @pytest.fixture(autouse=True)
+def _reset_the_access_tables_latch():
+    """Start and end every test with the access-tables latch OFF.
+
+    ``acb_auth.access._tables_missing`` is a process-wide latch. The first
+    ``resolve_access`` that fails with "does not exist" sets it, and from
+    then on every member in the process resolves to ``is_active=False``
+    without a query.
+
+    Measured 2026-11-01 (task 1332, pr-check run 41305223510, shard 4, and
+    a replay of that shard in the metorite-ci distro).
+    ``test_delegated_artifact_card.py`` ran an agent run whose access read
+    met a dropped database ("database acb_tenant_h3rls does not exist"), and
+    it left the latch set. Four admit tests in
+    ``test_h3_rls_promotion_rehearsal.py`` and ``test_h6_identity_shadow.py``
+    failed later in the shard, and passed alone. Nineteen suites guarded the
+    latch one by one. This guard covers every test.
+
+    ``sys.modules`` and not an import, so a test that never loads
+    ``acb_auth`` pays nothing. Fence:
+    ``tests/unit/test_cross_test_state_guards.py``.
+    """
+    import sys
+
+    access = sys.modules.get("acb_auth.access")
+    if access is not None:
+        access._tables_missing = False
+    yield
+    access = sys.modules.get("acb_auth.access")
+    if access is not None:
+        access._tables_missing = False
+
+
+@pytest.fixture(autouse=True)
+def _restore_the_database_url():
+    """End every test with the DATABASE_URL it started with.
+
+    ``tests/unit/_tenant_ladder.py::tenant_engine_scope`` points the shared
+    engine at a DSN through DATABASE_URL, and writes the old value back on
+    exit. Two scopes open in two concurrent tasks write back in the order
+    they finish. In the same replay (task 1332),
+    ``test_crm_z10d_modules_r8.py`` left DATABASE_URL naming its dedicated
+    database, and the module then dropped that database. Each later scope
+    saved and restored the stale value, so every later engine in the process
+    pointed at a database that did not exist.
+
+    The value at the start of a test already holds what a module or session
+    fixture set, so a fixture of a wider scope keeps its DSN. Fence:
+    ``tests/unit/test_cross_test_state_guards.py``.
+    """
+    before = os.environ.get("DATABASE_URL")
+    yield
+    if before is None:
+        os.environ.pop("DATABASE_URL", None)
+    else:
+        os.environ["DATABASE_URL"] = before
+
+
+@pytest.fixture(autouse=True)
 def _reset_agent_repo_refresh_clock():
     """The loader pulls a repo at most once per TTL. That clock is module
     state, so one test's pull would make the next test skip its own."""
