@@ -16,7 +16,10 @@ from pathlib import Path
 import pytest
 from acb_common.app_manifests import shell_manifest
 from acb_common.app_manifests.shell_manifest import (
+    SYSTEM_POINTS,
     ShellManifestError,
+    SystemContribution,
+    load_contributes,
     load_gates,
     load_jobs,
     load_vocabulary,
@@ -460,3 +463,50 @@ def test_no_hand_kept_access_map_remains():
     assert re.fullmatch(r"\[\s*\.\.\.GENERATED_ALWAYS_ALLOWED\s*\]", a.group(1).strip()), (
         "ALWAYS_ALLOWED is a hand-kept list: it must be a copy of GENERATED_ALWAYS_ALLOWED"
     )
+
+
+# ── PKG-5b: the system keys of the three points of the resolve ─────────────
+
+
+def test_contributes_are_the_keys_the_other_loaders_read():
+    """``load_contributes`` reads the same files as the other loaders, so its
+    keys and features equal theirs. The install store refuses each key."""
+    got = load_contributes()
+    assert tuple(got) == SYSTEM_POINTS == ("jobs", "nav", "cards")
+    jobs = load_jobs()
+    assert [(c.key, c.feature) for c in got["jobs"]] == [(j.id, j.feature) for j in jobs]
+    assert tuple(c.key for c in got["nav"]) == load_vocabulary().panes
+    assert tuple(c.key for c in got["cards"]) == load_vocabulary().cards
+    gated = dict(load_gates().href_features)
+    for c in got["nav"]:
+        assert c.feature == gated.get(c.key), c
+    assert {c.package for c in got["cards"]} == {"home"}
+    assert all(c.feature is None for c in got["cards"])
+    assert all(c.point == point for point, entries in got.items() for c in entries)
+    assert SystemContribution("jobs", "capture", "projects", "projects") in got["jobs"]
+    assert SystemContribution("nav", "/projects", "projects", "projects") in got["nav"]
+
+
+def test_contributes_loader_rejects_bad_files(tmp_path):
+    def attempt(**files: dict):
+        for p in tmp_path.glob("*.json"):
+            p.unlink()
+        for name, contributes in files.items():
+            _vocab_write(tmp_path, name, contributes)
+        return load_contributes(tmp_path)
+
+    ok = attempt(a={"nav": [{"href": "/a", "feature": "x"}, {"href": "/b"}]},
+                 home={"cards": [{"key": "c"}]})
+    assert ok == {
+        "jobs": (),
+        "nav": (SystemContribution("nav", "/a", "a", "x"), SystemContribution("nav", "/b", "a")),
+        "cards": (SystemContribution("cards", "c", "home"),),
+    }
+    with pytest.raises(ShellManifestError, match="duplicate nav key"):
+        attempt(a={"nav": [{"href": "/a"}]}, b={"nav": [{"href": "/a"}]})
+    with pytest.raises(ShellManifestError, match="duplicate cards key"):
+        attempt(home={"cards": [{"key": "c"}, {"key": "c"}]})
+    with pytest.raises(ShellManifestError, match=r"no '[?]'"):
+        attempt(a={"nav": [{"href": "/a?do=x"}]})
+    with pytest.raises(ShellManifestError, match="only 'key'"):
+        attempt(home={"cards": [{"key": "c", "feature": "x"}]})
