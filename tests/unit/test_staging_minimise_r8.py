@@ -192,9 +192,9 @@ def test_a_chat_summary_is_blanked(clone) -> None:
     and its other columns stay. Mutation: drop the UPDATE in ``minimise.sql``."""
     with clone.begin() as c:
         c.execute(text(
-            "INSERT INTO chat_session (id, user_id, agent_name, title, created_at, "
-            "updated_at, visibility, organization_id, member_summary) "
-            "VALUES ('pz35-keep', 'pz35@h3rls.test', 'orchestrator', 'Q3 deck', now(), now(), "
+            "INSERT INTO chat_session (id, user_id, agent_name, title, last_preview, "
+            "message_count, created_at, updated_at, visibility, organization_id, member_summary) "
+            "VALUES ('pz35-keep', 'pz35@h3rls.test', 'orchestrator', 'Q3 deck', 'Sure.', 7, now(), now(), "
             "'private', :o, CAST(:s AS jsonb))"),
             {"o": clone.org_a, "s": '{"v": 1, "text": "Planned the Q3 deck."}'})
     res = _run(clone, "h3rls-a")
