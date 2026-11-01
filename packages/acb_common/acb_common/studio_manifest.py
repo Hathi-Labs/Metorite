@@ -19,13 +19,25 @@ Schema export is ``studio_manifest.schema.json`` beside this file.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+from pydantic_core import PydanticCustomError
 
 from acb_common.app_manifests.base import APP_ID_PATTERN, CLASSES, OP_PATTERN, UUID_PATTERN
+from acb_common.app_manifests.shell_manifest import _CONTRIBUTES_KEYS as _P0_POINTS
+from acb_common.app_manifests.shell_manifest import SHELL_DIR
 from acb_common.secret_shapes import SECRET_SHAPES, is_secret_key
 from acb_common.studio_fields import (
     FIELD_TYPES,
@@ -49,6 +61,19 @@ BLOCKS: tuple[str, ...] = (
 )  # fmt: skip
 
 OBJECT_OPS: tuple[str, ...] = ("list", "get", "create", "update", "delete")
+
+#: The 13 contribution points of package_host.md section 4.
+CONTRIBUTION_POINTS: tuple[str, ...] = (
+    "nav", "page", "jobs", "search", "needs", "cards", "skill", "actions",
+    "triggers", "agent", "slot", "fields", "settings",
+)  # fmt: skip
+
+#: A `contributes` key is a point of section 4 or a P0-only key that the shell loader reads.
+#: The loader owns the second list (`_CONTRIBUTES_KEYS`), so this module keeps no copy of it.
+ALLOWED_POINTS: frozenset[str] = frozenset(CONTRIBUTION_POINTS) | frozenset(_P0_POINTS)
+
+#: The error type of a field that only a `studio` manifest must hold.
+_STUDIO_NEEDS = "studio_needs_field"
 
 #: The caps that bound the work. Each refusal names a path and one sentence.
 MAX_DOC_BYTES = 256 * 1024
@@ -223,9 +248,11 @@ class Manifest(_Strict):
             raise ValueError("`studio` must be the whole number 1")
         return v
 
+    kind: Literal["studio", "system"] = "studio"
     id: str = Field(pattern=rf"^{_DASHED}$")
-    name: str
-    purpose: str
+    # Required for `studio`. A `system` file (a P0 shell manifest) holds neither.
+    name: str | None = None
+    purpose: str | None = None
     team: str | None = None
     connections: list[str] = Field(default_factory=list)
     objects: list[ObjectDef] = Field(default_factory=list)
@@ -233,7 +260,35 @@ class Manifest(_Strict):
     views: list[ViewDef] = Field(default_factory=list)
     workflows: list[WorkflowDef] = Field(default_factory=list)
     skill: Skill | None = None
+    # The old `shell` block stays as it is. Its job shape (`verb`, `view`) differs from the
+    # P0 job shape in `contributes.jobs`, so the two are not merged.
     shell: Shell | None = None
+    # PKG-5a: package_host.md sections 3.1, 4, 5.4 and 8. Loose by design.
+    # PKG-14 to PKG-16 give `slots`, `needs` and `overrides` their meaning.
+    contributes: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    extends: str | None = Field(default=None, pattern=rf"^{_DASHED}$")
+    slots: list[dict[str, Any]] = Field(default_factory=list)
+    needs: list[dict[str, Any]] = Field(default_factory=list)
+    overrides: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("contributes")
+    @classmethod
+    def _points_are_known(
+        cls, v: dict[str, list[dict[str, Any]]]
+    ) -> dict[str, list[dict[str, Any]]]:
+        unknown = sorted(set(v) - ALLOWED_POINTS)
+        if unknown:
+            raise PydanticCustomError("unknown_point", "Unknown point.", {"point": unknown[0]})
+        return v
+
+    @model_validator(mode="after")
+    def _studio_needs_a_name(self) -> Manifest:
+        missing = [f for f in ("name", "purpose") if getattr(self, f) is None]
+        if self.kind == "studio" and missing:
+            raise PydanticCustomError(
+                _STUDIO_NEEDS, "A studio manifest needs its name and purpose.", {"fields": missing}
+            )
+        return self
 
 
 # --- the validator ---------------------------------------------------------
@@ -377,7 +432,19 @@ def _structure_errors(exc: ValidationError, skip: set[str]) -> list[ManifestErro
         typ = e["type"]
         val = e.get("input")
         limit = 25
+        if typ == _STUDIO_NEEDS:
+            out.extend(_err(f"$.{f}", f"`{f}` is required here.") for f in e["ctx"]["fields"])
+            continue
         if path in skip:
+            continue
+        if typ == "unknown_point":
+            point = _short(e["ctx"]["point"])
+            out.append(
+                _err(
+                    path,
+                    f"`{point}` is not a contribution point. Use a point of package_host.md section 4.",
+                )
+            )
             continue
         if typ == "extra_forbidden":
             msg = f"`{_short(last)}` is not a v1 manifest key. Remove it."
@@ -651,3 +718,19 @@ def validate_manifest(doc: Any, *, catalog: Mapping[str, str] | None = None) -> 
             seen.add((e.path, e.message))
             unique.append(e)
     return sorted(unique, key=lambda e: e.path)
+
+
+def validate_shell_manifests(directory: Path | None = None) -> list[ManifestError]:
+    """Run :func:`validate_manifest` on every P0 shell file. Return all refusals.
+
+    Each path starts with the file name, so one list names the file and the key.
+    The loader (`shell_manifest.py`) stays the strict reader of these files.
+    """
+    out: list[ManifestError] = []
+    for path in sorted((directory or SHELL_DIR).glob("*.json")):
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        out.extend(
+            ManifestError(path=f"{path.name}{e.path[1:]}", message=e.message)
+            for e in validate_manifest(doc)
+        )
+    return out
