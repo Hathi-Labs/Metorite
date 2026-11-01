@@ -153,17 +153,6 @@ export const CHAT_PANE_HREF = "/chat";
 /** The line All apps shows when the sidebar's "Add apps" opens it. */
 export const ADD_APPS_HINT = "Star the apps you want in your sidebar.";
 
-/**
- * The count on panes the sidebar does not show. A run on a hidden pane
- * folds to Chat (`countRunsByApp`), and when Chat is hidden too its badge
- * had no row. The sidebar shows this count on "Add apps", the door to the
- * hidden apps, so a run is never out of sight.
- */
-export function strayCount(counts: Record<string, number>, shown: ReadonlySet<string>): number {
-  let n = 0;
-  for (const [href, c] of Object.entries(counts)) if (!shown.has(href)) n += c;
-  return n;
-}
 
 /** The account menu's panes, in their manifest order. */
 export function accountPanes(sections: readonly NavSection[]): NavPane[] {
@@ -201,6 +190,19 @@ export const ASSISTANT_LINK: AccountLink = {
 };
 
 /**
+ * Appearance in the account menu's Settings. Since 2026-11-01 it is also a
+ * sidebar app that a member stars on or off (owner: "keep it on the sidebar
+ * ... add or remove them in the favorites in All Apps"), so it is no longer
+ * an account pane. The account menu keeps it as a static link, as it keeps
+ * "Assistant settings", so a member who unstars it still finds it here.
+ */
+export const APPEARANCE_LINK: AccountLink = {
+  href: "/settings/appearance",
+  label: "Appearance",
+  icon: "Palette",
+};
+
+/**
  * The account menu's rows: the member's own pages, with "My access" after My
  * Profile, and "Assistant settings" after Appearance when `opts.assistant` is
  * true. That order puts Appearance first in the Settings group. A
@@ -223,7 +225,7 @@ export function accountLinks(
   // Right after My Profile, because both describe the member.
   const at = mine.findIndex((l) => l.href === "/people/me") + 1;
   const assistant = opts.assistant === true ? [ASSISTANT_LINK] : [];
-  return [...mine.slice(0, at), MY_ACCESS, ...mine.slice(at), ...assistant, ...org];
+  return [...mine.slice(0, at), MY_ACCESS, ...mine.slice(at), APPEARANCE_LINK, ...assistant, ...org];
 }
 
 /**

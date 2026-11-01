@@ -657,6 +657,39 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # STU-G1 (ai_studio.md section 6.2): the AI Studio builder tools, for the
+    # one assistant to hold in a Studio turn. The owner is `studio-builder`,
+    # which is NOT a second assistant. Seven stateless tools (G2 added the interview and the plan card): no draft store
+    # exists. A run loads a pack only where tool packs are on, and the pack
+    # builds nothing for an org that STUDIO_ORGS does not hold.
+    "studio": {
+        "label": "AI Studio builder",
+        "summary": (
+            "Build an AI Studio app: draft a manifest from a brief, patch it, "
+            "check it, outline it, list the actions it may use, ask the interview and show the plan card."
+        ),
+        "description": (
+            "A tool pack: the builder tools of AI Studio, for the main "
+            "assistant to load in a Studio turn. It holds the tools to draft "
+            "an app manifest, patch it, validate it, outline it and list the "
+            "actions an app may use. The tools keep no draft: the chat holds "
+            "the manifest. A run loads a pack only where tool packs are on, "
+            "so until then this switch has no effect."
+        ),
+        "tools": (
+            "studio_draft",
+            "studio_interview",
+            "studio_list_actions",
+            "studio_outline",
+            "studio_patch",
+            "studio_plan",
+            "studio_validate",
+        ),
+        "owner": "studio-builder",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
 }
 
 

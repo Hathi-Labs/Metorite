@@ -39,7 +39,9 @@ import FencedText from "@/components/FencedText";
 import GenUiText from "@/components/GenUiText";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import SandboxedHtml from "@/components/SandboxedHtml";
+import { EmptyState } from "@/components/EmptyState";
 import Button from "@/components/ui/Button";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { CollapsibleCardBody, CollapsibleCardHeader, useCardFold } from "@/components/ui/Collapsible";
 import SandboxedReact from "@/components/SandboxedReact";
 import { OWN_HEAD_TEMPLATES, renderTemplate } from "@/components/genUITemplates";
@@ -48,6 +50,13 @@ import { isEmptyNode } from "@/lib/genUiFallback";
 import { plainTitle } from "@/lib/fencedText";
 import { tableCells, tableColumns, text } from "@/lib/genUiText";
 import { resolveIcon } from "@/lib/icons";
+import {
+  actionDisabled, boundView, bindsSource, gridData, parseAction, parseSource, pressAction, sourceKey,
+  type BoundView, type Row, type StudioDataDoor,
+} from "@/lib/studio/dataDoor";
+import { StudioDataContext } from "@/lib/studio/dataContext";
+import { TypedActionButton } from "@/lib/studio/TypedActionButton";
+import { useCachedResource } from "@/lib/useCachedResource";
 import { type AccentHue, accentForHue } from "@/lib/statusAccent";
 
 // ─── Schema ────────────────────────────────────────────────────────────────
@@ -118,6 +127,78 @@ export function GenUiMarkdown({ content }: { content: string }) {
 /** Re-exported for its test. The component lives in `GenUiText.tsx`. */
 export { GenUiText };
 
+/**
+ * A node whose rows come from the page's door (STU-D1, `ai_studio.md` §5.2).
+ * A component of its own, because `Node` calls hooks before its guards and a
+ * conditional hook is unsafe. `Node` mounts it only when a door exists.
+ */
+/** The loading, error and empty states of a bound block. Words are plain. */
+export function BoundStatus({
+  view, onRetry, title,
+}: {
+  view: BoundView;
+  onRetry: () => void;
+  title?: string;
+}): React.ReactElement | null {
+  if (view === "loading") {
+    return (
+      <div className="space-y-2" aria-busy="true">
+        <Skeleton className="h-6 w-full" />
+        <Skeleton className="h-6 w-5/6" />
+        <Skeleton className="h-6 w-4/6" />
+      </div>
+    );
+  }
+  if (view === "error") {
+    return (
+      <div className="flex items-center gap-2 text-xs text-destructive" role="alert">
+        <span>Could not load this list.</span>
+        <Button type="button" variant="secondary" size="sm" onClick={onRetry}>Try again</Button>
+      </div>
+    );
+  }
+  if (view === "empty") {
+    return <EmptyState icon="Inbox" message={title ? `No ${title} yet` : "Nothing to show yet"} />;
+  }
+  return null;
+}
+
+function BoundSource({
+  node, door, onAction, answered, onDecline, depth,
+}: {
+  node: GenUINode;
+  door: StudioDataDoor;
+  onAction?: (action: string) => void;
+  answered?: string;
+  onDecline?: () => void;
+  depth: number;
+}): React.ReactElement | null {
+  const props = (node.props ?? {}) as Record<string, unknown>;
+  const source = parseSource(props.source);
+  const { data, loading, error, refresh } = useCachedResource<Row[]>(
+    source ? sourceKey(door, source) : null,
+    () => door.read(source as NonNullable<typeof source>),
+  );
+  const view = boundView({ data, loading, error });
+  if (view !== "rows") {
+    const title = s(props.title ?? (props.data as Record<string, unknown> | undefined)?.title, "");
+    return <BoundStatus view={view} onRetry={refresh} title={title} />;
+  }
+  const rows = data as Row[];
+  const { source: _drop, ...rest } = props;
+  void _drop;
+  const bound: GenUINode = s(node.type) === "template"
+    ? {
+      ...node,
+      props: {
+        ...rest,
+        data: gridData((rest.data ?? {}) as Record<string, unknown>, rows),
+      },
+    }
+    : { ...node, props: { ...rest, rows } };
+  return <Node node={bound} onAction={onAction} answered={answered} onDecline={onDecline} depth={depth} />;
+}
+
 function Node({
   node, onAction, answered, onDecline, depth = 0,
 }: {
@@ -132,14 +213,25 @@ function Node({
   // The chat card this tree draws in, if it folds (`components/RollupCard`).
   // Read before the guards below, so the hook runs on every render.
   const fold = useCardFold();
+  // The page's data door, or null in chat. Read before the guards, for the
+  // same reason (STU-D1).
+  const door = useContext(StudioDataContext);
   // Depth guard — a pathological/looping tree can't blow the stack.
   if (depth > 20) return null;
   if (!node || typeof node !== "object") return null;
   // A node that holds nothing draws nothing: no frame, no gap, no bar
   // (`lib/genUiFallback.ts`). An empty callout drew a lone accent bar.
-  if (isEmptyNode(node)) return null;
   const type = s(node.type);
   const props = (node.props ?? {}) as Record<string, unknown>;
+  // With a door, a bound node draws its loading, empty and error states, so
+  // it is not "empty" for want of rows.
+  if (door && bindsSource(type, props)) {
+    return (
+      <BoundSource node={node} door={door} onAction={onAction} answered={answered}
+        onDecline={onDecline} depth={depth} />
+    );
+  }
+  if (isEmptyNode(node)) return null;
   const kids = Array.isArray(node.children) ? node.children : [];
 
   const renderKids = () =>
@@ -157,12 +249,12 @@ function Node({
         // The header is the fold's `<button>`: plain words, never a link
         // (review of #945, P2, `plainTitle`).
         return (
-          <div className="rounded-lg border border-border/60 bg-card/50 p-3">
+          <div className="rounded-lg border border-border/60 bg-card/50 p-3 glass:rounded-[16px] glass:border-transparent glass:glass-raised glass:p-3 glass:glass-card-tile">
             <CollapsibleCardHeader
               title={title === null ? undefined : plainTitle(s(props.title))}
               quiet={title === null}
               className="text-sm"
-              titleClassName="font-semibold text-foreground"
+              titleClassName="font-semibold text-foreground glass:text-subhead"
             />
             <CollapsibleCardBody className={title !== null || fold.toggle ? "space-y-2 pt-2" : "space-y-2"}>
               {renderKids()}
@@ -171,9 +263,9 @@ function Node({
         );
       }
       return (
-        <div className="rounded-lg border border-border/60 bg-card/50 p-3 space-y-2">
+        <div className="rounded-lg border border-border/60 bg-card/50 p-3 space-y-2 glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
           {title !== null && (
-            <div className="text-sm font-semibold text-foreground">{title}</div>
+            <div className="text-sm font-semibold text-foreground glass:text-subhead">{title}</div>
           )}
           {renderKids()}
         </div>
@@ -187,18 +279,18 @@ function Node({
       return <div className="flex flex-wrap items-center gap-2">{renderKids()}</div>;
 
     case "heading":
-      return <div className="text-sm font-semibold text-foreground"><GenUiText text={s(props.text)} /></div>;
+      return <div className="text-sm font-semibold text-foreground glass:text-subhead"><GenUiText text={s(props.text)} /></div>;
 
     case "text":
       return (
-        <p className={`text-[13px] leading-relaxed ${
+        <p className={`text-[13px] leading-relaxed glass:text-label ${
           props.muted ? "text-muted-foreground" : "text-foreground"
         }`}><GenUiText text={s(props.text)} /></p>
       );
 
     case "markdown":
       return (
-        <div className="min-w-0 text-[13px] leading-relaxed text-foreground">
+        <div className="min-w-0 text-[13px] leading-relaxed text-foreground glass:text-label">
           {/* Pills only inside a Projects turn (WS-27bm S9): the names
               resolve against that turn's tools through `EntityIndexContext`.
               Anywhere else this is plain Markdown. */}
@@ -214,14 +306,14 @@ function Node({
       const hue = TONE_HUE[s(props.tone, "neutral")];
       if (!hue) {
         return (
-          <span className="inline-block text-[10px] font-medium px-1.5 py-0.5 rounded border border-border text-muted-foreground bg-secondary/50">
+          <span className="inline-block text-[10px] font-medium px-1.5 py-0.5 rounded border border-border text-muted-foreground bg-secondary/50 glass:rounded-full glass:border-transparent glass:text-caption">
             <FencedText text={s(props.text)} />
           </span>
         );
       }
       const accent = accentForHue(hue);
       return (
-        <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border border-transparent text-foreground ${accent.soft}`}>
+        <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded border border-transparent text-foreground ${accent.soft} glass:rounded-full glass:text-caption`}>
           <span aria-hidden className={`size-1.5 shrink-0 rounded-full ${accent.dot}`} />
           <FencedText text={s(props.text)} />
         </span>
@@ -234,7 +326,7 @@ function Node({
     case "keyValue": {
       const pairs = Array.isArray(props.pairs) ? props.pairs : [];
       return (
-        <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[12px]">
+        <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-[12px] glass:rounded-[10px] glass:bg-secondary glass:p-3 glass:text-footnote">
           {pairs.map((p, i) => {
             const pair = (p ?? {}) as Record<string, unknown>;
             return (
@@ -258,10 +350,10 @@ function Node({
       const cols = tableColumns(props.columns, rows);
       const hasHeader = cols.some((c) => c.label.trim());
       return (
-        <div className="overflow-x-auto rounded-md border border-border/60">
-          <table className="w-full text-left text-[12px]">
+        <div className="overflow-x-auto rounded-md border border-border/60 glass:rounded-[10px] glass:border-transparent glass:bg-secondary">
+          <table className="w-full text-left text-[12px] glass:text-footnote">
             {hasHeader && (
-              <thead className="bg-secondary/60">
+              <thead className="bg-secondary/60 glass:bg-transparent">
                 <tr>{cols.map((c, i) => (
                   <th key={i} className="px-2 py-1 font-medium text-muted-foreground">{c.label}</th>
                 ))}</tr>
@@ -269,7 +361,7 @@ function Node({
             )}
             <tbody>
               {rows.map((r, ri) => (
-                <tr key={ri} className="border-t border-border/60">
+                <tr key={ri} className="border-t border-border/60 glass:border-border">
                   {tableCells(r, cols).map((cell, ci) => (
                     <td key={ci} className="px-2 py-1 text-foreground"><GenUiText text={cell} /></td>
                   ))}
@@ -286,7 +378,7 @@ function Node({
       const ordered = !!props.ordered;
       const Tag = ordered ? "ol" : "ul";
       return (
-        <Tag className={`ml-5 space-y-0.5 text-[13px] text-foreground ${
+        <Tag className={`ml-5 space-y-0.5 text-[13px] text-foreground glass:text-label ${
           ordered ? "list-decimal" : "list-disc"
         } list-outside marker:text-muted-foreground`}>
           {items.map((it, i) => <li key={i}><GenUiText text={s(it)} /></li>)}
@@ -296,7 +388,7 @@ function Node({
 
     case "code":
       return (
-        <pre className="rounded-md bg-muted border border-border p-2.5 overflow-x-auto text-[11px] text-foreground font-mono">
+        <pre className="rounded-md bg-muted border border-border p-2.5 overflow-x-auto text-[11px] text-foreground font-mono glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:text-caption">
           {s(props.text)}
         </pre>
       );
@@ -315,20 +407,26 @@ function Node({
     }
 
     case "button": {
-      const action = s(props.action);
+      // A string action is a sentence for the agent. An object action is typed
+      // (`{ id, args?, message? }`): a page runs it through its door, and chat
+      // sends `message ?? id` as the sentence (`generative_ui_2.md` §3).
+      const action = parseAction(props.action);
       const label = s(props.label, "Action");
       const tone = s(props.tone, "default");
       // The one control primitive (DESIGN_SYSTEM.md rule 3), so the button
       // wears the theme's focus ring and state layer in both modes.
       const variant =
         tone === "primary" ? "primary" : tone === "danger" ? "destructive" : "secondary";
+      if (door && action?.kind === "typed") {
+        return <TypedActionButton door={door} action={action} label={label} variant={variant} />;
+      }
       return (
         <Button
           type="button"
           variant={variant}
           size="sm"
-          disabled={!action || !onAction}
-          onClick={() => action && onAction?.(action)}
+          disabled={actionDisabled(action, door, onAction)}
+          onClick={() => pressAction(action, door, onAction)}
         >
           {label}
         </Button>
@@ -338,7 +436,7 @@ function Node({
     case "callout": {
       const accent = accentForHue(TONE_HUE[s(props.tone, "info")] ?? "blue");
       return (
-        <div className={`rounded-md border border-border border-l-2 px-3 py-2 space-y-1 ${accent.bar} ${accent.soft}`}>
+        <div className={`rounded-md border border-border border-l-2 px-3 py-2 space-y-1 glass:rounded-[10px] glass:border-transparent glass:border-l-0 ${accent.bar} ${accent.soft}`}>
           {props.title != null && (
             <div className="text-[12px] font-semibold text-foreground"><GenUiText text={s(props.title)} /></div>
           )}
