@@ -36,7 +36,7 @@ from gateway.db import get_session_factory as _get_session_factory  # noqa: F401
 # context — bound once in `_with_resolved_access` — so no call site passes
 # one (H2). A call outside a bound request raises `TenantUnbound` rather than
 # defaulting: fail closed, never "the usual org".
-from gateway.db import tenant_session as _tenant_session  # noqa: F401
+from gateway.db import tenant_session as _tenant_session
 from sqlalchemy import text
 
 _log = get_logger("gateway.apps")
@@ -531,6 +531,61 @@ def app_workspace(row: Any) -> Path:
 
 # ── Audit + activity (best-effort — never raise into the request path) ───────
 
+#: The one statement that writes an ``app_audit`` row. Both writers below run it.
+_APP_AUDIT_SQL = (
+    """INSERT INTO app_audit
+       (app_id, app_version, user_email, kind, detail,
+        tokens_in, tokens_out, cost_usd, model)
+       VALUES (:app_id, :app_version, :user_email, :kind,
+               :detail ::jsonb, :tokens_in, :tokens_out,
+               :cost_usd, :model)"""
+)
+
+
+def _app_audit_params(
+    *, app_id: str, user_email: str, kind: str, detail: dict[str, Any] | None,
+    app_version: int | None, tokens_in: int = 0, tokens_out: int = 0,
+    cost_usd: float = 0.0, model: str = "",
+) -> dict[str, Any]:
+    return {
+        "app_id": app_id,
+        "app_version": app_version,
+        "user_email": user_email,
+        "kind": kind,
+        "detail": json.dumps(detail or {}, default=str),
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cost_usd": cost_usd,
+        "model": model,
+    }
+
+
+async def record_app_audit_bound(
+    *,
+    app_id: str,
+    user_email: str,
+    kind: str,
+    detail: dict[str, Any] | None = None,
+    app_version: int | None = None,
+) -> None:
+    """Append one ``app_audit`` row in the tenant that the request bound.
+
+    The twin of :func:`record_app_audit` for a caller in a request, such as
+    the Studio action door (STU-B2a). ``app_audit`` has FORCE RLS, so a row
+    needs a bound session. The unbound session of :func:`record_app_audit`
+    writes no row as a role without BYPASSRLS. Best-effort: it opens its own
+    ``tenant_session()``, and a failure logs and never raises. Call it after
+    the caller's own session closes, so a request holds one session at a time.
+    """
+    try:
+        async with _tenant_session() as db:
+            await db.execute(text(_APP_AUDIT_SQL), _app_audit_params(
+                app_id=app_id, user_email=user_email, kind=kind, detail=detail,
+                app_version=app_version))
+    except Exception as exc:
+        _log.warning("apps.audit_failed", kind=kind, error=str(exc)[:160])
+
+
 async def record_app_audit(
     *,
     app_id: str,
@@ -562,25 +617,11 @@ async def record_app_audit(
         db = await _get_db()
         try:
             await db.execute(
-                text(
-                    """INSERT INTO app_audit
-                       (app_id, app_version, user_email, kind, detail,
-                        tokens_in, tokens_out, cost_usd, model)
-                       VALUES (:app_id, :app_version, :user_email, :kind,
-                               :detail ::jsonb, :tokens_in, :tokens_out,
-                               :cost_usd, :model)"""
-                ),
-                {
-                    "app_id": app_id,
-                    "app_version": app_version,
-                    "user_email": user_email,
-                    "kind": kind,
-                    "detail": json.dumps(detail or {}, default=str),
-                    "tokens_in": tokens_in,
-                    "tokens_out": tokens_out,
-                    "cost_usd": cost_usd,
-                    "model": model,
-                },
+                text(_APP_AUDIT_SQL),
+                _app_audit_params(
+                    app_id=app_id, user_email=user_email, kind=kind, detail=detail,
+                    app_version=app_version, tokens_in=tokens_in,
+                    tokens_out=tokens_out, cost_usd=cost_usd, model=model),
             )
             await db.commit()
         finally:

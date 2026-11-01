@@ -662,6 +662,57 @@ def test_set_key_is_not_checked_on_a_non_object_action():
     assert validate_manifest(d) == []
 
 
+# --- PKG-5a: the fields of package_host.md section 3.1 ------------------------------
+
+SHELL_DIR = (
+    Path(__file__).resolve().parents[2] / "packages/acb_common/acb_common/app_manifests/shell"
+)
+
+
+def test_every_shell_manifest_passes_the_model():
+    from acb_common.studio_manifest import validate_shell_manifests
+
+    assert list(SHELL_DIR.glob("*.json")), "the P0 folder is empty"
+    assert validate_shell_manifests() == []
+
+
+def test_a_shell_file_with_an_unknown_point_is_refused():
+    doc = json.loads((SHELL_DIR / "crm.json").read_text(encoding="utf-8"))
+    doc["contributes"]["wallpaper"] = [{"id": "x"}]
+    errs = validate_manifest(doc)
+    assert [e.path for e in errs] == ["$.contributes"]
+    assert "wallpaper" in errs[0].message
+    assert len(errs[0].message.split()) <= 25
+
+
+def test_a_system_file_with_an_unknown_top_level_key_is_refused():
+    doc = json.loads((SHELL_DIR / "crm.json").read_text(encoding="utf-8"))
+    doc["colour"] = "red"
+    errs = validate_manifest(doc)
+    assert errs
+    assert any(e.path == "$.colour" for e in errs)
+
+
+def test_a_studio_manifest_without_a_name_still_fails():
+    doc = copy.deepcopy(EXAMPLE)
+    del doc["name"]
+    errs = validate_manifest(doc)
+    assert [(e.path, e.message) for e in errs] == [("$.name", "`name` is required here.")]
+    doc2 = json.loads((SHELL_DIR / "crm.json").read_text(encoding="utf-8"))
+    doc2["kind"] = "studio"
+    assert {e.path for e in validate_manifest(doc2)} == {"$.name", "$.purpose"}
+
+
+def test_the_new_fields_default_and_the_kind_is_closed():
+    m = Manifest.model_validate(EXAMPLE)
+    assert m.kind == "studio"
+    assert m.contributes == {} and m.slots == [] and m.needs == [] and m.overrides == []
+    assert m.extends is None
+    bad = copy.deepcopy(EXAMPLE)
+    bad["kind"] = "plugin"
+    assert validate_manifest(bad)
+
+
 # --- C1: the field rules come from the one field-type module ------------------
 
 

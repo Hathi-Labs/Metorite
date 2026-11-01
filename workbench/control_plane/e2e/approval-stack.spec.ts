@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 /**
  * A stack of approval cards (owner, 2026-10-24): two cards wait at once. The
- * banner counts them, the dots move between them, a swipe on a touch screen
+ * tabs name them and move between them (owner, 2026-11-01), a swipe on a touch screen
  * moves to the next one, and an email card shows the subject as a row and
  * the mail in a frame of its own. Built on the held-send stubs.
  */
@@ -150,14 +150,20 @@ async function ask(page: Page, size = { width: 1440, height: 900 }) {
 test.describe("a stack of approval cards", () => {
   test.describe.configure({ timeout: 120_000 });
 
-  test("the banner counts the cards, the dots and the arrows move between them", async ({ page }) => {
+  test("the tabs name the cards, and a tab or an arrow key moves between them", async ({ page }) => {
     await ask(page);
-    const banner = page.locator("[data-card-stack-banner]");
-    await expect(banner).toContainText("2 approvals waiting");
+    const tabs = page.getByRole("tablist", { name: /2 approvals waiting/ });
+    await expect(page.locator("[data-card-stack-banner]")).toContainText("2 waiting");
+    await expect(tabs.getByRole("tab")).toHaveCount(2);
     await expect(page.locator("[data-card-stack-edge]")).toHaveCount(1);
     await expect(page.locator("[data-confirmation-card]")).toContainText("Send this draft?");
-    await banner.getByRole("button", { name: "Show card 2 of 2" }).click();
+    // Stacked, the card draws no pager of its own: the tabs are the switcher.
+    await expect(page.locator("[data-confirmation-pager]")).toHaveCount(0);
+    await tabs.getByRole("tab", { name: /Send this new email/ }).click();
     await expect(page.locator("[data-confirmation-card]")).toContainText("Send this new email?");
+    await expect(tabs.getByRole("tab", { selected: true })).toContainText("Send this new email");
+    await page.keyboard.press("ArrowLeft");
+    await expect(page.locator("[data-confirmation-card]")).toContainText("Send this draft?");
   });
 
   test("the email shows its subject as a row and the mail in its own frame", async ({ page }) => {

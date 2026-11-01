@@ -48,7 +48,8 @@ import hashlib
 import inspect
 import json
 import typing
-from typing import Any, Callable, Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # The registry (code-declared data; keep alphabetised inside each family)
@@ -659,14 +660,14 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     },
     # STU-G1 (ai_studio.md section 6.2): the AI Studio builder tools, for the
     # one assistant to hold in a Studio turn. The owner is `studio-builder`,
-    # which is NOT a second assistant. Seven stateless tools (G2 added the interview and the plan card): no draft store
+    # which is NOT a second assistant. Eight stateless tools (G1b added the describe tool, G2 the interview and the plan card): no draft store
     # exists. A run loads a pack only where tool packs are on, and the pack
     # builds nothing for an org that STUDIO_ORGS does not hold.
     "studio": {
         "label": "AI Studio builder",
         "summary": (
             "Build an AI Studio app: draft a manifest from a brief, patch it, "
-            "check it, outline it, list the actions it may use, ask the interview and show the plan card."
+            "check it, outline it, list the actions it may use, read the live schema, ask the interview and show the plan card."
         ),
         "description": (
             "A tool pack: the builder tools of AI Studio, for the main "
@@ -677,6 +678,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "so until then this switch has no effect."
         ),
         "tools": (
+            "studio_describe",
             "studio_draft",
             "studio_interview",
             "studio_list_actions",
@@ -1043,10 +1045,6 @@ def families_for_scope(
     del tool_scope  # reserved for S2 (declared-vs-effective display)
     out: list[str] = []
     for slug, fam in injected_families().items():
-        if not fam.get("scope_governed"):
-            out.append(slug)
-        elif resolved_scope is None:
-            out.append(slug)
-        elif resolved_scope & frozenset(fam["tools"]):
+        if not fam.get("scope_governed") or resolved_scope is None or resolved_scope & frozenset(fam["tools"]):
             out.append(slug)
     return out

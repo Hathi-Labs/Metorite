@@ -37,6 +37,7 @@ import Icon from "@/components/Icon";
 import { useRunActivity } from "@/hooks/useActiveSessions";
 import { shouldPollWorkspace } from "@/lib/access";
 import { visibleSections } from "@/lib/nav";
+import { morphAskBox } from "@/lib/panelMotion";
 
 import { closeActivity, openActivity, useActivityOpen } from "./ActivityControl";
 import { AskSheet, useAskSheetHost } from "./AskSheet";
@@ -233,17 +234,23 @@ export function AskField({
     return () => window.removeEventListener(FOCUS_ASK_FIELD, onFocus);
   }, []);
 
+  // At the foot, the bar's box becomes the chat's composer as the panel opens
+  // (`morphAskBox`): it is one box. The shell bar's field just opens it.
+  const toChat = (open: () => void) => (foot ? morphAskBox("into-chat", open) : open());
+
   const ask = () => {
     const words = text.trim();
     setShowing(false);
     setActiveKey(null);
     fieldRef.current?.blur();
     if (!words) {
-      openAssistant();
+      toChat(() => openAssistant());
       return;
     }
-    openAssistant({ text: words });
-    setText("");
+    toChat(() => {
+      openAssistant({ text: words });
+      setText("");
+    });
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -295,7 +302,7 @@ export function AskField({
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => {
                 fieldRef.current?.blur();
-                openAssistant({ text: s });
+                toChat(() => openAssistant({ text: s }));
               }}
               className="cc-link rounded-full border border-border bg-card px-3 py-1 text-xs text-foreground hover:bg-secondary glass:border-transparent glass:glass-chrome glass:text-footnote"
             >
@@ -397,10 +404,12 @@ export function AskField({
             aria-label="Open the chat beside the page"
             title={`Chat beside the page (${keyLabel.replace("K", "J")})`}
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => {
-              closeActivity();
-              openAssistant({ mode: "dock" });
-            }}
+            onClick={() =>
+              toChat(() => {
+                closeActivity();
+                openAssistant({ mode: "dock" });
+              })
+            }
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground tech-transition"
           >
             <Icon name="PanelRight" size={15} />

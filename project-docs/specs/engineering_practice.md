@@ -243,8 +243,9 @@ owner sees a missing preview, because no approval arrives.
 
 #### 1.3.1 The production copy on this PC (LD-8a, LD-8b, LD-8c)
 
-**Status, 2026-10-31:** 🟠 specified, not built. The spec-auditor gave
-GO-NARROWED and split LD-8 into three slices. LD-8c goes first.
+**Status, 2026-10-31:** 🟡 LD-8c is built (PR 1554), and it reaches
+production at the 21:30 UTC release. LD-8a and LD-8b are in build. The
+spec-auditor gave GO-NARROWED and split LD-8 into three slices.
 
 **Owner approval, 2026-10-31, in chat.** Production writes a reduced copy each
 night (`scripts/staging_export.sh`). It holds the organizations in
@@ -272,10 +273,15 @@ no sudo.
 
 - `scripts/backup_db.sh` starts the verify container with
   `-c maintenance_work_mem=256MB`. Fence: `tests/unit/test_backup_deploy_wiring.py`.
-- `minimise.sql` truncates `push_subscriptions`, and blanks the three columns
-  above. Its step 6 name check also catches `p256dh`, `auth` and `code_hash`.
-  Fences: `tests/unit/test_staging_minimise_r8.py` (R8) and
+- `minimise.sql` deletes `push_subscriptions` (with RE-9b), and blanks the
+  three columns above. The plugin auth also leaves `plugins.manifest`. Each
+  open WhatsApp act closes. Its step 6 name check also catches `p256dh`,
+  `auth`, `code_hash`, any `token` and `encryption_key`. Fences:
+  `tests/unit/test_staging_minimise_r8.py` (R8) and
   `tests/unit/test_staging_export.py`.
+- Each restore script asks for 256 MB too (`restore_db.sh`,
+  `staging_refresh.sh`). The production pooler ignores that request, so H-441
+  holds the disaster-restore fix.
 - Proof: the backup at 02:30 UTC on 2026-11-01 logs "restore verified", and a
   new `current` copy appears.
 

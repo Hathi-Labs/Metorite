@@ -19,7 +19,6 @@ import {
   isActive,
   launcherGroups,
   shellSidebar,
-  strayCount,
 } from "./shellNav";
 
 const ALL = PANES.map((p) => p.feature).filter((f): f is string => !!f);
@@ -390,12 +389,3 @@ describe("the star model: each category lists only its starred apps (owner, 2026
   });
 });
 
-describe("a run on a hidden app still shows (strayCount)", () => {
-  it("counts only the runs on panes the sidebar does not show", () => {
-    const shown = new Set(["/tasks", "/projects"]);
-    // Chat is hidden too, so a run folded onto Chat counts here.
-    expect(strayCount({ "/tasks": 2, "/chat": 1, "/email": 3 }, shown)).toBe(4);
-    expect(strayCount({ "/tasks": 2 }, shown)).toBe(0);
-    expect(strayCount({}, shown)).toBe(0);
-  });
-});

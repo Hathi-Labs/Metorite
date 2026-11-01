@@ -83,6 +83,22 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-441 · A restore through the production pooler still builds indexes at 64 MB, and `restore_db.sh` hides a failed restore · [AGENT]
+- **Metorite:** no task yet, so the full entry is here. The parent is #1229 (LD-8c).
+- **Why:** LD-8c sends `maintenance_work_mem=256MB` to each restore through `PGOPTIONS`.
+  - **Measured on production, 2026-10-31:** with the PG names of `/etc/acb/root.env`, the Supabase session pooler (port 5432) takes the connection and ignores the option. `show maintenance_work_mem` reads 64MB with and without it.
+  - So a disaster restore there still fails on a large IVFFlat index (lists = 100, about 9,500 rows or more), such as `email_embeddings` or `wa_message_embeddings`.
+  - Also, `restore_db.sh` ends each `pg_restore` with `| tail -20 || true`. The error prints, and the script goes on as if the restore worked.
+- **Do this:**
+  1. Find a way that reaches the server, and measure it with `show maintenance_work_mem`. Options:
+     - a direct connection, not the pooler
+     - `ALTER ROLE <restore role> SET maintenance_work_mem = '256MB'` for the restore, then `RESET`
+     - a rebuild of each failed index after the restore, in a session that runs `SET maintenance_work_mem`
+  2. In `restore_db.sh`, keep the exit code of `pg_restore`. Print each `pg_restore: error` line, and exit 1 on one. Fence it in `tests/unit/test_backup_deploy_wiring.py`.
+- **Check:** `rg -n 'tail -20 \|\| true' scripts/restore_db.sh`. A hit means part 2 is open. Part 1 stays open until a PR records a `show maintenance_work_mem` of `256MB` through the path that the restore uses.
+- **Authority:** LD-8c review, 2026-10-31, finding 2. `specs/backup_and_restore.md` §2 holds the 256 MB rule.
+- **Added:** 2026-10-31 · LD-8c repair round 1, branch `ld8c-backup-minimise-mt-d6426e98`
+
 ### H-433 · Check the chat prompt for notifications on a real phone, on production · [OWNER]
 - **Metorite:** #600 (OB-8). The task holds the checks and the state.
 - **Check:** task #600 is not Done → still pending. `PUSH_PROMPT_ORGS=*` is set in production since 2026-10-31 (D144, staging retired). The owner checks the three choices on an Android phone and in the iPhone Home Screen app.

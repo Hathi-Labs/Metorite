@@ -24,8 +24,8 @@
 
 import { useReducer, useState } from "react";
 
-import ConfirmationCard from "@/components/ConfirmationCard";
-import CardStack from "@/components/ui/CardStack";
+import ConfirmationCard, { cardSummary } from "@/components/ConfirmationCard";
+import CardStack, { type CardStackTab } from "@/components/ui/CardStack";
 import {
   NO_TICKS,
   rowTicksReducer,
@@ -33,6 +33,7 @@ import {
   type PendingConfirmation,
   type RowsApproval,
 } from "@/lib/confirmationQueue";
+import { unfenced } from "@/lib/fencedText";
 import type { ReplyApproval } from "@/lib/replyCard";
 
 /** A plain answer, an Approve that names the ticked rows of a card with
@@ -89,6 +90,7 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
   }
   const go = (to: number) => setShown({ key: cards[to].key, index: to });
   const view = rowsView(card, ticks);
+  const stacked = cards.length > 1;
   const shownCard = (
     <ConfirmationCard
       // A new key per card: a long body scrolled on one card does not stay
@@ -102,12 +104,13 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
       error={errors?.get(card.key)}
       rows={view.rows}
       onToggle={(id, on) => tick({ type: "toggle", card, id, on })}
-      position={{
-        index: at,
-        total: cards.length,
-        onPrev: () => go(Math.max(0, at - 1)),
-        onNext: () => go(Math.min(cards.length - 1, at + 1)),
-      }}
+      // Stacked, the stack's tabs are the one switcher (owner, 2026-11-01),
+      // so the card draws no "1 of N" pager of its own.
+      position={
+        stacked
+          ? undefined
+          : { index: at, total: cards.length, onPrev: () => go(Math.max(0, at - 1)), onNext: () => go(Math.min(cards.length - 1, at + 1)) }
+      }
       onApprove={() => {
         // One respond-input: the Approve and the ticked ids together. The
         // answered card carries the ticks, so a restore shows them again.
@@ -118,11 +121,21 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
       {...(card.reply !== undefined ? { reply: card.reply, onReply: (a: ReplyApproval) => onAnswer(card, a) } : {})}
     />
   );
-  // The stack's banner, deck edges, swipe and spring (owner, 2026-10-24)
-  // are the shared `CardStack`; a single card draws as it is.
+  // The stack's tabs, deck edges, swipe and spring (owner, 2026-10-24 and
+  // 2026-11-01) are the shared `CardStack`; a single card draws as it is.
   return (
-    <CardStack total={cards.length} index={at} onGo={go} keys={cards.map((c) => c.key)}>
+    <CardStack total={cards.length} index={at} onGo={go} tabs={cards.map(cardTab)}>
       {shownCard}
     </CardStack>
   );
+}
+
+/** A card's tab: its kind and the short name its own header leads with. */
+export function cardTab(card: PendingConfirmation): CardStackTab {
+  const { summary } = cardSummary(card.title, card.detail);
+  return {
+    key: card.key,
+    label: card.fenced ? unfenced(summary) : summary,
+    icon: card.reply !== undefined ? "Reply" : "ShieldCheck",
+  };
 }

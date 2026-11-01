@@ -1489,6 +1489,20 @@ CREATE POLICY studio_skill_versions_tenant_isolation ON studio_skill_versions
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE package_install ENABLE ROW LEVEL SECURITY;
+ALTER TABLE package_install FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS package_install_tenant_isolation ON package_install;
+CREATE POLICY package_install_tenant_isolation ON package_install
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE package_contribution ENABLE ROW LEVEL SECURITY;
+ALTER TABLE package_contribution FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS package_contribution_tenant_isolation ON package_contribution;
+CREATE POLICY package_contribution_tenant_isolation ON package_contribution
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE studio_objects ENABLE ROW LEVEL SECURITY;
 ALTER TABLE studio_objects FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS studio_objects_tenant_isolation ON studio_objects;

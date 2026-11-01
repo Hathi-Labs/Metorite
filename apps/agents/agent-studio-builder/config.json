@@ -28,6 +28,7 @@
     "make_report"
   ],
   "own_tool_scope": [
+    "studio_describe",
     "studio_draft",
     "studio_interview",
     "studio_list_actions",

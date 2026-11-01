@@ -42,7 +42,9 @@ transactions each hold it, and then each waits for the other before it can
 take the exclusive lock of a registry change. That is a deadlock.
 ``test_studio_objects_r8.py`` runs the interleaving that deadlocked before.
 
-**Reads are by id only.** The list, the filter and the sort are C2. Each record
+**Reads are by id only.** The list, the filter and the sort are C2. The one
+other read is :func:`get_object_by_name`: the door (B2) reads an object of one
+package by the name in its manifest. Each record
 function names the package, the object and the record. A statement finds the
 record only when the object row of the bound org has that package. So a door
 of one package cannot read or write a record of another package, also with a
@@ -103,9 +105,12 @@ _RECORD_COLUMNS = "id::text, object_id::text, data, created_by, updated_by, crea
 #: The value columns of a hot row, as ``jsonb_to_recordset`` reads them.
 _HOT_SET = "AS x(k text, t text, n numeric, ts timestamptz, b boolean)"
 
+#: Only a Studio package owns an object. An App Workshop app (``format`` is
+#: ``code`` or NULL) owns none (STU-B2a, the gap of C1).
 _PACKAGE_SQL = (
     "SELECT 1 FROM apps "
-    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:pid AS uuid)"
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:pid AS uuid) "
+    "AND format = 'manifest'"
 )
 
 _OBJECT_COUNTS_SQL = (
@@ -138,6 +143,13 @@ _DEFINE_SQL = (
 _GET_OBJECT_SQL = (
     f"SELECT {_OBJECT_COLUMNS} FROM studio_objects "
     f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid)"
+)
+
+#: An object of one package by its name. The pair is unique in an org.
+_OBJECT_BY_NAME_SQL = (
+    f"SELECT {_OBJECT_COLUMNS} FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) "
+    "AND name = :name"
 )
 
 #: A registry change locks the object row, so it waits for each record write.
@@ -415,7 +427,8 @@ async def define_object(db: Any, actor: str, *, package_id: str, name: str,
                         fields: Sequence[Mapping[str, Any]] = ()) -> StudioObject | None:
     """Define the object *name* of the package *package_id*, with its fields.
 
-    Answers None when the bound org holds no package of the id. Raises
+    Answers None when the bound org holds no Studio package of the id. An App
+    Workshop app is not a package, so it answers None too. Raises
     :class:`ObjectNameTaken` when the package holds the name already, and
     :class:`BudgetExceeded` past a cap: 50 objects for each package, 200 for
     each org, 60 fields for each object, and the hot budget. Each field spec
@@ -455,6 +468,21 @@ async def get_object(db: Any, object_id: str) -> StudioObject | None:
     if row is None:
         return None
     return _object(row, await _fields(db, oid))
+
+
+async def get_object_by_name(db: Any, name: str, *, package_id: str) -> StudioObject | None:
+    """The object *name* of the package *package_id* with its fields, or None.
+
+    A manifest names an object by its name (``object:<name>.<op>``), and the
+    door (B2) reads the id here. The name is unique in a package, so the
+    answer is one object or None. An object of another package never answers.
+    """
+    pid = _uuid(package_id, "package_id")
+    clean = _check_name(name)
+    row = (await db.execute(text(_OBJECT_BY_NAME_SQL), {"pid": pid, "name": clean})).first()
+    if row is None:
+        return None
+    return _object(row, await _fields(db, str(row[0])))
 
 
 async def add_field(db: Any, object_id: str, spec: Mapping[str, Any]) -> FieldSpec | None:
