@@ -182,8 +182,19 @@ The CHECKs of migration 326:
 **The unique key of a provider event.** `calendar_entries_external_uq` is
 UNIQUE on `(organization_id, connection_id, external_id)` where both are
 set. It covers EVERY source and every kind. So a sync that runs again adds
-no row, and a written-out event gets no `external` twin. Google `singleEvents=true`
-gives each instance of a series its own id, so the key holds for instances.
+no row, and a written-out SINGLE event gets no `external` twin. ⚠️ The key
+does not cover a written-out SERIES. With `singleEvents=true` the provider
+sends each instance of the master with its own id, so CE-10 must skip such
+an instance (§8.1 item 5).
+
+**The keys hold the org.** `calendar_entries_connection_fk` is
+`(organization_id, connection_id)` to `integration_connections
+(organization_id, id)`, with NO ACTION. The attendee key is
+`(organization_id, entry_id)` to `calendar_entries (organization_id, id)`,
+with ON DELETE CASCADE. So a row of one org never names a row of another
+org, and a delete of an org never fails on a row of another org. A partial
+index on `(organization_id, connection_id)` serves the check of a
+connection delete.
 
 **The sync cursor has no column here.** It lives on the connection row, in
 `integration_connections.provider_meta`.
@@ -1296,6 +1307,10 @@ gate.
    Graph delta query. The window is 30 days back and 180 days ahead.
 5. **The rows.** Each instance is an `external` entry, read only. A
    provider's "free" entry has `busy = false`. A cancel sets `status`.
+   ⚠️ **Skip an instance whose `recurringEventId` is the `external_id` of a
+   `metorite` row on the same connection.** That instance comes from a
+   series that Metorite wrote out (CE-11). The unique key of §3.3 does not
+   catch it, because the provider gives each instance its own id.
 6. **Conflicts.** `block_overlap` and MD-11's `meeting_overlap` read the busy
    external entries. The day planner treats them as fixed.
 
@@ -1313,7 +1328,8 @@ together. The owner gates of §8.3 still bind the live flips.
   `pending`, `sent` or `failed`.
 - The sync of CE-10 finds that row by the unique key
   `(organization_id, connection_id, external_id)` of §3.3, and updates it.
-  It never inserts an `external` copy of it.
+  It never inserts an `external` copy of a single event. For a series, the
+  rule of §8.1 item 5 skips each instance of the master.
 - Task blocks as busy time in the provider is a later choice (Q9).
 
 ### 8.3 Owner gates
@@ -1367,6 +1383,21 @@ needs no decision change.
 **The order.** CE-1 and CE-3 now. CE-0 is decided (D138). Then CE-4, CE-5,
 CE-6, CE-7b, CE-8, CE-9 and CE-12. Then CE-10 and CE-11 together, for Google
 and Outlook at once (D138).
+
+**Carried from the review of CE-4 (2026-11-01).** Each item belongs to the
+ticket that names it:
+
+- **CE-12:** CE-4 stores `task_id`, `crm_deal_id`, `crm_contact_id` and
+  `meeting_id` with no access check. CE-12 must check the access of the
+  member when it reads a link, or check it on the write.
+- **CE-9:** each attendee row keeps the org of its entry, because the
+  attendee key is `(organization_id, entry_id)`.
+- **CE-9:** the member purge must also take the guest rows that hold the
+  address (`email` is the address and `member_email` is NULL).
+- **CE-10:** give a title to a provider event that has none, and shorten a
+  title past 200 characters, before the insert.
+- **CE-5:** `PURGE_LABELS` in `OrganizationAdmin.tsx` needs a label for
+  `calendar_entries` and for `calendar_attendances`.
 
 ### 10.1 WS-66 — reminders and web push (D114)
 
