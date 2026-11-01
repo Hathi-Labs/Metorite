@@ -61,7 +61,10 @@ async def test_resolve_with_llm_picks_candidate(monkeypatch) -> None:
     cid = uuid4()
     cs = [ResolutionCandidate(entity_id=cid, score=0.8, reason="name match")]
 
-    async def fake_complete(*, tier, messages):
+    calls: list[str | None] = []
+
+    async def fake_complete(*, tier, messages, job=None):
+        calls.append(job)
         return "1"
 
     monkeypatch.setattr("orchestrator.resolution.complete", fake_complete)
@@ -69,6 +72,8 @@ async def test_resolve_with_llm_picks_candidate(monkeypatch) -> None:
         incoming={"name": "Acme"}, candidates=cs, candidate_summaries={cid: "Acme Inc"}
     )
     assert out == cid
+    # One integer is a pick among the candidates (task 1128).
+    assert calls == ["structured"]
 
 
 @pytest.mark.asyncio
@@ -76,7 +81,10 @@ async def test_resolve_with_llm_zero_means_new(monkeypatch) -> None:
     cid = uuid4()
     cs = [ResolutionCandidate(entity_id=cid, score=0.8, reason="name match")]
 
-    async def fake_complete(*, tier, messages):
+    calls: list[str | None] = []
+
+    async def fake_complete(*, tier, messages, job=None):
+        calls.append(job)
         return "0"
 
     monkeypatch.setattr("orchestrator.resolution.complete", fake_complete)
@@ -84,6 +92,9 @@ async def test_resolve_with_llm_zero_means_new(monkeypatch) -> None:
         incoming={"name": "Acme"}, candidates=cs, candidate_summaries={cid: "Acme Inc"}
     )
     assert out is None
+    # A fake that refused `job=` also gave None, through the error arm. So the
+    # model call must really have run for this None to mean "keep separate".
+    assert calls == ["structured"]
 
 
 @pytest.mark.asyncio
@@ -91,11 +102,15 @@ async def test_resolve_with_llm_swallows_exceptions(monkeypatch) -> None:
     cid = uuid4()
     cs = [ResolutionCandidate(entity_id=cid, score=0.8, reason="name match")]
 
-    async def boom(*, tier, messages):
+    async def boom(*, tier, messages, job=None):
         raise RuntimeError("LLM down")
 
+    events: list = []
     monkeypatch.setattr("orchestrator.resolution.complete", boom)
+    monkeypatch.setattr("orchestrator.resolution.record", events.append)
     out = await resolve_with_llm(
         incoming={"name": "Acme"}, candidates=cs, candidate_summaries={cid: "Acme Inc"}
     )
     assert out is None
+    # The error of the model call is in the audit, not a TypeError of the fake.
+    assert [e.payload["reason"] for e in events] == ["RuntimeError: LLM down"]

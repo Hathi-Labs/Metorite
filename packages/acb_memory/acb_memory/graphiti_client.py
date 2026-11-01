@@ -295,6 +295,12 @@ async def _is_episode_worthy(content: str) -> bool:
     entity, date, commitment, or decision; drop greetings / status pings /
     bare confirmations. Conservative — returns True on any error or ambiguity
     so the worst case is the pre-filter behaviour (record everything).
+
+    An EMPTY answer is no verdict, so it is uncertain, and the gate records
+    the episode (task 1128, repair round 1). It logs a warning, because a
+    blank answer means the model could not answer. Dropping the episode would
+    lose memory with no sign, for example when a chain step cannot turn
+    thinking off.
     """
     text = (content or "").strip()
     if len(text) < 20:
@@ -305,7 +311,8 @@ async def _is_episode_worthy(content: str) -> bool:
         verdict = await complete(
             tier=LLMTier.TIER_1,
             temperature=0.0,
-            max_tokens=4,
+            max_tokens=8,
+            job="structured",
             messages=[
                 {
                     "role": "system",
@@ -322,7 +329,11 @@ async def _is_episode_worthy(content: str) -> bool:
             # Deterministic gate → good candidate for the exact-match cache.
             enable_litellm_cache=True,
         )
-        return "no" not in verdict.strip().lower()[:4]
+        answer = (verdict or "").strip().lower()
+        if not answer:
+            _log.warning("graphiti.worthiness_gate_empty")
+            return True
+        return "no" not in answer[:4]
     except Exception as exc:
         _log.debug("graphiti.worthiness_gate_failed", error=str(exc)[:120])
         return True

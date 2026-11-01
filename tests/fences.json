@@ -54,6 +54,7 @@
       "tests/unit/test_import_no_network.py",
       "tests/unit/test_kb_one_index.py",
       "tests/unit/test_kb_visibility_one_seam.py",
+      "tests/unit/test_llm_jobs.py",
       "tests/unit/test_marketing_site.py",
       "tests/unit/test_meeting_bot_deploy_wiring.py",
       "tests/unit/test_member_seal.py",

@@ -161,6 +161,7 @@ async def summarize_group(db: Any, account_id: str, chat_id: str) -> dict[str, A
             messages=messages, temperature=0.2, max_tokens=400,
             feature="whatsapp.group_summary",
             response_format={"type": "json_object"},
+            job="writing",
         )
         parsed = parse_summary_response(resp.choices[0].message.content)
     except Exception as exc:

@@ -1,6 +1,27 @@
 import { describe, expect, it } from "vitest";
 
-import { extractCcIconNames } from "./ccBridge";
+import { extractCcIconNames, refusalText } from "./ccBridge";
+
+// Task 1128: a Custom App reads why its AI call failed. The gateway answers
+// an AI reply with no text as 502 `{detail: "..."}`, and the bridge read only
+// `error`, so the app saw "HTTP 502". Mutation: drop the `detail` arm, and
+// the second case fails.
+describe("refusalText", () => {
+  it("keeps the error code of a refusal", () => {
+    expect(refusalText({ error: "ai_budget_exhausted" }, 429)).toBe("ai_budget_exhausted");
+  });
+
+  it("reads FastAPI's detail when there is no error", () => {
+    expect(refusalText({ detail: "The model returned no text. Try again." }, 502)).toBe(
+      "The model returned no text. Try again.",
+    );
+  });
+
+  it("falls back to the status", () => {
+    expect(refusalText(null, 502)).toBe("HTTP 502");
+    expect(refusalText({ detail: { loc: ["body"] } }, 422)).toBe("HTTP 422");
+  });
+});
 
 describe("extractCcIconNames", () => {
   it("finds names from ccIcon(...) calls", () => {

@@ -33,6 +33,11 @@ from sqlalchemy import text
 _PASS_CHARS = 40_000
 _MAX_CHUNKS = 16  # runaway guard; excess is logged, never silently dropped
 
+#: The output cap of each meeting-notes pass: map, reduce and single (task
+#: 1128). The structured notes of a long meeting need room, and the old caps
+#: of 1200 and 1800 left too little for the answer.
+_NOTES_MAX_TOKENS = 4000
+
 _DEFAULT_MODELS = {
     "meeting_summary": "tier-powerful",
     "meeting_title": "tier-fast",
@@ -78,7 +83,16 @@ def _chunk_segments(segs: list[Any]) -> list[list[Any]]:
     return chunks
 
 
-async def _llm_json(system: str, user: str, model: str, max_tokens: int) -> dict | None:
+async def _llm_json(
+    system: str, user: str, model: str, *, max_tokens: int, job: str,
+) -> dict | None:
+    """One JSON-mode call of the notes app. Answers the parsed object, or None.
+
+    ``job`` names the kind of work (``acb_llm.jobs``, task 1128). Each caller
+    names it, so a member's ``NOTES_*_MODEL`` tier still runs with thinking
+    off for a writing job. An empty answer reads as None, as any unreadable
+    answer does, and the seam logs ``acb_llm.empty_answer``.
+    """
     try:
         from acb_llm.context import acompletion_with_fallback
 
@@ -92,6 +106,7 @@ async def _llm_json(system: str, user: str, model: str, max_tokens: int) -> dict
             temperature=0.0,
             max_tokens=max_tokens,
             response_format={"type": "json_object"},
+            job=job,
         )
         raw = resp.choices[0].message.content or ""
         start, end = raw.find("{"), raw.rfind("}")
@@ -156,7 +171,8 @@ async def _map_reduce(
             _MAP_SYSTEM,
             f"CHUNK {i + 1}/{len(chunks)} (DATA):\n{data}",
             model,
-            max_tokens=1200,
+            max_tokens=_NOTES_MAX_TOKENS,
+            job="writing",
         )
         if part:
             partials.append(part)
@@ -180,7 +196,8 @@ async def _map_reduce(
         + json.dumps(partials, ensure_ascii=False)
         + _scratch_block(scratch),
         model,
-        max_tokens=1800,
+        max_tokens=_NOTES_MAX_TOKENS,
+        job="writing",
     )
 
 
@@ -193,7 +210,8 @@ async def _single_pass(
         build_system_prompt(template),
         f"TRANSCRIPT (DATA):\n{data}" + _scratch_block(scratch),
         model,
-        max_tokens=1800,
+        max_tokens=_NOTES_MAX_TOKENS,
+        job="writing",
     )
 
 

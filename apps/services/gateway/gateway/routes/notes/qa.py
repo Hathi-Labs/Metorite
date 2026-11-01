@@ -139,6 +139,7 @@ async def ask_meeting(
         f"QUESTION: {question}\n\nTRANSCRIPT (DATA):\n{data}",
         _model("meeting_qa"),
         max_tokens=700,
+        job="writing",
     )
     if not result:
         raise HTTPException(status_code=502, detail="could not answer right now")

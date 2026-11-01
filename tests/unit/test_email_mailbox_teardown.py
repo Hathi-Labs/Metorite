@@ -454,6 +454,7 @@ async def test_the_mailbox_redis_keys_go_and_no_other(gmail, monkeypatch):
         ROW_ORG,
         ("email-brief", ACC, "2026-10-14", "abc123"),
         ("email-status-backoff", ACC, "thread-1", "msg-1"),
+        ("email-blank-rule", ACC, "msg-1"),
         ("email-llm", ACC, "2026-10-14"),
     )
     kept = _wire_keys(
@@ -469,12 +470,12 @@ async def test_the_mailbox_redis_keys_go_and_no_other(gmail, monkeypatch):
     assert await accounts.delete_account(ACC.upper(), user=_user()) is None
     assert fake.keys == kept, "a key of the mailbox stayed, or another key went"
     assert ("info", "email.disconnect.cache_dropped",
-            {"account_id": ACC, "keys": 3}) in g.log.lines
+            {"account_id": ACC, "keys": 4}) in g.log.lines
 
 
 def test_the_namespaces_are_the_writers_own():
     assert teardown._mailbox_namespaces() == (
-        "email-brief", "email-status-backoff", "email-llm")
+        "email-brief", "email-status-backoff", "email-blank-rule", "email-llm")
 
 
 async def test_a_redis_failure_still_answers_204(gmail, monkeypatch):

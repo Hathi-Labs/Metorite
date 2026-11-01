@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from email_ingestion.llm_cap import llm_slot
+from email_ingestion.llm_cap import LLMBudgetExhausted, llm_slot
 from gateway import outbound_guard
 from gateway.routes.email.automation.assistant import EMAIL_TASK_TIERS
 from gateway.routes.email.automation.drafting import (
@@ -291,14 +291,43 @@ def _load_action_attachments(
     return out
 
 
+class TemplateFillFailed(Exception):
+    """A ``{{...}}`` template got no filled text from the model (task 1128).
+
+    The action that needs the text fails, and the action loop records the
+    error. The raw template, braces and all, never reaches a label, a
+    subject or a draft. It is NOT ``LLMUnavailable``: the job keeps the
+    actions that it already took.
+
+    The message is what the member reads in History, so it is one of the
+    fixed texts below. It says what happened, why, and what to do next
+    (``DESIGN_SYSTEM.md`` §10). It never holds model or mail text.
+    """
+
+
+#: The History text of a template fill that got no text from the model.
+FILL_EMPTY = ("The AI could not fill this rule's template (it gave no text). "
+              "The action did not run. Open the email and run the rule again.")
+#: The History text of a template fill whose model call failed.
+FILL_FAILED = ("The AI could not fill this rule's template (the AI service did "
+               "not answer). The action did not run. Open the email and run the "
+               "rule again.")
+#: The History text of a template fill that the daily budget refused.
+FILL_BUDGET = ("This mailbox reached its daily AI limit. The action did not "
+               "run. Run the rule again tomorrow.")
+
+
 async def _render_template(template: str, email: dict[str, str]) -> str:
     """Fill an inbox-zero-style ``{{...}}`` template against the email context.
 
     Placeholders describe what to generate, e.g. ``{{choose "urgent",
     "normal"}}`` for a LABEL prompt or ``{{summarize the request}}`` in a draft.
     Returns the input unchanged when it has no ``{{`` placeholders (the common
-    case) so static fields never incur an LLM call. Best-effort: falls back to
-    the raw template on any error."""
+    case) so static fields never incur an LLM call.
+
+    Raises :class:`TemplateFillFailed` when the model call fails or gives no
+    text. The old fall back to the raw template wrote the ``{{...}}`` text
+    into the mailbox, so the caller's action now fails with a clear log."""
     if not template or "{{" not in template:
         return template
     try:
@@ -325,13 +354,19 @@ async def _render_template(template: str, email: dict[str, str]) -> str:
                           {"role": "user",
                            "content": f"Template:\n{template}\n\nEmail:\n{ctx}"}],
                 temperature=0, max_tokens=1000,
-                feature="email.template_fill",
+                feature="email.template_fill", job="writing",
             )
         out = (resp.choices[0].message.content or "").strip()
-        return out or template
+    except LLMBudgetExhausted as exc:
+        _log.warning("email.template_render_budget")
+        raise TemplateFillFailed(FILL_BUDGET) from exc
     except Exception as exc:
         _log.warning("email.template_render_failed", error=str(exc)[:200])
-        return template
+        raise TemplateFillFailed(FILL_FAILED) from exc
+    if not out:
+        _log.warning("email.template_render_empty")
+        raise TemplateFillFailed(FILL_EMPTY)
+    return out
 
 
 async def _draft_from_address(
@@ -632,6 +667,12 @@ async def _apply_rule_actions(
                 # leaves the thread with no draft (review round 1, F1).
                 if await _skip_for_paired_mailbox(db, account_id, message_id):
                     continue
+                # The subject fill runs BEFORE the thread check below, because
+                # it can raise and the check can trash the old draft. A failed
+                # fill then keeps that draft (task 1128). A kept draft pays one
+                # fill for a {{...}} subject, as a template body already does.
+                subj = await _render_template(
+                    a.get("subject") or f"Re: {email.get('subject', '')}", email)
                 # Dedup (inbox-zero handlePreviousDraftDeletion parity): at most
                 # one AI draft per thread — replace an unmodified prior draft,
                 # preserve one the user edited. Checked BEFORE generating so we
@@ -701,8 +742,6 @@ async def _apply_rule_actions(
                     append_signature_text,
                 )
                 body = append_signature_text(signature, body)
-                subj = await _render_template(
-                    a.get("subject") or f"Re: {email.get('subject', '')}", email)
                 to = a.get("to_address") or email.get("from", "")
                 if not to:
                     continue

@@ -17,12 +17,34 @@ from pathlib import Path
 from typing import Any
 
 from acb_common import get_logger
-from litellm import acompletion  # type: ignore[import-untyped]
+from litellm import (  # type: ignore[import-untyped]
+    acompletion,
+    get_llm_provider,
+    get_supported_openai_params,
+)
 
 from acb_llm.model_limits import STUB_MARKER
 from acb_llm.prompt_cache import apply_prompt_caching
 
 _log = get_logger("acb_llm")
+
+
+def litellm_takes_param(model: str, param: str) -> bool:
+    """Whether litellm sends *param* to *model* without a 400 (task 1128).
+
+    The rule behind :func:`acb_llm.jobs.model_takes`. It lives here because
+    this module already imports litellm, and the import stays the one
+    statement that ``tests/unit/test_no_direct_ai_vendor_calls.py`` counts.
+    Both helpers read litellm's tables and send no request. A model that
+    litellm cannot place reads as False.
+    """
+    try:
+        name, provider, _key, _base = get_llm_provider(model)
+        supported = get_supported_openai_params(
+            model=name, custom_llm_provider=provider) or []
+    except Exception:  # a model that litellm cannot place takes nothing
+        return False
+    return param in supported
 
 # Error substrings that indicate a transient failure worth retrying.
 _TRANSIENT_ERRORS = (
@@ -709,9 +731,13 @@ _init_litellm_cache()
 
 async def _routed_text(
     *, tier: str, messages: list[dict[str, Any]], temperature: float,
-    max_tokens: int,
+    max_tokens: int, extra: dict[str, Any] | None = None, job: str | None = None,
 ) -> str:
     """`complete`'s routed arm. Returns TEXT, because its caller expects text.
+
+    ``extra`` carries the request options. `completion_on_router` sends only
+    the keys that the Console names, such as ``thinking`` and
+    ``response_format``, and drops the litellm transport keys.
 
     ⚠️ `complete` answers a string, not a response object, so both arms must
     agree on that. Returning the object here would break every agent at once,
@@ -726,7 +752,7 @@ async def _routed_text(
 
     resp, _used = await completion_on_router(
         tier=tier, messages=messages, max_tokens=max_tokens,
-        temperature=temperature,
+        temperature=temperature, extra=extra, job=job,
     )
     choices = getattr(resp, "choices", None) or []
     if not choices:
@@ -742,6 +768,7 @@ async def complete(
     max_tokens: int = 1024,
     cache_key: str | None = None,
     enable_litellm_cache: bool = False,
+    job: str | None = None,
     **extra: Any,
 ) -> str:
     """Send a chat completion directly to the provider via litellm SDK.
@@ -754,7 +781,20 @@ async def complete(
     ``enable_litellm_cache=True`` to opt this call into the LiteLLM Redis
     exact-match response cache (Phase 5) — good for deterministic classify /
     triage / extraction calls that repeat with identical inputs.
+
+    ``job`` names the kind of work (:mod:`acb_llm.jobs`, task 1128). An empty
+    answer still returns ``""``, and it logs ``acb_llm.empty_answer`` first,
+    so the caller keeps its own rule for it. JSON mode gets the word "json".
     """
+    from acb_llm.jobs import (
+        apply_job,
+        ensure_json_word,
+        note_empty_answer,
+        params_for_model,
+    )
+
+    max_tokens, extra = apply_job(job, max_tokens=max_tokens, extra=extra)
+    messages = ensure_json_word(messages, extra.get("response_format"))
     await _ensure_keys_loaded()
 
     # ── H-171: the AGENT path bills too, or nothing does ──────────────
@@ -771,13 +811,15 @@ async def complete(
     if routing_is_on():
         return await _routed_text(
             tier=tier.value, messages=messages, temperature=temperature,
-            max_tokens=max_tokens,
+            max_tokens=max_tokens, extra=extra, job=job,
         )
 
     model = _TIER_MODEL[tier.value]
 
     # Dynamically register model so new provider models work immediately.
     ensure_model_registered(model)
+    # A thinking parameter only for a model that takes it (`acb_llm.jobs`).
+    extra = params_for_model(extra, model)
 
     # Provider-aware prompt caching (specs/llm_caching_memory.md Phase 2/3):
     # Anthropic cache_control blocks + OpenAI prompt_cache_key; sentinel stripped.
@@ -818,6 +860,7 @@ async def complete(
                 )
                 continue  # retry
             _emit_usage(model, tier.value, response)
+            note_empty_answer(response, model=model, job=job, max_tokens=max_tokens)
             content = choices[0]["message"]["content"]
             return content or ""  # type: ignore[no-any-return,index]
         except TimeoutError as exc:
