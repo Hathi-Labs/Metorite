@@ -60,8 +60,9 @@ describe("Enter asks, unless the member chose a result", () => {
     expect(field).toContain("data-ask-field-ask");
   });
 
-  it("the results drop below the field", () => {
-    expect(field).toContain("absolute left-0 right-0 top-full z-50 mt-1");
+  it("the results drop below the top field, and rise above the Ask bar at the foot", () => {
+    expect(field).toContain('"top-full mt-1 max-h-[70vh] flex-col"');
+    expect(field).toContain('"bottom-full mb-2 max-h-[60vh] flex-col-reverse glass:rounded-2xl"');
   });
 
   it("the placeholder says the field does all three", () => {

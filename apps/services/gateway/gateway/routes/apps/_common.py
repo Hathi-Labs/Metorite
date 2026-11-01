@@ -432,8 +432,13 @@ def check_bundle_size(data: bytes, cap: int = MAX_BUNDLE_BYTES) -> bytes:
 # ── Row loading + gating (shared by every feature module) ────────────────────
 
 async def load_app(db: Any, slug: str) -> Any:
+    """The App Workshop app *slug*, or None. A Studio package (format
+    'manifest', WS-STU A3) answers None, so each slug route gives 404 for
+    it. NULL reads as code. Fence: test_studio_packages_r8.py."""
     return (await db.execute(
-        text("SELECT * FROM apps WHERE slug = :slug"), {"slug": slug},
+        text("SELECT * FROM apps WHERE slug = :slug "
+             "AND format IS DISTINCT FROM 'manifest'"),
+        {"slug": slug},
     )).fetchone()
 
 
@@ -488,8 +493,40 @@ async def load_live_version_scopes(
     return manifest_scopes(parse_db_manifest(vrow.manifest)), (vrow.scope_set_hash or "")
 
 
+def workspace_dir(value: object) -> Path | None:
+    """The folder that an ``apps.workspace_path`` names, or None when it is
+    empty or blank.
+
+    ⚠️ ``Path('')`` is ``.``, so it resolves to the working directory of the
+    process. An empty path must never mean that folder. A Studio package
+    (WS-STU A3) stores ``workspace_path = ''``. Each reader of the column
+    goes through here. Fence: ``tests/unit/test_studio_packages_store.py``.
+    """
+    raw = "" if value is None else str(value)
+    return Path(raw) if raw.strip() else None
+
+
+def app_workspace_or_none(row: Any) -> Path | None:
+    """The workspace folder of an app for a READ, or None when it has none.
+
+    A read path (the detail of an app, the effective manifest of a run)
+    falls back to the stored manifest on None, so a row with an empty
+    ``workspace_path`` still reads, and never from the working directory."""
+    return workspace_dir(_field(row, "workspace_path"))
+
+
 def app_workspace(row: Any) -> Path:
-    return Path(str(_field(row, "workspace_path") or ""))
+    """The workspace folder of an App Workshop app, for a WRITE or a file
+    operation: publish, the file routes, sync, delete and rehydrate.
+
+    An app with no folder (an empty or blank ``workspace_path``) answers 409,
+    never the working directory. A writer calls this BEFORE its statement
+    commits, so the 409 comes before any write. A read path calls
+    :func:`app_workspace_or_none` instead. See :func:`workspace_dir`."""
+    workspace = app_workspace_or_none(row)
+    if workspace is None:
+        raise HTTPException(status_code=409, detail="This app has no workspace.")
+    return workspace
 
 
 # ── Audit + activity (best-effort — never raise into the request path) ───────

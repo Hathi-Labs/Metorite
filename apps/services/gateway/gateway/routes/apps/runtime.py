@@ -26,7 +26,7 @@ from gateway.routes.apps._common import (
     _log,
     _tenant_session,
     _uid,
-    app_workspace,
+    app_workspace_or_none,
     get_app_or_404,
     iso,
     parse_db_manifest,
@@ -98,8 +98,12 @@ def _row_out(row: Any) -> StorageRow:
 
 
 def _effective_manifest(row: Any) -> dict[str, Any]:
+    """The workspace ``app.json``, else the stored manifest. A row with no
+    folder reads the stored manifest, never the working directory (WS-STU
+    A3). Fence: ``test_studio_packages_store.py``."""
+    workspace = app_workspace_or_none(row)
     return (
-        read_workspace_manifest(app_workspace(row))
+        (read_workspace_manifest(workspace) if workspace is not None else None)
         or parse_db_manifest(row.manifest)
     )
 
