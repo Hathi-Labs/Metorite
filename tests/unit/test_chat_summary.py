@@ -552,6 +552,34 @@ def test_pz33b_the_boundary_a_letter_splits_a_number(text: str) -> None:
     assert summaries.check_answer(_answer(text), words) is None
 
 
+# ── PZ-33b: the member's switch and the dedupe key ─────────────────────────
+
+
+def test_pz33b_the_switch_reads_on_unless_the_member_stored_false(monkeypatch) -> None:
+    """PZ-35 declares ``apps.chat.summaries`` later. Before it, a stored
+    false turns the switch off, and a missing value or a wrong type reads
+    on. After it, the profile's own reader and default decide."""
+    assert "chat" not in ap.APP_PREFERENCES or "summaries" in ap.APP_PREFERENCES["chat"]
+    for stored, on in ((None, True), ({}, True), ({"summaries": True}, True),
+                       ({"summaries": False}, False), ({"summaries": "no"}, True),
+                       ('{"summaries": false}', False), ("not json", True), ([1], True)):
+        assert summaries.switch_on(stored) is on, stored
+    monkeypatch.setitem(ap.APP_PREFERENCES, "chat", {"summaries": True})
+    assert summaries.switch_on({"summaries": False}) is False
+    assert summaries.switch_on(None) is True
+    assert summaries.switch_on({"summaries": "no"}) is True
+
+
+def test_pz33b_the_dedupe_key_names_the_chat_and_its_newest_row() -> None:
+    from gateway.jobs.queue import DEDUPE_CHARS
+
+    assert summaries.dedupe_key("chat-1", "a2") == "summary:chat-1:a2"
+    long_key = summaries.dedupe_key("c" * 150, "m" * 100)
+    assert len(long_key) <= DEDUPE_CHARS and long_key.startswith("summary:")
+    assert long_key == summaries.dedupe_key("c" * 150, "m" * 100)
+    assert long_key != summaries.dedupe_key("c" * 150, "m" * 99 + "n")
+
+
 # ── Review round 1, P1-c: a card answer is not a typed row ──────────────────
 
 

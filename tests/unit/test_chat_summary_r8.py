@@ -32,11 +32,38 @@ whole ladder and two organizations:
 A hermetic fake agrees with any SQL that it gets, so none of this could be
 proved without the database.
 
+PZ-33b adds the job (``gateway/chat_summary_job.py``, items 1 to 5). The
+tests drive ``worker.run_org`` and the handler as ``test_job_queue.py`` does,
+on a frozen clock, as the app role. Only the Console call is a fake
+(``acb_auth.console_resolve.chat_completion_on_console``): the real
+``acompletion_with_fallback``, ``completion_on_router`` and
+``run_attribution`` run. So a call names the member, the app and the
+feature as production does, and a 402 is the real ``RoutedRefusal``.
+
+- item 1: an idle solo chat with Mira, with 2 typed rows, gets one summary
+  and one call, as the member, with ``feature="assistant.chat_summary"``,
+  and no session open during the call;
+- item 2: two seeds give one live job (the dedupe key), and a second tick
+  and a retry make no second call;
+- item 3: a mark with no result gives up ``SummaryUncertain``, a 402 gives
+  up ``OutOfCredits``, another fault gives up ``SummaryFailed``, and the
+  mark stays. With the Router off the seed enqueues nothing, and a job gives
+  up ``RouterOff`` with no call;
+- item 4: a shared room, another agent, WhatsApp, an archived chat, a chat
+  that reads ``off``, a member whose switch is off, the flag off, a member
+  who left and a chat with one typed row get no call, from the seed or from
+  a job put in by hand;
+- item 5: org A never reads or writes a chat of org B. A payload with the id
+  of a chat of org B finds no row.
+
 Mutations, each red here: the write also sets ``updated_at = now()`` (item
 6); drop the mark from the WHERE of the marked write (item 9); make
 ``SOLO_ROOM_SQL`` ignore a ``group:`` row (item 8); drop the
 ``private_chat_sessions`` row of the purge (item 10); let Forget write NULL
-(P2-a); skip ``clear_on_share`` in the room routes (P2-b).
+(P2-a); skip ``clear_on_share`` in the room routes (P2-b). PZ-33b: skip the
+Router check of the handler (RouterOff); drop the dedupe key of the seed
+(item 2); take ``SOLO_ROOM_SQL`` out of ``ELIGIBLE_SQL`` (item 4); store the
+answer with no ``check_answer`` (item 1, the sensitive line).
 """
 
 from __future__ import annotations
@@ -44,7 +71,8 @@ from __future__ import annotations
 import contextlib
 import json
 import uuid
-from datetime import UTC, datetime
+from collections import Counter
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -563,3 +591,443 @@ async def test_10_the_purge_deletes_the_summary_with_the_private_chat(purge_worl
     for sid in (other_org, bobs):
         kept = _row(ns, sid)
         assert kept is not None and kept["member_summary"]["text"] == ANSWER.text, sid
+
+
+# ══ PZ-33b: the job ═════════════════════════════════════════════════════════
+
+#: The frozen clock of the job tests, and the members of PZ-33b. Each address
+#: has its own domain, so the teardown finds its rows.
+T = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
+JOB_DOMAIN = "pz33b.test"
+ASHA = f"asha@{JOB_DOMAIN}"  # org A, the member of the chats
+RAVI = f"ravi@{JOB_DOMAIN}"  # org A, the other party of a shared room
+KIRAN = f"kiran@{JOB_DOMAIN}"  # org A, the switch "Keep chat summaries" off
+LENA = f"lena@{JOB_DOMAIN}"  # org A, a member who left
+OMAR = f"omar@{JOB_DOMAIN}"  # org B
+#: The answer of the fake model: the member's own plan and a follow-up.
+SUMMARY = {"text": "Planned the Q3 pricing deck for Priya.",
+           "follow_ups": ["Send the deck to Priya by Friday"]}
+#: What the member typed, what Mira answered, and a tool event that never
+#: reaches the prompt.
+TYPED_1 = "Help me plan the Q3 pricing deck for Priya."
+TYPED_2 = "Keep the old price for current customers. Send the deck to Priya by Friday."
+REPLY = "Sure. Three tiers, and the old price stays."
+TOOL_LEAK = "Account 556677889900 of the client"
+
+
+def _ms(moment: datetime) -> int:
+    return int(moment.timestamp() * 1000)
+
+
+def _checked_out() -> int:
+    """The connections of the ``acb_common.db`` pool that are in use now."""
+    from acb_common import db as seam
+
+    return int(seam.get_engine().sync_engine.pool.checkedout())
+
+
+class _Console:
+    """``chat_completion_on_console``, the one fake: it records each call and
+    answers as the Console does. ``status`` 402 is the refusal for credits.
+    ``fault`` raises in place of an answer."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.status = 200
+        self.fault: Exception | None = None
+        self.answer: dict[str, Any] = dict(SUMMARY)
+
+    async def __call__(self, payload: dict[str, Any], **attribution: Any) -> tuple[int, Any]:
+        self.calls.append({"payload": payload, "attribution": attribution,
+                           "checked_out": _checked_out()})
+        if self.fault is not None:
+            raise self.fault
+        if self.status != 200:
+            return self.status, {"detail": "out of credits"}
+        return 200, {
+            "id": f"cmpl-{len(self.calls)}", "model": "fake/model",
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {
+                "role": "assistant", "content": json.dumps(self.answer)}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+        }
+
+
+def _identity(ns, email: str, org: str, *, status: str = "active") -> None:
+    """A member in *org*: the ``app_user`` row and the identity rows that
+    ``my_day_loop.departed`` reads with the cutover on."""
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+            "VALUES (:e, :e, 'employee', :s, CAST(:o AS uuid)) ON CONFLICT DO NOTHING"),
+            {"e": email, "s": status, "o": org})
+        c.execute(text("UPDATE app_user SET status = :s WHERE email = :e"),
+                  {"e": email, "s": status})
+        uid = c.execute(text(
+            "INSERT INTO user_identity (email, display_name) VALUES (:e, :e) "
+            "ON CONFLICT (lower(email)) DO UPDATE SET updated_at = now() "
+            "RETURNING id::text"), {"e": email}).scalar()
+        c.execute(text(
+            "INSERT INTO org_membership (organization_id, user_id, status, joined_at) "
+            "VALUES (CAST(:o AS uuid), CAST(:u AS uuid), :s, now()) "
+            "ON CONFLICT (organization_id, user_id) DO UPDATE SET status = EXCLUDED.status"),
+            {"o": org, "u": uid, "s": status})
+
+
+def _switch(ns, email: str, org: str, on: bool) -> None:
+    """The member's stored switch, ``apps.chat.summaries`` (PZ-35)."""
+    profile = {"apps": {"chat": {"summaries": on}}}
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO user_settings (organization_id, user_id, assistant_profile) "
+            "VALUES (CAST(:o AS uuid), :u, CAST(:p AS jsonb))"),
+            {"o": org, "u": email, "p": json.dumps(profile)})
+
+
+@pytest.fixture
+def job(graph_as_app, monkeypatch):
+    """The job world: the flag on for both orgs, the Router on, the worker
+    with the summary kind and its seed hook only, the identity cutover on,
+    the frozen clock, and the fake Console. Teardown removes the jobs and
+    the members of PZ-33b."""
+    from acb_auth import console_resolve
+    from acb_common import _log, get_settings
+    from acb_common.settings import install_settings
+    from acb_llm import routed
+    from gateway import chat_summary_job
+    from gateway.jobs import worker
+
+    ns = graph_as_app
+    original = get_settings()
+    ns.flag = f"{ns.org_a},{ns.org_b}"
+
+    def flags(orgs: str) -> None:
+        install_settings(original.model_copy(update={
+            "assistant_chat_summary_orgs": orgs, "assistant_profile_enabled": True,
+            "assistant_profile_orgs": ""}))
+
+    flags(ns.flag)
+    ns.flags = flags
+    monkeypatch.setenv("IDENTITY_CUTOVER", "1")
+    for name, value in (("_HANDLERS", {}), ("_PRUNE_SEEDED", {}), ("prune_hooks", []),
+                        ("_SEEDED", {}), ("seed_hooks", [])):
+        monkeypatch.setattr(worker, name, value)
+    worker._stopping.clear()
+    chat_summary_job.register_jobs()
+    ns.router = {"on": True}
+    monkeypatch.setattr(routed, "routing_is_on", lambda: ns.router["on"])
+    ns.console = _Console()
+    monkeypatch.setattr(console_resolve, "chat_completion_on_console", ns.console)
+    vouch = getattr(_log, "_AUTOMATION_AGENT", None)
+    if vouch is not None:
+        vouch.set(None)
+    ns.clock = {"now": T}
+    monkeypatch.setattr(chat_summary_job, "_now", lambda: ns.clock["now"])
+    for email in (ASHA, RAVI, KIRAN):
+        _identity(ns, email, ns.org_a)
+    _identity(ns, LENA, ns.org_a, status="removed")
+    _identity(ns, OMAR, ns.org_b)
+    _switch(ns, KIRAN, ns.org_a, False)
+    try:
+        yield ns
+    finally:
+        install_settings(original)
+        with ns.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM jobs WHERE kind = :k"), {"k": summaries.KIND})
+            c.execute(text("DELETE FROM user_settings WHERE user_id LIKE :d"),
+                      {"d": f"%@{JOB_DOMAIN}"})
+            c.execute(text(
+                "DELETE FROM org_membership m USING user_identity ui "
+                "WHERE m.user_id = ui.id AND ui.email LIKE :d"), {"d": f"%@{JOB_DOMAIN}"})
+            c.execute(text("DELETE FROM user_identity WHERE email LIKE :d"),
+                      {"d": f"%@{JOB_DOMAIN}"})
+            c.execute(text("DELETE FROM app_user WHERE email LIKE :d"),
+                      {"d": f"%@{JOB_DOMAIN}"})
+
+
+def _job_chat(ns, *, org: str, member: str = ASHA, agent: str = "orchestrator",
+              channel: str | None = None, archived: bool = False,
+              subjects: tuple[str, ...] | None = None, typed: int = 2,
+              newest: datetime = T - timedelta(hours=1)) -> tuple[str, str]:
+    """One chat with its rows, seeded as the superuser: *typed* typed rows of
+    the member, a pasted mail, a reply of Mira with a tool event, and Mira's
+    newest reply, sealed. Answers the chat id and the id of its newest row."""
+    sid = f"pz33b-{uuid.uuid4().hex[:12]}"
+    ns.made.append(sid)
+    rows: list[tuple[str, str, str, str | None, str | None, datetime]] = []
+    for i, words in enumerate([TYPED_1, TYPED_2][:typed]):
+        rows.append((f"m{i + 1}", "user", words, "human", member,
+                     newest - timedelta(minutes=50 - 20 * i)))
+    rows.append(("m9", "user", "From: priya@acme.example\nSubject: rates\n\nCall 9845012345.",
+                 "human", member, newest - timedelta(minutes=5)))
+    rows.append(("a1", "assistant", REPLY, "agent", agent, newest - timedelta(minutes=40)))
+    rows.append(("a2", "assistant", "Done. I saved the plan.", "agent", agent, newest))
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_session (id, user_id, agent_name, title, last_preview, "
+            "message_count, created_at, updated_at, visibility, organization_id, channel, "
+            "archived_at) VALUES (:id, :u, :a, 'Q3 deck', 'Done.', 5, :t, :t, 'private', "
+            "CAST(:o AS uuid), :ch, :arc)"),
+            {"id": sid, "u": member, "a": agent, "t": OLD, "o": org, "ch": channel,
+             "arc": T - timedelta(days=1) if archived else None})
+        for i, subject in enumerate((member,) if subjects is None else subjects):
+            c.execute(text(
+                "INSERT INTO chat_session_participant (session_id, subject, role, "
+                "organization_id) VALUES (:s, :subject, :r, CAST(:o AS uuid))"),
+                {"s": sid, "subject": subject, "r": "owner" if i == 0 else "member",
+                 "o": org})
+        for mid, role, words, kind, author, at in rows:
+            c.execute(text(
+                "INSERT INTO chat_message (id, session_id, role, content, timestamp_ms, "
+                "organization_id, author_kind, author_email, tool_events, run_final_at) "
+                "VALUES (:id, :s, :r, :c, :ts, CAST(:o AS uuid), :k, :e, CAST(:te AS jsonb), "
+                ":fin)"),
+                {"id": mid, "s": sid, "r": role, "c": words, "ts": _ms(at), "o": org,
+                 "k": kind, "e": author,
+                 "te": json.dumps([{"name": "read_mail", "result": TOOL_LEAK}]
+                                  if mid == "a1" else []),
+                 "fin": at if role == "assistant" else None})
+    return sid, "a2"
+
+
+def _jobs(ns, sid: str | None = None) -> list[Any]:
+    """The rows of the summary kind, the oldest first, as the superuser sees
+    them. With *sid*, only the jobs of that chat."""
+    with ns.admin_engine.connect() as c:
+        rows = c.execute(text(
+            "SELECT id::text, state, attempts, last_error, payload, dedupe_key, "
+            "organization_id::text AS org FROM jobs WHERE kind = :k ORDER BY created_at"),
+            {"k": summaries.KIND}).fetchall()
+    return [r for r in rows if sid is None or r.payload.get("session_id") == sid]
+
+
+async def _tick(ns, org: str, now: datetime = T) -> Counter[str]:
+    """One run of the worker for *org* at *now*: the seed hook, then the jobs."""
+    from gateway.jobs import worker
+
+    ns.clock["now"] = now
+    async with tenant_engine_scope(_app_dsn(ns)):
+        return await worker.run_org(org, now)
+
+
+async def _put(ns, org: str, sid: str, through: str, now: datetime = T) -> str:
+    """A job of the kind put in by hand, as a retry or an old job would be."""
+    from gateway.jobs import queue
+
+    async with tenant_engine_scope(_app_dsn(ns)), tenant_session(org) as db:
+        out = await queue.enqueue(db, summaries.KIND, {"session_id": sid, "through": through},
+                                  dedupe_key=f"test:{uuid.uuid4().hex[:8]}", now=now)
+    return out.id
+
+
+def _summary(ns, sid: str) -> Any:
+    row = _row(ns, sid)
+    return None if row is None else row["member_summary"]
+
+
+# ── Item 1: one summary, one call, as the member ────────────────────────────
+
+
+async def test_1_an_idle_solo_chat_gets_one_summary_and_one_call(job) -> None:
+    sid, newest = _job_chat(job, org=job.org_a)
+    before = _row(job, sid)
+    counts = await _tick(job, job.org_a)
+    assert counts == Counter(done=1)
+    assert len(job.console.calls) == 1
+    call = job.console.calls[0]
+    who = call["attribution"]
+    assert (who["member"], who["member_proven"], who["agent"], who["module_slug"]) == (
+        ASHA, True, "assistant.chat_summary", "chat")
+    assert call["payload"]["model"] == "tier-fast"
+    assert call["payload"]["max_tokens"] == 300
+    assert call["payload"]["response_format"] == {"type": "json_object"}
+    assert call["checked_out"] == 0, "no session may be open during the model call"
+    prompt = json.dumps(call["payload"]["messages"])
+    assert TYPED_1 in prompt and REPLY in prompt
+    for leak in (TOOL_LEAK, "9845012345", "priya@acme.example"):
+        assert leak not in prompt, leak
+    stored = _summary(job, sid)
+    assert (stored["text"], stored["follow_ups"], stored["through"]) == (
+        SUMMARY["text"], SUMMARY["follow_ups"], newest)
+    assert stored["through_ms"] == _ms(T - timedelta(hours=1))
+    assert stored["mark"]["through"] == newest
+    assert _kept(_row(job, sid)) == _kept(before), "the job moved the chat"
+    (row,) = _jobs(job, sid)
+    assert row.state == "done" and row.payload == {"session_id": sid, "through": newest}
+    assert row.dedupe_key == f"summary:{sid}:{newest}"
+
+
+async def test_1_the_answer_goes_through_check_answer(job) -> None:
+    """A sensitive line that the member did not type, and a long number of
+    the pasted mail, never reach the column. The member's own line stays."""
+    sid, _newest = _job_chat(job, org=job.org_a)
+    job.console.answer = {
+        "text": "Planned the Q3 pricing deck for Priya. Priya seems depressed. "
+                "Call her on 98450 12345.",
+        "follow_ups": ["Send the deck to Priya by Friday", "Ask about her salary"]}
+    assert await _tick(job, job.org_a) == Counter(done=1)
+    stored = _summary(job, sid)
+    assert stored["text"] == "Planned the Q3 pricing deck for Priya."
+    assert stored["follow_ups"] == ["Send the deck to Priya by Friday"]
+
+
+# ── Item 2: one live job, and no second call ────────────────────────────────
+
+
+async def test_2_a_second_seed_a_second_tick_and_a_retry_make_no_second_call(job) -> None:
+    sid, newest = _job_chat(job, org=job.org_a)
+    async with tenant_engine_scope(_app_dsn(job)):
+        await summaries.seed(job.org_a, T)
+        await summaries.seed(job.org_a, T + timedelta(minutes=15))
+    assert len(_jobs(job, sid)) == 1, "the dedupe key keeps one live job"
+    assert await _tick(job, job.org_a, T + timedelta(minutes=15)) == Counter(done=1)
+    assert len(job.console.calls) == 1
+    # The next bucket: the summary covers the newest row, so the seed adds nothing.
+    assert await _tick(job, job.org_a, T + timedelta(minutes=30)) == Counter()
+    # A retry of the same rows, put in by hand, settles with no call.
+    await _put(job, job.org_a, sid, newest, T + timedelta(minutes=31))
+    assert await _tick(job, job.org_a, T + timedelta(minutes=31)) == Counter(done=1)
+    assert len(job.console.calls) == 1
+    assert len(_jobs(job, sid)) == 2
+
+
+async def test_2_the_seed_takes_at_most_its_cap_of_chats(job, monkeypatch) -> None:
+    monkeypatch.setattr(summaries, "SUMMARY_SEED_MAX", 2)
+    made = [_job_chat(job, org=job.org_a, newest=T - timedelta(hours=1, minutes=i))[0]
+            for i in range(3)]
+    async with tenant_engine_scope(_app_dsn(job)):
+        await summaries.seed(job.org_a, T)
+    assert sorted(r.payload["session_id"] for r in _jobs(job)) == sorted(made[:2])
+
+
+# ── Item 3: the give-ups ────────────────────────────────────────────────────
+
+
+def _given_up(ns, sid: str, name: str) -> None:
+    (row,) = _jobs(ns, sid)
+    assert row.state == "failed", row
+    assert str(row.last_error).split(":", 1)[0] == name, row.last_error
+
+
+async def test_3_a_mark_with_no_result_gives_up_uncertain(job) -> None:
+    sid, newest = _job_chat(job, org=job.org_a)
+    async with tenant_engine_scope(_app_dsn(job)):
+        assert await _in(job.org_a, summaries.mark, sid, through=newest, at=T)
+    await _put(job, job.org_a, sid, newest)
+    assert await _tick(job, job.org_a) == Counter(failed=1)
+    _given_up(job, sid, "SummaryUncertain")
+    assert job.console.calls == []
+    assert _summary(job, sid)["mark"]["through"] == newest
+
+
+async def test_3_a_402_gives_up_out_of_credits_and_the_mark_stays(job) -> None:
+    sid, newest = _job_chat(job, org=job.org_a)
+    job.console.status = 402
+    assert await _tick(job, job.org_a) == Counter(failed=1)
+    _given_up(job, sid, "OutOfCredits")
+    assert len(job.console.calls) == 1
+    stored = _summary(job, sid)
+    assert stored["mark"]["through"] == newest and "text" not in stored
+    # The mark stays, so the next tick does not try the same rows again.
+    assert await _tick(job, job.org_a, T + timedelta(minutes=15)) == Counter()
+    assert len(job.console.calls) == 1
+
+
+async def test_3_another_fault_gives_up_summary_failed_and_the_mark_stays(job) -> None:
+    sid, newest = _job_chat(job, org=job.org_a)
+    job.console.fault = RuntimeError("the Console is down")
+    assert await _tick(job, job.org_a) == Counter(failed=1)
+    _given_up(job, sid, "SummaryFailed")
+    assert _summary(job, sid)["mark"]["through"] == newest
+
+
+async def test_3_with_the_router_off_no_call_runs(job) -> None:
+    """The seed enqueues nothing, and a job that exists gives up with
+    ``RouterOff`` and makes no call (§15.3, "CODE")."""
+    sid, newest = _job_chat(job, org=job.org_a)
+    job.router["on"] = False
+    assert await _tick(job, job.org_a) == Counter()
+    assert _jobs(job, sid) == []
+    await _put(job, job.org_a, sid, newest, T + timedelta(minutes=15))
+    assert await _tick(job, job.org_a, T + timedelta(minutes=15)) == Counter(failed=1)
+    _given_up(job, sid, "RouterOff")
+    assert job.console.calls == []
+    assert _summary(job, sid) is None, "no mark with the Router off"
+
+
+# ── Item 4: the chats that get no summary ───────────────────────────────────
+
+
+def _no_summary_cases(ns) -> dict[str, tuple[str, str]]:
+    """Each chat that must get no call: the name, and the chat and its
+    newest row."""
+    return {
+        "a shared room": _job_chat(ns, org=ns.org_a, subjects=(ASHA, RAVI)),
+        "a group row": _job_chat(ns, org=ns.org_a, subjects=(ASHA, "group:eng")),
+        "another agent": _job_chat(ns, org=ns.org_a, agent="crm-assistant"),
+        "a WhatsApp chat": _job_chat(ns, org=ns.org_a, channel="whatsapp"),
+        "an archived chat": _job_chat(ns, org=ns.org_a, archived=True),
+        "the switch off": _job_chat(ns, org=ns.org_a, member=KIRAN),
+        "a member who left": _job_chat(ns, org=ns.org_a, member=LENA),
+        "one typed row": _job_chat(ns, org=ns.org_a, typed=1),
+        "not idle yet": _job_chat(ns, org=ns.org_a, newest=T - timedelta(minutes=10)),
+    }
+
+
+async def test_4_no_chat_of_the_list_gets_a_call_from_the_seed_or_a_job(job) -> None:
+    cases = _no_summary_cases(job)
+    deleted, _ = _job_chat(job, org=job.org_a)
+    async with tenant_engine_scope(_app_dsn(job)):
+        assert await _in(job.org_a, summaries.turn_off, deleted)
+    cases["a chat that reads off"] = (deleted, "a2")
+    # The 7-day window bounds the reads of the seed only.
+    _job_chat(job, org=job.org_a, newest=T - timedelta(days=8))
+    assert await _tick(job, job.org_a) == Counter()
+    assert _jobs(job) == [], "the seed must enqueue no job"
+    # The handler holds each rule too: a job put in by hand makes no call.
+    for sid, newest in cases.values():
+        await _put(job, job.org_a, sid, newest, T + timedelta(minutes=15))
+    counts = await _tick(job, job.org_a, T + timedelta(minutes=15))
+    assert counts == Counter(done=len(cases)), counts
+    assert job.console.calls == []
+    for name, (sid, _newest) in cases.items():
+        expected = {"v": 1, "off": True} if name == "a chat that reads off" else None
+        assert _summary(job, sid) == expected, name
+
+
+async def test_4_a_stored_switch_on_and_no_switch_read_as_on(job) -> None:
+    """``apps.chat.summaries`` false turns the member's summaries off (above).
+    True and a missing value read as on (PZ-35 declares the key later)."""
+    _switch(job, RAVI, job.org_a, True)
+    on, _ = _job_chat(job, org=job.org_a, member=RAVI)
+    unset, _ = _job_chat(job, org=job.org_a, member=ASHA)
+    assert await _tick(job, job.org_a) == Counter(done=2)
+    assert _summary(job, on)["text"] == SUMMARY["text"]
+    assert _summary(job, unset)["text"] == SUMMARY["text"]
+
+
+async def test_4_the_flag_off_gives_no_job_and_no_call(job) -> None:
+    sid, newest = _job_chat(job, org=job.org_a)
+    job.flags(job.org_b)
+    assert await _tick(job, job.org_a) == Counter()
+    assert _jobs(job, sid) == []
+    await _put(job, job.org_a, sid, newest, T + timedelta(minutes=15))
+    assert await _tick(job, job.org_a, T + timedelta(minutes=15)) == Counter(done=1)
+    assert job.console.calls == [] and _summary(job, sid) is None
+
+
+# ── Item 5: org A never reaches a chat of org B ─────────────────────────────
+
+
+async def test_5_org_a_never_reads_or_writes_a_chat_of_org_b(job) -> None:
+    theirs, newest = _job_chat(job, org=job.org_b, member=OMAR)
+    assert await _tick(job, job.org_a) == Counter()
+    assert _jobs(job, theirs) == []
+    # A payload of org A with the id of the chat of org B finds no row.
+    await _put(job, job.org_a, theirs, newest, T + timedelta(minutes=15))
+    assert await _tick(job, job.org_a, T + timedelta(minutes=15)) == Counter(done=1)
+    assert job.console.calls == [] and _summary(job, theirs) is None
+    # Org B summarises its own chat, as its own member.
+    assert await _tick(job, job.org_b, T + timedelta(minutes=15)) == Counter(done=1)
+    assert [c["attribution"]["member"] for c in job.console.calls] == [OMAR]
+    assert _summary(job, theirs)["text"] == SUMMARY["text"]
+    assert {r.org for r in _jobs(job, theirs)} == {job.org_a, job.org_b}
