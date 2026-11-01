@@ -47,8 +47,14 @@ longer (a float with an exponent) or refuses (a NUL, a lone surrogate).
 ``test_studio_skills_r8.py`` stores a body of exactly the limit, so the two
 limits stay in step.
 
+**The text columns.** The store refuses a name or a description with a NUL
+or a lone surrogate, and it matches the whole slug (``fullmatch``). So no
+value reaches a statement that Postgres refuses, and no refusal echoes it.
+
 **State.** :func:`set_state` writes one of :data:`STATES`. F1 holds no
-transition table. F2 and J1 own the rules of a move.
+transition table. F2 and J1 own the rules of a move. A caller that decides a
+move from the state reads the row with ``get_skill(..., for_update=True)``
+first, so two moves at once cannot both pass the rule.
 """
 
 from __future__ import annotations
@@ -202,8 +208,16 @@ def _skill_id(skill_id: object) -> str:
 
 
 def _text(value: object, field: str, *, limit: int, required: bool) -> str:
+    """A text column as Postgres takes it. Postgres refuses a NUL, and a lone
+    surrogate has no UTF-8 form. Each refusal names the field, never the value."""
     if not isinstance(value, str):
         raise SkillStoreError(f"{field} must be a string")
+    if "\x00" in value:
+        raise SkillStoreError(f"{field} must not hold a NUL character")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise SkillStoreError(f"{field} must not hold a lone surrogate") from None
     if required and not value.strip():
         raise SkillStoreError(f"{field} must not be empty")
     if len(value) > limit:
@@ -306,11 +320,14 @@ async def create_skill(db: Any, member: str, *, name: str, slug: str,
     Raises :class:`SkillSlugTaken` when *member* holds the slug already in
     this org, and then writes no row. Another member may hold the same slug.
     The slug is lower-case letters and digits, with one hyphen between parts,
-    at most 64 characters.
+    at most 64 characters. The name and the description hold no NUL and no
+    lone surrogate. Each refusal raises :class:`SkillStoreError` before the
+    database.
     """
     m = _member(member)
     clean_name = _text(name, "name", limit=MAX_NAME_CHARS, required=True).strip()
-    if not isinstance(slug, str) or len(slug) > MAX_SLUG_CHARS or not _SLUG_RE.match(slug):
+    # fullmatch, because ``$`` of ``match`` also matches before a final newline.
+    if not isinstance(slug, str) or len(slug) > MAX_SLUG_CHARS or not _SLUG_RE.fullmatch(slug):
         raise SkillStoreError(
             f"slug must be lower-case letters, digits and single hyphens, "
             f"at most {MAX_SLUG_CHARS} characters")
@@ -318,14 +335,21 @@ async def create_skill(db: Any, member: str, *, name: str, slug: str,
     row = (await db.execute(text(_CREATE_SQL), {
         "name": clean_name, "slug": slug, "desc": desc, "m": m})).first()
     if row is None:
-        raise SkillSlugTaken("You already have a skill with this name")
+        raise SkillSlugTaken("You already have a skill with this name. Choose another name.")
     return _skill(row)
 
 
-async def get_skill(db: Any, member: str, skill_id: str) -> Skill | None:
+async def get_skill(db: Any, member: str, skill_id: str, *,
+                    for_update: bool = False) -> Skill | None:
     """The skill *skill_id* of *member*, or None. A skill of another member
-    or of another org answers None."""
-    row = (await db.execute(text(_GET_SQL), {
+    or of another org answers None.
+
+    With *for_update*, the read locks the row until the transaction ends. A
+    caller that decides a write from the state that it reads takes the lock.
+    Then a second writer waits, and reads the state that the first one wrote.
+    """
+    sql = _GET_SQL + " FOR UPDATE" if for_update else _GET_SQL
+    row = (await db.execute(text(sql), {
         "m": _member(member), "id": _skill_id(skill_id)})).first()
     return None if row is None else _skill(row)
 

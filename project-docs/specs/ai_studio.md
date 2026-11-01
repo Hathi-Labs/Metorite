@@ -1,7 +1,7 @@
 # AI Studio — skills, workflows and apps that a company builds for itself (WS-STU)
 
-> **Product:** Metorite · **Feature:** AI Studio (`/studio`) · **Updated:** 2026-10-31 · **Owner:** vjvarada
-> **Status:** 🔨 **B1 BUILT and dark (2026-10-31)** behind `STUDIO_ORGS`, which is empty on every box. Every other slice is spec only. The pieces it reuses are built, and §16 names each one.
+> **Product:** Metorite · **Feature:** AI Studio (`/studio`) · **Updated:** 2026-11-01 · **Owner:** vjvarada
+> **Status:** 🔨 **In build.** A2, B1, D1, F1 and F2a are built, and §14 holds the state of each slice. B1 and F2a are dark behind `STUDIO_ORGS`, which is empty on every box. The pieces it reuses are built, and §16 names each one.
 > **Verified against code on 2026-10-31 at `57b91f721`.** Each path in §16 was read on that commit.
 > **Board:** WS-STU in `work_plan.md` §2. **Decisions:** D127 (one app, three kinds), D139 (one coding harness), **D141** (Studio starts now, and a skill creator replaces the agent creator), **D146** (the owner's answers of 2026-10-31: layered apps, a typed object store, first-party templates). D124, D130, D131 and D136 bind it too.
 > **Metorite:** project "AI Studio", umbrella epic #491, this spec task #1135. Each group of §14 has its own epic under #491.
@@ -393,6 +393,22 @@ The skill creator replaces the Agent Workshop (D141). A member does not build a 
 5. **Publish.** Private first. Sharing with the organization needs an approval (§9).
 6. **Improve.** Mira proposes an edit from failed turns, with the evidence. The member approves the diff.
 
+**States (F2a).** A skill is in one of four states. The route `PATCH /studio/skills/{id}/state` owns the moves, and `skills.TRANSITIONS` holds them:
+
+| From | To |
+|---|---|
+| `draft` | `published`, `archived` |
+| `published` | `paused`, `archived` |
+| `paused` | `published`, `archived` |
+| `archived` | `draft` |
+
+- A move to the same state is a no-op (200). The route refuses each other move with 409.
+- A publish needs a version. A skill with no version gets 409 "Add a version first".
+- A publish runs the catalog check again on the newest version. An action that the catalog no longer serves is 422.
+- **A new version of a published skill returns it to `draft`**, in the same transaction. So a published skill always runs a version that its owner published.
+- **Two moves at once.** A move reads the skill row `FOR UPDATE`. So a second move waits for the first one, reads the new state, and the table decides on that state. A move that the new state does not allow is 409.
+- No move changes the visibility. J2 adds the share, and until then a skill is private.
+
 **Format.** A skill exports as an Agent Skills folder (`SKILL.md`, its resources). So an outside agent such as Claude Code can load a company's skill over the MCP (F8). A `SKILL.md` can also be imported, and the importer keeps only actions that the catalog serves.
 
 **Runtime.** A published skill becomes one WS-67 tool pack for the organization. `tool_packs.choose` loads it on a turn that matches its description, inside the limits of 35 tools per pack and 3 packs per turn. Today packs are code-declared and switched on by environment (`TOOL_PACKS_ORGS`). F3 adds packs read from the database. F3 waits on WS-67 going live.
@@ -568,8 +584,10 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **F1** | The skill store: `studio_skills` and `studio_skill_versions` (immutable), tenant-scoped, private by default (§3.5). One expand-only migration in the shape of `315_brief_runs.sql`, with its own ENABLE, FORCE and policy, and a composite key so a version cannot point at another org's skill. Regenerate `infra/postgres/generated/` with `scripts/gen_tenant_migration.py`. A store module `gateway/studio/skills_store.py`, beside `gateway/brief/store.py`. **No route:** F2 owns the routes, and J1 owns the feature gate. The member purge (`routes/admin/members.py`) removes the member's skills | R8: org B reads none of org A's skills or versions, red first with FORCE removed. A skill is private by default. A stored version cannot be updated. Two `add_version` calls at once give two numbers or one clean refusal. `test_tenant_coverage.py` passes with a new case. `test_admin_member_purge.py` passes, and the purge removes the member's skills of this org only | HIGH | AGENT-SAFE |
-| **F2** | The skill creator in Studio: describe, draft, edit, publish (§7) | A member drafts, edits and publishes a private skill. Visual review in four contexts | STD | AGENT-SAFE |
+| **F1** | 🔨 **BUILT (2026-11-01).** Merged with migration `320_studio_skills.sql`. The skill store: `studio_skills` and `studio_skill_versions` (immutable), tenant-scoped, private by default (§3.5). One expand-only migration in the shape of `315_brief_runs.sql`, with its own ENABLE, FORCE and policy, and a composite key so a version cannot point at another org's skill. Regenerate `infra/postgres/generated/` with `scripts/gen_tenant_migration.py`. A store module `gateway/studio/skills_store.py`, beside `gateway/brief/store.py`. **No route:** F2 owns the routes, and J1 owns the feature gate. The member purge (`routes/admin/members.py`) removes the member's skills | R8: org B reads none of org A's skills or versions, red first with FORCE removed. A skill is private by default. A stored version cannot be updated. Two `add_version` calls at once give two numbers or one clean refusal. `test_tenant_coverage.py` passes with a new case. `test_admin_member_purge.py` passes, and the purge removes the member's skills of this org only | HIGH | AGENT-SAFE |
+| **F2a** | 🔨 **BUILT, dark (2026-11-01).** The skill routes over the F1 store: `gateway/routes/studio/skills.py`, on the router of B1, so `main.py` mounts no second router. `GET` and `POST /studio/skills`, `GET /studio/skills/{id}`, `GET /studio/skills/{id}/versions/{n}`, `POST /studio/skills/{id}/versions` and `PATCH /studio/skills/{id}/state`. **Switch:** the first line of each route reads `STUDIO_ORGS`, and an org outside it gets 404. **Tenant and member:** the org is the bound session and the member is `user.email`, never request input (R5). A skill of another member or org is 404 `Not found`, as a missing skill is. **Body checks**, before the store session opens: a depth cap of 20 (A2's cap), then `check_body`, then the catalog check. Each action is a catalog id of `actions.catalog_rows()`, once, and a skill holds at most 35 (the WS-67 pack cap). Class B and C actions are legal in a draft. **Slug:** with no slug, the route makes one from the name. A slug that the member holds is 409, and the text names no slug. **States:** the route owns the table of §7. No UI, no BFF, no migration | `test_studio_skills_routes.py`: a not-listed org gets 404 on each of the six routes, and a listed org and `*` get 200 or 201. An `organization_id` or `owner_email` in a body or a query changes nothing. A body 1500 levels deep is 422, never 500. An unknown or duplicate action is 422 with its path. An oversized body is 422. A slug conflict is 409 with no slug in the text. Each legal and each illegal move holds, and `test_state_machine_table` pins the table. `test_studio_skills_routes_r8.py` (`pytestmark = _DB_GATE`): org B and member 2 get 404 on the skill by id on every route, and do not list it. Two new versions at once give 1 and 2. A workflow of org B is not an action of org A. The unknown-action tests go red with the catalog check removed. Two moves at once give one 200 and one 409, and the test goes red without the row lock. A slug, a name or a description that Postgres refuses is 422, never 500, and writes no row | HIGH | AGENT-SAFE |
+| **F2b** | The skill creator UI in Studio: describe, edit and publish a private skill (§7) over the F2a routes, through a BFF route | A member drafts, edits and publishes a private skill. Visual review in four contexts | STD | AGENT-SAFE. After A1 and F2a. Metorite task 1306 |
+| **F2c** | "Mira drafts" (§7 step 2): Mira writes the description, the instructions and the action list through a tool of a Studio pack, and she picks actions from the catalog only | A draft names only catalog actions, and it lands as a new version through F2a. A drafting turn stops at its credit cap. The pack stays off until the owner turns it on | HIGH | AGENT-SAFE. After G1. The owner decides the credit cap and the pack switch-on. Metorite task 1307 |
 | **F3** | Published skills load as org tool packs in `tool_packs.choose` | A turn that matches a skill loads its actions and its rules. A skill of another member that is not shared never loads | HIGH | AGENT-SAFE. After WS-67 is live |
 | **F4** | Skill tests on a dry-run door | A test fails when the turn calls another action. No write leaves the dry-run door. A test run stops at its credit cap | STD | AGENT-SAFE |
 | **F5** | Skill cards: a skill renders a package view in chat | The card shows live rows, and its button reaches the member's approval card | STD | AGENT-SAFE |
@@ -634,7 +652,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Stage | Slices | What a member gets | Depends on |
 |---|---|---|---|
-| **1 · Studio opens** (M1, dark) | A1, A2, B1, D1, E1, F1, F2, G1 | One Studio pane in preview, the skill creator for private skills, the catalog, and the manifest | None. D146 answered STU-Q1 and Q2 |
+| **1 · Studio opens** (M1, dark) | A1, A2, B1, D1, E1, F1, F2a, F2b, F2c, G1 | One Studio pane in preview, the skill creator for private skills, the catalog, and the manifest | None. D146 answered STU-Q1 and Q2 |
 | **2 · First apps** (M2) | A3, A4, B1c, B2, C1, C1b, C2, C6, C7, D2, D3, D4, D11, D12, F5, G2, G3, G4, G5, H1, J1, J2, K1, K3 | Build, preview and publish an S2 app in chat. Tables, forms, boards and charts. The typed object store with rules. The inventory and procurement template | J1 waits on STU-Q4. F3 needs WS-67 live |
 | **3 · Automations and rich blocks** | B1b, B4, C3, C4, D5 to D9, E2 to E6, F3, F4, F6, F7, H2, I1, I2, J3, J4, K4 | S1 and S3 in full, connector apps, calendar, timeline, mind map, playbooks, first-party logic and the MRP-lite template | H-328 for unattended runs. WS-67 for F3 |
 | **4 · Code, outside agents, scale** | B3, B5, C5, D10, F8, F9, G6, G7, H3, K2, L1, L2, M1 | Member logic modules, the code block, MCP access, pinned answers | MCP-P1b, SBX-9, CA-14 (#1042), MCP-P5 (#869) |
@@ -651,6 +669,8 @@ Each path was read on `57b91f721`.
 
 - `apps/services/gateway/gateway/routes/workflows/` — `catalog.py` (`_integration_entries`, `_tool_entry`), `tools.py` (`WorkflowToolSpec`, `list_tools`), `core.py` (the router pattern), `search.py`, `triggers.py`, `scheduler.py`, `copilot.py`, `engine/graph.py`, `engine/runner.py`, `engine/handlers.py`, `engine/modules.py`
 - `apps/services/gateway/gateway/db.py` (`tenant_session`), `gateway/main.py` (the router mounts), `gateway/push/flags.py` (an `*_ORGS` reader)
+- `apps/services/gateway/gateway/studio/skills_store.py` — the F1 skill store, the one writer of `studio_skills` and `studio_skill_versions` (migration `infra/postgres/320_studio_skills.sql`). F1 added it after `57b91f721`
+- `apps/services/gateway/gateway/routes/studio/` — `actions.py` (B1, `GET /studio/actions` and `catalog_rows`), `flags.py` (the `STUDIO_ORGS` reader) and `skills.py` (F2a, the skill routes on the same router). B1 and F2a added them after `57b91f721`
 - `packages/acb_common/acb_common/settings.py`, `env_guard.py` — where an `*_ORGS` flag is declared and guarded
 - `packages/acb_common/acb_common/app_manifests/__init__.py` (`every_app`, `door_ops`)
 - `infra/postgres/132_workflows.sql` (`workflows`, `workflow_versions`)
