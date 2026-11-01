@@ -1,0 +1,15 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "studio",
+  "contributes": {
+    "nav": [
+      {
+        "href": "/build/apps"
+      },
+      {
+        "href": "/build/agents"
+      }
+    ]
+  }
+}

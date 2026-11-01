@@ -22,6 +22,11 @@
         "meaning": "start a new conversation with the AI assistant",
         "feature": "chat"
       }
+    ],
+    "nav": [
+      {
+        "href": "/chat"
+      }
     ]
   }
 }

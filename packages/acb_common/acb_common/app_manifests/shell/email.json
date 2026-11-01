@@ -26,6 +26,11 @@
         },
         "feature": "email"
       }
+    ],
+    "nav": [
+      {
+        "href": "/email"
+      }
     ]
   }
 }
