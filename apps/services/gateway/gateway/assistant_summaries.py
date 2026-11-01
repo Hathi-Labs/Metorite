@@ -268,16 +268,23 @@ def prompt_rows(rows: Iterable[Any], member: Any, *,
     return kept
 
 
-def _one_line(value: str) -> str:
+def _no_format(value: str) -> str:
     """*value* with each format character taken out, such as a zero-width
-    space, and each run of white space as one space."""
-    plain = "".join(ch for ch in value if unicodedata.category(ch) != "Cf")
-    return " ".join(plain.split())
+    space."""
+    return "".join(ch for ch in value if unicodedata.category(ch) != "Cf")
+
+
+def _one_line(value: str) -> str:
+    """*value* with no format character, and each run of white space as one
+    space."""
+    return " ".join(_no_format(value).split())
 
 
 def sentences(value: str) -> list[str]:
-    """The sentences and lines of *value*, each on one line, none empty."""
-    return [s for s in (_one_line(p) for p in _SENTENCE_END.split(value)) if s]
+    """The sentences and lines of *value*, each on one line, none empty. The
+    format characters go before the split, so a zero-width space cannot hide
+    the end of a sentence from the cap."""
+    return [s for s in (_one_line(p) for p in _SENTENCE_END.split(_no_format(value))) if s]
 
 
 # ── The strict digit rule (PZ-33b) ──────────────────────────────────────────
@@ -462,7 +469,7 @@ def _parse(raw: Any) -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(raw[start:end + 1])
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     return data if isinstance(data, dict) else None
 
@@ -485,6 +492,9 @@ def check_answer(raw: Any, words: Any) -> Answer | None:
       line drops, even a grounded one, and the check runs again. If it still
       fails, a form crosses the end of a line, and the answer gives None.
     * With no text and no follow-up left, the answer gives None.
+
+    It never raises on an answer of the model: a value that the caps of
+    :class:`Answer` refuse gives None.
     """
     data = _parse(raw)
     if data is None:
@@ -514,7 +524,10 @@ def check_answer(raw: Any, words: Any) -> Answer | None:
     text_out = " ".join(kept)
     if not text_out and not follow:
         return None
-    return Answer(text=text_out, follow_ups=tuple(follow))
+    try:
+        return Answer(text=text_out, follow_ups=tuple(follow))
+    except SummaryShapeError:
+        return None
 
 
 # ── The stored value ─────────────────────────────────────────────────────────

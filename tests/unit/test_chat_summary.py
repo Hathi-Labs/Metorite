@@ -48,6 +48,7 @@ answer as typed; let ``member_texts`` skip ``typed_text``; let
 from __future__ import annotations
 
 import json
+import random
 import re
 from datetime import date
 from pathlib import Path
@@ -654,6 +655,36 @@ def test_the_follow_ups_keep_three_of_one_hundred_and_twenty_characters() -> Non
     assert out is not None
     assert out.follow_ups == ("Send the deck", "Book the room")
     assert all(len(f) <= summaries.FOLLOW_UP_MAX for f in out.follow_ups)
+
+
+@pytest.mark.parametrize("mark", ["\u200b", "\u200d", "\ufeff", "\u00ad", "\u2060"])
+def test_pz33b_a_format_character_cannot_hide_a_sentence_from_the_cap(mark: str) -> None:
+    """A zero-width space after each full stop hid the sentence ends from the
+    split, and ``Answer`` then raised on the same text. It must keep the
+    cap, and never raise."""
+    out = summaries.check_answer(_answer(f"A.{mark} B.{mark} C.{mark} D."), "")
+    assert out is not None and out.text == "A. B. C."
+
+
+def test_pz33b_check_answer_never_raises_and_keeps_the_caps() -> None:
+    """Any text of the model gives None or an answer inside the caps."""
+    rng = random.Random(7)
+    parts = ["A", "deck", ".", "!", "?", " ", "\n", "\t", "\x0b", "\x1c", "\u2028", "\u0085",
+             "\u00a0", "\u200b", "\u200d", "\ufeff", "\u00ad", "9", "98450", "salary"]
+    for _ in range(3000):
+        text = "".join(rng.choice(parts) for _ in range(rng.randint(0, 40)))
+        items = ["".join(rng.choice(parts) for _ in range(rng.randint(0, 30)))
+                 for _ in range(rng.randint(0, 5))]
+        out = summaries.check_answer(_answer(text, items), "A deck")
+        if out is not None:
+            assert len(out.text) <= summaries.TEXT_MAX
+            assert len(summaries.sentences(out.text)) <= summaries.SENTENCES_MAX
+            assert len(out.follow_ups) <= summaries.FOLLOW_UPS_MAX
+
+
+def test_pz33b_a_nest_too_deep_to_parse_gives_no_summary() -> None:
+    deep = '{"text": ' + "[" * 100_000 + "]" * 100_000 + "}"
+    assert summaries.check_answer(deep, "") is None
 
 
 def test_white_space_folds_and_a_fence_of_code_parses() -> None:
