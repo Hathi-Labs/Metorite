@@ -415,10 +415,19 @@ from tests.unit.test_delegation_no_egress import (  # noqa: E402
 @pytest.fixture
 def no_db(monkeypatch):
     """The registry block and the skill toggles read the database. Stub both,
-    as the H-236 suite does, so the executor tests open no connection."""
+    as the H-236 suite does, so the executor tests open no connection.
+
+    ⚠️ The run still reads the member's access (``executor.
+    _integration_authorizer``) on whatever database DATABASE_URL names. A
+    database with no access tables there sets acb_auth's process-wide
+    ``_tables_missing`` latch, and a later suite then resolves every member
+    as inactive (task 1332). ``monkeypatch`` restores the latch after the test.
+    """
+    import acb_auth.access as auth_access
     import gateway.routes.agent as routes_agent
     from orchestrator import _tool_injection as ti
 
+    monkeypatch.setattr(auth_access, "_tables_missing", auth_access._tables_missing)
     monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
     monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda name: frozenset())
     ti._build_registry_block.cache_clear()
