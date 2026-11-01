@@ -2311,12 +2311,6 @@ html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-rail-row] > [
   top: 0.125rem;
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--background-grouped) 30%, var(--card));
 }
-/* The Ask bar floats at the foot of the page column (owner, 2026-11-01).
-   While it shows, the page card keeps a strip clear for it, so it never
-   covers a page's own last row or its composer (WhatsApp, Email). */
-html[data-look="glass"] main:has(~ [data-ask-bar]) {
-  padding-bottom: 4.25rem;
-}
 /* The head's brand clips to its mark while the rail is folded, and opens to
    the name as the rail widens, at the rail's own pace. It keeps one width,
    and a clip moves, not the layout (motion.test.ts G3). */
@@ -2329,6 +2323,15 @@ html[data-look="glass"] .sidebar-rail [data-head-brand] {
 html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="open"]) [data-head-brand] {
   clip-path: inset(0 calc(100% - 1.5rem) 0 0);
 }
+/* A folded rail shows the organization's square mark, and the open sidebar
+   its wide logo (owner, 2026-11-01). Until the mark has drawn, the wide logo
+   stays, clipped to its left. */
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="open"]) [data-head-brand] [data-brand-mark] {
+  display: flex;
+}
+html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="open"]) [data-head-brand]:has([data-brand-mark]) [data-brand-wide] {
+  display: none;
+}
 /* A section's cap: the rule while folded, the name while it peeks. */
 .sidebar-rail[data-peek="open"] [data-rail-rule] {
   display: none;
@@ -2339,6 +2342,7 @@ html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="ope
 .sidebar-rail [data-rail-trail] {
   max-width: 0;
   overflow: hidden;
+  white-space: nowrap;
   opacity: 0;
   padding-inline: 0;
   transition: opacity 100ms ease-out;
@@ -2351,6 +2355,14 @@ html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="ope
 }
 .sidebar-rail [data-rail-corner] {
   transition: opacity 100ms ease-out;
+}
+/* No count in the sidebar ever wraps (owner, 2026-11-01: "the numbers ...
+   never go to two lines across all the sidebar pills"). */
+.sidebar-rail [data-rail-corner],
+.sidebar-rail [data-rail-trail],
+.sidebar-rail [data-nav-needs] {
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .sidebar-rail[data-peek="open"] [data-rail-corner] {
   opacity: 0;
