@@ -39,22 +39,37 @@ the INSERT, and so the manifest id never changes either:
 
 **Private and a draft.** A new package has ``visibility = 'private'``,
 ``status = 'draft'`` and ``workspace_path = ''``, because it has no files. No
-function here changes the visibility, the status or the format. The trigger
+function here changes the visibility or the format. Only :func:`publish_version`
+and :func:`rollback` change the status, and only to ``live``. The trigger
 ``apps_format_fixed`` refuses a change of ``format`` on the database too.
 
-**Not here.** No route and no UI. Publish, versions and rollback are A4,
-over ``app_versions``. Install is WS-PKG.
+**Versions (A4).** :func:`publish_version` and :func:`rollback` write
+``app_versions``. A version row holds the manifest, ``bundle_html = ''`` and
+``bundle_sha256``, the SHA-256 of the manifest JSON text from
+:func:`check_manifest`. The store never updates or deletes a version row, so
+history is append-only. Both functions lock the package row first
+(``FOR UPDATE``), so two writers get N and N+1. ``UNIQUE (app_id, version)``
+is the backstop. Each writes its ``app_audit`` row in the same transaction.
+⚠️ A package skips the App Workshop review: no function here calls
+``record_app_audit`` or proposes ``app.publish_review``. The organization
+approval is J2. The install is WS-PKG, and ``apps.live_version`` is only the
+pointer of the author.
+
+**Not here.** No route and no UI. Install is WS-PKG.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from acb_common.secret_shapes import looks_like_secret
 from acb_common.studio_manifest import ManifestError, validate_manifest
 from sqlalchemy import text
 
@@ -108,6 +123,64 @@ _UPDATE_SQL = (
     "AND owner_email = :m AND id = CAST(:id AS uuid) "
     f"RETURNING {_PACKAGE_COLUMNS}"
 )
+
+_VERSION_FIELDS = (
+    "version, manifest, bundle_sha256, release_notes, published_by, "
+    "published_at, review_status")
+
+#: One statement takes the next number, so it never reads a stale maximum.
+#: The caller holds the package row lock. ``bundle_html`` is '' for a package.
+_VERSION_INSERT_SQL = (
+    "INSERT INTO app_versions (app_id, version, manifest, bundle_html, "
+    "bundle_sha256, release_notes, scope_set_hash, published_by, review_status) "
+    "SELECT CAST(:id AS uuid), COALESCE(MAX(version), 0) + 1, "
+    "CAST(:manifest AS jsonb), '', :sha, :notes, '', :m, 'auto' "
+    "FROM app_versions WHERE app_id = CAST(:id AS uuid) "
+    f"RETURNING app_id::text, {_VERSION_FIELDS}"
+)
+
+_VERSION_LIST_SQL = (
+    "SELECT v.app_id::text, v.version, NULL, v.bundle_sha256, v.release_notes, "
+    "v.published_by, v.published_at, v.review_status "
+    "FROM app_versions v JOIN apps a ON a.id = v.app_id "
+    f"WHERE a.organization_id = {_BOUND_ORG} AND a.format = 'manifest' "
+    "AND a.owner_email = :m AND a.id = CAST(:id AS uuid) ORDER BY v.version DESC"
+)
+
+_VERSION_GET_SQL = (
+    "SELECT v.app_id::text, v.version, v.manifest, v.bundle_sha256, "
+    "v.release_notes, v.published_by, v.published_at, v.review_status "
+    "FROM app_versions v JOIN apps a ON a.id = v.app_id "
+    f"WHERE a.organization_id = {_BOUND_ORG} AND a.format = 'manifest' "
+    "AND a.owner_email = :m AND a.id = CAST(:id AS uuid) AND v.version = :v"
+)
+
+#: A publish moves the pointer and the status. It leaves ``manifest`` as it is.
+_PUBLISH_POINT_SQL = (
+    "UPDATE apps SET status = 'live', live_version = :v, updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m AND id = CAST(:id AS uuid)"
+)
+
+#: A rollback overwrites the draft with the copy, and moves the pointer.
+_ROLLBACK_POINT_SQL = (
+    "UPDATE apps SET manifest = CAST(:manifest AS jsonb), name = :name, "
+    "description = :desc, status = 'live', live_version = :v, updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m AND id = CAST(:id AS uuid)"
+)
+
+_AUDIT_SQL = (
+    "INSERT INTO app_audit (app_id, app_version, user_email, kind, detail) "
+    "VALUES (CAST(:id AS uuid), :v, :m, :kind, CAST(:detail AS jsonb))"
+)
+
+#: The longest release note, in characters.
+MAX_NOTES_CHARS = 2000
+#: The version column is an INT4.
+MAX_VERSION = 2**31 - 1
+#: The refusal of a rollback to the live version.
+ROLLBACK_LIVE = "That version is already the live version."
 
 
 class PackageStoreError(ValueError):
@@ -341,3 +414,185 @@ async def update_manifest(db: Any, member: str, package_id: str,
         "m": m, "id": pid, "manifest": encoded, "name": manifest["name"],
         "desc": manifest["purpose"]})).first()
     return None if row is None else _package(row)
+
+
+@dataclass(frozen=True)
+class PackageVersion:
+    """One row of ``app_versions`` for a package. ``manifest`` is None in the
+    answer of :func:`list_versions`, which carries the metadata only."""
+
+    package_id: str
+    version: int
+    manifest: dict[str, Any] | None
+    bundle_sha256: str
+    release_notes: str
+    published_by: str
+    published_at: datetime
+    review_status: str
+
+
+def _version(row: Any) -> PackageVersion:
+    manifest = row[2]
+    if isinstance(manifest, str | bytes):
+        manifest = json.loads(manifest)
+    return PackageVersion(
+        package_id=str(row[0]), version=int(row[1]),
+        manifest=None if manifest is None else dict(manifest),
+        bundle_sha256=str(row[3]), release_notes=str(row[4] or ""),
+        published_by=str(row[5]), published_at=row[6], review_status=str(row[7]))
+
+
+def _notes(notes: object) -> str:
+    if not isinstance(notes, str):
+        raise _refuse("$.notes", "The release notes are text.")
+    if "\x00" in notes:
+        raise _refuse("$.notes", "The release notes hold a NUL character. Remove it.")
+    try:
+        notes.encode("utf-8")
+    except UnicodeEncodeError:
+        raise _refuse("$.notes", "The release notes hold a lone surrogate. Remove it.") from None
+    if looks_like_secret(notes):
+        raise _refuse("$.notes", "The release notes look like a secret. Remove it.")
+    if len(notes) > MAX_NOTES_CHARS:
+        raise _refuse("$.notes", f"The release notes are longer than {MAX_NOTES_CHARS} characters.")
+    return notes
+
+
+def _version_number(version: object) -> int:
+    """A version is an int from 1 to :data:`MAX_VERSION`. The refusal names no value."""
+    if isinstance(version, bool) or not isinstance(version, int) or not 1 <= version <= MAX_VERSION:
+        raise PackageStoreError(f"version must be an integer from 1 to {MAX_VERSION}")
+    return version
+
+
+def _catalog(catalog: object) -> Mapping[str, str]:
+    """A missing catalog would skip the catalog checks, so it is refused."""
+    if not isinstance(catalog, Mapping):
+        raise PackageStoreError("catalog is required: pass a map of action id to class")
+    return catalog
+
+
+def _check_publishable(doc: dict[str, Any], catalog: Mapping[str, str]) -> str:
+    """The JSON text of *doc* after :func:`check_manifest` and A2's checks WITH the catalog."""
+    encoded = check_manifest(doc)
+    errors = validate_manifest(doc, catalog=catalog)
+    if errors:
+        raise PackageStoreError("The manifest is not valid.", errors)
+    return encoded
+
+
+def _sha256(encoded: str) -> str:
+    """The SHA-256 of the manifest JSON text, as UTF-8 bytes."""
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+async def _append_version(db: Any, m: str, pid: str, encoded: str, notes: str) -> PackageVersion:
+    row = (await db.execute(text(_VERSION_INSERT_SQL), {
+        "id": pid, "manifest": encoded, "sha": _sha256(encoded), "notes": notes,
+        "m": m})).first()
+    if row is None:  # pragma: no cover - the INSERT .. SELECT always answers a row
+        raise PackageStoreError("The version was not written.")
+    return _version(row)
+
+
+async def _audit(db: Any, m: str, pid: str, version: int, kind: str,
+                 detail: dict[str, Any]) -> None:
+    """The audit row, in the caller's transaction. It never drops an error."""
+    await db.execute(text(_AUDIT_SQL), {
+        "id": pid, "v": version, "m": m, "kind": kind,
+        "detail": json.dumps(detail, ensure_ascii=False)})
+
+
+async def publish_version(db: Any, member: str, package_id: str, notes: str, *,
+                          catalog: Mapping[str, str]) -> PackageVersion | None:
+    """Publish the draft of the package *package_id* of *member* as version N+1.
+
+    Answers None when no package of the member has the id. The call locks the
+    row, reads the stored draft, and runs :func:`check_manifest` on it again.
+    Then it runs A2's ``validate_manifest`` WITH *catalog*, so a colour, a px
+    size, an unknown block or an action that the catalog does not serve
+    raises :class:`PackageStoreError` and writes nothing.
+
+    *catalog* maps an action id to its class letter, as
+    ``routes/studio/actions.catalog_rows`` serves it (``{row["id"]:
+    row["class"]}``). The caller passes it, because a store must not import
+    a route module. The caller reads it BEFORE it opens the store session.
+
+    One transaction writes the version row (``review_status = 'auto'``,
+    ``scope_set_hash = ''``, ``published_by`` the member), sets
+    ``apps.status = 'live'`` and ``apps.live_version = N+1``, and writes the
+    ``app_audit`` row (kind ``publish``). ``apps.manifest`` stays as it is.
+    No review step runs here: J2 owns the organization approval.
+    """
+    m = _member(member)
+    pid = _package_id(package_id)
+    note = _notes(notes)
+    known = _catalog(catalog)
+    current = await get_package(db, m, pid, for_update=True)
+    if current is None:
+        return None
+    encoded = _check_publishable(current.manifest, known)
+    version = await _append_version(db, m, pid, encoded, note)
+    await db.execute(text(_PUBLISH_POINT_SQL), {"m": m, "id": pid, "v": version.version})
+    await _audit(db, m, pid, version.version, "publish", {
+        "version": version.version, "sha256": version.bundle_sha256, "notes": note})
+    return version
+
+
+async def rollback(db: Any, member: str, package_id: str, version: int, *,
+                   catalog: Mapping[str, str]) -> PackageVersion | None:
+    """Roll the package back to *version*. History stays append-only.
+
+    ⚠️ This OVERWRITES THE DRAFT. In one transaction under the row lock it
+    inserts version N+1 as a copy of the manifest of *version*, sets
+    ``apps.manifest`` to that copy (the name and the description follow it),
+    and sets ``apps.live_version = N+1``. It writes an ``app_audit`` row (kind
+    ``rollback``) whose detail names both numbers, and says the draft was
+    overwritten. Any edit of the draft since the last publish is lost.
+
+    Answers None for a missing package or a missing version. Raises
+    :class:`PackageStoreError` (:data:`ROLLBACK_LIVE`) for the live version.
+    *catalog* is required, as for :func:`publish_version`. The copy runs
+    :func:`check_manifest` and A2's checks WITH the catalog before any write,
+    so a version with an action that the catalog withdrew or reclassified is
+    refused, and the draft stays as it is.
+    """
+    m = _member(member)
+    pid = _package_id(package_id)
+    version = _version_number(version)
+    known = _catalog(catalog)
+    current = await get_package(db, m, pid, for_update=True)
+    if current is None:
+        return None
+    old = await get_version(db, m, pid, version)
+    if old is None or old.manifest is None:
+        return None
+    if current.live_version == version:
+        raise PackageStoreError(ROLLBACK_LIVE)
+    encoded = _check_publishable(old.manifest, known)
+    new = await _append_version(db, m, pid, encoded, f"Rollback to version {version}.")
+    await db.execute(text(_ROLLBACK_POINT_SQL), {
+        "m": m, "id": pid, "manifest": encoded, "name": old.manifest["name"],
+        "desc": old.manifest["purpose"], "v": new.version})
+    await _audit(db, m, pid, new.version, "rollback", {
+        "to_version": version, "new_version": new.version,
+        "from_version": current.live_version, "draft_overwritten": True,
+        "sha256": new.bundle_sha256})
+    return new
+
+
+async def list_versions(db: Any, member: str, package_id: str) -> list[PackageVersion]:
+    """The versions of a package of *member*, newest first, with no manifest.
+    A package of another member or org answers an empty list."""
+    rows = (await db.execute(text(_VERSION_LIST_SQL), {
+        "m": _member(member), "id": _package_id(package_id)})).all()
+    return [_version(r) for r in rows]
+
+
+async def get_version(db: Any, member: str, package_id: str,
+                      version: int) -> PackageVersion | None:
+    """One version, with its manifest, or None."""
+    _version_number(version)
+    row = (await db.execute(text(_VERSION_GET_SQL), {
+        "m": _member(member), "id": _package_id(package_id), "v": version})).first()
+    return None if row is None else _version(row)
