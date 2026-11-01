@@ -552,7 +552,7 @@ async def test_list_actions_reports_a_failed_read(monkeypatch) -> None:
 def test_no_tool_takes_an_org_or_a_member_argument() -> None:
     identity = {"organization_id", "org_id", "organization", "org", "tenant", "tenant_id",
                 "member", "member_email", "user", "user_email", "email", "actor", "as_user"}
-    assert len(st.STUDIO_TOOLS) == 5
+    assert len(st.STUDIO_TOOLS) == 7
     for fn in st.STUDIO_TOOLS:
         params = set(inspect.signature(fn).parameters)
         assert not params & identity, (fn.__name__, params)
