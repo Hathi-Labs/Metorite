@@ -1814,6 +1814,11 @@ blocked until one is.
 
 ### 8.4 The first sign-in question
 
+**Amended by D150 (2026-11-02).** The first visit skips "Choose the apps for
+your sidebar", and the founder's dialog has no invite step.
+`specs/onboarding.md` §4 owns the first-run path. "Change my layout" keeps
+both steps.
+
 `WelcomeDialog` already mounts in `AppShell`. It asks one question, "What will
 you do most here?", with six answers. The answer picks a preset. The member may
 skip it. The question changes the starting layout and nothing else.

@@ -502,6 +502,7 @@ jobs:
               tests/unit/test_projects_search_description_r8.py \
               tests/unit/test_staging_minimise_r8.py \
               tests/unit/test_studio_objects_r8.py \
+              tests/unit/test_goal_record_r8.py \
               tests/unit/test_studio_packages_r8.py \
               tests/unit/test_studio_action_door_r8.py \
               tests/unit/test_studio_packages_versions_r8.py \

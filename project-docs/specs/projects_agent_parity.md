@@ -415,6 +415,10 @@ an input fails CI until its author decides what the chat does with it.
 This is D-PM-37 taken from the route to the field and to the UI action. D91
 records the extension (§13).
 
+**The rule now binds every app** (owner, 2026-11-01). `chat_parity.md` holds
+the fence for the whole control plane (Metorite task 1238). It leaves the
+Projects client to F3, and reads its decisions.
+
 ### 6.2 The fences (R7)
 
 | Fence | What it holds | State |
