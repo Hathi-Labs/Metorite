@@ -109,6 +109,9 @@ import {
 import { AiWaitingGroup } from "./AiWaitingCard";
 import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { emptyNeedsLine } from "./myDay";
+import RemindersBand from "./RemindersBand";
+import { bandCount, bandRows } from "./reminderBand";
+import { isReminderKind } from "./reminderKinds";
 import { carryNeeds, needsKey, runAct } from "./needs";
 import {
   EMPTY_ACTS,
@@ -596,7 +599,16 @@ export function FeedColumn({
   // and it holds each card's place until the member takes the new cards in.
   // `columnView` is the one rule of the visit, the cut and the pill.
   const [visit, setVisit] = useState<Visit | null>(null);
-  const view = columnView(feed.answer, visit, { shown, marked: feed.marked, hidden: feed.hidden });
+  // The reminder cards draw in the Reminders band (RX-3), so the groups leave
+  // them out and no reminder shows twice. They still count in the page's
+  // number: a reminder that waits on the member needs them.
+  const apart = new Set([
+    ...feed.hidden,
+    ...(feed.answer?.cards ?? []).filter((c) => isReminderKind(c.kind)).map((c) => c.signal_id),
+  ]);
+  const view = columnView(feed.answer, visit, { shown, marked: feed.marked, hidden: apart });
+  // A reminder that waits on the member sits in the band, so an empty column must not say "Nothing needs you".
+  const bandWaits = bandCount(bandRows(feed.answer, feed.marked, feed.hidden, now?.getTime() ?? 0)) > 0;
   // The first answer starts the visit: state from the render, as React's
   // "adjust state while rendering" pattern does it.
   if (visit === null && view.visit !== null) setVisit(view.visit);
@@ -699,7 +711,7 @@ export function FeedColumn({
             <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${accentForHue("green").soft}`}>
               <Icon name="Check" size={14} className={accentForHue("green").text} />
             </span>
-            <span className="text-sm text-muted-foreground">{emptyNeedsLine(failed.length > 0)}</span>
+            <span className="text-sm text-muted-foreground">{emptyNeedsLine(failed.length > 0 || bandWaits)}</span>
           </div>
         ) : null}
         {shownGroups.map((group) => (
@@ -803,6 +815,9 @@ export function FeedColumn({
       <h2 tabIndex={-1} data-leave-focus="" className="sr-only">
         Your day
       </h2>
+      {/* The Reminders band (RX-3) is the first thing of the column, above
+          every group. The groups leave the reminder cards out. */}
+      <RemindersBand feed={feed} now={now} />
       {chips}
       {body}
       {failed.length > 0 || stale ? (

@@ -35,6 +35,11 @@
   **OB-8 (the chat asks a phone member to turn on notifications) is
   BUILT, 2026-10-30, dark** behind `PUSH_PROMPT_ORGS` (§10.4). No box
   has the flag on.
+  **RX-3 (a reminder looks and acts like a reminder in My Day) and RX-4
+  (the push has buttons) are BUILT, 2026-11-02**, under epic task 1402. They
+  are not dark. They draw wherever `CALENDAR_REMINDERS` and the My Day feed
+  are on. See §5.6 "Settled 2026-11-02 (RX-3)" and §5.9 "Settled 2026-11-02
+  (RX-4)".
 - **Board row:** **WS-CAL**. WS-66 for reminders and web push sits under
   it.
 - **Asked by:** the owner, 2026-10-15. The Calendar must hold more than
@@ -844,6 +849,44 @@ when the feed reads it, and nothing stores a card.
   move of the member does the same, with the session's org. The next
   `fire_at` or `next_check_at` is the edge of the read cache.
 
+**Settled 2026-11-02 (RX-3).** The owner said that a reminder shows up
+differently than a due task in My Day. A reminder is a moment of the day, not
+a chore. These rules follow.
+
+1. **A Reminders band.** My Day draws a band above the groups of the feed. It
+   holds the reminders that fired and wait on the member, in strong rows.
+   Then it holds today's scheduled reminders in quiet rows. It hides when it
+   has no row. A row shows a Bell glyph and not the Calendar icon. It shows
+   the exact time, the title and the linked object in one line. A
+   check-back row asks "Did you do it?". A quiet row says "Later today" with
+   its time. The band shows five rows, then "Show all". The fired rows come
+   first, so they are never cut by a quiet row.
+2. **Done and Snooze in place.** Each row has both acts. They write the
+   reminder row through `/resolve` and `/snooze`, never the card state. Snooze
+   offers In 1 hour, This evening and Tomorrow morning. A toast offers Undo.
+   The Undo of a done is `/reopen`. The Undo of a snooze is `/reschedule`. A
+   quiet row goes back to its old time. A reminder that waited comes back one
+   minute later, because a past time would fire at once.
+3. **No double listing.** The groups of the feed leave out the three reminder
+   kinds. The card still counts in "N things need you", because a fired
+   reminder needs the member. A quiet row is never a card, a needs row or a
+   count.
+4. **One feed.** The upcoming rows ride in the feed answer as
+   `reminders_ahead`, with `reminder_subjects` for the linked objects. The
+   feed reads them once, beside the state join, in `my_day_band`
+   (`routes/projects/reminders.py`). The read runs only when the `reminders`
+   source answered `ok`. A failed read gives an empty band, and the answer is
+   served and not stored. The bell never runs it.
+5. **The bell.** A fired reminder (`reminder_due`, `reminder_check`) sorts first
+   in the bell, and its row has Done and Snooze too. Before "Show all" the
+   bell shows three reminder rows at most, so the other rows stay in the
+   seven. The server order of `KIND_ORDER` does not change. Only the client
+   groups the kinds first.
+
+Fences: `reminderBand.test.ts`, `reminderActions.test.ts`,
+`remindersBand.test.ts` and `test_shell_feed.py` (`TestTheReminderCards`).
+The real-database cases are in `test_reminder_loop.py` (`test_r8_the_band_*`).
+
 ### 5.7 A tap opens the chat
 
 The owner's words: "When I open the reminder on mobile, it should open the
@@ -1049,7 +1092,7 @@ and its item 5 (for reminder pushes, D114.4).
   web notification. So the tap that opens the chat is the one path.
 - **Android.** Push works in Chrome and in the installed app. A notification
   may carry two actions, Done and Later, as a shortcut. The tap still opens
-  the chat.
+  the chat. RX-4 builds the actions, and they read "Done" and "In 1 hour".
 - **Desktop.** Chrome, Edge, Firefox and Safari, from the same toggle.
 - **The service worker.** One file, `public/sw.js`, registered at scope `/`.
   On `push` it shows the notification with a `tag` of the reminder id, so a
@@ -1073,6 +1116,29 @@ and its item 5 (for reminder pushes, D114.4).
   account B is in use. The default: the payload names the org, and "Hide
   details" covers a shared device. Settled 2026-10-30: RE-9 decision 4 of
   §5.6 holds the rule, and RE-9a builds it.
+
+**Settled 2026-11-02 (RX-4).** The notification has buttons. These rules
+follow.
+
+1. **The payload.** `PushMessage` gains `reminder_id` and `kind`. They hold
+   an id and a card kind, and no text of the reminder. So `hide_push_details`
+   still hides the title, and the payload stays under 600 bytes.
+2. **The buttons.** For `reminder_due` and `reminder_check`, `public/sw.js`
+   adds "Done" and "In 1 hour". A device that allows fewer than two buttons
+   gets none. iOS shows none, and the tap path covers it.
+3. **The click.** A button sends one same-origin `POST` with the session
+   cookie. The path is `/api/projects/my/reminders/<id>/resolve` or
+   `/snooze`. The BFF has no origin check. The session cookie is
+   `SameSite=Lax`, and the request is same-site. A good answer or a 409 ends
+   it. Any other answer opens `/chat?reminder=<id>`, so nothing is lost. This
+   covers a 401 for a signed out session. It covers a 404 for a reminder of
+   another account of the device.
+4. **A plain tap** opens the chat card, as before. The worker has no
+   `fetch` handler. The file changes, so a browser installs it at its next
+   check, and `skipWaiting` makes it live. The repo has no worker version
+   rule.
+
+Fences: `src/lib/pushButtons.test.ts` and `tests/unit/test_reach_push_message.py`.
 
 ### 5.10 What the other docs gain
 
