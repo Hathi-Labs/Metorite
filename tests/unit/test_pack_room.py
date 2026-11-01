@@ -434,7 +434,7 @@ async def test_a_pack_that_left_gives_up_its_hand_off_rules(store, monkeypatch) 
     assert run.left == {"email"} and run.refusal("email-assistant") is None
 
 
-async def test_a_reloaded_owner_of_the_loader_opens_its_hand_off(store) -> None:
+async def test_a_pack_that_left_opens_the_hand_off_that_the_loader_closed(store) -> None:
     """Mutation: drop the ``via_failed`` write of ``leaves`` -> the refusal sends
     the model to a load that is not on offer -> red."""
     entries = _sticky("email")
