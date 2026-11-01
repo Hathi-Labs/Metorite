@@ -2312,14 +2312,16 @@ html[data-look="glass"] .sidebar-rail[data-collapsed="true"] [data-rail-row] > [
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--background-grouped) 30%, var(--card));
 }
 /* The head's brand clips to its mark while the rail is folded, and opens to
-   the name as the rail widens, at the rail's own pace. */
+   the name as the rail widens, at the rail's own pace. It keeps one width,
+   and a clip moves, not the layout (motion.test.ts G3). */
 html[data-look="glass"] .sidebar-rail [data-head-brand] {
   max-width: 11rem;
   overflow: hidden;
-  transition: max-width var(--panel-duration) var(--panel-easing);
+  clip-path: inset(0 0 0 0);
+  transition: clip-path var(--panel-duration) var(--panel-easing);
 }
 html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="open"]) [data-head-brand] {
-  max-width: 1.5rem;
+  clip-path: inset(0 calc(100% - 1.5rem) 0 0);
 }
 /* A section's cap: the rule while folded, the name while it peeks. */
 .sidebar-rail[data-peek="open"] [data-rail-rule] {
