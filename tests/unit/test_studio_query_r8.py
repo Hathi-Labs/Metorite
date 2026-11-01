@@ -1048,6 +1048,34 @@ def test_r8_a_field_that_turns_cold_during_a_query_gives_the_right_page(world) -
     assert page.total == 3 and len(page.records) == 3
 
 
+def test_r8_a_sort_field_that_turns_cold_during_a_query_is_refused(world) -> None:
+    """Only the sort reads `rank`. A second session turns it cold and commits,
+    and its hot rows go, so each record would fall to the tail in id order and
+    the page would lose its order with no error. The page statement sees that,
+    so the store reads the fields again and refuses the sort."""
+    async def go() -> tuple[bool, QueryError]:
+        obj = await _define(world.a, world.pkg_a, "cooling_sort", [
+            {"key": "rank", "type": "number", "hot": True}])
+        await _create(world.a, obj, {"a": {"rank": 3}, "b": {"rank": 1}, "c": {"rank": 2}})
+
+        async def unhot() -> None:
+            async with tenant_session(world.a) as other:
+                assert await store.set_field_hot(other, obj.id, "rank", False)
+
+        async with tenant_session(world.a) as db:
+            spy = _Spy(db, unhot, marker="FROM studio_object_fields")
+            with pytest.raises(QueryError) as stopped:
+                await store.query_records(spy, package_id=obj.package_id, object_id=obj.id,
+                                          sort={"field": "rank"})
+        async with tenant_session(world.a) as db:
+            assert await store.drop_object(db, obj.id)
+        return spy.fired, stopped.value
+
+    fired, err = _run(world.p.app_url, go)
+    assert fired
+    assert err.code == "query_not_indexed" and err.field == "rank"
+
+
 def test_r8_a_field_that_keeps_changing_stops_with_a_clear_error(world, monkeypatch) -> None:
     """The store believes that `cold` is hot on each read, and the statement
     says it is not. The store tries twice, then stops."""
