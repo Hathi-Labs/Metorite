@@ -47,6 +47,8 @@ export interface FieldDef {
   many?: boolean;
   options?: string[] | null;
   to?: string | null;
+  // The field gets a row in the index side table of C1 (studio_record_hot).
+  hot?: boolean;
 }
 
 export interface ObjectDef {

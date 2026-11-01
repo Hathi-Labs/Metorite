@@ -74,6 +74,11 @@
     "FieldDef": {
       "additionalProperties": false,
       "properties": {
+        "hot": {
+          "default": false,
+          "title": "Hot",
+          "type": "boolean"
+        },
         "key": {
           "pattern": "^[a-z][a-z0-9_]{0,47}$",
           "title": "Key",
@@ -171,6 +176,7 @@
         "label": {
           "anyOf": [
             {
+              "maxLength": 120,
               "type": "string"
             },
             {
