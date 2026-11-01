@@ -108,6 +108,13 @@ describe("which events draw the card", () => {
   const ev = (name: string, result: string, status: ToolEvent["status"] = "done"): ToolEvent =>
     ({ id: "e1", name, status, result } as ToolEvent);
 
+  it("a repeat of a reminder draws the card, and it offers no Undo", () => {
+    const text = receiptText({ undo: "" }).replace("Reminder set:", "Reminder already set:");
+    expect(isReminderReceipt(ev("set_reminder", text))).toBe(true);
+    expect(readReminderReceipt("set_reminder", text)!.already).toBe(true);
+    expect(draw(text)).not.toContain(">Undo<");
+  });
+
   it("a receipt of the three tools does, and nothing else does", () => {
     expect(isReminderReceipt(ev("set_reminder", receiptText()))).toBe(true);
     expect(isReminderReceipt(ev("update_reminder", receiptText()))).toBe(true);
