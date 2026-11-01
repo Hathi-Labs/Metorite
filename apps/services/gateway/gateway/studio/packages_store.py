@@ -78,7 +78,7 @@ FORMAT = "manifest"
 #: The bound of the CHECK ``apps_manifest_package``: the JSON text of a
 #: manifest, in bytes (256 KiB). A2's ``MAX_DOC_BYTES`` is the same number.
 MAX_MANIFEST_BYTES = 262144
-#: A float of this size or more is refused. See :func:`_first_bad_value`.
+#: A float of this size or more is refused. See :func:`first_bad_value`.
 MAX_FLOAT = 1e15
 #: The tries of a new id when the slug is taken.
 SLUG_TRIES = 3
@@ -251,7 +251,7 @@ def _path(loc: list[Any]) -> str:
     return out
 
 
-def _first_bad_value(doc: Any) -> ManifestError | None:
+def first_bad_value(doc: Any) -> ManifestError | None:
     """The first value, a key too, that jsonb refuses or writes longer.
 
     jsonb refuses the NUL character. A key that is not text is not JSON, and
@@ -261,6 +261,10 @@ def _first_bad_value(doc: Any) -> ManifestError | None:
     :func:`_manifest_text` refuses it when it encodes the text.
 
     Iterative. :func:`validate_manifest` runs first and bounds the depth.
+
+    This is the ONE copy of the check. The install store of the package host
+    (``package_host/store.py``) calls it for each contribution payload. That
+    caller runs no :func:`validate_manifest`, so it bounds the depth first.
     """
     stack: list[tuple[Any, list[Any]]] = [(doc, [])]
     while stack:
@@ -297,10 +301,10 @@ def _manifest_text(doc: dict[str, Any]) -> str:
     """The JSON text of a valid manifest, with the length of its jsonb text.
 
     The separators are those of the jsonb text form. With the value checks of
-    :func:`_first_bad_value`, the byte count is the count that the CHECK
+    :func:`first_bad_value`, the byte count is the count that the CHECK
     ``apps_manifest_package`` makes.
     """
-    bad = _first_bad_value(doc)
+    bad = first_bad_value(doc)
     if bad is not None:
         raise PackageStoreError("The manifest is not valid.", [bad])
     try:

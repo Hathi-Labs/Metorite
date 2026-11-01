@@ -71,7 +71,8 @@ PRIYA = "priya@fracktal.in"
 #: A colleague who stays. Priya shared one app with him (WS-PKG PKG-4).
 RAVI = "ravi@fracktal.in"
 #: Ravi's grant on the app that Priya shared with him. It is his, so it stays.
-RAVI_GRANT = {"app_id": "app-shared", "subject": RAVI}
+#: Priya made it, so it is a share (``package_host/sharing.py``, PKG-5b).
+RAVI_GRANT = {"app_id": "app-shared", "subject": RAVI, "granted_by": PRIYA}
 
 #: Her connected task workspace. Seeded with a real id because the GTD store
 #: is DUAL-SOURCE: `account_id IS NULL` is a LOCAL row she authored, a set
@@ -107,7 +108,8 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
                    {"user_id": "u-priya"})
     # Her own grant on the app of her unshared private install. It is not a
     # share, so the install still goes (WS-PKG PKG-4).
-    fake.seed_rows("app_grants", {"app_id": "app-mine", "subject": PRIYA},
+    fake.seed_rows("app_grants",
+                   {"app_id": "app-mine", "subject": PRIYA, "granted_by": PRIYA},
                    dict(RAVI_GRANT))
     fake.seed_rows("app_tool_grants", {"user_email": PRIYA})
     # ── credentials ──
@@ -827,8 +829,10 @@ def test_the_two_halves_of_package_install_do_not_overlap() -> None:
 
     * ``scope_kind`` splits the two private rows from ``shared_app_installs``.
     * ``NOT EXISTS`` and ``EXISTS`` of one subquery split the two private
-      rows. The subquery skips the member's own grants, which the delete side
-      deletes first, so the count before the deletes and the delete agree.
+      rows. The subquery is the share rule of ``package_host/sharing.py``
+      (PKG-5b). It names no parameter and never counts the member's own
+      grants, which the delete side deletes first. So the count before the
+      deletes and the delete agree.
 
     The rows name different person columns on purpose: a private install
     belongs to its ``scope_subject`` (the owner), and a shared one to its
@@ -867,13 +871,21 @@ def test_the_two_halves_of_package_install_do_not_overlap() -> None:
     assert kept["shared_app_installs"].where == (
         "scope_kind <> 'private' AND lower(installed_by) = :email"
         f" AND organization_id = {_BOUND_ORG}")
-    # The grant test names the install's app, and a person other than the
-    # member. A test that counted her own grant would keep each install
-    # that she granted to herself, and the delete would then disagree with
-    # the count, because her grants go first.
+    # The grant test names the install's app, an address, a person other
+    # than the owner, and the owner as the one who made the grant (PKG-5b).
+    # A test that counted her own grant would keep each install that she
+    # granted to herself, and the delete would then disagree with the count,
+    # because her grants go first. A test that counted a grant that she did
+    # not make would keep an install for a colleague's consent row.
+    from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL
+
+    assert _OTHERS_SEE_THE_APP is OTHERS_SEE_THE_INSTALL
     assert _OTHERS_SEE_THE_APP == (
         "EXISTS (SELECT 1 FROM app_grants AS g"
-        " WHERE g.app_id = package_install.app_id AND lower(g.subject) <> :email)")
+        " WHERE g.app_id = package_install.app_id"
+        " AND strpos(g.subject, '@') > 0"
+        " AND lower(g.subject) <> package_install.installed_by"
+        " AND lower(g.granted_by) = package_install.installed_by)")
     assert (_conjuncts(deleted.where)[0], _conjuncts(kept["shared_app_installs"].where)[0]) == (
         "scope_kind = 'private'", "scope_kind <> 'private'")
     keys = [r.key for r in _PURGE_DELETES]
@@ -910,30 +922,82 @@ async def test_her_private_install_goes_and_her_shared_installs_stay(
     assert db.rows["app_grants"] == [RAVI_GRANT]
 
 
-async def test_a_grant_to_the_org_or_a_group_also_keeps_her_private_install(
-    db: _FakeDB,
+@pytest.mark.parametrize("spacing", ["EXISTS (", "EXISTS(", "EXISTS  ("],
+                         ids=["one-space", "no-space", "two-spaces"])
+def test_the_fake_reads_an_exists_clause_at_any_spacing(spacing: str) -> None:
+    """``EXISTS(`` with no space is the same SQL as ``EXISTS (``. The fake
+    reads each form, so a body with no space can never get past it. A form
+    that the fake cannot read, here a subquery with no ``AS``, is an error,
+    never a pass. Before this test, the guard counted ``"EXISTS ("`` only,
+    so ``NOT EXISTS(`` got past the guard and the regex, and the clause was
+    ignored (PKG-5b repair round 1)."""
+    from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL
+
+    fake = _FakeDB()
+    fake.rows["package_install"] = [
+        {"app_id": "app-shared", "scope_kind": "private", "scope_subject": PRIYA,
+         "installed_by": PRIYA},
+        {"app_id": "app-mine", "scope_kind": "private", "scope_subject": PRIYA,
+         "installed_by": PRIYA}]
+    fake.rows["app_grants"] = [RAVI_GRANT]
+    private = "scope_kind = 'private' AND lower(scope_subject) = :email"
+    term = OTHERS_SEE_THE_INSTALL.replace("EXISTS (", spacing)
+    assert term.count(spacing) == 1
+
+    kept = fake._person_rows(f"{private} AND {term}", "package_install", {"email": PRIYA})
+    gone = fake._person_rows(f"{private} AND NOT {term}", "package_install", {"email": PRIYA})
+    assert [r["app_id"] for r in kept] == ["app-shared"]
+    assert [r["app_id"] for r in gone] == ["app-mine"]
+
+    unreadable = term.replace("app_grants AS g", "app_grants g")
+    with pytest.raises(AssertionError, match="unreadable EXISTS clause"):
+        fake._person_rows(f"{private} AND NOT {unreadable}", "package_install",
+                          {"email": PRIYA})
+
+
+#: (app, grant subject, granted by, the install stays). ``routes/apps/grants.py``
+#: (``is_valid_subject``) takes an address, ``agent:<name>`` and
+#: ``agents:*``, and the consent route writes the address of the member who
+#: consents as both the subject and ``granted_by``. Only a share that Priya
+#: made to another address keeps her private install (PKG-5b).
+_SHARE_CASES = (
+    ("app-share", RAVI, "Priya@Fracktal.IN", True),
+    ("app-agent", "agent:helper", PRIYA, False),
+    ("app-agents", "agents:*", PRIYA, False),
+    ("app-consent", RAVI, RAVI, False),
+    ("app-other-owner", RAVI, "owner@fracktal.in", False),
+    ("app-self", "Priya@Fracktal.IN", PRIYA, False),
+)
+
+
+@pytest.mark.parametrize(("app", "subject", "granted_by", "stays"), _SHARE_CASES,
+                         ids=[c[0] for c in _SHARE_CASES])
+async def test_only_a_share_that_she_made_keeps_her_private_install(
+    db: _FakeDB, app: str, subject: str, granted_by: str, stays: bool,
 ) -> None:
-    """Any subject other than her counts as a person who sees the app: an
-    `org` grant and a `group:` grant too. A grant to her own address in
-    another case does not count."""
+    """A grant keeps her private install only when its subject is an address,
+    is not her own in any case, and she made it. A grant to an agent or to
+    every agent names no person. A colleague's consent row names the
+    colleague as ``granted_by``, and so does a share that another owner of
+    the app made. Neither one is her share, so the install goes.
+
+    ⚠️ Mutation-checked: dropping the ``@`` test keeps the two agent cases,
+    and dropping the ``granted_by`` test keeps the consent and the
+    other-owner cases. The fake reads each test from the statement."""
     from gateway.routes.admin.members import purge_member
 
     db.rows["package_install"] = [
         {"app_id": app, "scope_kind": "private", "scope_subject": PRIYA,
-         "installed_by": PRIYA}
-        for app in ("app-org", "app-group", "app-self")]
+         "installed_by": PRIYA}]
     db.rows["app_grants"] = [
-        {"app_id": "app-org", "subject": "org"},
-        {"app_id": "app-group", "subject": "group:ops"},
-        {"app_id": "app-self", "subject": "Priya@Fracktal.IN"},
-    ]
+        {"app_id": app, "subject": subject, "granted_by": granted_by}]
 
     out = await purge_member(PRIYA, admin=OWNER)
 
-    assert sorted(r["app_id"] for r in db.rows["package_install"]) == [
-        "app-group", "app-org"]
-    assert out.deleted["private_app_installs"] == 1
-    assert out.kept["shared_private_app_installs"] == 2
+    left = [r["app_id"] for r in db.rows["package_install"]]
+    assert left == ([app] if stays else [])
+    assert out.deleted["private_app_installs"] == (0 if stays else 1)
+    assert out.kept["shared_private_app_installs"] == (1 if stays else 0)
 
 
 # ── The cross-table half: what the delete side cascades away ────────────────
