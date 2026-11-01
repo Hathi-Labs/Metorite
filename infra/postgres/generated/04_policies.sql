@@ -1488,3 +1488,10 @@ DROP POLICY IF EXISTS studio_skill_versions_tenant_isolation ON studio_skill_ver
 CREATE POLICY studio_skill_versions_tenant_isolation ON studio_skill_versions
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE goal_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE goal_records FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS goal_records_tenant_isolation ON goal_records;
+CREATE POLICY goal_records_tenant_isolation ON goal_records
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

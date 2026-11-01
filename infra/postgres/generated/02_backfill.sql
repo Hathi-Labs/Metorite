@@ -644,3 +644,6 @@ UPDATE studio_skills SET organization_id = (SELECT id FROM organization WHERE sl
 
 UPDATE studio_skill_versions SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
+
+UPDATE goal_records SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;

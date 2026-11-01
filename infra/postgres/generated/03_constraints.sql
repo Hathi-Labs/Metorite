@@ -2521,3 +2521,15 @@ ALTER TABLE studio_skill_versions ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE studio_skill_versions ADD CONSTRAINT studio_skill_versions_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS studio_skill_versions_org_idx ON studio_skill_versions (organization_id);
+
+-- goal_records
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM goal_records WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: goal_records still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE goal_records ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE goal_records ADD CONSTRAINT goal_records_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS goal_records_org_idx ON goal_records (organization_id);

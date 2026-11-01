@@ -430,6 +430,20 @@ def test_the_studio_skill_tables_are_tenant_scoped(table: str) -> None:
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
 
 
+def test_the_goal_record_table_is_tenant_scoped() -> None:
+    """WS-WEB WEB-10 (``web_research.md`` §6). A goal record holds the
+    objective of one member of one organization. The table may not be
+    exempt, and the committed policy phase must carry it (R5)."""
+    gen = _generator()
+    assert "goal_records" in gen.discover_tables()
+    assert "goal_records" not in gen.EXEMPT
+    assert "goal_records" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE goal_records FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_generated_policies_carry_all_four_load_bearing_clauses() -> None:
     """FORCE, WITH CHECK and the missing-ok flag each have an incident behind
     them (saas_multitenancy_implementation.md §1.1). Drop any one and the
