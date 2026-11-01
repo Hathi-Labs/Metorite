@@ -63,14 +63,20 @@ _PERSON_VIS = re.compile(r"\b(visibility|scope_kind) (=|<>) 'private'")
 #: is told from its SYNCED half (`account_id`). Read from the statement like
 #: everything else here, so a clause that drops the filter changes the answer.
 _PERSON_NULL = re.compile(r"(\w+) IS (NOT )?NULL")
-#: ``[NOT] EXISTS (SELECT 1 FROM <t> AS <a> WHERE <a>.<key> = <outer>.<col>
-#: AND lower(<a>.<subject>) <> :email)``: does a row of ``<t>`` for this row
-#: name a person other than the member? ``members._OTHERS_SEE_THE_APP``
-#: (WS-PKG PKG-4) asks it of ``app_grants``. The tables and the columns come
-#: from the statement, so a clause that drops the test changes the answer.
+#: ``[NOT] EXISTS (SELECT 1 FROM <t> AS <a> WHERE <tests>)``: does a row of
+#: ``<t>`` pass each test against this row? ``members._OTHERS_SEE_THE_APP``
+#: (WS-PKG PKG-4 and PKG-5b, ``package_host/sharing.py``) asks it of
+#: ``app_grants``. :meth:`_FakeDB._others_test` reads each test from the
+#: statement, so a clause that drops a test changes the answer. A test that
+#: the fake cannot read is an error. ``EXISTS(`` with no space or with more
+#: space is the same SQL, so the pattern and :data:`_ANY_EXISTS` take any
+#: spacing.
 _PERSON_OTHERS = re.compile(
-    r"(NOT )?EXISTS \(SELECT 1 FROM (\w+) AS (\w+) WHERE \3\.(\w+) = \w+\.(\w+)"
-    r" AND lower\(\3\.(\w+)\) <> :email\)")
+    r"(NOT\s+)?\bEXISTS\s*\(SELECT 1 FROM (\w+) AS (\w+) WHERE ((?:[^()]|\([^()]*\))*)\)")
+#: Each ``EXISTS (`` of a statement, at any spacing. When this count and the
+#: count of :data:`_PERSON_OTHERS` differ, the fake cannot read a subquery,
+#: and that is an error, never a pass.
+_ANY_EXISTS = re.compile(r"\bEXISTS\s*\(", re.I)
 
 
 class _Scalars:
@@ -349,16 +355,37 @@ class _FakeDB:
         for nul in _PERSON_NULL.finditer(s):
             col, negated = nul.group(1), bool(nul.group(2))
             found = [r for r in found if (r.get(col) is not None) is negated]
-        for ex in _PERSON_OTHERS.finditer(s):
+        others = list(_PERSON_OTHERS.finditer(s))
+        if len(_ANY_EXISTS.findall(s)) != len(others):
+            raise AssertionError(f"unreadable EXISTS clause in fake: {s}")
+        for ex in others:
             negated, inner = bool(ex.group(1)), self.rows.get(ex.group(2), [])
-            key, col, subject = ex.group(4), ex.group(5), ex.group(6)
-            me = str(p["email"]).lower()
-            found = [
-                r for r in found
-                if any(g.get(key) == r.get(col) and str(g.get(subject, "")).lower() != me
-                       for g in inner) is not negated
-            ]
+            passes = self._others_test(ex.group(3), table, ex.group(4))
+            found = [r for r in found if any(passes(g, r) for g in inner) is not negated]
         return found
+
+    @staticmethod
+    def _others_test(alias: str, table: str, body: str) -> Any:
+        """One test of a row ``g`` of the subquery against a row ``r`` of
+        *table*, read from the conjuncts of *body*. Postgres compares text
+        byte for byte, and so does this. A conjunct that this cannot read is
+        an error, never a pass."""
+        a, o = re.escape(alias), re.escape(table)
+        tests: list[Any] = []
+        for part in body.split(" AND "):
+            if m := re.fullmatch(rf"{a}\.(\w+) = {o}\.(\w+)", part):
+                tests.append(lambda g, r, k=m[1], c=m[2]: g.get(k) == r.get(c))
+            elif m := re.fullmatch(rf"strpos\({a}\.(\w+), '@'\) > 0", part):
+                tests.append(lambda g, r, k=m[1]: "@" in str(g.get(k, "")))
+            elif m := re.fullmatch(rf"lower\({a}\.(\w+)\) <> {o}\.(\w+)", part):
+                tests.append(
+                    lambda g, r, k=m[1], c=m[2]: str(g.get(k, "")).lower() != r.get(c))
+            elif m := re.fullmatch(rf"lower\({a}\.(\w+)\) = {o}\.(\w+)", part):
+                tests.append(
+                    lambda g, r, k=m[1], c=m[2]: str(g.get(k, "")).lower() == r.get(c))
+            else:
+                raise AssertionError(f"unreadable EXISTS test in fake: {part}")
+        return lambda g, r: all(t(g, r) for t in tests)
 
     def _person_delete(self, table: str, matched: list[dict[str, Any]]) -> None:
         if table == "app_user":
