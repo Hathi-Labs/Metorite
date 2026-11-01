@@ -62,6 +62,7 @@ import { cardOrderFor, cardsFor, dateLine, failedLines, seesApprovals, summaryLi
 import { myDayFeedOn, myDayFeedOnServer } from "./myDayFlag";
 import { BUILT_CARDS } from "./presets";
 import { homePane } from "./shellNav";
+import AiWaitingCard from "./AiWaitingCard";
 import { useShellPrefs } from "./shellPrefs";
 
 // The feed flag goes through `useSyncExternalStore`, as `/` reads its own:
@@ -199,6 +200,10 @@ export default function MyDay() {
       {briefOn && !accessLoading && !briefPending ? (
         <BriefCard brief={brief.data} error={brief.error} now={now} className="mt-6 -mb-2" />
       ) : null}
+
+      {/* The AI runs that wait on the member (owner, 2026-11-01: Needs you
+          folds into My Day). It draws nothing when no run waits. */}
+      {!accessLoading ? <AiWaitingCard className="mt-6" /> : null}
 
       {accessLoading || briefPending || (!feedOn && layoutPending) ? (
         <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3" aria-hidden>

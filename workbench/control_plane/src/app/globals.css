@@ -2339,6 +2339,7 @@ html[data-look="glass"] .sidebar-rail[data-collapsed="true"]:not([data-peek="ope
 .sidebar-rail [data-rail-trail] {
   max-width: 0;
   overflow: hidden;
+  white-space: nowrap;
   opacity: 0;
   padding-inline: 0;
   transition: opacity 100ms ease-out;
