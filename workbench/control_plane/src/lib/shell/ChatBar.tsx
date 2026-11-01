@@ -157,7 +157,9 @@ const ASK_STARTS_ANY: readonly string[] = ["What can you help me with here?", "S
 function AskBar() {
   const st = useAssistant();
   const pathname = usePathname();
-  if (st.open || pathname?.startsWith("/chat")) return null;
+  // WhatsApp's own composer sits at the foot of its page, so the bar would
+  // cover it. There the assistant opens from Ctrl+J and the Chat row.
+  if (st.open || pathname?.startsWith("/chat") || pathname?.startsWith("/whatsapp")) return null;
   return <AskBarFoot />;
 }
 

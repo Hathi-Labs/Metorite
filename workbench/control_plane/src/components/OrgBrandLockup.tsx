@@ -35,6 +35,7 @@ import {
   readCachedBranding,
   writeCachedBranding,
 } from "@/lib/orgBranding";
+import { useLogoMark } from "@/lib/logoMark";
 
 // ── One fetch per page load, shared by both shells ─────────────────────────
 //
@@ -210,6 +211,11 @@ export function BrandMark({
   compact?: boolean;
 }) {
   const mark = lockup(branding, fallbackCaption, orgName);
+  // The square mark, for the folded sidebar (owner, 2026-11-01): the stored
+  // one, else one drawn from each colour mode's logo.
+  const stored = branding?.logoMark?.dataUri ?? null;
+  const markLight = useLogoMark(mark.kind === "org" ? mark.logo.dataUri : null, stored);
+  const markDark = useLogoMark(mark.kind === "org" ? mark.logoDark.dataUri : null, stored);
 
   // ── A customer's logo stands alone (owner, 2026-10-11) ───────────────────
   //
@@ -266,7 +272,27 @@ export function BrandMark({
         </span>
       </>
     );
-    return <span className="flex min-w-0 items-center">{images}</span>;
+    // The square mark sits beside the wide logo, hidden. The folded sidebar
+    // shows the mark and hides the wide logo (globals.css, `data-brand-mark`).
+    return (
+      <span className="flex min-w-0 items-center">
+        {markLight && markDark ? (
+          <span data-brand-mark="" className="hidden shrink-0 items-center" style={{ width: height, height }}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={markLight} alt={mark.alt} className={`${showLight} h-full w-full object-contain`} />
+            <span
+              className={`${showDark} h-full w-full items-center justify-center ${mark.plate ? "rounded-md bg-white p-0.5" : ""}`}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={markDark} alt={mark.alt} className="h-full w-full object-contain" />
+            </span>
+          </span>
+        ) : null}
+        <span data-brand-wide="" className="flex min-w-0 items-center">
+          {images}
+        </span>
+      </span>
+    );
   }
 
   // ── No logo: our comet, and the organization's name (owner, 2026-10-11) ──
