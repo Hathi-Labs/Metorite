@@ -25,12 +25,14 @@ Such a run holds only:
    While ``EMAIL_HELD_CARD_SEND`` is on, :data:`HELD_CARD_SEND_TOOLS` join
    too (§21 of ``email_app_master_plan.md``), each behind the held card
    that the gateway records. With the switch off, none of them joins.
-5. the first-party writes of :data:`HELD_CARD_WRITE_TOOLS` (RX-1, D150). Each
-   shows its exact change on one server-built card, and the member's click
-   on that card is the guard, as for ``send_draft``. ``open_world`` does not
-   decide for these. A Projects or CRM write stays only through the list
+5. the first-party writes of :data:`HELD_CARD_WRITE_TOOLS` (RX-1, D150), in a
+   run under no covered run (:func:`covered_chain`). Each shows its exact
+   change on one server-built card, and the member's click on that card is
+   the guard, as for ``send_draft``. ``open_world`` does not decide for these.
+   A Projects or CRM write stays only through the list
    (:func:`is_held_card_write`), and a held chat holds no other write of
-   those owners (:func:`is_held_off_write`).
+   those owners (:func:`is_held_off_write`). A covered run, and each run under
+   it, keeps the older rule: D150 speaks of a chat that read outside mail.
 
 A tool with no annotation, or with no ``open_world`` key, counts as an
 egress tool (:func:`is_egress_tool`). So an agent from another repo, whose
@@ -66,6 +68,7 @@ __all__ = [
     "CARD_BOUND_KEY",
     "CARD_BOUND_SEND_TOOLS",
     "CARD_WRITE_KEY",
+    "COVERED_CHAIN_KEY",
     "DELEGATION_TOOLS",
     "EGRESS_HELD_MAIL_ANSWER",
     "EGRESS_HELD_MAIL_ANSWER_CARDS",
@@ -96,6 +99,7 @@ __all__ = [
     "EgressGuardProvider",
     "RefuseEgressTools",
     "WithholdEgressTools",
+    "covered_chain",
     "egress_held_answer",
     "egress_hold_note",
     "egress_tool_names",
@@ -121,6 +125,10 @@ __all__ = [
 
 #: The artifact-context key. ``True`` means this run holds no egress tool.
 NO_EGRESS_KEY = "no_egress"
+#: The artifact-context key that says a covered run is this run or a run above
+#: it (RX-1, D150). Each run boundary binds it (``_tool_injection._covered_chain``),
+#: and it never comes from a request. :func:`covered_chain` is its one reader.
+COVERED_CHAIN_KEY = "covered_chain"
 #: The artifact-context key of a call of a tool pack (WS-67 OA-7b).
 #: ``tool_packs.owner_scope`` binds it, so a held answer of a pack tool says
 #: what is true in the one assistant's own chat (:func:`egress_held_answer`).
@@ -1418,6 +1426,18 @@ def is_held_chat_off(item: Any) -> bool:
     return is_egress_tool(item) or is_held_off_write(item)
 
 
+def covered_chain() -> bool:
+    """True when a covered run is the run on this frame or a run above it.
+
+    THE reader of :data:`COVERED_CHAIN_KEY` (RX-1, D150). H-236 holds such a run
+    for the member data of a sandboxed turn, not for mail. So a listed write
+    with ``open_world=True`` stays off there, and this chain keeps every fence
+    of H-236 as it was. Only an explicit True counts. A frame with no key reads
+    False, and the listed write still shows its own card.
+    """
+    return _bound_context().get(COVERED_CHAIN_KEY) is True
+
+
 def is_egress_tool(item: Any) -> bool:
     """True unless *item* may stay in a ``no_egress`` run (H-236). Fails closed.
 
@@ -1429,7 +1449,8 @@ def is_egress_tool(item: Any) -> bool:
     the tool object first may pass one (the Copilot guard does). The only
     sends that may stay are the card-bound ones (:func:`is_card_bound_send`),
     and the only writes with ``open_world=True`` that may stay are the listed
-    ones (:func:`is_held_card_write`, RX-1).
+    ones (:func:`is_held_card_write`, RX-1), and never under a covered run
+    (:func:`covered_chain`).
     """
     if not isinstance(item, str) and _from_mcp(item):
         return True
@@ -1438,7 +1459,7 @@ def is_egress_tool(item: Any) -> bool:
         return False
     if not name or name in STORE_WRITES:
         return True
-    if is_card_bound_send(item) or is_held_card_write(item):
+    if is_card_bound_send(item) or (is_held_card_write(item) and not covered_chain()):
         return False
     hints = _risk_of(None if isinstance(item, str) else item, name)
     return not (isinstance(hints, Mapping) and hints.get("open_world") is False)

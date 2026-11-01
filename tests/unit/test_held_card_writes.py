@@ -489,6 +489,42 @@ def test_a_held_chat_drops_class_c_from_a_delegated_run(monkeypatch, projects_to
     assert [_name(t) for t in agents[0].default_options["tools"]] == ["set_reminder"]
 
 
+@pytest.mark.parametrize("name", sorted(KEPT_CRM))
+def test_a_covered_chain_keeps_the_crm_writes_off(name: str, crm_tools) -> None:
+    """H-236 holds a covered run for the data of a sandboxed turn, and D150 speaks
+    of a chat that read mail. So a run under a covered run holds no CRM write, as
+    it did. ``test_a_covered_parent_calls_crm_assistant_and_the_writes_are_gone``
+    proves it through the executor. Mutation: drop ``covered_chain`` from
+    ``is_egress_tool`` -> red."""
+    tool = crm_tools[name]
+    assert eg.is_egress_tool(tool) is False, "non-vacuity: a held chat keeps it"
+    with _bound(**_run_ctx(no_egress=True, covered_chain=True)):
+        assert eg.covered_chain() is True
+        assert eg.is_egress_tool(tool) is True
+        assert eg.is_held_chat_off(tool) is True
+
+
+def test_only_an_explicit_true_is_a_chain() -> None:
+    """Mutation: read any value as a chain -> a stray key takes a write away."""
+    assert eg.covered_chain() is False
+    with _bound(**_run_ctx(covered_chain="yes")):
+        assert eg.covered_chain() is False
+
+
+def test_the_chain_passes_down_from_each_kind_of_parent(monkeypatch) -> None:
+    """The grandchild of a covered run reads its parent's key, and a child asks
+    the cover of its parent again. Mutation: read only the agent's own cover ->
+    the CRM child of a covered Projects run holds the writes -> red."""
+    covered = {PA}
+    monkeypatch.setattr(ti, "_run_covered", lambda agent, _org=None: agent in covered)
+    assert ti._covered_chain(PA, {}) is True, "the covered run itself"
+    assert ti._covered_chain(CRM, {"agent_name": PA}) is True, "its child"
+    assert ti._covered_chain(CRM, {"agent_name": "email-assistant",
+                                   eg.COVERED_CHAIN_KEY: True}) is True, "its grandchild"
+    assert ti._covered_chain(CRM, {"agent_name": "orchestrator"}) is False
+    assert ti._covered_chain(CRM, {}) is False
+
+
 def test_a_covered_run_keeps_its_pinned_class_c_tools(monkeypatch, projects_tools) -> None:
     """H-236 did not change: a covered run with no mark keeps
     ``COVERED_PROJECTS_TOOLS``. Mutation: make ``_covered_hold`` False -> red."""

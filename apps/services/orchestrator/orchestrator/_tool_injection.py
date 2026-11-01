@@ -436,6 +436,28 @@ def _delegated_no_egress(parent_ctx: Any, child: str | None = None) -> bool:
     return _run_covered(parent)
 
 
+def _covered_chain(
+    agent_name: str | None, parent_ctx: Any, organization_id: str | None = None,
+) -> bool:
+    """True when a covered run is the run that starts now or a run above it.
+
+    Each run boundary binds the answer as ``egress.COVERED_CHAIN_KEY``, beside
+    ``no_egress`` (RX-1, D150). The parent's key passes down, so a grandchild of
+    a covered run keeps the answer. The cover of the parent is asked again, as
+    in :func:`_delegated_no_egress`, and that can only add the key. The values
+    come from the server-bound run, never from a request.
+    """
+    from acb_skills.egress import COVERED_CHAIN_KEY
+
+    parent = parent_ctx or {}
+    if parent.get(COVERED_CHAIN_KEY) is True:
+        return True
+    above = str(parent.get("agent_name") or "")
+    if above and _run_covered(above, organization_id):
+        return True
+    return _run_covered(str(agent_name or ""), organization_id)
+
+
 def _run_no_egress(
     agent_name: str | None, parent_ctx: Any, organization_id: str | None = None,
 ) -> bool:
@@ -485,11 +507,14 @@ def _covered_hold(agent_name: str | None) -> bool:
     A chat that read outside mail drops the writes of :func:`_is_held_off`. A
     covered run holds for another reason, the member data of a sandboxed turn,
     and it keeps ``COVERED_PROJECTS_TOOLS`` of
-    ``tests/unit/test_delegation_no_egress.py``. So only a covered run of this
-    agent, in a chat with no mark, skips the drop. The org comes from the run
-    binding (:func:`_run_covered`). A held run of any other kind drops them.
+    ``tests/unit/test_delegation_no_egress.py``. So a run in a covered chain, in
+    a chat with no mark, skips the drop. The org comes from the run binding
+    (:func:`_run_covered`). A held run of any other kind drops them.
     """
-    return bool(agent_name) and _run_covered(str(agent_name)) and not read_untrusted_answer()
+    from acb_skills.egress import covered_chain
+
+    covered = covered_chain() or (bool(agent_name) and _run_covered(str(agent_name)))
+    return covered and not read_untrusted_answer()
 
 
 #: The tool lists an injection knows how to read, by attribute.
