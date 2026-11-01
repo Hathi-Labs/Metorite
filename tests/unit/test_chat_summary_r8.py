@@ -1161,6 +1161,45 @@ async def test_4_a_mark_that_cannot_be_read_counts_as_mail(job) -> None:
     assert _summary(job, sid)["text"] == SUMMARY["text"]
 
 
+def _row_at(ns, org: str, sid: str, mid: str, role: str, words: str, at: datetime) -> None:
+    """One more row of the chat with Mira, sealed when it is hers."""
+    mine = role == "assistant"
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_message (id, session_id, role, content, timestamp_ms, "
+            "organization_id, author_kind, author_email, run_final_at) VALUES (:id, :s, :r, "
+            ":c, :ts, CAST(:o AS uuid), :k, :e, :fin)"),
+            {"id": mid, "s": sid, "r": role, "c": words, "ts": _ms(at), "o": org,
+             "k": "agent" if mine else "human", "e": "orchestrator" if mine else ASHA,
+             "fin": at if mine else None})
+
+
+async def test_4_a_waterline_holds_until_the_member_types_again(job) -> None:
+    """A Delete of PZ-35 leaves the waterline of ``clear_for_member``. A row
+    that only Mira wrote after it, such as a brief, starts no call. A new
+    typed row starts a new summary of the rows after the waterline."""
+    sid, newest = _job_chat(job, org=job.org_a)
+    async with tenant_engine_scope(_app_dsn(job)):
+        assert await _in(job.org_a, summaries.clear_for_member, ASHA) >= 1
+    assert _summary(job, sid)["through"] == newest
+    assert await _tick(job, job.org_a) == Counter(), "the waterline covers the chat"
+    _row_at(job, job.org_a, sid, "a3", "assistant", "Good morning.", T + timedelta(minutes=5))
+    later = T + timedelta(hours=1)
+    assert await _tick(job, job.org_a, later) == Counter()
+    await _put(job, job.org_a, sid, "a3", later)
+    assert await _tick(job, job.org_a, later) == Counter(done=1)
+    assert job.console.calls == [], "nothing new, so no call"
+    _row_at(job, job.org_a, sid, "m10", "user", "Book the review with Priya.",
+            later + timedelta(minutes=5))
+    last = later + timedelta(hours=1)
+    assert await _tick(job, job.org_a, last) == Counter(done=1)
+    assert len(job.console.calls) == 1
+    prompt = json.dumps(job.console.calls[0]["payload"]["messages"])
+    assert "Book the review with Priya." in prompt and "Good morning." in prompt
+    assert TYPED_1 not in prompt, "a row that a Delete covered must not come back"
+    assert _summary(job, sid)["through"] == "m10"
+
+
 async def test_4_a_stored_switch_on_and_no_switch_read_as_on(job) -> None:
     """``apps.chat.summaries`` false turns the member's summaries off (above).
     True and a missing value read as on (PZ-35 declares the key later)."""

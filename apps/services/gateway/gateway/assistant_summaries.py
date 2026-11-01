@@ -872,9 +872,11 @@ OPEN_RUN_SQL = """EXISTS (
 #: The newest row is between `:since_ms` and `:idle_ms`, no run is open, the
 #: newest row id is neither `through` nor `mark.through`, and the chat holds
 #: `:typed_min` short user rows or more. The seed then counts the typed rows
-#: of the member in Python (`member_texts`).
+#: of the member in Python (`member_texts`). `through_ms` is the waterline
+#: that a summary, a Delete or a Forget left.
 IDLE_SQL = f"""
-SELECT s.id, s.user_id, newest.id AS newest_id, newest.timestamp_ms AS newest_ms
+SELECT s.id, s.user_id, newest.id AS newest_id, newest.timestamp_ms AS newest_ms,
+       s.member_summary -> 'through_ms' AS through_ms
   FROM chat_session s
  CROSS JOIN LATERAL (
        SELECT m.id, m.timestamp_ms FROM chat_message m
@@ -896,8 +898,10 @@ SELECT s.id, s.user_id, newest.id AS newest_id, newest.timestamp_ms AS newest_ms
 #: The newest short user rows of each chat in `:sids`, `:rows` for each
 #: chat at most. RLS binds the tenant.
 SEED_ROWS_SQL = """
-SELECT r.session_id, r.id, r.role, r.content, r.author_kind, r.author_email
+SELECT r.session_id, r.id, r.role, r.content, r.author_kind, r.author_email,
+       r.timestamp_ms
   FROM (SELECT m.session_id, m.id, m.role, m.content, m.author_kind, m.author_email,
+               m.timestamp_ms,
                row_number() OVER (PARTITION BY m.session_id
                                   ORDER BY m.timestamp_ms DESC, m.id DESC) AS k
           FROM chat_message m
@@ -931,6 +935,16 @@ SELECT t.id, t.role, t.content, t.author_kind, t.author_email, t.timestamp_ms
 
 def _ms(moment: datetime) -> int:
     return int(moment.timestamp() * 1000)
+
+
+def rows_after(rows: Iterable[Any], through_ms: int | None) -> list[Any]:
+    """The rows of *rows* that the waterline *through_ms* does not cover. A
+    summary, a Delete and a Forget each leave one. With no waterline, each
+    row. A chat with no typed row of the member here has nothing new, such as
+    a brief or a reminder that came after a Delete. So it gets no call."""
+    if through_ms is None:
+        return list(rows)
+    return [r for r in rows if int(_field(r, "timestamp_ms") or 0) > through_ms]
 
 
 def dedupe_key(session_id: str, through: str) -> str:
@@ -1068,8 +1082,9 @@ async def seed(org: str, now: datetime) -> None:
     A chat gets a job when :data:`IDLE_SQL` selects it, its member is active
     with the switch on (:func:`member_switches`), the newest short rows hold
     :data:`TYPED_ROWS_MIN` typed rows of the member (:func:`member_texts`),
-    ``my_day_loop.departed`` says that the member did not leave, and the chat
-    holds no mail (:func:`holds_mail`)."""
+    and one of them is after the waterline (:func:`rows_after`). Then
+    ``my_day_loop.departed`` must say that the member did not leave, and the
+    chat must hold no mail (:func:`holds_mail`)."""
     from acb_common.db import tenant_session
     from acb_llm import routed
 
@@ -1097,7 +1112,11 @@ async def seed(org: str, now: datetime) -> None:
         newest = str(chat.newest_id)
         if "@" not in member or not switches.get(member, False) or len(newest) > THROUGH_MAX:
             continue
-        if len(member_texts(typed.get(str(chat.id), []), member)) < TYPED_ROWS_MIN:
+        rows = typed.get(str(chat.id), [])
+        if len(member_texts(rows, member)) < TYPED_ROWS_MIN:
+            continue
+        through_ms = chat.through_ms if type(chat.through_ms) is int else None
+        if not member_texts(rows_after(rows, through_ms), member):
             continue
         if member not in left:
             left[member] = await _gone(org, member)

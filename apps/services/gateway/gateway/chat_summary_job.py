@@ -23,10 +23,11 @@ with the id of a chat of another org finds no row.
 2. The flag of the org (``chat_summary_for``). Off, the job is ``done``.
 3. One short ``tenant_session(org)``: the chat, its newest rows, the stored
    summary and the member's switch (``assistant_summaries.read_job_chat``).
-4. The rules: Mira on the web, solo, not archived, not ``off``, the newest
-   row is ``through``, no open run, idle, and 2 typed rows of the member or
-   more. A chat that fails one is ``done`` with no call. ``through`` stored
-   already is ``done`` too.
+4. The rules: Mira on the web with no other agent, solo, not archived, not
+   ``off``, the newest row is ``through``, no open run, idle, 2 typed rows of
+   the member or more, and a typed row after the waterline. A chat that fails
+   one is ``done`` with no call. ``through`` stored already is ``done`` too,
+   and that is what a Delete leaves.
 5. ``my_day_loop.departed``. A member who left is ``done``. A failed read
    raises, and the queue tries again, because no mark exists yet. Then
    ``assistant_summaries.holds_mail``: a chat with the mail mark is ``done``
@@ -82,6 +83,7 @@ from gateway.assistant_summaries import (
     prompt_rows,
     read,
     read_job_chat,
+    rows_after,
     seed,
     write_marked,
 )
@@ -180,6 +182,9 @@ def _why_not(chat: JobChat | None, through: str, switch: bool, now: datetime) ->
         return "not_idle"
     if len(member_texts(chat.rows, chat.member)) < TYPED_ROWS_MIN:
         return "few_typed_rows"
+    after = chat.stored.through_ms if chat.stored is not None else None
+    if not member_texts(rows_after(chat.rows, after), chat.member):
+        return "nothing_new"
     if not switch:
         return "switch_off"
     return None
@@ -190,7 +195,7 @@ def messages_for(chat: JobChat) -> list[dict[str, str]]:
     summary and the rows after it (``prompt_rows``: the typed rows of the
     member and the text of each reply of the assistant, nothing else)."""
     after = chat.stored.through_ms if chat.stored is not None else None
-    rows = [r for r in chat.rows if after is None or int(r["timestamp_ms"]) > after]
+    rows = rows_after(chat.rows, after)
     body: dict[str, Any] = {
         "rows": [{"who": "member" if who == "member" else "assistant", "text": words}
                  for who, words in prompt_rows(rows, chat.member)],
