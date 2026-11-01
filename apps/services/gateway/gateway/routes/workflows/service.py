@@ -33,25 +33,22 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # H4, DELIBERATELY NOT H2 (`saas_multitenancy_handover.md`): every session in
-# this module belongs to the UNATTENDED run lifecycle — engine node loads
-# (`_get_module_code`), run rows written by supervised background tasks that
-# outlive the request that may have started them (`start_run`, `_finish_run`,
-# `_hold_at_gate`), the startup sweep (`reconcile_orphaned_runs`), the health
-# policy (`evaluate_automation_health`), and the programmatic/agent entry
-# points (F13). Several are DUAL-USE — reached from a member's manual Run AND
-# from the scheduler/webhook/event paths (`start_run`, `resume_run`) — and the
-# H2 rule for that is LEAVE: a run must not behave differently depending on
-# who happened to trigger it, and inheriting the ambient request tenant is
-# exactly what H4 forbids. They stay on the unbound `get_db()` until H4
-# threads an explicit tenant (`tenant_session(org_id)` from the workflow row)
-# through the run lifecycle. `_pm_task_updater` is the Projects automation
-# seam and is likewise H4 — do not change its session acquisition here.
+# this module belongs to the UNATTENDED run lifecycle — run rows written by
+# supervised background tasks that outlive the request that may have started
+# them (`start_run`, `_finish_run`, `_hold_at_gate`), the startup sweep
+# (`reconcile_orphaned_runs`), the health policy
+# (`evaluate_automation_health`), and the programmatic/agent entry points
+# (F13). Several are DUAL-USE — reached from a member's manual Run AND from
+# the scheduler/webhook/event paths (`start_run`, `resume_run`) — and the H2
+# rule for that is LEAVE: a run must not behave differently depending on who
+# happened to trigger it, and inheriting the ambient request tenant is exactly
+# what H4 forbids. They stay on the unbound `get_db()` until H4 threads an
+# explicit tenant (`tenant_session(org_id)` from the workflow row) through the
+# run lifecycle.
 #
 # ⚠️ ONE EXCEPTION, and it is done: `_pm_lifecycle_sweeper` (WS-27aa). It
-# resolves the workflow owner's organization on an unbound session and then
 # opens `_tenant_session(org)` for the sweep — an EXPLICIT tenant from a stored
-# fact, which is what H4 asks for, not the ambient inheritance it forbids. It
-# is the shape the rest of this module's sites will take.
+# fact, which is what H4 asks for, not the ambient inheritance it forbids.
 #
 # ⚠️ A SECOND EXCEPTION (2026-10-15): the F13 agent entry points. The agent
 # tools pass the run's organization, which the orchestrator takes from the run
@@ -63,6 +60,15 @@ from typing import Any
 # the start, because the wait scan is unbound. A run with no org (manual,
 # schedule, webhook, event, the wait scan) keeps the unbound path above.
 # Fence: `tests/unit/test_workflows_tool_rls_r8.py`.
+#
+# ⚠️ A THIRD EXCEPTION (H-328 part (a), 2026-11-02): the node services. A run
+# that carries an organization binds it for the module read, the `pm_task`
+# write, the lifecycle sweep and the `notify.whatsapp` owner read
+# (`build_node_services`). The org is the run's own stored fact, never the
+# ambient tenant and never input. A run with no org keeps the old path until
+# H4 slice 6c. That path is `_run_session(None)` for the module read and the
+# task write, and the unbound owner resolver for the other two.
+# Fence: `tests/unit/test_workflows_lifecycle_rls_r8.py`.
 from acb_common.db import TenantUnbound
 from gateway.routes.workflows.core import (
     _get_db,
@@ -192,9 +198,9 @@ async def _workflow_billing_member(workflow_id: str) -> str | None:
        and they belong to the workflow's organization. That is the person who
        pressed Run or approved the gate, so the bill names them.
     2. **The workflow's owner.** A schedule has no person, and the owner is
-       the one who set it running. ``_workflow_organization`` already takes
-       the tenant from the same owner, so the bill and the writes name one
-       organization.
+       the one who set it running. A run with no organization takes its
+       tenant from the same owner (``_workflow_organization``), so the bill
+       and the writes name one organization.
 
     ⚠️ **Never a request body.** A webhook payload, an event body and a
     ``user_email`` claim all stay out, because the member decides which
@@ -281,26 +287,36 @@ def _agent_runner(workflow_id: str) -> Any:
     return _run_agent_node
 
 
-async def _get_module_code(module_id: str) -> str | None:
-    db = await _get_db()
-    try:
-        row = (
-            await db.execute(
-                text("SELECT code FROM workflow_modules WHERE id = :id AND status = 'ready'"),
-                {"id": module_id},
-            )
-        ).fetchone()
-    finally:
-        await db.close()
-    return row.code if row is not None else None
+def _module_code_reader(organization_id: str | None) -> Any:
+    """The module node's read, with the run's organization bound in.
+
+    The read opens :func:`_run_session`, so a run sees only the modules of its
+    own organization. A module of another organization reads as no row.
+    """
+
+    async def _get_module_code(module_id: str) -> str | None:
+        async with _run_session(organization_id) as db:
+            row = (
+                await db.execute(
+                    text("SELECT code FROM workflow_modules WHERE id = :id AND status = 'ready'"),
+                    {"id": module_id},
+                )
+            ).fetchone()
+        return row.code if row is not None else None
+
+    return _get_module_code
 
 
-def _pm_task_updater(workflow_id: str) -> Any:
-    """The Projects write seam, with this workflow's identity bound in.
+def _pm_task_updater(workflow_id: str, organization_id: str | None) -> Any:
+    """The Projects write seam, with the workflow's identity and the run's
+    organization bound in.
 
     The import is inside the closure so the workflows package gains no
     import-time dependency on an app package, and so a deployment without
     Projects fails the one node that needs it rather than the whole engine.
+
+    :func:`_run_session` commits on a clean exit. A task of another
+    organization is not visible, so the patch reads it as ``Task not found``.
     """
 
     async def _update(task_id: str, fields: dict[str, Any]) -> dict[str, Any]:
@@ -312,33 +328,27 @@ def _pm_task_updater(workflow_id: str) -> Any:
             )
         except Exception as exc:  # pragma: no cover — Projects ships with the gateway
             raise NodeExecutionError("the Projects app is not available") from exc
-        db = await _get_db()
         try:
-            result = await apply_task_patch(
-                db, task_id, fields, actor=workflow_actor(workflow_id),
-            )
-            await db.commit()
-            return result
+            async with _run_session(organization_id) as db:
+                return await apply_task_patch(
+                    db, task_id, fields, actor=workflow_actor(workflow_id),
+                )
         except TaskPatchError as exc:
             raise NodeExecutionError(str(exc)) from exc
-        finally:
-            await db.close()
 
     return _update
 
 
 async def _workflow_organization(db: Any, workflow_id: str) -> str:
-    """The tenant a workflow's unattended writes belong to. **A stored fact.**
+    """The tenant of a run with no organization, from the workflow's owner.
 
-    ⚠️ **The `workflows` table has no `organization_id` column today** —
-    checked against `infra/postgres/132_workflows.sql` and against a live
-    catalog, not inferred: that column exists only in the unapplied
-    `generated/01_add_columns.sql` (H3 phase 1). So the tenant is resolved the
-    way `routes/crm/auto_lead._owner_organization` resolves the mailbox
-    owner's: the workflow's ``owner_email`` through ``app_user``. One shape for
-    "which tenant does this background unit act for", not two. When H3 phase 1
-    lands, this becomes a one-column read on the workflow row and this
-    function is where that change goes.
+    ⚠️ **This is the old path (H-328).** A run that carries an organization
+    never comes here. Under FORCE RLS this join reads zero rows on an unbound
+    session, so it raises, and that run fails its sweep or notify node. H4
+    slice 6c deletes this function with its last caller.
+
+    The owner goes through ``app_user``, as
+    `routes/crm/auto_lead._owner_organization` resolves the mailbox owner's.
 
     Reads on the CALLER's (unbound) session because it is what DECIDES the
     tenant — the same ordering identity resolution has on the request path.
@@ -366,7 +376,7 @@ async def _workflow_organization(db: Any, workflow_id: str) -> str:
     return str(org)
 
 
-def _pm_lifecycle_sweeper(workflow_id: str) -> Any:
+def _pm_lifecycle_sweeper(workflow_id: str, organization_id: str | None) -> Any:
     """The Projects lifecycle sweep (WS-27z), identity AND tenant bound in.
 
     Mirrors ``_pm_task_updater`` for the identity half — closure import so the
@@ -377,18 +387,15 @@ def _pm_lifecycle_sweeper(workflow_id: str) -> Any:
     ⚠️ **WS-27aa / H4 — this one is no longer an unbound background site.**
     ``run_lifecycle_sweep`` used to walk `pm_projects` with no tenant
     predicate, so one workflow's schedule archived and closed every customer's
-    work. It now takes a required ``organization_id`` and refuses without one,
-    and the tenant is resolved here from a stored fact
-    (:func:`_workflow_organization`) and bound **explicitly** on the session
-    the sweep writes through — never inherited from whoever happened to
-    trigger the run, which is the inheritance H4 forbids. Two sessions, in
-    this order and for the reason auto_lead has them:
+    work. It now takes a required ``organization_id`` and refuses without one.
+    The tenant is bound **explicitly** on the session the sweep writes
+    through — never inherited from whoever happened to trigger the run, which
+    is the inheritance H4 forbids.
 
-    1. an unbound one to RESOLVE the tenant (it is the decision, so it cannot
-       already be inside it), closed before anything is written;
-    2. ``tenant_session(org)`` for the sweep itself, which issues the
-       ``SET LOCAL app.tenant_id`` the RLS policies will read the moment H3's
-       phase 4 lands, and commits on clean exit.
+    The tenant is the run's own organization (H-328 part (a)). A run with no
+    organization keeps the old path, :func:`_resolve_workflow_organization`.
+    ``tenant_session(org)`` issues ``SET LOCAL app.tenant_id`` for the sweep,
+    and commits on clean exit.
     """
 
     async def _sweep() -> dict[str, Any]:
@@ -399,11 +406,11 @@ def _pm_lifecycle_sweeper(workflow_id: str) -> Any:
             )
         except Exception as exc:  # pragma: no cover — Projects ships with the gateway
             raise NodeExecutionError("the Projects app is not available") from exc
-        organization_id = await _resolve_workflow_organization(workflow_id)
-        async with _tenant_session(organization_id) as db:
+        org = organization_id or await _resolve_workflow_organization(workflow_id)
+        async with _tenant_session(org) as db:
             return await run_lifecycle_sweep(
                 db,
-                organization_id=organization_id,
+                organization_id=org,
                 actor=workflow_actor(workflow_id),
             )
 
@@ -414,8 +421,8 @@ async def _resolve_workflow_organization(workflow_id: str) -> str:
     """:func:`_workflow_organization` on its own unbound resolver session.
 
     H4: unbound ON PURPOSE — this session's whole job is to decide the
-    tenant, and it writes nothing. The lifecycle sweep and ``notify.whatsapp``
-    share it, so the two take the tenant one way."""
+    tenant, and it writes nothing. Only a run with no organization comes
+    here, from the lifecycle sweep or ``notify.whatsapp``."""
     resolver = await _get_db()
     try:
         return await _workflow_organization(resolver, workflow_id)
@@ -423,14 +430,17 @@ async def _resolve_workflow_organization(workflow_id: str) -> str:
         await resolver.close()
 
 
-async def _workflow_owner(workflow_id: str) -> tuple[str, str]:
+async def _workflow_owner(
+    workflow_id: str, organization_id: str | None,
+) -> tuple[str, str]:
     """The tenant and the owner's email of a workflow. **Stored facts.**
 
-    The tenant comes from :func:`_resolve_workflow_organization`, as the
-    lifecycle sweep takes it. The owner is then read in that tenant's
-    session. Raises when either is missing."""
-    organization_id = await _resolve_workflow_organization(workflow_id)
-    async with _tenant_session(organization_id) as db:
+    The tenant is the run's own organization. A run with no organization
+    keeps the old path, :func:`_resolve_workflow_organization`. The owner is
+    then read in that tenant's session, so a workflow of another organization
+    has no owner to read. Raises when either is missing."""
+    org = organization_id or await _resolve_workflow_organization(workflow_id)
+    async with _tenant_session(org) as db:
         owner = (
             await db.execute(
                 text("SELECT owner_email FROM workflows WHERE id = CAST(:wid AS uuid)"),
@@ -439,10 +449,10 @@ async def _workflow_owner(workflow_id: str) -> tuple[str, str]:
         ).scalar()
     if not owner:
         raise NodeExecutionError(f"workflow {workflow_id} has no owner to tell")
-    return organization_id, str(owner).strip().lower()
+    return org, str(owner).strip().lower()
 
 
-def _tool_runner(workflow_id: str) -> Any:
+def _tool_runner(workflow_id: str, organization_id: str | None) -> Any:
     """``execute_tool``, with the workflow's owner bound into the one step
     that tells a member: ``notify.whatsapp`` (WS-59 RE-5). The step's
     arguments never name the member."""
@@ -452,20 +462,29 @@ def _tool_runner(workflow_id: str) -> Any:
             return await execute_tool(action, args, actor)
         if not workflow_id:
             raise NodeExecutionError("notify.whatsapp needs a saved workflow")
-        org, owner = await _workflow_owner(workflow_id)
+        org, owner = await _workflow_owner(workflow_id, organization_id)
         return await notify_owner_whatsapp(org, owner, workflow_id, args)
 
     return _run
 
 
-def build_node_services(actor: str, workflow_id: str = "") -> NodeServices:
+def build_node_services(
+    actor: str, workflow_id: str, organization_id: str | None,
+) -> NodeServices:
+    """The node seams of one run, bound to the run's organization.
+
+    *organization_id* has no default, so a call site that forgets it fails at
+    once. The value comes from the run (:func:`_execute_run`), never from the
+    ambient tenant or from node input. ``None`` means that the run carries no
+    organization, so it keeps the old path until H4 slice 6c.
+    """
     return NodeServices(
         run_agent=_agent_runner(workflow_id),
-        run_tool=_tool_runner(workflow_id),
-        get_module_code=_get_module_code,
+        run_tool=_tool_runner(workflow_id, organization_id),
+        get_module_code=_module_code_reader(organization_id),
         actor=actor,
-        update_task=_pm_task_updater(workflow_id),
-        run_lifecycle_sweep=_pm_lifecycle_sweeper(workflow_id),
+        update_task=_pm_task_updater(workflow_id, organization_id),
+        run_lifecycle_sweep=_pm_lifecycle_sweeper(workflow_id, organization_id),
     )
 
 
@@ -474,16 +493,17 @@ def build_node_services(actor: str, workflow_id: str = "") -> NodeServices:
 
 @contextlib.asynccontextmanager
 async def _run_session(organization_id: str | None) -> Any:
-    """One session for one run-lifecycle write. It commits on a clean exit.
+    """One session for one run-lifecycle step. It commits on a clean exit.
 
-    A run that carries an organization writes through
-    ``_tenant_session(organization_id)``. Only the F13 agent entry points
+    A run that carries an organization uses
+    ``_tenant_session(organization_id)``, for its run rows and for the module
+    read and the task write of its nodes. Only the F13 agent entry points
     start such a run, with the org of the agent run. The org is never
     inherited from the ambient context, which is what H4 forbids.
 
     A run with no organization keeps the unbound ``_get_db()`` (the H4 note at
-    the top of this module). Under FORCE RLS that write fails, and H4 slice 6c
-    owns the conversion.
+    the top of this module). Under FORCE RLS that read finds no row and that
+    write fails, and H4 slice 6c owns the conversion.
     """
     if organization_id:
         async with _tenant_session(organization_id) as db:
@@ -753,7 +773,7 @@ async def _execute_run(
         outcome = await execute_workflow(
             serialized,
             trigger_payload,
-            build_node_services(actor, workflow_id),
+            build_node_services(actor, workflow_id, organization_id),
             variables=variables,
             emit=emit,
             precomputed=precomputed,

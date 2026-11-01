@@ -506,6 +506,7 @@ jobs:
               tests/unit/test_studio_action_door_r8.py \
               tests/unit/test_studio_packages_versions_r8.py \
               tests/unit/test_package_host_store_r8.py \
+              tests/unit/test_workflows_lifecycle_rls_r8.py \
               tests/unit/test_staging_export.py
 
       - name: Write the measured timings
