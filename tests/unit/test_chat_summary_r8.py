@@ -366,6 +366,18 @@ async def test_9_a_second_mark_of_the_same_row_refuses(db) -> None:
         assert await _in(db.org_a, summaries.mark, sid, through="m4", at=later)
 
 
+async def test_9_a_mark_of_a_row_that_through_covers_refuses(db) -> None:
+    """A clear takes the mark away and leaves ``through``. So the mark must
+    read ``through``, or a job would run on rows that the member forgot."""
+    sid = _chat(db, org=db.org_a, user_id=ALICE, subjects=(ALICE,))
+    _message(db, org=db.org_a, sid=sid, mid="m3", ts=1_761_900_000_000)
+    async with tenant_engine_scope(_app_dsn(db)):
+        assert await _in(db.org_a, summaries.clear_for_member, ALICE) >= 1
+        assert await _in(db.org_a, summaries.mark, sid, through="m3", at=NOW) is False
+        assert await _in(db.org_a, summaries.mark, sid, through="m4", at=NOW)
+    assert _row(db, sid)["member_summary"]["mark"]["through"] == "m4"
+
+
 async def test_9_a_newer_mark_wins_over_an_older_write(db) -> None:
     sid = _chat(db, org=db.org_a, user_id=ALICE, subjects=(ALICE,))
     async with tenant_engine_scope(_app_dsn(db)):
@@ -1042,6 +1054,25 @@ async def test_3_the_claim_that_loses_the_mark_makes_no_call(job, monkeypatch) -
     assert await _tick(job, job.org_a) == Counter(failed=1)
     _given_up(job, sid, "SummaryUncertain")
     assert job.console.calls == []
+
+
+async def test_3_a_forget_before_the_mark_wins(job, monkeypatch) -> None:
+    """The verifier's probe. A Forget lands while the handler waits on the
+    mail read, after it read the chat. The clear leaves ``through``, so the
+    mark refuses: no call runs, and the forgotten rows are not stored."""
+    from gateway import chat_summary_job
+
+    sid, newest = _job_chat(job, org=job.org_a)
+
+    async def forget_during_the_read(org: str, session_id: str) -> bool:
+        await _in(job.org_a, summaries.clear_for_member, ASHA)
+        return False
+
+    monkeypatch.setattr(chat_summary_job, "holds_mail", forget_during_the_read)
+    assert await _tick(job, job.org_a) == Counter(done=1)
+    assert job.console.calls == []
+    stored = _summary(job, sid)
+    assert stored["through"] == newest and "text" not in stored and "mark" not in stored
 
 
 async def test_3_a_402_gives_up_out_of_credits_and_the_mark_stays(job) -> None:
