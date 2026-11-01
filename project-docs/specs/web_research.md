@@ -74,8 +74,8 @@ Every web read goes through one function. The rules:
 3. **Redirects.** Follow them by hand, at most 5. Each hop passes rules 1 and 2 again.
 4. **Caps.** 20 seconds and 15 MB for each read. The reader output has its own cap, and an overflow spills through CTX-1 with a locator.
 5. **Type.** HTML, PDF, the Office types, CSV, JSON, plain text and images. The guard refuses any other type and names it. WEB-3 builds this refusal, and WEB-1 refuses no type.
-6. **The mark.** `UntrustedFrame` wraps the output as outside text. The header (title, final URL, date, type) goes inside the frame, because a page controls it. WEB-2 adds the title and the date, because its reader reads them from the page.
-7. **Jina.** A target passes rules 1 to 3 before any reader sees it, Jina included.
+6. **The mark.** `UntrustedFrame` wraps the output as outside text. The header (title, the URL that gave the text, date, type) goes inside the frame, because a page controls it. WEB-2 adds the title and the date, because its reader reads them from the page.
+7. **Jina.** A target passes rules 1 to 3 before any reader sees it, Jina included. Jina gets the URL of the call after the walk ends. Each hop that the walk reached passes the check first. A network fault can end the walk early. Then Jina's own network follows the hops that the walk did not reach.
 
 ### 3.2 Readers
 

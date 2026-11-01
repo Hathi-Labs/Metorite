@@ -20,8 +20,10 @@ not write a second copy of that seam. A bare test file name is under
 4. web_tools.py -- `web_search` and `fetch_page` (spec `web_research.md` §3.1). They need no credential.
    - `web_search` asks SerpAPI when a key is set, and then the free `ddgs` engines.
    - `fetch_page` reads through ONE guard. Each hop checks its host with `acb_common.public_address.pinned_public_address` before the request, and it connects to that address. Do not write a second address rule, and never import `gateway` here.
-   - The guard follows at most 5 redirects by hand. A read stops at 20 seconds and 15 MB. `_client` is the one client builder, with no redirect and no proxy from the env.
-   - Jina Reader gets the URL of the call only after the whole chain passes the guard. Jina's text wins, and the direct read is the fallback.
+   - The guard follows at most 5 redirects by hand. A read stops at 20 seconds and 15 MB. `_client` is the one client builder, with no redirect, no proxy from the env and no cookie.
+   - The jar of a walk keeps only a host-only cookie, and the hop asks the jar for its `Cookie` line.
+   - The text work runs on the event loop with its own bounds: `MAX_HTML_BYTES` for the strip and `MAX_MARKDOWN_BYTES` for Jina. A decode gives the loop a turn after each step.
+   - Jina Reader gets the URL of the call only after the walk ends. Each hop that the walk reached passes the guard first. Jina's text wins, and the direct read is the fallback.
    - `frame_page` wraps the output in a `WEB PAGE` block of `UntrustedFrame`. The URL and the type sit inside it. A refusal is one line that names the host of the URL of the call. It never names the path or the host of a redirect.
    - Fence: `test_web_fetch_guard.py`.
 5. write_artifact.py -- the `write_artifact` tool, which surfaces created files in the UI.

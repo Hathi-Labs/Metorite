@@ -18,11 +18,11 @@ import ast
 import asyncio
 import gzip
 import ipaddress
-import threading
+import itertools
 import time
 import tracemalloc
 import zlib
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
 import httpx
@@ -295,11 +295,48 @@ async def test_each_hop_is_checked(monkeypatch) -> None:
     assert dns.calls == ["a.example.com", "b.example.com", "c.example.com"]
     assert [r.url.host for r in net.direct] == ["93.184.216.1", "93.184.216.2", "93.184.216.3"]
     _note, inside, _token = _block(out)
-    assert "URL: http://c.example.com:8080/three?x=1" in inside, "the header lacks the final URL"
-    # Jina gets the URL of the call after the whole chain passed, and its own
-    # network follows the chain.
+    # Jina gets the URL of the call after each hop passed, and its own network
+    # follows the chain. Jina's text wins, so the header names that URL.
+    assert inside[0] == "URL: https://a.example.com/", "the header lacks the URL of Jina"
     assert [str(r.url) for r in net.to_jina] == [
         "https://r.jina.ai/https://a.example.com/"], "Jina got another URL"
+
+
+def _two_hops(last: Handler) -> dict[tuple[str, str], Handler]:
+    """``a.example.com/`` redirects to ``b.example.com/end``, and ``last``
+    answers there."""
+    return {("a.example.com", "/"): _redirect("https://b.example.com/end"),
+            ("b.example.com", "/end"): last}
+
+
+async def test_the_header_names_the_url_that_gave_the_text(monkeypatch) -> None:
+    """Jina read the URL of the call, so its text names that URL. The direct
+    read read the last hop, so its text names the last hop."""
+    net = _Net(pages=_two_hops(_page("<p>direct text</p>")),
+               jina=_page("# Jina text", ctype="text/plain")).install(monkeypatch)
+    _Dns({"a.example.com": [PUBLIC_IP], "b.example.com": ["93.184.216.2"]}).install(monkeypatch)
+    _note, inside, _token = _block(await web_tools.fetch_page("https://a.example.com/"))
+    assert inside[0] == "URL: https://a.example.com/", inside
+    assert inside[-1] == "# Jina text"
+    assert [str(r.url) for r in net.to_jina] == ["https://r.jina.ai/https://a.example.com/"]
+    net.jina = _page("rate limited", 429, ctype="text/plain")
+    _note, inside, _token = _block(await web_tools.fetch_page("https://a.example.com/"))
+    assert inside[0] == "URL: https://b.example.com/end", inside
+    assert inside[-1] == "direct text"
+
+
+async def test_a_walk_that_faults_names_no_url_that_nobody_read(monkeypatch) -> None:
+    """The last hop fails on the network, so the walk read no page there. The
+    header of Jina's text names the URL of the call, never that hop."""
+    def _down(_r: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    _Net(pages=_two_hops(_down), jina=_page("# Jina text", ctype="text/plain")).install(monkeypatch)
+    _Dns({"a.example.com": [PUBLIC_IP], "b.example.com": ["93.184.216.2"]}).install(monkeypatch)
+    out = await web_tools.fetch_page("https://a.example.com/")
+    _note, inside, _token = _block(out)
+    assert inside[0] == "URL: https://a.example.com/", inside
+    assert "b.example.com" not in out
 
 
 #: A redirect host that a page wrote. It carries an instruction.
@@ -353,6 +390,36 @@ async def test_one_cookie_jar_serves_the_hops_of_one_walk(monkeypatch) -> None:
     assert "inside the site" in again
     assert [r.headers.get("cookie") for r in net.direct] == [None, "seen=1", None, "seen=1"]
     assert all("cookie" not in r.headers for r in net.to_jina), "Jina got a cookie"
+
+
+@pytest.mark.parametrize(("first", "set_cookie", "second"), [
+    pytest.param("a.example.com", "s=1; Domain=example.com; Path=/", "b.example.com",
+                 id="parent-domain"),
+    pytest.param("evil.co.uk", "s=1; Domain=co.uk; Path=/", "victim.co.uk", id="public-suffix"),
+    pytest.param("evil.github.io", "s=1; Domain=.github.io; Path=/", "victim.github.io",
+                 id="shared-host-suffix"),
+    pytest.param("1.2.3.4", "s=1; Domain=2.3.4; Path=/", "5.2.3.4", id="ip-tail"),
+    pytest.param("a.example.com", "s=1; Domain=a.example.com; Path=/", "sub.a.example.com",
+                 id="own-domain"),
+    pytest.param("example.com", "s=1; Path=/", "sub.example.com", id="host-only-to-a-sub-host"),
+])
+async def test_a_cookie_does_not_cross_to_another_host(
+        first: str, set_cookie: str, second: str, monkeypatch) -> None:
+    """The jar knows no public suffix, so it keeps only a host-only cookie. A
+    cookie with a ``Domain`` attribute never goes to a sibling host, and a
+    host-only cookie never goes to a sub-host."""
+    def _set(_r: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": f"https://{second}/",
+                                            "set-cookie": set_cookie},
+                              stream=httpx.ByteStream(b""))
+
+    net = _Net(pages={(first, "/"): _set, (second, "/"): _page("<p>other host</p>")}
+               ).install(monkeypatch)
+    _Dns({first: [PUBLIC_IP], second: ["93.184.216.2"]}).install(monkeypatch)
+    out = await web_tools.fetch_page(f"https://{first}/")
+    assert "other host" in out, out
+    assert [r.headers.get("host") for r in net.direct] == [first, second]
+    assert [r.headers.get("cookie") for r in net.direct] == [None, None], "a cookie crossed hosts"
 
 
 # ── 3. Shape, pin and proxy ──────────────────────────────────────────────────
@@ -618,16 +685,27 @@ def test_the_html_strip_is_linear() -> None:
     assert web_tools._strip_html("<p>a</p><script>x()</script>b<style>c") == "a b"
 
 
-def test_a_charset_that_is_not_one_reads_as_utf8() -> None:
-    assert web_tools._decode("café".encode(), "punycode") == "café"
-    assert web_tools._decode(b"abc", "no-such-charset") == "abc"
-    assert web_tools._decode("é".encode("latin-1"), "ISO-8859-1") == "é"
+async def test_a_charset_that_is_not_one_reads_as_utf8() -> None:
+    assert await web_tools._decode("café".encode(), "punycode") == "café"
+    assert await web_tools._decode(b"abc", "no-such-charset") == "abc"
+    assert await web_tools._decode("é".encode("latin-1"), "ISO-8859-1") == "é"
+    assert await web_tools._decode(b"abc", "base64") == "abc", "a codec of bytes decoded"
 
 
-def test_a_charset_with_a_nul_reads_as_utf8() -> None:
+async def test_a_charset_with_a_nul_reads_as_utf8() -> None:
     """``codecs.lookup`` raises ValueError on a NUL, not LookupError."""
-    assert web_tools._decode("café".encode(), "utf\x00") == "café"
-    assert web_tools._decode(b"abc", "\x00") == "abc"
+    assert await web_tools._decode("café".encode(), "utf\x00") == "café"
+    assert await web_tools._decode(b"abc", "\x00") == "abc"
+
+
+async def test_utf16_with_no_byte_order_mark_reads_little_endian() -> None:
+    """The step decoder of UTF-16 raises with no byte order mark. The decode
+    reads such a body as little-endian, as a one-shot decode does."""
+    text = "Grüße 東京 " * 9000
+    for codec in ("utf-16", "utf-32"):
+        assert await web_tools._decode(text.encode(f"{codec}-le"), codec) == text
+        assert await web_tools._decode(text.encode(f"{codec}-be"), codec) != text
+        assert await web_tools._decode(text.encode(codec), codec) == text, "the mark is lost"
 
 
 async def test_a_huge_max_chars_stops_at_the_ceiling(monkeypatch) -> None:
@@ -649,23 +727,235 @@ async def test_a_max_chars_that_is_no_number_does_not_raise(value, monkeypatch) 
     assert out.endswith("[... truncated at 8000 chars]"), out[-80:]
 
 
-async def test_the_strip_runs_off_the_event_loop(monkeypatch) -> None:
-    """The decode and the strip of the direct read pass over up to 15 MB. They
-    run in a worker thread, so the loop thread never runs them."""
-    loop_thread = threading.get_ident()
+@pytest.mark.parametrize(("max_chars", "limit"), [
+    pytest.param(20_000_000, web_tools.MAX_CHARS, id="huge"),
+    pytest.param(10 ** 100, web_tools.MAX_CHARS, id="huger"),
+    pytest.param(float("inf"), web_tools.DEFAULT_CHARS, id="infinite"),
+    pytest.param(float("nan"), web_tools.DEFAULT_CHARS, id="nan"),
+    pytest.param("lots", web_tools.DEFAULT_CHARS, id="no-number"),
+    pytest.param(-5, web_tools.MIN_CHARS, id="negative"),
+])
+def test_frame_page_cuts_at_its_own_ceiling(max_chars, limit: int) -> None:
+    """``frame_page`` takes its limit from ``char_limit`` too, because the
+    eval fixture calls it with no ``fetch_page`` in front."""
+    out = web_tools.frame_page("x" * 300_000, "https://e.example.com/", "", max_chars)
+    _note, inside, _token = _block(out)
+    assert inside[0] == "URL: https://e.example.com/"
+    assert len("\n".join(inside[2:])) == limit
+    assert out.endswith(f"\n\n[... truncated at {limit} chars]")
+
+
+async def test_the_jina_read_stops_at_the_cap(monkeypatch) -> None:
+    """Jina's answer goes through the same capped read as a hop does."""
+    huge = _HugeStream()
+    _Net(jina=lambda _r: httpx.Response(200, headers={"content-type": "text/plain"},
+                                        stream=huge)).install(monkeypatch)
+    text, fault = await web_tools._jina_read(httpx.URL("https://big.example.com/"))
+    assert huge.yielded <= web_tools.MAX_READ_BYTES, "the Jina read went past the cap"
+    assert fault == "" and text == "a" * web_tools.MAX_MARKDOWN_BYTES
+
+
+class _GzipThenJunk(httpx.AsyncByteStream):
+    """A short gzip member, and then bytes past its end that inflate to
+    nothing. Each chunk is 1 MiB, and there are 32. Only the cap on the wire
+    can end this read early."""
+
+    def __init__(self) -> None:
+        self.yielded = 0
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        member = gzip.compress(b"<p>small</p>")
+        size = _HugeStream.CHUNK
+        for i in range(_HugeStream.CHUNKS):
+            chunk = member + b"\0" * (size - len(member)) if i == 0 else b"\0" * size
+            self.yielded += len(chunk)
+            yield chunk
+
+
+async def test_the_wire_cap_ends_a_read_that_inflates_to_little() -> None:
+    stream = _GzipThenJunk()
+    resp = httpx.Response(200, headers={"content-encoding": "gzip"}, stream=stream)
+    assert await web_tools._read_capped(resp) == b"<p>small</p>"
+    assert stream.yielded <= web_tools.MAX_READ_BYTES, "the wire cap did not end the read"
+
+
+class _Socket(httpx.AsyncByteStream):
+    """``body`` in chunks of 64 KiB. The loop gets a turn before each chunk,
+    as it does when a socket reads."""
+
+    STEP = 64 * 1024
+
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for at in range(0, len(self.body), self.STEP):
+            await asyncio.sleep(0)
+            yield self.body[at:at + self.STEP]
+
+
+#: The longest pause of the event loop that one read may cause. The worst
+#: read below measured about 60 ms on the dev PC on 2026-11-01. The frame of
+#: 100 000 characters is most of it. Before the text bounds, these reads
+#: stopped the loop for 0.5 to 2.5 seconds.
+_LOOP_GAP_S = 0.150
+_WIRE_CAP = 15 * 1024 * 1024
+
+
+async def _longest_gap(work: Awaitable[str]) -> tuple[str, float]:
+    """``(result, gap)``: a ticker wakes each millisecond on the loop while
+    ``work`` runs. ``gap`` is the longest time between two ticks."""
+    gaps: list[float] = []
+    done = asyncio.Event()
+
+    async def _tick() -> None:
+        last = time.perf_counter()
+        while not done.is_set():
+            await asyncio.sleep(0.001)
+            now = time.perf_counter()
+            gaps.append(now - last)
+            last = now
+
+    ticker = asyncio.create_task(_tick())
+    await asyncio.sleep(0.005)
+    try:
+        out = await work
+    finally:
+        done.set()
+        await ticker
+    return out, max(gaps)
+
+
+@pytest.mark.parametrize(("page", "page_type", "jina", "jina_type"), [
+    pytest.param(b"\xff", "text/html; charset=cp1255", b"", "", id="direct-bad-bytes"),
+    pytest.param(b" \n", "text/html; charset=utf-8", b"", "", id="direct-spaces"),
+    pytest.param(b"<", "text/html; charset=utf-8", b"", "", id="direct-open-tags"),
+    pytest.param(b"<b>x</b> ", "text/html; charset=utf-8", b"", "", id="direct-tags"),
+    pytest.param(b"<p>x</p>", "text/html", b"\x00\xd8", "text/plain; charset=utf-16-le",
+                 id="jina-lone-surrogates"),
+    pytest.param(b"<p>x</p>", "text/html", b"\xff", "text/plain; charset=cp1255",
+                 id="jina-bad-bytes"),
+])
+async def test_a_worst_case_read_keeps_the_event_loop_going(
+        page: bytes, page_type: str, jina: bytes, jina_type: str, monkeypatch) -> None:
+    """A hostile answer of 15 MB, the cap on the wire, and the most
+    ``max_chars``. The decode and the strip stop at their bounds, and a
+    decode gives the loop a turn after each step. So the loop goes on."""
+    body = page * (_WIRE_CAP // len(page))
+    markdown = jina * (_WIRE_CAP // len(jina)) if jina else b""
+
+    def _answer(data: bytes, ctype: str) -> Handler:
+        return lambda _r: httpx.Response(200, headers={"content-type": ctype},
+                                         stream=_Socket(data))
+
+    _Net(pages={("big.example.com", "/"): _answer(body, page_type)},
+         jina=_answer(markdown, jina_type) if jina else _page("", 503)).install(monkeypatch)
+    _Dns({"big.example.com": [PUBLIC_IP]}).install(monkeypatch)
+    out, gap = await _longest_gap(
+        web_tools.fetch_page("https://big.example.com/", max_chars=web_tools.MAX_CHARS))
+    assert out.startswith(("fetch_page could not read", "The text below")), out[:120]
+    assert gap < _LOOP_GAP_S, f"one read stopped the event loop for {gap * 1000:.0f} ms"
+
+
+async def test_the_text_work_never_passes_its_bounds(monkeypatch) -> None:
+    """Each decode and each strip gets at most its bound, whatever the size
+    of the answer. Jina's answer is blank, so the direct read runs too."""
+    assert web_tools.MAX_HTML_BYTES == 512 * 1024
+    assert web_tools.MAX_MARKDOWN_BYTES == 4 * web_tools.MAX_CHARS
+    decoded: list[int] = []
+    stripped: list[int] = []
+    real_decode, real_strip = web_tools._decode, web_tools._strip_html
+
+    async def _spy_decode(body: bytes, charset: str | None) -> str:
+        decoded.append(len(body))
+        return await real_decode(body, charset)
+
+    def _spy_strip(raw: str) -> str:
+        stripped.append(len(raw))
+        return real_strip(raw)
+
+    monkeypatch.setattr(web_tools, "_decode", _spy_decode)
+    monkeypatch.setattr(web_tools, "_strip_html", _spy_strip)
+    page = b"<p>word</p>" * (_WIRE_CAP // 11)
+    _Net(pages={("big.example.com", "/"): lambda _r: httpx.Response(
+             200, headers={"content-type": "text/html"}, stream=_Socket(page))},
+         jina=lambda _r: httpx.Response(200, headers={"content-type": "text/plain"},
+                                        stream=_Socket(b" " * _WIRE_CAP))).install(monkeypatch)
+    _Dns({"big.example.com": [PUBLIC_IP]}).install(monkeypatch)
+    out = await web_tools.fetch_page("https://big.example.com/", max_chars=web_tools.MAX_CHARS)
+    assert "word" in "\n".join(_block(out)[1])
+    assert decoded == [web_tools.MAX_MARKDOWN_BYTES, web_tools.MAX_HTML_BYTES], decoded
+    assert stripped == [web_tools.MAX_HTML_BYTES], stripped
+
+
+async def test_a_decode_gives_the_loop_a_turn_after_each_step(monkeypatch) -> None:
+    """Some codecs pay about 200 ns for each bad byte. So the decode feeds
+    the codec one step at a time, and the loop runs between two steps."""
+    turns = [0]
+    sizes: list[int] = []
     seen: list[int] = []
-    real = web_tools._strip_html
+    real = web_tools._decoder
 
-    def _spy(raw: str) -> str:
-        seen.append(threading.get_ident())
-        return real(raw)
+    class _Spy:
+        def __init__(self, inner: object) -> None:
+            self.inner = inner
 
-    monkeypatch.setattr(web_tools, "_strip_html", _spy)
-    _Net(pages={("w.example.com", "/"): _page("<p>direct text</p>")}).install(monkeypatch)
-    _Dns({"w.example.com": [PUBLIC_IP]}).install(monkeypatch)
-    out = await web_tools.fetch_page("https://w.example.com/")
+        def decode(self, data: bytes, final: bool = False) -> str:
+            sizes.append(len(data))
+            seen.append(turns[0])
+            return self.inner.decode(data, final)
+
+    monkeypatch.setattr(web_tools, "_decoder", lambda *a: _Spy(real(*a)))
+
+    async def _count() -> None:
+        while True:
+            turns[0] += 1
+            await asyncio.sleep(0)
+
+    counter = asyncio.create_task(_count())
+    await asyncio.sleep(0)
+    try:
+        steps = 5
+        text = await web_tools._decode(b"\xff" * (steps * web_tools._DECODE_STEP), "cp1255")
+    finally:
+        counter.cancel()
+    assert text == chr(0xFFFD) * (steps * web_tools._DECODE_STEP)
+    assert len(sizes) == steps + 1 and max(sizes) <= web_tools._DECODE_STEP, sizes
+    assert all(b > a for a, b in itertools.pairwise(seen)), f"no turn between steps: {seen}"
+
+
+async def test_the_frame_gets_its_own_loop_step(monkeypatch) -> None:
+    """The strip and the frame each pass over up to their bound. The loop
+    runs between them, so their two passes never hold it at once."""
+    turns = [0]
+    seen: dict[str, int] = {}
+    real_strip, real_frame = web_tools._strip_html, web_tools.frame_page
+
+    def _strip(raw: str) -> str:
+        seen["strip"] = turns[0]
+        return real_strip(raw)
+
+    def _frame(*args: object) -> str:
+        seen["frame"] = turns[0]
+        return real_frame(*args)
+
+    monkeypatch.setattr(web_tools, "_strip_html", _strip)
+    monkeypatch.setattr(web_tools, "frame_page", _frame)
+    _Net(pages={("f.example.com", "/"): _page("<p>direct text</p>")}).install(monkeypatch)
+    _Dns({"f.example.com": [PUBLIC_IP]}).install(monkeypatch)
+
+    async def _count() -> None:
+        while True:
+            turns[0] += 1
+            await asyncio.sleep(0)
+
+    counter = asyncio.create_task(_count())
+    try:
+        out = await web_tools.fetch_page("https://f.example.com/")
+    finally:
+        counter.cancel()
     assert "direct text" in out
-    assert seen and loop_thread not in seen, "the strip ran on the event loop"
+    assert seen["frame"] > seen["strip"], f"the strip and the frame shared a step: {seen}"
 
 
 async def test_a_fault_of_a_decode_is_not_a_raise(monkeypatch) -> None:
@@ -717,16 +1007,28 @@ async def test_a_page_that_reads_nowhere_names_only_the_host(monkeypatch) -> Non
 
 # ── 7. One guard, one copy ───────────────────────────────────────────────────
 
-#: Each call that builds a client or a transport, and the functions that may
-#: make it. A method is named ``Class.method``. ``_client`` is the one client
-#: of a web read. ``_serpapi_search`` reads one fixed host.
+#: Each call that builds a client, a transport or a checked target, and the
+#: functions that may make it. A method is named ``Class.method``. ``_client``
+#: is the one client of a web read. ``_serpapi_search`` reads one fixed host.
+#: Only ``_check`` makes a ``_Target``, so no hop goes to an unchecked address.
 BUILDS: dict[str, frozenset[str]] = {
     "_client": frozenset({"_hop", "_jina_read"}),
     "_inner_transport": frozenset({"_jina_read", "_PinnedTransport.__init__"}),
     "_PinnedTransport": frozenset({"_hop"}),
+    "_Target": frozenset({"_check"}),
     "httpx.AsyncClient": frozenset({"_client", "_serpapi_search"}),
     "httpx.AsyncHTTPTransport": frozenset({"_inner_transport"}),
 }
+#: The names of ``httpx`` that the module may use anywhere: types, values and
+#: a base class, and none of them sends. The list comes from the code of
+#: 2026-11-01. The module catches no ``httpx`` exception, so no exception class
+#: is in it. Any other ``httpx.<name>`` is a fault outside its :data:`BUILDS`.
+_HTTPX_NAMES = frozenset({"AsyncBaseTransport", "Cookies", "Request", "Response",
+                          "Timeout", "URL"})
+#: The dicts of the module itself. A ``get`` on one of them is a lookup, not a
+#: send, also with a key that is not a constant. ``_REASONS`` maps a refusal
+#: reason to its phrase.
+_OWN_DICTS = frozenset({"_REASONS"})
 #: The functions that may send a request. ``_hop`` sends to a pinned target.
 #: ``_jina_read`` and ``_serpapi_search`` send to a fixed host.
 #: ``_PinnedTransport.handle_async_request`` hands a pinned request on.
@@ -744,10 +1046,11 @@ _GET_ON = frozenset({"client", "httpx", "session", "c", "cl", "http"})
 #: speaks HTTP with no guard.
 _BANNED_MODULES = ("urllib.request", "urllib3", "requests", "aiohttp", "socket",
                    "http.client", "httpcore")
-#: No call of one of these names is allowed, on any object.
+#: No call of one of these names is allowed, on any object. ``vars`` and
+#: ``globals`` give a name of ``httpx`` with no attribute that the scan sees.
 _BANNED_CALLS = frozenset({"open_connection", "open_unix_connection", "create_connection",
                            "create_unix_connection", "sock_connect", "urlopen",
-                           "__import__", "import_module"})
+                           "__import__", "import_module", "vars", "globals"})
 
 
 def _callee(func: ast.expr) -> str:
@@ -848,11 +1151,34 @@ def _call_sites(node: ast.Call, who: str, bound: set[str]) -> tuple[list[tuple[s
         recv, method = node.func.value, node.func.attr
         if (method in _SEND_ANY
                 or (method in _REQUEST and (_build_name(recv) or ast.unparse(recv) in bound))
-                or (method == "get" and isinstance(recv, ast.Name) and recv.id in _GET_ON)):
+                or (method == "get" and isinstance(recv, ast.Name) and recv.id in _GET_ON)
+                or (method == "get" and _a_variable_target(node)
+                    and ast.unparse(recv) not in _OWN_DICTS)):
             sites.append(("send", method))
             if who not in SENDERS:
                 faults.append(f"{who}: sends {method}")
     return sites, faults
+
+
+def _a_variable_target(node: ast.Call) -> bool:
+    """True when the first argument of a call is not a constant, or when the
+    call names a ``url``. A client reads such a URL, and a lookup in a dict
+    of the module has a constant key."""
+    if any(k.arg == "url" for k in node.keywords):
+        return True
+    return bool(node.args) and not isinstance(node.args[0], ast.Constant)
+
+
+def _httpx_faults(node: ast.AST, who: str) -> list[str]:
+    """Rule (d): ``httpx.<name>`` is a fault unless :data:`_HTTPX_NAMES` holds
+    the name, or the name is a build of :data:`BUILDS` in one of its
+    functions. So an alias of a client class goes red where it is made."""
+    if not (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+            and node.value.id == "httpx"):
+        return []
+    if node.attr in _HTTPX_NAMES or who in BUILDS.get(f"httpx.{node.attr}", ()):
+        return []
+    return [f"{who}: uses httpx.{node.attr}"]
 
 
 def _scan(source: str) -> tuple[set[tuple[str, str, str]], list[str]]:
@@ -862,15 +1188,20 @@ def _scan(source: str) -> tuple[set[tuple[str, str, str]], list[str]]:
     outside its allowed functions, a banned import or a banned call. The
     rules:
 
-    (a) A call of ``_client``, ``_inner_transport``, ``_PinnedTransport`` or
-        any ``*Client`` or ``*Transport`` is a build. It is allowed only in
-        the functions of :data:`BUILDS`.
+    (a) A call of a name of :data:`BUILDS` or of any ``*Client`` or
+        ``*Transport`` is a build. It is allowed only in the functions of
+        :data:`BUILDS`. ``_Target`` is one, so only ``_check`` makes it.
     (b) A request method on a name that a build is bound to, under any name,
         or on a build itself, is a send. So is a method of :data:`_SEND_ANY`
-        on any object. A send is allowed only in :data:`SENDERS`.
+        on any object, and a ``get`` with a first argument that is not a
+        constant, except on a dict of :data:`_OWN_DICTS`. A send is allowed
+        only in :data:`SENDERS`.
     (c) An ``import`` or a ``from`` import of a module of
         :data:`_BANNED_MODULES`, an import from ``httpx``, an alias of
         ``httpx`` and a call of :data:`_BANNED_CALLS` are faults anywhere.
+    (d) ``httpx.<name>`` outside :data:`_HTTPX_NAMES` is a fault, unless it
+        is a build of :data:`BUILDS` in one of its functions. That covers
+        ``httpx.__dict__`` and an alias such as ``_Web = httpx.AsyncClient``.
     """
     tree = ast.parse(source)
     owner = _owners(tree)
@@ -880,6 +1211,7 @@ def _scan(source: str) -> tuple[set[tuple[str, str, str]], list[str]]:
     for node in ast.walk(tree):
         who = owner.get(id(node), "<module>")
         faults += _import_faults(node, who)
+        faults += _httpx_faults(node, who)
         if isinstance(node, ast.Call):
             found, bad = _call_sites(node, who, bound)
             sites.update((who, kind, name) for kind, name in found)
@@ -927,15 +1259,40 @@ STRAYS = {
     "create_connection": "def f(h):\n    return socket.create_connection((h, 80))\n",
     "loop create_connection": "async def f(loop, h):\n    await loop.create_connection(P, h, 80)\n",
     "getattr of httpx": "def f():\n    return getattr(httpx, 'AsyncClient')()\n",
+    # The shapes that passed the scan of repair round 1 (review and verify of
+    # WEB-1, round 2). Each one alone, with no other rule to catch it.
+    "a target built outside the check": (
+        "async def f(u):\n"
+        "    return await _hop(_Target(httpx.URL(u), 'h', '10.0.0.1'), httpx.Cookies())\n"),
+    "get on a parameter of another name": "async def f(reader, u):\n    return await reader.get(u)\n",
+    "get with a url keyword": "async def f(reader, u):\n    return await reader.get(url=u)\n",
+    "get on an attribute": "async def f(self, u):\n    return await self._conn.get(str(u))\n",
+    "a class alias": "_Web = httpx.AsyncClient\n",
+    "an alias of a send": "_GET = httpx.get\n",
+    "vars of httpx": "def f():\n    return vars(httpx)['AsyncClient']\n",
+    "globals": "def f():\n    return globals()['httpx']\n",
+    "__dict__ of httpx": "def f():\n    return httpx.__dict__['AsyncClient']\n",
+}
+
+#: Code that sends nothing. The scan must find no site and no fault in it.
+FINE = {
+    "a dict with a constant key": "def fine(d):\n    return d.get('k')\n",
+    "a dict of the module": "def fine(x):\n    return _REASONS.get(x, '')\n",
+    "a get with no argument": "def fine(q):\n    return q.get()\n",
+    "an httpx type": "def fine(u: httpx.URL) -> httpx.Response:\n    return httpx.Cookies()\n",
 }
 
 
 @pytest.mark.parametrize("label", sorted(STRAYS))
 def test_the_scan_sees_a_stray_read(label: str) -> None:
-    """The scan is not blind. Each stray gives a fault, and a dict stays fine."""
+    """The scan is not blind. Each stray gives a fault."""
     _sites, faults = _scan(STRAYS[label])
     assert faults, f"the scan missed: {label}"
-    assert _scan("def fine(d):\n    return d.get('k')\n") == (set(), [])
+
+
+@pytest.mark.parametrize("label", sorted(FINE))
+def test_the_scan_passes_code_that_sends_nothing(label: str) -> None:
+    assert _scan(FINE[label]) == (set(), []), label
 
 
 def test_no_httpx_web_read_outside_the_guard() -> None:
@@ -950,6 +1307,7 @@ def test_no_httpx_web_read_outside_the_guard() -> None:
             ("_serpapi_search", "send", "get"),
             ("_PinnedTransport.__init__", "build", "_inner_transport"),
             ("_PinnedTransport.handle_async_request", "send", "handle_async_request"),
+            ("_check", "build", "_Target"),
             } <= sites, sites
     assert "follow_redirects=True" not in source
     tree = ast.parse(source)

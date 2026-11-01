@@ -231,6 +231,12 @@ ALLOWED: dict[str, str] = {
         'Text, not rows: the cut shortens one string.',
     'packages/acb_skills/acb_skills/web_tools.py::frame_page::text[:limit]':
         "Text: one web page, cut and marked '[... truncated'. max_chars asks for more.",
+    'packages/acb_skills/acb_skills/web_tools.py::_direct_text::answer.body[:MAX_HTML_BYTES]':
+        'Bytes of one web page, not rows: the HTML that the fallback strips on the '
+        'event loop has a bound (WEB-1 repair 2). WEB-2 replaces this reader.',
+    'packages/acb_skills/acb_skills/web_tools.py::_jina_read::body[:MAX_MARKDOWN_BYTES]':
+        "Bytes of one web page, not rows: four bytes for each character of MAX_CHARS, so "
+        "the text still fills the ceiling, and frame_page marks the cut (WEB-1 repair 2).",
     'apps/agents/agent-email-assistant/agents.py::_inbox_card_parts::rows[:_CARD_MESSAGE_LINES]':
         "A confirm card's message lines (#1019). It ends with '+N more', and the act takes every message.",
     'apps/agents/agent-email-assistant/agents.py::_card_name::\' \'.join(\'\'.join((ch for ch in text if ch not in \'"\\\'`()[]{}\')).split())[:80]':
@@ -257,7 +263,9 @@ ALLOWED: dict[str, str] = {
 #: of child names as the app's dialog caps it, and it says "and N more" (66).
 #: WS-27bn RA-3 added the waiting card's cut, the sibling of the card's
 #: `rows[:rows_max]`. Its text prints every row with no cut (67).
-ALLOWED_CEILING = 67
+#: WEB-1 repair 2 bounded the text work of `fetch_page` on the event loop:
+#: two byte cuts of one page, each with its reason (69).
+ALLOWED_CEILING = 69
 
 
 def _stringy(node: ast.AST) -> bool:
