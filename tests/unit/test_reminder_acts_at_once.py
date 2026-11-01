@@ -23,6 +23,12 @@ Red first (R7), each run against the built code and then reverted:
   ``test_the_receipt_names_its_undo`` fails.
 * M5. ``egress.write_must_show_card``: ignore the mark ->
   ``test_a_marked_session_shows_the_card`` fails for each of the five tools.
+* M6. ``egress.write_must_show_card``: drop the ``_session_of`` test ->
+  ``test_a_run_with_no_tenant_shows_the_card`` fails.
+* M7. ``egress.write_must_show_card``: drop the ``deliver_to`` test ->
+  ``test_a_batch_child_of_a_marked_chat_shows_the_card`` fails.
+* M8. ``egress.write_must_show_card``: drop the ``_card_can_show`` test ->
+  ``test_a_run_that_cannot_read_a_mark_or_ask_shows_the_card`` fails.
 
 No database and no gateway process: the client is patched at httpx, and the
 mark lives in the in-memory store of ``tests/conftest.py``.
