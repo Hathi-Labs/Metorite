@@ -100,7 +100,12 @@ A proactive agent that speaks on each run gets muted in a week. So an unattended
 
 ### 4.2 A run with no person cannot approve its own action (AUTO-7)
 
-The server marks each unattended run `no person present` at the headless seam. The mark never comes from model output or from tool input. A marked run cannot answer a confirmation, cannot answer an elicitation, and cannot settle a `pending_actions` row. An action that needs a person parks and asks through a decision (ALN-2, task 1376) or through Reach. With no answerer, it fails closed, as Studio B2c plans. Without this rule, a prompt injected into a page or a mail could approve its own write while nobody watches.
+The server marks each unattended run `no person present`. The mark never comes from model output or from tool input. A marked run cannot answer a confirmation, cannot answer an elicitation, and cannot settle a `pending_actions` row. Without this rule, a prompt injected into a page or a mail could approve its own write while nobody watches.
+
+**AUTO-7 extends a mark that exists.** `ask_tools._CARDS_REFUSED` (`packages/acb_skills/acb_skills/ask_tools.py` line 57) is set at `executor.py` line 6018 from `shows_cards`. **A caveat:** the Copilot SDK JSON-RPC thread may read a fresh context. So a fence must verify the `carry_run_context` claim, and must not trust it.
+
+- **AUTO-7a.** A second ContextVar `no_person_present`, which only server code sets. It is set in the job worker's handler dispatch and in the non-manual `_execute_run`. Refusals sit in `broker.approve` and `reject`, in the workflow resume, and in the elicitation answer. `request_confirmation` returns deny.
+- **AUTO-7b.** Park and ask. An action that needs a person parks and asks through a decision (ALN-2a, task 1376) or through Reach. Until ALN-2a exists, a marked run fails closed.
 
 ### 4.3 A candidate check before any model call
 
@@ -233,8 +238,9 @@ The source is the research comment of 2026-11-02 on epic 807. The owner asked: c
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
 | **H-328** (856) | Bind the tenant in the workflow run lifecycle (§6). Owned by the HANDOFF, in progress | The `git grep` of §6 shows only tenant-discovery reads | HIGH | AGENT-SAFE. Blocks any second org |
-| **AUTO-7** (1391) | A run with no person present cannot approve its own action (§4.2). Needs AUTO-2 | A fence (R7): an unattended turn that tries to approve gets a refusal, and no write happens. A mutation that drops the mark turns the fence red. An injection fixture in a watched page asks for an approval, and nothing runs | HIGH | AGENT-SAFE |
-| **AUTO-8** (1392) | A headless turn with a credit cap (§4.4). Needs AUTO-2, AUTO-7 | A turn stops at its cap with `cap_reached` and reports once. A run with no candidate makes no model call. R8: the run reads only what its member can read, and org B sees nothing. A kill switch stops all headless turns for an org | HIGH | AGENT-SAFE |
+| **AUTO-7a** (1391) | The mark `no person present` and its refusals (§4.2). Needs AUTO-2 | A fence (R7): an unattended turn that tries to approve gets a refusal, and no write happens. The fence verifies the `carry_run_context` claim on the SDK thread. A mutation that drops the mark turns the fence red | HIGH | AGENT-SAFE |
+| **AUTO-7b** (1391) | Park and ask (§4.2). Needs AUTO-7a and ALN-2a | An action that needs a person parks and asks. An injection fixture in a watched page asks for an approval, and nothing runs. With no answerer, the run fails closed | HIGH | AGENT-SAFE |
+| **AUTO-8** (1392) | A headless turn with a credit cap (§4.4). Needs AUTO-2, AUTO-7a | A turn stops at its cap with `cap_reached` and reports once. A run with no candidate makes no model call. R8: the run reads only what its member can read, and org B sees nothing. A kill switch stops all headless turns for an org | HIGH | AGENT-SAFE |
 | **AUTO-6** (1390) | Silent by default (§4.1). Needs AUTO-2 | A run that finds nothing writes no outbox row and no bell row. Ten runs that find the same thing give one message. Quiet hours hold. The fence goes red under a mutation | STD | AGENT-SAFE |
 | **AUTO-1** (816) | "Do this every Monday": a `schedule_run` tool makes a workflow with one Mira step. Needs AUTO-2, AUTO-3, H-328, and a chat way to save a workflow | A request creates one automation, and the confirm card shows the next three run times. It delivers on Monday. It runs as the member who made it | STD | AGENT-SAFE. D145 preview. No second org before H-328 |
 | **AUTO-4** (817) | One list of every automation, in My profile. Needs AUTO-1 | A member pauses an automation from the list, and the next run does not happen. An admin sees the org's automations | STD | AGENT-SAFE. D145 preview |
@@ -249,7 +255,7 @@ The source is the research comment of 2026-11-02 on epic 807. The owner asked: c
 **The order has nine steps.**
 
 1. H-328, already in progress.
-2. AUTO-7.
+2. AUTO-7a, then AUTO-7b after ALN-2a.
 3. AUTO-8.
 4. AUTO-6.
 5. AUTO-1.
@@ -260,13 +266,13 @@ The source is the research comment of 2026-11-02 on epic 807. The owner asked: c
 
 **What can run in parallel.**
 
-1. H-328, AUTO-7 and AUTO-6 need only AUTO-2. They touch different code, so they can run at once.
-2. AUTO-8 waits for AUTO-7, because no turn may write before AUTO-7.
+1. H-328, AUTO-7a and AUTO-6 need only AUTO-2. They touch different code, so they can run at once.
+2. AUTO-8 waits for AUTO-7a, because no turn may write before AUTO-7a.
 3. AUTO-1 waits for H-328 and for a chat way to save a workflow.
 4. AUTO-4 and AUTO-10 can run in parallel after AUTO-1 and AUTO-6.
 5. Keep three or four slices in flight at most (CLAUDE.md §4).
 
-**The first dispatchable slice is AUTO-7.** It needs only AUTO-2, it is small, and no unattended turn may write before it. H-328 is already in progress in its own session. AUTO-6 is dispatchable at the same time.
+**The first dispatchable slice is AUTO-7a.** It needs only AUTO-2, it is small, and no unattended turn may write before it. H-328 is already in progress in its own session. AUTO-6 is dispatchable at the same time.
 
 ---
 

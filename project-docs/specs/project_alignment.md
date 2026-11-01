@@ -95,7 +95,20 @@ The facts of task 1369 were re-read on `ce29836ea`. Two of them changed.
 
 ### 3.2 One person decides (ALN-2)
 
-Nothing today shows a question with named options to a named person, and records the answer on a task. ALN-2 adds that primitive. The audit of ALN-2 picks the shape: a new `pm_decisions` table, or a wider `pm_intake`. It adds no third approval stack.
+Nothing today shows a question with named options to a named person, and records the answer on a task. ALN-2 adds that primitive. The shape is a new table `pm_decisions`, in migration 326 (recheck the number at dispatch, R1). `pm_intake` has fixed verbs, no named decider and no options. An `agent_runs` elicitation needs a run. The table reuses the bell, Reach and the My Day provider registry, and it runs no action. So it is not a third approval stack.
+
+| Column | Meaning |
+|---|---|
+| `subject_kind`, `subject_id` | `task` or `page`, and its id |
+| `decider` | The email of the named person |
+| `options` | Two to four objects `{key, label}` |
+| `question` | At most 140 characters |
+| `expires_at` | Default 7 days after the ask |
+| `payload` | JSONB. It serves SW-18 and Studio B2c |
+| `answered_by`, `answer_key`, `answer_reason` | Nullable until the answer. The reason is optional |
+| `source` | `align` or `auto` |
+
+A unique guard allows one answer for each decision. The table is tenant-scoped with FORCE RLS (R5). It widens `pm_notifications_kind_check` with the kind `decision`.
 
 A decision has a subject (a task or a page), a named decider, two to four options, a one-line question, an expiry and an answer. The answer writes one `pm_activities` row. A second answer is refused. AUTO-7 (task 1391) parks a blocked action on the same primitive.
 
@@ -208,14 +221,15 @@ A new table `pm_alignment_findings`.
 
 **The seam is the four handlers**, because no single write seam exists. The D80 fence (`tests/unit/test_pm_task_insert_sites.py`) holds the creators. ALN-1 does not hook `insert_row` or `update_row`.
 
-1. After the commit of `create_task`, `patch_task`, `move_task_in` and `create_personal_task`, the handler enqueues one job of kind `align.check` with `jobs.queue.enqueue`. The payload holds the task id only. The dedupe key is `align:<task_id>:<content_hash>`, which fits the 200-character limit.
+1. In `create_task`, `patch_task` and `move_task_in`, the handler enqueues one job of kind `align.check` with `jobs.queue.enqueue(db, ...)`. It uses the same tenant session that the handler holds. The enqueue runs in the same transaction as the write, inside a savepoint (`db.begin_nested()`). A crash between a commit and a later enqueue would lose the job, and this form cannot. `create_personal_task` is not in the list, because a personal task is never checked (§1.2). The payload holds the task id only and no org, because the session binds the tenant. The dedupe key is `align:<task_id>:<content_hash>`, which fits the 200-character limit.
 2. `patch_task` enqueues only when the hash of the title, the description and the acceptance text changed. An edit of a due date enqueues nothing.
 3. A move out of the personal root (`move_task_in`) enqueues, because that is the moment a personal note becomes project work.
-4. `publish_page` and an accepted proposal enqueue a `kb.page.published` job for each pinned project. With no pin, they enqueue nothing.
+4. The page signal is not part of ALN-1. Pins arrive with ALN-4, so the `kb.page.published` job for each pinned project belongs to ALN-5 or ALN-11. With no pin, a publish enqueues nothing.
 5. Recurrence and the file import stay out in v1. A recurring copy repeats text that was checked. An import is a bulk load that an owner would not want to check. Both are stated here so a later slice can reverse the choice.
-6. Add `organization_id` to the `pm.task.created` and `pm.task.updated` payloads. The bus still stays best effort. No check depends on it.
-7. A failed enqueue never fails the member's write. The handler logs it and goes on.
-8. The queue is dark: `job_queue` is OFF by default. A new per-org flag `ALIGN_JOBS_ORGS` gates the enqueue, so with the flag off no job row appears.
+6. ALN-1 does not stamp `organization_id` on the events. H-328 part (c) owns that stamp, once, in `routes/projects/core.py` (`emit`). No check depends on the bus.
+7. A failed enqueue never fails the member's write. The savepoint rolls back, and the handler swallows the error, logs it and goes on.
+8. The queue is dark: `job_queue` is OFF by default. A new per-org flag `ALIGN_JOBS_ORGS` (default empty) gates the enqueue. A handler enqueues only when `worker_enabled()` is true AND the org is in the list. The reason: `prune` deletes only `done` and `failed` rows, so queued rows would grow without a bound while the worker is off. ALN-1 adds the flag to the settings list.
+9. `align.check` has no handler until ALN-7, and the worker claims only registered kinds. So ALN-1 registers a stub handler that completes the job and does nothing else. ALN-7 replaces it.
 
 ---
 
@@ -272,7 +286,7 @@ There is no product manager role. A project lead is the role in v1. A later slic
 
 ### 7.4 The channels
 
-A card is a bell row, a My Day card and one Reach request. Reach is the only path to push, so its daily cap, quiet hours and dedupe all apply. ALN-2 adds one bell kind (`NOTIFICATION_KINDS` and its CHECK, by migration), one My Day provider with a two-answer act, and one `REACH_CLASS` row. The act is a link until MD-8, as `needs.py` says, so ALN-2 opens the task card for the answer.
+A card is a bell row, a My Day card and one Reach request. Reach is the only path to push, so its daily cap, quiet hours and dedupe all apply. ALN-2a adds one bell kind (`NOTIFICATION_KINDS` and its CHECK, by migration) and one `REACH_CLASS` row. ALN-2b adds one My Day provider with a two-answer act. The act is a link until MD-8, as `needs.py` says, so ALN-2b opens the task card for the answer.
 
 ---
 
@@ -322,8 +336,9 @@ Sources: `https://linear.app/docs/triage-intelligence` · `https://docs.coderabb
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **ALN-1** (1375) | The durable trigger (§5). Needs ALN-0 | R8: a task change enqueues one job in the bound org. An edit with the same text enqueues none. Org B sees none of org A's jobs. A failed enqueue never fails the write. With the flag off, no job row appears | HIGH | AGENT-SAFE |
-| **ALN-2** (1376) | One person decides (§3.2, §7.4). Needs ALN-0 | R8: a decision reaches its named person, and an answer writes one activity. A person outside the grant gets no row. A second answer is refused. Visual review in four contexts | HIGH | AGENT-SAFE |
+| **ALN-1** (1375) | The durable trigger (§5), the flag `ALIGN_JOBS_ORGS` and a stub `align.check` handler. Needs ALN-0 | R8: a task change enqueues one job in the bound org, and the stub completes it. With the worker off or the org not listed, no row appears. An edit with the same text enqueues none. Org B sees none of org A's jobs. A failed enqueue never fails the write. With the flag off, no job row appears | HIGH | AGENT-SAFE |
+| **ALN-2a** (1376) | The table, the service (ask, answer, expire), the activity row, the bell kind, the verb, `REACH_CLASS` and `KIND_ORDER` (§3.2). Flag `DECISIONS_ORGS` (default empty). Needs ALN-0 | R8: a decision reaches its named person, and an answer writes one activity. A person outside the grant gets no row. A second answer is refused. An expired decision takes no answer | HIGH | AGENT-SAFE |
+| **ALN-2b** (1376) | The My Day provider and the task-card UI. `needs.py` offers only a link act until MD-8, so the act opens the task card. Needs ALN-2a | Visual review in four contexts. D145 preview first | STD | AGENT-SAFE |
 
 ### Phase 2 — The source of truth
 
@@ -344,7 +359,7 @@ Sources: `https://linear.app/docs/triage-intelligence` · `https://docs.coderabb
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **ALN-9** (1383) | The person's card. Needs ALN-2, ALN-8 | One deviation gives one card, however often the task is saved. A member who cannot open the page sees the rule and not the quote | STD | AGENT-SAFE. D145 preview first |
+| **ALN-9** (1383) | The person's card. Needs ALN-2a, ALN-2b, ALN-8 | One deviation gives one card, however often the task is saved. A member who cannot open the page sees the rule and not the quote | STD | AGENT-SAFE. D145 preview first |
 | **ALN-10** (1384) | The lead's card (§3.3, §7.3). Needs ALN-9 | R8: an answer closes the finding and writes one activity. A second answer is refused. A lead outside the grant gets no card and no title. An accepted exception does not raise the finding again | STD | AGENT-SAFE. D145 preview first |
 | **ALN-3** (1377) | The project suggestion. Needs LP-2 (task 989) | An eval set of 30 items passes its written gate. A member never sees a project they cannot open. An injection fixture makes no tool call | STD | AGENT-SAFE. Waits for LP-2 |
 
@@ -367,7 +382,7 @@ Sources: `https://linear.app/docs/triage-intelligence` · `https://docs.coderabb
 **The order** has seven steps.
 
 1. ALN-0.
-2. ALN-1 and ALN-2.
+2. ALN-1, ALN-2a and ALN-2b (after ALN-2a).
 3. ALN-4, ALN-5 and ALN-6.
 4. ALN-7 and ALN-8.
 5. ALN-9, ALN-10 and ALN-3.
@@ -376,13 +391,13 @@ Sources: `https://linear.app/docs/triage-intelligence` · `https://docs.coderabb
 
 **What can run in parallel.**
 
-1. ALN-1, ALN-2 and ALN-4 need only ALN-0. They touch different files, so three sessions can build them at once.
+1. ALN-1, ALN-2a and ALN-4 need only ALN-0. They touch different files, so three sessions can build them at once.
 2. ALN-6 and ALN-7 can run in parallel after ALN-5 and ALN-1.
 3. ALN-3 needs LP-2 only. It can run at any time after LP-2 lands.
 4. ALN-11 and ALN-13 can run in parallel after ALN-10.
 5. Keep three or four slices in flight at most (CLAUDE.md §4).
 
-**The first dispatchable slice is ALN-1,** once this spec merges. ALN-2 and ALN-4 are dispatchable at the same time. ALN-1 comes first because ALN-7 and ALN-11 read through it.
+**The first dispatchable slice is ALN-1,** once this spec merges. ALN-2a and ALN-4 are dispatchable at the same time. ALN-1 comes first because ALN-7 and ALN-11 read through it.
 
 **⚠️ An outside prerequisite.** ALN-5 needs the rule store of SW-31 (task 1048). If SW-31 has not built the table, ALN-5 builds it in the shape of §4.2. SW-31 then adds only its editor and its MCP return.
 
@@ -437,7 +452,7 @@ For this spec only: `uv run pytest tests/unit/test_index_completeness.py tests/u
 | No score for any person: no table or column of this feature groups by a person | New with ALN-7: a schema scan in `test_align_findings.py`. Advisory for the views until ALN-13 |
 | A personal task is never checked | New with ALN-7: same file |
 | The checker, the proposer and the suggester get no tools | New with ALN-5 and ALN-7: injection fixtures that assert no tool call |
-| A card reaches only a person who can open the task | New with ALN-2: `tests/unit/test_decisions.py` (R8) |
+| A card reaches only a person who can open the task | New with ALN-2a: `tests/unit/test_decisions.py` (R8) |
 | A proactive path sends only through Reach | New with ALN-9: a scan for a direct send in the new modules |
 | A failed check never blocks a move | New with ALN-12: same fence as the hard rule |
 
