@@ -1,0 +1,23 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "studio",
+  "contributes": {
+    "nav": [
+      {
+        "href": "/studio",
+        "feature": "workflows"
+      }
+    ],
+    "gates": [
+      {
+        "href": "/build/apps",
+        "feature": "build.apps"
+      },
+      {
+        "href": "/build/agents",
+        "feature": "build.agents"
+      }
+    ]
+  }
+}

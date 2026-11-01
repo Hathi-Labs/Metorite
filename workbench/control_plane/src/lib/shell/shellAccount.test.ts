@@ -141,9 +141,12 @@ describe("the foot is the account row", () => {
   });
 
   it("folded: the avatar alone, in the geometry of a folded nav row", () => {
-    expect(text(folded)).toBe("A");
+    // The avatar shows. The name waits, hidden from sight and from assistive
+    // tech, for the rail to peek (hover to expand, owner 2026-11-01).
+    expect(text(folded).startsWith("A")).toBe(true);
+    expect(folded).toMatch(/<span data-rail-label="" aria-hidden="true"/);
     expect(folded).toMatch(/data-account-foot="" class="[^"]*\bp-2\b/);
-    expect(folded).toMatch(/<button[^>]*class="[^"]*justify-center p-1\.5/);
+    expect(folded).toMatch(/<button[^>]*class="[^"]*w-full justify-center p-1\.5/);
   });
 });
 

@@ -780,6 +780,19 @@ class Settings(BaseSettings):
     # tests/unit/test_profile_pz32.py.
     assistant_profile_card_writes_orgs: str = ""
 
+    # ── A summary of each private chat (WS-63 PZ-33, D142) ──────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. It opens the summary job of PZ-33b and the Settings
+    # section of PZ-35 (`personalization.md` §15.8). PZ-33a adds no caller.
+    # The profile switch (`enabled_for`) must be on for the org too. The one
+    # reader is `acb_common.assistant_profile.chat_summary_for`. A SIGHUP
+    # reload applies a change (`gateway/flag_reload.py`). ⚠️ The job spends
+    # the org's AI credits with no request of the member, so the production
+    # flip is owner-only (D-PZ-35, `work_plan.md` §6 D4). Fence:
+    # tests/unit/test_chat_summary.py.
+    assistant_chat_summary_orgs: str = ""
+
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
     # ON makes `GET /search/company` rank newer records first inside each app,

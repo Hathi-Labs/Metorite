@@ -449,7 +449,7 @@ export const NAV_SECTIONS: NavSection[] = [
         note: "Apps · workflows · skills in one library",
         feature: "workflows",
         launch: "preview", // ai_studio.md §14 A1: the one library pane
-        agent: "app-builder", // until G1 adds `studio-builder`
+        agent: "app-builder", // until G3 gives the dock `studio-builder`
       },
     ],
   },
@@ -492,10 +492,12 @@ export const NAV_SECTIONS: NavSection[] = [
         // preference, not an admin capability. The org-wide default on the
         // same page is authorized at the gateway.
         href: "/settings/appearance",
-        team: "personal",
+        // A sidebar app in Admin, beside Organisation and Integrations, and a
+        // member stars it on or off in All apps like any app (owner,
+        // 2026-11-01: "keep it on the sidebar ... add or remove them in the
+        // favorites"). It left the account menu.
+        team: "admin",
         blurb: "Light or dark, spacing and accent colour",
-        door: "account",
-        setting: true,
         label: "Appearance",
         icon: "Palette",
         // "Themes ·" led this line until 2026-08-31. The theming engine is
