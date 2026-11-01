@@ -49,6 +49,7 @@ import {
   areaLabel,
   chatHref,
   deleteAlias,
+  DELETE_ONE_BODY,
   deleteAllBody,
   deleteAllSummaries,
   deleteFact,
@@ -116,8 +117,8 @@ export interface PaneHandlers {
   onResetInterview: () => void;
   /** The switch "Keep chat summaries" (PZ-35). */
   onKeepSummaries: (value: boolean) => Promise<boolean>;
-  /** Delete the summary of one chat (PZ-35). */
-  onDeleteSummary: (id: string) => Promise<boolean>;
+  /** Ask to delete the summary of one chat. A confirm dialog follows (PZ-35). */
+  onDeleteSummary: (id: string) => void;
   /** Ask to delete every summary. A confirm dialog follows (PZ-35). */
   onDeleteAllSummaries: () => void;
   /** Load the list again after a failed load (PZ-35). */
@@ -169,6 +170,10 @@ export interface AssistantPaneViewProps extends PaneHandlers {
   summaries?: SummariesView;
   confirmDeleteSummaries?: boolean;
   onCancelDeleteSummaries?: () => void;
+  /** The chat whose summary waits on its confirm, or null. */
+  confirmDeleteSummaryId?: string | null;
+  onCancelDeleteSummary?: () => void;
+  onConfirmDeleteSummary?: () => void;
   onConfirmDeleteSummaries?: () => void;
 }
 
@@ -191,7 +196,7 @@ export const NO_HANDLERS: PaneHandlers = {
   onResetArea: noop,
   onResetInterview: () => {},
   onKeepSummaries: noop,
-  onDeleteSummary: noop,
+  onDeleteSummary: () => {},
   onDeleteAllSummaries: () => {},
   onRetrySummaries: () => {},
 };
@@ -296,7 +301,7 @@ function SummaryRow({ s, v }: { s: ChatSummary; v: AssistantPaneViewProps }) {
     <li className="space-y-1.5 rounded-lg border border-border bg-card px-3 py-2">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1 space-y-1">
-          <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <Link href={chatHref(s.id)} className="text-sm font-medium text-foreground underline-offset-2 hover:underline">
               {title}
             </Link>
@@ -1069,7 +1074,7 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
       <Section
         id="assistant-forget"
         title="Forget everything"
-        description="Clears every setting, fact and name above at once. You cannot undo this."
+        description="Clears every fact, name and style note above, and every chat summary, at once. The Keep chat summaries switch stays as it is. You cannot undo this."
       >
         <Button variant="destructive" size="sm" icon="Trash2" loading={v.busy.forget} onClick={v.onForget}>
           Forget everything
@@ -1079,7 +1084,7 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
       <ConfirmDialog
         open={v.confirmForget}
         title="Forget everything?"
-        body="The assistant loses every fact, name and style note you set. It cannot be undone."
+        body="The assistant loses every fact, name and style note you set, and every chat summary. The Keep chat summaries switch stays as it is. It cannot be undone."
         confirmLabel="Forget everything"
         confirmVariant="destructive"
         busy={v.busy.forget}
@@ -1096,6 +1101,18 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
           busy={v.busy["summaries-all"]}
           onConfirm={v.onConfirmDeleteSummaries ?? (() => {})}
           onCancel={v.onCancelDeleteSummaries ?? (() => {})}
+        />
+      ) : null}
+      {v.summaries ? (
+        <ConfirmDialog
+          open={!!v.confirmDeleteSummaryId}
+          title="Delete this summary?"
+          body={DELETE_ONE_BODY}
+          confirmLabel="Delete"
+          confirmVariant="destructive"
+          busy={v.confirmDeleteSummaryId ? v.busy[`summary-${v.confirmDeleteSummaryId}`] : false}
+          onConfirm={v.onConfirmDeleteSummary ?? (() => {})}
+          onCancel={v.onCancelDeleteSummary ?? (() => {})}
         />
       ) : null}
       <ConfirmDialog
@@ -1134,6 +1151,7 @@ export default function AssistantPane() {
   const [summaries, setSummaries] = useState<SummariesList>({ status: "loading" });
   const [summariesTry, setSummariesTry] = useState(0);
   const [confirmDeleteSummaries, setConfirmDeleteSummaries] = useState(false);
+  const [confirmDeleteSummaryId, setConfirmDeleteSummaryId] = useState<string | null>(null);
 
   useEffect(() => {
     if (status !== "ready" || !gate.enabled) return;
@@ -1302,13 +1320,7 @@ export default function AssistantPane() {
         await saveKeepSummaries(value);
         setGate((g) => ({ ...g, keep: value }));
       }),
-    onDeleteSummary: (id) =>
-      run(`summary-${id}`, async () => {
-        await deleteSummary(id);
-        setSummaries((l) =>
-          l.status === "ready" ? { ...l, summaries: l.summaries.filter((x) => x.id !== id) } : l,
-        );
-      }),
+    onDeleteSummary: (id) => setConfirmDeleteSummaryId(id),
     onDeleteAllSummaries: () => setConfirmDeleteSummaries(true),
     onRetrySummaries: () => {
       setSummaries({ status: "loading" });
@@ -1338,6 +1350,20 @@ export default function AssistantPane() {
       fallbackName={fallbackName}
       block={block}
       summaries={gate.enabled ? { keep: gate.keep, list: summaries } : undefined}
+      confirmDeleteSummaryId={confirmDeleteSummaryId}
+      onCancelDeleteSummary={() => setConfirmDeleteSummaryId(null)}
+      onConfirmDeleteSummary={async () => {
+        const id = confirmDeleteSummaryId;
+        if (!id) return;
+        const ok = await run(`summary-${id}`, async () => {
+          await deleteSummary(id);
+          setSummaries((l) =>
+            l.status === "ready" ? { ...l, summaries: l.summaries.filter((x) => x.id !== id) } : l,
+          );
+        });
+        setConfirmDeleteSummaryId(null);
+        if (ok) toast.show({ variant: "success", title: "The summary is deleted" });
+      }}
       confirmDeleteSummaries={confirmDeleteSummaries}
       onCancelDeleteSummaries={() => setConfirmDeleteSummaries(false)}
       onConfirmDeleteSummaries={async () => {

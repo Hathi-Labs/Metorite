@@ -71,11 +71,20 @@ export async function relay(
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** The id segment for the gateway path, or `null` for an id of the wrong shape. */
+/**
+ * A chat id may hold a colon (`<agent>:<run>`, `email-chat:...`). Only the
+ * summaries use it. `..` and `/` stay refused. The id is encoded in the URL.
+ */
+const CHAT_ID = /^[A-Za-z0-9_:-]{1,200}$/;
+
 export async function idSuffix(
   kind: "facts" | "aliases" | "summaries",
   params: Promise<{ id: string }>,
 ): Promise<string | null> {
   const { id } = await params;
+  if (kind === "summaries") {
+    return CHAT_ID.test(id) && !/^\.+$/.test(id) ? `/${kind}/${encodeURIComponent(id)}` : null;
+  }
   return ID.test(id) ? `/${kind}/${id}` : null;
 }
 

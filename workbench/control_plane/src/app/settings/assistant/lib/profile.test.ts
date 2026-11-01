@@ -4,6 +4,7 @@ import {
   EMPTY_PROFILE,
   ProfileError,
   chatHref,
+  DELETE_ONE_BODY,
   deleteAllBody,
   deleteAllSummaries,
   deleteSummary,
@@ -308,6 +309,10 @@ describe("Recent chats (PZ-35)", () => {
     expect(summaryCount({ summaries: [one, one], more: false })).toBe("2");
     expect(summaryCount({ summaries: [one, one], more: true })).toBe("2 or more");
     expect(deleteAllBody({ summaries: [one, one], more: false })).toContain("This deletes all 2 chat summaries.");
+    expect(deleteAllBody({ summaries: [one], more: false })).toContain(
+      "If you keep chatting, new summaries can appear. To stop them, turn off Keep chat summaries. You cannot undo this.",
+    );
+    expect(DELETE_ONE_BODY).toBe("If you keep chatting in this chat, a new one can appear. You cannot undo this.");
     expect(deleteAllBody({ summaries: [one, one], more: true })).toContain("This deletes all 2 or more chat summaries.");
   });
 });

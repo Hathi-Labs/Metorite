@@ -481,9 +481,13 @@ export function chatHref(id: string): string {
   return `/chat?do=open-chat&fill.session=${encodeURIComponent(id)}`;
 }
 
+/** The words of the confirm of Delete one. */
+export const DELETE_ONE_BODY =
+  "If you keep chatting in this chat, a new one can appear. You cannot undo this.";
+
 /** The words of the confirm of Delete all. They name the count. */
 export function deleteAllBody(page: SummariesPage): string {
-  return `This deletes all ${summaryCount(page)} chat summaries. The chats stay. You cannot undo this.`;
+  return `This deletes all ${summaryCount(page)} chat summaries. The chats stay. If you keep chatting, new summaries can appear. To stop them, turn off Keep chat summaries. You cannot undo this.`;
 }
 
 /** The count in the confirm of Delete all. A full page may hide more, so it says so. */

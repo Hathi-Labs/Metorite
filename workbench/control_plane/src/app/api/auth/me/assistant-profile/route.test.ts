@@ -286,6 +286,18 @@ describe("/api/auth/me/assistant-profile/summaries (PZ-35)", () => {
     },
   );
 
+  it("a chat id with a colon passes, encoded, and `..` and `/` stay refused", async () => {
+    stub(() => new Response(null, { status: 204 }));
+    const one = await import("./summaries/[id]/route");
+    expect((await one.DELETE(req("/summaries/x", "DELETE"), ctx("orchestrator:run-1"))).status).toBe(204);
+    expect(asked[0].url).toBe(`${GW}/summaries/orchestrator%3Arun-1`);
+    asked.length = 0;
+    for (const bad of ["..", "a/b", "a:../b", "%2E%2E"]) {
+      expect((await one.DELETE(req("/summaries/x", "DELETE"), ctx(bad))).status).toBe(404);
+    }
+    expect(asked).toEqual([]);
+  });
+
   it("a signed-out caller reaches no gateway", async () => {
     signedIn = false;
     stub(() => new Response(null, { status: 204 }));

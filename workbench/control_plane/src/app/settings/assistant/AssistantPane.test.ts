@@ -431,3 +431,30 @@ describe("Recent chats (PZ-35)", () => {
     expect(src).toMatch(/<ConfirmDialog\s+open=\{!!v\.confirmDeleteSummaries\}/);
   });
 });
+
+describe("Delete asks first, and Forget names the summaries (PZ-35 repair)", () => {
+  const src = readFileSync(new URL("./AssistantPane.tsx", import.meta.url), "utf-8");
+
+  it("a row Delete opens a confirm, and the confirm deletes", () => {
+    expect(src).toMatch(/onDeleteSummary:\s*\(id\) => setConfirmDeleteSummaryId\(id\)/);
+    expect(src).toContain('title="Delete this summary?"');
+    expect(src).toContain("body={DELETE_ONE_BODY}");
+    expect(src).toMatch(/onConfirmDeleteSummary=\{async \(\) => \{[\s\S]{0,200}await deleteSummary\(id\)/);
+    // The one-row dialog is closed until a Delete is pressed.
+    expect(draw({ summaries: { keep: true, list: { status: "ready", summaries: [], more: false } } })).not.toContain(
+      "Delete this summary?",
+    );
+  });
+
+  it("the Forget section and confirm name the chat summaries, and the switch that stays", () => {
+    const html = draw({});
+    expect(html).toContain("every chat summary");
+    expect(html).toContain("The Keep chat summaries switch stays as it is");
+    expect(html).not.toContain("Clears every setting");
+    expect(src).toMatch(/title="Forget everything\?"\s+body="[^"]*every chat summary/);
+  });
+
+  it("the date line uses the same size token as the other text of the section", () => {
+    expect(src).not.toMatch(/gap-2 text-\[11px\] text-muted-foreground">\s*<Link/);
+  });
+});
