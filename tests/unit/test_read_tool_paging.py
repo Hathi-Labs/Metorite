@@ -231,9 +231,10 @@ ALLOWED: dict[str, str] = {
         'Text, not rows: the cut shortens one string.',
     'packages/acb_skills/acb_skills/web_tools.py::frame_page::text[:limit]':
         "Text: one web page, cut and marked '[... truncated'. max_chars asks for more.",
-    'packages/acb_skills/acb_skills/web_tools.py::_direct_text::answer.body[:MAX_HTML_BYTES]':
-        'Bytes of one web page, not rows: the HTML that the fallback strips on the '
-        'event loop has a bound (WEB-1 repair 2). WEB-2 replaces this reader.',
+    'packages/acb_skills/acb_skills/web_tools.py::_html_bytes::answer.body[:limit]':
+        'Bytes of one web page, not rows: the ONE cut of the HTML that a read decodes '
+        'on the event loop. The strip uses MAX_HTML_BYTES (WEB-1 repair 2), and the '
+        'local reader uses MAX_LOCAL_HTML_BYTES (WEB-2).',
     'packages/acb_skills/acb_skills/web_tools.py::_jina_read::body[:MAX_MARKDOWN_BYTES]':
         "Bytes of one web page, not rows: four bytes for each character of MAX_CHARS, so "
         "the text still fills the ceiling, and frame_page marks the cut (WEB-1 repair 2).",
