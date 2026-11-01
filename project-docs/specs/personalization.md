@@ -1729,8 +1729,8 @@ personal records.
 (`gateway/rooms.py:141` `room_is_solo`). A WhatsApp chat, a shared room, a
 chat with another agent and an archived chat get no summary. A mentioned
 agent in the chat makes it a chat with another agent, and a row of another
-agent does too. A chat with the mail mark gets no summary either
-(`acb_skills.egress.run_holds_mail`).
+agent does too. A chat that can hold mail text gets no summary either (see
+"Mail" below).
 
 **Two slices (audit of 2026-10-31).** PZ-33 lands as two PRs. PZ-33a is the
 store: the migration, the one module with the answer checks, the solo SQL,
@@ -1862,7 +1862,9 @@ key is the pair of the chat and the id of its newest row. The handler is
 6. Commit the mark in its own short session, before the call. The mark
    refuses a row that it names already. Two claims can both read no mark.
    The one that loses gives up with `SummaryUncertain`, so only one call
-   runs.
+   runs. The mark also refuses a row that `through` names. A clear takes the
+   mark away and leaves `through`. So a Forget or a Delete before the mark
+   wins, and no call runs.
 7. Call the model with no session open (see "The model call").
 8. Open a new session. Run `hold`, write the result and run `complete`
    together.
@@ -1878,9 +1880,16 @@ payload, so a session of another org finds no row.
 **A chat that goes on.** When the member writes in the chat again, the next
 idle time gives a new job. The prompt then holds the earlier summary and
 only the rows after `through_ms`. So a long chat costs little each time. A
-new row with no typed row of the member after `through_ms` starts no call,
-such as a brief or a reminder. A Delete, a Forget and a share each leave
-that waterline, so a row that they covered does not come back.
+Delete, a Forget and a share each leave that waterline, so a row that they
+covered does not come back.
+
+A new call needs a new turn of the member after the waterline. A new turn is
+a typed row or a card answer. A brief or a reminder is not one.
+
+The waterline is the newer of `through_ms` and `mark.through_ms`. A failed
+call or an answer that keeps nothing leaves only the mark. So a row of Mira
+buys no second call, and members' turns bound the daily spend. The next try
+still reads each row that no summary covers.
 
 **The model call (D-PZ-27).** The handler calls
 `acb_llm.context.acompletion_with_fallback`
@@ -1922,7 +1931,8 @@ calls.
   in the cap. With no such field, the reasoning spends the 300 tokens, and
   `content` comes back empty. `test_tasks_ai_no_thinking.py` holds the
   measure. An empty or cut answer logs `assistant.chat_summary_bad_answer`
-  at warning.
+  at warning. Rank 2 of `tier-fast` refuses `thinking`, so a failover to it
+  gives up with `SummaryFailed`. The job does not change the routing.
 - The call has a limit of 30 seconds (`CALL_TIMEOUT_S`). The Console client
   waits 120 seconds, and the shared worker waits with it. A call over the
   limit gives up with `SummaryFailed`.
@@ -1939,10 +1949,31 @@ What goes into the prompt:
   1,500 characters give `""`, so they stay out. PZ-31 and PZ-32 use the
   same rule for "typed".
 - The `content` text of each row whose author is Mira, and nothing else. A
-  row of another agent stays out. Tool events,
-  reasoning, custom events and the brief row (`brief-<date>`,
-  `routes/chat_brief.py:114`) stay out. So the body of a mail, a page or a
-  file that a tool read never reaches the prompt.
+  row of another agent stays out. Tool events, reasoning, custom events and
+  the brief row (`brief-<date>`, `routes/chat_brief.py:114`) stay out.
+
+**Mail.** A reply of Mira can quote what a tool read, and `check_answer`
+cannot tell that from her own words. So a chat that can hold mail text gets
+no summary and no call. Two checks decide it, in this order:
+
+1. **The tool events, the durable rule (`MAIL_EVENTS_SQL`).** `ELIGIBLE_SQL`
+   refuses a chat when an agent row shows the email agent, or a mail tool, in
+   `tool_events`. The rule reads the whole JSON text, so it covers
+   `subAgentTools` and the args of `call_agent` and `delegate_to_agent`. A
+   value that is not an array counts as mail. The fold writes `tool_events`
+   from the events of the run, and no write can shrink it. A match in a
+   `result` is a false positive, and that is safe.
+2. **The mail mark in Redis (`holds_mail`).** It covers a run that the fold
+   did not write yet. Alone it is not enough, because it can expire after 400
+   days, be lost with Redis, or fail to write. It is absent from each chat
+   older than 2026-10-16. A fault or a read over 2 seconds counts as mail.
+
+The rule writes no mark, because a mark changes the write rights of a chat.
+
+**Known limit.** A tap on a brief pill sends its line as a plain `user` row,
+and nothing on the row tells it from typed text. The line can quote a mail
+subject (`reach/plan.py`), so that subject can reach the prompt as a turn of
+the member.
 
 What the code drops from the answer:
 
@@ -2323,19 +2354,31 @@ two exceptions are the probes with a real letter between the digit groups
   - The chat holds 2 short user rows or more.
 - **The checks of the seed in Python.** The seed reads the newest 20 short
   user rows of each candidate and counts the typed rows (`member_texts`).
-  One typed row must be after the waterline (`rows_after`). It reads the
+  A new turn must be after the waterline (`new_turn`, `rows_after`). It reads the
   switch of each active member through `MEMBERS_APP_SQL`, and calls
   `my_day_loop.departed` once for each member. It then reads the mail mark
   (`holds_mail`). It reads at most 60 candidates (`SEED_SCAN_MAX`) and
   enqueues at most 5 jobs (`SUMMARY_SEED_MAX`).
-- **The mail mark.** `assistant_summaries.holds_mail` asks
+- **The durable mail rule.** `MAIL_EVENTS_SQL` is a term of `ELIGIBLE_SQL`, so
+  the seed and the handler both read it. `MAIL_TOOLS` comes from the code:
+  each tool of a family that an agent of `UNTRUSTED_INPUT_AGENTS` owns, and
+  `MAIL_CORE_TOOLS` (`query_history`, `read_attachment`, `search_company`). A
+  fence reads `_TOOLS` of the email agent, because the gateway cannot import
+  it. The rule matches a name as a whole JSON string, which is wider than
+  `"name": "<tool>"`. `IDLE_SQL` runs the window first, so this read stays on
+  the chats of the window.
+- **The tools that are not in the rule.** `retrieve_entity_context` and
+  `retrieve_sales_context` read the entity graph, which holds no mail text.
+  `needs_attention` reads Projects runs. `search_timeline` and
+  `recall_timeline` read Graphiti, whose writers refuse a run that holds mail.
+- **The mail mark.** `assistant_summaries.mail_state` asks
   `acb_skills.egress.run_holds_mail("orchestrator", {"session_id": ...})`, the
   one predicate of the chat memory stores. It binds the org for the read,
   as `chat_fold._run_holds_mail` does, because a frame with no tenant reads
-  as clear. A fault reads as mail, so it fails closed. The seed checks it,
-  and the handler checks it again before the mark. A chat with the mark gets
-  no call and no mark. A reply of Mira can quote a mail, and `check_answer`
-  cannot tell that from her own words.
+  as clear. It has 2 seconds, and a fault or a timeout reads as mail. The
+  first fault ends the loop of the seed for that tick, so a hung Redis costs
+  one read. The handler checks the mark again before its own mark, through
+  `holds_mail`. A chat with the mark gets no call and no mark.
 - **The job.** `gateway/chat_summary_job.py` registers the detached,
   idempotent kind `assistant.chat_summary` with 3 tries, and adds the seed
   hook. `gateway/main.py` imports it beside `gateway.brief.run`. The
@@ -2347,9 +2390,9 @@ two exceptions are the probes with a real letter between the digit groups
   `chat_session.user_id`. A chat that fails a rule settles `done` with no
   call. The chat must be a row of the bound org, and `ELIGIBLE_SQL` must
   pass. `through` must be the newest row, with no summary of it yet. The
-  chat must be idle with no open run. It must hold 2 typed rows, and one of
-  them must be after the waterline. The switch must be on, the member must
-  not have left, and the chat must hold no mail. A failed status read raises
+  chat must be idle with no open run. It must hold 2 typed rows, and a new
+  turn must be after the waterline. The switch must be on, the member must
+  not have left, and the mark must be clear. A failed status read raises
   before the mark, so the queue tries again.
 - **The give-ups.**
   - `RouterOff`: the Router is off. The job makes no call and writes no
@@ -2374,7 +2417,12 @@ two exceptions are the probes with a real letter between the digit groups
   answer logs `assistant.chat_summary_bad_answer` at warning first.
   `check_answer` never raises on an answer of the model.
 - **A Delete.** The job honours `off` when it is there. It also honours the
-  `through` waterline, which is what a Delete of PZ-35 leaves.
+  `through` waterline, which is what a Delete of PZ-35 leaves. A Forget or a
+  Delete before the mark wins, because the mark refuses a row that `through`
+  names.
+- **The waterline of a paid call.** `mark` stores `through_ms`, the time of
+  its row. `Stored.waterline` is the newer of the two, and `IDLE_SQL` and
+  `nothing_new` read it.
 - **The member's switch** is `apps.chat.summaries` of the profile
   (`assistant_summaries.switch_on`). PZ-35 declares the key. Until then, a
   stored `false` turns it off, and a missing value reads on.

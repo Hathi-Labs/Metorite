@@ -54,9 +54,10 @@ feature as production does, and a 402 is the real ``RoutedRefusal``.
 - item 4: a shared room, another agent, a mentioned agent, a row of another
   agent, WhatsApp, an archived chat, a chat that reads ``off``, a member
   whose switch is off, the flag off, a member who left, a chat with one typed
-  row, a chat with the mail mark and a chat whose mark cannot be read get no
-  call, from the seed or from a job put in by hand. A waterline holds until
-  the member types again;
+  row, a chat with a mail tool in its tool events and no mark, a chat with
+  the mail mark and a chat whose mark cannot be read get no call, from the
+  seed or from a job put in by hand. A waterline holds until the member
+  types again, and a paid call that stores nothing leaves one;
 - item 5: org A never reads or writes a chat of org B. A payload with the id
   of a chat of org B finds no row.
 
@@ -68,9 +69,11 @@ Mutations, each red here: the write also sets ``updated_at = now()`` (item
 Router check of the handler (RouterOff); drop the dedupe key of the seed
 (item 2); take ``SOLO_ROOM_SQL`` out of ``ELIGIBLE_SQL`` (item 4); store the
 answer with no ``check_answer`` (item 1, the sensitive line); drop
-``thinking`` from the call (item 1); drop ``holds_mail`` from the seed or
+``thinking`` from the call (item 1); drop the mail check from the seed or
 the handler (item 4); let ``_is_mira_row`` and ``ELIGIBLE_SQL`` take any agent
-(item 4).
+(item 4); take ``MAIL_EVENTS_SQL`` out of ``ELIGIBLE_SQL``; drop ``through``
+from ``MARK_SQL`` (item 3); go on after a fault in the seed; drop
+``through_ms`` from the mark; read a typed row only in ``new_turn``.
 """
 
 from __future__ import annotations
