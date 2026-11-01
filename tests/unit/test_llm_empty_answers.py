@@ -12,6 +12,8 @@ Mutations this file catches (R7):
 * The consult plan reads a blank answer as "no specialist needed" again.
 * The rule pick reads a blank answer as "no rule fits", and burns the
   watermark. It must raise ``LLMUnavailable``, so the mail is tried again.
+* A job has no limit on those tries, an outage counts as a blank answer, or a
+  preview spends a try. The R8 half of the limit is in ``test_email_ai_cost.py``.
 * The template fill writes the raw ``{{...}}`` text on a blank answer.
 * The self-anneal finishes the run with ``""`` or a stock reply. A blank
   recovery must return None, so the first error is raised.
@@ -112,6 +114,198 @@ async def test_a_blank_rule_pick_is_an_outage_not_no_match(monkeypatch, pick, ev
     events = [c["event"] for c in caps]
     assert event in events
     assert not any(e.endswith(("_unparseable", "_failed")) for e in events)
+
+
+# ── email: the limit on blank rule answers ──────────────────────────────────
+
+_ORG = "55555555-5555-5555-5555-555555555555"
+_ACC = "acc-blank-1"
+
+
+class _Count:
+    """The two commands of ``TenantRedis`` that the blank count uses."""
+
+    def __init__(self, *, down: bool = False) -> None:
+        self.down = down
+        self.counts: dict[str, int] = {}
+        self.ttls: dict[str, int] = {}
+
+    def _name(self, k: Any) -> str:
+        from acb_common.tenant_redis import TenantKey
+
+        assert isinstance(k, TenantKey)
+        if self.down:
+            raise ConnectionError("redis is down")
+        return k.value
+
+    async def incr(self, k: Any, amount: int = 1) -> int:
+        name = self._name(k)
+        self.counts[name] = self.counts.get(name, 0) + amount
+        return self.counts[name]
+
+    async def expire(self, k: Any, seconds: int) -> bool:
+        self.ttls[self._name(k)] = seconds
+        return True
+
+
+@pytest.fixture()
+def blank(monkeypatch):
+    """A model that always answers blank, with a tenant and a Redis bound."""
+    from acb_common import tenant_redis
+    from acb_common.db import bind_tenant, release_tenant
+    from gateway.routes.email.automation import engine
+
+    redis = _Count()
+    calls: list[int] = []
+
+    async def llm(*_a: Any, **_k: Any) -> tuple[Any, str, str]:
+        calls.append(1)
+        return None, "  ", "deepseek/deepseek-flash"
+
+    monkeypatch.setattr(tenant_redis, "get_tenant_redis", lambda *a, **k: redis)
+    monkeypatch.setattr(engine, "_llm_json", llm)
+    token = bind_tenant(_ORG)
+    yield SimpleNamespace(engine=engine, redis=redis, calls=calls)
+    release_tenant(token)
+
+
+def _job_read(engine: Any, **facts: Any) -> Any:
+    return engine.MatchRead(**{
+        "account_id": _ACC, "email": _EMAIL, "message_id": "m1",
+        "ask_rules": _RULES, "bound_blank": True, **facts})
+
+
+async def _blank_tries(engine: Any, read: Any, tries: int) -> list[Any]:
+    """Ask ``tries`` times. Each item is the answer, or "raised"."""
+    out: list[Any] = []
+    for _ in range(tries):
+        try:
+            out.append(await engine.ask_rule_match(read))
+        except engine.EmptyRuleAnswer:
+            out.append("raised")
+    return out
+
+
+@pytest.mark.parametrize("multi", [False, True])
+async def test_a_job_keeps_a_blank_mail_until_its_tries_are_spent(blank, multi) -> None:
+    """Each blank answer under the limit raises, so the job stamps nothing.
+    The answer at the limit is "no rule matched", so the job goes on."""
+    limit = blank.engine.BLANK_RULE_TRIES
+    assert 2 <= limit <= 5, "the limit is a small number of tries"
+    read = _job_read(blank.engine, multi_rule=multi)
+    assert await _blank_tries(blank.engine, read, limit) == ["raised"] * (limit - 1) + [[]]
+    assert len(blank.calls) == limit
+
+
+async def test_the_limit_logs_once(blank) -> None:
+    read = _job_read(blank.engine)
+    with structlog.testing.capture_logs() as caps:
+        await _blank_tries(blank.engine, read, blank.engine.BLANK_RULE_TRIES + 2)
+    lines = [c for c in caps if c["event"] == "email.rule_blank_tries_spent"]
+    assert len(lines) == 1
+    assert lines[0]["account_id"] == _ACC
+    assert lines[0]["message_id"] == "m1"
+
+
+async def test_each_mail_has_its_own_count_under_the_tenant(blank) -> None:
+    engine = blank.engine
+    for mail in ("m1", "m2"):
+        await _blank_tries(engine, _job_read(engine, message_id=mail), 1)
+    name = f"cc:{_ORG}:{engine.BLANK_RULE_NAMESPACE}:{_ACC}:"
+    assert blank.redis.counts == {f"{name}m1": 1, f"{name}m2": 1}
+    assert set(blank.redis.ttls.values()) == {engine.BLANK_RULE_TTL_SECS}
+
+
+async def test_at_the_limit_the_matches_with_no_model_still_apply(blank) -> None:
+    """The multi-rule mode keeps a static match. The blank answer took away
+    only what the model would add."""
+    rule = {"id": "r2", "name": "Static"}
+    hit = {"rule": rule, "reason": "Matched static conditions.", "source": "static"}
+    read = _job_read(blank.engine, multi_rule=True, decided=[hit], order=["r2", "r1"])
+    answers = await _blank_tries(blank.engine, read, blank.engine.BLANK_RULE_TRIES)
+    assert answers[-1] == [hit]
+
+
+@pytest.mark.parametrize("multi", [False, True])
+async def test_an_outage_never_counts_and_never_ends(blank, monkeypatch, multi) -> None:
+    """A provider failure is no blank answer. It raises each time, as it did,
+    so the mail waits for the provider however long that takes."""
+    engine = blank.engine
+
+    async def down(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError("provider is down")
+
+    monkeypatch.setattr(engine, "_llm_json", down)
+    read = _job_read(engine, multi_rule=multi)
+    for _ in range(engine.BLANK_RULE_TRIES + 3):
+        with pytest.raises(engine.LLMUnavailable) as err:
+            await engine.ask_rule_match(read)
+        assert not isinstance(err.value, engine.EmptyRuleAnswer)
+    assert blank.redis.counts == {}
+
+
+async def test_a_preview_never_spends_a_try(blank) -> None:
+    """A read with no ``bound_blank`` is a preview. It keeps raising, and the
+    job later still has each of its tries."""
+    limit = blank.engine.BLANK_RULE_TRIES
+    read = _job_read(blank.engine, bound_blank=False)
+    assert await _blank_tries(blank.engine, read, limit + 2) == ["raised"] * (limit + 2)
+    assert blank.redis.counts == {}
+
+
+async def test_the_request_paths_stay_previews(blank, monkeypatch) -> None:
+    """The composed form serves the routes. It never counts, by its default."""
+    engine = blank.engine
+    rule = {**_RULES[0], "enabled": True}
+    for name, value in (("_load_rules", [rule]), ("_is_reply_candidate", (True, "")),
+                        ("_load_rule_patterns", {}), ("_load_rule_guidance", None),
+                        ("_fetch_sender_history", []), ("_decide_member", None)):
+        monkeypatch.setattr(engine, name, AsyncMock(return_value=value))
+    for _ in range(engine.BLANK_RULE_TRIES + 1):
+        with pytest.raises(engine.LLMUnavailable):
+            await engine._match_email_to_rule(AsyncMock(), _ACC, _EMAIL, message_id="m1")
+    assert len(blank.calls) == engine.BLANK_RULE_TRIES + 1
+    assert blank.redis.counts == {}
+
+
+@pytest.mark.parametrize("resolve", [True, False])
+async def test_only_a_live_job_marks_its_read(monkeypatch, resolve) -> None:
+    """``resolve`` is the live job, and a dry run is a preview."""
+    from gateway.routes.email.automation import engine, replyzero
+
+    read = AsyncMock(return_value=None)
+    monkeypatch.setattr(engine, "read_rule_match", read)
+    monkeypatch.setattr(replyzero, "read_status_first", AsyncMock(return_value=None))
+    monkeypatch.setattr(replyzero, "_thread_is_conversation", AsyncMock(return_value=False))
+    row = SimpleNamespace(id="m1", thread_id="t1")
+    await engine.read_classification(AsyncMock(), _ACC, row, _EMAIL, resolve=resolve)
+    assert read.await_args.kwargs["bound_blank"] is resolve
+
+
+@pytest.mark.parametrize(("facts", "tenant"), [
+    ({}, False),
+    ({"message_id": None}, True),
+])
+async def test_with_no_tenant_or_no_mail_id_the_mail_stays(blank, facts, tenant) -> None:
+    from acb_common.db import clear_tenant
+
+    if not tenant:
+        clear_tenant()
+    read = _job_read(blank.engine, **facts)
+    limit = blank.engine.BLANK_RULE_TRIES
+    assert await _blank_tries(blank.engine, read, limit + 1) == ["raised"] * (limit + 1)
+    assert blank.redis.counts == {}
+
+
+async def test_with_redis_down_the_mail_stays(blank) -> None:
+    """A lost mail costs more than one more model call, so a Redis outage
+    keeps the old retry and never reads the mail as "no rule matched"."""
+    blank.redis.down = True
+    limit = blank.engine.BLANK_RULE_TRIES
+    with structlog.testing.capture_logs() as caps:
+        answers = await _blank_tries(blank.engine, _job_read(blank.engine), limit + 1)
+    assert answers == ["raised"] * (limit + 1)
+    assert "email.rule_blank_count_unavailable" in [c["event"] for c in caps]
 
 
 @pytest.mark.parametrize(("pick", "verdict", "expected"), [

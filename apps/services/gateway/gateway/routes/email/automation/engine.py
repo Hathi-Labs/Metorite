@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
@@ -42,9 +42,31 @@ class LLMUnavailable(Exception):
     processed forever and the mail is never looked at again."""
 
 
-#: The reason of an ``LLMUnavailable`` for an answer with no text (task
-#: 1128). A blank answer is no verdict, so it must not burn the watermark.
+class EmptyRuleAnswer(LLMUnavailable):
+    """The classifier answered with no text (task 1128).
+
+    A subclass of :class:`LLMUnavailable`, so a caller that skips a mail on an
+    outage skips it here too. Only :func:`ask_rule_match` tells the two apart.
+    A job gives a mail :data:`BLANK_RULE_TRIES` blank answers, and then reads
+    it as "no rule matched". An outage has no such limit."""
+
+
+#: The reason of an :class:`EmptyRuleAnswer` (task 1128). A blank answer is no
+#: verdict, so one blank answer must not burn the watermark.
 EMPTY_RULE_ANSWER = "the classifier model gave no answer"
+
+#: The blank answers that a job takes for one mail (task 1128). A mail with no
+#: stamp stays in the select of the job, and the select has no age limit. So a
+#: mail that always blanks cost one model call in each cycle, with no end.
+BLANK_RULE_TRIES = 3
+
+#: The tenant Redis namespace of that count, as ``key(ns, account_id,
+#: message_id)``. No column of ``email_messages`` counts tries. The mailbox
+#: teardown deletes these keys (``teardown._mailbox_namespaces``).
+BLANK_RULE_NAMESPACE = "email-blank-rule"
+
+#: The count ends one week after the last blank answer of the mail.
+BLANK_RULE_TTL_SECS = 7 * 24 * 3600
 
 
 def _addr_emails(field: Any) -> set[str]:
@@ -908,8 +930,9 @@ async def _llm_pick_rule(
                 # The model gave no text (task 1128). That is no verdict, so
                 # it is not "no rule fits". It raises as an outage does, and
                 # the watermark stays, so a later run classifies the mail.
+                # `ask_rule_match` limits those runs for a job.
                 _log.warning("email.llm_pick_rule_empty", model=_used)
-                raise LLMUnavailable(EMPTY_RULE_ANSWER)
+                raise EmptyRuleAnswer(EMPTY_RULE_ANSWER)
             return None
         except LLMUnavailable:
             raise
@@ -1013,7 +1036,7 @@ async def _llm_pick_rules(
                 # No text at all is no verdict, not "no rules apply" (task
                 # 1128). It raises, so the watermark stays (see above).
                 _log.warning("email.llm_pick_rules_empty", model=_used)
-                raise LLMUnavailable(EMPTY_RULE_ANSWER)
+                raise EmptyRuleAnswer(EMPTY_RULE_ANSWER)
             return out
         except LLMUnavailable:
             raise
@@ -1331,6 +1354,8 @@ class MatchRead:
     that the model is asked about, and with none the ask asks nothing.
     ``order`` is the id of each gated rule in the order of ``_load_rules``,
     for the sort of the multi-rule mode. The lists are never changed.
+    ``bound_blank`` is True for a live job, whose write takes the mail out of
+    its select. Only then does a blank answer count (:data:`BLANK_RULE_TRIES`).
     """
 
     account_id: str
@@ -1343,11 +1368,13 @@ class MatchRead:
     guidance: dict[str, list[str]] | None = None
     history: list[dict[str, Any]] = field(default_factory=list)
     member: str | None = None
+    bound_blank: bool = False
 
 
 async def read_rule_match(
     db: Any, account_id: str, email: dict[str, str],
     *, multi_rule: bool = False, message_id: str | None = None,
+    bound_blank: bool = False,
 ) -> MatchRead:
     """The READ step of the rule match (WS-17 EM-T4a-2 PR-B1). It takes
     ``db``, opens no block and asks no model.
@@ -1358,11 +1385,13 @@ async def read_rule_match(
     member of a ``decide`` call. A learned pattern or a static condition
     decides with no model. In the one-rule mode the first such match ends
     the read, and the guidance loads only after the pattern short-circuit.
-    ``message_id`` reaches the ``decide`` shadow log only.
+    ``message_id`` reaches the ``decide`` shadow log and the blank count.
+    ``bound_blank`` goes on the read unchanged (:class:`MatchRead`).
     """
     def _read(**facts: Any) -> MatchRead:
         return MatchRead(account_id=account_id, email=email,
-                         multi_rule=multi_rule, message_id=message_id, **facts)
+                         multi_rule=multi_rule, message_id=message_id,
+                         bound_blank=bound_blank, **facts)
 
     rules = [r for r in await _load_rules(db, account_id) if r["enabled"]]
     if not rules:
@@ -1430,6 +1459,56 @@ async def read_rule_match(
                  history=history, member=member)
 
 
+async def _blank_tries_spent(read: MatchRead) -> bool:
+    """Count one blank answer for the mail of ``read``. True when none is left.
+
+    Only a live job counts (``read.bound_blank``), so a preview never ends the
+    tries of a mail. The count is in tenant Redis, under the tenant that the
+    job bound, never a value from input (R5). With no tenant, no message id or
+    no Redis, the answer is False. The mail then stays for a later run, as a
+    lost mail costs more than one more call. The limit logs once, on the try
+    that reaches it.
+    """
+    if not read.bound_blank or not read.message_id:
+        return False
+    from acb_common.db import current_tenant
+
+    org = current_tenant()
+    if not org:
+        return False
+    try:
+        from acb_common.tenant_redis import get_tenant_redis, key, organization_scope
+
+        client = get_tenant_redis()
+        with organization_scope(org):
+            mark = key(BLANK_RULE_NAMESPACE, str(read.account_id),
+                       str(read.message_id))
+            tries = int(await client.incr(mark))
+            await client.expire(mark, BLANK_RULE_TTL_SECS)
+    except Exception as exc:  # the count is best effort
+        _log.info("email.rule_blank_count_unavailable",
+                  account_id=read.account_id, error_type=type(exc).__name__)
+        return False
+    if tries == BLANK_RULE_TRIES:
+        _log.warning("email.rule_blank_tries_spent", tries=tries,
+                     account_id=read.account_id, message_id=read.message_id)
+    return tries >= BLANK_RULE_TRIES
+
+
+async def _pick_or_no_match[T](read: MatchRead, none: T, pick: Awaitable[T]) -> T:
+    """Await a rule pick. Give ``none`` when the mail has no blank try left.
+
+    A blank answer under the limit raises, so the job keeps the mail for a
+    later run. An outage is no :class:`EmptyRuleAnswer`, so it always raises,
+    and ``on`` of ``decide`` never reaches this class (D-EM-8)."""
+    try:
+        return await pick
+    except EmptyRuleAnswer:
+        if await _blank_tries_spent(read):
+            return none
+        raise
+
+
 async def ask_rule_match(read: MatchRead) -> list[dict[str, Any]]:
     """The ASK step of the rule match (WS-17 EM-T4a-2 PR-B1). It takes NO
     ``db``.
@@ -1441,18 +1520,20 @@ async def ask_rule_match(read: MatchRead) -> list[dict[str, Any]]:
     model asks nothing. It raises ``LLMUnavailable`` (``DecisionUnavailable``
     in ``on``) when the model gives no answer, so a job writes nothing and
     stamps nothing for the email (D-EM-8). The model await stays in its own
-    slot, in ``_llm_json`` or ``_ask_all`` (EM-T4b).
+    slot, in ``_llm_json`` or ``_ask_all`` (EM-T4b). A blank answer raises too,
+    until a live job spends :data:`BLANK_RULE_TRIES` on the mail. The ask then
+    has no match from the model, and the job goes on as for "no rule fits".
     """
     if not read.multi_rule:
         if read.decided or not read.ask_rules:
             return list(read.decided)
         # D-EM-7: no member chooses the rules model. The old call runs on its
         # fixed tier (`tier-fast`), and `on` asks Jev on `tier-decide`.
-        pick = await _llm_pick_rule(
+        pick = await _pick_or_no_match(read, None, _llm_pick_rule(
             read.email, read.ask_rules, hints=_hints_text(read.history),
             guidance=read.guidance, account_id=read.account_id,
             history=read.history, message_id=read.message_id,
-            member=read.member)
+            member=read.member))
         if not pick:
             return []
         return [{"rule": read.ask_rules[pick["index"]],
@@ -1462,12 +1543,12 @@ async def ask_rule_match(read: MatchRead) -> list[dict[str, Any]]:
     seen = {str(m["rule"].get("id")) for m in matches}
     if read.ask_rules:
         # D-EM-7: no member chooses the rules model (see the one-rule mode).
-        for pick in await _llm_pick_rules(
+        for pick in await _pick_or_no_match(read, [], _llm_pick_rules(
             read.email, read.ask_rules, hints=_hints_text(read.history),
             guidance=read.guidance, account_id=read.account_id,
             history=read.history, message_id=read.message_id,
             member=read.member,
-        ):
+        )):
             rule = read.ask_rules[pick["index"]]
             if str(rule.get("id")) in seen:
                 continue
@@ -1625,6 +1706,9 @@ async def read_classification(
 
     PR-B2: outside ``on``, it also reads whether the thread is a
     conversation, so the job knows in Block R whether it asks the status.
+
+    Task 1128: ``resolve`` also marks a live job, so its blank answers count
+    (:class:`MatchRead`). A dry run keeps no count.
     """
     # Lazy: replyzero imports this module (see classify_matches).
     from gateway.routes.email.automation.replyzero import (
@@ -1638,7 +1722,8 @@ async def read_classification(
              if resolve else None)
     match = await read_rule_match(
         db, account_id, email, multi_rule=multi_rule,
-        message_id=str(row_id) if row_id is not None else None)
+        message_id=str(row_id) if row_id is not None else None,
+        bound_blank=resolve)
     conversation = bool(
         resolve and thread_id
         and decide_features.mode_for("email.thread_status") != "on"
