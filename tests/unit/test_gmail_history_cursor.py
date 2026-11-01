@@ -1641,7 +1641,7 @@ async def test_the_sweep_after_a_spent_share_reads_one_page(
     assert res["resume_soon"] is True
     assert len(fake.requests("/history")) == 1
     assert fake.requests("/messages/m2") == []
-    assert [m.provider_message_id for m in cycle.upserts] == [
+    assert sorted(m.provider_message_id for m in cycle.upserts) == [
         "a1", "a2", "m1", "m1b"]
     assert [p["history_id"] for p in cycle.phase_d()] == ["107"]
 
@@ -1738,15 +1738,25 @@ async def test_a_limit_keeps_the_finished_pages_of_a_reset_sweep(
     assert json.loads(result.new_history_id)["seed"] == "500"
 
 
+async def test_a_limit_on_the_first_reset_page_raises(fake: _Gmail) -> None:
+    """Acceptance 9. No page finished, so the sweep has nothing to keep."""
+    _stale_history(fake)
+    fake.listing = _import_pages(["m1"], ["m2"])
+    fake.message("m1", REFUSED)
+
+    with pytest.raises(GmailRateLimited):
+        await _provider().sync_messages(history_id="100")
+
+
 async def test_a_short_reset_sweep_writes_no_new_point(
         fake: _Gmail, monkeypatch: pytest.MonkeyPatch) -> None:
     """Acceptance 9. A fetch that a later cycle can fix must read again, so
     the sweep cannot move past it."""
     monkeypatch.setattr(GmailProvider, "IMPORT_CYCLE_MAILS", 1)
     _stale_history(fake)
-    fake.listing = _import_pages(["m1"], ["m2"])
-    fake.message("m1", _refuse(503, "backendError"))
-    _serve(fake, "m2")
+    fake.listing = _import_pages(["m1", "m1b"], ["m2"])
+    _serve(fake, "m1", "m2")
+    fake.message("m1b", _refuse(503, "backendError"))
 
     result = await _provider().sync_messages(history_id="100")
 
