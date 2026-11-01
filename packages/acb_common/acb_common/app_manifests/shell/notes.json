@@ -1,0 +1,12 @@
+{
+  "studio": 1,
+  "kind": "system",
+  "id": "notes",
+  "contributes": {
+    "nav": [
+      {
+        "href": "/notes"
+      }
+    ]
+  }
+}

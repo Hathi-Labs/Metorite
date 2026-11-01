@@ -1,4 +1,4 @@
-"""The command bar's jobs, read from ``shell/<package>.json`` (WS-PKG, PKG-1).
+"""The command bar's jobs and the shell's vocabulary, read from ``shell/<package>.json`` (WS-PKG, PKG-1).
 
 Spec: ``project-docs/specs/package_host.md`` §3.3 and §4.
 
@@ -9,7 +9,8 @@ Each file holds the jobs of one owning package, in the spec §3.2 envelope. The
 ``position`` of a job sets the global order, because the empty bar and the
 model prompt both depend on it.
 
-The files are data, so nothing here is code. ``tests/unit/test_shell_manifests.py``
+PKG-2 adds :func:`load_vocabulary`: the pane links, the preset ids and the card
+keys (spec §3.3). The files are data, so nothing here is code. ``tests/unit/test_shell_manifests.py``
 is the fence.
 """
 
@@ -118,10 +119,24 @@ def _job(raw: Any, source: str) -> JobSpec:
     )
 
 
-def load_jobs(directory: Path | None = None) -> tuple[JobSpec, ...]:
-    """Every job of every ``shell/*.json`` file, sorted by ``position``."""
-    folder = directory or SHELL_DIR
-    jobs: list[JobSpec] = []
+_CONTRIBUTES_KEYS = {"jobs", "nav", "presets", "cards"}
+#: Presets and cards belong to the home page, so only this file may name them.
+_HOME_ONLY = {"presets", "cards"}
+_HOME_FILE = "home"
+
+
+@dataclass(frozen=True)
+class Vocabulary:
+    """The names the gateway checks and the workbench draws (spec §3.3)."""
+
+    panes: tuple[str, ...]
+    presets: tuple[str, ...]
+    cards: tuple[str, ...]
+
+
+def _read(folder: Path) -> list[tuple[str, dict[str, Any]]]:
+    """Each ``*.json`` file as ``(name, contributes)``, after the envelope checks."""
+    out: list[tuple[str, dict[str, Any]]] = []
     for path in sorted(folder.glob("*.json")):
         doc = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(doc, dict) or set(doc) - _ENVELOPE_KEYS:
@@ -131,12 +146,29 @@ def load_jobs(directory: Path | None = None) -> tuple[JobSpec, ...]:
         if doc.get("id") != path.stem:
             raise ShellManifestError(f"{path.name}: id must equal the file name")
         contributes = doc.get("contributes")
-        if not isinstance(contributes, dict) or set(contributes) != {"jobs"}:
-            raise ShellManifestError(f"{path.name}: contributes must hold only jobs")
-        raw_jobs = contributes["jobs"]
-        if not isinstance(raw_jobs, list):
-            raise ShellManifestError(f"{path.name}: jobs must be a list")
-        jobs.extend(_job(raw, path.name) for raw in raw_jobs)
+        if (
+            not isinstance(contributes, dict)
+            or not contributes
+            or set(contributes) - _CONTRIBUTES_KEYS
+        ):
+            raise ShellManifestError(
+                f"{path.name}: contributes must hold only {sorted(_CONTRIBUTES_KEYS)}"
+            )
+        wrong = set(contributes) & _HOME_ONLY
+        if wrong and path.stem != _HOME_FILE:
+            raise ShellManifestError(f"{path.name}: {sorted(wrong)} are allowed in home.json only")
+        for key, value in contributes.items():
+            if not isinstance(value, list):
+                raise ShellManifestError(f"{path.name}: {key} must be a list")
+        out.append((path.name, contributes))
+    return out
+
+
+def load_jobs(directory: Path | None = None) -> tuple[JobSpec, ...]:
+    """Every job of every ``shell/*.json`` file, sorted by ``position``."""
+    jobs: list[JobSpec] = []
+    for name, contributes in _read(directory or SHELL_DIR):
+        jobs.extend(_job(raw, name) for raw in contributes.get("jobs", []))
     for what, values in (("id", [j.id for j in jobs]), ("position", [j.position for j in jobs])):
         seen: set[Any] = set()
         for v in values:
@@ -144,3 +176,35 @@ def load_jobs(directory: Path | None = None) -> tuple[JobSpec, ...]:
                 raise ShellManifestError(f"duplicate job {what}: {v!r}")
             seen.add(v)
     return tuple(sorted(jobs, key=lambda j: j.position))
+
+
+def _names(entries: list[Any], key: str, source: str, kind: str) -> list[str]:
+    names: list[str] = []
+    for raw in entries:
+        if not isinstance(raw, dict) or set(raw) != {key}:
+            raise ShellManifestError(f"{source}: a {kind} entry must hold only {key!r}")
+        names.append(_str(raw[key], f"{source}: {kind} {key}"))
+    return names
+
+
+def load_vocabulary(directory: Path | None = None) -> Vocabulary:
+    """The panes, presets and cards of every ``shell/*.json`` file.
+
+    Panes keep file order (by file name, then entry order). Presets and cards
+    come from ``home.json`` in its own order. A repeated name is an error.
+    """
+    panes: list[str] = []
+    presets: list[str] = []
+    cards: list[str] = []
+    for name, contributes in _read(directory or SHELL_DIR):
+        for href in _names(contributes.get("nav", []), "href", name, "nav"):
+            if not href.startswith("/") or "?" in href:
+                raise ShellManifestError(f"{name}: nav href {href!r} must be a path with no '?'")
+            panes.append(href)
+        presets.extend(_names(contributes.get("presets", []), "id", name, "preset"))
+        cards.extend(_names(contributes.get("cards", []), "key", name, "card"))
+    for what, values in (("pane", panes), ("preset", presets), ("card", cards)):
+        if len(set(values)) != len(values):
+            dup = sorted({v for v in values if values.count(v) > 1})
+            raise ShellManifestError(f"duplicate {what}: {dup}")
+    return Vocabulary(tuple(panes), tuple(presets), tuple(cards))

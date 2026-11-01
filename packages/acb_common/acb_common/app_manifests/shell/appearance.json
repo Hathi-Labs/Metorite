@@ -25,6 +25,11 @@
         "meaning": "change the theme, dark or light mode, density or accent",
         "feature": null
       }
+    ],
+    "nav": [
+      {
+        "href": "/settings/appearance"
+      }
     ]
   }
 }
