@@ -2,9 +2,12 @@
 
 Spec: ``project-docs/specs/ai_studio.md`` sections 6.2 and 14 (G1 and G2).
 
-Seven **stateless** tools. No draft store exists in G1 (A3 is Stage 2). The
+Eight **stateless** tools. No draft store exists in G1 (A3 is Stage 2). The
 model holds the manifest in the chat turn and sends it back on each call.
 
+* :func:`studio_describe` (G1b) gives the live manifest schema, the field types
+  and the block tokens, so the model reads them before it drafts. It reads
+  them from the code, copies none, and makes no gateway call.
 * :func:`studio_draft` gives a minimal valid skeleton from a short brief.
   It makes no model call.
 * :func:`studio_patch` applies ``add``, ``replace`` and ``remove`` ops, then
@@ -63,8 +66,17 @@ import re
 from typing import Any
 
 import httpx
+from acb_common import studio_fields
 from acb_common.paging import paged
-from acb_common.studio_manifest import STUDIO_VERSION, ManifestError, validate_manifest
+from acb_common.studio_manifest import (
+    BLOCKS,
+    OBJECT_OPS,
+    RESERVED_BLOCKS,
+    STUDIO_VERSION,
+    Manifest,
+    ManifestError,
+    validate_manifest,
+)
 from acb_common.studio_patch import PatchError, apply_patch
 
 from acb_skills.tool_annotations import annotate
@@ -722,8 +734,58 @@ async def studio_list_actions(query: str = "", offset: int = 0, limit: int = 0) 
             "total": page.total, "shown": len(page.items), "page": page.line}
 
 
-#: The seven tools, in the order of the skill family ``studio``.
+#: The parts that :func:`studio_describe` serves, in the order it names them.
+DESCRIBE_PARTS = ("manifest", "fields", "blocks")
+
+
+def _describe_fields() -> dict[str, Any]:
+    f = studio_fields
+    return {
+        "types": list(f.FIELD_TYPES),
+        "hot_types": list(f.HOT_TYPES),
+        "name_pattern": f.NAME_PATTERN,
+        "limits": {
+            "max_fields_per_object": f.MAX_FIELDS_PER_OBJECT,
+            "max_options": f.MAX_OPTIONS,
+            "max_option_chars": f.MAX_OPTION_CHARS,
+            "max_label_chars": f.MAX_LABEL_CHARS,
+            "max_many_items": f.MAX_MANY_ITEMS,
+            "max_text_chars": f.MAX_TEXT_CHARS,
+        },
+    }
+
+
+def _describe_blocks() -> dict[str, Any]:
+    return {
+        "tokens": list(BLOCKS),
+        "reserved": list(RESERVED_BLOCKS),
+        "object_ops": list(OBJECT_OPS),
+    }
+
+
+@annotate(read_only=True, idempotent=True, open_world=False)
+async def studio_describe(part: str = "manifest") -> dict[str, Any]:
+    """Read the live manifest schema (manifest), the field types (fields) or the block tokens (blocks)."""
+    if part == "manifest":
+        body: dict[str, Any] = {"schema": Manifest.model_json_schema()}
+    elif part == "fields":
+        body = {"fields": _describe_fields()}
+    elif part == "blocks":
+        body = {"blocks": _describe_blocks()}
+    else:
+        return _result(False, _sentence(
+            "The part is not known. Use one of: " + ", ".join(DESCRIBE_PARTS) + "."), [])
+    size = _size(body)
+    if size > MAX_MANIFEST_CHARS:
+        return _result(False, _sentence(
+            f"This part is {size} characters, over the limit of {MAX_MANIFEST_CHARS}, "
+            "so it is not shown."), [])
+    return {"ok": True, "errors": [], "diff": [], "part": part, **body}
+
+
+#: The eight tools, in the order of the skill family ``studio``.
 STUDIO_TOOLS = (
+    studio_describe,
     studio_draft,
     studio_interview,
     studio_list_actions,
@@ -735,6 +797,6 @@ STUDIO_TOOLS = (
 
 __all__ = [
     "MAX_ACTION_ROWS", "MAX_MANIFEST_CHARS", "STUDIO_TOOLS", "outline_text", "parts_count",
-    "plan_card_text", "studio_draft", "studio_interview", "studio_list_actions",
+    "plan_card_text", "studio_describe", "studio_draft", "studio_interview", "studio_list_actions",
     "studio_outline", "studio_patch", "studio_plan", "studio_validate",
 ]
