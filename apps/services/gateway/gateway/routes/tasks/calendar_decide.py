@@ -160,9 +160,9 @@ def build_requests(
 def _position(answer: Any) -> float:
     """The scale position of one answer. A bad answer raises."""
     score = getattr(answer, "score", None)
-    if isinstance(score, int | float) and not isinstance(score, bool):
-        if math.isfinite(score):
-            return float(score)
+    if (isinstance(score, int | float) and not isinstance(score, bool)
+            and math.isfinite(score)):
+        return float(score)
     level = getattr(answer, "level", None)
     if level in LEVELS:
         return float(LEVELS.index(level))
