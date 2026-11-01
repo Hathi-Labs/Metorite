@@ -1,8 +1,8 @@
 # Package host — every app is a package, arranged around the person (WS-PKG)
 
 > **Product:** Metorite · **Feature:** the package host (the shell registry, installs, slots and the arrangement layer) · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. No code reads or writes those tables yet. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. The rest of this spec is not built.
-> **Verified against code on 2026-11-01 at `f59a636b5`.** Each path in §12 was read on that commit.
+> **Status:** 🚧 **IN BUILD.** PKG-1 (the jobs), PKG-2 (the 23 pane links, the 8 preset ids and the 5 card keys) and PKG-3a (`SCOPE_APPS` and `ALSO_SERVES`) are built. PKG-3b (`HREF_FEATURES` and `ALWAYS_ALLOWED`) is built too. None of them changes what a member sees. PKG-4 is built dark: the two tables of §5.1, the key on `apps` and the purge rows. PKG-5a (the manifest model) is built too: the A2 model holds the fields of §3.1, and `validate_manifest` accepts the P0 files. PKG-5b part 1 is built dark: the install store of §5.1 (`gateway/package_host/store.py`) and the one share rule (`gateway/package_host/sharing.py`), which the purge reads. No route calls the store yet. PKG-5b part 2 (the resolve and `GET /shell/manifest`) and the rest of this spec are not built.
+> **Verified against code on 2026-11-01 at `787269f0a`.** Each path in §12 was read on that commit.
 > **Board:** WS-PKG in `work_plan.md` §2.1. **Decision:** D147. D12, D49, D87, D89, D111, D127, D136, D141 and D146 bind it.
 > **Metorite:** project "Package Host", epic 1234, this spec task 1236. The slices PKG-1 to PKG-20 are tasks 1239 to 1258, in order.
 > **Research first:** the comment "Research notes, 2026-11-01" on epic 491, copied into §11.
@@ -140,10 +140,12 @@ Each point keeps the seam that owns it today. Only the place where the seam read
 
 **Claim overlap.** Two claims on the same point and key conflict when their scopes overlap:
 - An `org` claim conflicts with every other claim on the same key.
-- A `group:g` claim conflicts with the claims of group g and with org claims.
+- A `group:g` claim conflicts with the claims of group g, with org claims, and with the private claims of the members of g.
 - A private claim of member u conflicts with the private claims of u, with org claims, and with claims of the groups of u.
 - Any claim conflicts with a key that a system package holds.
 - `triggers` allows many claims. `slot` allows many claims in PKG-5b, and PKG-14 enforces the limit that the host declares.
+
+Overlap is one relation, so each rule holds from both sides. A private claim of u and a claim of a group of u conflict in either order of install. Each claim that exists holds its key, also a claim of a paused or archived install, until the disposal of §5.3 deletes it.
 
 ---
 
@@ -190,7 +192,9 @@ Constraints and indexes of `package_install`:
 
 The primary key is `(organization_id, install_id, point, key)`.
 
-**Check `app_grants` first.** PKG-5b must confirm in R8 that `app_grants` (from `114_custom_apps.sql`) is tenant-scoped through the generated phases. If it is not, PKG-5b reads it only through a join with the RLS-bound `apps` table.
+**`app_grants` is tenant-scoped.** The generated phases scope it: lines 106 to 108 of `infra/postgres/generated/04_policies.sql` enable and force row level security on it and add the policy `app_grants_tenant_isolation`. `tests/unit/test_package_host_store_r8.py` confirms it on a real database (PKG-5b part 1).
+
+**The install store.** `gateway/package_host/store.py` is the one writer of both tables (PKG-5b part 1). It checks only that the app exists in the bound org, has `format = 'manifest'`, and is not archived. It reads that row of `apps` and never writes `apps`, because `gateway/studio/packages_store.py` owns those rows. The check "may this member use this app" belongs to the install routes of PKG-8 and PKG-12.
 
 **Both tables** take the ENABLE, FORCE and policy block of `312_jobs.sql`, in DO blocks, through the `get_db()` seam (R5).
 
@@ -201,9 +205,12 @@ The primary key is `(organization_id, install_id, point, key)`.
 Five decisions that the columns carry:
 1. **`needs_setup` is not stored.** The resolve computes it from the needs (§5.2 step 4), so it can never be stale.
 2. **The scope grammar is D12's.** The code that writes a row (PKG-5b and later) passes each `scope_subject` through `normalize_grant_subject`. That function is in `acb_auth/permissions.py`. Do not copy it.
-3. **A share with named people stays `private`.** The people get rows in `app_grants`, the sharing table of `114_custom_apps.sql`. So `apps.visibility = people` maps to a private install plus grants. The resolve (PKG-5b) shows a private install to its owner and to each grantee.
+3. **A share with named people stays `private`.** The people get rows in `app_grants`, the sharing table of `114_custom_apps.sql`. So `apps.visibility = people` maps to a private install plus grants. The resolve (PKG-5b) shows a private install to its owner and to each grantee. `gateway/package_host/sharing.py` holds the one rule of a grantee. A grant counts only when all three tests hold:
+   - Its subject is an email address, with an `@`. So a grant to `agent:<name>` or `agents:*` shares nothing.
+   - Its subject is not the owner, in any case.
+   - The owner made it: `lower(granted_by) = installed_by`. A consent row of `routes/apps/grants.py` names the member who consents as `granted_by`. So a consent row shares nothing, and a share by another owner of the app shares nothing.
 4. **A duplicate claim is refused in code, not by an index.** Some points allow many claims (`triggers`, `slot`), and a private claim conflicts only with what its owner sees. PKG-5b checks the claims of §4 in the install transaction, under `pg_advisory_xact_lock` on the organization.
-5. **A purge deletes a private install of the member only when nobody else sees it.** Nobody else sees it when no `app_grants` row of its app names another subject. Its contributions go by the cascade. A private install that the member shared with named people stays, and the purge counts it (decision 3). An org or group install that the member made stays too, and the purge counts it. This follows the rule of `routes/admin/members.py`: "purge the person, keep their work".
+5. **A purge deletes a private install of the member only when nobody else sees it.** Nobody else sees it when no `app_grants` row of its app passes the three tests of decision 3. A consent row of a colleague fails test 3, so it keeps no install. Its contributions go by the cascade. A private install that the member shared with named people stays, and the purge counts it (decision 3). An org or group install that the member made stays too, and the purge counts it. This follows the rule of `routes/admin/members.py`: "purge the person, keep their work".
 
 ### 5.2 One resolve call
 
@@ -221,13 +228,17 @@ The workbench caches the answer through `useCachedResource`. A change to an inst
 
 **Version.** `version` is a hash of the resolved content, so it needs no column. It is an ETag. The workbench reads it again within 10 seconds, so a paused install disappears in time (J3).
 
-**Step 2.** The resolve drops a paused, archived or expired install (`ends_at` in the past). A draft install (`version IS NULL`) shows to its owner only.
+**Step 1.** The system points are `jobs`, `nav` and `cards`. A job has its `id` as its key. A nav entry has its `href`, and a card has its `key`. `load_contributes()` in `acb_common/app_manifests/shell_manifest.py` reads them, each with its feature.
 
-**Step 2, private installs.** A private install shows to its owner and to each `app_grants` grantee. It still shows to the grantees after its owner leaves the org.
+**Step 2.** The resolve drops a paused, archived or expired install (`ends_at` in the past). It also drops each install whose app has `apps.status = 'archived'`. A draft install (`version IS NULL`) shows to its owner only.
+
+**Step 2, private installs.** A private install shows to its owner and to each `app_grants` grantee that passes the three tests of §5.1 decision 3. It still shows to the grantees after its owner leaves the org.
 
 **Step 3.** A contribution names its feature in `payload.feature`. A contribution with no feature shows to every member, as an unknown href does in the system gates.
 
-**Step 4.** In PKG-5b, a need names a feature or another package. A connection need belongs to a later slice, the connection check of `ai_studio.md` I1.
+**Step 4.** In PKG-5b, a need is `{"feature": "<slug>"}` or `{"package": "<manifest id>"}`. Any other shape counts as unmet, so the install shows its setup card (fail closed). A feature need is met when `user.can_use_feature(slug)` holds. A package need is met when a system or Studio package with that id is visible to the viewer.
+
+**Step 4, the source.** The resolve reads the needs from the manifest of the installed version (`app_versions.manifest`), or from `apps.manifest` for a draft. A connection need belongs to a later slice, the connection check of `ai_studio.md` I1.
 
 **Step 5.** The arrangement (§9) is not in PKG-5b. PKG-5b orders by `position`, with the key as the tie-break.
 
@@ -378,7 +389,7 @@ The `CENTERS` rows of `HREF_FEATURES` stay in code (D49).
 |---|---|---|---|---|
 | **PKG-4** | The two tables of §5.1, the key on `apps`, the generated tenant files, and the purge rows of §5.1 decision 5 | Expand-only migration (R6). R8 in `tests/unit/test_package_registry_r8.py`: org B reads none of org A's rows, an unbound session reads none, a contribution cannot point at another org's install, and a delete of an install deletes its contributions. `test_tenant_coverage.py` passes with a new case `test_the_package_registry_tables_are_tenant_scoped`. `test_admin_member_purge.py` passes with the new rows | HIGH | AGENT-SAFE |
 | **PKG-5a** | The fields of §3.1 join the A2 model, and `validate_shell_manifests()` runs `validate_manifest` on the P0 files. **Built.** | `test_every_shell_manifest_passes_the_model` passes. The validator refuses a shell file with an unknown point or an unknown key. A `studio` manifest with no `name` still fails. The schema and the TypeScript twin match | STD | AGENT-SAFE |
-| **PKG-5b** | `GET /shell/manifest`, the resolve of §5.2, and the install store function (no route). PKG-8 adds the install route for Studio apps, and PKG-12 adds it for apps made in chat | R8: a private install shows for its owner and for each named grantee, a group install for its members only, an org install for its org only. A contribution with a feature the viewer lacks never shows. A paused, archived or expired install shows nothing. A duplicate claim makes the store function raise | HIGH | AGENT-SAFE |
+| **PKG-5b** | `GET /shell/manifest`, the resolve of §5.2, and the install store function (no route). PKG-8 adds the install route for Studio apps, and PKG-12 adds it for apps made in chat. **Part 1 is built:** the install store (`gateway/package_host/store.py`), the share rule (`gateway/package_host/sharing.py`) and `load_contributes()`. The store checks only that the app exists in the bound org, has `format = 'manifest'`, and is not archived. The PKG-8 and PKG-12 routes check that the member may use the app. Part 2 is the resolve and the route | R8: a private install shows for its owner and for each named grantee, a group install for its members only, an org install for its org only. A contribution with a feature the viewer lacks never shows. A paused, archived or expired install shows nothing. A duplicate claim makes the store function raise. Part 1: `tests/unit/test_package_host_store_r8.py` (a duplicate claim, the overlap of §4, two installs at once, a scope that is a 422) | HIGH | AGENT-SAFE |
 | **PKG-6** | The workbench reads the resolved manifest behind the flag | With the flag off, the shell is byte-for-byte as before. With it on, an org install shows in the sidebar, ⌘K and the bell. Visual review in four contexts | STD | AGENT-SAFE |
 | **PKG-7** | Features from installs pass the one entitlement seam | A feature that only an install declares is visible to a holder of `*`. The `FEATURES` tuple stays the system list | HIGH | AGENT-SAFE |
 | **PKG-8** | Studio H1 and H2 use this path. `ai_studio.md` §14 points here | An installed Studio app reaches every point of §4 through the registry. No Studio-only list exists | STD | AGENT-SAFE |
@@ -439,7 +450,7 @@ Research of 2026-11-01. The full notes, with a "Not verified" line for each sour
 
 ## 12. Current file paths
 
-Each path was read on `f59a636b5`.
+Each path was read on `787269f0a`. The PKG-5b part 1 files are new on its branch.
 
 **Workbench** (`workbench/control_plane/src/`)
 - `lib/nav.ts` (`NavPane`, `NAV_SECTIONS`, `visibleSections`), `lib/nav.test.ts` (14 live panes)
@@ -452,22 +463,28 @@ Each path was read on `f59a636b5`.
 - `routes/shell/intent.py` (`JOBS`), `routes/shell/needs.py` (`REGISTRY`, `register`), `routes/shell/search.py` (`PROVIDERS`, `SCOPE_APPS`)
 - `routes/admin/me.py` (`SHELL_PRESETS`, `SHELL_CARDS`, `SHELL_PANES`)
 - `retrieval/sources.py` (`REGISTRY`)
+- `routes/apps/grants.py` (`is_valid_subject`, the consent row), `studio/packages_store.py` (the rows of a Studio package)
+- New with PKG-5b part 1: `package_host/store.py` (`install`, `ClaimTaken`, `ScopeRefused`), `package_host/sharing.py` (`OTHERS_SEE_THE_INSTALL`)
 
 **Eval and CI**
 - `evals/routing/shell.py` (`also_serves()` reads `load_gates()`), `.github/workflows/skill-eval.yml` (the path filter)
 
 **Packages**
 - `packages/acb_auth/acb_auth/permissions.py` (`FEATURES`, `EffectiveAccess`)
-- `packages/acb_common/acb_common/app_manifests/` (D136 `App`, `Route`)
+- `packages/acb_common/acb_common/app_manifests/` (D136 `App`, `Route`), and `app_manifests/shell_manifest.py` (`load_contributes`, new with PKG-5b part 1)
+- `packages/acb_common/acb_common/studio_manifest.py` (`validate_manifest`, `CONTRIBUTION_POINTS`, PKG-5a), `studio_manifest.schema.json` and `workbench/control_plane/src/lib/studio/manifest.ts`
 - `packages/acb_skills/acb_skills/tool_packs.py` (`PACKS`)
 
 **Schema**
 - New migrations are `infra/postgres/NNN_*.sql`. The patterns to copy are `312_jobs.sql` (the RLS block) and `315_brief_runs.sql` (two tables and a composite FK). `scripts/gen_tenant_migration.py` writes `infra/postgres/generated/`
 - `infra/postgres/114_custom_apps.sql` (`apps`, `app_versions`, `app_grants`, `app_data`), `155_projects_custom_fields.sql`, `244_crm_mirror_columns.sql` (`crm_field_defs`), `239_user_settings_per_org.sql`, `240` (`shell_prefs`)
+- `infra/postgres/322_apps_format.sql` (`apps.format`), `324_package_registry.sql` (PKG-4: `package_install`, `package_contribution`), `generated/04_policies.sql` (`app_grants_tenant_isolation`)
 
 **Tests**
 - `tests/unit/test_shell_intent.py` (`TestOneJobList`), `tests/unit/test_auth_me_shell.py` (`TestOneVocabulary`), `tests/unit/test_tenant_coverage.py`, `tests/unit/test_studio_catalog_r8.py` (the R8 pattern), `tests/unit/test_admin_member_purge.py`
-- `apps/services/gateway/gateway/routes/admin/members.py` (`_PURGE_DELETES`, `_PURGE_KEEPS`)
+- `tests/unit/test_package_registry_r8.py` (PKG-4), `tests/unit/test_studio_manifest.py` (PKG-5a), `tests/unit/test_shell_manifests.py`
+- New with PKG-5b part 1: `tests/unit/test_package_host_store.py` and `tests/unit/test_package_host_store_r8.py`
+- `apps/services/gateway/gateway/routes/admin/members.py` (`_PURGE_DELETES`, `_PURGE_KEEPS`, `_OTHERS_SEE_THE_APP`)
 
 ---
 
@@ -495,6 +512,9 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | A new table is tenant-scoped | `tests/unit/test_tenant_coverage.py` |
 | No app mounts its own palette, bell, rail or ⌘K | `src/lib/shell/seams.test.ts` |
 | The live pane count changes only on purpose | `src/lib/nav.test.ts` |
+| Only the install store writes an install or a claim | New with PKG-5b part 1: `tests/unit/test_package_host_store.py` |
+| The store refuses a duplicate claim under one lock for each org | New with PKG-5b part 1: `tests/unit/test_package_host_store_r8.py` |
+| Only a share by the owner keeps a private install | `tests/unit/test_admin_member_purge.py`, `tests/unit/test_package_host_store_r8.py` |
 | Removal leaves no contribution | New with PKG-9: `tests/unit/test_package_disposal_r8.py` |
 | A stable region moves only on a member action | New with PKG-18: `src/lib/shell/arrangement.test.ts` |
 

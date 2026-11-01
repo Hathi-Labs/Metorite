@@ -160,7 +160,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - ⚠️ **The `/admin` auth floor is PER-ROUTE.** Each route declares `Depends(require_admin_user)` in its own signature.
    - `_common.py` holds the invariants. The org keeps an owner. Nobody assigns a role above their own rank. System roles are immutable. Nobody locks themselves out. ⚠️ Two guards answer 409, so a test must check the detail text. Fence: `test_admin_member_offboarding.py`.
    - Feature modules import from `_common`, never from each other.
-   - **`purge_member` is the hard delete**, a separate route, never a flag on Remove. It keeps the person's work and the audit trail. ⚠️ A KEEP clause must exclude all that the delete side CASCADES away. Only two tables are on both sides: `chat_session` splits on `visibility`, and `package_install` (WS-PKG PKG-4) splits on `scope_kind` and on `_OTHERS_SEE_THE_APP`. That term finds a grant on the app to a person other than the member. Fences: `test_admin_member_purge.py`, `tests/unit/_schema_cascade.py`.
+   - **`purge_member` is the hard delete**, a separate route, never a flag on Remove. It keeps the person's work and the audit trail. ⚠️ A KEEP clause must exclude all that the delete side CASCADES away. Only two tables are on both sides: `chat_session` splits on `visibility`, and `package_install` (WS-PKG PKG-4) splits on `scope_kind` and on `_OTHERS_SEE_THE_APP`. That term is the share rule of `package_host/sharing.py` (item 22e): a grant to an address other than the member, which the member made. Fences: `test_admin_member_purge.py`, `tests/unit/_schema_cascade.py`.
    - ⚠️ **The provisioning `ON CONFLICT` arms name the statuses they rewrite, and never negate.** The target is `ON CONFLICT (lower(email))`. Approve never rewrites the roles of an existing member that is not `invited`. Fences: `test_signin_requests.py`, `test_app_user_upserts.py`.
    - The `/auth/me/*` routes take the member and the tenant from the session. 🔴 No staff route reads an assistant profile. Fence: `test_assistant_profile_private.py`.
    - `routes/operator.py` needs the internal bearer AND `X-Operator-Token`. Fence: `test_operator_door.py`.
@@ -226,6 +226,13 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
         - A stored field reads with no authoring check (`studio_fields.stored_field`). A stricter rule binds a new spec only, so an older object still reads and writes.
         - The member purge names no object table. A record is company data, as a `pm_tasks` row is (D63).
         - Fences: `test_studio_fields.py`, `test_studio_objects_r8.py`, `test_admin_member_purge.py`.
+22e. package_host/ -- **The install store of the package host** (WS-PKG PKG-5b part 1, `package_host.md` §4 and §5.1). It holds no route: PKG-8 and PKG-12 add the install routes, and PKG-5b part 2 adds the resolve.
+    - ⚠️ `store.install` is the ONE `INSERT INTO package_install` and the ONE `INSERT INTO package_contribution` of `apps/` and `packages/`. It takes a session that the caller opened with `tenant_session(org)`, and no function takes an org. `installed_by` is the session member, never request input.
+    - ⚠️ The store checks only that the app is a Studio package of the bound org that is not archived. It reads `apps` and never writes it, because `studio/packages_store.py` owns those rows. The install routes check that the member may use the app.
+    - ⚠️ The store takes the scope kind from the value that `normalize_grant_subject` gives, never from the raw text. A `scope_kind` that does not agree raises `ScopeRefused` (422) before the first statement.
+    - ⚠️ One lock order: the read of the bound org, then `pg_advisory_xact_lock` on `package_install:<org>`, then each read that decides the write. A duplicate claim of §4 raises `ClaimTaken` with the point, the key and the holder.
+    - `sharing.py` is the ONE share rule of a private install: an address, not the owner, and made by the owner. The member purge and the resolve read it. Do not copy the SQL.
+    - Fences: `test_package_host_store.py`, `test_package_host_store_r8.py`, `test_admin_member_purge.py`.
 
 ## Work Guidance
 
