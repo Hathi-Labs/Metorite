@@ -136,7 +136,8 @@ export const OPENS_APP: Record<string, { app: "reports"; label: string }> = {
  * This card is the receipt: what changed, and a jump to the row.
  */
 const ACTION_META: Record<string, { icon: string; label: string }> = {
-  create_task: { icon: "Plus", label: "Task created" },
+  // RX-2: a task receipt wears a checked clipboard, and a reminder receipt wears a Bell.
+  create_task: { icon: "ClipboardCheck", label: "Task created" },
   update_task: { icon: "PenLine", label: "Task updated" },
   assign: { icon: "UserPlus", label: "Assignees changed" },
   comment: { icon: "MessageSquare", label: "Comment posted" },
@@ -167,7 +168,7 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   update_tag: { icon: "PenLine", label: "Tag updated" },
   edit_comment: { icon: "MessageSquare", label: "Comment edited" },
   set_recurrence: { icon: "Repeat", label: "Repeat rule set" },
-  create_personal_task: { icon: "Plus", label: "Private task captured" },
+  create_personal_task: { icon: "ClipboardCheck", label: "Private task captured" },
   set_my_overlay: { icon: "SlidersHorizontal", label: "Your triage updated" },
   // S3 — the guarded acts. Same receipt: the card BEFORE the act carried
   // the counts, this one says what the route reported.

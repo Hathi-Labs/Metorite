@@ -15,6 +15,12 @@ export interface ReminderSubject {
   id: string;
 }
 
+/** The longest title of a reminder (the route's own limit). */
+export const REMINDER_TITLE_MAX = 200;
+
+/** The words when the reminder routes answer 404 or 403 to a create: the flag is off, or the member lacks Projects. */
+export const REMINDERS_OFF_WORDS = "Reminders are not available for you.";
+
 export const REMINDERS_BASE = "/api/projects/my/reminders";
 const BASE = REMINDERS_BASE;
 
@@ -27,6 +33,7 @@ async function write(
   url: string,
   body: Record<string, unknown>,
   fetchImpl: typeof fetch,
+  off?: string,
 ): Promise<WriteResult> {
   try {
     const res = await fetchImpl(url, {
@@ -37,6 +44,7 @@ async function write(
     });
     if (res.ok) return { ok: true };
     const data: unknown = await res.json().catch(() => null);
+    if (off && (res.status === 404 || res.status === 403)) return { ok: false, words: off };
     return { ok: false, words: refusalWords(res.status, data, SAVE_FAILED_WORDS) };
   } catch {
     return { ok: false, words: UNREACHABLE_WORDS };
@@ -56,7 +64,7 @@ export function createReminder(
     body.subject_kind = a.subject.kind;
     body.subject_id = a.subject.id;
   }
-  return write(BASE, body, fetchImpl);
+  return write(BASE, body, fetchImpl, REMINDERS_OFF_WORDS);
 }
 
 /** Move a reminder to a named time through `/reschedule` (§5.4). */

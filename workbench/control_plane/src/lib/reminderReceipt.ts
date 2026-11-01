@@ -48,7 +48,7 @@ const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 
 /** The value of a `  key: value` machine line, or null. */
 function line(result: string, key: string): string | null {
-  const m = result.match(new RegExp(`^\s*${key}:\s*(.+?)\s*$`, "im"));
+  const m = result.match(new RegExp("^\\s*" + key + ":\\s*(.+?)\\s*$", "im"));
   return m ? m[1] : null;
 }
 

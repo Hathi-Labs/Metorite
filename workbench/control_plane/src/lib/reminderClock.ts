@@ -172,6 +172,9 @@ export function wallInputs(ms: number, zone: string): { date: string; time: stri
   return { date: dateText(p.year, p.month, p.day), time: `${pad(p.hour)}:${pad(p.minute)}` };
 }
 
+/** The words under a time field when the time is not after now. One text for the Calendar and Tasks. */
+export const PAST_FIELD_WORDS = "Pick a time after now.";
+
 // ── The words of a time (RX-2) ───────────────────────────────────────────────
 
 const MINUTE = 60_000;

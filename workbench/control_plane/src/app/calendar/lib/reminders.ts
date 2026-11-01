@@ -37,13 +37,14 @@ import {
   dateText,
   instantIso,
   offsetMinutes,
+  PAST_FIELD_WORDS,
   pad,
   wallMinutes,
   wallParts,
   zonedToIso,
   type ZonedTime,
 } from "@/lib/reminderClock";
-import type { ReminderKind, WriteResult } from "@/lib/reminderWrite";
+import { REMINDER_TITLE_MAX as TITLE_MAX, type ReminderKind, type WriteResult } from "@/lib/reminderWrite";
 import { knownZone } from "@/lib/shell/reminderOpen";
 
 // ── The rows ─────────────────────────────────────────────────────────────────
@@ -158,10 +159,10 @@ export {
 
 // ── The form ─────────────────────────────────────────────────────────────────
 
-export const TITLE_MAX = 200;
+export { TITLE_MAX };
 
-/** The words under the time field of the form when the time is not after now. */
-export const PAST_FIELD_WORDS = "Pick a time after now.";
+
+export { PAST_FIELD_WORDS };
 
 /** The words of a drag or a key move to a time that is not after now. */
 export const PAST_MOVE_WORDS = "That time has passed. Move the reminder to a time after now.";
