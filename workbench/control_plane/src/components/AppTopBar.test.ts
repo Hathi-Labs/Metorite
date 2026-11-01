@@ -49,7 +49,7 @@ describe("the app bar's shape", () => {
     expect(html).toMatch(/<h1 class="[^"]*">My Tasks<\/h1>/);
   });
 
-  it("draws the rail toggle as a pressed Button, then a divider", () => {
+  it("draws the rail toggle as a quiet Button that says open or shut, then a divider", () => {
     const open = bar({
       title: "My Tasks",
       rail: { open: true, onToggle: () => {}, noun: "your lists" },
@@ -57,7 +57,10 @@ describe("the app bar's shape", () => {
     // The primitive, not a hand-rolled button: `cc-control` is its class.
     const toggle = buttonWith(open, "aria-label", "Hide your lists");
     expect(toggle).toContain("cc-control");
-    expect(toggle).toContain('aria-pressed="true"');
+    // A disclosure says its state with aria-expanded. A tinted "pressed"
+    // circle read as a second highlight on every app (owner, 2026-10-31).
+    expect(toggle).toContain('aria-expanded="true"');
+    expect(toggle).not.toContain("aria-pressed");
     expect(open).toContain('class="h-4 w-px shrink-0 bg-border"');
     // The toggle comes before the title, and the divider between them.
     expect(open.indexOf("Hide your lists")).toBeLessThan(open.indexOf("h-4 w-px"));
@@ -67,7 +70,7 @@ describe("the app bar's shape", () => {
       title: "My Tasks",
       rail: { open: false, onToggle: () => {}, noun: "your lists" },
     });
-    expect(buttonWith(shut, "aria-label", "Show your lists")).toContain('aria-pressed="false"');
+    expect(buttonWith(shut, "aria-label", "Show your lists")).toContain('aria-expanded="false"');
   });
 
   it("puts the tools at the right end, after the actions", () => {

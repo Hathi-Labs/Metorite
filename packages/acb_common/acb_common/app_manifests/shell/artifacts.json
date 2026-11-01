@@ -28,7 +28,8 @@
     ],
     "nav": [
       {
-        "href": "/artifacts"
+        "href": "/artifacts",
+        "feature": "artifacts"
       }
     ]
   }

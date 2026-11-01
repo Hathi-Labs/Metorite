@@ -243,7 +243,7 @@ function TreeNodeRow({
   return (
     <>
       <div
-        className="group flex items-center gap-1.5 rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-secondary cursor-pointer transition-colors"
+        className="group flex items-center gap-1.5 rounded px-1 py-0.5 text-xs text-muted-foreground hover:bg-secondary cursor-pointer transition-colors glass:rounded-[10px] glass:px-2 glass:py-1 glass:text-footnote"
         style={{ paddingLeft: paddingLeft + 14 }}
         onClick={() => onFileOpen(entry)}
         onContextMenu={openContext}
@@ -490,8 +490,8 @@ export default function ArtifactSidebar({
     <aside
       className={
         fullWidth
-          ? "h-full w-full border-l border-border bg-card flex flex-col"
-          : `shrink-0 ${edgeBorder} border-border bg-card/40 flex flex-col transition-all duration-200 ${
+          ? "h-full w-full border-l border-border bg-card flex flex-col glass:border-transparent"
+          : `shrink-0 ${edgeBorder} border-border bg-card/40 flex flex-col transition-all duration-200 glass:border-transparent glass:bg-card ${
               open ? "w-64" : "w-10"
             }`
       }
@@ -499,9 +499,9 @@ export default function ArtifactSidebar({
       {/* Header — only rendered while open; the collapsed state is a rail
           (icon + count + vertical label) matching the other columns. */}
       {open && (
-        <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
+        <div className="flex items-center justify-between border-b border-border px-3 py-2.5 glass:border-transparent">
           <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-foreground">Files</span>
+            <span className="text-xs font-semibold text-foreground glass:text-label">Files</span>
             {files.length > 0 && (
               <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] text-muted-foreground">
                 {files.length}

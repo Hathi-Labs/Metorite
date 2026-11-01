@@ -285,6 +285,15 @@ sees whose workspace this is at all times (D51).
 - The fold tip points up at the bar's control. The fold rules of §3.2 do not
   change.
 
+**The frame since 2026-11-01 (owner, GL-11).** The owner said: "the burger
+icon being outside the sidebar kind of puts me off". The sidebar now runs
+the full height, and it owns its head: the organization's lockup and the
+fold control, on the sidebar it folds. The shell bar sits over the page
+column only, and it holds no brand zone. The table below keeps the bar's
+other zones. A folded rail keeps the organization's mark in view, as the
+owner asked on 2026-10-09. `AppShell.tsx` holds the frame, and the shell
+e2e specs fence it.
+
 This frame needs both shell flags. With the shell bar alone, the bar sits
 over the page column, as NS-1 built it. `desktopFrame` in
 `src/lib/shell/shellNav.ts` holds the rule. Fences: `shellNav.test.ts`,

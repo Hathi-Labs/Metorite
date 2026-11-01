@@ -53,7 +53,8 @@
     ],
     "nav": [
       {
-        "href": "/projects"
+        "href": "/projects",
+        "feature": "projects"
       }
     ],
     "scope": [

@@ -12,6 +12,7 @@
 // gateway's require_permission() is what actually refuses the request.
 
 import { CENTERS } from "@/lib/centers";
+import { GENERATED_ALWAYS_ALLOWED, GENERATED_HREF_FEATURES } from "@/lib/shell/gates.generated";
 
 export type Access = {
   email: string;
@@ -86,56 +87,21 @@ export const NO_ACCESS: Access = {
 // than being swallowed by a shorter "/settings" entry. Kept in sync with the
 // feature_catalog table (infra/postgres/130_org_access_control.sql).
 
-const HREF_FEATURES: ReadonlyArray<[string, string]> = [
+const HREF_FEATURES: ReadonlyArray<readonly [string, string]> = [
   // Departmental Centers — each landing page is gated by its own feature
-  // (feature_catalog rows seeded in 140_center_features.sql).
+  // (feature_catalog rows seeded in 140_center_features.sql). Kept in code (D49).
   ...CENTERS.map((c): [string, string] => [`/centers/${c.slug}`, c.feature]),
-  ["/chat", "chat"],
-  ["/email", "email"],
-  ["/inbox", "email"],
-  ["/whatsapp", "whatsapp"],
-  ["/memory", "memory"],
-  ["/tasks", "tasks"],
-  // Calendar — D54 (2026-08-24, board WS-39 S2). Gated on `tasks`, NOT a slug
-  // of its own: the calendar lived inside `/tasks` until this move, so every
-  // holder of `feature:tasks` already had it, and minting `feature:calendar`
-  // would ship the app dark to all of them (see `calendar_focus_os.md` §10.2).
-  //
-  // ⚠️ This entry is load-bearing and easy to forget, because it is a SECOND
-  // map: `nav.ts` carries a `feature` per pane and this file carries a
-  // route→feature list, and only this one is consulted by `canSeePath`. Adding
-  // the pane without adding this line leaves the route reachable by anyone —
-  // `featureForPath` returns null when nothing matches, and null means
-  // unguarded. `navAccessAgreement.test.ts` is the fence that makes the two
-  // maps agree.
-  ["/calendar", "tasks"],
-  ["/notes", "notes"],
-  // The Sales Center's pipeline module. Gated on its own slug, not on
-  // `center.sales`: a Center is a projection, and its modules carry their own
-  // grants (specs/crm_app.md §5).
-  ["/crm", "crm"],
-  // Projects — the People Center's work-management module, projected into
-  // every other Center as (app + scope). Gated on its own slug for the same
-  // reason as /crm; note this feature gates DATA as well as the pane, so the
-  // grant model in the API is the real boundary and this is the courtesy half
-  // (specs/project_management_app.md §5).
-  ["/projects", "projects"],
-  ["/people", "people"],
-  // The Knowledge app (WS-61 KB-0, `knowledge_base.md` §5.2). Its own slug,
-  // in the same shape as /crm. The space grants in the API are the real
-  // boundary, and this is the courtesy half.
-  ["/knowledge", "knowledge"],
-  ["/dashboard", "dashboard"],
-  ["/observability", "observability"],
-  ["/artifacts", "artifacts"],
-  ["/workflows", "workflows"],
-  ["/settings/models", "models"],
-  ["/agents", "agents"],
-  ["/approvals", "approvals"],
-  ["/integrations", "integrations"],
-  ["/apis", "integrations"],
-  ["/build/agents", "build.agents"],
-  ["/build/apps", "build.apps"],
+  // Every other route comes from the shell manifests (WS-PKG PKG-3b): a nav
+  // entry's `feature`, or a `gates` entry for a route that is not a pane.
+  // Notes that stood here, now kept in this comment:
+  //  - `/calendar` is gated on `tasks`, NOT a slug of its own (D54): minting
+  //    `feature:calendar` would ship the app dark to every `tasks` holder.
+  //  - `/crm`, `/projects` and `/knowledge` use their own slugs, not
+  //    `center.*`. A Center is a projection and its modules carry their own
+  //    grants. The API grant model is the real boundary.
+  //  - ⚠️ A route with no entry is UNGUARDED (`featureForPath` returns null).
+  //    `navAccessAgreement.test.ts` fences the gap against `nav.ts`.
+  ...GENERATED_HREF_FEATURES,
 ];
 
 /**
@@ -166,34 +132,14 @@ export function featureForPath(pathname: string): string | null {
  * the sign-in page, the access-denied page itself (a redirect loop is worse
  * than an over-permissive 200 on a page that renders "no access"), and the
  * personal settings a member needs to manage their own account.
+ *
+ * The list comes from the shell manifests (`always_allowed`, PKG-3b) and the
+ * match is EXACT, never a prefix: `/people/access` and `/people/me` sit under
+ * `/people`, whose `people` slug would otherwise reach them (D-PC-15), and
+ * `/integrations` is open to every member while a sub-route stays gated
+ * (D-EA-9). `/access` only redirects to `/people/access`.
  */
-const ALWAYS_ALLOWED = [
-  "/",
-  "/signin",
-  "/settings",
-  "/settings/profile",
-  // "My access" — the page that explains why a pane is missing. It has to be
-  // reachable by exactly the person who cannot reach things, so gating it on a
-  // feature would make it useless in the only situation it exists for. A tab
-  // of the People app since 2026-10-05 (owner directive). It is listed by
-  // name for the reason below: as a PREFIX match, `/people/access` would
-  // inherit the directory's `people` slug.
-  "/people/access",
-  // The old address. It only redirects to `/people/access`, and it stays
-  // here so a member with no grants reaches the redirect.
-  "/access",
-  // "My profile". `featureForPath` matches by PREFIX, so /people/me would
-  // otherwise inherit the directory's `people` slug — which is
-  // `is_default false`, and is what made an ordinary colleague unable to open
-  // their own record (WS-28g-2 / D-PC-15). The gateway serves it from a router
-  // with no feature dependency; this is the same answer on the client side.
-  "/people/me",
-  // The Integrations app (D-EA-9, WS-55 EA-4b, 2026-10-14). Every member
-  // opens it for the AI agents view, and the page gates each other view on
-  // `feature:integrations`. EXACT on purpose: `HREF_FEATURES` keeps
-  // `/integrations`, so a later sub-route stays gated unless it is listed.
-  "/integrations",
-];
+const ALWAYS_ALLOWED: readonly string[] = [...GENERATED_ALWAYS_ALLOWED];
 
 export function isAlwaysAllowed(pathname: string): boolean {
   return ALWAYS_ALLOWED.includes(pathname);
