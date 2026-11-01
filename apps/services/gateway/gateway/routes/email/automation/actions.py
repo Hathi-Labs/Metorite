@@ -667,6 +667,12 @@ async def _apply_rule_actions(
                 # leaves the thread with no draft (review round 1, F1).
                 if await _skip_for_paired_mailbox(db, account_id, message_id):
                     continue
+                # The subject fill runs BEFORE the thread check below, because
+                # it can raise and the check can trash the old draft. A failed
+                # fill then keeps that draft (task 1128). A kept draft pays one
+                # fill for a {{...}} subject, as a template body already does.
+                subj = await _render_template(
+                    a.get("subject") or f"Re: {email.get('subject', '')}", email)
                 # Dedup (inbox-zero handlePreviousDraftDeletion parity): at most
                 # one AI draft per thread — replace an unmodified prior draft,
                 # preserve one the user edited. Checked BEFORE generating so we
@@ -736,8 +742,6 @@ async def _apply_rule_actions(
                     append_signature_text,
                 )
                 body = append_signature_text(signature, body)
-                subj = await _render_template(
-                    a.get("subject") or f"Re: {email.get('subject', '')}", email)
                 to = a.get("to_address") or email.get("from", "")
                 if not to:
                     continue

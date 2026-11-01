@@ -15,6 +15,8 @@ Mutations this file catches (R7):
 * A job has no limit on those tries, an outage counts as a blank answer, or a
   preview spends a try. The R8 half of the limit is in ``test_email_ai_cost.py``.
 * The template fill writes the raw ``{{...}}`` text on a blank answer.
+* The subject fill of a rule draft runs after the thread check, so a failed
+  fill leaves the thread with no draft.
 * The self-anneal finishes the run with ``""`` or a stock reply. A blank
   recovery must return None, so the first error is raised.
 * The graphiti gate drops the episode on a blank answer, or logs no warning.
@@ -343,6 +345,88 @@ async def test_a_blank_template_fill_raises_and_never_returns_braces(
         await actions._render_template('{{choose "urgent", "normal"}}', {"body": "x"})
     assert str(err.value) == actions.FILL_EMPTY
     assert seen["job"] == "writing"
+
+
+def _old_draft_db() -> AsyncMock:
+    """A thread with an old rule draft that the member did not edit, so the
+    real thread check trashes it. The order is the two reads, then the delete."""
+    text = "Thanks, we are on it."
+    row = SimpleNamespace(id="d1", provider_message_id="old-draft", body_text=text)
+    db = AsyncMock()
+    db.execute.side_effect = [
+        MagicMock(fetchone=MagicMock(return_value=row)),
+        MagicMock(fetchone=MagicMock(return_value=SimpleNamespace(draft_text=text))),
+        MagicMock(),
+    ]
+    return db
+
+
+def _rule_draft_call(db: Any, provider: Any, errors: list[Any]) -> Any:
+    from gateway.routes.email.automation import actions
+
+    return actions._apply_rule_actions(
+        db, provider, "m1", "pm-1",
+        [{"type": "DRAFT_EMAIL", "content": "Thanks, we are on it.",
+          "subject": "{{summarize the request}}"}],
+        {"from": "x@y.com", "subject": "Quote", "body": "Send it.", "thread_id": "t1",
+         "self": "me@y.com"},
+        "", "", "me@y.com", account_id="acc-1", errors_out=errors)
+
+
+async def test_a_failed_subject_fill_keeps_the_old_draft(monkeypatch) -> None:
+    """The fill can raise since task 1128, and it ran after the thread check
+    trashed the old draft. So the thread ended with no draft at all."""
+    import acb_llm.context as llm_context
+    from gateway.routes.email.automation import actions
+
+    async def blank(**_kw: Any) -> Any:
+        message = SimpleNamespace(content="")
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)]), "tier-fast"
+
+    monkeypatch.setattr(llm_context, "acompletion_with_fallback", blank)
+    monkeypatch.setattr(actions, "draft_skip_in_pair", AsyncMock(return_value=None))
+    upsert = AsyncMock()
+    monkeypatch.setattr(actions, "_upsert_local_draft", upsert)
+    provider = SimpleNamespace(trash_message=AsyncMock(), create_draft=AsyncMock())
+    errors: list[Any] = []
+
+    done = await _rule_draft_call(_old_draft_db(), provider, errors)
+
+    assert done == []
+    assert errors == [{"type": "DRAFT_EMAIL", "error": actions.FILL_EMPTY[:160]}]
+    provider.trash_message.assert_not_awaited()
+    provider.create_draft.assert_not_awaited()
+    upsert.assert_not_awaited()
+
+
+async def test_a_good_subject_fill_still_replaces_the_old_draft(monkeypatch) -> None:
+    """The move keeps the replace: the old draft goes, the new one takes the
+    filled subject, and the fill comes first."""
+    import acb_llm.context as llm_context
+    from gateway.routes.email.automation import actions
+
+    order: list[str] = []
+
+    async def filled(**_kw: Any) -> Any:
+        order.append("fill")
+        message = SimpleNamespace(content="Price list for 200 brackets")
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)]), "tier-fast"
+
+    async def trash(_pid: str) -> None:
+        order.append("trash")
+
+    monkeypatch.setattr(llm_context, "acompletion_with_fallback", filled)
+    monkeypatch.setattr(actions, "draft_skip_in_pair", AsyncMock(return_value=None))
+    monkeypatch.setattr(actions, "_upsert_local_draft", AsyncMock(return_value="local-1"))
+    monkeypatch.setattr(actions, "_record_rule_draft", AsyncMock())
+    provider = SimpleNamespace(trash_message=trash,
+                               create_draft=AsyncMock(return_value="new-draft"))
+
+    done = await _rule_draft_call(_old_draft_db(), provider, [])
+
+    assert done == ["DRAFT_EMAIL"]
+    assert order == ["fill", "trash"]
+    assert provider.create_draft.await_args.kwargs["subject"] == "Price list for 200 brackets"
 
 
 @pytest.mark.parametrize(("error", "text"), [
