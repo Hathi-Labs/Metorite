@@ -6,15 +6,17 @@ Spec: ``project-docs/specs/calendar_events_reminders.md`` §5.6 "Settled
 ``build`` is a pure function. It reads no database and no flag, and it sends
 nothing. RE-9b calls it from the send step. The result is the one
 ``push.sender.PushMessage``, and the service worker
-(``public/sw.js``) reads only its ``title``, ``body``, ``url`` and ``tag``. So
-the org name goes in ``body``.
+(``public/sw.js``) reads its ``title``, ``body``, ``url`` and ``tag``, and the
+``reminder_id`` and ``kind`` that RX-4 adds. So the org name goes in ``body``.
+The worker shows the Done and "In 1 hour" buttons for a ``reminder_due`` or
+``reminder_check`` push, and the buttons call the reminder routes.
 
 * **Shown:** the title is the reminder title and its time in the zone of the
   row. The body is the org name.
 * **Hidden** (``hide_push_details`` on, for a shared device): the title is
   ``HIDDEN_TITLE`` and the body is the org name. No title or time text is in
-  the payload. The url still holds the reminder id, which is a UUID and says
-  nothing.
+  the payload. The url, ``reminder_id`` and ``kind`` still hold the reminder
+  id, which is a UUID, and the card kind. Neither says anything.
 
 Fence: ``tests/unit/test_reach_push_message.py``.
 """
@@ -112,4 +114,4 @@ def build(kind: str, reminder: Mapping[str, Any], org_name: str,
         at = _local(reminder.get("fire_at"), reminder.get("tz"))
         title = f"{text} at {_clock(at)}" if at is not None else text
     return PushMessage(title=title, body=org, url=reminder_url(rid), tag=rid,
-                       urgency=urgency, ttl=ttl)
+                       urgency=urgency, ttl=ttl, reminder_id=rid, kind=kind)
