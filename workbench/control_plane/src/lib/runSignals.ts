@@ -597,14 +597,27 @@ export function attentionTitle(needsInput: number, unread: number): string | nul
 /**
  * The favicon variants with a dot, made once and kept in `public/`. A swap of
  * the link costs nothing. A canvas drawn on each poll would cost a paint.
+ *
+ * ⚠️ Each link takes the twin of its own kind (owner, 2026-11-01: the hidden
+ * tab's icon "looks weird"). The PNG's comet is black, and a dark tab strip
+ * lost it, so only the dot showed. The SVG twins switch the comet to white
+ * in a dark frame, as `app/icon.svg` does. The PNGs stay for the `.ico`
+ * link, for a browser with no SVG icon.
  */
 export const FAVICON_NEEDS = "/favicon-needs.png";
 export const FAVICON_REPLY = "/favicon-reply.png";
+export const FAVICON_NEEDS_SVG = "/favicon-needs.svg";
+export const FAVICON_REPLY_SVG = "/favicon-reply.svg";
 
-export function attentionFavicon(needsInput: number, unread: number): string | null {
-  if (needsInput > 0) return FAVICON_NEEDS;
-  if (unread > 0) return FAVICON_REPLY;
+export function attentionFavicon(needsInput: number, unread: number, vector = false): string | null {
+  if (needsInput > 0) return vector ? FAVICON_NEEDS_SVG : FAVICON_NEEDS;
+  if (unread > 0) return vector ? FAVICON_REPLY_SVG : FAVICON_REPLY;
   return null;
+}
+
+/** The link held an SVG icon (`app/icon.svg`). */
+function isVectorIcon(href: string | null, type: string | null): boolean {
+  return type === "image/svg+xml" || /\.svg(?:[?#]|$)/.test(href ?? "");
 }
 
 /** The part of a `<link>` that the swap touches. */
@@ -655,10 +668,15 @@ export function applyTabSignal(doc: TabDocument, needsInput: number, unread: num
         doc.head.appendChild(_addedIcon);
       }
     }
-    const targets = _addedIcon ? [_addedIcon] : _savedIcons.map((s) => s.el);
-    for (const el of targets) {
-      if (el.getAttribute("href") !== icon) el.setAttribute("href", icon);
-      if (el.getAttribute("type") !== "image/png") el.setAttribute("type", "image/png");
+    // A link the swap added is SVG: every browser that runs this page draws one.
+    const targets = _addedIcon
+      ? [{ el: _addedIcon, vector: true }]
+      : _savedIcons.map((s) => ({ el: s.el, vector: isVectorIcon(s.href, s.type) }));
+    for (const { el, vector } of targets) {
+      const href = attentionFavicon(needsInput, unread, vector) ?? icon;
+      const type = vector ? "image/svg+xml" : "image/png";
+      if (el.getAttribute("href") !== href) el.setAttribute("href", href);
+      if (el.getAttribute("type") !== type) el.setAttribute("type", type);
     }
   } else if (_savedIcons !== null) {
     for (const { el, href, type } of _savedIcons) {
