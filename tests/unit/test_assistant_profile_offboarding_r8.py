@@ -435,7 +435,7 @@ async def test_e1_the_json_and_the_text_of_a_stored_profile(db) -> None:
         as_json = await _export(db.org_a, a)
         as_text = await _export(db.org_a, a, "text")
     body = json.loads(as_json.body)
-    assert set(body) == {"exported_at", "member", "profile", "summaries", "text"}
+    assert set(body) == {"exported_at", "member", "profile", "summaries", "more", "text"}
     assert body["member"] == a
     assert body["profile"] == stored_profile(_PROFILE)
     assert body["profile"]["facts"][0]["source"] == "chat"
