@@ -28,6 +28,13 @@ is dark behind ``EMAIL_GMAIL_CONNECT`` (:func:`gmail_connect_enabled`).
 narrows the flag to listed member addresses, for the live test while the
 Google app is in Testing. Each Gmail gate asks :func:`gmail_connect_allowed`
 with the member of the session, and never with a request input.
+
+**The disclosure (WS-17 EM-G11a, §12.3.13.4).** A Gmail authorize answers 400
+``disclosure_required`` unless the query names the current
+:data:`GMAIL_DISCLOSURE_VERSION`. The check comes before the leg signs a state.
+Microsoft needs no value. Each connect that reaches a provider with the current
+version logs ``email.oauth_disclosure_ack``, the CASA evidence. That line holds
+no address.
 """
 
 from __future__ import annotations
@@ -42,7 +49,7 @@ from uuid import uuid4
 
 import httpx
 from acb_auth import UserContext, get_current_user
-from acb_common import get_settings
+from acb_common import clear_run_context, get_settings, run_context_scope
 from email_ingestion.import_window import DEFAULT_IMPORT_MONTHS, since_for_months
 from email_ingestion.providers.app_credentials import MICROSOFT_OAUTH_BASE, oauth_app
 from email_ingestion.providers.gmail import GMAIL_SCOPES
@@ -104,6 +111,16 @@ _AADSTS_CODE = re.compile(r"AADSTS(\d{5,6})")
 _ADMIN_CONSENT_CODES = frozenset({"90094", "90095", "65001"})
 #: The member said no on the consent screen.
 _DECLINED_CODES = frozenset({"65004"})
+
+#: The disclosure words a member must acknowledge before Gmail (EM-G11a item 6).
+#: ``DISCLOSURE_VERSION`` in ``src/app/email/lib/connect.ts`` holds the same
+#: value, and ``test_the_disclosure_versions_match`` holds the two together. A
+#: new version here turns away a tab that showed the old words, so the member
+#: reads the new words first.
+GMAIL_DISCLOSURE_VERSION = "2026-11-draft"
+
+#: The code of the refusal. The BFF hands it to the callback page.
+DISCLOSURE_REQUIRED = "disclosure_required"
 
 #: The providers of the connect flow, in the order of the capability read.
 #: A bounce names a provider only when it is one of these, so a path segment
@@ -210,6 +227,26 @@ def provider_available(provider: str, user: UserContext) -> bool:
     return provider != "gmail" or gmail_connect_allowed(user)
 
 
+def _log_disclosure(event: str, provider: str, organization_id: str,
+                    **fields: str) -> None:
+    """Log a disclosure line with no address (EM-G11a item 7).
+
+    🔴 **A plain ``_log.info`` here writes the member's address.** The session
+    gate binds ``user=<address>`` into the log context of each BFF request
+    (``acb_auth.deps._bind_session_member``), and ``merge_contextvars`` adds it
+    to every line. So this line runs with the run fields unbound, and
+    ``run_context_scope`` puts them back for the rest of the request. The
+    Router needs that ``user`` to bill any later model call.
+
+    Fence: ``test_the_ack_log_line_carries_no_address``, which renders the line
+    through ``merge_contextvars``.
+    """
+    with run_context_scope():
+        clear_run_context()
+        _log.info(event, provider=provider, organization_id=organization_id,
+                  **fields)
+
+
 @router.get("/oauth/{provider}/authorize")
 async def oauth_authorize(
     provider: str,
@@ -217,6 +254,7 @@ async def oauth_authorize(
     redirect_after: str = Query(default=""),
     login_hint: Annotated[str | None, Query()] = None,
     import_months: Annotated[str | None, Query()] = None,
+    disclosure: Annotated[str | None, Query()] = None,
 ):
     """Start OAuth flow for an email provider.
 
@@ -249,6 +287,11 @@ async def oauth_authorize(
     ``import_months`` is the import range of a new mailbox, 0 to 6 months, and
     1 when absent (EM-T6a, D-EM-11). Any other value answers 400 before the
     route signs a state. The state carries it to the callback.
+
+    ``disclosure`` is the version of the words the member acknowledged in the
+    disclosure step (EM-G11a item 6). Gmail needs the current version, and any
+    other value answers 400 before the route signs a state. Microsoft needs no
+    value, so a live Outlook connect cannot break here (item 4).
     """
     if not user.organization_id or not user.email:
         raise HTTPException(
@@ -261,11 +304,19 @@ async def oauth_authorize(
     if provider == "gmail" and not gmail_connect_allowed(user):
         # Dark (EM-G7): the answer of a box with no Google app. It refuses
         # before it signs a state or reads a mailbox, and it names no flag.
-        # A reconnect of a Gmail mailbox is refused too, and production
-        # holds none (§12.3.9 as-built). A member off the list of EM-G7b
-        # gets the same answer. A `login_hint` never widens the list.
+        # A reconnect of a Gmail mailbox is refused too. Production holds
+        # Gmail mailboxes since the flag went on, so a box that turns the
+        # flag off again strands them. A member off the list of EM-G7b gets
+        # the same answer. A `login_hint` never widens the list.
         _log.info("email.oauth_gmail_dark", leg="authorize")
         raise HTTPException(status_code=400, detail=_NOT_CONFIGURED["gmail"])
+    if provider == "gmail" and disclosure != GMAIL_DISCLOSURE_VERSION:
+        # EM-G11a item 6. Before `sign_oauth_state`, so no state exists for a
+        # connect that skipped the step. The value is request input, so this
+        # line does not log it.
+        _log_disclosure("email.oauth_disclosure_refused", provider,
+                        str(user.organization_id))
+        raise HTTPException(status_code=400, detail=DISCLOSURE_REQUIRED)
     if len(redirect_after) > _MAX_REDIRECT_AFTER:
         raise HTTPException(status_code=400, detail="redirect_after is too long.")
     months = DEFAULT_IMPORT_MONTHS
@@ -349,6 +400,13 @@ async def oauth_authorize(
         # the session. A first connect sends no prompt (EM-T3a item 3).
         params["login_hint"] = hint
     auth_url = f"{base}?{urlencode(params)}"
+
+    if disclosure == GMAIL_DISCLOSURE_VERSION:
+        # EM-G11a item 7, the CASA evidence. It logs last, so each line is a
+        # member who reached the provider. Never add an address to this line.
+        _log_disclosure("email.oauth_disclosure_ack", provider,
+                        str(user.organization_id),
+                        version=GMAIL_DISCLOSURE_VERSION)
 
     # ⚠️ No `response_mode=form_post`. The provider would then POST the code
     # cross-site, and the browser drops the Lax session cookie on that POST, so

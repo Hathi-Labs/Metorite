@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono, Inter } from "next/font/google";
+import { Geist, Geist_Mono, Inter, Roboto } from "next/font/google";
 import "./globals.css";
 import { GLASS_LOOK, LOOK_ATTRIBUTE } from "@/lib/theme/look";
 
@@ -23,6 +23,18 @@ const geistMono = Geist_Mono({
 // fetches it. A browser downloads a face only when text uses it.
 const inter = Inter({
   variable: "--font-inter",
+  subsets: ["latin"],
+  preload: false,
+  display: "swap",
+});
+
+// The Google button only (EM-G11a item 8). Google's rules name Roboto Medium
+// for the label of its button. This is not a third face of the app, and no
+// other text uses it. `preload: false`, so a page with no such button never
+// fetches it.
+const roboto = Roboto({
+  variable: "--font-roboto",
+  weight: "500",
   subsets: ["latin"],
   preload: false,
   display: "swap",
@@ -62,7 +74,7 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-const fontVariables = [geistSans.variable, geistMono.variable, inter.variable]
+const fontVariables = [geistSans.variable, geistMono.variable, inter.variable, roboto.variable]
   .filter(Boolean)
   .join(" ");
 

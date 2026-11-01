@@ -25,6 +25,7 @@
 > ✅ **EM-T5b-2 in full MERGED (#593, 2026-10-03), OFF in production until the owner's go.** `on` now opens the thread status, the cold check and the sender pin too, each with no LLM path. The startup check logs a box that cannot reach `decide` (§10.4.8). Review fix round 3 adds the move bar of 0.7 to an archiving cold check and to a status whose rule moves mail. It asks a sure status before the rule match, and it puts the new-mail floor on the sent rows.
 > 📝 **§11 multi-inbox is SPECIFIED (2026-10-03).** Several mailboxes for one member: the AI context, the mailbox chip, All inboxes and the From row (D-EM-17 to D-EM-28, slices EM-T8a to EM-T8g). ✅ **EM-T8a MERGED (#587, 2026-10-03).** It fixes the wrong-sender defects. ✅ **EM-T8b MERGED (#588, 2026-10-03, migration 227).** Each mailbox has a name and a colour chip. ✅ **EM-T8c MERGED (#592, 2026-10-03).** The From row shows which mailbox sends, and warns when it does not fit. ✅ **EM-T8d MERGED (#596, 2026-10-03).** All inboxes lists the mail of each mailbox, and each row names its mailbox. ✅ **EM-T8e-2 MERGED (#597) and EM-T8e-3 MERGED (#599), 2026-10-03.** The chat tools bind each act to one mailbox, and the chat has a scope: one mailbox or All inboxes.
 > 📝 **§12 Gmail beside Outlook is SPECIFIED (2026-10-04).** The owner amended D-EM-5, so Gmail and Google Workspace mailboxes join Outlook in the connect flow. §12 holds D-EM-31 to D-EM-35, the slices EM-G1 to EM-G10 and the Google runbook. ✅ **EM-G1 is MERGED (#625, 2026-10-05).** The re-key reclaim runs only for Outlook (D-EM-34). ✅ **EM-G2 is MERGED (#626, 2026-10-05):** the Gmail parse and the folder model of D-EM-33 (§12.3.2). ✅ **EM-G4a is MERGED (#629, 2026-10-05):** the Gmail rate limits and the record of a failed fetch (§12.3.5.1). ✅ **EM-G4b is MERGED (#632, 2026-10-05):** the Gmail history cursor and its recovery (§12.3.5.2). ✅ **EM-G3a is MERGED (#634, 2026-10-05):** Gmail send and drafts (§12.3.3). ✅ **EM-G7 is MERGED (#637, 2026-10-05).** The connect backend asks the two scopes of D-EM-31 and answers the capability read of D-EM-35. `EMAIL_GMAIL_CONNECT` keeps Gmail dark (D-EM-36), and no Integrations write can set a mail-app key (O-GM-5). ✅ **EM-G8 is MERGED (#638, 2026-10-05):** the connect UI, dark, because Gmail stays "Coming soon" while the capability read says no (§12.3.10). ✅ **EM-G7b is MERGED (#639, 2026-10-05):** `EMAIL_GMAIL_CONNECT_MEMBERS` narrows the Gmail connect to the listed members, for the live test of the owner (§12.3.9b). ✅ **EM-G9 is MERGED (#640, 2026-10-05):** the parity tests of a Gmail and Outlook pair, with no SQL change (§12.3.11). The orchestrator amended D-EM-36: the flag flips for the owner's test after EM-G5a, EM-G9 and EM-G7b merge (§12.2). ✅ **EM-G5a is MERGED (#641, 2026-10-05):** the Gmail import reads one list of all mail, with an estimate and a resume (§12.3.6.1). ✅ **EM-G5b is MERGED (#647, 2026-10-05):** a Gmail Resync trashes a row only after Gmail answers 404 `notFound` to its provider id (§12.3.6.2). ✅ **EM-G3b is MERGED (#645, 2026-10-05):** a Gmail move to a user label, and the Gmail filter list (§12.3.4).
+> 🔨 **EM-G11a (PR-G1) is BUILT on branch `mt-98357a2c-gmail-disclosure`, not merged (2026-11-02).** Each connect now passes a disclosure step, and the Gmail authorize leg refuses a connect with no acknowledgement. The words are a draft, version `2026-11-draft` (§12.3.13.4).
 > 📝 **§13 Insights is SPECIFIED, audited GO-NARROWED (2026-10-07). EM-T14a to EM-T14d are dispatchable dark.** A background job writes typed facts from mail and its files to one table, `email_insights`. The Dashboard shows them in a tab for each domain, and `query_insights` gives them to the email assistant. §13 holds D-EM-37 to D-EM-46 and the slices EM-T14a to EM-T14g. The owner answered Q-IN-1 to Q-IN-4 on 2026-10-07, and the job became two stages: a `decide` screen, then the extraction (D-EM-43). The flip is the owner's act.
 > 📝 **§14 Tiered email storage and the inbox onboarding flow is SPECIFIED (2026-10-07). EM-S1 is ✅ MERGED #719 (2026-10-07). EM-S2, the pane and the prefetch, is ✅ MERGED #724 (2026-10-08). EM-S9, the sync banner, is ✅ MERGED #717 (2026-10-07). EM-S10 is ✅ MERGED #721 (2026-10-07). EM-S3, no writer stores old HTML, is 🔨 BUILT, not merged (2026-10-08). The other slices are not built. Audited twice, GO-NARROWED for EM-S1 to EM-S3, EM-S9 and EM-S10 (2026-10-07).** Old HTML lives at the provider, and the text stays (D-EM-47 to D-EM-60, EM-S1 to EM-S10).
 > ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
@@ -13915,7 +13916,7 @@ connect is the precedent (`src/app/whatsapp/connect/page.tsx:340`), and
 
 | PR | Slice | Items | Gate | Size | Section |
 |---|---|---|---|---|---|
-| PR-G1 | **EM-G11a** — the disclosure step and the Google button | 1, 8 | 🟢 AGENT-SAFE · security review · visual review. 🔴 The owner approves the disclosure text (Q-GM-7) | M, about 550 | §12.3.13.4 |
+| PR-G1 | **EM-G11a** — the disclosure step and the Google button. 🔨 Built, not merged (2026-11-02, branch `mt-98357a2c-gmail-disclosure`) | 1, 8 | 🟢 AGENT-SAFE · security review · visual review. 🔴 The Google submission waits for the owner's final words (Q-GM-7) | M, about 550 | §12.3.13.4 |
 | PR-G2 | **EM-G11b** — one set of Gmail scopes. ✅ Merged #1001 (2026-10-14) | 2 | 🟢 AGENT-SAFE | M, about 350 | §12.3.13.5 |
 | PR-G3 | **EM-G11c1** — a card for each chat write. ✅ Merged #1019 (2026-10-14) | 3 | 🟢 AGENT-SAFE · security review | M, about 550 | §12.3.13.6 |
 | PR-G3b | **EM-G11c1b** — cards in the email chat pane (Q-GM-14, owner answer 2026-10-14). ✅ Merged #1030 (2026-10-15). A browser spec proves the pane shows cards. In the pane and the Chat app, a saved draft card starts saved. On the D99 path a delegated `draft_reply` shows no draft card (§12.3.13.6b). The interim text names no chat | 3 | 🟢 AGENT-SAFE · one review round · visual review | S, about 150 | §12.3.13.6b |
@@ -13960,6 +13961,25 @@ acceptance item.
 
 ##### 12.3.13.4 EM-G11a — the disclosure step and the Google button (PR-G1)
 
+**Status.** 🔨 Built 2026-11-02 on branch `mt-98357a2c-gmail-disclosure`, not merged. The spec-auditor
+cleared it GO-NARROWED at risk tier HIGH, with no migration.
+
+**This version is a draft.** Gmail connect is live on production. `EMAIL_GMAIL_CONNECT` is true, no
+member list is set, and production holds 4 Gmail mailboxes (measured 2026-11-02). So a member sees
+this step on the day it ships, and the gateway check binds that member at once. The words must be
+true for a live member today. The Google submission waits for the owner's final words and a final
+`DISCLOSURE_VERSION`. The owner approves the words in a preview. Task
+`33204727-33db-4295-955e-eac30f9e58dd` moves Gmail text off direct DeepSeek. That change is a new
+`DISCLOSURE_VERSION`, because the words live in one constant.
+
+**Gates, item by item.**
+
+| Items | Gate |
+|---|---|
+| 1 to 8 | 🟢 AGENT-SAFE build, with security review and visual review |
+| The words of §12.3.13.4.1 | 🔴 The owner approves them before the Google submission (Q-GM-7) |
+| A change of provider in the words | 🔴 The owner decides each change of vendor (§12.4.1) |
+
 **Scope.**
 
 1. **A new step, the disclosure.** It is the last screen before the browser leaves Metorite. The
@@ -13989,13 +14009,19 @@ acceptance item.
    `src/app/email/lib/connect.ts`, beside `IMPORT_RANGE_COPY`. The draft text is in
    §12.3.13.4.1. A change of the words changes the version.
 6. **The gateway checks the acknowledgement.** The BFF route
-   (`src/app/api/email/oauth/[provider]/authorize/route.ts`) passes a `disclosure` query value. The
-   Gmail authorize leg (`transport/oauth.py`, the function that builds `params`) answers 400
-   `disclosure_required` when the value is not `GMAIL_DISCLOSURE_VERSION`. It answers before it signs
-   a state. *Why:* a later button that skips the step then fails in a test, not in a review at Google.
+   (`src/app/api/email/oauth/[provider]/authorize/route.ts`) passes a `disclosure` query value, and
+   a strict pattern holds that value, as `IMPORT_MONTHS` does. In `oauth_authorize`
+   (`transport/oauth.py`), the check comes right after the Gmail dark gate and before
+   `sign_oauth_state`. It does not go in the code that builds `params`, because that code runs after
+   the state is signed. The leg answers 400 `disclosure_required` when the value is not
+   `GMAIL_DISCLOSURE_VERSION`. *Why:* a later button that skips the step then fails in a test, not in
+   a review at Google. Each caller that builds an authorize URL must carry the value, so
+   `getOAuthUrl` and `getOAuthAuthorizeUrl` go from `src/app/email/lib/api.ts`. They built a URL with
+   no value, and no caller used them.
 7. **A record of each acknowledgement.** The authorize leg logs `email.oauth_disclosure_ack` with the
-   provider, the version and the organization id, and no address. That log line is the CASA evidence.
-   No migration.
+   provider, the version and the organization id, and no address. It logs the line just before the
+   redirect, so the line records a member who reached the provider. A Microsoft connect logs the
+   line only for the current version. That log line is the CASA evidence. No migration.
 8. **The Google button (item 8).** It follows
    `https://developers.google.com/identity/branding-guidelines`.
    - The label is "Continue with Google". The mark is the standard four-colour "G", unchanged, from
@@ -14032,6 +14058,9 @@ acceptance item.
   - `every-handleConnect-caller-passes-the-disclosure`: reads `page.tsx` as text, in the pattern of
     `lib/allInboxes.test.ts:443`.
   - `google-button-reads-continue-with-google`
+  - `the-button-waits-for-the-box`: draws the step with the box clear, and finds `disabled`.
+  - The old assertion that the range step reads "Continue to Google" now reads "Continue"
+    (`connect.test.ts`, the range step test of EM-G8).
 - `tests/unit/test_email_gmail_connect.py`:
   - `test_gmail_authorize_needs_the_disclosure`
   - `test_an_old_disclosure_version_is_refused`
@@ -14055,8 +14084,44 @@ uv run ruff check apps/services/gateway/gateway/routes/email/transport/oauth.py
 
 ###### 12.3.13.4.1 The disclosure text, draft for the owner (Q-GM-7)
 
-Product copy is not bound by STE (`docs/style_ste.md` §1). The text below must agree with the
-privacy page of the parallel PR. The `[…]` list hangs on Q-GM-5 and Q-GM-7.
+Product copy is not bound by STE (`docs/style_ste.md` §1). `DISCLOSURE_COPY` in
+`src/app/email/lib/connect.ts` is the one copy of these words, and this section mirrors it.
+The privacy page of the parallel PR must agree with these words before the Google submission. See
+the disagreement below.
+
+**The sub-processors, measured 2026-11-02.** These are the live bindings on production.
+
+| Sub-processor | In the words | Evidence |
+|---|---|---|
+| TypeSafe | Yes | `tier-decide` binds `aimlapi/typesafe/jev`. `DECIDE_FEATURE_MODES` holds `email.rule_match=on` and `email.thread_status=on` |
+| AI/ML API | Yes | It is the reseller of that binding |
+| DeepSeek | Yes | `tier-fast`, `tier-balanced` and `tier-powerful` each bind direct DeepSeek at rank 1. `EMAIL_AGENT_MODEL` is `tier-powerful` |
+| Google Gemini | **No** | No live path reaches it. `tier_binding` holds 0 Gemini rows, and `provider_credential` holds no Gemini row. `model_config` holds 0 Gemini values in `tier_overrides` and in `enabled_models`. `GEMINI_API_KEY` is set on the box, but no tier uses it |
+
+⚠️ An admin can bind a Gemini model to a tier in Settings. A binding like that needs a new
+`DISCLOSURE_VERSION` first.
+
+**Changes from the first draft of 2026-10-14, and why.**
+
+- **"They may not use your data to train their models" is gone.** It was false. The privacy policy
+  of DeepSeek lets it use personal data to train its models. The words now say that DeepSeek
+  processes the text in China under its own terms.
+- **"What we never do" now states only what Metorite itself does.**
+- **The AI paragraph now says what runs with no member choice.** The rule match and the thread
+  status run on new mail with Auto-run off too (`_maybe_classify_threads`).
+- **"It sends mail and saves drafts only when you, or a rule that you set, tell it to" is split.**
+  No rule sends mail. `REPLY` and `FORWARD` call `create_draft` (`automation/actions.py`).
+- **"Metorite lists the filters it made" is gone.** `GmailProvider.list_filters` reads each Gmail
+  filter of the mailbox.
+- **The disconnect paragraph now names what stays.** The revoke skips an address that another
+  Metorite row shares (`teardown.py`, migration 263). A task, a note or a chat message stays
+  (§12.4.2 gap 5), and so do the backups.
+
+**The disagreement with the open site branch.** `origin/site-google-verification` names Gemini, and
+its §3.5 says "never so that they can train or improve their models". Both disagree with these
+words. The owner resolves the §3.5 line before that branch merges. It is outside this slice.
+
+**The Gmail words.**
 
 ```text
 Before you connect Gmail
@@ -14066,30 +14131,40 @@ Metorite will ask Google for two permissions.
 1. Read, send and organise your email
    Metorite reads your messages, with their headers and attachments, your
    labels and your drafts. It shows your mail in Metorite and keeps it in step
-   with Gmail in both directions. It sends mail and saves drafts only when you,
-   or a rule that you set, tell it to. It archives, labels and moves mail when
-   you or your rules do.
+   with Gmail in both directions. It sends mail only when you tell it to. It
+   saves a draft when you ask for one, or when a rule or a setting that you
+   chose says so. It archives, labels and moves mail when you or your rules do.
 
 2. Manage your Gmail filters
-   When you choose Auto-archive for a sender, Metorite creates a Gmail filter
-   for it. Metorite lists the filters it made, and removes them when you change
-   your mind or disconnect.
+   Metorite reads your Gmail filters and shows them on its rules screen. When
+   you choose Auto-archive for a sender, Metorite creates a Gmail filter for
+   that sender. It removes the filters it made when you change your mind or
+   disconnect.
 
 AI features
-Metorite uses AI to sort your mail by your rules. When you turn them on, AI
-also drafts replies for you to review and answers your questions about your
-mail. A draft is never sent unless you send it. To do this, Metorite sends the
-text of the relevant messages to these sub-processors: [TypeSafe, AI/ML API,
-the AI model providers named in our privacy policy]. They may not use your
-data to train their models.
+Metorite uses AI on new mail to decide which of your rules matches and which
+threads need your reply. AI also writes a draft reply when you ask for one or
+turn on automatic drafts, answers your questions about your mail, and writes
+your digest if you turn it on. A draft is never sent unless you send it.
 
-What we never do
-We do not use your Gmail data for advertising, we do not sell it, and we do
-not use it to train a general AI model.
+Who processes your mail for AI
+To do this, Metorite sends your mail to these sub-processors: TypeSafe, AI/ML
+API and DeepSeek. TypeSafe receives the parts of a message that a sorting
+decision needs, through AI/ML API. DeepSeek receives the text of the messages
+that a draft, an answer or a digest needs. DeepSeek processes that text in
+China under its own terms, and those terms let it use that text to train its
+models.
+
+What Metorite never does
+Metorite itself does not use your Gmail data for advertising, does not sell
+it, and does not use it to train a general AI model.
 
 Disconnect at any time
 Disconnect the mailbox in Metorite, and Metorite deletes its copy and removes
-its access at Google. Your mail stays in Gmail.
+its access at Google, unless the same Gmail account is connected elsewhere in
+Metorite. A task, a note or a chat message that you made from an email stays
+until you delete it. Backups hold a copy for up to 30 days. Your mail stays in
+Gmail.
 
 Read our privacy policy
 
@@ -14098,6 +14173,13 @@ Read our privacy policy
 
 [Back]   [G  Continue with Google]
 ```
+
+**The Outlook words.** They take the same shape, with these differences. The title is "Before you
+connect Outlook", and the lead names Microsoft. The second permission is "Manage your mailbox
+settings", because `MailboxSettings.ReadWrite` covers Outlook rules and categories. The disconnect
+paragraph says that Microsoft keeps Metorite in the list of apps of the account, because Microsoft
+has no revoke for one delegated grant (`teardown.py`). The button is the shared primary `Button`,
+"Continue to Microsoft". `DISCLOSURE_COPY.microsoft` holds the words.
 
 ##### 12.3.13.5 EM-G11b — one set of Gmail scopes (PR-G2)
 
@@ -16320,9 +16402,9 @@ refresh token from Testing still ends after 7 days.
 The questions of EM-G11 (§12.3.13, 2026-10-14):
 
 - **Q-GM-7. Approve the disclosure text (§12.3.13.4.1), and name each sub-processor in it.** The
-  draft names TypeSafe, AI/ML API and "the AI model providers named in our privacy policy".
-  Google can ask for each name. It hangs on Q-GM-5. PR-G1 can merge with the draft text, but the
-  app is not published before the owner approves it.
+  draft of 2026-11-02 names TypeSafe, AI/ML API and DeepSeek, the live set, and it names no
+  Gemini. Google can ask for each name. It hangs on Q-GM-5. PR-G1 can merge with the draft text.
+  The Google submission waits for the owner's final words and a final `DISCLOSURE_VERSION`.
 - **Q-GM-8. Enable billing for Cloud KMS?** The proposal is one SOFTWARE key in Cloud KMS, at
   about USD 0.06 for each month plus the operations (§12.3.13.10). The owner also creates a service
   account that can only encrypt and decrypt with that key. Money: an owner act.
