@@ -67,7 +67,8 @@ describe("the reminder receipt card", () => {
     expect(html).toMatch(/data-reminder-exact[^>]*>[^<]*2099|data-reminder-exact[^>]*>[^<]*Oct/);
     expect(html).toContain("data-reminder-relative");
     expect(html).toMatch(/in \d+ days/);
-    expect(html).toContain("private, only you see it");
+    // A shared chat shows the receipt to each member, so the words fit each one.
+    expect(html).toContain("private to its owner");
     // The Bell glyph sits in the round badge.
     expect(html).toContain("lucide-bell");
   });
@@ -132,6 +133,10 @@ describe("the wiring", () => {
     expect(cards.indexOf("if (isReminderReceipt(e)) {")).toBeLessThan(
       cards.indexOf("items.push(<ActionResultCard key={e.id} event={e} />);"),
     );
+  });
+
+  it("a repeat of a reminder says so on the card", () => {
+    expect(cards).toContain("receipt.already ? ALREADY_HEAD : meta.label");
   });
 
   it("See in Calendar opens /calendar?reminder=<id>, and Change time calls /reschedule", () => {

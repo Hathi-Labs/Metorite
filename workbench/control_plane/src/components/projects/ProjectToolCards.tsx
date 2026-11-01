@@ -43,7 +43,7 @@ import { useOverflowTip } from "@/components/ui/OverflowTip";
 import { LEGEND, parseTaskRows, taskRowFacts, type ProjectTaskRow } from "@/lib/projectToolRows";
 import { statusAccent } from "@/lib/statusAccent";
 import { noteReminderReceipt } from "@/lib/shell/reminderOpen";
-import { readReminderReceipt } from "@/lib/reminderReceipt";
+import { ALREADY_HEAD, readReminderReceipt } from "@/lib/reminderReceipt";
 import ReminderReceiptCard from "./ReminderReceiptCard";
 import { glassToneFrame } from "@/components/glassCard";
 
@@ -1130,7 +1130,8 @@ function ReminderReceiptHost({ event: e }: { event: ToolEvent }) {
   }, [e.id]);
   if (!receipt) return null;
   const meta = ACTION_META[e.name] ?? { icon: "Bell", label: genericLabel(e.name) };
-  return <ReminderReceiptCard id={e.id} label={meta.label} receipt={receipt} openTask={openTask} />;
+  const label = receipt.already ? ALREADY_HEAD : meta.label;
+  return <ReminderReceiptCard id={e.id} label={label} receipt={receipt} openTask={openTask} />;
 }
 
 /** A label for a tool this file has no entry for — the generic card. */

@@ -307,8 +307,9 @@ MANIFEST: tuple[Route, ...] = (
     # RM-3 built the tools. The writes are class B, because each one is a
     # reversible write on the member's own record, and `reopen` is the Undo
     # of a done or a drop. RX-2 (2026-11-01): these five tools act at once
-    # in a chat that may send, with an Undo on the receipt, and show one card
-    # in a held chat (`writes._reminder_acts_at_once`). They stay class B:
+    # in a chat that read no outside mail, with an Undo on the receipt, and
+    # show one card in any other chat (`writes._reminder_acts_at_once`,
+    # `egress.write_must_show_card`). They stay class B:
     # the class marks "a reversible write", and the one reader decides the
     # card. The promote makes a task and has no undo, so it is class C and
     # always shows its card. The route finds a reminder by its OWNER only.

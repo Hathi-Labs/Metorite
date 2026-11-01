@@ -32,7 +32,7 @@ import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import Button from "@/components/ui/Button";
 import Input from "@/components/ui/Input";
 import { exactWhen, gridZone, laterPresets, relativeWhen, wallInputs } from "@/lib/reminderClock";
-import { calendarReminderHref, canUndo, runUndo, type ReminderReceipt } from "@/lib/reminderReceipt";
+import { calendarReminderHref, canUndo, receiptZoneName, runUndo, type ReminderReceipt } from "@/lib/reminderReceipt";
 import { moveReminder } from "@/lib/reminderWrite";
 import { knownZone } from "@/lib/shell/reminderOpen";
 
@@ -49,7 +49,7 @@ export default function ReminderReceiptCard({
 }: {
   /** The tool event id, stable across a replay. */
   id: string;
-  /** "Reminder set", "Reminder changed" or "Reminder moved". */
+  /** "Reminder set", "Reminder changed", "Reminder moved" or "Reminder already set". */
   label: string;
   receipt: ReminderReceipt;
   /** Opens the linked task in Projects. */
@@ -107,7 +107,7 @@ export default function ReminderReceiptCard({
     setFireMs(ms);
     setPicking(false);
     setUndone(true); // The old Undo no longer fits the new time.
-    setSaid(`Moved to ${exactWhen(ms, zone, Date.now(), receipt.zoneName)}.`);
+    setSaid(`Moved to ${exactWhen(ms, zone, Date.now(), receiptZoneName(receipt, ms))}.`);
   };
 
   const saveTime = () => {
@@ -119,7 +119,8 @@ export default function ReminderReceiptCard({
     void moveTo(check.when.iso, check.when.ms);
   };
 
-  const summary = `${title} · ${exactWhen(fireMs, zone, now, receipt.zoneName)}`;
+  const exact = exactWhen(fireMs, zone, now, receiptZoneName(receipt, fireMs));
+  const summary = `${title} · ${exact}`;
 
   return (
     <RollupCard id={`tool:${id}`} title={label} icon="Bell" summary={summary} header="own">
@@ -138,10 +139,10 @@ export default function ReminderReceiptCard({
                 {title || "Reminder"}
               </div>
               <div className={`text-xs ${dropped ? "text-muted-foreground line-through" : "text-foreground"}`} data-reminder-exact="">
-                {exactWhen(fireMs, zone, now, receipt.zoneName)}
+                {exact}
               </div>
               <div className="text-[10px] text-muted-foreground" data-reminder-relative="">
-                {dropped ? "Dropped" : relativeWhen(fireMs, now)} · private, only you see it
+                {dropped ? "Dropped" : relativeWhen(fireMs, now)} · private to its owner
               </div>
               {receipt.taskId && (
                 <div className="mt-1">

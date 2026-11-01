@@ -4658,12 +4658,14 @@ async def create_personal_task(
 #
 # **Act at once (WS-66 RX-2, owner 2026-11-01).** A reminder is private, it
 # reaches nobody else, and Undo reverses it. So set, update, resolve, reopen
-# and reschedule act at once in a chat that may send (``_reminder_acts_at_once``)
-# and the receipt carries the Undo (the ``undo:`` line of ``_reminder_receipt``). A HELD run
-# (``no_egress_for_this_run``) keeps today's one card through ``_confirm``,
-# the one door. There is no general act-at-once seam here: CF-6 stays unbuilt,
-# and only these five tools read ``_reminder_acts_at_once``. The promote keeps
-# its card: it is class C and lives in ``guarded.py``.
+# and reschedule act at once in a chat that read no outside mail
+# (``_reminder_acts_at_once``), and the receipt carries the Undo (the ``undo:``
+# line of ``_reminder_receipt``). A chat that read outside mail, a held run, a
+# delegated run and a run whose mark is unknown keep the one card through
+# ``_confirm``, the one door (``egress.write_must_show_card``). There is no
+# general act-at-once seam here: CF-6 stays unbuilt, and only these five tools
+# read ``_reminder_acts_at_once``. The promote keeps its card: it is class C
+# and lives in ``guarded.py``.
 #
 # **Time.** The tool resolves it. ``at`` is ISO 8601 with an offset, a wall
 # time with no offset read in the member's SAVED zone, or a date and the word
@@ -4712,24 +4714,28 @@ async def _reminder_gate(tool: str) -> str:
     return no_card_channel(tool) or await reminders_off()
 
 
-def _reminder_acts_at_once() -> bool:
+async def _reminder_acts_at_once() -> bool:
     """True when a reminder write in this run needs no card (WS-66 RX-2).
 
-    THE one reader of the rule, so the held-chat slice (RX-1) joins here. A run
-    that may send acts at once. A held run (``egress.no_egress_for_this_run``,
-    which fails closed) keeps its card. A run with no card channel never gets
+    The owner rule: a chat that read outside mail never acts at once. It shows
+    the card. ``egress.write_must_show_card`` is the one reader of that rule,
+    and it reads the mark of the session as well as ``no_egress``. A chat run
+    binds ``no_egress=False`` in a marked chat, so ``no_egress`` alone is not
+    enough. Any fault reads as the card. A run with no card channel never gets
     here: ``_reminder_gate`` refused it first.
     """
     try:
-        from acb_skills.egress import no_egress_for_this_run
-    except ImportError:  # no platform package: nothing can be checked
+        from acb_skills.egress import write_must_show_card
+
+        return not await write_must_show_card()
+    except Exception:  # no platform package, or a fault: the card shows
         return False
-    return not no_egress_for_this_run()
 
 
 async def _ask_reminder(title: str, detail: str, context: str) -> bool:
-    """``True`` to write: at once in an open run, else after the one card."""
-    if _reminder_acts_at_once():
+    """``True`` to write: at once in a chat that read no outside mail, else
+    after the one card."""
+    if await _reminder_acts_at_once():
         return True
     return bool(await _confirm(title=title, detail=detail, context=context))
 
@@ -4907,6 +4913,11 @@ def _reminder_card(row: dict[str, Any] | None) -> dict[str, Any]:
 
 #: What the model says after a write: the receipt card shows the time and the Undo.
 _RECEIPT_CARD = "The member sees a receipt card with an Undo, so say it in one short line."
+#: What the model says when the route found the same open reminder: no write.
+_ALREADY_SET = (
+    "This reminder exists, so no second one was set. Say so in one short line, "
+    "and do not set it again."
+)
 #: The fields that the Undo of ``update_reminder`` can put back.
 _UNDO_PATCH_FIELDS = frozenset({"title", "kind", "fire_at", "tz"})
 
@@ -5003,7 +5014,7 @@ async def set_reminder(
     project) and subject_id link one object. estimate_minutes is your guess
     of how long the act takes. important is yes or no.
     The reminder is saved at once, and the member sees a receipt with an
-    Undo. In a chat that cannot send, the member answers one card first.
+    Undo. In a chat that read outside mail, the member answers one card first.
     Always quote the time and the zone of
     the reply exactly, such as "Fri 31 Oct, 09:00 IST". Never say that a
     reminder is set when the reply does not say so. When reminders are not
@@ -5050,6 +5061,8 @@ async def set_reminder(
     ):
         return _not_confirmed()
     row = await post(REMINDERS, payload) or {}
+    if row.get("already") is True:
+        return _reminder_receipt("Reminder already set", row, _ALREADY_SET)
     return _reminder_receipt("Reminder set", row, _RECEIPT_CARD, undo="drop")
 
 

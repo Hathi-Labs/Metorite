@@ -13,6 +13,9 @@
  *       undo: drop | reschedule | patch   (only when Undo can put it back)
  *       was_fire_at / was_zone / was_title / was_kind   (what Undo puts back)
  *
+ * When the route found the same open reminder, the head is "Reminder already
+ * set" and no `undo` line follows: this call wrote nothing, so it has no Undo.
+ *
  * The card (`components/projects/ReminderReceiptCard.tsx`) draws the receipt
  * from these lines, so it shows a real reminder: its title, its exact time and
  * its relative time. The member never reads the machine lines
@@ -20,8 +23,9 @@
  *
  * Fence (R7): `reminderReceipt.test.ts` beside this file.
  */
+import { offsetMinutes } from "@/lib/reminderClock";
 import { REMINDERS_BASE } from "@/lib/reminderWrite";
-import { refusalWords, runReminderAct, UNREACHABLE_WORDS } from "@/lib/shell/reminderOpen";
+import { knownZone, refusalWords, runReminderAct, UNREACHABLE_WORDS } from "@/lib/shell/reminderOpen";
 
 /** The tools whose receipt draws as a reminder card. */
 export const REMINDER_RECEIPT_TOOLS: ReadonlySet<string> = new Set([
@@ -44,9 +48,14 @@ export interface ReminderReceipt {
   taskId: string | null;
   undo: UndoKind | null;
   was: { title?: string; kind?: string; fireAt?: string; zone?: string };
+  /** True when the route found the same open reminder, and wrote nothing. */
+  already: boolean;
 }
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+
+/** The head of a receipt when no write happened (`writes.py::set_reminder`). */
+export const ALREADY_HEAD = "Reminder already set";
 
 /** The value of a `  key: value` machine line, or null. */
 function line(result: string, key: string): string | null {
@@ -84,7 +93,19 @@ export function readReminderReceipt(tool: string, result: string): ReminderRecei
     taskId: task && new RegExp(`^${UUID}$`, "i").test(task) ? task.toLowerCase() : null,
     undo: undo === "drop" || undo === "reschedule" || undo === "patch" ? undo : null,
     was,
+    already: result.startsWith(ALREADY_HEAD),
   };
+}
+
+/**
+ * The zone name of a receipt for an instant, or null. The name came from the
+ * saved time, so it holds only while the zone has the same offset at `ms`. A
+ * move across a clock change takes the name the browser gives.
+ */
+export function receiptZoneName(r: ReminderReceipt, ms: number): string | null {
+  const zone = knownZone(r.zone);
+  if (!r.zoneName || !zone) return null;
+  return offsetMinutes(ms, zone) === offsetMinutes(r.fireMs, zone) ? r.zoneName : null;
 }
 
 /**

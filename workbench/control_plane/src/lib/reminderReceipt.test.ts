@@ -5,14 +5,18 @@
  * no `reminder_id` or no `fire_at` still draws a card; Undo of a new reminder
  * stops dropping; a move goes back to a time that has passed; an update with
  * no restorable field offers Undo; the exact time says the wrong day; the
- * relative time says "in 120 minutes"; a preset lands in the past.
+ * relative time says "in 120 minutes"; a preset lands in the past; the day
+ * name leaves the saved zone; a saved zone name stays on a time with another
+ * offset; a repeat of a reminder offers an Undo.
  */
 import { describe, expect, it } from "vitest";
 
 import {
+  ALREADY_HEAD,
   canUndo,
   calendarReminderHref,
   readReminderReceipt,
+  receiptZoneName,
   runUndo,
   undoRequest,
 } from "./reminderReceipt";
@@ -72,6 +76,67 @@ describe("readReminderReceipt", () => {
   it("a linked task needs a real id, and a receipt without one has none", () => {
     expect(readReminderReceipt("set_reminder", set.replace(TASK, "x"))!.taskId).toBeNull();
     expect(readReminderReceipt("reschedule_reminder", moved)!.taskId).toBeNull();
+  });
+});
+
+describe("a repeat of an open reminder", () => {
+  const repeat = set.replace("Reminder set:", `${ALREADY_HEAD}:`).replace("  undo: drop\n", "");
+
+  it("says that no write happened, and offers no Undo", () => {
+    const r = readReminderReceipt("set_reminder", repeat)!;
+    expect(r.already).toBe(true);
+    expect(r.title).toBe("Get a haircut");
+    expect(r.undo).toBeNull();
+    expect(canUndo(r)).toBe(false);
+  });
+
+  it("a new reminder is not a repeat", () => {
+    expect(readReminderReceipt("set_reminder", set)!.already).toBe(false);
+  });
+});
+
+describe("the time of a receipt around midnight and across zones", () => {
+  const IST = "Asia/Kolkata";
+  const NY = "America/New_York";
+  /** 23:50 on 30 Oct in Kolkata, and 14:20 on 30 Oct in New York. */
+  const NOW = Date.parse("2099-10-30T18:20:00Z");
+
+  it("names the day on the wall of the zone it shows", () => {
+    expect(exactWhen(Date.parse("2099-10-30T18:25:00Z"), IST, NOW, "IST")).toMatch(/^Today, 11:55\s?PM IST$/i);
+    expect(exactWhen(Date.parse("2099-10-30T19:00:00Z"), IST, NOW, "IST")).toMatch(/^Tomorrow, 12:30\s?AM IST$/i);
+    expect(exactWhen(Date.parse("2099-10-30T18:00:00Z"), IST, NOW, "IST")).toMatch(/^Today, 11:30\s?PM IST$/i);
+    // Ten minutes after midnight: the time of yesterday evening.
+    const after = Date.parse("2099-10-30T18:40:00Z");
+    expect(exactWhen(Date.parse("2099-10-30T18:25:00Z"), IST, after, "IST")).toMatch(/^Yesterday, 11:55\s?PM IST$/i);
+  });
+
+  it("the saved zone decides the day, not the zone of the browser", () => {
+    const soon = Date.parse("2099-10-30T19:00:00Z"); // 00:30 in Kolkata, 15:00 in New York
+    expect(exactWhen(soon, IST, NOW, "IST")).toMatch(/^Tomorrow/);
+    expect(exactWhen(soon, NY, NOW)).toMatch(/^Today/);
+  });
+
+  it("the relative time reads instants, so no zone can change it", () => {
+    const soon = Date.parse("2099-10-30T19:00:00Z");
+    expect(relativeWhen(soon, NOW)).toBe("in 40 minutes");
+    expect(relativeWhen(Date.parse("2099-10-30T18:00:00Z"), NOW)).toBe("20 minutes ago");
+  });
+
+  it("a saved zone name holds only for a time with the same offset", () => {
+    const winter = set
+      .replace("Fri 31 Oct, 17:00 IST", "Tue 1 Dec, 09:00 GMT")
+      .replace("2099-10-31T11:30:00+00:00", "2099-12-01T09:00:00+00:00")
+      .replace("zone: Asia/Kolkata", "zone: Europe/London");
+    const r = readReminderReceipt("set_reminder", winter)!;
+    expect(r.zoneName).toBe("GMT");
+    expect(receiptZoneName(r, r.fireMs)).toBe("GMT");
+    expect(receiptZoneName(r, Date.parse("2099-12-02T09:00:00Z"))).toBe("GMT");
+    expect(receiptZoneName(r, Date.parse("2099-07-01T09:00:00Z"))).toBeNull();
+  });
+
+  it("a receipt with no saved zone names none", () => {
+    const none = set.replace("  zone: Asia/Kolkata\n", "");
+    expect(receiptZoneName(readReminderReceipt("set_reminder", none)!, Date.parse("2099-10-31T11:30:00Z"))).toBeNull();
   });
 });
 

@@ -29,7 +29,8 @@
   **RX-2 (a reminder write in chat acts at once, with an Undo and a reminder
   receipt card) and RX-6 (the other doors: the `set-reminder` job, the Tasks
   quick capture and "Remind me" on a task) are BUILT 2026-11-02**, behind
-  `CALENDAR_REMINDERS`. A held chat keeps the one card (RX-1 owns that slice).
+  `CALENDAR_REMINDERS`. A chat that read outside mail keeps the one card
+  (`egress.write_must_show_card`).
   **RE-9b (a due reminder sends a real web push) is BUILT 2026-10-31.** It is
   not dark. It sends wherever `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS`
   are on, and production has both on. Its code is in migration 318 and in
@@ -948,13 +949,13 @@ adds the route. RM-1 added each row as a planned tool. RM-3 made it real.
 
 | Tool | Does | Confirm |
 |---|---|---|
-| `set_reminder` | Makes a reminder: `title`, `at` or `in_minutes`, `kind`, `subject_kind` and `subject_id`, `estimate_minutes`, `important` | Acts at once, with an Undo (RX-2). One card in a held chat |
+| `set_reminder` | Makes a reminder: `title`, `at` or `in_minutes`, `kind`, `subject_kind` and `subject_id`, `estimate_minutes`, `important` | Acts at once, with an Undo (RX-2). One card in a chat that read outside mail |
 | `list_reminders` | Lists my reminders by state and window | A read |
-| `update_reminder` | Changes the text, the time, the kind, the link, the estimate or `important` (PATCH) | Acts at once, with an Undo for the title, the kind and the time (RX-2). One card in a held chat |
-| `resolve_reminder` | Done or drop | Acts at once (RX-2). Its Undo is `reopen_reminder`. One card in a held chat |
-| `reopen_reminder` | The Undo of a done or a drop (§5.3) | Acts at once (RX-2). One card in a held chat |
+| `update_reminder` | Changes the text, the time, the kind, the link, the estimate or `important` (PATCH) | Acts at once, with an Undo for the title, the kind and the time (RX-2). One card in a chat that read outside mail |
+| `resolve_reminder` | Done or drop | Acts at once (RX-2). Its Undo is `reopen_reminder`. One card in a chat that read outside mail |
+| `reopen_reminder` | The Undo of a done or a drop (§5.3) | Acts at once (RX-2). One card in a chat that read outside mail |
 | `promote_reminder` | Makes a private task in my personal project, and ends the reminder | One card. It cannot reopen |
-| `reschedule_reminder` | A snooze, a named time, or `smart` (§5.5) | Acts at once, with an Undo (RX-2). One card in a held chat |
+| `reschedule_reminder` | A snooze, a named time, or `smart` (§5.5) | Acts at once, with an Undo (RX-2). One card in a chat that read outside mail |
 
 **As built (RM-3, 2026-10-25).** RM-1 built eight routes, and RM-3 built
 the seven tools over them. `reschedule_reminder` reaches two routes:
@@ -966,13 +967,35 @@ is `tests/unit/test_reminder_tools.py`.
 
 - **Confirm.** A reminder is private and reaches nobody else. Undo reverses
   it. So **RX-2 (owner, 2026-11-01)** made set, update, resolve, reopen and
-  reschedule act at once in a chat that may send. The receipt is the reminder
-  (see "The receipt" below).
-- **A held chat keeps the card.** A held run is one where
-  `egress.no_egress_for_this_run` is true. That reader fails closed. The held
-  run shows the one card through `writes._confirm`, the one door.
-  `writes._reminder_acts_at_once` is the one reader of the rule, and RX-1
-  joins it there. It is not a general CF-6 seam. Only these five tools read it.
+  reschedule act at once in a chat that read no outside mail. The receipt is
+  the reminder (see "The receipt" below).
+- **A chat that read outside mail keeps the card.** This is the owner rule. A
+  top-level chat binds `no_egress=False`, also after it read mail, because the
+  mark lives on the session. So `no_egress` alone is not enough.
+  `egress.write_must_show_card` is the one reader. It reads
+  `no_egress_for_this_run`, then the mark through `run_holds_mail`. The card
+  shows for a held run, a run with no context, a run that cannot ask the
+  member, a delegated run, a run with no session or no tenant, a marked
+  session, and an unknown mark or a Redis fault. The card goes through
+  `writes._confirm`, the one door. `writes._reminder_acts_at_once` is the only
+  caller. It is not a general CF-6 seam. Only these five tools read it.
+- **One reminder for one ask.** With no card, a model retry, a double tool
+  call or a double click reaches `POST /my/reminders` twice. So the route takes
+  a transaction-level advisory lock on the member. It then looks for an open
+  reminder of that member with the same normalised title and the same link,
+  within one minute of `fire_at`. It answers that row with 200 and
+  `already: true`, and it writes no row and no ledger row. The window is one
+  minute because `in_minutes` reads the clock on each call, so a retry names a
+  later instant. A different link is a different reminder. The chat receipt
+  says "Reminder already set" and shows no Undo, and the pack rule tells the
+  model not to set it again. The fence is `tests/unit/test_reminders_r8.py`.
+- **A shared chat.** The reminder belongs to the member whose message started
+  the run. `X-User-Email` comes from the run binding. `_confirm` binds no
+  responder, so any member who can send in the room could approve the card.
+  So acting at once loses no authority. `reminder_events` keeps the record
+  (`created`, with `source` `chat`). A plain card wrote no row of its own. The
+  other member sees the receipt, and Undo and Change time answer 404 for that
+  member, so the card says "private to its owner".
 - **The promote keeps its card.** `promote_reminder` stays class C. It makes a
   task and cannot reopen. The five other tools stay class B in the manifest.
   The fence is `tests/unit/test_reminder_acts_at_once.py`. The pins in
