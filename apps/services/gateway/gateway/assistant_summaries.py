@@ -292,36 +292,58 @@ def sentences(value: str) -> list[str]:
 # Three review rounds of PZ-33a each found a new mark between two digit groups
 # that the rule of a joint missed, such as "98450!!!!12345" or "98450 , ,
 # 12345". So PZ-33b reads digits in one way only: each character that is not a
-# letter joins two digits. A letter is a character of the Unicode category L.
-# A space, a mark, a symbol, an underscore, a format character and a line
-# break each join. A run of RUN_DIGITS digits or more must be a run of the
-# member's typed words, read the same way. So a time range, a date or a price
-# of six digits or more that the member did not type drops too. The agent
-# accepted that cost for a private summary of two or three lines.
+# real letter joins two digits. A real letter is a character of the Unicode
+# category L, less the letters that read as marks (:func:`_reads_as_mark`). A
+# space, a mark, a symbol, an underscore, a format character and a line break
+# each join. A run of RUN_DIGITS digits or more must be a run of the member's
+# typed words, read the same way. So a time range, a date or a price of six
+# digits or more that the member did not type drops too. The agent accepted
+# that cost for a private summary of two or three lines. A real letter ends a
+# run, so "98450x12345" is two runs. That is the agent's call too, and the
+# owner may overrule it (`personalization.md` §15.9).
+
+#: The letters of the category Lo that read as a mark: the click letters read
+#: as a bar, a double bar, a cross and a bang.
+_MARK_LETTERS = frozenset("\u01c0\u01c1\u01c2\u01c3")
+
+
+def _reads_as_mark(ch: str) -> bool:
+    """True for a letter that a reader sees as a mark, so it joins two digits:
+    a modifier letter (Lm), such as U+02D0, U+30FC and U+FF70, and each of
+    :data:`_MARK_LETTERS`."""
+    return ch in _MARK_LETTERS or unicodedata.category(ch) == "Lm"
 
 
 def _read_digits(value: str) -> str:
     """*value* after NFKD, with each digit of any script as an ASCII digit.
     So a fullwidth, an Arabic-Indic, a Devanagari, a superscript and a
-    circled digit each read as the digit that it shows."""
+    circled digit each read as the digit that it shows. A letter that reads
+    as a mark stays as it is, because NFKD turns some of them into real
+    letters (U+02B0 to "h")."""
     out: list[str] = []
-    for ch in unicodedata.normalize("NFKD", value):
-        digit = unicodedata.digit(ch, None)
-        out.append(ch if digit is None else str(digit))
+    for raw in value:
+        if _reads_as_mark(raw):
+            out.append(raw)
+            continue
+        for ch in unicodedata.normalize("NFKD", raw):
+            digit = unicodedata.digit(ch, None)
+            out.append(ch if digit is None else str(digit))
     return "".join(out)
 
 
 def _is_letter(ch: str) -> bool:
-    return unicodedata.category(ch).startswith("L")
+    """True for a real letter, which ends a digit run."""
+    return unicodedata.category(ch).startswith("L") and not _reads_as_mark(ch)
 
 
 def digit_runs(value: Any) -> list[str]:
     """Each run of digits in *value*, in order, as ASCII digits only.
 
     The digits are read through :func:`_read_digits`. Each character between
-    two digits that is not a letter joins them into one run. A letter ends a
-    run. So "98450!!!!12345", "98450 , , 12345" and "98450\\n12345" are each
-    the one run "9845012345", and "98450x12345" is two runs."""
+    two digits that is not a real letter joins them into one run. A real
+    letter ends a run. So "98450!!!!12345", "98450 , , 12345", "98450\u02d012345"
+    and "98450\\n12345" are each the one run "9845012345", and "98450x12345"
+    is two runs."""
     runs: list[str] = []
     run: list[str] = []
     for ch in _read_digits(str(value or "")):

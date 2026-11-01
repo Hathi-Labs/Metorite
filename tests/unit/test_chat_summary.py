@@ -466,6 +466,15 @@ STRICT_DROPS: list[tuple[str, str, list[str], list[dict[str, object]] | None]] =
     ("circled digits, a bang", "Call ⑨⑧④⑤⓪!①②③④⑤ today.", [], None),
     ("fullwidth digits, a fullwidth bang", "Call ９８４５０！１２３４５ today.", [], None),
     ("superscript digits", "Call ⁹⁸⁴⁵⁰¹²³⁴⁵ today.", [], None),
+    # Letters that read as marks (the review of PZ-33b).
+    ("a modifier colon", "Call 98450\u02d012345 today.", [], None),
+    ("a spaced modifier colon", "Call 98450 \u02d0 12345 today.", [], None),
+    ("a prolonged sound mark", "Call 98450\u30fc12345 today.", [], None),
+    ("a halfwidth prolonged sound mark", "Call 98450\uff7012345 today.", [], None),
+    ("a tatweel", "Call 98450\u064012345 today.", [], None),
+    ("a modifier h", "Call 98450\u02b012345 today.", [], None),
+    ("a dental click", "Call 98450\u01c012345 today.", [], None),
+    ("an alveolar click", "Call 98450\u01c312345 today.", [], None),
 ]
 
 
@@ -499,8 +508,10 @@ def test_pz33b_a_typed_number_stays_in_any_marks(text: str, typed: str) -> None:
     "Room 40512 is booked for the review.",
     "Meet at 10:30 for the Q3, 2026 plan.",
     "The team won 3-2, 4-1 this week.",
+    "Rooms 40512 and 40513 are booked.",
 ], ids=["two sentences", "a version", "a ratio", "a price of 4 digits",
-        "a room of 5 digits", "a time and a quarter", "two scores"])
+        "a room of 5 digits", "a time and a quarter", "two scores",
+        "two rooms with a word between"])
 def test_pz33b_a_short_run_stays(text: str) -> None:
     out = summaries.check_answer(_answer(text), summaries.member_words(PROBE_ROWS, MEMBER))
     assert out is not None and out.text == text
@@ -549,18 +560,23 @@ def test_pz33b_the_digit_runs() -> None:
     assert summaries.digit_runs("Room 12, floor 3") == ["12", "3"]
     assert summaries.digit_runs("٩٨٤ ९८४ ９８４ ⁹⁸⁴ ⑨⑧④") == ["984984984984984"]
     assert summaries.digit_runs("v2.3.1 then 10:30") == ["231", "1030"]
+    assert summaries.digit_runs("98450\u02d012345") == ["9845012345"]
+    assert summaries.digit_runs("98450\u02b012345") == ["9845012345"]
+    assert summaries.digit_runs("98450\u01c012345") == ["9845012345"]
+    assert summaries.digit_runs("98450x12345") == ["98450", "12345"]
     assert summaries.digit_runs("") == [] and summaries.digit_runs(None) == []
 
 
 @pytest.mark.xfail(strict=True, reason=(
-    "a letter ends a run (the strict rule of PZ-33b, §15.9). A number split "
-    "by a letter is two runs. The owner may widen the rule"))
+    "a real letter ends a run. The agent made that call, and the owner may "
+    "overrule it (§15.9). A number split by a real letter is two runs"))
 @pytest.mark.parametrize("text", ["Call 98450x12345 today.", "Call 98450 x 12345 today."],
                          ids=["an x", "a spaced x"])
-def test_pz33b_the_boundary_a_letter_splits_a_number(text: str) -> None:
-    """Two probes of review round 3 put a letter between the digit groups.
-    The rule reads a letter as the end of a run, so these stay today. This
-    test records the boundary: it turns red when a change closes it."""
+def test_pz33b_the_boundary_a_real_letter_splits_a_number(text: str) -> None:
+    """Two probes of review round 3 put a real letter between the digit
+    groups. The rule reads a real letter as the end of a run, so these stay
+    today. A letter that reads as a mark joins (``STRICT_DROPS``). This test
+    records the boundary: it turns red when a change closes it."""
     words = summaries.member_words(PROBE_ROWS, MEMBER)
     assert summaries.check_answer(_answer(text), words) is None
 
