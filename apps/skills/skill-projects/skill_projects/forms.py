@@ -164,7 +164,7 @@ def _clean(value: Any) -> str:
 # ── Edit a task ──────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def edit_task(task_id: str) -> str:
     """Open an editable form for a task in the chat: title, description,
     status (by name), due, start, the Important and Leveraged flags,
@@ -387,7 +387,7 @@ def _ref(task: dict[str, Any]) -> str:
 # ── Edit a project ───────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def edit_project(project_id: str) -> str:
     """Open an editable form for a space, folder or project: name,
     description, run state (active, paused, stopped), lead. The member
@@ -997,7 +997,7 @@ def _plan_fills_parent(label: str, parent_label: str, parent_id: str) -> str:
     ))
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 @agent_assignee_refusal_as_text
 async def propose_plan(
     name: str,
@@ -1666,7 +1666,7 @@ FORGED_ROWS = (
 )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 @agent_assignee_refusal_as_text
 async def create_tasks(project_id: str, tasks: str) -> str:
     """Create several new tasks in ONE project as one batch. Use it for 2 or
@@ -2267,7 +2267,7 @@ def _vocab_receipt(
     return "\n".join(lines)
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_tags(project_id: str, tags: str) -> str:
     """Register several new tags on the project's tree as one batch. Use it
     for 2 or more new tags, with no picker first, and never call create_tag
@@ -2286,7 +2286,7 @@ async def create_tags(project_id: str, tags: str) -> str:
     return await _vocab_write(plan, ticked)
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_types(project_id: str, types: str) -> str:
     """Add several new task types to the project's tree as one batch. Use it
     for 2 or more new types, with no picker first, and never call

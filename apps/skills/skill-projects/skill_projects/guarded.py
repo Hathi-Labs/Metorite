@@ -2461,7 +2461,7 @@ async def set_report_schedule(report_id: str, enabled: bool) -> str:
 # ── A reminder becomes a task (WS-66 RM-3, D114) ─────────────────────────────
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False, card_write=True)
 async def promote_reminder(reminder_id: str) -> str:
     """Make one of the member's OPEN reminders a private task in their own
     personal project ("make it a task"). The task takes the reminder's

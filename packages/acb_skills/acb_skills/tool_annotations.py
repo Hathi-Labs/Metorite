@@ -303,6 +303,7 @@ def annotate(
     idempotent: bool = False,
     open_world: bool | None = None,
     card_bound: bool = False,
+    card_write: bool = False,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator registering risk annotations for an agent-defined tool.
 
@@ -315,6 +316,11 @@ def annotate(
     nothing in a held run: ``egress.is_card_bound_send`` also needs the
     tool's name on its list and its pinned parameters. The key is set only
     when it is true, so every other tool's hints stay as they were.
+
+    ``card_write`` (RX-1, D150) marks a first-party write that always shows
+    its exact change on one card. The mark alone keeps nothing in a held
+    chat: ``egress.is_held_card_write`` also needs the tool's name on its
+    list and its pinned parameters.
 
     Example::
 
@@ -330,6 +336,8 @@ def annotate(
         hints["open_world"] = bool(open_world)
     if card_bound:
         hints["card_bound"] = True
+    if card_write:
+        hints["card_write"] = True
 
     def _wrap(fn: Callable[..., Any]) -> Callable[..., Any]:
         TOOL_ANNOTATIONS[fn.__name__] = hints

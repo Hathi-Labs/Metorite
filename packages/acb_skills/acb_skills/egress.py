@@ -25,6 +25,12 @@ Such a run holds only:
    While ``EMAIL_HELD_CARD_SEND`` is on, :data:`HELD_CARD_SEND_TOOLS` join
    too (§21 of ``email_app_master_plan.md``), each behind the held card
    that the gateway records. With the switch off, none of them joins.
+5. the first-party writes of :data:`HELD_CARD_WRITE_TOOLS` (RX-1, D150). Each
+   shows its exact change on one server-built card, and the member's click
+   on that card is the guard, as for ``send_draft``. ``open_world`` does not
+   decide for these. A Projects or CRM write stays only through the list
+   (:func:`is_held_card_write`), and a held chat holds no other write of
+   those owners (:func:`is_held_off_write`).
 
 A tool with no annotation, or with no ``open_world`` key, counts as an
 egress tool (:func:`is_egress_tool`). So an agent from another repo, whose
@@ -41,6 +47,7 @@ and the call-time refusal: :class:`EgressGuardProvider` on the MAF path, and
 from __future__ import annotations
 
 import contextlib
+import functools
 import sys
 import threading
 import weakref
@@ -58,6 +65,7 @@ _log = get_logger("acb_skills.egress")
 __all__ = [
     "CARD_BOUND_KEY",
     "CARD_BOUND_SEND_TOOLS",
+    "CARD_WRITE_KEY",
     "DELEGATION_TOOLS",
     "EGRESS_HELD_MAIL_ANSWER",
     "EGRESS_HELD_MAIL_ANSWER_CARDS",
@@ -70,7 +78,9 @@ __all__ = [
     "EGRESS_HOLD_NOTE_SANDBOX",
     "EGRESS_WITHHELD_ANSWER",
     "HELD_CARD_SEND_TOOLS",
+    "HELD_CARD_WRITE_TOOLS",
     "HELD_REFUSED_PARAMS",
+    "HELD_WRITE_OWNERS",
     "MAIL_STORE_WRITE_REFUSED",
     "MARK_CACHE_MAX",
     "MARK_CLEAR",
@@ -94,6 +104,9 @@ __all__ = [
     "is_card_bound_send",
     "is_delegation_tool",
     "is_egress_tool",
+    "is_held_card_write",
+    "is_held_chat_off",
+    "is_held_off_write",
     "mark_untrusted_answer",
     "mark_untrusted_session",
     "no_egress_for_this_run",
@@ -103,6 +116,7 @@ __all__ = [
     "session_is_marked",
     "session_mark_state",
     "tool_name",
+    "write_must_show_card",
 ]
 
 #: The artifact-context key. ``True`` means this run holds no egress tool.
@@ -763,25 +777,34 @@ EGRESS_HOLD_NOTE_PACK_CARDS = (
     "on a card first."
 )
 #: The answer and the note of a held pack whose owner is NOT an email owner
-#: (WS-67 OA-8a, the CRM pack). The reason is the same: the chat read mail from
-#: outside senders. The email texts talk about email tools, ``send_draft`` and
-#: ``schedule_send``, so a CRM write needs its own words. They name the held
-#: tool and give a next step that fits a write. They hold nothing less.
+#: (WS-67 OA-8a, the CRM pack, and the Projects packs). The reason is the same:
+#: the chat read mail from outside senders. The email texts talk about email
+#: tools, ``send_draft`` and ``schedule_send``, so a write needs its own words.
+#:
+#: RX-1 (D150, owner report of 2026-11-01). These texts said that the pack held
+#: no write, and they sent the member to the app or to a new chat. The model
+#: then refused a reminder that it could set. A held pack keeps each write of
+#: :data:`HELD_CARD_WRITE_TOOLS`, so the note tells the model to call it. For
+#: what stays off, the text names the act and the reason, and no other place.
+#: Fence: ``tests/unit/test_held_send_guidance.py``.
 EGRESS_HELD_PACK_ANSWER_OTHER = (
     "{name} is off now. This chat read email from outside senders, and such "
-    "text can carry hidden instructions. So no tool of this pack may create, "
-    "change or send data now. Tell the member in one sentence what you could "
-    "not do, and why. They can make the change in the app, or ask again in a "
-    "new chat. The read tools of the pack still work."
+    "text can carry hidden instructions. So a tool with no card, a bulk or a "
+    "delete act, a change of access and each path out of Metorite stay off. "
+    "Tell the member in one sentence what you could not do, and why. The other "
+    "writes of this pack still work here, and each shows the member a card "
+    "with the exact change."
 )
 EGRESS_HOLD_NOTE_PACK_OTHER = (
     "## Held in this chat\n"
     "This chat read email from outside senders, and such text can carry "
-    "hidden instructions. So you hold no tool of this pack that creates, "
-    "changes or sends data. If the member asks for such an act, say in one "
-    "sentence that you cannot do it in this chat now, and why. They can make "
-    "the change in the app, or ask again in a new chat. Use the read tools of "
-    "the pack. Your web tools ask the member on a card first."
+    "hidden instructions. Each write of this pack that you hold still works "
+    "here: it shows the member a card with the exact change, and the member "
+    "decides on that card. So call the tool, and do not refuse the act. A tool "
+    "with no card, a bulk or a delete act, a change of access and each path "
+    "out of Metorite stay off, so you do not hold them. If the member asks for "
+    "such an act, say in one sentence what you cannot do, and why. Your web "
+    "tools ask the member on a card first."
 )
 EGRESS_HOLD_NOTE_SANDBOX = (
     "## Held in this run\n"
@@ -1146,6 +1169,144 @@ HELD_REFUSED_PARAMS: Mapping[str, frozenset[str]] = {
 }
 
 
+def _pin(names: str) -> frozenset[str]:
+    """The parameter set of one entry of :data:`HELD_CARD_WRITE_TOOLS`."""
+    return frozenset(names.split())
+
+
+#: The annotation key of a write of :data:`HELD_CARD_WRITE_TOOLS`
+#: (``tool_annotations.annotate``).
+CARD_WRITE_KEY = "card_write"
+
+#: The first-party writes that stay in a held chat, each with its whole
+#: parameter set, EXACTLY (RX-1, D150, owner directive of 2026-11-01).
+#:
+#: **The rule.** Keep the guard on what leaves Metorite. A write that the member
+#: approves on a server-built card stays. Each tool here reads first, then shows
+#: its exact change on one card (``skill_projects.writes._confirm``, or
+#: ``request_confirmation`` for a CRM write), and writes nothing without the
+#: click. The model names no card and no answer. So this is the logic of
+#: ``send_draft``, and the same three tests hold it (:func:`is_held_card_write`):
+#: the name is on this list, the tool's own annotation says
+#: :data:`CARD_WRITE_KEY`, and its parameters are the pinned set. A new parameter
+#: can carry a new path, so it takes the tool off until a person looks.
+#:
+#: **What is here.** The class B tools of the Projects manifest
+#: (``skill_projects.manifest``). The reminder writes, and ``promote_reminder``
+#: although it is class C, because the reminder is the member's own private
+#: record and the task it makes is private too. The four CRM record writes.
+#: Each CRM write says ``open_world=True`` and keeps saying it, because D-CRM-9
+#: can queue it for Zoho. The list keeps it, never a claim on the annotation.
+#: Its card carries the Zoho note. In Mirror mode the three record writes leave
+#: the run first (``_tool_injection.MIRROR_RECORD_WRITES``).
+#:
+#: **What is not here, on purpose** (:func:`is_held_off_write` holds them off).
+#: The class C Projects tools. Each is hard to undo or acts on many rows, so a
+#: steered model should not reach it with one hasty click: archive, delete,
+#: merge, a bulk update, a move of a project, a revert, a status set, a change
+#: of access (``grant_access``, ``revoke_access``). ``nudge_task`` tells another
+#: person. ``add_report_recipient``, ``remove_report_recipient`` and
+#: ``set_report_schedule`` change who gets mail later, so they are paths out.
+#: ``attach_to_task`` moves a file of the chat onto a shared task. A store write
+#: (:data:`STORE_WRITES`), a web tool, a tool with no card and any MCP tool never
+#: join: :func:`is_egress_tool` answers for them before this list.
+#:
+#: Each Projects and CRM tool is native. No pack tool comes through MCP, so a
+#: tool that :func:`_from_mcp` names never passes, whatever it borrows.
+#: Fence: ``tests/unit/test_held_card_writes.py``.
+HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
+    # The Projects core pack.
+    "add_subtasks": _pin("task_id titles"),
+    "assign": _pin("task_id assignees"),
+    "comment": _pin("task_id body reply_to"),
+    "complete": _pin("task_id include_subtasks"),
+    "create_personal_task": _pin(
+        "title notes due context next_action block_start block_end"),
+    "create_task": _pin(
+        "project_id title description status assignees due estimate_mins tags "
+        "parent_task_id priority important leveraged importance repeat "
+        "repeat_every repeat_on repeat_day repeat_month repeat_from repeat_until "
+        "repeat_times start type fields source"),
+    "defer": _pin("task_id until"),
+    "move_task": _pin(
+        "task_ids destination_project_id parent_task_id fields include_subtasks"),
+    "set_my_overlay": _pin(
+        "task_id disposition context energy next_action estimate_mins two_minute "
+        "block_start block_end flexible hard_date actual_start actual_end "
+        "deep_work waiting_on waiting_since expected_by clear"),
+    "update_task": _pin(
+        "task_id title description status due start estimate_mins tags clear "
+        "priority important leveraged importance type fields include_subtasks"),
+    # The class B tools of projects-bulk.
+    "create_tasks": _pin("project_id tasks"),
+    "edit_comment": _pin("task_id comment_id body"),
+    "edit_task": _pin("task_id"),
+    "file_tasks": _pin("moves include_subtasks"),
+    "unarchive_task": _pin("task_id"),
+    "watch": _pin("target_id kind stop"),
+    # The class B tools of projects-plan.
+    "add_task_ref": _pin("task_id url title"),
+    "create_project": _pin("name parent_project_id kind description lead"),
+    "edit_project": _pin("project_id"),
+    "link_tasks": _pin("task_id other_task_id link_type"),
+    "link_tasks_batch": _pin("links"),
+    "propose_plan": _pin("name tasks parent_project_id description risks"),
+    "remove_task_ref": _pin("task_id url"),
+    "report_save": _pin("name project_id sections weeks report_id"),
+    "set_recurrence": _pin(
+        "task_id freq interval weekdays day_of_month month_of_year anchor until "
+        "max_occurrences stop"),
+    "unlink_tasks": _pin("task_id link_id"),
+    "update_project": _pin(
+        "project_id name description status lead icon icon_slot "
+        "archive_after_months close_after_months timezone clear"),
+    # The class B tools of projects-structure.
+    "capture_intake": _pin(
+        "title project_id description due priority important leveraged importance "
+        "source source_ref"),
+    "create_area": _pin("name"),
+    "create_field": _pin(
+        "project_id name field_type options description required org_wide"),
+    "create_status": _pin("project_id name category color"),
+    "create_tag": _pin("project_id name color description org_wide"),
+    "create_tags": _pin("project_id tags"),
+    "create_type": _pin("project_id name icon color is_default is_epic org_wide"),
+    "create_types": _pin("project_id types"),
+    "mark_notifications_read": _pin("ids all_unread"),
+    "save_view": _pin("project_id name view_type view_id filters group_by subtasks"),
+    "triage_intake": _pin("task_id action status duplicate_of until"),
+    "update_field": _pin(
+        "project_id field name description options required field_type"),
+    "update_status": _pin("project_id status name category color position"),
+    "update_tag": _pin("project_id tag name color description"),
+    "update_type": _pin("project_id type_name name icon color make_default epic"),
+    # The reminders: the member's own private record.
+    "set_reminder": _pin(
+        "title at in_minutes kind notes subject_kind subject_id estimate_minutes "
+        "important"),
+    "update_reminder": _pin(
+        "reminder_id title at in_minutes kind notes subject_kind subject_id "
+        "estimate_minutes important clear"),
+    "resolve_reminder": _pin("reminder_id answer"),
+    "reopen_reminder": _pin("reminder_id"),
+    "reschedule_reminder": _pin("reminder_id at in_minutes snooze"),
+    "promote_reminder": _pin("reminder_id"),
+    # The CRM record writes.
+    "create_lead": _pin("lead_name email phone organization_name description"),
+    "update_deal_status": _pin("deal_id stage lost_reason"),
+    "log_activity": _pin("entity record_id activity_type subject body"),
+    "convert_lead": _pin("lead_id deal_name amount expected_close_date"),
+}
+
+#: The pack owners whose every write needs the list. Their tools say
+#: ``open_world=False`` for a true reason: a Projects write stays in Metorite.
+#: So that claim alone would keep a new write, or a delete, in a held chat.
+#: :func:`is_held_off_write` closes that gap for these owners, and a new write of
+#: such an owner is off until a person lists it. The email tools have their own
+#: audit (``tests/unit/test_no_egress_tool_audit.py``), so they are not here.
+HELD_WRITE_OWNERS: frozenset[str] = frozenset({"projects-assistant", "crm-assistant"})
+
+
 def _pinned_params(name: str) -> frozenset[str] | None:
     """The pinned parameters of a card-bound send called *name*, or None.
 
@@ -1192,6 +1353,70 @@ def is_card_bound_send(item: Any) -> bool:
     return _tool_params(item) == allowed
 
 
+def is_held_card_write(item: Any) -> bool:
+    """True for a first-party write that stays in a held chat (RX-1, D150).
+
+    The three tests of :func:`is_card_bound_send`, and each one fails closed:
+    the name is on :data:`HELD_CARD_WRITE_TOOLS`, the tool's own annotation
+    says :data:`CARD_WRITE_KEY`, and the callable's parameters are the pinned
+    set, no more and no fewer. A bare name reads the registry, as
+    :func:`is_egress_tool` does for a bare name. A tool of an MCP server never
+    passes, also with a borrowed name and a borrowed annotation.
+    """
+    if not isinstance(item, str) and _from_mcp(item):
+        return False
+    name = item if isinstance(item, str) else tool_name(item)
+    allowed = HELD_CARD_WRITE_TOOLS.get(name)
+    if allowed is None:
+        return False
+    hints = _risk_of(None if isinstance(item, str) else item, name)
+    if not (isinstance(hints, Mapping) and hints.get(CARD_WRITE_KEY) is True):
+        return False
+    if isinstance(item, str):
+        return True
+    return _tool_params(item) == allowed
+
+
+@functools.lru_cache(maxsize=1)
+def _owner_tool_names() -> frozenset[str]:
+    """Each tool of a pack of :data:`HELD_WRITE_OWNERS`."""
+    from acb_skills.skill_families import SKILL_FAMILIES
+
+    return frozenset(
+        name for family in SKILL_FAMILIES.values()
+        if family.get("owner") in HELD_WRITE_OWNERS for name in family["tools"]
+    )
+
+
+def is_held_off_write(item: Any) -> bool:
+    """True for a write of a listed owner that a held chat does not hold (RX-1).
+
+    It is a tool of a pack of :data:`HELD_WRITE_OWNERS` that says no
+    ``read_only=True``, and that is not on the list (:func:`is_held_card_write`).
+    So a class C Projects tool, a new write with a bare ``open_world=False``,
+    and a kept tool that lost its card mark or changed its parameters are all
+    off. ``tool_packs.CHAT_FILE_TOOLS`` stay: each writes only a file of the
+    chat, and ``manifest`` classes it as a read. This test is separate from
+    :func:`is_egress_tool` because a covered run keeps its pinned tools
+    (``_tool_injection._covered_hold``). Fails closed: a tool with no annotation
+    counts as a write.
+    """
+    from acb_skills.tool_packs import CHAT_FILE_TOOLS
+
+    name = item if isinstance(item, str) else tool_name(item)
+    if name not in _owner_tool_names() or name in CHAT_FILE_TOOLS:
+        return False
+    if is_held_card_write(item):
+        return False
+    hints = _risk_of(None if isinstance(item, str) else item, name)
+    return not (isinstance(hints, Mapping) and hints.get("read_only") is True)
+
+
+def is_held_chat_off(item: Any) -> bool:
+    """True when a chat that read outside mail may not hold *item* (D150)."""
+    return is_egress_tool(item) or is_held_off_write(item)
+
+
 def is_egress_tool(item: Any) -> bool:
     """True unless *item* may stay in a ``no_egress`` run (H-236). Fails closed.
 
@@ -1201,7 +1426,9 @@ def is_egress_tool(item: Any) -> bool:
     tool, a store write, and a tool with no explicit ``open_world=False`` may
     not stay. A bare name reads the registry, so only a caller that resolved
     the tool object first may pass one (the Copilot guard does). The only
-    sends that may stay are the card-bound ones (:func:`is_card_bound_send`).
+    sends that may stay are the card-bound ones (:func:`is_card_bound_send`),
+    and the only writes with ``open_world=True`` that may stay are the listed
+    ones (:func:`is_held_card_write`, RX-1).
     """
     if not isinstance(item, str) and _from_mcp(item):
         return True
@@ -1210,7 +1437,7 @@ def is_egress_tool(item: Any) -> bool:
         return False
     if not name or name in STORE_WRITES:
         return True
-    if is_card_bound_send(item):
+    if is_card_bound_send(item) or is_held_card_write(item):
         return False
     hints = _risk_of(None if isinstance(item, str) else item, name)
     return not (isinstance(hints, Mapping) and hints.get("open_world") is False)
@@ -1241,6 +1468,25 @@ def no_egress_for_this_run() -> bool:
     return ctx.get(NO_EGRESS_KEY, False) is not False
 
 
+async def write_must_show_card(ctx: Mapping[str, Any] | None = None) -> bool:
+    """True when a write of the run on this frame must show its card (RX-1).
+
+    THE one reader for a write that a rule lets act at once with no card. CF-6
+    plans such a rule for the reminder writes (``chat_first_surface.md``). A held
+    chat keeps those writes BECAUSE of the card, so the act-at-once path asks
+    this first, and it shows the card when the answer is True.
+
+    It reads :func:`no_egress_for_this_run` first, which fails closed and covers
+    a pack call (``tool_packs.owner_scope`` binds the held answer). Then it reads
+    the mark of the session, with a Redis fault read as marked, because an open
+    run in a marked chat is not ``no_egress``. Fence:
+    ``tests/unit/test_held_card_writes.py``.
+    """
+    if no_egress_for_this_run():
+        return True
+    return await session_mark_state(ctx, fail_closed=True) != MARK_CLEAR
+
+
 def _egress_answer(name: str) -> str:
     _log.info("egress.call_refused", tool=name)
     return egress_held_answer(name)
@@ -1251,17 +1497,19 @@ class WithholdEgressTools(WithholdTools):
 
     Injection already left them out. This catches a tool that joined the run
     later, for example a sandbox provider's tool or an MCP server's tool.
+    *chat_hold* adds the writes of :func:`is_held_off_write`. Only a covered
+    run passes False (``_tool_injection._covered_hold``).
     """
 
-    def __init__(self) -> None:
-        super().__init__(is_egress_tool)
+    def __init__(self, *, chat_hold: bool = True) -> None:
+        super().__init__(is_held_chat_off if chat_hold else is_egress_tool)
 
 
 class RefuseEgressTools(RefuseTools):
     """Refuses a call to an egress tool, in case the model names one."""
 
-    def __init__(self) -> None:
-        super().__init__(is_egress_tool, _egress_answer)
+    def __init__(self, *, chat_hold: bool = True) -> None:
+        super().__init__(is_held_chat_off if chat_hold else is_egress_tool, _egress_answer)
 
 
 class EgressGuardProvider(ContextProvider):
@@ -1271,13 +1519,17 @@ class EgressGuardProvider(ContextProvider):
     of the agent (``agent_with_providers``), never to a shared agent object.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, chat_hold: bool = True) -> None:
         super().__init__(SOURCE_ID)
+        self._chat_hold = chat_hold
 
     async def before_run(
         self, *, agent: Any, session: Any, context: Any, state: dict[str, Any],
     ) -> None:
-        context.extend_middleware(SOURCE_ID, [WithholdEgressTools(), RefuseEgressTools()])
+        context.extend_middleware(SOURCE_ID, [
+            WithholdEgressTools(chat_hold=self._chat_hold),
+            RefuseEgressTools(chat_hold=self._chat_hold),
+        ])
         # The model reads what is held, and why, before it plans (owner
         # report of 2026-10-19). A fault here costs the note, never the hold.
         try:

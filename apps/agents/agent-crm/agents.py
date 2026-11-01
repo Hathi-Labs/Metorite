@@ -767,7 +767,7 @@ def _quoted_names(rows: Any, field: str) -> str:
     return ", ".join(f"'{name}'" for name in _names(rows, field))
 
 
-@_annotate_risk(destructive=True, idempotent=False, open_world=True)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
 async def create_lead(
     lead_name: str,
     email: str | None = None,
@@ -827,7 +827,7 @@ async def create_lead(
     )
 
 
-@_annotate_risk(destructive=True, idempotent=False, open_world=True)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
 async def update_deal_status(
     deal_id: str, stage: str, lost_reason: str | None = None,
 ) -> str:
@@ -907,7 +907,7 @@ async def update_deal_status(
     return f"Moved {title} to {lane}."
 
 
-@_annotate_risk(destructive=True, idempotent=False, open_world=True)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
 async def log_activity(
     entity: str,
     record_id: str,
@@ -976,7 +976,7 @@ async def log_activity(
     )
 
 
-@_annotate_risk(destructive=True, idempotent=False, open_world=True)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
 async def convert_lead(
     lead_id: str,
     deal_name: str | None = None,

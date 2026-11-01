@@ -188,7 +188,7 @@ def _clean_area_name(name: str) -> str:
     return clean
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_area(name: str) -> str:
     """Make a new area: a category for the member's private tasks in My
     Tasks, such as Home or Finance. Nobody else sees it. The card shows the
@@ -535,7 +535,7 @@ async def _change_view(
     return f"Saved view {data(label or row.get('name'))}.\n  view_id: {vid}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def save_view(
     project_id: str,
     name: str = "",
@@ -592,7 +592,7 @@ async def save_view(
     return f"Saved view {data(row.get('name') or label)} [{kind}] in {data(node.get('name'))}.\n  view_id: {row.get('id')}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 @takes_priority
 async def capture_intake(
     title: str,
@@ -686,7 +686,7 @@ async def capture_intake(
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def triage_intake(
     task_id: str, action: str, status: str = "", duplicate_of: str = "", until: str = ""
 ) -> str:
@@ -746,7 +746,7 @@ async def triage_intake(
     return "\n".join([f"Intake: {verb}.", *_task_line(merged)])
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def mark_notifications_read(ids: str = "", all_unread: bool = False) -> str:
     """Clear the bell: mark the listed notification ids read
     (comma-separated, from notifications), or every unread one with

@@ -469,6 +469,29 @@ def _is_egress(tool: Any) -> bool:
     return name in HOST_NETWORK_TOOLS or is_egress_tool(tool)
 
 
+def _is_held_off(tool: Any) -> bool:
+    """True for a Projects or CRM write that a held chat does not hold (RX-1,
+    D150): the rule ``acb_skills.egress.is_held_off_write``."""
+    try:
+        from acb_skills.egress import is_held_off_write
+    except ImportError:  # no acb_skills means no pack tool was built at all
+        return False
+    return is_held_off_write(tool)
+
+
+def _covered_hold(agent_name: str | None) -> bool:
+    """True when a covered run alone holds this run (H-236, RX-1).
+
+    A chat that read outside mail drops the writes of :func:`_is_held_off`. A
+    covered run holds for another reason, the member data of a sandboxed turn,
+    and it keeps ``COVERED_PROJECTS_TOOLS`` of
+    ``tests/unit/test_delegation_no_egress.py``. So only a covered run of this
+    agent, in a chat with no mark, skips the drop. The org comes from the run
+    binding (:func:`_run_covered`). A held run of any other kind drops them.
+    """
+    return bool(agent_name) and _run_covered(str(agent_name)) and not read_untrusted_answer()
+
+
 #: The tool lists an injection knows how to read, by attribute.
 _TOOL_POOLS = ("tools", "_tools")
 
@@ -496,21 +519,25 @@ def _inspectable(agent: Any) -> bool:
     return any(isinstance(p, list) for p in pools)
 
 
-def _withhold_egress_from_agent(agent: Any) -> list[str]:
+def _withhold_egress_from_agent(agent: Any, *, chat_hold: bool = True) -> list[str]:
     """Take every egress tool and MCP server out of ONE per-run agent (H-236).
 
     The factory built this agent object for this run, as every injection site
     assumes. The lists are filtered in place, as ``_apply_own_tool_scope``
     does. Returns the names it took out. The MCP servers of a MAF agent
     (``mcp_tools``) leave on the guarded view (:func:`_with_egress_guard`).
+    *chat_hold* also takes the writes of :func:`_is_held_off` (RX-1).
     """
     removed: list[str] = []
+
+    def _off(tool: Any) -> bool:
+        return _is_egress(tool) or (chat_hold and _is_held_off(tool))
 
     def _filter(pool: Any) -> None:
         if not isinstance(pool, list):
             return
-        kept = [t for t in pool if not _is_egress(t)]
-        removed.extend(_tool_name(t) for t in pool if _is_egress(t))
+        kept = [t for t in pool if not _off(t)]
+        removed.extend(_tool_name(t) for t in pool if _off(t))
         pool[:] = kept
 
     _do = getattr(agent, "default_options", None)
@@ -530,7 +557,7 @@ def _withhold_egress_from_agent(agent: Any) -> list[str]:
     return removed
 
 
-def _with_egress_guard(agent: Any) -> Any:
+def _with_egress_guard(agent: Any, *, chat_hold: bool = True) -> Any:
     """A per-run view of a native MAF agent that holds no egress tool (H-236).
 
     The view carries no MCP server (``mcp_tools``, which MAF expands into
@@ -548,7 +575,7 @@ def _with_egress_guard(agent: Any) -> Any:
         return agent
     from orchestrator._native_run_context import agent_with_providers
 
-    view = agent_with_providers(agent, [EgressGuardProvider()])
+    view = agent_with_providers(agent, [EgressGuardProvider(chat_hold=chat_hold)])
     view.mcp_tools = []
     return view
 
@@ -1606,9 +1633,7 @@ MIRROR_RECORD_WRITES: frozenset[str] = frozenset({
 })
 
 
-async def _drop_mirror_record_writes(
-    agents: list[Any], *, no_egress: bool = False,
-) -> None:
+async def _drop_mirror_record_writes(agents: list[Any]) -> None:
     """Take the CRM record writes from this run's agents in Mirror mode.
 
     It runs at assembly, after :func:`_apply_own_tool_scope`, and only for an
@@ -1618,12 +1643,10 @@ async def _drop_mirror_record_writes(
     relay of the write tools is the fallback. A change in place holds for
     this run only (:func:`_own_tool_pools`).
 
-    A ``no_egress`` run (H-236) reads nothing: the egress control drops the
-    three writes there anyway (each says ``open_world=True``), and a covered
-    run sends no request that it does not need.
+    RX-1: a ``no_egress`` run reads the mode too. The three writes are on
+    ``egress.HELD_CARD_WRITE_TOOLS``, so a held run keeps them, and in Mirror
+    mode a write would reach Zoho. An agent with none of them reads nothing.
     """
-    if no_egress:
-        return
     held = {
         _tool_name(t)
         for agent in agents for _attr, pool in _own_tool_pools(agent) for t in pool
@@ -2893,6 +2916,7 @@ def _apply_no_egress(
     ends before the agent can call an egress tool, and nothing retries it.
     """
     removed: set[str] = set(injected)
+    chat_hold = not _covered_hold(agent_name)
     for i, agent in enumerate(agents):
         if not _inspectable(agent):
             _log.error(
@@ -2904,8 +2928,8 @@ def _apply_no_egress(
                 "sandboxed turn, and its tools cannot be checked for a send."
             )
         try:
-            removed.update(_withhold_egress_from_agent(agent))
-            agents[i] = _with_egress_guard(agent)
+            removed.update(_withhold_egress_from_agent(agent, chat_hold=chat_hold))
+            agents[i] = _with_egress_guard(agent, chat_hold=chat_hold)
         except Exception as exc:
             _log.error(
                 "executor.no_egress_failed", agent=agent_name, error=str(exc)[:200],
@@ -2930,8 +2954,9 @@ def _apply_no_egress(
 # 2. The scope of the owner, per call (``tool_packs.owner_scope``), as the
 #    OUTERMOST wrapper, with the permission gate inside it.
 # 3. The held set, at load: a held pack drops each tool that :func:`_is_egress`
-#    names. ⚠️ This drop is the ONLY held-set control of a pack run. A pack
-#    run gets no ``EgressGuardProvider``, so no ``WithholdEgressTools`` and no
+#    or :func:`_is_held_off` names (RX-1, D150). ⚠️ This drop is the ONLY
+#    held-set control of a pack run. A pack run gets no
+#    ``EgressGuardProvider``, so no ``WithholdEgressTools`` and no
 #    ``RefuseEgressTools`` stand behind it (audit of 2026-10-26, §4.5).
 #
 # ONE seam: the builder calls ``_is_egress``, ``_run_no_egress``,
@@ -3111,8 +3136,10 @@ async def _pack_tools(
 
     The tools are the owner's own function objects (``tool_packs.owner_tools``),
     each in :func:`_pack_call`. A held pack drops each tool that
-    :func:`_is_egress` names, and that drop is the only held-set control of a
-    pack run. None for a slug that is no pack. An owner that does not load,
+    :func:`_is_egress` or :func:`_is_held_off` names, and that drop is the only
+    held-set control of a pack run. A covered org builds no Projects pack
+    (:func:`_drop_pack_covered`), so each held build is a held chat. None for a
+    slug that is no pack. An owner that does not load,
     and a run context with no run key, give a held build with no tool.
 
     OA-7c (condition 3): the run check of :func:`_pack_call` keys on
@@ -3146,7 +3173,7 @@ async def _pack_tools(
         # ``func`` is one (the Projects ``_StrictTool``). Any other shape skips.
         if name in taken or not inspect.iscoroutinefunction(_pack_func(fn)):
             skipped.append(name)
-        elif held and _is_egress(fn):
+        elif held and (_is_egress(fn) or _is_held_off(fn)):
             dropped.append(name)
         else:
             tools.append(_pack_call(fn, owner, held, run_key, slug))
@@ -3169,12 +3196,12 @@ async def _drop_pack_mirror_writes(
     ``load_skill_tools`` (OA-7e) or a turn-kind item (OA-7f) loads in the
     middle of a turn builds after that drop. It reads ``GET /crm/mode`` as
     the member (``acb_skills.crm_tools.crm_mode``) and reuses
-    :data:`MIRROR_RECORD_WRITES`. A held build reads nothing: the held drop
-    took the writes already. A failed
-    read keeps the tools, and the 409 relay of the write tools is the
-    fallback, as in :func:`_drop_mirror_record_writes`.
+    :data:`MIRROR_RECORD_WRITES`. RX-1: a held build reads it too, because the
+    writes now stay in a held pack, and in Mirror mode a write would reach
+    Zoho. A failed read keeps the tools, and the 409 relay of the write tools
+    is the fallback, as in :func:`_drop_mirror_record_writes`.
     """
-    if held or not any(_tool_name(t) in MIRROR_RECORD_WRITES for t in tools):
+    if not any(_tool_name(t) in MIRROR_RECORD_WRITES for t in tools):
         return tools, dropped
     try:
         from acb_skills.crm_tools import crm_mode
@@ -3295,7 +3322,8 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
        the frame with *run_key*, which the server minted (OA-7c condition 3).
     2. STRICT (owner, fix round 1): when the chat read mail since the build
        (``read_untrusted_answer``), this call is held although the build was
-       open. An egress tool then answers the held answer and does not run.
+       open. An egress tool, or a write of :func:`_is_held_off` (RX-1), then
+       answers the held answer and does not run.
     2a. OA-8i: a write tool after a hand-off to the owner started in this run
        refuses, and else the write is recorded on the run's record
        (``tool_packs.pack_write_refusal``). No await comes between the run
@@ -3332,7 +3360,13 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
         clone.func = _pack_call(inner, owner, held, run_key, slug)
         return clone
     from acb_skills.egress import _register_platform_wrapper
-    from acb_skills.tool_packs import PACK_RUN_KEY, note_used, owner_scope, pack_write_refusal
+    from acb_skills.tool_packs import (
+        PACK_RUN_KEY,
+        PACK_SLUG_ATTR,
+        note_used,
+        owner_scope,
+        pack_write_refusal,
+    )
 
     gate_on = os.environ.get("AGENT_PERMISSION_MODE", "enforce").strip().lower() != (
         "approve_all"
@@ -3349,7 +3383,7 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
             _log.warning("executor.pack_call_refused", tool=name, owner=owner)
             return PACK_CALL_REFUSED.format(tool=name)
         held_now = held or read_untrusted_answer(ctx)
-        if held_now and not held and _is_egress(fn):
+        if held_now and not held and (_is_egress(fn) or _is_held_off(fn)):
             return _held_in_turn(owner, name)
         twice = pack_write_refusal(owner, name, ctx)  # OA-8i, before any await
         if twice is not None:
@@ -3367,6 +3401,7 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
 
     _pack_tool.__cc_gated__ = True  # type: ignore[attr-defined]
     setattr(_pack_tool, PACK_OWNER_ATTR, owner)
+    setattr(_pack_tool, PACK_SLUG_ATTR, slug)
     return _register_platform_wrapper(gated, _pack_tool)
 
 
@@ -3692,16 +3727,19 @@ async def _apply_tool_packs(
         return None
     loaded = [(build.slug, build.held) for build in builds]
     added = _as_agent_tools([tool for build in builds for tool in build.tools])
-    kept = [t for t in pool if _delegates_to(t) not in tool_packs.PackRun.of(
-        turn, choice, loaded).replaced]
+    draft = tool_packs.PackRun.of(turn, choice, loaded)
+    kept = [t for t in pool if _delegates_to(t) not in draft.replaced]
     current = base + len(added) - (len(pool) - len(kept))
     plan = tool_packs.LoaderPlan()
     if offer_loader:
+        # RX-1: a sticky pack gives way to a load, so the plan counts it free.
+        built = {b.slug: len(b.tools) for b in builds}
         plan = await _plan_pack_loader(
             agent, allow, [b.slug for b in builds], builds=builds, current=current,
             pool=kept, persona=str(opts.get("instructions") or ""), bullets=bullets,
             agent_name=agent_name, no_egress=bool(run_ctx.get("no_egress")),
-            is_authorized=is_authorized)
+            is_authorized=is_authorized,
+            spare={slug: built[slug] for slug in draft.spare() if slug in built})
     if not builds and not plan.offered:
         return None
     via = plan.via_loader
@@ -3802,6 +3840,7 @@ async def _plan_pack_loader(
     agent: Any, allow: frozenset[str], held: list[str], *, builds: Sequence[PackBuild],
     current: int, pool: Sequence[Any], persona: str, bullets: Mapping[str, str],
     agent_name: str, no_egress: bool, is_authorized: Any,
+    spare: Mapping[str, int] | None = None,
 ) -> Any:
     """THE one plan of the loader in a run (OA-7i): ``tool_packs.plan_loader``
     with the facts of this run. Its answer drives the offer
@@ -3812,7 +3851,9 @@ async def _plan_pack_loader(
     owner's module loads (:func:`_pack_owner_module`), and the persona holds
     the owner's delegation text exactly once. The MCP rule reads the registry
     (:func:`_mcp_may_attach`) and only for a pack of an owner that reads
-    stranger text, and only while the run holds none of them."""
+    stranger text, and only while the run holds none of them. *spare* names
+    the sticky packs that can give way to a load, each with its tool count
+    (RX-1)."""
     from acb_skills import tool_packs
 
     if not _loader_agent_ok(agent):
@@ -3849,7 +3890,8 @@ async def _plan_pack_loader(
         return bool(old) and persona.count(old) == 1
 
     return tool_packs.plan_loader(
-        allow, held, current=current, removable=removable, mcp=mcp, available=_available)
+        allow, held, current=current, removable=removable, mcp=mcp, available=_available,
+        spare=spare)
 
 
 # ── Tool packs in the middle of a turn: layer (b) (WS-67 OA-7e, D117) ───────

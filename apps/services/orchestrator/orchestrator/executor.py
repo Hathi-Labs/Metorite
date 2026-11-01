@@ -2727,7 +2727,7 @@ async def _run_sub_agent_streaming(
                 if hasattr(loaded, "config") else None,
             )
             # CRM-C7: no CRM record write in Mirror mode, read as the member.
-            await _drop_mirror_record_writes(agents, no_egress=_sub_no_egress)
+            await _drop_mirror_record_writes(agents)
             _sub_own_tools = _count_agent_tools(agents)  # WS-8o
             _sub_run_tools = _inject_agent_tools(
                 agents,
@@ -4757,7 +4757,7 @@ async def _assemble_batch_agents(
         agents, loaded.config.get("own_tool_scope") or None,
     )
     # CRM-C7: no CRM record write in Mirror mode, read as the member.
-    await _drop_mirror_record_writes(agents, no_egress=no_egress)
+    await _drop_mirror_record_writes(agents)
     own_tools = _count_agent_tools(agents)  # WS-8o
     run_tools = _inject_agent_tools(
         agents,
@@ -6230,9 +6230,7 @@ async def run_agent_stream(
                 agents, loaded.config.get("own_tool_scope") or None,
             )
             # CRM-C7: no CRM record write in Mirror mode, read as the member.
-            await _drop_mirror_record_writes(
-                agents, no_egress=_stream_no_egress,
-            )
+            await _drop_mirror_record_writes(agents)
             _laps.lap("crm_mirror")
             _own_tools = _count_agent_tools(agents)  # WS-8o
             _run_tools = _inject_agent_tools(
