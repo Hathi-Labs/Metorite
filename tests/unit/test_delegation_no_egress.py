@@ -609,6 +609,12 @@ def _harness(monkeypatch, sandbox, models: dict[str, _Model]) -> list[str]:  # n
     monkeypatch.setattr(acb_memory, "rehydrate_workspace", nothing)
     monkeypatch.setattr(routes_agent, "_load_dynamic_agents", lambda: [])
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", trap)
+    # WEB-1: fetch_page checks the address of a host before it sends. Give the
+    # check a public answer with no real DNS, so the trap above still refuses.
+    from acb_common import public_address
+
+    monkeypatch.setattr(public_address, "resolve", lambda _h, _p: ["93.184.216.34"])
+    monkeypatch.setattr(public_address, "is_local_address", lambda _a: False)
     import sys
 
     monkeypatch.setitem(sys.modules, "ddgs", None)

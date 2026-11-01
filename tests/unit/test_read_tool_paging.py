@@ -229,8 +229,14 @@ ALLOWED: dict[str, str] = {
         'answer names its size and how to read the rest.',
     'packages/acb_skills/acb_skills/todo_tools.py::manage_todo_list::title[:120]':
         'Text, not rows: the cut shortens one string.',
-    'packages/acb_skills/acb_skills/web_tools.py::fetch_page::text[:max_chars]':
+    'packages/acb_skills/acb_skills/web_tools.py::frame_page::text[:limit]':
         "Text: one web page, cut and marked '[... truncated'. max_chars asks for more.",
+    'packages/acb_skills/acb_skills/web_tools.py::_direct_text::answer.body[:MAX_HTML_BYTES]':
+        'Bytes of one web page, not rows: the HTML that the fallback strips on the '
+        'event loop has a bound (WEB-1 repair 2). WEB-2 replaces this reader.',
+    'packages/acb_skills/acb_skills/web_tools.py::_jina_read::body[:MAX_MARKDOWN_BYTES]':
+        "Bytes of one web page, not rows: four bytes for each character of MAX_CHARS, so "
+        "the text still fills the ceiling, and frame_page marks the cut (WEB-1 repair 2).",
     'apps/agents/agent-email-assistant/agents.py::_inbox_card_parts::rows[:_CARD_MESSAGE_LINES]':
         "A confirm card's message lines (#1019). It ends with '+N more', and the act takes every message.",
     'apps/agents/agent-email-assistant/agents.py::_card_name::\' \'.join(\'\'.join((ch for ch in text if ch not in \'"\\\'`()[]{}\')).split())[:80]':
@@ -276,8 +282,9 @@ ALLOWED: dict[str, str] = {
 #: WS-27bn RA-3 added the waiting card's cut, the sibling of the card's
 #: `rows[:rows_max]`. Its text prints every row with no cut (67). STU-G1 added nine cuts in
 #: `studio_tools.py`: seven cut one string, and two end with a '... N more'
-#: line (76).
-ALLOWED_CEILING = 76
+#: line (76). WEB-1 repair 2 bounded the text work of `fetch_page` on the
+#: event loop: two byte cuts of one page, each with its reason (78).
+ALLOWED_CEILING = 78
 
 
 def _stringy(node: ast.AST) -> bool:

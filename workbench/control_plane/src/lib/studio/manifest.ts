@@ -136,11 +136,28 @@ export interface Shell {
   search?: string[];
 }
 
+// PKG-5a (package_host.md sections 3.1, 4, 5.4, 8). The shapes are loose on purpose.
+// PKG-14 to PKG-16 give `slots`, `needs` and `overrides` their meaning.
+export type ManifestKind = "studio" | "system";
+
+export type ContributionEntry = Record<string, unknown>;
+
+// A contribution point (section 4, or a P0-only key) to its entries.
+export type Contributes = Record<string, ContributionEntry[]>;
+
+export type SlotDecl = Record<string, unknown>;
+
+export type NeedDecl = Record<string, unknown>;
+
+export type OverrideDecl = Record<string, unknown>;
+
 export interface StudioManifest {
   studio: StudioVersion;
+  kind?: ManifestKind;
   id: string;
-  name: string;
-  purpose: string;
+  // Required for `studio`. A `system` file holds neither.
+  name?: string | null;
+  purpose?: string | null;
   team?: string | null;
   connections?: string[];
   objects?: ObjectDef[];
@@ -149,6 +166,11 @@ export interface StudioManifest {
   workflows?: WorkflowDef[];
   skill?: Skill | null;
   shell?: Shell | null;
+  contributes?: Contributes;
+  extends?: string | null;
+  slots?: SlotDecl[];
+  needs?: NeedDecl[];
+  overrides?: OverrideDecl[];
 }
 
 // One refusal of the validator: a JSON path and one sentence.
