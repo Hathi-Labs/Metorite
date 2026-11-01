@@ -24,6 +24,12 @@ a select value must be one of the options. A money filter takes a whole
 number of minor units and does not check the currency. A date value means
 the whole day in UTC.
 
+**The checkbox rule.** A checkbox has two states for a member, ticked and not
+ticked. A form that does not send an unticked box writes no value, so
+``eq false`` and ``ne true`` match a record with no value too. ``is_empty``
+matches only a record with no value. This is the one exception to the rule
+that ``ne`` matches only a record that holds a value.
+
 **Errors.** Each refusal raises :class:`QueryError` with one of
 :data:`QUERY_ERROR_CODES` and one sentence. The sentence names the field key
 when the key has the key shape. It never echoes a value.
@@ -88,7 +94,7 @@ OPS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "money": _NUMBER_OPS,
     "date": _TIME_OPS,
     "datetime": _TIME_OPS,
-    "checkbox": frozenset({"eq", "ne"}),
+    "checkbox": frozenset({"eq", "ne", "is_empty"}),
 }
 
 #: The types that a sort takes. A sort needs a hot field, and ``v_bool`` has
@@ -137,6 +143,9 @@ class Condition:
     the ``ILIKE`` pattern, with ``%``, ``_`` and ``\\`` escaped. For
     ``is_empty`` it is True (no value) or False (a value).
 
+    A checkbox condition is ``eq`` True (ticked) or ``eq`` False (not ticked,
+    which includes a record with no value). The parse turns ``ne`` into these.
+
     ``until`` is set only for ``eq`` on a day: the record matches from
     ``value`` up to ``until``, and not at ``until``.
     """
@@ -169,6 +178,13 @@ class Query:
     def cold(self) -> tuple[Condition, ...]:
         """The conditions on fields that are not hot (``hot_or_small``)."""
         return tuple(c for c in self.conditions if not c.field.hot)
+
+    def hot_keys(self) -> tuple[str, ...]:
+        """The keys of the fields that this query reads as hot."""
+        keys = {c.field.key for c in self.hot_only()}
+        if self.sort is not None:
+            keys.add(self.sort.field.key)
+        return tuple(sorted(keys))
 
 
 # --- the shape --------------------------------------------------------------
@@ -324,6 +340,11 @@ def _condition(field: FieldSpec, op: str, item: Mapping[str, Any]) -> Condition:
         if value is not None and type(value) is not bool:
             raise _invalid(field, "`is_empty` takes true or false.")
         return Condition(field, op, True if value is None else value)
+    if value is None:
+        raise _invalid(field, f"has no value for `{op}`. Give a value.")
+    if field.type == "checkbox":
+        ticked = _checked(field, value)
+        return Condition(field, "eq", ticked if op == "eq" else not ticked)
     if field.type in ("date", "datetime"):
         return _time(field, op, value)
     if op == "contains":

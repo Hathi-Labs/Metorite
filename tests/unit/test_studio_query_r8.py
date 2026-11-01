@@ -39,6 +39,12 @@ h. One statement reads a page and its total. A write between two reads never
    puts a record on a page twice (fix round 1, F1).
 i. One call has one deadline of 5 s. A slow statement leaves less time for
    the next one (F5).
+j. A checkbox has two states. ``eq false`` and ``ne true`` match a record
+   with no value too, and ``is_empty`` matches only that record (round 2).
+k. A field that turns cold during a call gives the right page. The store reads
+   the fields again, once, and then stops with a clear error (round 2).
+l. The guard reads the snapshot of the page, so a bulk insert during a call
+   cannot pass it (round 2).
 
 **The mutations (R7).** Commit before each, and restore with git after.
 
@@ -52,13 +58,14 @@ i. One call has one deadline of 5 s. A slow statement leaves less time for
   check ``AND r.data ->> ... = ...`` and keep the test of ``v_text``.
   ``test_r8_a_long_text_match_is_checked_against_data`` goes red. In
   ``_q_contains``, drop the second branch: the same test goes red.
-* Q5. ``objects_store._time_limit``: in ``run``, drop the ``set_config`` of
-  the timeout.
+* Q5. ``objects_store._Timed.execute``: drop the ``set_config`` of the
+  timeout.
   ``test_r8_a_query_past_the_timeout_stops_with_query_timeout`` goes red.
 * Q6. ``objects_store._time_limit``: drop ``begin_nested()``, or drop the
   restore in ``finally``. ``test_r8_a_query_past_the_timeout_stops_with_query_timeout``
   or ``test_r8_the_old_timeout_is_back_after_a_query`` goes red.
 * Q7. ``objects_store._check_hot_or_small``: ``return`` before the ``raise``.
+  The page is then empty, with no error.
   ``test_r8_a_cold_filter_on_more_than_5000_records_is_refused`` goes red.
 * Q8. ``objects_store._q_sorted_ids``: drop ``, s.record_id{dirn}`` from the
   ORDER BY of the head.
@@ -73,6 +80,14 @@ i. One call has one deadline of 5 s. A slow statement leaves less time for
 * F2. ``objects_store._q_source``: always give the records of the object.
   ``test_r8_a_cold_filter_after_a_hot_filter_reads_at_most_5000_records``
   goes red.
+* R1. ``objects_store._q_hot`` or ``_q_cold``: drop the branch of a checkbox
+  that is not ticked. ``test_r8_a_checkbox_has_two_states`` goes red.
+* R2. ``objects_store._read_page``: drop the check of ``v.n``.
+  ``test_r8_a_field_that_turns_cold_during_a_query_gives_the_right_page``
+  goes red.
+* R3. ``objects_store``: make ``_GUARD_GATE`` ``TRUE``, and run the count in a
+  statement of its own before the page.
+  ``test_r8_a_bulk_insert_during_a_query_cannot_pass_the_guard`` goes red.
 """
 
 from __future__ import annotations
@@ -81,6 +96,7 @@ import asyncio
 import json
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -239,9 +255,11 @@ _CASES: dict[str, list[tuple[str, Any, set[str]]]] = {
     ],
     "checkbox": [
         ("eq", True, {"r1", "r3"}),
-        ("eq", False, {"r2"}),
-        ("ne", True, {"r2"}),
+        ("eq", False, _ALL - {"r1", "r3"}),
+        ("ne", True, _ALL - {"r1", "r3"}),
         ("ne", False, {"r1", "r3"}),
+        ("is_empty", True, _ALL - {"r1", "r2", "r3"}),
+        ("is_empty", False, {"r1", "r2", "r3"}),
     ],
 }
 _KEY_OF = {f["type"]: f["key"] for f in _TYPED}
@@ -506,7 +524,7 @@ def test_r8_the_built_sql_of_another_package_reads_nothing(world) -> None:
                 sql, params = store.build_query(query, object_id=world.visit.id, package_id=pid,
                                                 limit=100, offset=0)
                 rows = (await db.execute(text(sql), params)).all()
-                out += [sum(1 for r in rows if r[1] is not None), int(rows[0][0])]
+                out += [sum(1 for r in rows if r[3] is not None), int(rows[0][0])]
                 sql, params = store.build_count((), object_id=world.visit.id, package_id=pid,
                                                 cap=100)
                 out.append(int((await db.execute(text(sql), params)).scalar_one()))
@@ -823,6 +841,18 @@ def test_r8_a_cold_filter_after_a_hot_filter_reads_at_most_5000_records(world, s
     assert _records_read(probe) == 0
 
 
+def test_r8_the_guard_stops_m_before_it_reads_data(world) -> None:
+    """Round 2. `g` counts 5,001 candidates on the records index. So the
+    One-Time Filter of `m` is false, and no scan under it runs. The plan of
+    `m` may hold a Seq Scan, because `m` has no LIMIT, but it runs 0 times."""
+    nodes = _page_plan(world, filter=[{"field": "cold", "op": "eq", "value": "c5"}])
+    ran = [n for n in nodes if n["Node Type"] == "Seq Scan" and int(n["Actual Loops"]) > 0
+           and n.get("Relation Name") in _TABLES]
+    assert ran == []
+    assert _uses(nodes, "studio_records_object_id_key")
+    assert _records_read(nodes) <= studio_query.SMALL_OBJECT + 1
+
+
 def test_r8_a_cold_filter_with_no_hot_filter_reads_the_records_index(world) -> None:
     """F2. With no hot filter, the candidates are the records of the small
     object, read by the records index."""
@@ -836,11 +866,14 @@ def test_r8_a_cold_filter_with_no_hot_filter_reads_the_records_index(world) -> N
 
 
 class _Spy:
-    """A session that keeps the SQL and the timeout of each statement, and
-    runs `after()` once, after the first statement of a page."""
+    """A session that keeps the SQL and the timeout of each statement. It runs
+    `after()` once, after the first statement that holds *marker*, or before
+    it with *before*."""
 
-    def __init__(self, db: Any, after: Callable[[], Any] | None = None) -> None:
+    def __init__(self, db: Any, after: Callable[[], Any] | None = None,
+                 marker: str = "LIMIT :lim", before: bool = False) -> None:
         self._db, self._after = db, after
+        self._marker, self._before = marker, before
         self.fired = False
         self.statements: list[str] = []
         self.timeouts: list[str] = []
@@ -854,8 +887,12 @@ class _Spy:
             self.timeouts.append(params["ms"])
         else:
             self.statements.append(sql)
+        due = self._after is not None and not self.fired and self._marker in sql
+        if due and self._before:
+            self.fired = True
+            await self._after()
         out = await self._db.execute(stmt, params)
-        if self._after is not None and not self.fired and "LIMIT :lim" in sql:
+        if due and not self._before:
             self.fired = True
             await self._after()
         return out
@@ -901,9 +938,10 @@ _COLD_B = [{"field": "c_name", "op": "eq", "value": "Alpha"}]
 
 
 def test_r8_a_slow_statement_leaves_less_time_for_the_next(world, monkeypatch) -> None:
-    """The call starts at 100 s, so its deadline is 105 s. The guard runs at
-    100 s and gets 5,000 ms. The page runs at 103 s and gets 2,000 ms."""
-    _ticks(monkeypatch, 100.0, 100.0, 103.0)
+    """The call starts at 100 s, so its deadline is 105 s. The reads of the
+    object and of its fields run at 100 s and each gets 5,000 ms. The page
+    runs at 103 s and gets 2,000 ms."""
+    _ticks(monkeypatch, 100.0, 100.0, 100.0, 103.0)
 
     async def go() -> tuple[list[str], Any]:
         async with tenant_session(world.b) as db:
@@ -913,14 +951,14 @@ def test_r8_a_slow_statement_leaves_less_time_for_the_next(world, monkeypatch) -
         return spy.timeouts, page
 
     timeouts, page = _run(world.p.app_url, go)
-    assert timeouts[:2] == ["5000", "2000"]
+    assert timeouts[:3] == ["5000", "5000", "2000"]
     assert page.total == 1
 
 
 def test_r8_a_call_with_no_time_left_runs_no_more_statements(world, monkeypatch) -> None:
     """At 106 s the deadline has passed, so the page statement never runs.
     The call gives `query_timeout`, and the session stays usable."""
-    _ticks(monkeypatch, 100.0, 100.0, 106.0)
+    _ticks(monkeypatch, 100.0, 100.0, 100.0, 106.0)
 
     async def go() -> tuple[str, list[str], Any]:
         async with tenant_session(world.b) as db:
@@ -936,3 +974,138 @@ def test_r8_a_call_with_no_time_left_runs_no_more_statements(world, monkeypatch)
     assert code == "query_timeout"
     assert not any("SELECT t.n" in sql for sql in statements)
     assert rec is not None
+
+
+# ── j. A checkbox has two states (round 2) ──────────────────────────────────
+
+
+_NOT_TICKED = {"unticked", "blank1", "blank2"}
+_BOX_WANT: dict[tuple[str, bool], set[str]] = {
+    ("eq", True): {"ticked"},
+    ("eq", False): _NOT_TICKED,
+    ("ne", True): _NOT_TICKED,
+    ("ne", False): {"ticked"},
+    ("is_empty", True): {"blank1", "blank2"},
+    ("is_empty", False): {"ticked", "unticked"},
+}
+
+
+def test_r8_a_checkbox_has_two_states(world) -> None:
+    """A form that does not send an unticked box writes no value. So `eq false`
+    and `ne true` match that record too, and `is_empty` matches it alone. Each
+    op gives the same records on the hot field and on its cold twin."""
+    async def go() -> dict[tuple[str, str, bool], tuple[set[str], int]]:
+        box = await _define(world.a, world.pkg_a, "box", [
+            {"key": "paid", "type": "checkbox", "hot": True},
+            {"key": "c_paid", "type": "checkbox"}])
+        ids = await _create(world.a, box, {
+            "ticked": {"paid": True, "c_paid": True},
+            "unticked": {"paid": False, "c_paid": False},
+            "blank1": {}, "blank2": {}})
+        label = {v: k for k, v in ids.items()}
+        out = {}
+        for field in ("paid", "c_paid"):
+            for op, value in _BOX_WANT:
+                page = await _query(world.a, box, filter=[{"field": field, "op": op, "value": value}])
+                out[(field, op, value)] = ({label[r.id] for r in page.records}, page.total)
+        async with tenant_session(world.a) as db:
+            assert await store.drop_object(db, box.id)
+        return out
+
+    got = _run(world.p.app_url, go)
+    for field in ("paid", "c_paid"):
+        for (op, value), labels in _BOX_WANT.items():
+            assert got[(field, op, value)] == (labels, len(labels)), (field, op, value)
+
+
+# ── k. A field that turns cold during a call (round 2) ──────────────────────
+
+
+def test_r8_a_field_that_turns_cold_during_a_query_gives_the_right_page(world) -> None:
+    """The store reads `status` as hot. A second session turns it cold and
+    commits, and its hot rows go. The page statement sees that, so the store
+    reads the fields again and answers from `data`."""
+    async def go() -> tuple[bool, Any]:
+        obj = await _define(world.a, world.pkg_a, "cooling", [
+            {"key": "status", "type": "text", "hot": True}])
+        await _create(world.a, obj, {"a": {"status": "open"}, "b": {"status": "open"},
+                                     "c": {"status": "open"}, "d": {"status": "done"}})
+
+        async def unhot() -> None:
+            async with tenant_session(world.a) as other:
+                assert await store.set_field_hot(other, obj.id, "status", False)
+
+        async with tenant_session(world.a) as db:
+            spy = _Spy(db, unhot, marker="FROM studio_object_fields")
+            page = await store.query_records(spy, package_id=obj.package_id, object_id=obj.id,
+                                             filter=[{"field": "status", "op": "eq", "value": "open"}])
+        async with tenant_session(world.a) as db:
+            assert await store.drop_object(db, obj.id)
+        return spy.fired, page
+
+    fired, page = _run(world.p.app_url, go)
+    assert fired
+    assert page.total == 3 and len(page.records) == 3
+
+
+def test_r8_a_field_that_keeps_changing_stops_with_a_clear_error(world, monkeypatch) -> None:
+    """The store believes that `cold` is hot on each read, and the statement
+    says it is not. The store tries twice, then stops."""
+    reads: list[str] = []
+    real = store._fields
+
+    async def stale(db: Any, oid: str) -> list[Any]:
+        reads.append(oid)
+        return [replace(f, hot=True) if f.key == "cold" else f for f in await real(db, oid)]
+
+    monkeypatch.setattr(store, "_fields", stale)
+
+    async def go() -> QueryError:
+        with pytest.raises(QueryError) as stopped:
+            await _query(world.b, world.big, filter=[{"field": "cold", "op": "eq", "value": "c5"}])
+        return stopped.value
+
+    err = _run(world.p.app_url, go)
+    assert err.code == "query_timeout" and len(reads) == 2
+    assert err.message == "The fields of this object changed during the query. Try again."
+
+
+# ── l. One snapshot for the guard (round 2) ─────────────────────────────────
+
+_CROWD_SQL = (
+    "INSERT INTO studio_records (object_id, id, data, created_by, updated_by) "
+    "SELECT CAST(:oid AS uuid), CAST(md5(CAST(:oid AS text) || '-' || g) AS uuid), "
+    "jsonb_build_object('cold', 'c' || (g % 100)), :a, :a FROM generate_series(CAST(:lo AS int), CAST(:hi AS int)) g"
+)
+
+
+def test_r8_a_bulk_insert_during_a_query_cannot_pass_the_guard(world) -> None:
+    """The object holds 5,000 records, so a cold filter runs. A second session
+    adds 10 records right before the page statement. The guard counts in that
+    statement, so it sees 5,010 and refuses."""
+    small = studio_query.SMALL_OBJECT
+    filter = [{"field": "cold", "op": "eq", "value": "c5"}]
+
+    async def go() -> tuple[Any, bool, QueryError]:
+        crowd = await _define(world.a, world.pkg_a, "crowd", [{"key": "cold", "type": "text"}])
+        async with tenant_session(world.a) as db:
+            await db.execute(text(_CROWD_SQL), {"oid": crowd.id, "a": ANA, "lo": 1, "hi": small})
+        page = await _query(world.a, crowd, filter=filter)
+
+        async def insert() -> None:
+            async with tenant_session(world.a) as other:
+                await other.execute(text(_CROWD_SQL), {"oid": crowd.id, "a": ANA, "lo": small + 1,
+                                                       "hi": small + 10})
+
+        async with tenant_session(world.a) as db:
+            spy = _Spy(db, insert, marker="SELECT t.n", before=True)
+            with pytest.raises(QueryError) as refused:
+                await store.query_records(spy, package_id=crowd.package_id, object_id=crowd.id,
+                                          filter=filter)
+        async with tenant_session(world.a) as db:
+            assert await store.drop_object(db, crowd.id)
+        return page, spy.fired, refused.value
+
+    page, fired, err = _run(world.p.app_url, go)
+    assert page.total == 50
+    assert fired and err.code == "query_not_indexed" and err.field == "cold"

@@ -79,7 +79,7 @@ def test_the_op_table_of_each_type() -> None:
         "money": {"eq", "ne", "lt", "lte", "gt", "gte", "in", "is_empty"},
         "date": {"eq", "lt", "lte", "gt", "gte", "is_empty"},
         "datetime": {"eq", "lt", "lte", "gt", "gte", "is_empty"},
-        "checkbox": {"eq", "ne"},
+        "checkbox": {"eq", "ne", "is_empty"},
     }
     # The op table holds the hot types, so each op can use the side table.
     assert set(sq.OPS_BY_TYPE) == set(sf.HOT_TYPES)
@@ -93,7 +93,7 @@ def test_the_caps() -> None:
 
 @pytest.mark.parametrize(("field", "op"), [
     ("name", "lt"), ("name", "gte"), ("mail", "gt"), ("status", "contains"),
-    ("hours", "contains"), ("day", "ne"), ("day", "in"), ("paid", "is_empty"),
+    ("hours", "contains"), ("day", "ne"), ("day", "in"), ("paid", "in"),
     ("paid", "lt"), ("body", "eq"), ("tags", "eq"), ("owner", "eq"),
 ])
 def test_an_op_outside_the_table_is_refused(field: str, op: str) -> None:
@@ -149,7 +149,6 @@ def test_a_value_runs_through_the_one_check_of_a_value() -> None:
     assert _one("hours", "lt", 2.5).value == Decimal("2.5")
     assert _one("hours", "eq", 7).value == Decimal(7)
     assert _one("fee", "gte", 125000).value == Decimal(125000)
-    assert _one("paid", "ne", False).value is False
     for field, op, value in (("status", "eq", "Open"), ("hours", "eq", "7"),
                              ("hours", "eq", 1e20), ("fee", "eq", 1.5),
                              ("fee", "eq", {"minor": 1, "currency": "INR"}), ("fee", "eq", True),
@@ -162,6 +161,23 @@ def test_a_value_runs_through_the_one_check_of_a_value() -> None:
         assert err.field == field and f"`{field}`" in err.message
         if value in ("not an address", "x" * 2001, "2026-02-30", "yesterday"):
             assert value not in err.message
+
+
+def test_a_checkbox_has_two_states() -> None:
+    """Ticked, or not ticked. The parse turns each op into one of the two, and
+    `is_empty` stays the test of no value alone."""
+    states = [(c.op, c.value) for c in (_one("paid", "eq", True), _one("paid", "ne", False),
+                                        _one("paid", "eq", False), _one("paid", "ne", True))]
+    assert states == [("eq", True), ("eq", True), ("eq", False), ("eq", False)]
+    assert (_one("paid", "is_empty").op, _one("paid", "is_empty").value) == ("is_empty", True)
+
+
+def test_a_missing_value_says_that_it_is_missing() -> None:
+    for field, op in (("name", "eq"), ("hours", "lt"), ("paid", "eq"), ("day", "gte"),
+                      ("name", "contains")):
+        for item in ({"field": field, "op": op}, {"field": field, "op": op, "value": None}):
+            err = _refused("query_value_invalid", [item])
+            assert err.message == f"Field `{field}` has no value for `{op}`. Give a value."
 
 
 def test_a_day_is_the_whole_day_in_utc() -> None:
@@ -272,8 +288,8 @@ _ALIAS = re.compile(r"(?:FROM|JOIN) studio_record(?:s|_hot) (\w+)")
 
 @pytest.mark.parametrize(("filter", "sort", "parts"), [
     (None, None, 2), (_HOT_MIX, None, 2), (None, {"field": "hours"}, 4),
-    (_HOT_MIX, {"field": "hours", "dir": "desc"}, 4), (_MIX, None, 1),
-    (_MIX, {"field": "hours", "dir": "desc"}, 1),
+    (_HOT_MIX, {"field": "hours", "dir": "desc"}, 4), (_MIX, None, 2),
+    (_MIX, {"field": "hours", "dir": "desc"}, 2),
 ])
 def test_each_statement_holds_the_org_the_object_and_the_package(filter: Any, sort: Any,
                                                                  parts: int) -> None:
@@ -318,13 +334,44 @@ def test_a_cold_filter_reads_data_only_after_the_hot_filters() -> None:
     only then the test of `data`. The CTE holds them once."""
     sql, _ = _sql([{"field": "hours", "op": "gte", "value": 2},
                    {"field": "note", "op": "contains", "value": "kit"}], {"field": "at"})
-    m = sql[:sql.index("), t AS (")]
-    assert m.startswith("WITH m AS MATERIALIZED (SELECT c.id AS id FROM (SELECT d.record_id AS id "
+    m = sql[sql.index("m AS MATERIALIZED"):sql.index("), v AS (")]
+    assert m.startswith("m AS MATERIALIZED (SELECT c.id AS id FROM (SELECT d.record_id AS id "
                         "FROM studio_record_hot d WHERE ")
     lookup = m.index("CROSS JOIN LATERAL (SELECT r.id")
     assert m.index("OFFSET 0) r WHERE") > lookup
     assert m.index("(r.data ->> CAST(:fk1 AS text)) ILIKE") > m.index("OFFSET 0) r WHERE")
     assert "LEFT JOIN LATERAL (SELECT s.v_ts AS k FROM studio_record_hot s" in sql
+
+
+def test_a_checkbox_that_is_not_ticked_also_matches_no_value() -> None:
+    hot, params = _sql([{"field": "paid", "op": "eq", "value": False}])
+    assert "NOT EXISTS (SELECT 1 FROM studio_record_hot h0 " in hot
+    assert "AND h0.v_bool = CAST(:v0 AS boolean))" in hot and params["v0"] is True
+    assert "FROM studio_record_hot d " not in hot, "it cannot give the candidates"
+    ticked, _ = _sql([{"field": "paid", "op": "ne", "value": False}])
+    assert "AND d.v_bool = CAST(:v0 AS boolean)" in ticked
+    fields = [sf.parse_field_spec({"key": "paid", "type": "checkbox"})]
+    cold, _ = store.build_query(sq.parse_query(fields, [{"field": "paid", "op": "ne", "value": True}]),
+                                object_id="o", package_id="p", limit=5, offset=0)
+    assert "END) IS NOT TRUE" in cold
+
+
+def test_the_guard_and_the_hot_check_are_in_the_page_statement() -> None:
+    """`g` gates `m` in one snapshot, and `v` counts the fields that are still
+    hot. Hot conditions keep their bind names in `g`, beside the cold ones."""
+    sql, params = _sql([{"field": "note", "op": "eq", "value": "kit"},
+                        {"field": "hours", "op": "gte", "value": 2}], {"field": "at"})
+    assert sql.startswith("WITH g AS (SELECT count(*) AS n FROM (SELECT 1 FROM ")
+    g, m = sql[:sql.index(", m AS MATERIALIZED")], sql[sql.index(", m AS MATERIALIZED"):sql.index("), v AS (")]
+    assert "LIMIT CAST(:small AS bigint) + 1) x)" in g and "r.data" not in g
+    assert "WHERE (SELECT g.n FROM g) <= CAST(:small AS bigint) AND " in m
+    assert "SELECT t.n, (SELECT g.n FROM g), v.n, " in sql
+    assert params["small"] == 5_000 and params["fk0"] == "note" and params["fk1"] == "hours"
+    assert params["hk"] == ["at", "hours"]
+    assert "FROM studio_object_fields f WHERE f." in sql and "AND f.hot AND f.key = ANY(" in sql
+    plain, params = _sql()
+    assert "SELECT t.n, CAST(NULL AS bigint), v.n, " in plain and "WITH g AS" not in plain
+    assert params["hk"] == []
 
 
 def test_the_candidates_come_from_an_index_condition_first() -> None:
@@ -397,13 +444,14 @@ _SQL_NAMES = frozenset({
     "i", "j", "_BOUND_ORG", "_IN_PACKAGE", "_OF_ORG", "_OF_OBJECT", "_QUERY_COLUMNS",
     "_RECORD_ROW", "HOT_TEXT_CHARS", "kref", "kind", "expr", "cmp", "col", "hcol", "h",
     "rid", "frag", "row", "where", "dirn", "what", "source", "lookup", "head", "tail",
-    "found", "total", "ids", "page", "counted", "count_head", "with_sql",
+    "found", "total", "ids", "page", "counted", "count_head", "with_sql", "gate", "cap",
+    "guard", "count_hot", "_STILL_HOT_SQL",
 })
 
 
-def _query_functions() -> list[ast.FunctionDef]:
+def _query_functions() -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
     tree = ast.parse(_STORE.read_text(encoding="utf-8"))
-    return [n for n in tree.body if isinstance(n, ast.FunctionDef)
+    return [n for n in tree.body if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
             and (n.name.startswith("_q_") or n.name.startswith("build_"))]
 
 
@@ -416,7 +464,7 @@ def test_no_fstring_in_the_query_sql_takes_a_value() -> None:
     assert {f.name for f in funcs} >= {"_q_hot_row", "_q_data", "_q_compare", "_q_text_eq",
                                       "_q_text_in", "_q_contains", "_q_frag", "_q_hot",
                                       "_q_cold", "_q_lookup", "_q_where", "_q_source",
-                                      "_q_filtered", "_q_head", "_q_sorted_ids",
+                                      "_q_filtered", "_q_count", "_q_head", "_q_sorted_ids",
                                       "_q_small_ids", "build_query", "build_count"}
     bad: list[str] = []
     for func in funcs:

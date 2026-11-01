@@ -63,11 +63,13 @@ records of the object by the records index. Each other condition tests the
 candidate id. A condition that reads ``data`` runs after a lookup of the
 record by its primary key, so it runs only on the candidates that the hot
 conditions keep. With a filter on a field that is not hot, the guard
-``hot_or_small`` first counts those candidates (at most
+``hot_or_small`` counts those candidates in the same statement (at most
 :data:`~acb_common.studio_query.SMALL_OBJECT`). A MATERIALIZED CTE then holds
-them, and the count and the page read it. The whole call has one deadline.
-Its statements run in a SAVEPOINT, and each gets the time that is left as a
-LOCAL ``statement_timeout``. A timeout rolls back the SAVEPOINT only, so the
+them, and the count and the page read it. The statement also checks that
+each field it reads as hot is still hot. If not, the store reads the fields
+again and runs the query once more. The whole call has one deadline. Its
+statements run in a SAVEPOINT, and each gets the time that is left as a LOCAL
+``statement_timeout``. A timeout rolls back the SAVEPOINT only, so the
 caller's transaction stays usable, and the old timeout comes back.
 ⚠️ ``v_num`` takes no index condition as the app role, because no ``numeric``
 comparison is LEAKPROOF (``docs/rls_and_indexes.md``). So a number filter
@@ -723,6 +725,12 @@ async def delete_record(db: Any, object_id: str, record_id: str, *,
 #
 # The shape of one page statement (one snapshot serves the page and its total):
 #
+#   v     the count of the fields that the query reads as hot and that are
+#         hot now. A field that turned cold after the store read the fields
+#         has lost its hot rows, so the store reads the fields again.
+#   g     (a filter on a field that is not hot) the count of the candidates
+#         that the hot conditions keep, up to one past SMALL_OBJECT. `m` reads
+#         nothing when it passes SMALL_OBJECT, in the same snapshot.
 #   t     the count of the records that match, up to the cap
 #   p     the ids of the page: the candidates, then each condition, then the
 #         order and the page. A sort reads the head (the records with a value,
@@ -774,12 +782,23 @@ _SQL_TYPE: Mapping[str, str] = {
 #: The comparison of each op that compares.
 _CMP: Mapping[str, str] = {"eq": "=", "ne": "<>", "lt": "<", "lte": "<=", "gt": ">", "gte": ">="}
 
+#: The count of the guard stops one past the limit, and `m` needs it at the limit.
+_GUARD_CAP = "CAST(:small AS bigint) + 1"
+_GUARD_GATE = "(SELECT g.n FROM g) <= CAST(:small AS bigint)"
+
+#: The fields that the query reads as hot and that are hot now.
+_STILL_HOT_SQL = (
+    f"SELECT count(*) AS n FROM studio_object_fields f WHERE f.{_OF_ORG} AND f.{_OF_OBJECT} "
+    "AND f.hot AND f.key = ANY(CAST(:hk AS text[]))"
+)
+
 _TIMEOUT_READ_SQL = "SELECT current_setting('statement_timeout')"
 #: ``SET LOCAL`` as a function, so the value is a bind.
 _TIMEOUT_SQL = "SELECT set_config('statement_timeout', :ms, true)"
 #: The SQLSTATE of a statement that the timeout cancelled.
 _QUERY_CANCELED = "57014"
 _TIMEOUT_MESSAGE = "The query took too long. Narrow the filter."
+_CHANGED_MESSAGE = "The fields of this object changed during the query. Try again."
 
 #: The clock of the deadline. A test replaces it.
 _clock = time.monotonic
@@ -827,6 +846,8 @@ def _drive_rank(cond: Condition) -> int | None:
         return None if cond.value else 2
     if cond.op == "ne":
         return 3
+    if cond.field.type == "checkbox" and not cond.value:
+        return None  # it matches a record with no hot row
     col = _HOT_COLUMN[cond.field.type]
     if col == "v_ts" or (col == "v_text" and cond.op in ("eq", "in")):
         return 0
@@ -934,6 +955,10 @@ def _q_hot(i: int, cond: Condition, params: dict[str, Any], rid: str) -> str:
     row = _q_hot_row(i, rid)
     if cond.op == "is_empty":
         return f"NOT EXISTS ({row})" if cond.value else f"EXISTS ({row})"
+    if cond.field.type == "checkbox" and not cond.value:
+        # Not ticked: no ticked hot row, so a record with no value matches too.
+        params[f"v{i}"] = True
+        return f"NOT EXISTS ({row} AND h{i}.v_bool = CAST(:v{i} AS boolean))"
     frag = _q_frag(f"h{i}", i, cond, params)
     return f"EXISTS ({row} AND {frag})"
 
@@ -950,6 +975,8 @@ def _q_cold(i: int, cond: Condition, params: dict[str, Any]) -> str:
     if cond.op == "contains":
         params[f"v{i}"] = cond.value
         return f"{expr} ILIKE CAST(:v{i} AS text) ESCAPE '\\'"
+    if cond.field.type == "checkbox" and not cond.value:
+        return f"{expr} IS NOT TRUE"  # false, or no value
     return _q_compare(expr, i, cond, params)
 
 
@@ -961,11 +988,14 @@ def _q_lookup(rid: str) -> str:
 
 
 def _q_where(conditions: Sequence[Condition], params: dict[str, Any], rid: str,
-             skip: int | None = None) -> str:
+             skip: int | None = None, only_hot: bool = False) -> str:
+    """Each condition, with its index in *conditions*, so one statement holds
+    one bind for each condition. *only_hot* leaves out a field that is not hot."""
     parts = [_IN_PACKAGE]
     for i, cond in enumerate(conditions):
-        if i != skip:
-            parts.append(_q_hot(i, cond, params, rid) if cond.field.hot else _q_cold(i, cond, params))
+        if i == skip or (only_hot and not cond.field.hot):
+            continue
+        parts.append(_q_hot(i, cond, params, rid) if cond.field.hot else _q_cold(i, cond, params))
     return " AND ".join(parts)
 
 
@@ -988,12 +1018,22 @@ def _q_source(conditions: Sequence[Condition], params: dict[str, Any]) -> tuple[
             f"AND {frag}) c"), j
 
 
-def _q_filtered(conditions: Sequence[Condition], params: dict[str, Any], what: str) -> str:
-    """``SELECT what`` from the candidates ``c`` that meet each condition."""
+def _q_filtered(conditions: Sequence[Condition], params: dict[str, Any], what: str,
+                only_hot: bool = False, gate: str = "TRUE") -> str:
+    """``SELECT what`` from the candidates ``c`` that meet each condition.
+    *gate* is a test of the whole statement, as the guard of ``m``."""
     source, skip = _q_source(conditions, params)
-    lookup = f" {_q_lookup('c.id')}" if any(_needs_row(c) for c in conditions) else ""
-    where = _q_where(conditions, params, "c.id", skip)
-    return f"SELECT {what} FROM {source}{lookup} WHERE {where}"
+    used = [c for c in conditions if c.field.hot or not only_hot]
+    lookup = f" {_q_lookup('c.id')}" if any(_needs_row(c) for c in used) else ""
+    where = _q_where(conditions, params, "c.id", skip, only_hot)
+    return f"SELECT {what} FROM {source}{lookup} WHERE {gate} AND {where}"
+
+
+def _q_count(conditions: Sequence[Condition], params: dict[str, Any], cap: str,
+             only_hot: bool = False) -> str:
+    """The count of the candidates that meet each condition, up to *cap*."""
+    counted = _q_filtered(conditions, params, "1", only_hot)
+    return f"SELECT count(*) AS n FROM ({counted} LIMIT {cap}) x"
 
 
 def _q_head(query: Query, params: dict[str, Any], what: str) -> str:
@@ -1049,48 +1089,52 @@ def build_query(query: Query, *, object_id: str, package_id: str, limit: int,
                 offset: int) -> tuple[str, dict[str, Any]]:
     """The one statement of a page of *query*: its SQL and its binds. Pure.
 
-    Each row holds the total (``t.n``) and one record. A page past the end
-    gives one row with the total and no record. With no sort, the records
+    Each row holds the total (``t.n``), the count of the guard (``g.n``, or
+    NULL with no filter on a field that is not hot), the count of the fields
+    that are still hot (``v.n``) and one record. A page past the end gives one
+    row with the counts and no record. With no sort, the records
     come in the order of their id. With a sort, the records with a value come
     first, in the order of the hot index and then the id, both in the
     direction of the sort. The records with no value come after, in the
     ascending order of their id.
     """
     params: dict[str, Any] = {"oid": object_id, "pid": package_id, "lim": limit,
-                              "off": offset, "cap": studio_query.TOTAL_CAP}
+                              "off": offset, "cap": studio_query.TOTAL_CAP,
+                              "hk": list(query.hot_keys())}
     dirn = " DESC" if query.sort is not None and query.sort.desc else ""
+    guard = "CAST(NULL AS bigint)"
     if query.cold():
-        found = _q_filtered(query.conditions, params, "c.id AS id")
-        with_sql = f"WITH m AS MATERIALIZED ({found}), "
+        params["small"] = studio_query.SMALL_OBJECT
+        count_hot = _q_count(query.conditions, params, _GUARD_CAP, only_hot=True)
+        found = _q_filtered(query.conditions, params, "c.id AS id", gate=_GUARD_GATE)
+        with_sql = f"WITH g AS ({count_hot}), m AS MATERIALIZED ({found}), "
+        guard = "(SELECT g.n FROM g)"
         total = "SELECT count(*) AS n FROM (SELECT 1 FROM m LIMIT :cap) x"
         ids = _q_small_ids(query, params)
     elif query.sort is not None:
         count_head = _q_head(query, params, "1")
         with_sql = ("WITH hc AS MATERIALIZED (SELECT count(*) AS n FROM "
                     f"({count_head} LIMIT CAST(:lim AS bigint) + CAST(:off AS bigint)) x), ")
-        counted = _q_filtered(query.conditions, params, "1")
-        total = f"SELECT count(*) AS n FROM ({counted} LIMIT :cap) x"
+        total = _q_count(query.conditions, params, ":cap")
         ids = _q_sorted_ids(query, params)
     else:
         with_sql = "WITH "
-        counted = _q_filtered(query.conditions, params, "1")
-        total = f"SELECT count(*) AS n FROM ({counted} LIMIT :cap) x"
+        total = _q_count(query.conditions, params, ":cap")
         page = _q_filtered(query.conditions, params,
                            "0 AS part, CAST(NULL AS text) AS k, c.id AS id")
         ids = f"{page} ORDER BY c.id LIMIT :lim OFFSET :off"
-    return (f"{with_sql}t AS ({total}), p AS ({ids}) "
-            f"SELECT t.n, {_QUERY_COLUMNS} FROM t LEFT JOIN (p {_q_lookup('p.id')}) ON true "
+    return (f"{with_sql}v AS ({_STILL_HOT_SQL}), t AS ({total}), p AS ({ids}) "
+            f"SELECT t.n, {guard}, v.n, {_QUERY_COLUMNS} FROM t CROSS JOIN v "
+            f"LEFT JOIN (p {_q_lookup('p.id')}) ON true "
             f"ORDER BY p.part, p.k{dirn}, (CASE WHEN p.part = 0 THEN p.id END){dirn}, p.id"), params
 
 
 def build_count(conditions: Sequence[Condition], *, object_id: str, package_id: str,
                 cap: int) -> tuple[str, dict[str, Any]]:
-    """The count of the records that meet *conditions*, up to *cap*, on the
-    candidates of :func:`build_query`. Pure. The guard ``hot_or_small``
-    counts the hot conditions with it."""
+    """The count of the records that meet *conditions*, up to *cap*, as the
+    CTE ``t`` of :func:`build_query` reads it. Pure."""
     params: dict[str, Any] = {"oid": object_id, "pid": package_id, "cap": cap}
-    counted = _q_filtered(conditions, params, "1")
-    return f"SELECT count(*) FROM ({counted} LIMIT :cap) x", params
+    return _q_count(conditions, params, ":cap"), params
 
 
 def _is_timeout(exc: DBAPIError) -> bool:
@@ -1100,28 +1144,35 @@ def _is_timeout(exc: DBAPIError) -> bool:
     return code == _QUERY_CANCELED
 
 
-@asynccontextmanager
-async def _time_limit(db: Any, deadline: float) -> AsyncIterator[Any]:
-    """Run the statements of a query in a SAVEPOINT, under one deadline.
+class _Timed:
+    """The session of a query, under one deadline. Before each statement it
+    sets the LOCAL ``statement_timeout`` to the time that is left, and it
+    refuses with ``query_timeout`` when none is left."""
 
-    It yields ``run(sql, params)``. Before each statement, ``run`` sets the
-    LOCAL ``statement_timeout`` to the time that is left, and it refuses with
-    ``query_timeout`` when none is left. A timeout aborts the SAVEPOINT only,
-    so the caller's transaction stays usable (C1b joins several store calls
-    in one). The old timeout comes back after each query, also after a success.
-    """
-    old = str((await db.execute(text(_TIMEOUT_READ_SQL))).scalar_one())
+    def __init__(self, db: Any, deadline: float) -> None:
+        self._db = db
+        self._deadline = deadline
 
-    async def run(sql: str, params: dict[str, Any]) -> Any:
-        left = deadline - _clock()
+    async def execute(self, stmt: Any, params: dict[str, Any]) -> Any:
+        left = self._deadline - _clock()
         if left <= 0:
             raise QueryError(studio_query.TIMEOUT, _TIMEOUT_MESSAGE)
-        await db.execute(text(_TIMEOUT_SQL), {"ms": str(max(1, int(left * 1000)))})
-        return await db.execute(text(sql), params)
+        await self._db.execute(text(_TIMEOUT_SQL), {"ms": str(max(1, int(left * 1000)))})
+        return await self._db.execute(stmt, params)
 
+
+@asynccontextmanager
+async def _time_limit(db: Any, deadline: float) -> AsyncIterator[_Timed]:
+    """Run the statements of a query in a SAVEPOINT, under one deadline.
+
+    A timeout aborts the SAVEPOINT only, so the caller's transaction stays
+    usable (C1b joins several store calls in one). The old timeout comes back
+    after each query, also after a success.
+    """
+    old = str((await db.execute(text(_TIMEOUT_READ_SQL))).scalar_one())
     try:
         async with db.begin_nested():
-            yield run
+            yield _Timed(db, deadline)
     except DBAPIError as exc:
         if _is_timeout(exc):
             raise QueryError(studio_query.TIMEOUT, _TIMEOUT_MESSAGE) from None
@@ -1130,21 +1181,33 @@ async def _time_limit(db: Any, deadline: float) -> AsyncIterator[Any]:
         await db.execute(text(_TIMEOUT_SQL), {"ms": old})
 
 
-async def _check_hot_or_small(run: Any, query: Query, oid: str, pid: str) -> None:
+def _check_hot_or_small(rows: Sequence[Any], query: Query) -> None:
     """``hot_or_small``: a filter on a field that is not hot reads ``data``,
     so it runs only when the hot filters leave at most
-    :data:`~acb_common.studio_query.SMALL_OBJECT` records."""
-    cold = query.cold()
-    if not cold:
-        return
-    small = studio_query.SMALL_OBJECT
-    sql, params = build_count(query.hot_only(), object_id=oid, package_id=pid, cap=small + 1)
-    if int((await run(sql, params)).scalar_one()) > small:
-        key = cold[0].field.key
+    :data:`~acb_common.studio_query.SMALL_OBJECT` records. The page statement
+    holds the count, so a write between two statements cannot pass the guard."""
+    guard, small = rows[0][1], studio_query.SMALL_OBJECT
+    if guard is not None and int(guard) > small:
+        key = query.cold()[0].field.key
         raise QueryError(
             studio_query.NOT_INDEXED,
             f"Field `{key}` is not hot, and the filter leaves more than {small} records to "
             "check. Turn it hot, or add a filter on a hot field.", key)
+
+
+async def _read_page(timed: _Timed, oid: str, pid: str, filter: Any, sort: Any, size: int,
+                     start: int) -> list[Any]:
+    """The fields, then the page statement. A field that turned cold after
+    the store read the fields has lost its hot rows, so the statement says so,
+    and the store reads the fields and runs the query once more."""
+    for _ in range(2):
+        query = studio_query.parse_query(await _fields(timed, oid), filter, sort)
+        sql, params = build_query(query, object_id=oid, package_id=pid, limit=size, offset=start)
+        rows = (await timed.execute(text(sql), params)).all()
+        if int(rows[0][2]) == len(query.hot_keys()):
+            _check_hot_or_small(rows, query)
+            return rows
+    raise QueryError(studio_query.TIMEOUT, _CHANGED_MESSAGE)
 
 
 async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any = None,
@@ -1158,8 +1221,10 @@ async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any
     :class:`~acb_common.studio_query.QueryError`, and the session stays
     usable. The whole call has one deadline of
     :data:`~acb_common.studio_query.TIMEOUT_MS`. One statement reads the
-    page and its total, so a write between two statements cannot put a
-    record on the page twice. A record with no value of the sort field comes
+    page, its total and the guard, so a write between two statements cannot
+    put a record on the page twice or pass the guard. If a field turns cold
+    twice during the call, the store raises ``query_timeout``, and the caller
+    may try again. A record with no value of the sort field comes
     after the records with a value. The total is exact below
     :data:`~acb_common.studio_query.TOTAL_CAP`.
     """
@@ -1168,15 +1233,13 @@ async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any
     pid = _uuid(package_id, "package_id")
     start, size = studio_query.page_bounds(offset, limit)
     studio_query.check_shape(filter, sort)
-    if (await db.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})).first() is None:
-        return None
-    query = studio_query.parse_query(await _fields(db, oid), filter, sort)
-    async with _time_limit(db, deadline) as run:
-        await _check_hot_or_small(run, query, oid, pid)
-        sql, params = build_query(query, object_id=oid, package_id=pid, limit=size, offset=start)
-        rows = (await run(sql, params)).all()
-    count = int(rows[0][0]) if rows else 0
-    records = tuple(_record(row[1:]) for row in rows if row[1] is not None)
+    async with _time_limit(db, deadline) as timed:
+        found = await timed.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})
+        if found.first() is None:
+            return None
+        rows = await _read_page(timed, oid, pid, filter, sort, size, start)
+    count = int(rows[0][0])
+    records = tuple(_record(row[3:]) for row in rows if row[3] is not None)
     exact = count < studio_query.TOTAL_CAP
     shown = len(records)
     reach = studio_query.MAX_OFFSET
