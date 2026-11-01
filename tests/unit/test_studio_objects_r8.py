@@ -31,6 +31,8 @@ e. The budget: the 9th hot field of an object and the 25th of an org are
 f. A record of more than 64 KiB is refused, by the store and by the CHECK.
 g. A field turns hot with a backfill, on an object of at most 50,000 records.
 h. A deleted package or object leaves no record and no hot row.
+i. Only a Studio package owns an object. An App Workshop app owns none
+   (STU-B2a). The door reads an object by its name in one package.
 
 **The mutations (R7).** Commit before each, and restore with git after.
 
@@ -61,6 +63,8 @@ h. A deleted package or object leaves no record and no hot row.
   goes red.
 * M12. ``studio_fields.stored_field``: return ``parse_field_spec(...)`` again.
   ``test_r8_an_older_stored_spec_still_reads_and_writes`` goes red.
+* M13 (STU-B2a). ``objects_store._PACKAGE_SQL``: drop ``AND format =
+  'manifest'``. ``test_r8_a_code_app_owns_no_object`` goes red.
 """
 
 from __future__ import annotations
@@ -140,6 +144,18 @@ def _dsn(url: Any) -> str:
     return url.render_as_string(hide_password=False)
 
 
+#: A Studio package, as the superuser seeds it: a row of `apps` with
+#: `format = 'manifest'` and a manifest that passes `apps_manifest_package`.
+#: Only a package owns an object (STU-B2a), so a code app is no seed here.
+_PACKAGE_INSERT = (
+    "INSERT INTO apps (slug, name, owner_email, workspace_path, organization_id, "
+    "format, manifest) VALUES (:s, 'stuc1', :oe, '', CAST(:org AS uuid), 'manifest', "
+    "CAST(:manifest AS jsonb)) RETURNING id"
+)
+_PACKAGE_MANIFEST = json.dumps(
+    {"studio": 1, "id": "stuc1", "name": "stuc1", "purpose": "The C1 R8 suite."})
+
+
 @pytest.fixture
 def world(promoted):  # noqa: F811
     """Three packages: two of org A and one of org B. Teardown deletes every
@@ -149,10 +165,9 @@ def world(promoted):  # noqa: F811
     pkgs: dict[str, str] = {}
     with p.admin_engine.begin() as c:
         for key, org in (("a", p.org_a), ("a2", p.org_a), ("b", p.org_b)):
-            pkgs[key] = str(c.execute(text(
-                "INSERT INTO apps (slug, name, owner_email, workspace_path, organization_id) "
-                "VALUES (:s, 'stuc1', :oe, '/tmp/stuc1', :org) RETURNING id"),
-                {"s": f"stuc1-{TAG}-{run}-{key}", "oe": ANA, "org": org}).scalar_one())
+            pkgs[key] = str(c.execute(text(_PACKAGE_INSERT), {
+                "s": f"stuc1-{TAG}-{run}-{key}", "oe": ANA, "org": org,
+                "manifest": _PACKAGE_MANIFEST}).scalar_one())
     yield SimpleNamespace(p=p, a=p.org_a, b=p.org_b, pkg_a=pkgs["a"], pkg_a2=pkgs["a2"],
                           pkg_b=pkgs["b"])
     with p.admin_engine.begin() as c:
@@ -378,10 +393,9 @@ def test_r8_the_object_caps_hold(world) -> None:
     # 50 + 1 = 51 in the org. Seed 149 more in a third package, to 200. The
     # cap of a package is the store's, so the superuser may pass it.
     with world.p.admin_engine.begin() as c:
-        pkg3 = str(c.execute(text(
-            "INSERT INTO apps (slug, name, owner_email, workspace_path, organization_id) "
-            "VALUES (:s, 'stuc1', :m, '/tmp/stuc1', CAST(:o AS uuid)) RETURNING id"),
-            {"s": f"stuc1-{TAG}-cap-{uuid.uuid4().hex[:6]}", "m": ANA, "o": world.a}).scalar_one())
+        pkg3 = str(c.execute(text(_PACKAGE_INSERT), {
+            "s": f"stuc1-{TAG}-cap-{uuid.uuid4().hex[:6]}", "oe": ANA, "org": world.a,
+            "manifest": _PACKAGE_MANIFEST}).scalar_one())
         c.execute(text(
             "INSERT INTO studio_objects (organization_id, package_id, name, created_by) "
             "SELECT CAST(:o AS uuid), CAST(:p AS uuid), 'seed_' || g, :m "
@@ -392,6 +406,61 @@ def test_r8_the_object_caps_hold(world) -> None:
     assert isinstance(got, store.BudgetExceeded) and "200" in str(got)
     with world.p.admin_engine.begin() as c:
         c.execute(text("DELETE FROM apps WHERE id = CAST(:p AS uuid)"), {"p": pkg3})
+
+
+def test_r8_a_code_app_owns_no_object(world) -> None:
+    """STU-B2a closes the gap of C1. `_PACKAGE_SQL` needs `format = 'manifest'`,
+    so an App Workshop app of the org, also of the same member, owns no object.
+    Both forms of a code app count: `format = 'code'` and a NULL format."""
+    run = uuid.uuid4().hex[:6]
+    apps: list[str] = []
+    with world.p.admin_engine.begin() as c:
+        for i, fmt in enumerate(("code", None)):
+            apps.append(str(c.execute(text(
+                "INSERT INTO apps (slug, name, owner_email, workspace_path, organization_id, "
+                "format) VALUES (:s, 'stuc1', :oe, '/tmp/stuc1', CAST(:o AS uuid), :f) "
+                "RETURNING id"),
+                {"s": f"stuc1-{TAG}-code-{run}-{i}", "oe": ANA, "o": world.a,
+                 "f": fmt}).scalar_one()))
+
+    async def go() -> list[Any]:
+        out = []
+        for app in apps:
+            async with tenant_session(world.a) as db:
+                out.append(await store.define_object(db, ANA, package_id=app, name="visit",
+                                                     fields=[]))
+        return out
+
+    try:
+        assert _go(world, go) == [None, None]
+        assert _admin_one(world, "SELECT count(*) FROM studio_objects WHERE package_id IN "
+                          "(CAST(:a AS uuid), CAST(:b AS uuid))",
+                          {"a": apps[0], "b": apps[1]}) == 0
+    finally:
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM apps WHERE slug LIKE :t"),
+                      {"t": f"stuc1-{TAG}-code-{run}-%"})
+
+
+def test_r8_get_object_by_name_reads_one_package_only(world) -> None:
+    """The door reads an object by the name in its manifest. Two packages of
+    one org may hold one name, and each read answers its own package."""
+    async def go() -> dict[str, Any]:
+        mine = await _define(world.a, world.pkg_a, fields=[])
+        other = await _define(world.a, world.pkg_a2, fields=[])
+        async with tenant_session(world.a) as db:
+            got = await store.get_object_by_name(db, "visit", package_id=world.pkg_a)
+            got2 = await store.get_object_by_name(db, "visit", package_id=world.pkg_a2)
+            none = await store.get_object_by_name(db, "claim", package_id=world.pkg_a)
+        async with tenant_session(world.b) as db:
+            org_b = await store.get_object_by_name(db, "visit", package_id=world.pkg_a)
+        return {"mine": mine, "other": other, "got": got, "got2": got2, "none": none,
+                "org_b": org_b}
+
+    out = _go(world, go)
+    assert out["got"] is not None and out["got"].id == out["mine"].id
+    assert out["got2"] is not None and out["got2"].id == out["other"].id
+    assert out["none"] is None and out["org_b"] is None
 
 
 def test_r8_sixty_fields_is_the_cap(world) -> None:

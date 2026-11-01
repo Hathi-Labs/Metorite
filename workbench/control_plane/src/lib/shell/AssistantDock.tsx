@@ -71,6 +71,7 @@ import {
   formDurationMs,
   isMoving,
   isShown,
+  morphAskBox,
   pickFocusReturn,
   swapPanelForm,
   usePanelPhase,
@@ -1197,7 +1198,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
           aria-label={`Close ${ASSISTANT_NAME}`}
           title="Close"
           className={phoneTap}
-          onClick={closeAssistant}
+          // The composer goes back into the Ask bar, where the page has one.
+          onClick={() => morphAskBox("into-bar", closeAssistant)}
         />
       </header>
 

@@ -112,7 +112,11 @@ rc=0
 # has no error. pg_restore needs a file it can seek in for -L.
 docker cp "$import_dir/staging.dump" "$ctr:/tmp/staging.dump"
 docker exec "$ctr" sh -c 'pg_restore -l /tmp/staging.dump | grep -vE "^[0-9]+; [0-9]+ [0-9]+ SCHEMA - public " > /tmp/staging.list'
-docker exec "$ctr" pg_restore -U postgres -d postgres --no-owner --no-acl \
+# LD-8c: the restore builds a vector index that needs more than the 64 MB
+# default of maintenance_work_mem. `env` sets PGOPTIONS inside the container,
+# as scripts/restore_db.sh does. Fence: tests/unit/test_staging_box.py.
+docker exec "$ctr" env "PGOPTIONS=-c maintenance_work_mem=256MB" \
+  pg_restore -U postgres -d postgres --no-owner --no-acl \
   -L /tmp/staging.list /tmp/staging.dump > "$log" 2>&1 || rc=$?
 docker exec "$ctr" rm -f /tmp/staging.dump /tmp/staging.list
 if [ "$rc" != "0" ] || grep -qE '^pg_restore: error' "$log"; then

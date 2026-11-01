@@ -809,6 +809,20 @@ if [ "$VERIFY_RESTORE" = "1" ]; then
     #                   memory cap.
     #   fsync=off ...   the data is thrown away, so durability buys nothing and
     #                   costs this box disk I/O.
+    #   maintenance_work_mem=256MB
+    #                   🔴 Incident, 2026-10-31 02:37 UTC. The restore failed
+    #                   with "memory required is 65 MB, maintenance_work_mem is
+    #                   64 MB", in the build of a vector index. 64 MB is the
+    #                   image default. We measured it the same day, with these
+    #                   flags and a 1g cap. At 64 MB, an IVFFlat index
+    #                   (lists = 100) on 12,000 vector(1536) rows gives that
+    #                   error. At 256 MB it builds. An HNSW build at 64 MB only
+    #                   goes slower.
+    #                   One index builds at a time, because pg_restore runs
+    #                   one job and the parallel workers are 0. So the peak is
+    #                   256 MB plus shared_buffers (128 MB, the image default),
+    #                   under the 1g cap. A cap below about 512m does not hold
+    #                   it. Fence: tests/unit/test_backup_deploy_wiring.py.
     verify_pw="$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
     if ! err="$(POSTGRES_PASSWORD="$verify_pw" docker run -d --rm \
           --name "$verify_ctr" --label acb.backup-verify=1 \
@@ -817,6 +831,7 @@ if [ "$VERIFY_RESTORE" = "1" ]; then
           "$verify_image" \
           -c fsync=off -c synchronous_commit=off -c full_page_writes=off \
           -c max_parallel_maintenance_workers=0 -c max_parallel_workers_per_gather=0 \
+          -c maintenance_work_mem=256MB \
           2>&1 >/dev/null)"; then
       echo "ERROR: the verify container did not start (image $verify_image). Reason:" >&2
       printf '%s\n' "${err:-<docker gave no reason>}" | redact | sed 's/^/    /' >&2

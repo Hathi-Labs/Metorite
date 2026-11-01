@@ -14,8 +14,10 @@ keys (spec §3.3). PKG-3a adds :func:`load_gates`: the search scope map and the
 ``ALSO_SERVES`` map. PKG-3b adds two more maps to :class:`Gates`: ``href_features``
 (route to feature slug) and ``always_allowed`` (routes open to every signed-in
 member). The ``always_allowed`` match is EXACT, never a prefix. A path under an
-entry is NOT allowed. The files are data, so nothing here is code. ``tests/unit/test_shell_manifests.py``
-is the fence.
+entry is NOT allowed. PKG-5b adds :func:`load_contributes`: the keys that the
+system packages hold at ``jobs``, ``nav`` and ``cards``, each with its feature.
+The install store checks a claim against them (spec §4). The files are data, so
+nothing here is code. ``tests/unit/test_shell_manifests.py`` is the fence.
 """
 
 from __future__ import annotations
@@ -311,3 +313,58 @@ def load_gates(directory: Path | None = None) -> Gates:
         tuple(features.items()),
         tuple(allowed),
     )
+
+
+#: The points of a system package that the resolve returns (spec §5.2, PKG-5b).
+SYSTEM_POINTS: tuple[str, ...] = ("jobs", "nav", "cards")
+
+
+@dataclass(frozen=True)
+class SystemContribution:
+    """One key that a system package holds at one point (spec §4, PKG-5b).
+
+    ``key`` is the job ``id``, the nav ``href`` or the card ``key``.
+    ``package`` is the id of the file that holds it. ``feature`` is the
+    feature slug of the entry, or None. A card names no feature.
+    """
+
+    point: str
+    key: str
+    package: str
+    feature: str | None = None
+
+
+def load_contributes(
+    directory: Path | None = None,
+) -> dict[str, tuple[SystemContribution, ...]]:
+    """The keys of the system packages at each point of :data:`SYSTEM_POINTS`.
+
+    The jobs keep the order of ``position``, as :func:`load_jobs` does. The
+    nav entries keep file order, and the cards keep the order of
+    ``home.json``, as :func:`load_vocabulary` does. A key that two entries of
+    one point hold is an error.
+    """
+    jobs: list[tuple[int, SystemContribution]] = []
+    nav: list[SystemContribution] = []
+    cards: list[SystemContribution] = []
+    for name, contributes in _read(directory or SHELL_DIR):
+        package = name.removesuffix(".json")
+        for raw in contributes.get("jobs", []):
+            job = _job(raw, name)
+            jobs.append((job.position, SystemContribution("jobs", job.id, package, job.feature)))
+        for href, feature in _nav_entries(contributes.get("nav", []), name):
+            _check_href(href, name, "nav")
+            nav.append(SystemContribution("nav", href, package, feature))
+        for key in _names(contributes.get("cards", []), "key", name, "card"):
+            cards.append(SystemContribution("cards", key, package))
+    out = {
+        "jobs": tuple(c for _, c in sorted(jobs, key=lambda pair: pair[0])),
+        "nav": tuple(nav),
+        "cards": tuple(cards),
+    }
+    for point, entries in out.items():
+        keys = [c.key for c in entries]
+        if len(set(keys)) != len(keys):
+            dup = sorted({k for k in keys if keys.count(k) > 1})
+            raise ShellManifestError(f"duplicate {point} key: {dup}")
+    return out

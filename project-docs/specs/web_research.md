@@ -1,7 +1,7 @@
 # Web research — Mira reads the web at large, on open-source parts (WS-WEB)
 
 > **Product:** Metorite · **Feature:** web search, page and file reading, crawling, browsing and research jobs for the one assistant · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 📐 **SPEC ONLY (WEB-0).** Nothing new is built. `web_search` and `fetch_page` exist today (§2).
+> **Status:** 🔨 **IN BUILD.** WEB-1 (the fetch guard) is built, 2026-11-01, and WEB-2 is next. `web_search` and `fetch_page` existed before WEB-0 (§2).
 > **Verified against code on 2026-11-01 at `f59a636b5`.** Each path in §12 was read on that commit.
 > **Board:** WS-WEB in `work_plan.md` §2.1. **Decision:** D148. D85, D117, D124, D129, D130 and D139 bind it.
 > **Metorite:** project "Agent Tooling", epic 1235, this spec task 1237. The slices WEB-1 to WEB-12 are tasks 1259 to 1270, in order.
@@ -57,7 +57,7 @@ The owner wants Mira to do in chat what a research agent does: search the web at
 | A browser on the box | `apps/services/meeting_bot/` | Playwright 1.48 with Chromium in its own container. Proof that a browser worker can run here |
 | The coding session's network | `maf_coding_engine.md` §18.4 CA-4 (task 1032) | Spec only: an egress proxy with an allow-list, `web_fetch` and `web_search` inside the sandbox |
 
-**⚠️ A finding.** The direct fallback of `fetch_page` follows redirects and checks no address. A redirect to a private address is not refused in that code. The egress card checks no address, so nothing else closes it. The code also sends a private target to Jina before any check. WEB-1 fixes it first.
+**⚠️ A finding.** The direct fallback of `fetch_page` follows redirects and checks no address. A redirect to a private address is not refused in that code. The egress card checks no address, so nothing else closes it. The code also sends a private target to Jina before any check. WEB-1 closed it first, on 2026-11-01.
 
 ---
 
@@ -73,9 +73,9 @@ Every web read goes through one function. The rules:
 2. **Address.** Resolve the host. Refuse it unless each address is public. Connect to the address that was checked. The rule is `acb_common.public_address`, which the gateway already uses. WEB-1 makes `web_tools.py` use it too, so the gateway and the orchestrator share one copy.
 3. **Redirects.** Follow them by hand, at most 5. Each hop passes rules 1 and 2 again.
 4. **Caps.** 20 seconds and 15 MB for each read. The reader output has its own cap, and an overflow spills through CTX-1 with a locator.
-5. **Type.** HTML, PDF, the Office types, CSV, JSON, plain text and images. Any other type is refused with its name.
-6. **The mark.** `UntrustedFrame` wraps the output as outside text. The header (title, final URL, date, type) goes inside the frame, because a page controls it.
-7. **Jina.** A target passes rules 1 to 3 before any reader sees it, Jina included.
+5. **Type.** HTML, PDF, the Office types, CSV, JSON, plain text and images. The guard refuses any other type and names it. WEB-3 builds this refusal, and WEB-1 refuses no type.
+6. **The mark.** `UntrustedFrame` wraps the output as outside text. The header (title, the URL that gave the text, date, type) goes inside the frame, because a page controls it. WEB-2 adds the title and the date, because its reader reads them from the page.
+7. **Jina.** A target passes rules 1 to 3 before any reader sees it, Jina included. Jina gets the URL of the call after the walk ends. Each hop that the walk reached passes the check first. A network fault can end the walk early. Then Jina's own network follows the hops that the walk did not reach.
 
 ### 3.2 Readers
 
