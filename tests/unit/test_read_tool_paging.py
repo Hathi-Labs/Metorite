@@ -229,7 +229,7 @@ ALLOWED: dict[str, str] = {
         'answer names its size and how to read the rest.',
     'packages/acb_skills/acb_skills/todo_tools.py::manage_todo_list::title[:120]':
         'Text, not rows: the cut shortens one string.',
-    'packages/acb_skills/acb_skills/web_tools.py::fetch_page::text[:max_chars]':
+    'packages/acb_skills/acb_skills/web_tools.py::frame_page::text[:limit]':
         "Text: one web page, cut and marked '[... truncated'. max_chars asks for more.",
     'apps/agents/agent-email-assistant/agents.py::_inbox_card_parts::rows[:_CARD_MESSAGE_LINES]':
         "A confirm card's message lines (#1019). It ends with '+N more', and the act takes every message.",
