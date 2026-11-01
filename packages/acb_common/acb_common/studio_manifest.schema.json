@@ -669,14 +669,63 @@
       "title": "Connections",
       "type": "array"
     },
+    "contributes": {
+      "additionalProperties": {
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "title": "Contributes",
+      "type": "object"
+    },
+    "extends": {
+      "anyOf": [
+        {
+          "pattern": "^[a-z][a-z0-9_-]{0,47}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Extends"
+    },
     "id": {
       "pattern": "^[a-z][a-z0-9_-]{0,47}$",
       "title": "Id",
       "type": "string"
     },
-    "name": {
-      "title": "Name",
+    "kind": {
+      "default": "studio",
+      "enum": [
+        "studio",
+        "system"
+      ],
+      "title": "Kind",
       "type": "string"
+    },
+    "name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Name"
+    },
+    "needs": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Needs",
+      "type": "array"
     },
     "objects": {
       "items": {
@@ -685,9 +734,25 @@
       "title": "Objects",
       "type": "array"
     },
+    "overrides": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Overrides",
+      "type": "array"
+    },
     "purpose": {
-      "title": "Purpose",
-      "type": "string"
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Purpose"
     },
     "shell": {
       "anyOf": [
@@ -710,6 +775,14 @@
         }
       ],
       "default": null
+    },
+    "slots": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Slots",
+      "type": "array"
     },
     "studio": {
       "const": 1,
@@ -745,9 +818,7 @@
   },
   "required": [
     "studio",
-    "id",
-    "name",
-    "purpose"
+    "id"
   ],
   "title": "Manifest",
   "type": "object"
