@@ -15,6 +15,11 @@
  * other half: it refuses a Gmail connect without the current version.
  * Fence: `connect.test.ts`, `every-handleConnect-caller-passes-the-disclosure`.
  *
+ * `ackLatch` lets one click through, so a double click writes one ack line.
+ * A browser that restores this page from its back-forward cache restores a
+ * spent latch too, and the member would meet a dead button. So `pageshow`
+ * opens it again.
+ *
  * Focus: the step is long, so focus goes to its title when it opens, and a
  * keyboard reads down from there. A focus on the box would scroll past the
  * words. After "Back", `ImportRangeStep` takes focus to the checked range.
@@ -23,10 +28,11 @@
  * The gateway does not require the acknowledgement for Microsoft (item 4).
  */
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import Button from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import {
+  ackLatch,
   DISCLOSURE_COPY,
   DISCLOSURE_VERSION,
   PRIVACY_POLICY_URL,
@@ -53,15 +59,30 @@ export function DisclosureStep({
   const titleId = useId();
   const boxId = useId();
   const titleRef = useRef<HTMLHeadingElement>(null);
+  const latch = useMemo(ackLatch, []);
+  const [leaving, setLeaving] = useState(false);
 
   // Mount only.
   useEffect(() => {
     titleRef.current?.focus();
   }, []);
 
-  const go = () => {
-    if (agreed) onAcknowledge(DISCLOSURE_VERSION);
-  };
+  // The member came back from the provider with the browser's Back button.
+  useEffect(() => {
+    const restored = (e: PageTransitionEvent) => {
+      if (!e.persisted) return;
+      latch.reset();
+      setLeaving(false);
+    };
+    window.addEventListener("pageshow", restored);
+    return () => window.removeEventListener("pageshow", restored);
+  }, [latch]);
+
+  const go = () =>
+    latch.fire(agreed, () => {
+      setLeaving(true);
+      onAcknowledge(DISCLOSURE_VERSION);
+    });
 
   return (
     <section aria-labelledby={titleId} className="flex flex-col gap-3">
@@ -113,9 +134,9 @@ export function DisclosureStep({
           {dialog ? DISCLOSURE_COPY.cancel : DISCLOSURE_COPY.back}
         </Button>
         {provider === "gmail" ? (
-          <GoogleButton disabled={!agreed} onClick={go} />
+          <GoogleButton disabled={!agreed || leaving} onClick={go} />
         ) : (
-          <Button variant="primary" size="sm" disabled={!agreed} onClick={go}>
+          <Button variant="primary" size="sm" disabled={!agreed || leaving} onClick={go}>
             {words.button}
           </Button>
         )}

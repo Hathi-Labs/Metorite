@@ -65,6 +65,7 @@ import {
   isFirstSyncPending,
   mapMailAppInfo,
   reconnectProvider,
+  ackLatch,
   DISCLOSURE_COPY,
   DISCLOSURE_PIN,
   DISCLOSURE_SUBPROCESSORS,
@@ -1670,11 +1671,63 @@ describe("disclosure-names-each-data-class-the-ai-and-each-sub-processor", () =>
     }
   });
 
-  it("says what the AI does, and that a draft waits for the member", () => {
+  it("says what the AI does, and that a draft reply waits for the member", () => {
+    for (const provider of ["gmail", "microsoft"] as const) {
+      expect(wordsOf(provider)).toContain("A draft reply stays a draft until you send it.");
+    }
+  });
+
+  it("covers each AI feature, and says that Metorite learns and stores", () => {
     for (const provider of ["gmail", "microsoft"] as const) {
       const words = wordsOf(provider);
-      expect(words).toContain("A draft is never sent unless you send it.");
-      expect(words).toContain("It sends mail only when you tell it to.");
+      expect(words).toContain("the text that each other AI feature works on");
+      expect(words).toContain("mail you received, your drafts or mail you sent");
+      expect(words).toContain("learns your writing style from the mail you send");
+      expect(words).toContain("it stores what it learns");
+      expect(words).toContain("to fill in what those rules ask for");
+    }
+  });
+
+  it("says each way that mail leaves without a click", () => {
+    for (const provider of ["gmail", "microsoft"] as const) {
+      const words = wordsOf(provider);
+      expect(words).toContain("It sends mail when you ask it to");
+      expect(words).toContain("it sends the digest from your mailbox to you on its schedule");
+    }
+    // `dispatch.py`: G1 drafts from Gmail, and Outlook sends with no click.
+    expect(wordsOf("gmail")).toContain("Metorite saves that email as a draft");
+    expect(wordsOf("gmail")).not.toContain("with no further step from you");
+    expect(wordsOf("microsoft")).toContain("sends it from your default mailbox, with no further step from you");
+  });
+
+  it("names the Note Taker setting that stops it, in the words of its screen", () => {
+    const modal = readFileSync(
+      join(EMAIL_APP, "..", "notes", "components", "NotesSettingsModal.tsx"),
+      "utf-8",
+    );
+    const label = /key: "auto_dispatch_emails",\s+label: "([^"]+)"/.exec(modal)?.[1];
+    expect(label).toBe("Send committed emails automatically");
+    expect(modal).toContain("Note Taker settings");
+    for (const provider of ["gmail", "microsoft"] as const) {
+      expect(wordsOf(provider)).toContain(`turn off “${label}” in Note Taker settings`);
+    }
+  });
+
+  it("says that a failed unsubscribe also makes a filter", () => {
+    expect(wordsOf("gmail")).toContain("or an unsubscribe does not work, Metorite creates a Gmail filter");
+    expect(wordsOf("microsoft")).toContain("does not work, Metorite creates an Outlook rule");
+  });
+
+  it("holds none of the sentences that the code proved false", () => {
+    const FALSE = [
+      "only when you tell it to",
+      "A draft is never sent unless you send it",
+      "a setting that you chose",
+      "a draft, an answer or a digest needs",
+      "Metorite lists the filters it made",
+    ];
+    for (const provider of ["gmail", "microsoft"] as const) {
+      for (const sentence of FALSE) expect(wordsOf(provider), sentence).not.toContain(sentence);
     }
   });
 
@@ -1856,10 +1909,9 @@ describe("the-button-waits-for-the-box", () => {
     ).toMatch(CHECKED);
     const src = codeOnly(read("components/DisclosureStep.tsx"));
     expect(src).toContain("const [agreed, setAgreed] = useState(false);");
-    expect(src).toContain("disabled={!agreed}");
-    expect([...src.matchAll(/disabled=\{!agreed\}/g)]).toHaveLength(2);
+    expect([...src.matchAll(/disabled=\{!agreed \|\| leaving\}/g)]).toHaveLength(2);
     // A call that gets past the attribute still does nothing.
-    expect(src).toMatch(/const go = \(\) => \{\s*if \(agreed\) onAcknowledge\(DISCLOSURE_VERSION\);\s*\};/);
+    expect(src).toMatch(/latch\.fire\(agreed, \(\) => \{/);
   });
 
   it("the label of the box is one control with the box", () => {
@@ -1906,5 +1958,60 @@ describe("the disclosure comes last, for each path (items 1 and 2)", () => {
     const src = codeOnly(read("lib/api.ts"));
     expect(src).not.toContain("getOAuthUrl");
     expect(src).not.toContain("getOAuthAuthorizeUrl");
+  });
+});
+
+describe("the-button-fires-once", () => {
+  it("a double click acknowledges once", () => {
+    const latch = ackLatch();
+    let sends = 0;
+    const click = () => latch.fire(true, () => sends++);
+    click();
+    click();
+    expect(sends).toBe(1);
+  });
+
+  it("the box clear lets nothing through, and does not spend the latch", () => {
+    const latch = ackLatch();
+    let sends = 0;
+    latch.fire(false, () => sends++);
+    expect(sends).toBe(0);
+    latch.fire(true, () => sends++);
+    expect(sends).toBe(1);
+  });
+
+  it("a page that the browser restored can go again", () => {
+    const latch = ackLatch();
+    let sends = 0;
+    latch.fire(true, () => sends++);
+    latch.reset();
+    latch.fire(true, () => sends++);
+    expect(sends).toBe(2);
+  });
+
+  it("the step sends only through the latch, and opens it on a restored page", () => {
+    const src = codeOnly(read("components/DisclosureStep.tsx"));
+    expect(src).toContain("const latch = useMemo(ackLatch, []);");
+    expect(src).toMatch(/const go = \(\) =>\s*latch\.fire\(agreed, \(\) => \{/);
+    expect([...src.matchAll(/onAcknowledge\(/g)]).toHaveLength(1);
+    expect(src).toMatch(/if \(!e\.persisted\) return;\s*latch\.reset\(\);\s*setLeaving\(false\);/);
+  });
+});
+
+describe("the-spec-mirrors-the-words", () => {
+  it("§12.3.13.4.1 holds each string of DISCLOSURE_COPY", () => {
+    const spec = readFileSync(
+      join(EMAIL_APP, "..", "..", "..", "..", "..", "project-docs", "specs", "email_app_master_plan.md"),
+      "utf-8",
+    );
+    const at = spec.indexOf("###### 12.3.13.4.1");
+    expect(at).toBeGreaterThan(-1);
+    const flat = spec.slice(at, spec.indexOf("##### 12.3.13.5", at)).replace(/\s+/g, " ");
+    for (const provider of ["gmail", "microsoft"] as const) {
+      const w = DISCLOSURE_COPY[provider];
+      for (const s of [w.title, w.lead, ...w.sections.flatMap((x) => [x.heading, x.body]), w.agree, w.button]) {
+        expect(flat, s).toContain(s);
+      }
+    }
   });
 });

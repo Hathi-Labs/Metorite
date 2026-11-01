@@ -242,7 +242,7 @@ export const DISCLOSURE_VERSION = "2026-11-draft";
  * version with new words would record a tick for words the member never saw.
  */
 export const DISCLOSURE_PIN =
-  "2026-11-draft:588678146d4b6bcafcef25340493fde9911a0df8a0c40e115a0d9de110055f84";
+  "2026-11-draft:663072c730c6e6bf4d0f3b12f97c511b1b7381911786f95c61a2ac1e8c574a7c";
 
 /** The privacy page. The step opens it in a new tab. */
 export const PRIVACY_POLICY_URL = "https://metorite.com/privacy.html";
@@ -277,13 +277,21 @@ export interface DisclosureWords {
   button: string;
 }
 
+/**
+ * The label of `auto_dispatch_emails` in `NotesSettingsModal.tsx`, in the words
+ * a member sees there. `connect.test.ts` reads that file, so the two cannot part.
+ */
+const NOTES_SEND_SETTING = "“Send committed emails automatically”";
+
 /** The two paragraphs that do not change with the provider. */
 const AI_FEATURES: DisclosureSection = {
   heading: "AI features",
   body:
-    "Metorite uses AI on new mail to decide which of your rules matches and which threads need your reply. " +
-    "AI also writes a draft reply when you ask for one or turn on automatic drafts, answers your questions " +
-    "about your mail, and writes your digest if you turn it on. A draft is never sent unless you send it.",
+    "Metorite uses AI on new mail to decide which of your rules matches, to fill in what those rules ask " +
+    "for, and to find the threads that need your reply. AI also writes a draft reply when you ask for one " +
+    "or turn on automatic drafts, answers your questions about your mail, and writes your digest if you " +
+    "turn it on. Metorite learns your writing style from the mail you send and from how you edit AI drafts, " +
+    "and it stores what it learns. A draft reply stays a draft until you send it.",
 };
 
 const AI_PROCESSORS: DisclosureSection = {
@@ -291,7 +299,8 @@ const AI_PROCESSORS: DisclosureSection = {
   body:
     `To do this, Metorite sends your mail to these sub-processors: ${SUBPROCESSOR_NAMES}. ` +
     "TypeSafe receives the parts of a message that a sorting decision needs, through AI/ML API. " +
-    "DeepSeek receives the text of the messages that a draft, an answer or a digest needs. " +
+    "DeepSeek receives the text that each other AI feature works on, which can be mail you received, " +
+    "your drafts or mail you sent. " +
     "DeepSeek processes that text in China under its own terms, and those terms let it use that text " +
     "to train its models.",
 };
@@ -302,6 +311,9 @@ const AI_PROCESSORS: DisclosureSection = {
  * Each sentence must be true for a live member today. The rule match and the
  * thread status run with Auto-run off too. A rule saves a draft and never
  * sends. The revoke skips a Google account that another Metorite row shares.
+ * ⚠️ One background send exists: `routes/notes/dispatch.py` sends from an
+ * Outlook mailbox with no click, and `auto_dispatch_emails` defaults to true.
+ * From Gmail it only drafts. So the two providers have different words there.
  *
  * ⚠️ Do NOT add a promise about what a sub-processor does with mail. Metorite
  * can state only what Metorite does, and the privacy policy of DeepSeek lets
@@ -325,15 +337,23 @@ export const DISCLOSURE_COPY: Readonly<Record<ConnectProviderId, DisclosureWords
         body:
           "Metorite reads your messages, with their headers and attachments, your labels and your drafts. " +
           "It shows your mail in Metorite and keeps it in step with Gmail in both directions. " +
-          "It sends mail only when you tell it to. It saves a draft when you ask for one, or when a rule " +
-          "or a setting that you chose says so. It archives, labels and moves mail when you or your rules do.",
+          "It sends mail when you ask it to, and if you turn on the digest, it sends the digest from your " +
+          "mailbox to you on its schedule. It saves a draft when you ask for one, when a rule that you set " +
+          "says so, or when you turn on automatic drafts. It archives, labels and moves mail when you or " +
+          "your rules do.",
       },
       {
         heading: "2. Manage your Gmail filters",
         body:
           "Metorite reads your Gmail filters and shows them on its rules screen. When you choose " +
-          "Auto-archive for a sender, Metorite creates a Gmail filter for that sender. It removes the " +
-          "filters it made when you change your mind or disconnect.",
+          "Auto-archive for a sender, or an unsubscribe does not work, Metorite creates a Gmail filter for " +
+          "that sender. It removes the filters it made when you change your mind or disconnect.",
+      },
+      {
+        heading: "After a meeting",
+        body:
+          "By default, when your meeting notes commit to sending an email, Metorite saves that email as a " +
+          `draft in your default mailbox. To stop this, turn off ${NOTES_SEND_SETTING} in Note Taker settings.`,
       },
       AI_FEATURES,
       AI_PROCESSORS,
@@ -364,17 +384,26 @@ export const DISCLOSURE_COPY: Readonly<Record<ConnectProviderId, DisclosureWords
         body:
           "Metorite reads your messages, with their headers and attachments, your folders, your " +
           "categories and your drafts. It shows your mail in Metorite and keeps it in step with Outlook " +
-          "in both directions. It sends mail only when you tell it to. It saves a draft when you ask for " +
-          "one, or when a rule or a setting that you chose says so. It archives, categorises and moves " +
-          "mail when you or your rules do.",
+          "in both directions. It sends mail when you ask it to, and if you turn on the digest, it sends " +
+          "the digest from your mailbox to you on its schedule. It saves a draft when you ask for one, when " +
+          "a rule that you set says so, or when you turn on automatic drafts. It archives, categorises and " +
+          "moves mail when you or your rules do.",
       },
       {
         heading: "2. Manage your mailbox settings",
         body:
           "Metorite reads your Outlook rules and shows them on its rules screen, and it creates the " +
-          "categories that your rules name. When you choose Auto-archive for a sender, Metorite creates " +
-          "an Outlook rule for that sender. It removes the rules it made when you change your mind or " +
-          "disconnect.",
+          "categories that your rules name. When you choose Auto-archive for a sender, or an unsubscribe " +
+          "does not work, Metorite creates an Outlook rule for that sender. It removes the rules it made " +
+          "when you change your mind or disconnect.",
+      },
+      {
+        heading: "After a meeting",
+        body:
+          "By default, when your meeting notes commit to sending an email, AI writes that email and Metorite " +
+          "sends it from your default mailbox, with no further step from you, if it can find the recipient. " +
+          "If it cannot, it saves a draft instead. To stop this, turn off " +
+          `${NOTES_SEND_SETTING} in Note Taker settings.`,
       },
       AI_FEATURES,
       AI_PROCESSORS,
@@ -400,6 +429,37 @@ export const DISCLOSURE_COPY: Readonly<Record<ConnectProviderId, DisclosureWords
   back: "Back",
   cancel: "Cancel",
 };
+
+/** One acknowledgement for one action (`ackLatch`). */
+export interface AckLatch {
+  /** Runs `send` once, and only with the box ticked. */
+  fire: (agreed: boolean, send: () => void) => void;
+  /** Opens the latch again, for a page that the browser restored. */
+  reset: () => void;
+}
+
+/**
+ * Lets one click through, so one action writes one ack line (DESIGN_SYSTEM.md
+ * M3). A double click would start two navigations, and each one would reach
+ * the gateway.
+ *
+ * ⚠️ The latch must be synchronous. A React state read in the handler is stale
+ * for the second click of a double click. `DisclosureStep` keeps the state for
+ * the look of the button only.
+ */
+export function ackLatch(): AckLatch {
+  let spent = false;
+  return {
+    fire(agreed, send) {
+      if (!agreed || spent) return;
+      spent = true;
+      send();
+    },
+    reset() {
+      spent = false;
+    },
+  };
+}
 
 /**
  * Where the range step keeps the last range the member chose (fix round 1).

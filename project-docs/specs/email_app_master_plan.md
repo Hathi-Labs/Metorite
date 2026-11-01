@@ -13973,6 +13973,16 @@ The Google submission waits for the owner's final words and a final `DISCLOSURE_
 approves the words in a preview. Task `33204727-33db-4295-955e-eac30f9e58dd` moves Gmail text off
 direct DeepSeek. That change is a new `DISCLOSURE_VERSION`, because the words live in one constant.
 
+**What the acknowledgement proves.** The client asserts the ack. The version is a public constant,
+so a crafted link can record an ack for a member who saw nothing. The check guards against a
+programmer's mistake, not an attacker. So `email.oauth_disclosure_ack` says that a request carried
+the current version, and it does not say that the member read the words. CASA evidence must not
+claim more, and this slice builds no signed token.
+
+**The limit of the pin.** `DISCLOSURE_PIN` holds the version and the hash in one string. A change of
+the words with the old pin fails the fence. A writer who changes the words and the hash, and keeps
+the version, passes it. No history list of old pins exists, on purpose. Review catches that case.
+
 **Gates, item by item.**
 
 | Items | Gate |
@@ -14022,7 +14032,8 @@ direct DeepSeek. That change is a new `DISCLOSURE_VERSION`, because the words li
 7. **A record of each acknowledgement.** The authorize leg logs `email.oauth_disclosure_ack` with the
    provider, the version and the organization id, and no address. It logs the line just before the
    redirect, so the line records a member who reached the provider. A Microsoft connect logs the
-   line only for the current version. That log line is the CASA evidence. No migration.
+   line only for the current version. `ackLatch` lets one click through, so one action writes one
+   line. That log line is the CASA evidence, within the limit above. No migration.
 8. **The Google button (item 8).** It follows
    `https://developers.google.com/identity/branding-guidelines`.
    - The label is "Continue with Google". The mark is the standard four-colour "G", unchanged, from
@@ -14060,6 +14071,8 @@ direct DeepSeek. That change is a new `DISCLOSURE_VERSION`, because the words li
     `lib/allInboxes.test.ts:443`.
   - `google-button-reads-continue-with-google`
   - `the-button-waits-for-the-box`: draws the step with the box clear, and finds `disabled`.
+  - `the-button-fires-once`: runs `ackLatch` on a double click, and proves one send.
+  - `the-spec-mirrors-the-words`: reads §12.3.13.4.1 and finds each string of `DISCLOSURE_COPY`.
   - The old assertion that the range step reads "Continue to Google" now reads "Continue"
     (`connect.test.ts`, the range step test of EM-G8).
 - `tests/unit/test_email_gmail_connect.py`:
@@ -14071,8 +14084,14 @@ direct DeepSeek. That change is a new `DISCLOSURE_VERSION`, because the words li
   - `test_the_ack_log_line_carries_no_address`
 - `src/lib/theme/conformance.test.ts`: the allowlist entry for the Google button file.
 
-**Mutations.** M1: the authorize leg skips the check. M2: the reconnect banner calls `handleConnect`
-directly. M3: the button is enabled with the box clear. M4: the words change and the version does not.
+**Mutations.**
+
+- M1: the authorize leg skips the check.
+- M2: the reconnect banner calls `handleConnect` directly.
+- M3: the button is enabled with the box clear.
+- M4: the words change and the version does not.
+- M5: a double click sends twice.
+- M6: a sentence that the code proved false comes back.
 
 **Verify with.**
 
@@ -14086,8 +14105,9 @@ uv run ruff check apps/services/gateway/gateway/routes/email/transport/oauth.py
 ###### 12.3.13.4.1 The disclosure text, draft for the owner (Q-GM-7)
 
 STE does not bind product copy (`docs/style_ste.md` §1). `DISCLOSURE_COPY` in
-`src/app/email/lib/connect.ts` is the one copy of these words, and this section mirrors it.
-The privacy page of the parallel PR must agree with these words before the Google submission.
+`src/app/email/lib/connect.ts` is the one copy of these words, and this section mirrors it. The
+fence `the-spec-mirrors-the-words` holds the two together. The privacy page of the parallel PR must
+agree with these words before the Google submission.
 
 **The sub-processors, measured 2026-11-02.** These are the live bindings on production.
 
@@ -14101,18 +14121,45 @@ The privacy page of the parallel PR must agree with these words before the Googl
 ⚠️ An admin can bind a Gemini model to a tier in Settings. A binding like that needs a new
 `DISCLOSURE_VERSION` first.
 
+**Rank-2 fallbacks add no vendor.** Rank 2 of `tier-fast` and `tier-powerful` names OpenRouter, and
+that step is inert. `provider_credential` holds `aimlapi`, `assemblyai` and `deepseek`, and
+`OPENROUTER_API_KEY` is empty. So the words name no fifth vendor.
+
+**Two paths that the words leave out.** `email_semantic_search_enabled` and `crm_auto_lead` are not
+set in the production env, so both are off. Turning either one on needs a new `DISCLOSURE_VERSION`
+first.
+
+**The backup claim.** "Backups hold a copy for up to 30 days" stays. Production runs on Supabase.
+Its daily backups last at most 30 days (Enterprise), and its point-in-time recovery lasts at most
+28 days. The repo keeps 14 dumps.
+
 **Changes from the first draft of 2026-10-14, and why.**
 
 - **"They may not use your data to train their models" is gone.** It was false. The privacy policy
   of DeepSeek lets it use personal data to train its models. The words now say that DeepSeek
   processes the text in China under its own terms.
 - **"What we never do" now states only what Metorite itself does.**
-- **The AI paragraph now says what runs with no member choice.** The rule match and the thread
-  status run on new mail with Auto-run off too (`_maybe_classify_threads`).
-- **"It sends mail and saves drafts only when you, or a rule that you set, tell it to" is split.**
-  No rule sends mail. `REPLY` and `FORWARD` call `create_draft` (`automation/actions.py`).
+- **The AI paragraph now covers each feature.** The rule match and the thread status run on new mail
+  with Auto-run off too (`_maybe_classify_threads`). A rule can ask AI to fill a field
+  (`_render_template`). `_learn_from_sent` runs after each send of an edited AI draft, with no
+  setting, and it stores what it learns. The voice profile and the writing style read sent mail.
+- **The DeepSeek sentence now covers each other AI feature.** "A draft, an answer or a digest" was
+  too narrow. The cold check is off in `DECIDE_FEATURE_MODES`, so it runs on `tier-fast`.
+- **"It sends mail and saves drafts only when you, or a rule that you set, tell it to" is gone.** No
+  rule sends mail, because `REPLY` and `FORWARD` call `create_draft` (`automation/actions.py`). The
+  digest goes on a schedule from the mailbox to the member (`digest.py:1075`). An unsubscribe by
+  `mailto:` sends on a click of the member, so "when you ask it to" covers it.
+- **The Note Taker send is now named.** `routes/notes/dispatch.py:303-336` sends from an Outlook
+  mailbox with no click after the notes of a meeting, and it only drafts from Gmail.
+  `auto_dispatch_emails` defaults to true (`notes/settings.py:85`, migration 129). So the two
+  providers have different words. The words say "if it can find the recipient", not "an attendee",
+  because `resolve_recipient` passes a literal address with no check against the attendees.
+- **"A setting that you chose" is gone.** The Note Taker draft is on by default, so nobody chose it.
+- **"A draft is never sent unless you send it" is gone.** The Outlook Note Taker send has no draft
+  step. The new sentence speaks of a draft reply, which stays true for both providers.
 - **"Metorite lists the filters it made" is gone.** `GmailProvider.list_filters` reads each Gmail
   filter of the mailbox.
+- **A failed unsubscribe is now named.** It also creates a filter (`senders.py:1017-1024`).
 - **The disconnect paragraph now names what stays.** The revoke skips an address that another
   Metorite row shares (`teardown.py`, migration 263). A task, a note or a chat message stays
   (§12.4.2 gap 5), and so do the backups.
@@ -14131,29 +14178,39 @@ Metorite will ask Google for two permissions.
 1. Read, send and organise your email
    Metorite reads your messages, with their headers and attachments, your
    labels and your drafts. It shows your mail in Metorite and keeps it in step
-   with Gmail in both directions. It sends mail only when you tell it to. It
-   saves a draft when you ask for one, or when a rule or a setting that you
-   chose says so. It archives, labels and moves mail when you or your rules do.
+   with Gmail in both directions. It sends mail when you ask it to, and if you
+   turn on the digest, it sends the digest from your mailbox to you on its
+   schedule. It saves a draft when you ask for one, when a rule that you set
+   says so, or when you turn on automatic drafts. It archives, labels and moves
+   mail when you or your rules do.
 
 2. Manage your Gmail filters
    Metorite reads your Gmail filters and shows them on its rules screen. When
-   you choose Auto-archive for a sender, Metorite creates a Gmail filter for
-   that sender. It removes the filters it made when you change your mind or
-   disconnect.
+   you choose Auto-archive for a sender, or an unsubscribe does not work,
+   Metorite creates a Gmail filter for that sender. It removes the filters it
+   made when you change your mind or disconnect.
+
+After a meeting
+By default, when your meeting notes commit to sending an email, Metorite saves
+that email as a draft in your default mailbox. To stop this, turn off “Send
+committed emails automatically” in Note Taker settings.
 
 AI features
-Metorite uses AI on new mail to decide which of your rules matches and which
-threads need your reply. AI also writes a draft reply when you ask for one or
-turn on automatic drafts, answers your questions about your mail, and writes
-your digest if you turn it on. A draft is never sent unless you send it.
+Metorite uses AI on new mail to decide which of your rules matches, to fill in
+what those rules ask for, and to find the threads that need your reply. AI also
+writes a draft reply when you ask for one or turn on automatic drafts, answers
+your questions about your mail, and writes your digest if you turn it on.
+Metorite learns your writing style from the mail you send and from how you edit
+AI drafts, and it stores what it learns. A draft reply stays a draft until you
+send it.
 
 Who processes your mail for AI
 To do this, Metorite sends your mail to these sub-processors: TypeSafe, AI/ML
 API and DeepSeek. TypeSafe receives the parts of a message that a sorting
-decision needs, through AI/ML API. DeepSeek receives the text of the messages
-that a draft, an answer or a digest needs. DeepSeek processes that text in
-China under its own terms, and those terms let it use that text to train its
-models.
+decision needs, through AI/ML API. DeepSeek receives the text that each other
+AI feature works on, which can be mail you received, your drafts or mail you
+sent. DeepSeek processes that text in China under its own terms, and those
+terms let it use that text to train its models.
 
 What Metorite never does
 Metorite itself does not use your Gmail data for advertising, does not sell
@@ -14174,13 +14231,74 @@ Read our privacy policy
 [Back]   [G  Continue with Google]
 ```
 
-**The Outlook words.** They take the same shape, with these differences. The title is "Before you
-connect Outlook", and the lead names Microsoft. The second permission is "Manage your mailbox
-settings", because `MailboxSettings.ReadWrite` covers Outlook rules and categories.
+**The Outlook words.** The second permission is "Manage your mailbox settings", because
+`MailboxSettings.ReadWrite` covers Outlook rules and categories. Microsoft has no revoke for one
+delegated grant (`teardown.py`), so the disconnect paragraph says that Metorite stays in the list of
+apps of the account. The button is the shared `Button`.
 
-Microsoft has no revoke for one delegated grant (`teardown.py`). So the disconnect paragraph says
-that Metorite stays in the list of apps of the account. The button is the shared `Button`,
-"Continue to Microsoft". `DISCLOSURE_COPY.microsoft` holds the words.
+```text
+Before you connect Outlook
+
+Metorite will ask Microsoft for permission to use your mailbox.
+
+1. Read, send and organise your email
+   Metorite reads your messages, with their headers and attachments, your
+   folders, your categories and your drafts. It shows your mail in Metorite and
+   keeps it in step with Outlook in both directions. It sends mail when you ask
+   it to, and if you turn on the digest, it sends the digest from your mailbox
+   to you on its schedule. It saves a draft when you ask for one, when a rule
+   that you set says so, or when you turn on automatic drafts. It archives,
+   categorises and moves mail when you or your rules do.
+
+2. Manage your mailbox settings
+   Metorite reads your Outlook rules and shows them on its rules screen, and it
+   creates the categories that your rules name. When you choose Auto-archive
+   for a sender, or an unsubscribe does not work, Metorite creates an Outlook
+   rule for that sender. It removes the rules it made when you change your mind
+   or disconnect.
+
+After a meeting
+By default, when your meeting notes commit to sending an email, AI writes that
+email and Metorite sends it from your default mailbox, with no further step
+from you, if it can find the recipient. If it cannot, it saves a draft instead.
+To stop this, turn off “Send committed emails automatically” in Note Taker
+settings.
+
+AI features
+Metorite uses AI on new mail to decide which of your rules matches, to fill in
+what those rules ask for, and to find the threads that need your reply. AI also
+writes a draft reply when you ask for one or turn on automatic drafts, answers
+your questions about your mail, and writes your digest if you turn it on.
+Metorite learns your writing style from the mail you send and from how you edit
+AI drafts, and it stores what it learns. A draft reply stays a draft until you
+send it.
+
+Who processes your mail for AI
+To do this, Metorite sends your mail to these sub-processors: TypeSafe, AI/ML
+API and DeepSeek. TypeSafe receives the parts of a message that a sorting
+decision needs, through AI/ML API. DeepSeek receives the text that each other
+AI feature works on, which can be mail you received, your drafts or mail you
+sent. DeepSeek processes that text in China under its own terms, and those
+terms let it use that text to train its models.
+
+What Metorite never does
+Metorite itself does not use your Outlook data for advertising, does not sell
+it, and does not use it to train a general AI model.
+
+Disconnect at any time
+Disconnect the mailbox in Metorite, and Metorite deletes its copy and its
+sign-in tokens. Microsoft keeps Metorite in the list of apps of your account
+until you remove it there. A task, a note or a chat message that you made from
+an email stays until you delete it. Backups hold a copy for up to 30 days. Your
+mail stays in Outlook.
+
+Read our privacy policy
+
+[ ] I understand and agree that Metorite accesses my Outlook data as described
+    above.
+
+[Back]   [Continue to Microsoft]
+```
 
 ##### 12.3.13.5 EM-G11b — one set of Gmail scopes (PR-G2)
 
