@@ -7,6 +7,12 @@
       {
         "href": "/tasks"
       }
+    ],
+    "scope": [
+      {
+        "href": "/tasks",
+        "source": "tasks"
+      }
     ]
   }
 }

@@ -84,6 +84,12 @@
       {
         "href": "/crm"
       }
+    ],
+    "scope": [
+      {
+        "href": "/crm",
+        "source": "crm"
+      }
     ]
   }
 }

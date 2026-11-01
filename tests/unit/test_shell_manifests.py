@@ -15,7 +15,12 @@ from pathlib import Path
 
 import pytest
 from acb_common.app_manifests import shell_manifest
-from acb_common.app_manifests.shell_manifest import ShellManifestError, load_jobs, load_vocabulary
+from acb_common.app_manifests.shell_manifest import (
+    ShellManifestError,
+    load_gates,
+    load_jobs,
+    load_vocabulary,
+)
 from gateway.routes.shell import intent
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -238,3 +243,105 @@ def test_no_hand_kept_vocabulary_remains():
     assert '"founder"' not in me
     assert '"/tasks"' not in me
     assert '"team-pulse"' not in me
+
+
+# --- PKG-3a: SCOPE_APPS and ALSO_SERVES ---------------------------------------
+
+GATES_TS = VOCABULARY.with_name("gates.generated.ts")
+SEARCH_PY = ROOT / "apps/services/gateway/gateway/routes/shell/search.py"
+ASSISTANT_TS = VOCABULARY.with_name("assistant.ts")
+
+#: The two maps as they stood before the slice. This copy is FROZEN.
+FROZEN_SCOPE = {
+    "/email": "email",
+    "/projects": "tasks",
+    "/tasks": "tasks",
+    "/people": "people",
+    "/crm": "crm",
+    "/knowledge": "knowledge",
+}
+FROZEN_ALSO_SERVES = {"projects-assistant": ("/tasks", "/calendar")}
+
+
+def test_gates_ts_is_current():
+    want = _generator().render_gates_ts(load_gates())
+    have = GATES_TS.read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert have == want, "gates.generated.ts is stale: run `uv run python scripts/gen_shell_manifests.py`"
+
+
+def test_gates_equal_the_pre_slice_values():
+    gates = load_gates()
+    assert gates.scope == FROZEN_SCOPE
+    assert gates.also_serves == FROZEN_ALSO_SERVES
+    from gateway.routes.shell import search
+
+    assert search.SCOPE_APPS == FROZEN_SCOPE
+
+
+def test_gates_counts():
+    gates = load_gates()
+    assert len(gates.scope) == 6
+    assert sum(len(h) for h in gates.also_serves.values()) == 2
+
+
+def test_gates_loader_rejects_bad_files(tmp_path):
+    def attempt(**files: dict):
+        for p in tmp_path.glob("*.json"):
+            p.unlink()
+        for name, contributes in files.items():
+            _vocab_write(tmp_path, name, contributes)
+        return load_gates(tmp_path)
+
+    s = {"href": "/a", "source": "a"}
+    p = {"agent": "x", "href": "/a"}
+    ok = attempt(a={"scope": [s], "also_serves": [p]})
+    assert (ok.scope, ok.also_serves) == ({"/a": "a"}, {"x": ("/a",)})
+    with pytest.raises(ShellManifestError, match="must hold exactly"):
+        attempt(a={"scope": [{**s, "extra": "y"}]})
+    with pytest.raises(ShellManifestError, match="must hold exactly"):
+        attempt(a={"scope": [{"href": "/a"}]})
+    with pytest.raises(ShellManifestError, match="must hold exactly"):
+        attempt(a={"also_serves": [{"agent": "x"}]})
+    with pytest.raises(ShellManifestError, match=r"no '[?]'"):
+        attempt(a={"scope": [{"href": "/a?x=1", "source": "a"}]})
+    with pytest.raises(ShellManifestError, match=r"no '[?]'"):
+        attempt(a={"also_serves": [{"agent": "x", "href": "/a?x=1"}]})
+    with pytest.raises(ShellManifestError, match=r"no '[?]'"):
+        attempt(a={"scope": [{"href": "a", "source": "a"}]})
+    with pytest.raises(ShellManifestError, match="duplicate scope href"):
+        attempt(a={"scope": [s]}, b={"scope": [{"href": "/a", "source": "b"}]})
+    with pytest.raises(ShellManifestError, match="duplicate also_serves pair"):
+        attempt(a={"also_serves": [p, p]})
+
+
+def test_no_hand_kept_shell_map_remains():
+    import ast
+
+    tree = ast.parse(SEARCH_PY.read_text(encoding="utf-8"))
+    found = False
+    for node in ast.walk(tree):
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        for t in targets:
+            if isinstance(t, ast.Name) and t.id == "SCOPE_APPS":
+                found = True
+                assert not isinstance(node.value, ast.Dict), (
+                    "SCOPE_APPS is a hand-kept dict literal: it must come from load_gates()"
+                )
+    assert found, "SCOPE_APPS moved out of search.py"
+    ts = ASSISTANT_TS.read_text(encoding="utf-8")
+    assert re.search(r"export const ALSO_SERVES[^=]*=\s*GENERATED_ALSO_SERVES\s*;", ts), (
+        "ALSO_SERVES in assistant.ts must be GENERATED_ALSO_SERVES"
+    )
+    assert not re.search(r"export const ALSO_SERVES[^=]*=\s*\{", ts), (
+        "ALSO_SERVES is a hand-kept object literal: it must come from gates.generated.ts"
+    )
+
+
+def test_eval_reads_the_same_also_serves():
+    from evals.routing import shell
+
+    assert shell.also_serves() == FROZEN_ALSO_SERVES

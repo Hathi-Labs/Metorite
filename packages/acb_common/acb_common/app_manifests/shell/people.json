@@ -49,6 +49,12 @@
       {
         "href": "/people/me"
       }
+    ],
+    "scope": [
+      {
+        "href": "/people",
+        "source": "people"
+      }
     ]
   }
 }

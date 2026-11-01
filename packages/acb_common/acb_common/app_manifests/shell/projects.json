@@ -55,6 +55,22 @@
       {
         "href": "/projects"
       }
+    ],
+    "scope": [
+      {
+        "href": "/projects",
+        "source": "tasks"
+      }
+    ],
+    "also_serves": [
+      {
+        "agent": "projects-assistant",
+        "href": "/tasks"
+      },
+      {
+        "agent": "projects-assistant",
+        "href": "/calendar"
+      }
     ]
   }
 }
