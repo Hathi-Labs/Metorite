@@ -14153,7 +14153,11 @@ Its daily backups last at most 30 days (Enterprise), and its point-in-time recov
   mailbox with no click after the notes of a meeting, and it only drafts from Gmail.
   `auto_dispatch_emails` defaults to true (`notes/settings.py:85`, migration 129). So the two
   providers have different words. The words say "if it can find the recipient", not "an attendee",
-  because `resolve_recipient` passes a literal address with no check against the attendees.
+  because `resolve_recipient` passes a literal address with no check against the attendees. The
+  words say "if this is your default mailbox", because the path uses only that mailbox
+  (`_default_email_account`). A member can hold a default of the other provider.
+- **"Writes your digest" is gone.** The digest makes no model call of its own. Only the AI morning
+  brief does (`_digest_brief`), and that has its own switch.
 - **"A setting that you chose" is gone.** The Note Taker draft is on by default, so nobody chose it.
 - **"A draft is never sent unless you send it" is gone.** The Outlook Note Taker send has no draft
   step. The new sentence speaks of a draft reply, which stays true for both providers.
@@ -14191,16 +14195,16 @@ Metorite will ask Google for two permissions.
    made when you change your mind or disconnect.
 
 After a meeting
-By default, when your meeting notes commit to sending an email, Metorite saves
-that email as a draft in your default mailbox. To stop this, turn off “Send
+By default, if this is your default mailbox, Metorite saves each email that
+your meeting notes commit to as a draft here. To stop this, turn off “Send
 committed emails automatically” in Note Taker settings.
 
 AI features
 Metorite uses AI on new mail to decide which of your rules matches, to fill in
 what those rules ask for, and to find the threads that need your reply. AI also
 writes a draft reply when you ask for one or turn on automatic drafts, answers
-your questions about your mail, and writes your digest if you turn it on.
-Metorite learns your writing style from the mail you send and from how you edit
+your questions about your mail, and writes the AI morning brief if you turn it
+on. Metorite learns your writing style from the mail you send and from how you edit
 AI drafts, and it stores what it learns. A draft reply stays a draft until you
 send it.
 
@@ -14258,8 +14262,8 @@ Metorite will ask Microsoft for permission to use your mailbox.
    or disconnect.
 
 After a meeting
-By default, when your meeting notes commit to sending an email, AI writes that
-email and Metorite sends it from your default mailbox, with no further step
+By default, if this is your default mailbox, AI writes each email that your
+meeting notes commit to, and Metorite sends it from here with no further step
 from you, if it can find the recipient. If it cannot, it saves a draft instead.
 To stop this, turn off “Send committed emails automatically” in Note Taker
 settings.
@@ -14268,8 +14272,8 @@ AI features
 Metorite uses AI on new mail to decide which of your rules matches, to fill in
 what those rules ask for, and to find the threads that need your reply. AI also
 writes a draft reply when you ask for one or turn on automatic drafts, answers
-your questions about your mail, and writes your digest if you turn it on.
-Metorite learns your writing style from the mail you send and from how you edit
+your questions about your mail, and writes the AI morning brief if you turn it
+on. Metorite learns your writing style from the mail you send and from how you edit
 AI drafts, and it stores what it learns. A draft reply stays a draft until you
 send it.
 

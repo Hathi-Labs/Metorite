@@ -242,7 +242,7 @@ export const DISCLOSURE_VERSION = "2026-11-draft";
  * version with new words would record a tick for words the member never saw.
  */
 export const DISCLOSURE_PIN =
-  "2026-11-draft:663072c730c6e6bf4d0f3b12f97c511b1b7381911786f95c61a2ac1e8c574a7c";
+  "2026-11-draft:1b1699c869c4ddd8da1cfea902392147b89717b1368521a8a441597e3fdeaee3";
 
 /** The privacy page. The step opens it in a new tab. */
 export const PRIVACY_POLICY_URL = "https://metorite.com/privacy.html";
@@ -289,8 +289,8 @@ const AI_FEATURES: DisclosureSection = {
   body:
     "Metorite uses AI on new mail to decide which of your rules matches, to fill in what those rules ask " +
     "for, and to find the threads that need your reply. AI also writes a draft reply when you ask for one " +
-    "or turn on automatic drafts, answers your questions about your mail, and writes your digest if you " +
-    "turn it on. Metorite learns your writing style from the mail you send and from how you edit AI drafts, " +
+    "or turn on automatic drafts, answers your questions about your mail, and writes the AI morning brief " +
+    "if you turn it on. Metorite learns your writing style from the mail you send and from how you edit AI drafts, " +
     "and it stores what it learns. A draft reply stays a draft until you send it.",
 };
 
@@ -314,6 +314,10 @@ const AI_PROCESSORS: DisclosureSection = {
  * ⚠️ One background send exists: `routes/notes/dispatch.py` sends from an
  * Outlook mailbox with no click, and `auto_dispatch_emails` defaults to true.
  * From Gmail it only drafts. So the two providers have different words there.
+ * That path uses the default mailbox of the member (`_default_email_account`),
+ * so the words hang on "this is your default mailbox". A mailbox beside another
+ * default gets none of it, and the other provider's words would be false here.
+ * The digest makes no model call of its own. Only the AI morning brief does.
  *
  * ⚠️ Do NOT add a promise about what a sub-processor does with mail. Metorite
  * can state only what Metorite does, and the privacy policy of DeepSeek lets
@@ -352,8 +356,8 @@ export const DISCLOSURE_COPY: Readonly<Record<ConnectProviderId, DisclosureWords
       {
         heading: "After a meeting",
         body:
-          "By default, when your meeting notes commit to sending an email, Metorite saves that email as a " +
-          `draft in your default mailbox. To stop this, turn off ${NOTES_SEND_SETTING} in Note Taker settings.`,
+          "By default, if this is your default mailbox, Metorite saves each email that your meeting notes " +
+          `commit to as a draft here. To stop this, turn off ${NOTES_SEND_SETTING} in Note Taker settings.`,
       },
       AI_FEATURES,
       AI_PROCESSORS,
@@ -400,8 +404,8 @@ export const DISCLOSURE_COPY: Readonly<Record<ConnectProviderId, DisclosureWords
       {
         heading: "After a meeting",
         body:
-          "By default, when your meeting notes commit to sending an email, AI writes that email and Metorite " +
-          "sends it from your default mailbox, with no further step from you, if it can find the recipient. " +
+          "By default, if this is your default mailbox, AI writes each email that your meeting notes commit " +
+          "to, and Metorite sends it from here with no further step from you, if it can find the recipient. " +
           "If it cannot, it saves a draft instead. To stop this, turn off " +
           `${NOTES_SEND_SETTING} in Note Taker settings.`,
       },

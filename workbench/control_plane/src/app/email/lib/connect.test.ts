@@ -1695,11 +1695,15 @@ describe("disclosure-names-each-data-class-the-ai-and-each-sub-processor", () =>
       expect(words).toContain("it sends the digest from your mailbox to you on its schedule");
     }
     // `dispatch.py`: G1 drafts from Gmail, and Outlook sends with no click.
-    expect(wordsOf("gmail")).toContain("Metorite saves that email as a draft");
+    expect(wordsOf("gmail")).toContain("saves each email that your meeting notes commit to as a draft here");
     expect(wordsOf("gmail")).not.toContain("with no further step from you");
     expect(wordsOf("microsoft")).toContain(
-      "AI writes that email and Metorite sends it from your default mailbox, with no further step from you",
+      "AI writes each email that your meeting notes commit to, and Metorite sends it from here with no further step from you",
     );
+    // `_default_email_account`: the other mailboxes of the member get none of it.
+    for (const provider of ["gmail", "microsoft"] as const) {
+      expect(wordsOf(provider)).toContain("if this is your default mailbox");
+    }
   });
 
   it("names the Note Taker setting that stops it, in the words of its screen", () => {
@@ -1726,6 +1730,8 @@ describe("disclosure-names-each-data-class-the-ai-and-each-sub-processor", () =>
       "A draft is never sent unless you send it",
       "a setting that you chose",
       "a draft, an answer or a digest needs",
+      "writes your digest",
+      "in your default mailbox",
       "Metorite lists the filters it made",
     ];
     for (const provider of ["gmail", "microsoft"] as const) {
