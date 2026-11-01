@@ -71,8 +71,9 @@ from acb_skills.crm_tools import CRM_DETAIL_MAX, CRM_TOOLS, CRM_VOICE
 
 # H-236: the four writes carry ``open_world=True``. Per D-CRM-9 an agent write
 # queues for the live Zoho tenant when ``CRM_ZOHO_SYNC`` is on, so it can carry
-# data off the platform. A run that a covered Projects run delegates to does
-# not get them (``acb_skills.egress``). The reads stay.
+# data off the platform. D150: a held run keeps them only through
+# ``egress.HELD_CARD_WRITE_TOOLS`` and the ``card_write`` mark, because each
+# shows its exact change on its card, and that card names the Zoho queue.
 try:
     from acb_skills.tool_annotations import annotate as _annotate_risk
 except ImportError:  # older platform without the annotations registry

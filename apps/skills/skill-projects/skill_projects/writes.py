@@ -4659,7 +4659,8 @@ async def create_personal_task(
 # one door, until the act-at-once seam of CF-6 exists
 # (``chat_first_surface.md``). Then set, update, resolve, reopen and
 # reschedule act at once with Undo. The promote keeps its card: it is class C
-# and lives in ``guarded.py``.
+# and lives in ``guarded.py``. D150: a held chat keeps these writes because of
+# the card, so that seam reads ``egress.write_must_show_card`` first.
 #
 # **Time.** The tool resolves it. ``at`` is ISO 8601 with an offset, a wall
 # time with no offset read in the member's SAVED zone, or a date and the word

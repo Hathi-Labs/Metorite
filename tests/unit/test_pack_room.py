@@ -49,7 +49,6 @@ from tests.unit.test_load_skill_tools import (
     _dummies,
     _flag,
     _mark_chat,
-    _name,
     _names,
     _run_ctx,
     _tenant,
@@ -561,7 +560,6 @@ def test_a_held_chat_at_the_cap_sets_the_reminder_in_that_turn(store, monkeypatc
     assert "off now" not in answer and "new chat" not in answer, answer
     system = json.dumps(model.bodies[0]["messages"][0])
     assert "They can make the change in the app" not in system
-    assert _name is not None
 
 
 def test_a_model_load_at_the_cap_works_in_a_real_run(store, monkeypatch) -> None:

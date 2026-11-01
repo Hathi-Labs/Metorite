@@ -1108,7 +1108,7 @@ class PackRun:
     #: The owners whose specialist tool and persona text left the run. A
     #: hand-off by ``call_agent`` still reaches such an owner unless it is in
     #: :attr:`refusals` too. A load in the middle of the turn (OA-7e) never
-    #: adds an owner here, because no tool and no persona text leaves a run.
+    #: adds an owner here, because no persona text leaves a run.
     replaced: frozenset[str] = frozenset()
     #: OA-7i. The owners whose specialist tool left because the loader reaches
     #: every pack of the owner that the run does not hold (:func:`plan_loader`).
@@ -1985,8 +1985,9 @@ def handoff_ended(
 # adds the tools of ONE pack to the live tool list of the run, through MAF's
 # ``FunctionInvocationContext.add_tools`` (``PROGRESSIVE_TOOLS``, an
 # experimental feature), and answers the rules of the pack. The model sees
-# the new tools on its next request. A load is monotonic: no tool leaves the
-# run, and the persona does not change in the turn. The next turn holds the
+# the new tools on its next request. The persona does not change in the turn.
+# RX-1 (D150): at a cap, a sticky pack moves out for the load, so a new need
+# never loses to an old pack. Else no tool leaves the run. The next turn holds the
 # pack by layer (a) only after one of its tools ran (:func:`note_used`, in the
 # pack call). A mere load is not sticky: a wrong pack never becomes sticky.
 #

@@ -5009,6 +5009,29 @@ Owner directive, 2026-10-31, in chat. It ends the trial that D143 point 2 opened
 5. **New work targets glass.** An agent no longer writes a classic fallback. An agent looks at each surface fresh, and tunes it for glass.
 6. **This closes D143 point 2, and it ends the exceptions to D69.1 and D69.3.** The look is one again, and `DESIGN_SYSTEM.md` §0 says so.
 
+### D150 — A held chat keeps writes that a card shows (2026-11-01)
+
+Owner directive, 2026-11-01, in chat. Board: **WS-67**, slice RX-1, Metorite epic task 1402. It narrows what H-236 and EM-G11d hold in a chat that read outside mail. It reverses nothing in D85.
+
+In one chat the owner read mail, sent mail, and said "Remind me to call Rajendra". The chat answered that it held no tool that creates anything, and that a new chat would do it.
+
+```text
+"These kinds of things should not be the problem"
+```
+
+**The finding.** Each Projects tool says `open_world=False`, so a held Projects pack dropped nothing. The refusal came from the text `EGRESS_HOLD_NOTE_PACK_OTHER`, which said that the pack held no write. The same fact kept each class C Projects tool in a held pack. The CRM writes say `open_world=True`, so a held pack did drop them.
+
+1. **Keep the guard on what leaves Metorite. A write that the member approves on a server-built card stays.** The member's click on that card is the guard. This is the logic of `send_draft`, and the same three tests hold it: the list, the annotation and the pinned parameters. `egress.is_held_card_write` is the test, and it fails closed.
+2. **What stays in a held chat.** `egress.HELD_CARD_WRITE_TOOLS` is the list, 52 tools. It holds the 47 class B Projects tools, the five reminder writes among them. It also holds `promote_reminder`, which is class C, because a reminder is the member's own private record. It holds the four CRM record writes. A CRM write keeps `open_world=True`, because D-CRM-9 can queue it for Zoho. Its card says so. Mirror mode still takes the three record writes from a held run.
+3. **What stays off in a held chat.** Each other write of a Projects or CRM pack (`egress.is_held_off_write`). That is 29 class C Projects tools: each archive, delete, merge and bulk act, a project move, a revert, a status set, a change of access, a nudge, a file move and each change to who gets a report. A new write of those owners is off until a person lists it, also with a bare `open_world=False`.
+4. **What H-236 still holds.** Each rule that this decision does not name stands. A run that a held chat delegates to binds `no_egress`. An MCP tool is egress, and a tool with a borrowed name or mark does not change that. A store write, a web tool with no card, a tool with no annotation, an agent assignee and a send outside the card flows stay off.
+5. **A covered run does not change.** It holds for another reason, and it keeps `COVERED_PROJECTS_TOOLS`. The class C drop reads `_tool_injection._covered_hold`. A child of a covered run reads as a held chat, so it keeps the listed writes behind their cards, as it keeps `send_draft`.
+6. **A held write that would skip its card still shows it.** CF-6 plans a reminder write that acts at once. `egress.write_must_show_card` is the one reader, and that path reads it first.
+7. **No text sends the member away.** A held pack names no new chat and no app. For what stays off, it names the act and the reason in one sentence.
+8. **One chat loads what it needs.** A new need of the member never loses to an old sticky pack. Layer (a) already met this. A load that the model asks for now meets it too. The sticky pack that the member used least recently leaves, in that same turn, and it leaves the sticky state. This reverses "a load is monotonic" of §4.2.2 of `one_assistant_context.md`. A pack that the member named in this turn, or that ran in this run, stays.
+
+**Fences.** `tests/unit/test_held_card_writes.py`, `tests/unit/test_pack_room.py`, `tests/unit/test_no_egress_tool_audit.py`, `tests/unit/test_held_send_guidance.py`.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 

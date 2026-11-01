@@ -94,7 +94,7 @@ def test_a_held_pack_text_sends_nobody_away(name: str) -> None:
     assert "in one sentence" in text and "why" in text
     assert "card with the exact change" in text
     # What stays off, named by the act.
-    assert "a tool with no card, a bulk or a delete act" in text
+    assert "a tool with no card, a bulk act, an act that is hard to undo" in text
     assert "a change of access" in text and "path out of metorite" in text
 
 

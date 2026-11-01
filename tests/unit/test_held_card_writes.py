@@ -222,11 +222,14 @@ def test_a_read_of_a_listed_owner_stays(projects_tools, crm_tools) -> None:
 
 def _writer(name: str, params: tuple[str, ...], **risk: Any) -> Any:
     """A coroutine function called *name*, with *params* as its parameters."""
-    namespace: dict[str, Any] = {}
-    exec(  # noqa: S102 - a fixed test signature, so a pin compares real parameters
-        f"async def {name}({', '.join(params)}): return 'ok'", namespace)
-    fn = namespace[name]
-    fn.__tool_risk__ = {"read_only": False, **risk}
+
+    async def fn(**_kwargs: Any) -> str:
+        return "ok"
+
+    fn.__name__ = name
+    fn.__signature__ = inspect.Signature([  # type: ignore[attr-defined]
+        inspect.Parameter(p, inspect.Parameter.KEYWORD_ONLY) for p in params])
+    fn.__tool_risk__ = {"read_only": False, **risk}  # type: ignore[attr-defined]
     return fn
 
 

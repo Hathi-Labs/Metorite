@@ -5010,7 +5010,9 @@ decision inside D86, after review: the control fails closed.
   depth, binds `no_egress=True` in its artifact context. Such a run holds
   only three kinds of tool: the platform's own four delegation tools, the
   sandbox tools, and tools whose annotation says `open_world=False`
-  explicitly.
+  explicitly. The card-bound sends join them. D150 adds the listed
+  first-party writes, each behind its own card. A covered run itself keeps
+  `COVERED_PROJECTS_TOOLS`.
 - **A tool with no annotation is an egress tool.** So is a tool whose
   annotation has no `open_world` key, an MCP tool, and a tool that MAF made
   from an MCP server. A tool write to a store that later runs read is one

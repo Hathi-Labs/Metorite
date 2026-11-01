@@ -14964,6 +14964,8 @@ Email app is not held (below), but a run that it calls can be.
 **A held run.** A run that binds `no_egress` is a held run. Two causes set it: a covered
 Projects run above it (H-236), or a chat session that read stranger mail (EM-G11d). A held run
 keeps only the delegation tools, the sandbox tools and the tools that say `open_world=False`.
+D150 adds the first-party writes of `egress.HELD_CARD_WRITE_TOOLS`, each behind its own card,
+and it takes the other Projects and CRM writes out of a held chat.
 
 **The three classes.** The audit sorts each tool by what its code does, not by its name.
 
@@ -20847,7 +20849,7 @@ set match `CARD_BOUND_SEND_TOOLS`. Any new parameter makes it an egress tool aga
 | `fetch_page` and `web_search` | The URL carries data out. A card cannot show a URL as a safe act, because the member has no way to judge a query string. No card form is proposed |
 | The GitHub tools | They write to a service outside Metorite, and a repository can be public |
 | `save_memory`, `save_episode`, `save_agent_memory`, `save_org_memory`, `save_note` (`STORE_WRITES`) | A later run reads the store. A later run that holds a send tool can send what an injection parked there. A card for the member's own memory is possible later (open question 6) |
-| Any MCP tool, and any tool with no explicit `open_world=False` | The fail-closed rule of H-236 stays |
+| Any MCP tool, and any tool with no explicit `open_world=False` that is off the D150 list | The fail-closed rule of H-236 stays |
 | `create_rule`, `update_rule` and `run_rules` that widen an act | The rules have their own checks (`_outward_rule_refusal`, `_held_widening_refusal`). This section does not change them |
 
 ### 21.6 Remember and settings
