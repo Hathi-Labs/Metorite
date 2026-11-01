@@ -47,19 +47,22 @@ describe("the recipients roll up (owner, 2026-11-01)", () => {
     const [to, cc] = summarize(recipientGroups(TO, CC), MINE);
     expect(to.shown.map((n) => n.text)).toEqual(["you", "Fracktal Works"]);
     expect(to.more).toBe(1);
-    // The Cc stays in the line by name: one cut line once hid it.
-    expect(cc.shown.map((n) => n.text)).toEqual(["Girish R (TGSIN - Purchase)", "Ramesh (TGSIN - Purchase)"]);
+    // The Cc stays in the line by name: one cut line once hid it. The team
+    // suffix in brackets goes from the line, and stays in the details.
+    expect(cc.shown.map((n) => n.text)).toEqual(["Girish R", "Ramesh"]);
     expect(cc.more).toBe(CC.length - NAMES_PER_GROUP);
   });
 
   it("reads the address when there is no name, or the name is the address", () => {
     expect(shortName(p("", "x@y.in"), MINE)).toBe("x@y.in");
     expect(shortName(p("X@y.in", "x@y.in"), MINE)).toBe("x@y.in");
+    // A name that is only a bracket keeps it.
+    expect(shortName(p("(Accounts)", "a@y.in"), MINE)).toBe("(Accounts)");
   });
 
   it("says the whole line in words, with the counts", () => {
     expect(summaryText(summarize(recipientGroups(TO, CC), MINE))).toBe(
-      "to you, Fracktal Works and 1 more; cc Girish R (TGSIN - Purchase), Ramesh (TGSIN - Purchase) and 2 more",
+      "to you, Fracktal Works and 1 more; cc Girish R, Ramesh and 2 more",
     );
   });
 
@@ -70,8 +73,10 @@ describe("the recipients roll up (owner, 2026-11-01)", () => {
     const card = src("ContactCard.tsx");
     expect(card).toContain("export function RecipientSummary(");
     expect(card).toMatch(/aria-expanded=\{open\}/);
-    // Open, it is the full list: name and address for each person.
+    // Open, it is the full list: one person a line, name and address.
     expect(card).toMatch(/open \? \(/);
-    expect(card).toContain("<RecipientList");
+    expect(card).toContain('data-recipient-summary="open"');
+    // Folded, each group is its own segment, so its label and "+N" always show.
+    expect(card).toContain("data-recipient-group={g.label}");
   });
 });

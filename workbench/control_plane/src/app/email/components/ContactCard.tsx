@@ -21,7 +21,7 @@
 
 import Button from "@/components/ui/Button";
 import AppIcon, { themedIcon, type ThemedIcon } from "@/components/Icon";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getContactCard } from "../lib/api";
 import { useEmailStore } from "../lib/emailStore";
@@ -307,35 +307,62 @@ export function RecipientSummary({
       <AppIcon name="ChevronDown" size={12} className={`shrink-0 tech-transition ${open ? "rotate-180" : ""}`} />
     </Button>
   );
+  const fullName = (p: EmailAddress) => (p.name && p.name !== p.email ? `${p.name} <${p.email}>` : p.email);
   return open ? (
+    // The details: a label column, then one person a line, name and address.
+    // A comma list wrapped badly in a narrow header, centred and broken.
     <div className={className} data-recipient-summary="open">
-      {full}
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5 text-xs">
+        {groups.map((g) => (
+          <Fragment key={g.label}>
+            <span className="text-muted-foreground/70">{g.label.toLowerCase()}</span>
+            <ul className="min-w-0" data-recipient-list={g.label}>
+              {g.people.map((person, i) => (
+                <li key={`${person.email}-${i}`} className="truncate text-muted-foreground">
+                  <ContactTrigger
+                    contact={person}
+                    accountId={accountId}
+                    title={fullName(person)}
+                    className="text-left text-foreground/85 hover:text-primary hover:underline tech-transition"
+                  >
+                    {person.name && person.name !== person.email ? person.name : person.email}
+                  </ContactTrigger>
+                  {person.name && person.name !== person.email ? <span className="ml-1.5">{person.email}</span> : null}
+                </li>
+              ))}
+            </ul>
+          </Fragment>
+        ))}
+      </div>
       {toggle}
     </div>
   ) : (
-    <div className={`flex min-w-0 items-center text-xs text-muted-foreground ${className}`} data-recipient-summary="">
-      <span className="min-w-0 truncate">
-        {summary.map((g, gi) => (
-          <span key={g.label}>
-            {gi > 0 ? <span aria-hidden>{" · "}</span> : null}
-            <span className="text-muted-foreground/70">{g.label.toLowerCase()}</span>{" "}
+    // One line. Each group is its own segment, so its label and "+N" always
+    // show and only its names give way: a cut line once hid the Cc (owner
+    // report, 2026-10-24).
+    <div className={`flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground ${className}`} data-recipient-summary="">
+      {summary.map((g, gi) => (
+        <span key={g.label} className="flex min-w-0 shrink items-baseline gap-1" data-recipient-group={g.label}>
+          {gi > 0 ? <span aria-hidden className="shrink-0">·</span> : null}
+          <span className="shrink-0 text-muted-foreground/70">{g.label.toLowerCase()}</span>
+          <span className="min-w-0 truncate">
             {g.shown.map((n, i) => (
               <span key={`${n.person.email}-${i}`}>
                 {i > 0 ? ", " : null}
                 <ContactTrigger
                   contact={n.person}
                   accountId={accountId}
-                  title={n.person.name && n.person.name !== n.person.email ? `${n.person.name} <${n.person.email}>` : n.person.email}
+                  title={fullName(n.person)}
                   className={`hover:text-primary hover:underline tech-transition ${n.text === "you" ? "" : "text-foreground/85"}`}
                 >
                   {n.text}
                 </ContactTrigger>
               </span>
             ))}
-            {g.more > 0 ? <span className="tabular-nums">{` +${g.more}`}</span> : null}
           </span>
-        ))}
-      </span>
+          {g.more > 0 ? <span className="shrink-0 tabular-nums">{`+${g.more}`}</span> : null}
+        </span>
+      ))}
       {toggle}
     </div>
   );

@@ -69,7 +69,10 @@ export function rollsUp(groups: readonly RecipientGroup[]): boolean {
 export function shortName(p: EmailAddress, mine: ReadonlySet<string>): string {
   if (mine.has(key(p.email))) return "you";
   const name = p.name?.trim();
-  return name && key(name) !== key(p.email) ? name : p.email.trim();
+  if (!name || key(name) === key(p.email)) return p.email.trim();
+  // A team suffix in brackets goes: "Girish R (TGSIN - Purchase)" reads
+  // "Girish R". The full name shows on hover and in the details.
+  return name.replace(/\s*[([][^)\]]*[)\]]\s*$/, "").trim() || name;
 }
 
 /** The rolled-up line: each group's first names, the member first, and the rest as a count. */
