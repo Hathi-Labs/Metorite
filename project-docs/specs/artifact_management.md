@@ -197,8 +197,10 @@ the one D12 names, and no second grammar exists here (R7, fence in §15).
 
 - **Versions with bytes** stay out of the first release. `agent_file_history`
   keeps the metadata. §13 Q6 asks whether to keep the last five bodies.
-- **Folders** are not built. Labels and filters do the work. A member who
-  wants a folder makes a project.
+- ~~**Folders** are not built. Labels and filters do the work. A member who
+  wants a folder makes a project.~~ **Changed by D150, 2026-11-02.** Folders
+  are two small tables, `artifact_folder` and `artifact_folder_item`,
+  tenant-scoped under R5. §6.0 holds the rule.
 - **Comments** on an artifact are not built. A comment goes on the task the
   artifact is attached to.
 
@@ -296,6 +298,30 @@ expiry, never a public row.
 The design system binds: one look, `AppTopBar`, headless primitives from
 `src/components/ui/`, status colour from `src/lib/statusAccent.ts`, and the
 `--cat-1…12` ramp for the kind chips. Nothing here draws its own palette.
+
+### 6.0 One system, reached from the chat (D150)
+
+The owner asked for one system that is accessible from the chat window, and
+not a separate Artifacts app (2026-11-02). This section wins where §6.1 to
+§6.3 differ.
+
+- **The door.** The chat rail has a Chats and Files switch. Files is this
+  library. The Artifacts row leaves the sidebar when AM-2 ships, and
+  `/artifacts` and `/artifacts/<id>` stay as routes. A chat's Files panel
+  is the library, filtered to that chat.
+- **The rail.** All files, Today, Topics, then My folders. Topics fill in
+  by themselves when chat topics ship. Until then the rail shows Chats.
+- **The filters.** Kind, and Made by Metorite or Uploaded by you.
+- **A folder** belongs to one member and has one level. A file can sit in
+  several, and a drag adds it. A folder is a label and holds no grant, so
+  sharing stays §5.
+- **The detail panel** shows the source chat, the folders, the version and
+  the acts: Open, Use in a chat, Share and Save to Knowledge.
+- **Save to Knowledge** is D104. The panel asks for a space and says who
+  will read the copy. The file stays private, and the panel links to the
+  page.
+
+The prototype of 2026-11-02 shows this layout.
 
 ### 6.1 The library (the Artifacts app, rebuilt)
 
@@ -554,7 +580,8 @@ reads nothing (R8, two-org fixture). The card's event carries the `id`.
 
 ### AM-2 · The library — AGENT-SAFE
 
-The Artifacts app reads the registry. It gets the rail, the filters, server
+The Files library reads the registry (§6.0, D150). It gets the rail, the
+folders, the filters, server
 search, star, rename, trash and restore. It gets the artifact page with the
 provenance strip, the CSV table view and the read-only storage meter. The
 chat card gets its three acts.
@@ -682,6 +709,7 @@ others gate the slice they name.
 | Q4 | Deleting a chat | Trash its scratch artifacts, keep the kept ones | AM-5 |
 | Q5 | Links for people outside the organization | Not in this release. Later as an org switch, off by default, signed URL with expiry | AM-3 external half |
 | Q6 | Keep the bodies of old versions | Last five, text kinds under 1 MB, text only | AM-9 |
+| Q7 | Folders, and where the library lives | **Decided: D150, 2026-11-02.** One library, reached from the chat, with flat private folders | AM-2 |
 
 ---
 

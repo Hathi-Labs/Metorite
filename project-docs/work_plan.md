@@ -5009,6 +5009,24 @@ Owner directive, 2026-10-31, in chat. It ends the trial that D143 point 2 opened
 5. **New work targets glass.** An agent no longer writes a classic fallback. An agent looks at each surface fresh, and tunes it for glass.
 6. **This closes D143 point 2, and it ends the exceptions to D69.1 and D69.3.** The look is one again, and `DESIGN_SYSTEM.md` §0 says so.
 
+### D150 — Files are one library, reached from the chat (2026-11-02)
+
+Owner directive, 2026-11-02, in chat. Board: **WS-60**, owner `specs/artifact_management.md` §6.0 and slice AM-2. The owner left the design to the agent, so this decision is the agent's and the owner can reopen it.
+
+```text
+"when it comes down to artifacts and folders, I leave it up to you. Basically, some really good way in which we can organize all the files, artifacts, and all the things that we upload and create via the agent chat should be available and accessible somewhere. I was thinking that, instead of having a separate artifacts system, it's one system that is accessible from the chat window. Possibly later on, these artifacts can either be linked into knowledge base articles or themselves become available within company knowledge."
+```
+
+1. **One library.** Each file that a member uploads or an agent makes in a chat has one row in `artifacts`. No second file system exists.
+2. **The chat is the door.** The chat rail gets a Chats and Files switch, and Files is the library. When AM-2 ships, the Artifacts row leaves the sidebar. `/artifacts` and `/artifacts/<id>` stay as routes, so each link still works. A chat's own Files panel is the same library, filtered to that chat.
+3. **Filing is automatic.** The library sorts each file by chat, type, day and who made it, and by topic when chat topics ship. A member never has to file anything.
+4. **Folders exist, flat and private.** This replaces `artifact_management.md` §4.4, which refused folders. A folder belongs to one member, has one level, and a file can sit in several. A folder is a label, and it holds no grant. Sharing stays Share and a project, in the D12 grammar, so no second grant vocabulary starts.
+5. **A move never cuts a file from its chat.** The chat link stays, and the file stays in its chat's list.
+6. **Knowledge stays D104.** "Save to Knowledge" is a member's act. It copies the text into a space with the artifact id as provenance. An agent never publishes, and the file stays private. The screen says who will read the copy before the member confirms.
+7. **Open, and not decided here:** whether chat topics are per member or per organization, the rule for joining an old chat, and who pays for the idle-chat job (D142.9).
+
+Fence: advisory until AM-2. `nav.test.ts` fences the sidebar row when it goes.
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
