@@ -10,7 +10,8 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *      link names say ", 3 need you" and ", 2 need you".
  *   2. A failed email source: no number on Email, never a 0. A source that
  *      fails on a later poll drops its number, and never keeps the old one.
- *   3. Hiding Tasks moves its 2 onto "Add apps".
+ *   3. Hiding Projects takes its row away. "Add apps" carries no count, and
+ *      My Day still counts the 2 (owner, 2026-11-01).
  *   4. Hover on a row still shows its "···", and the count gives way.
  *   5. The folded rail shows a dot, and the name keeps the number.
  *   6. A Done in My Day takes the task out of the count at once.
@@ -18,7 +19,8 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *   8. The phone drawer shows the same counts.
  *   9. A feed read that fails as a whole (502) takes every number off.
  *  10. A capped source prints "15+" and says "15 or more need you".
- *  11. "Add apps" says the run badge's words and the needs, open and folded.
+ *  11. "Add apps" carries no count, open and folded, even with a run and
+ *      needs in hidden apps.
  *
  * Mutations, run by hand (2026-10-11), each seen to fail:
  *   - drop `needs={appNeeds[p.href]}` from the open rail's `NavLink`: seven
@@ -254,33 +256,32 @@ test.describe("desktop", () => {
     await expect(count(page, "/projects")).toHaveText("2");
   });
 
-  test("Add apps keeps the run badge's words beside the needs, open and folded", async ({ page }) => {
-    // Projects and Chat are not starred. A run of the Tasks agent folds to
-    // Chat, and Chat is hidden too, so the run counts on Add apps.
+  // Owner, 2026-11-01: "why does this have a number ... the home's approvals
+  // view would have this". Add apps is a door, not a place where things
+  // wait. My Day counts what waits in a hidden app.
+  test("Add apps carries no count, with a run and needs in hidden apps", async ({ page }) => {
+    // Projects and Chat are not starred, and a run of the Tasks agent folds to Chat.
     const runs = [{ threadId: "th-1", agentName: "task-manager", state: "running", startedAt: hoursAgo(0.1) }];
-    const pins = ["/calendar", "/email", "/people"];
-    await stub(page, { runs, pins });
+    await stub(page, { runs, pins: ["/calendar", "/email", "/people"] });
     await page.goto("/settings/appearance");
+    await expect(count(page, "/email")).toHaveText("3", { timeout: 15_000 });
     const addApps = sidebar(page).locator("[data-nav-add-apps] button");
-    const name = "Add apps, 1 assistant running, 2 need you in hidden apps";
-    await expect(addApps).toHaveAccessibleName(name, { timeout: 15_000 });
-    // The run badge wins the slot, so the quiet count does not show.
-    await expect(addApps.locator("[data-nav-badge]")).toHaveText("1");
-    await expect(addApps.locator('[data-nav-needs="count"]')).toHaveCount(0);
+    await expect(addApps).toHaveAccessibleName("Add apps");
+    await expect(addApps.locator("[data-nav-badge], [data-nav-needs]")).toHaveCount(0);
   });
 
-  test("hiding Projects moves its 2 (the due tasks) onto Add apps", async ({ page }) => {
+  test("hiding Projects takes its row away, and My Day still counts its 2", async ({ page }) => {
     await stub(page);
     await page.goto("/settings/appearance");
     await expect(count(page, "/projects")).toHaveText("2");
-    const addApps = sidebar(page).locator("[data-nav-add-apps] button");
-    await expect(addApps.locator('[data-nav-needs="count"]')).toHaveCount(0);
+    const myDay = sidebar(page).locator("[data-nav-my-day]");
+    const before = await myDay.innerText();
 
     await row(page, "/projects").getByRole("link").click({ button: "right" });
     await page.getByRole("menuitem", { name: "Hide from sidebar" }).click();
     await expect(row(page, "/projects")).toHaveCount(0);
-    await expect(addApps.locator('[data-nav-needs="count"]')).toHaveText("2");
-    await expect(addApps).toHaveAccessibleName("Add apps, 2 need you in hidden apps");
+    await expect(sidebar(page).locator("[data-nav-add-apps] button [data-nav-needs]")).toHaveCount(0);
+    await expect(myDay).toHaveText(before);
     // Email keeps its own row and its own number.
     await expect(count(page, "/email")).toHaveText("3");
   });
@@ -302,14 +303,14 @@ test.describe("desktop", () => {
     await expect(page.getByRole("menuitem", { name: "Hide from sidebar" })).toBeVisible();
   });
 
-  test("folded, Add apps keeps the run badge's words beside the needs", async ({ page }) => {
+  test("folded, Add apps carries no count either", async ({ page }) => {
     const runs = [{ threadId: "th-1", agentName: "task-manager", state: "running", startedAt: hoursAgo(0.1) }];
     await stub(page, { folded: true, runs, pins: ["/calendar", "/email", "/people"] });
     await page.goto("/settings/appearance");
+    await expect(sidebar(page).locator("[data-nav-my-day]")).toBeVisible({ timeout: 15_000 });
     const addApps = sidebar(page).locator("[data-nav-add-apps] button");
-    await expect(addApps).toHaveAccessibleName("Add apps, 1 assistant running, 2 need you in hidden apps", {
-      timeout: 15_000,
-    });
+    await expect(addApps).toHaveAccessibleName("Add apps");
+    await expect(addApps.locator("[data-nav-badge], [data-rail-corner]")).toHaveCount(0);
   });
 
   test("the folded rail shows a quiet dot, and the name keeps the number", async ({ page }) => {

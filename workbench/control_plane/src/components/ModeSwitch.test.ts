@@ -74,9 +74,11 @@ describe("both apps render it", () => {
 
   it("both view headings use Projects' scale", () => {
     // The project name in Projects, the view name in My Tasks.
-    // OP-12b put the name in a truncating <span> beside the lock icon.
+    // OP-12b put the name in a truncating <span> beside the lock icon. GL-11
+    // added the glass type after the classic scale, so `glass:` classes may
+    // follow it (the pin read only the classic list, and broke on #1572).
     expect(read("app/projects/page.tsx")).toMatch(
-      /<h2\s+className="[^"]*truncate text-sm font-medium text-foreground"(?:\s+title=\{title\})?\s*>\s*(?:<span className="min-w-0 truncate">)?\{title\}/,
+      /<h2\s+className="[^"]*truncate text-sm font-medium text-foreground(?: glass:[^\s"]+)*"(?:\s+title=\{title\})?\s*>\s*(?:<span className="min-w-0 truncate">)?\{title\}/,
     );
     expect(read("app/tasks/components/ItemList.tsx")).toMatch(
       /<h2 className="whitespace-nowrap text-sm font-medium text-foreground">/,
