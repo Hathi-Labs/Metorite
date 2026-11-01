@@ -1530,3 +1530,17 @@ DROP POLICY IF EXISTS studio_record_hot_tenant_isolation ON studio_record_hot;
 CREATE POLICY studio_record_hot_tenant_isolation ON studio_record_hot
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE calendar_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calendar_entries FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS calendar_entries_tenant_isolation ON calendar_entries;
+CREATE POLICY calendar_entries_tenant_isolation ON calendar_entries
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE calendar_entry_attendees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calendar_entry_attendees FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS calendar_entry_attendees_tenant_isolation ON calendar_entry_attendees;
+CREATE POLICY calendar_entry_attendees_tenant_isolation ON calendar_entry_attendees
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

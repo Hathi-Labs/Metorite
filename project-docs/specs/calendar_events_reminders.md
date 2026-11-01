@@ -35,6 +35,10 @@
   **OB-8 (the chat asks a phone member to turn on notifications) is
   BUILT, 2026-10-30, dark** behind `PUSH_PROMPT_ORGS` (§10.4). No box
   has the flag on.
+  **CE-4 (the event store) is BUILT, 2026-10-31, dark** behind
+  `CALENDAR_EVENTS` (migration 326, `routes/tasks/entries.py`, the
+  `entries` key of `GET /projects/my/calendar`). No box has the flag on.
+  CE-5 to CE-12 are not built.
 - **Board row:** **WS-CAL**. WS-66 for reminders and web push sits under
   it.
 - **Asked by:** the owner, 2026-10-15. The Calendar must hold more than
@@ -136,47 +140,104 @@ contract (R6) and is out of scope here.
 ### 3.3 The table sketch
 
 `calendar_entries`. Tenant-scoped, FORCE ROW LEVEL SECURITY at the
-`get_db()` seam (R5). Every column is nullable or has a default (R6).
+`get_db()` seam (R5). Every column is nullable or has a default (R6), except
+`owner_email` and `title`. The one writer always fills those two, as for
+`reminders`. Migration 326 (CE-4) builds it.
 
 | Column | Meaning |
 |---|---|
 | `id`, `organization_id` | The row and the tenant. `organization_id` defaults to `app.tenant_id` |
-| `owner_email` | The member who owns the entry. For `external`, the member whose account it came from |
+| `owner_email` | The member who owns the entry, lower case. For `external`, the member whose account it came from |
 | `kind` | `event` or `external`. A CHECK holds the list |
-| `title`, `notes`, `location` | Text |
+| `title`, `notes`, `location` | Text. A title has 1 to 200 characters |
 | `starts_at`, `ends_at` | TIMESTAMPTZ. NULL for an all-day entry |
-| `start_date`, `end_date` | DATE, for an all-day entry only. A date never moves with a time zone |
+| `start_date`, `end_date` | DATE, for an all-day entry only. A date never moves with a time zone. ⚠️ **`end_date` is EXCLUSIVE.** A one-day entry on 8 March has `start_date` 2026-03-08 and `end_date` 2026-03-09. Google and Outlook send an all-day end that way, so CE-10 copies it with no change |
 | `tz` | The IANA zone of the entry. A repeat rule expands in this zone |
 | `recurrence` | An RFC 5545 RRULE, or NULL |
-| `series_id`, `original_start` | One changed or cancelled instance of a series |
-| `status` | `confirmed`, `tentative` or `cancelled` |
-| `busy` | Default true. False for a holiday, or for an entry that blocks no time |
+| `series_id`, `original_start` | One changed or cancelled instance of a series. `series_id` names the Metorite master |
+| `original_start_date` | The all-day instance that a changed instance replaces. `original_start` is an instant, so it cannot name it |
+| `external_series_id` | The master at the provider: Google `recurringEventId`, Outlook `seriesMasterId` |
+| `status` | `confirmed`, `tentative` or `cancelled`. Google `status=cancelled` and a Graph `@removed` set `cancelled` |
+| `busy` | Default true. False for a holiday, or for an entry that blocks no time. Google `transparency=transparent` and Graph `showAs=free` set false |
 | `conference_url` | The join link of a call |
-| `task_id`, `crm_deal_id`, `crm_contact_id`, `meeting_id` | Links. All nullable |
+| `task_id`, `crm_deal_id`, `crm_contact_id`, `meeting_id` | Links. All nullable, with no foreign key yet. A later release adds the keys (expand, then contract) |
 | `source` | `metorite`, `google` or `outlook` |
-| `connection_id`, `external_id`, `etag` | For a synced entry only. `connection_id` names the `integration_connections` row |
+| `connection_id`, `external_id`, `etag`, `external_url` | The account, the provider id, the version and the provider link of an entry. `connection_id` names the `integration_connections` row |
+| `push_to_provider` | `google`, `outlook` or NULL. The provider that CE-11 writes this event to. NULL means the switch is off |
+| `provider_sync_state`, `provider_sync_error` | `pending`, `sent` or `failed`, and the last error (500 characters at most, no token). NULL means that the member wants no write-out. A failed write keeps the row, so the event is never lost |
 | `created_at`, `updated_at` | Times |
 
-`calendar_entry_attendees`. One row for each person on an entry.
+The CHECKs of migration 326:
+
+- Exactly one time pair: a timed pair with `ends_at >= starts_at`, or an
+  all-day pair with `end_date > start_date`.
+- An `external` entry has source `google` or `outlook`, a `connection_id`
+  and an `external_id`. An `event` has source `metorite`.
+- ⚠️ **An event made in Metorite may carry `connection_id` and
+  `external_id`.** CE-11 writes the provider id into the SAME row (§8.2).
+- `connection_id` and `external_id` are both set or both NULL.
+- A write-out state needs `push_to_provider`. `sent` needs an
+  `external_id`. An `external` entry has no write-out state.
+
+**The unique key of a provider event.** `calendar_entries_external_uq` is
+UNIQUE on `(organization_id, connection_id, external_id)` where both are
+set. It covers EVERY source and every kind. So a sync that runs again adds
+no row, and a written-out SINGLE event gets no `external` twin. ⚠️ The key
+does not cover a written-out SERIES. With `singleEvents=true` the provider
+sends each instance of the master with its own id, so CE-10 must skip such
+an instance (§8.1 item 5).
+
+**The keys hold the org.** `calendar_entries_connection_fk` is
+`(organization_id, connection_id)` to `integration_connections
+(organization_id, id)`, with NO ACTION. The attendee key is
+`(organization_id, entry_id)` to `calendar_entries (organization_id, id)`,
+with ON DELETE CASCADE. So a row of one org never names a row of another
+org, and a delete of an org never fails on a row of another org. A partial
+index on `(organization_id, connection_id)` serves the check of a
+connection delete.
+
+**The sync cursor has no column here.** It lives on the connection row, in
+`integration_connections.provider_meta`.
+
+`calendar_entry_attendees`. One row for each person on an entry. A UNIQUE
+index on `(entry_id, COALESCE(member_email, email))` keeps one row for each
+person.
 
 | Column | Meaning |
 |---|---|
-| `entry_id`, `organization_id` | The entry and the tenant |
-| `member_email` | Set when the person is a member of this organization. NULL for a guest |
+| `id`, `entry_id`, `organization_id` | The row, the entry and the tenant. A delete of the entry deletes its rows |
+| `member_email` | Set when the person is a member of this organization, lower case. NULL for a guest |
 | `email`, `display_name` | The guest's address and name |
 | `role` | `organizer` or `attendee`. The owner has an `organizer` row |
-| `rsvp` | `needs_action`, `accepted`, `tentative` or `declined` |
-| `lead_minutes` | This member's own lead time. NULL reads the member default |
+| `rsvp` | `needs_action`, `accepted`, `tentative` or `declined`. The default is `needs_action` |
+| `lead_minutes` | This member's own lead time, 0 or more. NULL reads the member default |
+| `created_at` | Time |
+
+A CHECK needs `member_email` or `email`. ⚠️ Only `member_email` gives a
+member the entry. A guest row with a member's address gives nobody the
+entry.
 
 The lead time is on the attendee row for the reason that migration 187 put
 the block on the overlay. Two people at one meeting want two lead times.
 
 ### 3.4 The read
 
-`GET /projects/my/calendar` stays the one read. With `CALENDAR_EVENTS` on, it
-adds the entries in the window that I own or attend, each with `kind`. With
-the flag off, it returns what it returns today. The client draws by `kind`.
-No lens other than the Calendar reads `calendar_entries`.
+`GET /projects/my/calendar` stays the one read. With `CALENDAR_EVENTS` on and
+`feature:tasks`, it adds an `entries` key. The key holds the entries in the
+window that I own or attend, each with `kind`. The entries never go into
+`rows`, because the client maps each row to a task, and the chat pages
+`rows`. With the flag off, the read runs no entry query, and the body has no
+`entries` key. It is the body of today. The client draws by `kind`. No lens
+other than the Calendar reads `calendar_entries`.
+
+The read returns a cancelled entry with its `status`, and CE-8 hides it.
+It compares an all-day entry by date, on the UTC window with one day of
+slack on each side, as `projects/calendar.py` does. The client places it.
+
+⚠️ The read needs `feature:projects`, from its router. The Calendar pane
+needs `feature:tasks` (D138 Q10). A member who holds `feature:tasks` and not
+`feature:projects` cannot reach the read at all. That gap is older than
+CE-4, and CE-4 does not widen the router gate.
 
 ## 4. Meetings with invitees
 
@@ -1225,11 +1286,31 @@ gate.
    `credentials_encrypted`, never in the environment (D96.3). The email
    app's row stays its own, so a disconnect in one app breaks nothing in
    the other.
+
+   ⚠️ **`calendar_entries.connection_id` has NO cascade** (migration 326,
+   the default NO ACTION). A Metorite event that CE-11 wrote out names the
+   connection too, so a cascade would delete the member's own events. So
+   the disconnect does three steps in one transaction:
+   1. Delete the `external` rows of the connection.
+   2. On the `metorite` rows of the connection, clear `connection_id`,
+      `external_id`, `push_to_provider`, `provider_sync_state` and
+      `provider_sync_error`.
+   3. Only then delete the connection row, if the disconnect deletes it.
+
+   A delete of a connection that an entry still names fails. An
+   organization delete cascades through both tables in one statement, so
+   it works. The member purge deletes the entries of the member before it
+   deletes any connection. CE-10 must add the calendar connection to the
+   purge, after the entries.
 4. **The loop.** A 60-second tick with a due check and a lock, after
    `gateway/crm_sync/scheduler.py`. Google uses a sync token. Outlook uses a
    Graph delta query. The window is 30 days back and 180 days ahead.
 5. **The rows.** Each instance is an `external` entry, read only. A
    provider's "free" entry has `busy = false`. A cancel sets `status`.
+   ⚠️ **Skip an instance whose `recurringEventId` is the `external_id` of a
+   `metorite` row on the same connection.** That instance comes from a
+   series that Metorite wrote out (CE-11). The unique key of §3.3 does not
+   catch it, because the provider gives each instance its own id.
 6. **Conflicts.** `block_overlap` and MD-11's `meeting_overlap` read the busy
    external entries. The day planner treats them as fixed.
 
@@ -1241,8 +1322,14 @@ together. The owner gates of §8.3 still bind the live flips.
 - An event made in Metorite, with a connected account, has the switch
   **Also in Google Calendar**. It is on by default when connected.
 - Metorite writes the event to the provider. The provider sends the invites.
-  The provider's id goes into `external_id`, and the sync of CE-10 keeps the
-  row current.
+  The connection goes into `connection_id`, and the provider's id goes into
+  `external_id`, on the SAME row. The row keeps `source = 'metorite'`.
+  `push_to_provider` names the provider, and `provider_sync_state` records
+  `pending`, `sent` or `failed`.
+- The sync of CE-10 finds that row by the unique key
+  `(organization_id, connection_id, external_id)` of §3.3, and updates it.
+  It never inserts an `external` copy of a single event. For a series, the
+  rule of §8.1 item 5 skips each instance of the master.
 - Task blocks as busy time in the provider is a later choice (Q9).
 
 ### 8.3 Owner gates
@@ -1266,7 +1353,7 @@ Every flag is OFF by default. Off gives today's behaviour.
 | `WEB_PUSH_ENABLED` | Gateway. The client has no flag of its own: the Notifications section shows only when `/push/public-key` answers | PN-1, RE-9 | Every `/push` route answers 404, so the section draws nothing, and nothing registers or sends. ✅ ON for every org is approved (D114.8) |
 | `PUSH_PROMPT_ORGS` | Gateway, a per-org list. The client reads `prompt` in the `/push/public-key` answer | OB-8 (§10.4) | The chat shows no sheet that asks a phone member to turn on notifications |
 | `NEXT_PUBLIC_CALENDAR_COMPOSER` | Control plane | CE-3 | No drag to draw. The Gap Filler as today |
-| `CALENDAR_EVENTS` and `NEXT_PUBLIC_CALENDAR_EVENTS` | Both | CE-4 to CE-9, CE-12 | No events. `/version` carries `calendar_events` |
+| `CALENDAR_EVENTS` and `NEXT_PUBLIC_CALENDAR_EVENTS` | Both. `events_enabled()` in `routes/tasks/entries.py` is the one reader of the gateway flag. CE-5 reads the client flag | CE-4 to CE-9, CE-12 | No events. Each `/tasks/calendar/entries` route answers 404, and the read has no `entries` key. `/version` carries `calendar_events` |
 | `CALENDAR_SYNC_READ` | Gateway | CE-10 | No sync. 🔴 Owner flip |
 | `CALENDAR_SYNC_WRITE` | Gateway | CE-11 | No write-out. 🔴 Owner flip |
 
@@ -1282,13 +1369,13 @@ needs no decision change.
 | **CE-1** Lead time on a task block | AGENT-SAFE. No change | `pm_task_personal.lead_minutes`. `user_settings.block_lead_minutes` and `event_lead_minutes`. `feed.py` reads the lead, not `SOON`. The block menu sets it | A lead of 10 gives `block_soon` 10 minutes before the start. No lead gives 30. The flag off gives 30 for every block | `tests/unit/test_calendar_lead_time.py` (R8, new) and `test_shell_feed.py` |
 | ~~**CE-2**~~ | **REPLACED by WS-66 (§10.1), D114** | — | — | — |
 | **CE-3** The composer and drag to draw | AGENT-SAFE. No change | The composer of §6.1 with Task and Reminder. Event shows only with `NEXT_PUBLIC_CALENDAR_EVENTS`. Drag to draw in `TimeGrid.tsx`. The **New at…** row in the Gap Filler | A drag from 14:00 to 15:00 makes a private task with that block in one save. Esc saves nothing. The keyboard alone can do it | `components/Composer.test.tsx` (new), the conformance suite, `src/lib/shell/seams.test.ts`, and a visual review |
-| **CE-4** The event store | AGENT-SAFE after CE-0 Q1 | The two tables of §3.3. `POST`, `PATCH` and `DELETE` on `/calendar/entries`. The read of §3.4 | I see my entries. A colleague who is not an attendee sees none. Org B sees no row of org A. The flag off gives today's read | `tests/unit/test_calendar_entries_r8.py` (new) and `test_db_engine_seam.py` |
+| **CE-4** The event store — ✅ **BUILT 2026-10-31, dark** (migration 326) | AGENT-SAFE after CE-0 Q1 | The two tables of §3.3. `POST`, `PATCH` and `DELETE` on `/tasks/calendar/entries` (`routes/tasks/entries.py`, under the `feature:tasks` router). The `entries` key of the read of §3.4. The member purge deletes the member's entries and seats. CE-4 writes ONE attendee row: the organizer row of the owner. The body takes no attendees. Attendee input, invite cards and RSVP belong to CE-9 | I see my entries. A colleague who is not an attendee sees none. Org B sees no row of org A. The flag off gives today's read. A PATCH or a DELETE of another member's entry, or of an `external` entry, answers 404 and changes nothing. A naive time is 422. A purged member leaves no entry. An all-day entry returns the same dates in every `tz` | `tests/unit/test_calendar_entries_r8.py` (R8, two orgs, M1 to M7), `test_admin_member_purge.py`, `test_tenant_coverage.py`, `test_tenancy_boundary.py` and `test_db_engine_seam.py` |
 | **CE-5** Events in the UI | AGENT-SAFE after CE-3, CE-4 | The Event kind, the looks of §6.2, the sheet of §6.3, the all-day row and Month of §6.4 | No event shows in Tasks or Projects. An all-day event keeps its date in every zone | Vitest for the composer, `MonthGrid` and the all-day row, and `themes.test.ts` |
 | **CE-6** Event lead time and conflicts | AGENT-SAFE after CE-1, CE-4 | `event_soon` with class `interrupt`. `block_overlap` reads busy entries | A lead of 10 gives `event_soon` 10 minutes before. A free entry gives no overlap | `test_calendar_lead_time.py` and `test_shell_feed_r8.py` |
 | ~~**CE-7a**~~ | **REPLACED by RM-3 and RM-9 (§10.1), D114** | — | — | — |
 | **CE-7b** The event tools and job | AGENT-SAFE after CE-4 | `create_event`, `update_event`, `set_reminder` on an event. The `new-event` job | "Meet Sharath 8:30-10:30 tomorrow" opens a filled composer. The chat makes the event after one confirm | The three tests of CE-7a |
 | **CE-8** Repeat rules | AGENT-SAFE after CE-4 | `recurrence`, `series_id`, `original_start`, expanded in the window. "This event" or "all events" on a change | A weekly 09:00 event in `Asia/Kolkata` stays at 09:00 in that zone. A cancelled instance does not show | `tests/unit/test_calendar_recurrence.py` (new), with a zone that changes its clock |
-| **CE-9** Colleagues on an event | AGENT-SAFE after CE-0 Q2, CE-4 | Attendee rows with `member_email`. The rule of §4.1. `event_invite` with RSVP in place (D101) | An attendee sees the event. A colleague who is not one does not. Decline writes `rsvp` and mutes the entry | `test_calendar_entries_r8.py`, the visibility cases |
+| **CE-9** Colleagues on an event | AGENT-SAFE after CE-0 Q2, CE-4 | Attendee input: the rows with `member_email` and the guest rows. CE-4 writes only the organizer row, and its read already applies the rule of §4.1. `event_invite` with RSVP in place (D101) | An attendee sees the event. A colleague who is not one does not. Decline writes `rsvp` and mutes the entry | `test_calendar_entries_r8.py`, the visibility cases |
 | **CE-10** Read Google and Outlook | 🔴 OWNER-GATE for §8.3. The code is AGENT-SAFE after CE-0 Q1, Q6, CE-4 | §8.1, and the provider of MD-11 | With recorded replies, a sync writes each instance once, and a second sync adds nothing. A disconnect deletes the rows of that connection | `tests/unit/test_calendar_sync_read.py` (R8, new) and the loop in `test_db_engine_seam.py` |
 | **CE-11** Write events to the provider | 🔴 OWNER-GATE (§8.3). After CE-10 | §8.2 | The flag off sends no request. One event makes one provider event, and the next sync makes no copy | `tests/unit/test_calendar_sync_write.py` (new) |
 | **CE-12** Notes meetings | AGENT-SAFE after CE-4 | `meeting_id`. **Prepare notes** and **Send notetaker**. The "Coming up" band reads entries | Prepare notes twice opens one `meeting` row. A moved event moves the band | `tests/unit/test_calendar_meeting_link.py` (new) |
@@ -1296,6 +1383,21 @@ needs no decision change.
 **The order.** CE-1 and CE-3 now. CE-0 is decided (D138). Then CE-4, CE-5,
 CE-6, CE-7b, CE-8, CE-9 and CE-12. Then CE-10 and CE-11 together, for Google
 and Outlook at once (D138).
+
+**Carried from the review of CE-4 (2026-11-01).** Each item belongs to the
+ticket that names it:
+
+- **CE-12:** CE-4 stores `task_id`, `crm_deal_id`, `crm_contact_id` and
+  `meeting_id` with no access check. CE-12 must check the access of the
+  member when it reads a link, or check it on the write.
+- **CE-9:** each attendee row keeps the org of its entry, because the
+  attendee key is `(organization_id, entry_id)`.
+- **CE-9:** the member purge must also take the guest rows that hold the
+  address (`email` is the address and `member_email` is NULL).
+- **CE-10:** give a title to a provider event that has none, and shorten a
+  title past 200 characters, before the insert.
+- **CE-5:** `PURGE_LABELS` in `OrganizationAdmin.tsx` needs a label for
+  `calendar_entries` and for `calendar_attendances`.
 
 ### 10.1 WS-66 — reminders and web push (D114)
 

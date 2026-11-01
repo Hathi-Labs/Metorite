@@ -171,9 +171,11 @@ async def _calendar(user: UserContext) -> Found:
     day0 = datetime.combine(today, time.min, tzinfo=tz)
     tomorrow0 = datetime.combine(today + timedelta(days=1), time.min, tzinfo=tz)
     # DONE blocks too, so a day whose plan is all done is not "no plan".
+    # Blocks only: no lens other than the Calendar reads calendar_entries
+    # (calendar_events_reminders.md §3.4), so the feed runs no entry query.
     week = await my_calendar(start=day0.isoformat(),
                              end=(day0 + timedelta(days=WEEK_DAYS)).isoformat(),
-                             include_done=True, user=user)
+                             include_done=True, user=user, with_entries=False)
     rows = list(getattr(week, "rows", None) or [])
     level = {str(r["id"]): task_cell(r) for r in rows}
 
@@ -909,7 +911,8 @@ async def _people(user: UserContext) -> Found:
     day0 = datetime.combine(today, time.min, tzinfo=tz)
     tomorrow0 = datetime.combine(today + timedelta(days=1), time.min, tzinfo=tz)
     # My open blocks of today, each with its assignees (`attach_assignees`).
-    day = await my_calendar(start=day0.isoformat(), end=tomorrow0.isoformat(), user=user)
+    day = await my_calendar(start=day0.isoformat(), end=tomorrow0.isoformat(), user=user,
+                            with_entries=False)
     me = str(user.email or "").strip().lower()
     # Each co-assignee once, with the first task, by the start of its block.
     shared: dict[str, str] = {}

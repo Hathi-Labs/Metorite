@@ -850,6 +850,25 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # the same address in another organization stay.
     _PersonRows("push_devices", "push_subscriptions",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # WS-CAL CE-4 (D138): the member's calendar entries of THIS organization,
+    # the events they made and the copies of their own provider calendar.
+    # Only the owner changes an entry, so nobody else could ever delete one.
+    # The clause names the bound org, as `reminders` does. The attendee rows
+    # of these entries go by their `ON DELETE CASCADE` key. ⚠️ This row runs
+    # before any connection delete of the purge (`purge_knowledge_member`
+    # runs after the list), because `calendar_entries.connection_id` has NO
+    # cascade (migration 326).
+    _PersonRows("calendar_entries", "calendar_entries",
+                f"lower(owner_email) = :email AND organization_id = {_BOUND_ORG}"),
+    # The member's own rows on the entries of colleagues: their seat, RSVP
+    # and lead time. The entry stays with its owner. The clause leaves out
+    # the rows on the member's own entries, which the cascade above deletes,
+    # so the two counts never count one row twice.
+    _PersonRows("calendar_attendances", "calendar_entry_attendees",
+                f"lower(member_email) = :email AND organization_id = {_BOUND_ORG} "
+                "AND NOT EXISTS (SELECT 1 FROM calendar_entries e "
+                "WHERE e.id = calendar_entry_attendees.entry_id "
+                "AND lower(e.owner_email) = :email)"),
     # The identity itself. LAST.
     _PersonRows("member_record", "app_user", "id = CAST(:uid AS uuid)"),
 )

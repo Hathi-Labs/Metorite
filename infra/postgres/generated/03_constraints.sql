@@ -2593,3 +2593,27 @@ ALTER TABLE studio_record_hot ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE studio_record_hot ADD CONSTRAINT studio_record_hot_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS studio_record_hot_org_idx ON studio_record_hot (organization_id);
+
+-- calendar_entries
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM calendar_entries WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: calendar_entries still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE calendar_entries ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE calendar_entries ADD CONSTRAINT calendar_entries_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS calendar_entries_org_idx ON calendar_entries (organization_id);
+
+-- calendar_entry_attendees
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM calendar_entry_attendees WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: calendar_entry_attendees still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE calendar_entry_attendees ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE calendar_entry_attendees ADD CONSTRAINT calendar_entry_attendees_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS calendar_entry_attendees_org_idx ON calendar_entry_attendees (organization_id);
