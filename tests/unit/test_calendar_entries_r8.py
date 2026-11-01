@@ -27,8 +27,9 @@ returns the same dates in every ``tz``.
 **The mutations (R7).** Each turned the named test red on 2026-10-31.
 Commit before each.
 
-* M1. ``entries.py`` ``read_my_entries``: drop ``VISIBLE_SQL`` (the owner or
-  attendee predicate) from the read. Bob read Alice's entry.
+* M1. ``entries.py``: make ``ATTENDEE_ARM`` ``true``, so the attendee arm
+  of the read matches every member (re-run 2026-11-01 on the UNION read of
+  repair round 1). Bob read Alice's entry.
   ``test_r8_a_colleague_who_is_not_an_attendee_sees_none_and_changes_nothing``.
 * M2. ``entries.py`` ``MINE_SQL``: drop ``owner_email = :me``, the rule of
   the PATCH load. Bob's DELETE answered 204.
@@ -51,6 +52,15 @@ Commit before each.
   (``calendar_entries_connection_fk`` since repair round 1), so the order is
   load-bearing.
   ``test_r8_a_member_purge_leaves_no_entry[app]``.
+* M8. ``feed.py``: drop ``with_entries=False`` from the week read of
+  ``_calendar``. The feed ran the entry query.
+  ``test_r8_the_feed_never_runs_the_entry_query``.
+* M9. ``entries.py`` ``_require_my_series``: accept a master that is an
+  instance. The link from B to A answered with the wrong refusal.
+  ``test_r8_a_series_link_is_one_step_and_never_a_cycle``.
+* M10. ``entries.py`` ``_utc_day``: let the ``OverflowError`` out. The
+  three windows at the edge of the calendar failed, and so did the unit
+  case. ``test_r8_a_window_at_the_edge_of_the_calendar_reads_as_today``.
 """
 
 from __future__ import annotations
