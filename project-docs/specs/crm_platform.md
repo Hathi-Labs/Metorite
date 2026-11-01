@@ -12175,7 +12175,7 @@ Left out on purpose: the duplicate warning (CRM-S5), "Create another", and a com
 
 **Gate.** AGENT-SAFE. No flag and no migration. One gateway change: the label of one system field (`routes/crm/core.py:706`). Everything else is frontend.
 
-**Evidence.** The read-only inventory of origin/main `fc1b5edb6`, 2026-11-01. CRM settings use nine save patterns. Two places open a modal on top of a modal. All three defects are real. Paths below are under `workbench/control_plane/src/app/crm/` unless a path says otherwise.
+**Evidence.** The read-only inventory of origin/main `fc1b5edb6`, 2026-11-01. CRM settings use nine save patterns. Two places open a modal on top of a modal. All three defects are real. `page.tsx` and `lib/` are under `workbench/control_plane/src/app/crm/`. A bare component name is under `src/app/crm/components/`, and `routes/` is under `apps/services/gateway/gateway/`.
 
 **Slices.** U17a goes first. U17b follows, because it changes the same files.
 
@@ -12187,7 +12187,7 @@ Left out on purpose: the duplicate warning (CRM-S5), "Create another", and a com
 #### CRM-U17a
 
 1. **Native modules show in the rail.** `page.tsx:203` reads the modules in Mirror mode only, so a Native org gets no "More modules" group. Read them in both modes. The server already returns the Native modules that hold records (`routes/crm/modules.py:241-264`). Correct its old docstring at `:429`.
-2. **No raw module name.** `lib/modules.ts:128-133` `moduleLabel` falls back to the API name. The fallback becomes a readable name: `service_requests` reads "Service requests". `ModuleRecordSheet.tsx:146` uses the same helper.
+2. **No raw module name.** `lib/modules.ts:128-133` `moduleLabel` falls back to the API name. The fallback becomes a readable name: `service_requests` reads "Service requests". `ModuleRecordSheet.tsx:148` has its own raw fallback (`… || module`), and it takes the same readable name.
 3. **Loading is not empty.** The statuses start as `[]` (`lib/store.ts:315-317`), and `loadVocabulary` has no loading state (`:359-370`). The store records "loading", "loaded" and "failed" for the vocabulary.
    - Until the first read lands, the stage list, the lead statuses, the lost reasons and the read-only lists (`SettingsCards.tsx:55`, `:124`) show a loading row.
    - A failed read shows its reason and Retry.
