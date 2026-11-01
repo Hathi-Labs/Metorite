@@ -42,6 +42,7 @@ from acb_auth.permissions import matched_by
 from acb_common.assistant_profile import CLEAR_FOR_MEMBER_SQL_TEMPLATE, mark_changed
 from fastapi import Depends, HTTPException
 from gateway.assistant_summaries import clear_for_member
+from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL
 from gateway.routes.admin._common import (
     PURGE_OUTCOME,
     _iso,
@@ -715,16 +716,16 @@ _CREDENTIAL_CASCADES: dict[str, tuple[str, ...]] = {
     "task_accounts": (),
 }
 
-#: WS-PKG PKG-4 (package_host.md §5.1 decisions 3 and 5): a person other than
-#: the member sees the app of this install. A share with named people stays
-#: `private` and adds `app_grants` rows, and the resolve shows the install to
-#: each grantee. Any subject other than the member counts, `org` and a group
-#: too. The member's own grants do not count: `_PURGE_DELETES` deletes them
-#: before it deletes the installs. So the count, which runs before every
-#: delete, and the delete of the installs read the same answer.
-_OTHERS_SEE_THE_APP = (
-    "EXISTS (SELECT 1 FROM app_grants AS g"
-    " WHERE g.app_id = package_install.app_id AND lower(g.subject) <> :email)")
+#: WS-PKG PKG-4 and PKG-5b (package_host.md §5.1 decisions 3 and 5): the
+#: member shared this private install with another person. It is the ONE
+#: rule of `gateway/package_host/sharing.py`, which the resolve reads too. A
+#: grant counts only when its subject is an address, is not the member, and
+#: the member made it. So a consent row of a colleague, a grant to an agent
+#: and a share by another owner of the app do not keep the install. The rule
+#: names no parameter, and the member's own grants never count. So the count,
+#: which runs before every delete, and the delete of the installs, which runs
+#: after `_PURGE_DELETES` deletes her grants, read the same answer.
+_OTHERS_SEE_THE_APP = OTHERS_SEE_THE_INSTALL
 
 #: **Deleted.** Enumerated from `infra/postgres/` by grepping for every column
 #: that names a person — FKs to `app_user(id)` and the email-string columns
