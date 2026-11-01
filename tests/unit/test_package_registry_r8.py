@@ -61,10 +61,20 @@ existed. Commit before each mutation, and restore with git after.
   ``install_id`` alone, to ``package_install (id)``.
   ``test_r8_a_contribution_cannot_point_at_an_install_of_another_org`` goes
   red, because a foreign key check skips RLS.
-* M3. ``routes/admin/members.py``: drop ``scope_kind = 'private' AND`` from
-  the ``private_app_installs`` row. Both cases of
+* M3. ``routes/admin/members.py``: drop ``scope_kind <> 'private' AND`` from
+  the ``shared_app_installs`` row. Both cases of
   ``test_r8_the_member_purge_takes_private_installs_and_keeps_shared_ones``
-  go red, and so does ``test_admin_member_purge.py``.
+  go red (3 kept, not 2), and so do three tests of
+  ``test_admin_member_purge.py``. The same drop on the delete row stays
+  green here: the CHECK on ``scope_subject`` lets only a private install
+  hold an address. The exact-text test of ``test_admin_member_purge.py``
+  is its fence.
+* M4. ``routes/admin/members.py``: drop the org predicate of the
+  ``private_app_installs`` row. The ``superuser`` case of the purge test
+  goes red, because org B's private install of the same address goes too.
+  The ``app`` case stays green, because RLS still binds the app role.
+
+Each mutation ran on 2026-11-01 and gave the result above.
 """
 
 from __future__ import annotations
