@@ -18,13 +18,6 @@ const LITELLM_KEY =
   process.env.LITELLM_MASTER_KEY ?? "";
 const SUGGESTION_MODEL = process.env.SUGGESTION_MODEL ?? "deepseek/deepseek-chat";
 
-/**
- * A pick of three short lines is a structured job (`acb_llm/jobs.py`), so it
- * asks for no thinking: a thinking model spends the 150 tokens on thinking
- * and returns no text. The Router drops it for a model that does not take it.
- */
-const THINKING_OFF = { type: "disabled" } as const;
-
 /** Ensure the base URL ends with /v1 (env values vary). */
 function v1Base(): string {
   const base = LITELLM_BASE_URL.replace(/\/+$/, "");
@@ -55,7 +48,6 @@ export async function POST(req: NextRequest) {
         model: SUGGESTION_MODEL,
         max_tokens: 150,
         temperature: 0.7,
-        thinking: THINKING_OFF,
         messages: [
           {
             role: "system",

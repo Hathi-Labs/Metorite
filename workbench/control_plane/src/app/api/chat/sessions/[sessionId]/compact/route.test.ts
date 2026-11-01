@@ -6,9 +6,11 @@
 // so the agent lost them. A failed call dropped them too. Now both answer 502
 // with `compacted: false` and the messages as sent.
 //
+// The body sends no `thinking`: `deepseek/deepseek-chat` does not think, and
+// the gateway's local `/v1` path forwards named fields only.
+//
 // Mutations: put back the `??` fallback, and the blank test fails. Drop the
-// messages in the catch again, and the failure test fails. Remove `thinking`
-// from the body, and the first test fails.
+// messages in the catch again, and the failure test fails.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
@@ -49,7 +51,7 @@ describe("/api/chat/sessions/[id]/compact", () => {
     seam.bodies.length = 0;
   });
 
-  it("compacts with a real summary, and asks for no thinking", async () => {
+  it("compacts with a real summary", async () => {
     seam.reply = () => answer("- Acme deal at stage 3");
     const res = await compact();
     expect(res.status).toBe(200);
@@ -58,7 +60,7 @@ describe("/api/chat/sessions/[id]/compact", () => {
     expect(data.removedCount).toBe(4);
     expect(data.messages).toHaveLength(7);
     expect(data.messages[0].content).toContain("Acme deal at stage 3");
-    expect(seam.bodies[0].thinking).toEqual({ type: "disabled" });
+    expect(seam.bodies[0]).not.toHaveProperty("thinking");
   });
 
   it.each([[""], ["   "], [null]])("keeps every message on a blank summary (%j)", async (content) => {

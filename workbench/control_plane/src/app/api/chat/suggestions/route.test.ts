@@ -1,11 +1,11 @@
-// `/api/chat/suggestions` asks for no thinking (task 1128).
+// `/api/chat/suggestions` reads three short lines, and a blank reply is none.
 //
-// Three short lines are a structured job. A thinking model spends the cap of
-// 150 tokens on thinking and returns no text, and the UI then shows only its
-// static defaults. The Router drops `thinking` for a model that does not take
-// it, so the body can always carry it.
+// The body sends no `thinking` (task 1128). `deepseek/deepseek-chat` does not
+// think, and the gateway's local `/v1` path forwards named fields only, so the
+// field would reach no model. If `SUGGESTION_MODEL` ever names a thinking
+// tier, that path must forward `thinking` first (through `params_for_model`).
 //
-// Mutation: remove `thinking` from the body, and the first test fails.
+// Mutation: send a `thinking` field again, and the first test fails.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
@@ -40,13 +40,13 @@ describe("/api/chat/suggestions", () => {
     seam.bodies.length = 0;
   });
 
-  it("asks for no thinking, and reads the three lines", async () => {
+  it("reads the three lines, and sends no thinking field", async () => {
     seam.reply = () => answer('["Draft a note to Acme", "Which deals slip?", "Show stage 3"]');
     const res = await ask();
     expect(await res.json()).toEqual({
       suggestions: ["Draft a note to Acme", "Which deals slip?", "Show stage 3"],
     });
-    expect(seam.bodies[0].thinking).toEqual({ type: "disabled" });
+    expect(seam.bodies[0]).not.toHaveProperty("thinking");
     expect(seam.bodies[0].max_tokens).toBe(150);
   });
 

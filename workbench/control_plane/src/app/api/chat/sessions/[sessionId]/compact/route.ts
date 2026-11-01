@@ -30,14 +30,10 @@ const LITELLM_BASE_URL =
   "http://127.0.0.1:8080/v1";
 const LITELLM_KEY =
   process.env.LITELLM_MASTER_KEY ?? "";
+// The body sends no `thinking` (task 1128). `deepseek/deepseek-chat` does not
+// think, and the gateway's local `/v1` path forwards named fields only, so the
+// field would reach no model.
 const COMPACT_MODEL = process.env.SUGGESTION_MODEL ?? "deepseek/deepseek-chat";
-
-/**
- * A summary is a writing job (`acb_llm/jobs.py`), so it asks for no thinking.
- * A thinking model spends the cap on thinking and returns no text. The Router
- * drops the parameter for a model that does not take it.
- */
-const THINKING_OFF = { type: "disabled" } as const;
 
 /** The answer when no summary came back: nothing is removed. */
 function keepEverything(messages: StoredMessage[], error: string) {
@@ -116,7 +112,6 @@ export async function POST(
         model: COMPACT_MODEL,
         max_tokens: 1_200,
         temperature: 0.2,
-        thinking: THINKING_OFF,
         messages: [
           {
             role: "system",
