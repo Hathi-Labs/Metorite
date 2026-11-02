@@ -6,10 +6,17 @@ Spec: ``project-docs/specs/calendar_events_reminders.md`` §5.6 "Settled
 ``build`` is a pure function. It reads no database and no flag, and it sends
 nothing. RE-9b calls it from the send step. The result is the one
 ``push.sender.PushMessage``, and the service worker
-(``public/sw.js``) reads its ``title``, ``body``, ``url`` and ``tag``, and the
-``reminder_id`` and ``kind`` that RX-4 adds. So the org name goes in ``body``.
-The worker shows the Done and "In 1 hour" buttons for a ``reminder_due`` or
-``reminder_check`` push, and the buttons call the reminder routes.
+(``public/sw.js``) reads its ``title``, ``body``, ``url``, ``tag`` and
+``renotify``, and the ``reminder_id`` and ``kind`` that RX-4 adds. So the org name
+goes in ``body``. The worker shows the Done and "In 1 hour" buttons for a
+``reminder_due`` or ``reminder_check`` push, and the buttons call the reminder
+routes.
+
+**A replacement alerts.** One reminder has one tag, and the summary has one tag
+for all days, so a new push takes the place of an older one on the device. By
+the Notifications standard, that replacement makes no sound unless the push
+sets ``renotify``. So each push of this module sets it. Without it, a check-back
+that replaces a fired reminder arrives silent.
 
 * **Shown:** the title is the reminder title and its time in the zone of the
   row. The body is the org name.
@@ -132,7 +139,7 @@ def build(kind: str, reminder: Mapping[str, Any], org_name: str,
         at = _local(reminder.get("fire_at"), reminder.get("tz"))
         title = f"{text} at {_clock(at)}" if at is not None else text
     return PushMessage(title=title, body=org, url=reminder_url(rid), tag=rid,
-                       urgency=urgency, ttl=ttl, reminder_id=rid, kind=kind)
+                       urgency=urgency, ttl=ttl, reminder_id=rid, kind=kind, renotify=True)
 
 
 def due_title(due_today: int, overdue: int, *, capped: bool = False) -> str:
@@ -160,4 +167,5 @@ def build_due(*, due_today: int, overdue: int, first_title: str, org_name: str,
         if more > 0:
             body = f"{body} and {more}{'+' if capped else ''} more"
     return PushMessage(title=due_title(due_today, overdue, capped=capped), body=body,
-                       url=MY_DAY_URL, tag=DUE_TAG, urgency="normal", ttl=DUE_TTL_S)
+                       url=MY_DAY_URL, tag=DUE_TAG, urgency="normal", ttl=DUE_TTL_S,
+                       renotify=True)

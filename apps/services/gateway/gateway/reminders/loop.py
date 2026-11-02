@@ -86,6 +86,13 @@ member who did not get a turn waits for the next tick. The send phase of the
 tick sends the row after the reminders. The phase makes no network call, and
 it never raises.
 
+**A summary has a share of the send phase** (RX-5). A reminder fires in the tick
+after ``fire_at``, and the wait until that tick holds the send phase of the
+tick before it. So a full send phase of summaries takes the 90 s of §5.6. No
+summary row starts after :data:`SUMMARY_SEND_S`, and a later tick sends the
+rest. Each summary sorts after every reminder row, so a reminder of the tick
+always goes first.
+
 **Dark by default.** With ``calendar_reminders`` off, :func:`start_reminder_loop`
 starts no task, and :func:`run_tick` does nothing.
 
@@ -129,6 +136,13 @@ STOP_GRACE_SECONDS = 30
 #: tick. A healthy push service sends each row in well under a second, so
 #: the call starts a few seconds after the fire, inside the 90 s of §5.6.
 SEND_PHASE_S = 30
+#: The seconds of the send phase in which a morning summary may START (RX-5).
+#: A reminder that fires just after the steps of a tick waits for that tick's
+#: plan phase, its summaries, ``TICK_SECONDS`` and the plan phase of the next
+#: tick. 10 + 8 + 60 + 10 is 88 s, inside the 90 s of §5.6. A row that did not
+#: start stays planned. At a few sends each second, an org of 300 clears in
+#: about 8 ticks, inside the 4 hours of the row's TTL.
+SUMMARY_SEND_S = 8
 #: The seconds in which the plan phase of one tick may START a member (RX-5).
 #: It runs before the send phase, so it adds to the wait of a reminder that
 #: fired in this tick. A fire must reach its send inside the 90 s of §5.6, and
@@ -477,12 +491,12 @@ class _Share:
         return self.stopped
 
 
-async def _send_org(org: str, clock: Callable[[], datetime],
-                    stop: Callable[[], bool]) -> Counter[str]:
+async def _send_org(org: str, clock: Callable[[], datetime], stop: Callable[[], bool],
+                    summaries_over: Callable[[], bool]) -> Counter[str]:
     """The planned pushes of *org*, bound to *org*. It never raises."""
     token = bind_tenant(org)
     try:
-        return await push_channel.send_planned(org, clock, stop)
+        return await push_channel.send_planned(org, clock, stop, summaries_over)
     except Exception as exc:  # a failed send never stops the loop
         _log.warning("reminders.push_failed", error=type(exc).__name__)
         return Counter()
@@ -504,6 +518,10 @@ async def _send_phase(orgs: list[str], now: datetime | None,
     go. Its first row always starts. The second round gives the time still
     left to the orgs that still hold rows, in the same order.
 
+    **A summary has a share.** No summary row starts after
+    :data:`SUMMARY_SEND_S`, in any org. The next tick starts at the next org, so
+    the share moves on.
+
     The clock of a row is the time of its start, so the quiet hours of a row
     read its send time, not the start of the tick. With a frozen *now* the
     clock starts there and moves with the stopwatch. It adds each org's
@@ -521,6 +539,9 @@ async def _send_phase(orgs: list[str], now: datetime | None,
     def over() -> bool:
         return _stopping.is_set() or _monotonic() >= deadline
 
+    def summaries_over() -> bool:
+        return _monotonic() >= start + SUMMARY_SEND_S
+
     turn = _send_turn % len(orgs)
     _send_turn += 1
     order = orgs[turn:] + orgs[:turn]
@@ -530,7 +551,7 @@ async def _send_phase(orgs: list[str], now: datetime | None,
             break
         at = _monotonic()
         share = _Share(over, at + (deadline - at) / (len(order) - n))
-        sent = await _send_org(org, clock, share)
+        sent = await _send_org(org, clock, share, summaries_over)
         if sent:
             out.setdefault(org, Counter()).update(sent)
         if share.stopped:
@@ -538,7 +559,7 @@ async def _send_phase(orgs: list[str], now: datetime | None,
     for org in held:
         if over():
             break
-        sent = await _send_org(org, clock, over)
+        sent = await _send_org(org, clock, over, summaries_over)
         if sent:
             out.setdefault(org, Counter()).update(sent)
     if over():

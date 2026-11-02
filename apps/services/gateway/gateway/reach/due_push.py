@@ -35,6 +35,20 @@ tasks are read once. The key is a saving and the quiet rule, never the guard of
 a duplicate: with Redis down, the read runs on each tick of the window, and a
 task that lands in the window can then send the one push of the day.
 
+**A long list.** A tick plans :data:`PLAN_BATCH` members, and the next tick starts
+where that batch ended (:func:`_take`). So a member late in the alphabet gets a
+turn. With Redis down, no read leaves a mark, so the same members come back on
+each tick. Then a tick reads :data:`FAULT_BATCH` members, writes no mark, and
+leaves the plan phase its time. Each member still gets a turn in the window.
+
+**A working day.** No summary on a day that is not a working day of the member:
+a day off their week (``work_schedule.works_on``), a company holiday, or a day on
+leave (``absences.away_rows``, ``away`` or ``holiday``, and a ``partial`` day still
+counts as work). One read for the batch, and a mark for the rest of that day. The
+next working day's summary lists what is overdue, so nothing is lost. A failed
+read plans nothing, and a later tick tries again: the rule of
+``feed._working_day``, which stays quiet rather than nag on a day off.
+
 **Who.** Each active member of the org (``app_user.status``, one read), who
 holds ``feature:projects``, the check that My Day makes before it shows a task
 card. ``reach.loop.resolve`` is the one member check. The member comes from
@@ -95,10 +109,17 @@ READ_LIMIT = 200
 #: The members that one tick plans for one org, at most. The rest wait for the
 #: next tick, so one org cannot hold the steps of the next org.
 PLAN_BATCH = 100
+#: The same cap while Redis is down. No read leaves a mark then, so a full batch
+#: would fill the plan phase on each tick. 240 ticks of the 4-hour window still
+#: reach 4800 members.
+FAULT_BATCH = 20
 #: Seconds that the mark of an empty read lives: past the end of the window.
 CHECK_TTL_S = 36 * 3600
 #: Seconds that one Redis call may take. Past it, the plan reads the tasks.
 REDIS_TIMEOUT_S = 0.25
+
+#: Where the next batch of each org starts (:func:`_take`).
+_next_start: dict[str, int] = {}
 
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 
@@ -176,10 +197,11 @@ def _guard(slot: Slot) -> Any:
     return key("reach", "due_checked", slot.member, slot.local_date.isoformat())
 
 
-async def _unchecked(org: str, slots: list[Slot]) -> list[Slot]:
-    """The slots with no mark of an empty read. Redis down: all of them."""
+async def _unchecked(org: str, slots: list[Slot]) -> tuple[list[Slot], bool]:
+    """The slots with no mark of an empty read, and whether Redis failed. Redis
+    down: all of them, and True."""
     if not slots:
-        return slots
+        return slots, False
     try:
         with organization_scope(org):
             marks = await asyncio.wait_for(
@@ -187,8 +209,21 @@ async def _unchecked(org: str, slots: list[Slot]) -> list[Slot]:
                 REDIS_TIMEOUT_S)
     except Exception as exc:  # the key is a saving: read the tasks instead
         _log.warning("reach.due.guard_read_failed", error=type(exc).__name__)
+        return slots, True
+    return [s for s, mark in zip(slots, marks, strict=True) if not mark], False
+
+
+def _take(org: str, slots: list[Slot], size: int) -> list[Slot]:
+    """At most *size* of *slots*, from where the last batch of *org* ended.
+
+    A slot stays open until it has a row or a mark. So a batch that always
+    started at the first address would read the same members on each tick
+    while Redis is down, and a later member would lose the summary."""
+    if len(slots) <= size:
         return slots
-    return [s for s, mark in zip(slots, marks, strict=True) if not mark]
+    start = _next_start.get(org, 0) % len(slots)
+    _next_start[org] = start + size
+    return (slots[start:] + slots[:start])[:size]
 
 
 async def _mark_checked(org: str, slot: Slot) -> None:
@@ -227,6 +262,23 @@ async def _open_slots(db: Any, now: datetime) -> list[Slot]:
     return [s for s in slots if s.key not in taken]
 
 
+async def _day_off(db: Any, slots: list[Slot]) -> set[Slot]:
+    """The slots whose local date is no working day of the member. One read of
+    the policy, one of the directory, and one of leave for each local date, for
+    the whole batch. It raises on a failed read, so nothing is planned."""
+    from gateway.routes.people.absences import away_rows
+    from gateway.work_schedule import load_policy, person_schedules, works_on
+
+    policy = await load_policy(db)
+    schedules = await person_schedules(db, [s.member for s in slots], policy)
+    away: dict[date, set[str]] = {}
+    for day in {s.local_date for s in slots}:
+        members = [s.member for s in slots if s.local_date == day]
+        away[day] = set(await away_rows(db, members, day))
+    return {s for s in slots if s.member in away[s.local_date]
+            or not works_on(policy, schedules.get(s.member), s.local_date)}
+
+
 async def _may_read(org: str, member: str) -> bool | None:
     """True when the member may read task cards, False when the member may
     not, and None when the read failed, so a later tick tries again.
@@ -248,18 +300,21 @@ async def _may_read(org: str, member: str) -> bool | None:
         return None
 
 
-async def _plan_one(org: str, slot: Slot, now: datetime) -> str:
-    """One member: read, check, plan. Answers the outcome."""
+async def _plan_one(org: str, slot: Slot, now: datetime, *, marks: bool = True) -> str:
+    """One member: read, check, plan. Answers the outcome. With *marks* off,
+    while Redis is down, it writes no mark."""
     async with tenant_session(org) as db:
         found = await summary(db, slot.member, now)
     if found is None:
-        await _mark_checked(org, slot)
+        if marks:
+            await _mark_checked(org, slot)
         return "due_nothing"
     allowed = await _may_read(org, slot.member)
     if allowed is None:
         return "due_retry"
     if not allowed:
-        await _mark_checked(org, slot)
+        if marks:
+            await _mark_checked(org, slot)
         return "due_no_feature"
     async with tenant_session(org) as db:
         planned = await outbox.plan_push(
@@ -281,11 +336,22 @@ async def plan_org(org: str, now: datetime,
     try:
         async with tenant_session(org) as db:
             slots = await _open_slots(db, now)
-        for slot in (await _unchecked(org, slots))[:PLAN_BATCH]:
+        unchecked, fault = await _unchecked(org, slots)
+        batch = _take(org, unchecked, FAULT_BATCH if fault else PLAN_BATCH)
+        off: set[Slot] = set()
+        if batch:
+            async with tenant_session(org) as db:
+                off = await _day_off(db, batch)
+        for slot in batch:
             if stopping is not None and stopping():
                 break
             try:
-                counts[await _plan_one(org, slot, now)] += 1
+                if slot not in off:
+                    counts[await _plan_one(org, slot, now, marks=not fault)] += 1
+                    continue
+                if not fault:
+                    await _mark_checked(org, slot)
+                counts["due_day_off"] += 1
             except Exception as exc:  # the next tick tries this member again
                 _log.warning("reach.due.member_plan_failed", error=type(exc).__name__)
                 counts["due_failed"] += 1

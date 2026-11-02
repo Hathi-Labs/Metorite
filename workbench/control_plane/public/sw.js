@@ -9,11 +9,15 @@
  *
  * - On `push`, it ALWAYS shows a notification. The subscription is
  *   `userVisibleOnly`, and iOS revokes a push permission that shows nothing.
- *   It reads six keys of the payload: `title`, `body`, `url`, `tag`,
- *   `reminder_id` and `kind`. A `tag` replaces an earlier notification with
- *   the same tag, so a check-back does not stack. A push of a reminder that
- *   waits (`kind` is `reminder_due` or `reminder_check`) gets two buttons,
- *   "Done" and "In 1 hour" (RX-4). iOS shows no buttons, and a tap covers it.
+ *   It reads seven keys of the payload: `title`, `body`, `url`, `tag`,
+ *   `renotify`, `reminder_id` and `kind`. A `tag` replaces an earlier
+ *   notification with the same tag, so a check-back does not stack. A
+ *   replacement makes no sound unless `renotify` is true, by the Notifications
+ *   standard, so a push that must alert sets the flag. `renotify` with no tag
+ *   makes `showNotification` throw, so a push with no tag never sets it. A push
+ *   of a reminder that waits (`kind` is `reminder_due` or `reminder_check`) gets
+ *   two buttons, "Done" and "In 1 hour" (RX-4). iOS shows no buttons, and a tap
+ *   covers it.
  * - On `notificationclick`, a plain tap focuses an open Metorite window and
  *   navigates it to the payload's `url`, or opens a new window there. The
  *   default is `/`. A url off this origin opens `/`. A tap on a button sends
@@ -80,7 +84,10 @@ function notificationOf(data) {
     data: { url: sameOriginPath(payload.url) },
   };
   if (typeof payload.body === "string" && payload.body) options.body = payload.body;
-  if (typeof payload.tag === "string" && payload.tag) options.tag = payload.tag;
+  if (typeof payload.tag === "string" && payload.tag) {
+    options.tag = payload.tag;
+    if (payload.renotify === true) options.renotify = true;
+  }
   // RX-4: the buttons of a reminder that waits. The data keeps the id and the
   // kind for the click. A device that shows no buttons ignores `actions`.
   const id = typeof payload.reminder_id === "string" ? payload.reminder_id : "";

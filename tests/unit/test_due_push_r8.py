@@ -46,6 +46,25 @@ Run (one R8 suite at a time, because the ``promoted`` fixture drops
   ``test_r8_a_member_with_no_row_starts_at_the_people_seed``.
 * M14, the deadline of a plan. ``due_push.plan_org``: drop the check of
   ``stopping``. ``test_r8_a_plan_out_of_time_stops_between_two_members``.
+* M15, the seam of a bulk edit. ``bulk.bulk_edit``: drop the ``stored_due``
+  call. ``test_r8_each_write_of_a_chat_date_reaches_the_seam``.
+* M16, the seam of a mail draft. ``capture_email._draft_due``: return the bare
+  ``_parse_dt``. ``test_r8_a_mail_draft_of_a_date_is_noon_of_the_member``.
+* M17, the digest. ``digest._overdue``: ``due < at``.
+  ``test_r8_a_commitment_reads_late_by_the_zone_of_its_owner``, and
+  ``test_email_digest.py::TestTheOneRuleOfLateWork``.
+* M18, the share. ``push_channel.send_planned``: drop the check of
+  ``summaries_over``. ``test_r8_a_summary_past_its_share_waits_for_a_later_tick``,
+  and ``test_due_day.py::TestTheSendShare``.
+* M19, the turn. ``due_push._take``: start at 0.
+  ``test_r8_with_redis_down_a_long_list_reaches_the_last_member``, and
+  ``test_due_day.py::TestALongList``.
+* M20, the working day. ``due_push._day_off``: answer an empty set.
+  ``test_r8_no_summary_on_a_weekend_and_monday_lists_it``,
+  ``test_r8_no_summary_on_a_leave_day_and_the_next_day_lists_it``,
+  ``test_r8_no_summary_on_a_company_holiday``.
+* M21, the partial day. ``_AWAY_ON_SQL``: add ``'partial'``.
+  ``test_r8_a_partial_day_off_still_gets_the_summary``.
 
 ⚠️ It SKIPS without ``TENANT_LADDER_DATABASE_URL``, and a skip is not a pass.
 """
@@ -78,11 +97,13 @@ from gateway.reach import due_push, outbox
 from gateway.reach.push_message import DUE_TAG, DUE_TTL_S
 from gateway.reminders import loop
 from gateway.routes import projects as projects_package
-from gateway.routes.projects import due_day, intake, personal, tasks
+from gateway.routes.email import digest
+from gateway.routes.projects import bulk, due_day, intake, personal, tasks
 from gateway.routes.projects import reminders as rm
 from gateway.routes.projects.analytics import load_sql, overdue_by_project_sql
 from gateway.routes.shell import cache, feed, needs
 from gateway.routes.shell.state import Day
+from gateway.routes.tasks import capture_email
 from sqlalchemy import event, text
 from sqlalchemy.exc import DBAPIError
 
@@ -191,7 +212,7 @@ def _wipe(p: Any) -> None:
                     "DELETE FROM pm_tasks", "DELETE FROM pm_project_grants",
                     "DELETE FROM pm_task_statuses", "DELETE FROM pm_projects",
                     "DELETE FROM reach_outbox", "DELETE FROM push_subscriptions",
-                    "DELETE FROM user_settings",
+                    "DELETE FROM user_settings", "DELETE FROM people_absences",
                     "DELETE FROM people WHERE email LIKE '%@rx5.test'",
                     "DELETE FROM app_user WHERE email LIKE '%@rx5.test'"):
             c.execute(text(sql))
@@ -708,12 +729,73 @@ def test_r8_each_write_of_a_chat_date_reaches_the_seam(world) -> None:
             intake.IntakeIn(project_id=project, title="By chat too", due_at="2099-03-10"),
             user=user)
         kept.append(await stored(taken["task"]["id"]))
+        # The chat's `bulk_update` and the board's bulk edit: one request.
+        await bulk.bulk_edit(bulk.BulkIn(task_ids=[made["id"], taken["task"]["id"]],
+                                         patch={"due_at": "2099-03-13"}), user=user)
+        kept += [await stored(made["id"]), await stored(taken["task"]["id"])]
         return kept
 
-    created, patched, timed, captured, in_intake = _in_org(world, org, work)
+    created, patched, timed, captured, in_intake, bulk_one, bulk_two = _in_org(world, org, work)
     assert created == captured == in_intake == _la(10, 12)
     assert patched == _la(12, 12)
     assert timed == datetime(2099, 3, 12, 17, 0, tzinfo=IST)
+    # A New York or Los Angeles member keeps the day, and reads no day early.
+    assert bulk_one == bulk_two == _la(13, 12)
+    assert due_day.local_date("America/Los_Angeles", bulk_one) == date(2099, 3, 13)
+
+
+def test_r8_a_mail_draft_of_a_date_is_noon_of_the_member(world) -> None:
+    """Both capture paths of ``capture_email`` call ``_draft_due``. A value with
+    a time parses as it always did, and a value that does not parse is None."""
+    org = world.p.org_b
+
+    async def work() -> list[Any]:
+        async with tenant_session(org) as db:
+            return [await capture_email._draft_due(db, world.wendy, value)
+                    for value in ("2099-03-10", "2099-03-10T17:00:00+05:30", "", "soon")]
+
+    plain, timed, empty, junk = _in_org(world, org, work)
+    assert plain == _la(10, 12)
+    assert timed == datetime(2099, 3, 10, 17, 0, tzinfo=IST)
+    assert empty is None and junk is None
+
+
+def _commitments(world: Any, member: str, due: datetime, now: datetime,
+                 monkeypatch: Any) -> list[dict[str, Any]]:
+    """The digest's read of one commitment of *member*, on a real session, with
+    the task seam faked: the rule under test is the read of the zone."""
+    from gateway.routes.tasks import item_source as seam
+
+    task = SimpleNamespace(id=uuid.uuid4(), title="Send the quote", due_at=due, origin={})
+
+    class Source:
+        async def items_by_origin(self, db: Any, uid: str, key: str, value: str) -> list[Any]:
+            return [task]
+
+    monkeypatch.setattr(seam, "item_source", Source)
+    org = world.p.org_b
+
+    async def work() -> list[dict[str, Any]]:
+        async with tenant_session(org) as db:
+            zone, at, picked, _latest = await digest._commitments_core(
+                db, str(uuid.uuid4()), horizon_days=3, limit=8, now=now, owner=member)
+        return [{"overdue": digest._overdue(d, zone, at),
+                 "day": digest._due_day(d, zone).isoformat()} for _, d in picked]
+
+    return _in_org(world, org, work)
+
+
+def test_r8_a_commitment_reads_late_by_the_zone_of_its_owner(world, monkeypatch) -> None:
+    """A task of the 10th stored at 00:00Z: "Due today" on My Day at 08:00 in
+    Kolkata, so the digest must not say overdue."""
+    stored = datetime(2099, 3, 10, tzinfo=UTC)
+    task = _due(world, world.asha, "Send the quote", stored)
+    assert _kinds(world, world.asha, _ist(10, 8))[task] == "due_today"
+    got = _commitments(world, world.asha, stored, _ist(10, 8), monkeypatch)
+    assert got == [{"overdue": False, "day": "2099-03-10"}]
+    # The next morning both call it late.
+    assert _kinds(world, world.asha, _ist(11, 8))[task] == "overdue"
+    assert _commitments(world, world.asha, stored, _ist(11, 8), monkeypatch)[0]["overdue"] is True
 
 
 def test_r8_the_sql_rule_and_the_python_rule_agree_at_the_day_edge(world) -> None:
@@ -860,13 +942,28 @@ def test_r8_a_reminder_goes_before_a_morning_of_summaries(world) -> None:
             "SELECT id::text, kind FROM reach_outbox WHERE organization_id = CAST(:o AS uuid)"),
             {"o": org}).all())
 
-    async def work() -> tuple[list[str], list[str]]:
+    async def work() -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         return (await outbox.planned_pushes(org, limit=2),
                 await outbox.planned_pushes(org, limit=7))
 
     first_two, every = _in_org(world, org, work)
-    assert {kinds[i] for i in first_two} == {"reminder_due", "reminder_check"}
-    assert [kinds[i] for i in every[2:]] == ["due_summary"] * 5
+    assert {kind for _, kind in first_two} == {"reminder_due", "reminder_check"}
+    assert [kind for _, kind in every[2:]] == ["due_summary"] * 5
+    # The read gives the kind of the row, and it is the kind of the row.
+    assert all(kinds[i] == kind for i, kind in every)
+
+
+def test_r8_a_summary_past_its_share_waits_for_a_later_tick(world, monkeypatch) -> None:
+    """A share of no time starts no summary, the row stays planned, and a later
+    tick sends it. A reminder never waits on this: ``test_due_day.py``."""
+    _due(world, world.asha, "Call the Acme buyer", _ist(10, 12))
+    monkeypatch.setattr(loop, "SUMMARY_SEND_S", 0)
+    _ticks(world, _ist(10, 8, 0))
+    assert [r.state for r in _rows(world, world.asha)] == ["planned"]
+    assert world.service.posts == []
+    monkeypatch.setattr(loop, "SUMMARY_SEND_S", 8)
+    _ticks(world, _ist(10, 8, 1))
+    assert [r.state for r in _rows(world, world.asha)] == ["sent"]
 
 
 def _quiet_members(world: Any, count: int) -> list[str]:
@@ -955,9 +1052,136 @@ def test_r8_a_plan_out_of_time_stops_between_two_members(world) -> None:
     assert len(_rows(world, world.asha)) == len(_rows(world, world.dev)) == 1
 
 
+def test_r8_with_redis_down_a_long_list_reaches_the_last_member(world) -> None:
+    """More members in the window than one batch holds, and Redis down, so no
+    read leaves a mark. The last address still gets its turn in the window."""
+    org = world.p.org_b
+    world.redis.down = True
+    # A member with no settings row takes the People seed of the default week:
+    # 08:00 in UTC, one hour before 09:30. No other member's day just started.
+    at = datetime(2099, 3, 10, 8, 0, tzinfo=UTC)
+    members = sorted(_quiet_members(world, due_push.PLAN_BATCH + 5))
+    last = members[-1]
+    _due(world, last, "The last address", datetime(2099, 3, 10, 12, tzinfo=UTC))
+    due_push._next_start.clear()
+    ticks = 0
+    while not _rows(world, last) and ticks < 7:
+        got = _plan(world, org, at + timedelta(minutes=ticks))
+        assert sum(got.values()) <= due_push.FAULT_BATCH
+        ticks += 1
+    assert len(_rows(world, last)) == 1
+
+
+# ── A working day ──────────────────────────────────────────────────────────
+
+
+def _person(world: Any, member: str, *, org: str | None = None, hours: Any = None) -> str:
+    """The ``people`` row of *member*, which a trigger makes for an ``app_user``,
+    with these working hours. Answers its id."""
+    org = org or world.p.org_b
+    binds = {"o": org, "e": member, "wh": json.dumps(hours or {})}
+    with world.p.admin_engine.begin() as c:
+        found = c.execute(text(
+            "UPDATE people SET working_hours = CAST(:wh AS jsonb) "
+            "WHERE organization_id = CAST(:o AS uuid) AND lower(email) = :e RETURNING id"),
+            binds).scalar()
+        if found is None:
+            found = c.execute(text(
+                "INSERT INTO people (organization_id, name, email, status, working_hours) "
+                "VALUES (CAST(:o AS uuid), :e, :e, 'active', CAST(:wh AS jsonb)) RETURNING id"),
+                binds).scalar_one()
+    return str(found)
+
+
+def _leave(world: Any, person: str, first: date, last: date, kind: str = "away") -> None:
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO people_absences (organization_id, person_id, starts_on, ends_on, kind, "
+            "created_by) VALUES (CAST(:o AS uuid), CAST(:p AS uuid), :a, :b, :k, 'hr@rx5.test')"),
+            {"o": world.p.org_b, "p": person, "a": first, "b": last, "k": kind})
+
+
+def test_r8_no_summary_on_a_weekend_and_monday_lists_it(world) -> None:
+    """Saturday 14 and Sunday 15 March 2099. The org's default week."""
+    _due(world, world.asha, "Call the Acme buyer", _ist(14, 12))
+    got = _ticks(world, _ist(14, 8, 0), _ist(15, 8, 0))
+    assert got[0][world.p.org_b]["due_day_off"] >= 1
+    assert _rows(world, world.asha) == [] and world.service.posts == []
+    _ticks(world, _ist(16, 8, 0))
+    assert _pushes(world, world.asha)[0]["title"] == "1 overdue"
+
+
+def test_r8_a_day_off_costs_one_read_of_the_day(world) -> None:
+    """The mark quiets the rest of the window, so a later tick reads nothing
+    more for that member."""
+    org = world.p.org_b
+    assert _plan(world, org, _ist(14, 8, 0))["due_day_off"] >= 1
+    assert "due_day_off" not in _plan(world, org, _ist(14, 8, 1))
+
+
+def test_r8_a_member_who_works_on_saturday_gets_it(world) -> None:
+    _person(world, world.asha, hours={"days": [2, 3, 4, 5, 6]})
+    _due(world, world.asha, "Open the shop", _ist(14, 12))
+    _ticks(world, _ist(14, 8, 0))
+    assert _pushes(world, world.asha)[0]["title"] == "1 due today"
+
+
+def test_r8_no_summary_on_a_leave_day_and_the_next_day_lists_it(world) -> None:
+    person = _person(world, world.asha)
+    _leave(world, person, date(2099, 3, 10), date(2099, 3, 10))
+    _due(world, world.asha, "Call the Acme buyer", _ist(10, 12))
+    _due(world, world.dev, "Call the Acme buyer", _ist(10, 12))
+    _ticks(world, _ist(10, 8, 0))
+    assert _rows(world, world.asha) == []
+    assert len(_rows(world, world.dev)) == 1  # the leave of one member
+    _ticks(world, _ist(11, 8, 0))
+    assert _pushes(world, world.asha)[0]["title"] == "1 overdue"
+
+
+def test_r8_a_partial_day_off_still_gets_the_summary(world) -> None:
+    person = _person(world, world.asha)
+    _leave(world, person, date(2099, 3, 10), date(2099, 3, 10), kind="partial")
+    _due(world, world.asha, "Call the Acme buyer", _ist(10, 12))
+    _ticks(world, _ist(10, 8, 0))
+    assert _pushes(world, world.asha)[0]["title"] == "1 due today"
+
+
+def test_r8_no_summary_on_a_company_holiday(world) -> None:
+    org = world.p.org_b
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO org_settings (organization_id, key, value, updated_by) "
+            "VALUES (CAST(:o AS uuid), 'work_schedule', CAST(:v AS jsonb), 'hr@rx5.test') "
+            "ON CONFLICT DO NOTHING"),
+            {"o": org, "v": json.dumps({"holidays": ["2099-03-10"]})})
+    try:
+        _due(world, world.asha, "Call the Acme buyer", _ist(10, 12))
+        _ticks(world, _ist(10, 8, 0))
+        assert _rows(world, world.asha) == []
+    finally:
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM org_settings WHERE organization_id = CAST(:o AS uuid) "
+                           "AND key = 'work_schedule'"), {"o": org})
+
+
+def test_r8_the_leave_of_another_org_says_nothing(world) -> None:
+    """One address may hold a directory row in two orgs. The read names the
+    bound tenant."""
+    person = _person(world, world.asha, org=world.p.org_a)
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO people_absences (organization_id, person_id, starts_on, ends_on, kind, "
+            "created_by) VALUES (CAST(:o AS uuid), CAST(:p AS uuid), :a, :a, 'away', 'h@rx5.test')"),
+            {"o": world.p.org_a, "p": person, "a": date(2099, 3, 10)})
+    _due(world, world.asha, "Call the Acme buyer", _ist(10, 12))
+    _ticks(world, _ist(10, 8, 0))
+    assert _pushes(world, world.asha)[0]["title"] == "1 due today"
+
+
 def test_the_day_of_a_member_is_the_day_of_the_row() -> None:
     day = Day(IST, 8, 20)
     assert due_push.push_channel.too_late(due_push.KIND, day.day_start(_ist(10, 8)),
                                           _ist(10, 11, 59)) is False
     assert day.feed_day(_ist(10, 8)) == date(2099, 3, 10)
     assert due_push.dedupe_key("a@b", date(2099, 3, 10)) == "due_summary:a@b:2099-03-10"
+

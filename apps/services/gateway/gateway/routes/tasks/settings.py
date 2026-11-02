@@ -278,6 +278,7 @@ async def work_schedule_seeds(db: Any, emails: list[str]) -> dict[str, dict[str,
     """
     try:
         from gateway.work_schedule import (
+            PEOPLE_HOURS_SQL,
             calendar_seed,
             load_policy,
             person_schedule,
@@ -285,16 +286,11 @@ async def work_schedule_seeds(db: Any, emails: list[str]) -> dict[str, dict[str,
 
         # A savepoint, so a failed seed read cannot abort the caller's
         # session: ``member_day`` runs this on the shared session of the
-        # My Day provider (MD-3c review). And the bound tenant, as
-        # ``people.core.find_self_row`` does: since migration 209 one address
-        # may hold a ``people`` row in two orgs, and the owner role reads
-        # past RLS. An unbound GUC matches no row, so it fails closed.
+        # My Day provider (MD-3c review). The statement names the bound
+        # tenant, as ``people.core.find_self_row`` does.
         async with db.begin_nested():
-            rows = (await db.execute(text(
-                "SELECT lower(email) AS member, working_hours FROM people "
-                "WHERE lower(email) = ANY(CAST(:emails AS text[])) "
-                f"  AND organization_id = {_BOUND_ORG}"),
-                {"emails": list(emails)})).fetchall()
+            rows = (await db.execute(text(PEOPLE_HOURS_SQL),
+                                     {"emails": list(emails)})).fetchall()
             if not rows:
                 return {}
             policy = await load_policy(db)

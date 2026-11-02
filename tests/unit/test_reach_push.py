@@ -1179,7 +1179,7 @@ def test_r8_org_b_reads_nothing_of_org_a(world) -> None:
         raise AssertionError("org B claimed a row of org A")
 
     async def as_org_b() -> tuple[list[str], Any, Counter, int]:
-        listed = await outbox.planned_pushes(b, limit=100)
+        listed = [i for i, _kind in await outbox.planned_pushes(b, limit=100)]
         claimed = await outbox.claim_push(b, row.id, never)
         sent = await push_channel.send_planned(b, lambda: at)
         async with tenant_session(b) as db:

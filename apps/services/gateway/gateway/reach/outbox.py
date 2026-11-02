@@ -127,7 +127,7 @@ _PUSHES_COUNTED_SQL = (
 #: ``due_summary`` goes last: a morning of summaries is a long queue, and a
 #: reminder that fires at an exact time must never wait behind it (RX-5).
 _PLANNED_PUSHES_SQL = (
-    "SELECT id::text FROM reach_outbox "
+    "SELECT id::text, kind FROM reach_outbox "
     f"WHERE organization_id = {_BOUND_ORG} AND channel = 'web_push' "
     f"AND state = 'planned' AND NOT {_HELD} "
     "ORDER BY (kind = 'due_summary'), member_email, created_at, id LIMIT :n"
@@ -300,13 +300,14 @@ async def pushes_counted(db: Any, member: str, *, kind: str, local_date: date,
         "lease": PUSH_LEASE_S})).scalar() or 0)
 
 
-async def planned_pushes(org: str, *, limit: int) -> list[str]:
-    """The ids of the planned push rows of *org* that no send step holds,
-    one member after another, the oldest first."""
+async def planned_pushes(org: str, *, limit: int) -> list[tuple[str, str]]:
+    """The id and the kind of the planned push rows of *org* that no send step
+    holds, one member after another, the oldest first. Each ``due_summary`` row
+    comes after every reminder row."""
     async with tenant_session(org) as db:
         rows = (await db.execute(text(_PLANNED_PUSHES_SQL),
                                  {"n": limit, "lease": PUSH_LEASE_S})).all()
-    return [str(r[0]) for r in rows]
+    return [(str(r[0]), str(r[1])) for r in rows]
 
 
 async def claim_push[T](org: str, outbox_id: str,

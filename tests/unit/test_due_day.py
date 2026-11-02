@@ -7,6 +7,7 @@ Spec: ``project-docs/specs/calendar_events_reminders.md`` §5.11. The real SQL i
 
 from __future__ import annotations
 
+import contextlib
 import re
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
@@ -81,10 +82,15 @@ class TestTheRule:
 
 
 #: A due date against the clock, in either order and any case. ``:now`` and
-#: ``:at`` are the binds that stand for the clock.
-_CLOCK = r"(?:now\(\)|:now\b|:at\b|current_timestamp|clock_timestamp\(\)|statement_timestamp\(\))"
+#: ``:at`` are the binds that stand for the clock. ``now`` and ``at`` are the
+#: Python names of it, and ``due`` is the Python name of a due value: the digest
+#: held ``due < at`` for a ``pm_tasks`` row, and the SQL form could not see it.
+_SQL_CLOCK = r"(?:now\(\)|:now\b|:at\b|current_timestamp|clock_timestamp\(\)|statement_timestamp\(\))"
+_PY_CLOCK = r"(?:\bnow\b|\bat\b|datetime\.now\([^)]*\))"
+_CLOCK = rf"(?:{_SQL_CLOCK}|{_PY_CLOCK})"
+_DUE = r"(?:\w+\.)?\bdue(?:_at)?\b"
 _CLOCK_COMPARE = re.compile(
-    rf"\bdue_at\s*(?:<=?|>=?)\s*{_CLOCK}|{_CLOCK}\s*(?:<=?|>=?)\s*(?:\w+\.)?due_at\b",
+    rf"{_DUE}\s*(?:<=?|>=?)\s*{_CLOCK}|{_CLOCK}\s*(?:<=?|>=?)\s*{_DUE}",
     re.IGNORECASE)
 
 
@@ -95,6 +101,9 @@ class TestOneDefinition:
         "t.due_at < current_timestamp", "t.due_at < clock_timestamp()",
         "now() > t.due_at", "NOW() >= due_at", ":now > t.due_at",
         "CURRENT_TIMESTAMP > t.due_at",
+        # The same test on a value held in a variable.
+        "due < at", "due <= now", "due<now", "at > due", "now >= due",
+        "row.due_at < now", "due < datetime.now(UTC)", "datetime.now(UTC) > due",
     ])
     def test_each_spelling_of_the_clock_is_a_hit(self, sql):
         assert _CLOCK_COMPARE.search(sql)
@@ -102,16 +111,25 @@ class TestOneDefinition:
     @pytest.mark.parametrize("sql", [
         "t.due_at < :day_start", "t.due_at >= :day_start", "t.due_at < :due_before",
         "t.due_at < CAST(:until AS date)", "t.due_at IS NOT NULL", "t.due_at < :nowhere",
+        "due < today", "due <= until", "due > horizon", "due < day_start", "overdue < at",
+        "at < until", "due <= at_most",
     ])
     def test_the_day_rule_is_no_hit(self, sql):
         assert not _CLOCK_COMPARE.search(sql)
 
     def test_no_statement_of_the_gateway_compares_a_due_date_with_the_clock(self):
         """The day rule binds ``:day_start``. A new ``due_at < now()`` is a
-        second definition of late work. Two reads stay on the clock, and
-        each says why in §5.11: an upcoming list, and the 48-hour urgency."""
+        second definition of late work, and so is ``due < at`` in Python. Two
+        reads of a task stay on the clock, and each says why in §5.11: an
+        upcoming list, and the 48-hour urgency. ``due_day.py`` names the old
+        test in its own docstring.
+
+        Three more hold a value named ``due`` that is no due date of a member:
+        the review date of a Knowledge page (``kb_index``, ``retrieval``), and
+        the importer's estimate of when a closed task finished (``layout``)."""
         kept = {"routes/projects/item_lens.py": 2, "routes/projects/core.py": 1,
-                "routes/projects/due_day.py": 1}
+                "routes/projects/due_day.py": 1, "kb_index/query.py": 1,
+                "retrieval/sources.py": 1, "routes/projects/importer/layout.py": 1}
         found: dict[str, int] = {}
         for path in _GATEWAY.rglob("*.py"):
             hits = len(_CLOCK_COMPARE.findall(path.read_text(encoding="utf-8")))
@@ -186,6 +204,28 @@ class TestADateOnlyValue:
         assert "await stored_due(db, email, payload.due_at)" in mine
         # capture_intake.
         assert "await stored_due(db, actor(user).lower(), payload.due_at)" in intake
+
+    def test_a_bulk_edit_of_a_member_reaches_the_seam(self):
+        """The chat's ``bulk_update`` and the board's bulk edit send a date."""
+        bulk = (_GATEWAY / "routes/projects/bulk.py").read_text(encoding="utf-8")
+        assert bulk.count('await stored_due(db, who.lower(), patch["due_at"])') == 1
+        # The seam comes before the loop over the tasks: one read, one instant.
+        assert bulk.index("await stored_due(") < bulk.index("for task_id in ids:", bulk.index(
+            "async def bulk_edit"))
+
+    def test_a_draft_of_a_mail_capture_reaches_the_seam(self):
+        """Both capture paths. A bare ``_parse_dt`` of a date is midnight UTC."""
+        capture = (_GATEWAY / "routes/tasks/capture_email.py").read_text(encoding="utf-8")
+        assert capture.count('await _draft_due(db, uid, draft.get("due_at", ""))') == 2
+        assert '_parse_dt(draft.get("due_at"' not in capture
+
+    def test_each_caller_of_the_patch_door_is_known(self):
+        """``apply_task_patch`` keeps a date as it came, because a workflow has
+        no member. A new caller for a member must call the seam first."""
+        found = {path.relative_to(_GATEWAY).as_posix()
+                 for path in _GATEWAY.rglob("*.py")
+                 if "await apply_task_patch(" in path.read_text(encoding="utf-8")}
+        assert found == {"routes/projects/bulk.py", "routes/workflows/service.py"}
 
 
 # ── My Day ─────────────────────────────────────────────────────────────────
@@ -358,6 +398,183 @@ class TestThePlanPhase:
         monkeypatch.setattr(loop.due_push, "plan_org", plan_org)
         await loop.run_tick(datetime(2026, 11, 2, 12, tzinfo=UTC))
         assert seen == [False, True]
+
+
+# ── A summary takes a share of the send phase ──────────────────────────────
+
+
+class TestTheSendShare:
+    """A morning of summaries leaves a reminder its 90 s (§5.6)."""
+
+    @pytest.fixture
+    def phase(self, monkeypatch):
+        box = SimpleNamespace(clock=0.0, sent=[], lists={})
+
+        async def planned(org, *, limit):
+            return box.lists[org][:limit]
+
+        async def send_one(org, outbox_id, now):
+            box.sent.append(outbox_id)
+            box.lists[org] = [r for r in box.lists[org] if r[0] != outbox_id]
+            box.clock += 1.0
+            return "sent"
+
+        monkeypatch.setattr(loop.push_channel, "push_on", lambda: True)
+        monkeypatch.setattr(loop.push_channel.outbox, "planned_pushes", planned)
+        monkeypatch.setattr(loop.push_channel, "_send_one", send_one)
+        monkeypatch.setattr(loop, "_monotonic", lambda: box.clock)
+        monkeypatch.setattr(loop, "_send_turn", 0)
+        loop._stopping.clear()
+        return box
+
+    @staticmethod
+    def _rows(prefix: str, count: int, kind: str = "due_summary") -> list[tuple[str, str]]:
+        return [(f"{prefix}{n}", kind) for n in range(count)]
+
+    async def test_a_summary_starts_only_in_its_share(self, phase):
+        phase.lists = {"a": self._rows("s", 300)}
+        await loop._send_phase(["a"], None, {})
+        assert len(phase.sent) == loop.SUMMARY_SEND_S
+        assert phase.clock < loop.SEND_PHASE_S
+
+    async def test_the_send_stays_inside_the_90_seconds(self):
+        """Each phase before the send of a reminder that fired just after the
+        steps of a tick."""
+        assert (loop.PLAN_PHASE_S + loop.SUMMARY_SEND_S + loop.TICK_SECONDS
+                + loop.PLAN_PHASE_S) <= 90
+
+    async def test_a_reminder_of_the_next_org_still_goes(self, phase):
+        phase.lists = {"a": self._rows("s", 300),
+                       "b": [("rem", "reminder_due"), *self._rows("t", 5)]}
+        await loop._send_phase(["a", "b"], None, {})
+        assert "rem" in phase.sent
+        assert sum(1 for i in phase.sent if i != "rem") == loop.SUMMARY_SEND_S
+
+    async def test_a_late_reminder_row_goes_past_the_share(self, phase):
+        """The share stops a summary, never a reminder."""
+        phase.lists = {"a": [*self._rows("r", 20, "reminder_due"), *self._rows("s", 5)]}
+        await loop._send_phase(["a"], None, {})
+        assert sum(1 for i in phase.sent if i.startswith("r")) == 20
+        assert not [i for i in phase.sent if i.startswith("s")]
+
+    async def test_a_later_tick_sends_the_rest(self, phase):
+        phase.lists = {"a": self._rows("s", 20)}
+        for _ in range(3):
+            await loop._send_phase(["a"], None, {})
+        assert len(phase.sent) == 20 and phase.lists["a"] == []
+
+    async def test_each_tick_gives_the_share_to_the_next_org(self, phase):
+        phase.lists = {"a": self._rows("a", 50), "b": self._rows("b", 50)}
+        await loop._send_phase(["a", "b"], None, {})
+        await loop._send_phase(["a", "b"], None, {})
+        assert {i[0] for i in phase.sent} == {"a", "b"}
+
+
+# ── A long list of members ─────────────────────────────────────────────────
+
+
+class TestALongList:
+    """More members in the window than one batch holds."""
+
+    @staticmethod
+    def _slots(count: int) -> list[due_push.Slot]:
+        return [due_push.Slot(f"m{n:04d}@x.test", TODAY) for n in range(count)]
+
+    @pytest.fixture
+    def plan(self, monkeypatch):
+        """``plan_org`` with a fake session, a fake plan of one member and a
+        Redis that is down. *open* is the list of open slots of each tick."""
+        box = SimpleNamespace(open=[], read=[], marks=[], fault=True, off=set())
+
+        @contextlib.asynccontextmanager
+        async def session(org):
+            yield None
+
+        async def open_slots(db, now):
+            return list(box.open)
+
+        async def unchecked(org, slots):
+            return list(slots), box.fault
+
+        async def plan_one(org, slot, now, *, marks=True):
+            box.read.append(slot.member)
+            box.marks.append(marks)
+            return "due_nothing"
+
+        async def day_off(db, slots):
+            return {s for s in slots if s.member in box.off}
+
+        async def mark(org, slot):
+            box.marks.append(True)
+
+        monkeypatch.setattr(due_push.push_channel, "push_on", lambda: True)
+        monkeypatch.setattr(flags, "due_push_allowed", lambda org: True)
+        monkeypatch.setattr(due_push, "tenant_session", session)
+        monkeypatch.setattr(due_push, "_open_slots", open_slots)
+        monkeypatch.setattr(due_push, "_unchecked", unchecked)
+        monkeypatch.setattr(due_push, "_plan_one", plan_one)
+        monkeypatch.setattr(due_push, "_day_off", day_off)
+        monkeypatch.setattr(due_push, "_mark_checked", mark)
+        monkeypatch.setattr(due_push, "_next_start", {})
+        return box
+
+    async def test_with_redis_down_each_member_gets_a_turn(self, plan):
+        plan.open = self._slots(due_push.PLAN_BATCH + 50)
+        ticks = -(-len(plan.open) // due_push.FAULT_BATCH)
+        for _ in range(ticks):
+            await due_push.plan_org("o", _ist(2, 8))
+        assert set(plan.read) == {s.member for s in plan.open}
+
+    async def test_with_redis_down_a_tick_reads_a_small_batch_and_writes_no_mark(self, plan):
+        plan.open = self._slots(due_push.PLAN_BATCH + 50)
+        await due_push.plan_org("o", _ist(2, 8))
+        assert len(plan.read) == due_push.FAULT_BATCH < due_push.PLAN_BATCH
+        assert not any(plan.marks)
+
+    async def test_with_redis_up_a_tick_reads_a_full_batch_and_the_next_tick_moves_on(self, plan):
+        plan.fault = False
+        plan.open = self._slots(due_push.PLAN_BATCH * 2 + 1)
+        await due_push.plan_org("o", _ist(2, 8))
+        assert len(plan.read) == due_push.PLAN_BATCH and all(plan.marks)
+        first = set(plan.read)
+        await due_push.plan_org("o", _ist(2, 8))
+        assert len(set(plan.read) - first) == due_push.PLAN_BATCH
+
+    async def test_a_short_list_needs_no_turn(self, plan):
+        plan.open = self._slots(5)
+        await due_push.plan_org("o", _ist(2, 8))
+        await due_push.plan_org("o", _ist(2, 8))
+        assert plan.read == [s.member for s in plan.open] * 2
+
+    async def test_one_org_keeps_its_own_turn(self, plan):
+        plan.open = self._slots(due_push.FAULT_BATCH * 3)
+        await due_push.plan_org("a", _ist(2, 8))
+        await due_push.plan_org("b", _ist(2, 8))
+        assert plan.read[0] == plan.read[due_push.FAULT_BATCH]
+
+    async def test_a_day_off_reads_no_task_and_leaves_a_mark(self, plan):
+        plan.fault = False
+        plan.open = self._slots(2)
+        plan.off = {plan.open[0].member}
+        got = await due_push.plan_org("o", _ist(2, 8))
+        assert plan.read == [plan.open[1].member]
+        assert got["due_day_off"] == 1 and len(plan.marks) == 2
+
+    async def test_a_day_off_with_redis_down_writes_no_mark(self, plan):
+        plan.open = self._slots(1)
+        plan.off = {plan.open[0].member}
+        assert (await due_push.plan_org("o", _ist(2, 8)))["due_day_off"] == 1
+        assert plan.marks == []
+
+    async def test_a_failed_read_of_the_working_day_plans_nothing(self, plan, monkeypatch):
+        async def boom(db, slots):
+            raise RuntimeError("relation people does not exist")
+
+        monkeypatch.setattr(due_push, "_day_off", boom)
+        plan.fault = False
+        plan.open = self._slots(1)
+        assert (await due_push.plan_org("o", _ist(2, 8)))["due_failed"] == 1
+        assert plan.read == []
 
 
 # ── The flag ───────────────────────────────────────────────────────────────

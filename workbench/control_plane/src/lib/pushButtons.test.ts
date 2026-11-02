@@ -16,7 +16,9 @@
  *   - give `reminder_unconfirmed` buttons: "only a reminder that waits" fails;
  *   - treat a 404 as done in `pressButton`: "a failed request opens the chat card" fails;
  *   - post `/resolve` for "snooze": "In 1 hour posts /snooze" fails;
- *   - let a plain tap call `fetch`: "a plain tap never calls the routes" fails.
+ *   - let a plain tap call `fetch`: "a plain tap never calls the routes" fails;
+ *   - drop `options.renotify = true`: "a check-back that replaces a fired reminder alerts" fails;
+ *   - set `renotify` outside the `tag` branch: "a push with no tag" fails.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -27,17 +29,25 @@ const ROOT = path.join(__dirname, "..", "..");
 const ORIGIN = "https://app.metorite.test";
 const RID = "6f1c2b9e-0000-4000-8000-00000000abcd";
 
-type Options = NotificationOptions & { actions?: { action: string; title: string }[]; data?: Record<string, string> };
+type Options = NotificationOptions & {
+  actions?: { action: string; title: string }[];
+  data?: Record<string, string>;
+  renotify?: boolean;
+};
 
 interface Scope {
   listeners: Record<string, (e: unknown) => void>;
   shown: Array<[string, Options]>;
+  /** One entry for each `showNotification`: whether the device alerts. */
+  alerted: boolean[];
   openWindow: ReturnType<typeof vi.fn>;
 }
 
 function loadWorker(extra: { fetch?: ReturnType<typeof vi.fn>; Notification?: { maxActions?: number } } = {}): Scope {
   const listeners: Scope["listeners"] = {};
   const shown: Scope["shown"] = [];
+  const alerted: boolean[] = [];
+  const tags = new Set<string>();
   const openWindow = vi.fn(async (url: string) => ({ url }));
   const scope = {
     location: { origin: ORIGIN },
@@ -46,7 +56,13 @@ function loadWorker(extra: { fetch?: ReturnType<typeof vi.fn>; Notification?: { 
     },
     skipWaiting: vi.fn(),
     registration: {
+      // The show steps of the Notifications standard: `renotify` with no tag
+      // is a TypeError, and a replacement alerts only with `renotify`.
       showNotification: vi.fn(async (title: string, options: Options) => {
+        if (options.renotify && !options.tag) throw new TypeError("renotify needs a tag");
+        const replaces = Boolean(options.tag && tags.has(options.tag));
+        if (options.tag) tags.add(options.tag);
+        alerted.push(!replaces || options.renotify === true);
         shown.push([title, options]);
       }),
     },
@@ -54,7 +70,7 @@ function loadWorker(extra: { fetch?: ReturnType<typeof vi.fn>; Notification?: { 
     ...extra,
   };
   new Function("self", fs.readFileSync(path.join(ROOT, "public", "sw.js"), "utf8"))(scope);
-  return { listeners, shown, openWindow };
+  return { listeners, shown, alerted, openWindow };
 }
 
 async function dispatch(scope: Scope, type: string, event: Record<string, unknown>) {
@@ -114,6 +130,47 @@ describe("the buttons of a reminder push", () => {
     const options = await pushOf(w, { ...REMINDER_PUSH, title: "Metorite: a reminder" });
     expect(w.shown[0][0]).toBe("Metorite: a reminder");
     expect(options.actions).toHaveLength(2);
+  });
+});
+
+describe("a push that replaces an older one", () => {
+  it("a check-back that replaces a fired reminder alerts", async () => {
+    const w = loadWorker();
+    await pushOf(w, { ...REMINDER_PUSH, renotify: true });
+    const options = await pushOf(w, { ...REMINDER_PUSH, kind: "reminder_check", renotify: true });
+    expect(options.tag).toBe(RID);
+    expect(options.renotify).toBe(true);
+    expect(w.alerted).toEqual([true, true]);
+  });
+
+  it("today's summary that replaces yesterday's alerts", async () => {
+    const w = loadWorker();
+    const summary = { title: "3 due today", body: "File the GST return", url: "/", tag: "due-summary", renotify: true };
+    await pushOf(w, summary);
+    await pushOf(w, { ...summary, title: "1 overdue" });
+    expect(w.alerted).toEqual([true, true]);
+  });
+
+  it("with no flag the replacement stays silent, as the standard says", async () => {
+    const w = loadWorker();
+    await pushOf(w, { title: "T", url: "/", tag: "metorite-test" });
+    const options = await pushOf(w, { title: "T", url: "/", tag: "metorite-test" });
+    expect(options).not.toHaveProperty("renotify");
+    expect(w.alerted).toEqual([true, false]);
+  });
+
+  it("a push with no tag never sets renotify, so the push still shows", async () => {
+    const w = loadWorker();
+    expect(await pushOf(w, { title: "T", url: "/", renotify: true })).not.toHaveProperty("renotify");
+    expect(await pushOf(w, { title: "T", url: "/", tag: "", renotify: true })).not.toHaveProperty("renotify");
+    expect(w.shown).toHaveLength(2);
+  });
+
+  it("only a true flag counts", async () => {
+    const w = loadWorker();
+    for (const renotify of [1, "true", null]) {
+      expect(await pushOf(w, { title: "T", url: "/", tag: "g", renotify })).not.toHaveProperty("renotify");
+    }
   });
 });
 

@@ -50,7 +50,11 @@
   (§5.11). The push is dark behind `DUE_PUSH_ORGS` (migration 327,
   `reach/due_push.py`). Repair round 1 (2026-11-02) sent the Tasks date
   picks and `capture_intake` through the day rule. It also added the shell's
-  zone save and the plan phase of the reminder tick.
+  zone save and the plan phase of the reminder tick. Repair round 2
+  (2026-11-02) sent a bulk edit, a mail capture and the email date pick through
+  the day rule, and gave the digest the one overdue rule. It also made a
+  replaced push alert (`renotify`), gave a summary a share of the send phase,
+  moved the plan over a long list, and added working days.
 - **Board row:** **WS-CAL**. WS-66 for reminders and web push sits under
   it.
 - **Asked by:** the owner, 2026-10-15. The Calendar must hold more than
@@ -822,6 +826,10 @@ after the review of the Opus reviewer and the verifier. The code is
     `SEND_PHASE_S` (30 s) after the phase starts. A healthy push service
     sends each row in well under a second, so the call starts a few
     seconds after the fire, inside the 90 s.
+  - **The morning summary (RX-5).** A summary shares the tick, so §5.11 caps
+    it: no summary row starts after `SUMMARY_SEND_S` (8 s) of the send phase.
+    The worst wait of a fire is one plan phase, that share, one tick and one
+    plan phase: 10 + 8 + 60 + 10 = 88 s.
 
 **As built (RM-2, 2026-10-25).** The cards come from the feed source
 `reminders` in `routes/shell/feed.py`. Code computes each card from the row
@@ -1171,7 +1179,12 @@ and its item 5 (for reminder pushes, D114.4).
 - **Desktop.** Chrome, Edge, Firefox and Safari, from the same toggle.
 - **The service worker.** One file, `public/sw.js`, registered at scope `/`.
   On `push` it shows the notification with a `tag` of the reminder id, so a
-  check-back replaces the first notification and does not stack. On
+  check-back replaces the first notification and does not stack. By the
+  Notifications standard, a replacement makes no sound unless `renotify` is
+  true. So each reminder push and the morning summary carry the `renotify`
+  flag, and the worker passes it on (RX-5, repair round 2). A rare duplicate of
+  a retry then alerts twice, and that is the better fault. A push with no tag
+  never sets it, because `showNotification` throws on `renotify` with no tag. On
   `notificationclick` it focuses an open Metorite window and navigates it,
   or opens a new one at the payload's `url`.
 - **Every notification.** Push is the channel for every card that Reach
@@ -1265,13 +1278,28 @@ it.
 
 A date picker sends the same noon, through `dueInstantForDay`. Quick capture
 sends 09:00 of the picked local day, which is the same day.
-`app/tasks/lib/duePick.test.ts` refuses a picker that parses a date input as
-midnight UTC.
+`app/tasks/lib/duePick.test.ts` walks all of `src/`. It refuses a picker that
+parses a date input as midnight UTC, and a picked value in a due key that goes
+out as it came. The email task pick uses `dueInstantForDay` too, and `dueDayOf`
+reads the instant back into the date input.
 
-`create_task`, `create_tasks`, `update_task`, `create_personal_task` and
-`capture_intake` all reach the seam. Their routes are `POST /projects/tasks`,
-`PATCH /projects/tasks/{id}`, `POST /projects/my/tasks`, `POST /projects/intake`
-and organize.
+`create_task`, `create_tasks`, `update_task`, `create_personal_task`,
+`capture_intake`, `bulk_update` and a mail capture all reach the seam. Their
+routes are `POST /projects/tasks`, `PATCH /projects/tasks/{id}`,
+`POST /projects/my/tasks`, `POST /projects/intake`, organize,
+`POST /projects/tasks/bulk` and `POST /tasks/capture/from-email`.
+`capture_email._draft_due` calls the seam before the parse, so both mail paths
+and a model's date keep the day. `bulk_edit` calls it once, before the first
+task, and it passes the instant to `apply_task_patch`.
+
+The other writers of `pm_tasks.due_at` keep a value that already holds the day:
+
+- A merge takes the earliest instant, and a revert restores an old instant.
+- A recurring successor steps from the old instant, and keeps its hour.
+- A plan from the Tasks planner stores now plus N days, which is the local day
+  of the member who applies it.
+- The importer stores local noon at the offset of the file (`due_instant`).
+- A calendar or timeline drag keeps the local hour of the task.
 
 **The zone.** The member's day needs a saved zone. The shell saves the browser's
 zone once, for a member whose saved zone is the default
@@ -1284,6 +1312,11 @@ A write that makes the member's row carries the People seed
 route needs `feature:tasks`, so a member who does not hold it stays on the
 default.
 
+⚠️ That save makes the settings row, and a member with a row no longer follows
+the People seed (D-PC-16). So an HR change of that member's schedule after the
+save does not reach their day hours. The save stays as it is
+(`saveZone.ts`), because a member with no saved zone reads as UTC.
+
 **Where the rule binds.**
 
 - The My Day needs and cards, and the WhatsApp due views.
@@ -1293,6 +1326,11 @@ default.
   preview.
 - The People dashboard.
 - The client's card, list, detail and Waiting For lines.
+- The email digest and the `promise_due` card. A commitment is a `pm_tasks`
+  row, so `digest._overdue` reads it in the zone of the mailbox owner, and the
+  date in the digest is that owner's date.
+- The next occurrence of a recurring task. `next_occurrence` takes the start of
+  the closer's today, so a task closed at 15:00 keeps a successor due that day.
 
 **What stays as it is, and why.**
 
@@ -1302,11 +1340,11 @@ default.
 | `item_lens` upcoming hard dates | A hard date is a fixed appointment of the Calendar, so it is a moment |
 | `analytics_pulse` focus and waiting lines | The report states one UTC day, and its text says so |
 | The UTC day of `analytics_conflicts` and the capacity arithmetic | They place work on a calendar. They do not say that a task is late |
-| `automation.apply_task_patch` | No member writes, so no member zone exists. A date-only value stays as it came |
+| `automation.apply_task_patch` for a workflow step | A workflow step has no member, so no member zone exists. A date-only value stays as it came. A member reaches this function only through `bulk_edit`, which calls the seam first |
 | The `legend` of the chat reads (`skill_projects/reads.py`) | It gives the UTC date, because the member's zone costs one more call for each tool. A count in the answer is the member's own, from the server |
 | Rows that chat or a Tasks date picker stored before RX-5 | A row at midnight UTC can be a real time. No backfill guesses. West of UTC such a row reads a day early until somebody edits it |
 | The "Defer until" picks of the Tasks app | A defer date says when a task comes back, so no overdue rule reads it. It stays at midnight UTC |
-| Email commitments, CRM stage limits, Knowledge review dates and Calendar blocks | Each is another object with its own rule |
+| CRM activities, CRM stage limits, Knowledge review dates and Calendar blocks | Each is another object with its own rule |
 
 **The morning summary.** `reach/due_push.py` plans one web push row of the kind
 `due_summary` (migration 327). It says "3 due today, 1 overdue", with the first
@@ -1321,6 +1359,13 @@ title. A tap opens My Day.
 3. **Nothing due.** No row and no push. A Redis mark records the empty read, so
    a task that lands later that day sends nothing. The mark is a saving and
    the quiet rule. The key guards a duplicate, also with Redis down.
+   **A working day.** No summary on a day that is not a working day of the
+   member. That is a day off their week (`work_schedule.works_on`), a company
+   holiday of the policy, or a day on leave (`absences.away_rows`, kinds `away`
+   and `holiday`). A `partial` day still counts as work. The next working day's
+   summary lists what is overdue, so nothing is lost. One read serves the whole
+   batch, and a mark quiets the rest of that day. A failed read plans nothing,
+   and a later tick tries again.
 4. **What it reads.** `personal.my_due_rows`, the body of `my_due_tasks`, and
    `needs.due_kind`, the split of My Day. So the push and My Day agree. A card
    that the member dismissed on My Day still counts, because the task is due.
@@ -1330,12 +1375,18 @@ title. A tap opens My Day.
    again, so a task closed since the plan drops out.
 6. **The send.** `send_planned`, `claim_push`, `finish_push` and `push.sender`,
    with no second path and no ledger row. A member with no device ends as
-   `skipped`, reason `no_device`.
+   `skipped`, reason `no_device`. The tag `due-summary` never changes, so each
+   day's summary replaces yesterday's on the device. It sets `renotify`, so it
+   still alerts (§5.9).
 7. **Quiet hours.** A row that reaches the send in quiet hours ends as
    `skipped`, reason `quiet`. It does not wait, so no push goes for that day.
    Each kind that is not `urgent` follows this rule.
 8. **The order.** The read of planned rows sorts `due_summary` after each
    reminder kind. So an exact-time reminder never waits behind a summary.
+   **The share.** No summary row starts after `SUMMARY_SEND_S` (8 s) of the send
+   phase, in any org. A row that did not start stays planned, and a later tick
+   sends it. So a morning of 300 members never fills the send phase, and a
+   reminder keeps its 90 s (§5.6). Each tick gives the share to the next org.
 9. **The caps.** It counts against no other cap. The key gives at most one a
    day.
 10. **The plan phase.** `run_tick` runs the reminder steps of every org first.
@@ -1343,6 +1394,11 @@ title. A tap opens My Day.
     never delays a reminder step of another org. `PLAN_PHASE_S` (10 s) bounds
     the phase, and each tick starts it at the next org. A member with no turn
     waits for the next tick.
+    **A long list.** One tick plans `PLAN_BATCH` (100) members of an org, and
+    the next tick starts where that batch ended. With Redis down, no read leaves
+    a mark, so the same members come back. Then a tick plans `FAULT_BATCH` (20)
+    members and writes no mark, so each member gets a turn and the phase keeps
+    its time.
 11. **The cost.** A quiet tick costs a few statements: one read of the members,
     one set read of the People seed and one read of the keys.
 12. **Who.** Each active member who holds `feature:projects`. The org comes from
@@ -1353,11 +1409,16 @@ title. A tap opens My Day.
     owner's.
 
 Fences: `tests/unit/test_due_day.py` holds the rule, and it refuses a new
-`due_at` compare with the clock in the gateway, in any spelling.
-`tests/unit/test_due_push_r8.py` runs the planner and the SQL on a real
-Postgres, and one test ties two routes to the reader's zone.
+`due_at` compare with the clock in the gateway, in any spelling. It also
+refuses a Python compare of a value named `due` with `at` or `now`, the share of
+a summary and a list that one member never reaches. It names each caller of
+`apply_task_patch`. `tests/unit/test_due_push_r8.py` runs the planner and the SQL
+on a real Postgres, and one test ties two routes to the reader's zone.
+`tests/unit/test_email_digest.py` holds the digest's rule, and
+`tests/unit/test_projects_recurrence.py` holds the next occurrence.
 `src/lib/taskCard.test.ts` holds the client half.
-`src/app/tasks/lib/duePick.test.ts` holds the date picks, and
+`src/app/tasks/lib/duePick.test.ts` holds the date picks.
+`src/lib/pushButtons.test.ts` holds `renotify`, and
 `src/lib/shell/saveZone.test.ts` holds the zone save.
 
 ## 6. UI and UX

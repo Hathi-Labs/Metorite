@@ -74,12 +74,17 @@ class PushMessage:
     """One notification. ``url`` must be a path on this app.
 
     The payload holds ``title``, ``url`` and, when set, ``body``, ``tag``,
-    ``reminder_id`` and ``kind``. The last two are for a reminder push: the
-    service worker (``workbench/control_plane/public/sw.js``) adds the Done and
-    "In 1 hour" buttons from them (RX-4). The worker reads these six keys and
-    no other. ``reminder_id`` is an id and ``kind`` is a card kind, so neither
-    holds any text of the reminder, and ``hide_push_details`` hides nothing
-    more than before."""
+    ``renotify``, ``reminder_id`` and ``kind``. The last two are for a reminder
+    push: the service worker (``workbench/control_plane/public/sw.js``) adds the
+    Done and "In 1 hour" buttons from them (RX-4). The worker reads these seven
+    keys and no other. ``reminder_id`` is an id and ``kind`` is a card kind, so
+    neither holds any text of the reminder, and ``hide_push_details`` hides
+    nothing more than before.
+
+    ``renotify`` asks the device to alert when this push replaces a
+    notification with the same ``tag``. By the Notifications standard, a
+    replacement is silent without it. It needs a ``tag``, so a message with no
+    tag sends no such key."""
 
     title: str
     body: str | None = None
@@ -89,16 +94,19 @@ class PushMessage:
     ttl: int = 60
     reminder_id: str | None = None
     kind: str | None = None
+    renotify: bool = False
 
     def payload(self) -> str:
         """The JSON that the push service carries, encrypted, to the device."""
         if not self.url.startswith("/") or self.url.startswith("//"):
             raise ValueError("a push url is a path on this app")
-        data: dict[str, str] = {"title": self.title, "url": self.url}
+        data: dict[str, str | bool] = {"title": self.title, "url": self.url}
         if self.body is not None:
             data["body"] = self.body
         if self.tag is not None:
             data["tag"] = self.tag
+            if self.renotify:
+                data["renotify"] = True
         if self.reminder_id is not None:
             data["reminder_id"] = self.reminder_id
         if self.kind is not None:

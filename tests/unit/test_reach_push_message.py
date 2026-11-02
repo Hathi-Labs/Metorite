@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 import pytest
 from gateway.push.sender import PushMessage
 from gateway.reach import push_message
-from gateway.reach.push_message import HIDDEN_TITLE, build
+from gateway.reach.push_message import DUE_TAG, HIDDEN_TITLE, build, build_due
 
 RID = "6f1c2b9e-0000-4000-8000-00000000abcd"
 # 2026-11-02 04:00 UTC is 9:30 AM in Kolkata and 11:00 PM (the day before) in New York.
@@ -66,7 +66,7 @@ def test_hidden_details_leave_no_title_or_time_in_the_payload() -> None:
     raw = msg.payload()
     data = json.loads(raw)
     assert data == {"title": "Metorite: a reminder", "body": ORG,
-                    "url": f"/chat?reminder={RID}", "tag": RID,
+                    "url": f"/chat?reminder={RID}", "tag": RID, "renotify": True,
                     "reminder_id": RID, "kind": "reminder_due"}
     for secret in ("Acme", "buyer", "9:30", "AM", "PM"):
         assert secret not in raw
@@ -107,6 +107,26 @@ def test_the_payload_carries_what_the_buttons_need_and_stays_small() -> None:
 
 def test_a_message_with_no_reminder_keeps_the_four_keys() -> None:
     assert set(json.loads(PushMessage(title="T", url="/x", tag="g").payload())) == {"title", "url", "tag"}
+
+
+def test_each_reminder_push_and_the_summary_alert_when_they_replace_one() -> None:
+    """A check-back has the tag of the fired reminder, and each day's summary has
+    the tag of yesterday's. By the Notifications standard a replacement is
+    silent without ``renotify``. Mutation: drop ``renotify=True`` from ``build``
+    or from ``build_due`` and this fails."""
+    for kind in ("reminder_due", "reminder_check", "reminder_unconfirmed"):
+        for hide in (False, True):
+            data = json.loads(build(kind, ROW, ORG, hide).payload())
+            assert data["renotify"] is True and data["tag"] == RID
+    due = build_due(due_today=1, overdue=0, first_title="A", org_name=ORG, hide_details=False)
+    assert json.loads(due.payload())["renotify"] is True
+    assert json.loads(due.payload())["tag"] == DUE_TAG
+
+
+def test_a_push_with_no_tag_never_carries_the_flag() -> None:
+    """``showNotification`` throws on ``renotify`` with no tag. Mutation: move
+    the flag out of the ``tag`` branch of ``payload`` and this fails."""
+    assert "renotify" not in json.loads(PushMessage(title="T", renotify=True).payload())
 # ── The morning summary (RX-5, calendar_events_reminders.md §5.11) ──────────
 
 

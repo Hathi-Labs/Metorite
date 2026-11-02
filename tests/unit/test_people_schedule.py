@@ -26,6 +26,7 @@ import inspect
 import json
 import re
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -389,6 +390,25 @@ def test_a_failed_seed_read_is_contained_in_its_savepoint() -> None:
     db = _SeedDB(fail=True)
     assert asyncio.run(task_settings._seed_from_work_schedule(db, "me@x.example")) == {}
     assert db.nested == 1 and all(db.inside)
+
+
+def test_a_working_day_is_a_day_of_the_week_and_no_company_holiday() -> None:
+    """RX-5. ``works_on`` is the weekly half of the morning summary's day."""
+    policy = ws.normalise_policy({"working_days": [1, 2, 3, 4, 5], "holidays": ["2026-11-09"]})
+    friday, saturday, holiday = date(2026, 11, 6), date(2026, 11, 7), date(2026, 11, 9)
+    assert ws.works_on(policy, None, friday) is True
+    assert ws.works_on(policy, None, saturday) is False
+    assert ws.works_on(policy, None, holiday) is False
+    # The schedule of the person wins over the org's week.
+    shop = ws.effective_schedule(policy, {"days": [6, 7]})
+    assert ws.works_on(policy, shop, saturday) is True
+    assert ws.works_on(policy, shop, friday) is False
+
+
+def test_a_schedule_with_no_days_reads_the_default_week() -> None:
+    """The rule of ``feed._working_day`` and ``state._working_days``."""
+    assert ws.works_on({}, {"days": []}, date(2026, 11, 6)) is True
+    assert ws.works_on({}, {"days": []}, date(2026, 11, 7)) is False
 
 
 # ══════════════════════════════════════════════════════════════════════════

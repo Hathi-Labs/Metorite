@@ -60,7 +60,10 @@ row and the My Day card stay as they are.
 **The morning summary** (RX-5). ``reach/due_push.py`` plans a row of the kind
 ``due_summary`` for a member and a day. It takes this send step, with no
 ledger row, because no reminder stands behind it. Its read and its words are in
-``due_push.read_facts``, and :class:`Facts` carries the built message.
+``due_push.read_facts``, and :class:`Facts` carries the built message. Each
+summary row comes after every reminder row, and *summaries_over* of
+:func:`send_planned` stops the summaries, so a morning of them leaves a reminder
+its 90 s. A later tick sends the rest.
 
 Fence: ``tests/unit/test_reach_push.py`` (R8, frozen clock, two orgs, a fake
 push service at ``outbound_guard.request_https``), and
@@ -365,7 +368,8 @@ async def _finish(org: str, row: outbox.PushRow, facts: Facts,
 
 
 async def send_planned(org: str, clock: Callable[[], datetime],
-                       stopping: Callable[[], bool] | None = None) -> Counter[str]:
+                       stopping: Callable[[], bool] | None = None,
+                       summaries_over: Callable[[], bool] | None = None) -> Counter[str]:
     """Send every planned push of *org* that no other send step holds.
     Answers the count of each outcome, each key with the prefix ``push_``.
 
@@ -373,12 +377,17 @@ async def send_planned(org: str, clock: Callable[[], datetime],
     bound. *clock* gives the time of each row as the row starts, so the quiet
     hours of a late row read the time of its send (ruling k). *stopping* is
     read before each row: a row that does not start stays planned for the
-    next tick. One failed row never stops the others."""
+    next tick. *summaries_over* is read before each summary row: each reminder
+    row comes first, so a true answer leaves only summaries, and they stay
+    planned for the next tick. One failed row never stops the others."""
     counts: Counter[str] = Counter()
     if not push_on():
         return counts
-    for outbox_id in await outbox.planned_pushes(org, limit=SEND_BATCH):
+    for outbox_id, kind in await outbox.planned_pushes(org, limit=SEND_BATCH):
         if stopping is not None and stopping():
+            break
+        if (kind == push_message.DUE_SUMMARY and summaries_over is not None
+                and summaries_over()):
             break
         try:
             outcome = await _send_one(org, outbox_id, clock())
