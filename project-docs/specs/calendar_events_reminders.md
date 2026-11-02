@@ -1014,6 +1014,9 @@ is `tests/unit/test_reminder_tools.py`.
   `fire_at`, `zone`, `task_id`, `undo` and `was_*`. Undo drops a new reminder.
   It moves a move back. It restores the title, the kind and the time of an
   update. A change of notes, link, estimate or `important` shows no Undo.
+  Undo acts on the member's own reminder only, and any other member gets 404.
+  A fired reminder is still open, so Undo still drops it. A closed reminder
+  answers 409, and the card shows those words.
 - **A task receipt says it is a task.** `create_personal_task` and
   `create_task` print "Private task captured" and "Task created". A "Make it a
   reminder" act on a task receipt is deferred.
