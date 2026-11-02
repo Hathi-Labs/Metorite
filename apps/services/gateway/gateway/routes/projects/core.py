@@ -58,8 +58,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 # `TenantUnbound` rather than defaulting: fail closed, never "the usual org".
 # ⚠️ It reads as UNUSED inside this module — it is a re-export. `ruff --fix`
 # deletes it and takes 25 test modules with it; do not let a linter "tidy" it.
-from gateway.db import tenant_session as _tenant_session
 from pydantic import BaseModel, field_validator
+from gateway.db import tenant_session as _tenant_session
+from skill_projects.hues import hue_of
 from sqlalchemy import text
 
 _log = get_logger("gateway.projects")
@@ -1215,6 +1216,18 @@ def actor(user: Any) -> str:
 def now() -> datetime:
     """The one clock this package reads, so tests can freeze it in one place."""
     return datetime.now(UTC)
+
+
+def hue_values(values: dict[str, Any]) -> dict[str, Any]:
+    """Map a colour in a status, type or tag body to one of the six hues (PJP-1).
+
+    The map is ``skill_projects.hues``, the one the chat tools use, so the app
+    and the chat store the same value. An empty or null colour stays as it is:
+    null clears the field, and the create route keeps its default.
+    """
+    if values.get("color"):
+        values["color"] = hue_of(values["color"])
+    return values
 
 
 def clean_payload(payload: BaseModel) -> dict[str, Any]:

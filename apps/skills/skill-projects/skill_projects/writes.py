@@ -58,6 +58,7 @@ from skill_projects.client import (
     put,
     uuid_of,
 )
+from skill_projects.hues import hue_of
 from skill_projects.priority import (
     CLEAR_PRIORITY,
     Removed,
@@ -3686,6 +3687,11 @@ def _yes_no(value: str, what: str) -> bool | None:
     raise GatewayRefusal(f"{what} is yes or no.")
 
 
+def _category_words(category: Any) -> str:
+    """A category key in words, for text the model reads: in_progress → in progress."""
+    return str(category or "").replace("_", " ")
+
+
 def _next_position(rows: list[dict[str, Any]]) -> int:
     taken = [int(r.get("position") or 0) for r in rows]
     return (max(taken) + 10) if taken else 10
@@ -3694,9 +3700,11 @@ def _next_position(rows: list[dict[str, Any]]) -> int:
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
 async def create_status(project_id: str, name: str, category: str = "todo", color: str = "") -> str:
     """Add a status lane. category is backlog, todo, in_progress, done,
-    cancelled or triage. The lane lands LAST in the set the project uses;
-    the card names the project that owns that set, because a subproject
-    may inherit its lanes from a parent. Deleting a lane is a guarded act."""
+    cancelled or triage. color is one of six hues: gray, red, amber, green,
+    blue or violet. Another colour maps to the nearest hue. The lane lands
+    LAST in the set the project uses. The card names the project that owns
+    that set, because a subproject may inherit its lanes from a parent.
+    Deleting a lane is a guarded act."""
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:
@@ -3713,17 +3721,18 @@ async def create_status(project_id: str, name: str, category: str = "todo", colo
         return f"{data(label)} already exists here. The statuses are: {_names(rows)}."
     payload: dict[str, Any] = {"name": label, "category": cat, "position": _next_position(rows)}
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
     set_of = "this project" if owner.get("owns") else data(owner.get("owner_name"))
     if not await _confirm(
         title="Add this status?",
-        detail=f"{data(label)} [{cat}] in {data(node.get('name'))}",
+        detail=f"{data(label)} in {data(node.get('name'))}",
         context=_fields_block({**payload, "project": data(node.get("name")), "status set": set_of}),
     ):
         return CANCELLED
     row = await post(f"/projects/nodes/{pid}/statuses", payload)
     return (
-        f"Added status {data(row.get('name') or label)} [{row.get('category') or cat}] "
+        f"Added status {data(row.get('name') or label)} "
+        f"(category: {_category_words(row.get('category') or cat)}) "
         f"to {data(node.get('name'))}.\n  status_id: {row.get('id')}"
     )
 
@@ -3739,7 +3748,8 @@ async def update_status(
 ) -> str:
     """Rename, recategorise, recolour or reorder one lane, found by NAME in
     the project's set. Only the arguments you pass change. A rename changes
-    what every task in the lane reads. The card shows before → after."""
+    what every task in the lane reads. color is one of gray, red, amber,
+    green, blue or violet. The card shows before → after."""
     pid, node = await _node(project_id)
     refused = status_edit_refusal(
         (await get(f"/projects/nodes/{pid}/status-set")) or {}, node.get("name")
@@ -3760,7 +3770,7 @@ async def update_status(
         payload["category"] = cat
         before["category"] = row.get("category")
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
         before["color"] = row.get("color")
     if position >= 0:
         payload["position"] = int(position)
@@ -3776,7 +3786,8 @@ async def update_status(
     updated = await patch(f"/projects/statuses/{sid}", payload)
     return (
         f"Updated status {data(updated.get('name') or row.get('name'))} "
-        f"[{updated.get('category') or row.get('category')}].\n  status_id: {sid}"
+        f"(category: {_category_words(updated.get('category') or row.get('category'))}).\n"
+        f"  status_id: {sid}"
     )
 
 
@@ -3794,6 +3805,7 @@ async def create_type(
     start as it. is_epic makes it a top level in the hierarchy rule.
     org_wide=true mints it for every project, and the server decides
     whether the member may. An org-wide type cannot be the default.
+    color is one of gray, red, amber, green, blue or violet.
     Deleting a type is a guarded act; tasks keep existing, untyped."""
     pid, node = await _node(project_id)
     label = str(name or "").strip()
@@ -3807,7 +3819,7 @@ async def create_type(
     if icon.strip():
         payload["icon"] = icon.strip()
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
     if is_default and org_wide:
         # The route's rule (admin.create_type): the default is each project's
         # own choice. Refused here, so the card is not shown for a 422.
@@ -3842,7 +3854,8 @@ async def update_type(
     """Rename, re-icon, recolour a task type found by NAME, make it the
     project's default (make_default=true), or set epic to yes or no. Only
     the arguments you pass change. The Epic system type cannot be renamed
-    or un-flagged; the route says so."""
+    or un-flagged; the route says so. color is one of gray, red, amber,
+    green, blue or violet."""
     pid, node = await _node(project_id)
     rows = await _vocab(pid, "types")
     row = _one_named(rows, type_name, "type")
@@ -3856,7 +3869,7 @@ async def update_type(
         payload["icon"] = icon.strip()
         before["icon"] = row.get("icon")
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
         before["color"] = row.get("color")
     demoted = ""
     if make_default:
@@ -4048,7 +4061,8 @@ async def create_tag(
 ) -> str:
     """Register a tag on the project's root, with a colour and a
     description. A tag typed onto a task registers itself; this is for
-    naming one before it is used, or giving it a colour. org_wide=true
+    naming one before it is used, or giving it a colour (gray, red, amber,
+    green, blue or violet). org_wide=true
     mints it for every project. Deleting a tag is a guarded act."""
     pid, node = await _node(project_id)
     label = str(name or "").strip()
@@ -4060,7 +4074,7 @@ async def create_tag(
     root = await _root_of(pid, node)
     payload: dict[str, Any] = {"name": label}
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
     if description.strip():
         payload["description"] = description.strip()
     if org_wide:
@@ -4082,7 +4096,8 @@ async def update_tag(
 ) -> str:
     """Rename, recolour or describe a tag found by NAME. A rename rewrites
     every task that wears the tag, and the card says how many. Renaming
-    onto an existing tag is refused by the route; merging is a guarded act."""
+    onto an existing tag is refused by the route. color is one of gray, red,
+    amber, green, blue or violet. Merging is a guarded act."""
     pid, node = await _node(project_id)
     row = _one_named(await _vocab(pid, "tags"), tag, "tag")
     gid = uuid_of(str(row.get("id")), "tag_id")
@@ -4092,7 +4107,7 @@ async def update_tag(
         payload["name"] = name.strip()
         before["name"] = row.get("name")
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
         before["color"] = row.get("color")
     if description.strip():
         payload["description"] = description.strip()

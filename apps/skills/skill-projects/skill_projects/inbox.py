@@ -584,7 +584,7 @@ async def save_view(
         shown.update(_config_card(payload["config"]))
     if not await _confirm(
         title="Save this view?",
-        detail=f"{data(label)} [{kind}] in {data(node.get('name'))}",
+        detail=f"{data(label)} in {data(node.get('name'))}",
         context=_fields_block({**shown, "project": data(node.get("name"))}),
     ):
         return CANCELLED

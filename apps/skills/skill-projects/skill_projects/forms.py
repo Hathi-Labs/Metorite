@@ -44,6 +44,7 @@ from acb_common.priority import importance_for, important_from_importance
 
 from skill_projects import choices
 from skill_projects.client import GatewayRefusal, data, get, post, put, uuid_of
+from skill_projects.hues import hue_of
 from skill_projects.priority import (
     card_view,
     flag,
@@ -2057,6 +2058,8 @@ def _vocab_payload(spec: _VocabKind, item: dict[str, Any]) -> dict[str, Any]:
         if key in ("name", "is_epic"):
             continue
         value = str(item.get(key) or "").strip()
+        if key == "color":
+            value = hue_of(value) or ""
         if value:
             payload[key] = value
     if "is_epic" in spec.keys and _yes_no(str(item.get("is_epic") or ""), "is_epic"):

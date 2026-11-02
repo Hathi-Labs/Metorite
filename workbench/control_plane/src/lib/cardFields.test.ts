@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
+import CardFieldValue, { ValueElement } from "@/components/CardFieldValue";
 import ConfirmationCard, { parseCardBody, runKey } from "@/components/ConfirmationCard";
 import {
   CARD_FIELDS,
@@ -182,5 +183,24 @@ describe("the one-card batches (file_tasks, link_tasks_batch, 2026-10-18)", () =
     );
     expect(body.fields.map((f) => f.label)).toEqual(["Destinations", "Cannot move"]);
     expect(body.fields.map((f) => f.values?.length)).toEqual([2, 2]);
+  });
+});
+
+describe("the color kind (PJP-1)", () => {
+  it("the one `color` key draws a swatch for status, tag and type cards alike", () => {
+    expect(fieldSpec("color").kind).toBe("color");
+    const html = renderToStaticMarkup(
+      createElement(ValueElement, { item: { text: "#6366F1", named: true }, kind: "color" }),
+    );
+    expect(visible(html)).toContain("Blue");
+    expect(html).toContain("bg-info");
+  });
+
+  it("draws a hue name as its swatch, and a change as old swatch to new swatch", () => {
+    const html = renderToStaticMarkup(
+      createElement(CardFieldValue, { value: "«gray» → «green»", kind: "color" }),
+    );
+    expect(html.indexOf("Gray")).toBeLessThan(html.indexOf("Green"));
+    expect(html).toContain("bg-success");
   });
 });

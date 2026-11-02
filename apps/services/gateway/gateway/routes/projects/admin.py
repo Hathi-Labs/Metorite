@@ -39,6 +39,7 @@ from gateway.routes.projects.core import (
     can_manage_settings,
     clean_payload,
     count_where,
+    hue_values,
     is_org_wide,
     load_visible_project,
     org_wide_exists,
@@ -48,10 +49,10 @@ from gateway.routes.projects.core import (
     remap_task_statuses,
     require_done_status,
     require_known_tenant,
-    require_same_tenant,
     require_org_vocabulary_edit,
     require_org_vocabulary_write,
     require_row,
+    require_same_tenant,
     resolve_visibility,
     root_project_id,
     router,
@@ -199,7 +200,7 @@ async def create_status(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     assert_can_manage_settings(user)
-    values = clean_payload(payload)
+    values = hue_values(clean_payload(payload))
     name = str(values.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=422, detail="A status needs a name.")
@@ -232,7 +233,7 @@ async def patch_status(
     user: UserContext = Depends(get_current_user),
 ) -> dict:
     assert_can_manage_settings(user)
-    values = clean_payload(payload)
+    values = hue_values(clean_payload(payload))
     validate_choice(values.get("category"), STATUS_CATEGORIES, "status category")
     async with _tenant_session() as db:
         existing = await require_row(db, "pm_task_statuses", status_id, "Status")
@@ -942,7 +943,7 @@ async def create_type(
     project_id: str, payload: TypeIn,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    values = clean_payload(payload)
+    values = hue_values(clean_payload(payload))
     name = str(values.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=422, detail="A task type needs a name.")
@@ -1022,7 +1023,7 @@ async def patch_type(
     type_id: str, payload: TypeIn,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    values = clean_payload(payload)
+    values = hue_values(clean_payload(payload))
     # `scope` selects where a NEW row lands; it is not a column and re-scoping an
     # existing row is not this ticket's (see `refuse_org_wide_write`). Dropped
     # rather than refused: it arrives from a client reusing one form model for
