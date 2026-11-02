@@ -473,6 +473,7 @@ export default function Sidebar() {
       {/* `key` swaps the whole list on a fold, so the new shape fades in while
           the width moves (`.sidebar-swap`), rather than snapping. */}
       <nav
+        data-guide="home.app-list"
         ref={navRef}
         key={collapsed ? "rail" : "full"}
         data-more-below={edges.below ? "" : undefined}

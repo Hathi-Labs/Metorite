@@ -62,6 +62,32 @@
       {
         "href": "/access"
       }
+    ],
+    "anchors": [
+      {
+        "id": "app-list",
+        "label": "App list",
+        "route": "/",
+        "does": "Lists the apps that the company turned on, in the sidebar."
+      },
+      {
+        "id": "ask",
+        "label": "Ask field",
+        "route": "/",
+        "does": "Finds any app or job, or asks a question, from the top bar."
+      },
+      {
+        "id": "my-day",
+        "label": "My Day",
+        "route": "/",
+        "does": "Shows what needs the member today."
+      },
+      {
+        "id": "account-menu",
+        "label": "Account menu",
+        "route": "/",
+        "does": "Opens the member's account menu from the foot of the sidebar."
+      }
     ]
   }
 }

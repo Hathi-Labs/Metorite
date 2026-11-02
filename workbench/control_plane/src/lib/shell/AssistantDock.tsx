@@ -1019,6 +1019,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
     ) : null}
     <section
       ref={rootRef}
+      data-guide="chat.panel"
       data-assistant={st.open ? form : "closed"}
       data-panel-form={motionForm}
       data-panel-phase={phase}

@@ -121,6 +121,11 @@ around"**. "Explore on my own" stays. The dialog stays the one interruption of
 `onboarding.md` P2. The tour starts only from that button, from Help → "Take
 the tour", or from the chat ("give me a tour").
 
+**Before OB-4 and HLP-1 (GD-5a).** The button sits in the founder's welcome
+step of the dialog that exists today. Every member finds "Take the tour" in the
+account menu. Stop 4 rings My Day alone until OB-1b builds the Get started
+card. GD-5b adds the later entries when their slices land.
+
 The tour runs in the side chat. Each stop rings one part of the page, and the
 chat says one or two sentences about it. The chat shows "2 of 5", with Back,
 Next and End tour. The message field stays open the whole time.
@@ -364,7 +369,8 @@ the activation measure of `onboarding.md` §12.9.
 
 Epic: **GD**, Metorite task 1451. Each slice is a task under it. GD-0 to GD-9
 are tasks 1452 to 1461. GD-10a, GD-10b and GD-10c are 1462 to 1464. GD-11,
-GD-12 and GD-13 are 1466 to 1468, and GD-14 is 1465.
+GD-12 and GD-13 are 1466 to 1468, and GD-14 is 1465. GD-5 became GD-5a
+(task 1457) and GD-5b (task 1493) after the audit of 2026-11-02.
 
 The design task 178 closes with this spec.
 
@@ -373,9 +379,10 @@ The design task 178 closes with this spec.
 | **GD-0** | This spec, its decision, the INDEX row and the board row | spec-auditor returns GO. The INDEX lists it | AGENT-SAFE · LOW |
 | **GD-1** | Anchors in the shell manifest, the generator, and `data-guide` on the shell's own parts (§4.1) | F1 passes, and fails on a removed attribute | AGENT-SAFE · LOW |
 | **GD-2** | `GuideSpotlight`: the ring, the popover, and its access rules (§5.3) | A vitest test per rule. Four captures. An e2e test rings an anchor | AGENT-SAFE · MEDIUM |
-| **GD-3** | The guide format, its loader, F2, and the five guides of the tour | F2 passes, and fails on a bad path, anchor or tool | AGENT-SAFE · LOW |
+| **GD-3** | The guide format, its loader, F2, and the tour guide `home.tour`. Its five steps are the five stops of §4.1 | F2 passes, and fails on a bad path, anchor or tool | AGENT-SAFE · LOW |
 | **GD-4** | The runner (§5.3), with the phone strip | vitest per state. An e2e test runs a guide, reloads, and resumes | AGENT-SAFE · MEDIUM |
-| **GD-5** | The first-run tour (§4.1). Needs OB-4 and HLP-1 | An e2e test: a founder and a member each run it. It never starts alone | AGENT-SAFE · MEDIUM |
+| **GD-5a** | The first-run tour (§4.1) before OB-4 and HLP-1: "Show me around" in the founder's welcome step, "Take the tour" in the account menu, `tour_seen_at` in the shell prefs, and `GUIDE_ORGS` on `GET /auth/me/shell` | An e2e test: a founder and a member each run it. It never starts alone. With the flag off, no entry shows | AGENT-SAFE · MEDIUM |
+| **GD-5b** | The later entries: the OB-4 dialog button, the HLP-1 Help row, the Get started card at stop 4 (OB-1b), and "give me a tour" through `show_guide` (GD-7) | Each entry lands when its slice lands. The GD-5a e2e test runs from each entry | AGENT-SAFE · LOW |
 | **GD-6** | Ask during the tour: a question pauses it, and a chip continues it | An e2e test asks at stop 3 and continues to stop 4 | AGENT-SAFE · MEDIUM |
 | **GD-7** | `find_guide` and `show_guide` (§5.4), the persona line, the eval cases | A tool test per refusal. The eval cases pass. An eval over USD 0.50 waits for the owner | AGENT-SAFE · MEDIUM |
 | **GD-8** | Sample values (§5.5), first in the CRM and Projects quick-create forms | A test per form. Save is never pressed. F3 lists the forms | AGENT-SAFE · MEDIUM |
@@ -390,8 +397,8 @@ The design task 178 closes with this spec.
 
 | Wave | Slices | Why |
 |---|---|---|
-| 1. The tour | GD-1, GD-2, GD-3, GD-4, GD-5, with OB-4 and HLP-1 | The owner's first ask. It needs no AI |
-| 2. Ask and show | GD-6, GD-7, GD-8, GD-10a, GD-10b, GD-14 | "How do I" with Show me, in the two apps that new members open first |
+| 1. The tour | GD-1, GD-2, GD-3, GD-4, GD-5a | The owner's first ask. It needs no AI, and it waits on no other workstream |
+| 2. Ask and show | GD-5b, GD-6, GD-7, GD-8, GD-10a, GD-10b, GD-14 | "How do I" with Show me, in the two apps that new members open first. GD-5b adds each entry when its slice lands |
 | 3. Do and practice | GD-9, GD-11, GD-12, GD-13, then GD-10c | Practice needs the runner and the fill hook first |
 
 The guide ships dark behind `GUIDE_ORGS`, a per-organization list like
