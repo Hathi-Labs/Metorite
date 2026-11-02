@@ -132,6 +132,10 @@ not write a second copy of that seam. A bare test file name is under
 5n-1. knowledge_tools.py + knowledge_manifest.py -- `read_page` and `list_spaces` (spec `knowledge_base.md` §8.1). They read `/knowledge` as the run's member and take no SQL.
    - A new Knowledge route needs a row in `acb_common/app_manifests/knowledge.py` (MCP-P1a, D136). `knowledge_manifest.py` re-exports those rows, so the chat and the MCP door read one table. The row names a chat tool or the slice that plans one. It also names a door op, or why the door does not serve the row. `propose_page` and `propose_edit` show one card before they send.
    - Fences: `test_knowledge_tools.py`, `test_knowledge_chat_coverage.py`, `test_kb_proposals.py`.
+5n-2. chat_parity.py -- the ONE parity table of the whole control plane (spec `chat_parity.md`, Metorite task 1238). It is data, and it imports nothing.
+   - Each request of the UI has one row: `COVERED` with a tool, `EXEMPT` with a kind of `EXEMPT_KINDS`, or `DEBT` with a wave. Projects rows stay in `skill_projects.manifest` (F3), and Knowledge rows in its manifest. Do not copy them here.
+   - `DEBT_CEILING` and `UNREAD_CEILING` only go down. Lower a number in the change that pays the debt.
+   - Fence: `test_chat_parity.py`.
 5o. reports.py -- `make_report`, the ONE report tool of the chat (spec `projects_ai_chat.md` §14.10). It keeps no copy of the checks of `documents.py`.
    - `by_code` is the ONE gate of a report that a tool builds from its own reads. Fences: `test_chat_reports.py`, `test_reports_by_code.py`.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox. It is advisory only: it never blocks a write and never raises.
