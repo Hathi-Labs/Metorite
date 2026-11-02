@@ -8,7 +8,9 @@ This file proves:
 - the count: door ops, plus integration tools, plus published workflows,
   with no duplicate id;
 - the class mapping, row by row, and no row of class X;
-- the read takes no org from the request.
+- the read takes no org from the request;
+- B1c: the rows of the caller's own packages (``package_rows``), their class,
+  the ``?app=`` filter, and one statement however many packages exist.
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from gateway.routes.studio import actions, flags
 from gateway.routes.workflows.tools import WorkflowToolSpec, list_tools
+from gateway.studio import packages_store
 
 ORG = str(uuid.uuid4())
 OTHER = str(uuid.uuid4())
@@ -61,6 +64,15 @@ def db(monkeypatch):
         yield fake
 
     monkeypatch.setattr(actions, "_tenant_session", _session)
+    # B1c: the package read is faked here, so these tests see no package row.
+    fake.package_calls = []
+    fake.packages = []
+
+    async def _packages(db, member, *, package_id=None):
+        fake.package_calls.append((member, package_id))
+        return [p for p in fake.packages if package_id in (None, p.id)]
+
+    monkeypatch.setattr(packages_store, "list_package_actions", _packages)
     return fake
 
 
@@ -254,3 +266,168 @@ def test_the_flag_reader_is_per_call(monkeypatch):
     assert flags.studio_allowed(ORG) is False
     _open(monkeypatch, ORG)
     assert flags.studio_allowed(ORG) is True
+
+
+# --- B1c: the rows of the caller's own packages ------------------------------
+
+PKG_A = str(uuid.uuid4())
+PKG_B = str(uuid.uuid4())
+VERBS = {"list": "A", "get": "A", "create": "B", "update": "B", "delete": "C"}
+
+
+def _pkg(pid, objects=(), actions=()):
+    return packages_store.PackageActions(id=pid, objects=tuple(objects), actions=tuple(actions))
+
+
+def _rows(db, monkeypatch, **params):
+    _open(monkeypatch, "*")
+    res = _client().get(URL, params=params)
+    assert res.status_code == 200
+    return [r for r in res.json()["actions"] if r["source"] == "package"]
+
+
+class TestThePackageRows:
+    def test_an_object_gives_five_rows_with_the_class_of_its_verb(self, monkeypatch, db):
+        db.packages = [_pkg(PKG_A, ["items"])]
+        rows = _rows(db, monkeypatch)
+        assert {r["id"]: r["class"] for r in rows} == {
+            f"object:items.{v}": c for v, c in VERBS.items()}
+        assert {r["app"] for r in rows} == {PKG_A}
+        assert all("uses" not in r for r in rows)
+
+    def test_a_stored_object_name_that_a2_refuses_gives_no_row(self, monkeypatch, db):
+        db.packages = [_pkg(PKG_A, ["items", "Items", "x" * 3000, "a.b", "ok_2"])]
+        names = {r["id"].split(":", 1)[1].rsplit(".", 1)[0] for r in _rows(db, monkeypatch)}
+        assert names == {"items", "ok_2"}
+
+    def test_every_row_has_the_shape_of_the_catalog_and_a_named_one_adds_uses(
+            self, monkeypatch, db):
+        db.packages = [_pkg(PKG_A, ["items"], [("peek", "object:items.get", "Peek")])]
+        for r in _rows(db, monkeypatch):
+            assert set(r) - {"uses"} == {"id", "title", "source", "class", "input_schema",
+                                         "output_schema", "connection", "app"}
+
+    def test_a_named_action_is_one_row_with_uses_and_the_class_of_its_target(
+            self, monkeypatch, db):
+        db.packages = [_pkg(PKG_A, [], [("peek", "object:items.get", "Peek it"),
+                                        ("drop", "object:items.delete", None)])]
+        rows = {r["id"]: r for r in _rows(db, monkeypatch)}
+        assert set(rows) == {"peek", "drop"}
+        assert (rows["peek"]["uses"], rows["peek"]["class"], rows["peek"]["title"]) == (
+            "object:items.get", "A", "Peek it")
+        assert (rows["drop"]["class"], rows["drop"]["title"]) == ("C", "drop")
+
+    def test_a_named_action_on_a_catalog_target_takes_the_catalog_class(
+            self, monkeypatch, db):
+        monkeypatch.setattr(actions, "list_tools", lambda: [_tool("zoho.x", read_only=True)])
+        db.packages = [_pkg(PKG_A, [], [("sync", "integration:zoho.x", None)])]
+        rows = _rows(db, monkeypatch)
+        assert [(r["id"], r["uses"], r["class"]) for r in rows] == [
+            ("sync", "integration:zoho.x", "A")]
+
+    def test_a_class_x_target_and_an_action_outside_the_catalog_are_left_out(
+            self, monkeypatch, db):
+        async def _cat():
+            return [{"id": "knowledge.secret", "class": "X", "source": "manifest"},
+                    {"id": "knowledge.list_pages", "class": "A", "source": "manifest"}]
+
+        monkeypatch.setattr(actions, "catalog_rows", _cat)
+        db.packages = [_pkg(PKG_A, [], [
+            ("x", "knowledge.secret", None), ("gone", "knowledge.nothing", None),
+            ("bad", "not an id", None), ("ok", "knowledge.list_pages", None)])]
+        assert [r["id"] for r in _rows(db, monkeypatch)] == ["ok"]
+
+    def test_two_packages_with_one_object_name_give_two_rows_with_different_app(
+            self, monkeypatch, db):
+        db.packages = [_pkg(PKG_A, ["items"]), _pkg(PKG_B, ["items"])]
+        rows = [r for r in _rows(db, monkeypatch) if r["id"] == "object:items.list"]
+        assert {r["app"] for r in rows} == {PKG_A, PKG_B}
+
+    def test_the_app_filter_narrows_to_one_package(self, monkeypatch, db):
+        db.packages = [_pkg(PKG_A, ["items"]), _pkg(PKG_B, ["items"])]
+        _open(monkeypatch, "*")
+        body = _client().get(URL, params={"app": PKG_B.upper()}).json()["actions"]
+        assert {r["app"] for r in body} == {PKG_B}
+        assert len(body) == 5
+        assert db.package_calls[-1][1] == PKG_B
+
+    def test_a_bad_app_filter_is_422_and_reads_nothing(self, monkeypatch, db):
+        _open(monkeypatch, "*")
+        assert _client().get(URL, params={"app": "nope"}).status_code == 422
+        assert db.package_calls == []
+
+    def test_the_member_is_the_caller_and_never_a_query_value(self, monkeypatch, db):
+        db.packages = [_pkg(PKG_A, ["items"])]
+        _rows(db, monkeypatch, member="evil@example.test", owner_email="evil@example.test")
+        assert {m for m, _ in db.package_calls} == {"m@example.test"}
+
+    def test_the_switch_off_reads_no_package(self, monkeypatch, db):
+        _open(monkeypatch, OTHER)
+        assert _client().get(URL, params={"app": "nope"}).status_code == 404
+        assert db.package_calls == []
+
+    def test_no_package_gives_the_old_catalog_unchanged(self, monkeypatch, db):
+        assert _rows(db, monkeypatch) == []
+
+    def test_a_fence_catalog_rows_holds_no_package_row(self, monkeypatch, db):
+        import asyncio
+        import inspect
+
+        db.packages = [_pkg(PKG_A, ["items"], [("peek", "object:items.get", None)])]
+        _open(monkeypatch, "*")
+        rows = asyncio.run(actions.catalog_rows())
+        assert all(r["source"] != "package" for r in rows)
+        assert db.package_calls == []
+        body = inspect.getsource(actions.catalog_rows).split('"""')[2]
+        assert "package_rows" not in body and "packages_store" not in body
+
+
+class _Rows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return self._rows
+
+
+class _StatementDb:
+    def __init__(self, n):
+        self.sql: list[str] = []
+        self.params: list[dict] = []
+        self.n = n
+
+    async def execute(self, stmt, params=None):
+        self.sql.append(str(stmt))
+        self.params.append(params)
+        return _Rows([
+            (str(uuid.uuid4()), ["items"],
+             [{"id": "peek", "uses": "object:items.get", "title": None}])
+            for _ in range(self.n)])
+
+
+class TestThePackageStatement:
+    @pytest.mark.parametrize("n", [1, 5, 60])
+    def test_one_statement_however_many_packages(self, n):
+        import asyncio
+
+        db = _StatementDb(n)
+        out = asyncio.run(packages_store.list_package_actions(db, "Ana@Example.test"))
+        assert len(out) == n
+        assert len(db.sql) == 1
+        assert db.params[0] == {"m": "ana@example.test", "app": None}
+
+    def test_the_statement_binds_the_org_and_the_member_and_loads_no_manifest(self):
+        sql = packages_store._ACTIONS_SQL
+        assert "app.tenant_id" in sql
+        assert "owner_email = :m" in sql
+        assert "format = 'manifest'" in sql
+        assert "SELECT manifest" not in sql
+        assert ", manifest," not in sql
+
+    def test_a_package_id_that_is_not_a_uuid_is_refused_before_a_statement(self):
+        import asyncio
+
+        db = _StatementDb(1)
+        with pytest.raises(packages_store.PackageStoreError):
+            asyncio.run(packages_store.list_package_actions(db, "a@b.test", package_id="x"))
+        assert db.sql == []

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { gatewayFetch, requireIdentity } from "@/lib/gateway";
+import { helperModel } from "@/lib/helperModel";
 
 // Resolves the signed-in member, so it is never statically evaluated.
 export const dynamic = "force-dynamic";
@@ -30,12 +31,13 @@ const LITELLM_BASE_URL =
   "http://127.0.0.1:8080/v1";
 const LITELLM_KEY =
   process.env.LITELLM_MASTER_KEY ?? "";
-// The body sends no `thinking` (task 1128), because `deepseek/deepseek-chat`
-// does not think. Off the Router, the gateway's local `/v1` path forwards named
-// fields only, so the field would reach no model. With the Router on, the
-// gateway forwards the whole body, and the Console filters the field for each
-// step of the chain.
-const COMPACT_MODEL = process.env.SUGGESTION_MODEL ?? "deepseek/deepseek-chat";
+// The default is a TIER name (`tier-fast`), so the Router and the local path
+// both accept it. A bare model id gets a 400 from the Router. The body asks
+// for no thinking (task 1128), because the tier may think. Off the Router,
+// the gateway's local `/v1` path forwards named fields only, so the field
+// reaches no model there. With the Router on, the Console drops the field
+// for each chain step that does not take it.
+const COMPACT_MODEL = helperModel();
 
 /** The answer when no summary came back: nothing is removed. */
 function keepEverything(messages: StoredMessage[], error: string) {
@@ -112,6 +114,7 @@ export async function POST(
       },
       body: JSON.stringify({
         model: COMPACT_MODEL,
+        thinking: { type: "disabled" },
         max_tokens: 1_200,
         temperature: 0.2,
         messages: [

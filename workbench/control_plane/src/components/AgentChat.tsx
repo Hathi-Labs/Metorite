@@ -349,6 +349,9 @@ interface AgentChatProps {
 /** The `answer` of a resolved card that closed with no answer. */
 const CARD_CLOSED_UNANSWERED: ReadonlySet<string> = new Set(["TIMEOUT", "CANCELLED"]);
 
+/** The one line a member reads when compaction fails. Nothing was removed. */
+const COMPACT_FAILED_NOTICE = "Could not shorten this chat. Every message is kept.";
+
 export default function AgentChat({
   agentName,
   sessionId,
@@ -933,8 +936,15 @@ export default function AgentChat({
         // subsumes any earlier checkpoint it contains.
         body: JSON.stringify({ messages: active, keepLast: KEEP_LAST }),
       });
-      const data = (await res.json()) as { messages?: ChatMessage[]; compacted?: boolean };
+      const data = (await res.json().catch(() => ({}))) as {
+        messages?: ChatMessage[]; compacted?: boolean; error?: string;
+      };
       if (forSession !== sessionIdRef.current) return false; // session switched
+      if (!res.ok || data.error) {
+        // The route kept every message. Say so in one plain line (task 1128).
+        setComposerNotice(COMPACT_FAILED_NOTICE);
+        return false;
+      }
       if (!data.compacted || !Array.isArray(data.messages)) return false;
       const summaryMsg = data.messages.find((m) => isCompactionCheckpoint(m));
       if (!summaryMsg) return false;
@@ -947,6 +957,7 @@ export default function AgentChat({
       });
       return true;
     } catch {
+      if (forSession === sessionIdRef.current) setComposerNotice(COMPACT_FAILED_NOTICE);
       return false;
     } finally {
       setCompacting(false);
