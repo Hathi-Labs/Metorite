@@ -807,8 +807,13 @@ async def _execute_run(
     # member. Closed as the last act of the `finally` below. An unresolved
     # member binds nothing, so a manual run keeps its clicker as before.
     from acb_common import job_member_scope
+    from acb_common.no_person import no_person_scope
 
     member_scope = contextlib.ExitStack()
+    # AUTO-7a (`proactive_agent.md` §4.2): nobody watches these kinds. The kind
+    # is a literal of the starting code or the stored run row, never a payload.
+    if trigger_kind in UNATTENDED_TRIGGERS:
+        member_scope.enter_context(no_person_scope())
     billing_member = await _workflow_billing_member(workflow_id)
     if billing_member:
         member_scope.enter_context(
@@ -1225,6 +1230,11 @@ async def resume_run(
     resume past it goes on.
     """
     global _ACTIVE_TOTAL
+    from acb_common.no_person import no_person_present, no_person_refusal
+
+    if no_person_present():  # AUTO-7a: a marked turn resumes nothing.
+        _log.warning("workflows.resume_refused_no_person", run_id=run_id)
+        return no_person_refusal()
     async with _run_session(organization_id) as db:
         run = (
             await db.execute(

@@ -47,13 +47,19 @@ import {
   addAlias,
   addFact,
   areaLabel,
+  chatHref,
   deleteAlias,
+  DELETE_ONE_BODY,
+  deleteAllBody,
+  deleteAllSummaries,
   deleteFact,
+  deleteSummary,
   errorText,
   fallbackAddress,
   fetchBlock,
   fetchExport,
-  fetchProfile,
+  fetchProfileAndGate,
+  fetchSummaries,
   forgetAll,
   mergeAddress,
   mergeStyle,
@@ -64,6 +70,7 @@ import {
   resetArea,
   resetInterview,
   saveAddress,
+  saveKeepSummaries,
   saveLearning,
   saveStyle,
   shortDate,
@@ -72,7 +79,10 @@ import {
   withoutInterview,
   type Address,
   type Alias,
+  type ChatSummary,
   type ProfileBlock,
+  type SummariesPage,
+  type SummaryGate,
   type ExportFormat,
   type Fact,
   type FactKind,
@@ -105,6 +115,26 @@ export interface PaneHandlers {
   onResetArea: (id: InterviewAreaId) => Promise<boolean>;
   /** Ask to reset the whole interview. A confirm dialog follows. */
   onResetInterview: () => void;
+  /** The switch "Keep chat summaries" (PZ-35). */
+  onKeepSummaries: (value: boolean) => Promise<boolean>;
+  /** Ask to delete the summary of one chat. A confirm dialog follows (PZ-35). */
+  onDeleteSummary: (id: string) => void;
+  /** Ask to delete every summary. A confirm dialog follows (PZ-35). */
+  onDeleteAllSummaries: () => void;
+  /** Load the list again after a failed load (PZ-35). */
+  onRetrySummaries: () => void;
+}
+
+/** The list of "Recent chats" (PZ-35). */
+export type SummariesList =
+  | { status: "loading" }
+  | { status: "error"; error: string }
+  | ({ status: "ready" } & SummariesPage);
+
+/** The section "Recent chats": the member's switch and the list (PZ-35). */
+export interface SummariesView {
+  keep: boolean;
+  list: SummariesList;
 }
 
 /** The state of "What the assistant sees" (PZ-20a). */
@@ -136,6 +166,15 @@ export interface AssistantPaneViewProps extends PaneHandlers {
   fallbackName?: { name: string; from: "preferred" | "display" } | null;
   /** "What the assistant sees". Without it, the section does not draw. */
   block?: BlockState;
+  /** "Recent chats". Without it, the section does not draw (the flag is off). */
+  summaries?: SummariesView;
+  confirmDeleteSummaries?: boolean;
+  onCancelDeleteSummaries?: () => void;
+  /** The chat whose summary waits on its confirm, or null. */
+  confirmDeleteSummaryId?: string | null;
+  onCancelDeleteSummary?: () => void;
+  onConfirmDeleteSummary?: () => void;
+  onConfirmDeleteSummaries?: () => void;
 }
 
 const noop = async () => true;
@@ -156,6 +195,10 @@ export const NO_HANDLERS: PaneHandlers = {
   onGetToKnow: () => {},
   onResetArea: noop,
   onResetInterview: () => {},
+  onKeepSummaries: noop,
+  onDeleteSummary: () => {},
+  onDeleteAllSummaries: () => {},
+  onRetrySummaries: () => {},
 };
 
 /** The jump links at the top, and the id each section answers to. */
@@ -169,6 +212,13 @@ const JUMPS = [
   { id: "assistant-block", label: "What it sees" },
   { id: "assistant-download", label: "Download" },
   { id: "assistant-forget", label: "Forget" },
+] as const;
+
+/** The same links with "Recent chats", which draws only with the flag on (PZ-35). */
+const JUMPS_WITH_SUMMARIES = [
+  ...JUMPS.slice(0, 7),
+  { id: "assistant-summaries", label: "Recent chats" },
+  ...JUMPS.slice(7),
 ] as const;
 
 function Section({
@@ -234,6 +284,123 @@ function BlockSection({ block, onRetry }: { block: BlockState; onRetry: () => vo
       <p className="text-xs text-muted-foreground">
         In a chat, the assistant can add one reminder line to this text.
       </p>
+    </Section>
+  );
+}
+
+/** The date of a chat, or "" when the gateway sent none. */
+function chatDate(date: string | null): string {
+  return date ? shortDate(date) : "";
+}
+
+function SummaryRow({ s, v }: { s: ChatSummary; v: AssistantPaneViewProps }) {
+  const busy = v.busy[`summary-${s.id}`];
+  const when = chatDate(s.date);
+  const title = s.title || "Untitled chat";
+  return (
+    <li className="space-y-1.5 rounded-lg border border-border bg-card px-3 py-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <Link href={chatHref(s.id)} className="text-sm font-medium text-foreground underline-offset-2 hover:underline">
+              {title}
+            </Link>
+            {when ? <span>{when}</span> : null}
+          </div>
+          {s.text ? <p className="break-words text-sm text-foreground">{s.text}</p> : null}
+          {s.follow_ups.length > 0 ? (
+            <ul className="list-disc space-y-0.5 pl-4 text-xs text-muted-foreground">
+              {s.follow_ups.map((f) => (
+                <li key={f} className="break-words">
+                  {f}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+        <div className="flex items-center gap-1 sm:shrink-0">
+          <Button
+            size="sm"
+            variant="ghost"
+            icon="Trash2"
+            aria-label={`Delete the summary of ${title}`}
+            loading={busy}
+            disabled={busy}
+            onClick={() => v.onDeleteSummary(s.id)}
+          >
+            Delete
+          </Button>
+        </div>
+      </div>
+      <RowError text={v.errors[`summary-${s.id}`]} />
+    </li>
+  );
+}
+
+/**
+ * "Recent chats" (PZ-35, `personalization.md` §15.5): the switch, and each
+ * summary with Delete. It draws only when the organization has the flag on.
+ */
+function SummariesSection({ view, v }: { view: SummariesView; v: AssistantPaneViewProps }) {
+  const list = view.list;
+  const empty = list.status === "ready" && list.summaries.length === 0;
+  return (
+    <Section
+      id="assistant-summaries"
+      title="Recent chats"
+      description="A short summary of each private chat, so the assistant can pick up where you left off. Other members never see it."
+    >
+      <label className="flex items-start gap-2.5">
+        <Checkbox
+          checked={view.keep}
+          disabled={v.busy.summaries}
+          onChange={(e) => v.onKeepSummaries(e.target.checked)}
+          aria-label="Keep chat summaries"
+        />
+        <span className="space-y-0.5">
+          <span className="block text-sm font-medium text-foreground">Keep chat summaries</span>
+          <span className="block text-xs text-muted-foreground">
+            When this is off, the assistant writes no new summary. The summaries below stay until
+            you delete them.
+          </span>
+        </span>
+      </label>
+      <RowError text={v.errors.summaries} />
+      {list.status === "loading" ? (
+        <div data-testid="assistant-summaries-loading">
+          <SkeletonRows count={2} />
+        </div>
+      ) : list.status === "error" ? (
+        <div role="alert" className="space-y-2 rounded-lg border border-border bg-card p-3">
+          <p className="text-xs text-foreground">The summaries did not load.</p>
+          <p className="text-xs text-muted-foreground">{list.error || "Try again."}</p>
+          <Button size="sm" variant="secondary" icon="RefreshCw" onClick={v.onRetrySummaries}>
+            Retry
+          </Button>
+        </div>
+      ) : empty ? (
+        <p className="text-xs text-muted-foreground">
+          No summaries yet. A summary comes after a private chat has been quiet for a while.
+        </p>
+      ) : (
+        <>
+          <ul className="space-y-2">
+            {list.summaries.map((s) => (
+              <SummaryRow key={s.id} s={s} v={v} />
+            ))}
+          </ul>
+          <Button
+            size="sm"
+            variant="destructive"
+            icon="Trash2"
+            loading={v.busy["summaries-all"]}
+            onClick={v.onDeleteAllSummaries}
+          >
+            Delete all
+          </Button>
+        </>
+      )}
+      <RowError text={v.errors["summaries-all"]} />
     </Section>
   );
 }
@@ -833,7 +1000,7 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
   return (
     <div className="space-y-8">
       <nav aria-label="Sections on this page" className="flex flex-wrap gap-1.5">
-        {JUMPS.map((j) => (
+        {(v.summaries ? JUMPS_WITH_SUMMARIES : JUMPS).map((j) => (
           <Button
             key={j.id}
             size="sm"
@@ -876,6 +1043,7 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
       <InterviewSection p={p} v={v} />
       <AliasesSection p={p} v={v} />
       {v.block ? <BlockSection block={v.block} onRetry={v.onRetryBlock} /> : null}
+      {v.summaries ? <SummariesSection view={v.summaries} v={v} /> : null}
       <Section
         id="assistant-download"
         title="Download my profile"
@@ -906,7 +1074,7 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
       <Section
         id="assistant-forget"
         title="Forget everything"
-        description="Clears every setting, fact and name above at once. You cannot undo this."
+        description="Clears every fact, name and style note above, and every chat summary, at once. The Keep chat summaries switch stays as it is. You cannot undo this."
       >
         <Button variant="destructive" size="sm" icon="Trash2" loading={v.busy.forget} onClick={v.onForget}>
           Forget everything
@@ -916,13 +1084,37 @@ export function AssistantPaneView(v: AssistantPaneViewProps) {
       <ConfirmDialog
         open={v.confirmForget}
         title="Forget everything?"
-        body="The assistant loses every fact, name and style note you set. It cannot be undone."
+        body="The assistant loses every fact, name and style note you set, and every chat summary. The Keep chat summaries switch stays as it is. It cannot be undone."
         confirmLabel="Forget everything"
         confirmVariant="destructive"
         busy={v.busy.forget}
         onConfirm={v.onConfirmForget}
         onCancel={v.onCancelForget}
       />
+      {v.summaries && v.summaries.list.status === "ready" ? (
+        <ConfirmDialog
+          open={!!v.confirmDeleteSummaries}
+          title="Delete all chat summaries?"
+          body={deleteAllBody(v.summaries.list)}
+          confirmLabel="Delete all"
+          confirmVariant="destructive"
+          busy={v.busy["summaries-all"]}
+          onConfirm={v.onConfirmDeleteSummaries ?? (() => {})}
+          onCancel={v.onCancelDeleteSummaries ?? (() => {})}
+        />
+      ) : null}
+      {v.summaries ? (
+        <ConfirmDialog
+          open={!!v.confirmDeleteSummaryId}
+          title="Delete this summary?"
+          body={DELETE_ONE_BODY}
+          confirmLabel="Delete"
+          confirmVariant="destructive"
+          busy={v.confirmDeleteSummaryId ? v.busy[`summary-${v.confirmDeleteSummaryId}`] : false}
+          onConfirm={v.onConfirmDeleteSummary ?? (() => {})}
+          onCancel={v.onCancelDeleteSummary ?? (() => {})}
+        />
+      ) : null}
       <ConfirmDialog
         open={v.confirmResetInterview}
         title="Reset the interview?"
@@ -953,6 +1145,27 @@ export default function AssistantPane() {
   const [fallbackName, setFallbackName] = useState<AssistantPaneViewProps["fallbackName"]>(null);
   const [block, setBlock] = useState<BlockState>({ status: "loading" });
   const [blockTry, setBlockTry] = useState(0);
+  // Recent chats (PZ-35). The gate is what the profile read says, and the list
+  // loads only when the organization has the flag on.
+  const [gate, setGate] = useState<SummaryGate>({ enabled: false, keep: true });
+  const [summaries, setSummaries] = useState<SummariesList>({ status: "loading" });
+  const [summariesTry, setSummariesTry] = useState(0);
+  const [confirmDeleteSummaries, setConfirmDeleteSummaries] = useState(false);
+  const [confirmDeleteSummaryId, setConfirmDeleteSummaryId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (status !== "ready" || !gate.enabled) return;
+    let live = true;
+    fetchSummaries()
+      .then((page) => live && setSummaries({ status: "ready", ...page }))
+      .catch((e) =>
+        live &&
+        setSummaries({ status: "error", error: e instanceof ProfileError ? e.message : errorText("", 502) }),
+      );
+    return () => {
+      live = false;
+    };
+  }, [status, gate.enabled, summariesTry]);
 
   // The text the assistant reads (PZ-20a). It loads again after each change
   // of the profile, so the member sees what a save did. The old text stays
@@ -991,7 +1204,9 @@ export default function AssistantPane() {
   const load = useCallback(async () => {
     setStatus("loading");
     try {
-      setProfile(await fetchProfile());
+      const read = await fetchProfileAndGate();
+      setProfile(read.profile);
+      setGate(read.gate);
       setStatus("ready");
     } catch (e) {
       setLoadError(e instanceof ProfileError ? e.message : errorText("", 502));
@@ -1100,6 +1315,17 @@ export default function AssistantPane() {
         setProfile((p) => (p ? withoutArea(p, id) : p));
       }),
     onResetInterview: () => setConfirmResetInterview(true),
+    onKeepSummaries: (value) =>
+      run("summaries", async () => {
+        await saveKeepSummaries(value);
+        setGate((g) => ({ ...g, keep: value }));
+      }),
+    onDeleteSummary: (id) => setConfirmDeleteSummaryId(id),
+    onDeleteAllSummaries: () => setConfirmDeleteSummaries(true),
+    onRetrySummaries: () => {
+      setSummaries({ status: "loading" });
+      setSummariesTry((n) => n + 1);
+    },
     onRetry: () => void load(),
     onRetryBlock: () => {
       setBlock({ status: "loading" });
@@ -1123,6 +1349,31 @@ export default function AssistantPane() {
       epoch={epoch}
       fallbackName={fallbackName}
       block={block}
+      summaries={gate.enabled ? { keep: gate.keep, list: summaries } : undefined}
+      confirmDeleteSummaryId={confirmDeleteSummaryId}
+      onCancelDeleteSummary={() => setConfirmDeleteSummaryId(null)}
+      onConfirmDeleteSummary={async () => {
+        const id = confirmDeleteSummaryId;
+        if (!id) return;
+        const ok = await run(`summary-${id}`, async () => {
+          await deleteSummary(id);
+          setSummaries((l) =>
+            l.status === "ready" ? { ...l, summaries: l.summaries.filter((x) => x.id !== id) } : l,
+          );
+        });
+        setConfirmDeleteSummaryId(null);
+        if (ok) toast.show({ variant: "success", title: "The summary is deleted" });
+      }}
+      confirmDeleteSummaries={confirmDeleteSummaries}
+      onCancelDeleteSummaries={() => setConfirmDeleteSummaries(false)}
+      onConfirmDeleteSummaries={async () => {
+        const ok = await run("summaries-all", async () => {
+          await deleteAllSummaries();
+          setSummaries((l) => (l.status === "ready" ? { status: "ready", summaries: [], more: false } : l));
+        });
+        setConfirmDeleteSummaries(false);
+        if (ok) toast.show({ variant: "success", title: "The chat summaries are deleted" });
+      }}
       confirmForget={confirmForget}
       onCancelForget={() => setConfirmForget(false)}
       confirmResetInterview={confirmResetInterview}
@@ -1139,6 +1390,8 @@ export default function AssistantPane() {
         const ok = await run("forget", async () => {
           setProfile(await forgetAll());
           setEpoch((n) => n + 1);
+          // Forget clears the summaries and keeps the switch (PZ-35).
+          setSummariesTry((n) => n + 1);
         });
         setConfirmForget(false);
         if (ok) toast.show({ variant: "success", title: "The assistant forgot everything" });

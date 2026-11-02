@@ -51,10 +51,53 @@ export function Card({
   );
 }
 
+/**
+ * The one row of a list with nothing to list: loading, failed or empty
+ * (CRM-U17a). The three share it, so the card keeps one height (M1).
+ */
+export const STATE_ROW =
+  "flex min-h-20 items-center justify-center gap-2 px-4 py-6 text-center text-xs text-muted-foreground";
+
+/**
+ * A vocabulary card that has no rows to draw yet: a loading row, or the
+ * reason of a failed read with Retry (CRM-U17a). It wears the title of the
+ * card it stands in for.
+ */
+export function VocabularyNotice({
+  title,
+  state,
+  error,
+  onRetry,
+}: {
+  title: string;
+  state: "loading" | "failed";
+  error?: string | null;
+  onRetry?: () => void;
+}) {
+  return (
+    <Card title={title}>
+      {state === "loading" ? (
+        <p className={STATE_ROW} role="status">
+          Loading…
+        </p>
+      ) : (
+        <div className={STATE_ROW} role="alert">
+          <span className="text-destructive">{error || "The list did not load."}</span>
+          {onRetry && (
+            <Button size="sm" variant="secondary" onClick={onRetry}>
+              Retry
+            </Button>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 /** A list of names to read: no input, no handle and no delete. */
 export function NameList({ names, empty = "None yet." }: { names: string[]; empty?: string }) {
   if (names.length === 0) {
-    return <p className="px-4 py-3 text-xs text-muted-foreground">{empty}</p>;
+    return <p className={STATE_ROW}>{empty}</p>;
   }
   return (
     <ul className="space-y-0.5 px-4 py-3">
