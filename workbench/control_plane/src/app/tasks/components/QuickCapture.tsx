@@ -689,7 +689,7 @@ function CaptureWhen({
             d.setHours(9, 0, 0, 0);
             onChange(d.toISOString(), kind);
           }}
-          className="rounded-md border border-border bg-background/60 px-2 py-1 text-[11px] text-foreground focus:border-primary/50 focus:outline-none"
+          className="rounded-md border border-border bg-background/60 px-2 py-1 text-[11px] text-foreground focus:border-primary/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
         {kind === "remind" && iso && (
           <input
@@ -703,7 +703,7 @@ function CaptureWhen({
               d.setHours(Number(m[1]), Number(m[2]), 0, 0);
               onChange(d.toISOString(), kind);
             }}
-            className="rounded-md border border-border bg-background/60 px-2 py-1 text-[11px] text-foreground focus:border-primary/50 focus:outline-none"
+            className="rounded-md border border-border bg-background/60 px-2 py-1 text-[11px] text-foreground focus:border-primary/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         )}
       </div>
