@@ -71,7 +71,56 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["publish_reasoning_alias", "reasoning_for_vendor"]
+__all__ = [
+    "REASONING_PARAMS",
+    "publish_reasoning_alias",
+    "reasoning_for_vendor",
+    "reasoning_params_for",
+    "step_takes",
+]
+
+#: The request parameters that control a model's thinking (task 1128).
+REASONING_PARAMS = ("thinking", "reasoning_effort")
+
+
+def step_takes(model: str, param: str) -> bool:
+    """Whether litellm sends *param* to the step model *model* without a 400.
+
+    The Router calls litellm with no ``drop_params``, so a parameter that the
+    model's litellm config does not list raises ``UnsupportedParamsError``.
+    Measured on litellm 1.103.0: DeepSeek takes ``thinking``, and OpenAI,
+    Groq and older Claude and Gemini models refuse it. ``acb_llm/jobs.py``
+    holds the full table per vendor, and the same rule (``model_takes``) for
+    the gateway's direct path. This copy exists because the Console imports
+    no ``acb_*`` package. A model that litellm cannot place reads as False.
+    """
+    try:
+        import litellm
+
+        name, provider, _key, _base = litellm.get_llm_provider(model)
+        supported = litellm.get_supported_openai_params(
+            model=name, custom_llm_provider=provider) or []
+    except Exception:  # a model that litellm cannot place takes nothing
+        return False
+    return param in supported
+
+
+def reasoning_params_for(kwargs: dict[str, Any], model: str) -> dict[str, Any]:
+    """*kwargs* with no reasoning parameter that the step *model* does not take.
+
+    🔴 **Why, task 1128 (2026-10-31).** The gateway asks for no thinking on a
+    short job, because DeepSeek V4 spends a small cap on thinking and answers
+    nothing. The gateway names a TIER, and the chain decides the model. A
+    chain may mix vendors, so a step whose model refuses ``thinking`` would
+    turn a good request into a 400. This drops the parameter for THAT step
+    only. Each step builds its own body, so the next step keeps it.
+
+    Returns *kwargs* itself when nothing is dropped, else a new dict.
+    """
+    drop = [k for k in REASONING_PARAMS if k in kwargs and not step_takes(model, k)]
+    if not drop:
+        return kwargs
+    return {k: v for k, v in kwargs.items() if k not in drop}
 
 #: What DeepSeek calls it, and what it wants back.
 VENDOR_KEY = "reasoning_content"
