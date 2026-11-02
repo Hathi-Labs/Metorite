@@ -279,18 +279,20 @@ show_in_app(path: str, why: str) -> dict
 - **The client** (`useAgentChat.ts`, the `custom` case) emits `onNavigate`
   on `agentEvents`. `AssistantDock.tsx` acts on it, and only while the member
   watches that chat, as it does for a delegation. It checks the path again
-  with `isInAppPath`, pushes the route, and then:
-  - on a desktop, the panel stays. A full view becomes the side panel, as
-    for a delegation. One toast says "Opened Projects · Go back".
-  - ~~on a phone, the sheet drops to the peek strip. The strip's line is
-    `why`. A tap brings the chat back.~~ **Changed by the owner,
-    2026-10-22.** On a phone the run moves no page, for `show_in_app` and
-    for a delegation alike. The chat closed and the app opened while the
-    member still talked, and that was jarring. The sheet stays open. A
-    toast names the page, and its Open button opens it. A link that the
-    member taps still opens its page. `runMovesPage` in
-    `src/lib/shell/assistant.ts` holds the rule, and
-    `src/lib/shell/assistant.test.ts` is the fence.
+  with `isInAppPath`, and pushes the route only beside the side panel.
+  **Changed by the owner, 2026-11-01.** A run moves the page only when the
+  chat is the desktop side panel, for `show_in_app` and for a delegation
+  alike. The full view and a phone keep the chat as it is and move nothing,
+  because the chat reaches the whole app from any form. No toast says
+  anything: "Opened Projects · Go back" covered the chat and confused, and
+  the phone's "Open" toast went with it. A link that the member taps still
+  opens its page. `runMovesPage` in `src/lib/shell/assistant.ts` holds the
+  rule, and `src/lib/shell/assistant.test.ts` is the fence.
+  - ~~on a desktop, a full view becomes the side panel, and one toast says
+    "Opened Projects · Go back".~~ Retired 2026-11-01.
+  - ~~on a phone, the sheet stays open, and a toast offers the page
+    (owner, 2026-10-22).~~ Retired 2026-11-01: the sheet stays open, and
+    nothing is offered.
 - **Once per turn.** A run may call `show_in_app` once per assistant turn.
   A second call in the same turn returns an error to the model and moves
   nothing. A page that jumps twice is a page the member cannot read.
@@ -547,10 +549,11 @@ No server code makes such a link.
    model and sends no event.
 2. A good path sends one `custom` event `navigate` in the parent run's
    stream, through a delegation too.
-3. On a desktop with the assistant open on that chat, the page moves. A full
-   view becomes the panel, and one toast offers "Go back". With the
-   assistant closed, nothing moves.
-4. On a phone, the sheet drops to the strip, and the strip reads `why`.
+3. On a desktop with the side panel open on that chat, the page moves, and
+   no toast shows. The full view stays full and moves nothing. With the
+   assistant closed, nothing moves (owner, 2026-11-01).
+4. On a phone, the sheet stays open, nothing moves, and no toast shows
+   (owner, 2026-11-01).
 5. A second call in one turn moves nothing and returns an error.
 6. A reconnect replay moves nothing.
 
