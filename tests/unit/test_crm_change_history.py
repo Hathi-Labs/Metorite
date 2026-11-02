@@ -121,6 +121,11 @@ PENDING: dict[str, str] = {
     "DELETE /crm/rules/{rule_id}": "a delete; its card says it cannot be undone",
     "PUT /crm/statuses/{kind}/order": "the order of the stages",
     "POST /crm/statuses/{kind}/order/reset": "the order of the stages: reset to Zoho",
+    # Fix round 1: these two were OUT, and the reason was false. With
+    # apply=true the stage import rewrites stage names, places and win
+    # chances. The legacy import makes stages (import_zoho.ensure_status).
+    "POST /crm/import/zoho/stages": "the Zoho stage import: apply=true writes the stages",
+    "POST /crm/import/zoho": "the legacy Zoho import: it makes stages (ensure_status)",
 }
 
 #: Write routes that CRM-M1 never logs, each with the reason.
@@ -132,8 +137,6 @@ OUT: dict[str, str] = {
     "POST /crm/connection/disconnect": "the connection, not a set-up value",
     "POST /crm/sync/zoho": "starts a sync run; it changes no set-up value",
     "POST /crm/analysis/rerun": "starts the analysis; it changes no set-up value",
-    "POST /crm/import/zoho/stages": "the Zoho stage import: dry run by default, an owner gate",
-    "POST /crm/import/zoho": "the legacy Zoho record import",
     "POST /crm/mapping/preview": "a READ ONLY preview; it writes nothing",
     "POST /crm/rules/propose": "holds a rule in Redis; it saves nothing",
     "POST /crm/leads": "a record write",

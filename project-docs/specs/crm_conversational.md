@@ -239,8 +239,9 @@ The table is the list of record. `test_crm_change_history.py` holds the same lis
 | `POST /crm/rules/pending/{id}` | 1 | `rule` | team, or own | Yes. The row says `chat` or `whatsapp`. |
 | Field rules, the conversion map, the field studio, the catalogue, the sync holds, the mapping plans and suggestions, the open questions | 2 | | | Pending. The row of a plan names the plan version. |
 | `DELETE` of a status, a lost reason or a rule, `PUT .../order`, `POST .../order/reset` | 2 | | | Pending. A delete card says "This cannot be undone". |
+| `POST /crm/import/zoho/stages` (the Zoho stage import) and `POST /crm/import/zoho` (the legacy import) | 2 | | | Pending. With `apply=true`, the import of the stages writes their names, places and win chances. The legacy import makes stages through `import_zoho.ensure_status`. PR 2 decides how each one logs. |
 | The cutover (`cutover.py`) and the start over (`POST /crm/reset`) | Out | | | No. Each is one-way and keeps its own audit line. |
-| Connect, disconnect, Sync now, the analysis rerun, the Zoho stage import, the legacy import, the mapping preview, the rule hold | Out | | | They change no set-up value, or they write nothing. |
+| Connect, disconnect, Sync now, the analysis rerun, the mapping preview, the rule hold | Out | | | They change no set-up value, or they write nothing. |
 | Each record write: records, activities, deal contacts, module records, lead convert | Out | | | A record is not the set-up. |
 
 **What no Undo reverses.** The route logs a change of the mode, and no Undo reverses it. The cutover and the start over keep their own audit lines and write no Change history row. An Undo row cannot be undone either. A person makes the change again.
