@@ -1352,6 +1352,45 @@ async def test_4_a_card_answer_after_the_waterline_is_no_new_turn(job) -> None:
     assert len(job.console.calls) == 1, "the handler makes no call"
 
 
+async def test_4_the_first_failed_status_read_ends_the_seed_for_the_tick(job, monkeypatch) -> None:
+    """A slow identity read must cost a tick one read, not one for each
+    member. The seed asks once, stops, and enqueues nothing."""
+    import gateway.my_day_loop as my_day_loop
+
+    asked: list[str] = []
+
+    async def failing(org: str, member: str) -> str | None:
+        asked.append(member)
+        raise my_day_loop.IdentityReadFailed(member)
+
+    monkeypatch.setattr(my_day_loop, "departed", failing)
+    _job_chat(job, org=job.org_a, member=ASHA, newest=T - timedelta(hours=1))
+    _job_chat(job, org=job.org_a, member=RAVI, newest=T - timedelta(hours=2))
+    assert await _tick(job, job.org_a) == Counter()
+    assert asked == [ASHA] and _jobs(job) == []
+
+
+async def test_4_a_chat_with_an_open_run_gets_no_job_and_no_call(job) -> None:
+    """An agent row with no ``run_final_at`` is a run that is still open."""
+    sid, newest = _job_chat(job, org=job.org_a)
+    with job.admin_engine.begin() as c:
+        c.execute(text("UPDATE chat_message SET run_final_at = NULL "
+                       "WHERE session_id = :s AND id = 'a1'"), {"s": sid})
+    assert await _tick(job, job.org_a) == Counter()
+    assert _jobs(job, sid) == []
+    await _put(job, job.org_a, sid, newest, T + timedelta(minutes=15))
+    assert await _tick(job, job.org_a, T + timedelta(minutes=15)) == Counter(done=1)
+    assert job.console.calls == [] and _summary(job, sid) is None
+
+
+async def test_4_a_blank_row_id_gets_no_job(job) -> None:
+    """A row id of spaces would raise in the mark, and each try would fail."""
+    sid, _newest = _job_chat(job, org=job.org_a)
+    _row_at(job, job.org_a, sid, "   ", "user", "Thanks.", T - timedelta(minutes=59))
+    assert await _tick(job, job.org_a) == Counter()
+    assert _jobs(job, sid) == [] and job.console.calls == []
+
+
 async def test_4_a_stored_switch_on_and_no_switch_read_as_on(job) -> None:
     """``apps.chat.summaries`` false turns the member's summaries off (above).
     True and a missing value read as on (PZ-35 declares the key later)."""

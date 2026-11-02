@@ -1056,16 +1056,18 @@ async def read_job_chat(db: Any, session_id: str, *,
     )
 
 
-async def _gone(org: str, member: str) -> bool:
-    """True when *member* left *org* (``my_day_loop.departed``). A failed read
-    skips the member for this tick, and the next tick reads again."""
+async def _gone(org: str, member: str) -> bool | None:
+    """True when *member* left *org* (``my_day_loop.departed``), False when
+    they did not, and None when the read failed. A failed read does not say
+    that they left. The seed stops at it for this tick, so a slow identity
+    read costs a tick one read and not one for each member."""
     from gateway.my_day_loop import departed
 
     try:
         return await departed(org, member) is not None
-    except Exception as exc:  # a failed read does not say that they left
+    except Exception as exc:
         _log.warning("assistant.chat_summary_member_check_failed", error=type(exc).__name__)
-        return True
+        return None
 
 
 async def seed(org: str, now: datetime) -> None:
@@ -1082,7 +1084,8 @@ async def seed(org: str, now: datetime) -> None:
     with the switch on (:func:`member_switches`), the newest short rows hold
     :data:`TYPED_ROWS_MIN` typed rows of the member (:func:`member_texts`),
     and a typed row is after the waterline (:func:`rows_after`). Then
-    ``my_day_loop.departed`` must say that the member did not leave."""
+    ``my_day_loop.departed`` must say that the member did not leave. The first
+    failed read of it ends the loop for this tick (:func:`_gone`)."""
     from acb_common.db import tenant_session
     from acb_llm import routed
 
@@ -1108,7 +1111,9 @@ async def seed(org: str, now: datetime) -> None:
     for chat in found:
         member = _key(chat.user_id)
         newest = str(chat.newest_id)
-        if "@" not in member or not switches.get(member, False) or len(newest) > THROUGH_MAX:
+        # A blank row id would raise in the mark, and each try would fail.
+        if ("@" not in member or not switches.get(member, False) or not newest.strip()
+                or len(newest) > THROUGH_MAX):
             continue
         rows = typed.get(str(chat.id), [])
         if len(member_texts(rows, member)) < TYPED_ROWS_MIN:
@@ -1117,6 +1122,8 @@ async def seed(org: str, now: datetime) -> None:
             continue
         if member not in left:
             left[member] = await _gone(org, member)
+        if left[member] is None:
+            break
         if left[member]:
             continue
         picked.append(chat)
