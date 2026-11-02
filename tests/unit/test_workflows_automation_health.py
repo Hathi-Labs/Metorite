@@ -279,9 +279,9 @@ def test_a_finished_run_reports_its_trigger_kind_to_the_policy(monkeypatch) -> N
     monkeypatch.setattr(service, "execute_workflow", fake_execute_workflow)
     monkeypatch.setattr(service, "_finish_run", fake_finish)
     monkeypatch.setattr(service, "evaluate_automation_health", fake_health)
-    # Two args since WS-27f: the workflow id is bound into the Projects write
-    # seam so a `pm_task` node writes as `system:workflow:<id>`.
-    monkeypatch.setattr(service, "build_node_services", lambda actor, wid="": None)
+    # Three args since H-328: the run binds its workflow id and its org into
+    # the node seams.
+    monkeypatch.setattr(service, "build_node_services", lambda actor, wid, org: None)
     monkeypatch.setattr(service, "publish_workflow_activity", lambda *a, **k: None)
 
     asyncio.run(

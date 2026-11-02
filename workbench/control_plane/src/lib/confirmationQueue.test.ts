@@ -619,3 +619,27 @@ describe("the stack of waiting cards (owner, 2026-10-24)", () => {
     expect(stackBanner(2)).toBe("2 approvals waiting. Swipe or use the arrows to see each one.");
   });
 });
+
+describe("a receipt line drops the «marks» (owner report, 2026-11-02)", () => {
+  it("says a fenced card's values as plain words", async () => {
+    const { receiptLabel, receiptText } = await import("./confirmationQueue");
+    const label = receiptLabel({ title: "Create a space", detail: "«Video and Marketing» under the top level (a new space)", fenced: true });
+    expect(label).toBe("Video and Marketing under the top level (a new space)");
+    expect(receiptText({ key: "k", label, kind: "approved", intent: "approved", afterId: null })).toBe(
+      "Approved · Video and Marketing under the top level (a new space)",
+    );
+  });
+
+  it("keeps an unfenced card's words as they are, and falls back to the title", async () => {
+    const { receiptLabel } = await import("./confirmationQueue");
+    expect(receiptLabel({ title: "Send «this»", detail: "", fenced: false })).toBe("Send «this»");
+    expect(receiptLabel({ title: "«Ventures» under «Video and Marketing»", fenced: true })).toBe("Ventures under Video and Marketing");
+  });
+
+  it("the chat draws every receipt through it", () => {
+    const chat = readFileSync(join(__dirname, "..", "components", "AgentChat.tsx"), "utf8");
+    expect(chat).toContain("label: receiptLabel(card),");
+    expect(chat).not.toContain("label: card.detail || card.title,");
+  });
+});
+
