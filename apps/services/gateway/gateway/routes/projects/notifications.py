@@ -67,8 +67,12 @@ from sqlalchemy import text
 #: question an outside agent asks on a task (`agent_runs.py`, spec
 #: external_agent_access.md §12.1). The actor is the run's `mcp:<slug>`, so
 #: the run's member hears it too.
+#:
+#: `decision` (WS-ALN ALN-2a, the `pm_decisions` migration) is a question with
+#: named options for one named person (`decisions.py`, spec
+#: project_alignment.md §3.2). Only the decider hears it.
 NOTIFICATION_KINDS: tuple[str, ...] = (
-    "assigned", "mention", "comment", "nudge", "agent_question",
+    "assigned", "mention", "comment", "nudge", "agent_question", "decision",
 )
 
 #: How much of a comment a notification quotes. Long enough to know whether it
