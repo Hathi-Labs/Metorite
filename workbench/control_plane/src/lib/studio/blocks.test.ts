@@ -146,16 +146,16 @@ describe("Form: the draft and the value", () => {
 describe("Form: the submit goes through door.run once", () => {
   function slowDoor() {
     const runs: unknown[][] = [];
-    let release: () => void = () => {};
+    const waiting: (() => void)[] = [];
     const door: StudioDataDoor = {
       scope: "t:draft",
       read: async () => [],
       run: (action, args) => {
         runs.push([action, args]);
-        return new Promise((res) => { release = () => res({ ok: true }); });
+        return new Promise((res) => { waiting.push(() => res({ ok: true })); });
       },
     };
-    return { door, runs, release: () => release() };
+    return { door, runs, release: () => { while (waiting.length) waiting.shift()?.(); } };
   }
 
   it("a double submit calls door.run once (M3)", async () => {
