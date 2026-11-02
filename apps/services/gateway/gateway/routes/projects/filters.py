@@ -25,7 +25,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
+from gateway.routes.projects import due_day
 from gateway.routes.projects.core import CLOSING_CATEGORIES, task_visibility_clause, wire
+from gateway.routes.projects.due_day import overdue_sql
 from sqlalchemy import text
 
 #: `pm_task_statuses.category`. Mirrored from the CHECK the migrations leave in
@@ -223,9 +225,9 @@ def parse_when(raw: str, *, field: str) -> datetime:
     and `due_before=tomorrow` deserves to be told so rather than to read as a
     server fault.
 
-    A naive value is taken as UTC. ``due_at`` is a ``timestamptz`` and `overdue`
-    compares against `now()`, so UTC is the frame this module already works in —
-    stated rather than left to whatever the connection's TimeZone happens to be.
+    A naive value is taken as UTC. ``due_at`` is a ``timestamptz``, and UTC is
+    the frame this module works in, stated rather than left to whatever the
+    connection's TimeZone happens to be.
     """
     try:
         parsed = datetime.fromisoformat(raw.strip())
@@ -248,6 +250,7 @@ def build_task_filters(
     assignees: str | None = None,
     unassigned: bool = False,
     overdue: bool = False,
+    day_start: datetime | None = None,
     due_before: str | None = None,
     importance_gte: int | None = None,
     q: str | None = None,
@@ -354,13 +357,16 @@ def build_task_filters(
     if overdue:
         # Overdue means "past due AND still open". A finished task with a past
         # due date is not overdue, it is done — colouring it red forever is how
-        # a board teaches people to ignore red.
+        # a board teaches people to ignore red. The date half is the one
+        # rule (`due_day`): `day_start` is the reader's own, and a caller that
+        # has none reads the UTC day.
         clauses.append(
-            "t.due_at < now() AND NOT EXISTS ("
+            f"{overdue_sql()} AND NOT EXISTS ("
             "  SELECT 1 FROM pm_task_statuses s "
             "  WHERE s.id = t.status_id AND s.category = ANY(:closed))"
         )
         params["closed"] = list(CLOSED_CATEGORIES)
+        params["day_start"] = day_start or due_day.day_start("UTC", datetime.now(UTC))
 
     if due_before:
         clauses.append("t.due_at < :due_before")

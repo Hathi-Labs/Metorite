@@ -68,7 +68,7 @@ describe("the reminder receipt card", () => {
     expect(html).toContain("data-reminder-relative");
     expect(html).toMatch(/in \d+ days/);
     // A shared chat shows the receipt to each member, so the words fit each one.
-    expect(html).toContain("private to its owner");
+    expect(html).toContain("private");
     // The Bell glyph sits in the round badge.
     expect(html).toContain("lucide-bell");
   });

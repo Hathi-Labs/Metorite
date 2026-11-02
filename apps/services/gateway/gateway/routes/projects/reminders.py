@@ -1095,7 +1095,7 @@ CARD_STEPS: tuple[str, ...] = ("fired", "check_back", "gave_up")
 #: takes its `fire_at`.
 _CARDS_SQL = (
     "SELECT r.id, r.title, r.kind, r.state, r.fire_at, r.next_check_at, "
-    "r.cycles, r.important, s.step, s.step_at "
+    "r.cycles, r.important, r.subject_kind, r.subject_id, s.step, s.step_at "
     "FROM reminders r LEFT JOIN LATERAL ("
     "  SELECT e.event AS step, e.at AS step_at FROM reminder_events e "
     "   WHERE e.reminder_id = r.id AND e.event = ANY(CAST(:steps AS text[])) "
@@ -1133,3 +1133,68 @@ async def my_open_cards(
         })).fetchall()
         edge = (await db.execute(text(_EDGE_SQL), {"me": me, "now": now})).scalar()
     return [dict(r._mapping) for r in rows], edge
+
+
+# ── The Reminders band of My Day (RX-3) ────────────────────────────────────
+
+#: Upcoming reminders of the rest of the day that the band reads.
+AHEAD_LIMIT = 10
+#: The longest label of a linked object, in characters.
+SUBJECT_LABEL_MAX = 80
+
+#: The scheduled reminders from now to the end of the member's local day.
+#: Never a needs row: the feed puts them in ``reminders_ahead`` only.
+_AHEAD_SQL = (
+    "SELECT id, title, kind, fire_at, important, subject_kind, subject_id "
+    "FROM reminders WHERE member_email = :me AND state = 'scheduled' "
+    "AND fire_at > :now AND fire_at < :end "
+    "ORDER BY fire_at, created_at, id LIMIT :limit"
+)
+
+
+async def my_day_band(
+    user: Any, *, now: datetime, subjects: list[tuple[str, str, str]],
+) -> dict[str, Any]:
+    """What the Reminders band of My Day needs beyond the open cards (RX-3).
+
+    ``rows`` are my ``scheduled`` reminders from *now* to the end of my
+    local day, soonest first, at most :data:`AHEAD_LIMIT`. ``subjects`` maps
+    a reminder id to its linked object, for these rows and for the fired
+    ones in *subjects* (``(reminder_id, subject_kind, subject_id)``). The
+    label is set only when the member may see the object (``_subject_of``).
+    The flag is the caller's check. One tenant session reads it all.
+    """
+    from types import SimpleNamespace
+
+    from gateway.reminders.context import plain
+    from gateway.reminders.loop import member_day
+
+    me = _member(user)
+    async with _tenant_session() as db:
+        day = await member_day(db, me)
+        local = now.astimezone(day.tz)
+        end = datetime.combine(
+            local.date() + timedelta(days=1), datetime.min.time(), tzinfo=day.tz,
+        )
+        found = (await db.execute(text(_AHEAD_SQL), {
+            "me": me, "now": now, "end": end, "limit": AHEAD_LIMIT,
+        })).fetchall()
+        rows = [{
+            "id": str(r.id), "title": r.title, "kind": r.kind,
+            "fire_at": _iso(r.fire_at), "important": bool(r.important),
+        } for r in found]
+        wanted = list(subjects) + [
+            (str(r.id), r.subject_kind, r.subject_id) for r in found
+            if r.subject_kind and r.subject_id
+        ]
+        labels: dict[str, dict[str, Any]] = {}
+        for rid, kind, sid in wanted:
+            subject = await _subject_of(
+                db, user, SimpleNamespace(subject_kind=kind, subject_id=sid),
+            )
+            if subject is None:
+                continue
+            title = None if subject.hidden or not subject.title else plain(
+                subject.title, SUBJECT_LABEL_MAX)
+            labels[rid] = {"kind": kind, "label": title}
+    return {"rows": rows, "subjects": labels}

@@ -588,6 +588,7 @@ async def _cleanup_thread_drafts(account_id: str, thread_id: str) -> None:
 
 async def _resolve_existing_thread_draft(
     db: Any, provider: Any, account_id: str, thread_id: str,
+    *, trash: bool = True,
 ) -> str:
     """Decide what to do about an existing AI draft before auto-drafting again —
     a port of inbox-zero's handlePreviousDraftDeletion (at most ONE AI draft per
@@ -602,7 +603,11 @@ async def _resolve_existing_thread_draft(
     Unmodified is judged by comparing the live draft mirror against the original
     AI text stored in ``email_ai_drafts`` (the same sync that delivers the new
     inbound message also refreshes the draft mirror, so it is current). Best-effort
-    — returns "none" on any error so drafting still proceeds."""
+    — returns "none" on any error so drafting still proceeds.
+
+    ``trash=False`` only LOOKS: it returns "replace" and trashes nothing. The
+    rule path looks first, builds the new draft, and trashes the old one only
+    after a good new draft exists (task 1128 follow-up)."""
     if not thread_id or not account_id:
         return "none"
     try:
@@ -621,6 +626,8 @@ async def _resolve_existing_thread_draft(
         original = (orig.draft_text if orig else "") or ""
         if original and _normalize_text(row.body_text or "") == \
                 _normalize_text(original):
+            if not trash:
+                return "replace"
             try:
                 await provider.trash_message(row.provider_message_id)
             except Exception:  # noqa: BLE001 — a stuck draft shouldn't abort
@@ -1294,7 +1301,7 @@ async def _llm_draft_reply(
                 raw, _used = await acompletion_stream_text(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
-                    feature="email.draft",
+                    feature="email.draft", job="writing",
                     on_delta=on_delta, **vision_extra,
                 )
         else:
@@ -1302,7 +1309,7 @@ async def _llm_draft_reply(
                 resp, _used = await acompletion_with_fallback(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
-                    feature="email.draft", **vision_extra,
+                    feature="email.draft", job="writing", **vision_extra,
                 )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())
@@ -1510,7 +1517,7 @@ async def _llm_compose_assist(
                 raw, _used = await acompletion_stream_text(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
-                    feature="email.compose_assist",
+                    feature="email.compose_assist", job="writing",
                     on_delta=on_delta,
                 )
         else:
@@ -1518,7 +1525,7 @@ async def _llm_compose_assist(
                 resp, _used = await acompletion_with_fallback(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
-                    feature="email.compose_assist",
+                    feature="email.compose_assist", job="writing",
                 )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())

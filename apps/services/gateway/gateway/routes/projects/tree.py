@@ -73,6 +73,7 @@ from gateway.routes.projects.core import (
     node_level,
     org_groups,
     personal_tree_owner,
+    reader_day_start,
     record_activity,
     record_field_change,
     remap_task_statuses,
@@ -92,6 +93,7 @@ from gateway.routes.projects.core import (
     validate_lifecycle_settings,
 )
 from gateway.routes.projects.notifications import project_audience
+from gateway.routes.projects.due_day import overdue_sql
 from gateway.routes.projects.tasks import _narrow_agent_body
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -739,7 +741,7 @@ async def get_portfolio_summary(
                 f"SELECT t.project_id, s.category, count(*) AS n,"
                 f"       count(*) FILTER ("
                 f"         WHERE t.due_at IS NOT NULL"
-                f"           AND t.due_at < now()"
+                f"           AND {overdue_sql()}"
                 f"           AND s.category <> ALL(CAST(:closed AS text[]))"
                 f"       ) AS overdue"
                 f"  FROM pm_tasks t"
@@ -748,7 +750,8 @@ async def get_portfolio_summary(
                 f"   AND ({task_visibility_clause(vis, 't')})"
                 f" GROUP BY t.project_id, s.category"
             ),
-            {**vis.params, "closed": sorted(CLOSING_CATEGORIES)},
+            {**vis.params, "closed": sorted(CLOSING_CATEGORIES),
+             "day_start": await reader_day_start(db, vis.email)},
         )).fetchall()
 
     totals: dict[str, int] = {}
@@ -855,7 +858,7 @@ def node_counts_sql(visibility_clause: str) -> str:
         # the closed set must not leave this one counting finished work late.
         "       count(*) FILTER ("
         "         WHERE t.due_at IS NOT NULL"
-        "           AND t.due_at < now()"
+        f"           AND {overdue_sql()}"
         "           AND s.category <> ALL(CAST(:closed AS text[]))"
         "       ) AS overdue"
         "  FROM pm_tasks t"
@@ -1006,6 +1009,7 @@ async def get_node_summary(
                 **vis.params,
                 "ids": scope_ids,
                 "closed": sorted(CLOSING_CATEGORIES),
+                "day_start": await reader_day_start(db, vis.email),
             },
         )).fetchall()
 

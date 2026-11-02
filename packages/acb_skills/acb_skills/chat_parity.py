@@ -1037,8 +1037,11 @@ UNREAD_CEILING: dict[str, int] = {
     # The Undo of a profile tool: the verb comes with the card.
     "components/profile/ProfileToolCards.tsx": 1,
     # The reminder chips: `actRequest` returns the url, and the verb is set where it is sent.
-    # RX-2: the Undo of a reminder receipt reads the same way (the fifth, and the
-    # one of `reminderReceipt.ts`).
+    # RX-2 to RX-4 (epic task 1402): Done, Snooze, Later, Undo and Change time
+    # of a reminder go through `postReminder` and `moveRequest`, so the fence
+    # cannot read the verb. Each act has a chat tool: resolve_reminder,
+    # reschedule_reminder and reopen_reminder. The receipt's Change time is the
+    # one of `reminderReceipt.ts`.
     "lib/reminderReceipt.ts": 1,
-    "lib/shell/reminderOpen.ts": 5,
+    "lib/shell/reminderOpen.ts": 8,
 }

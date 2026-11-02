@@ -40,6 +40,21 @@
   **OB-8 (the chat asks a phone member to turn on notifications) is
   BUILT, 2026-10-30, dark** behind `PUSH_PROMPT_ORGS` (§10.4). No box
   has the flag on.
+  **RX-3 (a reminder looks and acts like a reminder in My Day) and RX-4
+  (the push has buttons) are BUILT, 2026-11-02**, under epic task 1402. They
+  are not dark. They draw wherever `CALENDAR_REMINDERS` and the My Day feed
+  are on. See §5.6 "Settled 2026-11-02 (RX-3)" and §5.9 "Settled 2026-11-02
+  (RX-4)".
+  **RX-5 (a due date is a day, and the morning summary push) is BUILT,
+  2026-11-02.** The day rule is not dark: it binds wherever the code ships
+  (§5.11). The push is dark behind `DUE_PUSH_ORGS` (migration 330,
+  `reach/due_push.py`). Repair round 1 (2026-11-02) sent the Tasks date
+  picks and `capture_intake` through the day rule. It also added the shell's
+  zone save and the plan phase of the reminder tick. Repair round 2
+  (2026-11-02) sent a bulk edit, a mail capture and the email date pick through
+  the day rule, and gave the digest the one overdue rule. It also made a
+  replaced push alert (`renotify`), gave a summary a share of the send phase,
+  moved the plan over a long list, and added working days.
 - **Board row:** **WS-CAL**. WS-66 for reminders and web push sits under
   it.
 - **Asked by:** the owner, 2026-10-15. The Calendar must hold more than
@@ -811,6 +826,10 @@ after the review of the Opus reviewer and the verifier. The code is
     `SEND_PHASE_S` (30 s) after the phase starts. A healthy push service
     sends each row in well under a second, so the call starts a few
     seconds after the fire, inside the 90 s.
+  - **The morning summary (RX-5).** A summary shares the tick, so §5.11 caps
+    it: no summary row starts after `SUMMARY_SEND_S` (8 s) of the send phase.
+    The worst wait of a fire is one plan phase, that share, one tick and one
+    plan phase: 10 + 8 + 60 + 10 = 88 s.
 
 **As built (RM-2, 2026-10-25).** The cards come from the feed source
 `reminders` in `routes/shell/feed.py`. Code computes each card from the row
@@ -848,6 +867,44 @@ when the feed reads it, and nothing stores a card.
   version (`cache.bump_member_safe`). After its commit, each answer and each
   move of the member does the same, with the session's org. The next
   `fire_at` or `next_check_at` is the edge of the read cache.
+
+**Settled 2026-11-02 (RX-3).** The owner said that a reminder shows up
+differently than a due task in My Day. A reminder is a moment of the day, not
+a chore. These rules follow.
+
+1. **A Reminders band.** My Day draws a band above the groups of the feed. It
+   holds the reminders that fired and wait on the member, in strong rows.
+   Then it holds today's scheduled reminders in quiet rows. It hides when it
+   has no row. A row shows a Bell glyph and not the Calendar icon. It shows
+   the exact time, the title and the linked object in one line. A
+   check-back row asks "Did you do it?". A quiet row says "Later today" with
+   its time. The band shows five rows, then "Show all". The fired rows come
+   first, so they are never cut by a quiet row.
+2. **Done and Snooze in place.** Each row has both acts. They write the
+   reminder row through `/resolve` and `/snooze`, never the card state. Snooze
+   offers In 1 hour, This evening and Tomorrow morning. A toast offers Undo.
+   The Undo of a done is `/reopen`. The Undo of a snooze is `/reschedule`. A
+   quiet row goes back to its old time. A reminder that waited comes back one
+   minute later, because a past time would fire at once.
+3. **No double listing.** The groups of the feed leave out the three reminder
+   kinds. The card still counts in "N things need you", because a fired
+   reminder needs the member. A quiet row is never a card, a needs row or a
+   count.
+4. **One feed.** The upcoming rows ride in the feed answer as
+   `reminders_ahead`, with `reminder_subjects` for the linked objects. The
+   feed reads them once, beside the state join, in `my_day_band`
+   (`routes/projects/reminders.py`). The read runs only when the `reminders`
+   source answered `ok`. A failed read gives an empty band, and the answer is
+   served and not stored. The bell never runs it.
+5. **The bell.** A fired reminder (`reminder_due`, `reminder_check`) sorts first
+   in the bell, and its row has Done and Snooze too. Before "Show all" the
+   bell shows three reminder rows at most, so the other rows stay in the
+   seven. The server order of `KIND_ORDER` does not change. Only the client
+   groups the kinds first.
+
+Fences: `reminderBand.test.ts`, `reminderActions.test.ts`,
+`remindersBand.test.ts` and `test_shell_feed.py` (`TestTheReminderCards`).
+The real-database cases are in `test_reminder_loop.py` (`test_r8_the_band_*`).
 
 ### 5.7 A tap opens the chat
 
@@ -996,7 +1053,7 @@ is `tests/unit/test_reminder_tools.py`.
   So acting at once loses no authority. `reminder_events` keeps the record
   (`created`, with `source` `chat`). A plain card wrote no row of its own. The
   other member sees the receipt, and Undo and Change time answer 404 for that
-  member, so the card says "private to its owner".
+  member, so the card says "private".
 - **The promote keeps its card.** `promote_reminder` stays class C. It makes a
   task and cannot reopen. The five other tools stay class B in the manifest.
   The fence is `tests/unit/test_reminder_acts_at_once.py`. The pins in
@@ -1118,11 +1175,16 @@ and its item 5 (for reminder pushes, D114.4).
   web notification. So the tap that opens the chat is the one path.
 - **Android.** Push works in Chrome and in the installed app. A notification
   may carry two actions, Done and Later, as a shortcut. The tap still opens
-  the chat.
+  the chat. RX-4 builds the actions, and they read "Done" and "In 1 hour".
 - **Desktop.** Chrome, Edge, Firefox and Safari, from the same toggle.
 - **The service worker.** One file, `public/sw.js`, registered at scope `/`.
   On `push` it shows the notification with a `tag` of the reminder id, so a
-  check-back replaces the first notification and does not stack. On
+  check-back replaces the first notification and does not stack. By the
+  Notifications standard, a replacement makes no sound unless `renotify` is
+  true. So each reminder push and the morning summary carry the `renotify`
+  flag, and the worker passes it on (RX-5, repair round 2). A rare duplicate of
+  a retry then alerts twice, and that is the better fault. A push with no tag
+  never sets it, because `showNotification` throws on `renotify` with no tag. On
   `notificationclick` it focuses an open Metorite window and navigates it,
   or opens a new one at the payload's `url`.
 - **Every notification.** Push is the channel for every card that Reach
@@ -1143,6 +1205,29 @@ and its item 5 (for reminder pushes, D114.4).
   details" covers a shared device. Settled 2026-10-30: RE-9 decision 4 of
   §5.6 holds the rule, and RE-9a builds it.
 
+**Settled 2026-11-02 (RX-4).** The notification has buttons. These rules
+follow.
+
+1. **The payload.** `PushMessage` gains `reminder_id` and `kind`. They hold
+   an id and a card kind, and no text of the reminder. So `hide_push_details`
+   still hides the title, and the payload stays under 600 bytes.
+2. **The buttons.** For `reminder_due` and `reminder_check`, `public/sw.js`
+   adds "Done" and "In 1 hour". A device that allows fewer than two buttons
+   gets none. iOS shows none, and the tap path covers it.
+3. **The click.** A button sends one same-origin `POST` with the session
+   cookie. The path is `/api/projects/my/reminders/<id>/resolve` or
+   `/snooze`. The BFF has no origin check. The session cookie is
+   `SameSite=Lax`, and the request is same-site. A good answer or a 409 ends
+   it. Any other answer opens `/chat?reminder=<id>`, so nothing is lost. This
+   covers a 401 for a signed out session. It covers a 404 for a reminder of
+   another account of the device.
+4. **A plain tap** opens the chat card, as before. The worker has no
+   `fetch` handler. The file changes, so a browser installs it at its next
+   check, and `skipWaiting` makes it live. The repo has no worker version
+   rule.
+
+Fences: `src/lib/pushButtons.test.ts` and `tests/unit/test_reach_push_message.py`.
+
 ### 5.10 What the other docs gain
 
 | Doc | Gains |
@@ -1150,6 +1235,194 @@ and its item 5 (for reminder pushes, D114.4).
 | `chat_run_continuity.md` §S7 | A note: built under WS-66 PN-1. Item 4 grows to every Reach card. Item 5 has the reminder exception of D114.4 |
 | `proactive_reach.md` | `reminder_due`, `reminder_check` and `reminder_unconfirmed` in §4. The D114.3 exception in the budget. RE-9 points at PN-1 |
 | `my_day_feed.md` | The three card kinds |
+
+### 5.11 Due tasks and the morning summary (RX-5)
+
+Owner directive, 2026-11-01. **A due date is a day. A reminder is a moment.**
+A task does not fire at an hour, so a due task gets one morning push and no
+other. This section replaces D-PM-22 of `project_management_app.md`.
+
+**The rule.** A task is overdue when its local due date is before the member's
+local today. A task due today stays due today until that day ends in the
+member's zone, whatever instant the row holds.
+
+- `pm_tasks.due_at` stays one TIMESTAMPTZ. The instant only carries the day.
+- `routes/projects/due_day.py` holds the rule. `is_overdue` is the Python form.
+  `overdue_sql` is the SQL form, `due_at < :day_start`. The two forms are the
+  same test, and `:day_start` is the instant that the reader's today started.
+- A shared count uses the zone of the member who reads it, so a card, a filter
+  and a count agree for that member.
+- The client half is `isOverdue` in `src/lib/taskCard.ts`. It compares the same
+  two local dates. The zone is the browser's, and the browser stores that zone
+  in `user_settings.timezone`.
+
+**The words.** No line names a clock.
+
+- The My Day line reads `Due today.` or `Due tomorrow.` A late task reads
+  `Due yesterday. 1 day late.`
+- A task chip and the WhatsApp views say the day too (`dueLabel`).
+- The source line of a card due today leaves out the state, so the row does
+  not say the words twice.
+- A bell row due today shows no time, because its group heading says the day.
+
+**The group.** A task due today sits in Needs you. It has no `urgent_at`, so
+state rule 4 does not lift it into Now, and it gains no points by the clock. An
+overdue task keeps its `urgent_at`, so it keeps the points of a passed time.
+The order of the needs kinds stays: overdue, approval, due today, notification,
+reply.
+
+**A date with no time.** `personal.stored_due` is the one seam. A date-only
+value becomes noon of that date in the zone of the member who writes. A value
+with a time and an offset stays as it came. So an MCP `due_at` with a time keeps
+it.
+
+A date picker sends the same noon, through `dueInstantForDay`. Quick capture
+sends 09:00 of the picked local day, which is the same day.
+`app/tasks/lib/duePick.test.ts` walks all of `src/`. It refuses a picker that
+parses a date input as midnight UTC. It also refuses a picked value in a due
+key that goes out as it came. The email task pick uses `dueInstantForDay` too, and `dueDayOf`
+reads the instant back into the date input.
+
+`create_task`, `create_tasks`, `update_task`, `create_personal_task`,
+`capture_intake`, `bulk_update` and a mail capture all reach the seam. Their
+routes are `POST /projects/tasks`, `PATCH /projects/tasks/{id}`,
+`POST /projects/my/tasks`, `POST /projects/intake`, organize,
+`POST /projects/tasks/bulk` and `POST /tasks/capture/from-email`.
+`capture_email._draft_due` calls the seam before the parse, so both mail paths
+and a model's date keep the day. `bulk_edit` calls it once, before the first
+task, and it passes the instant to `apply_task_patch`.
+
+The other writers of `pm_tasks.due_at` keep a value that already holds the day:
+
+- A merge takes the earliest instant, and a revert restores an old instant.
+- A recurring successor steps from the old instant, and keeps its hour.
+- A plan from the Tasks planner stores now plus N days, which is the local day
+  of the member who applies it.
+- The importer stores local noon at the offset of the file (`due_instant`).
+- A calendar or timeline drag keeps the local hour of the task.
+
+**The zone.** The member's day needs a saved zone. The shell saves the browser's
+zone once, for a member whose saved zone is the default
+(`lib/shell/saveZone.ts`). So a member who stays on My Day does not stay on UTC.
+"UTC" is the column default, and it is also the answer for a member with no row.
+Any other saved zone stays.
+
+A write that makes the member's row carries the People seed
+(`put_user_settings`, D-PC-16), so the save does not move their day hours. The
+route needs `feature:tasks`, so a member who does not hold it stays on the
+default.
+
+⚠️ That save makes the settings row, and a member with a row no longer follows
+the People seed (D-PC-16). So an HR change of that member's schedule after the
+save does not reach their day hours. The save stays as it is
+(`saveZone.ts`), because a member with no saved zone reads as UTC.
+
+**Where the rule binds.**
+
+- The My Day needs and cards, and the WhatsApp due views.
+- The Overdue filter of the list, the calendar, the export and the dataset.
+- The summaries of a space, a node and "mine".
+- Load, Stuck, Capacity, the dependency conflicts, the candidates and the plan
+  preview.
+- The People dashboard.
+- The client's card, list, detail and Waiting For lines.
+- The email digest and the `promise_due` card. A commitment is a `pm_tasks`
+  row. So `digest._overdue` reads it in the zone of the mailbox owner. The date
+  in the digest is that owner's date.
+- The next occurrence of a recurring task. `next_occurrence` takes the start of
+  the closer's today, so a task closed at 15:00 keeps a successor due that day.
+
+**What stays as it is, and why.**
+
+| Read | Why it stays |
+|---|---|
+| `core._URG` and `priority.ts` `isUrgent` | The D78 urgency window of 48 hours. It says "soon", and it does not say late |
+| `item_lens` upcoming hard dates | A hard date is a fixed appointment of the Calendar, so it is a moment |
+| `analytics_pulse` focus and waiting lines | The report states one UTC day, and its text says so |
+| The UTC day of `analytics_conflicts` and the capacity arithmetic | They place work on a calendar. They do not say that a task is late |
+| `automation.apply_task_patch` for a workflow step | A workflow step has no member, so no member zone exists. A date-only value stays as it came. A member reaches this function only through `bulk_edit`, which calls the seam first |
+| The `legend` of the chat reads (`skill_projects/reads.py`) | It gives the UTC date, because the member's zone costs one more call for each tool. A count in the answer is the member's own, from the server |
+| Rows that chat or a Tasks date picker stored before RX-5 | A row at midnight UTC can be a real time. No backfill guesses. West of UTC such a row reads a day early until somebody edits it |
+| The "Defer until" picks of the Tasks app | A defer date says when a task comes back, so no overdue rule reads it. It stays at midnight UTC |
+| CRM activities, CRM stage limits, Knowledge review dates and Calendar blocks | Each is another object with its own rule |
+
+**The morning summary.** `reach/due_push.py` plans one web push row of the kind
+`due_summary` (migration 330). It says "3 due today, 1 overdue", with the first
+title. A tap opens My Day.
+
+1. **When.** The first tick at or after the member's day start
+   (`day_start_hour`, in the member's zone). A day start missed by more than
+   the TTL of 4 hours plans nothing (`too_late`).
+2. **One for each day.** The key is `due_summary:<member>:<local date>`, under
+   the UNIQUE of `(organization_id, dedupe_key)`, so a retry and a second
+   process plan one row.
+3. **Nothing due.** No row and no push. A Redis mark records the empty read, so
+   a task that lands later that day sends nothing. The mark is a saving and
+   the quiet rule. The key guards a duplicate, also with Redis down.
+   **A working day.** No summary on a day that is not a working day of the
+   member. That is a day off their week (`work_schedule.works_on`). It is also
+   a company holiday of the policy, or a day on leave (`absences.away_rows`,
+   kinds `away` and `holiday`). A `partial` day still counts as work. The next working day's
+   summary lists what is overdue, so nothing is lost. One read serves the whole
+   batch, and a mark quiets the rest of that day. A failed read plans nothing,
+   and a later tick tries again.
+4. **What it reads.** `personal.my_due_rows`, the body of `my_due_tasks`, and
+   `needs.due_kind`, the split of My Day. So the push and My Day agree. A card
+   that the member dismissed on My Day still counts, because the task is due.
+5. **The words.** The title gives the counts. The body gives the first title,
+   then "and 2 more". With `hide_push_details` on, the body is the org name.
+   The outbox holds the fixed text `due_summary`. The send step reads the tasks
+   again, so a task closed since the plan drops out.
+6. **The send.** `send_planned`, `claim_push`, `finish_push` and `push.sender`,
+   with no second path and no ledger row. A member with no device ends as
+   `skipped`, reason `no_device`. The tag `due-summary` never changes, so each
+   day's summary replaces yesterday's on the device. It sets `renotify`, so it
+   still alerts (§5.9).
+7. **Quiet hours.** A row that reaches the send in quiet hours ends as
+   `skipped`, reason `quiet`. It does not wait, so no push goes for that day.
+   Each kind that is not `urgent` follows this rule.
+8. **The order.** The read of planned rows sorts `due_summary` after each
+   reminder kind. So an exact-time reminder never waits behind a summary.
+   **The share.** No summary row starts after `SUMMARY_SEND_S` (8 s) of the send
+   phase, in any org. A row that did not start stays planned, and a later tick
+   sends it. So a morning of 300 members never fills the send phase, and a
+   reminder keeps its 90 s (§5.6). Each tick gives the share to the next org.
+9. **The caps.** It counts against no other cap. The key gives at most one a
+   day.
+10. **The plan phase.** `run_tick` runs the reminder steps of every org first.
+    One plan phase and then the send phase follow. So a morning of summaries
+    never delays a reminder step of another org. `PLAN_PHASE_S` (10 s) bounds
+    the phase, and each tick starts it at the next org. A member with no turn
+    waits for the next tick.
+    **A long list.** One tick plans `PLAN_BATCH` (100) members of an org, and
+    the next tick starts where that batch ended. With Redis down, no read leaves
+    a mark, so the same members come back. Then a tick plans `FAULT_BATCH` (20)
+    members and writes no mark, so each member gets a turn and the phase keeps
+    its time.
+11. **The cost.** A quiet tick costs a few statements: one read of the members,
+    one set read of the People seed and one read of the keys.
+12. **Who.** Each active member who holds `feature:projects`. The org comes from
+    the loop and the member from `app_user`, never from input.
+13. **The flag.** `DUE_PUSH_ORGS`, a comma list of org ids or `*`, default empty.
+    `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` must be on too. A SIGHUP reload
+    applies a change. A flip in production reaches real people, so it is the
+    owner's.
+
+Fences:
+
+- `tests/unit/test_due_day.py` holds the rule. It refuses a new `due_at`
+  compare with the clock in the gateway, in any spelling. It also refuses a
+  Python compare of a value named `due` with `at` or `now`.
+- The same file holds the share of a summary and a list that one member never
+  reaches. It names each caller of `apply_task_patch`.
+- `tests/unit/test_due_push_r8.py` runs the planner and the SQL on a real
+  Postgres. One test ties two routes to the reader's zone.
+- `tests/unit/test_email_digest.py` holds the digest's rule.
+- `tests/unit/test_projects_recurrence.py` holds the next occurrence.
+- `src/lib/taskCard.test.ts` holds the client half.
+- `src/app/tasks/lib/duePick.test.ts` holds the date picks.
+- `src/lib/pushButtons.test.ts` holds `renotify`.
+- `src/lib/shell/saveZone.test.ts` holds the zone save.
 
 ## 6. UI and UX
 
@@ -1333,6 +1606,7 @@ Every flag is OFF by default. Off gives today's behaviour.
 | `CALENDAR_LEAD_TIME` | Gateway | CE-1, CE-6 | The fixed 30 minutes |
 | `CALENDAR_REMINDERS` | Gateway. As for web push, the client has no flag of its own: RM-5 draws reminders only when the reminder routes answer | RM-1 to RM-5 | The reminder routes answer 404. No loop, no cards, no tools, no pins. `/version` carries `calendar_reminders` |
 | `WEB_PUSH_ENABLED` | Gateway. The client has no flag of its own: the Notifications section shows only when `/push/public-key` answers | PN-1, RE-9 | Every `/push` route answers 404, so the section draws nothing, and nothing registers or sends. ✅ ON for every org is approved (D114.8) |
+| `DUE_PUSH_ORGS` | Gateway, a per-org list, or `*` | RX-5 (§5.11) | No morning summary of due tasks. 🔴 A production flip is the owner's |
 | `PUSH_PROMPT_ORGS` | Gateway, a per-org list. The client reads `prompt` in the `/push/public-key` answer | OB-8 (§10.4) | The chat shows no sheet that asks a phone member to turn on notifications |
 | `NEXT_PUBLIC_CALENDAR_COMPOSER` | Control plane | CE-3 | No drag to draw. The Gap Filler as today |
 | `CALENDAR_EVENTS` and `NEXT_PUBLIC_CALENDAR_EVENTS` | Both | CE-4 to CE-9, CE-12 | No events. `/version` carries `calendar_events` |
@@ -1385,6 +1659,7 @@ _DB_GATE`, because `deploy.yml` has no ladder database.
 | **RE-9b** A due reminder sends a real web push — ✅ **BUILT 2026-10-31. Not dark: it sends wherever `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` are on (production: both on)** (AGENT-SAFE, tier HIGH: a migration, and a send to real devices) | After RE-9a and RM-2. It does not wait for RM-2b | §5.6 "Settled 2026-10-30 (RE-9)", decisions 1 to 3, 5 and 6, and the rulings a to k of RE-9b. The migration (`infra/postgres/318_reach_outbox_web_push.sql`, the next free number on 2026-10-31), the classes in `apps/services/gateway/gateway/reach/classes.py`, the plan step and the send step in `apps/services/gateway/gateway/reach/push_channel.py`, the calls from `_fire`, `_check_back` and `_give_up` in `reminders/loop.py`, the per-channel budget, and the R8 acceptance. The plan step takes the session `db` of the loop and writes the row through a new helper in `reach/outbox.py`, with no new `tenant_session` or `get_db` site (R5). The dedupe key is `reminder:<reminder id>:<reminder_events id>`. The send phase of `run_tick` calls the send step after the steps of every org, with no `REACH_*` flag (ruling k). The margin of the 90 s is one tick (`TICK_SECONDS` = 60) plus the send phase (`SEND_PHASE_S` = 30, ruling k). The outbox `body` holds the fixed text "reminder". The caps count `sent` rows on `web_push` for one member and one local date: 10 for `reminder_due`, and `reach_daily_cap` (default 3) for `reminder_check`. **Non-goals:** WhatsApp (D115), the S7 chat events, a new channel setting (RE-7), and any new flag | A frozen-clock R8 test fires a `reminder_due` row and sends one push through a faked `outbound_guard.request_https` within 90 s of `fire_at`. The decrypted payload holds the url `/chat?reminder=<id>`. A hidden-details member gets no title. A replay of the same tick sends once, and two workers send once. The push of the second cycle is sent, because each ledger row gives its own key. The push is sent with `REACH_ENABLED`, `REACH_ORGS` and `REACH_MEMBERS` all off. A done, dropped or moved reminder sends nothing. `reminder_check` and `reminder_unconfirmed` send nothing in quiet hours. The eleventh `reminder_due` of a day sends nothing. A `reminder_check` over the interrupt cap sends nothing, and its card stays in My Day. Push rows do not count in the WhatsApp cap, and `_SENT_SINCE_SQL` counts by channel. The Reach loop and `whatsapp.deliver` never touch a `web_push` row. `plan.on_whatsapp` still removes the three reminder kinds after their class changes. Org B reads nothing of org A | `tests/unit/test_reach_push.py` (new, `pytestmark = _DB_GATE`), `tests/unit/test_reach_plan.py` and `tests/unit/test_reach_loop.py` (the WhatsApp fence). **Verify:** `bash scripts/dev_db.sh`, then `uv run pytest tests/unit/test_reach_push.py tests/unit/test_reach_plan.py tests/unit/test_reach_loop.py tests/unit/test_reach_r8.py tests/unit/test_reminder_loop.py tests/unit/test_reminders_r8.py tests/unit/test_push_subscriptions.py tests/unit/test_reach_push_message.py tests/unit/test_tenancy_boundary.py`. The production flip needs no new owner act (D114.8): an agent flips both flags once each slice passes on dev.metorite.com. The owner checks a real device through the PN-1 HANDOFF item |
 | **RM-4** A tap opens the chat — ✅ **BUILT 2026-10-29, dark** (AGENT-SAFE) | After RM-3 | §5.7: `/chat?reminder=<id>`, the code-built first message, the chips, the `reminder` context block. As built: §5.7 | A tap on a push opens the chat with the reminder message and no model call. Done from a chip ends the reminder and offers Undo | `src/app/chat/reminderOpen.test.ts` (new, `.ts` because vitest runs `*.test.ts` only), `tests/unit/test_reminder_context.py` and `tests/unit/test_reminders_r8.py` |
 | **RM-5** The Calendar UI and the New reminder form — ✅ **BUILT 2026-10-30. It draws wherever `CALENDAR_REMINDERS` is on (production: on). The client has no flag of its own (§9)** (AGENT-SAFE) | After RM-1 | The pin and the Month chip of §6.2. The Reminders panel: Upcoming, Waiting on you, Unconfirmed. **The New reminder form** (owner decision, 2026-10-30, no D-number): a member makes a reminder in the Calendar with no chat. A button in the title bar tools and a button in the panel header open one `Modal` (`src/components/ui/Modal.tsx`) with a title (200 characters at most), a date and a time (the next half hour by default), and a kind (action or notice). The form makes a standalone reminder and sends no subject. The time is read in the browser zone, which is the zone of the grid, and goes out as ISO with the offset beside `tz`. The form does not read `user_settings.timezone`, because it holds "UTC" until the settings load. The form refuses a time at or before now, under its field. A drag of a pin, or Alt+ArrowUp and Alt+ArrowDown (15 minutes of real time), calls `/reschedule` once. The Calendar refuses a drag or a key move to a time at or before now, and a toast says why. A move of a scheduled reminder offers Undo. A "Move to…" item opens the same date and time controls. A move starts the reminder again, so an unconfirmed pin goes back to cycle 0. A tap on a pin or a panel row opens `/chat?do=new-chat&reminder=<id>`. The panel shows in every mode, and a phone opens it as a sheet from the title bar. With the routes at 404 or 403 the Calendar draws no pin, chip, panel or button and shows no error. | A reminder draws as a line with no height and takes no capacity. Drag moves `fire_at`. With the flag off the Calendar draws nothing. The form sends `fire_at` with an offset and `tz`, and the pin shows at that minute. A reminder changes no `leverageStats` | `reminders.test.ts` beside `lib/reminders.ts` (zone to ISO across a clock change, the split by state, the pin, the absent state on a 404, the one-call `/reschedule`), the conformance suite, `uiGates.test.ts`, and a visual review. Non-goals: events, the full Task, Event and Reminder composer (CE-3), the link picker, the `set-reminder` and `new-event` jobs, push (RE-9b), and the bell glyph (RM-5b) |
+| **RX-5** A due date is a day, and the morning summary — ✅ **BUILT 2026-11-02. The rule is live with the code, and the push is dark behind `DUE_PUSH_ORGS`** (migration 330) | Owner directive, 2026-11-01 | §5.11 | A task due today at noon reads Due today at 18:00 local. One push for each member and local day, and none when nothing is due | `test_due_day.py`, `test_due_push_r8.py`, `taskCard.test.ts` |
 | **RM-5b** The bell glyph on Tasks and Projects | After RM-5 | The bell glyph of §6.5 on a Tasks or Projects card, for the member who set the reminder. Split from RM-5 on 2026-10-30 | A linked card shows the glyph to its own member only | A vitest for the card chip, and the conformance suite |
 | **RM-6** Closed by evidence | Later | The linked task goes to done, or the member sends an email on the linked thread. The reminder closes and says so | A done task closes its reminder, with an `evidence` ledger row | `test_reminder_evidence.py` |
 | **RM-7** Conditional follow-ups | Later | "Remind me if Ravi has not replied by Friday". A reply cancels it | An inbound reply before Friday cancels the reminder | `test_reminder_conditions.py` |
