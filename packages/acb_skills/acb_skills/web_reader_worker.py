@@ -87,9 +87,15 @@ CPU_SECONDS = 10
 LANDLOCK_ABI = 1
 
 #: One small page for :func:`_preload`.
-_WARM_HTML = ("<html><head><title>Warm</title></head><body><article><p>"
-              "The reader runs one small page before it reads the real one.</p>"
-              "</article></body></html>")
+_WARM_HTML = (
+    "<html><head><title>Warm-up page</title>"
+    '<meta name="author" content="Reader"><meta name="date" content="2026-01-02">'
+    "</head><body><nav><a href='/'>Home</a><a href='/news'>News</a></nav><article>"
+    "<h1>Warm-up page</h1>"
+    + "<p>The reader runs one page like this before it reads the real page, so each "
+      "module that a normal read needs is loaded inside the confinement.</p>" * 6
+    + "</article><footer>Footer text of the warm-up page.</footer></body></html>"
+)
 
 #: Trafilatura's extensive search takes a year from prose ("founded in 2009")
 #: or from a footer ("(c) 2019") and writes it as ``2009-01-01``. So it is off.
