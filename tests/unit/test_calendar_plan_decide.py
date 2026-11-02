@@ -424,3 +424,7 @@ def test_a_not_today_task_is_marked_and_gets_its_own_reason(monkeypatch):
     assert [b.item_id for b in plan.blocks] == ["t0"]
     assert [(e.item_id, e.reason) for e in plan.evicted] == [
         ("t1", "Not today, by your plan.")]
+    # The note names the plan's choice, never a lack of time. Mutation: put the
+    # one "not enough time" note back, and this fails.
+    assert "not today, by your plan" in (plan.notes or "")
+    assert "not enough time" not in (plan.notes or "")

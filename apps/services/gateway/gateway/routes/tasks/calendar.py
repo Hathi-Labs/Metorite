@@ -396,6 +396,8 @@ DEFAULT_PLANNING_PROMPT = (
 # tests/unit/test_calendar_plan_llm.py and tests/unit/test_tasks_ai_no_thinking.py.
 PLAN_MODEL = "tier-fast"
 PLAN_MAX_TOKENS = 2000
+#: The reason of a block that the plan ruled out for today (task 1338).
+NOT_TODAY_REASON = "Not today, by your plan."
 #: The BFF proxy gives up at 30 s (`api/projects/[...path]/route.ts`). The rank
 #: stops well before that, and the plan falls to the priority order.
 PLAN_RANK_BOUND_S = 20
@@ -941,7 +943,7 @@ async def _replan_core(
         was_scheduled = c["id"] in movable_ids
         if o.get("not_today"):
             # The plan ruled it out for today. Not a lack of time.
-            _miss(c["id"], c["title"], was_scheduled, "Not today, by your plan.")
+            _miss(c["id"], c["title"], was_scheduled, NOT_TODAY_REASON)
             continue
         is_one_thing = c["id"] == one_thing_id
         dur = max(5, int(c["estimate_mins"]))
@@ -988,8 +990,15 @@ async def _replan_core(
     carried_placed = sum(1 for b in blocks if b.carried_over)
     carry_note = (f"Carried {carried_placed} unfinished task(s) forward from an "
                   "earlier day." if carried_placed else None)
-    evict_note = (f"{len(evicted)} block(s) moved back to your list — not enough "
-                  "time." if evicted else None)
+    # A block the plan ruled out for today is no lack of time (task 1338).
+    not_today = sum(1 for ev in evicted if ev.reason == NOT_TODAY_REASON)
+    short = len(evicted) - not_today
+    parts = []
+    if short:
+        parts.append(f"{short} block(s) moved back to your list — not enough time.")
+    if not_today:
+        parts.append(f"{not_today} block(s) moved back to your list — not today, by your plan.")
+    evict_note = " ".join(parts) or None
     return DayPlan(
         blocks=blocks, unplaced=unplaced, evicted=evicted,
         notes=_join_notes(notes, carry_note, lunch_note, template_note,
