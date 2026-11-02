@@ -3,7 +3,7 @@
 > **Product:** Metorite · **Feature:** automations, standing watches and the chase, on a trust ladder · **Updated:** 2026-11-02 · **Owner:** vjvarada
 > **Status:** 📋 **SPEC, FIRST SLICE BUILT.** The first slice of AUTO-2 is merged (PR 1442, migration 313, dark): the run ledger, the incidents and the stall guard. The brief is its only caller. AUTO-3 is decided (D131). H-328 (task 856) is in progress. AUTO-7 is the next slice. AUTO-Q1 is open, and the build runs on its working default (§12).
 > **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §10 was read on that commit. The line numbers of Open Instinct come from a read on 2026-11-02, and no code of it ran.
-> **Board:** WS-AUTO in `work_plan.md` §2.1. **Decision:** D151. D75, D100, D103, D124, D129, D131, D132, D140, D145 and workflows G5 bind it.
+> **Board:** WS-AUTO in `work_plan.md` §2.1. **Decision:** D153. D75, D100, D103, D124, D129, D131, D132, D140, D145 and workflows G5 bind it.
 > **Metorite:** project "Automations", epic 807, this spec task 1396. The slices are AUTO-1 (816), AUTO-4 (817), AUTO-5 to AUTO-10 (1389 to 1394). AUTO-2 is task 814, AUTO-3 is task 815 and AUTO-Q1 is task 1395.
 > **Research first:** the comments "Research notes, 2026-11-02 (Open Instinct)" on epic 807, copied into §8, and the Hermes research of 2026-10-27.
 > **Gate summary:** every slice is AGENT-SAFE. A flag that spends credits stays the owner's flip. A slice that changes what a member sees follows the D145 loop.
