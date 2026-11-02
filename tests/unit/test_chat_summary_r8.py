@@ -656,6 +656,7 @@ RAVI = f"ravi@{JOB_DOMAIN}"  # org A, the other party of a shared room
 KIRAN = f"kiran@{JOB_DOMAIN}"  # org A, the switch "Keep chat summaries" off
 LENA = f"lena@{JOB_DOMAIN}"  # org A, a member who left
 OMAR = f"omar@{JOB_DOMAIN}"  # org B
+UMA = f"uma@{JOB_DOMAIN}"  # org A, "Let the assistant remember" off
 #: The answer of the fake model: the member's own plan and a follow-up.
 SUMMARY = {"text": "Planned the Q3 pricing deck for Priya.",
            "follow_ups": ["Send the deck to Priya by Friday"]}
@@ -786,11 +787,16 @@ def job(graph_as_app, monkeypatch):
         vouch.set(None)
     ns.clock = {"now": T}
     monkeypatch.setattr(chat_summary_job, "_now", lambda: ns.clock["now"])
-    for email in (ASHA, RAVI, KIRAN):
+    for email in (ASHA, RAVI, KIRAN, UMA):
         _identity(ns, email, ns.org_a)
     _identity(ns, LENA, ns.org_a, status="removed")
     _identity(ns, OMAR, ns.org_b)
     _switch(ns, KIRAN, ns.org_a, False)
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO user_settings (organization_id, user_id, assistant_profile) "
+            "VALUES (CAST(:o AS uuid), :u, CAST(:p AS jsonb))"),
+            {"o": ns.org_a, "u": UMA, "p": json.dumps({"v": 1, "learning": False})})
     try:
         yield ns
     finally:
@@ -1231,6 +1237,7 @@ def _no_summary_cases(ns) -> dict[str, tuple[str, str]]:
         "a WhatsApp chat": _job_chat(ns, org=ns.org_a, channel="whatsapp"),
         "an archived chat": _job_chat(ns, org=ns.org_a, archived=True),
         "the switch off": _job_chat(ns, org=ns.org_a, member=KIRAN),
+        "learning off": _job_chat(ns, org=ns.org_a, member=UMA),
         "a member who left": _job_chat(ns, org=ns.org_a, member=LENA),
         "one typed row": _job_chat(ns, org=ns.org_a, typed=1),
         "not idle yet": _job_chat(ns, org=ns.org_a, newest=T - timedelta(minutes=10)),

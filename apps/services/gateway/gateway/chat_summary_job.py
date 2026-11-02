@@ -27,7 +27,9 @@ with the id of a chat of another org finds no row.
    ``off``, the newest row is ``through``, no open run, idle, 2 typed rows of
    the member or more, and a typed row of the member after the waterline. A
    chat that fails one is ``done`` with no call. ``through`` stored already
-   is ``done`` too, and that is what a Delete leaves.
+   is ``done`` too, and that is what a Delete leaves. A member who turned
+   "Let the assistant remember" off gets no new summary (an agent default,
+   D-PZ-36).
 5. ``my_day_loop.departed``. A member who left is ``done``. A failed read
    raises, and the queue tries again, because no mark exists yet.
 6. A mark of ``through`` with no result gives up with ``SummaryUncertain``:
@@ -81,6 +83,7 @@ from gateway.assistant_summaries import (
     JobChat,
     check_answer,
     mark,
+    member_learning_on,
     member_switch_on,
     member_texts,
     member_words,
@@ -178,7 +181,8 @@ def _uncovered(chat: JobChat) -> list[Any]:
     return rows_after(chat.rows, chat.stored.through_ms if chat.stored is not None else None)
 
 
-def _why_not(chat: JobChat | None, through: str, switch: bool, now: datetime) -> str | None:
+def _why_not(chat: JobChat | None, through: str, switch: bool, now: datetime, *,
+             learning: bool = True) -> str | None:
     """Why the chat gets no model call now, or None. Each reason settles the
     job ``done`` with no call and no mark."""
     if chat is None:
@@ -207,6 +211,8 @@ def _why_not(chat: JobChat | None, through: str, switch: bool, now: datetime) ->
         return "nothing_new"
     if not switch:
         return "switch_off"
+    if not learning:
+        return "learning_off"
     return None
 
 
@@ -276,7 +282,8 @@ async def _load(org: str, sid: str, through: str,
     async with tenant_session(org) as db:
         chat = await read_job_chat(db, sid)
         switch = chat is not None and await member_switch_on(db, org, chat.member)
-    why = _why_not(chat, through, switch, now)
+        learning = chat is not None and await member_learning_on(db, org, chat.member)
+    why = _why_not(chat, through, switch, now, learning=learning)
     if why is None and chat is not None:
         from gateway.my_day_loop import departed
 

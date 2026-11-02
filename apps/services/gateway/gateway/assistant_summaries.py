@@ -110,7 +110,11 @@ from acb_common.assistant_profile import (
     needs_confirm,
     sensitive_terms,
     stored_app_prefs,
+    stored_profile,
     typed_text,
+)
+from acb_common.assistant_profile import (
+    READ_SQL as PROFILE_READ_SQL,
 )
 from acb_common.pg_text import storable
 from sqlalchemy import text
@@ -1044,6 +1048,18 @@ async def member_switch_on(db: Any, org: str, member: str) -> bool:
     return switch_on(None if row is None else row[1])
 
 
+async def member_learning_on(db: Any, org: str, member: str) -> bool:
+    """False when *member* turned "Let the assistant remember what I tell it"
+    off (``learning`` of the profile, §7 item 3). Off stops every write, and a
+    summary is a new note about the member, so the seed and the job skip
+    them. The kept summaries stay. This is an agent default that the owner
+    may overrule (§15.11, D-PZ-36). The read is the one profile row read
+    (``assistant_profile.READ_SQL``), and a member with no row has the
+    default, on."""
+    row = (await db.execute(text(PROFILE_READ_SQL), {"org": org, "m": member})).first()
+    return stored_profile(None if row is None else row[0])["learning"] is not False
+
+
 async def member_switches(db: Any, org: str) -> dict[str, bool]:
     """The switch of each ACTIVE member of *org*, by address in lower case
     (``assistant_profile.MEMBERS_APP_SQL``). A member who is not active is
@@ -1117,7 +1133,8 @@ async def seed(org: str, now: datetime) -> None:
     is False: a call off the Router writes no usage row and draws no credit.
 
     A chat gets a job when :data:`IDLE_SQL` selects it, its member is active
-    with the switch on (:func:`member_switches`), the newest short rows hold
+    with the switch on (:func:`member_switches`) and learning on
+    (:func:`member_learning_on`), the newest short rows hold
     :data:`TYPED_ROWS_MIN` typed rows of the member (:func:`member_texts`),
     and a typed row is after the waterline (:func:`rows_after`). Then
     ``my_day_loop.departed`` must say that the member did not leave. The first
@@ -1142,13 +1159,16 @@ async def seed(org: str, now: datetime) -> None:
                 "rows": SEED_ROWS})).all():
             typed.setdefault(str(row.session_id), []).append(row)
         switches = await member_switches(db, org)
+        learns = {member: await member_learning_on(db, org, member)
+                  for member in {_key(c.user_id) for c in found}}
     picked: list[Any] = []
     left: dict[str, bool] = {}
     for chat in found:
         member = _key(chat.user_id)
         newest = str(chat.newest_id)
         # A blank row id would raise in the mark, and each try would fail.
-        if ("@" not in member or not switches.get(member, False) or not newest.strip()
+        if ("@" not in member or not switches.get(member, False)
+                or not learns.get(member, False) or not newest.strip()
                 or len(newest) > THROUGH_MAX):
             continue
         rows = typed.get(str(chat.id), [])
