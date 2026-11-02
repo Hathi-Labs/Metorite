@@ -1044,6 +1044,10 @@ def plan_formulas(rules: Sequence[Rule], object_name: str,
     formulas = [r for r in rules if r.kind == FORMULA]
     if not formulas:
         return None
+    if len(formulas) > MAX_COMPUTED_RULES:
+        raise FormulaError(
+            formulas[0].name, object_name, studio_expr.DECLARATION,
+            f"Object `{object_name}`: at most {MAX_COMPUTED_RULES} formula rules are allowed.")
     try:
         check_formulas(formulas, fields)
     except ConstraintError as exc:

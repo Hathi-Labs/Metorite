@@ -713,6 +713,113 @@ def test_r8_a_forged_stored_formula_that_reads_no_field_refuses_each_write(world
     assert refused.cause.rule == "line_total" and refused.cause.object == "line"
 
 
+def test_r8_a_forged_list_over_the_count_cap_refuses_each_write(world) -> None:
+    """The cap binds a stored list too: 9 valid formulas, each on its own target."""
+    keys = [f"t{n}" for n in range(9)]
+    fields = [{"key": "q", "type": "number"}, {"key": "need", "type": "text", "required": True},
+              *({"key": k, "type": "number"} for k in keys)]
+    rules = [{"name": f"r_{k}", "kind": "formula", "target": k, "rounding": "half_up",
+              "expr": {"fn": "add", "args": [{"ref": "q"}, {"num": "1"}]}} for k in keys]
+
+    async def go() -> tuple[BatchError, BatchError, store.StudioObject]:
+        obj = await _line(world.a, world.pkg_a, rules[:8], name="wide", fields=fields)
+        made = await _make(world.a, obj, q=1)
+        _forge(world, obj, rules)
+        on_create = await _refused(world.a, obj, Write("create", obj.id, data={"need": "x"}))
+        on_update = await _refused(world.a, obj, _set(obj, made.id, q=2))
+        return on_create, on_update, obj
+
+    on_create, on_update, obj = _go(world, go)
+    for refused in (on_create, on_update):
+        assert isinstance(refused.cause, FormulaError) and refused.cause.code == "declaration"
+        assert "at most 8" in str(refused.cause)
+    assert _rows(world, obj) == 1
+
+
+def test_r8_a_rename_and_a_new_message_pass_on_an_object_with_records(world) -> None:
+    async def go() -> tuple[store.StudioObject, store.StudioObject]:
+        obj = await _line(world.a, world.pkg_a, [_TOTAL])
+        await _make(world.a, obj, qty=2, price=3)
+        async with tenant_session(world.a) as db:
+            msg = await store.set_constraints(
+                db, obj.id, [{**_TOTAL, "message": "Line total."}], package_id=world.pkg_a)
+            name = await store.set_constraints(
+                db, obj.id, [{**_TOTAL, "name": "renamed"}], package_id=world.pkg_a)
+        assert msg is not None and name is not None
+        return msg, name
+
+    msg, name = _go(world, go)
+    assert msg.constraints[0].message == "Line total." and name.constraints[0].name == "renamed"
+
+
+def test_r8_a_changed_rounding_or_expr_is_still_refused_with_records(world) -> None:
+    async def go() -> list[str]:
+        obj = await _line(world.a, world.pkg_a, [_TOTAL])
+        await _make(world.a, obj, qty=2, price=3)
+        out = []
+        async with tenant_session(world.a) as db:
+            for changed in ({**_TOTAL, "rounding": "down"},
+                            {**_TOTAL, "expr": {"fn": "add", "args": [{"ref": "qty"},
+                                                                       {"ref": "price"}]}}):
+                with pytest.raises(ConstraintError) as refused:
+                    await store.set_constraints(db, obj.id, [changed], package_id=world.pkg_a)
+                out.append(str(refused.value))
+        return out
+
+    assert all("declare before the first record" in m for m in _go(world, go))
+
+
+def test_r8_a_malformed_stored_formula_is_still_refused_as_new_with_records(world) -> None:
+    async def go() -> str:
+        obj = await _line(world.a, world.pkg_a, [_TOTAL])
+        await _make(world.a, obj, qty=2, price=3)
+        _forge(world, obj, [{**_TOTAL, "expr": {"ref": "qty", "junk": 1}}])
+        async with tenant_session(world.a) as db:
+            with pytest.raises(ConstraintError) as refused:
+                await store.set_constraints(db, obj.id, [_TOTAL], package_id=world.pkg_a)
+        return str(refused.value)
+
+    assert "declare before the first record" in _go(world, go)
+
+
+def test_r8_a_delete_skips_the_formula_plan_and_a_create_and_update_still_fail(world) -> None:
+    """A stored formula that does not fit blocks a create and an update, not a delete.
+    The group floor still runs on the delete."""
+    floor = {"name": "tag_floor", "kind": "group_sum_min", "field": "total",
+             "group_by": ["tag"], "min": 15}
+
+    async def go() -> tuple[BatchError, BatchError, BatchError, store.StudioObject, str]:
+        obj = await _line(world.a, world.pkg_a, [_TOTAL])
+        first = await _make(world.a, obj, tag="a", qty=5, price=2)
+        second = await _make(world.a, obj, tag="a", qty=5, price=2)
+        third = await _make(world.a, obj, tag="a", qty=5, price=2)
+        _forge(world, obj, [{**_TOTAL, "expr": {"ref": "ghost"}}, floor])
+        on_create = await _refused(world.a, obj, Write("create", obj.id, data={"need": "x"}))
+        on_update = await _refused(world.a, obj, _set(obj, first.id, qty=1))
+        done = await _put(world.a, obj, Write("delete", obj.id, third.id))
+        assert done == [True]
+        on_floor = await _refused(world.a, obj, Write("delete", obj.id, second.id))
+        return on_create, on_update, on_floor, obj, second.id
+
+    on_create, on_update, on_floor, obj, second = _go(world, go)
+    for refused in (on_create, on_update):
+        assert isinstance(refused.cause, FormulaError) and refused.cause.code == "declaration"
+    assert isinstance(on_floor.cause, ConstraintViolation) and on_floor.cause.rule == "tag_floor"
+    assert _rows(world, obj) == 2 and _data(world, second)["total"] == 10
+
+
+def test_r8_an_update_that_sends_the_stored_target_value_is_refused(world) -> None:
+    async def go() -> tuple[BatchError, store.Record]:
+        obj = await _line(world.a, world.pkg_a)
+        made = await _make(world.a, obj, qty=2, price=3)
+        assert made.data["total"] == 6
+        return await _refused(world.a, obj, _set(obj, made.id, total=6)), made
+
+    refused, made = _go(world, go)
+    assert isinstance(refused.cause, FormulaError) and refused.cause.code == "computed_field"
+    assert _data(world, made.id)["total"] == 6
+
+
 # -- isolation ---------------------------------------------------------------------------
 
 

@@ -1312,6 +1312,14 @@ def test_a_stored_formula_that_does_not_fit_refuses_the_write() -> None:
     assert info.value.rule == "line_total" and "ghost" in info.value.message
 
 
+def test_a_stored_list_over_the_count_cap_refuses_the_plan() -> None:
+    forged = sr.stored_rules([_formula(name=f"r{n}") for n in range(sr.MAX_COMPUTED_RULES + 1)])
+    with pytest.raises(sr.FormulaError) as info:
+        sr.plan_formulas(list(forged), "po", F7)
+    assert info.value.code == "declaration" and info.value.object == "po"
+    assert "at most 8" in info.value.message
+
+
 @pytest.mark.parametrize("data", [
     {"total": 5}, {"total": None}, {"qty": 1, "total": 7.5}, {"total": "x"}])
 def test_a_key_for_a_target_is_refused_also_with_the_same_value(data: dict[str, Any]) -> None:

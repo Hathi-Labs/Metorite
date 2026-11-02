@@ -111,7 +111,8 @@ read fails closed: each write of its object is refused.
 **The formulas (C7a).** A rule of kind ``formula`` fills one field, its target,
 from the other fields of the same record (``acb_common/studio_expr.py`` holds the
 closed tree, and ``studio_rules.plan_formulas`` checks the formulas of an object
-as a set). :func:`_lock_objects` builds the plan once for each object of a batch,
+as a set). :func:`_lock_objects` builds the plan once for each object of a batch
+that holds a create or an update (a delete computes nothing),
 and a stored formula that does not fit refuses each write. :func:`_apply_write`
 refuses a key for a target (also with the same value), validates the record
 without its targets, and then runs each formula in order of dependency. So
@@ -119,7 +120,8 @@ without its targets, and then runs each formula in order of dependency. So
 ``unique``, a ``group_sum_min`` and a guard of C6 read it. A division by zero, a
 currency mismatch or a result that is too large raises
 :class:`~acb_common.studio_rules.FormulaError`, and the batch writes nothing. A
-declaration of a new or changed formula on an object that holds records is
+declaration of a new formula, or of one with a changed target, expression, scale,
+rounding or currency, on an object that holds records is
 refused (:func:`_check_formulas_first`), because there is no backfill. A removed
 formula leaves its stored values as plain values.
 
@@ -853,7 +855,12 @@ async def drop_object(db: Any, object_id: str) -> bool:
 
 
 def _formula_key(rule: Rule) -> str:
-    return json.dumps(rule.stored(), sort_keys=True, ensure_ascii=False)
+    """What makes a stored result stale: the target, the expression, and the
+    scale, rounding and currency. The name and the message do not, so a rename
+    or a new message passes. Key order does not matter."""
+    stored = rule.stored()
+    kept = {k: stored.get(k) for k in ("target", "expr", "scale", "rounding", "currency")}
+    return json.dumps(kept, sort_keys=True, ensure_ascii=False)
 
 
 async def _check_formulas_first(db: Any, oid: str, old: Sequence[Rule],
@@ -1595,8 +1602,11 @@ def _clean_writes(writes: Any) -> list[Write]:
 async def _lock_objects(db: Any, batch: _Batch) -> None:
     """Step 2. The second statement of each object follows its row lock."""
     first: dict[str, int] = {}
+    writes: set[str] = set()
     for i, step in enumerate(batch.steps):
         first.setdefault(step.object_id, i)
+        if step.op != "delete":
+            writes.add(step.object_id)
     for oid in sorted(first):
         batch.index = first[oid]
         row = (await db.execute(text(_SHARE_OBJECT_SQL), {"oid": oid, "pid": batch.pid})).first()
@@ -1604,8 +1614,9 @@ async def _lock_objects(db: Any, batch: _Batch) -> None:
             raise RecordNotFound("This package holds no such object.")
         fields = await _fields(db, oid)
         rules = stored_rules(_json(row[1]))
-        batch.objects[oid] = _Held(str(row[0]), fields, rules,
-                                   plan_formulas(rules, str(row[0]), fields))
+        # A delete computes nothing, so only a create or an update builds the plan.
+        plan = plan_formulas(rules, str(row[0]), fields) if oid in writes else None
+        batch.objects[oid] = _Held(str(row[0]), fields, rules, plan)
 
 
 async def _lock_records(db: Any, batch: _Batch) -> None:
