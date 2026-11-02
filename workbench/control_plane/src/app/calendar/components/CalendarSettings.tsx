@@ -167,6 +167,7 @@ export function CalendarSettings({
               widthClass="w-44"
               filterAbove={8}
               layer="top"
+              align="end"
             />
           </div>
           <p className="mb-2 text-[10px] text-muted-foreground">

@@ -118,6 +118,23 @@ class TestPut:
         assert res.status_code == 422, res.text
         assert fake.sql == []
 
+    @pytest.mark.parametrize("where", ["query", "header"])
+    def test_a_member_named_outside_the_session_changes_nothing(
+            self, fake: _FakeDB, where: str) -> None:
+        """The route reads the member from the session only (R5). A query
+        value or a header that names another member must not move the write.
+        Mutation: take the member from the query, and this fails."""
+        other = "someone@else.example"
+        kwargs: dict[str, Any] = {"json": {"timezone": "Asia/Kolkata"}}
+        if where == "query":
+            kwargs["params"] = {"user_id": other, "email": other, "member": other}
+        else:
+            kwargs["headers"] = {"X-User-Email": other, "X-Member": other}
+        res = _client(_user("ana@alpha.example")).put("/auth/me/zone", **kwargs)
+        assert res.status_code == 200, res.text
+        [(_, params)] = _writes(fake)
+        assert params["uid"] == "ana@alpha.example"
+
     def test_a_failed_write_is_a_503(self, fake: _FakeDB) -> None:
         fake.fail = True
         res = _client(_user()).put("/auth/me/zone", json={"timezone": "Asia/Kolkata"})
