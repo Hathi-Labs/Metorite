@@ -323,7 +323,7 @@ def annotate(
     tool's name on its list and its pinned parameters. The key is set only
     when it is true, so every other tool's hints stay as they were.
 
-    ``card_write`` (RX-1, D151) marks a first-party write that always shows
+    ``card_write`` (RX-1, D162) marks a first-party write that always shows
     its exact change on one card. The mark alone keeps nothing in a held
     chat: ``egress.is_held_card_write`` also needs the tool's name on its
     list and its pinned parameters.

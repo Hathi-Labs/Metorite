@@ -5010,7 +5010,7 @@ decision inside D86, after review: the control fails closed.
   depth, binds `no_egress=True` in its artifact context. Such a run holds
   only three kinds of tool: the platform's own four delegation tools, the
   sandbox tools, and tools whose annotation says `open_world=False`
-  explicitly. Each card-bound send joins them. Outside this chain, D151
+  explicitly. Each card-bound send joins them. Outside this chain, D162
   adds the listed first-party writes, each behind its own card. A covered run
   and each run under it keep this rule.
 - **A tool with no annotation is an egress tool.** So is a tool whose

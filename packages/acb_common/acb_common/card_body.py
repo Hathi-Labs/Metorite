@@ -6,7 +6,7 @@ body that was too long, from its tail, as one string. So a long description took
 every line after it. An ``update_project`` with 4100 characters of description
 drew no ``status`` line and no ``lead`` line, and the write sent both (RX-1).
 
-D151 rests on one promise: the member's click on a server-built card is the
+D162 rests on one promise: the member's click on a server-built card is the
 guard, so the card must show the exact change. The rule lives here, once:
 
 1. A short field shows first, and it is never cut. :data:`LONG_TEXT_KEYS` names

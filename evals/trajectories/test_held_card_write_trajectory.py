@@ -1,4 +1,4 @@
-"""Golden trajectory: a chat that read mail still sets the reminder (RX-1, D151).
+"""Golden trajectory: a chat that read mail still sets the reminder (RX-1, D162).
 
 Owner report of 2026-11-01. In one chat the owner read mail, sent mail, and said
 "Remind me to call Rajendra". The chat refused, and it named a new chat. This

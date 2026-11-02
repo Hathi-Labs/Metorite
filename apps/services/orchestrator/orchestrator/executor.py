@@ -2616,7 +2616,7 @@ async def _run_sub_agent_streaming(
     # binding, and bound at once, so no later path reads the parent's frame.
     _parent_ctx_sub = artifact_context()
     _sub_no_egress = _run_no_egress(agent_name, _parent_ctx_sub)
-    # RX-1 (D151): a covered run keeps H-236 as it was, down the whole chain.
+    # RX-1 (D162): a covered run keeps H-236 as it was, down the whole chain.
     _sub_cover = _covered_chain(agent_name, _parent_ctx_sub)
     _sub_marked = await _chat_marked(_parent_ctx_sub)
     # WS-67 OA-7c: a delegated run never inherits the run key or the record of
@@ -4955,7 +4955,7 @@ async def _run_agent_inner(
                       or _run_covered(agent_name, organization_id))
     else:
         _no_egress = _run_no_egress(agent_name, _parent_ctx, organization_id)
-    # RX-1 (D151): a covered run keeps H-236 as it was, down the whole chain.
+    # RX-1 (D162): a covered run keeps H-236 as it was, down the whole chain.
     _cover = _covered_chain(agent_name, _parent_ctx, organization_id)
     _marked = await _chat_marked(
         {**dict(_parent_ctx), "session_id": _parent_ctx.get("session_id") or thread_id,
@@ -6058,7 +6058,7 @@ async def run_agent_stream(
     from acb_skills.write_artifact import artifact_context as _ctx_now
     from acb_skills.write_artifact import derive_artifact_context as _derive_ctx
     _stream_no_egress = _run_no_egress(agent_name, _ctx_now(), organization_id)
-    # RX-1 (D151): a covered run keeps H-236 as it was, down the whole chain.
+    # RX-1 (D162): a covered run keeps H-236 as it was, down the whole chain.
     _stream_cover = _covered_chain(agent_name, _ctx_now(), organization_id)
     _stream_marked = await _chat_marked(
         {**dict(_ctx_now()), "session_id": thread_id or run_id, "batch_thread": _batch_thread},

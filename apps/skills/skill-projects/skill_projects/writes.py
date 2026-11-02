@@ -372,7 +372,7 @@ async def _resolve_status(project_id: str, status: str) -> dict[str, Any]:
 
 #: H-236: the refusal of an agent assignee in a run that may not send. Such a
 #: run holds for member data of a sandboxed turn, or for mail that a stranger
-#: wrote, so the text claims neither cause. D151 item 7: it names the act and
+#: wrote, so the text claims neither cause. D162 item 7: it names the act and
 #: the reason, and it sends the member to no app and no new chat.
 AGENT_ASSIGNEE_REFUSED = (
     "This chat cannot assign a task to an agent now. An assigned agent starts a "

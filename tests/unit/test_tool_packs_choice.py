@@ -1586,7 +1586,7 @@ async def test_a_crm_write_through_the_real_assembly_shows_one_card_and_one_gate
 async def test_a_crm_write_after_mail_in_the_same_turn_shows_its_one_card(
     store, orchestrator, monkeypatch,
 ) -> None:
-    """RX-1 (D151). The chat read mail after the pack was built (the pack builds
+    """RX-1 (D162). The chat read mail after the pack was built (the pack builds
     open). The write stays, because the member's click on its own card is the
     guard: one card, no untrusted card, one post. Mutation: take ``create_lead``
     off ``HELD_CARD_WRITE_TOOLS`` -> the held answer and no card -> red."""
