@@ -108,6 +108,8 @@ from orchestrator._tool_injection import (
     _count_agent_tools,
     _log_agent_tools_resolved,
     _build_registry_block,
+    _chat_marked,
+    _covered_chain,
     _gate_injected_tool,
     _held_tool_names,
     _host_shell_refused,
@@ -2621,12 +2623,15 @@ async def _run_sub_agent_streaming(
     # binding, and bound at once, so no later path reads the parent's frame.
     _parent_ctx_sub = artifact_context()
     _sub_no_egress = _run_no_egress(agent_name, _parent_ctx_sub)
+    # RX-1 (D169): a covered run keeps H-236 as it was, down the whole chain.
+    _sub_cover = _covered_chain(agent_name, _parent_ctx_sub)
+    _sub_marked = await _chat_marked(_parent_ctx_sub)
     # WS-67 OA-7c: a delegated run never inherits the run key or the record of
     # its parent's packs, so its own hand-offs are never refused for them.
     # OA-9c: a spawn child takes the key of its own pack tools instead.
     derive_artifact_context(
-        no_egress=_sub_no_egress, **_without_pack_keys(agent_name),
-        **_without_job_key(agent_name),
+        no_egress=_sub_no_egress, covered_chain=_sub_cover, chat_marked=_sub_marked,
+        **_without_pack_keys(agent_name), **_without_job_key(agent_name),
     )
     _sub_calls: list[dict[str, Any]] = []
 
@@ -2734,7 +2739,7 @@ async def _run_sub_agent_streaming(
                 if hasattr(loaded, "config") else None,
             )
             # CRM-C7: no CRM record write in Mirror mode, read as the member.
-            await _drop_mirror_record_writes(agents, no_egress=_sub_no_egress)
+            await _drop_mirror_record_writes(agents)
             _sub_own_tools = _count_agent_tools(agents)  # WS-8o
             _sub_run_tools = _inject_agent_tools(
                 agents,
@@ -2850,6 +2855,8 @@ async def _run_sub_agent_streaming(
                 # H-236: set from the parent's binding, never cleared here.
                 # The batch run of a MAF sub-agent reads it as its parent.
                 no_egress=_sub_no_egress,
+                covered_chain=_sub_cover,
+                chat_marked=_sub_marked,
                 # The chat that asked. The batch run of a MAF sub-agent
                 # passes it on (``delegation_target``).
                 deliver_to=_deliver_to,
@@ -4764,7 +4771,7 @@ async def _assemble_batch_agents(
         agents, loaded.config.get("own_tool_scope") or None,
     )
     # CRM-C7: no CRM record write in Mirror mode, read as the member.
-    await _drop_mirror_record_writes(agents, no_egress=no_egress)
+    await _drop_mirror_record_writes(agents)
     own_tools = _count_agent_tools(agents)  # WS-8o
     run_tools = _inject_agent_tools(
         agents,
@@ -4955,7 +4962,12 @@ async def _run_agent_inner(
                       or _run_covered(agent_name, organization_id))
     else:
         _no_egress = _run_no_egress(agent_name, _parent_ctx, organization_id)
-    derive_artifact_context(no_egress=_no_egress)
+    # RX-1 (D169): a covered run keeps H-236 as it was, down the whole chain.
+    _cover = _covered_chain(agent_name, _parent_ctx, organization_id)
+    _marked = await _chat_marked(
+        {**dict(_parent_ctx), "session_id": _parent_ctx.get("session_id") or thread_id,
+         "batch_thread": _batch_thread}, organization_id)
+    derive_artifact_context(no_egress=_no_egress, covered_chain=_cover, chat_marked=_marked)
     # WS-17 EM-G11f3: the batch twin of the mark in _run_sub_agent_streaming.
     await _mark_untrusted_session(agent_name, _parent_ctx)
     # WS-45 S4: a covered batch run has its own tier policy (below). Its
@@ -5285,6 +5297,8 @@ async def _run_agent_inner(
                 # H-236: a delegated run of a covered parent sends nothing
                 # off the platform. Its own delegations inherit this.
                 no_egress=_no_egress,
+                covered_chain=_cover,
+                chat_marked=_marked,
                 # The chat that asked, for a delegated run.
                 **({"deliver_to": _deliver_to} if _deliver_to is not None else {}),
                 # WS-45 S4: the System-1 threshold of a covered run follows
@@ -6051,7 +6065,13 @@ async def run_agent_stream(
     from acb_skills.write_artifact import artifact_context as _ctx_now
     from acb_skills.write_artifact import derive_artifact_context as _derive_ctx
     _stream_no_egress = _run_no_egress(agent_name, _ctx_now(), organization_id)
-    _derive_ctx(no_egress=_stream_no_egress)
+    # RX-1 (D169): a covered run keeps H-236 as it was, down the whole chain.
+    _stream_cover = _covered_chain(agent_name, _ctx_now(), organization_id)
+    _stream_marked = await _chat_marked(
+        {**dict(_ctx_now()), "session_id": thread_id or run_id, "batch_thread": _batch_thread},
+        organization_id)
+    _derive_ctx(
+        no_egress=_stream_no_egress, covered_chain=_stream_cover, chat_marked=_stream_marked)
     if _stream_no_egress:
         _remember_no_egress_run(run_id)
     # WS-67 OA-7c (§4.2.2): layer (a) of the tool packs. The read of the
@@ -6237,9 +6257,7 @@ async def run_agent_stream(
                 agents, loaded.config.get("own_tool_scope") or None,
             )
             # CRM-C7: no CRM record write in Mirror mode, read as the member.
-            await _drop_mirror_record_writes(
-                agents, no_egress=_stream_no_egress,
-            )
+            await _drop_mirror_record_writes(agents)
             _laps.lap("crm_mirror")
             _own_tools = _count_agent_tools(agents)  # WS-8o
             _run_tools = _inject_agent_tools(
@@ -6382,6 +6400,8 @@ async def run_agent_stream(
                 # bind True for itself: its delegations compute it from
                 # covers(), and the sandbox middleware withholds its own.
                 no_egress=_stream_no_egress,
+                covered_chain=_stream_cover,
+                chat_marked=_stream_marked,
                 # WS-45 S1: the effort mode, so the System-1 `decide` reads
                 # its threshold from the run binding (ai_tier_routing.md §5).
                 think_mode=think_mode or "auto",
