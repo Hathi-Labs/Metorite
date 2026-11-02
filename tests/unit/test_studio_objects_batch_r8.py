@@ -1782,11 +1782,23 @@ def test_r8_a_positive_write_on_200000_rows_reads_no_sum(promoted) -> None:  # n
 
 
 def test_r8_a_timeout_in_a_check_refuses_the_batch_and_keeps_the_session(big, monkeypatch) -> None:
-    """At 1 ms, a sum over 50,000 hot rows stops. The clock stands still, so
-    the store gives the statement its 1 ms and Postgres cancels it. The batch
-    writes nothing, the caller's row stays, and the old timeout is back."""
+    """At 1 ms, a check statement stops. The clock stands still, so the store
+    gives the statement its 1 ms and Postgres cancels it. The batch writes
+    nothing, the caller's row stays, and the old timeout is back.
+
+    The sum statement waits 50 ms in Postgres first. A real sum of a new group
+    can end inside 1 ms on a fast machine, and then the rule refuses the write
+    with a ConstraintViolation and no timeout, so the test would depend on the
+    speed of the machine."""
     monkeypatch.setattr(studio_query, "TIMEOUT_MS", 1)
     monkeypatch.setattr(store, "_clock", lambda: 0.0)
+    real_sum = store.build_group_sum
+
+    def slow_sum(*args: Any, **kwargs: Any) -> tuple[str, dict[str, Any]]:
+        sql, params = real_sum(*args, **kwargs)
+        return f"SELECT x.* FROM pg_sleep(0.05) CROSS JOIN ({sql}) x", params
+
+    monkeypatch.setattr(store, "build_group_sum", slow_sum)
     obj, plain = big.obj, big.plain
 
     async def go() -> tuple[BatchError, Any, str]:
