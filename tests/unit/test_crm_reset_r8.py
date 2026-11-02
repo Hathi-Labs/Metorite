@@ -351,6 +351,13 @@ def _seed(p: Any, org: str, *, tag: str, deals: int, status: str = "disconnected
             "created_by, updated_by) VALUES (CAST(:o AS uuid), 'org', 'net-of-gst', "
             "'All amounts net of GST', 'settings', 'admin@crm-t5-r8.test', "
             "'admin@crm-t5-r8.test')"), o)
+        # CRM-M1: a row of the Change history. The start over keeps it.
+        c.execute(text(
+            "INSERT INTO crm_change_log (organization_id, actor_email, via, "
+            "ladder_level, area, action, summary, before, after, reversible) "
+            "VALUES (CAST(:o AS uuid), 'admin@crm-t5-r8.test', 'ui', 'team', "
+            "'lost_reason', 'change', 'Renamed the lost reason', "
+            "'{\"label\": \"Price\"}'::jsonb, '{\"label\": \"Cost\"}'::jsonb, true)"), o)
         c.execute(text(
             "INSERT INTO crm_field_rules (organization_id, ext_source, entity, "
             "field_api_name, field_type, profile_version, target_column, status, "
