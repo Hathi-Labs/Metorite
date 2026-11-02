@@ -1059,3 +1059,10 @@ def test_schema_carries_the_page_caps():
     assert schema["$defs"]["PageDef"]["properties"]["tabs"]["maxItems"] == 8
     assert schema["$defs"]["PageDef"]["properties"]["cells"]["maxItems"] == 12
     assert schema["$defs"]["TabDef"]["properties"]["cells"]["maxItems"] == 12
+
+
+@pytest.mark.parametrize("title", ["", "   "])
+def test_a_tab_title_is_not_empty_or_blank(title):
+    tab = {"id": "plan", "title": title, "cells": [{"view": "board"}]}
+    d = _with_pages({"id": "main", "tabs": [tab]})
+    assert _at(d, "$.pages[0].tabs[0].title"), validate_manifest(d)

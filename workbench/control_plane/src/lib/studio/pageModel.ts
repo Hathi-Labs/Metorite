@@ -2,9 +2,10 @@
  * The page model of a Studio app (STU-D11a). Pure: no React, no context, no I/O.
  *
  * The one validator of a manifest is the pydantic model in `acb_common/studio_manifest.py`.
- * This reader does not validate a second way. It drops what it cannot read, the way
- * `parseFields` in `blocks.ts` does, and it never repairs. The renderer (STU-D11b) draws
- * the page that `buildPage` returns.
+ * This reader does not validate a second way. It assumes a manifest that A2 passed. It drops
+ * each part that A2 refuses, the way `parseFields` in `blocks.ts` does, and it never repairs:
+ * it does not clamp a span and it does not invent a default for a bad part. The renderer
+ * (STU-D11b) draws the page that `buildPage` returns.
  */
 
 import type { PageDef, ViewDef } from "./manifest";
@@ -60,14 +61,18 @@ function readCols(v: unknown): number {
   return typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= PAGE_CAPS.maxCols ? v : DEFAULT_COLS;
 }
 
-/** Read a cell list. A bad cell, an unknown view and any cell over the cap are dropped. */
+/** Read a cell list. A bad cell, a span over `cols`, an unknown view and any cell over the cap are dropped. */
 function readCells(v: unknown, cols: number, views: ReadonlySet<string> | null): CellModel[] {
   if (!Array.isArray(v)) return [];
   const out: CellModel[] = [];
   for (const raw of v) {
     const c = obj(raw);
     if (!c || !dashed(c.view) || (views && !views.has(c.view))) continue;
-    const span = typeof c.span === "number" && Number.isInteger(c.span) ? Math.min(Math.max(c.span, 1), cols) : 1;
+    let span = 1;
+    if (c.span !== undefined && c.span !== null) {
+      if (typeof c.span !== "number" || !Number.isInteger(c.span) || c.span < 1 || c.span > cols) continue;
+      span = c.span;
+    }
     out.push({ view: c.view, span });
     if (out.length >= PAGE_CAPS.cellsPerList) break;
   }
@@ -75,20 +80,23 @@ function readCells(v: unknown, cols: number, views: ReadonlySet<string> | null):
 }
 
 /**
- * Read one page. Returns `null` when the page has no usable id.
- * A page with tabs and cells keeps its tabs. `views`, when given, is the set of declared
- * view ids, and a cell of another view is dropped.
+ * Read one page. Returns `null` when the page has no usable id, when it has both tabs and
+ * cells, or when it has neither (A2 refuses each). `views`, when given, is the set of
+ * declared view ids, and a cell of another view is dropped.
  */
 export function readPage(def: unknown, views: ReadonlySet<string> | null = null): PageModel | null {
   const d = obj(def);
   if (!d || !dashed(d.id)) return null;
+  const hasTabs = Array.isArray(d.tabs) && d.tabs.length > 0;
+  const hasCells = Array.isArray(d.cells) && d.cells.length > 0;
+  if (hasTabs === hasCells) return null;
   const cols = readCols(d.cols);
   const tabs: TabModel[] = [];
   if (Array.isArray(d.tabs)) {
     const seen = new Set<string>();
     for (const raw of d.tabs) {
       const t = obj(raw);
-      if (!t || !dashed(t.id) || seen.has(t.id) || typeof t.title !== "string") continue;
+      if (!t || !dashed(t.id) || seen.has(t.id) || typeof t.title !== "string" || !t.title.trim()) continue;
       seen.add(t.id);
       tabs.push({ id: t.id, title: t.title, cells: readCells(t.cells, cols, views) });
       if (tabs.length >= PAGE_CAPS.tabsPerPage) break;
@@ -101,12 +109,12 @@ export function readPage(def: unknown, views: ReadonlySet<string> | null = null)
     title: typeof d.title === "string" ? d.title : null,
     cols,
     tabs,
-    cells: tabs.length ? [] : readCells(d.cells, cols, views),
+    cells: hasTabs ? [] : readCells(d.cells, cols, views),
     side: sideView,
   };
 }
 
-/** The page of a manifest with no `pages`: all views, one column, in order. */
+/** The page of a manifest with no `pages`: every view, one column, in order. The cell caps bind declared pages only. */
 export function defaultPage(views: readonly Pick<ViewDef, "id">[] = []): PageModel {
   return {
     id: "default",
@@ -115,7 +123,6 @@ export function defaultPage(views: readonly Pick<ViewDef, "id">[] = []): PageMod
     tabs: [],
     cells: views
       .filter((v) => dashed(v.id))
-      .slice(0, PAGE_CAPS.cellsPerList)
       .map((v) => ({ view: v.id, span: 1 })),
     side: null,
   };
@@ -128,8 +135,8 @@ export function resolveTab(page: Pick<PageModel, "tabs">, tab: string | null | u
 }
 
 /**
- * Build the page that the renderer draws. `pageId` picks a page, and the first page is the
- * default pick. With no `pages` (or no readable page) the result is `defaultPage(views)`.
+ * Build the page that the renderer draws. `pageId` picks a page, and the first page of that id
+ * wins (A2 refuses a repeated id, so a later one is dropped). The first page is the default pick. With no `pages` (or no readable page) the result is `defaultPage(views)`.
  */
 export function buildPage(
   manifest: { views?: readonly ViewDef[] | null; pages?: readonly PageDef[] | null },

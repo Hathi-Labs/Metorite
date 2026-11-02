@@ -26,6 +26,14 @@ describe("default page", () => {
   });
 });
 
+describe("default page with many views", () => {
+  it("holds all 20 views, with no slice", () => {
+    const twenty = Array.from({ length: 20 }, (_, i) => view(`v${i}`));
+    const b = buildPage({ views: twenty });
+    expect(b.cells.map((c) => c.view)).toEqual(twenty.map((v) => v.id));
+  });
+});
+
 describe("tabs", () => {
   const pages: PageDef[] = [
     {
@@ -49,10 +57,17 @@ describe("tabs", () => {
     expect(resolveTab({ tabs: [] }, "one")).toBeNull();
   });
 
-  it("keeps tabs when a page has both tabs and cells", () => {
-    const page = readPage({ id: "p", tabs: pages[0].tabs, cells: [{ view: "a" }] });
-    expect(page?.cells).toEqual([]);
-    expect(page?.tabs).toHaveLength(2);
+  it("drops a page that has both tabs and cells, or neither, as A2 refuses it", () => {
+    expect(readPage({ id: "p", tabs: pages[0].tabs, cells: [{ view: "a" }] })).toBeNull();
+    expect(readPage({ id: "p" })).toBeNull();
+    expect(readPage({ id: "p", tabs: [], cells: [] })).toBeNull();
+    expect(buildPage({ views, pages: [{ id: "p" }] }).page).toEqual(defaultPage(views));
+  });
+
+  it("drops a tab with an empty or blank title", () => {
+    const tab = (id: string, title: string) => ({ id, title, cells: [{ view: "a" }] });
+    const p = readPage({ id: "p", tabs: [tab("x", ""), tab("y", "  "), tab("z", "Z")] });
+    expect(p?.tabs.map((t) => t.id)).toEqual(["z"]);
   });
 });
 
@@ -65,23 +80,40 @@ describe("a page that cannot be read well", () => {
     expect(b.cells.map((c) => c.view)).toEqual(["a"]);
   });
 
-  it("clamps a span to the columns", () => {
+  it("drops a cell whose span A2 refuses, and never clamps it", () => {
     const b = buildPage({
       views,
-      pages: [{ id: "p", cols: 2, cells: [{ view: "a", span: 4 }, { view: "b", span: 0 }, { view: "c", span: 1.5 }] }],
+      pages: [
+        {
+          id: "p",
+          cols: 2,
+          cells: [{ view: "a", span: 3 }, { view: "b", span: 0 }, { view: "c", span: 1.5 }, { view: "a", span: 2 }, { view: "b" }],
+        },
+      ],
     });
-    expect(b.cells.map((c) => c.span)).toEqual([2, 1, 1]);
+    expect(b.cells.map((c) => [c.view, c.span])).toEqual([["a", 2], ["b", 1]]);
+  });
+
+  it("keeps the first of a repeated page id and drops the rest", () => {
+    const pages: PageDef[] = [
+      { id: "p", cells: [{ view: "a" }] },
+      { id: "p", cells: [{ view: "b" }] },
+      { id: "q", cells: [{ view: "c" }] },
+    ];
+    expect(buildPage({ views, pages }, "p").cells.map((c) => c.view)).toEqual(["a"]);
+    expect(buildPage({ views, pages }, "q").page.id).toBe("q");
   });
 
   it("uses 2 columns when cols is missing or bad, and drops an unreadable side view", () => {
-    expect(readPage({ id: "p" })?.cols).toBe(2);
-    expect(readPage({ id: "p", cols: 9 })?.cols).toBe(2);
-    expect(readPage({ id: "p", side: { view: "zzz" } }, new Set(["a"]))?.side).toBeNull();
-    expect(readPage({ id: "p", side: { view: "a" } }, new Set(["a"]))?.side).toBe("a");
+    const C = [{ view: "a" }];
+    expect(readPage({ id: "p", cells: C })?.cols).toBe(2);
+    expect(readPage({ id: "p", cols: 9, cells: C })?.cols).toBe(2);
+    expect(readPage({ id: "p", cells: C, side: { view: "zzz" } }, new Set(["a"]))?.side).toBeNull();
+    expect(readPage({ id: "p", cells: C, side: { view: "a" } }, new Set(["a"]))?.side).toBe("a");
   });
 
   it("applies the caps, and drops a duplicate tab id", () => {
-    const many = Array.from({ length: 30 }, (_, i) => ({ view: "a", span: i }));
+    const many = Array.from({ length: 30 }, () => ({ view: "a", span: 1 }));
     expect(readPage({ id: "p", cells: many })?.cells).toHaveLength(PAGE_CAPS.cellsPerList);
     const tabs = Array.from({ length: 20 }, (_, i) => ({ id: `t${i}`, title: "T", cells: [] }));
     expect(readPage({ id: "p", tabs })?.tabs).toHaveLength(PAGE_CAPS.tabsPerPage);

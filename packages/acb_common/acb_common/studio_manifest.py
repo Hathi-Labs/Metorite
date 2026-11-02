@@ -273,7 +273,7 @@ class SideDef(_Strict):
 
 class TabDef(_Strict):
     id: str = Field(pattern=rf"^{_DASHED}$")
-    title: str
+    title: str = Field(min_length=1, pattern=r"\S")
     cells: list[CellDef] = Field(max_length=MAX_CELLS_PER_PAGE)
 
 

@@ -532,6 +532,8 @@
           "type": "string"
         },
         "title": {
+          "minLength": 1,
+          "pattern": "\\S",
           "title": "Title",
           "type": "string"
         }
