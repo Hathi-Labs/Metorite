@@ -103,6 +103,7 @@ __all__ = [
     "owner_tools",
     "pack",
     "pack_only_refusal",
+    "pack_tool_runs",
     "pack_write_refusal",
     "packs_on",
     "persona_for",
@@ -1147,6 +1148,11 @@ class PackRun:
     #: RX-1. The sticky packs that left this run for a load. Only
     #: :meth:`leaves` writes it.
     left: set[str] = field(default_factory=set, compare=False, repr=False)
+    #: RX-1. The packs with a tool that started in this run, also one that
+    #: still waits on a card. :func:`note_used` runs only after a tool returns,
+    #: so this is what keeps the pack of a waiting card in the run. Only
+    #: :func:`pack_tool_runs` writes it.
+    ran: set[str] = field(default_factory=set, compare=False, repr=False)
 
     @classmethod
     def of(
@@ -1184,11 +1190,17 @@ class PackRun:
     def spare(self) -> tuple[str, ...]:
         """The packs that can leave for a load now, the least recently used
         first (RX-1): a sticky pack that the member did not name in this turn,
-        and that no tool of it ran in this run. A new need of the member never
-        loses to such a pack."""
+        and that no tool of it started in this run. A new need of the member
+        never loses to such a pack. With the org off
+        (``egress.held_card_writes_on``), no pack leaves."""
+        from acb_skills.egress import held_card_writes_on
+
+        if not held_card_writes_on(self.org):
+            return ()
         now = self.holds()
         return tuple(sorted(
-            (slug for slug in self.used if slug in now and slug not in self.noted),
+            (slug for slug in self.used
+             if slug in now and slug not in self.noted and slug not in self.ran),
             key=lambda slug: (self.used[slug], self.first_of(slug)),
         ))
 
@@ -1535,11 +1547,14 @@ def choose(
     def _over() -> bool:
         return len(order) > MAX_PACKS or _total(order) > MAX_REQUEST_TOOLS
 
+    from acb_skills.egress import held_card_writes_on
+
+    room_rule = held_card_writes_on(turn.org)
     while order and _over():
         olds = [sticky[slug] for slug in order if slug in sticky]
         if olds:
             victim = min(olds, key=lambda e: (
-                _asked_now(turn, e.slug) is not None, e.used, e.first)).slug
+                room_rule and _asked_now(turn, e.slug) is not None, e.used, e.first)).slug
             evicted.append(victim)
         else:
             replacing = [slug for slug in order if _replaces_specialist(slug)]
@@ -1644,6 +1659,18 @@ async def drop_sticky(turn: PackTurn | PackRun, slugs: Iterable[str]) -> None:
                 timeout=REDIS_TIMEOUT_S)
     except Exception as exc:
         _log.warning("tool_packs.state_write_failed", error=type(exc).__name__)
+
+
+def pack_tool_runs(slug: str, ctx: Mapping[str, Any] | None) -> None:
+    """Record that a tool of pack *slug* starts in this run (RX-1).
+
+    ``_tool_injection._pack_call`` calls it before any await. A send can wait on
+    its card for minutes, and :func:`note_used` runs only after the tool returns.
+    A load in that gap must not move the pack out, so :meth:`PackRun.spare` reads
+    this record. A run with no record writes nothing."""
+    run = (ctx or {}).get(PACKS_KEY)
+    if isinstance(run, PackRun) and slug:
+        run.ran.add(slug)
 
 
 async def note_used(slug: str, ctx: Mapping[str, Any] | None = None) -> bool:
@@ -2479,7 +2506,9 @@ class LoadSkillTools(FunctionMiddleware):
         tools = tuple(getattr(build, "tools", None) or ())
         if build is None or not tools:
             return _refused(slug, "unavailable", LOAD_UNAVAILABLE.format(label=_label(slug)))
-        leaving = _room_for(run, live, len(tools), spare)
+        # RX-1: the build awaited, so a tool of a spare pack may have started.
+        # Nothing awaits from this line until the pack leaves.
+        leaving = _room_for(run, live, len(tools), [s for s in spare if s not in run.ran])
         if leaving is None:
             return _refused(slug, "cap_tools", _past_cap(found, run))
         held = getattr(build, "held", True) is not False

@@ -24,6 +24,7 @@ for it. Fence: ``tests/unit/test_delegation_no_egress.py``.
 """
 from __future__ import annotations
 
+import inspect
 from collections.abc import Iterable
 from typing import Any, Callable
 
@@ -295,6 +296,11 @@ _AGENT_OWN: set[str] = set()
 #: these, so it no longer depends on what one process imported.
 _PLATFORM_STATIC: frozenset[str] = frozenset(TOOL_ANNOTATIONS)
 
+#: RX-1: the parameters of each tool that says ``card_write``, read when the
+#: tool registers. A caller with only a NAME cannot read a signature, so
+#: ``egress.is_held_card_write`` holds a bare name to this record.
+CARD_WRITE_PARAMS: dict[str, frozenset[str]] = {}
+
 
 def annotate(
     *,
@@ -343,6 +349,8 @@ def annotate(
         TOOL_ANNOTATIONS[fn.__name__] = hints
         _AGENT_OWN.add(fn.__name__)
         fn.__tool_risk__ = hints  # type: ignore[attr-defined]
+        if card_write:
+            CARD_WRITE_PARAMS[fn.__name__] = frozenset(inspect.signature(fn).parameters)
         return fn
 
     return _wrap

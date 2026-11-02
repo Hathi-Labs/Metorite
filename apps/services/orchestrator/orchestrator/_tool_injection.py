@@ -458,6 +458,35 @@ def _covered_chain(
     return _run_covered(str(agent_name or ""), organization_id)
 
 
+async def _chat_marked(ctx: Any, organization_id: str | None = None) -> bool:
+    """True when the chat of the run that starts now read outside mail (RX-1).
+
+    Each run boundary awaits it once and binds the answer as
+    ``egress.CHAT_MARK_KEY``, because the injection is sync and cannot ask Redis.
+    It reads the mark that FAILS CLOSED, so a fault reads as marked, and a mark
+    that this process never saw still counts after a restart. A parent's True
+    passes down. With the org off (``egress.held_card_writes_on``) it reads
+    nothing and adds no Redis call to the run. *ctx* names the session, from the
+    server-bound run only, and *organization_id* binds the tenant of a batch run
+    that has not bound it yet.
+    """
+    from acb_common.db import bind_tenant, current_tenant, release_tenant
+    from acb_skills.egress import CHAT_MARK_KEY, held_card_writes_on
+
+    if not held_card_writes_on(organization_id):
+        return False
+    if (ctx or {}).get(CHAT_MARK_KEY) is True:
+        return True
+    token = bind_tenant(organization_id) if organization_id and not current_tenant() else None
+    try:
+        return await session_mark_state(ctx, fail_closed=True) != MARK_CLEAR
+    except Exception:  # fail closed: an unreadable mark reads as marked
+        return True
+    finally:
+        if token is not None:
+            release_tenant(token)
+
+
 def _run_no_egress(
     agent_name: str | None, parent_ctx: Any, organization_id: str | None = None,
 ) -> bool:
@@ -491,14 +520,15 @@ def _is_egress(tool: Any) -> bool:
     return name in HOST_NETWORK_TOOLS or is_egress_tool(tool)
 
 
-def _is_held_off(tool: Any) -> bool:
+def _is_held_off(tool: Any, owner: str | None = None) -> bool:
     """True for a Projects or CRM write that a held chat does not hold (RX-1,
-    D151): the rule ``acb_skills.egress.is_held_off_write``."""
+    D151): the rule ``acb_skills.egress.is_held_off_write``. *owner* names the
+    agent of the run, so its own tools count too."""
     try:
         from acb_skills.egress import is_held_off_write
     except ImportError:  # no acb_skills means no pack tool was built at all
         return False
-    return is_held_off_write(tool)
+    return is_held_off_write(tool, owner=owner)
 
 
 def _covered_hold(agent_name: str | None) -> bool:
@@ -509,12 +539,14 @@ def _covered_hold(agent_name: str | None) -> bool:
     and it keeps ``COVERED_PROJECTS_TOOLS`` of
     ``tests/unit/test_delegation_no_egress.py``. So a run in a covered chain, in
     a chat with no mark, skips the drop. The org comes from the run binding
-    (:func:`_run_covered`). A held run of any other kind drops them.
+    (:func:`_run_covered`). A held run of any other kind drops them. The mark is
+    the one that the run boundary read from Redis (:func:`_chat_marked`), so a
+    restart does not lose it, and a fault keeps the drop.
     """
-    from acb_skills.egress import covered_chain
+    from acb_skills.egress import chat_marked_now, covered_chain
 
     covered = covered_chain() or (bool(agent_name) and _run_covered(str(agent_name)))
-    return covered and not read_untrusted_answer()
+    return covered and not chat_marked_now()
 
 
 #: The tool lists an injection knows how to read, by attribute.
@@ -544,19 +576,22 @@ def _inspectable(agent: Any) -> bool:
     return any(isinstance(p, list) for p in pools)
 
 
-def _withhold_egress_from_agent(agent: Any, *, chat_hold: bool = True) -> list[str]:
+def _withhold_egress_from_agent(
+    agent: Any, *, chat_hold: bool = True, owner: str | None = None,
+) -> list[str]:
     """Take every egress tool and MCP server out of ONE per-run agent (H-236).
 
     The factory built this agent object for this run, as every injection site
     assumes. The lists are filtered in place, as ``_apply_own_tool_scope``
     does. Returns the names it took out. The MCP servers of a MAF agent
     (``mcp_tools``) leave on the guarded view (:func:`_with_egress_guard`).
-    *chat_hold* also takes the writes of :func:`_is_held_off` (RX-1).
+    *chat_hold* also takes the writes of :func:`_is_held_off` (RX-1). *owner*
+    names the agent of the run.
     """
     removed: list[str] = []
 
     def _off(tool: Any) -> bool:
-        return _is_egress(tool) or (chat_hold and _is_held_off(tool))
+        return _is_egress(tool) or (chat_hold and _is_held_off(tool, owner))
 
     def _filter(pool: Any) -> None:
         if not isinstance(pool, list):
@@ -582,7 +617,9 @@ def _withhold_egress_from_agent(agent: Any, *, chat_hold: bool = True) -> list[s
     return removed
 
 
-def _with_egress_guard(agent: Any, *, chat_hold: bool = True) -> Any:
+def _with_egress_guard(
+    agent: Any, *, chat_hold: bool = True, owner: str | None = None,
+) -> Any:
     """A per-run view of a native MAF agent that holds no egress tool (H-236).
 
     The view carries no MCP server (``mcp_tools``, which MAF expands into
@@ -600,7 +637,7 @@ def _with_egress_guard(agent: Any, *, chat_hold: bool = True) -> Any:
         return agent
     from orchestrator._native_run_context import agent_with_providers
 
-    view = agent_with_providers(agent, [EgressGuardProvider(chat_hold=chat_hold)])
+    view = agent_with_providers(agent, [EgressGuardProvider(chat_hold=chat_hold, owner=owner)])
     view.mcp_tools = []
     return view
 
@@ -2365,6 +2402,8 @@ def _inject_agent_tools(
     if not _all_tools:
         if no_egress:  # H-236 holds even when nothing else is injected
             _apply_no_egress(agents, agent_name)
+        else:
+            _apply_chat_hold(agents, agent_name)
         return frozenset()  # acb_skills not installed in this env — skip silently
 
     # ── Tool scoping: a guaranteed core floor + optional per-agent scope ───
@@ -2848,6 +2887,8 @@ def _inject_agent_tools(
     # a native MAF agent gets the call-time refusal, as a per-run view.
     if no_egress:
         _apply_no_egress(agents, agent_name, injected=_egress)
+    else:
+        _apply_chat_hold(agents, agent_name)
     # CRM-Q29: a native MAF agent that holds a CRM tool gets the number
     # check, as a per-run view, after the H-236 step.
     _apply_answer_check(agents, agent_name)
@@ -2948,6 +2989,7 @@ def _apply_no_egress(
     """
     removed: set[str] = set(injected)
     chat_hold = not _covered_hold(agent_name)
+    owner = str(agent_name or "")
     for i, agent in enumerate(agents):
         if not _inspectable(agent):
             _log.error(
@@ -2959,8 +3001,8 @@ def _apply_no_egress(
                 "sandboxed turn, and its tools cannot be checked for a send."
             )
         try:
-            removed.update(_withhold_egress_from_agent(agent, chat_hold=chat_hold))
-            agents[i] = _with_egress_guard(agent, chat_hold=chat_hold)
+            removed.update(_withhold_egress_from_agent(agent, chat_hold=chat_hold, owner=owner))
+            agents[i] = _with_egress_guard(agent, chat_hold=chat_hold, owner=owner)
         except Exception as exc:
             _log.error(
                 "executor.no_egress_failed", agent=agent_name, error=str(exc)[:200],
@@ -2972,6 +3014,33 @@ def _apply_no_egress(
     _log.info(
         "executor.egress_tools_withheld", agent=agent_name, tools=sorted(removed),
     )
+
+
+def _apply_chat_hold(agents: list[Any], agent_name: str | None) -> None:
+    """D151 on a run that binds ``no_egress=False`` (RX-1).
+
+    A top-level run of an owner of ``egress.HELD_WRITE_OWNERS`` holds its own
+    class C tools, and H-236 does not reach it, because the mark lives on the
+    session. ``egress.ChatHoldProvider`` holds those writes back while the chat
+    is marked, and only those writes. Each egress tool of the run keeps its card.
+    Off for an org that the switch does not name, and for an agent that holds no
+    such write, so every other run keeps its object. A Copilot agent has its
+    own guard, and a plain object holds no middleware, so each stays as it is.
+    """
+    from acb_skills.egress import ChatHoldProvider, held_card_writes_on
+
+    if not held_card_writes_on():
+        return
+    from agent_framework import Agent
+    from orchestrator._native_run_context import agent_with_providers
+
+    owner = str(agent_name or "")
+    for i, agent in enumerate(agents):
+        if not isinstance(agent, Agent) or hasattr(agent, "_permission_handler"):
+            continue
+        if any(_is_held_off(tool, owner) for _label, pool in _own_tool_pools(agent)
+               for tool in pool):
+            agents[i] = agent_with_providers(agent, [ChatHoldProvider(owner=owner)])
 
 
 # ── Tool packs: the guarded builder (WS-67 OA-7b, D117) ─────────────────────
@@ -3396,6 +3465,7 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
         PACK_SLUG_ATTR,
         note_used,
         owner_scope,
+        pack_tool_runs,
         pack_write_refusal,
     )
 
@@ -3419,6 +3489,7 @@ def _pack_call(fn: Any, owner: str, held: bool, run_key: str, slug: str = "") ->
         twice = pack_write_refusal(owner, name, ctx)  # OA-8i, before any await
         if twice is not None:
             return twice
+        pack_tool_runs(slug, ctx)  # RX-1, before any await: its pack stays
         await _mark_pack_session(owner, ctx)
         try:
             with owner_scope(owner, held_now):
