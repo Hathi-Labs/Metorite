@@ -19,6 +19,7 @@ from skill_projects.forms import (
 )
 from skill_projects.guarded import (
     add_report_recipient,
+    answer_decision,
     archive_project,
     archive_task,
     attach_to_task,
@@ -38,7 +39,6 @@ from skill_projects.guarded import (
     merge_tags,
     merge_tasks,
     move_project,
-    answer_decision,
     nudge_task,
     promote_reminder,
     remove_report_recipient,
@@ -58,9 +58,9 @@ from skill_projects.inbox import (
     mark_notifications_read,
     my_areas,
     my_contexts,
+    my_decisions,
     my_led_projects,
     notifications,
-    my_decisions,
     project_access,
     project_views,
     save_view,

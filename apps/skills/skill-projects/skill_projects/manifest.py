@@ -1193,6 +1193,13 @@ _TASK_PREFIX_REASON = (
 #: A field the chat does not set, and why. A reason names the tool or the
 #: rule that answers the need, so a reviewer can check the claim.
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    # WS-ALN ALN-2a: the list is the member's own, and the chat reads only that.
+    ("GET", "/projects/decisions"): {
+        "task_id": "my_decisions lists the decisions that name the member, across tasks."
+    },
+    ("POST", "/projects/decisions/{decision_id}/answer"): {
+        "reason": "The chat answer carries no reason. The card shows the option only."
+    },
     ("GET", "/projects/tasks"): {
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (

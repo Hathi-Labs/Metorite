@@ -1060,7 +1060,9 @@ def test_no_injected_tool_can_approve() -> None:
     names |= set(skill_projects.__all__) | set(getattr(skill_my_tasks, "__all__", []))
     assert len(names) > 50, "the walk found no tools, so it proves nothing"
     pattern = re.compile(r"approve|reject|resume|respond|settle|answer", re.I)
-    assert {n for n in names if pattern.search(n)} == {"crm_answer_question"}
+    # `answer_decision` (WS-ALN ALN-2a) refuses a marked run before it reads or
+    # raises a card. `test_decisions_tool.py` holds that.
+    assert {n for n in names if pattern.search(n)} == {"crm_answer_question", "answer_decision"}
 
 
 def test_a_new_module_keeps_the_import_graph_low() -> None:

@@ -39,6 +39,7 @@ from typing import Any
 from urllib.parse import quote
 
 from acb_common.no_person import NO_PERSON_TEXT, no_person_present
+
 from skill_projects import client as _client
 from skill_projects.client import (
     GatewayRefusal,
