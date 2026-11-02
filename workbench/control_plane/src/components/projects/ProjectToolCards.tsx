@@ -94,6 +94,7 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   status_report: { icon: "Flag", label: "Status report" },
   // S5 — the rest of the reads
   project_access: { icon: "Users", label: "Access" },
+  my_decisions: { icon: "Users", label: "Decisions" },
   project_views: { icon: "LayoutList", label: "Views" },
   my_contexts: { icon: "AtSign", label: "Contexts" },
   watchers: { icon: "Eye", label: "Watchers" },
@@ -197,6 +198,7 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   attach_to_task: { icon: "Paperclip", label: "File attached" },
   grant_access: { icon: "UserPlus", label: "Access given" },
   revoke_access: { icon: "UserMinus", label: "Access removed" },
+  answer_decision: { icon: "UserPlus", label: "Decision answered" },
   add_report_recipient: { icon: "UserPlus", label: "Recipient added" },
   remove_report_recipient: { icon: "UserMinus", label: "Recipient removed" },
   set_report_schedule: { icon: "CalendarClock", label: "Schedule changed" },
@@ -310,6 +312,7 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "attach_to_task",
   "grant_access",
   "revoke_access",
+  "answer_decision",
   "add_report_recipient",
   "remove_report_recipient",
   "set_report_schedule",

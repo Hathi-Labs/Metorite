@@ -1,5 +1,5 @@
 -- ============================================================================
--- 330_pm_decisions.sql — one person decides (WS-ALN ALN-2a, Metorite task
+-- 332_pm_decisions.sql — one person decides (WS-ALN ALN-2a, Metorite task
 -- 94ca4c39).
 --
 -- What: one new table, `pm_decisions`, and a wider `pm_notifications_kind_check`.
@@ -52,8 +52,9 @@
 -- answer after it. No pruning yet: a later slice owns it.
 --
 -- The number. The scan of origin and every local branch on 2026-11-02 found
--- 326 to 329 taken (326_calendar_entries, 327 twice, 328 twice, and
--- 329_pm_project_authorities). So this file took 330. Check it again at
+-- 326 to 331 taken (326_calendar_entries, 327 twice, 328 twice,
+-- 329_pm_project_authorities, 330_reach_outbox_due_summary, and 331 twice:
+-- calendar_entries and crm_change_log). So this file took 332. Check it again at
 -- merge (R1). Pinned by tests/unit/test_decisions.py, which finds this file by
 -- CONTENT, never by number.
 -- ============================================================================

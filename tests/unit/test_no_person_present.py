@@ -868,6 +868,9 @@ _READERS = frozenset({
     "apps/services/gateway/gateway/routes/projects/agent_runs.py",
     # WS-ALN ALN-2a: the answer of a decision.
     "apps/services/gateway/gateway/routes/projects/decisions.py",
+    # WS-ALN ALN-2a: the one tool that names a route that answers. See
+    # `_NAMED_TOOL_EXEMPTIONS`.
+    "apps/skills/skill-projects/skill_projects/guarded.py",
     "apps/services/gateway/gateway/routes/workflows/service.py",
     "apps/services/orchestrator/orchestrator/executor.py",
 })
@@ -959,6 +962,18 @@ _ROUTE_TABLES = frozenset({
 })
 
 
+#: A NAMED exemption of `test_no_tool_names_a_route_that_approves_or_answers`.
+#: The tool `answer_decision` (WS-ALN ALN-2a, D-OP-9) posts the answer of a
+#: decision. That is safe because a person confirms a card first, and the tool
+#: refuses a run with no person present BEFORE any read and any card. The two
+#: tests `test_answer_decision_*` in `test_decisions_tool.py` hold both facts.
+#: The exemption names one file and one route. A second route in that file, or
+#: the same route in another file, still fails the scan.
+_NAMED_TOOL_EXEMPTIONS: dict[str, frozenset[str]] = {
+    "apps/skills/skill-projects/skill_projects/guarded.py": frozenset({"/decisions/{}/answer"}),
+}
+
+
 def _strings_that_run(tree: ast.AST) -> list[str]:
     """The string constants of *tree*, each docstring left out."""
     docs: set[int] = set()
@@ -988,7 +1003,10 @@ def test_no_tool_names_a_route_that_approves_or_answers() -> None:
         if rel in _ROUTE_TABLES:
             continue
         for value in _strings_that_run(ast.parse(path.read_text(encoding="utf-8-sig"))):
-            hits += [f"{rel}: {route}" for route in _APPROVAL_ROUTES if route in value]
+            hits += [
+                f"{rel}: {route}" for route in _APPROVAL_ROUTES
+                if route in value and route not in _NAMED_TOOL_EXEMPTIONS.get(rel, ())
+            ]
     assert hits == [], (
         "A tool acts as its member over HTTP, and the mark does not cross HTTP. "
         "So this route takes the call as a person's. Do not add this call."

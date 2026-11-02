@@ -501,6 +501,17 @@ class TestDecisionsOnARealDatabase:
             made = await _ask(w.p, w.p.org_a, w.task, w.c)
         assert made["heard"] is True
 
+    async def test_an_asker_who_is_the_decider_and_an_agent_decider_write_nothing(self, w):
+        async with _session(w.p):
+            with pytest.raises(decisions.DecisionRefused) as same:
+                await _ask(w.p, w.p.org_a, w.task, w.d, asked_by=w.d.upper())
+            assert same.value.reason == "self_decision"
+            with pytest.raises(decisions.DecisionRefused) as agent:
+                await _ask(w.p, w.p.org_a, w.task, "agent:bot@x.test")
+            assert agent.value.reason == "bad_decider"
+        assert _count(w.p, "SELECT count(*) FROM pm_decisions") == 0
+        assert _count(w.p, "SELECT count(*) FROM pm_notifications") == 0
+
     async def test_a_page_subject_a_long_question_and_bad_options_write_nothing(self, w):
         async with _session(w.p):
             for kw, reason in (
@@ -735,8 +746,13 @@ class TestDecisionsOnARealDatabase:
             listed = (await call(w.u_d, "GET", "/projects/decisions")).json()["decisions"]
             assert [d["id"] for d in listed] == [mine["id"]]
             assert all("payload" not in d for d in listed)
+            # O opens the task and is not the decider: O reads no decision of D.
             by_task = (await call(w.u_o, "GET", f"/projects/decisions?task_id={w.task}")).json()
-            assert len(by_task["decisions"]) == 2
+            assert by_task == {"decisions": []}
+            assert mine["question"] not in str(by_task) and w.d not in str(by_task)
+            # D reads their own decision on the task, and not the one of C.
+            own = (await call(w.u_d, "GET", f"/projects/decisions?task_id={w.task}")).json()
+            assert [d["id"] for d in own["decisions"]] == [mine["id"]]
             # A member who cannot open the task cannot list its decisions.
             assert (await call(w.u_x, "GET",
                                f"/projects/decisions?task_id={w.task}")).status_code == 404

@@ -206,11 +206,13 @@ async def ask_decision(
         raise DecisionRefused("bad_question", f"A question is 1 to {QUESTION_MAX} characters.")
     opts = clean_options(options)
     who = (decider or "").strip().lower()
-    if not who or "@" not in who:
-        raise DecisionRefused("bad_decider", "Name the decider by email address.")
+    if not who or "@" not in who or who.startswith("agent:"):
+        raise DecisionRefused("bad_decider", "Name the decider by the email address of a person.")
     asker = (asked_by or "").strip()
     if not asker:
         raise DecisionRefused("bad_asker", "Name who asks.")
+    if asker.lower() == who:
+        raise DecisionRefused("self_decision", "A person does not ask themselves to decide.")
     try:
         tid = str(uuid.UUID(str(task_id)))
     except (TypeError, ValueError) as exc:
@@ -380,8 +382,10 @@ async def list_decisions(
     task_id: str | None = Query(default=None),
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """With ``task_id``: the decisions on a task the caller can open, newest
-    first. Without: the caller's own open decisions. No count of people."""
+    """The caller's own decisions. With ``task_id``: those on a task the caller
+    can open, newest first, answered or not. Without: the open ones. A decision
+    is shown to its decider only. Other members read the answer as the comment
+    on the task. No count of people."""
     async with _tenant_session() as db:
         if task_id is not None:
             try:
@@ -393,9 +397,10 @@ async def list_decisions(
                 text(
                     f"{_SELECT} WHERE d.subject_kind = 'task'"
                     " AND d.subject_id = CAST(:tid AS uuid)"
+                    " AND lower(d.decider) = :me"
                     " ORDER BY d.created_at DESC LIMIT :lim"
                 ),
-                {"tid": tid, "lim": LIST_LIMIT},
+                {"tid": tid, "me": actor(user).strip().lower(), "lim": LIST_LIMIT},
             )).fetchall()
         else:
             rows = (await db.execute(
