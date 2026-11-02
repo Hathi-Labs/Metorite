@@ -531,7 +531,8 @@ _CHECKS: dict[str, Any] = {
 assert tuple(_CHECKS) == FIELD_TYPES, "each field type has one check"
 
 
-def _blank(v: Any) -> bool:
+def is_blank(v: Any) -> bool:
+    """True for no value, a text of only spaces, and an empty list."""
     return v is None or (isinstance(v, str) and not v.strip()) or (isinstance(v, list) and not v)
 
 
@@ -569,7 +570,7 @@ def validate_record(fields: Sequence[FieldSpec], data: Any) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for f in fields:
         value = data.get(f.key)
-        if _blank(value):
+        if is_blank(value):
             if f.required:
                 raise FieldError(f.key, f"Field `{f.key}` is required.")
             if value is None:

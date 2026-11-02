@@ -291,13 +291,14 @@ def _number(field: FieldSpec, value: Any) -> Decimal:
 
 
 def _day(field: FieldSpec, value: str) -> tuple[datetime, datetime]:
-    """The start of the day and the start of the next day, in UTC."""
+    """The start of the day and the start of the next day, in UTC. The last
+    day has no next day, so it ends at the last instant that a date holds."""
     day = _checked(replace(field, type="date"), value)
     start = datetime.fromisoformat(f"{day}T00:00:00+00:00")
     try:
         return start, start + timedelta(days=1)
     except OverflowError:
-        raise _invalid(field, "takes a day before 9999-12-31.") from None
+        return start, datetime.max.replace(tzinfo=start.tzinfo)
 
 
 def _time(field: FieldSpec, op: str, value: Any) -> Condition:
