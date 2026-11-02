@@ -77,6 +77,8 @@ const VERB: Record<string, string> = {
   agent_question: "asked you about",
   // Task 1054 — the stranded-run nudge: the run went quiet, the member decides.
   nudge: "has gone quiet on",
+  // WS-ALN ALN-2a — one person decides: the asker needs this member's choice.
+  decision: "asks you to decide on",
 };
 
 /**

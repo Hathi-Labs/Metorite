@@ -3241,8 +3241,9 @@ export const attentionApi = {
 
 export interface NotificationRow {
   id: string;
-  /** `agent_question`: an outside agent asks on a task (WS-55 EA-12c). */
-  kind: "assigned" | "mention" | "comment" | "nudge" | "agent_question";
+  /** `agent_question`: an outside agent asks on a task (WS-55 EA-12c).
+   *  `decision`: one person decides (WS-ALN ALN-2a). */
+  kind: "assigned" | "mention" | "comment" | "nudge" | "agent_question" | "decision";
   task_id: string;
   actor: string;
   excerpt?: string | null;
