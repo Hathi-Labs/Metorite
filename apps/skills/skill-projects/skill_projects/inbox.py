@@ -103,6 +103,32 @@ async def project_access(project_id: str) -> str:
     return "\n".join(out)
 
 
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def project_authorities(project_id: str, include_removed: bool = False) -> str:
+    """The Knowledge pages pinned to a project as its authority (the pages
+    that hold its rules), each with its pin_id and its state: active or
+    stale. A page the member cannot read shows no title. pin_authority pins a
+    page and unpin_authority removes a pin, each behind a card.
+    include_removed=true lists removed pins too."""
+    pid, node = await _node(project_id)
+    params = {"include_removed": True} if include_removed else None
+    rows = ((await get(f"/projects/nodes/{pid}/authorities", params)) or {}).get("rows") or []
+    out = [legend(), f"Authority pages of {data(node.get('name'))} ({len(rows)} pins):"]
+    for row in rows:
+        hidden = row.get("page_hidden") is True
+        name = "a page you cannot read" if hidden else data(row.get("title"))
+        state = str(row.get("state") or "?")
+        if state == "stale" and row.get("stale_reason"):
+            state = f"stale ({data(row.get('stale_reason'))})"
+        out.append(
+            f"- {name} · {state} · pinned by {data(row.get('pinned_by') or '?')}"
+            f" · pin_id {row.get('id')} · page_id {row.get('page_id')}"
+        )
+    if not rows:
+        out.append("(no page is pinned as its authority)")
+    return "\n".join(out)
+
+
 def subject_words(subject: str) -> str:
     """A grant subject in plain words, for a card, a receipt and a read."""
     if subject == "org":
@@ -787,6 +813,7 @@ __all__ = [  # noqa: RUF022 — reads first, then the writes
     "my_led_projects",
     "notifications",
     "project_access",
+    "project_authorities",
     "project_views",
     "watchers",
     "capture_intake",

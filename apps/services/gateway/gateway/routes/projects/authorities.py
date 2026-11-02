@@ -125,7 +125,10 @@ def _view(
     """One pin for the caller. ``state`` is the DERIVED state.
 
     A title and a ``space_id`` go out only when *heads* holds the page, that
-    is, when the caller can read it. Else ``page_hidden`` is true.
+    is, when the caller can read it. Else ``page_hidden`` is true, and then
+    ``stale_reason`` and ``page_version`` are null too, so a member who cannot
+    read the page does not learn that it changed. ``state`` stays, because
+    that member must still see that the authority of the project needs care.
     """
     state = str(row.state)
     reason = None
@@ -149,6 +152,8 @@ def _view(
         head = heads.get(str(row.page_id))
         if head is None:
             out["page_hidden"] = True
+            out["stale_reason"] = None
+            out["page_version"] = None
         else:
             out["page_hidden"] = False
             out["title"] = head["title"]

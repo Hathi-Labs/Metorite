@@ -2250,6 +2250,123 @@ async def revoke_access(project_id: str, grant: str) -> str:
     )
 
 
+# ── The authority page of a project (WS-ALN ALN-4) ──────────────────────────
+
+#: What the member reads for a 403 or a 404 of the authority routes. A 409
+#: carries the route's own words (not published, or narrower than the project).
+_PIN_REFUSALS = {
+    403: "The server says that you may not change the authority page of this project.",
+    404: "The project, the page or the pin was not found, or you cannot see it.",
+}
+
+
+def _pin_refusal(exc: GatewayRefusal) -> str:
+    """One plain sentence for a 403, 404 or 409 of the authority routes.
+
+    Any other status is raised again for the shared wrapper.
+    """
+    status = getattr(exc, "status", None)
+    if status in _PIN_REFUSALS:
+        return f"{REFUSED} {_PIN_REFUSALS[status]} Nothing was changed."
+    if status == 409:
+        said = str(getattr(exc, "detail", "") or "").strip()
+        return f"{REFUSED} {data(said) if said else 'The server refused the pin.'} Nothing was changed."
+    raise exc
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def pin_authority(project_id: str, page_id: str) -> str:
+    """Pin one published Knowledge page to a project as its authority: the
+    page that holds the project's rules. page_id is the full id of a page.
+    ONE page per call. The card names the project and the page id. The server
+    decides if the member may pin. It refuses a page that is not published,
+    and a page that fewer people can read than can see the project. A refusal
+    comes back in one sentence."""
+    if _many(page_id) or _many(project_id):
+        return f"pin_authority {ONE_ACT.replace('id', 'page_id')}"
+    page = uuid_of(page_id, "page_id")
+    pid, node = await _node(project_id)
+    refused = grant_refusal(node)
+    if refused:
+        return refused
+    held = ((await get(f"/projects/nodes/{pid}/authorities")) or {}).get("rows") or []
+    same = next((r for r in held if str(r.get("page_id") or "").lower() == page), None)
+    if same is not None:
+        name = "a page you cannot read" if same.get("page_hidden") is True else data(same.get("title"))
+        return (
+            f"{name} is already the authority page of {data(node.get('name'))}. "
+            f"Nothing changed.\n  project_id: {pid}\n  pin_id: {same.get('id')}"
+        )
+    path = await _project_path(node)
+    impact = (
+        f"a finding of {path} will quote this page to everyone who can see the "
+        "project. The server refuses a page that fewer people can read"
+    )
+    if not await _confirm(
+        title="Pin this page as the authority of the project?",
+        detail=f"{path} · page {page}",
+        context=_guard_card(
+            impact,
+            {"project": path,
+             "covers": f"page {page} becomes the source of the rules of this project"},
+        ),
+    ):
+        return CANCELLED
+    try:
+        row = (await post(f"/projects/nodes/{pid}/authorities", {"page_id": page})) or {}
+    except GatewayRefusal as exc:
+        return _pin_refusal(exc)
+    name = "a page you cannot read" if row.get("page_hidden") is True else data(row.get("title"))
+    return (
+        f"{name} is now the authority page of {path}."
+        f"\n  project_id: {pid}\n  pin_id: {row.get('id')}"
+    )
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def unpin_authority(project_id: str, pin_id: str) -> str:
+    """Remove one authority pin from a project. pin_id is a pin_id from
+    project_authorities. ONE pin per call. The card names the project and the
+    page title, and the title shows only when the member can read the page.
+    The page itself stays. The server decides if the member may remove the
+    pin, and a refusal comes back in one sentence."""
+    if _many(pin_id) or _many(project_id):
+        return f"unpin_authority {ONE_ACT.replace('id', 'pin_id')}"
+    pid, node = await _node(project_id)
+    refused = grant_refusal(node)
+    if refused:
+        return refused
+    rows = ((await get(f"/projects/nodes/{pid}/authorities")) or {}).get("rows") or []
+    wanted = str(pin_id or "").strip().lower()
+    row = next((r for r in rows if str(r.get("id") or "").lower() == wanted), None)
+    if row is None:
+        return (
+            f"{data(node.get('name'))} has no pin like that. project_authorities lists "
+            f"its pins, each with a pin_id.\n  project_id: {pid}"
+        )
+    pin = uuid_of(str(row.get("id")), "pin_id")
+    path = await _project_path(node)
+    name = "a page you cannot read" if row.get("page_hidden") is True else data(row.get("title"))
+    impact = (
+        f"{path} loses {name} as its authority page. A finding of the project "
+        "stops quoting its rules. The page itself stays"
+    )
+    if not await _confirm(
+        title="Remove the authority page of this project?",
+        detail=f"{path} · remove {name}",
+        context=_guard_card(
+            impact,
+            {"project": path, "covers": f"{name} stops being the authority page of this project"},
+        ),
+    ):
+        return CANCELLED
+    try:
+        await delete(f"/projects/nodes/{pid}/authorities/{pin}")
+    except GatewayRefusal as exc:
+        return _pin_refusal(exc)
+    return f"Removed {name} as the authority page of {path}.\n  project_id: {pid}\n  pin_id: {pin}"
+
+
 # ── Who gets a report, and when (WS-64 OP-6d, D-OP-9) ───────────────────────
 
 
@@ -2528,6 +2645,8 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "attach_to_task",
     "grant_access",
     "revoke_access",
+    "pin_authority",
+    "unpin_authority",
     "add_report_recipient",
     "remove_report_recipient",
     "set_report_schedule",

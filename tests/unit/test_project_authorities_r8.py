@@ -39,6 +39,8 @@ not a pass.
   goes red.
 * M5. The migration: drop the trigger ``pm_project_authorities_same_org``.
   ``test_the_database_refuses_a_hand_written_cross_org_pin`` goes red.
+* M7. ``G/authorities.py`` ``_view``: drop the ``page_hidden`` mask of ``stale_reason``.
+  ``test_a_hidden_page_shows_no_reason_and_no_version_but_keeps_the_state`` goes red.
 * M6. ``G/authorities.py`` ``_stale_reason``: always ``None``.
   ``test_edit_and_archive_make_a_pin_stale_and_a_restore_makes_it_active``
   goes red.
@@ -689,8 +691,11 @@ class TestTheRead:
         r = await _as(live, KBA, "POST", f"/knowledge/pages/{page}/archive")
         assert r.status_code == 200, r.text
         got = _item(await _list(live, LEAD, live.team), pin)
-        assert got["state"] == "stale" and got["stale_reason"] == "not_published"
+        # LEAD cannot read an archived page. The pin shows `stale`, and says
+        # no reason and no version, so LEAD learns nothing about the page.
+        assert got["state"] == "stale" and got["stale_reason"] is None
         assert got["page_hidden"] is True and "title" not in got
+        assert got["page_version"] is None
         r = await _as(live, KBA, "POST", f"/knowledge/pages/{page}/restore")
         assert r.status_code == 200, r.text
         got = _item(await _list(live, LEAD, live.team), pin)
@@ -724,6 +729,31 @@ class TestTheRead:
         assert SECRET_TITLE not in json.dumps(seen)
         mine = _item(await _list(live, LEAD, live.team), pin)
         assert mine["page_hidden"] is False and mine["title"] == SECRET_TITLE
+
+    async def test_a_hidden_page_shows_no_reason_and_no_version_but_keeps_the_state(
+        self, live,
+    ):
+        # P2 of the ALN-4 review. A member who cannot read the page must not learn
+        # that it was edited or unpublished. `state` stays: the authority needs care.
+        two = _space(live, "Hides change", [("org", "read")])
+        page = _page(live, two, "Rules hidden change", versions=2)
+        pin = (await _pin(live, LEAD, live.team, page)).json()["id"]
+        r = await _as(live, KBA, "PATCH", f"/knowledge/pages/{page}",
+                      {"body_md": "Changed after the pin."})
+        assert r.status_code == 200, r.text
+        live.seeder.one("DELETE FROM kb_space_grants WHERE space_id = CAST(:s AS uuid)"
+                        " RETURNING space_id", s=two)
+        live.seeder.one("INSERT INTO kb_space_grants (space_id, subject, level, created_by,"
+                        " organization_id) VALUES (CAST(:s AS uuid), :u, 'read', :a,"
+                        " CAST(:o AS uuid)) RETURNING space_id",
+                        s=two, u=LEAD, a=w.OWNER, o=live.org)
+        seen = _item(await _list(live, VIEWER, live.team), pin)
+        assert seen["page_hidden"] is True
+        assert seen["state"] == "stale", "the member still sees that care is due"
+        assert seen["stale_reason"] is None and seen["page_version"] is None
+        mine = _item(await _list(live, LEAD, live.team), pin)
+        assert mine["page_hidden"] is False
+        assert mine["stale_reason"] == "changed" and mine["page_version"] == 2
 
     async def test_a_member_who_cannot_see_the_project_reads_404(self, live):
         r = await _as(live, OUTSIDER, "GET", _path(live.hidden))

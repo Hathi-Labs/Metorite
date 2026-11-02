@@ -39,6 +39,7 @@ from skill_projects.guarded import (
     merge_tasks,
     move_project,
     nudge_task,
+    pin_authority,
     promote_reminder,
     remove_report_recipient,
     rename_area,
@@ -48,6 +49,7 @@ from skill_projects.guarded import (
     set_report_schedule,
     set_status_set,
     unarchive_project,
+    unpin_authority,
 )
 from skill_projects.inbox import (
     calendar,
@@ -60,6 +62,7 @@ from skill_projects.inbox import (
     my_led_projects,
     notifications,
     project_access,
+    project_authorities,
     project_views,
     save_view,
     triage_intake,
@@ -183,6 +186,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "my_areas",
     "notifications",
     "project_access",
+    "project_authorities",
     "project_views",
     "watchers",
     # Class A — navigation (S6)
@@ -274,6 +278,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "delete_type",
     "delete_view",
     "grant_access",
+    "pin_authority",
     "merge_tags",
     "merge_tasks",
     "move_project",
@@ -281,6 +286,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "rename_area",
     "report_delete",
     "revoke_access",
+    "unpin_authority",
     "add_report_recipient",
     "remove_report_recipient",
     "set_report_schedule",
