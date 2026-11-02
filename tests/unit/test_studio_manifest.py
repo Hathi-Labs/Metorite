@@ -152,6 +152,52 @@ def test_reserved_key(key, slice_id):
     assert f"`{key}` is reserved for slice {slice_id} and v1 does not accept it" in e.message
 
 
+def test_rules_is_lifted_in_an_object_only() -> None:
+    """C6 lifted `rules` at `objects[*].rules`. Elsewhere it stays reserved."""
+    d = doc()
+    d["contributes"] = {"rules": []}
+    one(d, "$.contributes.rules", contains="C6")
+    d = copy.deepcopy(EXAMPLE)
+    d["shell"]["rules"] = []
+    one(d, "$.shell.rules", contains="C6")
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"][0]["rules"] = []
+    one(d, "$.objects[0].fields[0].rules", contains="C6")
+
+
+_VISIT_MACHINE = {
+    "name": "visit_flow", "kind": "state_machine", "field": "status", "initial": "planned",
+    "moves": [{"from": "planned", "to": "on site"}, {"from": "on site", "to": "done"}],
+}
+
+
+def test_a_state_machine_validates_in_an_object() -> None:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["rules"] = [_VISIT_MACHINE]
+    assert validate_manifest(d) == []
+
+
+def test_a_rule_that_does_not_fit_gets_a_path() -> None:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["rules"] = [{**_VISIT_MACHINE, "initial": "nope"}]
+    one(d, "$.objects[0].rules", contains="initial")
+
+
+def test_a_role_guard_in_a_manifest_waits_for_c8() -> None:
+    d = copy.deepcopy(EXAMPLE)
+    moves = [{"from": "planned", "to": "done", "role": "director"}]
+    d["objects"][0]["rules"] = [{**_VISIT_MACHINE, "moves": moves}]
+    one(d, "$.objects[0].rules", contains="C8")
+
+
+def test_the_manifest_rules_equal_the_store_rules() -> None:
+    """A5 passes the manifest list unchanged to `set_constraints`: the one parser."""
+    from acb_common.studio_rules import parse_rules
+
+    (rule,) = parse_rules([_VISIT_MACHINE])
+    assert rule.stored() == _VISIT_MACHINE
+
+
 @pytest.mark.parametrize("ftype", ["formula", "rollup"])
 def test_formula_field_type_is_reserved_for_c7(ftype):
     d = copy.deepcopy(EXAMPLE)
