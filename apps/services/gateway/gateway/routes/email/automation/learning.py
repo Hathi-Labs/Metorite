@@ -181,7 +181,7 @@ async def _ai_confirms_sender_pattern(
     async def _old() -> bool:
         try:
             data, _content, _used = await _llm_json(
-                "tier-balanced",
+                "tier-fast",
                 [{"role": "system", "content": (
                     "You decide whether a sender's mail should ALWAYS be filed "
                     "under one rule, without the classifier ever looking at it "
@@ -195,11 +195,15 @@ async def _ai_confirms_sender_pattern(
                     "automated sender. No: anyone who might also send something "
                     "that needs a reply. No: mixed content across the samples.\n"
                     "Be conservative. Any doubt at all is a no.\n"
-                    'Respond with ONLY {"always": true|false, "why": "<short>"}.'
+                    # "JSON" in the text: a provider refuses JSON mode with
+                    # a 400 when no message says it (task 1128).
+                    'Respond with ONLY a JSON object: '
+                    '{"always": true|false, "why": "<short>"}.'
                 )},
                  {"role": "user", "content": user_content}],
                 max_tokens=200,
                 feature="sender_pin",
+                job="structured",
             )
         except Exception as exc:  # never fail a rule run on this
             _log.warning("email.auto_learn_verdict_failed",
