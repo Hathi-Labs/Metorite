@@ -874,7 +874,7 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # so the two counts never count one row twice.
     _PersonRows("calendar_attendances", "calendar_entry_attendees",
                 f"lower(member_email) = :email AND organization_id = {_BOUND_ORG} "
-                "AND NOT EXISTS (SELECT 1 FROM calendar_entries e "
+                "AND NOT EXISTS (SELECT 1 FROM calendar_entries AS e "
                 "WHERE e.id = calendar_entry_attendees.entry_id "
                 "AND lower(e.owner_email) = :email)"),
     # The identity itself. LAST.
