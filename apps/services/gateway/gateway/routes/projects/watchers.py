@@ -143,23 +143,27 @@ async def unwatch_task(
 
 @router.get("/tasks/{task_id}/watchers")
 async def list_watchers(
-    task_id: str, user: UserContext = Depends(get_current_user),
+    task_id: str,
+    audience: bool = False,
+    user: UserContext = Depends(get_current_user),
 ) -> dict:
     """Who watches this task, and whether the caller does — one read, so the
-    panel's toggle can render without a second round trip."""
+    panel's toggle can render without a second round trip. *audience* adds who
+    a comment tells, for the card of a chat that read outside mail (RX-1). It is
+    the one list that ``add_comment`` reads, and the panel does not ask it."""
     async with _tenant_session() as db:
         vis = await resolve_visibility(db, user)
         await load_visible_task(db, vis, task_id)
         watchers = await watchers_of(db, task_id)
-        # RX-1: who a comment tells, for the card of a chat that read outside
-        # mail. The one list that `add_comment` reads.
-        from gateway.routes.projects.notifications import task_audience
+        told: dict[str, list[str]] = {}
+        if audience:
+            from gateway.routes.projects.notifications import task_audience
 
-        audience = await task_audience(db, task_id)
+            told["audience"] = sorted(await task_audience(db, task_id))
     return {
         "watchers": watchers,
         "watching": actor(user).lower() in set(watchers),
-        "audience": sorted(audience),
+        **told,
     }
 
 

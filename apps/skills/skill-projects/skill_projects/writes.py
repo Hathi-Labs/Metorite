@@ -1754,7 +1754,7 @@ async def _comment_tells(tid: str, text: str) -> dict[str, Any]:
     who = mention_targets(text)
     if await _held_chat():
         task_id = uuid_of(tid, "task_id")
-        read = (await get(f"/projects/tasks/{task_id}/watchers")) or {}
+        read = (await get(f"/projects/tasks/{task_id}/watchers", {"audience": "true"})) or {}
         who.extend(str(person) for person in read.get("audience") or [])
     return {"sent to": ", ".join(dict.fromkeys(who))} if who else {}
 

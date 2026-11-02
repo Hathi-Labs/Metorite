@@ -1880,7 +1880,7 @@ async def list_grants(
 @router.get("/nodes/{project_id}/audience")
 async def read_project_audience(
     project_id: str,
-    people: str = Query(default="", max_length=2000),
+    people: str = Query(default="", max_length=4000),
     beyond: str = Query(default="", max_length=64),
     user: UserContext = Depends(get_current_user),
 ) -> dict:

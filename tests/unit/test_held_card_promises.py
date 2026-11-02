@@ -174,7 +174,6 @@ _REACH_WORDS = ("lead", "owner", "grant", "audience", "visib", "share", "public"
 _REACH_KEPT = {
     ("create_lead", "lead_name"): "the name of a CRM lead",
     ("convert_lead", "lead_id"): "the id of a CRM lead",
-    ("create_lead", "email"): "not a word of the list",
 }
 
 

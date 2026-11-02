@@ -781,6 +781,28 @@ def test_a_held_delegated_run_of_the_owner_drops_it(monkeypatch) -> None:
     assert agents[0].default_options["tools"] == []
 
 
+def test_the_owner_rule_drops_no_tool_of_the_crm_agent_today(crm_tools, monkeypatch) -> None:
+    """Each tool of the agent is a read or a listed write, so a held delegated run
+    keeps all of them. Mutation: drop the read test -> the reads leave -> red."""
+    monkeypatch.setattr(ti, "_run_covered", lambda *_a, **_k: False)
+    agents = [_agent_with(list(crm_tools.values()))]
+    with _bound(**{eg.CHAT_MARK_KEY: True}):
+        ti._apply_no_egress(agents, CRM)
+    assert {_name(t) for t in agents[0].default_options["tools"]} == set(crm_tools)
+
+
+def test_the_owner_rule_drops_only_class_c_from_the_projects_agent(
+    projects_tools, monkeypatch,
+) -> None:
+    """Mutation: count the chat file tools as writes -> red."""
+    monkeypatch.setattr(ti, "_run_covered", lambda *_a, **_k: False)
+    agents = [_agent_with(list(projects_tools.values()))]
+    with _bound(**{eg.CHAT_MARK_KEY: True}):
+        ti._apply_no_egress(agents, PA)
+    kept = {_name(t) for t in agents[0].default_options["tools"]}
+    assert set(projects_tools) - kept == OFF_PROJECTS
+
+
 def test_the_owner_keeps_its_reads_and_the_platform_tools(monkeypatch) -> None:
     """A read stays, and so does a tool that the platform injected. Mutation: drop
     the platform test -> red."""
@@ -810,6 +832,8 @@ def test_a_bare_name_holds_to_the_pin_that_the_tool_registered(
 
     assert eg.is_held_card_write("create_lead") is True
     assert pp._reaches_out({}, "create_lead", None) is False
+    assert {n for n in eg.HELD_CARD_WRITE_TOOLS if not eg.is_held_card_write(n)} == set(), (
+        "each pin agrees with the parameters that the tool registered")
     monkeypatch.setitem(ta.CARD_WRITE_PARAMS, "create_lead", frozenset({"lead_name", "owner"}))
     assert eg.is_held_card_write("create_lead") is False
     assert pp._reaches_out({}, "create_lead", None) is True, "a drifted tool reaches out"

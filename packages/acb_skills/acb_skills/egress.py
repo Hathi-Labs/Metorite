@@ -1771,7 +1771,8 @@ class ChatHoldProvider(ContextProvider):
         self._owner = owner
 
     def _off(self, item: Any) -> bool:
-        return is_held_off_write(item, owner=self._owner) and chat_marked_now()
+        # The mark first: a clear chat reads no signature at each request.
+        return chat_marked_now() and is_held_off_write(item, owner=self._owner)
 
     async def before_run(
         self, *, agent: Any, session: Any, context: Any, state: dict[str, Any],

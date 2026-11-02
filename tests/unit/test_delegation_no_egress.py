@@ -2815,12 +2815,21 @@ def test_a_top_level_run_in_a_marked_chat_holds_no_class_c_tool(
 def test_a_top_level_run_in_a_clear_chat_keeps_each_tool(
     sandbox, monkeypatch,  # noqa: F811
 ) -> None:
-    """Non-vacuity. Mutation: drop the mark from ``ChatHoldProvider._off`` -> red."""
+    """Non-vacuity, and the whole difference: a marked chat loses each class C tool
+    and nothing else. Mutation: drop the mark from ``ChatHoldProvider._off`` -> red.
+    Mutation: count an injected tool as the owner's -> a platform tool leaves -> red."""
     _register_every_annotation()
-    model = _Model([_say("ok")])
-    _harness(monkeypatch, sandbox, {PA: model})
+    clear = _Model([_say("ok")])
+    marked = _Model([_say("ok")])
+    _harness(monkeypatch, sandbox, {PA: clear})
     _run_top(PA, ORG_B)
-    assert {"delete_task", "grant_access", "create_task"} <= _offered(model.bodies[0])
+    have = _offered(clear.bodies[0])
+    assert {"delete_task", "grant_access", "create_task"} <= have
+    thread = new_thread()
+    _harness(monkeypatch, sandbox, {PA: marked})
+    _mark_in_redis(ORG_B, thread)
+    _run_top(PA, ORG_B, thread=thread)
+    assert have - _offered(marked.bodies[0]) == {n for n in have if eg.is_held_off_write(n)}
 
 
 def test_a_top_level_run_keeps_each_egress_tool_behind_its_card(
