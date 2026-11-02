@@ -68,6 +68,7 @@ import { ReminderFormModal, type ReminderFormValue } from "./components/Reminder
 import { RemindersPanel, RemindersSheetBody } from "./components/RemindersPanel";
 import {
   createReminder,
+  createdWords,
   moveBack,
   moveRefusal,
   moveReminder,
@@ -200,7 +201,7 @@ export function CalendarView() {
       showWords("error", out.words);
       return out.words;
     }
-    showWords("success", `Reminder set for ${whenText(v.when.ms, remZone)}`);
+    showWords("success", createdWords(out, v.when, remZone));
     setRemForm(null);
     return null;
   };

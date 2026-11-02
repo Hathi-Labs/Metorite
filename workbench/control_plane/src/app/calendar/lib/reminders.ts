@@ -451,7 +451,7 @@ export function firstReadRetry(settled: boolean, attempt: number): number | null
   return FIRST_READ_RETRY_MS[attempt] ?? null;
 }
 
-export { createReminder, moveReminder, type WriteResult } from "@/lib/reminderWrite";
+export { createReminder, createdWords, moveReminder, type WriteResult } from "@/lib/reminderWrite";
 
 /** The words of the busy guard: a second write while one runs does nothing. */
 export const BUSY_WORDS = "Wait for the last change to finish.";
