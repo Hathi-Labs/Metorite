@@ -612,6 +612,15 @@ def test_pz33b_the_words_of_the_check_keep_the_newest_whole_rows() -> None:
     assert summaries.member_words(one, MEMBER, limit=summaries.WORDS_MAX) == "y" * 1500
 
 
+def test_pz33b_the_prompt_takes_the_house_voice_of_a_summary() -> None:
+    from acb_llm.voice import CORE, JSON_NOTE, OVERLAYS
+    from gateway import chat_summary_job
+
+    system = chat_summary_job.SYSTEM
+    assert CORE in system and OVERLAYS["summary"] in system and JSON_NOTE in system
+    assert system.index("member's own words") < system.index(CORE)
+
+
 def test_pz33b_the_job_grounds_on_the_capped_words() -> None:
     source = (ROOT / "apps/services/gateway/gateway/chat_summary_job.py").read_text(
         encoding="utf-8")

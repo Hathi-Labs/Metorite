@@ -71,6 +71,7 @@ from typing import Any
 from acb_common import get_logger
 from acb_common.assistant_profile import chat_summary_for
 from acb_common.db import tenant_session
+from acb_llm.voice import voice_prompt
 
 from gateway.assistant_summaries import (
     IDLE,
@@ -127,6 +128,8 @@ BAD_PAYLOAD = "SummaryFailed: the payload is not {session_id, through}"
 #: What the model must do. The code checks the answer (``check_answer``),
 #: so this text guards nothing alone. ADVISORY (R7): no test can prove that
 #: a model obeys the rule of no inference. The PZ-10 eval measures it.
+#: The member reads the note, so it takes the house voice of a summary
+#: (``acb_llm.voice``, fence ``tests/unit/test_drafting_voice.py``).
 SYSTEM = (
     "You write a short private note about one chat between a member and "
     "their assistant. Only the member reads it. You see only the member's own "
@@ -141,7 +144,7 @@ SYSTEM = (
     'Answer with one JSON object: {"text": "at most 3 sentences and 400 '
     'characters", "follow_ups": ["at most 3 items, each of 120 characters or '
     'less"]}.'
-)
+) + "\n\n" + voice_prompt("summary", json=True)
 
 
 def _now() -> datetime:
