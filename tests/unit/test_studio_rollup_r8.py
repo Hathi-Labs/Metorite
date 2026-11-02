@@ -35,7 +35,8 @@ shows no Seq Scan. A source in another package is refused.
 * M2. ``studio_rules.rollup_parents``: answer ``[]`` for a delete.
   ``test_r8_sum_and_count_follow_a_create_an_update_and_a_delete`` goes red.
 * M3. ``objects_store._apply_batch``: run ``_recompute_parents`` after the SAVEPOINT.
-  ``test_r8_a_currency_mismatch_is_refused_and_the_batch_writes_nothing`` goes red.
+  ``test_r8_a_refused_recompute_rolls_back_its_savepoint_and_keeps_the_callers_work`` and
+  ``test_r8_a_parent_range_that_breaks_rolls_back_the_child_write`` go red.
 * M4. ``objects_store._ROLLUP_OBJECTS_SQL``: drop the package filter.
   ``test_r8_a_write_in_another_package_touches_no_parent_of_this_one`` goes red.
 * M5. ``studio_rules.touched_keys``: take ``ROLLUP`` out of the early return.
@@ -628,6 +629,28 @@ def test_r8_a_currency_mismatch_is_refused_and_the_batch_writes_nothing(world) -
     assert isinstance(err.cause, RollupError) and err.cause.code == "currency_mismatch"
     assert err.index == 1 and rows == 0 and spent == _inr(0)
     assert "USD" not in str(err)
+
+
+def test_r8_a_refused_recompute_rolls_back_its_savepoint_and_keeps_the_callers_work(world) -> None:
+    """The recompute runs inside the SAVEPOINT of the batch. A caller that keeps
+    its session after the refusal loses the writes of that batch and nothing else."""
+    async def go() -> tuple[int, Any, str]:
+        acc, ent = await _objects(world.a, world.pkg_a, [BAL, SPENT])
+        p = await _acct(world.a, acc)
+        async with tenant_session(world.a) as db:
+            await store.apply_writes(db, ANA, package_id=ent.package_id, writes=[
+                _entry(ent, p, days=2, amount=_inr(10))])
+            with pytest.raises(BatchError) as refused:
+                await store.apply_writes(db, ANA, package_id=ent.package_id, writes=[
+                    _entry(ent, p, days=5, amount=_inr(10)),
+                    _entry(ent, p, days=7, amount={"minor": 1, "currency": "USD"})])
+            await store.apply_writes(db, ANA, package_id=ent.package_id, writes=[
+                _entry(ent, p, days=1, amount=_inr(10))])
+        return _rows(world, ent), _data(world, p.id), refused.value.cause.code
+
+    rows, parent, code = _go(world, go)
+    assert code == "currency_mismatch" and rows == 2
+    assert parent["balance"] == 3 and parent["spent"] == _inr(20)
 
 
 def test_r8_a_dangling_parent_is_skipped(world) -> None:
