@@ -14,7 +14,8 @@ import { ContextMenu, type CtxItem } from "@/components/ContextMenu";
 import { themedIcon } from "@/components/Icon";
 import Button from "@/components/ui/Button";
 
-import { snoozeChoices } from "./reminderBand";
+import { useMemberZone } from "./memberZone";
+import { snoozeChoices, snoozeZone } from "./reminderBand";
 import { type ActRow, useReminderActions } from "./reminderActions";
 
 const CHOICE_ICON = { hour: "Clock", evening: "Sunset", tomorrow: "Sunrise" } as const;
@@ -31,13 +32,15 @@ export default function ReminderActs({
   quiet?: boolean;
 }) {
   const acts = useReminderActions(refresh);
+  // The member's saved zone names "This evening" and "Tomorrow morning" (RX-7).
+  const saved = useMemberZone();
   const busy = acts.pending.has(row.key);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const opener = useRef<HTMLElement | null>(null);
   // The choices are read when the menu opens, so "This evening" is true for that moment.
   const items = (): CtxItem[] => [
     { kind: "label", label: "Snooze" },
-    ...snoozeChoices(new Date()).map(
+    ...snoozeChoices(new Date(), snoozeZone(saved)).map(
       (c): CtxItem => ({
         kind: "item",
         label: c.label,

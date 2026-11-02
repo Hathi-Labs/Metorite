@@ -20,10 +20,12 @@
  *
  * Fence: `reminderBand.test.ts`.
  */
-import { fmtClock } from "@/app/tasks/lib/utils";
+import { browserTimeZone, fmtClock } from "@/app/tasks/lib/utils";
+import { clockText, dateText, gridZone, instantIso, wallParts, zonedToIso } from "@/lib/reminderClock";
 import { relativeTime } from "@/lib/taskCard";
 
 import { type AheadReminder, type FeedAnswer, type FeedCard, cardHidden } from "./feed";
+import { knownZone } from "./reminderOpen";
 import { REMINDER_KINDS, reminderIdOf } from "./reminderKinds";
 
 // ── The rows ────────────────────────────────────────────────────────────────
@@ -212,8 +214,12 @@ export type SnoozeChoiceId = "hour" | "evening" | "tomorrow";
 export interface SnoozeChoice {
   id: SnoozeChoiceId;
   label: string;
-  /** The wall time the choice names, in the browser's zone. */
+  /** The instant the choice names. */
   at: Date;
+  /** The same instant as ISO WITH the offset of `zone`, as the gateway wants it. */
+  iso: string;
+  /** The zone whose wall clock named the choice: the member's saved zone (RX-7). */
+  zone: string;
 }
 
 /** The hour of "This evening" and the hour of "Tomorrow morning". */
@@ -223,18 +229,38 @@ export const MORNING_HOUR = 9;
 const EVENING_MIN_GAP_MS = 90 * 60_000;
 
 /**
+ * The zone that the snooze choices read: the member's saved zone, else the
+ * browser's, else UTC. The window of My Day reads the saved zone on the
+ * server, so "This evening" must be 18:00 there, not 18:00 on this browser
+ * (RX-7). A zone the browser does not know falls back.
+ */
+export function snoozeZone(saved: string | null | undefined, browser: string | undefined = browserTimeZone()): string {
+  return knownZone(saved) ?? gridZone(browser);
+}
+
+/** The wall date after `date` by `days`, as "2026-11-03". */
+function dayAfter(date: { year: number; month: number; day: number }, days: number): string {
+  const d = new Date(Date.UTC(date.year, date.month - 1, date.day + days));
+  return dateText(d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate());
+}
+
+/**
  * The snooze choices of a moment (owner, RX-3): In 1 hour, This evening
  * (18:00 today, offered only while it is more than 90 minutes away), and
- * Tomorrow morning (09:00 the next day). The wall clock is the browser's, as
- * the Calendar's is.
+ * Tomorrow morning (09:00 the next day). The wall clock is the clock of
+ * `zone`, the member's saved zone (RX-7), and each choice carries its ISO with
+ * that zone's offset.
  */
-export function snoozeChoices(now: Date): SnoozeChoice[] {
-  const hour = new Date(now.getTime() + 60 * 60_000);
-  const evening = new Date(now.getFullYear(), now.getMonth(), now.getDate(), EVENING_HOUR, 0, 0, 0);
-  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, MORNING_HOUR, 0, 0, 0);
-  const out: SnoozeChoice[] = [{ id: "hour", label: "In 1 hour", at: hour }];
-  if (evening.getTime() - now.getTime() > EVENING_MIN_GAP_MS) out.push({ id: "evening", label: "This evening", at: evening });
-  out.push({ id: "tomorrow", label: "Tomorrow morning", at: tomorrow });
+export function snoozeChoices(now: Date, zone: string = snoozeZone(null)): SnoozeChoice[] {
+  const today = wallParts(now.getTime(), zone);
+  const hourMs = now.getTime() + 60 * 60_000;
+  const evening = zonedToIso(dateText(today.year, today.month, today.day), `${pad(EVENING_HOUR)}:00`, zone);
+  const tomorrow = zonedToIso(dayAfter(today, 1), `${pad(MORNING_HOUR)}:00`, zone);
+  const out: SnoozeChoice[] = [{ id: "hour", label: "In 1 hour", at: new Date(hourMs), iso: instantIso(hourMs, zone), zone }];
+  if (evening && evening.ms - now.getTime() > EVENING_MIN_GAP_MS) {
+    out.push({ id: "evening", label: "This evening", at: new Date(evening.ms), iso: evening.iso, zone });
+  }
+  if (tomorrow) out.push({ id: "tomorrow", label: "Tomorrow morning", at: new Date(tomorrow.ms), iso: tomorrow.iso, zone });
   return out;
 }
 
@@ -249,10 +275,14 @@ export function localIso(d: Date): string {
   return `${date}T${time}${sign}${pad(Math.floor(Math.abs(off) / 60))}:${pad(Math.abs(off) % 60)}`;
 }
 
-/** "Snoozed to 6:00 PM", or "Snoozed to tomorrow 9:00 AM" for another day. */
-export function snoozedWords(at: Date, now: Date): string {
-  const sameDay = at.toDateString() === now.toDateString();
-  return sameDay ? `Snoozed to ${fmtClock(at)}` : `Snoozed to tomorrow ${fmtClock(at)}`;
+/** "Snoozed to 6:00 PM", or "Snoozed to tomorrow 9:00 AM" for another day. Both read in the zone of the choice. */
+export function snoozedWords(choice: Pick<SnoozeChoice, "at" | "zone">, now: Date): string {
+  const day = (d: Date) => {
+    const p = wallParts(d.getTime(), choice.zone);
+    return dateText(p.year, p.month, p.day);
+  };
+  const clock = clockText(choice.at.getTime(), choice.zone);
+  return day(choice.at) === day(now) ? `Snoozed to ${clock}` : `Snoozed to tomorrow ${clock}`;
 }
 
 /** How soon after Undo a reminder that was waiting comes back: the loop fires a past time within a minute. */

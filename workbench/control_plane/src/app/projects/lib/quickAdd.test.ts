@@ -7,6 +7,9 @@
  * create body can carry people.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { dayKey } from "./calendar";
@@ -144,5 +147,22 @@ describe("mergePlans — a lane cell is two contexts at once", () => {
 
   it("merging nothing is still a valid plan", () => {
     expect(mergePlans()).toEqual({ create: {} });
+  });
+});
+
+// RX-7 item 7. A due value is a noon instant. Its first ten characters are the
+// UTC date, which is the day before east of UTC+12. Each date input reads the
+// day through `dueDayOf`. Mutation: write `.slice(0, 10)` on `due_at`, `dueAt`
+// or `expectedBy` in one of the three files, and this fails.
+describe("the date inputs read a due value through dueDayOf", () => {
+  const read = (rel: string) => readFileSync(join(__dirname, "..", "..", "..", rel), "utf8");
+  it.each([
+    "app/tasks/components/ItemDetail.tsx",
+    "app/projects/components/TaskBody.tsx",
+    "app/projects/components/TableView.tsx",
+  ])("%s", (rel) => {
+    const src = read(rel);
+    expect(src).toContain("dueDayOf(");
+    expect(src).not.toMatch(/(due_at|dueAt|expectedBy)\s*\.slice\(0, 10\)/);
   });
 });
