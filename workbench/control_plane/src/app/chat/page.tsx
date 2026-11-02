@@ -1306,6 +1306,7 @@ function ChatPageInner() {
                     : null
                 }
                 pendingInput={recoveredInput ?? askInput}
+                pendingInputTyped={!recoveredInput && !!askInput}
                 onPendingInputConsumed={() => {
                   setRecoveredInput(undefined);
                   setAskInput(undefined);
@@ -1385,6 +1386,9 @@ function ChatFullView() {
       mode: "full",
       sessionId: job === OPEN_CHAT_JOB && fields.session && !reminder ? fields.session : undefined,
       draft: params.get("q") ?? undefined,
+      // D-PZ-37: the command bar's Ask arrives as `q`. It waits in the box,
+      // and a send of it counts as typed (a known limit: a link can say q).
+      typed: true,
       fresh: job === "new-chat" || Boolean(reminder),
       reminder,
     });

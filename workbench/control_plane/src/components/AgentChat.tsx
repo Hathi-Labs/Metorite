@@ -119,6 +119,7 @@ import { useAgentEvents } from "@/lib/agentEvents";
 import { buildFrontendToolsAddendum, runFrontendToolEvent } from "@/hooks/useFrontendTool";
 import { isInterruptedReply } from "@/lib/chatInterrupted";
 import { missingAgentIntegrations, missingIntegrationsText } from "@/lib/missingIntegrations";
+import { EMPTY_BOX, composerTyped, edited, filled, type ComposerMark } from "@/lib/typedMark";
 import {
   composerControls,
   composerModelPlan,
@@ -321,6 +322,13 @@ interface AgentChatProps {
    * Changing this value injects it; `onPendingInputConsumed` fires once applied.
    */
   pendingInput?: string;
+  /**
+   * WS-63 D-PZ-37: true only when `pendingInput` holds the member's own typed
+   * words (the command bar's Ask). Missing or false, the words are not
+   * typed: a send of them from the box carries no typed mark. The Fix prompt
+   * passes nothing (`lib/typedMark.ts`).
+   */
+  pendingInputTyped?: boolean;
   onPendingInputConsumed?: () => void;
   /**
    * Words to SEND once, as the member's turn (D99: the shell's chat bar).
@@ -328,7 +336,7 @@ interface AgentChatProps {
    * waits until the history has loaded, sends each `seq` once, and then
    * calls `onAutoSendConsumed`.
    */
-  autoSend?: { seq: number; text: string } | null;
+  autoSend?: { seq: number; text: string; typed?: boolean } | null;
   onAutoSendConsumed?: (seq: number) => void;
   /**
    * D99: the one assistant's name, "Metorite". The member talks to one
@@ -375,6 +383,7 @@ export default function AgentChat({
   phoneChrome = false,
   moreActs,
   pendingInput,
+  pendingInputTyped,
   onPendingInputConsumed,
   autoSend,
   onAutoSendConsumed,
@@ -594,8 +603,13 @@ export default function AgentChat({
   );
   // The composer is declared below the hook, so the run-cap restore reaches
   // it through this ref (WS-51 D-3).
-  const restoreCappedRef = useRef<(text: string) => void>(() => {});
-  const restoreCappedText = useCallback((text: string) => restoreCappedRef.current(text), []);
+  const restoreCappedRef = useRef<(text: string, typed: boolean) => void>(() => {});
+  const restoreCappedText = useCallback(
+    (text: string, typed: boolean) => restoreCappedRef.current(text, typed), []);
+  // WS-63 D-PZ-37: whether a send from the box carries the typed mark. Words
+  // that a program puts in the box take it away until the box is empty
+  // (`lib/typedMark.ts`). A ref: only the send reads it.
+  const boxMarkRef = useRef<ComposerMark>(EMPTY_BOX);
   const {
     messages, isLoading, error, sendMessage, steerMessage, stopGeneration, setMessages,
     stopping, stopError,
@@ -835,6 +849,8 @@ export default function AgentChat({
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- follows the text
     if (!input) setComposerExpanded(false);
+    // D-PZ-37: an empty box starts clean, so new typed words carry the mark.
+    boxMarkRef.current = edited(boxMarkRef.current, input);
   }, [input]);
 
   // Inject one-shot external text into the composer (e.g. the email Assistant's
@@ -842,6 +858,9 @@ export default function AgentChat({
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (pendingInput && pendingInput.trim()) {
+      // D-PZ-37: the words replace the box. They carry the typed mark only
+      // when the surface says that the member typed them.
+      boxMarkRef.current = filled(EMPTY_BOX, pendingInputTyped === true);
       setInput(pendingInput);
       inputRef.current?.focus();
       onPendingInputConsumed?.();
@@ -853,7 +872,8 @@ export default function AgentChat({
   // member typed since then keeps its place, and the refused words follow
   // it, so nothing they wrote is lost (`mergeCappedText`).
   useEffect(() => {
-    restoreCappedRef.current = (text: string) => {
+    restoreCappedRef.current = (text: string, typed: boolean) => {
+      boxMarkRef.current = filled(boxMarkRef.current, typed);
       setInput((prev) => mergeCappedText(prev, text));
       inputRef.current?.focus();
     };
@@ -1386,6 +1406,8 @@ export default function AgentChat({
   useEffect(() => {
     const left = takeLeftoverQueue(sessionId);
     if (!left) return;
+    // An older build queued them, and no mark came with them (D-PZ-37).
+    boxMarkRef.current = filled(boxMarkRef.current, false);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- a one-time move out of storage
     setInput((prev) => mergeCappedText(prev, left));
   }, [sessionId]);
@@ -1662,7 +1684,8 @@ export default function AgentChat({
 
   // A steer the server refused gives its words back, and says why. Text the
   // member typed since then keeps its place (`mergeCappedText`).
-  const giveBack = useCallback((text: string, notice: string) => {
+  const giveBack = useCallback((text: string, notice: string, typed: boolean) => {
+    boxMarkRef.current = filled(boxMarkRef.current, typed);
     setInput((prev) => mergeCappedText(prev, text));
     setComposerNotice(notice);
     inputRef.current?.focus();
@@ -1673,9 +1696,14 @@ export default function AgentChat({
    * `lib/chatSteer.ts`): the run goes on, its partial reply stays, and no
    * second stream opens. Returns false when the words were not taken, so
    * the box keeps them.
+   *
+   * WS-63 D-PZ-37: `opts.typed` is the ONE typed mark. Only the composer's
+   * send and the shell's Ask field (one box with the composer) pass it. A
+   * pill, a choice, a card action, a feed starter, a retry and the Fix
+   * prompt call this with no mark (`lib/typedMark.test.ts`).
    */
   const submitText = useCallback(
-    (text: string): boolean => {
+    (text: string, opts?: { typed?: boolean }): boolean => {
       const trimmed = text.trim();
       // Guard ALL senders (suggestion pills, MCQ choices, HITL card submits,
       // the email "Fix" flow) — not just the textarea form — against sending
@@ -1684,16 +1712,17 @@ export default function AgentChat({
       if (!trimmed || loadingHistory) return false;
       setComposerNotice(null);
       const route = sendRoute({ runActive: isRunActive, mode: effectiveRuntime });
+      const typed = opts?.typed === true;
       if (route === "send") {
-        void sendMessage(trimmed);
+        void (typed ? sendMessage(trimmed, { typed: true }) : sendMessage(trimmed));
         return true;
       }
       if (route === "unsupported") {
         setComposerNotice(STEER_UNSUPPORTED);
         return false;
       }
-      void steerMessage(trimmed).then((out) => {
-        if (out.kind === "refused") giveBack(trimmed, out.notice);
+      void (typed ? steerMessage(trimmed, { typed: true }) : steerMessage(trimmed)).then((out) => {
+        if (out.kind === "refused") giveBack(trimmed, out.notice, typed);
       });
       return true;
     },
@@ -1711,7 +1740,13 @@ export default function AgentChat({
     // Refused (a live run that cannot take a steer): the words wait in the
     // composer with the notice, as a refused steer does. The field that sent
     // them has already cleared, so they must not vanish (review, 2026-10-14).
-    if (!submitText(autoSend.text)) setInput((prev) => mergeCappedText(prev, autoSend.text));
+    // D-PZ-37: the Ask field is one box with the composer, so its typed
+    // words carry the mark. A start pill of the field sends none.
+    const askTyped = autoSend.typed === true;
+    if (!submitText(autoSend.text, askTyped ? { typed: true } : undefined)) {
+      boxMarkRef.current = filled(boxMarkRef.current, askTyped);
+      setInput((prev) => mergeCappedText(prev, autoSend.text));
+    }
     onAutoSendConsumed?.(autoSend.seq);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoSend?.seq, loadingHistory]);
@@ -1728,7 +1763,10 @@ export default function AgentChat({
     if (!input.trim() || loadingHistory) return;
     // `answerTyped` is defined below, where the question state is read. A
     // submit runs after the render, so it is in scope.
-    if (answerTyped(input) || submitText(input)) setInput("");
+    // WS-63 D-PZ-37: the ONE send that sets the typed mark, unless words
+    // that the member did not type sit in the box (`boxMarkRef`).
+    const typed = composerTyped(boxMarkRef.current);
+    if (answerTyped(input) || submitText(input, typed ? { typed: true } : undefined)) setInput("");
     inputRef.current?.focus();
   };
 
@@ -2046,7 +2084,12 @@ export default function AgentChat({
   // (`lib/typedAnswer.ts`, owner report 2026-10-23). Else it steers.
   const typedTarget = typedAnswerTarget({ userInput, elicitation });
   const answerTyped = (text: string): boolean => {
-    const giveBack = () => setInput((prev) => (prev.trim() ? prev : text));
+    // D-PZ-37: the words go back with the mark that the box had.
+    const was = boxMarkRef.current;
+    const giveBack = () => {
+      boxMarkRef.current = filled(boxMarkRef.current, composerTyped(was));
+      setInput((prev) => (prev.trim() ? prev : text));
+    };
     if (typedTarget === "userInput") answerUserInput(typedAnswers("userInput", text), giveBack);
     else if (typedTarget === "elicitation") answerElicitation(typedAnswers("elicitation", text, elicitation?.questions), giveBack);
     else return false;
