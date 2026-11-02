@@ -10,7 +10,7 @@ Spec: ``project-docs/specs/crm_conversational.md`` §8 CRM-M1 and §4 (D164).
   list fails, and so does a list entry that names no route (done when 1).
 - ``change_log.log_change`` is the one writer of ``crm_change_log``.
 - Each area has an Undo function, except ``setup``, which no Undo reverses.
-- Migration 328 has the tenant key, FORCE RLS and the tenant policy, the
+- The migration (331) has the tenant key, FORCE RLS and the tenant policy, the
   one Undo index and the guard trigger. The generated phases carry the table.
 - The chat holds ``crm_change_history`` in its default scope.
 
