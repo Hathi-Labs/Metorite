@@ -36,6 +36,7 @@ reads only their own changes, and a row never changes.
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import re
 import uuid
@@ -915,6 +916,76 @@ async def test_the_undo_of_an_added_pipeline_stage_that_moved_since_is_refused(
                 pid=pipeline, sid=ids["next"]) == 7
     assert len(_rows(ns, ns.org_a)) == 3
     assert all(r.undone_by is None for r in _rows(ns, ns.org_a))
+
+
+async def _until_it_waits(p: Any, call: asyncio.Task) -> None:
+    """Wait until a statement of the cluster waits on a lock, or *call* ends."""
+    for _ in range(150):
+        with p.admin_engine.begin() as c:
+            if c.execute(text("SELECT count(*) FROM pg_locks WHERE NOT granted")).scalar():
+                return
+        if call.done():
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError("the request never waited on the other transaction")
+
+
+_PLACE_INSERT = (
+    "INSERT INTO crm_pipeline_stages (organization_id, pipeline_id, status_id, position) "
+    "VALUES (CAST(:o AS uuid), CAST(:pid AS uuid), CAST(:sid AS uuid), :pos)"
+)
+
+
+@_DB_GATE
+async def test_an_add_that_another_write_beat_logs_no_row(ns, app_engine) -> None:  # noqa: F811
+    """P3b (fix round 1). Another transaction puts the stage in the pipeline
+    after the check of the route and before its INSERT. The INSERT does
+    nothing, so the route logs no row. Mutation: log with no ``RETURNING``
+    check → one row for a change that the route did not make → red."""
+    _settings(ns, ns.org_a, "native")
+    ids = _seed(ns, ns.org_a)
+    pipeline = _pipeline(ns, ns.org_a)
+    with ns.admin_engine.connect() as other:
+        tx = other.begin()
+        other.execute(text(_PLACE_INSERT),
+                      {"o": ns.org_a, "pid": pipeline, "sid": ids["next"], "pos": 5})
+        call = asyncio.create_task(_call(
+            ns, _admin(ns.org_a), "POST", f"/crm/pipelines/{pipeline}/stages",
+            {"status_id": ids["next"]}))
+        await _until_it_waits(ns, call)
+        tx.commit()
+    r = await call
+    assert r.status_code == 201, r.text
+    assert _rows(ns, ns.org_a) == []
+    assert _one(ns, "SELECT position FROM crm_pipeline_stages "
+                    "WHERE pipeline_id = CAST(:pid AS uuid) AND status_id = CAST(:sid AS uuid)",
+                pid=pipeline, sid=ids["next"]) == 5
+
+
+@_DB_GATE
+async def test_a_removal_that_another_write_beat_logs_no_row(ns, app_engine) -> None:  # noqa: F811
+    """P3b (fix round 1). Another transaction takes the stage out after the
+    checks of the route and before its DELETE. The DELETE takes nothing, so
+    the route logs no row. Mutation: read the place before the DELETE and
+    log from it → one row for a change that the route did not make → red."""
+    _settings(ns, ns.org_a, "native")
+    ids = _seed(ns, ns.org_a)
+    pipeline = _pipeline(ns, ns.org_a)
+    _one(ns, _PLACE_INSERT + " RETURNING position",
+         o=ns.org_a, pid=pipeline, sid=ids["next"], pos=5)
+    with ns.admin_engine.connect() as other:
+        tx = other.begin()
+        other.execute(text(
+            "DELETE FROM crm_pipeline_stages WHERE pipeline_id = CAST(:pid AS uuid) "
+            "AND status_id = CAST(:sid AS uuid)"), {"pid": pipeline, "sid": ids["next"]})
+        call = asyncio.create_task(_call(
+            ns, _admin(ns.org_a), "DELETE",
+            f"/crm/pipelines/{pipeline}/stages/{ids['next']}"))
+        await _until_it_waits(ns, call)
+        tx.commit()
+    r = await call
+    assert r.status_code == 200, r.text
+    assert _rows(ns, ns.org_a) == []
 
 
 @_DB_GATE

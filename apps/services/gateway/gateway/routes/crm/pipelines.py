@@ -265,15 +265,18 @@ _PLACE_SQL = (
 async def add_stage_in(
     db: Any, user: Any, pipeline_id: str, status_id: str, position: int | None,
     *, undoes: str | None = None,
-) -> None:
+) -> bool:
     """The write of ``POST /crm/pipelines/{id}/stages``, in the caller's
     transaction. The route and the Undo of a removal both call it. It logs
-    one row when the stage was not in the pipeline (CRM-M1)."""
+    one row when ITS statement put the stage in the pipeline (CRM-M1), and
+    returns whether it did. A write of another request that put the stage
+    there first, between the check and the INSERT, makes the INSERT do
+    nothing, so no row is logged."""
     pipeline = await _native_pipeline(db, pipeline_id)
     stage = await require_row(db, "crm_deal_statuses", status_id, "Status")
     await assert_writable(db, current_tenant(), "crm_pipeline_stages")
     if (await db.execute(text(_PLACE_SQL), {"p": pipeline_id, "s": status_id})).first():
-        return  # It sits there already, and keeps its place.
+        return False  # It sits there already, and keeps its place.
     if position is None:
         position = int((await db.execute(
             text(
@@ -282,14 +285,16 @@ async def add_stage_in(
             ),
             {"p": pipeline_id},
         )).scalar() or 1)
-    await db.execute(
+    inserted = (await db.execute(
         text(
             "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position) "
             "VALUES (CAST(:p AS uuid), CAST(:s AS uuid), :pos) "
-            "ON CONFLICT (pipeline_id, status_id) DO NOTHING"
+            "ON CONFLICT (pipeline_id, status_id) DO NOTHING RETURNING position"
         ),
         {"p": pipeline_id, "s": status_id, "pos": position},
-    )
+    )).first()
+    if inserted is None:
+        return False  # Another write put it there first. This one changed nothing.
     await log_change(db, user, Change(
         area="pipeline_stage", action=change_log.CREATE,
         summary=(
@@ -299,6 +304,7 @@ async def add_stage_in(
         ladder=change_log.TEAM, entity_id=str(pipeline_id),
         after={"status_id": status_id, "position": position, "stage": stage.name},
     ), undoes=undoes)
+    return True
 
 
 @router.delete(
@@ -324,10 +330,12 @@ async def remove_pipeline_stage(
 async def remove_stage_in(
     db: Any, user: Any, pipeline_id: str, status_id: str,
     *, undoes: str | None = None,
-) -> None:
+) -> bool:
     """The write of ``DELETE /crm/pipelines/{id}/stages/{status_id}``, in the
     caller's transaction. The route and the Undo of an added stage both call
-    it. It logs one row when the stage was in the pipeline (CRM-M1)."""
+    it. It logs one row when ITS statement took the stage out (CRM-M1), and
+    returns whether it did. The place in the row comes from ``RETURNING``,
+    so a removal by another request at the same time logs nothing here."""
     pipeline = await _native_pipeline(db, pipeline_id)
     await assert_writable(db, current_tenant(), "crm_pipeline_stages")
     in_use = int((await db.execute(
@@ -348,16 +356,15 @@ async def remove_stage_in(
                 ),
             },
         )
-    place = (await db.execute(text(_PLACE_SQL), {"p": pipeline_id, "s": status_id})).first()
-    await db.execute(
+    place = (await db.execute(
         text(
             "DELETE FROM crm_pipeline_stages WHERE pipeline_id = CAST(:p AS uuid) "
-            "AND status_id = CAST(:s AS uuid)"
+            "AND status_id = CAST(:s AS uuid) RETURNING position"
         ),
         {"p": pipeline_id, "s": status_id},
-    )
+    )).first()
     if place is None:
-        return  # It was not there. Nothing changed.
+        return False  # It was not there, or another write took it. Nothing changed here.
     stage = await load_row(db, "crm_deal_statuses", status_id)
     name = getattr(stage, "name", None) or "a stage"
     await log_change(db, user, Change(
@@ -366,6 +373,7 @@ async def remove_stage_in(
         ladder=change_log.TEAM, entity_id=str(pipeline_id),
         before={"status_id": status_id, "position": int(place.position or 0), "stage": name},
     ), undoes=undoes)
+    return True
 
 
 # ── The Undo of a change (CRM-M1) ───────────────────────────────────────────
@@ -406,7 +414,8 @@ async def _undo_stage(db: Any, user: Any, logged: Logged) -> None:
             {k: after[k] for k in ("status_id", "position") if k in after},
         ):
             raise change_log.changed_since()
-        await remove_stage_in(db, user, pipeline_id, status_id, undoes=logged.id)
+        if not await remove_stage_in(db, user, pipeline_id, status_id, undoes=logged.id):
+            raise change_log.changed_since()
         return
     before = logged.before or {}
     status_id = str(before.get("status_id") or "")
@@ -414,10 +423,13 @@ async def _undo_stage(db: Any, user: Any, logged: Logged) -> None:
         raise change_log.gone("deal_stage")
     if (await db.execute(text(_PLACE_SQL), {"p": pipeline_id, "s": status_id})).first():
         raise change_log.changed_since()
-    await add_stage_in(
+    # False: another request put the stage back between the check and the
+    # INSERT. That is a change since, and not an Undo with no row.
+    if not await add_stage_in(
         db, user, pipeline_id, status_id, int(before.get("position") or 0),
         undoes=logged.id,
-    )
+    ):
+        raise change_log.changed_since()
 
 
 @router.get(
