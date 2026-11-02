@@ -360,6 +360,16 @@ async def test_a_fraction_of_a_minute_refuses_the_row(monkeypatch) -> None:
     assert [r["id"] for r in asked[0]["rows"]] == ["row-2"]
 
 
+async def test_a_hint_reads_like_the_single_task_card(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.update_tasks(
+        _changes({"task_id": _tid(1), "estimate_mins": 90}, {"task_id": _tid(2), "estimate_mins": 240})
+    )
+    hints = [r["hint"] for r in asked[0]["rows"]]
+    assert hints == ["estimate: none → 1h 30m", "estimate: none → 4h"]
+
+
 # ── 6. A row sends what update_task sends ───────────────────────────────────
 
 

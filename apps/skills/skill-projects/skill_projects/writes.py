@@ -3313,6 +3313,20 @@ def _update_arg(key: str, value: Any) -> Any:
 _UPDATE_HINT_ORDER = (
     "due_at", "start_date", "estimate_mins", "type", "priority", "important", "leveraged", "tags",
 )
+def _hint_value(key: str, value: Any) -> str:
+    """A value of a row hint, in the words of the single-task card: "none"
+    for an empty value, a list as a comma list, and an estimate in hours and
+    minutes."""
+    if value is None or value == "":
+        return "none"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value) or "none"
+    if key == "estimate_mins" and isinstance(value, int) and not isinstance(value, bool):
+        hours, mins = divmod(value, 60)
+        return " ".join(p for p in (f"{hours}h" if hours else "", f"{mins}m" if mins else "") if p) or "0m"
+    return str(value)
+
+
 #: The words of the single-task card for a hint key.
 _UPDATE_HINT_LABEL = {"due_at": "due", "start_date": "start", "estimate_mins": "estimate"}
 
@@ -3352,16 +3366,12 @@ class _UpdateRow(_BatchRow):
         parts = []
         for key in keys:
             value = card[key]
-            if isinstance(value, (list, tuple)):
-                value = ", ".join(str(v) for v in value)
             name = _UPDATE_HINT_LABEL.get(key, key)
             if key in before and before[key] != value:
-                old = before[key]
-                if isinstance(old, (list, tuple)):
-                    old = ", ".join(str(v) for v in old)
-                parts.append(f"{name}: {old} → {value}")
+                old = _hint_value(key, before[key])
+                parts.append(f"{name}: {old} → {_hint_value(key, value)}")
             else:
-                parts.append(f"{name} → {value}")
+                parts.append(f"{name} → {_hint_value(key, value)}")
         return _unfence(", ".join(parts))
 
     async def send(self) -> Any:
