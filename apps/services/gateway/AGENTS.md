@@ -259,6 +259,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
     - ⚠️ A route answers a refusal with `exc.detail_for(user.email)` only. It never sends `ClaimTaken.holder`, because that can name the private install of another member.
     - `sharing.py` is the ONE share rule of a private install: an address, not the owner, and made by the owner. The member purge and the resolve read it. Do not copy the SQL.
     - Fences: `test_package_host_store.py`, `test_package_host_store_r8.py`, `test_admin_member_purge.py`.
+22f. align/ -- **The project alignment check** (WS-ALN, `project_alignment.md`). `trigger.py` is the producer of `align.check`, and `check.py` holds its handler, a stub until ALN-7. `create_task`, `patch_task` and `move_task_in` call `trigger.enqueue_check` on the session of the write, inside its `_tenant_session`. ⚠️ No hook sits on `insert_row` or `update_row`. ⚠️ `jobs_enabled` is the one reader of `ALIGN_JOBS_ORGS`. It runs first and touches no database, and it needs `worker.worker_enabled` too, because `prune` deletes no queued row. ⚠️ Each statement runs in `db.begin_nested()`, and the error is swallowed there, so a failed enqueue never fails the write. The log line holds the error class, never task text. ⚠️ A personal task gets no job, and a move gets one only when it leaves a personal project. `core.assert_move_keeps_privacy` answers the owner of the project that the task leaves, so the move adds no read. Fence: `test_align_trigger.py` (R8).
 
 ## Work Guidance
 

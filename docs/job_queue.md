@@ -164,6 +164,15 @@ await queue.enqueue(db, "email.send_later", {"draft_id": draft_id},
 
 A kind matches `[a-z][a-z0-9_.]{0,63}`.
 
+**A producer on a member's write.** `align/trigger.py::enqueue_check` (WS-ALN
+ALN-1) enqueues `align.check` on the session of a task write, inside
+`db.begin_nested()`. So the write and the job commit together, and a failed
+enqueue rolls back the savepoint only. Without the savepoint, a Postgres error
+aborts the member's write. The gate needs the worker on and the org in
+`ALIGN_JOBS_ORGS`, because `prune` deletes no queued row. Copy this form for a
+new producer on a request path. `project_alignment.md` §5 holds the design, and
+`test_align_trigger.py` is the fence.
+
 ## 5a. The detached mode (BR-1b-a, built)
 
 The adversarial review of BR-1a recorded this contract. BR-1b-a built it.

@@ -1,7 +1,7 @@
 # Project alignment — Metorite checks work against the project's rules (WS-ALN)
 
 > **Product:** Metorite · **Feature:** the project of a task, the project's rules, and a check that asks a person · **Updated:** 2026-11-02 · **Owner:** vjvarada
-> **Status:** 📋 **SPEC, NOTHING BUILT.** ALN-0 (this spec) is the first slice. ALN-1 is next. The owner did not answer ALN-Q1 to ALN-Q5, and told us to start. The build runs on the working defaults of §14.
+> **Status:** 🟡 **IN BUILD, DARK.** ALN-0 (this spec) and ALN-1 (§5, the durable trigger) are built. `ALIGN_JOBS_ORGS` ships empty and `JOB_QUEUE` ships off, so no job exists yet, and the `align.check` handler is a stub until ALN-7. ALN-2a and ALN-4 are next. The owner did not answer ALN-Q1 to ALN-Q5, and told us to start. The build runs on the working defaults of §14.
 > **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §11 was read on that commit. Earlier task text came from a read at `308df8828`, and §2 lists each fact that changed.
 > **Board:** WS-ALN in `work_plan.md` §2.1. **Decision:** D160. D12, D75, D93, D100, D104, D105, D128, D131, D140, D145 and workflows G5 bind it.
 > **Metorite:** project "Projects/Tasks App", epic 1368, this spec task 1369. The questions are tasks 1370 to 1374. The slices ALN-1 to ALN-14 are tasks 1375 to 1388, in order.
@@ -222,7 +222,7 @@ A new table `pm_alignment_findings`.
 **The seam is the four handlers**, because no single write seam exists. The D80 fence (`tests/unit/test_pm_task_insert_sites.py`) holds the creators. ALN-1 does not hook `insert_row` or `update_row`.
 
 1. In `create_task`, `patch_task` and `move_task_in`, the handler enqueues one job of kind `align.check` with `jobs.queue.enqueue(db, ...)`. It uses the same tenant session that the handler holds. The enqueue runs in the same transaction as the write, inside a savepoint (`db.begin_nested()`). A crash between a commit and a later enqueue would lose the job, and this form cannot. `create_personal_task` is not in the list, because a personal task is never checked (§1.2). The payload holds the task id only and no org, because the session binds the tenant. The dedupe key is `align:<task_id>:<content_hash>`, which fits the 200-character limit.
-2. `patch_task` enqueues only when the hash of the title, the description and the acceptance text changed. An edit of a due date enqueues nothing.
+2. `patch_task` enqueues only when the hash of the title, the description and the acceptance text changed. An edit of a due date enqueues nothing. `pm_tasks` has no acceptance column (read at `f41bc2257`), so `trigger.content_hash` reads the title and the description.
 3. A move out of the personal root (`move_task_in`) enqueues, because that is the moment a personal note becomes project work.
 4. The page signal is not part of ALN-1. Pins arrive with ALN-4, so the `kb.page.published` job for each pinned project belongs to ALN-5 or ALN-11. With no pin, a publish enqueues nothing.
 5. Recurrence and the file import stay out in v1. A recurring copy repeats text that was checked. An import is a bulk load that an owner would not want to check. Both are stated here so a later slice can reverse the choice.
