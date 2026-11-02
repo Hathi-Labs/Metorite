@@ -125,6 +125,24 @@ rounding or currency, on an object that holds records is
 refused (:func:`_check_formulas_first`), because there is no backfill. A removed
 formula leaves its stored values as plain values.
 
+**The roll-ups (C7b).** A rule of kind ``rollup`` fills a field of a parent record
+with the sum, count, min or max of a hot field of the child records of another
+object of the same package, found through a hot relation field of the child
+(``acb_common/studio_rules.py`` holds the grammar and the pure checks). The
+store recomputes each stale parent after all the writes of the batch, in the
+same SAVEPOINT and under the org lock, so a read is exact. :func:`_find_rollups`
+finds the parent objects from the package rules after the org lock, and
+:func:`_lock_objects` locks them with the others in ascending id. The parent
+records follow the child records, ``FOR NO KEY UPDATE`` in ascending id.
+:func:`_recompute_parents` runs one aggregate (:func:`build_rollup`) for each
+parent and each roll-up, and :func:`_derive_parent` writes the parent: the
+formulas run again, the record is validated, and the hot rows are rebuilt. At
+most :data:`~acb_common.studio_rules.MAX_ROLLUP_PARENTS` parents and
+:data:`~acb_common.studio_rules.MAX_ROLLUP_STATEMENTS` aggregates run for each
+batch, under the one deadline of the batch. A parent id that names no record is
+skipped. A child in another currency than the rule is refused. A roll-up that
+does not fit now, or that the store cannot read, refuses the batch.
+
 **On a floor of 0 or less, a write that does not lower a group never reads
 the group.** The store adds up the net change of the batch on each key of
 ``group_sum_min``, in exact ``Decimal``, from the values that it read under
@@ -190,21 +208,30 @@ from acb_common.studio_fields import (
     stored_field,
     validate_record,
 )
-from acb_common.studio_query import Condition, Query, QueryError
+from acb_common.studio_query import Condition, Query, QueryError, parse_query
 from acb_common.studio_rules import (
     FORMULA,
+    MAX_ROLLUP_PARENTS,
+    MAX_ROLLUP_STATEMENTS,
     MAX_WRITES_PER_BATCH,
     RANGE,
+    ROLLUP,
+    ROLLUP_OF_ROLLUP,
     STATE_MACHINE,
     UNIQUE,
     ConstraintError,
     FormulaPlan,
+    RollupError,
+    RollupSource,
     Rule,
     add_change,
     check_group_sum,
     check_kind_known,
     check_move,
     check_range,
+    check_rollup_currency,
+    check_rollup_inputs,
+    check_rollups,
     check_rule_is_hot,
     check_rules_fit,
     check_unique_count,
@@ -213,10 +240,14 @@ from acb_common.studio_rules import (
     parse_rules,
     plan_formulas,
     refuse_computed_keys,
+    rollup_parents,
+    rollup_result,
     run_formulas,
     stored_rules,
     touched_keys,
+    where_filter,
     with_initial,
+    with_rollup_zero,
     without_targets,
 )
 from sqlalchemy import text
@@ -322,6 +353,22 @@ _LOCK_PACKAGE_OBJECT_SQL = (
     f"SELECT {_OBJECT_COLUMNS} FROM studio_objects "
     f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
     "AND package_id = CAST(:pid AS uuid) FOR UPDATE"
+)
+
+#: The objects of one package that hold a roll-up rule, with their rules (C7b).
+_ROLLUP_OBJECTS_SQL = (
+    "SELECT id::text, name, constraints FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) "
+    "AND constraints @> CAST(:probe AS jsonb)"
+)
+_ROLLUP_PROBE = '[{"kind": "rollup"}]'
+
+#: The names of the objects that a batch writes. A name never changes, and every
+#: registry change takes the org lock, so this read needs no row lock.
+_OBJECT_NAMES_SQL = (
+    "SELECT id::text, name FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) "
+    "AND id = ANY(CAST(:oids AS uuid[]))"
 )
 
 _SET_RULES_SQL = (
@@ -522,9 +569,10 @@ class StudioObject:
 
     @property
     def computed(self) -> tuple[str, ...]:
-        """The keys of the fields that a formula computes (C7a). A caller writes
-        none of them, so a Form shows each one read-only and sends no key."""
-        return tuple(str(r.target) for r in self.constraints if r.kind == FORMULA)
+        """The keys of the fields that a formula (C7a) or a roll-up (C7b) computes.
+        A caller writes none of them, so a Form shows each one read-only and
+        sends no key."""
+        return tuple(str(r.target) for r in self.constraints if r.kind in (FORMULA, ROLLUP))
 
 
 @dataclass(frozen=True)
@@ -801,6 +849,37 @@ def _check_no_rule_reads(rules: Sequence[Rule], key: str) -> None:
                 "Remove the rule first.")
 
 
+async def _package_rollups(db: Any, pid: str, *, strict: bool = False) -> list[tuple[str, str, Rule]]:
+    """Each roll-up rule of the package *pid*, as ``(object id, object name, rule)``.
+    The org lock is held. With *strict*, a stored roll-up that this code cannot
+    read raises :class:`RollupError`, because its source is unknown and a write
+    of the package could skip it. A rule must never pass because the store
+    could not read it."""
+    out: list[tuple[str, str, Rule]] = []
+    rows = (await db.execute(text(_ROLLUP_OBJECTS_SQL), {"pid": pid, "probe": _ROLLUP_PROBE})).all()
+    for row in rows:
+        raw = _json(row[2])
+        for item, rule in zip(raw, stored_rules(raw), strict=True):
+            if rule.kind == ROLLUP:
+                out.append((str(row[0]), str(row[1]), rule))
+            elif strict and isinstance(item, Mapping) and item.get("kind") == ROLLUP:
+                raise RollupError(
+                    rule.name, str(row[1]), "declaration",
+                    f"Object `{row[1]}` holds a roll-up that the store cannot read. "
+                    "Declare the rules of the object again.")
+    return out
+
+
+async def _check_no_rollup_reads(db: Any, row: Any, key: str) -> None:
+    """A field of a source that a roll-up of the package reads stays hot: its
+    hot rows are what the roll-up sums, so a cold field would skip the sum."""
+    for _, owner, rule in await _package_rollups(db, str(row[1])):
+        if rule.source == str(row[2]) and key in rule.source_keys():
+            raise ObjectStoreError(
+                f"Field `{key}` must stay hot, because rule `{rule.name}` of object `{owner}` "
+                "reads it. Remove the rule first.")
+
+
 async def set_field_hot(db: Any, object_id: str, key: str, hot: bool) -> bool:
     """Turn the field *key* of the object *object_id* hot, or not hot.
 
@@ -827,6 +906,7 @@ async def set_field_hot(db: Any, object_id: str, key: str, hot: bool) -> bool:
         return True
     if not hot:
         _check_no_rule_reads(_object(row, fields).constraints, key)
+        await _check_no_rollup_reads(db, row, key)
         await db.execute(text(_SET_HOT_SQL), {"oid": oid, "key": key, "hot": False})
         await db.execute(text(_UNHOT_SQL), {"oid": oid, "key": key})
         return True
@@ -863,18 +943,47 @@ def _formula_key(rule: Rule) -> str:
     return json.dumps(kept, sort_keys=True, ensure_ascii=False)
 
 
+def _rollup_key(rule: Rule) -> str:
+    """What makes a stored roll-up stale: the target, the source, the relation,
+    the aggregate, the read field, the filter and the currency. The name and the
+    message do not. Key order does not matter."""
+    stored = rule.stored()
+    kept = {k: stored.get(k) for k in (
+        "target", "source", "via", "agg", "field", "where", "currency")}
+    return json.dumps(kept, sort_keys=True, ensure_ascii=False)
+
+
+def _computed_key(rule: Rule) -> str:
+    return _formula_key(rule) if rule.kind == FORMULA else _rollup_key(rule)
+
+
 async def _check_formulas_first(db: Any, oid: str, old: Sequence[Rule],
                                 new: Sequence[Rule]) -> None:
-    """A new or changed formula needs an object with no record (C7a). There is
-    no backfill, and a stored result that a formula did not compute is worse
-    than a refusal. A formula that stays as it is, and a removed one, pass: a
-    removed formula leaves its stored values as plain values."""
-    kept = {_formula_key(r) for r in old if r.kind == FORMULA}
-    fresh = [r for r in new if r.kind == FORMULA and _formula_key(r) not in kept]
+    """A new or changed formula or roll-up needs an object with no record (C7a,
+    C7b). There is no backfill, and a stored result that the rule did not
+    compute is worse than a refusal. A rule that stays as it is, and a removed
+    one, pass: a removed rule leaves its stored values as plain values."""
+    kinds = (FORMULA, ROLLUP)
+    kept = {(r.kind, _computed_key(r)) for r in old if r.kind in kinds}
+    fresh = [r for r in new if r.kind in kinds and (r.kind, _computed_key(r)) not in kept]
     if fresh and (await db.execute(text(_HAS_RECORDS_SQL), {"oid": oid})).scalar_one():
         raise ConstraintError(
             fresh[0].name, f"Rule `{fresh[0].name}`: declare before the first record. This "
-            "object holds records, so a new or changed formula would leave their results stale.")
+            "object holds records, so a new or changed formula or roll-up would leave their "
+            "results stale.")
+
+
+async def _rollup_sources(db: Any, pid: str, rules: Sequence[Rule]) -> dict[str, RollupSource]:
+    """The objects of the package that the roll-ups of *rules* name, with their
+    fields and rules. A name that the package does not hold is left out, and
+    the check then refuses the rule. The org lock is held."""
+    out: dict[str, RollupSource] = {}
+    for name in sorted({str(r.source) for r in rules if r.kind == ROLLUP}):
+        row = (await db.execute(text(_OBJECT_BY_NAME_SQL), {"pid": pid, "name": name})).first()
+        if row is not None:
+            out[name] = RollupSource(
+                name, tuple(await _fields(db, str(row[0]))), stored_rules(_json(row[7])))
+    return out
 
 
 async def set_constraints(db: Any, object_id: str, constraints: Any, *,
@@ -897,7 +1006,11 @@ async def set_constraints(db: Any, object_id: str, constraints: Any, *,
     if locked is None:
         return None
     fields = await _fields(db, oid)
-    check_rules_fit(rules, fields)
+    name = str(locked[2])
+    check_rules_fit(rules, fields, object_name=name, sources=await _rollup_sources(db, pid, rules))
+    readers = [(owner, rule) for _, owner, rule in await _package_rollups(db, pid)
+               if rule.source == name]
+    check_rollup_inputs(name, rules, readers)
     await _check_formulas_first(db, oid, stored_rules(_json(locked[7])), rules)
     row = (await db.execute(text(_SET_RULES_SQL), {
         **binds, "rules": json.dumps([r.stored() for r in rules], ensure_ascii=False)})).one()
@@ -1010,6 +1123,7 @@ _RECORD_ROW = "r.id, r.object_id, r.data, r.created_by, r.updated_by, r.created_
 _HOT_COLUMN: Mapping[str, str] = {
     "text": "v_text", "email": "v_text", "select": "v_text", "number": "v_num",
     "money": "v_num", "date": "v_ts", "datetime": "v_ts", "checkbox": "v_bool",
+    "relation": "v_text",
 }
 assert set(_HOT_COLUMN) == set(studio_query.OPS_BY_TYPE), "each type of the op table has a column"
 
@@ -1552,6 +1666,11 @@ class _Mark:
     index: int
     before: dict[str, Any] | None
     after: dict[str, Any] | None
+    #: The actor that last wrote the record, for a derived write with no actor.
+    updated_by: str = ""
+    #: True for a parent that only a roll-up changed (C7b). It is no caller write,
+    #: so its keys need no check: no roll-up target is a key of a rule.
+    derived: bool = False
 
 
 class _Batch:
@@ -1565,6 +1684,15 @@ class _Batch:
         self.objects: dict[str, _Held] = {}
         self.marks: dict[tuple[str, str], _Mark] = {}
         self.index = 0
+        #: The roll-ups that read an object of this batch (C7b): the object id of
+        #: the parent, its name and the rule.
+        self.rollups: list[tuple[str, str, Rule]] = []
+        #: The id of each object of the batch, by name.
+        self.names: dict[str, str] = {}
+        #: The fields that any roll-up of the package reads, for each source name.
+        self.readers: dict[str, set[str]] = {}
+        #: The first write that made each parent stale, for the place of an error.
+        self.firsts: dict[tuple[str, str], int] = {}
 
 
 def _clean_write(write: Any) -> Write:
@@ -1599,14 +1727,35 @@ def _clean_writes(writes: Any) -> list[Write]:
     return out
 
 
+async def _find_rollups(db: Any, batch: _Batch) -> None:
+    """Step 1b (C7b). Find the parent objects: the objects of the package whose
+    rules hold a roll-up that reads an object of this batch. The org lock is
+    held, and every change of a rule takes it too, so the answer is stable.
+    A package with no roll-up costs one statement."""
+    found = await _package_rollups(db, batch.pid, strict=True)
+    if not found:
+        return
+    rows = (await db.execute(text(_OBJECT_NAMES_SQL), {
+        "pid": batch.pid, "oids": sorted({s.object_id for s in batch.steps})})).all()
+    batch.names = {str(r[1]): str(r[0]) for r in rows}
+    for oid, owner, rule in found:
+        batch.readers.setdefault(str(rule.source), set()).update(rule.source_keys())
+        if rule.source in batch.names:
+            batch.rollups.append((oid, owner, rule))
+
+
 async def _lock_objects(db: Any, batch: _Batch) -> None:
-    """Step 2. The second statement of each object follows its row lock."""
+    """Step 2. The second statement of each object follows its row lock. The
+    parent objects of the roll-ups join the list, so all come in one order."""
     first: dict[str, int] = {}
     writes: set[str] = set()
     for i, step in enumerate(batch.steps):
         first.setdefault(step.object_id, i)
         if step.op != "delete":
             writes.add(step.object_id)
+    for parent, _, _ in batch.rollups:
+        first.setdefault(parent, 0)
+        writes.add(parent)  # a derived write computes the formulas of the parent
     for oid in sorted(first):
         batch.index = first[oid]
         row = (await db.execute(text(_SHARE_OBJECT_SQL), {"oid": oid, "pid": batch.pid})).first()
@@ -1632,7 +1781,7 @@ async def _lock_records(db: Any, batch: _Batch) -> None:
         if row is None:
             raise RecordNotFound("This package holds no such record.")
         data = dict(_json(row[2]))
-        batch.marks[(oid, rid)] = _Mark(oid, index, data, data)
+        batch.marks[(oid, rid)] = _Mark(oid, index, data, data, str(row[4]))
 
 
 def _live_mark(batch: _Batch, step: Write) -> _Mark:
@@ -1652,12 +1801,13 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     if step.op == "create":
         data = with_initial(held.rules, step.data)
         refuse_computed_keys(held.plan, held.name, data)
+        data = with_rollup_zero(held.plan, data)
         clean = run_formulas(held.plan, held.name, validate_record(plain, data))
         row = (await db.execute(text(_CREATE_RECORD_SQL), {
             "oid": oid, "data": record_json(clean), "actor": batch.who,
             "hot": _hot_rows(held.fields, clean)})).one()
         made = _record(row)
-        batch.marks[(oid, made.id)] = _Mark(oid, batch.index, None, clean)
+        batch.marks[(oid, made.id)] = _Mark(oid, batch.index, None, clean, batch.who)
         return made
     mark = _live_mark(batch, step)
     binds = {"oid": oid, "rid": step.record_id, "pid": batch.pid}
@@ -1693,7 +1843,7 @@ def _check_records(batch: _Batch) -> dict[tuple[str, Rule, tuple[Any, ...]], int
                 check_range(rule, held.name, mark.after)
             if rule.kind == STATE_MACHINE:
                 check_move(rule, held.name, mark.before, mark.after)
-            for key in touched_keys(rule, mark.before, mark.after):
+            for key in [] if mark.derived else touched_keys(rule, mark.before, mark.after):
                 at = (mark.object_id, rule, key)
                 keys.setdefault(at, mark.index)
                 if floor_holds_at_zero(rule):
@@ -1731,15 +1881,196 @@ async def _check_keys(db: Any, batch: _Batch,
             await _check_key(timed, oid, batch.pid, batch.objects[oid], rule, key)
 
 
+# --- the roll-ups (C7b) -----------------------------------------------------
+#
+# The batch gets four more steps. Step 1b finds the parent objects (`_find_rollups`),
+# and step 2 locks them with the others, in ascending id. Step 4b runs after all
+# the writes:
+#
+#   1. The currency of each written child is checked, and `rollup_parents` names
+#      the parents that the net of the batch made stale (a skip rule: only a change of
+#      the relation, the read field or a `where` field counts).
+#   2. The parent records are locked in ascending `(object_id, record_id)`
+#      (`FOR NO KEY UPDATE`). A parent that no record holds is dangling and skipped.
+#   3. One aggregate for each (parent, roll-up), then one derived write for each
+#      parent. Both run under the one deadline of the batch.
+#
+# The derived write is a store write: it re-runs the formulas of the parent,
+# validates, rebuilds the hot rows, and sets `updated_at` and `updated_by`. It
+# writes no history row. The checks of the parent (`range`, a state machine) run
+# in `_check_records`, with the marks of the batch.
+
+#: The aggregate of a sum, a min and a max over the hot rows of the read field.
+_ROLLUP_NUMBER_AGG: Mapping[str, str] = {
+    "sum": "sum(s.v_num)", "min": "min(s.v_num)", "max": "max(s.v_num)"}
+_ROLLUP_DATE_AGG: Mapping[str, str] = {"min": "min(s.v_ts)", "max": "max(s.v_ts)"}
+
+
+def build_rollup(rule: Rule, fields: Sequence[FieldSpec], *, object_id: str, package_id: str,
+                 parent_id: str) -> tuple[str, dict[str, Any]]:
+    """The aggregate of the roll-up *rule* for the parent *parent_id*: its SQL
+    and its binds. *fields* and *object_id* are those of the SOURCE. Pure.
+
+    The candidates are the children of one parent, found by the hot rows of the
+    relation field, as the index serves them. The ``where`` of the rule joins
+    the conditions of a query, and so it reads hot rows too. Each child reads its
+    hot row of the read field by the primary key. A child with no value adds
+    nothing. The answer is a count, or the aggregate: NULL when no child holds a
+    value, and the store gives 0 for a sum then.
+    """
+    via = next(f for f in fields if f.key == rule.via)
+    where = parse_query(fields, where_filter(rule)).conditions
+    conditions = (Condition(via, "eq", parent_id), *where)
+    params: dict[str, Any] = {"oid": object_id, "pid": package_id, "sk": rule.field}
+    ids = _q_filtered(conditions, params, "c.id AS id")
+    if rule.agg == "count":
+        return f"SELECT count(*) FROM ({ids}) g", params
+    read = next(f for f in fields if f.key == rule.field)
+    what = (_ROLLUP_DATE_AGG if read.type == "date" else _ROLLUP_NUMBER_AGG)[str(rule.agg)]
+    return (f"SELECT {what} FROM ({ids}) g "
+            "LEFT JOIN LATERAL (SELECT s.v_num, s.v_ts FROM studio_record_hot s "
+            f"WHERE s.{_OF_ORG} AND s.{_OF_OBJECT} AND s.field_key = CAST(:sk AS text) "
+            "AND s.record_id = g.id OFFSET 0) s ON true"), params
+
+
+def _check_rollups_fit(batch: _Batch) -> None:
+    """Fail closed. A stored roll-up that does not fit its object or its source
+    now (a source dropped and made again, a field that turned cold by raw SQL)
+    refuses the batch, and never gives a sum from fields it cannot read."""
+    for oid, owner, rule in batch.rollups:
+        held, source = batch.objects[oid], batch.objects[batch.names[str(rule.source)]]
+        try:
+            check_rollups([rule], held.fields, owner, {
+                source.name: RollupSource(source.name, tuple(source.fields), source.rules)})
+        except ConstraintError as exc:
+            raise RollupError(
+                rule.name, owner, "declaration",
+                f"Object `{owner}`: {exc.message}") from None
+
+
+def _stale_parents(batch: _Batch) -> dict[tuple[str, str], list[Rule]]:
+    """The parents that the net of the batch made stale, each with its roll-ups.
+    The caps hold before any statement of the recompute."""
+    work: dict[tuple[str, str], list[Rule]] = {}
+    firsts: dict[tuple[str, str], int] = {}
+    for oid, owner, rule in batch.rollups:
+        source_id = batch.names[str(rule.source)]
+        for mark in sorted(batch.marks.values(), key=lambda m: m.index):
+            if mark.object_id != source_id:
+                continue
+            batch.index = mark.index
+            if mark.after is not None:
+                check_rollup_currency(rule, owner, mark.after)
+            for rid in rollup_parents(rule, mark.before, mark.after):
+                rules = work.setdefault((oid, rid), [])
+                if rule not in rules:
+                    rules.append(rule)
+                firsts.setdefault((oid, rid), mark.index)
+    if len(work) > MAX_ROLLUP_PARENTS:
+        raise BudgetExceeded(
+            f"A batch recomputes at most {MAX_ROLLUP_PARENTS} parent records of roll-ups.")
+    if sum(len(rules) for rules in work.values()) > MAX_ROLLUP_STATEMENTS:
+        raise BudgetExceeded(
+            f"A batch runs at most {MAX_ROLLUP_STATEMENTS} aggregates of roll-ups.")
+    batch.firsts = firsts
+    return work
+
+
+async def _lock_parents(db: Any, batch: _Batch,
+                        work: dict[tuple[str, str], list[Rule]]) -> None:
+    """Step 4b, locks. A parent in the batch is locked already. The others come
+    in ascending `(object_id, record_id)`. A parent that no record holds is
+    dangling, and it leaves the work. So does a parent that the batch deleted."""
+    for key in sorted(work):
+        mark = batch.marks.get(key)
+        if mark is not None:
+            if mark.after is None:
+                del work[key]
+            continue
+        oid, rid = key
+        batch.index = batch.firsts[key]
+        row = (await db.execute(text(_LOCK_RECORD_SQL), {
+            "oid": oid, "rid": rid, "pid": batch.pid})).first()
+        if row is None:
+            del work[key]
+            continue
+        data = dict(_json(row[2]))
+        batch.marks[key] = _Mark(oid, batch.firsts[key], data, data, str(row[4]), derived=True)
+
+
+async def _derive_parent(timed: _Timed, batch: _Batch, key: tuple[str, str],
+                         data: dict[str, Any]) -> None:
+    """Step 4b, the derived write of one parent. It is a store write: the
+    formulas of the parent run again, the record is checked, and the hot rows
+    are rebuilt. It writes no history row. The actor is the actor of the batch,
+    and a batch with none (a single delete) keeps the actor of the last write."""
+    oid, rid = key
+    held, mark = batch.objects[oid], batch.marks[key]
+    plan = held.plan
+    assert plan is not None  # the parent holds a roll-up, so it has a plan
+    clean = run_formulas(plan, held.name, validate_record(
+        list(plan.plain), without_targets(plan, data)))
+    old = mark.after or {}
+    moved = sorted(k for k in batch.readers.get(held.name, set()) if clean.get(k) != old.get(k))
+    if moved:
+        raise RollupError(
+            plan.rollups[0][0].name, held.name, ROLLUP_OF_ROLLUP,
+            f"Object `{held.name}`: field `{moved[0]}` is read by a roll-up of another object, "
+            "and a roll-up of this object fills it. A roll-up cannot read a roll-up.")
+    await timed.execute(text(_UPDATE_RECORD_SQL), {
+        "oid": oid, "rid": rid, "pid": batch.pid, "data": record_json(clean),
+        "actor": batch.who or mark.updated_by, "hot": _hot_rows(held.fields, clean)})
+    mark.after = clean
+
+
+async def _recompute_parents(db: Any, batch: _Batch) -> None:
+    """Step 4b. After all the writes, recompute each parent that the net of the
+    batch made stale. The aggregates and the derived writes share the one
+    deadline of the batch (`query_timeout`), and a timeout refuses the whole
+    batch. One aggregate runs for each parent and each roll-up, so 50 children
+    of one parent cost one."""
+    if not batch.rollups:
+        return
+    _check_rollups_fit(batch)
+    work = _stale_parents(batch)
+    await _lock_parents(db, batch, work)
+    if not work:
+        return
+    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    async with _time_limit(db, deadline, _RULE_TIMEOUT_MESSAGE) as timed:
+        for key in sorted(work):
+            oid, rid = key
+            batch.index = batch.firsts[key]
+            held, mark = batch.objects[oid], batch.marks[key]
+            assert held.plan is not None
+            data = dict(mark.after or {})
+            for rule in work[key]:
+                source_id = batch.names[str(rule.source)]
+                sql, params = build_rollup(
+                    rule, batch.objects[source_id].fields, object_id=source_id,
+                    package_id=batch.pid, parent_id=rid)
+                raw = (await timed.execute(text(sql), params)).scalar_one()
+                field = next(f for r, f in held.plan.rollups if r.name == rule.name)
+                value = rollup_result(rule, held.name, field, raw)
+                if value is None:
+                    data.pop(field.key, None)
+                else:
+                    data[field.key] = value
+            await _derive_parent(timed, batch, key, data)
+
+
 async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
-    """The six steps, in their order. The caller holds the SAVEPOINT."""
+    """The six steps, in their order, with the roll-up steps (C7b) between them.
+    The caller holds the SAVEPOINT."""
     await _lock_org(db)
+    await _find_rollups(db, batch)
     await _lock_objects(db, batch)
     await _lock_records(db, batch)
     answers: list[Record | bool] = []
     for i, step in enumerate(batch.steps):
         batch.index = i
         answers.append(await _apply_write(db, batch, step))
+    await _recompute_parents(db, batch)
     await _check_keys(db, batch, _check_records(batch))
     return answers
 

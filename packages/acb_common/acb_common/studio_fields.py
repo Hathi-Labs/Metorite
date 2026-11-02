@@ -57,7 +57,7 @@ FIELD_TYPES: tuple[str, ...] = (
 #: The types that a hot field may have. Each maps to one value column of
 #: ``studio_record_hot`` (see :func:`hot_value`).
 HOT_TYPES: tuple[str, ...] = (
-    "text", "select", "number", "money", "date", "datetime", "checkbox", "email",
+    "text", "select", "number", "money", "date", "datetime", "checkbox", "email", "relation",
 )  # fmt: skip
 
 #: A field key and an object name: lower-case, a letter first, at most 48.
@@ -593,6 +593,17 @@ def record_json(data: Mapping[str, Any]) -> str:
     return encoded
 
 
+def relation_key(value: str) -> str:
+    """The text that a hot relation row holds for the id *value*. An id that
+    is a UUID in any spelling gets the one lower-case form of a record id, so a
+    child that names its parent in capitals still joins it. Any other id stays
+    as it is. The id holds at most :data:`MAX_ID_CHARS` characters."""
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        return value
+
+
 def hot_value(field: FieldSpec, value: Any) -> dict[str, Any] | None:
     """The ``studio_record_hot`` row of one checked value, or None.
 
@@ -606,6 +617,8 @@ def hot_value(field: FieldSpec, value: Any) -> dict[str, Any] | None:
     kind = field.type
     if kind in ("text", "select", "email"):
         row["t"] = value[:HOT_TEXT_CHARS]
+    elif kind == "relation":
+        row["t"] = relation_key(value["id"])
     elif kind == "number":
         row["n"] = value
     elif kind == "money":

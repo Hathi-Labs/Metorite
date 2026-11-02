@@ -33,6 +33,18 @@ rules. :data:`RULE_KINDS` is the closed list of kinds.
   A money target names ``currency``. :func:`plan_formulas` checks the formulas of
   an object as a set, and :func:`run_formulas` runs them in order of dependency.
   A formula reads no key, so :func:`touched_keys` answers none for it.
+* ``rollup`` (C7b): ``{target, source, via, agg, field?, where?, currency?}``. The
+  store fills the field *target* of a parent record with the sum, count, min or
+  max of a hot field of the child records of the object *source* of the same
+  package, one hop. A child names its parent in the hot relation field *via*,
+  whose ``to`` is the bare name of this object. ``where`` is at most 2 C2a
+  conditions on hot fields of the source. The store recomputes each touched
+  parent after the writes of a batch, so a read is exact. A caller cannot write a
+  target. A roll-up reads no key of its own object, so :func:`touched_keys`
+  answers none for it. The fields it reads are fields of the *source*
+  (:meth:`Rule.source_keys`), and the store keeps them hot.
+  :func:`check_rollups` checks a declaration against the source, and
+  :func:`rollup_parents` and :func:`rollup_result` serve the recompute.
 
 **A key.** A ``unique`` field and a group field have a type of
 :data:`KEY_TYPES`. A checkbox has two states and a money value has a currency,
@@ -59,8 +71,10 @@ from __future__ import annotations
 
 import math
 import re
+import uuid
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Context, Decimal
 from typing import Any
 
@@ -74,9 +88,10 @@ from acb_common.studio_fields import (
     FieldSpec,
     check_value,
     is_blank,
+    relation_key,
     storable_text,
 )
-from acb_common.studio_query import OPS_BY_TYPE
+from acb_common.studio_query import MAX_IN_VALUES, OPS, OPS_BY_TYPE, QueryError, parse_query
 
 # --- the caps ---------------------------------------------------------------
 
@@ -93,8 +108,13 @@ MAX_MOVES = 64
 MAX_GUARD_ATOMS = 4
 #: The values of an ``in`` atom.
 MAX_GUARD_IN_VALUES = 20
-#: The computed rules of one object, inside :data:`MAX_RULES_PER_OBJECT`.
+#: The computed rules of one object (formulas and roll-ups), inside :data:`MAX_RULES_PER_OBJECT`.
 MAX_COMPUTED_RULES = 8
+#: The conditions of the ``where`` of one roll-up.
+MAX_ROLLUP_WHERE = 2
+#: The parents that one batch recomputes, and the aggregate statements it runs.
+MAX_ROLLUP_PARENTS = 100
+MAX_ROLLUP_STATEMENTS = 100
 
 #: The closed ops of a guard atom. All but ``not_empty`` are ops of C2a.
 GUARD_OPS: tuple[str, ...] = (
@@ -109,9 +129,18 @@ UNIQUE = "unique"
 GROUP_SUM_MIN = "group_sum_min"
 STATE_MACHINE = "state_machine"
 FORMULA = "formula"
+ROLLUP = "rollup"
 
 #: The closed list of kinds.
-RULE_KINDS: tuple[str, ...] = (RANGE, UNIQUE, GROUP_SUM_MIN, STATE_MACHINE, FORMULA)
+RULE_KINDS: tuple[str, ...] = (RANGE, UNIQUE, GROUP_SUM_MIN, STATE_MACHINE, FORMULA, ROLLUP)
+#: The aggregates of a roll-up.
+ROLLUP_AGGS: tuple[str, ...] = ("sum", "count", "min", "max")
+#: The field types that a roll-up reads, for each aggregate. ``count`` reads none.
+ROLLUP_FIELD_TYPES: Mapping[str, tuple[str, ...]] = {
+    "sum": ("number", "money"), "min": ("number", "money", "date"),
+    "max": ("number", "money", "date")}
+#: The code of a roll-up that reads a roll-up (also through a formula).
+ROLLUP_OF_ROLLUP = "rollup_of_rollup"
 #: The kind of a stored rule that the checks cannot read. It is not in
 #: :data:`RULE_KINDS`, so :func:`check_kind_known` refuses each write.
 MALFORMED = "malformed"
@@ -132,6 +161,7 @@ _KIND_KEYS: Mapping[str, frozenset[str]] = {
     GROUP_SUM_MIN: frozenset({"field", "group_by", "min"}),
     STATE_MACHINE: frozenset({"field", "initial", "moves"}),
     FORMULA: frozenset({"target", "expr", "scale", "rounding", "currency"}),
+    ROLLUP: frozenset({"target", "source", "via", "agg", "field", "where", "currency"}),
 }
 assert tuple(_KIND_KEYS) == RULE_KINDS, "each kind has its keys"
 
@@ -177,6 +207,18 @@ class FormulaError(RuleViolation):
     """A write that a formula refuses (C7a). ``object`` is the object name and
     ``code`` is a code of ``studio_expr``, or ``computed_field`` for a caller that
     writes a target. The message never echoes a value."""
+
+    def __init__(self, rule: str, object_name: str, code: str, message: str) -> None:
+        super().__init__(rule, message)
+        self.object = object_name
+        self.code = code
+
+
+class RollupError(RuleViolation):
+    """A write that a roll-up refuses (C7b). ``object`` is the name of the object
+    that holds the roll-up and ``code`` is ``currency_mismatch``,
+    ``result_too_large``, ``declaration`` or ``rollup_of_rollup``. The message
+    never echoes a value."""
 
     def __init__(self, rule: str, object_name: str, code: str, message: str) -> None:
         super().__init__(rule, message)
@@ -238,6 +280,14 @@ class Rule:
     scale: int | None = None
     rounding: str | None = None
     currency: str | None = None
+    #: A ``rollup`` fills ``target`` from the records of the object ``source``,
+    #: found through the hot relation field ``via``. ``agg`` is one of
+    #: :data:`ROLLUP_AGGS`, ``field`` is the field it reads (none for ``count``),
+    #: and ``where`` keeps the conditions of the source.
+    source: str | None = None
+    via: str | None = None
+    agg: str | None = None
+    where: tuple[Atom, ...] = ()
 
     def stored(self) -> dict[str, Any]:
         """The JSON of this rule, as the store keeps it."""
@@ -261,6 +311,14 @@ class Rule:
             for key in ("scale", "rounding", "currency"):
                 if getattr(self, key) is not None:
                     out[key] = getattr(self, key)
+        if self.kind == ROLLUP:
+            out.update(target=self.target, source=self.source, via=self.via, agg=self.agg)
+            if self.field is not None:
+                out["field"] = self.field
+            if self.where:
+                out["where"] = where_filter(self)
+            if self.currency is not None:
+                out["currency"] = self.currency
         if self.min is not None:
             out["min"] = self.min
         if self.max is not None:
@@ -268,10 +326,24 @@ class Rule:
         return out
 
     def hot_keys(self) -> tuple[str, ...]:
-        """The fields that must stay hot while this rule stands."""
-        if self.kind in (RANGE, STATE_MACHINE, FORMULA):
+        """The fields of the object of this rule that must stay hot while the
+        rule stands. A roll-up reads fields of its source, so it names none here:
+        :meth:`source_keys` names them."""
+        if self.kind in (RANGE, STATE_MACHINE, FORMULA, ROLLUP):
             return ()
         return (*self.keys, self.field) if self.field is not None else self.keys
+
+    def source_keys(self) -> tuple[str, ...]:
+        """The fields of the SOURCE object that a roll-up reads, each once: the
+        relation, the summed field and the fields of ``where``. They must stay
+        hot while the rule stands. Any other kind reads none."""
+        if self.kind != ROLLUP:
+            return ()
+        keys = [str(self.via)]
+        if self.field is not None:
+            keys.append(self.field)
+        keys.extend(a.field for a in self.where)
+        return tuple(dict.fromkeys(keys))
 
 
 def _stored_atom(atom: Atom) -> dict[str, Any]:
@@ -478,8 +550,81 @@ def _parse_formula(rule: str, spec: Mapping[str, Any], message: str | None) -> R
                 rounding=rounding, currency=currency)
 
 
+def _object_name(rule: str, label: str, value: Any) -> str:
+    if not isinstance(value, str) or not _NAME_RE.fullmatch(value):
+        raise ConstraintError(
+            rule, f"Rule `{rule}`: `{label}` names an object of this package by its bare name.")
+    return value
+
+
+def _parse_where_item(rule: str, spec: Any) -> Atom:
+    if not isinstance(spec, Mapping):
+        raise ConstraintError(rule, f"Rule `{rule}`: a `where` condition is an object with `field` and `op`.")
+    extra = sorted(str(k) for k in spec if k not in ("field", "op", "value"))
+    if extra:
+        safe = extra[0] if _NAME_RE.fullmatch(extra[0]) else "?"
+        raise ConstraintError(rule, f"Rule `{rule}`: `{safe}` is not a key of a `where` condition.")
+    field = _key(rule, "field", spec.get("field"))
+    op = spec.get("op")
+    if not isinstance(op, str) or op not in OPS:
+        raise ConstraintError(rule, f"Rule `{rule}`: a `where` op is {', '.join(OPS)}.")
+    value = spec.get("value")
+    if op == "is_empty":
+        if value is not None and type(value) is not bool:
+            raise ConstraintError(rule, f"Rule `{rule}`: `is_empty` takes true or false.")
+        return Atom(field, op, value)
+    if op == "in":
+        if not isinstance(value, list) or not 1 <= len(value) <= MAX_IN_VALUES:
+            raise ConstraintError(
+                rule, f"Rule `{rule}`: op `in` takes a list of 1 to {MAX_IN_VALUES} values.")
+        return Atom(field, op, tuple(_atom_scalar(rule, v) for v in value))
+    if "value" not in spec:
+        raise ConstraintError(rule, f"Rule `{rule}`: op `{op}` needs a `value`.")
+    return Atom(field, op, _atom_scalar(rule, value))
+
+
+def _parse_where(rule: str, value: Any) -> tuple[Atom, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_ROLLUP_WHERE:
+        raise ConstraintError(
+            rule, f"Rule `{rule}`: `where` is a list of 1 to {MAX_ROLLUP_WHERE} conditions.")
+    return tuple(_parse_where_item(rule, item) for item in value)
+
+
+def where_filter(rule: Rule) -> list[dict[str, Any]]:
+    """The ``where`` of a roll-up as the filter of the query grammar (C2a)."""
+    out: list[dict[str, Any]] = []
+    for atom in rule.where:
+        item: dict[str, Any] = {"field": atom.field, "op": atom.op}
+        if atom.value is not None:
+            item["value"] = list(atom.value) if atom.op == "in" else atom.value
+        out.append(item)
+    return out
+
+
+def _parse_rollup(rule: str, spec: Mapping[str, Any], message: str | None) -> Rule:
+    target = _key(rule, "target", spec.get("target"))
+    source = _object_name(rule, "source", spec.get("source"))
+    via = _key(rule, "via", spec.get("via"))
+    agg = spec.get("agg")
+    if not isinstance(agg, str) or agg not in ROLLUP_AGGS:
+        raise ConstraintError(rule, f"Rule `{rule}`: `agg` is {', '.join(ROLLUP_AGGS)}.")
+    field: str | None = None
+    if agg == "count":
+        if spec.get("field") is not None:
+            raise ConstraintError(rule, f"Rule `{rule}`: a count takes no `field`.")
+    else:
+        field = _key(rule, "field", spec.get("field"))
+    currency = spec.get("currency")
+    if "currency" in spec and (not isinstance(currency, str) or not _CURRENCY_RE.fullmatch(currency)):
+        raise ConstraintError(rule, f"Rule `{rule}`: `currency` is three capital letters, as INR.")
+    return Rule(rule, ROLLUP, message, field=field, target=target, currency=currency,
+                source=source, via=via, agg=agg, where=_parse_where(rule, spec.get("where")))
+
+
 _PARSERS = {RANGE: _parse_range, UNIQUE: _parse_unique, GROUP_SUM_MIN: _parse_group,
-            STATE_MACHINE: _parse_machine, FORMULA: _parse_formula}
+            STATE_MACHINE: _parse_machine, FORMULA: _parse_formula, ROLLUP: _parse_rollup}
 assert tuple(_PARSERS) == RULE_KINDS, "each kind has one parser"
 
 
@@ -515,6 +660,9 @@ def parse_rules(specs: Any) -> tuple[Rule, ...]:
         seen.add(rule.name)
     if sum(r.kind == FORMULA for r in rules) > MAX_COMPUTED_RULES:
         raise ConstraintError("?", f"An object holds at most {MAX_COMPUTED_RULES} formula rules.")
+    if sum(r.kind in (FORMULA, ROLLUP) for r in rules) > MAX_COMPUTED_RULES:
+        raise ConstraintError(
+            "?", f"An object holds at most {MAX_COMPUTED_RULES} formula and rollup rules in all.")
     machines: set[str] = set()
     for rule in rules:
         if rule.kind == STATE_MACHINE:
@@ -610,15 +758,20 @@ def _fit_machine(rule: Rule, by_key: Mapping[str, FieldSpec]) -> None:
             _fit_atom(rule, atom, by_key)
 
 
-def check_rules_fit(rules: Sequence[Rule], fields: Sequence[FieldSpec]) -> None:
+def check_rules_fit(rules: Sequence[Rule], fields: Sequence[FieldSpec], *,
+                    object_name: str | None = None,
+                    sources: Mapping[str, RollupSource] | None = None) -> None:
     """Refuse a rule that does not fit the *fields* of the object.
 
     Each named field must exist, and each has the type of its place. A field
     of ``unique`` and of ``group_sum_min`` must be hot. This check never turns
-    a field hot. It raises :class:`ConstraintError`.
+    a field hot. A ``rollup`` also needs the name of this object and the
+    *sources* (the other objects of the package, by name), and without them it
+    is refused. It raises :class:`ConstraintError`.
     """
     by_key = {f.key: f for f in fields}
     check_formulas([r for r in rules if r.kind == FORMULA], fields)
+    check_rollups(rules, fields, object_name, sources)
 
     def named(rule: Rule, key: str) -> FieldSpec:
         field = by_key.get(key)
@@ -630,7 +783,7 @@ def check_rules_fit(rules: Sequence[Rule], fields: Sequence[FieldSpec]) -> None:
         if rule.kind == STATE_MACHINE:
             _fit_machine(rule, by_key)
             continue
-        if rule.kind == FORMULA:
+        if rule.kind in (FORMULA, ROLLUP):
             continue
         if rule.field is not None:
             field = named(rule, rule.field)
@@ -672,7 +825,7 @@ def _stored_rule(item: Any) -> Rule:
     name = item.get("name") if isinstance(item, Mapping) else None
     if not isinstance(name, str) or not name:
         return Rule("?", MALFORMED)
-    if item.get("kind") in (STATE_MACHINE, FORMULA):
+    if item.get("kind") in (STATE_MACHINE, FORMULA, ROLLUP):
         # The one parser reads it. A role atom or a bad shape fails closed.
         try:
             return parse_rule(item)
@@ -779,7 +932,7 @@ def touched_keys(rule: Rule, before: Mapping[str, Any] | None,
     key only: a delete or an old key cannot add a clash, so a check there
     would only stop the repair of old duplicates. C6 and C7a reuse this hook.
     """
-    if rule.kind in (RANGE, STATE_MACHINE, FORMULA):
+    if rule.kind in (RANGE, STATE_MACHINE, FORMULA, ROLLUP):
         return []
     states: Collection[Mapping[str, Any] | None] = (
         (after,) if rule.kind == UNIQUE else (before, after))
@@ -1031,6 +1184,10 @@ class FormulaPlan:
     fields: tuple[FieldSpec, ...]
     plain: tuple[FieldSpec, ...]
     targets: frozenset[str]
+    #: The roll-ups of the object (C7b), each with its target field. A roll-up
+    #: target is computed too, but the record keeps its stored value, so it stays
+    #: in ``plain`` and ``without_targets`` keeps it.
+    rollups: tuple[tuple[Rule, FieldSpec], ...] = ()
 
 
 def plan_formulas(rules: Sequence[Rule], object_name: str,
@@ -1042,24 +1199,29 @@ def plan_formulas(rules: Sequence[Rule], object_name: str,
     code ``declaration``.
     """
     formulas = [r for r in rules if r.kind == FORMULA]
-    if not formulas:
+    rollups = [r for r in rules if r.kind == ROLLUP]
+    if not formulas and not rollups:
         return None
-    if len(formulas) > MAX_COMPUTED_RULES:
+    if len(formulas) > MAX_COMPUTED_RULES or len(formulas) + len(rollups) > MAX_COMPUTED_RULES:
         raise FormulaError(
-            formulas[0].name, object_name, studio_expr.DECLARATION,
-            f"Object `{object_name}`: at most {MAX_COMPUTED_RULES} formula rules are allowed.")
+            (formulas or rollups)[0].name, object_name, studio_expr.DECLARATION,
+            f"Object `{object_name}`: at most {MAX_COMPUTED_RULES} formula and rollup rules are allowed.")
+    by_key = {f.key: f for f in fields}
     try:
-        check_formulas(formulas, fields)
+        if formulas:
+            check_formulas(formulas, fields)
+        for rule in rollups:
+            _fit_rollup_target(rule, by_key)
     except ConstraintError as exc:
         raise FormulaError(
             exc.rule, object_name, studio_expr.DECLARATION,
             f"Object `{object_name}`: {exc.message}") from None
     ordered = formula_order(formulas) or []
-    by_key = {f.key: f for f in fields}
     targets = frozenset(str(r.target) for r in formulas)
     return FormulaPlan(
         tuple((r, by_key[str(r.target)]) for r in ordered), tuple(fields),
-        tuple(f for f in fields if f.key not in targets), targets)
+        tuple(f for f in fields if f.key not in targets), targets,
+        tuple((r, by_key[str(r.target)]) for r in rollups))
 
 
 def refuse_computed_keys(plan: FormulaPlan | None, object_name: str, data: Any) -> None:
@@ -1068,8 +1230,8 @@ def refuse_computed_keys(plan: FormulaPlan | None, object_name: str, data: Any) 
     if plan is None or not isinstance(data, Mapping):
         return
     for key in data:
-        if key in plan.targets:
-            rule = next(r for r, f in plan.ordered if f.key == key)
+        if key in plan.targets or any(f.key == key for _, f in plan.rollups):
+            rule = next(r for r, f in (*plan.ordered, *plan.rollups) if f.key == key)
             raise FormulaError(
                 rule.name, object_name, COMPUTED_FIELD,
                 f"Rule `{rule.name}` of object `{object_name}`: field `{key}` is computed. "
@@ -1117,12 +1279,262 @@ def rule_reads(rule: Rule) -> frozenset[str]:
     """Every field key that *rule* reads. C9 reads it to decide that a formula
     or a guard that reads a personal or restricted field makes its target the
     same level. A target is written, so a formula does not read it. A rule of
-    an unknown kind reads nothing."""
+    an unknown kind reads nothing. A roll-up reads fields of another object, so
+    it reads nothing here (:meth:`Rule.source_keys` names them)."""
     if rule.kind == FORMULA:
         return studio_expr.expr_reads(rule.expr) if rule.expr is not None else frozenset()
+    if rule.kind == ROLLUP:
+        return frozenset()  # it reads fields of its source, never of its own record
     reads = set(rule.keys)
     if rule.field is not None:
         reads.add(rule.field)
     if rule.kind == STATE_MACHINE:
         reads.update(a.field for m in rule.moves for a in m.guard)
     return frozenset(reads) if rule.kind in RULE_KINDS else frozenset()
+
+
+# --- the roll-ups (C7b) -------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RollupSource:
+    """An object that a roll-up reads: its bare name, its fields and its rules."""
+
+    name: str
+    fields: tuple[FieldSpec, ...]
+    rules: tuple[Rule, ...] = ()
+
+
+def rollup_tainted(rules: Sequence[Rule]) -> frozenset[str]:
+    """The fields of an object that a roll-up fills, directly or through a
+    formula that reads one. A roll-up of another object may not read them:
+    a roll-up of a roll-up needs a second recompute, and v1 has none."""
+    tainted = {str(r.target) for r in rules if r.kind == ROLLUP}
+    formulas = [r for r in rules if r.kind == FORMULA and r.expr is not None]
+    grown = True
+    while grown:
+        grown = False
+        for rule in formulas:
+            key = str(rule.target)
+            if key not in tainted and studio_expr.expr_reads(rule.expr or Node("bool")) & tainted:
+                tainted.add(key)
+                grown = True
+    return frozenset(tainted)
+
+
+def _refuse(rule: Rule, message: str) -> ConstraintError:
+    return ConstraintError(rule.name, f"Rule `{rule.name}`: {message}")
+
+
+def _fit_rollup_target(rule: Rule, by_key: Mapping[str, FieldSpec]) -> FieldSpec:
+    """The target field of one roll-up, with the checks that need no source."""
+    key = str(rule.target)
+    field = by_key.get(key)
+    if field is None:
+        raise _refuse(rule, f"`{key}` is not a field of this object.")
+    allowed = ("number",) if rule.agg == "count" else (
+        ("number", "money") if rule.agg == "sum" else ("number", "money", "date"))
+    if field.type not in allowed or field.many:
+        raise _refuse(rule, f"target `{key}` must be one {' or '.join(allowed)} field for `{rule.agg}`.")
+    if field.required:
+        raise _refuse(rule, f"target `{key}` cannot be required, because a roll-up can give no value.")
+    if (field.type == "money") != (rule.currency is not None):
+        raise _refuse(rule, "only a money target takes `currency`, and it needs one.")
+    return field
+
+
+def _source_hot(rule: Rule, source: RollupSource, field: FieldSpec) -> None:
+    if not field.hot or field.many:
+        raise _refuse(
+            rule, f"field `{field.key}` of `{source.name}` must be one hot field. Turn it hot first.")
+
+
+def _fit_rollup(rule: Rule, own_name: str, by_key: Mapping[str, FieldSpec],
+                source: RollupSource | None) -> None:
+    target = _fit_rollup_target(rule, by_key)
+    if source is None or source.name == own_name:
+        raise _refuse(rule, f"`{rule.source}` must be another object of this package.")
+    src = {f.key: f for f in source.fields}
+    via = src.get(str(rule.via))
+    if via is None:
+        raise _refuse(rule, f"`{rule.via}` is not a field of `{source.name}`.")
+    if via.type != "relation" or via.many:
+        raise _refuse(rule, f"`via` must be one relation field of `{source.name}`.")
+    if via.to != own_name:
+        raise _refuse(
+            rule, f"field `{via.key}` of `{source.name}` must point to `{own_name}`, by its bare name.")
+    _source_hot(rule, source, via)
+    if rule.agg != "count":
+        read = src.get(str(rule.field))
+        if read is None:
+            raise _refuse(rule, f"`{rule.field}` is not a field of `{source.name}`.")
+        kinds = ROLLUP_FIELD_TYPES[str(rule.agg)]
+        if read.type not in kinds or read.many:
+            raise _refuse(
+                rule, f"`{rule.agg}` reads a {' or '.join(kinds)} field, and `{read.key}` is not one.")
+        _source_hot(rule, source, read)
+        if target.type != read.type:
+            raise _refuse(rule, f"target `{target.key}` must be a {read.type} field, as `{read.key}` is.")
+    try:
+        conditions = parse_query(list(source.fields), where_filter(rule)).conditions
+    except QueryError as exc:
+        raise _refuse(rule, f"`where`: {exc.message}") from None
+    for cond in conditions:
+        _source_hot(rule, source, cond.field)
+    bad = sorted(set(rule.source_keys()) & rollup_tainted(source.rules))
+    if bad:
+        raise _refuse(
+            rule, f"field `{bad[0]}` of `{source.name}` is filled by a roll-up, "
+            "and a roll-up cannot read a roll-up.")
+
+
+def check_rollups(rules: Sequence[Rule], fields: Sequence[FieldSpec], object_name: str | None,
+                  sources: Mapping[str, RollupSource] | None) -> None:
+    """Refuse the roll-ups of one object that do not fit it and their *sources*.
+
+    A source is a bare name of an object of the same package, and it is not
+    this object. The relation is a hot, single relation field of the source
+    that points to this object. The summed field and each ``where`` field are
+    hot. The target takes the type of the summed field, and it is no key of
+    another rule and no target of another computed rule. Raises
+    :class:`ConstraintError`.
+    """
+    rollups = [r for r in rules if r.kind == ROLLUP]
+    if not rollups:
+        return
+    if object_name is None or sources is None:
+        raise _refuse(rollups[0], "a roll-up is checked with the other objects of its package.")
+    by_key = {f.key: f for f in fields}
+    taken = {str(r.target) for r in rules if r.kind == FORMULA}
+    for rule in rollups:
+        _fit_rollup(rule, object_name, by_key, sources.get(str(rule.source)))
+        key = str(rule.target)
+        if key in taken:
+            raise _refuse(rule, f"another formula or roll-up fills `{key}` already.")
+        taken.add(key)
+        for other in rules:
+            keyed = (other.kind == UNIQUE and key in other.keys) or (
+                other.kind == GROUP_SUM_MIN and (key == other.field or key in other.keys)) or (
+                other.kind == STATE_MACHINE and key == other.field)
+            if keyed:
+                raise _refuse(
+                    rule, f"target `{key}` is a key of rule `{other.name}`. A roll-up fills no key.")
+
+
+def check_rollup_inputs(object_name: str, rules: Sequence[Rule],
+                        readers: Sequence[tuple[str, Rule]]) -> None:
+    """The other direction of :func:`check_rollups`. *rules* are the new rules of
+    the object *object_name*, and *readers* are the roll-ups of other objects
+    of the package that read it, each with the name of its object. A roll-up
+    that reads a field which these rules fill is refused."""
+    tainted = rollup_tainted(rules)
+    for owner, rule in readers:
+        bad = sorted(set(rule.source_keys()) & tainted)
+        if bad:
+            raise ConstraintError(
+                rule.name, f"Rule `{rule.name}` of object `{owner}` reads field `{bad[0]}` of "
+                f"`{object_name}`, and a roll-up or a formula fills it. A roll-up cannot read a roll-up.")
+
+
+def _parent_id(rule: Rule, data: Mapping[str, Any] | None) -> str | None:
+    """The id of the parent that the child record *data* names, as a record id.
+    None when the field is empty or the id is no UUID: the parent is dangling."""
+    raw = None if data is None else data.get(str(rule.via))
+    ident = raw.get("id") if isinstance(raw, Mapping) else None
+    if not isinstance(ident, str):
+        return None
+    try:
+        return str(uuid.UUID(relation_key(ident)))
+    except ValueError:
+        return None
+
+
+def rollup_parents(rule: Rule, before: Mapping[str, Any] | None,
+                   after: Mapping[str, Any] | None) -> list[str]:
+    """The parents that one written child record makes stale, each once.
+
+    *before* is the child before the batch (None for a create) and *after* is
+    the child after it (None for a delete). A create and a delete touch their
+    parent. An update touches its parent only when the relation field, the read
+    field or a ``where`` field changed, and a move touches the old and the new
+    parent. A parent id that is no UUID is dangling, and it is left out."""
+    old, new = _parent_id(rule, before), _parent_id(rule, after)
+    if before is not None and after is not None:
+        watch = [k for k in rule.source_keys() if k != rule.via]  # the parents compare by id
+        if old == new and all(before.get(k) == after.get(k) for k in watch):
+            return []
+    out: list[str] = []
+    for ident in (old, new):
+        if ident is not None and ident not in out:
+            out.append(ident)
+    return out
+
+
+def check_rollup_currency(rule: Rule, object_name: str, data: Mapping[str, Any]) -> None:
+    """Refuse a child record whose money is not in the currency of the rule.
+    The hot row holds the minor amount only, so the sum would mix currencies."""
+    if rule.currency is None or rule.field is None:
+        return
+    value = data.get(rule.field)
+    if isinstance(value, Mapping) and value.get("currency") != rule.currency:
+        raise RollupError(
+            rule.name, object_name, studio_expr.CURRENCY_MISMATCH,
+            f"Rule `{rule.name}` of object `{object_name}`: field `{rule.field}` of "
+            f"`{rule.source}` must be in {rule.currency}.")
+
+
+def rollup_empty(rule: Rule) -> Any:
+    """What a roll-up gives for no child: 0 for a sum and a count (a money sum
+    is 0 minor units in the currency of the rule), and None for a min and a max."""
+    if rule.agg == "count":
+        return 0
+    if rule.agg == "sum":
+        return {"minor": 0, "currency": rule.currency} if rule.currency is not None else 0
+    return None
+
+
+def with_rollup_zero(plan: FormulaPlan | None, data: Any) -> Any:
+    """The data of a create, with the empty value of each roll-up that has one.
+    A new parent has no child. Any other data comes back as it is."""
+    if plan is None or not plan.rollups or not isinstance(data, Mapping):
+        return data
+    out = dict(data)
+    for rule, field in plan.rollups:
+        empty = rollup_empty(rule)
+        if empty is not None:
+            out[field.key] = empty
+    return out
+
+
+def _too_large(rule: Rule, object_name: str) -> RollupError:
+    return RollupError(
+        rule.name, object_name, studio_expr.RESULT_TOO_LARGE,
+        f"Rule `{rule.name}` of object `{object_name}`: the result is too large to store exactly.")
+
+
+def rollup_result(rule: Rule, object_name: str, field: FieldSpec, raw: Any) -> Any:
+    """The stored value of a roll-up from the *raw* answer of the aggregate, or
+    None when the target clears. A sum and a count of nothing give 0 and a min
+    and a max of nothing give None. The answer runs through ``check_value`` of
+    the target, and a number must read back exactly, so a result that does not
+    fit raises :class:`RollupError` with ``result_too_large``."""
+    if raw is None:
+        return rollup_empty(rule)
+    try:
+        if field.type == "date":
+            stored: Any = raw.astimezone(UTC).date().isoformat() if isinstance(raw, datetime) else raw
+        else:
+            exact = Decimal(raw)
+            if abs(exact) >= 10**15:
+                raise _too_large(rule, object_name)
+            if field.type == "money":
+                if exact != exact.to_integral_value():
+                    raise _too_large(rule, object_name)
+                stored = {"minor": int(exact), "currency": rule.currency}
+            else:
+                stored = studio_expr.number_json(exact)
+                if Decimal(repr(stored)) != exact:
+                    raise _too_large(rule, object_name)
+        return check_value(field, stored)
+    except (FieldError, ArithmeticError):
+        raise _too_large(rule, object_name) from None
