@@ -24,9 +24,17 @@
  *
  * WHAT a card shows, and what a drop does, stays each app's business. Pass the
  * drag handlers as props: they land on the frame.
+ *
+ * **The add.** A lane with `onAdd` has two ways in: the "+" in its header,
+ * which opens the title box at the top of the lane, and "+ Add" at its foot.
+ * The header one is always on screen, however long the lane (owner,
+ * 2026-11-02: the floating Ask bar sat on the foot of the lanes).
  */
 
 import type React from "react";
+import { useState } from "react";
+
+import Icon from "@/components/Icon";
 
 import { QuickAdd } from "@/components/QuickAdd";
 
@@ -90,6 +98,20 @@ export function BoardColumn({
 }: BoardColumnProps) {
   const Body = as;
   const EmptyBox = as === "ul" ? "li" : "div";
+  const [addAtTop, setAddAtTop] = useState(false);
+  const headAdd =
+    onAdd && header ? (
+      <button
+        type="button"
+        aria-label={addLabel}
+        title={addLabel}
+        data-lane-add=""
+        onClick={() => setAddAtTop(true)}
+        className="cc-link flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+      >
+        <Icon name="Plus" size={14} />
+      </button>
+    ) : null;
   const frameProps = {
     role: "group",
     "aria-label": header?.title,
@@ -104,7 +126,25 @@ export function BoardColumn({
   const lane = (
     <>
       {overlay}
-      {header ? <BoardColumnHead header={header} actions={headerActions} hidden={hidden} /> : null}
+      {header ? (
+        <BoardColumnHead
+          header={header}
+          actions={
+            headAdd || headerActions ? (
+              <>
+                {headerActions}
+                {headAdd}
+              </>
+            ) : null
+          }
+          hidden={hidden}
+        />
+      ) : null}
+      {onAdd && addAtTop ? (
+        <div className="pb-1">
+          <QuickAdd label={addLabel} onAdd={onAdd} startOpen onClose={() => setAddAtTop(false)} />
+        </div>
+      ) : null}
       {totals ? <div className="px-1 pb-2 text-[10px] text-muted-foreground">{totals}</div> : null}
       {/* The negative margin takes the body to the frame's inner edge, and
           its own padding gives the card's cursor ring and hover shadow room.

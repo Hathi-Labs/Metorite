@@ -143,7 +143,7 @@ def test_code_block_is_reserved_for_l1():
 
 @pytest.mark.parametrize(
     "key,slice_id",
-    [("rules", "C6"), ("state_machine", "C6"), ("states", "C6"), ("formula", "C7"), ("code", "L1")],
+    [("rules", "C6"), ("state_machine", "C6"), ("states", "C6"), ("code", "L1")],
 )
 def test_reserved_key(key, slice_id):
     d = doc()
@@ -198,11 +198,53 @@ def test_the_manifest_rules_equal_the_store_rules() -> None:
     assert rule.stored() == _VISIT_MACHINE
 
 
-@pytest.mark.parametrize("ftype", ["formula", "rollup"])
-def test_formula_field_type_is_reserved_for_c7(ftype):
+def test_rollup_field_type_is_reserved_for_c7b():
     d = copy.deepcopy(EXAMPLE)
-    d["objects"][0]["fields"][2]["type"] = ftype
-    one(d, "$.objects[0].fields[2].type", contains="C7")
+    d["objects"][0]["fields"][2]["type"] = "rollup"
+    one(d, "$.objects[0].fields[2].type", contains="C7b")
+
+
+def test_formula_field_type_names_the_rules_list():
+    """A formula has one spelling: a rule of kind `formula` (C7a)."""
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"][2]["type"] = "formula"
+    e = one(d, "$.objects[0].fields[2].type", contains="`rules`")
+    assert "kind `formula`" in e.message
+
+
+def test_the_formula_key_is_no_longer_reserved():
+    """`RESERVED_KEYS` dropped `formula` (C7a): a rule uses `expr`, so the key is dead."""
+    from acb_common.studio_manifest import RESERVED_KEYS
+
+    assert "formula" not in RESERVED_KEYS
+
+
+_TOTAL_FORMULA = {
+    "name": "visit_cost", "kind": "formula", "target": "cost", "rounding": "half_up",
+    "expr": {"fn": "mul", "args": [{"ref": "hours"}, {"num": "1.5"}]},
+}
+
+
+def test_a_formula_validates_in_an_object() -> None:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"] += [{"key": "hours", "type": "number"},
+                                  {"key": "cost", "type": "number"}]
+    d["objects"][0]["rules"] = [_TOTAL_FORMULA]
+    assert validate_manifest(d) == []
+
+
+def test_a_formula_that_does_not_fit_gets_a_path() -> None:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"] += [{"key": "cost", "type": "number"}]
+    d["objects"][0]["rules"] = [_TOTAL_FORMULA]
+    one(d, "$.objects[0].rules", contains="expr")
+
+
+def test_the_manifest_formula_equals_the_store_formula() -> None:
+    from acb_common.studio_rules import parse_rules
+
+    (rule,) = parse_rules([_TOTAL_FORMULA])
+    assert rule.stored() == _TOTAL_FORMULA
 
 
 def test_unknown_top_level_key():

@@ -109,6 +109,9 @@ flag_env() {
   for name in "${!out[@]}"; do printf '%s=%s\n' "$name" "${out[$name]}"; done | sort
 }
 
+# STUDIO_ORGS=* is the AI Studio skill switch (STU-F2b). It is not a name of the
+# SWITCH pattern, so production's flags cannot carry it. The stack on this PC holds
+# two made-up orgs, so a fixed line here flips no box.
 gateway_env() {
   base_env
   flag_env root
@@ -117,7 +120,8 @@ gateway_env() {
     "DATABASE_URL=postgresql+psycopg://acb_app:acb_app@127.0.0.1:$DB_PORT/acb_dev" \
     "REDIS_URL=redis://127.0.0.1:$REDIS_PORT/0" \
     "GATEWAY_INTERNAL_TOKEN=$TOKEN" \
-    "EXECUTIVE_EMAILS=$ME"
+    "EXECUTIVE_EMAILS=$ME" \
+    "STUDIO_ORGS=*"
 }
 
 web_env() {
