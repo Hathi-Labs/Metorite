@@ -723,7 +723,11 @@ jobs:
       - name: Install deps
         run: npm ci --no-audit --no-fund
 
+      # tsc used 2,256 MB on main on 2026-11-02 (--extendedDiagnostics). That
+      # is over Node's default heap, so a small PR ran out of memory here.
       - name: Typecheck
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: npx tsc --noEmit -p tsconfig.json
 
       # Two-speed CI (2026-10-19): the process fences (design-system regexes,

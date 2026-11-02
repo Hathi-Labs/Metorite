@@ -1,6 +1,6 @@
-"""The action door of AI Studio on a real database (STU-B2a, R8).
+"""The action door of AI Studio on a real database (STU-B2a and STU-B2b-1, R8).
 
-Spec: ``project-docs/specs/ai_studio.md`` §3.2 and §14 B2a. Code:
+Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a and B2b-1. Code:
 ``gateway/routes/studio/invoke.py`` over ``gateway/studio/packages_store.py``
 (A3) and ``gateway/studio/objects_store.py`` (C1). The hermetic half is
 ``test_studio_action_door.py``.
@@ -39,6 +39,29 @@ j. An action that is not an A2 action id is 404, and writes no row.
 k. An object that the package lacks is 404 ``object_missing``, and a record
    id that names nothing is 404 ``Not found``. The audit row tells them apart.
 l. A catalog that fails is 503 ``catalog_unavailable``, and the row lands.
+
+**Acceptance (B2b-1).**
+
+m. The owner lists a filtered, sorted page with the right total, and each call
+   writes one audit row in the bound org. The row holds no record data.
+n. Another member and org B get 404 ``Not found``, and no row names the
+   package.
+o. An object of another package gets 404 ``object_missing``, also when the
+   door holds a true object id. Two packages with one object name each read
+   their own records.
+p. The five refused codes get 422 ``{code, message, field}``, and the real
+   ``query_timeout`` gets 503 with ``Retry-After: 2``.
+q. An extra key, ``limit: true`` and ``limit: Infinity`` get 422 and read
+   nothing.
+r. A value that Postgres refuses (a NUL, a lone surrogate) gets 422, never 500.
+s. After each refusal the door session runs a statement, and the audit row
+   lands. A real timeout changes nothing for the next call.
+t. A body past the cap gets 413 and one audit row. A non-owner and an org
+   outside the switch read no byte. No connection of the app role is in a
+   transaction during the read.
+u. A change during the read is seen. A package that goes and an owner that
+   changes get 404. A declaration that changes gets 403. Neither reads a
+   record.
 
 **The mutations (R7).** Commit before each, and restore with git after.
 Each result below was run on 2026-11-01, with both B2a suites.
@@ -86,11 +109,101 @@ Each result below was run on 2026-11-01, with both B2a suites.
   ``get_package`` does not find. ``test_r8_another_member_of_the_org_gets_404``,
   ``test_r8_org_b_gets_404_also_with_the_same_email``,
   ``test_r8_a_code_app_is_404`` and four hermetic tests go red.
+
+**The mutations of B2b-1.** Each result below was run on 2026-11-02, on both
+door suites and ``test_one_writer_of_the_four_tables``.
+
+* L1. ``OPEN_EXECUTORS``: drop the list entry. 76 tests go red, first
+  ``test_a_list_is_class_a_and_it_runs``.
+* L2. ``_run_object_list``: drop the ``QueryError`` catch. 62 tests go red,
+  among them ``test_r8_each_refused_query_is_422_and_the_session_stays_usable``
+  and ``test_each_refused_query_is_422_with_its_code``.
+* L3. ``_query_refusal``: answer 422 for a timeout. ``test_a_query_timeout_is_503_with_retry_after``
+  and ``test_r8_a_real_timeout_is_503_with_retry_after_and_the_session_stays_usable``
+  go red.
+* L4. ``_list_input``: skip the key check. 13 tests go red, among them
+  ``test_a_key_outside_the_schema_is_422_and_reads_nothing`` and
+  ``test_r8_a_refused_body_is_422_and_reads_nothing``.
+* L5. ``_run_object_list``: pass ``obj.package_id`` to the store in place of
+  the package of the path. Only
+  ``test_r8_a_true_object_id_of_another_package_is_object_missing`` goes red,
+  because the fake of the hermetic half cannot tell the two apart.
+* L6a. ``invoke_action``: open the session with the ``organization_id`` of the
+  body. ``test_the_session_takes_no_org_or_package_from_the_request``,
+  ``test_r8_a_refused_body_is_422_and_reads_nothing`` and two B2a tests go red.
+* L6b. Add ``package_id`` to the accepted keys, and pass it to the store.
+  ``test_the_accepted_keys_are_the_properties_of_the_input_schema`` and two
+  refused-body tests go red. With the key check in place, a body cannot name
+  a package at all, so no narrower mutation reaches the store.
+* L7. ``_query_refusal``: drop the ``Retry-After`` header. The two tests of L3
+  go red.
+* L8. ``_list_input``: use ``isinstance`` for the int check, so a bool passes.
+  Two ``limit`` and ``offset`` tests of each suite go red.
+* L9. ``_list_input``: drop the int check. 18 tests go red, among them
+  ``test_a_limit_or_offset_that_is_not_an_int_is_422_and_reads_nothing``.
+* L10. ``_run_object_list``: treat None from the store as a page.
+  ``test_none_from_the_store_is_404_object_missing`` and
+  ``test_r8_a_true_object_id_of_another_package_is_object_missing`` go red.
+* L11. ``_run_object_list``: check the body after the object read. 37 tests go
+  red, because a refused body then reads the object.
+* L12. ``_run_object_list``: drop the ``ObjectStoreError`` catch.
+  ``test_an_id_that_the_store_refuses_is_404_object_missing`` goes red.
+* L13. ``objects_store._time_limit``: drop the SAVEPOINT. Only
+  ``test_r8_a_real_timeout_is_503_with_retry_after_and_the_session_stays_usable``
+  goes red. So that test holds a real cancel by Postgres.
+* L14. ``REFUSALS``: put back the old text.
+  ``test_the_refusal_text_names_each_open_verb`` goes red.
+* L15. ``invoke.py``: name ``studio_records`` in a SQL text.
+  ``test_one_writer_of_the_four_tables`` goes red.
+
+**The mutations of the fix round.** Each result below was run on 2026-11-02,
+on both door suites. F4, F5a and F5b are the moves that an earlier review saw
+pass all 162 tests.
+
+* F1. ``_read_body``: drop the cap.
+  ``test_a_body_past_the_cap_is_413_and_the_read_stops_near_the_cap`` and
+  ``test_r8_a_body_past_the_cap_is_413_and_one_audit_row`` go red.
+* F2. ``_read_body``: read to the end, then refuse. Only
+  ``test_a_body_past_the_cap_is_413_and_the_read_stops_near_the_cap`` goes red.
+* F3. ``_read_body``: refuse a body at the cap.
+  ``test_a_body_at_the_cap_runs_and_one_byte_more_is_413`` goes red.
+* F4. ``invoke_action``: read before the switch. 14 tests go red, among them
+  ``test_a_read_that_fails_with_the_switch_off_is_404_and_never_runs`` and
+  ``test_r8_the_switch_off_reads_no_byte``.
+* F5a. ``_run_executor``: read inside the session of the executor.
+  ``test_no_session_is_open_during_the_read`` and
+  ``test_r8_no_connection_is_in_a_transaction_during_the_read`` go red.
+* F5b. ``invoke_action``: read inside the session of the package. 13 tests go
+  red, among them the two tests of F5a.
+* F6. ``invoke_action``: read after the app id and before the package. 11 tests
+  go red, among them ``test_a_non_owner_gets_404_for_no_byte_read`` and
+  ``test_r8_a_non_owner_reads_no_byte``.
+* F7. ``_read_body``: call ``request.body()``. 39 tests go red.
+* F8. ``_audit_detail``: drop the branch of a 413. The two tests of F1 go red.
+* F9. ``_run_object_list``: drop the log line.
+  ``test_an_id_that_the_store_refuses_is_404_object_missing`` goes red.
+* F10. ``invoke_action``: write an audit row on a raw fault.
+  ``test_a_raw_fault_writes_no_audit_row`` goes red.
+* F11. ``_json_object``: catch only ``JSONDecodeError``.
+  ``test_a_body_that_is_not_a_json_object_is_422_never_500`` and
+  ``test_a_number_too_long_to_parse_is_422_never_500`` go red.
+
+**The mutations of the second check.** Each result below was run on 2026-11-02,
+on both door suites.
+
+* G1. ``_run_executor``: use the package and the reference of the first check.
+  Each case of ``test_r8_a_change_during_the_read_is_seen_and_reads_no_record``
+  and ``test_one_check_runs_twice`` go red.
+* G2. ``_run_executor``: drop the check of the source. The two ``now_door_op``
+  cases of that test go red.
+* G3. ``_check``: do not clear the outcome first. The two ``removed`` cases of
+  that test go red, because the row keeps the old ``uses``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import uuid
 from collections.abc import Awaitable, Callable
@@ -102,8 +215,9 @@ import pytest
 pytest.importorskip("sqlalchemy")
 
 from acb_auth import UserContext, UserRole, build_access
-from acb_common import get_settings
+from acb_common import get_settings, studio_query
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.studio_query import QueryError
 from fastapi import HTTPException
 from gateway.routes.studio import invoke
 from gateway.studio import objects_store, packages_store
@@ -158,26 +272,52 @@ def _user(org: str, email: str) -> UserContext:
 
 
 class _Request:
-    """The one part of a request that the handler reads: the body bytes."""
+    """The one part of a request that the handler reads: the stream of the
+    body. *on_read* runs at the read, and it may be async. *fails* makes the
+    read fail."""
 
-    def __init__(self, payload: Any) -> None:
+    def __init__(self, payload: Any, on_read: Callable[[], Any] | None = None,
+                 fails: bool = False) -> None:
         self._raw = b"" if payload is None else json.dumps(payload).encode("utf-8")
+        self._on_read = on_read
+        self._fails = fails
+        self.reads = 0
 
-    async def body(self) -> bytes:
-        return self._raw
+    async def stream(self) -> Any:
+        self.reads += 1
+        if self._fails:
+            raise OSError("the read of the body failed")
+        if self._on_read is not None:
+            done = self._on_read()
+            if inspect.isawaitable(done):
+                await done
+        yield self._raw
 
 
-async def _call(org: str, email: str, pid: str, action: str,
-                payload: Any = None) -> tuple[int, Any]:
+async def _call(org: str, email: str, pid: str, action: str, payload: Any = None,
+                request: _Request | None = None) -> tuple[int, Any]:
     """Call the real handler with *org* bound, as the auth layer binds it.
     Answers the status and the answer, or the detail of a refusal."""
     token = bind_tenant(org)
     try:
-        found = await invoke.invoke_action(pid, action, request=_Request(payload),
+        found = await invoke.invoke_action(pid, action, request=request or _Request(payload),
                                            user=_user(org, email))
         return 200, found
     except HTTPException as exc:
         return exc.status_code, exc.detail
+    finally:
+        release_tenant(token)
+
+
+async def _refusal(org: str, email: str, pid: str, action: str,
+                   payload: Any = None) -> HTTPException:
+    """The refusal of the handler, whole, so a test can read its headers."""
+    token = bind_tenant(org)
+    try:
+        with pytest.raises(HTTPException) as refused:
+            await invoke.invoke_action(pid, action, request=_Request(payload),
+                                       user=_user(org, email))
+        return refused.value
     finally:
         release_tenant(token)
 
@@ -383,7 +523,7 @@ def test_r8_each_write_verb_writes_nothing(world) -> None:
 def test_r8_a_source_that_is_not_an_object_never_runs(world) -> None:
     async def go() -> dict[str, tuple[int, Any]]:
         return {a: await _call(world.a, ANA, world.pkg, a, {"id": world.rec})
-                for a in ("flow", "flow_b", "propose", "pages", "find")}
+                for a in ("flow", "flow_b", "propose", "pages")}
 
     got = {a: (s, d["code"]) for a, (s, d) in _run(world, go).items()}
     assert got == {
@@ -392,10 +532,20 @@ def test_r8_a_source_that_is_not_an_object_never_runs(world) -> None:
         "flow_b": (403, "not_in_catalog"),
         "propose": (403, "approval_required"),
         "pages": (403, "source_not_open"),
-        "find": (403, "source_not_open"),
     }
     classes = {r[3]["action"]: r[3]["class"] for r in _audits(world, world.pkg)}
-    assert classes == {"flow": "B", "flow_b": None, "propose": "B", "pages": "A", "find": "A"}
+    assert classes == {"flow": "B", "flow_b": None, "propose": "B", "pages": "A"}
+
+
+def test_r8_a_class_a_row_of_another_source_is_source_not_open(world, monkeypatch) -> None:
+    """A workflow row is class B today. If a row ever reads class A, the door
+    still stops, because the list opens one verb of one source."""
+    async def _rows() -> list[dict[str, Any]]:
+        return [{"id": f"workflow:{world.wf_a}", "class": "A"}]
+
+    monkeypatch.setattr(invoke.actions, "catalog_rows", _rows)
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "flow", {}))
+    assert (status, detail["code"]) == (403, "source_not_open")
 
 
 # ── f, g and h. The package, the record and the body ───────────────────────
@@ -472,6 +622,311 @@ def test_r8_a_body_that_names_another_org_changes_nothing(world) -> None:
     assert got["record"]["id"] == world.rec
     rows = _audits(world, world.pkg)
     assert [(r[0], r[1]) for r in rows] == [(world.a, ANA)]
+
+
+# ── m to s. The list ───────────────────────────────────────────────────────
+
+
+_LIST_OUTCOME = {"action": "find", "uses": "object:visit.list", "class": "A"}
+
+#: One input for each refused code of the real grammar, and the field it names.
+_REFUSED: list[tuple[str, dict[str, Any], str | None]] = [
+    ("query_field_unknown", {"filter": [{"field": "nope", "op": "eq", "value": "x"}]}, "nope"),
+    ("query_op_not_allowed",
+     {"filter": [{"field": "status", "op": "contains", "value": "x"}]}, "status"),
+    ("query_value_invalid",
+     {"filter": [{"field": "status", "op": "eq", "value": "lost"}]}, "status"),
+    ("query_not_indexed", {"sort": {"field": "site"}}, "site"),
+    ("query_too_big", {"offset": 10_001}, None),
+]
+
+
+async def _add_records(org: str, oid: str, pid: str, rows: list[tuple[str, str]]) -> list[str]:
+    ids = []
+    async with tenant_session(org) as db:
+        for site, status in rows:
+            rec = await objects_store.create_record(
+                db, ANA, oid, {"site": site, "status": status, "notes": "x"}, package_id=pid)
+            assert rec is not None
+            ids.append(rec.id)
+    return ids
+
+
+def _watch_the_door_session(monkeypatch) -> list[int]:
+    """After each refused query, run one statement on the door's own session.
+    The list that it answers holds one 1 for each statement that ran."""
+    real = objects_store.query_records
+    ran: list[int] = []
+
+    async def spy(db: Any, **kw: Any) -> Any:
+        try:
+            return await real(db, **kw)
+        except QueryError:
+            ran.append((await db.execute(text("SELECT 1"))).scalar_one())
+            raise
+
+    monkeypatch.setattr(objects_store, "query_records", spy)
+    return ran
+
+
+def test_r8_the_owner_lists_a_filtered_sorted_page_and_one_audit_row(world) -> None:
+    async def go() -> list[tuple[int, Any]]:
+        ids = await _add_records(world.a, world.obj, world.pkg, [
+            ("Plant 1", "done"), ("Plant 2", "planned"), ("Plant 3", "done"), ("Depot", "planned"),
+        ])
+        world.ids = ids
+        body = {"filter": [{"field": "site", "op": "contains", "value": "Plant"}],
+                "sort": {"field": "status", "dir": "asc"}, "limit": 2}
+        return [await _call(world.a, ANA, world.pkg, "find", body),
+                await _call(world.a, ANA, world.pkg, "find", {**body, "offset": 2})]
+
+    (status1, first), (status2, second) = _run(world, go)
+    assert (status1, status2) == (200, 200), (first, second)
+    # Four records of five match, and `done` sorts before `planned`.
+    assert (first["total"], first["total_at_least"], first["offset"], first["limit"]) == (
+        4, None, 0, 2)
+    assert first["line"] == "Showing 1-2 of 4. Call again with offset=2 for the rest."
+    assert [r["data"]["status"] for r in first["records"]] == ["done", "done"]
+    assert {r["data"]["site"] for r in first["records"]} == {"Plant 1", "Plant 3"}
+    assert (second["total"], second["offset"]) == (4, 2)
+    assert [r["data"]["status"] for r in second["records"]] == ["planned", "planned"]
+    assert {r["data"]["site"] for r in second["records"]} == {"Plant 2", _DATA["site"]}
+    assert set(first["records"][0]) == {"id", "object_id", "data", "created_by", "updated_by",
+                                        "created_at", "updated_at"}
+    rows = _audits(world, world.pkg)
+    assert rows == [(world.a, ANA, "action", {**_LIST_OUTCOME, "outcome": "ran"})] * 2
+    # The row holds no record data and no value of the filter.
+    for value in (*_DATA.values(), "Plant"):
+        assert value not in json.dumps(rows[0][3])
+
+
+def test_r8_an_empty_body_lists_the_first_page(world) -> None:
+    status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, "find"))
+    assert status == 200, got
+    assert [r["id"] for r in got["records"]] == [world.rec]
+    assert (got["total"], got["offset"], got["limit"], got["line"]) == (1, 0, 25, "")
+
+
+def test_r8_another_member_and_org_b_get_404_on_a_list(world) -> None:
+    async def go() -> list[tuple[int, Any]]:
+        return [await _call(world.a, BEN, world.pkg, "find", {}),
+                await _call(world.b, ANA, world.pkg, "find", {}),
+                await _call(world.a, ANA, world.pkg_b, "find", {})]
+
+    assert _run(world, go) == [(404, NOT_FOUND)] * 3
+    assert _audits(world, world.pkg) == [] and _audits(world, world.pkg_b) == []
+
+
+def test_r8_two_packages_with_one_object_name_read_their_own_records(world) -> None:
+    async def go() -> list[tuple[int, Any]]:
+        return [await _call(world.a, ANA, world.pkg, "find", {}),
+                await _call(world.a, ANA, world.pkg2, "find", {})]
+
+    (_, mine), (_, other) = _run(world, go)
+    assert [r["id"] for r in mine["records"]] == [world.rec]
+    assert [r["id"] for r in other["records"]] == [world.rec2]
+
+
+def test_r8_an_object_that_the_package_lacks_is_object_missing_on_a_list(world) -> None:
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg_empty, "find", {}))
+    assert (status, detail) == (404, {"code": "object_missing", "message": invoke.NO_OBJECT})
+    assert [r[3] for r in _audits(world, world.pkg_empty)] == [{
+        **_LIST_OUTCOME, "outcome": "not_found", "reason": "object_missing"}]
+
+
+def test_r8_a_true_object_id_of_another_package_is_object_missing(world, monkeypatch) -> None:
+    """The name read answers the object of the OTHER package, so the door holds
+    a true id. `query_records` still takes the package of the path, so the
+    store answers None and the door reads no record (the drop of `package_id`)."""
+    real = objects_store.get_object_by_name
+
+    async def wrong(db: Any, name: str, *, package_id: str) -> Any:
+        return await real(db, name, package_id=world.pkg2)
+
+    monkeypatch.setattr(objects_store, "get_object_by_name", wrong)
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", {}))
+    assert (status, detail) == (404, {"code": "object_missing", "message": invoke.NO_OBJECT})
+
+
+@pytest.mark.parametrize("code,body,field", _REFUSED, ids=[c for c, _, _ in _REFUSED])
+def test_r8_each_refused_query_is_422_and_the_session_stays_usable(
+        world, monkeypatch, code, body, field) -> None:
+    ran = _watch_the_door_session(monkeypatch)
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", body))
+    assert status == 422, detail
+    assert set(detail) == {"code", "message", "field"}
+    assert (detail["code"], detail["field"]) == (code, field)
+    assert ran == [1]
+    assert [r[3] for r in _audits(world, world.pkg)] == [{
+        **_LIST_OUTCOME, "outcome": "refused", "reason": code}]
+
+
+def test_r8_a_real_timeout_is_503_with_retry_after_and_the_session_stays_usable(
+        world, monkeypatch) -> None:
+    """A second connection holds a lock on the record table, so Postgres itself
+    cancels the page statement at the 1 ms limit. The clock stands still, so
+    the store's own check never fires first."""
+    ran = _watch_the_door_session(monkeypatch)
+    monkeypatch.setattr(studio_query, "TIMEOUT_MS", 1)
+    monkeypatch.setattr(objects_store, "_clock", lambda: 0.0)
+    with world.p.admin_engine.begin() as lock:
+        lock.execute(text("LOCK TABLE studio_records IN ACCESS EXCLUSIVE MODE"))
+        refused = _run(world, lambda: _refusal(world.a, ANA, world.pkg, "find", {}))
+    assert refused.status_code == 503
+    assert refused.detail["code"] == "query_timeout"
+    assert set(refused.detail) == {"code", "message"}
+    assert refused.headers == {"Retry-After": "2"}
+    assert ran == [1]
+    assert [r[3] for r in _audits(world, world.pkg)] == [{
+        **_LIST_OUTCOME, "outcome": "failed", "reason": "query_timeout"}]
+    # The limit of the store goes back, and the next call lists the page.
+    monkeypatch.setattr(studio_query, "TIMEOUT_MS", 5_000)
+    status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", {}))
+    assert (status, got["total"]) == (200, 1)
+
+
+@pytest.mark.parametrize("body", [
+    {"package_id": str(uuid.uuid4())},
+    {"organization_id": str(uuid.uuid4())},
+    {"limit": 1, "owner_email": BEN},
+    {"limit": True},
+    {"offset": False},
+    {"limit": float("inf")},
+    {"offset": float("inf")},
+    {"limit": float("nan")},
+    {"limit": None},
+], ids=["package", "org", "member", "limit_true", "offset_false", "limit_inf", "offset_inf",
+        "limit_nan", "limit_null"])
+def test_r8_a_refused_body_is_422_and_reads_nothing(world, monkeypatch, body) -> None:
+    def _no_read(*_: Any, **__: Any) -> Any:
+        raise AssertionError("a refused body must read nothing")
+
+    monkeypatch.setattr(objects_store, "get_object_by_name", _no_read)
+    monkeypatch.setattr(objects_store, "query_records", _no_read)
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", body))
+    assert (status, detail) == (422, {"code": "query_value_invalid",
+                                      "message": invoke.BAD_LIST_INPUT, "field": None})
+    assert [r[3] for r in _audits(world, world.pkg)] == [{
+        **_LIST_OUTCOME, "outcome": "refused", "reason": "query_value_invalid"}]
+
+
+@pytest.mark.parametrize("op,value", [("eq", "a\x00b"), ("eq", "\ud800"),
+                                      ("contains", "a\x00b"), ("contains", "\ud800"),
+                                      ("in", ["a\x00b"]), ("in", ["\ud800"])])
+def test_r8_a_value_that_postgres_refuses_is_422_never_500(world, op, value) -> None:
+    body = {"filter": [{"field": "site", "op": op, "value": value}]}
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", body))
+    assert (status, detail["code"], detail["field"]) == (422, "query_value_invalid", "site")
+
+
+# ── t. The body read ───────────────────────────────────────────────────────
+
+
+def _connections_in_a_transaction(world: Any) -> int:
+    """The connections of the app role that a session holds now. A pooled
+    connection with no session reads `idle`."""
+    with world.p.admin_engine.connect() as c:
+        return int(c.execute(text(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+            "AND usename = :role AND state <> 'idle'"),
+            {"role": world.p.app_url.username}).scalar_one())
+
+
+@pytest.mark.parametrize("action", ["find", "peek"])
+def test_r8_no_connection_is_in_a_transaction_during_the_read(world, action) -> None:
+    held: list[int] = []
+    body = {"id": world.rec} if action == "peek" else {}
+    request = _Request(body, on_read=lambda: held.append(_connections_in_a_transaction(world)))
+    status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, action, request=request))
+    assert status == 200, got
+    assert held == [0]
+
+
+def test_r8_a_body_past_the_cap_is_413_and_one_audit_row(world) -> None:
+    payload = {"filter": [], "pad": "x" * invoke.MAX_BODY_BYTES}
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", payload))
+    assert (status, detail) == (413, {"code": "body_too_large", "message": invoke.BODY_OVER_CAP})
+    assert _audits(world, world.pkg) == [(world.a, ANA, "action", {
+        **_LIST_OUTCOME, "outcome": "refused", "reason": "body_too_large"})]
+
+
+def test_r8_a_non_owner_reads_no_byte(world) -> None:
+    async def go() -> list[tuple[int, Any]]:
+        return [await _call(world.a, BEN, world.pkg, "find", request=_Request(None, fails=True)),
+                await _call(world.b, ANA, world.pkg, "find", request=_Request(None, fails=True))]
+
+    assert _run(world, go) == [(404, NOT_FOUND)] * 2
+    assert _audits(world, world.pkg) == []
+
+
+def test_r8_the_switch_off_reads_no_byte(world, monkeypatch) -> None:
+    monkeypatch.setattr(get_settings(), "studio_orgs", world.b)
+    request = _Request(None, fails=True)
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", request=request))
+    assert (status, detail) == (404, NOT_FOUND)
+    assert request.reads == 0
+
+
+# ── u. A change during the read ────────────────────────────────────────────
+
+
+async def _set_action(world: Any, action: str, uses: str | None) -> None:
+    """Replace or remove *action* in the draft manifest, through the store, in
+    a session of its own."""
+    async with tenant_session(world.a) as db:
+        package = await packages_store.get_package(db, ANA, world.pkg)
+        assert package is not None
+        manifest = dict(package.manifest)
+        kept = [a for a in manifest["actions"] if a["id"] != action]
+        manifest["actions"] = kept + ([{"id": action, "uses": uses}] if uses else [])
+        assert await packages_store.update_manifest(db, ANA, world.pkg, manifest) is not None
+
+
+async def _change(world: Any, change: str, action: str) -> None:
+    """One change, in a second session, while the door waits on the body."""
+    if change == "package_gone":
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM apps WHERE id = CAST(:p AS uuid)"), {"p": world.pkg})
+    elif change == "owner_changed":
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE apps SET owner_email = :o WHERE id = CAST(:p AS uuid)"),
+                      {"o": BEN, "p": world.pkg})
+    else:
+        await _set_action(world, action, {
+            "removed": None,
+            "now_deletes": "object:visit.delete",
+            "now_door_op": "knowledge.list_pages",
+        }[change])
+
+
+@pytest.mark.parametrize("action", ["find", "peek"])
+@pytest.mark.parametrize("change,answer,row", [
+    ("package_gone", (404, NOT_FOUND), None),
+    ("owner_changed", (404, NOT_FOUND), None),
+    ("removed", (403, "not_declared"), {"uses": None, "class": None}),
+    ("now_deletes", (403, "approval_required"), {"uses": "object:visit.delete", "class": "C"}),
+    ("now_door_op", (403, "source_not_open"), {"uses": "knowledge.list_pages", "class": None}),
+], ids=["package_gone", "owner_changed", "removed", "now_deletes", "now_door_op"])
+def test_r8_a_change_during_the_read_is_seen_and_reads_no_record(
+        world, monkeypatch, action, change, answer, row) -> None:
+    """A slow client passes the first check, and the change lands while the
+    door waits on the body. The door then reads no object and no record."""
+    def _no_read(*_: Any, **__: Any) -> Any:
+        raise AssertionError("the door read a record after the change")
+
+    for name in ("get_object_by_name", "get_record", "query_records"):
+        monkeypatch.setattr(objects_store, name, _no_read)
+    request = _Request({"id": world.rec} if action == "peek" else {},
+                       on_read=lambda: _change(world, change, action))
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, action, request=request))
+    assert request.reads == 1
+    if row is None:
+        assert (status, detail) == answer
+        assert _audits(world, world.pkg) == []
+        return
+    assert (status, detail["code"]) == answer
+    assert [r[3] for r in _audits(world, world.pkg)] == [{
+        "action": action, **row, "outcome": "refused", "reason": answer[1]}]
 
 
 # ── i. The switch ──────────────────────────────────────────────────────────
