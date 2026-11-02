@@ -1446,6 +1446,11 @@ non-bug, every time.
 **R7:** the fence is the spec files themselves; there is no test that can force their
 existence, so this decision is **advisory** until a WS-27ak slice lands one.
 
+> **Superseded on 2026-11-01 by the owner (RX-5).** A due date is a day. A task is overdue
+> when its local due date is before the member's local today. A task due today stays due
+> today until that day ends. `calendar_events_reminders.md` §5.11 holds the rule, and
+> `routes/projects/due_day.py` holds the code. The text below is the record of the old rule.
+
 **D-PM-22 — "Overdue" stays timestamp-granular: `due_at < now()`. Today does NOT count as
 due.** `DECISION (2026-08-11, owner-delegated).` WS-27al(5) inherited *"today counts as due"*
 from the upstream reference. **Refused, and recorded so it is not re-proposed.** Our store is

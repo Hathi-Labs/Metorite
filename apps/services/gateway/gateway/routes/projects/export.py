@@ -84,7 +84,6 @@ from gateway.csv_export import (
     csv_cell,
     csv_document,
 )
-from gateway.routes.projects.mine import check_scope, mine_scope
 from gateway.routes.projects.core import (
     DIRECTIONS,
     TASK_SORTS,
@@ -92,6 +91,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     load_visible_project,
+    reader_day_start,
     resolve_visibility,
     root_project_id,
     router,
@@ -110,6 +110,7 @@ from gateway.routes.projects.filters import (
     normalise_view_config,
     split_csv,
 )
+from gateway.routes.projects.mine import check_scope, mine_scope
 from gateway.routes.tasks.priority import task_level_label
 from sqlalchemy import text
 
@@ -394,6 +395,7 @@ async def export_tasks_csv(
             parent_task_id=parent_task_id, status_id=status_id,
             status_category=status_category, assignee=assignee,
             assignees=assignees, unassigned=unassigned, overdue=overdue,
+            day_start=await reader_day_start(db, actor(user).lower()) if overdue else None,
             due_before=due_before, importance_gte=importance_gte, q=q,
             tags=tags, tags_all=tags_all, include_archived=include_archived,
             archived_only=archived_only,

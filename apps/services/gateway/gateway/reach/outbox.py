@@ -124,11 +124,13 @@ _PUSHES_COUNTED_SQL = (
 #: The planned push rows that no send step holds, one member after another,
 #: the oldest first. Each tick reads it for each org, so the partial index
 #: ``reach_outbox_push_planned_idx`` of migration 318 serves it.
+#: ``due_summary`` goes last: a morning of summaries is a long queue, and a
+#: reminder that fires at an exact time must never wait behind it (RX-5).
 _PLANNED_PUSHES_SQL = (
     "SELECT id::text FROM reach_outbox "
     f"WHERE organization_id = {_BOUND_ORG} AND channel = 'web_push' "
     f"AND state = 'planned' AND NOT {_HELD} "
-    "ORDER BY member_email, created_at, id LIMIT :n"
+    "ORDER BY (kind = 'due_summary'), member_email, created_at, id LIMIT :n"
 )
 
 #: The claim. One statement, so two workers never both hold the row. The age

@@ -355,7 +355,10 @@ def _scope(vis: Any, params: dict[str, Any], column: str = "t.project_id") -> st
 async def _totals(db: Any, vis: Any) -> dict[str, Any]:
     """Open tasks, hours, unestimated, overdue and the next deadline — one
     statement for the whole page, grouped by assignee."""
-    params: dict[str, Any] = {}
+    from gateway.routes.projects.core import reader_day_start
+    from gateway.routes.projects.due_day import not_overdue_sql, overdue_sql
+
+    params: dict[str, Any] = {"day_start": await reader_day_start(db, vis.email)}
     scope = _scope(vis, params)
     rows = (await db.execute(text(
         "SELECT lower(a.assignee) AS who, "
@@ -363,8 +366,8 @@ async def _totals(db: Any, vis: Any) -> dict[str, Any]:
         "       COALESCE(sum(t.estimate_mins), 0) AS mins, "
         "       count(*) FILTER (WHERE t.estimate_mins IS NULL) AS unestimated, "
         "       count(*) FILTER (WHERE t.due_at IS NOT NULL "
-        "                          AND t.due_at < now()) AS overdue, "
-        "       min(t.due_at) FILTER (WHERE t.due_at >= now()) AS next_due "
+        f"                          AND {overdue_sql()}) AS overdue, "
+        f"       min(t.due_at) FILTER (WHERE {not_overdue_sql()}) AS next_due "
         "  FROM pm_tasks t "
         "  JOIN pm_task_statuses s ON s.id = t.status_id "
         "  JOIN pm_task_assignees a ON a.task_id = t.id "

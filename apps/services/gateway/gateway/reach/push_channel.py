@@ -57,8 +57,14 @@ row and the My Day card stay as they are.
 * still ``planned`` — the VAPID keys are missing (reason ``no_keys``), or an
   error came before the end. A later tick tries again until the TTL.
 
+**The morning summary** (RX-5). ``reach/due_push.py`` plans a row of the kind
+``due_summary`` for a member and a day. It takes this send step, with no
+ledger row, because no reminder stands behind it. Its read and its words are in
+``due_push.read_facts``, and :class:`Facts` carries the built message.
+
 Fence: ``tests/unit/test_reach_push.py`` (R8, frozen clock, two orgs, a fake
-push service at ``outbound_guard.request_https``).
+push service at ``outbound_guard.request_https``), and
+``tests/unit/test_due_push_r8.py`` for the summary.
 """
 
 from __future__ import annotations
@@ -226,6 +232,8 @@ class Facts:
     reminder: dict[str, Any] = field(default_factory=dict)
     org_name: str = ""
     hide: bool = True
+    #: The message, when the read built it. A reminder builds it at the send.
+    message: sender.PushMessage | None = None
 
 
 async def _stale(db: Any, row: outbox.PushRow, rid: str, eid: str) -> tuple[str | None, Any]:
@@ -261,13 +269,28 @@ async def _held_back(db: Any, row: outbox.PushRow, now: datetime) -> str | None:
     return None
 
 
+async def reader_of(db: Any, member: str) -> tuple[str, bool]:
+    """The org's name, and whether *member* hides the details of a push."""
+    from gateway.routes.shell.prefs import hide_push_details
+
+    hide = await hide_push_details(db, member)
+    name = (await db.execute(text(_ORG_NAME_SQL))).scalar()
+    return str(name or ""), hide
+
+
 async def read_facts(db: Any, row: outbox.PushRow, now: datetime) -> Facts:
     """The claim read: on the claim's own session, in its transaction. The
     TTL comes first, so an old row ends even when a later read fails."""
-    if row.kind not in push_message.KINDS:
+    summary = row.kind == push_message.DUE_SUMMARY
+    if row.kind not in push_message.KINDS and not summary:
         return Facts("unknown_kind")
     if row.age_s > push_message.ttl_of(row.kind):
         return Facts("expired")
+    if summary:
+        from gateway.reach import due_push
+
+        why = await _held_back(db, row, now)
+        return Facts(why) if why is not None else await due_push.read_facts(db, row, now)
     ids = parse_key(row.key)
     if ids is None:
         return Facts("bad_key")
@@ -280,14 +303,11 @@ async def read_facts(db: Any, row: outbox.PushRow, now: datetime) -> Facts:
     why = await _held_back(db, row, now)
     if why is not None:
         return Facts(why)
-    from gateway.routes.shell.prefs import hide_push_details
-
-    hide = await hide_push_details(db, row.member)
-    name = (await db.execute(text(_ORG_NAME_SQL))).scalar()
+    org_name, hide = await reader_of(db, row.member)
     return Facts(None, reminder_id=rid, event_id=eid,
                  reminder={"id": rid, "title": rem.title, "fire_at": rem.fire_at,
                            "tz": rem.tz},
-                 org_name=str(name or ""), hide=hide)
+                 org_name=org_name, hide=hide)
 
 
 async def _send_one(org: str, outbox_id: str, now: datetime) -> str:
@@ -304,7 +324,8 @@ async def _send_one(org: str, outbox_id: str, now: datetime) -> str:
         await outbox.finish_push(org, row.id, state="skipped", reason=facts.skip)
         _log.info("reach.push.skipped", kind=row.kind, reason=facts.skip)
         return facts.skip
-    message = push_message.build(row.kind, facts.reminder, facts.org_name, facts.hide)
+    message = facts.message or push_message.build(row.kind, facts.reminder, facts.org_name,
+                                                  facts.hide)
     try:
         report = await sender.send_to_member(org, row.member, message)
     except RuntimeError:  # the VAPID keys are missing: keep the row (ruling b)
@@ -334,7 +355,7 @@ async def _finish(org: str, row: outbox.PushRow, facts: Facts,
               "removed": report.removed, "by": "metorite"}
 
     async def ledger(db: Any) -> None:
-        if event is not None:
+        if event is not None and facts.reminder_id:  # a summary has no reminder
             await _ledger(db, facts.reminder_id, event, detail, channel="push")
 
     await outbox.finish_push(org, row.id, state=state, reason=reason, then=ledger)

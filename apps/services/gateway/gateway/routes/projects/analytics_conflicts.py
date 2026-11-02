@@ -85,11 +85,13 @@ from gateway.routes.projects.candidates import (
 from gateway.routes.projects.core import (
     STARTED_CATEGORY,
     _tenant_session,
+    reader_day_start,
     resolve_visibility,
     router,
     task_visibility_clause,
     triage_exclusion_clause,
 )
+from gateway.routes.projects.due_day import overdue_sql
 from gateway.routes.projects.report_scope import (
     filter_conflict_rows,
     reportable_people,
@@ -107,7 +109,7 @@ def dependency_sql(open_where: str, blocker_visible: str) -> str:
     ``t`` and ``s`` are the BLOCKED task and its status, so Load's predicate
     applies to it unchanged. ``k`` is the blocker, bounded by the caller's
     grants and nothing about projects (§13.5 rule 4). ``blocker_overdue`` is
-    Load's overdue predicate, ``due_at < now()`` (rule 5).
+    Load's overdue predicate, the one rule of ``due_day`` (rule 5).
     """
     return (
         f"SELECT t.id AS blocked_id, t.title AS blocked_title,"
@@ -115,7 +117,7 @@ def dependency_sql(open_where: str, blocker_visible: str) -> str:
         f"       k.id AS blocker_id, k.title AS blocker_title,"
         f"       k.start_date AS blocker_start, k.due_at AS blocker_due,"
         f"       k.completed_at AS blocker_completed,"
-        f"       (k.due_at IS NOT NULL AND k.due_at < now()) AS blocker_overdue"
+        f"       (k.due_at IS NOT NULL AND {overdue_sql('k')}) AS blocker_overdue"
         f"  FROM pm_task_links l"
         f"  JOIN pm_tasks t ON t.id = l.target_task_id"
         f"  JOIN pm_task_statuses s ON s.id = t.status_id"
@@ -426,7 +428,7 @@ async def conflicts_body(
         }
         for r in (await db.execute(
             text(dependency_sql(scope_where, task_visibility_clause(vis, "k"))),
-            params,
+            {**params, "day_start": await reader_day_start(db, vis.email)},
         )).fetchall()
     ]
     pair_ids = sorted({p[end]["id"] for p in pairs for end in ("blocked", "blocker")})
@@ -528,7 +530,10 @@ async def _hr_rows(
     totals = {
         str(r.who): r
         for r in (
-            await db.execute(text(capacity_totals_sql(all_where)), all_params)
+            await db.execute(
+                text(capacity_totals_sql(all_where)),
+                {**all_params, "day_start": await reader_day_start(db, vis.email)},
+            )
         ).fetchall()
     }
     dated_params = {**all_params, "until": dated_until(today, horizon_days)}

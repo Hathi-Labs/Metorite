@@ -232,14 +232,15 @@ describe("1. the answer of §14.1a", () => {
   });
 
   it("shows a clock time or a day at the right, never a duration (visual review, item 4)", () => {
-    // The why line already says "Due in 1 h 5 min.", so the right-hand time
-    // says WHEN, through the clock Today draws (`fmtClock`): "17:00",
-    // "Yesterday", "Mon". Local times, so the test holds in any zone.
+    // The why line says how long, so the right-hand time says WHEN, through
+    // the clock Today draws (`fmtClock`): "17:00", "Yesterday", "Mon". Local
+    // times, so the test holds in any zone. A task due today has no hour, so
+    // it draws no clock (RX-5).
     const now = new Date(2026, 9, 14, 12, 0).getTime();
     const at = (d: Date) => ({ kind: "overdue", at: d.toISOString() });
     const today = new Date(2026, 9, 14, 17, 0);
     expect(cardTime(at(today), now)).toBe(fmtClock(today));
-    expect(cardTime({ kind: "due_today", at: today.toISOString() }, now)).toBe(fmtClock(today));
+    expect(cardTime({ kind: "due_today", at: today.toISOString() }, now)).toBe("");
     expect(cardTime(at(new Date(2026, 9, 13, 9, 0)), now)).toBe("Yesterday");
     expect(cardTime(at(new Date(2026, 9, 15, 9, 0)), now)).toBe("Tomorrow");
     const monday = new Date(2026, 9, 12, 9, 0);

@@ -12,6 +12,7 @@ import type { TaskAttachment } from "../lib/types";
 import { useVisualViewport } from "../lib/useVisualViewport";
 import { captureDestinations, destinations, useCompanyTree } from "../lib/companyTree";
 import { parseProjectToken } from "../lib/quickAdd";
+import { dueInstantForDay } from "@/app/projects/lib/quickAdd";
 
 // Ubiquitous capture (C2) + Mind Sweep (C3/C4). A global palette openable from
 // any Tasks view via a hotkey (C) or a button. Single mode = rapid-fire
@@ -639,7 +640,7 @@ function CaptureWhen({
           value={iso ? iso.slice(0, 10) : ""}
           onChange={(e) => {
             if (!e.target.value) return onClear();
-            const d = new Date(e.target.value);
+            const d = new Date(dueInstantForDay(e.target.value));
             d.setHours(9, 0, 0, 0);
             onChange(d.toISOString(), kind);
           }}
