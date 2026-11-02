@@ -291,6 +291,13 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
                  [{"title": "QA pass"}, {"title": "Copy freeze"}, {"title": "Go live"}])}),),
                   "Made 3 tasks in Website Relaunch: QA pass, Copy freeze and Go live.")),
     )),
+    # projects-reminders: a read of the member's own reminders (MT-1228).
+    _pm("pm_reminders", "Reminders pack: what reminders do I have", (
+        Turn("What reminders do I have?",
+             (Check("ran_tool", ("list_reminders",), "read_the_reminders"),
+              Check("right_pack", "projects-reminders"), Check("no_unasked_write", 0)),
+             Plan((("list_reminders", {}),), "You have no open reminders.")),
+    )),
     _pm("pm_calendar", "Calendar surface: what is due", (
         Turn("What is due this week?",
              (Check("ran_tool", ("my_work", "calendar", "list_tasks"), "read_my_work"),

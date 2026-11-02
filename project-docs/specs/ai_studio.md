@@ -1,7 +1,7 @@
 # AI Studio — skills, workflows and apps that a company builds for itself (WS-STU)
 
 > **Product:** Metorite · **Feature:** AI Studio (`/studio`) · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 🔨 **In build.** A2, A3, B1, C1, D1, F1, F2a, G1 and G2 are built, and §14 holds the state of each slice. B1 and F2a are dark behind `STUDIO_ORGS`, which is empty on every box. A3, the package store, and C1, the typed object store, have no route and no caller yet. The `studio` tool pack of G1 and G2 gives tools only where tool packs are on, and only to an org in `STUDIO_ORGS`. The pieces it reuses are built, and §16 names each one.
+> **Status:** 🔨 **In build.** A1, A2, A3, A4, B1, B2a, C1, C2a, D1, E1, F1, F2a, G1, G1b and G2 are built, and §14 holds the state of each slice. B1, B2a and F2a are dark behind `STUDIO_ORGS`, which is empty on every box. B2a, the first cut of the action door, is the first caller of A3, the package store, and of C1, the typed object store. It runs only `object:<name>.get`, and it refuses each other action. A4, publish and rollback, has no route and no caller yet. C2a, the object query, has no route either. B2b gives it its first caller. The `studio` tool pack of G1, G1b and G2 gives tools only where tool packs are on, and only to an org in `STUDIO_ORGS`. A1 and E1 are the `/studio` preview pane, which needs neither `STUDIO_ORGS` nor a new feature. The pieces it reuses are built, and §16 names each one.
 > **Verified against code on 2026-11-01 at `82157e5fd`.** Each path in §16 was read on that commit.
 > **Board:** WS-STU in `work_plan.md` §2. **Decisions:** D127 (one app, three kinds), D139 (one coding harness), **D141** (Studio starts now, and a skill creator replaces the agent creator), **D146** (the owner's answers of 2026-10-31: layered apps, a typed object store, first-party templates). D124, D130, D131 and D136 bind it too.
 > **Metorite:** project "AI Studio", umbrella epic #491, this spec task #1135. Each group of §14 has its own epic under #491.
@@ -148,7 +148,8 @@ An object is a typed record kind that the package owns: `visit`, `claim`, `asset
 - **What C1 built** (migration `323_studio_objects.sql`). `studio_objects` holds an object of a package (an `apps` row). `studio_object_fields` holds its fields, and `studio_records` holds its records. `studio_record_hot` is the index side table. It holds one row for each value of a hot field, under three fixed btrees that every org shares. Each foreign key is a pair with `organization_id`, and each one cascades, so a deleted package leaves no record.
 - **The rules of a value** are in one module, `acb_common/studio_fields.py`. The A2 validator and the store call it, and PKG-13 will too. A number, a money amount and a coordinate stay below 10^15, with no exponent. Money is `{"minor": <whole number>, "currency": "INR"}`. A datetime is kept in UTC. A person is a lower-case member email. A relation and a file store `{"id": ...}` only.
 - **The caps.** An object holds at most 8 hot fields and 60 fields. An org holds at most 24 hot fields and 200 objects. A package holds at most 50 objects. A record holds at most 64 KiB of JSON. A field turns hot only on an object of at most 50,000 records, and the store fills its rows in the same transaction.
-- **Still to come.** One action may write several records in one transaction, so a stock move writes both ledger rows or neither. Constraints run on each write, for example "stock never goes below zero". C1b builds both. C2 builds the query, and C2 rechecks a hot text match against `data`, because `v_text` holds the first 256 characters only.
+- **Still to come.** One action may write several records in one transaction, so a stock move writes both ledger rows or neither. Constraints run on each write, for example "stock never goes below zero". C1b builds both. C2b adds group, count, sum and average to the query of C2a.
+- **The query (C2a).** `objects_store.query_records` reads one page of the records of one object, with a filter and a sort. `acb_common/studio_query.py` holds its grammar. A filter or a sort on a hot field reads `studio_record_hot`. `v_text` holds the first 256 characters only, so the store checks a match of 256 characters or more against `data` too. §14 C2a holds the rules.
 - **A write outside the store.** A raw SQL write that skips `objects_store.py` can leave a stale hot row. The one-writer fence reads the Python under `apps/` and `packages/` only, so it does not see a script or a manual statement.
 - **Relations reach built-in records.** A field can point to a task, a project, a CRM record or a person. The relation stores the id only. A read of the related record goes through its owning app, as the viewer, so a relation never shows what the viewer cannot open.
 - **A package may own no objects.** A connector app or an S1 workflow reads and writes other apps through actions only.
@@ -171,6 +172,8 @@ An action is one typed capability: an id, a title, an input schema, an output sc
 3. **The organization's MCP servers** (`connections/mcp.py`). Each tool becomes an action. A tool that says it is read-only is class A, and every other tool is class B or C behind `McpPermissionGate`.
 4. **Published workflows.** A workflow is one action with its trigger input as the schema.
 5. **The package's own objects:** list, get, create, update and delete for each object, plus each named action in the manifest.
+
+**The class of an object action (B2a).** A list and a get are class A. A create and an update are class B, because the app can undo them. A delete is class C. `acb_common/studio_manifest.py::OBJECT_OP_CLASSES` is the one source of these classes, and a test holds its verbs equal to the `uses` grammar of A2. The B1 catalog (`catalog_rows`) gives the class of each other source. The door reads no class from anywhere else.
 
 **Why one catalog.** Today five consumers each keep their own list: the workflow palette, the `window.cc` bridge (`tools.call`), the `app_<slug>_<action>` agent tools, the chat tool packs and the MCP door. A catalog keyed by the D136 manifest serves all five. A new app joins all five when it ships its manifest.
 
@@ -434,11 +437,11 @@ The skill creator replaces the Agent Workshop (D141). A member does not build a 
 1. **Who builds.** A member with `feature:studio` builds private packages. STU-Q4 sets the default roles.
 2. **Run as the viewer.** Every action runs with the viewer's `UserContext`. A view never shows more than the viewer can read in the owning app.
 3. **Share.** Private → named people or a group (`group:<slug>`, D12) → the organization. A share to the organization needs a holder of `studio:publish`, who reads the manifest diff and approves one version (the pattern of D130.3).
-4. **Versions.** Publishing snapshots an immutable version (`app_versions`, `workflow_versions`). An open workflow run keeps its version. Rollback republishes an older version.
+4. **Versions.** Publishing snapshots an immutable version (`app_versions`, `workflow_versions`). An open workflow run keeps its version. Rollback copies an older version into a new one, and history stays append-only. The install of a version is WS-PKG (`package_host.md`).
 5. **Trust ladder.** An S1 workflow starts at "ask each run" and climbs by D131. Five acts always ask: money, a member or role write, a delete, a bulk change, and a send to an outside person whom the scope does not name.
 6. **Cost.** Each build and each run has a credit cap. Every model call writes a `usage_event` row (the lesson of H-287).
 7. **Kill switch.** An admin pauses a package, a workflow or a skill in one step. New actions stop within 10 seconds.
-8. **Audit.** `app_audit` records each publish, share, install and action, with the actor and the version.
+8. **Audit.** `app_audit` records each publish, rollback, share and action, with the actor and the version. The install record belongs to WS-PKG (`package_host.md`).
 9. **Entitlements.** `feature:studio` and `studio:publish` map through the one entitlement seam (old STU-7). Pricing stays flat (`launch_surface.md` §4, STU-Q7).
 
 ---
@@ -517,6 +520,11 @@ Each question has one recommendation. A slice that waits on a question says so i
 | **STU-Q8** | Which map tiles? | **MapLibre with an OpenStreetMap-based tile host**, and a paid key only at scale | Open |
 | **STU-Q9** | Can Mira start a build from any chat? | **Yes.** Chat starts it, and Studio finishes it | Open |
 | **STU-Q10** | Does Metorite ship first-party templates for inventory, procurement, MRP-lite and the production schedule, built on Studio? | Yes, in Stages 2 and 3 | ✅ **Yes** (D146.6): K3 and K4 |
+| **STU-Q11** | May real HR data (pay, bank details, ID numbers, punches) go into a Studio app? | **Only after C8, C9 and C10, and after a lawyer reads the design for WS-37 (DPDP).** Sample data until then | Open |
+| **STU-Q12** | May an employee with no seat use self-service? | **No, at first.** The slip goes by mail. A free self-service seat is a pricing call | Open |
+| **STU-Q13** | Which sender does a bulk mail use? | **An HR shared mailbox with a throttle first.** An org system sender needs a mail provider and domain setup, so it comes later | Open |
+| **STU-Q14** | Does one card that approves a whole pay run fit D131.7? | **Yes.** "Ask each run" means one ask for one run, and the card shows the exact list (D131.2) | Open |
+| **STU-Q15** | Module Studio runs member Python on the box under `feature:workflows`, with an AST allowlist and rlimits. Its own docstring says that it is not a sandbox. Does it stay? | **Limit it to admins now.** Move it into the sandbox with B5, and retire the on-box path | Open |
 
 ---
 
@@ -526,13 +534,13 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Field | Value |
 |---|---|
-| **Team** | `ai-studio` |
+| **Team** | `studio` |
 | **Purpose** (blurb) | "Build skills, workflows and apps for your team." |
 | **Jobs** | "Build an app" (describe bar), "Teach Mira a skill" (skill draft), "Automate a task" (workflow draft). Each opens its draft route |
 | **Search provider** | Packages, workflows and skills by name and purpose |
 | **Needs you** | A share waiting on your approval, a failed run of your workflow, a skill test that broke after an edit |
 | **Home cards** | "Your apps" (altitude: me), "Waiting for approval" (altitude: admin) |
-| **Agent** | `studio-builder` |
+| **Agent** | `app-builder` until G1 adds `studio-builder` |
 | **Own palette, bell, assistant rail or ⌘K** | None |
 
 ---
@@ -545,10 +553,11 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **A1** | The Studio pane at `/studio` (preview). One library lists apps (`apps`), workflows (`workflows`) and skills (F1, when it exists). `/workflows`, `/build/apps` and `/build/agents` redirect to it. `nav.ts` holds one preview pane in place of three | The three old routes answer 308 to `/studio`. `nav.test.ts` moves its preview count in the same PR. The library shows each kind with its owner and state. Visual review in four contexts | STD | AGENT-SAFE |
+| **A1** | 🔨 **BUILT (2026-11-02).** The Studio pane at `/studio` (preview). One library lists apps (`apps`), workflows (`workflows`) and skills (F1, when it exists). A kind filter reads `?kind=`. Module Studio is a tab. The create, fork, pin and delete flows of apps and the create, duplicate and delete flows of workflows move in. `/workflows`, `/build/apps` and `/build/agents` redirect to it. `nav.ts` holds one preview pane in place of three | The old routes answer 308 to `/studio`. The run page and the Workshop under `/build/apps/{slug}` stay. A new `nav.test.ts` case holds `/studio` as the one preview pane. The mirrors move too: `SHELL_PANES` in `me.py`, `PREVIEW_BAR_HOME` and `app-title-bar.spec.ts`, and `runActivity.test.ts`. The library shows each kind with its owner and state. Apps show only to a member who holds `build.apps`. Visual review in four contexts | STD | AGENT-SAFE |
 | **A2** | 🔨 **BUILT (2026-11-01).** Enum tokens are camelCase (`longText`, `multiSelect`, `mindMap`, `processFlow`), as the genUI node types are, and keys stay snake_case. Caps: depth 20, a string of 20,000 characters, a list of 500 items, a document of 256 KiB. The validator never raises on any JSON value. Credential shapes come from one list, `acb_common/secret_shapes.py` (J5 points the older copies at it). The package manifest schema v1 and its one validator: `packages/acb_common/acb_common/studio_manifest.py` (pydantic, pure data, no gateway import), the committed export `studio_manifest.schema.json`, and hand-written TypeScript types in `workbench/control_plane/src/lib/studio/manifest.ts` held equal by a parity test (no code generator, as the genUI lockstep does). `validate_manifest(doc, *, catalog=None)` takes the catalog as an input: a map of action id to class. With no catalog it checks structure only. **The `uses` grammar:** `object:<name>.(list|get|create|update|delete)`, `<app>.<op>`, `integration:<action>` or `workflow:<uuid>` (B1's ids). An `object:` action is checked against the package's own objects. **Not yet in v1:** `rules`, a state machine (C6), a formula or roll-up (C7) and a code block (L1) are reserved keys, and each refusal names the slice that lifts it. A logic module (B4) needs no key: it is a catalog action | Each refusal of §3.7 has a test that fails with a JSON path and one sentence: an unknown block, an action the catalog does not serve, a class X action, a colour, a pixel size, a credential-shaped string, a field that a view names and the object lacks, an undeclared submit, skill action or card, a bad relation, a duplicate id, a select with no options. The §3.6 example validates with no catalog and with a fake one. The committed JSON Schema equals the live export. `test_studio_manifest_ts_parity.py` holds the TypeScript types equal | STD | AGENT-SAFE |
 | **A3** | 🔨 **BUILT, dark (2026-11-01).** Migration `322_apps_format.sql`. The package store: `apps` gains `format` only, because `apps.manifest` exists since 114. `format` is nullable with DEFAULT `code`, so an old row reads as `code` with no backfill. A reader takes NULL as `code` too. **Two CHECKs:** `apps_format` holds `code` and `manifest`. `apps_manifest_package` needs a package to hold an object with a number `studio`, in at most 262144 bytes of jsonb text. **A trigger**, `apps_format_fixed`, refuses each change of `format`, so a code app never becomes a package that skipped A2. **The writer** is `gateway/studio/packages_store.py`: `create_package`, `get_package`, `list_packages` and `update_manifest`, each over a session of `tenant_session(org)` and for one member. It runs `validate_manifest` before each write, then checks the JSON text itself. A new package is private, a draft, and has no files. **The slug** is `<manifest id>-<8 hex digits of the new id>`, because `apps.slug` is unique for all orgs. A taken slug writes nothing, and the store takes a new id. **Five readers skip a package:** `list_apps`, `load_app` (so each slug route is 404), `list_pinned_apps`, `orchestrator/app_tools.py` and `_app_workspace_for` of `routes/workspace.py`. `Path('')` is the working directory, so `_common.workspace_dir` refuses an empty or blank `workspace_path` too, for each reader of the column (fix round 1). `update_manifest` refuses a new manifest id, because the slug holds it. No route, no UI and no publish. **For A4:** `app_versions` needs no new column. A version writes `bundle_html = ''` and `bundle_sha256` as the SHA-256 of the manifest JSON, because both columns are NOT NULL. **Later:** a slug key for each org is a contract step of its own | An expand-only migration (R6). R8: org B reads none of A's packages. `test_tenant_coverage.py` passes. `test_studio_packages_r8.py` (`pytestmark = _DB_GATE`): org B and an unbound session read none of org A's packages, and a member reads only their own. An INSERT of the old shape reads as `code`. Each CHECK refuses its case, and a package of exactly the store's limit passes. The format never changes, also for the superuser. An invalid manifest writes nothing. A slug clash with another org leaks nothing. The five readers skip a package and still return a code app. A new manifest id is refused. A source scan finds no other writer of a package. `test_studio_packages_store.py` (no database): validate before write, the size cap and the slug shape | HIGH | AGENT-SAFE |
-| **A4** | Publish, version and roll back, over `app_versions`. **The install itself (its scope, its end date and its removal) is WS-PKG** (`package_host.md`, D147) | A rollback restores the older manifest in one call. An open workflow run keeps its version | STD | AGENT-SAFE |
+| **A4** | 🔨 **BUILT, dark (2026-11-01).** No route, no flag and no UI reach it, as with A3 and C1. No migration: every column exists. **Publish, version and roll back**, over `app_versions`. **The install (its scope, its end date and its removal) is WS-PKG** (`package_host.md`, D147). The organization share is J2. The review step is J2 too. **Built** in `gateway/studio/packages_store.py`, the one writer: `publish_version(db, member, package_id, notes, *, catalog)`, `rollback(db, member, package_id, version, *, catalog)`, `list_versions` and `get_version`. Each locks the package row first (`FOR UPDATE`), so two writers get N and N+1, and `UNIQUE (app_id, version)` is the backstop. **Publish** re-reads the stored draft and runs `check_manifest`. Then it runs `validate_manifest` WITH the catalog, so a colour, a px size, an unknown block, an action that the catalog does not serve or a class X action fails to publish (D12). The caller passes `catalog` as `{id: class}` from `routes/studio/actions.catalog_rows`, because a store must not import a route. The version row holds `bundle_html = ''`, `bundle_sha256` (the SHA-256 of the manifest JSON text), `scope_set_hash = ''`, `review_status = 'auto'` and `published_by`. Then `apps.status = 'live'` and `apps.live_version = N+1`. `apps.manifest` stays as it is. `live_version` is the pointer of the author only. `package_install.version` is WS-PKG. **Rollback** makes a NEW version N+1 that copies the older manifest. In the same transaction it sets `apps.manifest` to that copy (the name and the description follow) and `live_version` to N+1. ⚠️ It overwrites the draft, and the audit detail says so. A missing package or version answers None. A rollback to the live version raises. Rollback runs the same catalog checks on the copied manifest, and a refused rollback writes nothing. A `catalog` of None is refused. **Audit:** an `INSERT INTO app_audit` (kind `publish` or `rollback`) in the same transaction. The store never calls `record_app_audit`, which opens its own session. **No review:** the store never proposes `app.publish_review`, and it never updates a version row. The run-keeps-version test belongs to the first slice that runs a package workflow. | R8: a publish makes version N+1 and `live_version = N+1`, and leaves the draft. A rollback to v1 after v2 makes v3 with the manifest of v1, and the draft equals it. A publish or a rollback never edits an old row. Org B and another member see no versions, and cannot publish or roll back. An invalid draft publishes nothing. Two writers on two connections get N and N+1. The audit rolls back with the write. Verify: `uv run pytest tests/unit/test_studio_packages_store.py tests/unit/test_studio_packages_versions_r8.py tests/unit/test_studio_packages_r8.py tests/unit/test_tenant_coverage.py -q`. R8 tests: `test_r8_a_publish_makes_the_next_version_and_moves_the_pointer`, `test_r8_a_rollback_to_v1_after_v2_makes_v3_and_restores_the_draft`, `test_r8_a_publish_after_a_rollback_never_edits_an_old_row`, `test_r8_org_b_and_another_member_see_no_versions`, `test_r8_an_invalid_draft_publishes_nothing`, `test_r8_two_writers_on_two_connections_get_n_and_n_plus_1` and `test_r8_a_failure_after_a_write_rolls_back_the_version_and_the_audit` | STD | AGENT-SAFE |
+| **A5** | **The package routes.** Create a package, edit its draft, define its objects and fields, and publish, over the A3, A4 and C1 stores. They sit on the router of B1, behind `STUDIO_ORGS`. Today only the stores exist, so nobody can make a package | A member creates a package and an object and publishes a version through routes. A non-owner gets 404. Org B reads none of it. R8 for each route. G3 and K1 call these routes | HIGH | AGENT-SAFE |
 
 ### Group B — The action catalog
 
@@ -557,10 +566,15 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **B1** | 🔨 **BUILT, dark (2026-10-31).** Source 2 is empty until a workflow tool registers with an integration, and a tripwire test says so. A manifest row takes its input schema from `agent_apps.args_schema` (AD-9). A workflow row has a null input schema. `GET /studio/actions`: the read-only catalog of §3.2 sources 1, 2 and 4. **Row:** `id`, `title`, `source` (`manifest`, `integration` or `workflow`), `class`, `input_schema` (where the source declares one, else null), `output_schema` (always null: no source declares one yet), `connection`, `app`. **Source 1:** each door op of `every_app()` through `door_ops()`. **Source 2:** each entry of `list_tools()` with an `integration`, read with no live probe and no availability. **Source 4:** the org's workflows with `status = 'published'`, id `workflow:<uuid>`, class B. **Class map:** a manifest row keeps `route.cls`. An integration tool with `read_only` is A, one with `destructive` or `open_world` is C, and every other is B. No row is X. **Route:** a new `gateway/routes/studio/` router, prefix `/studio`, gated by `require_feature_router("workflows")` until J1, mounted beside the workflows router in `main.py`. **Tenant:** `tenant_session` from `gateway/db.py`, the org from `UserContext`, never from input (R5). **Flag:** `STUDIO_ORGS` (`*` for all, default off) in `acb_common/settings.py`, read per call as `push/flags.py` does, and `STUDIO_` in `env_guard.py`. No invoke, no MCP door | `test_studio_catalog.py`: a not-listed org gets 404, a listed org and `*` get 200. The row count is the door ops plus the integration tools plus the published workflows, with no duplicate id. A draft or disabled workflow never appears. The class map holds row by row. No row is X. `test_studio_catalog_r8.py` (`pytestmark = _DB_GATE`): org B's published workflow never appears for org A, red first with the RLS-bound session removed | STD | AGENT-SAFE |
 | **B1c** | Source 5: the package's own object actions and named actions | Each object of a stored manifest gives its five actions, and each named action appears once. Needs A2, A3 and C1 | STD | AGENT-SAFE |
 | **B1b** | Source 3: the tools of the organization's MCP servers, read from a cached `tools/list` | A tool with `readOnlyHint` is class A, and every other tool is B. A server of another org never appears | HIGH | AGENT-SAFE |
-| **B2** | The invoke door `POST /studio/apps/{id}/actions/{action}`. Class A runs as the viewer. Class B and C go through `request_confirmation` in chat, or `pending_actions` outside it. Class X and undeclared actions are refused | Each class has an R8 test, red first under a named mutation. An action that the package does not declare gets 403. A viewer without the right in the owning app gets that app's own refusal | HIGH | AGENT-SAFE |
+| **B2a** | 🔨 **BUILT, dark (2026-11-01).** The first cut of the invoke door: `POST /studio/apps/{id}/actions/{action}` in `gateway/routes/studio/invoke.py`, on the router of B1. **The order of the checks:** the switch `STUDIO_ORGS` (404 for each body, because the route takes the raw request and FastAPI parses no body first), then the shape of the action (404 for a value that is not an A2 action id), then `packages_store.get_package` for the caller (404 for a package of another member or org, an App Workshop app, or an id that names nothing), then the declared `actions[].id` (403 `not_declared`), then the class (403 `class_x`, or 403 `not_in_catalog` for an id that the catalog does not serve), then 403 `approval_required` for class B and C. A catalog that fails is 503 `catalog_unavailable`. **The one executor** is `object:<name>.get`. It reads the object by its name in the package (`objects_store.get_object_by_name`, new), then the record (`get_record`), each with the package id. The record id is the key `id` of the body, under the id rule of C1. The executor is the only step that parses the body. An object that the package lacks is 404 `object_missing`, and a record id that names nothing is 404 `Not found`. Each other class A action gets 403 `source_not_open`. **The class** of an object action comes from `OBJECT_OP_CLASSES` (§3.2), and the class of each other source from `catalog_rows`. **The audit:** each call that reaches a package of the caller writes one `app_audit` row (kind `action`) through `routes/apps/_common.record_app_audit_bound`. The row holds the action, its `uses`, its class and the outcome, and no record data. Each text in it has at most 200 characters. A 404 before the package writes no row. The audit is best-effort on purpose, for a class A read only: a failed audit never fails the read. **The org** is the bound session and the member is `user.email`, never request input. **A gap of C1, closed:** `objects_store._PACKAGE_SQL` needs `format = 'manifest'`, so an App Workshop app owns no object. **Not built:** the executors of B2b and the approval of B2c | `test_studio_action_door_r8.py` (`pytestmark = _DB_GATE`, in the `--must-run` list): the owner reads a record, and one audit row lands in the bound org. Another member of the org, and org B with the same email, get 404 on each action. An undeclared action is 403. Class B and C write nothing. A published workflow of org B is not in the catalog of org A. An App Workshop app and a record of another package are 404. A body that names an org changes nothing. With the switch off, each call is 404 and writes no row. Each mutation of the suite docstring turns a named test red. `test_studio_action_door.py` (no database): the switch, the order of the checks, each refusal code, and the verb table against the A2 grammar. `test_studio_objects_r8.py::test_r8_a_code_app_owns_no_object` | HIGH | AGENT-SAFE |
+| **B2b** | The executors of the other class A sources: `<app>.<op>`, `integration:<action>` and `object:<name>.list`. ⚠️ **First, this slice records in this spec the executor of a door op inside the gateway.** No such executor exists today. Only the MCP edge runs a door op: `agent_edge/tools.py::_door_send` builds the call with `app_manifests.build_call` and sends it over HTTP with the member's credentials. `integration:` runs through `routes/workflows/tools.py::execute_tool`. `object:<name>.list` waits on B1c. Its query is C2a: the action passes its filter, sort, limit and offset to `objects_store.query_records`, and `studio_query.list_input_schema()` is its input schema. ⚠️ B2b checks its input against `list_input_schema()` before it calls the store. `paging.bounds` raises `OverflowError` for an offset of infinity. ⚠️ B2b catches `QueryError` (a `ValueError`) and `ObjectStoreError` (a bad UUID), and maps each one to its answer | This spec records the executor choice before the build. Each class A source has an R8 test that runs as the viewer. A viewer without the right in the owning app gets that app's own refusal | HIGH | AGENT-SAFE. After this spec records the executor |
+| **B2c** | The approval of class B and class C: `request_confirmation` in chat, or `pending_actions` outside it. ⚠️ **B2c reuses the approval path of WS-MCP MCP-P1b, and builds no second one.** It opens the create, the update and the delete of an object, and a published workflow (`routes/workflows/service.py::run_published_workflow`). ⚠️ B2c writes its audit row in the same transaction as the write, and a failed audit fails the write. It does not copy the best-effort audit of B2a | A class B or C action runs only after the member's card. A refused card writes nothing. Each class has an R8 test, red first under a named mutation | HIGH | AGENT-SAFE. After MCP-P1b |
 | **B3** | A published app's actions join the D136 door: `list_apps` and `describe_app` show it, and `app_read` and `app_write` reach it | Needs MCP-P1b. The MCP coverage fences pass. A package that is not shared with the caller does not appear | HIGH | AGENT-SAFE. After MCP-P1b |
 | **B4** | **First-party logic modules** (§3.7 layer 3): a typed function in the repository, served by the catalog as an action. It reads its input through B2, as the caller, and returns proposed writes. B2 applies them in one transaction | A module that returns writes to two objects applies both or neither. A proposed class B or C write waits for the member's card. A module that names an object the package does not hold is refused. The first module is the MRP run of K4 | HIGH | AGENT-SAFE |
 | **B5** | **Member-authored logic modules** on the off-box sandbox, with the same contract as B4 | The module runs with no network, no database link and no secret. A share to the organization needs an approval of one version (D130.3) | HIGH | AGENT-SAFE. After SBX-9 (D127.2) |
+| **B6** | **A run with no viewer.** An install names one `run_as` member, chosen by an admin. A scheduled or event run holds the rights of that member, cut down to the `uses` of the package. Each write carries `system:package:<id>` and that name (§19.2) | A run cannot reach what `run_as` cannot read. A run stops when `run_as` loses access or leaves. The audit row names both | HIGH | AGENT-SAFE. After H-328 |
+| **B7** | **The `runtime` key** (§19.3). The four kinds in the A2 model, the import scan against the image lock, the plan-card line and the rule that the builder picks the lowest kind. `hosts` is no key | No key means `none`. An import outside the lock is an error with a JSON path. A `hosts` key is refused. `studio_describe` serves the kinds. No sandbox runs in this slice | STD | AGENT-SAFE |
+| **B8** | **Package layers** (§19.5). The registry proxy, the install at build time, the frozen layer with its hash, the review of the list | Each rule of §19.5 has a refusal test. A run has no network. A new package list is a new version | HIGH | AGENT-SAFE. After SBX-9 and the sandbox meter |
 
 ### Group C — Objects
 
@@ -568,12 +582,18 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 |---|---|---|---|---|
 | **C1** | 🔨 **BUILT, dark (2026-11-01).** No route, no flag and no UI reach it. Migration `323_studio_objects.sql` copies the two `apps` blocks of 321 (PKG-4) byte for byte, so the two files apply in either order. **The typed object store** (D146.4, §3.1): an object registry, record tables on shared JSONB rows, the field types of §3.1, validation on each write, and an index budget per org. No per-tenant DDL. Expand-only migration, next free number (R1). **Built:** `acb_common/studio_fields.py` holds the 16 types and the one check of a spec and of a value. A2 imports `FIELD_TYPES` and `validate_field_spec` from it, and A2's `FieldDef` gained `hot`. `gateway/studio/objects_store.py` is the one writer. It holds define, add a field, turn a field hot or cold, and drop for the registry. It holds create, get, update and delete for one record. A read is by id only. Each record function takes a required `package_id`, so a door of one package cannot reach a record of another package. The caller owns the transaction, so C1b can join several calls. **The rules:** a hot field has one of eight types: text, select, number, money, date, datetime, checkbox or email. A hot field takes no `many`. A number is below 10^15 in size, and a value that is not zero is at least 1e-4 in size, because the check refuses a float in exponent form. `v_text` holds the first 256 characters of a text. The options of a select must differ by more than case. A URL holds no user name and no password. A stored field reads with no authoring check, so a stricter rule binds a new spec only. **The lock order:** every write takes the advisory lock of the org first, then the row lock of the object. The org lock is exclusive, so the writes of one org run one at a time. **Hard delete:** a hard delete of the package deletes all its records by cascade (`routes/apps/lifecycle.py:566`). A confirm step that names the records belongs to A4 or J4. **Not built:** no TypeScript twin of the value check. D2 adds it, with a parity test as A2 has | Each field type refuses a bad value with its field name. R8: FORCE RLS holds on each table, and org B reads nothing. A hot field gets an index, and no org passes its budget. `test_tenant_coverage.py` passes. **The budget:** at most 8 hot fields for each object and 24 for each org. The store refuses first, and the trigger `studio_object_fields_hot_budget` refuses too, also under two writers at once. A field turns hot only on an object of at most 50,000 records. A record holds at most 64 KiB (65,536 bytes) of JSON. **Tests:** `test_studio_fields.py` (each type, the spec rules, three fences). `test_studio_objects_r8.py` (`pytestmark = _DB_GATE`): FORCE RLS on all four tables, org B reads and writes nothing, each composite key refuses a row of another org, a hot row on each write, the 9th and the 25th hot field, two writers at once, the 64 KiB cap, the 50,000 cap, the cascades. `test_admin_member_purge.py`: no purge row and no cascade reaches a record | HIGH | AGENT-SAFE |
 | **C1b** | Multi-record writes and constraints: one action writes several records in one transaction, and a constraint runs on each write | A stock move writes two ledger rows or neither, also when the second write fails. A constraint "stock is never below zero" refuses the write that breaks it, with its name. R8 under two writers at once | HIGH | AGENT-SAFE |
-| **C2** | The object query: filter, sort, group, count, sum and average, paging and a cost guard | R8 on a real Postgres for each operator. A query over the guard stops with a clear error. An index plan is checked with EXPLAIN on 50,000 rows | HIGH | AGENT-SAFE |
+| **C2a** | 🔨 **BUILT, dark (2026-11-01).** No route, no flag, no UI and no migration. **The object query:** filter, sort, paging, the cost guard and its errors. **Built:** `acb_common/studio_query.py` holds the grammar: the shape, the op table of each type and the caps. It holds no SQL and no gateway import. B2b's list action and the chat tool pass their input through it, and `list_input_schema()` is the JSON Schema of that input. `objects_store.query_records(db, *, package_id, object_id, filter, sort, limit, offset)` is the one reader, beside the reads of C1. It answers None for an object of another package or org. `build_query` and `build_count` are pure. **The filter** is a list of at most 8 conditions `{field, op, value}`, and a record must meet each one. **The ops of each type:** text and email take `eq`, `ne`, `in`, `contains` and `is_empty`. Select takes `eq`, `ne`, `in` and `is_empty`. Number and money take `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `in` and `is_empty`. Date and datetime take `eq`, `lt`, `lte`, `gt`, `gte` and `is_empty`. Checkbox takes `eq`, `ne` and `is_empty`. Another type and a field with `many` take no filter. The grammar refuses a range op on text. **The values** go through `studio_fields.check_value`, so an email compares in lower case and a select value must be an option. `in` takes at most 100 values. A money filter compares the minor amount, and it does not check the currency. A date value means the whole day in UTC. So `lte` a day is up to the end of the day, and `gt` a day is after its end. Apart from the checkbox rule, `ne` matches only a record that holds a value, and only `is_empty` (true or false) matches a record with no value. An empty text is a value. **The checkbox rule (the one exception).** The build loop decided this rule on 2026-11-02, and the owner can change it. A checkbox has two states for a member. `eq true` and `ne false` match a ticked record. `eq false` and `ne true` match an unticked record and a record with no value, because a form that does not send an unticked box writes no value. `is_empty` matches only a record with no value. **The 256-character rule:** `v_text` holds the first 256 characters. So `eq`, `ne` and `in` with a value of 256 characters or more check `data` too. `contains` checks `data` when `v_text` holds 256 characters. **The sort:** one hot field, then the record id. A text sorts by its first 256 characters. A record with no value of the sort field comes after the others, in the ascending order of its id. A checkbox field takes no sort, because `v_bool` has no index. With no sort, the order is the record id. **Paging:** `paging.bounds` gives a page of 25 records by default and 100 at most. The offset is at most 10,000. The total is exact below 10,001. At 10,001 the page gives `total_at_least` in its place. `page_line` gives the line, and it names no offset past 10,000. **One statement for a page (fix round 1).** One statement reads the page and its total, so one snapshot serves both. A write between two reads cannot put a record on a page twice. For a sort, the head reads the hot index of the sort field in order. The CTE `hc` counts the head up to the end of the page. So the tail reads only the rows that the page needs, and no rows when the head fills the page. A Sort node takes at most the rows of one page. **The candidates.** Each part of the statement reads its candidates from the hot rows of one hot condition (a time or a text match first). With no such condition, it reads the records of the object by the records index, in the order of the id. Each other condition tests the candidate id. A condition that reads `data` runs after a lookup of the record by its primary key. **The cost guard**, in three layers. (a) The caps of the shape. (b) `hot_or_small`: the grammar refuses a sort on a field that is not hot. A filter on a field that is not hot reads `data`, so it runs only when the hot filters leave at most 5,000 records. The page statement holds this count as the CTE `g`, so a write between two statements cannot pass the guard. Then the MATERIALIZED CTE `m` holds those candidates once, and `data` is read only for them. The count and the page read `m`. (c) One call has one deadline of 5 seconds. Each statement of the call, from the read of the object on, runs in a SAVEPOINT. Before each statement, the store sets the LOCAL `statement_timeout` to the time that is left. With no time left, it refuses with `query_timeout` and runs no more statements. **A field that turns cold.** The page statement counts the fields that it reads as hot and that are still hot (the CTE `v`). A field that turned cold after the store read the fields has lost its hot rows. So the store reads the fields again and runs the query once more. A second change gives `query_timeout` with the sentence "The fields of this object changed during the query. Try again." A timeout rolls back the SAVEPOINT only. The caller's transaction stays usable, and the old timeout comes back. **The six errors:** `QueryError` holds `query_field_unknown`, `query_op_not_allowed`, `query_value_invalid`, `query_not_indexed`, `query_too_big` or `query_timeout`, and one sentence. The sentence never echoes a value. A route answers 503 for `query_timeout` and 422 for each other code. **Injection:** a field key and a value are always binds. The SQL text takes a column name and an operator from a constant map only. ⚠️ **The known gap:** no `numeric` comparison is LEAKPROOF in Postgres 16. So the app role gets no index condition on `v_num`, and a number or money filter reads the hot rows of its one field (`docs/rls_and_indexes.md`). A sort on a number still reads the index in order. A checkbox filter reads the hot rows of its field too. The verifier measured a number range filter at 2.3 seconds on 600,000 records. No cap limits the records of an object after a field turns hot. A later slice fixes the gap with a migration. **Not built:** group, count, sum and average (C2b), and the route (B2b) | `test_studio_query_r8.py` (`pytestmark = _DB_GATE`, in the `--must-run` list). Each op of each type gives the same records on a hot field and on a field that is not hot. `ne` skips a record with no value, and `lt` and `lte` differ at the boundary. A long text matches against `data`. A sort pages each record once, with the ties in id order and the empty records last. A query of another package, object or org reads nothing. The store refuses a filter on a field that is not hot over 5,000 records. At a 1 ms timeout the query gives `query_timeout`. Then `get_record` runs in the same session, and the old timeout is back. On 50,000 records, EXPLAIN of the SQL of `build_query` shows the hot index, no Seq Scan, and no Sort node for a hot sort. A one-day filter (1%) reads at most 2,500 hot rows. A cold filter after a hot filter reads at most 5,000 records, and no count or page scans a table. A second session that clears a value between two reads puts no record on the page twice. A slow statement leaves less time for the next one. Each checkbox op gives the same records on a hot field and on its cold twin. A field that turns cold during a call gives the right page. A bulk insert during a call cannot pass the guard. `test_studio_query.py` (no database): the op table, each refusal, the caps and the injection fences. Verify: `uv run pytest tests/unit/test_studio_query.py tests/unit/test_studio_query_r8.py -q` | HIGH | AGENT-SAFE |
+| **C2b** | Group and aggregate: `group_by`, count, sum and average, on hot fields only. At most 50 groups, and the rest fold into `other`. Sum and average take a number only. C2b refuses a money sum unless a check of `data` proves one currency, as CRM H-333 does. A date groups by day or by month in UTC. It uses the grammar, the guard and the errors of C2a | R8 for each aggregate. A group on a field that is not hot gives `query_not_indexed`. C2b refuses a money sum of two currencies. EXPLAIN on 50,000 rows shows the hot index | HIGH | AGENT-SAFE. After C2a |
 | **C3** | Record events: create, update and delete emit `studio.record.*` through `ingestion/event_hooks.py` | A workflow with a record trigger runs once for one change. The event carries the org | STD | AGENT-SAFE |
 | **C4** | Record history: each change names the actor and the old value | The history of one record lists each change in order | STD | AGENT-SAFE |
 | **C5** | Records join `search_company` through the one retrieval seam (D128) | A new record is found by Mira within five minutes. A record the viewer cannot open is never returned | HIGH | AGENT-SAFE |
 | **C6** | **State machines** (§3.7 layer 2): a status field names its allowed moves, and each move may have a guard rule and a required role | A move that the machine does not allow is refused. A guarded move ("a PO above the limit needs a director") is refused for any other role. Each move writes a history row (C4) | STD | AGENT-SAFE |
 | **C7** | **Formula and roll-up fields** in an interpreted expression language with no I/O, no loops and a step cap | A roll-up (stock on hand is the sum of the moves) updates within one minute of a write. A formula over the step cap stops with a clear error. An expression can read only the fields of its own package | STD | AGENT-SAFE |
+| **C8** | **App roles and row rules** (§19.7). `roles` in the manifest, `access` on an object, `<person field> = $me`, `hide` for a field, a required `viewer` in the one reader and the one writer, query ops for `person` | R8: an employee reads only their records through the door, chat, search and a workflow. A manager reads their team only. A fence lists each reader path. A `where` on a field that is not hot is refused | HIGH | AGENT-SAFE |
+| **C9** | **Field sensitivity** (§19.7). `normal`, `personal`, `restricted`, encryption with a per-org key, an audit row for each read, `[restricted]` in each tool result, and the card path to the viewer | The ciphertext is in `data`. A restricted field cannot turn hot or take a filter or an embed. A test runs each chat path and finds no restricted value in what reaches the model. A package with a restricted field and no `access` is refused | HIGH | AGENT-SAFE |
+| **C10** | **Retention and the org caps.** `retention_days`, the sweep, 1,000,000 records and 2 GiB for an org, more hot fields after a measure of the write cost | A record past its date goes with its hot rows and vectors. A write past a cap is refused in one plain sentence. R8 | HIGH | AGENT-SAFE |
+| **C11** | **Ingest and import.** A CSV into an object with a field map, and a signed endpoint for a device or a vendor push, with a token for each install, a rate limit and a key for each row | A second delivery of one punch writes no second row. A wrong signature writes nothing. The endpoint binds the tenant. Rows go in chunks of 50 | HIGH | AGENT-SAFE. After H-328 |
+| **C12** | **Exports between packages.** Off by default. A package names what it exports, and a reader needs its install and the viewer's rights | With no export, package B reads nothing of A. C8 still binds | HIGH | AGENT-SAFE |
 
 ### Group D — Blocks and the renderer
 
@@ -582,7 +602,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **D1** | Data binding, page state and typed actions in `GenerativeUINode` (§5.2) | A node with `source` renders rows from a mocked door, with the default loading, empty and error states. A button sends its action id. The lockstep test passes. **Built 2026-11-01 (STU-D1):** `table` and `dataGrid` bind, through `lib/studio/dataDoor.tsx`. **Narrowed:** page state is a pure encode and decode helper (`lib/studio/pageState.ts`), and the URL wiring waits for D11, since no Studio page mounts a bound node yet. Other blocks bind in D2 to D5 | STD | AGENT-SAFE |
 | **D2** | The Table, Form and Detail blocks, from the §3.1 field types | Each field type renders and validates in the form. Inline edit in the table calls the update action. Visual review in four contexts | STD | AGENT-SAFE |
 | **D3** | The Board block on `components/board/` | A drag between columns calls the update action once. A refused update puts the card back | STD | AGENT-SAFE |
-| **D4** | The Chart and Stat blocks on `lib/charts/kinds.mjs`, fed by an aggregate query | Each of the 13 kinds renders from a C2 result | LOW | AGENT-SAFE |
+| **D4** | The Chart and Stat blocks on `lib/charts/kinds.mjs`, fed by an aggregate query | Each of the 13 kinds renders from a C2b result | LOW | AGENT-SAFE |
 | **D5** | Pull the Calendar grids out to `components/calendar/` with a generic event shape | The Calendar app's tests pass with no change. The block renders object records by a date field | STD | AGENT-SAFE |
 | **D6** | Pull the Timeline core out of `TimelineView.tsx` to `components/timeline/` | The Projects tests pass with no change. The block renders records with a start and an end | STD | AGENT-SAFE |
 | **D7** | The Mind map block, on `@xyflow/react` with a tree layout | A parent field draws the tree. A drag to a new parent calls the update action | STD | AGENT-SAFE |
@@ -591,17 +611,19 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **D10** | The Map block | Records with a geo field show as pins. Visual review at 390 px | STD | **OWNER-GATE** for a paid tile key (STU-Q8). Otherwise AGENT-SAFE |
 | **D11** | The page layout: grid, tabs, side panel and the phone layout. Wire `pageState` to the URL | Each block passes visual review at four widths down to 390 px. A round-trip test shows `pageState` survives a reload through the URL | STD | AGENT-SAFE |
 | **D12** | The manifest conformance fence | A manifest with a colour, a pixel size or an unknown block fails to publish | LOW | AGENT-SAFE |
+| **D13** | **Documents.** A template block with fields from a record, a `document.render` first-party action over `render_pdf`, images in `render_pdf`, and the result stored in `attachments` | One record gives one PDF with a logo and a table of lines. A `file` field opens it for a viewer with access. A restricted value stays out of each log | STD | AGENT-SAFE |
 
 ### Group E — Workflows in Studio
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **E1** | The workflow editor at `/studio/workflows/{id}`, the same engine and components | Every `/workflows` test passes on the new route | LOW | AGENT-SAFE |
+| **E1** | The workflow editor at `/studio/workflows/{id}`, the same engine and components | `/workflows/{id}` answers 308 to the new route. `nav.test.ts`, `entities.test.ts`, `studioRedirects.test.ts` and the ratchet suites pass. The editor keeps its own toolbar until it gets an `AppTopBar` | LOW | AGENT-SAFE |
 | **E2** | Fan-in and loops (`workflows_app.md` §8.3b and §8.3c, unchanged) | The acceptance of §8.3b and §8.3c | STD | AGENT-SAFE |
 | **E3** | Studio triggers: record, form submit, button, skill. Each trigger registers as a contribution of its install (§11.1) | Each trigger starts one run, with the org bound. A trigger stops when WS-PKG removes its install | STD | AGENT-SAFE. Unattended triggers wait on H-328 |
 | **E4** | The human step node: a task in `pm_tasks`, and a wait until it is done | The run resumes once when the task moves to done. A cancelled task fails the step | STD | AGENT-SAFE |
 | **E5** | Catalog nodes: any B1 action is a node | A class B node pauses for approval, as the approval node does | HIGH | AGENT-SAFE |
 | **E6** | The workflow template gallery (`workflows_app.md` §8.3a) | §8.3a's acceptance | LOW | AGENT-SAFE |
+| **E8** | **The batch run.** One approval for one run, then chunks of 50 through `apply_writes`, a key for each item, a status for each item, and a resume after a stop | A run of 300 items stopped at item 120 resumes and repeats none. The card shows the exact list (D131.2) | HIGH | AGENT-SAFE. After C1b and E2. STU-Q14 |
 
 ### Group F — Skills
 
@@ -618,6 +640,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **F7** | SKL-2: history, one-step undo and archive when unused (task #819) | Each change shows who made it. Undo restores the version before | STD | AGENT-SAFE |
 | **F8** | `SKILL.md` export and import, and skills over the MCP | An exported skill loads in a stock Agent Skills client. An import keeps only catalog actions | STD | AGENT-SAFE |
 | **F9** | Retire the Agent Workshop and `AddAgentWizard` | The route and the wizard are gone. No test imports them | LOW | AGENT-SAFE |
+| **F10** | **Each published action is a chat tool.** A package gets a pack with no hand-written skill. Tool text comes from the manifest. A record value carries the untrusted mark | A view button with no tool fails a fence. A class B action asks on a card in chat. A member of a package sees its tools, and another member does not | HIGH | AGENT-SAFE. After B1c, B2b and F3 |
 
 ### Group G — The builder
 
@@ -625,7 +648,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 |---|---|---|---|---|
 | **G1** | 🔨 **BUILT, dark (2026-11-01).** The builder tools for Mira: draft, patch, validate, outline and list actions. The tools are stateless, because the chat holds the manifest and A3 is Stage 2. A serialized manifest has a cap of 24,000 characters, and each tool result stays under that cap too. Agent `studio-builder` owns the `studio` pack. It is not a second assistant, and Mira alone talks to the member. It never runs as an agent: it is in no agent list (`_PACK_OWNER_AGENTS` in `gateway/routes/agent.py`), and every run refuses a hand-off to it or a run of it (`tool_packs.pack_only_refusal`). Preview waits for G4 | Each tool refuses an invalid patch with the validator's error, and the manifest stays as it was. No tool runs code. Verify: `uv run pytest tests/unit/test_studio_builder_tools.py tests/unit/test_studio_patch.py tests/unit/test_tool_packs_registry.py -q` | STD | AGENT-SAFE |
 | **G2** | 🔨 **BUILT, dark (2026-11-01).** The interview and the plan card (§6.2 steps 1 and 2). Two tools join the `studio` pack. `studio_interview` checks at most five questions, one topic each (`who`, `records`, `next`, `approver`, `systems`). It refuses a repeated topic and a topic that the brief states. Its result is the exact input of `ask_questions`, which stays the one ask seam. `studio_plan` checks the manifest and shows one card with `request_confirmation`. The card draws each name from the manifest inside « », and the member rejects it to build nothing. The model cannot call that function, so the tool calls it and returns a `decision`: `approved`, `revised`, `stopped` or `no_card`. `stopped` means the card closed with no approval: a Reject, a timeout or an answer by another member. `no_card` means the chat shows no card. The plan text stays in `context`, and the member answers in words. A child agent never holds `studio_plan` (it is in `DISPLAY_TOOLS`). The card shows objects, views, workflows, skill, connections and actions. "Ask only what the brief does not say" is model judgement, and it is **advisory**. The build cost is **not priced yet**: no credit estimator exists, and J3 sets the caps. The card shows the count of parts and the line "Build cost: not priced yet. Credit limits come with a later release." It shows no price and no turn count | **Enforced:** one `studio_interview` call holds at most five questions, one topic each (`test_studio_interview_caps_at_five_questions`). **Advisory:** the limit across a whole request (one interview, one plan card, no direct `ask_questions` call) is a rule for Mira and no code counts it. A counter per run is a follow-up. An invalid manifest shows no card. A stop on the card writes nothing: `studio_plan` makes no write call and G1 keeps no store. After a stop, the rules forbid `studio_patch` (advisory). Fences: `test_studio_interview_caps_at_five_questions`, `test_studio_interview_refuses_repeat_topic`, `test_a_stop_writes_nothing_so_any_non_get_call_fails`. Verify: `uv run pytest tests/unit/test_studio_interview_plan.py tests/unit/test_studio_builder_tools.py tests/unit/test_tool_packs_registry.py -q` | STD | AGENT-SAFE |
-| **G1b** | `studio_describe(part)` in the `studio` pack: the live JSON Schema of the manifest, the field types of `studio_fields` and the block catalog, so Mira reads them before she drafts (§11.1). Stateless and read-only, like G1 | The schema it returns is the one A2 checks against, from the same source. A test fails when the two differ. Each result stays under G1's cap | STD | AGENT-SAFE. Stage 2 |
+| **G1b** | 🔨 **BUILT, dark (2026-11-01).** `studio_describe(part)` in the `studio` pack: the live JSON Schema of the manifest, the field types of `studio_fields` and the block catalog, so Mira reads them before she drafts (§11.1). Stateless and read-only, like G1 | **Built:** `part` is `manifest`, `fields` or `blocks`. A bad part gives `ok: false` and the legal parts. The tool reads `Manifest.model_json_schema()`, `studio_fields` and `BLOCKS` live and copies none. It adds no per-block prop docs. The pack now holds eight tools. The schema it returns is the one A2 checks against, from the same source. A test fails when the two differ. Each result stays under G1's cap | STD | AGENT-SAFE. Stage 2 |
 | **G3** | The Studio build screen (§6.3). A build session keeps one goal record of WEB-10 (§11.1) | Outline, preview and the shell's dock with `studio-builder`. `seams.test.ts` passes. A build that reaches its round cap stops with a block code that the member can read | STD | AGENT-SAFE |
 | **G4** | Preview on sample data, with a preview store and simulated sends | A preview write never reaches `app_data` of the live package. A send in preview leaves no message | HIGH | AGENT-SAFE |
 | **G5** | Edit by diff, with one-step undo | Each change shows its diff before it applies | STD | AGENT-SAFE |
@@ -648,6 +671,8 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 |---|---|---|---|---|
 | **I1** | A package names its connections. Install checks them, and Integrations lists the apps that use each one | An app with a missing connection installs in the "needs a connection" state and runs no action | STD | AGENT-SAFE |
 | **I2** | Generate an app from a connection or an MCP server (§8.2) | A test MCP server with two reads and one write gives two lists, two details and one form with an approval | STD | AGENT-SAFE |
+| **I3** | **Mail merge.** An `email.merge_send` action: one template, one attachment for each person, one approval, a throttle, a status for each person. It copies the pattern of `whatsapp.broadcast` | A run of 300 stops at the provider limit and resumes. A resend sends none twice. A send to a person outside the scope asks | HIGH | AGENT-SAFE. After E8. STU-Q13 |
+| **I4** | **Doors for the rest.** Ask WS-MCP to plan the doors of attachments, documents and notes, and a write op for `people_absences` | Each built-in app that §19.6 names has a row in `external_agent_access.md` | LOW | AGENT-SAFE |
 
 ### Group J — Governance
 
@@ -657,6 +682,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **J2** | Share: private → people or a group → the organization, with an approval for the organization | A share to the organization without approval stays pending. Approval publishes one version only | HIGH | AGENT-SAFE |
 | **J3** | The kill switch, the credit caps and a `usage_event` row for each model call | A paused package runs no new action within 10 seconds. A build stops at its cap | HIGH | AGENT-SAFE |
 | **J4** | The admin view: every package, owner, version, runs, last error and use. It joins AUTO-4 (task #817) | An admin sees every package of the org. A member sees only their own | STD | AGENT-SAFE |
+| **J6** | **The install consent screen.** What the app reads, writes and sends, who sees it, its runtime kind, its sensitive fields and its `run_as` | The screen draws from the manifest, with no hand-written list. A new version that widens any of these asks again | STD | AGENT-SAFE. After PKG-8 |
 
 ### Groups K, L and M — Templates, code, pinned answers
 
@@ -666,6 +692,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | **K2** | A template update to an installed app that a member changed | The update keeps each local change, or names the conflict | HIGH | AGENT-SAFE |
 | **K3** | **First-party template: inventory and procurement** (D146.6, §3.7 example). Items with product lines and units, locations, the stock ledger, vendors, purchase requests and purchase orders with an approval chain by amount, and goods receipt with a QC step. It posts to Tally or Zoho Books through a connector | It installs in one step and passes D12. A receipt writes stock moves that keep stock on hand right. A purchase order above the limit waits for a director | STD | AGENT-SAFE |
 | **K4** | **First-party template: MRP-lite and the production schedule** (D146.6). BOMs, work orders, machines, the nightly MRP run (a B4 module) and a production timeline by machine | On a fixed test set, the MRP run proposes the expected planned orders. Each planned order waits for approval. The timeline shows each work order on its machine | HIGH | AGENT-SAFE |
+| **K5** | **First-party template: HR and payroll.** The objects, rules, workflows and views of §19.8, at kind `none`, with sample data | An HR team installs it and runs one month on sample data: punches, leave, a pay run, slips, mail. No sandbox runs. Real data waits on STU-Q11 | STD | AGENT-SAFE. After the slices of §19.9 |
 | **L1** | The code block (§5.4) | Code runs with the `--cc-*` tokens only, and every bridge call goes through B2 | HIGH | AGENT-SAFE. After SBX-9 and CA-14 |
 | **L2** | Move existing App Workshop apps into packages with `format = code` | Each existing app opens and runs from Studio | STD | AGENT-SAFE |
 | **M1** | **Grown into WS-PKG PKG-12** (`package_host.md`, D147): Mira makes a private package from chat, with an end date. Pin a chat card or an artifact as a draft package page, with a 30-day expiry | A pinned page opens by link after the chat ends. It expires on its date, and its owner can restore it | STD | AGENT-SAFE |
@@ -677,9 +704,9 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 | Stage | Slices | What a member gets | Depends on |
 |---|---|---|---|
 | **1 · Studio opens** (M1, dark) | A1, A2, B1, D1, E1, F1, F2a, F2b, F2c, G1 | One Studio pane in preview, the skill creator for private skills, the catalog, and the manifest | None. D146 answered STU-Q1 and Q2 |
-| **2 · First apps** (M2) | A3, A4, B1c, B2, C1, C1b, C2, C6, C7, D2, D3, D4, D11, D12, F5, G2, G3, G4, G5, H1, J1, J2, K1, K3 | Build, preview and publish an S2 app in chat. Tables, forms, boards and charts. The typed object store with rules. The inventory and procurement template | J1 waits on STU-Q4. F3 needs WS-67 live |
-| **3 · Automations and rich blocks** | B1b, B4, C3, C4, D5 to D9, E2 to E6, F3, F4, F6, F7, H2, I1, I2, J3, J4, K4 | S1 and S3 in full, connector apps, calendar, timeline, mind map, playbooks, first-party logic and the MRP-lite template | H-328 for unattended runs. WS-67 for F3 |
-| **4 · Code, outside agents, scale** | B3, B5, C5, D10, F8, F9, G6, G7, H3, K2, L1, L2, M1 | Member logic modules, the code block, MCP access, pinned answers | MCP-P1b, SBX-9, CA-14 (#1042), MCP-P5 (#869) |
+| **2 · First apps** (M2) | A3, A4, A5, B1c, B2a, B2b, B2c, C1, C1b, C2a, C2b, C6, C7, C8, D2, D3, D4, D11, D12, F3, F5, F10, G2, G3, G4, G5, H1, J1, J2, K1, K3 | Build, preview and publish an S2 app in chat. Tables, forms, boards and charts. The typed object store with rules. The inventory and procurement template | J1 waits on STU-Q4. F3 needs WS-67 live |
+| **3 · Automations and rich blocks** | B1b, B4, B6, B7, C3, C4, C5, C9, C10, C11, D5 to D9, D13, E2 to E6, E8, F4, F6, F7, H2, I1, I2, I3, I4, J3, J4, J6, K4, K5 | S1 and S3 in full, connector apps, calendar, timeline, mind map, playbooks, first-party logic and the MRP-lite template | H-328 for unattended runs. WS-67 for F3 |
+| **4 · Code, outside agents, scale** | B3, B5, B8, C12, D10, F8, F9, G6, G7, H3, K2, L1, L2, M1 | Member logic modules, the code block, MCP access, pinned answers | MCP-P1b, SBX-9, CA-14 (#1042), MCP-P5 (#869) |
 
 **The first dispatchable slice is B1.** It waits on no owner question, writes nothing, and every later group reads it.
 
@@ -694,11 +721,11 @@ Each path was read on `82157e5fd`. A3 and C1 added their paths after that commit
 - `apps/services/gateway/gateway/routes/workflows/` — `catalog.py` (`_integration_entries`, `_tool_entry`), `tools.py` (`WorkflowToolSpec`, `list_tools`), `core.py` (the router pattern), `search.py`, `triggers.py`, `scheduler.py`, `copilot.py`, `engine/graph.py`, `engine/runner.py`, `engine/handlers.py`, `engine/modules.py`
 - `apps/services/gateway/gateway/db.py` (`tenant_session`), `gateway/main.py` (the router mounts), `gateway/push/flags.py` (an `*_ORGS` reader)
 - `apps/services/gateway/gateway/studio/skills_store.py` — the F1 skill store, the one writer of `studio_skills` and `studio_skill_versions` (migration `infra/postgres/320_studio_skills.sql`)
-- `apps/services/gateway/gateway/studio/packages_store.py` — the A3 package store, the one writer of a Studio package in `apps` (migration `infra/postgres/322_apps_format.sql`). A3 added it after `82157e5fd`
-- `apps/services/gateway/gateway/routes/apps/_common.py` (`load_app`, `workspace_dir`), `lifecycle.py` (`list_apps`), `pins.py` (`list_pinned_apps`), and `routes/workspace.py` (`_app_workspace_for`) — the App Workshop readers that skip a package
+- `apps/services/gateway/gateway/studio/packages_store.py` — the A3 package store, the one writer of a Studio package in `apps` (migration `infra/postgres/322_apps_format.sql`). A3 added it after `82157e5fd`. A4 added `publish_version`, `rollback`, `list_versions` and `get_version`, over `app_versions` and `app_audit` (`infra/postgres/114_custom_apps.sql`)
+- `apps/services/gateway/gateway/routes/apps/_common.py` (`load_app`, `workspace_dir`, and `record_app_audit_bound`, the audit writer of B2a), `lifecycle.py` (`list_apps`), `pins.py` (`list_pinned_apps`), and `routes/workspace.py` (`_app_workspace_for`) — the App Workshop readers that skip a package
 - `apps/services/gateway/gateway/studio/objects_store.py` — the C1 object store, the one writer of `studio_objects`, `studio_object_fields`, `studio_records` and `studio_record_hot` (migration `infra/postgres/323_studio_objects.sql`)
 - `packages/acb_common/acb_common/studio_fields.py` — the C1 field types and the one check of a spec and of a value. `studio_manifest.py` (A2) imports it
-- `apps/services/gateway/gateway/routes/studio/` — `actions.py` (B1, `GET /studio/actions` and `catalog_rows`), `flags.py` (the `STUDIO_ORGS` reader) and `skills.py` (F2a, the skill routes on the same router)
+- `apps/services/gateway/gateway/routes/studio/` — `actions.py` (B1, `GET /studio/actions` and `catalog_rows`), `flags.py` (the `STUDIO_ORGS` reader), `skills.py` (F2a, the skill routes on the same router) and `invoke.py` (B2a, the action door on the same router). B2a added `invoke.py` after `82157e5fd`
 - `packages/acb_common/acb_common/settings.py`, `env_guard.py` — where an `*_ORGS` flag is declared and guarded
 - `packages/acb_common/acb_common/app_manifests/__init__.py` (`every_app`, `door_ops`)
 - `infra/postgres/132_workflows.sql` (`workflows`, `workflow_versions`)
@@ -729,6 +756,7 @@ Each slice names its own test files. These commands bind every Studio PR:
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"   # R8 needs a database
 uv run python scripts/affected_tests.py --run
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_genui_catalog_lockstep.py tests/unit/test_workflows_engine.py -q
+uv run pytest tests/unit/test_studio_packages_store.py tests/unit/test_studio_packages_versions_r8.py tests/unit/test_studio_packages_r8.py -q   # A3 and A4
 uv run ruff check apps packages
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/nav.test.ts src/lib/shell/seams.test.ts src/lib/theme/conformance.test.ts
 bash scripts/ci_local.sh
@@ -748,14 +776,253 @@ A slice that changes UI also runs the `visual-review` skill in light mode, at co
 | The live pane count changes only on purpose | `src/lib/nav.test.ts` |
 | No colour literal or px font in UI code | `src/lib/theme/conformance.test.ts` |
 | A manifest names no colour, px size, unknown block or class X action | New with A2 and D12: `tests/unit/test_studio_manifest.py` |
-| A package reaches data only through a declared catalog action | New with B2: `tests/unit/test_studio_action_door_r8.py` |
+| A package reaches data only through a declared catalog action | New with B2a: `tests/unit/test_studio_action_door_r8.py` (R8) and `tests/unit/test_studio_action_door.py` |
+| The class of an object action has one source, and its verbs are the verbs of the A2 grammar | New with B2a: `OBJECT_OP_CLASSES`, pinned by `test_the_object_verb_table_holds_the_five_verbs_of_the_grammar` in `tests/unit/test_studio_action_door.py` |
+| Only a Studio package owns an object | New with B2a: `test_r8_a_code_app_owns_no_object` in `tests/unit/test_studio_objects_r8.py` |
 | A catalog row never carries class X | New with B1: `tests/unit/test_studio_catalog.py` |
 | A package is private to its org and its owner, and its manifest passes A2 before each write | New with A3: `tests/unit/test_studio_packages_r8.py` (R8) and `tests/unit/test_studio_packages_store.py` |
 | The format of an app never changes | New with A3: the trigger `apps_format_fixed`, pinned by `tests/unit/test_studio_packages_r8.py` |
 | No App Workshop list, slug route, pin, agent tool or session workspace shows a package | New with A3: `tests/unit/test_studio_packages_r8.py` and `tests/unit/test_studio_packages_store.py` |
 | An empty `workspace_path` never means the working directory | New with A3: `tests/unit/test_studio_packages_store.py` |
 | Only `packages_store.py` writes a package | New with A3: `test_only_the_package_store_writes_a_package` in `tests/unit/test_studio_packages_store.py` |
+| A publish validates the draft against the catalog, and writes a version, the pointer and the audit row in one transaction | New with A4: `tests/unit/test_studio_packages_store.py` (group h) and `tests/unit/test_studio_packages_versions_r8.py` |
+| A publish or a rollback never edits a version row. A package never meets the App Workshop review step, and the store never calls `record_app_audit` | New with A4: `test_a_version_row_is_never_updated_or_deleted_and_no_review_is_proposed` in `tests/unit/test_studio_packages_store.py`, and `test_r8_a_publish_after_a_rollback_never_edits_an_old_row` |
+| Two publishes of one package get N and N+1 | New with A4: `test_r8_two_writers_on_two_connections_get_n_and_n_plus_1` |
 | One field-type module. No other module holds a tuple, a list or a `Literal` of the type names | New with C1: `tests/unit/test_studio_fields.py::test_one_field_type_module` |
 | One writer. Only `gateway/studio/objects_store.py` runs SQL against the four object tables | New with C1: `tests/unit/test_studio_fields.py::test_one_writer_of_the_four_tables` |
+| The object query binds each field key and each value, and its SQL text takes a column and an operator from a constant map only | New with C2a: `test_no_fstring_in_the_query_sql_takes_a_value` and `test_a_hostile_key_or_value_never_reaches_the_sql` in `tests/unit/test_studio_query.py` |
+| A query reads one object of one package of one org. A filter on a field that is not hot runs on at most 5,000 records, and a timeout leaves the session usable | New with C2a: `tests/unit/test_studio_query_r8.py` (R8) |
+| A hot sort reads its index in order, and a Sort node takes only the rows of one page, on 50,000 records | New with C2a: `test_r8_a_hot_sort_reads_its_index_in_order_and_sorts_only_the_page` in `tests/unit/test_studio_query_r8.py` |
+| One statement reads a page and its total, so a write between two reads never puts a record on a page twice | New with C2a fix round 1: `test_r8_a_write_between_two_reads_never_puts_a_record_twice` in `tests/unit/test_studio_query_r8.py` |
+| A filter on a field that is not hot reads `data` only for the candidates of the hot filters, and no count or page scans a table | New with C2a fix round 1: `test_r8_a_cold_filter_after_a_hot_filter_reads_at_most_5000_records` and `test_r8_a_count_reads_the_candidates_of_the_page_and_no_table_scan` |
+| A checkbox has two states, and `is_empty` alone tests for no value | New with C2a fix round 2: `test_r8_a_checkbox_has_two_states` in `tests/unit/test_studio_query_r8.py` |
+| The guard and the check of the hot fields read the snapshot of the page | New with C2a fix round 2: `test_r8_a_bulk_insert_during_a_query_cannot_pass_the_guard` and `test_r8_a_field_that_turns_cold_during_a_query_gives_the_right_page` |
 | The hot budget: 8 for each object and 24 for each org, also under two writers at once | New with C1: the trigger `studio_object_fields_hot_budget` and `tests/unit/test_studio_objects_r8.py` |
 | A record is company data, so the member purge deletes none | New with C1: `tests/unit/test_admin_member_purge.py::test_the_records_of_studio_objects_stay` |
+| `studio_describe` output equals the live manifest schema, the committed schema, the field module and the block list | New with G1b: `tests/unit/test_studio_describe.py` |
+
+---
+
+## 19. Native apps: the contract, the runtime, the data and a full HRMS
+
+**The rule of this section: a Studio app gets no private power.** It gets what a built-in app gets, through the same seams. So a valid app is a native app.
+
+**An HRMS needs no sandbox, no Node and no package.** Rules and first-party actions cover it (§19.8). Sandbox code is the last resort, because no off-box sandbox exists today.
+
+Owner ask, 2026-11-02, in chat. The design is agent-proposed, and it changes no decision. The facts were read at `c793ff0a0`. §12 holds the questions that the owner decides.
+
+### 19.1 The native contract
+
+| What a member does | The seam | State |
+|---|---|---|
+| Opens the app from the sidebar, ⌘K, the bell, Home or search | `contributes` of the package: `nav`, `jobs`, `needs`, `cards`, `search` | Spec. No point works for an installed package until PKG-8 |
+| Types in chat: "apply for leave on Friday" | Each published action is a chat tool (F10) | Not built |
+| Enters data in chat | The Form block draws as a chat card and asks for each missing field (F5). A file goes to `attachments`, then a draft record | Not built. `genui_refusal` refuses a bound action in chat today |
+| Sees one look | One renderer. The A2 validator refuses a colour, a pixel size and an unknown block | Built |
+| Reads another app | `<app>.<op>` through the door, as the viewer | Knowledge only (§19.6) |
+| Gets a task or a reminder | A human step is a task in `pm_tasks` (E4). A need goes to the bell | Not built |
+| Starts other work when a record changes | `studio.record.*` events (C3) start a workflow | Not built |
+
+**Chat parity by construction.** A view can only call an action that the package declares in `uses`. F10 turns each declared action into a tool of the package's pack. So a UI action with no chat path cannot exist, and no second list holds them. This meets the owner's chat-first rule with one mechanism.
+
+**A record value is untrusted text.** A leave reason can hold an instruction to Mira. Each record value that reaches a model carries the untrusted mark of WEB-1. A class B or C action still needs the member's card, so such a text cannot start a write.
+
+### 19.2 The guardrails, stage by stage
+
+The same gates bind a skill (a tool set), a workflow and an app.
+
+| Stage | The gate | State |
+|---|---|---|
+| **Build** | The A2 validator, catalog actions only, no class X, the secret scan, the caps, the plan card (G2) | Built |
+| **Build** | Preview on sample data (G4), dry-run tests with no real write (F4) | Not built |
+| **Publish** | One immutable version (A4). A review of the manifest diff by a holder of `studio:publish` (J2) | Version built, review not built |
+| **Install** | The consent screen (J6): what the app reads, what it writes, what it sends, who sees it, its runtime kind and its sensitive fields | Not built |
+| **Run** | One door, the viewer's rights, approval by action class, the trust ladder (D131), a credit cap, the kill switch (J3), the audit row | Door and audit built for class A. The rest are not built |
+| **Data** | Row rules, field sensitivity, retention and org caps (§19.7, C8 to C10) | Not built |
+
+**A package with no chat run has one named human.** A scheduled run has no viewer. B6 makes an admin name a `run_as` member at install. The run holds the rights of that member, cut down to the `uses` of the package. Each write carries `system:package:<id>` and the name of that member.
+
+### 19.3 How an app says what it needs to run
+
+A new `runtime` key names one of four kinds. No key means `none`. The builder picks the lowest kind that works.
+
+| Kind | Runs where | For | Review |
+|---|---|---|---|
+| **`none`** | The platform | Manifest, rules, workflows, first-party actions and modules (B4). No member code | The usual review |
+| **`browser`** | The viewer's browser, in the sandboxed frame: `allow-scripts`, `connect-src 'none'` | A custom screen, a scanner, a bespoke chart (L1). Each call goes through the door | `studio:publish` reads the code |
+| **`sandbox`** | A sandbox with no network, on the standard image | Member Python or Node (B5) | A holder of `tools:approve` reads the code and approves one version (D130.3). The author may run a private version on sample data first |
+| **`packages`** | The same sandbox, plus one frozen package layer | Code that needs a package outside the image (B8) | The same, and the reviewer reads the package list. Approval comes before the first real run |
+
+```json
+"logic": [{
+  "id": "late_mark_report",
+  "runtime": {
+    "kind": "packages",
+    "language": "python",
+    "packages": {"num2words": "0.5.13"},
+    "limits": {"seconds": 120, "memory_mb": 512}
+  }
+}]
+```
+
+**How the kind gets chosen.** Mira asks four questions in order, and the first yes wins.
+
+1. Can a rule do it (a formula, a roll-up, a state machine, a constraint)? Then `none`.
+2. Can a workflow or a first-party action do it? Then `none`.
+3. Is it only a screen, with no server work? Then `browser`.
+4. Does the standard image hold what the code imports? Then `sandbox`. If not, `packages`.
+
+**How the build proves it.** The validator scans the imports of the code against the lock of the image. An import outside the lock and outside `packages` is an error with a JSON path and one sentence that a model can act on. A dry run on sample data then runs at the declared kind. The plan card names the kind and the cost.
+
+**Run-time rules that do not bend.**
+
+- **No network at run time.** D130.2 says that a step that can read Metorite data never gets a host. So `runtime` has no `hosts` key. A call to an outside API goes through `integration:<action>` or an MCP tool, and the platform holds the credential.
+- **Input in, proposed writes out.** The code gets one JSON input through the door. It holds no database credential and no token. It returns proposed writes, and the platform applies them (§3.7).
+- **A restricted field does not enter a sandbox** unless the logic names it and the reviewer approves that name.
+- **The limits are ceilings, and they are the broker's** (`settings.py:1418-1436`): 1 CPU, 1 GiB of memory, 300 s, 256 processes, 2 GiB of disk. New: at most 5 MiB of input, 5 MiB of output and 5,000 proposed writes.
+- **Cost.** A step costs at least 1 credit (D130.4). No sandbox meter exists yet, so sandbox runs stay off until one does.
+
+**⚠️ Where it runs today: nowhere.** BH-3 and SBX-9 are on the same box, and SBX-9 is an owner gate. The true off-box step is SBX-10, on a hosted microVM service. It needs an account (SBX-G3) and a data processing agreement before tenant data goes there (SBX-Q7). Each box has 2 vCPU, about 7 GB and no `/dev/kvm`. So plan each Stage 2 and Stage 3 template at kind `none`.
+
+### 19.4 The standard image
+
+A member installs nothing to use these. A change to this list is a Metorite PR with a measured size. The image stays at or below 1.2 GB on disk. It measures 1.05 GB to 1.13 GB today (`maf_coding_engine.md`).
+
+| Layer | Contents | State |
+|---|---|---|
+| **Runtimes** | Python 3.12, Node 22 and npm, git, bash, procps | In `Dockerfile.coding-sandbox` |
+| **Python data** | pandas, numpy, scipy, duckdb, networkx | In the lock |
+| **Python files** | openpyxl, xlsxwriter, python-docx, python-pptx, pypdf, pdfplumber, reportlab, fpdf2, pillow | In the lock |
+| **Python charts and text** | matplotlib, seaborn, jinja2, markdown, tabulate, pyyaml, python-dateutil, beautifulsoup4, lxml, requests | In the lock. `requests` has no network at run time |
+| **Python, to add** | pydantic, babel, num2words, qrcode | Proposed |
+| **Node, to add** | date-fns, decimal.js, zod, csv-parse, exceljs, pdf-lib | Proposed. The image holds no npm package today |
+| **Browser** | react 18.3.1, react-dom 18.3.1, lucide-react 1.17.0 | In the T2 vendor cache |
+| **Left out** | LibreOffice, Pandoc, Tesseract | Left out on purpose, for size. OCR and documents go through first-party actions |
+
+### 19.5 What a member may install, and how much
+
+**An install happens once, at build time, never at run time.** The build step has a network that reaches the registry proxy only. It writes one layer, which the store freezes by hash and ties to one package version. A change of a package is a new version and a new review.
+
+| Rule | The limit |
+|---|---|
+| **Sources** | PyPI and npm through one proxy (`pypi.org`, `files.pythonhosted.org`, `registry.npmjs.org`). No git URL, tarball URL, private index or local path |
+| **Pinning** | An exact version and a hash for each package, also for each indirect one |
+| **No build code** | Python takes wheels only (`--only-binary :all:`). npm runs with `--ignore-scripts` |
+| **No system packages** | No `apt`. A need for one goes to the standard image or to a first-party module |
+| **Age** | A version is at least 14 days old, so that the community has time to find a poisoned release |
+| **Known risk** | No version with a high or critical advisory. A licence outside MIT, BSD, Apache, ISC and MPL goes to the reviewer |
+| **Count** | At most 20 direct packages and 150 with their dependencies |
+| **Size** | One download at most 50 MiB. One layer at most 300 MiB unpacked, the cap of T2 today (`install_t2_deps.mjs`). An org holds at most 2 GiB of layers. A layer that two orgs share by hash counts once for each |
+| **Time** | An install takes at most 180 s, the T2 limit |
+| **Who** | The builder proposes the list. A holder of `tools:approve` approves it |
+
+### 19.6 Data: existing, new, outside and searchable
+
+**No app runs SQL.** Every route below goes through the door or the store.
+
+| Data | The route | State |
+|---|---|---|
+| **Existing Metorite data** | `<app>.<op>`, as the viewer. A relation field stores an id, and the read goes through the owning app | Knowledge has a door. CRM and Email wait on MCP-P2a and P2b, People and Calendar on MCP-P4. Attachments, documents and notes have no plan (I4). `people_absences` has no write op |
+| **New data** | A typed object (D146.4). A member sees a new table. Each record is a row of shared tables under FORCE RLS. No tenant gets DDL, now or later | C1 built, no route (A5) |
+| **Another package** | Off by default. A package names what it `exports`, and a reader needs its install and the viewer's rights (C12) | Not built |
+| **An outside database** | An HTTP MCP server in front of it, after B1b, read-only by default. Metorite ships no direct Postgres or MySQL connector, and stdio MCP stays refused | Not built |
+| **A file** | A `file` field holds an `attachments` id. A member upload needs a Studio path | Not built |
+
+**Search by meaning.** An object opts in:
+
+```json
+"search": {"fields": ["title", "notes"], "semantic": true}
+```
+
+- **The store.** `studio_record_vectors`, a new table with one row for each chunk, `vector(1536)` and an HNSW index, under FORCE RLS. `kb_chunks` refuses a new `source_kind`, and `knowledge_base.md` already puts vectors in the app's own table.
+- **The pipeline is the Knowledge one.** A NULL vector on write, an embed after the session, a sweep each 120 s, `text-embedding-3-small` on `tier-embed`, chunks of about 600 tokens. The vector row cascades from the record.
+- **The seam.** One `Source` in `retrieval/sources.py` calls `search_records` as the member, so `search_company` finds records with no second search path. It applies C8, so a search never shows a record that the viewer cannot open.
+- **The caps.** At most 4 searchable fields on an object and 200,000 chunks for an org. An embed costs 0 credits today, because the card is absorbed, so this cap is the only brake.
+- **A restricted field is never embedded**, because the embed sends its text to a vendor.
+
+**Use the right tool for the question.** "How many leaves did Priya take?" is a structured query (C2a, C2b). "Who asked about relocation?" is a meaning search (C5). Mira gets both, and the tool text says which is which. A vector search never answers a number.
+
+### 19.7 Access inside an app, and sensitive data
+
+Today each viewer of a shared app would see every record, and the store holds no sensitivity. An HRMS cannot ship on that.
+
+**App roles and row rules (C8).** A package names roles. An install maps each role to a `group:<slug>` or to named people, so D12 stays the one grant grammar.
+
+```json
+"roles": ["hr", "manager", "employee"],
+"objects": [{"name": "payslip", "access": [
+  {"role": "hr", "read": "all", "write": "all"},
+  {"role": "manager", "read": {"where": "manager = $me"}},
+  {"role": "employee", "read": {"where": "employee = $me"}, "hide": ["bank_account"]}
+]}]
+```
+
+- **A closed grammar.** A `where` is `<person field> = $me`, and that field must be hot. Nothing else in v1.
+- **One place.** The store applies the rule in its one reader and its one writer, and `viewer` becomes a required input. So the door, chat, search and workflows inherit it, and none can skip it.
+- **A residual risk.** RLS stays org-only, so a row rule is an app-level check. The one-reader fence and an R8 suite hold it.
+- **`person` needs query ops.** C2a gives `person` no op today.
+
+**Field sensitivity (C9).** A field takes a `sensitivity`.
+
+| Level | Example | Effect |
+|---|---|---|
+| `normal` | Leave type | None |
+| `personal` | Phone, address, punch logs | Left out of logs and search snippets. Not embedded unless the object says so. It stays hot and filterable, because attendance queries it |
+| `restricted` | Salary, bank account, PAN, Aadhaar | Encrypted in `data` with a per-org key. Never hot, never filtered, never embedded. Each read writes an audit row with no value. Left out of exports. A package with such a field must declare `access` |
+
+**A formula over a restricted field.** Its result is restricted too. It runs in the gateway, and a total for a pay review is added in Python, because SQL cannot read the ciphertext. Only a role with `read: all` gets a total.
+
+**A model never sees a restricted value.** A tool result holds `[restricted]`. The card takes the value from the door straight to the viewer's browser. So Mira can show a member their pay and never read it. The fence: a test runs every chat path over a restricted field and greps what reaches the model.
+
+**Biometric data.** Metorite stores a punch: employee code, device, time and direction. It never stores a fingerprint or a face template. The template of K5 holds no such field, and review refuses one.
+
+**Retention (C10).** An object takes `retention_days`, and a sweep deletes older records. The caps of C10 are new: 1,000,000 records and 2 GiB of JSON for an org, and more hot fields. 200 people with 4 punches a day make about 250,000 records a year, and an HRMS plus an inventory app pass today's 24 hot fields.
+
+**⚠️ The law.** `people_center_app.md` keeps pay out of the directory, and says that it belongs "in a payroll module with its own access model". C8 and C9 are that model. WS-37 (DPDP) has no spec yet, and no purge reaches a record. A lawyer reads this design before real HR data goes in (STU-Q11).
+
+### 19.8 The worked example: an HRMS that an HR team builds
+
+Kind `none` for the whole app. K5 ships it as a first-party template, so the HR team starts from it and changes it.
+
+**Objects:** employee, shift, punch, attendance day, leave type, leave balance, leave request, salary structure, statutory rate (with its dates), pay run, pay line, payslip.
+
+| Step | The member's view | Built on | Missing |
+|---|---|---|---|
+| 1. Build | HR describes it in chat, and Mira plans it. HR previews it on sample data | G1, G2, G3, G4, K5 | **A5**: no route creates a package, an object or a publish. Without it, nobody builds anything |
+| 2. Attendance | The device pushes punches, or HR uploads a CSV | An object with `retention_days`, the org token | **C11** (a signed ingest and a CSV import). **H-328**: webhooks read `workflows` unbound under FORCE RLS |
+| 3. Leave request | "Apply for leave on Friday" in chat, or the form | Form card (F5), state machine (C6), balance as a roll-up (C7), a rule against a negative balance (C1b) | F10, F5, C6, C7 |
+| 4. Leave approval | The manager gets a card and approves | Human step (E4) | E4. A named approver: the approval node files an inbox proposal today |
+| 5. It shows everywhere | Approved leave appears in Calendar and in Out today | A People door that writes `people_absences` | **I4** and MCP-P4 |
+| 6. Pay run | HR opens the month, and each person gets a pay line | Schedule trigger (E3), formulas and roll-ups (C7), statutory rates as data | E3 and H-328, C7 with exact money rounding, **E8** (a batch), **B6** (no viewer) |
+| 7. Pay review | HR sees totals and each line, and approves once | State machine (C6), one card for the run | STU-Q14 |
+| 8. Slips | Each line gets a PDF slip from one template | `render_pdf`, a template block | **D13**: no action makes a PDF, `render_pdf` takes no image, and a `file` field holds only an id |
+| 9. Email | Each person gets one mail with one attachment | The Email door, the throttle of `whatsapp.broadcast` | **I3**: no bulk send, no merge, no org sender, no send limit. STU-Q13 |
+| 10. Self-service | An employee asks "show my last slip", and only their slip shows | Row rule, a chat card | **C8**, **C9**. STU-Q12 for a person with no seat |
+| 11. Native | Sidebar, ⌘K, the bell ("3 leaves wait"), a Home card | PKG-8, H1, H2 | PKG-5b part 2, PKG-6, PKG-7, PKG-8 |
+
+**A pay run is a batch.** C1b caps one batch at 50 writes, and a lock serves one writer for each org. So 300 lines cannot be one transaction. E8 gives one approval, then chunks of 50, with a key for each item, so a stopped run resumes and pays no one twice. The same primitive serves the slips and the mail.
+
+**Money.** C7 holds money as whole minor units, and it names the rounding of each step. It has no float. A pay line keeps the rates that it used. A correction is a new adjustment line, because an approved run never changes. Metorite calculates what HR configures, and it does not certify statutory compliance. The template says so.
+
+**This calculates pay and sends slips. It does not move money.** A bank file is a later act, and D131.7 keeps it on Ask each run.
+
+### 19.9 What is missing, in build order
+
+| # | Missing | Slice | Blocks |
+|---|---|---|---|
+| 1 | Routes that create a package, define objects and publish | **A5** (new) | Every app |
+| 2 | The door runs list and door ops, and the catalog lists package actions | B2b, B1c | Every app |
+| 3 | Each action is a chat tool, and a form works in chat | **F10** (new), F3, F5 | Native chat |
+| 4 | Install and the shell points | PKG-5b part 2 to PKG-8 | Native shell |
+| 5 | Rules | C6, C7 | Business logic |
+| 6 | Roles, row rules and sensitivity | **C8**, **C9** (new) | Any data on people |
+| 7 | Unattended runs that bind the tenant, and a run with no viewer | H-328, E3, **B6** (new) | Every schedule |
+| 8 | Writes through the door with approval | B2c, MCP-P1b | Every write |
+| 9 | Ingest, batch, documents and mail merge | **C11**, **E8**, **D13**, **I3** (new) | HR, finance, operations |
+| 10 | Doors for People and Calendar, and a plan for the rest | MCP-P4, **I4** (new) | Reach into built-in apps |
+| 11 | Retention, caps, consent and search | **C10**, **J6** (new), C5 | Scale and trust |
+| 12 | Code: the runtime key, the sandbox, its meter, layers | **B7** (new), SBX-9, B5, L1, **B8** (new) | Member code only |
+| 13 | Data shared between packages | **C12** (new) | App suites |
+| 14 | The template that proves all of it | **K5** (new) | The owner's example |
+
+**Fences for this section.** Each slice names its own when it lands. The first four are: a UI action with no chat tool fails (F10), a member reads no record of another member past a row rule (C8), a restricted value reaches no model (C9), and the validator refuses a `hosts` key in `runtime` (B7).

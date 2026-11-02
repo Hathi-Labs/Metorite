@@ -8776,7 +8776,14 @@ async def _llm_recovery(
             tier=LLMTier.TIER_2,
             messages=recovery_msgs,
             max_tokens=400,
+            job="writing",
         )
+        if not (content or "").strip():
+            # No recovery text (task 1128). Send no blank reply and no stock
+            # apology as a finished run. None makes the caller go on to the
+            # self-mutation step and raise the first error, with its class.
+            _log.warning("self_anneal.llm_recovery_empty", agent=agent_name)
+            return None
         _log.info("self_anneal.llm_recovery_success", agent=agent_name)
         return {"result": {"role": "assistant", "content": content}}
     except Exception as llm_exc:

@@ -22,6 +22,7 @@ LiteLLM integration, the unified credential store (LLM and integration keys) and
 - Only the tenant-scoped methods resolve an org (`get`, `put`, `delete`, `get_all`, `get_by_type`, `get_by_service`). `encrypt` and `decrypt` are plain Fernet over the single `ACB_MASTER_KEY`.
 - `client.py` is `H4` and stays untenanted. Per-tenant live credentials need a tenant-scoped API key, which is an owner gate, not a refactor.
 - `decide.py` is the ONE tenant facade for typed decisions. It calls `acb_auth.console_resolve.decide_on_console` and ships dark behind `DECIDE_ENABLED`, an OWNER-ONLY flag. It has no local litellm path. Fences: `tests/unit/test_acb_llm_decide.py`, `tests/unit/test_email_decide_shadow.py`.
+- `jobs.py` is the ONE policy of an AI call's job (task 1128): `structured`, `writing` or `judgement`. The three seams read `job=`. Thinking reaches only a model that takes it: `params_for_model` decides it off the Router, and `customer_console/reasoning.py::reasoning_params_for` decides it for each chain step. Each seam adds the word "json" to JSON mode and logs `acb_llm.empty_answer`. A second thinking literal must import `THINKING_OFF`. Fence: `tests/unit/test_llm_jobs.py`.
 - `context.acompletion_stream_text` ends a stream at `STREAM_FIRST_CHUNK_S` (45 s), `STREAM_IDLE_S` (30 s) and `STREAM_TOTAL_S` (150 s). Past a bound it raises a `StreamTimeout` subclass with a `reason` code. The caller decides what to do. Do not catch it into a draft. Fence: `tests/unit/test_llm_stream_bounds.py`.
 
 ### acb_memory/
@@ -68,6 +69,10 @@ Each module below holds ONE rule. Do not copy its rule into a caller.
 - `child_env.py`: the ONE env of every child process that the gateway starts, as an allowlist of literal names. Pass `env=` at every spawn and at every `CopilotClient(`. Never put `os.environ` in `extra=`.
 - Do not hand a spawn function to other code as a value. The one exception is `orchestrator/mutation_runner.py`, which keeps its own literal allowlist. Spec: `project-docs/specs/box_hardening.md` §5 BH-1.
 - Child env fences: `tests/unit/test_child_env_seam.py`, `tests/unit/test_copilot_child_env.py` and `tests/unit/test_child_env_call_sites.py`.
+- `goal_store.py`: the ONE writer of `goal_records`, the goal record of a long job (WS-WEB WEB-10, `web_research.md` §6.1). It is here because the orchestrator runs WEB-11 and cannot import gateway code.
+  - ⚠️ Each function takes an async session that the caller opened with `tenant_session(org)`. No function takes an org or opens a session. The member is a required argument, and each statement filters on it. The caller resolves the member from a trusted source, never from request input.
+  - ⚠️ Each write names `expected_version`. A stale one raises `StaleGoal`, and nothing changes. `cap_block` is the one cap rule, and the write that reaches a cap blocks the goal with `cap_reached`. `BLOCK_CODES` is the closed set, with one sentence for the member for each code.
+  - The objective never changes. Store no permission to continue. A restart asks the member again. The member purge names `goal_records`. Fences: `tests/unit/test_goal_record_r8.py` (R8), `tests/unit/test_tenant_coverage.py`.
 
 ### acb_audit/
 Audit event recording.

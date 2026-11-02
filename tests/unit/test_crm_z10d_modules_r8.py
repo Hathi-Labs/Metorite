@@ -50,8 +50,17 @@ REP = "rep@crm-q6b-r8.test"
 MEMBER = "new.owner@crm-z10d-r8.test"
 
 
-async def _patch(p: Any, org: str, path: str, body: dict[str, Any]) -> Any:
-    """One PATCH through the real router. The tenant comes from the user."""
+async def _patch(
+    p: Any, org: str, path: str, body: dict[str, Any], *, engine_scope: bool = True,
+) -> Any:
+    """One PATCH through the real router. The tenant comes from the user.
+
+    ``engine_scope=False`` is for a caller that already holds ONE
+    ``tenant_engine_scope`` around several concurrent PATCHes. See
+    ``test_two_concurrent_patches_of_different_keys_both_land``.
+    """
+    from contextlib import nullcontext
+
     import httpx
     from acb_auth import get_current_user
     from acb_common.db import bind_tenant, clear_tenant, release_tenant
@@ -70,9 +79,13 @@ async def _patch(p: Any, org: str, path: str, body: dict[str, Any]) -> Any:
     app.include_router(crm_package.router)
     app.dependency_overrides[get_current_user] = _caller
     scope = clear_tenant()
+    engine = (
+        tenant_engine_scope(p.app_url.render_as_string(hide_password=False))
+        if engine_scope else nullcontext()
+    )
     try:
         async with (
-            tenant_engine_scope(p.app_url.render_as_string(hide_password=False)),
+            engine,
             httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://crm.test",
             ) as client,
@@ -278,10 +291,20 @@ async def test_two_concurrent_patches_of_different_keys_both_land(ns) -> None:
     ids = _seed_install_base(ns, a, 1)
     path = f"/crm/modules/Install_Base/records/{ids[0]}"
 
-    first, second = await asyncio.gather(
-        _patch(ns, a, path, {"fields": {"Site_Count": 7}}),
-        _patch(ns, a, path, {"fields": {"Notes": "changed"}}),
-    )
+    # 🔴 ONE engine scope around both PATCHes, never one each (task 1332).
+    # ``tenant_engine_scope`` saves DATABASE_URL on entry and writes it back on
+    # exit. Two scopes in two concurrent tasks exit in the order the PATCHes
+    # finish. When the second one in finished last, it wrote back the DSN of
+    # this module's dedicated database, and the module then dropped that
+    # database. Every later engine in the process pointed at a database that
+    # did not exist. The first access read there set acb_auth's
+    # ``_tables_missing`` latch, and four tests of test_h3 and test_h6 failed
+    # in pr-check run 41305223510.
+    async with tenant_engine_scope(ns.app_url.render_as_string(hide_password=False)):
+        first, second = await asyncio.gather(
+            _patch(ns, a, path, {"fields": {"Site_Count": 7}}, engine_scope=False),
+            _patch(ns, a, path, {"fields": {"Notes": "changed"}}, engine_scope=False),
+        )
     assert (first.status_code, second.status_code) == (200, 200), (first.text, second.text)
     fields = _row(ns, ids[0]).fields
     assert fields["Site_Count"] == 7 and fields["Notes"] == "changed"

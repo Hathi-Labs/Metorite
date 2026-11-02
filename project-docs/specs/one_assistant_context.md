@@ -17,6 +17,8 @@ OA-8h is BUILT (2026-10-29, "As built, OA-8h" in §4.3.2). It repairs the Projec
 
 OA-8i is BUILT (2026-10-30, "As built, OA-8i" in §4.3.2). In one turn it refuses a hand-off to an owner after a write tool of the owner's pack, and the reverse. Both directions hold only while the owner's specialist tool stays in the run, so today they bind the Projects owner only. It has no flag of its own and acts only in a run that `TOOL_PACKS` serves. The OA-8e report counts a refused hand-off on its own row.
 
+Fix MT-1228 (2026-10-31): the seven reminder tools left `projects-bulk` (28 to 21 tools) for a new pack, `projects-reminders` (7). A "remind me" turn had loaded the core pack only, and the model made a private task. The core pack could not take the tools, because it fills the 110-tool cap beside `email`. The new pack loads on the words `remind`, `remind me`, `reminder`, `reminders`, `nudge me`, `ping me`, `alert me` and `don't let me forget`. It carries the same flag, `TOOL_PACKS`.
+
 OA-8e RAN LIVE and is NOT MET (2026-10-28, `docs/one_assistant_measure_oa8e_2026-10-28.md`, harness at `9912eee5a`). On the app turns that are not email, the pack arm passed 38 of 70 and delegation 52 of 70 (CRM 14 of 24 against 19 of 24, Projects 21 of 38 against 29 of 38). Stop results 1, 2 and 11 occur. The pack arm is 2.6 times faster per turn and 32 percent cheaper. Causes: the model loads a pack it lacks only 3 times in 70 turns and never in the miss chats, it skips the bulk pack for several new tasks, it hands off after it loaded the plan or structure pack, and on a Projects page the plan and structure packs do not fit beside the core pack. The run also shows harness defects to repair first: fixture gaps, checks that count a refused call, the `crm_report` annotation, and dev-database reach through the memory tools. The fan-out chats and the `packs+spawn` arm were skipped. OA-10 must not start. Phase 3 (2026-10-29) wires the fan-out chats and the `packs+spawn` arm in the harness (fixtures for the web tools, a worker plan, ten invoices, the `spawned`, `not_spawned` and `items_contract` checks, stop results 9 and 10). No second live run yet. Run 2 (2026-10-29, `docs/one_assistant_measure_oa8e_2026-10-29.md`, base trim on for both arms) is still NOT MET. Pass counts: packs 74 of 105 against delegation 70 of 105 on app turns (CRM 28 of 36 against 23, Projects 41 of 57 each). Stop results 1, 5 (the model loads a pack itself on 21 percent of app turns) and 11 (7 model-choice hand-offs) occur. The main assistant never spawned on the research chats (0 of 6), so sub-agents are not measured. OA-10 must not start.
 
 OA-9b and the OA-9a worker half are BUILT, dark behind `SPAWN_SUBAGENTS_ORGS` (2026-10-28, "As built, OA-9b" in §4.5). The flag flip is OWNER-GATE.
@@ -507,7 +509,8 @@ Projects reads only.
 | `projects` | 10: `calendar`, `find_tasks`, `list_tasks`, `my_task`, `my_work`, `people_for`, `project_summary`, `projects_tree`, `task_detail`, `vocabulary` |
 | `projects-plan` | 16: `analytics_finished`, `analytics_load`, `analytics_outlook`, `analytics_stuck`, `analytics_throughput`, `find_conflicts`, `fit_for_task`, `needs_attention`, `rebalance`, `recurrence`, `report_list`, `report_recipients`, `report_render`, `task_dataset`, `team_capacity`, `waiting_agent_requests` |
 | `projects-structure` | 7: `intake_queue`, `my_areas`, `my_contexts`, `notifications`, `project_access`, `project_views`, `watchers` |
-| `projects-bulk` | 2: `list_reminders`, `my_led_projects` |
+| `projects-bulk` | 1: `my_led_projects` |
+| `projects-reminders` | 1: `list_reminders` |
 
 - **Open.**
   - The email packs give a child no tool. A fix marks the email read tools
