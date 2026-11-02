@@ -787,9 +787,9 @@ def test_r8_a_derived_write_checks_the_plain_fields_of_the_parent(world) -> None
         err = await _refused(world.a, ent, _entry(ent, p, days=5))
         return err, _rows(world, ent), _data(world, p.id)["balance"]
 
-    err, rows, balance = _go(world, go)
+    err, rows, left = _go(world, go)
     assert isinstance(err.cause, sf.FieldError) and "big" in str(err.cause)
-    assert rows == 0 and balance == 0
+    assert rows == 0 and left == 0
 
 
 # -- two real connections -----------------------------------------------------------
