@@ -8,7 +8,12 @@ one parser of the profile. Repair round 1 (2026-10-24): only a private room
 of one is solo, and a detached run is never solo. A profile write ends the
 cached block.
 
-**§15 ACCEPTED 2026-10-30 (D142), nothing of it built.** It adds the
+**PZ-35 BUILT 2026-11-01, dark** (task 1133). The switch `apps.chat.summaries`,
+the three routes, the section "Recent chats", the relays, Forget, removal,
+export and the staging blank are in. The section shows only with
+`ASSISTANT_CHAT_SUMMARY_ORGS` on for the org. See §15.5 and §15.9.
+
+**§15 ACCEPTED 2026-10-30 (D142), PZ-35 built (above), the rest not built.** It adds the
 epic "Recent chats and open loops" (Metorite task 1129). PZ-33 keeps chat
 summaries, and PZ-34 opens a chat with a briefing. PZ-35 adds the Settings
 controls, and PZ-36 turns a promise into a task on one yes card. PZ-22
@@ -1773,8 +1778,10 @@ The shape:
 
 `text` holds at most 3 sentences and 400 characters. `follow_ups` holds at
 most 3 items of 120 characters each. `mark` is the intent mark of the job. A
-summary that the member deleted reads `{"v": 1, "off": true}`, and no job
-writes that chat again (§15.5).
+summary that the member deleted is gone, and the row keeps only a `through`
+waterline. A new message can then earn a new summary (§15.5, D-PZ-33).
+`{"v": 1, "off": true}` is a guard for a row that already holds it: no
+route or page writes it now.
 
 **One module names the column.**
 `apps/services/gateway/gateway/assistant_summaries.py` holds each read and
@@ -2044,16 +2051,16 @@ query.
 | Route | Does |
 |---|---|
 | `GET /auth/me/assistant-profile/summaries` | The member's summaries, newest first: the chat id, the title, the date, the text and the follow-ups. At most 50 in a page |
-| `DELETE /auth/me/assistant-profile/summaries/{session_id}` | Delete one. A chat that the member does not own is a 404. The chat reads `{"v": 1, "off": true}` after it, so no job writes it again |
-| `DELETE /auth/me/assistant-profile/summaries` | Delete all. Each summary turns `off`. A new chat still gets a summary while the switch is on |
+| `DELETE /auth/me/assistant-profile/summaries/{session_id}` | Delete one, after a confirm in Settings. A chat that the member does not own is a 404. The summary goes and the chat keeps a waterline at its newest row (`clear_one_for_member`), so no summary comes until a new message comes. A chat that reads `off` stays `off`. A chat write (`X-Profile-Via`) is a 422 |
+| `DELETE /auth/me/assistant-profile/summaries` | Delete all, after a confirm that names the count. It calls `clear_for_member`, as Forget does. A new message may bring a new summary while the switch is on |
 
 The routes sit in `apps/services/gateway/gateway/routes/admin/assistant_profile.py` (`me_router`), beside
 the profile routes. They call `assistant_summaries`, the one module.
 
 **The page.** Settings → Assistant settings
 (`workbench/control_plane/src/app/settings/assistant/`) gains a section
-"Chat summaries". It shows the switch "Keep a short summary of my private
-chats", and each summary with Delete. "Delete all" asks one confirm that
+"Recent chats". It shows the switch "Keep chat summaries", and each summary
+with a date, a link to the chat and Delete. "Delete all" asks one confirm that
 names the count. The relays go under
 `src/app/api/auth/me/assistant-profile/summaries/`, through `relay.ts`. The
 section shows only when the flag is on for the org.
@@ -2077,7 +2084,7 @@ section shows only when the flag is on for the org.
 - A chat that stops being solo loses its summary. The room routes call
   `assistant_summaries.clear_on_share` after a participant joins and after
   the visibility changes (PZ-33a, P2-b).
-- The export (`apps/services/gateway/gateway/routes/admin/assistant_profile.py:826`) adds the summaries.
+- The export (`apps/services/gateway/gateway/routes/admin/assistant_profile.py:826`) adds the summaries and a `more` key. With no profile but with summaries, it prints no "keeps nothing" line.
 - The staging copy blanks the column, as it blanks the profile
   (`infra/staging/minimise.sql:124`).
 
@@ -2214,8 +2221,8 @@ Each slice is one PR, and each lands dark. The tier follows
 | Slice | What | Done when | Gate · tier |
 |---|---|---|---|
 | **PZ-33a** · task 1131 · **BUILT 2026-10-31, dark** | The store. Migration 319 at the merge (R1, 318 went to RE-9b): nullable JSONB `chat_session.member_summary`, `ADD COLUMN IF NOT EXISTS`, no default, no backfill, and `SET lock_timeout = '5s'` as in migration 220. `gateway/assistant_summaries.py`, the only reader and writer, with the pure answer checks: the 400-character cap, at most 3 follow-ups of 120 characters, the drop of a sensitive line, an address or a long number that the member did not type, and no write for an answer that does not parse. `SOLO_ROOM_SQL` beside `SESSION_VISIBLE_SQL`, and its parity test. `chat_summary_for(org)`. The flag in `settings.py`, in `PLATFORM_ENV_NAMES`, in `ALLOWED_KEYS` with the comment that it spends credits, in `test_acb_staging_flag.py` and in the staging README. The purge test and the private fence | Items 6 and 8 to 11 of the PZ-33 list below pass. Item 7 passes for pastes, tool events, the brief row and sensitive terms, but not for every long-number form (see "Open" under "As built, PZ-33a") | AGENT-SAFE · **HIGH** (a migration, tenancy) |
-| **PZ-33b** · task 1131 | The job. The seed hook `assistant_summaries.seed(org, now)`, modelled on `gateway/brief/planner.py`. The detached, idempotent kind `assistant.chat_summary`. The model call and the rule of the Router off. The import beside `import gateway.brief.run` in `gateway/main.py`. The R8 tests of the job. The idle rule: 30 minutes after the newest row, no open run, and 2 or more typed rows of the member. **First, the strict digit rule of `check_answer`** (see "Open" under "As built, PZ-33a"), with the probes of the PZ-33a reviews as tests | Items 1 to 5 of the PZ-33 list below pass, and item 7 passes for every long-number probe of the PZ-33a reviews | AGENT-SAFE · **HIGH** (money, tenancy). The flip of `ASSISTANT_CHAT_SUMMARY_ORGS` for a real org waits for PZ-35. The production flip is **OWNER-GATE** (§15.8) |
-| **PZ-35** · task 1133 | The switch `apps.chat.summaries`, the three routes, the Settings section, the relays, Forget, removal, export and the staging blank | An R8 test: Delete turns the chat `off`, and the next tick writes nothing. Delete all, Forget everything and a removal clear the member's summaries in one org only. A chat of another member is a 404. The export holds the summaries. A vitest test covers the section and the confirm. The UI gate passes: four captures and a `Visual review:` line | AGENT-SAFE · STANDARD |
+| **PZ-33b** · task 1131 | The job. The seed hook `assistant_summaries.seed(org, now)`, modelled on `gateway/brief/planner.py`. The detached, idempotent kind `assistant.chat_summary`. The model call and the rule of the Router off. The import beside `import gateway.brief.run` in `gateway/main.py`. The R8 tests of the job. The idle rule: 30 minutes after the newest row, no open run, and 2 or more typed rows of the member. **First, the strict digit rule of `check_answer`** (see "Open" under "As built, PZ-33a"), with the probes of the PZ-33a reviews as tests | Items 1 to 5 of the PZ-33 list below pass, and item 7 passes for every long-number probe of the PZ-33a reviews | AGENT-SAFE · **HIGH** (money, tenancy). The flip of `ASSISTANT_CHAT_SUMMARY_ORGS` for a real org waits for PZ-35. The production flip is **OWNER-GATE** (§15.8). The job reads `app_prefs(raw, "chat")["summaries"]` of the member, and writes no new summary while it reads False (the switch of PZ-35, §15.5) |
+| **PZ-35** · task 1133 | The switch `apps.chat.summaries`, the three routes, the Settings section, the relays, Forget, removal, export and the staging blank | An R8 test: Delete turns the chat `off`, and the next tick writes nothing. Delete all, Forget everything and a removal clear the member's summaries in one org only. A chat of another member is a 404. The export holds the summaries. A vitest test covers the section and the confirm. The UI gate passes: four captures and a `Visual review:` line | AGENT-SAFE · STANDARD · **BUILT 2026-11-01, dark** (task 1133). The R8 file is `tests/unit/test_chat_summary_routes_r8.py`. The test "the next tick writes nothing" belongs to PZ-33b: PZ-35 proves that a Delete turns the chat `off` and that `write_marked` then writes nothing |
 | **PZ-34** · task 1132 | `_prime_member_briefing`, `_member_briefing_block`, the Redis store of the block, `BRIEFING_MAX` and the flag | A unit test: the block shows in a solo web run. It does not show in a shared room, a delegated run, a run with no member, a WhatsApp run or with the flag off. No block above it moves. Two turns of one chat get the same bytes. The block sheds tasks first, then the oldest chat, and stays at 1,500 characters or less. It never holds the current chat. An R8 test: the tasks come from `my_due_tasks`, and a chat or a task of another member never shows | AGENT-SAFE · **HIGH** (it puts the member's other chats into a run) |
 | **PZ-36** · task 1134 | `offer` on `create_personal_task`, the shared offer helper, the card text, the persona line and the flag | A test: an approved card makes one private task in the member's personal project. A decline, a second offer in the chat, a pasted mail, a Continue turn, WhatsApp, the flag off and the pack off each make no task. A refusal before the card draws nothing. A sensitive title asks twice. `test_profile_pz32.py` stays green with the shared helper | AGENT-SAFE · STANDARD (the one card guards the write, and the task is private) |
 | **PZ-22** grows · task 317 | `since` and `superseded_by` (§15.7) | A test: a replace keeps the old fact, the block hides it, and Undo restores it. The cap of 40 superseded facts holds. An edit in Settings stays in place | AGENT-SAFE · STANDARD |
@@ -2230,7 +2237,8 @@ each box.
   moved to 319 at the merge (R1).
 - `apps/services/gateway/gateway/assistant_summaries.py` holds the store:
   `read`, `mark`, `write_marked` (the write with the mark in its WHERE),
-  `turn_off` (the Delete, `off`), `clear_for_member` and `clear_on_share`.
+  `turn_off` (it writes `off`, and no route calls it), `clear_one_for_member`
+(the Delete), `clear_for_member` and `clear_on_share`.
   It has no plain write. Each caller checks the member, because a
   statement finds the chat by its id and RLS binds only the tenant.
 - Review round 1 (2026-10-31): the stored text as one string must pass
@@ -2351,8 +2359,8 @@ decision are in this table:
 - **The owner saw and accepted these in chat** on 2026-10-30 ("go ahead with
   your recommendations"): D-PZ-24, D-PZ-31, D-PZ-32 and D-PZ-34.
 - **These are the agent's design defaults** under that blanket answer:
-  D-PZ-25 to D-PZ-30, D-PZ-33 and D-PZ-35. The owner did not see them one by
-  one, and may overrule any of them.
+  D-PZ-25 to D-PZ-30 and D-PZ-35. The owner did not see them one by one, and
+  may overrule any of them. The owner decided D-PZ-33 on 2026-11-02.
 
 | # | Question | Decision |
 |---|---|---|
@@ -2365,7 +2373,7 @@ decision are in this table:
 | **D-PZ-30** | Which reader gives the open tasks? | `my_due_tasks`, the reader of the needs feed and so of the day's brief. No `loop.snapshot` on a chat turn |
 | **D-PZ-31** | How does a promise become a task? | `create_personal_task` with `offer=true`: once in a chat, typed words only, on the web, on its one card |
 | **D-PZ-32** | Do facts get dates? | Yes: `since` and `superseded_by`. A replaced fact stays, hidden |
-| **D-PZ-33** | What do Delete and Off do? | Delete removes the summary, and that chat gets no new one. Off stops new summaries and the chats of the briefing. The kept ones stay in the list until the member deletes them |
+| **D-PZ-33** | What do Delete and Off do? | **Owner decision, 2026-11-02, in chat (it overrules the first default):** Delete removes the summary now, and a new one may come later. Delete writes no `off`. The chat keeps a waterline, so a new summary comes only after a new message. Off stops new summaries and the chats of the briefing. The kept ones stay in the list until the member deletes them |
 | **D-PZ-34** | Where does long-term recall live? | MEM-2, one full-text search over past chats and their summaries. Mem0 and Graphiti stay retired (D132) |
 | **D-PZ-35** | Who may turn the summary job on in production? | The owner only (§6 D4), because the job spends each org's credits with no request of the member. Each other flip of §15 is gate `enforcement-flip` |
 

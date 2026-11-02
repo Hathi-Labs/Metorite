@@ -342,3 +342,119 @@ describe("language, facts and interview, in plain words", () => {
     });
   });
 });
+
+describe("Recent chats (PZ-35)", () => {
+  const one = {
+    id: "s1",
+    title: "Q3 pricing deck",
+    date: "2026-10-30T10:00:00Z",
+    text: "Planned the Q3 pricing deck.",
+    follow_ups: ["Send the deck to Priya by Friday"],
+  };
+  const ready = (summaries = [one], more = false) => ({
+    keep: true,
+    list: { status: "ready" as const, summaries, more },
+  });
+
+  it("draws nothing with the flag off (no summaries view)", () => {
+    const html = draw({});
+    expect(html).not.toContain("Recent chats");
+    expect(html).not.toContain('href="#assistant-summaries"');
+  });
+
+  it("draws the section before the download, with the switch, the date, the link and Delete", () => {
+    const html = draw({ summaries: ready() });
+    expect(html).toContain("Recent chats");
+    expect(html).toContain("Keep chat summaries");
+    expect(html).toContain("Q3 pricing deck");
+    expect(html).toContain("2026-10-30");
+    expect(html).toContain("Planned the Q3 pricing deck.");
+    expect(html).toContain("Send the deck to Priya by Friday");
+    expect(html).toContain('href="/chat?do=open-chat&amp;fill.session=s1"');
+    expect(html).toContain("Delete the summary of Q3 pricing deck");
+    expect(html).toContain("Delete all");
+    expect(html.indexOf("Recent chats")).toBeLessThan(html.indexOf("Download my profile"));
+  });
+
+  it("draws the switch as checked or not, from the member's choice", () => {
+    const on = draw({ summaries: ready() });
+    expect(on).toMatch(/<input[^>]*aria-label="Keep chat summaries"[^>]*checked=""|<input[^>]*checked=""[^>]*aria-label="Keep chat summaries"/);
+    const off = draw({ summaries: { ...ready(), keep: false } });
+    expect(off).not.toMatch(/<input[^>]*aria-label="Keep chat summaries"[^>]*checked=""/);
+    expect(off).not.toMatch(/<input[^>]*checked=""[^>]*aria-label="Keep chat summaries"/);
+    expect(off).toContain("The summaries below stay until");
+  });
+
+  it("draws an empty line, a loading state and an error with Retry", () => {
+    const empty = draw({ summaries: ready([]) });
+    expect(empty).toContain("No summaries yet.");
+    expect(empty).not.toContain("Delete all");
+    expect(draw({ summaries: { keep: true, list: { status: "loading" } } })).toContain(
+      "assistant-summaries-loading",
+    );
+    const failed = draw({
+      summaries: { keep: true, list: { status: "error", error: "The assistant profile is not available now." } },
+    });
+    expect(failed).toContain("The summaries did not load.");
+    expect(failed).toContain("not available now");
+    expect(failed).toContain("Retry");
+    expect(failed).not.toContain("No summaries yet.");
+    expect(failed).not.toContain("Delete all");
+  });
+
+  it("shows a row error for a failed Delete, and the busy state", () => {
+    const html = draw({ summaries: ready(), errors: { "summary-s1": "That item is gone." }, busy: { "summary-s1": true } });
+    expect(html).toContain("That item is gone.");
+    expect(html).toContain('role="alert"');
+  });
+
+  it("the Delete all confirm is built from the count (the dialog draws in a portal)", () => {
+    const src = readFileSync(new URL("./AssistantPane.tsx", import.meta.url), "utf-8");
+    expect(src).toContain('title="Delete all chat summaries?"');
+    expect(src).toContain("body={deleteAllBody(v.summaries.list)}");
+    expect(src).toContain('confirmLabel="Delete all"');
+    // The dialog is closed until Delete all is pressed, so the page holds no confirm text.
+    expect(draw({ summaries: ready([one, { ...one, id: "s2" }]) })).not.toContain("This deletes all");
+  });
+
+  it("the jump list gains a link only when the section draws", () => {
+    expect(draw({ summaries: ready() })).toContain("assistant-summaries");
+    expect(draw({})).not.toContain("assistant-summaries");
+  });
+
+  it("wires the switch, Delete, and the confirm in the container", () => {
+    const src = readFileSync(new URL("./AssistantPane.tsx", import.meta.url), "utf-8");
+    expect(src).toMatch(/onKeepSummaries:\s*\(value\) =>/);
+    expect(src).toMatch(/saveKeepSummaries\(value\)/);
+    expect(src).toMatch(/onDeleteAllSummaries:\s*\(\) => setConfirmDeleteSummaries\(true\)/);
+    expect(src).toMatch(/await deleteAllSummaries\(\)/);
+    expect(src).toMatch(/<ConfirmDialog\s+open=\{!!v\.confirmDeleteSummaries\}/);
+  });
+});
+
+describe("Delete asks first, and Forget names the summaries (PZ-35 repair)", () => {
+  const src = readFileSync(new URL("./AssistantPane.tsx", import.meta.url), "utf-8");
+
+  it("a row Delete opens a confirm, and the confirm deletes", () => {
+    expect(src).toMatch(/onDeleteSummary:\s*\(id\) => setConfirmDeleteSummaryId\(id\)/);
+    expect(src).toContain('title="Delete this summary?"');
+    expect(src).toContain("body={DELETE_ONE_BODY}");
+    expect(src).toMatch(/onConfirmDeleteSummary=\{async \(\) => \{[\s\S]{0,200}await deleteSummary\(id\)/);
+    // The one-row dialog is closed until a Delete is pressed.
+    expect(draw({ summaries: { keep: true, list: { status: "ready", summaries: [], more: false } } })).not.toContain(
+      "Delete this summary?",
+    );
+  });
+
+  it("the Forget section and confirm name the chat summaries, and the switch that stays", () => {
+    const html = draw({});
+    expect(html).toContain("every chat summary");
+    expect(html).toContain("The Keep chat summaries switch stays as it is");
+    expect(html).not.toContain("Clears every setting");
+    expect(src).toMatch(/title="Forget everything\?"\s+body="[^"]*every chat summary/);
+  });
+
+  it("the date line uses the same size token as the other text of the section", () => {
+    expect(src).not.toMatch(/gap-2 text-\[11px\] text-muted-foreground">\s*<Link/);
+  });
+});

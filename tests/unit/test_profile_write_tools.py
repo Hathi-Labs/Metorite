@@ -730,7 +730,8 @@ def test_every_profile_write_route_reads_the_header_by_its_name() -> None:
     writes = [r for r in me_router.routes
               if "/me/assistant-profile" in getattr(r, "path", "")
               and set(getattr(r, "methods", ())) & {"PUT", "POST", "PATCH", "DELETE"}]
-    assert len(writes) == 13
+    # PZ-35 added the two summary DELETEs. They read the header to refuse it.
+    assert len(writes) == 15
     for route in writes:
         headers = {p.alias.lower() for p in route.dependant.header_params}
         assert "x-profile-via" in headers, route.path
