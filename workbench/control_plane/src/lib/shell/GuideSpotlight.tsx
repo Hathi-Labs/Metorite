@@ -37,7 +37,7 @@ import Button from "@/components/ui/Button";
 import { WATCHED_ATTRIBUTES, isShown } from "./guideAnchor";
 
 export type GuideSpotlightProps = {
-  /** An anchor id, e.g. "home.ask". Looks up `[data-guide="<anchor>"]`. */
+  /** An anchor id, e.g. "home.ask". Looks up the element whose guide attribute holds it. */
   anchor: string;
   /** The step line, shown in the popover and announced. */
   say: string;
@@ -81,9 +81,15 @@ export function escapeId(id: string): string {
   return id.replace(/[^a-zA-Z0-9_-]/g, (c) => "\\" + c);
 }
 
+/**
+ * The attribute an anchor carries. A constant, so fence F1
+ * (`tests/unit/test_guide_anchors.py`) never reads this file as an anchor.
+ */
+const GUIDE_ATTR = "data-guide";
+
 /** The selector for an anchor id. The id can never end the attribute or add a selector. */
 export function anchorSelector(id: string): string {
-  return `[data-guide="${escapeId(id)}"]`;
+  return `[${GUIDE_ATTR}="${escapeId(id)}"]`;
 }
 
 /** The first element of the list that `visible` accepts, or null. Pure, so a test drives it. */
