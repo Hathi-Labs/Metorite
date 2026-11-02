@@ -1071,7 +1071,10 @@ def test_the_reminder_tools_are_in_one_pack_that_the_words_load() -> None:
     seven = {"list_reminders", "promote_reminder", "reopen_reminder",
              "reschedule_reminder", "resolve_reminder", "set_reminder",
              "update_reminder"}
-    assert set(_family("projects-reminders")) == seven
+    # WS-ALN ALN-4: the other Projects packs are full, so the three tools of the
+    # authority page sit here too, until a pack of their own is listed.
+    authority = {"pin_authority", "project_authorities", "unpin_authority"}
+    assert set(_family("projects-reminders")) == seven | authority
     assert not seven & set(_family("projects-bulk"))
     assert not seven & set(_family("projects"))
 

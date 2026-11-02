@@ -2349,7 +2349,7 @@ async def unpin_authority(project_id: str, pin_id: str) -> str:
     name = "a page you cannot read" if row.get("page_hidden") is True else data(row.get("title"))
     impact = (
         f"{path} loses {name} as its authority page. A finding of the project "
-        "stops quoting its rules. The page itself stays"
+        "stops quoting its rules to everyone who sees the project. The page itself stays"
     )
     if not await _confirm(
         title="Remove the authority page of this project?",

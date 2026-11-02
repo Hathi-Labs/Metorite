@@ -164,6 +164,7 @@ const NAMED: Record<string, { kind: StepKind; verb: Verb; object: string }> = {
   notifications: { kind: "read", verb: V.read, object: "notifications" },
   watchers: { kind: "read", verb: V.read, object: "the watchers" },
   project_access: { kind: "read", verb: V.read, object: "who may see a project" },
+  project_authorities: { kind: "read", verb: V.read, object: "the authority pages of a project" },
   project_views: { kind: "read", verb: V.read, object: "the saved views" },
   recurrence: { kind: "read", verb: V.read, object: "a repeat rule" },
   team_capacity: { kind: "read", verb: V.read, object: "the team's capacity" },

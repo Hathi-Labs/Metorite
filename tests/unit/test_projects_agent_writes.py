@@ -426,6 +426,26 @@ def _op6b_answers(call: dict) -> Any:
     return None
 
 
+#: WS-ALN ALN-4. The pins of the project, as `GET /projects/nodes/{id}/authorities` lists them.
+PIN_ID = "b2c9fad5-d9cb-469f-a165-70867728950e"
+PINS = [{"id": PIN_ID, "project_id": UUID, "page_id": FILE, "page_version": 1,
+         "pinned_by": "a@x.io", "state": "active", "stale_reason": None,
+         "page_hidden": False, "title": "Project rules"}]
+
+
+def _aln4_answers(call: dict) -> Any:
+    """WS-ALN ALN-4: the pin list, a new pin and a removed one."""
+    path, method = call["path"], call["method"]
+    base = f"/projects/nodes/{UUID}/authorities"
+    if path == base and method == "GET":
+        return {"rows": PINS, "total": len(PINS)}
+    if path == base and method == "POST":
+        return {**PINS[0], "id": OTHER, "page_id": call["json"]["page_id"]}
+    if path == f"{base}/{PIN_ID}" and method == "DELETE":
+        return {**PINS[0], "state": "removed"}
+    return None
+
+
 def _op6d_answers(call: dict) -> Any:
     """WS-64 OP-6d: the list of a report, an add, a remove and the schedule."""
     path, method = call["path"], call["method"]
@@ -520,7 +540,7 @@ def responder(call: dict) -> Any:
     # `_op6c_answers` before `_s2b_answers`: its task answers a `/my/tasks/` read that
     # `_s2b_answers` also claims. WS-66 RM-3: `_reminder_answers` claims only the
     # member's zone and `/projects/my/reminders`, so it may lead.
-    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
                          _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
@@ -743,6 +763,9 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "attach_to_task": [{"task_id": UUID, "file_name": "brief.pdf"}],
     # WS-64 OP-6b — one grant per card, by grant_id or by subject
     "grant_access": [{"project_id": UUID, "subject": "org"}],
+    # WS-ALN ALN-4 — one pin per card, by pin_id
+    "pin_authority": [{"project_id": UUID, "page_id": OTHER}],
+    "unpin_authority": [{"project_id": UUID, "pin_id": PIN_ID}],
     "revoke_access": [
         {"project_id": UUID, "grant": GRANT_ID},
         {"project_id": UUID, "grant": "group:Design"},
@@ -837,6 +860,8 @@ _ONE_ID: dict[str, str] = {
     "attach_to_task": "task_id",
     "grant_access": "subject",
     "revoke_access": "grant",
+    "pin_authority": "page_id",
+    "unpin_authority": "pin_id",
     "add_report_recipient": "recipient",
     "remove_report_recipient": "recipient",
     "set_report_schedule": "report_id",
