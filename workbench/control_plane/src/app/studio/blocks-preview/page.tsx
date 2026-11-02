@@ -19,6 +19,7 @@ import StudioForm from "@/components/studio/StudioForm";
 import Badge from "@/components/ui/Badge";
 import SelectButton from "@/components/ui/SelectButton";
 import { tableBlock } from "@/lib/studio/blocks";
+import { boardBlock } from "@/lib/studio/boardModel";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, sourceKey } from "@/lib/studio/dataDoor";
 import {
@@ -28,6 +29,8 @@ import { useCachedResource } from "@/lib/useCachedResource";
 
 const PANEL = "rounded-xl border border-border bg-card p-3 sm:p-4";
 const LIST = { action: "object:visit.list" };
+const BOARD_FIELDS = SAMPLE_FIELDS.filter((f) =>
+  ["title", "status", "owner", "visit_date", "tags", "done"].includes(f.key));
 const TABLE_FIELDS = SAMPLE_FIELDS.filter((f) => SAMPLE_TABLE_KEYS.includes(f.key));
 
 export default function BlocksPreviewPage() {
@@ -37,10 +40,14 @@ export default function BlocksPreviewPage() {
   const rows = data ?? [];
   const record = rows.find((r) => r.id === picked) ?? rows[0];
   const node = useMemo(() => tableBlock(TABLE_FIELDS, LIST, "Visits"), []);
+  const board = useMemo(() => boardBlock({
+    fields: BOARD_FIELDS, groupBy: "status", titleField: "title", cardFields: ["owner", "visit_date", "tags"],
+    update: "object:visit.update", title: "Visits",
+  }, LIST), []);
 
   return (
     <div className="flex h-full flex-col">
-      <AppTopBar title="Block preview" subtitle="Table, Form and Detail on sample records"
+      <AppTopBar title="Block preview" subtitle="Table, Board, Form and Detail on sample records"
         back={{ href: "/studio", label: "Back to Studio" }} />
       <div className="pb-askbar flex flex-1 flex-col gap-3 overflow-y-auto p-3 sm:gap-4 sm:p-4">
         <div className="flex flex-wrap items-center gap-2">
@@ -54,6 +61,15 @@ export default function BlocksPreviewPage() {
           <section aria-label="Table" className={PANEL}>
             <h2 className="mb-2 text-sm font-semibold text-foreground">Table</h2>
             <GenerativeUINode spec={node} />
+          </section>
+
+          <section aria-label="Board" className={PANEL}>
+            <h2 className="mb-2 text-sm font-semibold text-foreground">Board</h2>
+            <GenerativeUINode spec={board} />
+            <p className="mt-3 text-xs text-muted-foreground">
+              Drag a card to another lane, or press Space on a card, then the arrow keys, then Space.
+              To see a refusal of the server, move a visit that is not done into Closed.
+            </p>
           </section>
 
           <div className="grid grid-cols-1 gap-3 sm:gap-4 xl:grid-cols-2">

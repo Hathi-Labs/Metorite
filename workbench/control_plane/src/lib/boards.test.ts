@@ -28,6 +28,7 @@ const BOARDS: Record<string, string> = {
   "app/projects/components/TaskBoard.tsx": "the Projects columns and the swimlane cells",
   "app/tasks/components/TaskBoard.tsx": "the three My Tasks stage columns",
   "app/crm/components/KanbanBoard.tsx": "the Deals and Leads stage lanes",
+  "components/studio/StudioBoard.tsx": "the Studio Board block, one lane for each option of a select field",
 };
 
 /** The shared primitive. The stripe and the column-shape rules read it too. */
