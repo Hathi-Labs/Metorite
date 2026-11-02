@@ -142,8 +142,12 @@ def db(monkeypatch: pytest.MonkeyPatch) -> _FakeDB:
     # ── her two private reminders (WS-66 RM-1) ──
     fake.seed_rows("reminders", {"member_email": PRIYA}, {"member_email": PRIYA})
     # ── her two calendar entries, and her seat on a colleague's event (CE-4) ──
-    fake.seed_rows("calendar_entries", {"owner_email": PRIYA}, {"owner_email": PRIYA})
-    fake.seed_rows("calendar_entry_attendees", {"member_email": PRIYA})
+    fake.seed_rows("calendar_entries", {"id": "entry-p1", "owner_email": PRIYA},
+                   {"id": "entry-p2", "owner_email": PRIYA})
+    # Her seat on a colleague's entry. The ids matter: the purge clause leaves
+    # out a seat on her own entry, which the cascade of her entries deletes.
+    fake.seed_rows("calendar_entry_attendees",
+                   {"member_email": PRIYA, "entry_id": "entry-colleague"})
     # ── her one private AI Studio skill (WS-STU F1) ──
     fake.seed_rows("studio_skills", {"owner_email": PRIYA})
     # ── her app installs (WS-PKG PKG-4): a private one that nobody else
