@@ -1736,3 +1736,28 @@ async def test_round_4_a_switch_turned_off_during_the_call_writes_nothing(job, w
     assert stored["mark"]["through"] == newest, "the mark keeps its waterline"
     (row,) = _jobs(job, sid)
     assert row.state == "done"
+
+
+async def test_round_4_tapped_rows_never_push_typed_rows_out_of_the_seed(job, monkeypatch) -> None:
+    """The seed reads the newest short user rows of each chat, a few at
+    most (``SEED_ROWS``). It reads only rows with the typed mark, so pills
+    that the member tapped after typing never push the typed rows out."""
+    monkeypatch.setattr(summaries, "SEED_ROWS", 3)
+    sid, _newest = _job_chat(job, org=job.org_a)
+    # Between the typed rows and Mira's newest reply, so the chat stays idle.
+    for i in range(3):
+        _row_at(job, job.org_a, sid, f"p{i}", "user", f"Tapped pill {i}.",
+                T - timedelta(hours=1, minutes=20 - i), typed=False)
+    assert await _tick(job, job.org_a) == Counter(done=1)
+    assert _summary(job, sid)["text"] == SUMMARY["text"]
+
+
+async def test_round_4_chats_of_taps_never_crowd_out_a_typed_chat(job, monkeypatch) -> None:
+    """``IDLE_SQL`` counts only rows with the typed mark, so newer chats of
+    tapped rows never fill the scan (``SEED_SCAN_MAX``) of the seed."""
+    monkeypatch.setattr(summaries, "SEED_SCAN_MAX", 3)
+    typed, _ = _job_chat(job, org=job.org_a, newest=T - timedelta(hours=2))
+    for _ in range(3):
+        _job_chat(job, org=job.org_a, mark=False, newest=T - timedelta(minutes=50))
+    assert await _tick(job, job.org_a) == Counter(done=1)
+    assert _summary(job, typed)["text"] == SUMMARY["text"]

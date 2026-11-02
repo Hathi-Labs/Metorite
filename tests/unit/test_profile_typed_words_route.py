@@ -239,3 +239,50 @@ def test_round_4_a_turn_with_no_words_of_the_member_gets_no_card(
     assert _post(body)[0] == 200
     assert ground[-1] == {"typed": "", "sent": False,
                           "outcome": ("refused", pt.NO_TYPED_TEXT)}
+
+
+@pytest.fixture()
+def saved(world, monkeypatch) -> list[Any]:  # noqa: F811
+    """The member's turn that the route saves at run start, with its mark.
+    A solo room the member may send in, so the route saves the turn."""
+    from gateway.rooms import RoomAccess
+    from gateway.routes import agent
+
+    prompts: list[Any] = []
+
+    def _room(thread_id: str, email: str, _org: Any) -> RoomAccess:
+        return RoomAccess(session_id=thread_id, email=email, role="owner", can_read=True,
+                          can_send=True, can_cancel=True, can_invite=True, can_manage=True,
+                          is_shared=False, members=[email])
+
+    async def _mint(*_a: Any, prompt: Any = None, **_k: Any) -> None:
+        prompts.append(prompt)
+
+    monkeypatch.setattr(agent, "_resolve_room", _room)
+    monkeypatch.setattr(agent, "_mint_run_row_bounded", _mint)
+    return prompts
+
+
+@pytest.mark.parametrize(("kind", "stored"), [
+    ("typed", True), ("tap", False), ("card", False), ("continue", False)])
+def test_round_4_the_saved_turn_keeps_the_mark_of_its_request(
+        saved, monkeypatch, kind, stored) -> None:
+    """D-PZ-37: the run route is the one writer of ``member_typed``. The turn
+    that it saves carries the mark of its request, and a card answer and a
+    Continue are never typed, with the mark or without it."""
+    from gateway.routes import agent
+
+    async def _note(*_a: Any, **_k: Any) -> str:
+        return "[Continue your reply] ..."
+
+    monkeypatch.setattr(agent, "_resume_note_for", _note)
+    body = _body(f"t-save-{kind}", "remember I like oolong tea", typed=kind != "tap")
+    body["payload"]["user_message_id"] = f"u-{kind}"
+    if kind == "card":
+        body["payload"]["card_answer"] = {"question": "Which tea?"}
+    if kind == "continue":
+        body["payload"]["resume"] = True
+    assert _post(body)[0] == 200
+    (prompt,) = saved
+    assert prompt is not None and prompt.message_id == f"u-{kind}"
+    assert prompt.member_typed is stored
