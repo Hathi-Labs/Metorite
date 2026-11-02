@@ -13,6 +13,14 @@ written. Specified 2026-10-05. Board row **WS-45**, and decision **D90** is in
 `AI_TIER_ROUTING` ships empty, and `NEXT_PUBLIC_AI_TIER_ROUTING` ships OFF.
 Neither flag covers an agent on any box.
 
+**Helper routes default to a tier name (task 1128 follow-up, 2026-11-02).**
+`/api/chat/sessions/[id]/compact` and `/api/chat/suggestions` defaulted to the
+bare model id `deepseek/deepseek-chat`. The Router refuses a bare id with a
+400, so compaction failed on every call with the Router on. Both now read
+`HELPER_MODEL_DEFAULT` (`tier-fast`, `src/lib/helperModel.ts`), and
+`SUGGESTION_MODEL` still overrides it. A failed compaction shows one line in
+the composer. Fence: `tests/unit/test_helper_model_default.py`.
+
 **Amended by D93 (2026-10-07).** A typed System-1 question goes to
 `tier-decide`, with `tier-fast` as its fallback. §5 and §6.1 carry the
 amendment, and WS-48 N3 (`data_narrowing_pipeline.md`) builds it.
