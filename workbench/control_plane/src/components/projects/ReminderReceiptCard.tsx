@@ -142,7 +142,7 @@ export default function ReminderReceiptCard({
                 {exact}
               </div>
               <div className="text-[10px] text-muted-foreground" data-reminder-relative="">
-                {dropped ? "Dropped" : relativeWhen(fireMs, now)} · private to its owner
+                {dropped ? "Dropped" : relativeWhen(fireMs, now)} · private
               </div>
               {receipt.taskId && (
                 <div className="mt-1">

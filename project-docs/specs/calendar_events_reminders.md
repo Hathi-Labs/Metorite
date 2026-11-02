@@ -1045,7 +1045,7 @@ is `tests/unit/test_reminder_tools.py`.
   So acting at once loses no authority. `reminder_events` keeps the record
   (`created`, with `source` `chat`). A plain card wrote no row of its own. The
   other member sees the receipt, and Undo and Change time answer 404 for that
-  member, so the card says "private to its owner".
+  member, so the card says "private".
 - **The promote keeps its card.** `promote_reminder` stays class C. It makes a
   task and cannot reopen. The five other tools stay class B in the manifest.
   The fence is `tests/unit/test_reminder_acts_at_once.py`. The pins in
