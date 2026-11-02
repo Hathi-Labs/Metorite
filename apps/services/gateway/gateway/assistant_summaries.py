@@ -49,13 +49,15 @@ the column, and when a module that is not on its list imports this one.
 **The answer checks.** Pure functions, with no I/O.
 
 * :func:`member_texts`, :func:`member_words` and :func:`prompt_rows` choose
-  what may reach the model. A row of the member counts only through
+  what may reach the model: the member's own typed words, and nothing else
+  (the owner, 2026-11-02, D-PZ-28). A row of the member counts only through
   ``acb_common.assistant_profile.typed_text``, so a pasted mail and a text of
   more than 1,500 characters stay out. A card answer stays out too, because
   it quotes the question that the model wrote
-  (``gateway.chat_recovery.is_card_answer_text``). A row of Mira gives its
-  ``content`` only. Tool events, reasoning, custom events, system rows and
-  the brief row (``brief-<date>``) stay out.
+  (``gateway.chat_recovery.is_card_answer_text``). No row of Mira, no tool
+  text, no row of another author, no system row and no brief row
+  (``brief-<date>``) goes in, because each of them can carry text that a
+  stranger wrote.
 * :func:`check_answer` parses the answer of the model and applies the caps:
   at most 3 sentences and 400 characters of text, and at most 3 follow-ups of
   120 characters each. :func:`_keep` gives the rule of a line, and the stored
@@ -84,7 +86,6 @@ Router on (§15.3). Fences: ``tests/unit/test_chat_summary.py``,
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import re
@@ -112,7 +113,6 @@ from acb_common.assistant_profile import (
     typed_text,
 )
 from acb_common.pg_text import storable
-from acb_skills import egress
 from sqlalchemy import text
 
 from gateway.chat_recovery import is_card_answer_text
@@ -183,53 +183,20 @@ def is_brief_row(row: Any) -> bool:
     return BRIEF_ROW.match(str(_field(row, "id") or "")) is not None
 
 
-def _is_member_turn(row: Any, member: Any) -> bool:
-    """True when *row* is a ``user`` row of *member*, a card answer too. In a
-    solo chat only the member writes a ``user`` row. A row that names another
-    author never counts."""
+def _is_member_row(row: Any, member: Any) -> bool:
+    """True when *row* is a turn of *member*. In a solo chat only the member
+    writes a ``user`` row. A row that names another author never counts.
+
+    A card answer never counts. Its text quotes the question of the card,
+    which the model wrote, so it grounds nothing (``routes/agent.py``)."""
     if _field(row, "role") != "user" or is_brief_row(row):
+        return False
+    if is_card_answer_text(str(_field(row, "content") or "").strip()):
         return False
     if _field(row, "author_kind") not in (None, "", "human"):
         return False
     author = _key(_field(row, "author_email"))
     return not author or author == _key(member)
-
-
-def _is_card_answer(row: Any) -> bool:
-    return is_card_answer_text(str(_field(row, "content") or "").strip())
-
-
-def _is_member_row(row: Any, member: Any) -> bool:
-    """True when *row* is a turn of *member* that can hold typed words.
-
-    A card answer never counts. Its text quotes the question of the card,
-    which the model wrote, so it grounds nothing (``routes/agent.py``)."""
-    return _is_member_turn(row, member) and not _is_card_answer(row)
-
-
-def new_turn(rows: Iterable[Any], member: Any) -> bool:
-    """True when *rows* hold a new turn of *member*: a typed row or a card
-    answer. A card answer moves the chat on, so a stored follow-up can go
-    stale without one more summary. It still stays out of the typed words
-    (:func:`member_words`) and of the prompt (:func:`prompt_rows`)."""
-    for row in rows:
-        if _is_member_turn(row, member) and (
-                _is_card_answer(row) or typed_text(_field(row, "content")).strip()):
-            return True
-    return False
-
-
-def _is_mira_row(row: Any) -> bool:
-    """True when *row* is a reply of Mira, and not the brief row. A legacy row
-    names no author, and a chat with Mira has one agent. A row of another
-    agent never counts: the text of a mentioned agent is not a reply of
-    Mira, and :data:`ELIGIBLE_SQL` refuses such a chat too."""
-    if _field(row, "role") != "assistant" or is_brief_row(row):
-        return False
-    if _field(row, "author_kind") not in (None, "", "agent"):
-        return False
-    author = _key(_field(row, "author_email"))
-    return not author or author == AGENT
 
 
 def member_texts(rows: Iterable[Any], member: Any) -> list[str]:
@@ -255,36 +222,25 @@ def member_words(rows: Iterable[Any], member: Any) -> str:
 
 
 def prompt_rows(rows: Iterable[Any], member: Any, *,
-                limit: int = INPUT_MAX) -> list[tuple[str, str]]:
-    """The rows that may reach the model, as ``(who, words)``, oldest first.
+                limit: int = INPUT_MAX) -> list[str]:
+    """The words that may reach the model, oldest first: the typed text of each
+    row of *member* (:func:`member_texts`), and nothing else.
 
-    *rows* are in time order, oldest first. *who* is ``"member"`` or
-    ``"mira"``. A row of the member gives its typed text only. A row of Mira
-    gives its ``content`` only, so no tool event, reasoning or custom event
-    goes in. A system row and the brief row give nothing.
+    The owner decided on 2026-11-02 that the prompt holds the member's own
+    words only. A reply of Mira can restate a mail, a CRM record, a WhatsApp
+    message or a tool answer, and no list of tools can tell which. So no row
+    of Mira, no tool text, no card answer and no row of another author goes
+    in (D-PZ-28).
 
-    The rows hold at most *limit* characters. The newest rows go in first,
+    The words hold at most *limit* characters. The newest rows go in first,
     and the oldest row that goes in can lose its end."""
-    chosen: list[tuple[str, str]] = []
-    for row in rows:
-        if _is_member_row(row, member):
-            words = typed_text(_field(row, "content")).strip()
-            who = "member"
-        elif _is_mira_row(row):
-            content = _field(row, "content")
-            words = content.strip() if isinstance(content, str) else ""
-            who = "mira"
-        else:
-            continue
-        if words:
-            chosen.append((who, words))
-    kept: list[tuple[str, str]] = []
+    kept: list[str] = []
     room = max(0, int(limit))
-    for who, words in reversed(chosen):
+    for words in reversed(member_texts(rows, member)):
         if room <= 0:
             break
         part = words[:room]
-        kept.append((who, part))
+        kept.append(part)
         room -= len(part)
     kept.reverse()
     return kept
@@ -873,7 +829,7 @@ WINDOW = timedelta(days=7)
 #: 5 chats hold the worker for at most 150 seconds in a tick.
 SUMMARY_SEED_MAX = 5
 #: The most candidate chats that one seed reads. The typed-row rule and the
-#: mail mark run in Python, so the SQL reads more chats than the cap.
+#: status of the member run in Python, so the SQL reads more chats than the cap.
 SEED_SCAN_MAX = 60
 #: The newest short rows of the member that the seed reads for each chat.
 SEED_ROWS = 20
@@ -881,61 +837,14 @@ SEED_ROWS = 20
 TYPED_ROWS_MIN = 2
 #: The most rows of one chat that the handler reads, the newest first.
 JOB_ROWS_MAX = 400
-#: The seconds that one read of the mail mark may take. A hung Redis then
-#: costs a tick 2 seconds, because the seed stops at the first fault.
-MAIL_READ_TIMEOUT_S = 2.0
 #: The app and the key of the member's switch, "Keep chat summaries"
 #: (PZ-35, §15.5). A missing value reads as on.
 SWITCH_APP = "chat"
 SWITCH_KEY = "summaries"
 
-#: The tools outside an email family whose answer can hold mail text. Each is
-#: a platform tool, so no family of ``email-assistant`` names it:
-#: `query_history` can copy mail from another chat, `search_company` quotes the
-#: subject and a passage of a mail, and `read_attachment` reads a file of a
-#: mail. `tests/unit/test_chat_summary.py` fails when a tool of the email agent
-#: is missing from :data:`MAIL_TOOLS`.
-MAIL_CORE_TOOLS = ("query_history", "read_attachment", "search_company")
-
-
-def _mail_tool_names() -> tuple[str, ...]:
-    """Each tool of a family that an agent of ``UNTRUSTED_INPUT_AGENTS`` owns,
-    and :data:`MAIL_CORE_TOOLS`. The names come from the code, so a new mail
-    tool joins the rule with no change here."""
-    from acb_skills.skill_families import SKILL_FAMILIES
-
-    owned = {str(name) for family in SKILL_FAMILIES.values()
-             if str(family.get("owner")) in egress.UNTRUSTED_INPUT_AGENTS
-             for name in family["tools"]}
-    return tuple(sorted(owned | set(MAIL_CORE_TOOLS)))
-
-
-#: The tool names of the durable mail rule.
-MAIL_TOOLS = _mail_tool_names()
-#: The rule over the JSON text of `tool_events`. It matches the email agent
-#: under any spelling, which covers the specialist tool, the args of
-#: `call_agent` and `delegate_to_agent`, and `subAgentName`. It matches each
-#: mail tool as a whole JSON string, which covers `subAgentTools`. A match in
-#: a `result` is a false positive, and that is safe: the chat only gets no
-#: summary. There is no `(?:`, because SQLAlchemy would read `:name` as a bind.
-MAIL_EVENT_RE = 'email[-_]assistant|"(' + "|".join(MAIL_TOOLS) + ')"'
-
-#: True when an agent row of the chat `s` shows that the chat can hold mail
-#: text. This is the durable rule. The Redis mark can expire, be lost or fail
-#: to write, and this job reads old rows. `tool_events` stays: the fold writes
-#: it from the events of the run, and no write can shrink it
-#: (`routes/chat.py::MONOTONIC_MESSAGE_COLUMNS`). A value that is not an array
-#: cannot be read, so it counts as mail.
-MAIL_EVENTS_SQL = f"""EXISTS (
-        SELECT 1 FROM chat_message t
-         WHERE t.session_id = s.id AND t.role = 'assistant'
-           AND (jsonb_typeof(t.tool_events) IS DISTINCT FROM 'array'
-                OR CAST(t.tool_events AS text) ~* '{MAIL_EVENT_RE}'))"""
-
 #: True when the chat `s` is one that a summary may cover: a chat of the
 #: bound org with Mira on the web, not archived, not deleted by the member
-#: (`off`), and solo (`rooms.SOLO_ROOM_SQL`). No other agent is in the chat,
-#: and no agent row shows a mail tool (:data:`MAIL_EVENTS_SQL`).
+#: (`off`), and solo (`rooms.SOLO_ROOM_SQL`). No other agent is in the chat.
 #: A member can add a mentioned agent to a solo chat, and the chat stays
 #: solo (`routes/rooms.py`), so `s.agent_name` alone is not enough. An agent
 #: that left keeps its rows, so the rows count too. A NULL kind of an
@@ -956,7 +865,6 @@ ELIGIBLE_SQL = f"""(
                AND COALESCE(g.author_kind,
                             CASE g.role WHEN 'assistant' THEN 'agent' END) = 'agent'
                AND COALESCE(NULLIF(g.author_email, ''), '{AGENT}') <> '{AGENT}')
-        AND NOT {MAIL_EVENTS_SQL}
         AND {SOLO_ROOM_SQL}
     )"""
 
@@ -1049,9 +957,9 @@ def _ms(moment: datetime) -> int:
 def rows_after(rows: Iterable[Any], through_ms: int | None) -> list[Any]:
     """The rows of *rows* that the waterline *through_ms* does not cover. A
     summary, a Delete, a Forget and a paid call each leave one. With no
-    waterline, each row. A chat with no new turn of the member here has
-    nothing new, such as a brief or a reminder that came after a Delete. So
-    it gets no call (:func:`new_turn`)."""
+    waterline, each row. A chat with no typed row of the member here has
+    nothing new, such as a brief, a reminder or a card answer that came after
+    a Delete. So it gets no call: the prompt holds the member's words only."""
     if through_ms is None:
         return list(rows)
     return [r for r in rows if int(_field(r, "timestamp_ms") or 0) > through_ms]
@@ -1153,43 +1061,6 @@ async def _gone(org: str, member: str) -> bool:
         return True
 
 
-async def mail_state(org: str, session_id: str) -> str:
-    """The mail mark of the chat: ``egress.MARK_CLEAR``, ``egress.MARK_MARKED``
-    or ``egress.MARK_UNKNOWN``. Unknown is a fault or a read over
-    :data:`MAIL_READ_TIMEOUT_S`, and it counts as mail.
-
-    ``egress.run_holds_mail`` is the one predicate of the chat memory stores,
-    and this is its second check here. :data:`MAIL_EVENTS_SQL` is the durable
-    rule, and the mark covers a run that the fold did not write yet.
-
-    *org* comes from the worker. It is bound only for the read, as
-    ``chat_fold._run_holds_mail`` binds it, because a frame with no tenant
-    reads as clear."""
-    from acb_common.db import bind_tenant, release_tenant
-
-    token = None
-    context = {"session_id": session_id}
-    try:
-        token = bind_tenant(str(org))
-        async with asyncio.timeout(MAIL_READ_TIMEOUT_S):
-            if not await egress.run_holds_mail(AGENT, context):
-                return egress.MARK_CLEAR
-            # The predicate says yes to a mark and to a fault. The seed stops
-            # at a fault, so this read says which one it is.
-            return await egress.session_mark_state(context, fail_closed=True)
-    except Exception as exc:  # fail closed, TimeoutError too: the chat holds mail
-        _log.warning("assistant.chat_summary_mail_check_failed", error=type(exc).__name__)
-        return egress.MARK_UNKNOWN
-    finally:
-        release_tenant(token)
-
-
-async def holds_mail(org: str, session_id: str) -> bool:
-    """True when the mark of the chat is not clear (:func:`mail_state`). The
-    chat then gets no call and no mark."""
-    return await mail_state(org, session_id) != egress.MARK_CLEAR
-
-
 async def seed(org: str, now: datetime) -> None:
     """The ``worker.seed_hooks`` hook of PZ-33b (§15.3, "Which job writes it").
 
@@ -1203,11 +1074,8 @@ async def seed(org: str, now: datetime) -> None:
     A chat gets a job when :data:`IDLE_SQL` selects it, its member is active
     with the switch on (:func:`member_switches`), the newest short rows hold
     :data:`TYPED_ROWS_MIN` typed rows of the member (:func:`member_texts`),
-    and a new turn is after the waterline (:func:`new_turn`). Then
-    ``my_day_loop.departed`` must say that the member did not leave, and the
-    mark of the chat must be clear (:func:`mail_state`). The first fault of
-    that read ends the loop for this tick, so a hung Redis costs one read and
-    not one for each candidate."""
+    and a typed row is after the waterline (:func:`rows_after`). Then
+    ``my_day_loop.departed`` must say that the member did not leave."""
     from acb_common.db import tenant_session
     from acb_llm import routed
 
@@ -1238,16 +1106,11 @@ async def seed(org: str, now: datetime) -> None:
         rows = typed.get(str(chat.id), [])
         if len(member_texts(rows, member)) < TYPED_ROWS_MIN:
             continue
-        if not new_turn(rows_after(rows, _waterline(chat.through_ms, chat.mark_ms)), member):
+        if not member_texts(rows_after(rows, _waterline(chat.through_ms, chat.mark_ms)), member):
             continue
         if member not in left:
             left[member] = await _gone(org, member)
         if left[member]:
-            continue
-        state = await mail_state(org, str(chat.id))
-        if state == egress.MARK_UNKNOWN:
-            break
-        if state != egress.MARK_CLEAR:
             continue
         picked.append(chat)
         if len(picked) >= SUMMARY_SEED_MAX:

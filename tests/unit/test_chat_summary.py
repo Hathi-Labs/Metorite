@@ -48,7 +48,6 @@ answer as typed; let ``member_texts`` skip ``typed_text``; let
 # ruff: noqa: RUF001 - the probes hold digits and marks of other scripts on purpose
 from __future__ import annotations
 
-import ast
 import json
 import random
 import re
@@ -130,7 +129,7 @@ def test_a_pasted_mail_over_the_cap_reaches_neither_the_prompt_nor_the_words() -
     rows = _chat()
     texts = summaries.member_texts(rows, MEMBER)
     words = summaries.member_words(rows, MEMBER)
-    prompt = " ".join(w for _who, w in summaries.prompt_rows(rows, MEMBER))
+    prompt = " ".join(summaries.prompt_rows(rows, MEMBER))
     assert len(texts) == 2, texts
     for leak in (PASTED_PHONE, PASTED_MAIL, PASTED_SALARY, "quarterly numbers"):
         assert leak not in words
@@ -149,7 +148,9 @@ def test_a_tool_event_reasoning_and_a_custom_event_stay_out_of_the_prompt() -> N
     joined = json.dumps(prompt)
     for leak in ("556677889900", "4455667788", "99887766", "read_mail"):
         assert leak not in joined
-    assert ("mira", "Sure. Three tiers, and the old price stays.") in prompt
+    # The owner, 2026-11-02: the prompt holds the member's own words only.
+    assert "Sure. Three tiers" not in joined, "a reply of Mira stays out"
+    assert prompt == summaries.member_texts(_chat(), MEMBER)
 
 
 def test_the_brief_row_and_a_system_row_stay_out_of_the_prompt() -> None:
@@ -177,28 +178,29 @@ def test_a_user_row_of_another_author_is_not_the_members() -> None:
     assert summaries.member_texts(legacy, MEMBER) == ["Plan the offsite."]
 
 
-def test_pz33b_a_reply_of_another_agent_stays_out_of_the_prompt() -> None:
-    """A member can add a mentioned agent to a solo chat. Its text is not a
-    reply of Mira. A legacy row names no author, and it is hers."""
+def test_pz33b_no_row_of_an_agent_reaches_the_prompt() -> None:
+    """A reply of Mira can restate a mail, a CRM record or a tool answer, and
+    the text of a mentioned agent is a stranger's too. So no agent row goes
+    in, and a legacy row with no author neither (the owner, 2026-11-02)."""
     rows = [_row("a1", "assistant", "CRM agent: Acme paid 4.2 lakh",
                  author_kind="agent", author_email="crm-assistant"),
             _row("a2", "assistant", "Sure, I saved it.",
                  author_kind="agent", author_email="orchestrator"),
-            _row("a3", "assistant", "An older reply.")]
-    assert summaries.prompt_rows(rows, MEMBER) == [
-        ("mira", "Sure, I saved it."), ("mira", "An older reply.")]
+            _row("a3", "assistant", "An older reply."),
+            _row("m1", "user", "Book the review.", author_email=MEMBER)]
+    assert summaries.prompt_rows(rows, MEMBER) == ["Book the review."]
 
 
 def test_the_prompt_keeps_the_newest_rows_under_the_cap() -> None:
-    rows = [_row(f"a{i}", "assistant", f"{i:03d}" + "x" * 97) for i in range(200)]
+    rows = [_row(f"m{i}", "user", f"{i:03d}" + "x" * 97, author_email=MEMBER)
+            for i in range(200)]
     kept = summaries.prompt_rows(rows, MEMBER)
-    total = sum(len(w) for _who, w in kept)
-    assert total == summaries.INPUT_MAX
-    assert kept[-1][1].startswith("199"), "the newest row must go in"
-    assert kept[0][1].startswith("080"), "the oldest rows drop first"
+    assert sum(len(w) for w in kept) == summaries.INPUT_MAX
+    assert kept[-1].startswith("199"), "the newest row must go in"
+    assert kept[0].startswith("080"), "the oldest rows drop first"
     short = summaries.prompt_rows(rows, MEMBER, limit=150)
-    assert [w[:3] for _who, w in short] == ["198", "199"]
-    assert len(short[0][1]) == 50, "the oldest row that goes in loses its end"
+    assert [w[:3] for w in short] == ["198", "199"]
+    assert len(short[0]) == 50, "the oldest row that goes in loses its end"
 
 
 # ── Item 7: the answer checks drop what the member did not type ─────────────
@@ -583,83 +585,6 @@ def test_pz33b_the_boundary_a_real_letter_splits_a_number(text: str) -> None:
     assert summaries.check_answer(_answer(text), words) is None
 
 
-# ── PZ-33b: the durable mail rule ──────────────────────────────────────────
-
-ROOT_EMAIL_AGENT = ROOT / "apps" / "agents" / "agent-email-assistant" / "agents.py"
-
-
-def _email_agent_tools() -> set[str]:
-    """Each name of ``_TOOLS`` in the source of the email agent. The gateway
-    loads that agent at run time and cannot import it, so the fence reads it."""
-    tree = ast.parse(ROOT_EMAIL_AGENT.read_text(encoding="utf-8-sig"))
-    for node in tree.body:
-        if (isinstance(node, ast.Assign)
-                and any(getattr(t, "id", "") == "_TOOLS" for t in node.targets)):
-            return {item.id for item in node.value.elts if isinstance(item, ast.Name)}
-    raise AssertionError("the email agent has no _TOOLS list")
-
-
-def _is_mail_event(events: object) -> bool:
-    return re.search(summaries.MAIL_EVENT_RE, json.dumps(events), re.I) is not None
-
-
-def test_pz33b_each_tool_of_the_email_agent_is_a_mail_tool() -> None:
-    """A new tool of the email agent fails here until the rule holds it."""
-    tools = _email_agent_tools()
-    assert len(tools) >= 50, tools
-    assert tools <= set(summaries.MAIL_TOOLS), tools - set(summaries.MAIL_TOOLS)
-
-
-@pytest.mark.parametrize("name", [
-    "query_inbox", "read_thread", "list_senders", "compose_reply", "edit_draft", "send_draft",
-    "read_attachment", "narrow_and_read", "present_email_groups", "list_accounts", "read_email",
-    "read_email_attachment", "send_email", "query_history", "search_company",
-])
-def test_pz33b_each_mail_tool_of_production_is_in_the_rule(name: str) -> None:
-    assert name in summaries.MAIL_TOOLS
-    assert _is_mail_event([{"name": name, "args": {}, "result": "ok"}])
-
-
-def test_pz33b_the_rule_holds_each_tool_of_an_email_family() -> None:
-    from acb_skills.egress import UNTRUSTED_INPUT_AGENTS
-    from acb_skills.skill_families import SKILL_FAMILIES
-
-    families = [f for f in SKILL_FAMILIES.values() if f.get("owner") in UNTRUSTED_INPUT_AGENTS]
-    assert len(families) >= 2
-    assert {t for f in families for t in f["tools"]} <= set(summaries.MAIL_TOOLS)
-    # Each name goes into a SQL literal, so it must hold no quote.
-    assert all(re.fullmatch(r"[a-z0-9_]+", name) for name in summaries.MAIL_TOOLS)
-    assert "'" not in summaries.MAIL_EVENT_RE
-    assert "(?:" not in summaries.MAIL_EVENT_RE, "SQLAlchemy reads :name as a bind"
-
-
-@pytest.mark.parametrize("events", [
-    [{"name": "call_agent", "args": {"agent_name": "email-assistant", "task": "read it"}}],
-    [{"name": "delegate_to_agent", "args": {"agent": "email_assistant"}}],
-    [{"name": "email_assistant", "args": {"task": "read it"}}],
-    [{"name": "call_agent", "subAgentName": "Email-Assistant", "subAgentTools": []}],
-    [{"name": "call_agent", "subAgentTools": [{"name": "read_thread", "args": {}}]}],
-], ids=["call_agent", "delegate", "specialist", "sub-agent name", "sub-agent tool"])
-def test_pz33b_the_rule_reads_a_hand_off_to_the_email_agent(events: object) -> None:
-    assert _is_mail_event(events)
-
-
-@pytest.mark.parametrize("events", [
-    [], [{"name": "find_tasks", "args": {"q": "deck"}, "result": "3 tasks"}],
-    [{"name": "web_search", "args": {"query": "mail servers"}, "result": "a page on email"}],
-])
-def test_pz33b_the_rule_leaves_a_chat_with_no_mail_tool(events: object) -> None:
-    assert not _is_mail_event(events)
-
-
-def test_pz33b_the_other_reads_are_not_mail_tools() -> None:
-    """Each one was read in the code. The entity reads and the Projects read
-    hold no mail text. The timeline reads a store that takes no mail."""
-    for name in ("retrieve_entity_context", "retrieve_sales_context", "needs_attention",
-                 "search_timeline", "recall_timeline"):
-        assert name not in summaries.MAIL_TOOLS
-
-
 # ── PZ-33b: the bound on the shared worker ─────────────────────────────────
 
 
@@ -706,22 +631,18 @@ def test_pz33b_the_dedupe_key_names_the_chat_and_its_newest_row() -> None:
 # ── Review round 1, P1-c: a card answer is not a typed row ──────────────────
 
 
-def test_pz33b_a_card_answer_is_a_new_turn_and_no_typed_row() -> None:
-    """It moves the chat on, so a stored follow-up can go stale. It stays out
-    of the typed words, so it still grounds nothing."""
+def test_pz33b_a_card_answer_is_no_new_turn() -> None:
+    """The prompt holds the member's typed words only, and a card answer is
+    none of them (the owner, 2026-11-02). So it cannot count as new: a call
+    on it would see nothing new."""
     from gateway.chat_recovery import compose_card_answer
 
     card = _row("m9", "user", compose_card_answer("Send the deck to Priya?", "APPROVE"),
                 author_email=MEMBER)
-    assert summaries.new_turn([card], MEMBER) is True
     assert summaries.member_texts([card], MEMBER) == []
     assert summaries.member_words([card], MEMBER) == ""
     assert summaries.prompt_rows([card], MEMBER) == []
-    other = _row("m8", "user", card["content"], author_email="bob@pz33.test")
-    pasted = _row("m7", "user", _pasted_mail(), author_email=MEMBER)
-    mira = _row("a1", "assistant", "Done.", author_kind="agent", author_email="orchestrator")
-    assert summaries.new_turn([other, pasted, mira], MEMBER) is False
-    assert summaries.new_turn([_row("m6", "user", "Book it.", author_email=MEMBER)], MEMBER)
+    assert summaries.member_texts([_row("m6", "user", "Book it.", author_email=MEMBER)], MEMBER)
 
 
 def test_a_card_answer_is_not_a_typed_row() -> None:
@@ -738,7 +659,7 @@ def test_a_card_answer_is_not_a_typed_row() -> None:
     # A leading space does not hide a card answer (review round 2).
     spaced = [rows[0], _row("m4", "user", "  " + card, author_email=MEMBER)]
     assert summaries.member_texts(spaced, MEMBER) == ["Help me answer Ravi."]
-    assert all("ravi.k" not in w for _who, w in summaries.prompt_rows(rows, MEMBER))
+    assert all("ravi.k" not in w for w in summaries.prompt_rows(rows, MEMBER))
     words = summaries.member_words(rows, MEMBER)
     assert summaries.check_answer(_answer(
         "Sent the reply to ravi.k@vendor.example about his diagnosis report."),

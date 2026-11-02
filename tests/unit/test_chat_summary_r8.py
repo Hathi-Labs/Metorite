@@ -43,7 +43,10 @@ feature as production does, and a 402 is the real ``RoutedRefusal``.
 - item 1: an idle solo chat with Mira, with 2 typed rows, gets one summary
   and one call, as the member, with ``feature="assistant.chat_summary"``,
   ``thinking`` off and no session open during the call. An empty or cut
-  answer logs a warning;
+  answer logs a warning. The prompt holds the member's own typed words and
+  nothing else: a token in a reply of Mira, a tool result, a sub-agent
+  result, a card answer, a pasted mail and a row of another author never
+  reaches the payload or the stored text (the owner, 2026-11-02);
 - item 2: two seeds give one live job (the dedupe key), and a second tick
   and a retry make no second call;
 - item 3: a mark with no result gives up ``SummaryUncertain``, and so does
@@ -53,11 +56,10 @@ feature as production does, and a 402 is the real ``RoutedRefusal``.
   ``RouterOff`` with no call;
 - item 4: a shared room, another agent, a mentioned agent, a row of another
   agent, WhatsApp, an archived chat, a chat that reads ``off``, a member
-  whose switch is off, the flag off, a member who left, a chat with one typed
-  row, a chat with a mail tool in its tool events and no mark, a chat with
-  the mail mark and a chat whose mark cannot be read get no call, from the
-  seed or from a job put in by hand. A waterline holds until the member
-  types again, and a paid call that stores nothing leaves one;
+  whose switch is off, the flag off, a member who left and a chat with one
+  typed row get no call, from the seed or from a job put in by hand. A
+  waterline holds until the member types again, a card answer is no new
+  turn, and a paid call that stores nothing leaves a waterline;
 - item 5: org A never reads or writes a chat of org B. A payload with the id
   of a chat of org B finds no row.
 
@@ -69,11 +71,11 @@ Mutations, each red here: the write also sets ``updated_at = now()`` (item
 Router check of the handler (RouterOff); drop the dedupe key of the seed
 (item 2); take ``SOLO_ROOM_SQL`` out of ``ELIGIBLE_SQL`` (item 4); store the
 answer with no ``check_answer`` (item 1, the sensitive line); drop
-``thinking`` from the call (item 1); drop the mail check from the seed or
-the handler (item 4); let ``_is_mira_row`` and ``ELIGIBLE_SQL`` take any agent
-(item 4); take ``MAIL_EVENTS_SQL`` out of ``ELIGIBLE_SQL``; drop ``through``
-from ``MARK_SQL`` (item 3); go on after a fault in the seed; drop
-``through_ms`` from the mark; read a typed row only in ``new_turn``.
+``thinking`` from the call (item 1); let ``ELIGIBLE_SQL`` take any agent
+(item 4); drop ``through`` from ``MARK_SQL`` (item 3); drop ``through_ms``
+from the mark. Round 3 adds one mutant for each source of stranger text in
+the prompt: a reply of Mira, a tool result, a sub-agent result, a card
+answer, a pasted mail and a row of another author.
 """
 
 from __future__ import annotations
@@ -92,7 +94,7 @@ import structlog
 pytest.importorskip("sqlalchemy")
 
 import acb_graph.db as graph_db
-from acb_common.db import bind_tenant, current_tenant, release_tenant, tenant_session
+from acb_common.db import tenant_session
 from gateway import assistant_summaries as summaries
 from gateway.rooms import SOLO_ROOM_SQL, resolve_room_access, room_is_solo
 from sqlalchemy import create_engine, text
@@ -644,8 +646,8 @@ OMAR = f"omar@{JOB_DOMAIN}"  # org B
 #: The answer of the fake model: the member's own plan and a follow-up.
 SUMMARY = {"text": "Planned the Q3 pricing deck for Priya.",
            "follow_ups": ["Send the deck to Priya by Friday"]}
-#: What the member typed, what Mira answered, and a tool event that never
-#: reaches the prompt.
+#: What the member typed, what Mira answered, and a tool event. Only the
+#: first two reach the prompt.
 TYPED_1 = "Help me plan the Q3 pricing deck for Priya."
 TYPED_2 = "Keep the old price for current customers. Send the deck to Priya by Friday."
 REPLY = "Sure. Three tiers, and the old price stays."
@@ -667,7 +669,9 @@ class _Console:
     """``chat_completion_on_console``, the one fake: it records each call and
     answers as the Console does. ``status`` 402 is the refusal for credits.
     ``fault`` raises in place of an answer. ``content`` replaces the JSON of
-    :attr:`answer`, and ``finish`` is the ``finish_reason`` of the answer."""
+    :attr:`answer`, and ``finish`` is the ``finish_reason`` of the answer.
+    ``reply`` builds the answer from the messages, as a model that repeats
+    what it reads would."""
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -677,6 +681,7 @@ class _Console:
         self.content: str | None = None
         self.finish = "stop"
         self.hang = False
+        self.reply: Any = None
 
     async def __call__(self, payload: dict[str, Any], **attribution: Any) -> tuple[int, Any]:
         self.calls.append({"payload": payload, "attribution": attribution,
@@ -687,39 +692,15 @@ class _Console:
             raise self.fault
         if self.status != 200:
             return self.status, {"detail": "out of credits"}
+        answer = self.answer if self.reply is None else self.reply(payload["messages"])
         return 200, {
             "id": f"cmpl-{len(self.calls)}", "model": "fake/model",
             "choices": [{"index": 0, "finish_reason": self.finish, "message": {
                 "role": "assistant",
-                "content": json.dumps(self.answer) if self.content is None else self.content,
+                "content": json.dumps(answer) if self.content is None else self.content,
             }}],
             "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
         }
-
-
-class _Marks:
-    """The tenant Redis of the mail mark (``acb_skills.egress``). It holds
-    ``(org, chat)`` pairs and reads the tenant of the frame, as the prefix
-    wrapper does. ``down`` makes each read fail, and ``hang`` makes it wait.
-    ``asked`` holds each key that a read named."""
-
-    def __init__(self) -> None:
-        self.marked: set[tuple[str, str]] = set()
-        self.down = False
-        self.hang = False
-        self.asked: list[str] = []
-
-    async def exists(self, key: str) -> int:
-        self.asked.append(str(key))
-        if self.hang:
-            await asyncio.sleep(60)
-        if self.down:
-            raise ConnectionError("redis down")
-        org = str(current_tenant() or "")
-        return int(any(org == o and str(key).endswith(sid) for o, sid in self.marked))
-
-    async def expire(self, key: str, seconds: int) -> bool:
-        return True
 
 
 def _identity(ns, email: str, org: str, *, status: str = "active") -> None:
@@ -763,7 +744,6 @@ def job(graph_as_app, monkeypatch):
     from acb_common import _log, get_settings
     from acb_common.settings import install_settings
     from acb_llm import routed
-    from acb_skills import egress
     from gateway import chat_summary_job
     from gateway.jobs import worker
 
@@ -788,8 +768,6 @@ def job(graph_as_app, monkeypatch):
     monkeypatch.setattr(routed, "routing_is_on", lambda: ns.router["on"])
     ns.console = _Console()
     monkeypatch.setattr(console_resolve, "chat_completion_on_console", ns.console)
-    ns.marks = _Marks()
-    monkeypatch.setattr(egress, "get_tenant_redis", lambda: ns.marks)
     vouch = getattr(_log, "_AUTOMATION_AGENT", None)
     if vouch is not None:
         vouch.set(None)
@@ -946,8 +924,8 @@ async def test_1_an_idle_solo_chat_gets_one_summary_and_one_call(job) -> None:
     assert call["payload"]["thinking"] == {"type": "disabled"}
     assert call["checked_out"] == 0, "no session may be open during the model call"
     prompt = json.dumps(call["payload"]["messages"])
-    assert TYPED_1 in prompt and REPLY in prompt
-    for leak in (TOOL_LEAK, "9845012345", "priya@acme.example"):
+    assert TYPED_1 in prompt and TYPED_2 in prompt
+    for leak in (REPLY, TOOL_LEAK, "9845012345", "priya@acme.example"):
         assert leak not in prompt, leak
     stored = _summary(job, sid)
     assert (stored["text"], stored["follow_ups"], stored["through"]) == (
@@ -998,6 +976,71 @@ async def test_1_a_cut_answer_logs_a_warning_with_no_word_of_it(job) -> None:
     assert "text" not in _summary(job, sid)
 
 
+#: A token in each place where a stranger can write. A reply of Mira can
+#: restate a mail or a tool answer, so it counts as a stranger's text too.
+TOKENS = {
+    "a reply of Mira": "Zqmirareply",
+    "a tool result": "Zqtoolresult",
+    "a sub-agent result": "Zqsubresult",
+    "a card answer": "Zqcardquestion",
+    "a pasted mail": "Zqpastedmail",
+    "a row of another author": "Zqotherauthor",
+}
+
+
+def _row_by(ns, org: str, sid: str, mid: str, role: str, words: str, at: datetime,
+            kind: str, author: str) -> None:
+    """One sealed row of the chat by *author*."""
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO chat_message (id, session_id, role, content, timestamp_ms, "
+            "organization_id, author_kind, author_email, run_final_at) VALUES (:id, :s, :r, "
+            ":c, :ts, CAST(:o AS uuid), :k, :e, :fin)"),
+            {"id": mid, "s": sid, "r": role, "c": words, "ts": _ms(at), "o": org,
+             "k": kind, "e": author, "fin": at})
+
+
+def _echo(messages: list[dict[str, str]]) -> dict[str, Any]:
+    """The answer of a model that repeats each token that it reads."""
+    seen = [tok for tok in TOKENS.values() if tok in json.dumps(messages)]
+    return {"text": "Planned the deck." + (f" Also {' '.join(seen)}." if seen else ""),
+            "follow_ups": ["Send the deck to Priya by Friday"]}
+
+
+async def test_1_the_prompt_holds_the_members_own_words_only(job) -> None:
+    """The owner, 2026-11-02 (D-PZ-28). The fence reads the payload at the
+    Console seam. No token of a stranger's place is in it, or in the stored
+    text, and the member's short typed rows are."""
+    from gateway.chat_recovery import compose_card_answer
+
+    events = [{"name": "find_tasks", "args": {}, "result": f"Found {TOKENS['a tool result']}",
+               "subAgentName": "projects-assistant",
+               "subAgentTools": [{"name": "read_thread", "args": {},
+                                  "result": f"Thread {TOKENS['a sub-agent result']}"}]}]
+    sid, _newest = _job_chat(job, org=job.org_a, events=events)
+    at = T - timedelta(hours=1, minutes=20)
+    _row_by(job, job.org_a, sid, "x1", "assistant",
+            f"Priya's mail says {TOKENS['a reply of Mira']}.", at, "agent", "orchestrator")
+    _row_by(job, job.org_a, sid, "x2", "user",
+            compose_card_answer(f"Send {TOKENS['a card answer']} now?", "APPROVE"),
+            at + timedelta(minutes=1), "human", ASHA)
+    _row_by(job, job.org_a, sid, "x3", "user",
+            f"From: priya@acme.example\nSubject: {TOKENS['a pasted mail']}\n\nThe rates rise.",
+            at + timedelta(minutes=2), "human", ASHA)
+    _row_by(job, job.org_a, sid, "x4", "user", f"Note from {TOKENS['a row of another author']}.",
+            at + timedelta(minutes=3), "human", RAVI)
+    job.console.reply = _echo
+    assert await _tick(job, job.org_a) == Counter(done=1)
+    (call,) = job.console.calls
+    payload = json.dumps(call["payload"])
+    assert TYPED_1 in payload and TYPED_2 in payload, "the member's words must go in"
+    stored = json.dumps(_summary(job, sid))
+    for place, token in TOKENS.items():
+        assert token not in payload, place
+        assert token not in stored, place
+    assert _summary(job, sid)["text"] == "Planned the deck."
+
+
 # ── Item 2: one live job, and no second call ────────────────────────────────
 
 
@@ -1037,9 +1080,11 @@ def _given_up(ns, sid: str, name: str) -> None:
 
 
 async def test_3_a_mark_with_no_result_gives_up_uncertain(job) -> None:
+    """The mark holds ``through_ms``, as the job writes it in production."""
     sid, newest = _job_chat(job, org=job.org_a)
     async with tenant_engine_scope(_app_dsn(job)):
-        assert await _in(job.org_a, summaries.mark, sid, through=newest, at=T)
+        assert await _in(job.org_a, summaries.mark, sid, through=newest, at=T,
+                         through_ms=_ms(T - timedelta(hours=1)))
     await _put(job, job.org_a, sid, newest)
     assert await _tick(job, job.org_a) == Counter(failed=1)
     _given_up(job, sid, "SummaryUncertain")
@@ -1068,18 +1113,21 @@ async def test_3_the_claim_that_loses_the_mark_makes_no_call(job, monkeypatch) -
 
 
 async def test_3_a_forget_before_the_mark_wins(job, monkeypatch) -> None:
-    """The verifier's probe. A Forget lands while the handler waits on the
-    mail read, after it read the chat. The clear leaves ``through``, so the
-    mark refuses: no call runs, and the forgotten rows are not stored."""
+    """The verifier's probe. A Forget lands after the handler read the chat
+    and before its mark. The clear leaves ``through``, so the mark refuses:
+    no call runs, and the forgotten rows are not stored."""
     from gateway import chat_summary_job
 
     sid, newest = _job_chat(job, org=job.org_a)
+    real = chat_summary_job.read_job_chat
 
-    async def forget_during_the_read(org: str, session_id: str) -> bool:
-        await _in(job.org_a, summaries.clear_for_member, ASHA)
-        return False
+    async def read_then_forget(db: Any, session_id: str) -> Any:
+        chat = await real(db, session_id)
+        async with tenant_session(job.org_a) as other:
+            assert await summaries.clear_for_member(other, ASHA) >= 1
+        return chat
 
-    monkeypatch.setattr(chat_summary_job, "holds_mail", forget_during_the_read)
+    monkeypatch.setattr(chat_summary_job, "read_job_chat", read_then_forget)
     assert await _tick(job, job.org_a) == Counter(done=1)
     assert job.console.calls == []
     stored = _summary(job, sid)
@@ -1178,94 +1226,6 @@ async def test_4_no_chat_of_the_list_gets_a_call_from_the_seed_or_a_job(job) -> 
         assert _summary(job, sid) == expected, name
 
 
-#: Each set of tool events that shows mail, with no mark in Redis. The mark
-#: can expire, be lost or fail to write, and these rows stay.
-MAIL_EVENTS: dict[str, Any] = {
-    "read_email at the top level": [
-        {"name": "read_email", "args": {"id": "e1"}, "result": "Hi team"}],
-    "read_thread only in a sub-agent": [
-        {"name": "call_agent", "args": {"agent_name": "projects-assistant"}, "result": "ok",
-         "subAgentName": "projects-assistant",
-         "subAgentTools": [{"name": "read_thread", "args": {"id": "t1"}}]}],
-    "call_agent that names the email agent": [
-        {"name": "call_agent", "args": {"agent_name": "email-assistant", "task": "read"},
-         "result": "ok"}],
-    "query_history": [{"name": "query_history", "args": {"query": "rates"}, "result": "ok"}],
-    "a value that is not an array": {"name": "find_tasks"},
-}
-
-
-async def test_4_the_tool_events_show_mail_with_no_mark_in_redis(job) -> None:
-    """The durable rule. Each chat gets no job and no call, and no mark exists
-    for any of them. A chat with only ``find_tasks`` still gets its job."""
-    cases = {name: _job_chat(job, org=job.org_a, events=events)
-             for name, events in MAIL_EVENTS.items()}
-    clean, _ = _job_chat(job, org=job.org_a, newest=T - timedelta(hours=2),
-                         events=[{"name": "find_tasks", "args": {}, "result": "3 tasks"}])
-    assert await _tick(job, job.org_a) == Counter(done=1)
-    assert [r.payload["session_id"] for r in _jobs(job)] == [clean]
-    assert len(job.console.calls) == 1
-    assert job.marks.marked == set(), "the rule needs no mark"
-    for sid, newest in cases.values():
-        await _put(job, job.org_a, sid, newest, T + timedelta(minutes=15))
-    assert await _tick(job, job.org_a, T + timedelta(minutes=15)) == Counter(done=len(cases))
-    assert len(job.console.calls) == 1, "the handler holds the rule too"
-    for name, (sid, _newest) in cases.items():
-        assert _summary(job, sid) is None, name
-
-
-async def test_4_a_mail_tool_in_an_old_row_of_a_chat_holds_it(job) -> None:
-    """The verifier's route: a chat from before the marks. Two new typed rows
-    come, and an old agent row still shows the mail tool."""
-    sid, _newest = _job_chat(job, org=job.org_a)
-    old = T - timedelta(days=30)
-    with job.admin_engine.begin() as c:
-        c.execute(text(
-            "INSERT INTO chat_message (id, session_id, role, content, timestamp_ms, "
-            "organization_id, author_kind, author_email, tool_events, run_final_at) VALUES "
-            "('old1', :s, 'assistant', 'Priya wrote about the rates.', :ts, CAST(:o AS uuid), "
-            "'agent', 'orchestrator', CAST(:te AS jsonb), :fin)"),
-            {"s": sid, "ts": _ms(old), "o": job.org_a, "fin": old,
-             "te": json.dumps([{"name": "query_inbox", "args": {}, "result": "ok"}])})
-    assert await _tick(job, job.org_a) == Counter()
-    assert job.console.calls == [] and _summary(job, sid) is None
-
-
-async def test_4_a_chat_with_the_mail_mark_gets_no_call_and_no_mark(job) -> None:
-    """``run_holds_mail`` is the one predicate of the chat memory stores. A
-    reply of Mira can quote a mail, and ``check_answer`` lets the line pass:
-    no number, no address and no sensitive word (review P1). So the seed
-    skips the chat, and so does a job put in by hand."""
-    words = "Priya's mail says the rates rise ten percent on Monday."
-    assert summaries.check_answer(json.dumps({"text": words}), "") is not None
-    sid, newest = _job_chat(job, org=job.org_a)
-    clean, _ = _job_chat(job, org=job.org_a, newest=T - timedelta(hours=2))
-    job.marks.marked.add((job.org_a, sid))
-    job.console.answer = {"text": words}
-    assert await _tick(job, job.org_a) == Counter(done=1)
-    assert _jobs(job, sid) == [], "the seed must skip a chat with the mark"
-    assert len(job.console.calls) == 1, "only the clean chat gets a call"
-    assert _summary(job, clean)["text"] == words
-    await _put(job, job.org_a, sid, newest, T + timedelta(minutes=15))
-    assert await _tick(job, job.org_a, T + timedelta(minutes=15)) == Counter(done=1)
-    assert len(job.console.calls) == 1
-    assert _summary(job, sid) is None, "no mark, so a later read can try again"
-
-
-async def test_4_a_mark_that_cannot_be_read_counts_as_mail(job) -> None:
-    """The check fails closed: with Redis down, no chat gets a call."""
-    sid, newest = _job_chat(job, org=job.org_a)
-    job.marks.down = True
-    assert await _tick(job, job.org_a) == Counter()
-    await _put(job, job.org_a, sid, newest, T + timedelta(minutes=15))
-    assert await _tick(job, job.org_a, T + timedelta(minutes=15)) == Counter(done=1)
-    assert job.console.calls == [] and _summary(job, sid) is None
-    # The next tick after Redis comes back summarises the chat.
-    job.marks.down = False
-    assert await _tick(job, job.org_a, T + timedelta(minutes=30)) == Counter(done=1)
-    assert _summary(job, sid)["text"] == SUMMARY["text"]
-
-
 def _row_at(ns, org: str, sid: str, mid: str, role: str, words: str, at: datetime) -> None:
     """One more row of the chat with Mira, sealed when it is hers."""
     mine = role == "assistant"
@@ -1300,36 +1260,9 @@ async def test_4_a_waterline_holds_until_the_member_types_again(job) -> None:
     assert await _tick(job, job.org_a, last) == Counter(done=1)
     assert len(job.console.calls) == 1
     prompt = json.dumps(job.console.calls[0]["payload"]["messages"])
-    assert "Book the review with Priya." in prompt and "Good morning." in prompt
+    assert "Book the review with Priya." in prompt and "Good morning." not in prompt
     assert TYPED_1 not in prompt, "a row that a Delete covered must not come back"
     assert _summary(job, sid)["through"] == "m10"
-
-
-async def test_4_the_mail_read_binds_the_org_that_it_names(job) -> None:
-    """A frame with no tenant reads as clear, so the check binds the org of
-    the worker for the read. A mark of one org is no mark of another."""
-    sid, _newest = _job_chat(job, org=job.org_a)
-    job.marks.marked.add((job.org_a, sid))
-    assert await summaries.holds_mail(job.org_a, sid) is True, "no tenant is bound here"
-    token = bind_tenant(job.org_b)
-    try:
-        assert await summaries.holds_mail(job.org_b, sid) is False
-    finally:
-        release_tenant(token)
-
-
-@pytest.mark.parametrize("fault", ["down", "hang"])
-async def test_4_the_first_fault_ends_the_seed_for_the_tick(job, monkeypatch, fault) -> None:
-    """A hung Redis must cost 2 seconds and not 60 times 2 seconds. The seed
-    asks about one chat, stops, and enqueues nothing."""
-    monkeypatch.setattr(summaries, "MAIL_READ_TIMEOUT_S", 0.05)
-    made = [_job_chat(job, org=job.org_a, newest=T - timedelta(hours=1, minutes=i))[0]
-            for i in range(3)]
-    setattr(job.marks, fault, True)
-    assert await _tick(job, job.org_a) == Counter()
-    assert len(set(job.marks.asked)) == 1, job.marks.asked
-    assert made[0] in job.marks.asked[0]
-    assert job.console.calls == [] and _jobs(job) == []
 
 
 @pytest.mark.parametrize("bad", ["fault", "nothing_kept"])
@@ -1365,34 +1298,22 @@ async def test_4_a_paid_call_that_stores_nothing_needs_a_new_typed_row(job, bad)
     assert _summary(job, sid)["through"] == "m10"
 
 
-async def test_4_a_card_answer_after_the_waterline_counts_as_new(job) -> None:
-    """A card answer closes a follow-up, so a stored summary must not keep it.
-    The next summary reads the reply of Mira, and never the quoted question."""
-    from gateway.chat_recovery import compose_card_answer
-
-    sid, _newest = _job_chat(job, org=job.org_a)
-    assert await _tick(job, job.org_a) == Counter(done=1)
-    question = "Send the reply to ravi.k@vendor.example now?"
-    _row_at(job, job.org_a, sid, "m11", "user", compose_card_answer(question, "APPROVE"),
-            T + timedelta(minutes=5))
-    _row_at(job, job.org_a, sid, "a4", "assistant", "Sent.", T + timedelta(minutes=6))
-    assert await _tick(job, job.org_a, T + timedelta(hours=1)) == Counter(done=1)
-    assert len(job.console.calls) == 2
-    prompt = json.dumps(job.console.calls[1]["payload"]["messages"])
-    assert "Sent." in prompt and "ravi.k" not in prompt
-    assert _summary(job, sid)["through"] == "a4"
-
-
-async def test_4_a_card_answer_alone_buys_no_call_with_an_empty_prompt(job) -> None:
-    """A turn with no reply of Mira leaves the prompt with no row."""
+async def test_4_a_card_answer_after_the_waterline_is_no_new_turn(job) -> None:
+    """The prompt holds the member's typed words only, so a card answer and a
+    reply of Mira after a summary buy no call (the owner, 2026-11-02). Round
+    2 counted a card answer, and that rule is gone."""
     from gateway.chat_recovery import compose_card_answer
 
     sid, _newest = _job_chat(job, org=job.org_a)
     assert await _tick(job, job.org_a) == Counter(done=1)
     _row_at(job, job.org_a, sid, "m11", "user", compose_card_answer("Send it?", "APPROVE"),
             T + timedelta(minutes=5))
-    assert await _tick(job, job.org_a, T + timedelta(hours=1)) == Counter(done=1)
-    assert len(job.console.calls) == 1
+    _row_at(job, job.org_a, sid, "a4", "assistant", "Sent.", T + timedelta(minutes=6))
+    later = T + timedelta(hours=1)
+    assert await _tick(job, job.org_a, later) == Counter(), "the seed adds no job"
+    await _put(job, job.org_a, sid, "a4", later)
+    assert await _tick(job, job.org_a, later) == Counter(done=1)
+    assert len(job.console.calls) == 1, "the handler makes no call"
 
 
 async def test_4_a_stored_switch_on_and_no_switch_read_as_on(job) -> None:
