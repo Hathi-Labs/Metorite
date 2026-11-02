@@ -58,6 +58,7 @@ import FirstOpen from "./components/FirstOpen";
 import { ImportProgress, MirrorNote, SetupLink, StalledBanner } from "./components/MirrorBanner";
 import KanbanBoard from "./components/KanbanBoard";
 import MoveModal from "./components/MoveModal";
+import ChangeHistoryCard from "./components/ChangeHistory";
 import PipelineSettings from "./components/PipelineSettings";
 import QuickCreateModal from "./components/QuickCreateModal";
 import RecordList from "./components/RecordList";
@@ -1094,6 +1095,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
             />
           ) : view.tab === "reports" ? (
             <Reports reports={store.reports} loading={store.loading} />
+          ) : view.tab === "settings" && settingsSection === "change-history" ? (
+            // WS-CRM CRM-M1: an admin section of its own. `shownSection` sends
+            // a member to the default, so only an admin reaches this card.
+            <ChangeHistoryCard />
           ) : view.tab === "settings" ? (
             <PipelineSettings
               section={settingsSection}

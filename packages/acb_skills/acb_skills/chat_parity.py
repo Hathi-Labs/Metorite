@@ -286,6 +286,7 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/email/drafts": "edit_draft",
     "PUT /api/email/voice-profile": "voice_profile",
     # ── CRM ──
+    "GET /api/crm/change-history": "crm_change_history",
     "GET /api/crm/deals/{}/contacts": "crm_deal_contacts",
     "GET /api/crm/fields/{}": "crm_list_fields",
     "GET /api/crm/lost-reasons": "update_deal_status",
