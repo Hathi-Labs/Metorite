@@ -346,35 +346,57 @@ def _item(*, id: str, app: str, kind: str, title: Any, detail: Any, href: str,
 # ── My Tasks: due today and overdue, through the lens ───────────────────────
 
 
+def local_today(answer: dict[str, Any]) -> date:
+    """The member's own date of a due read (``personal.my_due_rows``). A read
+    with no date reads the clock in its zone."""
+    from gateway.routes.projects.due_day import local_date
+
+    try:
+        return date.fromisoformat(str(answer.get("today")))
+    except ValueError:
+        return local_date(answer.get("timezone"), _now())
+
+
+def due_kind(task: dict[str, Any], zone: Any, today: date) -> str | None:
+    """The kind of one row of the due read: ``overdue``, ``due_today``, or
+    None for a row that makes no card. ``due_day.is_overdue`` is the one rule,
+    so My Day, the WhatsApp views and the morning push split the rows in one
+    way. A task due today stays ``due_today`` until that day ends in the
+    member's zone, whatever hour the row holds."""
+    from gateway.routes.projects.due_day import is_overdue
+
+    due = _instant(task.get("due_at"))
+    if due is None or task.get("completed_at"):
+        return None
+    if task.get("disposition") in HIDDEN_DISPOSITIONS:
+        return None  # Someday is "not now", see HIDDEN_DISPOSITIONS
+    # The read holds nothing due after the member's today.
+    return "overdue" if is_overdue(due, zone, today) else "due_today"
+
+
 async def _tasks(user: UserContext) -> Found:
     from gateway.routes.projects.personal import my_due_tasks
 
     # One bounded read: due before the member's tomorrow, in the member's
     # zone, the oldest deadline first, at most PER_APP rows.
     answer = await my_due_tasks(user, limit=PER_APP)
-    now = _now()
     found = answer.get("rows") or []
+    today = local_today(answer)
 
     overdue: list[Item] = []
     due_today: list[Item] = []
     kept: list[tuple[str, dict[str, Any]]] = []
     for task in found:
-        due = _instant(task.get("due_at"))
-        if due is None or task.get("completed_at"):
+        kind = due_kind(task, answer.get("timezone"), today)
+        if kind is None:
             continue
-        if task.get("disposition") in HIDDEN_DISPOSITIONS:
-            continue  # Someday is "not now", see HIDDEN_DISPOSITIONS
-        if due < now:
-            kind, bucket = "overdue", overdue
-        else:
-            # The read holds nothing due after the member's today.
-            kind, bucket = "due_today", due_today
+        bucket = overdue if kind == "overdue" else due_today
         task_id = str(task["id"])
         kept.append((kind, task))
         bucket.append(_item(
             id=f"tasks:{task_id}", app="tasks", kind=kind,
             title=task.get("title"), detail=task.get("project_name"),
-            href=f"/projects?task={quote(task_id)}", at=due,
+            href=f"/projects?task={quote(task_id)}", at=_instant(task.get("due_at")),
             act="done", act_ref=task_id,
         ))
     rows = (_sort(overdue) + _sort(due_today))[:PER_APP]
@@ -461,8 +483,11 @@ def _task_signals(kept: list[tuple[str, dict[str, Any]]], zone: Any,
             signal_id=f"tasks:{task_id}", app="tasks", kind=kind,
             entity=task_entity(task_id, task.get("title")),
             title=task_entity(task_id, task.get("title"))["label"],
+            # A date has no hour, so a task due today has no urgent time: no
+            # lift into Now, and no points by the clock. An overdue task has
+            # passed by definition (RX-5).
             facts=facts, href=task_href(task_id), acts=tuple(acts),
-            at=_iso(due), urgent_at=_iso(due),
+            at=_iso(due), urgent_at=_iso(due) if kind == "overdue" else None,
         ))
     return out
 
@@ -961,7 +986,10 @@ def _reminder_signal(row: dict[str, Any]) -> Signal:
         facts={"fire_at": fire_at,
                "waiting_since": _iso(row.get("step_at")) or fire_at,
                "cycles": int(row.get("cycles") or 0),
-               "notice": row.get("kind") == "notice"},
+               "notice": row.get("kind") == "notice",
+               # RX-3: the linked object, so My Day's band can name it.
+               "subject_kind": row.get("subject_kind"),
+               "subject_id": row.get("subject_id")},
         href=href, acts=(link("open-reminder", "Open", href),),
         at=fire_at, urgent_at=fire_at if kind == "reminder_due" else None,
     )

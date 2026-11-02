@@ -171,9 +171,11 @@ async def _calendar(user: UserContext) -> Found:
     day0 = datetime.combine(today, time.min, tzinfo=tz)
     tomorrow0 = datetime.combine(today + timedelta(days=1), time.min, tzinfo=tz)
     # DONE blocks too, so a day whose plan is all done is not "no plan".
+    # Blocks only: no lens other than the Calendar reads calendar_entries
+    # (calendar_events_reminders.md §3.4), so the feed runs no entry query.
     week = await my_calendar(start=day0.isoformat(),
                              end=(day0 + timedelta(days=WEEK_DAYS)).isoformat(),
-                             include_done=True, user=user)
+                             include_done=True, user=user, with_entries=False)
     rows = list(getattr(week, "rows", None) or [])
     level = {str(r["id"]): task_cell(r) for r in rows}
 
@@ -909,7 +911,8 @@ async def _people(user: UserContext) -> Found:
     day0 = datetime.combine(today, time.min, tzinfo=tz)
     tomorrow0 = datetime.combine(today + timedelta(days=1), time.min, tzinfo=tz)
     # My open blocks of today, each with its assignees (`attach_assignees`).
-    day = await my_calendar(start=day0.isoformat(), end=tomorrow0.isoformat(), user=user)
+    day = await my_calendar(start=day0.isoformat(), end=tomorrow0.isoformat(), user=user,
+                            with_entries=False)
     me = str(user.email or "").strip().lower()
     # Each co-assignee once, with the first task, by the start of its block.
     shared: dict[str, str] = {}
@@ -1221,16 +1224,15 @@ def why(kind: str, facts: dict[str, Any], at: Any, now: datetime, tz: ZoneInfo,
         today: date) -> tuple[str, str]:
     """``(why_key, why)``: the template of a kind, filled from ``facts``."""
     if kind == "overdue":
+        # A due date is a day, so no line names a clock (RX-5). A task is
+        # overdue from the day after its date, so a late task is a day late.
         late = int(facts.get("days_late") or 0)
-        if late >= 1:
-            return "days_late", (f"Due {_when(facts.get('due_at'), tz, today)}. "
-                                 f"{late} day{'' if late == 1 else 's'} late.")
-        return "late_today", f"Due at {_clock(facts.get('due_at'), tz)} today."
+        days = f" {late} day{'' if late == 1 else 's'} late." if late >= 1 else ""
+        when = _when(facts.get("due_at"), tz, today)
+        return "days_late", (f"Due {when}.{days}" if when else "Overdue.")
     if kind == "due_today":
-        due = _instant(facts.get("due_at"))
-        if due is not None and due - now <= feed_rank.SOON:
-            return "due_soon", f"Due in {_duration(math.ceil((due - now).total_seconds() / 60))}."
-        return "due_today", f"Due today at {_clock(due, tz)}."
+        # A sentence, as each why line is: a folded clause follows it.
+        return "due_today", f"Due {_when(facts.get('due_at'), tz, today) or 'today'}."
     if kind == "notification":
         return _note_clause(facts, tz, today)
     if kind == "approval":
@@ -1652,6 +1654,39 @@ class FeedRun:
     tz: ZoneInfo
     needs_view: dict[str, Any] | None = None
     closed: handled.HandledRun | None = None
+    #: The Reminders band's extra read (RX-3), for the read only: the
+    #: upcoming rows and the linked objects. None when it did not run.
+    band: dict[str, Any] | None = None
+    #: False when the band read failed, so the answer is served and not stored.
+    band_ok: bool = True
+
+
+async def _reminder_band(user: UserContext, signals: list[Signal],
+                         sources: dict[str, str], now: datetime) -> tuple[dict[str, Any], bool]:
+    """The Reminders band of My Day beyond the cards (RX-3): the scheduled
+    reminders of the rest of the member's day, and the linked object of each
+    reminder on the band. It reads only when the reminders source answered
+    ``ok``, so a flag off or a member without ``projects`` costs nothing.
+    The rows are never needs rows and never a card: they take no slot of
+    ``limit`` and raise no count. A failed read gives an empty band and
+    ``False``, so the cache does not store the answer."""
+    empty: dict[str, Any] = {"rows": [], "subjects": {}}
+    if sources.get("reminders") != "ok":
+        return empty, True
+    from gateway.routes.projects import reminders
+
+    fired = [
+        (s.entity["id"], str(s.facts["subject_kind"]), str(s.facts["subject_id"]))
+        for s in signals
+        if s.signal_id.startswith("reminders:")
+        and s.facts.get("subject_kind") and s.facts.get("subject_id")
+    ]
+    try:
+        return await reminders.my_day_band(user, now=now, subjects=fired), True
+    except Exception as exc:
+        logger.warning("shell.feed reminder band failed",
+                       extra={"error": type(exc).__name__})
+        return empty, False
 
 
 async def feed_cards(user: UserContext, now: datetime | None = None, *,
@@ -1706,15 +1741,18 @@ async def feed_cards(user: UserContext, now: datetime | None = None, *,
     # (MD-2c), so the feed's worst case does not grow.
     cards = build_cards(signals, now, tz, today)
     closed: handled.HandledRun | None = None
+    band: dict[str, Any] | None = None
+    band_ok = True
     if read:
-        joined, closed = await asyncio.gather(
+        joined, closed, (band, band_ok) = await asyncio.gather(
             state.apply_state(user, cards, now),
             handled.handled_run(user, now, budget_s=state.STATE_TIMEOUT_S),
+            _reminder_band(user, signals, sources, now),
         )
     else:
         joined = await state.apply_state(user, cards, now)
     return FeedRun(joined.cards, joined, signals, found, sources, capped, now, tz,
-                   needs_view, closed)
+                   needs_view, closed, band, band_ok)
 
 
 async def feed_answer(user: UserContext, size: int) -> cache.Computed:
@@ -1738,10 +1776,18 @@ async def feed_answer(user: UserContext, size: int) -> cache.Computed:
         "handled": closed.entries,
         "handled_ok": closed.ok,
     }
+    # RX-3: the Reminders band's extra rows, sent only when there are some, so
+    # an answer with none keeps its bytes. `reminders_ahead` is never a card,
+    # a group or a count. `reminder_subjects` names the linked object of each
+    # reminder on the band, by reminder id.
+    if (fr.band or {}).get("rows"):
+        body["reminders_ahead"] = fr.band["rows"]
+    if (fr.band or {}).get("subjects"):
+        body["reminder_subjects"] = fr.band["subjects"]
     # The next time edge (§8.4 item 2): what the clock changes, and when.
     edges = [*cache.signal_edges(fr.signals), *cache.day_edges(joined.day, tz, now)]
     edges += [e for e in (needs._instant(a.next_edge) for a in fr.found.values())
               if e is not None]
     if joined.snooze_edge is not None:
         edges.append(joined.snooze_edge)
-    return cache.Computed(body, tuple(edges), cache.storable(body, state_ok=joined.ok))
+    return cache.Computed(body, tuple(edges), cache.storable(body, state_ok=joined.ok and fr.band_ok))

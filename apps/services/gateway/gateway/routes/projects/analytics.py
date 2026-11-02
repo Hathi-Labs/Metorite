@@ -54,12 +54,14 @@ from gateway.routes.projects.core import (
     STARTED_CATEGORY,
     _tenant_session,
     load_visible_project,
+    reader_day_start,
     reportable_with_ancestors_clause,
     resolve_visibility,
     router,
     task_visibility_clause,
     triage_exclusion_clause,
 )
+from gateway.routes.projects.due_day import not_overdue_sql, overdue_sql
 from gateway.routes.projects.filters import (
     AGENT_RUN_OPEN_STATUSES,
     attach_parent_context,
@@ -319,7 +321,8 @@ async def stuck(
         blocked_total, blocked = await blocked_body(db, vis, open_where, params)
 
         overdue_rows = (await db.execute(
-            text(overdue_by_project_sql(open_where)), params,
+            text(overdue_by_project_sql(open_where)),
+            {**params, "day_start": await reader_day_start(db, vis.email)},
         )).fetchall()
 
         return {
@@ -432,7 +435,7 @@ def overdue_by_project_sql(open_where: str) -> str:
         f"  JOIN pm_task_statuses s ON s.id = t.status_id"
         f"  JOIN pm_projects pr ON pr.id = t.project_id"
         f" WHERE {open_where}"
-        f"   AND t.due_at IS NOT NULL AND t.due_at < now()"
+        f"   AND t.due_at IS NOT NULL AND {overdue_sql()}"
         f" GROUP BY 1, 2"
         # Worst first. A dashboard row the reader acts on is the top one.
         f" ORDER BY overdue DESC, name"
@@ -520,15 +523,15 @@ def load_sql(open_where: str) -> str:
     return (
         f"SELECT coalesce(lower(a.assignee), '') AS who,"
         f"       count(*) FILTER ("
-        f"         WHERE t.due_at IS NOT NULL AND t.due_at < now()"
+        f"         WHERE t.due_at IS NOT NULL AND {overdue_sql()}"
         f"       ) AS overdue,"
         f"       count(*) FILTER ("
-        f"         WHERE t.due_at >= now()"
-        f"           AND t.due_at < now() + interval '7 days'"
+        f"         WHERE {not_overdue_sql()}"
+        f"           AND t.due_at < CAST(:day_start AS timestamptz) + interval '7 days'"
         f"       ) AS due_next_7d,"
         f"       count(*) FILTER ("
         f"         WHERE t.due_at IS NULL"
-        f"            OR t.due_at >= now() + interval '7 days'"
+        f"            OR t.due_at >= CAST(:day_start AS timestamptz) + interval '7 days'"
         f"       ) AS later,"
         f"       count(*) AS open_tasks,"
         # ⚠️ ESTIMATED effort, never logged effort. Nothing in this product
@@ -711,7 +714,8 @@ async def load_body(
     # one dashboard must not disagree about what "open" means. Named, so
     # the Capacity panel beside this one reads the SAME predicate.
     open_where = load_open_where(scope_sql, vis)
-    params = {**load_params(vis, project_id), **subject_params(subject_people)}
+    params = {**load_params(vis, project_id), **subject_params(subject_people),
+              "day_start": await reader_day_start(db, vis.email)}
 
     # ── Per person, bucketed by when it is due — see `load_sql`. ──────
     rows = (

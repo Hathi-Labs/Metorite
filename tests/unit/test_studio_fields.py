@@ -437,7 +437,7 @@ def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
     block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
     assert block, "the --must-run argument list is missing"
     for suite in ("test_studio_objects_r8", "test_studio_query_r8",
-                  "test_studio_objects_batch_r8"):
+                  "test_studio_objects_batch_r8", "test_studio_state_machine_r8"):
         assert re.search(rf"^[ \t]+tests/unit/{suite}\.py(?: \\)?$", block.group(1), re.M), suite
 
 

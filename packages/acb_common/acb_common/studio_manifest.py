@@ -31,6 +31,7 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -48,8 +49,12 @@ from acb_common.studio_fields import (
     MAX_LABEL_CHARS,
     MAX_OBJECTS_PER_PACKAGE,
     NAME_PATTERN,
+    FieldError,
+    FieldSpec,
+    parse_field_spec,
     validate_field_spec,
 )
+from acb_common.studio_rules import ConstraintError, check_rules_fit, parse_rules
 
 STUDIO_VERSION = 1
 
@@ -86,6 +91,10 @@ CONTRIBUTION_POINTS: tuple[str, ...] = (
 #: The loader owns the second list (`_CONTRIBUTES_KEYS`), so this module keeps no copy of it.
 ALLOWED_POINTS: frozenset[str] = frozenset(CONTRIBUTION_POINTS) | frozenset(_P0_POINTS)
 
+#: Points that only a shipped `system` file holds. An anchor is the guide's contract with the
+#: shipped shell code (assistant_guide.md section 5.7), so a package never declares one.
+SYSTEM_ONLY_POINTS: frozenset[str] = frozenset({"anchors"})
+
 #: The error type of a field that only a `studio` manifest must hold.
 _STUDIO_NEEDS = "studio_needs_field"
 
@@ -96,6 +105,8 @@ MAX_LIST_ITEMS = 500
 MAX_DEPTH = 20  # the same bound as `_GENUI_MAX_DEPTH` in `acb_skills/write_artifact.py`
 
 #: A key that v1 refuses, and the slice that lifts the refusal.
+# `rules` is an object key since C6 (a list beside `fields`). `state_machine` and `states`
+# stay refused, so a rule has one spelling.
 RESERVED_KEYS: dict[str, str] = {
     "rules": "C6",
     "state_machine": "C6",
@@ -197,6 +208,9 @@ class ObjectDef(_Strict):
     #: The CHECK `studio_objects_label` of C1 holds the same cap.
     label: str | None = Field(default=None, max_length=MAX_LABEL_CHARS)
     fields: list[FieldDef] = Field(default_factory=list)
+    #: The constraints and state machines of the object (C6). The one parser is
+    #: `studio_rules.parse_rules`, and `_check_objects` calls it.
+    rules: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ActionDef(_Strict):
@@ -318,9 +332,12 @@ class Manifest(_Strict):
     @field_validator("contributes")
     @classmethod
     def _points_are_known(
-        cls, v: dict[str, list[dict[str, Any]]]
+        cls, v: dict[str, list[dict[str, Any]]], info: ValidationInfo
     ) -> dict[str, list[dict[str, Any]]]:
-        unknown = sorted(set(v) - ALLOWED_POINTS)
+        allowed = ALLOWED_POINTS
+        if info.data.get("kind") != "system":
+            allowed = ALLOWED_POINTS - SYSTEM_ONLY_POINTS
+        unknown = sorted(set(v) - allowed)
         if unknown:
             raise PydanticCustomError("unknown_point", "Unknown point.", {"point": unknown[0]})
         return v
@@ -431,7 +448,9 @@ def _scan(
         for k, v in node.items():
             here = [*loc, k]
             lk = str(k).lower()
-            if isinstance(k, str) and k in RESERVED_KEYS and key not in _DATA_KEYS:
+            in_object = k == "rules" and len(loc) == 2 and loc[0] == "objects"
+            if (isinstance(k, str) and k in RESERVED_KEYS and key not in _DATA_KEYS
+                    and not in_object):
                 out.append(_err(_path(here), _reserved(k, RESERVED_KEYS[k], "Key ")))
                 continue
             if lk in _COLOR_KEYS:
@@ -631,6 +650,22 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
             for problem in validate_field_spec(f.model_dump(), objects=objects):
                 tail = "" if problem.got is None else _got(problem.got)
                 out.append(_err(f"{base}[{fi}].{problem.path}", problem.message + tail))
+        _check_rules(o, f"$.objects[{oi}].rules", out)
+
+
+def _check_rules(o: ObjectDef, path: str, out: list[ManifestError]) -> None:
+    """The rules of an object run through the one parser of the object store.
+    The fit check needs fields that passed their own check."""
+    if not o.rules:
+        return
+    try:
+        rules = parse_rules(o.rules)
+        specs: list[FieldSpec] = [parse_field_spec(f.model_dump()) for f in o.fields]
+        check_rules_fit(rules, specs)
+    except ConstraintError as exc:
+        out.append(_err(path, exc.message))
+    except FieldError:
+        pass  # the field refusal is in the list already
 
 
 def _check_skill_ref(

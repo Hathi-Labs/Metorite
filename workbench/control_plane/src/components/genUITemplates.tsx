@@ -103,6 +103,7 @@ import {
   runReminderAct,
   useKnownReminder,
 } from "@/lib/shell/reminderOpen";
+import { gridZone, laterPresets } from "@/lib/reminderClock";
 import { statusAccent } from "@/lib/statusAccent";
 import { priorityChip } from "@/lib/taskCard";
 import { TYPE } from "@/lib/typeScale";
@@ -1880,12 +1881,33 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   const resolution = known ? known.row.resolution : data.resolution == null ? null : str(data.resolution);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
+  // "Later" asks for a time first: three presets, then `/snooze` (RX-2).
+  const [choosing, setChoosing] = useState(false);
   const acts = ctx?.onAction ? reminderActs({ state, resolution, via: known?.via }) : [];
   const link = str(data.link).trim();
   const closed = said ? "" : closedWords(state, resolution);
+  const pickLater = async (words: string) => {
+    if (busy) return;
+    if (words === "Back") {
+      setChoosing(false);
+      return;
+    }
+    const zone = gridZone(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    const preset = laterPresets(Date.now(), zone).find((p) => p.label === words);
+    if (!preset) return;
+    setChoosing(false);
+    setBusy(true);
+    const got = await runReminderAct(id, "later", fetch, { fireAt: preset.time.iso, tz: zone });
+    setBusy(false);
+    setSaid(got.ok ? actResultWords("later", got.row, zone) : got.words);
+  };
   const pick = async (words: string) => {
     const act = actOfWords(words);
     if (!act || busy) return;
+    if (act === "later") {
+      setChoosing(true);
+      return;
+    }
     const turn = actTurn(act);
     if (turn) {
       ctx?.onAction?.(turn);
@@ -1905,11 +1927,20 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           {link ? <div className="text-xs text-muted-foreground" data-reminder-link="">{link}</div> : null}
           {closed ? <div className="text-xs text-muted-foreground" data-reminder-closed="">{closed}</div> : null}
           <div role="status" className="text-xs text-foreground" data-reminder-said="">{said ?? ""}</div>
-          {acts.length > 0 && (
+          {acts.length > 0 && !choosing && (
             <SuggestionPills
               suggestions={acts.map((a) => REMINDER_CHIPS[a])}
               onPick={(words) => void pick(words)}
               label={chipsLabel(acts)}
+              align="start"
+              disabled={busy}
+            />
+          )}
+          {acts.length > 0 && choosing && (
+            <SuggestionPills
+              suggestions={laterPresets(Date.now(), gridZone(Intl.DateTimeFormat().resolvedOptions().timeZone)).map((p) => p.label).concat("Back")}
+              onPick={(words) => void pickLater(words)}
+              label="Remind me again"
               align="start"
               disabled={busy}
             />

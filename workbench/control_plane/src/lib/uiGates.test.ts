@@ -79,7 +79,7 @@ const OUTLINE_DEBT: Record<string, number> = {
   "app/tasks/components/InboxCard.tsx": 3,
   "app/tasks/components/InboxView.tsx": 3,
   "app/tasks/components/ItemDetail.tsx": 5,
-  "app/tasks/components/QuickCapture.tsx": 4,
+  "app/tasks/components/QuickCapture.tsx": 3,
   "app/tasks/components/SchedulePopup.tsx": 1,
   "app/tasks/components/TaskBoard.tsx": 1,
   "app/tasks/components/TaskListGrouped.tsx": 1,

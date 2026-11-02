@@ -222,6 +222,7 @@ def next_occurrence(
     due_at: Any | None,
     completed_at: Any | None,
     now: datetime,
+    day_start: datetime | None = None,
 ) -> datetime | None:
     """When the successor is due, or ``None`` if the series has ended.
 
@@ -240,6 +241,12 @@ def next_occurrence(
     An anchor of `completed` never needs catching up — its base is already
     "now-ish" — so it takes exactly one step and stays honest about the
     interval somebody asked for.
+
+    **`day_start` is the day rule (RX-5, `due_day.py`).** A due date is a day,
+    so an occurrence stays due until the day ends. A candidate is passed when
+    it is before `day_start`, the instant that the closer's today started. So a
+    task closed at 15:00 keeps a successor that is due at noon of that same day.
+    With no `day_start`, a candidate is passed at `now`.
     """
     anchor = str(rule.get("anchor") or "due")
     base = (
@@ -249,13 +256,16 @@ def next_occurrence(
         else now
     )
 
+    def passed(when: datetime) -> bool:
+        return when <= now if day_start is None else when < day_start
+
     candidate = _step(rule, base)
     if anchor == "due":
         steps = 0
-        while candidate <= now and steps < MAX_CATCHUP:
+        while passed(candidate) and steps < MAX_CATCHUP:
             candidate = _step(rule, candidate)
             steps += 1
-        if candidate <= now:
+        if passed(candidate):
             # Further behind than the cap allows: the series is dead, not late.
             return None
 
@@ -334,12 +344,16 @@ async def spawn_successor(db: Any, task: Any, *, actor_id: str) -> str | None:
     if row is None:
         return None
 
+    from gateway.routes.projects.personal import member_day_start
+
     rule = rule_of(row)
+    closed = datetime.now(UTC)
     when = next_occurrence(
         rule,
         due_at=getattr(task, "due_at", None),
-        completed_at=datetime.now(UTC),
-        now=datetime.now(UTC),
+        completed_at=closed,
+        now=closed,
+        day_start=await member_day_start(db, actor_id, closed),
     )
     if when is None:
         # The series has ended. Stamped anyway, so a reopen-and-close does not

@@ -91,7 +91,10 @@ ascending object id (``FOR KEY SHARE``), then the record rows in ascending
 ``(object_id, record_id)`` (``FOR NO KEY UPDATE``). The store then applies
 the writes in list order. The checks run after all the writes, so a stock
 move is judged on the net. ``range`` runs on the last value of each written
-record. ``unique`` and ``group_sum_min`` run once for each key that
+record. A ``state_machine`` (C6) judges the net move of each record, from
+its data before the batch to its data after it, with no SQL. A create takes
+the ``initial`` state when the field is absent. ``unique`` and
+``group_sum_min`` run once for each key that
 ``studio_rules.touched_keys`` names. The whole batch runs in one SAVEPOINT.
 Any error rolls back the SAVEPOINT and raises :class:`BatchError`, so the
 caller's transaction stays usable with its earlier work.
@@ -174,11 +177,13 @@ from acb_common.studio_query import Condition, Query, QueryError
 from acb_common.studio_rules import (
     MAX_WRITES_PER_BATCH,
     RANGE,
+    STATE_MACHINE,
     UNIQUE,
     Rule,
     add_change,
     check_group_sum,
     check_kind_known,
+    check_move,
     check_range,
     check_rule_is_hot,
     check_rules_fit,
@@ -188,6 +193,7 @@ from acb_common.studio_rules import (
     parse_rules,
     stored_rules,
     touched_keys,
+    with_initial,
 )
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -1579,7 +1585,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     oid = step.object_id
     held = batch.objects[oid]
     if step.op == "create":
-        clean = validate_record(held.fields, step.data)
+        clean = validate_record(held.fields, with_initial(held.rules, step.data))
         row = (await db.execute(text(_CREATE_RECORD_SQL), {
             "oid": oid, "data": record_json(clean), "actor": batch.who,
             "hot": _hot_rows(held.fields, clean)})).one()
@@ -1615,6 +1621,8 @@ def _check_records(batch: _Batch) -> dict[tuple[str, Rule, tuple[Any, ...]], int
             check_rule_is_hot(rule, held.name, held.fields)
             if rule.kind == RANGE and mark.after is not None:
                 check_range(rule, held.name, mark.after)
+            if rule.kind == STATE_MACHINE:
+                check_move(rule, held.name, mark.before, mark.after)
             for key in touched_keys(rule, mark.before, mark.after):
                 at = (mark.object_id, rule, key)
                 keys.setdefault(at, mark.index)

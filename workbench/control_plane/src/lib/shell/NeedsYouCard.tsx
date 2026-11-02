@@ -43,6 +43,9 @@ import { accentForHue } from "@/lib/statusAccent";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { CardError, HomeCard, rowMover } from "./HomeCard";
+import ReminderActs from "./ReminderActs";
+import { rowOfNeeds } from "./reminderActions";
+import { isReminderKind } from "./reminderKinds";
 import { appIcon, emptyNeedsLine, failedLines, keepApprovals, rowTime, shownNeeds } from "./myDay";
 import { type NeedsApp, type NeedsFeed, type NeedsItem, countsByApp, fetchNeeds, floorApps, needsKey, runAct } from "./needs";
 import {
@@ -234,6 +237,7 @@ export function NeedsList({
                   nowMs={now?.getTime() ?? null}
                   error={needs.errors[item.id]}
                   onAct={(from) => needs.act(item, from)}
+                  onRefresh={needs.refresh}
                 />
               ))}
             </ul>
@@ -292,20 +296,30 @@ function NeedsRow({
   nowMs,
   error,
   onAct,
+  onRefresh,
 }: {
   item: NeedsItem;
   /** `null` before the client clock exists: the row then prints no time. */
   nowMs: number | null;
   error?: string;
   onAct: (from: HTMLElement) => void;
+  /** The list reads again after a reminder write. */
+  onRefresh: () => void;
 }) {
   const time = nowMs === null ? "" : rowTime(item, nowMs);
+  // RX-3: a reminder that waits on the member has Done and Snooze in place.
+  const reminder = rowOfNeeds(item);
   return (
     <li>
       <div className="flex min-h-11 items-center gap-2 rounded-lg pr-1 hover:bg-secondary/60 tech-transition">
         <Link href={item.href} className="flex min-w-0 flex-1 items-center gap-3 rounded-lg py-1.5 pl-2">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
-            <Icon name={appIcon(item.app)} size={14} />
+          {/* A reminder wears the Bell, not the Calendar's icon (RX-3). */}
+          <span
+            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${
+              reminder ? `${accentForHue("amber").soft} ${accentForHue("amber").text}` : "bg-secondary text-muted-foreground"
+            }`}
+          >
+            <Icon name={isReminderKind(item.kind) ? "Bell" : appIcon(item.app)} size={14} />
           </span>
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm text-foreground">{item.title}</span>
@@ -320,7 +334,9 @@ function NeedsRow({
         </Link>
         {/* On a phone the act is its icon alone, so the title keeps the row's
             width. The name stays whole for a screen reader at every size. */}
-        {item.act === "done" ? (
+        {reminder ? (
+          <ReminderActs row={reminder} refresh={onRefresh} quiet />
+        ) : item.act === "done" ? (
           <Button variant="ghost" size="sm" icon="Check" data-row-act="" onClick={(e) => onAct(e.currentTarget)} aria-label={`Mark ${item.title} done`} className="min-h-9 min-w-9">
             <span className="hidden sm:inline">Done</span>
           </Button>
