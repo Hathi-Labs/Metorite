@@ -106,15 +106,22 @@ MAX_DEPTH = 20  # the same bound as `_GENUI_MAX_DEPTH` in `acb_skills/write_arti
 
 #: A key that v1 refuses, and the slice that lifts the refusal.
 # `rules` is an object key since C6 (a list beside `fields`). `state_machine` and `states`
-# stay refused, so a rule has one spelling.
+# stay refused, so a rule has one spelling. A formula is a rule of kind `formula` (C7a),
+# so the key `formula` has no use and C7a lifts its refusal.
+# `formula` and `rollup` stay refused as field types, so a formula has one spelling:
+# the rules list.
 RESERVED_KEYS: dict[str, str] = {
     "rules": "C6",
     "state_machine": "C6",
     "states": "C6",
-    "formula": "C7",
     "code": "L1",
 }
-RESERVED_FIELD_TYPES: dict[str, str] = {"formula": "C7", "rollup": "C7"}
+RESERVED_FIELD_TYPES: dict[str, str] = {"formula": "C7a", "rollup": "C7b"}
+#: The refusal of a field of type `formula`: the formula is a rule, so one spelling holds.
+_FORMULA_TYPE_MESSAGE = (
+    "Field type `formula` is not a field type. Fill a field with a rule of kind `formula` "
+    "in the `rules` of its object."
+)
 RESERVED_BLOCKS: dict[str, str] = {"code": "L1", "custom": "L1", "customUi": "L1"}
 
 #: Subtrees that hold member data, not structure. The reserved-key scan skips them.
@@ -518,7 +525,9 @@ def _structure_errors(exc: ValidationError, skip: set[str]) -> list[ManifestErro
                 msg = f"Block is unknown. Use {', '.join(BLOCKS[:-1])} or {BLOCKS[-1]}.{_got(val)}"
                 limit = 25 + len(BLOCKS)
         elif last == "type" and typ == "literal_error":
-            if isinstance(val, str) and val in RESERVED_FIELD_TYPES:
+            if val == "formula":
+                msg = _FORMULA_TYPE_MESSAGE
+            elif isinstance(val, str) and val in RESERVED_FIELD_TYPES:
                 msg = _reserved(val, RESERVED_FIELD_TYPES[val], "Field type ")
             else:
                 msg = (
