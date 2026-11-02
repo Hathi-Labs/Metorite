@@ -1294,7 +1294,7 @@ async def _llm_draft_reply(
                 raw, _used = await acompletion_stream_text(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
-                    feature="email.draft",
+                    feature="email.draft", job="writing",
                     on_delta=on_delta, **vision_extra,
                 )
         else:
@@ -1302,7 +1302,7 @@ async def _llm_draft_reply(
                 resp, _used = await acompletion_with_fallback(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
-                    feature="email.draft", **vision_extra,
+                    feature="email.draft", job="writing", **vision_extra,
                 )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())
@@ -1510,7 +1510,7 @@ async def _llm_compose_assist(
                 raw, _used = await acompletion_stream_text(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
-                    feature="email.compose_assist",
+                    feature="email.compose_assist", job="writing",
                     on_delta=on_delta,
                 )
         else:
@@ -1518,7 +1518,7 @@ async def _llm_compose_assist(
                 resp, _used = await acompletion_with_fallback(
                     model=model,
                     messages=_messages, temperature=0.3, max_tokens=3000,
-                    feature="email.compose_assist",
+                    feature="email.compose_assist", job="writing",
                 )
             raw = resp.choices[0].message.content or ""
         body = _clean_draft_body(raw.strip())
