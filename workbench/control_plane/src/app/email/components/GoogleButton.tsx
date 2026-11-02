@@ -19,14 +19,18 @@
  * when the source spells it.
  */
 
+import { Roboto } from "next/font/google";
 import { DISCLOSURE_COPY, GOOGLE_G_MARK } from "../lib/connect";
 
 const PALETTE =
   "border-[#8E918F] bg-[#131314] text-[#E3E3E3] " +
   "[.light_&]:border-[#747775] [.light_&]:bg-[#FFFFFF] [.light_&]:text-[#1F1F1F]";
 
-/** Roboto Medium, 14 px. `layout.tsx` loads the face, and only this text uses it. */
-const FACE = { fontFamily: "var(--font-roboto), Roboto, Arial, sans-serif" };
+/**
+ * Roboto Medium, 14 px, because Google's rules name it for this label. It is
+ * loaded here and not in the root layout, so no other app carries its CSS.
+ */
+const roboto = Roboto({ weight: "500", subsets: ["latin"], preload: false, display: "swap" });
 
 export function GoogleButton({ disabled, onClick }: { disabled: boolean; onClick: () => void }) {
   return (
@@ -34,7 +38,7 @@ export function GoogleButton({ disabled, onClick }: { disabled: boolean; onClick
       type="button"
       disabled={disabled}
       onClick={onClick}
-      style={FACE}
+      style={roboto.style}
       className={`inline-flex h-[40px] shrink-0 items-center gap-[10px] rounded-[4px] border px-[12px] text-[14px] leading-[20px] font-medium outline-none hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50 ${PALETTE}`}
     >
       <img src={GOOGLE_G_MARK} alt="" width={20} height={20} />

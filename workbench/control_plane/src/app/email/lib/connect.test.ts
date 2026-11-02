@@ -81,6 +81,9 @@ import {
 } from "./connect";
 import { syncBanners } from "./onboarding";
 
+// next/font is a build step, so it has no function under vitest.
+vi.mock("next/font/google", () => ({ Roboto: () => ({ style: {} }) }));
+
 const EMAIL_APP = join(__dirname, "..");
 
 /** The live sets of two answers of the capability read (WS-17 EM-G8). */
@@ -1871,7 +1874,8 @@ describe("google-button-reads-continue-with-google", () => {
     for (const hex of ["#131314", "#8E918F", "#E3E3E3", "#FFFFFF", "#747775", "#1F1F1F"]) {
       expect(src, hex).toContain(hex);
     }
-    expect(codeOnly(src)).toContain("--font-roboto");
+    expect(codeOnly(src)).toContain("style={roboto.style}");
+    expect(readFileSync(join(EMAIL_APP, "..", "layout.tsx"), "utf-8")).not.toContain("Roboto(");
     const conformance = readFileSync(join(EMAIL_APP, "..", "..", "lib", "theme", "conformance.test.ts"), "utf-8");
     expect(conformance).toMatch(/const COLOR_EXCEPTIONS[\s\S]*"app\/email\/components\/GoogleButton\.tsx":/);
   });
@@ -2006,7 +2010,7 @@ describe("the-button-fires-once", () => {
 
   it("the step sends only through the latch, and opens it on a restored page", () => {
     const src = codeOnly(read("components/DisclosureStep.tsx"));
-    expect(src).toContain("const latch = useMemo(ackLatch, []);");
+    expect(src).toContain("const [latch] = useState(ackLatch);");
     expect(src).toMatch(/const go = \(\) =>\s*latch\.fire\(agreed, \(\) => \{/);
     expect([...src.matchAll(/onAcknowledge\(/g)]).toHaveLength(1);
     expect(src).toMatch(/if \(!e\.persisted\) return;\s*latch\.reset\(\);\s*setLeaving\(false\);/);

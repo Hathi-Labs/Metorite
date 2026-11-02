@@ -28,7 +28,7 @@
  * The gateway does not require the acknowledgement for Microsoft (item 4).
  */
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import Button from "@/components/ui/Button";
 import { Checkbox } from "@/components/ui/Checkbox";
 import {
@@ -59,7 +59,7 @@ export function DisclosureStep({
   const titleId = useId();
   const boxId = useId();
   const titleRef = useRef<HTMLHeadingElement>(null);
-  const latch = useMemo(ackLatch, []);
+  const [latch] = useState(ackLatch);
   const [leaving, setLeaving] = useState(false);
 
   // Mount only.
