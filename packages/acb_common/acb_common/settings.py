@@ -880,6 +880,22 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_spawn_subagents.py.
     spawn_subagents_orgs: str = ""
 
+    # ── Web research (WS-WEB, D148, `web_research.md` §3.2 and §11) ─────────
+    #
+    # `web_research_orgs` lists the organization ids whose `fetch_page` reads
+    # an HTML page with the local reader (Trafilatura, WEB-2), or `*` for each
+    # one. Empty means off, and then `fetch_page` reads as WEB-1 did. The one
+    # reader is `acb_skills.web_tools.web_research_on`, and it fails closed.
+    # The tool reads it on each call. Any value on a box is a dark flag flip
+    # (`work_plan.md` §6 D4).
+    # Fence: tests/unit/test_web_readers.py.
+    web_research_orgs: str = ""
+    # `web_reader_remote` is `jina` or empty. With `jina`, an org of
+    # `web_research_orgs` asks Jina Reader last, and only when the local text
+    # is under 200 characters. Any other value means no remote reader.
+    # 🔴 OWNER-ONLY on a box: `jina` sends each URL to a third party (WEB-Q3).
+    web_reader_remote: str = ""
+
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
     # `decide_feature_modes` holds `feature=mode` pairs with a comma between
