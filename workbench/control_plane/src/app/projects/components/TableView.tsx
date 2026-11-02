@@ -68,7 +68,7 @@ import {
   labelWith,
   toQuery,
 } from "../lib/grouping";
-import { dueInstantForDay, quickAddPrefill } from "../lib/quickAdd";
+import { dueDayOf, dueInstantForDay, quickAddPrefill } from "../lib/quickAdd";
 import {
   MATRIX_FLAG_OPTIONS,
   type MatrixFlags,
@@ -538,7 +538,7 @@ export function TableView({
         <CellText
           label={`Due date of ${task.title}`}
           type="date"
-          defaultValue={task.due_at ? task.due_at.slice(0, 10) : ""}
+          defaultValue={task.due_at ? dueDayOf(task.due_at) : ""}
           onCommit={(value) =>
             // Noon local, the calendar quick-add's rule (`dueInstantForDay`),
             // so the chosen day survives every viewer's timezone.

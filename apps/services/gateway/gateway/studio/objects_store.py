@@ -108,6 +108,23 @@ already is refused only when a later write touches it. A field that a rule
 holds cannot turn cold while the rule stands. A rule that the store cannot
 read fails closed: each write of its object is refused.
 
+**The formulas (C7a).** A rule of kind ``formula`` fills one field, its target,
+from the other fields of the same record (``acb_common/studio_expr.py`` holds the
+closed tree, and ``studio_rules.plan_formulas`` checks the formulas of an object
+as a set). :func:`_lock_objects` builds the plan once for each object of a batch
+that holds a create or an update (a delete computes nothing),
+and a stored formula that does not fit refuses each write. :func:`_apply_write`
+refuses a key for a target (also with the same value), validates the record
+without its targets, and then runs each formula in order of dependency. So
+``mark.after`` and the hot rows hold the stored result, and a ``range``, a
+``unique``, a ``group_sum_min`` and a guard of C6 read it. A division by zero, a
+currency mismatch or a result that is too large raises
+:class:`~acb_common.studio_rules.FormulaError`, and the batch writes nothing. A
+declaration of a new formula, or of one with a changed target, expression, scale,
+rounding or currency, on an object that holds records is
+refused (:func:`_check_formulas_first`), because there is no backfill. A removed
+formula leaves its stored values as plain values.
+
 **On a floor of 0 or less, a write that does not lower a group never reads
 the group.** The store adds up the net change of the batch on each key of
 ``group_sum_min``, in exact ``Decimal``, from the values that it read under
@@ -175,10 +192,13 @@ from acb_common.studio_fields import (
 )
 from acb_common.studio_query import Condition, Query, QueryError
 from acb_common.studio_rules import (
+    FORMULA,
     MAX_WRITES_PER_BATCH,
     RANGE,
     STATE_MACHINE,
     UNIQUE,
+    ConstraintError,
+    FormulaPlan,
     Rule,
     add_change,
     check_group_sum,
@@ -191,9 +211,13 @@ from acb_common.studio_rules import (
     floor_holds_at_zero,
     key_filter,
     parse_rules,
+    plan_formulas,
+    refuse_computed_keys,
+    run_formulas,
     stored_rules,
     touched_keys,
     with_initial,
+    without_targets,
 )
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -495,6 +519,12 @@ class StudioObject:
     updated_at: datetime
     fields: tuple[FieldSpec, ...]
     constraints: tuple[Rule, ...] = ()
+
+    @property
+    def computed(self) -> tuple[str, ...]:
+        """The keys of the fields that a formula computes (C7a). A caller writes
+        none of them, so a Form shows each one read-only and sends no key."""
+        return tuple(str(r.target) for r in self.constraints if r.kind == FORMULA)
 
 
 @dataclass(frozen=True)
@@ -824,6 +854,29 @@ async def drop_object(db: Any, object_id: str) -> bool:
     return (await db.execute(text(_DROP_OBJECT_SQL), {"oid": oid})).first() is not None
 
 
+def _formula_key(rule: Rule) -> str:
+    """What makes a stored result stale: the target, the expression, and the
+    scale, rounding and currency. The name and the message do not, so a rename
+    or a new message passes. Key order does not matter."""
+    stored = rule.stored()
+    kept = {k: stored.get(k) for k in ("target", "expr", "scale", "rounding", "currency")}
+    return json.dumps(kept, sort_keys=True, ensure_ascii=False)
+
+
+async def _check_formulas_first(db: Any, oid: str, old: Sequence[Rule],
+                                new: Sequence[Rule]) -> None:
+    """A new or changed formula needs an object with no record (C7a). There is
+    no backfill, and a stored result that a formula did not compute is worse
+    than a refusal. A formula that stays as it is, and a removed one, pass: a
+    removed formula leaves its stored values as plain values."""
+    kept = {_formula_key(r) for r in old if r.kind == FORMULA}
+    fresh = [r for r in new if r.kind == FORMULA and _formula_key(r) not in kept]
+    if fresh and (await db.execute(text(_HAS_RECORDS_SQL), {"oid": oid})).scalar_one():
+        raise ConstraintError(
+            fresh[0].name, f"Rule `{fresh[0].name}`: declare before the first record. This "
+            "object holds records, so a new or changed formula would leave their results stale.")
+
+
 async def set_constraints(db: Any, object_id: str, constraints: Any, *,
                           package_id: str) -> StudioObject | None:
     """Replace the rules of the object *object_id* of the package *package_id*.
@@ -840,10 +893,12 @@ async def set_constraints(db: Any, object_id: str, constraints: Any, *,
     rules = parse_rules(constraints)
     await _lock_org(db)
     binds = {"oid": oid, "pid": pid}
-    if (await db.execute(text(_LOCK_PACKAGE_OBJECT_SQL), binds)).first() is None:
+    locked = (await db.execute(text(_LOCK_PACKAGE_OBJECT_SQL), binds)).first()
+    if locked is None:
         return None
     fields = await _fields(db, oid)
     check_rules_fit(rules, fields)
+    await _check_formulas_first(db, oid, stored_rules(_json(locked[7])), rules)
     row = (await db.execute(text(_SET_RULES_SQL), {
         **binds, "rules": json.dumps([r.stored() for r in rules], ensure_ascii=False)})).one()
     return _object(row, fields)
@@ -1484,6 +1539,8 @@ class _Held:
     name: str
     fields: list[FieldSpec]
     rules: tuple[Rule, ...]
+    #: The formulas of the object, checked once for the batch (C7a). None when it has none.
+    plan: FormulaPlan | None = None
 
 
 @dataclass
@@ -1545,14 +1602,21 @@ def _clean_writes(writes: Any) -> list[Write]:
 async def _lock_objects(db: Any, batch: _Batch) -> None:
     """Step 2. The second statement of each object follows its row lock."""
     first: dict[str, int] = {}
+    writes: set[str] = set()
     for i, step in enumerate(batch.steps):
         first.setdefault(step.object_id, i)
+        if step.op != "delete":
+            writes.add(step.object_id)
     for oid in sorted(first):
         batch.index = first[oid]
         row = (await db.execute(text(_SHARE_OBJECT_SQL), {"oid": oid, "pid": batch.pid})).first()
         if row is None:
             raise RecordNotFound("This package holds no such object.")
-        batch.objects[oid] = _Held(str(row[0]), await _fields(db, oid), stored_rules(_json(row[1])))
+        fields = await _fields(db, oid)
+        rules = stored_rules(_json(row[1]))
+        # A delete computes nothing, so only a create or an update builds the plan.
+        plan = plan_formulas(rules, str(row[0]), fields) if oid in writes else None
+        batch.objects[oid] = _Held(str(row[0]), fields, rules, plan)
 
 
 async def _lock_records(db: Any, batch: _Batch) -> None:
@@ -1584,8 +1648,11 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     """Step 4, for one write. Only this function runs the three write statements."""
     oid = step.object_id
     held = batch.objects[oid]
+    plain = held.fields if held.plan is None else list(held.plan.plain)
     if step.op == "create":
-        clean = validate_record(held.fields, with_initial(held.rules, step.data))
+        data = with_initial(held.rules, step.data)
+        refuse_computed_keys(held.plan, held.name, data)
+        clean = run_formulas(held.plan, held.name, validate_record(plain, data))
         row = (await db.execute(text(_CREATE_RECORD_SQL), {
             "oid": oid, "data": record_json(clean), "actor": batch.who,
             "hot": _hot_rows(held.fields, clean)})).one()
@@ -1598,7 +1665,10 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
         await db.execute(text(_DELETE_RECORD_SQL), binds)
         mark.after = None
         return True
-    clean = validate_record(held.fields, {**(mark.after or {}), **dict(step.data or {})})
+    changes = dict(step.data or {})
+    refuse_computed_keys(held.plan, held.name, changes)
+    merged = without_targets(held.plan, {**(mark.after or {}), **changes})
+    clean = run_formulas(held.plan, held.name, validate_record(plain, merged))
     row = (await db.execute(text(_UPDATE_RECORD_SQL), {
         **binds, "data": record_json(clean), "actor": batch.who,
         "hot": _hot_rows(held.fields, clean)})).one()

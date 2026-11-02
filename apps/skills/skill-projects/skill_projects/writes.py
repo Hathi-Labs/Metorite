@@ -46,6 +46,15 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
+from acb_common.card_body import (
+    CARD_CLIP,
+    CUT_MARK,
+    CardWontFit,
+    card_body,
+    cut_refusal,
+    is_cut,
+)
+from acb_common.mentions import mention_targets, new_mentions
 
 from skill_projects import choices
 from skill_projects.client import (
@@ -58,6 +67,7 @@ from skill_projects.client import (
     put,
     uuid_of,
 )
+from skill_projects.hues import hue_of
 from skill_projects.priority import (
     CLEAR_PRIORITY,
     Removed,
@@ -102,8 +112,10 @@ except Exception:  # pragma: no cover — platform package absent in isolation
 
 #: ``request_confirmation`` clips ``context`` at 4000 characters. The clip is
 #: ours and visible, never the card silently losing whatever came last.
-CARD_CONTEXT_LIMIT = 4000
-_TRUNCATED = "… [truncated on this card; the full text is what gets written]"
+#: ``acb_common.card_body`` holds the rule: each short field shows, and only
+#: long text may be cut.
+CARD_CONTEXT_LIMIT = CARD_CLIP
+_TRUNCATED = CUT_MARK
 #: The fixed first line of every card body. The member signs as themselves.
 CARD_NOTE = "This change is recorded as yours, made through the Projects assistant."
 
@@ -117,18 +129,19 @@ LINK_TYPES = ("blocks", "relates_to", "duplicates")
 # ── The card ─────────────────────────────────────────────────────────────────
 
 
-def _fields_block(payload: dict[str, Any], *, before: dict[str, Any] | None = None) -> str:
+def _fields_block(
+    payload: dict[str, Any], *, before: dict[str, Any] | None = None, lead: str = "",
+) -> str:
     """The payload as the card body, rendered from what goes on the wire.
 
     ``before`` adds the current value beside each changed field, so a member
-    approving an update sees the change and not only the result.
+    approving an update sees the change and not only the result. *lead* is a
+    line that stays right under the fixed note. Each short field shows, and only
+    long text may be cut (``acb_common.card_body``). A body whose short fields do
+    not fit raises the refusal, in every chat.
     """
-    body = _card_lines(payload, before=before)
-    budget = CARD_CONTEXT_LIMIT - len(CARD_NOTE) - 1
-    if len(body) <= budget:
-        return f"{CARD_NOTE}\n{body}"
-    keep = max(0, budget - len(_TRUNCATED) - 1)
-    return f"{CARD_NOTE}\n{body[:keep]}\n{_TRUNCATED}"
+    note = f"{CARD_NOTE}\n{lead}" if lead else CARD_NOTE
+    return card_body(note, _card_rows(payload, before=before))
 
 
 def _fits_on_card(payload: dict[str, Any]) -> bool:
@@ -142,6 +155,13 @@ def _fits_on_card(payload: dict[str, Any]) -> bool:
 
 def _card_lines(payload: dict[str, Any], *, before: dict[str, Any] | None = None) -> str:
     """The card body before the clip: one ``key: value`` line per field."""
+    return "\n".join(line for _key, line in _card_rows(payload, before=before))
+
+
+def _card_rows(
+    payload: dict[str, Any], *, before: dict[str, Any] | None = None,
+) -> list[tuple[str, str]]:
+    """Each field of the card: its key, and its whole ``key: value`` line."""
 
     def shown(value: Any) -> Any:
         # A value that carries a fence is usually ours (`data()`, `_ref()`),
@@ -153,13 +173,61 @@ def _card_lines(payload: dict[str, Any], *, before: dict[str, Any] | None = None
             return " ".join(value.split()) if "«" in value else data(value)
         return value
 
-    lines: list[str] = []
+    rows: list[tuple[str, str]] = []
     for key, value in payload.items():
         if before is not None and key in before and before[key] != value:
-            lines.append(f"{key}: {shown(before[key])} → {shown(value)}")
+            rows.append((key, f"{key}: {shown(before[key])} → {shown(value)}"))
         else:
-            lines.append(f"{key}: {shown(value)}")
-    return "\n".join(lines)
+            rows.append((key, f"{key}: {shown(value)}"))
+    return rows
+
+
+#: The most characters of a name in the detail line of a card. ``ask_tools``
+#: clips that line at 500, so a long title would hide what comes after it.
+_DETAIL_NAME_MAX = 120
+
+
+def _brief(name: Any) -> str:
+    """*name*, fenced, short enough for the detail line. The card body shows
+    it whole."""
+    text = " ".join(str(name or "").split())
+    return data(text if len(text) <= _DETAIL_NAME_MAX else f"{text[:_DETAIL_NAME_MAX - 1]}…")
+
+
+async def _held_chat() -> bool:
+    """True when this chat read outside mail, and the switch is on (RX-1).
+
+    ``egress.chat_is_held`` is the reader, and it fails closed. With no platform
+    package, no run can be checked, so this reads as held.
+    """
+    try:
+        from acb_skills.egress import chat_is_held
+    except ImportError:
+        return True
+    return await chat_is_held()
+
+
+async def _held_param_refusal(tool: str, param: str) -> str:
+    """The answer of *tool* to *param* in a held chat, or ``""`` (RX-1). The
+    parameter is one of ``egress.HELD_REFUSED_PARAMS``."""
+    if not await _held_chat():
+        return ""
+    from acb_skills.egress import held_param_refusal
+
+    return held_param_refusal(tool, param)
+
+
+async def _check_card(context: str) -> None:
+    """Two refusals at the one door (RX-1). A body past the clip would lose its
+    tail in ``ask_tools`` with no mark, so no chat sends one. A held chat refuses
+    a cut card too, because a cut text is not consent there."""
+    if len(context) > CARD_CONTEXT_LIMIT:
+        raise CardWontFit(
+            "This change does not fit on one card, so nothing was changed. Split "
+            "the change, and call the tool once more."
+        )
+    if is_cut(context) and await _held_chat():
+        raise GatewayRefusal(cut_refusal(context))
 
 
 async def _confirm(
@@ -173,6 +241,7 @@ async def _confirm(
     """
     from acb_skills.ask_tools import request_confirmation
 
+    await _check_card(context)
     # `fenced`: every member value on these cards is in «marks» (`data()`),
     # so the client draws each one as a token and never shows the marks.
     if rows is None:
@@ -302,12 +371,14 @@ async def _resolve_status(project_id: str, status: str) -> dict[str, Any]:
     return await _named(await _statuses_of(project_id), status, "status", "statuses")
 
 
-#: H-236: the refusal of an agent assignee in a run that may not send.
+#: H-236: the refusal of an agent assignee in a run that may not send. Such a
+#: run holds for member data of a sandboxed turn, or for mail that a stranger
+#: wrote, so the text claims neither cause. D169 item 7: it names the act and
+#: the reason, and it sends the member to no app and no new chat.
 AGENT_ASSIGNEE_REFUSED = (
-    "This chat works with member data from a sandboxed turn, so it cannot "
-    "assign a task to an agent: an assigned agent starts a run of its own, "
-    "outside this chat's controls. Assign a person, or ask the member to "
-    "assign the agent in the Projects app."
+    "This chat cannot assign a task to an agent now. An assigned agent starts a "
+    "run of its own, outside the controls that hold this chat. Assign a person "
+    "here, and tell the member in one sentence why the agent is not assigned."
 )
 
 
@@ -366,7 +437,12 @@ async def _resolve_assignee(value: str, *, dispatch: bool = True) -> str:
     ``dispatch=False``, because taking an agent off a task starts nothing.
     """
     resolved = await _resolve_assignee_name(value)
-    return _refuse_agent_assignee(resolved) if dispatch else resolved
+    if not dispatch:
+        return resolved
+    # RX-1: a top-level run in a marked chat binds no `no_egress`.
+    if resolved.startswith("agent:") and await _held_chat():
+        raise AgentAssigneeRefused(AGENT_ASSIGNEE_REFUSED)
+    return _refuse_agent_assignee(resolved)
 
 
 async def _resolve_assignee_name(value: str) -> str:
@@ -424,6 +500,59 @@ async def _unknown_addresses(who: list[str]) -> list[str]:
 
 def _split(csv: str) -> list[str]:
     return [part.strip() for part in str(csv or "").split(",") if part.strip()]
+
+
+def _seen_by(view: dict[str, Any]) -> str:
+    """Who opens a project, in the words of a card (``GET .../audience``)."""
+    count = int(view.get("count") or 0)
+    if view.get("everyone"):
+        return f"everyone in the organization ({count} people)"
+    names = [str(name) for name in view.get("sample") or []]
+    more = count - len(names)
+    return ", ".join(names) + (f" and {more} more" if more > 0 else "") if names else "nobody"
+
+
+async def _access_lines(
+    project_id: str, people: list[str] | None = None, beyond: str = "",
+) -> dict[str, Any]:
+    """The lines of a held card: who sees the project, and who this opens it to.
+
+    ``seen by`` is who opens *project_id* (RX-1, P1). ``gives access to`` names
+    each of *people* who cannot open it now, because an assignment opens a task
+    to its assignee (``notifications.grant_holders``), and each person who opens
+    it and not *beyond*, because a move changes who sees a row (D-OP-14). The
+    server answers, from the one predicate. A failed read raises the refusal, so
+    a held chat shows no card that cannot say who sees the row. An agent is no
+    person here: it never opens a task by a grant.
+    """
+    pid = uuid_of(project_id, "project_id")
+    params: dict[str, str] = {}
+    humans = [p for p in people or [] if not p.startswith("agent:")]
+    if humans:
+        params["people"] = ",".join(humans)
+    if beyond:
+        params["beyond"] = uuid_of(beyond, "project_id")
+    view = (await get(f"/projects/nodes/{pid}/audience", params)) or {}
+    lines: dict[str, Any] = {"seen by": _seen_by(view)}
+    gives = [str(p) for p in [*(view.get("without_access") or []), *(view.get("gains") or [])]]
+    if gives:
+        more = int(view.get("gains_count") or 0) - len(view.get("gains") or [])
+        lines["gives access to"] = ", ".join(dict.fromkeys(gives)) + (
+            f" and {more} more" if more > 0 else "")
+    return lines
+
+
+def _told(text: Any, old: Any = None) -> dict[str, Any]:
+    """The ``sent to`` line of a text that tells a person (RX-1, P2).
+
+    Each address that the text @mentions is notified (``activities.add_comment``),
+    and an edit tells only the addresses it adds (``new_mentions``). The parser
+    is the gateway's own (``acb_common.mentions``), so the card and the write
+    agree. Empty when the text tells nobody.
+    """
+    who = new_mentions(str(old or ""), str(text or "")) if old is not None else (
+        mention_targets(str(text or "")))
+    return {"sent to": ", ".join(who)} if who else {}
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -862,7 +991,7 @@ async def field_values(
 # ── Tasks ────────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 @takes_priority
 @agent_assignee_refusal_as_text
 async def create_task(
@@ -943,7 +1072,8 @@ async def create_task(
     if isinstance(repeating, str):
         return repeating
     # After the argument checks, which answer with no call, and before the card.
-    stop = await space_refusal(pid, (await _node(pid))[1])
+    node = (await _node(pid))[1]
+    stop = await space_refusal(pid, node)
     if stop:
         return stop
     new = await _prepare_new_task(
@@ -974,22 +1104,29 @@ async def create_task(
     twin = (await choices.twin_flags(get, pid, [name])).get(0)
     if twin is not None:
         card["note"] = choices.twin_note(twin)
-    where = ""
-    if by_name is not None:
-        # The project came from a NAME, so the card names it, first (review
-        # P1). The id line alone would not tell the member where it goes.
-        card = {"project": data(by_name), **{k: v for k, v in card.items() if k != "project_id"}}
-        where = f" · in {data(by_name)}"
-    if new.payload.get("source") == "email":
-        # P9: the first line of the card says what leaves the mailbox.
-        shown = data(by_name or (await _node(pid))[1].get("name"))
-        card = {"mailbox": mailbox_line(shown), **card}
+    # The card names the project, first, however the model named it. The client
+    # hides a line that holds only an id, so an id line tells the member nothing
+    # (RX-1, review P1 of 2026-10-09). The parent gets its name the same way.
+    place = data(by_name or node.get("name"))
+    hidden = ("project_id", "parent_task_id")
+    card = {"project": place, **{k: v for k, v in card.items() if k not in hidden}}
+    if new.parent is not None:
+        card["parent"] = _ref(new.parent)
+    where = f" · in {place}"
+    held = await _held_chat()
+    if held:
+        card.update(await _access_lines(pid, new.who))
+    if held or new.payload.get("source") == "email":
+        # P9: the first line of the card says what leaves the mailbox. RX-1: a
+        # held chat says it from the server's answer, because a steered model
+        # would leave out `source`.
+        card = {"mailbox": mailbox_line(place), **card}
     # WS-47 WAC-4: a card that names the project by NAME must still bind the
     # project it resolved, and the people, for a Confirm on WhatsApp.
     _bind_card_facts(project_id=pid, assignees=sorted(new.who))
     if not await _confirm(
         title=repeating.card_title,
-        detail=f"{data(name)}{where} · status {new.status_label}"
+        detail=f"{_brief(name)}{where} · status {new.status_label}"
         + (f" · {', '.join(new.who)}" if new.who else "")
         + repeating.detail(),
         context=_fields_block(card),
@@ -1426,7 +1563,7 @@ async def _edit_task_fields(
     return out
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 @takes_priority
 async def update_task(
     task_id: str,
@@ -1518,6 +1655,9 @@ async def update_task(
     if not payload:
         return "Nothing to change. Pass at least one field."
     card, detail = _edit_card(payload, before, extra, lane, task)
+    if payload.get("description"):
+        # A description edit tells each address that it adds (`tasks.patch_task`).
+        card.update(_told(payload["description"], old=task.get("description") or ""))
     if not await _confirm(
         title="Update this task?", detail=detail, context=_fields_block(card, before=before)
     ):
@@ -1571,7 +1711,7 @@ def _edit_card(
     return card, detail
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 @agent_assignee_refusal_as_text
 async def assign(task_id: str, assignees: str) -> str:
     """Set who holds a task. assignees is comma-separated: emails,
@@ -1585,10 +1725,13 @@ async def assign(task_id: str, assignees: str) -> str:
     if sorted(who) == sorted(current):
         return f"{_ref(task)} already has exactly those assignees."
     agents = [a for a in who if a.startswith("agent:") and a not in current]
-    context = _fields_block(
-        {"assignees": ", ".join(who) or "(nobody)"},
-        before={"assignees": ", ".join(current) or "(nobody)"},
-    )
+    shown: dict[str, Any] = {"assignees": ", ".join(who) or "(nobody)"}
+    added = [a for a in who if a not in current]
+    if added and await _held_chat():
+        # An assignment opens the task to its assignee (`grant_holders`).
+        access = await _access_lines(str(task.get("project_id")), added)
+        shown.update({k: v for k, v in access.items() if k == "gives access to"})
+    context = _fields_block(shown, before={"assignees": ", ".join(current) or "(nobody)"})
     if agents:
         context += f"\nAssigning {', '.join(agents)} starts an agent run on this task."
     strangers = await _unknown_addresses([a for a in who if a not in current])
@@ -1605,7 +1748,19 @@ async def assign(task_id: str, assignees: str) -> str:
     return "\n".join(["Assigned:", *_task_line(task)])
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+async def _comment_tells(tid: str, text: str) -> dict[str, Any]:
+    """The ``sent to`` line of a new comment: each address that it @mentions,
+    and in a held chat each person that the task already tells, because the
+    comment reaches them too (``notifications.task_audience``)."""
+    who = mention_targets(text)
+    if await _held_chat():
+        task_id = uuid_of(tid, "task_id")
+        read = (await get(f"/projects/tasks/{task_id}/watchers", {"audience": "true"})) or {}
+        who.extend(str(person) for person in read.get("audience") or [])
+    return {"sent to": ", ".join(dict.fromkeys(who))} if who else {}
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def comment(task_id: str, body: str, reply_to: str = "") -> str:
     """Add a comment to a task's timeline, in the member's own words.
     reply_to is the id of the comment it answers (one level deep). The card
@@ -1621,14 +1776,14 @@ async def comment(task_id: str, body: str, reply_to: str = "") -> str:
     if not await _confirm(
         title="Post this comment?",
         detail=f"on {_ref(task)}",
-        context=_fields_block(payload),
+        context=_fields_block({**payload, **await _comment_tells(tid, text_body)}),
     ):
         return CANCELLED
     row = await post(f"/projects/tasks/{tid}/comments", payload)
     return f"Commented on {_ref(task)} (comment id {row.get('id')}).\n  full_id: {tid}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def add_subtasks(task_id: str, titles: str) -> str:
     """Break a task into steps. titles is one subtask per line, or
     comma-separated. ONE card lists every subtask; the member approves the
@@ -1686,7 +1841,7 @@ async def _lane_name(project_id: str, status_id: Any) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def link_tasks(task_id: str, other_task_id: str, link_type: str = "relates_to") -> str:
     """Link two tasks. link_type is blocks (task_id blocks other_task_id),
     relates_to, or duplicates. The card names both tasks. unlink_tasks
@@ -1714,7 +1869,7 @@ async def link_tasks(task_id: str, other_task_id: str, link_type: str = "relates
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def unlink_tasks(task_id: str, link_id: str) -> str:
     """Remove a link from a task. link_id comes from task_detail's Links
     list. The card names the task and the link."""
@@ -1774,7 +1929,7 @@ def _ref_line(row: dict[str, Any]) -> str:
 #: The card's next read fetches a GitHub title and state. Every Projects
 #: chat tool is closed-world (`test_projects_agent_refusals.py`), so a run
 #: that may not reach the outside (`no_egress`) keeps this tool too.
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def add_task_ref(task_id: str, url: str, title: str = "") -> str:
     """Attach a URL to a task: a GitHub pull request, issue, commit, branch or
     comment, a GitLab merge request, a Google Doc, Sheet or Slides, a Figma
@@ -1809,7 +1964,7 @@ async def add_task_ref(task_id: str, url: str, title: str = "") -> str:
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def remove_task_ref(task_id: str, url: str) -> str:
     """Take a URL reference off a task. url is the link as task_detail's
     References list shows it, or its ref id. The card names the task and the
@@ -1844,7 +1999,7 @@ async def remove_task_ref(task_id: str, url: str) -> str:
     return f"Removed the link {_ref_line(row)} from {_ref(task)}.\n  full_id: {tid}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def move_task(
     task_ids: str,
     destination_project_id: str = "",
@@ -2082,6 +2237,10 @@ async def _plan_move(
     if missing:
         return await _required_refusal(dest, missing, len(ids) > 1)
     card = _move_card(plan, tasks, dest_node, field_card, bool(wanted), count)
+    if await _held_chat():
+        # D-OP-14: a move changes who sees a row. The tasks of one call come
+        # from one project (`move.shared_source`).
+        card.update(await _access_lines(dest, beyond=str(tasks[0].get("project_id"))))
     drops = sorted(plan.get("drops") or [])
     if answers:
         # One task, with the answers: the promote door's route, which lands
@@ -2744,7 +2903,7 @@ def _ask_subtasks_once(rows: list[_FileRow]) -> str:
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def file_tasks(moves: str, include_subtasks: str = "") -> str:
     """File several tasks into their projects with ONE approval, for example
     an inbox into the right projects. Use it for 2 or more tasks, even when
@@ -2984,7 +3143,7 @@ def _link_exists(rels: list[dict[str, Any]], row: _LinkRow) -> bool:
     return False
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def link_tasks_batch(links: str) -> str:
     """Link many pairs of tasks with ONE approval. Use it for 3 or more
     links. For 1 or 2 links, use link_tasks. links is a JSON list with one
@@ -3025,7 +3184,7 @@ async def link_tasks_batch(links: str) -> str:
     return _batch_receipt(LINK_WORDS, head, out, chosen, left, list(stuck))
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def watch(target_id: str, kind: str = "task", stop: bool = False) -> str:
     """Watch a task or a project for the member, so its changes reach their
     notifications. kind is task or project. stop=true unwatches. Watching
@@ -3054,7 +3213,7 @@ async def watch(target_id: str, kind: str = "task", stop: bool = False) -> str:
     return f"You now watch {label}.\n  full_id: {row.get('id')}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def complete(task_id: str, include_subtasks: str = "") -> str:
     """Mark a task done. This moves the task's SHARED status to its
     project's done lane, for everyone. To reopen, set a status by name with
@@ -3106,7 +3265,7 @@ def _defer_scope(task: dict[str, Any]) -> str:
     return "your inbox only"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def defer(task_id: str, until: str) -> str:
     """Hide a task from the member's own inbox until a date (YYYY-MM-DD).
     Mine only: the team's board does not change, even on a finished task."""
@@ -3126,7 +3285,7 @@ async def defer(task_id: str, until: str) -> str:
     return f"Deferred {_ref(task)} until {when} in your inbox.\n  full_id: {tid}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def unarchive_task(task_id: str) -> str:
     """Bring an archived task back onto its board. This is the undo of
     archiving. list_tasks with include_archived=true finds archived tasks."""
@@ -3149,7 +3308,7 @@ async def unarchive_task(task_id: str) -> str:
 # ── Projects ─────────────────────────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_project(
     name: str,
     parent_project_id: str = "",
@@ -3164,6 +3323,10 @@ async def create_project(
     label = str(name or "").strip()
     if not label:
         return "A project needs a name."
+    if lead.strip():
+        refused = await _held_param_refusal("create_project", "lead")
+        if refused:
+            return refused
     which = str(kind or "project").strip().lower()
     if which not in ("project", "folder"):
         return "kind is project or folder."
@@ -3321,7 +3484,7 @@ def _level_refusal(node: dict[str, Any], payload: dict[str, Any]) -> str:
     return ""
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def update_project(
     project_id: str,
     name: str = "",
@@ -3348,6 +3511,10 @@ async def update_project(
     months are measured from. clear switches settings off: icon, icon_slot,
     archive_after_months, close_after_months (comma-separated)."""
     pid = uuid_of(project_id, "project_id")
+    if lead.strip():
+        refused = await _held_param_refusal("update_project", "lead")
+        if refused:
+            return refused
     node = await get(f"/projects/nodes/{pid}")
     settings = _project_settings(
         node, icon, icon_slot, archive_after_months, close_after_months, timezone, clear
@@ -3446,7 +3613,7 @@ async def _report_change(
     return f"Updated report {data(row.get('name'))}.\n  full_id: {rid}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def report_save(
     name: str, project_id: str = "", sections: str = "", weeks: int = 0, report_id: str = ""
 ) -> str:
@@ -3687,17 +3854,24 @@ def _yes_no(value: str, what: str) -> bool | None:
     raise GatewayRefusal(f"{what} is yes or no.")
 
 
+def _category_words(category: Any) -> str:
+    """A category key in words, for text the model reads: in_progress → in progress."""
+    return str(category or "").replace("_", " ")
+
+
 def _next_position(rows: list[dict[str, Any]]) -> int:
     taken = [int(r.get("position") or 0) for r in rows]
     return (max(taken) + 10) if taken else 10
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_status(project_id: str, name: str, category: str = "todo", color: str = "") -> str:
     """Add a status lane. category is backlog, todo, in_progress, done,
-    cancelled or triage. The lane lands LAST in the set the project uses;
-    the card names the project that owns that set, because a subproject
-    may inherit its lanes from a parent. Deleting a lane is a guarded act."""
+    cancelled or triage. color is one of six hues: gray, red, amber, green,
+    blue or violet. Another colour maps to the nearest hue. The lane lands
+    LAST in the set the project uses. The card names the project that owns
+    that set, because a subproject may inherit its lanes from a parent.
+    Deleting a lane is a guarded act."""
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:
@@ -3714,22 +3888,23 @@ async def create_status(project_id: str, name: str, category: str = "todo", colo
         return f"{data(label)} already exists here. The statuses are: {_names(rows)}."
     payload: dict[str, Any] = {"name": label, "category": cat, "position": _next_position(rows)}
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
     set_of = "this project" if owner.get("owns") else data(owner.get("owner_name"))
     if not await _confirm(
         title="Add this status?",
-        detail=f"{data(label)} [{cat}] in {data(node.get('name'))}",
+        detail=f"{data(label)} in {data(node.get('name'))}",
         context=_fields_block({**payload, "project": data(node.get("name")), "status set": set_of}),
     ):
         return CANCELLED
     row = await post(f"/projects/nodes/{pid}/statuses", payload)
     return (
-        f"Added status {data(row.get('name') or label)} [{row.get('category') or cat}] "
+        f"Added status {data(row.get('name') or label)} "
+        f"(category: {_category_words(row.get('category') or cat)}) "
         f"to {data(node.get('name'))}.\n  status_id: {row.get('id')}"
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def update_status(
     project_id: str,
     status: str,
@@ -3740,7 +3915,8 @@ async def update_status(
 ) -> str:
     """Rename, recategorise, recolour or reorder one lane, found by NAME in
     the project's set. Only the arguments you pass change. A rename changes
-    what every task in the lane reads. The card shows before → after."""
+    what every task in the lane reads. color is one of gray, red, amber,
+    green, blue or violet. The card shows before → after."""
     pid, node = await _node(project_id)
     refused = status_edit_refusal(
         (await get(f"/projects/nodes/{pid}/status-set")) or {}, node.get("name")
@@ -3761,7 +3937,7 @@ async def update_status(
         payload["category"] = cat
         before["category"] = row.get("category")
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
         before["color"] = row.get("color")
     if position >= 0:
         payload["position"] = int(position)
@@ -3777,11 +3953,12 @@ async def update_status(
     updated = await patch(f"/projects/statuses/{sid}", payload)
     return (
         f"Updated status {data(updated.get('name') or row.get('name'))} "
-        f"[{updated.get('category') or row.get('category')}].\n  status_id: {sid}"
+        f"(category: {_category_words(updated.get('category') or row.get('category'))}).\n"
+        f"  status_id: {sid}"
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_type(
     project_id: str,
     name: str,
@@ -3795,7 +3972,12 @@ async def create_type(
     start as it. is_epic makes it a top level in the hierarchy rule.
     org_wide=true mints it for every project, and the server decides
     whether the member may. An org-wide type cannot be the default.
+    color is one of gray, red, amber, green, blue or violet.
     Deleting a type is a guarded act; tasks keep existing, untyped."""
+    if org_wide:
+        refused = await _held_param_refusal("create_type", "org_wide")
+        if refused:
+            return refused
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:
@@ -3808,7 +3990,7 @@ async def create_type(
     if icon.strip():
         payload["icon"] = icon.strip()
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
     if is_default and org_wide:
         # The route's rule (admin.create_type): the default is each project's
         # own choice. Refused here, so the card is not shown for a 422.
@@ -3830,7 +4012,7 @@ async def create_type(
     return f"Added type {data(row.get('name') or label)} to {where}.\n  type_id: {row.get('id')}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def update_type(
     project_id: str,
     type_name: str,
@@ -3843,7 +4025,8 @@ async def update_type(
     """Rename, re-icon, recolour a task type found by NAME, make it the
     project's default (make_default=true), or set epic to yes or no. Only
     the arguments you pass change. The Epic system type cannot be renamed
-    or un-flagged; the route says so."""
+    or un-flagged; the route says so. color is one of gray, red, amber,
+    green, blue or violet."""
     pid, node = await _node(project_id)
     rows = await _vocab(pid, "types")
     row = _one_named(rows, type_name, "type")
@@ -3857,7 +4040,7 @@ async def update_type(
         payload["icon"] = icon.strip()
         before["icon"] = row.get("icon")
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
         before["color"] = row.get("color")
     demoted = ""
     if make_default:
@@ -3922,7 +4105,7 @@ def _field_of(rows: list[dict[str, Any]], wanted: str) -> dict[str, Any]:
     raise GatewayRefusal(f"{data(wanted)} matches more than one field. Pass its key.")
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_field(
     project_id: str,
     name: str,
@@ -3937,6 +4120,10 @@ async def create_field(
     for select and multi_select. required=true means a task cannot MOVE
     into this project without a value. org_wide=true mints it for every
     project. The key is derived from the name and never changes."""
+    if org_wide:
+        refused = await _held_param_refusal("create_field", "org_wide")
+        if refused:
+            return refused
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:
@@ -3986,7 +4173,7 @@ async def create_field(
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def update_field(
     project_id: str,
     field: str,
@@ -4043,14 +4230,19 @@ async def update_field(
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_tag(
     project_id: str, name: str, color: str = "", description: str = "", org_wide: bool = False
 ) -> str:
     """Register a tag on the project's root, with a colour and a
     description. A tag typed onto a task registers itself; this is for
-    naming one before it is used, or giving it a colour. org_wide=true
+    naming one before it is used, or giving it a colour (gray, red, amber,
+    green, blue or violet). org_wide=true
     mints it for every project. Deleting a tag is a guarded act."""
+    if org_wide:
+        refused = await _held_param_refusal("create_tag", "org_wide")
+        if refused:
+            return refused
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:
@@ -4061,7 +4253,7 @@ async def create_tag(
     root = await _root_of(pid, node)
     payload: dict[str, Any] = {"name": label}
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
     if description.strip():
         payload["description"] = description.strip()
     if org_wide:
@@ -4077,13 +4269,14 @@ async def create_tag(
     return f"Added tag {data(row.get('name') or label)} to {where}.\n  tag_id: {row.get('id')}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def update_tag(
     project_id: str, tag: str, name: str = "", color: str = "", description: str = ""
 ) -> str:
     """Rename, recolour or describe a tag found by NAME. A rename rewrites
     every task that wears the tag, and the card says how many. Renaming
-    onto an existing tag is refused by the route; merging is a guarded act."""
+    onto an existing tag is refused by the route. color is one of gray, red,
+    amber, green, blue or violet. Merging is a guarded act."""
     pid, node = await _node(project_id)
     row = _one_named(await _vocab(pid, "tags"), tag, "tag")
     gid = uuid_of(str(row.get("id")), "tag_id")
@@ -4093,7 +4286,7 @@ async def update_tag(
         payload["name"] = name.strip()
         before["name"] = row.get("name")
     if color.strip():
-        payload["color"] = color.strip()
+        payload["color"] = hue_of(color)
         before["color"] = row.get("color")
     if description.strip():
         payload["description"] = description.strip()
@@ -4133,7 +4326,7 @@ async def update_tag(
 # ── A comment of the member's own ────────────────────────────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def edit_comment(task_id: str, comment_id: str, body: str) -> str:
     """Reword a comment the member wrote. comment_id comes from task_detail's
     timeline or from comment's receipt. Only the author can edit, and the
@@ -4162,7 +4355,10 @@ async def edit_comment(task_id: str, comment_id: str, body: str) -> str:
     if not await _confirm(
         title="Edit your comment?",
         detail=f"on {_ref(task)}",
-        context=_fields_block({"body": text_body}, before={"body": old.get("body")}),
+        context=_fields_block(
+            {"body": text_body, **_told(text_body, old=old.get("body") or "")},
+            before={"body": old.get("body")},
+        ),
     ):
         return CANCELLED
     await patch(f"/projects/comments/{aid}", {"body": text_body})
@@ -4525,7 +4721,7 @@ def _weekly_days(
     return str(day), note
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def set_recurrence(
     task_id: str,
     freq: str = "",
@@ -4588,7 +4784,7 @@ async def set_recurrence(
 # ── The member's own: a private capture, and the overlay ─────────────────────
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_personal_task(
     title: str, notes: str = "", due: str = "", context: str = "", next_action: str = "",
     block_start: str = "", block_end: str = "",
@@ -4982,7 +5178,7 @@ def _reminder_receipt(
     return "\n".join(lines)
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def set_reminder(
     title: str,
     at: str = "",
@@ -5066,7 +5262,7 @@ async def set_reminder(
     return _reminder_receipt("Reminder set", row, _RECEIPT_CARD, undo="drop")
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def update_reminder(
     reminder_id: str,
     title: str = "",
@@ -5206,7 +5402,7 @@ def _reminder_before(row: dict[str, Any] | None, card: dict[str, Any]) -> dict[s
     return {k: ("none" if v in (None, "") else v) for k, v in stored.items() if k in card}
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def resolve_reminder(reminder_id: str, answer: str = "done") -> str:
     """The member's answer to one of their OPEN reminders: answer is done
     ("I did it") or drop ("forget it"). Either closes it. reopen_reminder
@@ -5233,7 +5429,7 @@ async def resolve_reminder(reminder_id: str, answer: str = "done") -> str:
     return _reminder_receipt(head, saved, "reopen_reminder undoes this answer.")
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def reopen_reminder(reminder_id: str) -> str:
     """Undo a done or a drop: the reminder is open again, in the state it
     had before the answer. A reminder that became a task (promote_reminder)
@@ -5255,7 +5451,7 @@ async def reopen_reminder(reminder_id: str) -> str:
     return _reminder_receipt("Reopened", saved)
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def reschedule_reminder(
     reminder_id: str, at: str = "", in_minutes: int = 0, snooze: str = "",
 ) -> str:
@@ -5523,7 +5719,7 @@ async def _overlay_times(given: dict[str, str], values: dict[str, Any]) -> None:
             values[_OVERLAY_TIMES[arg]] = _instant(raw, arg, zone)
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def set_my_overlay(
     task_id: str,
     disposition: str = "",

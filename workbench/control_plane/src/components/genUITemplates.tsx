@@ -104,7 +104,9 @@ import {
   runReminderAct,
   useKnownReminder,
 } from "@/lib/shell/reminderOpen";
-import { gridZone, laterPresets } from "@/lib/reminderClock";
+import { laterPresets } from "@/lib/reminderClock";
+import { useMemberZone } from "@/lib/shell/memberZone";
+import { snoozeZone } from "@/lib/shell/reminderBand";
 import { statusAccent } from "@/lib/statusAccent";
 import { priorityChip } from "@/lib/taskCard";
 import { TYPE } from "@/lib/typeScale";
@@ -1896,6 +1898,9 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   const resolution = known ? known.row.resolution : data.resolution == null ? null : str(data.resolution);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
+  // The presets of "Later" read the member's SAVED zone, as the window of My
+  // Day does, else the browser's (RX-7).
+  const laterZone = snoozeZone(useMemberZone());
   // "Later" asks for a time first: three presets, then `/snooze` (RX-2).
   const [choosing, setChoosing] = useState(false);
   const acts = ctx?.onAction ? reminderActs({ state, resolution, via: known?.via }) : [];
@@ -1907,7 +1912,7 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
       setChoosing(false);
       return;
     }
-    const zone = gridZone(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    const zone = laterZone;
     const preset = laterPresets(Date.now(), zone).find((p) => p.label === words);
     if (!preset) return;
     setChoosing(false);
@@ -1953,7 +1958,7 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           )}
           {acts.length > 0 && choosing && (
             <SuggestionPills
-              suggestions={laterPresets(Date.now(), gridZone(Intl.DateTimeFormat().resolvedOptions().timeZone)).map((p) => p.label).concat("Back")}
+              suggestions={laterPresets(Date.now(), laterZone).map((p) => p.label).concat("Back")}
               onPick={(words) => void pickLater(words)}
               label="Remind me again"
               align="start"

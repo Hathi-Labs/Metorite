@@ -274,6 +274,12 @@ describe("the chips", () => {
     expect(template).toContain("const known = useKnownReminder(id);");
     expect(template).toContain("reminderActs({ state, resolution, via: known?.via })");
 
+    // RX-7: the presets of "Later" read the member's saved zone, not the browser's.
+    // Mutation: put `Intl.DateTimeFormat().resolvedOptions().timeZone` back in
+    // the card, and the second line fails.
+    expect(template).toContain("snoozeZone(useMemberZone())");
+    expect(template).not.toContain("laterPresets(Date.now(), gridZone(");
+
     const undo = await runReminderAct(RID, "undo", impl);
     expect(undo.ok).toBe(true);
     expect(calls[1]).toEqual({ url: `/api/projects/my/reminders/${RID}/reopen`, method: "POST", body: {} });
