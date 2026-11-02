@@ -2,7 +2,7 @@
 
 > **Product:** Metorite · **Feature:** planning in the Projects chat · **Updated:** 2026-11-02 · **Owner:** vjvarada
 
-> **Status:** 📋 **SPEC, NOTHING BUILT.** PJP-0 (this spec) is the first slice. PJP-1 and PJP-2 are next, in parallel.
+> **Status:** 🚧 **BUILDING.** PJP-0 (this spec) merged on 2026-11-02 (`4bbe7c5b4`). PJP-1 (pills, swatches and six hues) merged on 2026-11-02 and reaches production at the 21:30 UTC release. PJP-2 and PJP-4 are in review.
 
 > **Verified against code on 2026-11-02 at `c8b31dcbf`.** Each path in §8 was read on that commit. The production facts in §2 come from the gateway journal and the database of 2026-11-02.
 

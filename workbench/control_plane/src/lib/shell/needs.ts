@@ -211,14 +211,16 @@ function byHref(
  * opens Approvals and reads the proposal first.
  */
 export const KIND_ORDER: readonly NeedsKind[] = [
+  // RX-7: a reminder that fired and waits on the member comes first, so the
+  // server's cut to 30 rows cannot drop it (`needs.py` `KIND_ORDER`).
+  "reminder_due",
+  "reminder_check",
   "overdue",
   "approval",
   "due_today",
   "notification",
   "needs_reply",
-  // WS-66 RM-2b: the member's own reminders, last of the needs kinds.
-  "reminder_due",
-  "reminder_check",
+  // WS-66 RM-2b: a reminder that Metorite stopped checking is the last kind.
   "reminder_unconfirmed",
 ];
 

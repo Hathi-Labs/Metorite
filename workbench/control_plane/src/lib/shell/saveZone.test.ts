@@ -79,8 +79,10 @@ describe("saveBrowserZone", () => {
     vi.stubGlobal("fetch", fetcher);
     await saveBrowserZone("m|o", KOLKATA);
     expect(writes).toEqual([{ timezone: KOLKATA }]);
-    expect(fetcher.mock.calls[0][0]).toBe("/api/tasks/settings");
-    expect(fetcher.mock.calls[1][0]).toBe("/api/tasks/settings");
+    // RX-7: the route needs no app feature. `/api/tasks/settings` does.
+    // Mutation: point `memberZone.ts` back at `/api/tasks/settings`, and this fails.
+    expect(fetcher.mock.calls[0][0]).toBe("/api/auth/me/zone");
+    expect(fetcher.mock.calls[1][0]).toBe("/api/auth/me/zone");
   });
 
   it("writes nothing over a zone that is not the default", async () => {
@@ -108,7 +110,15 @@ describe("saveBrowserZone", () => {
 });
 
 describe("the shell", () => {
-  it("runs the save once for a signed-in member who holds the Tasks feature", () => {
-    expect(shell()).toMatch(/useSaveZone\(inShell \? signedInAs : null, cacheOrg, canUseFeature\(access, "tasks"\)\)/);
+  it("runs the save once for a signed-in member, with no feature test", () => {
+    expect(shell()).toMatch(/useSaveZone\(inShell \? signedInAs : null, cacheOrg\)/);
+    expect(shell()).not.toMatch(/useSaveZone\([^)]*canUseFeature/);
+  });
+
+  it("is the one rule that every client asks before it writes a zone (RX-7)", () => {
+    const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+    // Mutation: write `browserTimeZone()` in either place again, and this fails.
+    expect(read("../../app/tasks/lib/taskStore.ts")).toContain("zoneToSave(settings.timezone, browserTimeZone())");
+    expect(read("../../app/calendar/CalendarView.tsx")).toContain("zoneToSave(settings.timezone, tz)");
   });
 });

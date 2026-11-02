@@ -32,7 +32,7 @@ import {
   parseFieldValue,
   personOf,
 } from "@/lib/cardFields";
-import { statusAccent } from "@/lib/statusAccent";
+import { accentForHue, resolveHue, statusAccent } from "@/lib/statusAccent";
 import { categoryLabel } from "@/lib/statusCategory";
 
 /** One short name with no mark: a lane's name or a category key. */
@@ -48,7 +48,7 @@ const LANE_WORD = /^[\p{L}\p{N}][\p{L}\p{N} _&/-]{0,39}$/u;
 function asChip(item: ValueItem, kind: FieldKind): boolean {
   if (item.named) return true;
   const text = item.text.trim();
-  if (kind === "category" || kind === "status") return LANE_WORD.test(text) && formatPlain(text) !== "none";
+  if (kind === "category" || kind === "status" || kind === "color") return LANE_WORD.test(text) && formatPlain(text) !== "none";
   if (kind === "person") return personOf(text).email !== undefined;
   return false;
 }
@@ -82,6 +82,17 @@ export function ValueElement({ item, kind }: { item: ValueItem; kind: FieldKind 
       return (
         <EntityPill fit kind="status" label={categoryLabel(text)} accent={statusAccent({ category: text, name: text })} />
       );
+    case "color": {
+      // PJP-1: a swatch in the hue, and the hue's name. A hex code maps by
+      // the same rule as the server (`resolveHue`).
+      const hue = resolveHue({ color: text });
+      return (
+        <span className="inline-flex items-center gap-1.5 text-foreground">
+          <span aria-hidden className={`inline-block size-2.5 shrink-0 rounded-full ${accentForHue(hue).dot}`} />
+          {formatWords(hue)}
+        </span>
+      );
+    }
     case "person": {
       if (text.startsWith("agent:")) return <EntityPill fit kind="agent" label={text.slice(6)} />;
       // "Priya (priya@x.io)" is a name and an address, never one label.

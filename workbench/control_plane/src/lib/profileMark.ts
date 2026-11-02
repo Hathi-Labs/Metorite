@@ -29,12 +29,26 @@ export function profileUsedIn(
 }
 
 /**
+ * True when *viewerEmail* is the member who ran the turn (`runMemberEmail`).
+ * A turn with no run member is a live turn of this browser, and its reader
+ * started it. With no reader the answer is true. A receipt of a reminder asks
+ * this: the reminder belongs to the member who ran the turn (RX-7).
+ */
+export function ranByViewer(
+  message: { runMemberEmail?: string },
+  viewerEmail: string | undefined,
+): boolean {
+  const viewer = (viewerEmail ?? "").trim().toLowerCase();
+  const runner = (message.runMemberEmail ?? "").trim().toLowerCase();
+  return !viewer || !runner || runner === viewer;
+}
+
+/**
  * True when the bubble draws the mark under *message* for *viewerEmail*.
  *
  * An assistant turn with the event draws it when there is no reader, or when
- * the reader is the member who ran the turn (`runMemberEmail`). A turn with
- * no run member is a live turn of this browser, and its reader started it.
- * A turn that names another member draws none.
+ * the reader is the member who ran the turn (`ranByViewer`). A turn that names
+ * another member draws none.
  */
 export function profileMarkShown(
   message: {
@@ -47,7 +61,5 @@ export function profileMarkShown(
   if (message.role !== "assistant" || !profileUsedIn(message.customEvents)) {
     return false;
   }
-  const viewer = (viewerEmail ?? "").trim().toLowerCase();
-  const runner = (message.runMemberEmail ?? "").trim().toLowerCase();
-  return !viewer || !runner || runner === viewer;
+  return ranByViewer(message, viewerEmail);
 }

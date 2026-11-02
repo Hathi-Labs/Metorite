@@ -16,9 +16,14 @@
  * other saved value stays. This code never overwrites a zone that is not the
  * default. A browser that reports UTC has nothing better to save.
  *
- * The read and the write are `/tasks/settings`, the one store of the zone, and
- * that router needs `feature:tasks`. So a member who does not hold it stays on
- * the default, and the caller does not run this for them.
+ * The read and the write go to `/api/auth/me/zone` (`memberZone.ts`, RX-7).
+ * That route needs a signed-in member and no app feature, so a member without
+ * `feature:tasks` gets a saved zone too. It writes the same column as
+ * `/tasks/settings`, through the one write of the settings row.
+ *
+ * `zoneToSave` is the ONE rule for replacing a zone. `taskStore.hydrate` and
+ * `CalendarView` ask it before they write, so no client overwrites a zone that
+ * the member chose in the Calendar settings (RX-7).
  *
  * A failed read or write leaves no mark, so the next page load tries again. It
  * never reaches the member: this is a background save with nothing to show.
@@ -28,8 +33,9 @@
 
 import { useEffect } from "react";
 
-import { fetchTaskSettings, updateTaskSettings } from "@/app/tasks/lib/api";
 import { browserTimeZone } from "@/app/tasks/lib/utils";
+
+import { readMemberZone, writeMemberZone } from "./memberZone";
 
 /** The column default of `user_settings.timezone`. It may never be a choice. */
 const DEFAULT_ZONE = "UTC";
@@ -72,21 +78,17 @@ export async function saveBrowserZone(
 ): Promise<void> {
   if (checked(mark)) return;
   try {
-    const zone = zoneToSave((await fetchTaskSettings()).timezone, browser);
-    if (zone) await updateTaskSettings({ timezone: zone });
+    const zone = zoneToSave(await readMemberZone(), browser);
+    if (zone) await writeMemberZone(zone);
     setChecked(mark);
   } catch {
     // No mark: the next page load tries again.
   }
 }
 
-/** Save the zone once for a signed-in member who holds `feature:tasks`. */
-export function useSaveZone(
-  member: string | null,
-  org: string | null,
-  allowed: boolean,
-): void {
+/** Save the zone once for a signed-in member. No app feature is needed (RX-7). */
+export function useSaveZone(member: string | null, org: string | null): void {
   useEffect(() => {
-    if (member && org && allowed) void saveBrowserZone(`${member}|${org}`);
-  }, [member, org, allowed]);
+    if (member && org) void saveBrowserZone(`${member}|${org}`);
+  }, [member, org]);
 }

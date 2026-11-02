@@ -30,14 +30,13 @@ import { useToast } from "@/components/ui/Toast";
 import {
   PAST_FIELD_WORDS,
   defaultWhen,
-  exactWhen,
   gridZone,
   laterPresets,
   wallInputs,
   zonedToIso,
   type ZonedTime,
 } from "@/lib/reminderClock";
-import { REMINDER_TITLE_MAX, createReminder } from "@/lib/reminderWrite";
+import { REMINDER_TITLE_MAX, createReminder, createdWords } from "@/lib/reminderWrite";
 
 /** The checked time of the form, or the words under its field. Pure. */
 export function checkRemindMe(a: {
@@ -112,7 +111,7 @@ export function RemindMeModal({
       toast.show({
         key: "task-reminder",
         variant: "success",
-        title: `Reminder set for ${exactWhen(check.when.ms, zone)}`,
+        title: createdWords(got, check.when, zone),
       });
       onClose();
     } finally {
