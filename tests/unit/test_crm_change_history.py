@@ -717,6 +717,159 @@ async def test_the_undo_refuses_a_changed_mode_and_a_newer_change(ns, app_engine
                 i=ids["open"]) == "C"
 
 
+def _undo_code(r: Any) -> tuple[int, str | None]:
+    detail = r.json().get("detail") if r.status_code >= 400 else None
+    return r.status_code, (detail or {}).get("code") if isinstance(detail, dict) else None
+
+
+def _create_row(p: Any, org: str, area: str) -> Any:
+    return next(r for r in _rows(p, org) if r.area == area and r.action == "create")
+
+
+@_DB_GATE
+async def test_the_undo_of_a_created_stage_that_changed_since_is_refused(
+    ns, app_engine,  # noqa: F811
+) -> None:
+    """P2a (fix round 1). Create a stage, rename it, then undo the create:
+    409 ``changed_since``, and the stage and its new name stay. Undo the
+    rename first, and then the Undo of the create removes the stage."""
+    _settings(ns, ns.org_a, "native")
+    admin = _admin(ns.org_a)
+    made = await _call(ns, admin, "POST", "/crm/statuses/deal", {"name": "Demo", "type": "open"})
+    assert made.status_code == 201, made.text
+    stage = made.json()["id"]
+    assert (await _call(ns, admin, "PATCH", f"/crm/statuses/deal/{stage}",
+                        {"name": "Demo 2"})).status_code == 200
+    create = _create_row(ns, ns.org_a, "deal_stage")
+    refused = await _call(ns, admin, "POST", f"/crm/change-history/{create.id}/undo")
+    assert _undo_code(refused) == (409, "changed_since"), refused.text
+    assert _one(ns, "SELECT name FROM crm_deal_statuses WHERE id = CAST(:i AS uuid)",
+                i=stage) == "Demo 2"
+    assert len(_rows(ns, ns.org_a)) == 2
+    assert all(r.undone_by is None for r in _rows(ns, ns.org_a))
+    rename = next(r for r in _rows(ns, ns.org_a) if r.action == "change")
+    assert (await _call(ns, admin, "POST",
+                        f"/crm/change-history/{rename.id}/undo")).status_code == 200
+    done = await _call(ns, admin, "POST", f"/crm/change-history/{create.id}/undo")
+    assert done.status_code == 200, done.text
+    assert _one(ns, "SELECT count(*) FROM crm_deal_statuses WHERE id = CAST(:i AS uuid)",
+                i=stage) == 0
+
+
+@_DB_GATE
+async def test_the_undo_of_a_created_lost_reason_that_changed_since_is_refused(
+    ns, app_engine,  # noqa: F811
+) -> None:
+    """P2a (fix round 1): a lost reason, relabelled after its create."""
+    _settings(ns, ns.org_a, "native")
+    admin = _admin(ns.org_a)
+    made = await _call(ns, admin, "POST", "/crm/lost-reasons", {"label": "Budget"})
+    assert made.status_code == 201, made.text
+    reason = made.json()["id"]
+    assert (await _call(ns, admin, "PATCH", f"/crm/lost-reasons/{reason}",
+                        {"label": "Budget 2"})).status_code == 200
+    create = _create_row(ns, ns.org_a, "lost_reason")
+    refused = await _call(ns, admin, "POST", f"/crm/change-history/{create.id}/undo")
+    assert _undo_code(refused) == (409, "changed_since"), refused.text
+    assert _one(ns, "SELECT label FROM crm_lost_reasons WHERE id = CAST(:i AS uuid)",
+                i=reason) == "Budget 2"
+    assert len(_rows(ns, ns.org_a)) == 2
+    assert all(r.undone_by is None for r in _rows(ns, ns.org_a))
+
+
+@_DB_GATE
+async def test_the_undo_of_a_created_view_that_changed_since_or_went_is_refused(
+    ns, app_engine,  # noqa: F811
+) -> None:
+    """P2a and P3e (fix round 1): a view renamed after its create is a 409
+    ``changed_since``. A view that is gone is a 409 ``gone``, not a 404."""
+    _settings(ns, ns.org_a, "native")
+    admin = _admin(ns.org_a)
+    made = await _call(ns, admin, "POST", "/crm/views", {"entity": "deals", "name": "Hot"})
+    assert made.status_code == 201, made.text
+    view = made.json()["id"]
+    assert (await _call(ns, admin, "PATCH", f"/crm/views/{view}",
+                        {"name": "Hot 2"})).status_code == 200
+    create = _create_row(ns, ns.org_a, "view")
+    refused = await _call(ns, admin, "POST", f"/crm/change-history/{create.id}/undo")
+    assert _undo_code(refused) == (409, "changed_since"), refused.text
+    assert _one(ns, "SELECT name FROM crm_views WHERE id = CAST(:i AS uuid)", i=view) == "Hot 2"
+    assert len(_rows(ns, ns.org_a)) == 2
+    assert all(r.undone_by is None for r in _rows(ns, ns.org_a))
+    assert (await _call(ns, admin, "DELETE", f"/crm/views/{view}")).status_code == 200
+    gone = await _call(ns, admin, "POST", f"/crm/change-history/{create.id}/undo")
+    assert _undo_code(gone) == (409, "gone"), gone.text
+    assert len(_rows(ns, ns.org_a)) == 3
+
+
+def _rules_on(monkeypatch: Any) -> None:
+    """The flags of the business rules: the mirror, the catalogue, the
+    questions and the answer-first list, each for every org."""
+    from acb_common import get_settings
+
+    settings = get_settings()
+    for name, value in {
+        "crm_mirror": True, "crm_mirror_orgs": "*", "crm_catalogue_orgs": "*",
+        "crm_questions_orgs": "*", "crm_answer_first_orgs": "*",
+    }.items():
+        monkeypatch.setattr(settings, name, value, raising=False)
+
+
+@_DB_GATE
+async def test_the_undo_of_a_created_rule_that_changed_since_is_refused(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """P2a (fix round 1): an org rule whose words changed after its create."""
+    _rules_on(monkeypatch)
+    _settings(ns, ns.org_a, "mirror")
+    admin = _admin(ns.org_a)
+    made = await _call(ns, admin, "POST", "/crm/rules",
+                       {"body": "All amounts net of GST", "scope": "org"})
+    assert made.status_code == 200, made.text
+    rule = made.json()["id"]
+    assert (await _call(ns, admin, "PATCH", f"/crm/rules/{rule}",
+                        {"body": "All amounts with GST"})).status_code == 200
+    create = _create_row(ns, ns.org_a, "rule")
+    refused = await _call(ns, admin, "POST", f"/crm/change-history/{create.id}/undo")
+    assert _undo_code(refused) == (409, "changed_since"), refused.text
+    assert _one(ns, "SELECT body FROM crm_business_rules WHERE id = CAST(:i AS uuid)",
+                i=rule) == "All amounts with GST"
+    assert len(_rows(ns, ns.org_a)) == 2
+    assert all(r.undone_by is None for r in _rows(ns, ns.org_a))
+
+
+def _pipeline(p: Any, org: str, name: str = "Sales") -> str:
+    return str(_one(
+        p, "INSERT INTO crm_pipelines (organization_id, name, is_default) "
+           "VALUES (CAST(:o AS uuid), :n, true) RETURNING id", o=org, n=name))
+
+
+@_DB_GATE
+async def test_the_undo_of_an_added_pipeline_stage_that_moved_since_is_refused(
+    ns, app_engine,  # noqa: F811
+) -> None:
+    """P2a (fix round 1): a stage put in a pipeline, taken out, and put back
+    at another place. The Undo of the first add is a 409, and the stage stays."""
+    _settings(ns, ns.org_a, "native")
+    ids = _seed(ns, ns.org_a)
+    pipeline = _pipeline(ns, ns.org_a)
+    admin = _admin(ns.org_a)
+    base = f"/crm/pipelines/{pipeline}/stages"
+    assert (await _call(ns, admin, "POST", base,
+                        {"status_id": ids["next"], "position": 3})).status_code == 201
+    first = _create_row(ns, ns.org_a, "pipeline_stage")
+    assert (await _call(ns, admin, "DELETE", f"{base}/{ids['next']}")).status_code == 200
+    assert (await _call(ns, admin, "POST", base,
+                        {"status_id": ids["next"], "position": 7})).status_code == 201
+    refused = await _call(ns, admin, "POST", f"/crm/change-history/{first.id}/undo")
+    assert _undo_code(refused) == (409, "changed_since"), refused.text
+    assert _one(ns, "SELECT position FROM crm_pipeline_stages "
+                    "WHERE pipeline_id = CAST(:pid AS uuid) AND status_id = CAST(:sid AS uuid)",
+                pid=pipeline, sid=ids["next"]) == 7
+    assert len(_rows(ns, ns.org_a)) == 3
+    assert all(r.undone_by is None for r in _rows(ns, ns.org_a))
+
+
 @_DB_GATE
 async def test_a_private_view_shows_to_its_owner_only_and_a_member_reads_their_own(
     ns, app_engine,  # noqa: F811

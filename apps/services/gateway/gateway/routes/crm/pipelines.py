@@ -392,8 +392,15 @@ async def _undo_stage(db: Any, user: Any, logged: Logged) -> None:
     if await load_row(db, "crm_pipelines", pipeline_id) is None:
         raise change_log.gone(logged.area)
     if logged.action == change_log.CREATE:
-        status_id = str((logged.after or {}).get("status_id") or "")
-        if (await db.execute(text(_PLACE_SQL), {"p": pipeline_id, "s": status_id})).first() is None:
+        after = logged.after or {}
+        status_id = str(after.get("status_id") or "")
+        place = (await db.execute(text(_PLACE_SQL), {"p": pipeline_id, "s": status_id})).first()
+        # The stage must still sit in the pipeline at the place of this
+        # change. The name of the stage in "after" is for the reader only.
+        if place is None or not change_log.same_values(
+            {"status_id": status_id, "position": int(place.position or 0)},
+            {k: after[k] for k in ("status_id", "position") if k in after},
+        ):
             raise change_log.changed_since()
         await remove_stage_in(db, user, pipeline_id, status_id, undoes=logged.id)
         return

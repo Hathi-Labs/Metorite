@@ -550,21 +550,25 @@ async def _undo_view(db: Any, user: Any, logged: Logged) -> None:
     """A create goes, a change goes back, and a deleted view comes back.
 
     Each path keeps the owner rule of the route. A deleted view comes back
-    only for its owner, or for an admin when the view was shared.
+    only for its owner, or for an admin when the view was shared. A view
+    that is gone is a 409 ``gone``, and a view that changed again since the
+    create or the change is a 409 ``changed_since``.
     """
     view_id = str(logged.entity_id or "")
-    if logged.action == change_log.CREATE:
-        await delete_view_in(db, user, view_id, undoes=logged.id)
-        return
-    if logged.action == change_log.CHANGE:
+    if logged.action in (change_log.CREATE, change_log.CHANGE):
+        # A create and a change alike: the view must still be there, with
+        # the values that this change left. Else 409, and nothing moves.
         current = (await db.execute(
             text(f"SELECT {_COLUMNS} FROM crm_views WHERE id = CAST(:id AS uuid)"),
-            {"id": view_id},
+            {"id": checked_uuid(view_id, "id")},
         )).first()
         if current is None:
             raise change_log.gone(logged.area)
         if not change_log.same_values(_snapshot(current), logged.after):
             raise change_log.changed_since()
+        if logged.action == change_log.CREATE:
+            await delete_view_in(db, user, view_id, undoes=logged.id)
+            return
         await patch_view_in(
             db, user, view_id, ViewPatch(**(logged.before or {})), undoes=logged.id,
         )

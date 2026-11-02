@@ -31,7 +31,9 @@ database said no" into "Proposal still has 4 deals in it".
 and a PATCH of a status or a lost reason write one row through
 ``change_log.log_change``, in the same transaction, at the ``team`` level of
 the ladder. A refused write (409, 422) writes none, and a PATCH that changes
-no value writes none. The Undo of a create deletes the row through the
+no value writes none. Each Undo first checks that the row still holds the
+values of the change, so a row that changed again since is a 409
+``changed_since``. The Undo of a create deletes the row through the
 helper of the DELETE route, and it refuses while records name the row. The
 Undo of a PATCH writes the old values through :func:`patch_status_in` or
 :func:`patch_lost_reason_in`, the helpers of the PATCH routes. The DELETE
@@ -850,10 +852,14 @@ async def _current(db: Any, table: str, record_id: str | None, area: str) -> Any
 
 @change_log.undoes("deal_stage", "lead_status")
 async def _undo_status(db: Any, user: Any, logged: Logged) -> None:
-    """A create goes, unless records sit in it. A PATCH goes back."""
+    """A create goes, unless records sit in it. A PATCH goes back. Each path
+    first checks that the status still holds the values of this change: a
+    status that changed again since is a 409, and the create stays."""
     kind = _KIND_OF_AREA[logged.area]
     table, _ = _kind(kind)
     row = await _current(db, table, logged.entity_id, logged.area)
+    if not change_log.same_values(_snapshot(row, STATUS_LOG_KEYS), logged.after):
+        raise change_log.changed_since()
     if logged.action == change_log.CREATE:
         held = await status_in_use(db, kind, str(row.id))
         if held:
@@ -869,8 +875,6 @@ async def _undo_status(db: Any, user: Any, logged: Logged) -> None:
             before=_snapshot(row, STATUS_LOG_KEYS),
         ), undoes=logged.id)
         return None
-    if not change_log.same_values(_snapshot(row, STATUS_LOG_KEYS), logged.after):
-        raise change_log.changed_since()
     await patch_status_in(
         db, user, kind, str(row.id), dict(logged.before or {}), undoes=logged.id,
     )
@@ -879,8 +883,11 @@ async def _undo_status(db: Any, user: Any, logged: Logged) -> None:
 
 @change_log.undoes("lost_reason")
 async def _undo_lost_reason(db: Any, user: Any, logged: Logged) -> None:
-    """A create goes, unless a record cites it. A PATCH goes back."""
+    """A create goes, unless a record cites it. A PATCH goes back. Each path
+    first checks that the reason still holds the values of this change."""
     row = await _current(db, "crm_lost_reasons", logged.entity_id, logged.area)
+    if not change_log.same_values(_snapshot(row, REASON_LOG_KEYS), logged.after):
+        raise change_log.changed_since()
     if logged.action == change_log.CREATE:
         held = await reason_in_use(db, str(row.id))
         if held:
@@ -896,8 +903,6 @@ async def _undo_lost_reason(db: Any, user: Any, logged: Logged) -> None:
             before=_snapshot(row, REASON_LOG_KEYS),
         ), undoes=logged.id)
         return None
-    if not change_log.same_values(_snapshot(row, REASON_LOG_KEYS), logged.after):
-        raise change_log.changed_since()
     await patch_lost_reason_in(
         db, user, str(row.id), dict(logged.before or {}), undoes=logged.id,
     )

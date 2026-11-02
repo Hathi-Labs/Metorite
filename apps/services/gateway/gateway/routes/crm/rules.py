@@ -506,7 +506,9 @@ async def remove_rule(rule_id: str, user: UserContext = Depends(get_current_user
 @change_log.undoes("rule")
 async def _undo_rule(db: Any, user: Any, logged: Logged) -> None:
     """A new rule goes, and a change takes the old words back. Each path
-    has the guards of the routes: the flags, Mirror mode and the owner."""
+    has the guards of the routes: the flags, Mirror mode and the owner.
+    Each path first checks that the rule still holds the values of this
+    change, so a rule that changed again since is a 409 and stays."""
     org = _org_or_off(user)
     if not crm_mirror_allowed(org):
         raise HTTPException(status_code=404, detail="Not Found")
@@ -515,6 +517,9 @@ async def _undo_rule(db: Any, user: Any, logged: Logged) -> None:
     current = (await db.execute(text(_ONE_SQL), {"org": org, "id": rule_id})).first()
     if current is None:
         raise change_log.gone(logged.area)
+    now = {"scope": _scope_word(current), "slug": str(current.slug), "body": str(current.body)}
+    if not change_log.same_values(now, logged.after):
+        raise change_log.changed_since()
     if logged.action == change_log.CREATE:
         row = await remove_rule_in(db, org, user, rule_id)
         scope = _scope_word(row)
@@ -526,8 +531,6 @@ async def _undo_rule(db: Any, user: Any, logged: Logged) -> None:
             private_to=None if scope == SCOPE_ORG else str(row.member_email or ""),
         ), undoes=logged.id)
         return
-    if not change_log.same_values({"body": str(current.body)}, logged.after):
-        raise change_log.changed_since()
     body = _body_or_422((logged.before or {}).get("body"))
     await change_rule_in(db, org, user, rule_id, body, undoes=logged.id)
 
