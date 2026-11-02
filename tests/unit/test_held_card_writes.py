@@ -90,6 +90,8 @@ OFF_PROJECTS = frozenset({
     "merge_tasks", "move_project", "nudge_task", "remove_report_recipient", "rename_area",
     "report_delete", "revert_activity", "revoke_access", "set_report_schedule",
     "set_status_set", "unarchive_project",
+    # WS-ALN ALN-4, off in a held chat as every class C tool but promote_reminder.
+    "pin_authority", "unpin_authority",
 })
 
 #: The class A Projects tools that write a file of the chat. They stay.
@@ -405,7 +407,8 @@ async def test_a_chat_that_read_mail_builds_each_project_pack_with_the_table(sto
     assert tools >= KEPT_PROJECTS and tools >= CHAT_FILES
     assert not tools & OFF_PROJECTS
     reminders = {_name(t) for t in built["projects-reminders"].tools}
-    assert reminders == set(SKILL_FAMILIES["projects-reminders"]["tools"])
+    # The class C tools of this pack (the authority pins) are off in a held chat.
+    assert reminders == set(SKILL_FAMILIES["projects-reminders"]["tools"]) - OFF_PROJECTS
 
 
 async def test_a_held_load_of_the_crm_pack_keeps_the_nine_tools(store, monkeypatch) -> None:
