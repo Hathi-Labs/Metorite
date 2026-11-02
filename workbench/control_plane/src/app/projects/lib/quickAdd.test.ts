@@ -7,12 +7,16 @@
  * create body can carry people.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { dayKey } from "./calendar";
 import { UNSET } from "./grouping";
 import {
   EMPTY_PLAN,
+  dueDayOf,
   dueInstantForDay,
   mergePlans,
   quickAddPrefill,
@@ -88,6 +92,28 @@ describe("quickAddPrefill per axis", () => {
   });
 });
 
+describe("dueDayOf — the date input of a due value", () => {
+  it("reads a pick back as the day that was picked", () => {
+    expect(dueDayOf(dueInstantForDay("2026-11-06"))).toBe("2026-11-06");
+  });
+
+  it("keeps a plain date, which a model draft holds", () => {
+    expect(dueDayOf("2026-11-06")).toBe("2026-11-06");
+  });
+
+  it("reads an instant as a day of this browser, not as its UTC date", () => {
+    // West of UTC the late hour is the next UTC date, and east of it the early
+    // hour is the UTC date before.
+    expect(dueDayOf(new Date(2026, 10, 6, 23, 30).toISOString())).toBe("2026-11-06");
+    expect(dueDayOf(new Date(2026, 10, 6, 0, 30).toISOString())).toBe("2026-11-06");
+  });
+
+  it("gives an empty input for no value and for a value that does not parse", () => {
+    expect(dueDayOf("")).toBe("");
+    expect(dueDayOf("next week")).toBe("");
+  });
+});
+
 describe("mergePlans — a lane cell is two contexts at once", () => {
   it("merges a column's field with a lane's field", () => {
     const merged = mergePlans(
@@ -121,5 +147,22 @@ describe("mergePlans — a lane cell is two contexts at once", () => {
 
   it("merging nothing is still a valid plan", () => {
     expect(mergePlans()).toEqual({ create: {} });
+  });
+});
+
+// RX-7 item 7. A due value is a noon instant. Its first ten characters are the
+// UTC date, which is the day before east of UTC+12. Each date input reads the
+// day through `dueDayOf`. Mutation: write `.slice(0, 10)` on `due_at`, `dueAt`
+// or `expectedBy` in one of the three files, and this fails.
+describe("the date inputs read a due value through dueDayOf", () => {
+  const read = (rel: string) => readFileSync(join(__dirname, "..", "..", "..", rel), "utf8");
+  it.each([
+    "app/tasks/components/ItemDetail.tsx",
+    "app/projects/components/TaskBody.tsx",
+    "app/projects/components/TableView.tsx",
+  ])("%s", (rel) => {
+    const src = read(rel);
+    expect(src).toContain("dueDayOf(");
+    expect(src).not.toMatch(/(due_at|dueAt|expectedBy)\s*\.slice\(0, 10\)/);
   });
 });

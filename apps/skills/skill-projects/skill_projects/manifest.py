@@ -141,6 +141,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/nodes/{project_id}/archive", "archive_project", "C"),
     Route("POST", "/projects/nodes/{project_id}/unarchive", "unarchive_project", "C"),
     Route("GET", "/projects/nodes/{project_id}/grants", "project_access", "A"),
+    # RX-1: who can see a project, for the card of a held chat.
+    Route("GET", "/projects/nodes/{project_id}/audience", "project_access", "A"),
     # WS-64 OP-6b (D-OP-9 reverses D-PM-40): one grant per card. The route
     # decides who may write it (D-OP-11, `authority.assert_may_write_grant`).
     Route("POST", "/projects/nodes/{project_id}/grants", "grant_access", "C"),
@@ -306,9 +308,13 @@ MANIFEST: tuple[Route, ...] = (
     # The member's private reminders (calendar_events_reminders.md §5.8).
     # RM-3 built the tools. The writes are class B, because each one is a
     # reversible write on the member's own record, and `reopen` is the Undo
-    # of a done or a drop. Each write shows one card until CF-6 gives it an
-    # act-at-once door with Undo (D-CF-5). The promote makes a task and has
-    # no undo, so it is class C. The route finds a reminder by its OWNER only.
+    # of a done or a drop. RX-2 (2026-11-01): these five tools act at once
+    # in a chat that read no outside mail, with an Undo on the receipt, and
+    # show one card in any other chat (`writes._reminder_acts_at_once`,
+    # `egress.write_must_show_card`). They stay class B:
+    # the class marks "a reversible write", and the one reader decides the
+    # card. The promote makes a task and has no undo, so it is class C and
+    # always shows its card. The route finds a reminder by its OWNER only.
     Route("GET", "/projects/my/reminders", "list_reminders", "A"),
     Route("POST", "/projects/my/reminders", "set_reminder", "B"),
     Route("PATCH", "/projects/my/reminders/{reminder_id}", "update_reminder", "B"),
@@ -1178,6 +1184,10 @@ _TASK_PREFIX_REASON = (
 
 #: A field the chat does not set, and why. A reason names the tool or the
 #: rule that answers the need, so a reviewer can check the claim.
+#: RX-1: a field that the card of a chat that read outside mail sets from the rows
+#: it read. The model never names it.
+_HELD_CARD_REASON = "The card of a held chat sets it from the rows it read."
+
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
     ("GET", "/projects/tasks"): {
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
@@ -1275,6 +1285,12 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "mapping": _MAPPING_CARD_REASON,
     },
     ("POST", "/projects/nodes/{project_id}/status-set"): {"mapping": _MAPPING_CARD_REASON},
+    # RX-1: a held card reads these. No tool argument names them.
+    ("GET", "/projects/nodes/{project_id}/audience"): {
+        "people": _HELD_CARD_REASON,
+        "beyond": _HELD_CARD_REASON,
+    },
+    ("GET", "/projects/tasks/{task_id}/watchers"): {"audience": _HELD_CARD_REASON},
     ("PATCH", "/projects/types/{type_id}"): {"scope": _SCOPE_AT_CREATE_REASON},
     ("POST", "/projects/nodes/{project_id}/fields"): {
         "field_key": "The route makes the key from the name.",

@@ -489,6 +489,7 @@ export function AskField({
       >
       {foot ? <AskSheet open={sheet} /> : null}
       <div
+        data-guide="home.ask"
         onFocusCapture={() => setFocused(true)}
         onBlurCapture={() => setFocused(false)}
         className={

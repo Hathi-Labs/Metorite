@@ -68,6 +68,7 @@ from gateway.routes.projects.core import (
     STARTED_CATEGORY,
     _tenant_session,
     load_visible_task,
+    reader_day_start,
     resolve_visibility,
     router,
 )
@@ -165,9 +166,11 @@ async def pool_capacity(
         "holders": emails,
         "started_cat": STARTED_CATEGORY,
     }
+    day_from = await reader_day_start(db, vis.email)
     totals = {
         str(r.who): r
-        for r in (await db.execute(text(capacity_totals_sql(where)), params)).fetchall()
+        for r in (await db.execute(text(capacity_totals_sql(where)),
+                                   {**params, "day_start": day_from})).fetchall()
     }
     dated_params = {**params, "until": dated_until(today, horizon_days)}
     dated_params.pop("started_cat")

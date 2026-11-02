@@ -2268,7 +2268,7 @@ API, and EM-T4b adds the shared cap and the budget.
 
 Agent work that must land BEFORE the flip (review round 1, finding G). Neither item binds in `log`, the shipped mode.
 
-5. **The template fill at the budget. Decided and built (task 1128, 2026-11-01).** `_render_template` (`automation/actions.py`) never returns the raw template now. A fill that fails raises `TemplateFillFailed`. A spent budget (`LLMBudgetExhausted`), a failed model call and an answer with no text all fail the fill. Only that action does not run, and History shows the reason and the next step in plain words. The other actions of the rule still run. When one of them succeeds, the runner records the row as APPLIED with errors. Nothing retries the failed action. The subject of a rule draft fills BEFORE the thread check, because that check can trash the old draft. A failed fill keeps the old draft. Fence: `tests/unit/test_llm_empty_answers.py`.
+5. **The template fill at the budget. Decided and built (task 1128, 2026-11-01).** `_render_template` (`automation/actions.py`) never returns the raw template now. A fill that fails raises `TemplateFillFailed`. A spent budget (`LLMBudgetExhausted`), a failed model call and an answer with no text all fail the fill. Only that action does not run, and History shows the reason and the next step in plain words. The other actions of the rule still run. When one of them succeeds, the runner records the row as APPLIED with errors. Nothing retries the failed action. The subject of a rule draft fills BEFORE the thread check, because that check can trash the old draft. A failed fill keeps the old draft. **Follow-up (task 1128, 2026-11-02).** The thread check now only LOOKS before the model runs. It trashes the old unmodified draft after a good new draft exists, just before `create_draft`, and it looks again so an edit made while the model wrote still wins. A NO_DRAFT answer or an empty To keeps the old draft. The streaming drafter (`acompletion_stream_text`) takes a job, and a blank stream logs `acb_llm.empty_answer`. The rule draft and compose calls name the `writing` job. Fence: `tests/unit/test_llm_empty_answers.py`, `tests/unit/test_llm_jobs.py`.
 6. **One warning a day, not one a cycle.** In `enforce`, a spent mailbox logs WARNING lines on each cycle until UTC midnight. The lines are `decide.unavailable`, `email.classify_unavailable_skip` and `email.mark_thread_replied_failed`. Check the budget once for each job, and log once.
 7. **A timeout gives back spend that the model billed.** On a timeout, `_ask_all` gives back all its requests, also the ones that already answered (`llm_cap.py:303-309`). The drafter consult does the same for a whole agent run. In `enforce`, a mailbox whose calls keep running slow then never reaches its limit. Count the answered requests before the bound cancels them. In `log`, the same rule makes the count a little low for slow calls (re-verify of round 1, P2).
 8. **Shadow traffic shares the budget.** In `shadow`, the decide requests and the old call that acts spend one budget. In `enforce`, a shadow request can take the last unit, and the call that acts is then refused. Decide whether a shadow request counts.
@@ -15233,6 +15233,8 @@ Email app is not held (below), but a run that it calls can be.
 **A held run.** A run that binds `no_egress` is a held run. Two causes set it: a covered
 Projects run above it (H-236), or a chat session that read stranger mail (EM-G11d). A held run
 keeps only the delegation tools, the sandbox tools and the tools that say `open_world=False`.
+D169 adds the first-party writes of `egress.HELD_CARD_WRITE_TOOLS`, each behind its own card.
+It takes the other Projects and CRM writes out of a held chat.
 
 **The three classes.** The audit sorts each tool by what its code does, not by its name.
 
@@ -21116,7 +21118,7 @@ set match `CARD_BOUND_SEND_TOOLS`. Any new parameter makes it an egress tool aga
 | `fetch_page` and `web_search` | The URL carries data out. A card cannot show a URL as a safe act, because the member has no way to judge a query string. No card form is proposed |
 | The GitHub tools | They write to a service outside Metorite, and a repository can be public |
 | `save_memory`, `save_episode`, `save_agent_memory`, `save_org_memory`, `save_note` (`STORE_WRITES`) | A later run reads the store. A later run that holds a send tool can send what an injection parked there. A card for the member's own memory is possible later (open question 6) |
-| Any MCP tool, and any tool with no explicit `open_world=False` | The fail-closed rule of H-236 stays |
+| Any MCP tool, and any tool with no explicit `open_world=False` that is off the D169 list | The fail-closed rule of H-236 stays |
 | `create_rule`, `update_rule` and `run_rules` that widen an act | The rules have their own checks (`_outward_rule_refusal`, `_held_widening_refusal`). This section does not change them |
 
 ### 21.6 Remember and settings

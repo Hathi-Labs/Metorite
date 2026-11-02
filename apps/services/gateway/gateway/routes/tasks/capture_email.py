@@ -414,6 +414,17 @@ def _parse_dt(val: str) -> datetime | None:
         return None
 
 
+async def _draft_due(db: Any, uid: str, raw: str) -> datetime | None:
+    """The instant that a draft's due value stores (RX-5). A date with no time
+    is noon of that date in the member's zone (``personal.stored_due``). A bare
+    parse gives midnight UTC, which is the day before in a zone west of UTC.
+    Any other value parses as it always did."""
+    from gateway.routes.projects.personal import stored_due
+
+    stored = await stored_due(db, uid, raw)
+    return stored if isinstance(stored, datetime) else _parse_dt(stored)
+
+
 # ── Shared machinery (used by the one-click endpoint AND the popup steps) ─────
 
 _STOPWORDS = {
@@ -542,7 +553,7 @@ async def _route_and_persist(
             assignee, disposition = None, "INBOX"
 
     is_mine = disposition != "WAITING"
-    due_at = _parse_dt(draft.get("due_at", ""))
+    due_at = await _draft_due(db, uid, draft.get("due_at", ""))
     defer_until = _parse_dt(draft.get("defer_until", ""))
     is_hard = bool(due_at) and disposition in ("NEXT", "CALENDAR")
     clarified = disposition != "INBOX"
@@ -680,7 +691,7 @@ async def capture_from_email(
                 assignee, disposition = None, "INBOX"
 
         is_mine = disposition != "WAITING"
-        due_at = _parse_dt(draft.get("due_at", ""))
+        due_at = await _draft_due(db, uid, draft.get("due_at", ""))
         defer_until = _parse_dt(draft.get("defer_until", ""))
         # A due date the owner must hit (NEXT/CALENDAR) is a HARD date — it
         # belongs on the Calendar / deadline view. A WAITING item's due date is

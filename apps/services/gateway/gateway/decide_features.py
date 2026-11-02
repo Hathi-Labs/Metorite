@@ -117,6 +117,7 @@ __all__ = [
     "CRITERION_CLIP",
     "CRM_FEATURES",
     "CRM_PREFIX",
+    "DAY_PLAN_FEATURES",
     "DEFAULT_MODES",
     "FEATURES",
     "MODES",
@@ -186,6 +187,8 @@ ON_FEATURES: frozenset[str] = frozenset({
     "crm.map_stage",
     # WS-53 CRM-Q31-3: the catalogue step of the mapping pipeline.
     "crm.map_catalogue",
+    # Task 1338: the day plan keeps the LLM call as its fallback, so `on` is legal.
+    "my_day.day_plan",
 })
 
 #: WS-58 MD-6a-1: the eight My Day features (``my_day_feed.md`` §10.3), in
@@ -210,6 +213,14 @@ MY_DAY_FEATURES: tuple[str, ...] = (
 #: ``my_day_decide_orgs`` (``my_day_feed.md`` §10.9 item 5).
 MY_DAY_PREFIX = "my_day."
 
+#: Task 1338: the day plan of "Rebuild my day" (``routes/tasks/
+#: calendar_decide.py``). It is a ``my_day.`` feature, so it reads
+#: ``my_day_decide_orgs``, but it is not in :data:`MY_DAY_FEATURES`: that tuple
+#: is the eight cards of the feed, and ``test_feed_decide.py`` pins it. It is
+#: ``off`` by default. Unlike the feed features it may run ``on``, because
+#: the old LLM call answers whenever decide gives no answer.
+DAY_PLAN_FEATURES: tuple[str, ...] = ("my_day.day_plan",)
+
 #: WS-53 CRM-Q26: the CRM features (``crm_platform.md`` §18.11.2 item 1).
 #: They are not in :data:`FEATURES`, which is the email set: two email suites
 #: pin it, and the email start-up check :func:`configured_on` reads it. Each
@@ -232,7 +243,7 @@ CRM_FEATURES: tuple[str, ...] = (
 CRM_PREFIX = "crm."
 
 #: Every feature of the registry, email first.
-REGISTERED: tuple[str, ...] = FEATURES + MY_DAY_FEATURES + CRM_FEATURES
+REGISTERED: tuple[str, ...] = FEATURES + MY_DAY_FEATURES + DAY_PLAN_FEATURES + CRM_FEATURES
 
 #: The value of ``decide_feature_orgs`` that allows every organization.
 ALL_ORGS = "*"
@@ -997,6 +1008,7 @@ async def shadow[T](
     module_slug: str | None = None,
     features: Collection[str] | None = None,
     record: Record | None = None,
+    detach: bool = False,
 ) -> T:
     """Run the old call, and in ``shadow`` mode ask ``decide`` beside it.
 
@@ -1054,8 +1066,31 @@ async def shadow[T](
     except BaseException:
         task.cancel()
         raise
+    if detach:
+        # The member's answer leaves now. The shadow ends in the background,
+        # still bounded by SHADOW_BOUND_S, and logs when it ends. A strong
+        # reference keeps the task from collection.
+        bg = asyncio.create_task(
+            _finish_shadow(task, ids, result, compare, record))
+        _BACKGROUND.add(bg)
+        bg.add_done_callback(_BACKGROUND.discard)
+        return result
     # The task is bounded by SHADOW_BOUND_S from its start, so this wait adds
     # at most that much to the old answer.
+    await _finish_shadow(task, ids, result, compare, record)
+    return result
+
+
+#: Strong references to the detached shadow tasks (asyncio keeps weak ones).
+_BACKGROUND: set[asyncio.Task] = set()
+
+
+async def _finish_shadow(
+    task: asyncio.Task, ids: Mapping[str, Any], result: Any,
+    compare: Callable[[Any, Any], Comparison | list[Comparison]],
+    record: Record | None,
+) -> None:
+    """Wait for the shadow request, log the comparison and record it."""
     asked = await task
     if asked is not None:
         made = _log_comparison(ids, result, asked, compare)
@@ -1065,7 +1100,6 @@ async def shadow[T](
             except Exception as exc:  # a lost row never breaks the old path
                 _log.warning("decide.shadow_record_failed", **ids,
                              error_type=type(exc).__name__)
-    return result
 
 
 def _log_comparison(

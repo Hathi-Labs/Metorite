@@ -32,6 +32,7 @@ import {
   type PromoteFieldsState,
 } from "@/app/projects/components/PromoteFields";
 import { nameOf } from "@/app/projects/lib/destinations";
+import { dueInstantForDay } from "@/app/projects/lib/quickAdd";
 import { destinations, useCompanyTree } from "../lib/companyTree";
 import { PROMOTE_HINT, promotePlan } from "../lib/promote";
 
@@ -487,7 +488,7 @@ export function ClarifyPanel({
     // Actionable — Shape applies.
     const na = nextAction.trim();
     if (!na) return null;
-    const dueIso = when === "date" && dueAt ? new Date(dueAt).toISOString() : undefined;
+    const dueIso = when === "date" && dueAt ? dueInstantForDay(dueAt) : undefined;
     const delegateTo = owner === "delegate" ? (assignee ?? undefined) : undefined;
     if (owner === "delegate" && !delegateTo) return null; // must pick someone
 

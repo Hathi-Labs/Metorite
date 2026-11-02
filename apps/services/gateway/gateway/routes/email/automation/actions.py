@@ -677,13 +677,20 @@ async def _apply_rule_actions(
                 # one AI draft per thread — replace an unmodified prior draft,
                 # preserve one the user edited. Checked BEFORE generating so we
                 # don't waste an LLM call when preserving the user's draft.
+                # ⚠️ This is a LOOK. It trashes nothing. A NO_DRAFT answer or
+                # an empty To then leaves the old draft in place. The old
+                # draft is trashed below, after a good new draft exists
+                # (task 1128 follow-up, as the subject fill above).
                 tid = email.get("thread_id") or ""
+                replace_old = False
                 if tid and account_id and provider is not None:
-                    if await _resolve_existing_thread_draft(
-                            db, provider, account_id, tid) == "keep":
+                    verdict = await _resolve_existing_thread_draft(
+                        db, provider, account_id, tid, trash=False)
+                    if verdict == "keep":
                         _log.info("email.draft_skipped_existing",
                                   account_id=account_id)
                         continue
+                    replace_old = verdict == "replace"
                 # Static template wins; otherwise the orchestrating drafter
                 # (memory + sales/task-manager + thread history) writes a
                 # context-aware reply. Only the AI path needs the thread.
@@ -752,6 +759,14 @@ async def _apply_rule_actions(
                 # H-404: the Cc and the Bcc that the rule names go on the
                 # draft, as the card that saved the rule showed them.
                 cc, bcc = _action_copies(a)
+                # A good new draft exists, so the old unmodified one goes now.
+                # The call looks again: a member who edited the old draft
+                # while the model wrote keeps it.
+                if replace_old and await _resolve_existing_thread_draft(
+                        db, provider, account_id, tid) == "keep":
+                    _log.info("email.draft_skipped_existing",
+                              account_id=account_id)
+                    continue
                 draft_pid = await provider.create_draft(
                     to=[to], subject=subj, body_text=body,
                     reply_to_message_id=provider_msg_id,

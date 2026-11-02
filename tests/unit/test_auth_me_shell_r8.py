@@ -266,6 +266,42 @@ async def test_a_second_save_changes_only_the_layout(db) -> None:
 # ── The calendar seed survives the first write ─────────────────────────────
 
 
+async def test_the_first_zone_save_keeps_the_calendar_seed(db) -> None:
+    """RX-5: the shell saves the browser's zone for a member with no row. That
+    write makes the row, so it carries the seed, as the layout write does. A
+    second save changes the zone and leaves the hours."""
+    from gateway.routes.tasks.settings import (
+        UserSettingsPatch,
+        get_user_settings,
+        put_user_settings,
+    )
+
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    with db.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO people (id, name, email, status, skills, source, "
+            "source_key, organization_id, updated_by, updated_at, working_hours) "
+            "VALUES (gen_random_uuid(), 'Zone Seed', :e, 'active', ARRAY[]::text[], "
+            "'manual', :k, CAST(:o AS uuid), 'test', now(), "
+            "CAST(:wh AS jsonb))"),
+            {"e": email, "k": f"manual:{email}", "o": db.org_a,
+             "wh": '{"start": "11:00", "end": "19:00"}'})
+    async with tenant_engine_scope(_app_dsn(db)):
+        with _tenant(db.org_a):
+            seeded = await get_user_settings(user=user)
+            await put_user_settings(patch=UserSettingsPatch(timezone="Asia/Kolkata"), user=user)
+            saved = await get_user_settings(user=user)
+            await put_user_settings(patch=UserSettingsPatch(day_start_hour=6), user=user)
+            await put_user_settings(patch=UserSettingsPatch(timezone="Asia/Dubai"), user=user)
+            later = await get_user_settings(user=user)
+    assert seeded.day_start_hour == 10
+    assert (saved.timezone, saved.day_start_hour, saved.day_end_hour) == (
+        "Asia/Kolkata", seeded.day_start_hour, seeded.day_end_hour)
+    assert (later.timezone, later.day_start_hour) == ("Asia/Dubai", 6)
+
+
 async def test_the_first_write_keeps_the_calendar_seed(db) -> None:
     """``/tasks/settings`` seeds the day window from the People schedule while
     the member has no row. The layout write makes the row, so it carries the
