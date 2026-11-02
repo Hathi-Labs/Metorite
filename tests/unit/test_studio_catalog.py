@@ -295,6 +295,11 @@ class TestThePackageRows:
         assert {r["app"] for r in rows} == {PKG_A}
         assert all("uses" not in r for r in rows)
 
+    def test_a_stored_object_name_that_a2_refuses_gives_no_row(self, monkeypatch, db):
+        db.packages = [_pkg(PKG_A, ["items", "Items", "x" * 3000, "a.b", "ok_2"])]
+        names = {r["id"].split(":", 1)[1].rsplit(".", 1)[0] for r in _rows(db, monkeypatch)}
+        assert names == {"items", "ok_2"}
+
     def test_every_row_has_the_shape_of_the_catalog_and_a_named_one_adds_uses(
             self, monkeypatch, db):
         db.packages = [_pkg(PKG_A, ["items"], [("peek", "object:items.get", "Peek")])]

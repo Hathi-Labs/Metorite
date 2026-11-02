@@ -33,11 +33,13 @@ reports no availability.
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Annotated, Any
 
 from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common.app_manifests import door_ops, every_app
+from acb_common.studio_fields import NAME_PATTERN
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, OBJECT_OPS, parse_uses
 from fastapi import APIRouter, Depends, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session
@@ -143,6 +145,11 @@ async def catalog_rows() -> list[dict[str, Any]]:
     return [*_manifest_rows(), *_integration_rows(), *await _workflow_rows()]
 
 
+#: A stored object name that A2 would refuse gives no row. Only a write past the
+#: store can make one, and a row id must stay a short, plain name.
+_OBJECT_NAME = re.compile(NAME_PATTERN)
+
+
 def _object_row(package_id: str, name: str, op: str) -> dict[str, Any]:
     uses = f"object:{name}.{op}"
     return {
@@ -196,6 +203,8 @@ async def package_rows(
     rows: list[dict[str, Any]] = []
     for package in found:
         for name in package.objects:
+            if not _OBJECT_NAME.fullmatch(name):
+                continue
             rows.extend(_object_row(package.id, name, op) for op in OBJECT_OPS)
         for named in package.actions:
             row = _named_row(package.id, named, catalog)
