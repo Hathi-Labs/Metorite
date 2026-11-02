@@ -17,6 +17,7 @@
       "tests/unit/test_byok_disabled.py",
       "tests/unit/test_caddy_auth_gate.py",
       "tests/unit/test_chat_hardening.py",
+      "tests/unit/test_chat_parity.py",
       "tests/unit/test_chat_payload_identity_claims.py",
       "tests/unit/test_chat_summary.py",
       "tests/unit/test_chat_summary_private.py",
