@@ -88,6 +88,7 @@ __all__ = [
     "EGRESS_WITHHELD_ANSWER",
     "HELD_CARD_SEND_TOOLS",
     "HELD_CARD_WRITE_TOOLS",
+    "HELD_OWNER_CHAT_FILES",
     "HELD_PARAM_REASONS",
     "HELD_REFUSED_PARAMS",
     "HELD_WRITE_OWNERS",
@@ -1401,6 +1402,11 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
 #: own agent is the other: its own tool list can hold a write that no family
 #: names, so the rule reads that too (the ``owner`` of :func:`is_held_off_write`).
 HELD_WRITE_OWNERS: frozenset[str] = frozenset({"projects-assistant", "crm-assistant"})
+#: The tools of an owner's own agent that stay though no pack family names them:
+#: each sends only reads, and writes only a file of the chat, as
+#: ``tool_packs.CHAT_FILE_TOOLS``. ``crm_report`` says ``read_only=False`` so that
+#: an edited turn does not run it again unseen (``projects_ai_chat.md`` §14.10.9).
+HELD_OWNER_CHAT_FILES: frozenset[str] = frozenset({"crm_report"})
 
 
 def _pinned_params(name: str) -> frozenset[str] | None:
@@ -1514,7 +1520,7 @@ def is_held_off_write(item: Any, *, owner: str | None = None) -> bool:
     from acb_skills.tool_packs import CHAT_FILE_TOOLS
 
     name = item if isinstance(item, str) else tool_name(item)
-    if name in CHAT_FILE_TOOLS or not (
+    if name in CHAT_FILE_TOOLS or name in HELD_OWNER_CHAT_FILES or not (
             name in _owner_tool_names() or _own_tool_of(item, name, owner)):
         return False
     if not held_card_writes_on() or is_held_card_write(item):

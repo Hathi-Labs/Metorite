@@ -759,7 +759,7 @@ def test_each_write_of_the_crm_agent_is_in_the_table() -> None:
 
     wrote = {_name(t) for t in tools
              if not (TOOL_ANNOTATIONS.get(_name(t)) or {}).get("read_only")}
-    assert wrote == KEPT_CRM
+    assert wrote - eg.HELD_OWNER_CHAT_FILES == KEPT_CRM
 
 
 def test_a_new_write_of_an_owner_outside_a_family_is_off_in_its_run() -> None:
