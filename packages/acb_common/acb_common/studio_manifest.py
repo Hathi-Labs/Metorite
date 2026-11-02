@@ -103,6 +103,7 @@ MAX_DEPTH = 20  # the same bound as `_GENUI_MAX_DEPTH` in `acb_skills/write_arti
 # `rules` is an object key since C6 (a list beside `fields`). `state_machine` and `states`
 # stay refused, so a rule has one spelling.
 RESERVED_KEYS: dict[str, str] = {
+    "rules": "C6",
     "state_machine": "C6",
     "states": "C6",
     "formula": "C7",
@@ -439,7 +440,9 @@ def _scan(
         for k, v in node.items():
             here = [*loc, k]
             lk = str(k).lower()
-            if isinstance(k, str) and k in RESERVED_KEYS and key not in _DATA_KEYS:
+            in_object = k == "rules" and len(loc) == 2 and loc[0] == "objects"
+            if (isinstance(k, str) and k in RESERVED_KEYS and key not in _DATA_KEYS
+                    and not in_object):
                 out.append(_err(_path(here), _reserved(k, RESERVED_KEYS[k], "Key ")))
                 continue
             if lk in _COLOR_KEYS:

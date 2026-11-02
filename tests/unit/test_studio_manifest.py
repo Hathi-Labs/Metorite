@@ -143,7 +143,7 @@ def test_code_block_is_reserved_for_l1():
 
 @pytest.mark.parametrize(
     "key,slice_id",
-    [("state_machine", "C6"), ("states", "C6"), ("formula", "C7"), ("code", "L1")],
+    [("rules", "C6"), ("state_machine", "C6"), ("states", "C6"), ("formula", "C7"), ("code", "L1")],
 )
 def test_reserved_key(key, slice_id):
     d = doc()
@@ -152,11 +152,17 @@ def test_reserved_key(key, slice_id):
     assert f"`{key}` is reserved for slice {slice_id} and v1 does not accept it" in e.message
 
 
-def test_top_level_rules_is_not_a_v1_key() -> None:
-    """C6 lifted `rules` as an object key. At the top it is an unknown key."""
+def test_rules_is_lifted_in_an_object_only() -> None:
+    """C6 lifted `rules` at `objects[*].rules`. Elsewhere it stays reserved."""
     d = doc()
-    d["rules"] = []
-    one(d, "$.rules", contains="not a v1 manifest key")
+    d["contributes"] = {"rules": []}
+    one(d, "$.contributes.rules", contains="C6")
+    d = copy.deepcopy(EXAMPLE)
+    d["shell"]["rules"] = []
+    one(d, "$.shell.rules", contains="C6")
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"][0]["rules"] = []
+    one(d, "$.objects[0].fields[0].rules", contains="C6")
 
 
 _VISIT_MACHINE = {

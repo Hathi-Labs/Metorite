@@ -1008,3 +1008,42 @@ def test_the_manifest_uses_the_one_parser() -> None:
     assert "parse_rules" in src and "check_rules_fit" in src
     for second in ("def parse_rule", "def _parse_machine", "MAX_MOVES ="):
         assert second not in src, second
+
+
+# ── C6 fix round: the checkbox rule and a blank initial state ──────────────
+#
+#   F1. studio_rules._atom_holds: drop the line that reads an absent checkbox
+#       as false. test_a_checkbox_guard_follows_the_c2a_rule goes red.
+#   F2. studio_rules.with_initial: test `not in data` again.
+#       test_a_blank_state_on_a_create_takes_the_initial_state goes red.
+
+
+@pytest.mark.parametrize("op,value,data,holds", [
+    ("eq", False, {}, True), ("eq", False, {"urgent": False}, True),
+    ("eq", False, {"urgent": True}, False),
+    ("ne", True, {}, True), ("ne", True, {"urgent": False}, True),
+    ("ne", True, {"urgent": True}, False),
+    ("eq", True, {}, False), ("eq", True, {"urgent": True}, True),
+    ("eq", True, {"urgent": False}, False),
+    ("ne", False, {}, False), ("ne", False, {"urgent": True}, True),
+    ("ne", False, {"urgent": False}, False),
+])
+def test_a_checkbox_guard_follows_the_c2a_rule(
+        op: str, value: bool, data: dict[str, Any], holds: bool) -> None:
+    assert sr.guard_holds([sr.Atom("urgent", op, value)], data) is holds
+
+
+def test_is_empty_on_a_checkbox_still_means_no_value() -> None:
+    assert sr.guard_holds([sr.Atom("urgent", "is_empty")], {})
+    assert not sr.guard_holds([sr.Atom("urgent", "is_empty")], {"urgent": False})
+    assert sr.guard_holds([sr.Atom("urgent", "not_empty")], {"urgent": False})
+
+
+@pytest.mark.parametrize("data", [
+    {"status": None}, {}, {"status": ""}, {"status": "  "}])
+def test_a_blank_state_on_a_create_takes_the_initial_state(data: dict[str, Any]) -> None:
+    assert sr.with_initial((_machine(),), data)["status"] == "draft"
+
+
+def test_a_state_that_is_set_stays_on_a_create() -> None:
+    assert sr.with_initial((_machine(),), {"status": "sent"}) == {"status": "sent"}

@@ -752,12 +752,14 @@ def key_filter(rule: Rule, key: tuple[Any, ...]) -> list[dict[str, Any]]:
 
 def with_initial(rules: Sequence[Rule], data: Any) -> Any:
     """The data of a create, with ``initial`` in each machine field that it
-    leaves out. Any other data comes back as it is."""
+    leaves out or leaves blank (None, empty text). Any other data comes back
+    as it is."""
     if not isinstance(data, Mapping):
         return data
     out: dict[str, Any] | None = None
     for rule in rules:
-        if rule.kind == STATE_MACHINE and rule.field is not None and rule.field not in data:
+        if (rule.kind == STATE_MACHINE and rule.field is not None
+                and is_blank(data.get(rule.field))):
             out = dict(data) if out is None else out
             out[rule.field] = rule.initial
     return data if out is None else out
@@ -767,6 +769,11 @@ def _atom_holds(atom: Atom, data: Mapping[str, Any]) -> bool:
     """One atom against the merged record. An error of type fails closed."""
     value = data.get(atom.field)
     blank = is_blank(value)
+    # The checkbox rule of C2a. Only a checkbox takes a bool value (`_fit_atom`
+    # holds it), so a bool value marks a checkbox atom. `eq false` and `ne true`
+    # match a record with no value. `is_empty` still means no value.
+    if blank and isinstance(atom.value, bool) and atom.op in ("eq", "ne"):
+        value, blank = False, False
     if atom.op == "is_empty":
         return blank
     if atom.op == "not_empty":

@@ -511,3 +511,34 @@ def test_r8_org_b_is_not_bound_by_the_machine_of_org_a(world) -> None:
     assert free.data["status"] == "sent"
     assert seen is None and declared is None
     assert isinstance(refused.cause, MoveViolation)
+
+
+def test_r8_a_checkbox_guard_passes_for_a_box_never_ticked(world) -> None:
+    """A form sends no value for an unticked box. `eq false` matches it, as C2a does."""
+    async def go() -> tuple[store.Record, store.Record]:
+        fields = [*_FIELDS, {"key": "urgent", "type": "checkbox"}]
+        flow = {**_FLOW, "moves": [{"from": "draft", "to": "approved", "guard": [
+            {"field": "urgent", "op": "eq", "value": False}]}]}
+        async with tenant_session(world.a) as db:
+            made = await store.define_object(db, ANA, package_id=world.pkg_a, name="chk",
+                                             fields=fields)
+            assert made is not None
+            obj = await store.set_constraints(db, made.id, [flow], package_id=world.pkg_a)
+        assert obj is not None
+        never = await _make(world.a, obj)
+        ticked = await _make(world.a, obj, urgent=True)
+        await _put(world.a, obj, _set(obj, never.id, status="approved"))
+        refused = await _refused(world.a, obj, _set(obj, ticked.id, status="approved"))
+        assert isinstance(refused.cause, MoveViolation)
+        return never, ticked
+
+    never, _ = _go(world, go)
+    assert _status(world, never.id) == "approved"
+
+
+def test_r8_a_create_with_a_null_state_takes_the_initial_state(world) -> None:
+    async def go() -> store.Record:
+        obj = await _po(world.a, world.pkg_a)
+        return await _make(world.a, obj, status=None)
+
+    assert _go(world, go).data["status"] == "draft"
