@@ -17,7 +17,7 @@
 -- Expand only (R6): one new table, two indexes, one trigger function and one
 -- trigger. No rename, no drop, and no change to an existing table. Old code
 -- names no new object, so old code that meets this schema runs as before.
--- The one writer is `gateway/routes/crm/change_log.py::record`. It writes in
+-- The one writer is `gateway/routes/crm/change_log.py::log_change`. It writes in
 -- the transaction of the change itself, so a change that rolls back leaves
 -- no row, and a row never names a change that did not happen.
 -- Idempotent per infra/postgres/README.md: CREATE TABLE IF NOT EXISTS,

@@ -1,6 +1,6 @@
 # CRM-M — The CRM you talk to: say it, see it, keep it
 
-**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is built on the branch `crm-m1-change-history-mt-22a37d3b` (2026-11-02), not merged. No other slice is built.** Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
+**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is built on the branch `crm-m1-change-history-mt-22a37d3b` (2026-11-02), with fix round 1 (2026-11-03), not merged. No other slice is built.** Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
 
 Every anchor below was re-read at `930839f2e`. §13 lists the few that moved.
 
@@ -211,7 +211,7 @@ R8 binds each slice with SQL. Run the SQL against a real database. Name the exac
 5. The log table has FORCE row level security. A test reads it as a second org and gets zero rows (R5, R8).
 6. The migration is expand/contract and takes the next free number at build time (R1, R6).
 
-**Status.** PR 1 is built on the branch `crm-m1-change-history-mt-22a37d3b` (2026-11-02), not merged. PR 2 is not built. Done when 1 holds for the PR 1 routes, and done when 2, 3, 5 and 6 hold. Done when 4 waits for PR 2 and the cards of CRM-M2.
+**Status.** PR 1 is built on the branch `crm-m1-change-history-mt-22a37d3b` (2026-11-02), with fix round 1 (2026-11-03), not merged. PR 2 is not built. Done when 1 holds for the PR 1 routes, and done when 2, 3, 5 and 6 hold. Done when 4 waits for PR 2 and the cards of CRM-M2.
 
 **Fence.** Two test files hold this slice.
 
@@ -251,6 +251,7 @@ The table is the list of record. `test_crm_change_history.py` holds the same lis
 - **The seam.** `routes/crm/change_log.py::log_change` is the one writer of `crm_change_log`. Each logged route calls it with the session of its own write. So a write that rolls back leaves no row. It is not `acb_audit.record`, which writes outside the transaction.
 - **The table.** `crm_change_log` has the tenant `organization_id` and FORCE row level security. An index allows one Undo for each row. A trigger keeps a row fixed. Only `undone_by` changes, and only once. The CRM start over keeps the rows.
 - **Undo.** `POST /crm/change-history/{id}/undo` writes the stored "before" through the write helper of the route. Each module registers the Undo of its own areas. The Undo refuses with a plain reason in five cases. The change cannot be undone, or it is undone already. The CRM mode changed since. The thing changed again since. The thing is gone or holds records.
+- **The check before an Undo.** Each Undo reads its thing `FOR UPDATE` first. Then it compares the current values with the "after" of the row, for a create too. So the Undo of a create refuses with `changed_since` when the thing changed after the create. An Undo of an admin area needs an admin now, even for the member who made the change.
 - **Who reads.** An admin reads each row that is not private to another member. A member who is not an admin reads only their own changes. A private view and a member's own rule are private to that member.
 - **A member purge.** The purge deletes the rows that are private to the member (`crm_private_changes` in `routes/admin/members._PURGE_DELETES`). The org's rows that the member made stay with the address, as the audit log does. Fence: `tests/unit/test_admin_member_purge.py`.
 - **Through what.** Each PR 1 route writes `ui`. The confirm of a rule writes `chat` or `whatsapp`. CRM-M2 passes `chat` from its tools.
@@ -284,6 +285,8 @@ The table is the list of record. `test_crm_change_history.py` holds the same lis
 6. A chat turn on the live path loads each new tool. A test proves it.
 
 **Fence.** `tests/unit/test_crm_ui_actions.py` (planned), a ratchet like `test_projects_ui_actions.py`.
+
+**A trap from CRM-M1.** The views code logs each view change at the `own` level, a delete and an edit of a shared view too. D164 puts a delete at "always asks". So CRM-M2 must not take the ladder level of a card from these rows.
 
 ### CRM-M3. Many deal pipelines (#1097) — Wave 2
 
