@@ -92,9 +92,13 @@ def _pasted_mail() -> str:
 
 
 def _row(id_: str, role: str, content: str, **extra: object) -> dict[str, object]:
+    """One row. A ``user`` row carries the typed mark unless a test says
+    otherwise, as the run route stores it for a message that the member typed
+    in the message box (D-PZ-37)."""
     row: dict[str, object] = {"id": id_, "role": role, "content": content,
                               "author_kind": None, "author_email": None,
-                              "tool_events": [], "custom_events": [], "reasoning": None}
+                              "tool_events": [], "custom_events": [], "reasoning": None,
+                              "member_typed": role == "user"}
     row.update(extra)
     return row
 
@@ -176,6 +180,32 @@ def test_a_user_row_of_another_author_is_not_the_members() -> None:
     # A legacy row names no author, and a solo chat has one member.
     legacy = [_row("m3", "user", "Plan the offsite.")]
     assert summaries.member_texts(legacy, MEMBER) == ["Plan the offsite."]
+
+
+#: A tapped pill of Mira's own words, with a token that only it holds.
+PILL_TOKEN = "PILLTOKEN-4471 billing@pill-only.example 9988776655"
+
+
+@pytest.mark.parametrize("mark", [False, None, "true", 1],
+                         ids=["tapped", "no mark", "a string", "a number"])
+def test_round_4_only_the_typed_mark_counts(mark: object) -> None:
+    """D-PZ-37 (the owner, 2026-11-02): only a row whose mark is ``True``
+    counts. A tapped pill, a choice, a card action, a feed starter and the
+    Fix prompt store False. A row from before the mark stores NULL. Neither
+    reaches the prompt, the words that ground a line, or the count of typed
+    rows. A value that is not ``True`` is no mark."""
+    tapped = _row("p1", "user", f"Draft a reply to Ravi: {PILL_TOKEN}",
+                  author_kind="human", author_email=MEMBER, member_typed=mark)
+    typed = _row("m1", "user", "Book the review.", author_kind="human",
+                 author_email=MEMBER)
+    rows = [tapped, typed]
+    assert summaries.member_texts(rows, MEMBER) == ["Book the review."]
+    assert summaries.prompt_rows(rows, MEMBER) == ["Book the review."]
+    assert "PILLTOKEN" not in summaries.member_words(rows, MEMBER)
+    # A line that copies the pill's address or number grounds nothing.
+    raw = json.dumps({"text": "Write to billing@pill-only.example about 9988776655.",
+                      "follow_ups": []})
+    assert summaries.check_answer(raw, summaries.member_words(rows, MEMBER)) is None
 
 
 def test_pz33b_no_row_of_an_agent_reaches_the_prompt() -> None:
@@ -625,6 +655,33 @@ def test_pz33b_the_job_grounds_on_the_capped_words() -> None:
     source = (ROOT / "apps/services/gateway/gateway/chat_summary_job.py").read_text(
         encoding="utf-8")
     assert "member_words(chat.rows, chat.member, limit=WORDS_MAX)" in source
+
+
+def test_round_4_only_the_run_route_writes_the_typed_mark() -> None:
+    """D-PZ-37: ``_upsert_messages(member_typed=...)`` is for the run route's
+    save of the turn only (``routes/agent.py::_write_prompt_row``). Each other
+    caller binds NULL, so the client save of the thread can neither set the
+    mark nor clear it. ``test_chat_summary_r8.py`` proves the SQL."""
+    found: dict[str, list[str]] = {}
+    for base in ("apps", "packages"):
+        for path in (ROOT / base).rglob("*.py"):
+            if "tests" in path.parts:
+                continue
+            body = path.read_text(encoding="utf-8", errors="replace")
+            hits = re.findall(r"\bmember_typed\s*=(?!=)[^\n]*", body)
+            if hits:
+                found[path.relative_to(ROOT).as_posix()] = hits
+    assert set(found) == {"apps/services/gateway/gateway/routes/agent.py",
+                          "apps/services/gateway/gateway/routes/chat.py"}, found
+    chat = found["apps/services/gateway/gateway/routes/chat.py"]
+    assert chat == ["member_typed   = COALESCE(EXCLUDED.member_typed, chat_message.member_typed),"]
+    agent = found["apps/services/gateway/gateway/routes/agent.py"]
+    assert agent == ["member_typed=typed is True and card_answer is None,",
+                     "member_typed=prompt.member_typed is True,"], agent
+    from gateway.routes import chat as chat_route
+
+    assert "member_typed" not in chat_route.MessageRecord.model_fields, (
+        "a client record must name no mark")
 
 
 # ── PZ-33b: the bound on the shared worker ─────────────────────────────────

@@ -48,15 +48,19 @@ with the id of a chat of another org finds no row.
 9. ``check_answer`` checks the answer. An answer that keeps nothing is
    ``done`` with no write. An empty or cut answer logs
    ``assistant.chat_summary_bad_answer`` at warning.
-10. ``room_is_solo(resolve_room_access(...))`` again, then ``hold``,
-    ``write_marked`` (the mark in its WHERE) and ``complete`` in one
-    session. A chat that a Delete, a Forget or a share changed during the
-    call keeps that change.
+10. ``room_is_solo(resolve_room_access(...))`` again, then ``hold``, the
+    flag, the switch and "Let the assistant remember" again
+    (:func:`_turned_off`, review P3 of round 3), ``write_marked`` (the mark
+    in its WHERE) and ``complete`` in one session. A chat that a Delete, a
+    Forget or a share changed during the call keeps that change. A switch
+    that went off during the call settles the job ``done`` with no write.
 
 **The prompt** holds the earlier summary and the member's own typed rows
-after the waterline, and nothing else (the owner, 2026-11-02, D-PZ-28). So
-no text that a stranger wrote reaches the model through a reply of Mira, a
-tool answer or a card answer.
+after the waterline, and nothing else (the owner, 2026-11-02, D-PZ-28). A
+row counts only with the ONE typed mark, ``chat_message.member_typed`` is
+``True`` (D-PZ-37). So no text that a stranger wrote reaches the model
+through a reply of Mira, a tool answer, a card answer, a tapped pill, a
+choice, a card action, a feed starter or the Fix prompt.
 
 The module imports no litellm and no streamed completion (H-287). Fences:
 ``tests/unit/test_chat_summary_r8.py`` (R8) and
@@ -314,6 +318,19 @@ async def _marked(org: str, claim: queue.Claim, sid: str, through: str, chat: Jo
     return False
 
 
+async def _turned_off(db: Any, org: str, member: str) -> str | None:
+    """Why the write must not run now, or None (review P3 of round 3). It
+    reads the flag of the org, the member's switch "Keep chat summaries" and
+    "Let the assistant remember" again, in *db*, the session of the write."""
+    if not chat_summary_for(org):
+        return "flag_off"
+    if not await member_switch_on(db, org, member):
+        return "switch_off"
+    if not await member_learning_on(db, org, member):
+        return "learning_off"
+    return None
+
+
 async def _store(org: str, claim: queue.Claim, sid: str, through: str, chat: JobChat,
                  raw: Any, now: datetime) -> None:
     """Steps 9 and 10: check the answer, check the room again, and write the
@@ -332,9 +349,19 @@ async def _store(org: str, claim: queue.Claim, sid: str, through: str, chat: Job
     async with tenant_session(org) as db:
         if not await queue.hold(db, claim):
             return
-        wrote = await write_marked(db, sid, answer, through=through,
-                                   through_ms=int(chat.newest_ms or 0), at=now)
+        # PZ-33b round 4 (review P3): the member or an admin can turn the
+        # summary off during the model call. So the switch, "Let the
+        # assistant remember" and the flag of the org are read again here, in
+        # the session of the write. Off, the job is `done` and writes nothing.
+        why = await _turned_off(db, org, chat.member)
+        wrote = False
+        if why is None:
+            wrote = await write_marked(db, sid, answer, through=through,
+                                       through_ms=int(chat.newest_ms or 0), at=now)
         await queue.complete(db, claim, now=now)
+    if why is not None:
+        _log.info("assistant.chat_summary_skipped", reason=why)
+        return
     _log.info("assistant.chat_summary_done", wrote=wrote,
               follow_ups=len(answer.follow_ups))
 

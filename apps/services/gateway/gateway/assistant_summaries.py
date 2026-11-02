@@ -50,10 +50,13 @@ the column, and when a module that is not on its list imports this one.
 
 * :func:`member_texts`, :func:`member_words` and :func:`prompt_rows` choose
   what may reach the model: the member's own typed words, and nothing else
-  (the owner, 2026-11-02, D-PZ-28). A row of the member counts only through
-  ``acb_common.assistant_profile.typed_text``, so a pasted mail and a text of
-  more than 1,500 characters stay out. A card answer stays out too, because
-  it quotes the question that the model wrote
+  (the owner, 2026-11-02, D-PZ-28). A row of the member counts only with
+  the ONE typed mark, ``chat_message.member_typed`` is ``True`` (D-PZ-37,
+  migration 328). So a tapped pill, a choice, a card action, a feed starter,
+  the Fix prompt and each row from before the mark stay out. Then it counts
+  only through ``acb_common.assistant_profile.typed_text``, so a pasted mail
+  and a text of more than 1,500 characters stay out. A card answer stays out
+  too, because it quotes the question that the model wrote
   (``gateway.chat_recovery.is_card_answer_text``). No row of Mira, no tool
   text, no row of another author, no system row and no brief row
   (``brief-<date>``) goes in, because each of them can carry text that a
@@ -194,12 +197,23 @@ def is_brief_row(row: Any) -> bool:
 
 
 def _is_member_row(row: Any, member: Any) -> bool:
-    """True when *row* is a turn of *member*. In a solo chat only the member
-    writes a ``user`` row. A row that names another author never counts.
+    """True when *row* is a turn that *member* typed. In a solo chat only the
+    member writes a ``user`` row. A row that names another author never
+    counts.
+
+    ⚠️ The ONE typed mark (D-PZ-37, the owner on 2026-11-02): only a row
+    whose ``member_typed`` is ``True`` counts. The run route stores it when
+    the member typed the message in the message box
+    (``routes/agent.py::_write_prompt_row``). A tapped pill, a choice, a card
+    action, a feed starter and the Fix prompt store False. A row that no run
+    request saved, and each row from before migration 328, reads NULL. So
+    each of them counts for nothing.
 
     A card answer never counts. Its text quotes the question of the card,
     which the model wrote, so it grounds nothing (``routes/agent.py``)."""
     if _field(row, "role") != "user" or is_brief_row(row):
+        return False
+    if _field(row, "member_typed") is not True:
         return False
     if is_card_answer_text(str(_field(row, "content") or "").strip()):
         return False
@@ -212,9 +226,10 @@ def _is_member_row(row: Any, member: Any) -> bool:
 def member_texts(rows: Iterable[Any], member: Any) -> list[str]:
     """The typed text of each row of *member*, oldest first.
 
-    A row counts only through ``typed_text``. A pasted mail, a text of more
-    than 1,500 characters and an empty row give nothing. The count of the
-    list is the count of typed rows that the idle rule of PZ-33b reads."""
+    A row counts only with the typed mark (:func:`_is_member_row`, D-PZ-37)
+    and through ``typed_text``. A pasted mail, a text of more than 1,500
+    characters and an empty row give nothing. The count of the list is the
+    count of typed rows that the idle rule of PZ-33b reads."""
     out: list[str] = []
     for row in rows:
         if not _is_member_row(row, member):
@@ -952,6 +967,15 @@ ATTEMPTS = 3
 IDLE = timedelta(minutes=30)
 #: The seed reads only the chats with a row in this window (§15.3).
 WINDOW = timedelta(days=7)
+#: The slack of the cheap filter of :data:`IDLE_SQL` on ``updated_at`` (PZ-33b
+#: round 4). Each new row moves ``updated_at`` to the server time of its
+#: insert (``routes/chat.py::_TOUCH_SESSION_SQL``). The time of a row is the
+#: browser clock, and a first checkpoint can move it later while the row is
+#: empty. So the filter reads one more day back than the window, and it keeps
+#: each chat that the exact rule keeps while no row is more than one day
+#: ahead of its insert. A chat with a row further ahead gets no summary,
+#: which is the safe way to fail.
+IDLE_SLACK = timedelta(days=1)
 #: The most jobs that one seed enqueues for one org (§15.3). The worker runs
 #: the orgs in turn, and one job at a time (``jobs/worker.py``). So 20 slow
 #: calls of one org would hold the worker for minutes, and the ``brief.run``
@@ -1008,13 +1032,20 @@ OPEN_RUN_SQL = """EXISTS (
 #: The idle chats of the bound org that need a summary, the newest first.
 #: The newest row is between `:since_ms` and `:idle_ms`, no run is open, the
 #: newest row id is neither `through` nor `mark.through`, and the chat holds
-#: `:typed_min` short user rows or more. The seed then counts the typed rows
-#: of the member in Python (`member_texts`). `through_ms` is the waterline
-#: that a summary, a Delete or a Forget left, and `mark_ms` is the one that a
-#: paid call left. One statement, with the window in the WHERE. Round 2 ran
-#: the window first in a MATERIALIZED step, because the mail rule read the JSON
-#: of each agent row. That rule is gone, and on 8,000 chats with 300 in the
-#: window the plain form took 1.0 s and the step 1.5 s (measured 2026-11-02).
+#: `:typed_min` short user rows with the typed mark or more (D-PZ-37). The
+#: seed then counts the typed rows of the member in Python (`member_texts`).
+#: `through_ms` is the waterline that a summary, a Delete or a Forget left,
+#: and `mark_ms` is the one that a paid call left. One statement, with the
+#: window in the WHERE. Round 2 ran the window first in a MATERIALIZED step,
+#: because the mail rule read the JSON of each agent row. That rule is gone.
+#:
+#: ⚠️ `s.updated_at >= :since` (PZ-33b round 4) is a cheap filter that the
+#: index `chat_session_user_idx (user_id, updated_at DESC)` serves. It keeps a
+#: superset of the chats that the LATERAL keeps, and the LATERAL stays the
+#: exact rule. Each new row moves `updated_at` (`routes/chat.py::
+#: _TOUCH_SESSION_SQL`), and `:since` is the window less `IDLE_SLACK`. Without
+#: it, each tick read every Mira chat of the org. On 8,000 chats with 300 in
+#: the window it took 7.0 s, and with it 29 ms (measured 2026-11-02, §15.3).
 IDLE_SQL = f"""
 SELECT s.id, s.user_id, newest.id AS newest_id, newest.timestamp_ms AS newest_ms,
        s.member_summary -> 'through_ms' AS through_ms,
@@ -1025,29 +1056,32 @@ SELECT s.id, s.user_id, newest.id AS newest_id, newest.timestamp_ms AS newest_ms
         WHERE m.session_id = s.id
         ORDER BY m.timestamp_ms DESC, m.id DESC
         LIMIT 1) AS newest
- WHERE {ELIGIBLE_SQL}
+ WHERE s.updated_at >= :since
+   AND {ELIGIBLE_SQL}
    AND newest.timestamp_ms BETWEEN :since_ms AND :idle_ms
    AND newest.id IS DISTINCT FROM (s.member_summary ->> 'through')
    AND newest.id IS DISTINCT FROM (s.member_summary -> 'mark' ->> 'through')
    AND NOT {OPEN_RUN_SQL}
    AND (SELECT count(*) FROM chat_message u
          WHERE u.session_id = s.id AND u.role = 'user'
+           AND u.member_typed IS TRUE
            AND length(u.content) <= :typed_max) >= :typed_min
  ORDER BY newest.timestamp_ms DESC, s.id
  LIMIT :scan
 """
 
-#: The newest short user rows of each chat in `:sids`, `:rows` for each
-#: chat at most. RLS binds the tenant.
+#: The newest short user rows with the typed mark of each chat in `:sids`,
+#: `:rows` for each chat at most (D-PZ-37). RLS binds the tenant.
 SEED_ROWS_SQL = """
 SELECT r.session_id, r.id, r.role, r.content, r.author_kind, r.author_email,
-       r.timestamp_ms
+       r.timestamp_ms, r.member_typed
   FROM (SELECT m.session_id, m.id, m.role, m.content, m.author_kind, m.author_email,
-               m.timestamp_ms,
+               m.timestamp_ms, m.member_typed,
                row_number() OVER (PARTITION BY m.session_id
                                   ORDER BY m.timestamp_ms DESC, m.id DESC) AS k
           FROM chat_message m
          WHERE m.session_id = ANY(CAST(:sids AS text[])) AND m.role = 'user'
+           AND m.member_typed IS TRUE
            AND length(m.content) <= :typed_max) AS r
  WHERE r.k <= :rows
 """
@@ -1063,10 +1097,13 @@ SELECT s.user_id, s.member_summary, {ELIGIBLE_SQL} AS eligible,
 """
 
 #: The newest `:rows` rows of one chat, oldest first, with the columns that
-#: the answer checks read and nothing else.
+#: the answer checks read and nothing else. `member_typed` is the typed mark
+#: (D-PZ-37). Only a row with the mark counts (`_is_member_row`).
 JOB_ROWS_SQL = """
-SELECT t.id, t.role, t.content, t.author_kind, t.author_email, t.timestamp_ms
-  FROM (SELECT m.id, m.role, m.content, m.author_kind, m.author_email, m.timestamp_ms
+SELECT t.id, t.role, t.content, t.author_kind, t.author_email, t.timestamp_ms,
+       t.member_typed
+  FROM (SELECT m.id, m.role, m.content, m.author_kind, m.author_email, m.timestamp_ms,
+               m.member_typed
           FROM chat_message m
          WHERE m.session_id = :sid
          ORDER BY m.timestamp_ms DESC, m.id DESC
@@ -1079,12 +1116,25 @@ def _ms(moment: datetime) -> int:
     return int(moment.timestamp() * 1000)
 
 
+def idle_params(now: datetime) -> dict[str, Any]:
+    """The parameters of :data:`IDLE_SQL` at *now*. ``since`` is the cheap
+    filter on ``updated_at``: the window, less :data:`IDLE_SLACK`."""
+    return {
+        "since": now - WINDOW - IDLE_SLACK,
+        "since_ms": _ms(now - WINDOW), "idle_ms": _ms(now - IDLE),
+        "typed_max": TYPED_MAX, "typed_min": TYPED_ROWS_MIN,
+        "scan": SEED_SCAN_MAX,
+    }
+
+
 def rows_after(rows: Iterable[Any], through_ms: int | None) -> list[Any]:
     """The rows of *rows* that the waterline *through_ms* does not cover. A
     summary, a Delete, a Forget and a paid call each leave one. With no
     waterline, each row. A chat with no typed row of the member here has
-    nothing new, such as a brief, a reminder or a card answer that came after
-    a Delete. So it gets no call: the prompt holds the member's words only."""
+    nothing new, such as a brief, a reminder, a card answer or a tapped pill
+    that came after a Delete. So it gets no call: the prompt holds the
+    member's words only. The caller counts the rows through
+    :func:`member_texts`, so only a row with the typed mark is new (D-PZ-37)."""
     if through_ms is None:
         return list(rows)
     return [r for r in rows if int(_field(r, "timestamp_ms") or 0) > through_ms]
@@ -1225,10 +1275,7 @@ async def seed(org: str, now: datetime) -> None:
     if not chat_summary_for(org) or not routed.routing_is_on():
         return
     async with tenant_session(org) as db:
-        found = (await db.execute(text(IDLE_SQL), {
-            "since_ms": _ms(now - WINDOW), "idle_ms": _ms(now - IDLE),
-            "typed_max": TYPED_MAX, "typed_min": TYPED_ROWS_MIN,
-            "scan": SEED_SCAN_MAX})).all()
+        found = (await db.execute(text(IDLE_SQL), idle_params(now))).all()
         if not found:
             return
         typed: dict[str, list[Any]] = {}
