@@ -80,7 +80,7 @@ These counts come from the production line of each turn and from `_tool_count`.
 
 `plan_loader` (`tool_packs.py:2124`) reaches an owner only when EVERY pack of the owner that the run does not hold fits. With the specialist tool gone, 79 − 1 + 35 = 113, and 79 − 1 + 34 = 112. Both exceed 110. So `projects-assistant` is never in `via_loader`. `SPECIALIST_STAYS_UNTIL_REACHED` (`tool_packs.py:1679`) then keeps the specialist. `one_assistant_context.md` records this gap (§4.3.2, "As built, OA-8b").
 
-A second path exists. The Projects page has its own "AI chat" entry and a docked rail (`AssistantRail.tsx`). Both are pinned to `projects-assistant`. `NEXT_PUBLIC_PROJECTS_CHAT=1` is on in production.
+A second path exists in code. The Projects page has its own "AI chat" entry and a docked rail (`AssistantRail.tsx`). Both are pinned to `projects-assistant`. Production has `NEXT_PUBLIC_SHELL_CHAT`, `NEXT_PUBLIC_SHELL_BAR` and `NEXT_PUBLIC_SHELL_NAV` on. So `shellChatOn()` is true, `CHAT_LIVE` is false (`page.tsx:300` to `:303`), and production shows neither. The owner's session used the main chat.
 
 ### 2.3 Seven days of production use (2026-10-26 to 2026-11-02)
 
@@ -121,6 +121,14 @@ The journal's `permission.decision` lines count each tool call. In `projects-pla
 
 A delete stays a single guarded act (class C). No batch tool deletes.
 
+**`update_tasks` starts with an extraction.** `update_task` (`writes.py:1430` to `:1533`) mixes its checks with `_confirm` and the patch. It has no validator that a row can call. So step 1 of PJP-4 extracts a pure `_plan_task_edit(task, args)`. It returns the payload, the before values and the card text, or a refusal string.
+
+`update_task` and the new row class (a `_BatchRow`, as `_LinkRow` and `_FileRow` are) both call it. Each row then patches `/projects/tasks/{tid}` with the same params. Three more rules bind the rows:
+
+- A row that would ask a question (the `include_subtasks` ask of `_edit_task_fields`) is a refused row. A batch never asks in the middle.
+- The priority fields keep the `@takes_priority` rules of `update_task`.
+- A call takes at most 50 rows, as `bulk_update` does. `bulk_update` stays the tool for ONE change across many tasks. `update_tasks` is the tool for a different change on each task.
+
 **A row shows its values.** A row may carry two new optional keys, `hue` and `category`. The client draws them with the same `CardFieldValue` kinds as a card field: a swatch and a category chip. `clean_card_rows` accepts them like `kind`, `class` and `warning`.
 
 **The rule text.** The pack rules (`tool_packs.py`, rules block) and `apps/agents/agent-projects/instructions.md` state the table above, in one place each. Two writes in one step must reach the member as a stack. PJP-3 checks that the executor runs two `request_confirmation` calls of one step at the same time. If it does not, PJP-3 fixes that first.
@@ -129,10 +137,13 @@ A delete stays a single guarded act (class C). No batch tool deletes.
 
 **The six hues** of `ACCENT_HUES` stay the only status colours: gray, red, amber, green, blue and violet.
 
-**Any other colour maps to the nearest hue.** One rule, in two places that a parity test holds together:
+**Any other colour maps to the nearest hue.** One rule covers statuses, tags and types. Tags already use the six hues (`TAG_COLORS` in `app/projects/lib/tags.ts:51`). The rule lives in two places that a parity test holds together:
 
-1. **The server** (`skill_projects`, a new helper `hue_of`): a known name or alias maps through the alias table. A hex code maps by its HSL value. A saturation under 0.25 is gray. The hue angle decides the rest. Red runs from 345° to 15°, amber to 65°, green to 170°, blue to 250° and violet to 345°. The status and tag tools store the hue name. The gateway status routes (`gateway/routes/projects/admin.py`) apply the same map. So the app and the chat store the same value.
-2. **The client** (`statusAccent.ts`, `resolveHue`): a stored hex code maps by the same rule. So the seven lanes of §2.1 draw in their chosen colours with no data change.
+1. **The server** (`skill_projects/hues.py`, a new helper `hue_of`): a known name or alias maps through the alias table. A hex code maps by its HSL value. A saturation under 0.30 is gray. The hue angle decides the rest. Red runs from 345° to 15°, amber to 65°, green to 170°, blue to 250° and violet to 345°. The status, tag and type tools store the hue name. The gateway routes that take a colour apply the same map by import of `skill_projects.hues`. The gateway imports `skill_projects` today (`authority.py`, `delta.py`). It must not copy the map. So the app and the chat store the same value. These routes take a colour:
+   - the status routes in `admin.py`: create (:195 to :221), `PATCH` (:229) and the copy of a set (:779 to :785)
+   - the type routes in `admin.py`, about :991 to :1000
+   - the tag routes in `tags.py`: :192, :419, :454 and :507.
+2. **The client** (`statusAccent.ts`, `resolveHue`): a stored hex code maps by the same rule. So the seven lanes of §2.1 draw in their chosen colours with no data change. `statusAccent.ts` exports `COLOR_ALIASES` and the hue bands, so the parity test reads values and does not parse source.
 
 **The card shows a swatch.** `cardFields.ts` gains the kind `color`. `CardFieldValue` draws a dot in the hue and the hue's name. A change draws as the old swatch, an arrow and the new swatch.
 
@@ -153,13 +164,24 @@ A delete stays a single guarded act (class C). No batch tool deletes.
 | `projects-reminders` | 7 | gains `capture_intake`, `intake_queue`, `triage_intake`, `create_area`, `delete_area`, `rename_area`, `my_areas`, `my_contexts`, `notifications`, `mark_notifications_read` | 17 | — |
 | `projects-bulk` | 21 | none | 21 | PJP-4 adds 1 |
 
+**A side effect, intended.** At base 56, the core and `projects-plan` now fit together (79 + 24 = 103). So a pack word that loads `projects-plan` no longer drops the core pack (`replaces_core`). The owner is also reached while `email` is held (87 − 1 + 24 = 110). The tests that pin the old premise change in PJP-2:
+
+- `test_projects_packs.py`: `SLUGS` and `SIZES` (:69 to :71), the 120-tool union (:119) and the "35 tools" answer (:716).
+- `test_projects_packs.py`: "not reached with email held" (:811), the access request (:939) and the compound words (:887 to :915).
+- `test_projects_packs.py`: the reminders size (:1069 to :1082) and the core rules text (:525).
+- `test_pack_cues.py:45`, `test_pack_guards.py:1200`, `test_pack_no_double_write.py:52`, `test_pack_rules_oa8g.py:13` and `:46`, `test_tool_packs_choice.py:1413`, `test_tool_packs_registry.py:104`, `test_one_assistant_measure_oa8e.py:333` and `evals/one_assistant_measure/scenarios_work.py`.
+
+The rule text changes in `tool_packs.py`. The core rules (about :421 to :431) and `_PROJECTS_PLAN_RULES` (:440 to :460) change. The structure rules (:492 to :500), `_PROJECTS_STRUCTURE_WORDS` (:611 to :615) and the plan words (:583 to :588) change. The `when` lines of plan, structure and reminders change. The new pack needs a `Pack` and a `SKILL_FAMILIES` entry with its `owner` and `replaces_core`. The rules-length cap of the test is 3450 characters.
+
 `projects-reminders` becomes the pack of "my own organising": reminders, the task inbox, areas and contexts, and notifications. Its `when` line and its load words change to match. The slug stays, because `TOOL_PACKS` names it.
 
 **The flag line.** `projects-reports` is a new slug. Production's `TOOL_PACKS` is an explicit list. `plan_loader` needs EVERY pack of the owner in the allow list.
 
 So the slug must join `TOOL_PACKS` on production BEFORE the release that ships PJP-2. That line is owner-only (`work_plan.md` §6 D4). The old code drops an unknown slug, so the order is safe. Until the line exists, the hand-off stays as it is today. Nothing gets worse.
 
-**The rail.** The Projects page's "AI chat" entry and its docked rail open the ONE shell assistant with the member's place. They no longer pin `projects-assistant` (D99, D87 to D89). This is PJP-2b. `AssistantRail.tsx` keeps its place-building code (`buildProjectsAssistantPersona`) and feeds it to the shell assistant.
+**The rail.** With the three shell flags on, production already withdraws the Projects page's "AI chat" entry and its docked rail (§2.2). The page publishes its place to the shell assistant (`projectsAssistantFacts`, through `useAssistantFacts` in `lib/shell/assistant.ts`). So PJP-2b removes the dead `CHAT_LIVE` paths. These are `page.tsx` :4621 to :4628, :5791, :3022, :5220 and :5545 to :5613, `AssistantRail.tsx` and its use in `lib/chatDock.ts`.
+
+`buildProjectsAssistantPersona` stays, because the facts use it. PJP-2b is low in priority. It removes a second door to the specialist (D99, D87 to D89).
 
 **The measure.** One OA-8e Projects run after PJP-2, with `--budget-usd 0.50` (D168.4). Done when the pack arm has 0 hand-offs to `projects-assistant` and does not score below the delegation arm. If the measure cannot fit in USD 0.50, the slice ships on its fences. Then the check is the production journal after the release. It must show 0 `agent=projects-assistant` runs from the main chat for a day of real use.
 
@@ -290,11 +312,11 @@ The buffer and the finish are ordinary tasks with the tags `Buffer` and `Milesto
 | Slice | Task | What | Done when | Tier | Gate | Needs |
 |---|---|---|---|---|---|---|
 | PJP-0 | 1477 | This spec, D168, the board row, the INDEX entry and the research file | It merges with no `ste-lint` error in the new lines | LOW | AGENT-SAFE | — |
-| PJP-1 | 1478 | §3.2: the hue map on the server, the routes and the client. The `color` card kind. No brackets on a card | The fences of §10 for PJP-1 pass. A card for `update_status` with `#EAB308` shows an amber swatch and stores `amber`. The seven lanes of §2.1 draw in amber, blue, amber, gray, gray, green and violet on the board. The visual review gate passes (four captures) | LOW | AGENT-SAFE | — |
+| PJP-1 | 1478 | §3.2: the hue map for statuses, tags and types, on the server, the routes and the client. The `color` card kind, tested on status, tag and type cards. No brackets on a card (`writes.py:3720`, `inbox.py:587`) | The fences of §10 for PJP-1 pass. A card for `update_status` with `#EAB308` shows an amber swatch and stores `amber`. The seven lanes of §2.1 draw in amber, blue, amber, gray, gray, green and violet on the board. The visual review gate passes (four captures) | LOW | AGENT-SAFE | — |
 | PJP-2 | 1479 | §3.3: the pack split, its fence, the `when` lines and load words | `plan_loader` with the production allow list and the core held puts `projects-assistant` in `via_loader`. The fence of §10 passes. The measure or the journal check of §3.3 passes | MEDIUM | AGENT-SAFE. The `TOOL_PACKS` line is OWNER-GATE | — |
-| PJP-2b | 1479 | §3.3: the Projects page's chat opens the one assistant | The "AI chat" entry and the docked rail open the shell assistant with the member's place. No component outside the shell pins `projects-assistant`. The visual review gate passes | LOW | AGENT-SAFE | — |
+| PJP-2b | 1479 | §3.3: remove the dead `CHAT_LIVE` rail paths | No `AgentChat` or `useAgentSessions` call with `PROJECTS_AGENT` stays outside the shell. `seams.test.ts:139` counts one fewer rail wrapper. The Projects page looks the same with the shell flags on. The visual review gate passes | LOW | AGENT-SAFE | — |
 | PJP-3 | 1480 | §3.1: `change_statuses`, the row keys `hue` and `category`, and the rule text | One call with 8 rows draws ONE card with 8 tick boxes, each with its swatch and chip. Ticking 6 writes 6. Two writes in one step show as a stack of 2 | MEDIUM | AGENT-SAFE | PJP-1 |
-| PJP-4 | 1481 | §3.1: `update_tasks` | One call with 12 rows draws ONE card. Each row shows before and after. Each ticked row writes through the same route as `update_task`. A failed row does not stop the next one, and the receipt names it | MEDIUM | AGENT-SAFE | — |
+| PJP-4 | 1481 | §3.1: step 1 extracts `_plan_task_edit` from `update_task` (`writes.py:1430`). Step 2 adds `update_tasks` | `update_task` and each row call `_plan_task_edit`, and the existing `update_task` tests pass unchanged. One call with 12 rows draws ONE card. Each row shows before and after. Each ticked row writes through the same route as `update_task`. A failed row does not stop the next one, and the receipt names it | MEDIUM | AGENT-SAFE | — |
 | PJP-5 | 1482 | §3.6: `stage_sets.py` and `suggest_stages` | Each set passes the limits of §3.6 in a test. "Set up stages for a hardware project" in a live turn gives one `change_statuses` card | LOW | AGENT-SAFE | PJP-2, PJP-3 |
 | PJP-6 | 1483 | §3.4: `planning.py` passes and `analyze_plan` | The module tests of §10 pass for a chain, a diamond, a cycle, a task with no estimate and a graph with no links | LOW | AGENT-SAFE | PJP-2 |
 | PJP-7 | 1484 | §3.4: `plan_chain`, `set_chain`, `buffer_status` | A fixed project with two people and 9 tasks gives the chain, the buffer and the target date in a test. `set_chain` makes the buffer and finish tasks on one card. A second call finds them and proposes no copy | MEDIUM | AGENT-SAFE | PJP-4, PJP-6 |
@@ -357,7 +379,8 @@ The research file holds the methods and their sources. A survey of competing pro
 # Python: the packs, the card rows, the Projects skill
 uv run pytest tests/unit/test_projects_packs.py tests/unit/test_tool_packs_choice.py \
   tests/unit/test_confirmation_rows.py -q
-uv run pytest apps/skills/skill-projects/tests -q
+uv run pytest tests/unit/test_card_words.py tests/unit/test_pack_cues.py tests/unit/test_pack_guards.py \n  tests/unit/test_pack_no_double_write.py tests/unit/test_pack_rules_oa8g.py tests/unit/test_tool_packs_registry.py -q
+uv run pytest tests/unit -k "projects_ and not calendar" -q   # the skill's own tests live in tests/unit
 uv run python scripts/affected_tests.py --run
 
 # Frontend
@@ -376,10 +399,10 @@ The live measure of PJP-2 runs the OA-8e harness with `--budget-usd 0.50`.
 | Rule | Fence | Slice |
 |---|---|---|
 | A status colour is one of six hues | A test feeds `hue_of` every alias and the seven hex codes of §2.1, and checks each result | PJP-1 |
-| Server and client map a colour the same way | A parity test reads `COLOR_ALIASES` and the hue bands from `statusAccent.ts` and compares them with `hues.py` | PJP-1 |
+| Server and client map a colour the same way | A parity test compares the exported `COLOR_ALIASES` and hue bands of `statusAccent.ts` with `hues.py`, through a JSON fixture that a vitest writes and pytest reads, or the reverse | PJP-1 |
 | A card detail has no bracketed category | A test calls each status and view tool with a stubbed `_confirm` and checks that no detail matches `\[[a-z_]+\]` | PJP-1 |
 | Each other Projects pack fits beside the core | `test_projects_packs.py`: with base 56 and the core held, each other pack is 31 tools or fewer, and `plan_loader` puts `projects-assistant` in `via_loader` | PJP-2 |
-| No component outside the shell pins `projects-assistant` | A source scan of `workbench/control_plane/src` | PJP-2b |
+| No `AgentChat` or `useAgentSessions` call pins `PROJECTS_AGENT` outside the shell | A source scan of `workbench/control_plane/src`. Other names of the agent (`nav.ts`, `agentName.ts`, `ProjectToolCards`, `spend.ts`) are legal | PJP-2b |
 | A batch tool validates like its single tool | For each batch tool, a test sends one bad row and checks the same refusal text as the single tool | PJP-3, PJP-4 |
 | The planning arithmetic | Module tests of `planning.py` on fixed graphs | PJP-6 to PJP-10 |
 | Each stage set keeps its limits | A test over `stage_sets.py` | PJP-5 |
