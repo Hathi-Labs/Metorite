@@ -151,7 +151,7 @@ class _FakeDB:
         if sql == objects_store._OBJECT_BY_NAME_SQL:
             for o in w.objects:
                 if (o["org"], o["package"], o["name"]) == (self.org, p["pid"], p["name"]):
-                    return _Result([(o["id"], o["package"], o["name"], None, ANA, NOW, NOW)])
+                    return _Result([(o["id"], o["package"], o["name"], None, ANA, NOW, NOW, [])])
             return _Result()
         if sql == objects_store._FIELDS_SQL:
             return _Result([("site", "text", {}, False), ("notes", "text", {}, False)])
