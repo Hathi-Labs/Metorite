@@ -441,7 +441,7 @@ def test_r8_a_zone_west_of_utc_has_its_own_day(world) -> None:
     assert _kinds(world, world.wendy, _la(10, 18))[today] == "due_today"
 
 
-def test_r8_quiet_hours_hold_a_planned_row(world) -> None:
+def test_r8_quiet_hours_end_a_planned_row(world) -> None:
     _due(world, world.asha, "Call the Acme buyer", _ist(10, 12))
     with world.p.admin_engine.begin() as c:
         c.execute(text("UPDATE user_settings SET day_end_hour = 9 WHERE user_id = :u"),

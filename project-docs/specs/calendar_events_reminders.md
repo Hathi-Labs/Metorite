@@ -1218,9 +1218,12 @@ title. A tap opens My Day.
     owner's.
 
 Fences: `tests/unit/test_due_day.py` holds the rule, and it refuses a new
-`due_at < now()` in the gateway. `tests/unit/test_due_push_r8.py` runs the
-planner and the SQL on a real Postgres. `src/lib/taskCard.test.ts` holds the
-client half.
+`due_at` compare with the clock in the gateway, in any spelling.
+`tests/unit/test_due_push_r8.py` runs the planner and the SQL on a real
+Postgres, and one test ties two routes to the reader's zone.
+`src/lib/taskCard.test.ts` holds the client half.
+`src/app/tasks/lib/duePick.test.ts` holds the date picks, and
+`src/lib/shell/saveZone.test.ts` holds the zone save.
 
 ## 6. UI and UX
 

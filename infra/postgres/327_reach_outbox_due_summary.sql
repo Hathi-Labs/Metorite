@@ -23,8 +23,8 @@
 -- its definition does not yet name the new value. A second run changes
 -- nothing. The guard of 318 looks for `reminder_unconfirmed`, and this CHECK
 -- keeps that value, so a replay of 318 leaves this CHECK alone.
--- The number is taken at build time (R1). On 2026-11-02 main held 324, and
--- open pull requests held 325 and 326. Check it again at merge.
+-- The number is taken at build time (R1). On 2026-11-02 main held 325, and
+-- an open pull request held 326. Check it again at merge.
 -- Pinned by tests/unit/test_due_push_r8.py, which finds this file by CONTENT,
 -- never by number (R1).
 -- ============================================================================
