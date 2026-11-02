@@ -388,6 +388,7 @@ export function SidebarAccountFooter({
     <div className={`border-t border-sidebar-border ${collapsed ? "flex justify-center p-2" : "px-2 py-2"}`}>
       <div ref={rootRef} className={collapsed ? "" : "flex items-center gap-1"}>
         <button
+          data-guide="home.account-menu"
           onClick={toggle}
           aria-haspopup="dialog"
           aria-expanded={open}
