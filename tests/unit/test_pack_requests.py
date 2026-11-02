@@ -222,6 +222,10 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "studio_patch": ("change the title in the app manifest",),
     "studio_plan": ("plan the studio app",),
     "studio_validate": ("validate the app manifest",),
+    # -- studio skills (STU-F2d) --
+    "studio_skill_list": ("list my studio skills",),
+    "studio_skill_save": ("save a new studio skill that summarises a meeting",),
+    "studio_skill_state": ("publish my studio skill",),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),
