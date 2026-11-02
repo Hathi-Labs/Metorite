@@ -6,17 +6,22 @@ A task write enqueues one ``align.check`` job on the session of the write. So
 the write and its job commit together, or neither does. A crash between a
 commit and a later enqueue would lose the job, and this form cannot.
 
-**The seam is the handlers.** ``tasks.create_task``, ``tasks.patch_task`` and
-``tasks.move_task_in`` call :func:`enqueue_check`, and each call sits inside the
-``_tenant_session`` of the write. No hook sits on ``insert_row`` or
-``update_row``. A personal task is never checked, so
-``personal.create_personal_task`` does not call it. Recurrence and the file
-import stay out in v1 (§5 item 5). Fence: ``test_the_seam_*`` in
-``tests/unit/test_align_trigger.py``.
+**The seam is the handlers.** ``tasks.create_task``, ``tasks.patch_task``,
+``tasks.move_task_in`` and ``intake.capture_intake`` call :func:`enqueue_check`,
+and each call sits inside the ``_tenant_session`` of the write. No hook sits on
+``insert_row`` or ``update_row``. A personal task is never checked, so
+``personal.create_personal_task`` does not call it. These writes stay out in v1
+(§5 item 5): recurrence, the file import, the revert in ``activities.py``, the
+automation patch in ``automation.py`` and the merge in ``merge.py``. ALN-7 reads
+the current task, so a later edit through ``patch_task`` catches up. The dedupe
+scope holds only while a job is queued or running. So a title that goes A, B, A
+enqueues again, and ALN-7 must read the current text and not the text at enqueue.
+Fence: ``test_the_seam_*`` in ``tests/unit/test_align_trigger.py``.
 
 **The gate.** :func:`jobs_enabled` runs first and touches no database, so a
 member of an org that is not listed pays no statement. It needs the worker on
-(``worker.worker_enabled``) AND the org in ``ALIGN_JOBS_ORGS``. ``queue.prune``
+(``worker.worker_enabled``), the ``align.check`` kind registered with the worker,
+AND the org in ``ALIGN_JOBS_ORGS``. ``queue.prune``
 deletes no queued row, so a queue with no worker would grow without a bound.
 
 **A failed enqueue never fails the write** (§5 item 7). Each statement of this
@@ -51,7 +56,7 @@ from typing import Any
 from acb_common import get_logger, get_settings
 from sqlalchemy import text
 
-from gateway.jobs import queue
+from gateway.jobs import queue, worker
 from gateway.jobs.worker import worker_enabled
 
 _log = get_logger("align.trigger")
@@ -78,6 +83,10 @@ def jobs_enabled(org: str | None) -> bool:
     ``ALIGN_JOBS_ORGS``, and it reads the settings at each call, so a SIGHUP
     reload applies. No database work."""
     if not org or not worker_enabled():
+        return False
+    # The kind must have a handler. If `gateway.align.check` failed to import, no
+    # worker claims the row and it stays queued for ever.
+    if KIND not in worker.kinds():
         return False
     orgs = _parse_orgs(str(getattr(get_settings(), "align_jobs_orgs", "") or ""))
     return "*" in orgs or str(org).strip().lower() in orgs

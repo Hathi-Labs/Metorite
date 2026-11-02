@@ -45,6 +45,10 @@ Run (a PRIVATE ladder database, one R8 suite at a time, because the
   ``test_the_stub_registers_at_import`` goes red.
 * M10. ``trigger._checked_text``: add the due date.
   ``test_the_hash_reads_only_the_title_and_the_description`` goes red.
+* M12. ``intake.capture_intake``: drop the ``enqueue_check`` call.
+  ``test_r8_a_capture_into_a_team_project_enqueues_one_job`` goes red.
+* M13. ``trigger.jobs_enabled``: drop the test of ``worker.kinds()``.
+  ``test_an_unregistered_kind_closes_the_gate_and_opens_no_savepoint`` goes red.
 * M11. ``core.assert_move_keeps_privacy``: answer None.
   ``test_r8_a_move_out_of_a_personal_project_enqueues_one_job`` goes red.
 """
@@ -132,6 +136,17 @@ def test_the_gate_needs_the_worker_and_the_org(
 ) -> None:
     _gate(monkeypatch, worker_on=worker_on, orgs=orgs)
     assert trigger.jobs_enabled(org) is open_
+
+
+def test_an_unregistered_kind_closes_the_gate_and_opens_no_savepoint(
+        monkeypatch: Any) -> None:
+    """If `gateway.align.check` failed to import, no worker claims the row."""
+    _gate(monkeypatch, orgs=ORG)
+    monkeypatch.setattr(worker, "_HANDLERS", {})
+    assert trigger.jobs_enabled(ORG) is False
+    answer = asyncio.run(trigger.enqueue_check(
+        _NoDatabase(), TASK, ORG, row=_row(), known_team=True))
+    assert answer is None
 
 
 def test_the_default_gate_is_closed() -> None:
@@ -332,10 +347,17 @@ def test_the_seam_has_no_hook_on_the_row_helpers(function: str) -> None:
 
 
 @pytest.mark.parametrize("module", [
-    "personal.py", "recurrence.py", "import_writer.py", "intake.py",
+    "personal.py", "recurrence.py", "import_writer.py",
+    "activities.py", "automation.py", "merge.py",
 ])
 def test_the_seam_skips_the_creators_that_the_spec_leaves_out(module: str) -> None:
     assert "enqueue_check" not in (_ROUTES / module).read_text(encoding="utf-8")
+
+
+def test_the_seam_intake_enqueues_inside_the_tenant_session() -> None:
+    function = _function(_tree(_ROUTES / "intake.py"), "capture_intake")
+    calls = _calls(function, "enqueue_check")
+    assert len(calls) == 1 and _inside_tenant_session(function, calls[0])
 
 
 def test_the_trigger_opens_no_session_and_names_no_org_in_the_job() -> None:
@@ -616,6 +638,27 @@ class TestTheTriggerOnARealDatabase:
             edited = _call(p, w.a, "PATCH", f"/projects/tasks/{made.json()['id']}",
                            {"title": "Still no row"})
             assert edited.status_code == 200
+        assert _jobs(p, p.org_a) == []
+
+    def test_r8_a_capture_into_a_team_project_enqueues_one_job(self, w: Any) -> None:
+        p = w.p
+        made = _call(p, w.a, "POST", "/projects/intake", {
+            "title": "Captured idea", "description": "From a call",
+            "project_id": w.team_a["id"]})
+        assert made.status_code == 201, made.text
+        tid = made.json()["task"]["id"]
+        jobs = _jobs(p, p.org_a)
+        assert len(jobs) == 1
+        assert str(jobs[0].organization_id) == p.org_a and jobs[0].payload == {"task_id": tid}
+        digest = trigger.content_hash(_row("Captured idea", "From a call"))
+        assert jobs[0].dedupe_key == f"align:{tid}:{digest}"
+        assert _jobs(p, p.org_b) == []
+
+    def test_r8_a_capture_into_a_personal_project_enqueues_none(self, w: Any) -> None:
+        p = w.p
+        made = _call(p, w.a, "POST", "/projects/intake", {
+            "title": "A private capture", "project_id": w.own["id"]})
+        assert made.status_code == 201, made.text
         assert _jobs(p, p.org_a) == []
 
     def test_r8_a_personal_task_is_never_enqueued(self, w: Any) -> None:
