@@ -83,6 +83,7 @@ import {
 import { runReminderAct } from "@/lib/shell/reminderOpen";
 import { ShellJob } from "@/lib/shell/doJob";
 import { browserTimeZone } from "@/app/tasks/lib/utils";
+import { zoneToSave } from "@/lib/shell/saveZone";
 
 export function CalendarView() {
   const { isMobile } = useViewMode();
@@ -96,6 +97,7 @@ export function CalendarView() {
   const quickDispose = useTaskStore((s) => s.quickDispose);
   const loadDone = useTaskStore((s) => s.loadDone);
   const settings = useTaskStore((s) => s.settings);
+  const settingsLoaded = useTaskStore((s) => s.settingsLoaded);
   // ONE grid, like Google Calendar: it always renders the full 24 hours, so you
   // can view and schedule at any hour (no working-vs-24h toggle). The user's
   // WORKING HOURS aren't a wall — they're a soft zone: shaded on the grid, and
@@ -328,10 +330,15 @@ export function CalendarView() {
 
   // Persist the user's real IANA timezone so the server-side nightly roll-over
   // computes their local-day boundary correctly (defaults to UTC otherwise).
+  // RX-7: only when the saved zone is unset or the "UTC" default (`zoneToSave`,
+  // the shell's one rule), and only once the saved settings were read. A zone
+  // the member chose in the settings below stays.
   useEffect(() => {
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    if (tz && tz !== settings.timezone) void updateSettings({ timezone: tz });
-  }, [settings.timezone, updateSettings]);
+    if (!settingsLoaded) return;
+    const tz = browserTimeZone();
+    const zone = zoneToSave(settings.timezone, tz);
+    if (zone) void updateSettings({ timezone: zone });
+  }, [settingsLoaded, settings.timezone, updateSettings]);
 
   // Pull DONE tasks into the store so COMPLETED time-blocks stay on the grid
   // (they're excluded from the normal hydrate). Keeps the sense of progress.
