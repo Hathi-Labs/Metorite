@@ -40,9 +40,16 @@
  * With the shell nav off (`shellNavOn`), only the founder's welcome exists,
  * exactly as before NS-7.
  *
- * Dismissing the welcome strips the query with `router.replace`, so a reload,
- * a share of the URL or the back button cannot summon it again (no
- * localStorage: a second founder on a shared machine still gets their own).
+ * Dismissing the welcome closes it AT ONCE, in local state, and then strips
+ * the query with `history.replaceState` (OB-0, owner report 2026-11-01). A
+ * reload, a share of the URL or the back button then cannot summon it again
+ * (no localStorage: a second founder on a shared machine still gets their
+ * own). ⚠️ Never `router.replace` here. It waits on a server round trip, and
+ * the dialog stayed open until that round trip ended. On a slow server no way
+ * out did anything. "Invite my team" also navigates in the same click, so the
+ * replace lost, and Back brought the dialog back. Fence:
+ * `e2e/shell-presets.spec.ts`, "a slow server never holds the founder's
+ * welcome open".
  *
  * Renders through the ONE Modal primitive (`components/ui/Modal`).
  * `useSearchParams` requires a Suspense boundary at build. The default export
@@ -51,7 +58,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 
 import { useAccess } from "@/components/AccessProvider";
 import Icon from "@/components/Icon";
@@ -76,7 +83,7 @@ import {
   type PresetId,
 } from "@/lib/shell/presets";
 import { launcherGroups, shellNavOn } from "@/lib/shell/shellNav";
-import { layoutQuestionOpen, setWelcomeOpen, skipsAppsStep } from "@/lib/shell/welcomeSteps";
+import { layoutQuestionOpen, setWelcomeOpen, skipsAppsStep, withoutWelcome } from "@/lib/shell/welcomeSteps";
 import { CHANGE_LAYOUT, askedInThisPage, markAsked, saveShellPrefs, useShellPrefs } from "@/lib/shell/shellPrefs";
 
 export const WELCOME_PARAM = "welcome";
@@ -120,10 +127,11 @@ function InviteBody({ onDone }: { onDone: () => void }) {
 }
 
 function WelcomeDialogInner() {
-  const router = useRouter();
-  const pathname = usePathname() ?? "/";
   const params = useSearchParams();
-  const newOrg = params?.get(WELCOME_PARAM) === WELCOME_NEW_ORG;
+  // OB-0: a way out sets `dismissed` first, so the dialog never waits on the
+  // address to change.
+  const [dismissed, setDismissed] = useState(false);
+  const newOrg = !dismissed && params?.get(WELCOME_PARAM) === WELCOME_NEW_ORG;
   // Read once, as the sidebar reads it: the dev override must not flip.
   const [navOn] = useState(() => shellNavOn());
   // WS-62 CF-2: with the chat-first flag on, a phone skips step 2. It has
@@ -201,7 +209,10 @@ function WelcomeDialogInner() {
     setReopened(false);
     setHandled(true);
     setStep("ask");
-    if (newOrg) router.replace(pathname);
+    if (newOrg) {
+      setDismissed(true);
+      window.history.replaceState(null, "", withoutWelcome(window.location.href, WELCOME_PARAM));
+    }
   };
   const next = () => (newOrg ? setStep("invite") : close());
   const again = reopened && !asking;
