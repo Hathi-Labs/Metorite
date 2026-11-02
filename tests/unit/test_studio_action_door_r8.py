@@ -56,6 +56,9 @@ q. An extra key, ``limit: true`` and ``limit: Infinity`` get 422 and read
 r. A value that Postgres refuses (a NUL, a lone surrogate) gets 422, never 500.
 s. After each refusal the door session runs a statement, and the audit row
    lands. A real timeout changes nothing for the next call.
+t. A body past the cap gets 413 and one audit row. A non-owner and an org
+   outside the switch read no byte. No connection of the app role is in a
+   transaction during the read.
 
 **The mutations (R7).** Commit before each, and restore with git after.
 Each result below was run on 2026-11-01, with both B2a suites.
@@ -222,22 +225,32 @@ def _user(org: str, email: str) -> UserContext:
 
 
 class _Request:
-    """The one part of a request that the handler reads: the body bytes."""
+    """The one part of a request that the handler reads: the stream of the
+    body. *on_read* runs at the read, and *fails* makes the read fail."""
 
-    def __init__(self, payload: Any) -> None:
+    def __init__(self, payload: Any, on_read: Callable[[], None] | None = None,
+                 fails: bool = False) -> None:
         self._raw = b"" if payload is None else json.dumps(payload).encode("utf-8")
+        self._on_read = on_read
+        self._fails = fails
+        self.reads = 0
 
-    async def body(self) -> bytes:
-        return self._raw
+    async def stream(self) -> Any:
+        self.reads += 1
+        if self._fails:
+            raise OSError("the read of the body failed")
+        if self._on_read is not None:
+            self._on_read()
+        yield self._raw
 
 
-async def _call(org: str, email: str, pid: str, action: str,
-                payload: Any = None) -> tuple[int, Any]:
+async def _call(org: str, email: str, pid: str, action: str, payload: Any = None,
+                request: _Request | None = None) -> tuple[int, Any]:
     """Call the real handler with *org* bound, as the auth layer binds it.
     Answers the status and the answer, or the detail of a refusal."""
     token = bind_tenant(org)
     try:
-        found = await invoke.invoke_action(pid, action, request=_Request(payload),
+        found = await invoke.invoke_action(pid, action, request=request or _Request(payload),
                                            user=_user(org, email))
         return 200, found
     except HTTPException as exc:
@@ -754,6 +767,54 @@ def test_r8_a_value_that_postgres_refuses_is_422_never_500(world, op, value) -> 
     body = {"filter": [{"field": "site", "op": op, "value": value}]}
     status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", body))
     assert (status, detail["code"], detail["field"]) == (422, "query_value_invalid", "site")
+
+
+# ── t. The body read ───────────────────────────────────────────────────────
+
+
+def _connections_in_a_transaction(world: Any) -> int:
+    """The connections of the app role that a session holds now. A pooled
+    connection with no session reads `idle`."""
+    with world.p.admin_engine.connect() as c:
+        return int(c.execute(text(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+            "AND usename = :role AND state <> 'idle'"),
+            {"role": world.p.app_url.username}).scalar_one())
+
+
+@pytest.mark.parametrize("action", ["find", "peek"])
+def test_r8_no_connection_is_in_a_transaction_during_the_read(world, action) -> None:
+    held: list[int] = []
+    body = {"id": world.rec} if action == "peek" else {}
+    request = _Request(body, on_read=lambda: held.append(_connections_in_a_transaction(world)))
+    status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, action, request=request))
+    assert status == 200, got
+    assert held == [0]
+
+
+def test_r8_a_body_past_the_cap_is_413_and_one_audit_row(world) -> None:
+    payload = {"filter": [], "pad": "x" * invoke.MAX_BODY_BYTES}
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", payload))
+    assert (status, detail) == (413, {"code": "body_too_large", "message": invoke.BODY_OVER_CAP})
+    assert _audits(world, world.pkg) == [(world.a, ANA, "action", {
+        **_LIST_OUTCOME, "outcome": "refused", "reason": "body_too_large"})]
+
+
+def test_r8_a_non_owner_reads_no_byte(world) -> None:
+    async def go() -> list[tuple[int, Any]]:
+        return [await _call(world.a, BEN, world.pkg, "find", request=_Request(None, fails=True)),
+                await _call(world.b, ANA, world.pkg, "find", request=_Request(None, fails=True))]
+
+    assert _run(world, go) == [(404, NOT_FOUND)] * 2
+    assert _audits(world, world.pkg) == []
+
+
+def test_r8_the_switch_off_reads_no_byte(world, monkeypatch) -> None:
+    monkeypatch.setattr(get_settings(), "studio_orgs", world.b)
+    request = _Request(None, fails=True)
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", request=request))
+    assert (status, detail) == (404, NOT_FOUND)
+    assert request.reads == 0
 
 
 # ── i. The switch ──────────────────────────────────────────────────────────

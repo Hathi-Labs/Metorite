@@ -28,6 +28,8 @@ This file proves:
   id of the path;
 - each ``QueryError`` code maps to its answer, and the audit row holds the
   code and no value;
+- the body read: it runs after the checks, with no session open, and it stops
+  near the cap;
 - a catalog that fails is 503, and an object that the package lacks is 404
   ``object_missing``;
 - one audit row for each call that reaches a package, with no record data
@@ -54,6 +56,7 @@ These turn a test of this file red:
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import re
@@ -74,7 +77,7 @@ from acb_common.studio_manifest import (
     validate_manifest,
 )
 from acb_common.studio_query import QueryError, list_input_schema
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from gateway.routes.studio import actions, invoke
 from gateway.studio import objects_store, packages_store
@@ -273,7 +276,7 @@ def _call(c: TestClient, pid: str, action: str, body: Any = None) -> Any:
     return c.post(f"/studio/apps/{pid}/actions/{action}", json=body)
 
 
-def _raw(c: TestClient, pid: str, action: str, content: str) -> Any:
+def _raw(c: TestClient, pid: str, action: str, content: str | bytes) -> Any:
     return c.post(f"/studio/apps/{pid}/actions/{action}", content=content,
                   headers={"content-type": "application/json"})
 
@@ -370,7 +373,7 @@ class TestThePackage:
         r = _client(world).post(f"/studio/apps/{pid}/actions/peek", json=body,
                                 params={"organization_id": OTHER, "owner_email": BEN})
         assert r.status_code == 200, r.text
-        assert world.session_args == [()]
+        assert world.session_args == [(), ()]
         reads = [p for sql, p in world.statements if sql == packages_store._GET_SQL]
         assert reads == [{"m": ANA, "id": pid}]
         assert world.audits[0]["user_email"] == ANA
@@ -665,7 +668,7 @@ class TestTheList:
         _read_nothing(world)
 
     @pytest.mark.parametrize("content", ["[]", '"text"', "7", "null", "{not json", "   ",
-                                         "[" * 20000 + "]" * 20000, "\x00\xff"],
+                                         "[" * 20000 + "]" * 20000, b'{"limit": \xff}'],
                              ids=["list", "text", "number", "null", "not_json", "blank",
                                   "deep", "bytes"])
     def test_a_body_that_is_not_a_json_object_is_422_never_500(self, world, content):
@@ -742,14 +745,19 @@ class TestTheList:
         assert r.json()["detail"] == {"code": "object_missing", "message": invoke.NO_OBJECT}
         assert world.audits[0]["detail"]["reason"] == "object_missing"
 
-    def test_an_id_that_the_store_refuses_is_404_object_missing(self, world):
+    def test_an_id_that_the_store_refuses_is_404_object_missing(self, world, monkeypatch):
         """The body names no id, so the store refused a stored value. The
         caller can change nothing, so the answer is not a 422."""
         pid, _, _ = _setup(world)
+        logged: list[tuple[str, dict[str, Any]]] = []
+        monkeypatch.setattr(invoke, "_log", SimpleNamespace(
+            warning=lambda event, **kw: logged.append((event, kw))))
         world.query_raises = objects_store.ObjectStoreError("object_id must be a UUID")
         r = _call(_client(world), pid, "find", {})
         assert r.status_code == 404
         assert r.json()["detail"]["code"] == "object_missing"
+        # It cannot fire today, so a future fault shows in the log. No value.
+        assert logged == [("studio.invoke.stored_value_refused", {"error": "ObjectStoreError"})]
 
     def test_the_session_takes_no_org_or_package_from_the_request(self, world):
         pid, oid, _ = _setup(world)
@@ -760,7 +768,7 @@ class TestTheList:
         assert r.status_code == 422, r.text
         r = c.post(f"/studio/apps/{pid}/actions/find", json={}, params=query)
         assert r.status_code == 200, r.text
-        assert world.session_args == [(), ()]
+        assert world.session_args == [()] * 4
         assert world.queries == [{"package_id": pid, "object_id": oid, **NO_INPUT}]
         assert {a["user_email"] for a in world.audits} == {ANA}
 
@@ -783,7 +791,139 @@ class TestTheList:
         pid, _, _ = _setup(world)
         world.query_raises = QueryError(studio_query.TIMEOUT, "Try again.")
         _call(_client(world), pid, "find", {})
-        assert world.log == ["open", "close", "audit"]
+        assert world.log == ["open", "close", "open", "close", "audit"]
+
+
+# ── The body read ──────────────────────────────────────────────────────────
+
+
+class _Body:
+    """A request that counts the bytes that the door reads. Each read logs, so
+    a test sees what is open during it. A test client reads a whole body before
+    the app runs, so these tests call the handler with this request."""
+
+    def __init__(self, world: Any, chunk: bytes = b"{}", repeat: int = 1,
+                 fails: bool = False) -> None:
+        self.world, self.chunk, self.repeat, self.fails = world, chunk, repeat, fails
+        self.reads = 0
+        self.sent = 0
+
+    async def stream(self) -> Any:
+        self.reads += 1
+        self.world.log.append("body")
+        if self.fails:
+            raise OSError("the read of the body failed")
+        for _ in range(self.repeat):
+            self.sent += len(self.chunk)
+            yield self.chunk
+
+    async def body(self) -> bytes:
+        raise AssertionError("request.body() has no cap, so the door must not call it")
+
+
+def _direct(world: Any, pid: str, action: str, request: Any, org: str = ORG,
+            email: str = ANA) -> tuple[int, Any]:
+    """Call the handler with *request*. Answers the status and the answer, or
+    the detail of a refusal."""
+    world.org = org
+    user = UserContext(email=email, role=UserRole.EMPLOYEE,
+                       access=build_access(["feature:workflows"]), organization_id=org)
+
+    async def go() -> tuple[int, Any]:
+        try:
+            return 200, await invoke.invoke_action(pid, action, request=request, user=user)
+        except HTTPException as exc:
+            return exc.status_code, exc.detail
+
+    return asyncio.run(go())
+
+
+class TestTheBodyRead:
+    def test_the_cap_is_one_mib(self):
+        assert invoke.MAX_BODY_BYTES == 1024 * 1024
+
+    @pytest.mark.parametrize("action,uses", [("find", "object:visit.list"),
+                                             ("peek", "object:visit.get")])
+    def test_a_body_past_the_cap_is_413_and_the_read_stops_near_the_cap(
+            self, world, action, uses):
+        """A stream of 256 MiB. The door stops at the first chunk past the cap,
+        so it reads the package, reads no object, and writes the audit row."""
+        pid, _, _ = _setup(world)
+        body = _Body(world, b"x" * 65_536, repeat=4096)
+        status, detail = _direct(world, pid, action, body)
+        assert (status, detail) == (413, {"code": "body_too_large",
+                                          "message": invoke.BODY_OVER_CAP})
+        assert invoke.MAX_BODY_BYTES < body.sent <= invoke.MAX_BODY_BYTES + len(body.chunk)
+        assert body.sent < 2 * invoke.MAX_BODY_BYTES
+        _read_nothing(world)
+        assert world.audits[0]["detail"] == {
+            "action": action, "uses": uses, "class": "A",
+            "outcome": "refused", "reason": "body_too_large"}
+
+    def test_a_body_at_the_cap_runs_and_one_byte_more_is_413(self, world):
+        pid, _, _ = _setup(world)
+        c = _client(world)
+        at_cap = b"{}" + b" " * (invoke.MAX_BODY_BYTES - 2)
+        assert _raw(c, pid, "find", at_cap).status_code == 200
+        r = _raw(c, pid, "find", at_cap + b" ")
+        assert (r.status_code, _code(r)) == (413, "body_too_large")
+
+    def test_a_read_that_fails_with_the_switch_off_is_404_and_never_runs(
+            self, monkeypatch, world):
+        pid, _, _ = _setup(world)
+        _open(monkeypatch, OTHER)
+        body = _Body(world, fails=True)
+        assert _direct(world, pid, "find", body) == (404, "Not found")
+        assert body.reads == 0 and world.log == []
+
+    @pytest.mark.parametrize("org,email", [(ORG, BEN), (OTHER, ANA)])
+    def test_a_non_owner_gets_404_for_no_byte_read(self, world, org, email):
+        pid = _package(world, org=org, owner=email)
+        _object(world, pid, org=org)
+        body = _Body(world, fails=True)
+        assert _direct(world, pid, "find", body) == (404, "Not found")
+        assert body.reads == 0 and world.audits == []
+
+    def test_a_bad_action_or_a_bad_app_id_reads_no_byte(self, world):
+        pid, _, _ = _setup(world)
+        body = _Body(world, fails=True)
+        assert _direct(world, pid, "a" * 49, body) == (404, "Not found")
+        with pytest.raises(HTTPException):
+            asyncio.run(invoke.invoke_action("not-a-uuid", "find", request=body, user=UserContext(
+                email=ANA, role=UserRole.EMPLOYEE, access=build_access(["feature:workflows"]),
+                organization_id=ORG)))
+        assert body.reads == 0
+
+    @pytest.mark.parametrize("action,code", [
+        ("add", "approval_required"), ("change", "approval_required"),
+        ("remove", "approval_required"), ("flow", "approval_required"),
+        ("pages", "source_not_open"), ("no_such_action", "not_declared"),
+    ])
+    def test_a_refused_action_reads_no_byte(self, world, action, code):
+        pid, _, _ = _setup(world)
+        body = _Body(world, fails=True)
+        status, detail = _direct(world, pid, action, body)
+        assert (status, detail["code"]) == (403, code)
+        assert body.reads == 0
+
+    @pytest.mark.parametrize("action", ["find", "peek"])
+    def test_no_session_is_open_during_the_read(self, world, action):
+        """A wait on a slow client must not hold a pool connection."""
+        pid, _, rid = _setup(world)
+        body = _Body(world, json.dumps({"id": rid} if action == "peek" else {}).encode())
+        status, _ = _direct(world, pid, action, body)
+        assert status == 200
+        assert world.log == ["open", "close", "body", "open", "close", "audit"]
+        assert body.reads == 1
+
+    def test_a_raw_fault_writes_no_audit_row(self, world):
+        """The door serves or refuses each other call. A raw fault is neither,
+        and the session is not safe to write on."""
+        pid, _, _ = _setup(world)
+        world.query_raises = RuntimeError("the statement failed")
+        with pytest.raises(RuntimeError):
+            _direct(world, pid, "find", _Body(world))
+        assert world.audits == []
 
 
 # ── The audit ──────────────────────────────────────────────────────────────
@@ -823,7 +963,7 @@ class TestTheAudit:
     def test_the_audit_runs_after_the_session_closes(self, world):
         pid, _, rid = _setup(world)
         _call(_client(world), pid, "peek", {"id": rid})
-        assert world.log == ["open", "close", "audit"]
+        assert world.log == ["open", "close", "open", "close", "audit"]
 
 
 # ── The tables ─────────────────────────────────────────────────────────────
@@ -870,7 +1010,7 @@ class TestTheTables:
                                         "approval_required", "source_not_open"}
         messages = {**invoke.REFUSALS, "catalog_unavailable": invoke.CATALOG_DOWN,
                     "object_missing": invoke.NO_OBJECT, "bad_input": invoke.BAD_RECORD_ID,
-                    "bad_list": invoke.BAD_LIST_INPUT}
+                    "bad_list": invoke.BAD_LIST_INPUT, "body_too_large": invoke.BODY_OVER_CAP}
         for code, message in messages.items():
             assert re.fullmatch(r"[a-z_]+", code)
             assert message.endswith(".") and message.count(". ") == 0, code

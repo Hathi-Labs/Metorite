@@ -26,9 +26,14 @@ package declares. The route registers on the router of ``actions.py``, as
    that fails gets 503 ``catalog_unavailable``.
 6. The approval. Class B and class C get 403 ``approval_required``. No card
    exists yet (B2c), so nothing runs.
-7. The executor. The door opens two: ``object:<name>.get`` (B2a) and
-   ``object:<name>.list`` (B2b-1). Each one parses the body here, and only
-   here. An object name that the package does not hold gets 404
+7. The body. Only a call that an open executor runs reads the body, so a
+   non-owner and a refused action read no byte. No session is open during the
+   read, because a wait on a slow client must not hold a pool connection. The
+   read stops past :data:`MAX_BODY_BYTES`, and the answer is 413
+   ``body_too_large``.
+8. The executor, in a new session. The door opens two: ``object:<name>.get``
+   (B2a) and ``object:<name>.list`` (B2b-1). Each one parses the body here,
+   and only here. An object name that the package does not hold gets 404
    ``object_missing``, and a record id that names nothing gets 404 ``Not
    found``. Each other class A action gets 403 ``source_not_open`` (B2b-2 and
    B2b-3 name the next executors).
@@ -47,12 +52,14 @@ the session usable after each refusal.
 org, a member or a package from the path, the query or the body. A key such
 as ``organization_id`` in a body changes nothing.
 
-**The audit.** Each call that reaches a package of the caller writes one
-``app_audit`` row (kind ``action``) through ``record_app_audit_bound``. The
-row holds the action id, its ``uses``, its class and the outcome, and no
-record data. Each text in it has at most :data:`MAX_AUDIT_TEXT` characters.
-A 404 before the package writes no row. A refused query gives the row its
-code in ``reason``, and never its input.
+**The audit.** Each call that reaches a package of the caller, and that the
+door serves or refuses, writes one ``app_audit`` row (kind ``action``) through
+``record_app_audit_bound``. The row holds the action id, its ``uses``, its
+class and the outcome, and no record data. Each text in it has at most
+:data:`MAX_AUDIT_TEXT` characters. A 404 before the package writes no row. A
+refused query gives the row its code in ``reason``, and never its input. A raw
+fault, such as a failed statement, gets 500 and writes no row, because the
+session is not safe to write on.
 
 ⚠️ **The audit is best-effort, on purpose, for a class A read only.** It
 opens its own session after the read, and a failed audit logs and never
@@ -80,7 +87,8 @@ from gateway.routes.studio import actions, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store, packages_store
 
-__all__ = ["LIST_INPUT_KEYS", "MAX_AUDIT_TEXT", "OPEN_EXECUTORS", "REFUSALS", "router"]
+__all__ = ["LIST_INPUT_KEYS", "MAX_AUDIT_TEXT", "MAX_BODY_BYTES", "OPEN_EXECUTORS", "REFUSALS",
+           "router"]
 
 _log = get_logger("gateway.studio.invoke")
 
@@ -99,6 +107,10 @@ _ACTION_ID = re.compile(OP_PATTERN)
 #: The most characters of one text in an audit row.
 MAX_AUDIT_TEXT = 200
 
+#: The most bytes of one body (1 MiB). The grammar caps a list body far below
+#: this. B2c may raise it for writes.
+MAX_BODY_BYTES = 1024 * 1024
+
 NOT_DECLARED = "not_declared"
 CLASS_X = "class_x"
 NOT_IN_CATALOG = "not_in_catalog"
@@ -106,6 +118,7 @@ APPROVAL_REQUIRED = "approval_required"
 SOURCE_NOT_OPEN = "source_not_open"
 CATALOG_UNAVAILABLE = "catalog_unavailable"
 OBJECT_MISSING = "object_missing"
+BODY_TOO_LARGE = "body_too_large"
 
 #: The code of each 403 and one sentence that a model can act on.
 REFUSALS: dict[str, str] = {
@@ -122,6 +135,8 @@ REFUSALS: dict[str, str] = {
 #: does not hold. Each is one sentence that a model can act on.
 CATALOG_DOWN = "The action catalog is not available now, so try the action again later."
 NO_OBJECT = "This package holds no object for this action yet, so define the object first."
+
+BODY_OVER_CAP = "This body is too large for this door, so send a smaller body."
 
 BAD_RECORD_ID = "Send the record id as a UUID in the key id of a JSON object."
 BAD_LIST_INPUT = (
@@ -147,6 +162,7 @@ class _Outcome:
     object_missing: bool = False
     invalid: bool = False
     catalog_down: bool = False
+    too_large: bool = False
 
 
 def _app_id(raw: str) -> str:
@@ -194,6 +210,20 @@ async def _catalog_class(uses: str) -> str | None:
         if row.get("id") == uses:
             return str(row.get("class"))
     return None
+
+
+async def _read_body(request: Request) -> bytes | None:
+    """The bytes of the body, or None past :data:`MAX_BODY_BYTES`. The read
+    stops at the first chunk past the cap, so the door holds no more than one
+    chunk over the cap. The executor parses the bytes."""
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_BODY_BYTES:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _json_object(raw: bytes) -> dict[str, Any] | None:
@@ -275,15 +305,29 @@ async def _run_object_list(db: Any, package: packages_store.Package, ref: UsesRe
     except studio_query.QueryError as exc:
         out.query_error = exc
         return
-    except objects_store.ObjectStoreError:
+    except objects_store.ObjectStoreError as exc:
         # The body named no id, so this is a stored name or id that the store
         # refuses. The package holds no object that the action can read.
+        _log.warning("studio.invoke.stored_value_refused", error=type(exc).__name__)
         out.object_missing = True
         return
     if page is None:
         out.object_missing = True
     else:
         out.page = page
+
+
+async def _run_executor(request: Request, package: packages_store.Package, ref: UsesRef,
+                        out: _Outcome) -> None:
+    """Read the body, then run the open executor of *ref* in a new session. No
+    session is open during the read, so a slow client holds no pool connection."""
+    raw = await _read_body(request)
+    if raw is None:
+        out.too_large = True
+        return
+    run = _run_object_list if ref.op == "list" else _run_object_get
+    async with _tenant_session() as db:
+        await run(db, package, ref, raw, out)
 
 
 def _query_refusal(exc: studio_query.QueryError) -> HTTPException:
@@ -303,6 +347,8 @@ def _audit_detail(out: _Outcome) -> dict[str, Any]:
         outcome, reason = "failed", CATALOG_UNAVAILABLE
     elif out.refusal is not None:
         outcome, reason = "refused", out.refusal
+    elif out.too_large:
+        outcome, reason = "refused", BODY_TOO_LARGE
     elif out.query_error is not None:
         timed_out = out.query_error.code == studio_query.TIMEOUT
         outcome, reason = "failed" if timed_out else "refused", out.query_error.code
@@ -329,6 +375,9 @@ def _answer(out: _Outcome) -> dict[str, Any]:
     if out.refusal is not None:
         raise HTTPException(status_code=403, detail={
             "code": out.refusal, "message": REFUSALS[out.refusal]})
+    if out.too_large:
+        raise HTTPException(status_code=413, detail={
+            "code": BODY_TOO_LARGE, "message": BODY_OVER_CAP})
     if out.query_error is not None:
         raise _query_refusal(out.query_error)
     if out.invalid:
@@ -357,9 +406,6 @@ async def invoke_action(
     if not _ACTION_ID.fullmatch(action):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _app_id(app_id)
-    # The bytes only. The executor parses them, after the switch and the
-    # package, and no session is open while the body arrives.
-    raw = await request.body()
     out = _Outcome(action=action)
     ref: UsesRef | None = None
     async with _tenant_session() as db:
@@ -375,9 +421,6 @@ async def invoke_action(
             if ref.source == "object":
                 out.cls = OBJECT_OP_CLASSES.get(str(ref.op))
                 out.refusal = refusal_for(ref, out.cls)
-                if out.refusal is None:
-                    run = _run_object_list if ref.op == "list" else _run_object_get
-                    await run(db, package, ref, raw, out)
     if ref is not None and out.uses is not None and ref.source != "object":
         try:
             out.cls = await _catalog_class(out.uses)
@@ -386,6 +429,8 @@ async def invoke_action(
             out.catalog_down = True
         else:
             out.refusal = refusal_for(ref, out.cls)
+    elif ref is not None and out.refusal is None:
+        await _run_executor(request, package, ref, out)
     await record_app_audit_bound(app_id=package.id, user_email=user.email, kind="action",
                                  detail=_audit_detail(out))
     return _answer(out)
