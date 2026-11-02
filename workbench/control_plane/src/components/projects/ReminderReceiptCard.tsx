@@ -46,6 +46,7 @@ export default function ReminderReceiptCard({
   label,
   receipt,
   openTask,
+  mine = true,
 }: {
   /** The tool event id, stable across a replay. */
   id: string;
@@ -54,6 +55,12 @@ export default function ReminderReceiptCard({
   receipt: ReminderReceipt;
   /** Opens the linked task in Projects. */
   openTask: (taskId: string) => void;
+  /**
+   * False when another member ran the turn (RX-7). A reminder is private to
+   * its owner, so in a shared chat the reader sees the reminder and no act:
+   * Undo, Change time and See in Calendar all answer 404 for them.
+   */
+  mine?: boolean;
 }) {
   const router = useRouter();
   // The zone of the reminder, else the browser's. The time reads in it.
@@ -71,7 +78,7 @@ export default function ReminderReceiptCard({
   const [refused, setRefused] = useState("");
 
   const now = Date.now();
-  const undoable = !undone && canUndo(receipt, now);
+  const undoable = mine && !undone && canUndo(receipt, now);
 
   const undo = async () => {
     if (busy) return;
@@ -166,7 +173,7 @@ export default function ReminderReceiptCard({
             </div>
           )}
 
-          {!dropped && (
+          {mine && !dropped && (
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               {undoable && (
                 <Button variant="secondary" size="sm" icon="Undo2" onClick={() => void undo()} disabled={busy}>
@@ -194,7 +201,7 @@ export default function ReminderReceiptCard({
               </Button>
             </div>
           )}
-          {dropped && (
+          {mine && dropped && (
             <div className="mt-2">
               <Button
                 variant="text"
@@ -208,7 +215,7 @@ export default function ReminderReceiptCard({
             </div>
           )}
 
-          {picking && !dropped && (
+          {mine && picking && !dropped && (
             <div className="mt-2 flex flex-col gap-2 rounded-lg border border-border bg-secondary/40 p-2" data-reminder-picker="">
               <div className="flex flex-wrap gap-1.5">
                 {laterPresets(Date.now(), zone).map((p) => (

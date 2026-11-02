@@ -59,6 +59,7 @@ export const SAMPLE_ROWS: Row[] = [
 
 const TAKEN = "Duplicate";
 const OVER_LIMIT = "Over limit";
+const CLOSED = "Closed";
 
 /** A fake door over `rows`. `delayMs` shows the pending state of a button. */
 export function makeSampleDoor(
@@ -77,6 +78,34 @@ export function makeSampleDoor(
     },
     async run(action, args): Promise<ActionResult> {
       await wait();
+      // A patch: an update that carries an id and lacks a required field. A
+      // Board sends `{id, data: {status}}`. The patch joins the stored record
+      // before the check, and a null clears the field. The Form sends whole
+      // records, and its own check blocks a missing required field first.
+      const at0 = action.endsWith(".update") ? store.findIndex((r) => r.id === args?.id) : -1;
+      const patch = args?.data;
+      if (
+        at0 >= 0 && patch && typeof patch === "object" && !Array.isArray(patch)
+        && fields.some((f) => f.required && !(f.key in patch))
+      ) {
+        const { id: _id, ...rest } = store[at0];
+        void _id;
+        const joined: Record<string, unknown> = { ...rest, ...(patch as Record<string, unknown>) };
+        for (const k of Object.keys(joined)) if (joined[k] === null) delete joined[k];
+        const check = validateRecord(fields, joined);
+        if (!check.ok) {
+          const fieldErrors = Object.fromEntries(check.problems.map((p) => [p.field, p.message]));
+          return { ok: false, message: "Fix the marked fields.", data: { fieldErrors } };
+        }
+        if (check.value.status === CLOSED && check.value.done !== true) {
+          return {
+            ok: false, message: "That did not save.",
+            data: { rule: "close_needs_done", message: "A visit closes only when it is done." },
+          };
+        }
+        store[at0] = { id: store[at0].id, ...check.value };
+        return { ok: true, message: "Saved to the sample list. Nothing is stored." };
+      }
       const checked = validateRecord(fields, args?.data);
       if (!checked.ok) {
         const fieldErrors = Object.fromEntries(checked.problems.map((p) => [p.field, p.message]));

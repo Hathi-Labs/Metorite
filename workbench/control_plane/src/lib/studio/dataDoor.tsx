@@ -71,11 +71,11 @@ export function parseSource(raw: unknown): StudioSource | null {
   return { action, args: isObject(raw.args) ? raw.args : undefined };
 }
 
-/** The kinds that bind in STU-D1: a `table` and the `dataGrid` template. */
+/** The kinds that bind: a `table`, and the `dataGrid` and `board` templates (D1, D3). */
 export function bindsSource(type: string, props: Record<string, unknown>): boolean {
   if (parseSource(props.source) === null) return false;
   if (type === "table") return true;
-  return type === "template" && props.name === "dataGrid";
+  return type === "template" && (props.name === "dataGrid" || props.name === "board");
 }
 
 /** A button's action: the old sentence, or a typed action. */

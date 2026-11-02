@@ -40,7 +40,7 @@ import { buildLinkChipIndex } from "@/lib/linkChips";
 import { pillsForTurn, taskRefModeForTurn } from "@/lib/projectsAgent";
 import { useRevalidateOnTools } from "@/lib/taskRefs";
 import AnswerDetails from "@/components/AnswerDetails";
-import { profileMarkShown } from "@/lib/profileMark";
+import { profileMarkShown, ranByViewer } from "@/lib/profileMark";
 import { tierRouteLabel, tierRoutingUiOn } from "@/lib/tierRouting";
 import { isEdited } from "@/lib/chatEdit";
 import { cardAnswerOf, cardAnswerText } from "@/lib/cardAnswer";
@@ -804,7 +804,7 @@ function MessageBubble({
           titled reads). Inert unless the message contains skill-projects tool
           calls, so this renders in both the chat app and the Projects app's
           AI chat (WS-27bm). */}
-      <ProjectToolCards toolEvents={dedupedToolEvents} />
+      <ProjectToolCards toolEvents={dedupedToolEvents} mine={ranByViewer(message, viewerEmail)} />
       {/* The receipts of the assistant profile writes, each with Undo (WS-63
           PZ-6a). Inert unless the message holds a profile_* tool call. */}
       <ProfileToolCards toolEvents={dedupedToolEvents} />

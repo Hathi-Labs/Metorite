@@ -23,6 +23,8 @@ import {
   reminderHref,
   rowMeta,
   snoozeChoices,
+  snoozeZone,
+  snoozedWords,
   subjectLine,
   timeWords,
   undoMove,
@@ -215,6 +217,45 @@ describe("snooze", () => {
   it("offers no evening when it is under 90 minutes away or past", () => {
     expect(snoozeChoices(at(17)).map((c) => c.id)).toEqual(["hour", "tomorrow"]);
     expect(snoozeChoices(at(21)).map((c) => c.id)).toEqual(["hour", "tomorrow"]);
+  });
+
+  // RX-7 item 1. Mutation: build the evening from `getHours` of the browser
+  // again, and these three fail whenever the test zone is not Kolkata.
+  it("reads 18:00 and 09:00 on the wall of the saved zone, not the browser's", () => {
+    const now = new Date("2026-11-02T04:30:00Z"); // 10:00 in Kolkata
+    const [, evening, tomorrow] = snoozeChoices(now, "Asia/Kolkata");
+    expect(evening.iso).toBe("2026-11-02T18:00:00+05:30");
+    expect(tomorrow.iso).toBe("2026-11-03T09:00:00+05:30");
+    expect(evening.at.getTime()).toBe(Date.parse("2026-11-02T12:30:00Z"));
+    expect(tomorrow.at.getTime()).toBe(Date.parse("2026-11-03T03:30:00Z"));
+  });
+
+  it("names the day in the saved zone, also east of UTC+12", () => {
+    // 20:00 UTC on 2 Nov is 09:00 on 3 Nov in Auckland (UTC+13).
+    const now = new Date("2026-11-02T20:00:00Z");
+    const [hour, evening, tomorrow] = snoozeChoices(now, "Pacific/Auckland");
+    expect(evening.iso).toBe("2026-11-03T18:00:00+13:00");
+    expect(tomorrow.iso).toBe("2026-11-04T09:00:00+13:00");
+    expect(hour.iso).toBe("2026-11-03T10:00:00+13:00");
+  });
+
+  it("drops the evening when it is past in the saved zone", () => {
+    const now = new Date("2026-11-02T13:00:00Z"); // 18:30 in Kolkata
+    expect(snoozeChoices(now, "Asia/Kolkata").map((c) => c.id)).toEqual(["hour", "tomorrow"]);
+  });
+
+  it("says the clock of the saved zone in the toast", () => {
+    const now = new Date("2026-11-02T04:30:00Z");
+    const [, evening, tomorrow] = snoozeChoices(now, "Asia/Kolkata");
+    expect(snoozedWords(evening, now)).toMatch(/^Snoozed to 6:00\s?PM$/i);
+    expect(snoozedWords(tomorrow, now)).toMatch(/^Snoozed to tomorrow 9:00\s?AM$/i);
+  });
+
+  it("takes the saved zone first, then the browser's, then UTC", () => {
+    expect(snoozeZone("Asia/Kolkata", "America/New_York")).toBe("Asia/Kolkata");
+    expect(snoozeZone(null, "America/New_York")).toBe("America/New_York");
+    expect(snoozeZone("Not/AZone", "America/New_York")).toBe("America/New_York");
+    expect(snoozeZone(null, "")).toBe("UTC");
   });
 
   it("writes an ISO time WITH the offset that parses back to the same instant", () => {

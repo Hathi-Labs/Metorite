@@ -933,12 +933,14 @@ DEBT: dict[str, str] = {
     "GET /api/auth/me/assistant-profile/export": "P-8",
     "GET /api/auth/me/assistant-profile/summaries": "P-8",
     "GET /api/auth/me/shell": "P-8",
+    "GET /api/auth/me/zone": "P-8",
     "GET /api/settings/appearance": "P-8",
     "GET /api/settings/branding": "P-8",
     "GET /api/settings/llm": "P-8",
     "GET /api/settings/number-system": "P-8",
     "PUT /api/auth/me/agent-access": "P-8",
     "PUT /api/auth/me/shell": "P-8",
+    "PUT /api/auth/me/zone": "P-8",
     "PUT /api/settings/appearance": "P-8",
     "PUT /api/settings/branding": "P-8",
     "PUT /api/settings/number-system": "P-8",
@@ -1020,7 +1022,7 @@ DEBT_CEILING: dict[str, int] = {
     "agents": 20,
     "chat": 25,
     "shell": 15,
-    "settings": 24,  # PZ-35 added the three chat summary actions.
+    "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
     "admin": 36,
     "integrations": 19,
 }
