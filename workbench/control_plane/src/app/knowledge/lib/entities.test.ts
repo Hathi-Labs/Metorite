@@ -63,7 +63,7 @@ describe("the link to the owner record", () => {
   it("goes to the app that owns the record", () => {
     expect(ownerHref(row("person", "people"))).toBe("/people/r-1");
     expect(ownerHref(row("workstream", "pm_projects"))).toBe("/projects?project=r-1");
-    expect(ownerHref(row("workflow", "workflows"))).toBe("/workflows/r-1");
+    expect(ownerHref(row("workflow", "workflows"))).toBe("/studio/workflows/r-1");
   });
 
   it("opens a customer as the organization the CRM sheet reads", () => {
