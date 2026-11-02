@@ -152,6 +152,38 @@ door suites and ``test_one_writer_of_the_four_tables``.
   ``test_the_refusal_text_names_each_open_verb`` goes red.
 * L15. ``invoke.py``: name ``studio_records`` in a SQL text.
   ``test_one_writer_of_the_four_tables`` goes red.
+
+**The mutations of the fix round.** Each result below was run on 2026-11-02,
+on both door suites. F4, F5a and F5b are the moves that an earlier review saw
+pass all 162 tests.
+
+* F1. ``_read_body``: drop the cap.
+  ``test_a_body_past_the_cap_is_413_and_the_read_stops_near_the_cap`` and
+  ``test_r8_a_body_past_the_cap_is_413_and_one_audit_row`` go red.
+* F2. ``_read_body``: read to the end, then refuse. Only
+  ``test_a_body_past_the_cap_is_413_and_the_read_stops_near_the_cap`` goes red.
+* F3. ``_read_body``: refuse a body at the cap.
+  ``test_a_body_at_the_cap_runs_and_one_byte_more_is_413`` goes red.
+* F4. ``invoke_action``: read before the switch. 14 tests go red, among them
+  ``test_a_read_that_fails_with_the_switch_off_is_404_and_never_runs`` and
+  ``test_r8_the_switch_off_reads_no_byte``.
+* F5a. ``_run_executor``: read inside the session of the executor.
+  ``test_no_session_is_open_during_the_read`` and
+  ``test_r8_no_connection_is_in_a_transaction_during_the_read`` go red.
+* F5b. ``invoke_action``: read inside the session of the package. 13 tests go
+  red, among them the two tests of F5a.
+* F6. ``invoke_action``: read after the app id and before the package. 11 tests
+  go red, among them ``test_a_non_owner_gets_404_for_no_byte_read`` and
+  ``test_r8_a_non_owner_reads_no_byte``.
+* F7. ``_read_body``: call ``request.body()``. 39 tests go red.
+* F8. ``_audit_detail``: drop the branch of a 413. The two tests of F1 go red.
+* F9. ``_run_object_list``: drop the log line.
+  ``test_an_id_that_the_store_refuses_is_404_object_missing`` goes red.
+* F10. ``invoke_action``: write an audit row on a raw fault.
+  ``test_a_raw_fault_writes_no_audit_row`` goes red.
+* F11. ``_json_object``: catch only ``JSONDecodeError``.
+  ``test_a_body_that_is_not_a_json_object_is_422_never_500`` and
+  ``test_a_number_too_long_to_parse_is_422_never_500`` go red.
 """
 
 from __future__ import annotations

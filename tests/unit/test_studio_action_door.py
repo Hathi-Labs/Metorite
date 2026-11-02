@@ -52,6 +52,7 @@ These turn a test of this file red:
   ``test_a_catalog_that_fails_is_503_and_audited``.
 * L1 to L4, and L6 to L12 and L14, of B2b-1 turn a test of this file red. L5
   and L13 need the real store, so only the R8 suite sees them.
+* F1 to F11 of the fix round each turn a test of this file red.
 """
 
 from __future__ import annotations
