@@ -30,7 +30,8 @@ owner asked for a flow from first principles.
 - Setup health per app over time (the SH tasks, epic 940). This spec builds the
   first items of the same `setup_status` seam, and SH extends it.
 - Billing, seats and plans (`specs/launch_surface.md` §4, WS-PLN).
-- A product tour with coach marks. §3 P2 says why.
+- A product tour with coach marks. §3 P2 says why. ⚠️ `assistant_guide.md`
+  (PROPOSED 2026-11-02) proposes a tour that the member starts, run by the chat.
 
 ## 2. What is wrong today
 
