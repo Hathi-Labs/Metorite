@@ -74,7 +74,7 @@ the thing that used to EXPOSE a breach for free: one theme switch and every
 hardcoded value announced itself. The breach is still a breach. Nothing shows
 it to you now.
 
-Eleven rules on top of the three above. Each one exists because somebody broke it:
+Twelve rules on top of the three above. Each one exists because somebody broke it:
 
 4. **One vocabulary per concept, in `src/lib/` or `src/components/`, consumed by
    every app.** Status and lane colour is `src/lib/statusAccent.ts` — the single
@@ -560,6 +560,12 @@ Eleven rules on top of the three above. Each one exists because somebody broke i
    The "Visual review line" step of the Frontend job in `pr-check.yml` fails
    a PR body with no such line. `tests/unit/test_fence_lists.py` keeps that
    step in the required job.
+15. **A new UI action needs a chat tool, or a row in the parity table**
+   (owner rule, 2026-11-01). The table is
+   `packages/acb_skills/acb_skills/chat_parity.py`, and the spec is
+   `project-docs/specs/chat_parity.md`. Send each request through a seam or
+   with a literal path, so the fence can read it.
+   **Fence: `tests/unit/test_chat_parity.py`.**
 
 **What CI cannot catch, and you must.** There is no structural or layout test in
 this tree: nothing asserts panel counts, shell adoption, mobile branches, or that

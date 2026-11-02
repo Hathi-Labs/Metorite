@@ -22,6 +22,7 @@ LiteLLM integration, the unified credential store (LLM and integration keys) and
 - Only the tenant-scoped methods resolve an org (`get`, `put`, `delete`, `get_all`, `get_by_type`, `get_by_service`). `encrypt` and `decrypt` are plain Fernet over the single `ACB_MASTER_KEY`.
 - `client.py` is `H4` and stays untenanted. Per-tenant live credentials need a tenant-scoped API key, which is an owner gate, not a refactor.
 - `decide.py` is the ONE tenant facade for typed decisions. It calls `acb_auth.console_resolve.decide_on_console` and ships dark behind `DECIDE_ENABLED`, an OWNER-ONLY flag. It has no local litellm path. Fences: `tests/unit/test_acb_llm_decide.py`, `tests/unit/test_email_decide_shadow.py`.
+- `jobs.py` is the ONE policy of an AI call's job (task 1128): `structured`, `writing` or `judgement`. The three seams read `job=`. Thinking reaches only a model that takes it: `params_for_model` decides it off the Router, and `customer_console/reasoning.py::reasoning_params_for` decides it for each chain step. Each seam adds the word "json" to JSON mode and logs `acb_llm.empty_answer`. A second thinking literal must import `THINKING_OFF`. Fence: `tests/unit/test_llm_jobs.py`.
 - `context.acompletion_stream_text` ends a stream at `STREAM_FIRST_CHUNK_S` (45 s), `STREAM_IDLE_S` (30 s) and `STREAM_TOTAL_S` (150 s). Past a bound it raises a `StreamTimeout` subclass with a `reason` code. The caller decides what to do. Do not catch it into a draft. Fence: `tests/unit/test_llm_stream_bounds.py`.
 
 ### acb_memory/

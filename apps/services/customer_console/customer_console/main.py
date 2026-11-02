@@ -165,6 +165,7 @@ from customer_console.lifecycle import (
 from customer_console.reasoning import (
     publish_reasoning_alias,
     reasoning_for_vendor,
+    reasoning_params_for,
 )
 from customer_console.router import (
     SSE_DONE,
@@ -9069,6 +9070,10 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
         # vendors and each step builds its own body. `messages` is a required
         # field, so no guard: a guard here was pure complexity (C901).
         passthrough["messages"] = reasoning_for_vendor(passthrough["messages"])
+        # Task 1128: a thinking parameter reaches only a step whose model
+        # takes it. litellm here runs with no `drop_params`, so a step that
+        # refuses `thinking` would answer 400 for the whole request.
+        passthrough = reasoning_params_for(passthrough, step.model)
         requested_max = passthrough.get("max_tokens")
         passthrough["max_tokens"] = min(
             int(requested_max) if requested_max else _MAX_OUTPUT_TOKENS,
