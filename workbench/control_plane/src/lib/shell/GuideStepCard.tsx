@@ -33,6 +33,7 @@ import {
   endGuide,
   guideView,
   isActive,
+  nextLabel,
   nextStep,
   tourChips,
   useGuide,
@@ -44,7 +45,7 @@ import { starrableHeld } from "./presets";
 
 /** The card's content. Exported so a test reads its markup. */
 export function GuideStepCardBody(p: {
-  view: Pick<GuideView, "say" | "index" | "total" | "missing">;
+  view: Pick<GuideView, "say" | "index" | "total" | "missing"> & { isLast?: boolean };
   onBack?: () => void;
   onNext: () => void;
   onEnd: () => void;
@@ -77,7 +78,7 @@ export function GuideStepCardBody(p: {
           End tour
         </Button>
         <Button variant="primary" size="sm" onClick={p.onNext}>
-          Next
+          {nextLabel(p.view.isLast)}
         </Button>
       </div>
     </>

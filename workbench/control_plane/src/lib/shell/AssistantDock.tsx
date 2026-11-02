@@ -101,7 +101,7 @@ import {
 
 import { requestBrief } from "./briefTurn";
 import GuideStepCard from "./GuideStepCard";
-import { ANCHOR_MISSING_NOTE, endGuide, guideView, isActive as guideActive, nextStep, offerGuide, startGuide, useGuide } from "./guide";
+import { ANCHOR_MISSING_NOTE, endGuide, guideView, isActive as guideActive, nextLabel, nextStep, offerGuide, startGuide, useGuide } from "./guide";
 import { chatFirstOn } from "./chatFlag";
 import {
   REMINDER_HOLD_MS,
@@ -656,7 +656,7 @@ function PeekStrip({
           End tour
         </Button>
         <Button variant="primary" size="sm" onClick={nextStep}>
-          Next
+          {nextLabel(tourView.isLast)}
         </Button>
       </div>
     );

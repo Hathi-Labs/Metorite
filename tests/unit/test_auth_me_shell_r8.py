@@ -209,6 +209,30 @@ async def test_the_first_tour_start_stays_and_the_nudge_mark_still_takes_the_new
     assert "guide" not in raw
 
 
+async def test_an_old_tab_s_layout_save_never_writes_the_tour_mark(db) -> None:
+    """WS-OB GD-5a repair 2: an old tab copies the whole answer back, so its
+    star save names ``tour_seen_at`` (null, or a time). A layout save never
+    writes the mark. Only the key-only stamp does."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        # No stamp yet: an old tab's null and an old tab's time both leave none.
+        a = await _put(db.org_a, user, {"answered": "skipped", "tour_seen_at": None})
+        assert a["tour_seen_at"] is None
+        b = await _put(db.org_a, user, {"answered": "skipped", "tour_seen_at": "2001-01-01T00:00:00.000Z"})
+        assert b["tour_seen_at"] is None
+        # The first start stamps. An old tab's save after it keeps the stamp.
+        first = (await _put(db.org_a, user, {"tour_seen_at": "2002-02-02T00:00:00.000Z"}))["tour_seen_at"]
+        assert first is not None
+        c = await _put(db.org_a, user, {"answered": "skipped", "pins": ["/tasks"], "tour_seen_at": None})
+        assert (c["pins"], c["tour_seen_at"]) == (["/tasks"], first)
+        d = await _put(db.org_a, user, {"answered": "skipped", "tour_seen_at": "2003-03-03T00:00:00.000Z"})
+        assert d["tour_seen_at"] == first
+    [(_, raw)] = _stored(db, email)
+    assert raw["tour_seen_at"] == first
+
+
 async def test_the_nudge_mark_round_trips_and_a_layout_save_keeps_it(db) -> None:
     """WS-62 CF-2: ``chat_first_message_at`` rides the jsonb column, and a
     later layout save that does not name it keeps it (§4.7, D-CF-7)."""

@@ -89,7 +89,8 @@ test.describe("desktop", () => {
     expect(pop.y + pop.height).toBeLessThanOrEqual(vp.height);
 
     // The address lost the parameter, so a reload resumes and does not restart.
-    expect(new URL(page.url()).search).toBe("");
+    // The router drops it (a soft move), so the address changes a moment after the start.
+    await expect.poll(() => new URL(page.url()).search).toBe("");
     expect(JSON.parse((await stored(page)) ?? "null")).toEqual({ guideId: "home.tour", step: 0 });
 
     // The focus did not move on mount, and the ring takes no pointer.

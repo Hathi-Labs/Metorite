@@ -26,6 +26,7 @@
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 
 import {
   GUIDE_MENU_EVENT,
@@ -63,6 +64,10 @@ export const isChatAnchor = (anchor: string | null): boolean => !!anchor && anch
  *   the Menu drawer stop, whose strip is under the drawer.
  * - On the tour's last stop the card carries the app chips (GD-5a), and a
  *   popover above the message field would cover them.
+ * - An anchor inside an open dialog (`[role="dialog"]`) is the exception to
+ *   all of these. The dialog's backdrop covers the dock, the strip and the
+ *   card, so the popover alone can carry the line. It sits on the `top`
+ *   panel layer, above a dialog.
  */
 export function showsPopover(a: {
   phone: boolean;
@@ -70,7 +75,10 @@ export function showsPopover(a: {
   tourLast: boolean;
   /** The assistant is open, in any form. */
   assistantOpen: boolean;
+  /** The anchor sits inside an open dialog. */
+  inDialog?: boolean;
 }): boolean {
+  if (a.inDialog) return true;
   if (a.tourLast && isChatAnchor(a.anchor)) return false;
   if (a.phone) return a.anchor === DRAWER_ANCHOR;
   return !a.assistantOpen;
@@ -125,13 +133,16 @@ function GuideHostInner({ phone = false }: { phone?: boolean }) {
       startGuide(id, "url");
       // Out of the address at once, so a reload resumes and does not start
       // again, and the flag read (which can be slow) never holds it there.
+      // ⚠️ Through the router, never `history.replaceState`: that call keeps
+      // the router's own `__NA` state, so Next skips its sync, keeps the old
+      // address in its tree, and writes it back on the next change.
       const { pathname: p, search, hash } = window.location;
-      window.history.replaceState(window.history.state, "", withoutGuideParam(p, search, hash));
+      router.replace(withoutGuideParam(p, search, hash), { scroll: false });
     } else if (!mounted.current) {
       resumeGuide();
     }
     mounted.current = true;
-  }, [searchKey]);
+  }, [searchKey, router]);
 
   // GD-5a: a member started the tour, from any entry. The record keeps the
   // first start, and a resume after a reload is not a start.
@@ -185,12 +196,16 @@ function GuideHostInner({ phone = false }: { phone?: boolean }) {
         step={{ index: view.index, total: view.total }}
         onNext={nextStep}
         onEnd={() => endGuide("end")}
-        popover={showsPopover({
-          phone,
-          anchor: view.anchor,
-          tourLast: view.guide.id === TOUR_GUIDE_ID && view.isLast,
-          assistantOpen: assistant.open,
-        })}
+        last={view.isLast}
+        popover={(inDialog) =>
+          showsPopover({
+            phone,
+            anchor: view.anchor!,
+            tourLast: view.guide.id === TOUR_GUIDE_ID && view.isLast,
+            assistantOpen: assistant.open,
+            inDialog,
+          })
+        }
         onAnchorClick={nextStep}
         onMissing={guideAnchorMissing}
       />
@@ -199,10 +214,15 @@ function GuideHostInner({ phone = false }: { phone?: boolean }) {
     <>
       {/* The ONE live region of the guide: it announces each step's line, on
           a desktop and on a phone. It stays in the tree, so a change of its
-          text is announced. */}
-      <div role="status" aria-live="polite" data-guide-live="" className="sr-only">
-        {view ? view.say : ""}
-      </div>
+          text is announced. It sits on `body`: an open Modal hides the app
+          shell from a screen reader (`aria-hidden`), and a region inside the
+          shell would go silent while the tour points into the Modal. */}
+      {createPortal(
+        <div role="status" aria-live="polite" data-guide-live="" className="sr-only">
+          {view ? view.say : ""}
+        </div>,
+        document.body,
+      )}
       {spot}
     </>
   );

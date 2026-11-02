@@ -21,8 +21,8 @@ from acb_auth import UserContext, get_current_user
 from acb_auth.permissions import CAPABILITIES
 from acb_common import get_logger
 from acb_common.app_manifests.shell_manifest import load_vocabulary
-from fastapi import APIRouter, Body, Depends, HTTPException
 from acb_common.guide_flags import guide_allowed
+from fastapi import APIRouter, Body, Depends, HTTPException
 from gateway.routes.admin._common import _tenant_session, get_org_id
 from pydantic import (
     BaseModel,
@@ -644,9 +644,12 @@ async def put_my_shell(
         else:
             prefs = model.model_dump(by_alias=True)
             # A mark the body did not name keeps its stored value (CF-2).
-            keep = tuple(k for k in KEPT_KEYS if k not in named)
-            if keep:
-                mode = "layout-keep"
+            # ``tour_seen_at`` is kept even when named: an old tab copies the
+            # whole answer back, so a layout save never writes the tour mark.
+            # Only the key-only stamp sets it (WS-OB GD-5a).
+            keep = tuple(k for k in KEPT_KEYS if k not in named or k == "tour_seen_at")
+            prefs["tour_seen_at"] = None
+            mode = "layout-keep"
         # GD-5a: the tour mark is the SERVER's time, never the device's.
         if prefs.get("tour_seen_at") is not None:
             prefs["tour_seen_at"] = _server_stamp()

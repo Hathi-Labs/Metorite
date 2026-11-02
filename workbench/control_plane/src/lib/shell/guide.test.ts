@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import { guideAct } from "./assistant";
 import { assistantFor, showsPopover } from "./GuideHost";
 import { GuideStepCardBody } from "./GuideStepCard";
-import { OWN_PART, bindAnchorClick, bindEscape, pickVisible } from "./GuideSpotlight";
+import { GuidePopoverBody, OWN_PART, anchorInDialog, bindAnchorClick, bindEscape, pickVisible } from "./GuideSpotlight";
 import {
   ANCHOR_MISSING_NOTE,
   GUIDE_STORAGE_KEY,
@@ -22,6 +22,7 @@ import {
   TOUR_GUIDE_ID,
   createGuideRunner,
   guideFromSearch,
+  nextLabel,
   parseStored,
   tourChips,
   withoutGuideParam,
@@ -633,5 +634,116 @@ describe("GD-5a: the last stop's card is not covered", () => {
     expect(showsPopover({ phone: true, anchor: "home.app-list", tourLast: false, assistantOpen: true })).toBe(true);
     expect(showsPopover({ phone: true, anchor: "home.ask", tourLast: false, assistantOpen: true })).toBe(false);
     expect(showsPopover({ phone: true, anchor: "home.ask", tourLast: false, assistantOpen: false })).toBe(false);
+  });
+});
+
+describe("GD-4 repair 2", () => {
+  it("the welcome picker holds a start and a resume, and the close lets them run", () => {
+    const a = rig();
+    a.runner.setHeld(true);
+    expect(a.runner.start("t.tour", "url")).toBe(false);
+    expect(a.runner.get().phase).toBe("idle");
+    a.runner.setHeld(false);
+    expect(a.runner.get()).toMatchObject({ phase: "pointing", guideId: "t.tour", source: "url" });
+
+    const b = rig();
+    b.data.set(GUIDE_STORAGE_KEY, JSON.stringify({ guideId: "t.tour", step: 2 }));
+    b.runner.setHeld(true);
+    expect(b.runner.resume()).toBe(false);
+    expect(b.runner.get().phase).toBe("idle");
+    b.runner.setHeld(false);
+    expect(b.runner.get()).toMatchObject({ phase: "pointing", step: 2, source: "resume" });
+  });
+
+  it("a hold set before the switch answers still waits for the dialog", () => {
+    const a = rig([TOUR, BAD_OPEN], null);
+    a.runner.setHeld(true);
+    a.runner.start("t.tour", "url");
+    a.runner.setAllowed(true);
+    expect(a.runner.get().phase).toBe("idle");
+    a.runner.setHeld(false);
+    expect(a.runner.get().phase).toBe("pointing");
+  });
+
+  it("a close with the switch off or unknown starts nothing", () => {
+    const off = rig([TOUR, BAD_OPEN], false);
+    off.runner.setHeld(true);
+    off.runner.start("t.tour", "url");
+    off.runner.setHeld(false);
+    expect(off.runner.get().phase).toBe("idle");
+    const unknown = rig([TOUR, BAD_OPEN], null);
+    unknown.runner.setHeld(true);
+    unknown.runner.setHeld(false);
+    expect(unknown.runner.get().phase).toBe("idle");
+  });
+
+  it("a hold does not stop a tour already on screen", () => {
+    const a = rig();
+    a.runner.start("t.tour", "button");
+    a.runner.setHeld(true);
+    expect(a.runner.get().phase).toBe("pointing");
+    a.runner.next();
+    expect(a.runner.get().step).toBeGreaterThan(0);
+  });
+
+  it("the popover shows for an anchor inside an open dialog, whatever the dock does", () => {
+    for (const phone of [false, true]) {
+      for (const assistantOpen of [false, true]) {
+        for (const tourLast of [false, true]) {
+          expect(showsPopover({ phone, anchor: "crm.record", tourLast, assistantOpen, inDialog: true })).toBe(true);
+        }
+      }
+    }
+    // Without a dialog the old rules hold.
+    expect(showsPopover({ phone: false, anchor: "crm.record", tourLast: false, assistantOpen: true })).toBe(false);
+    expect(showsPopover({ phone: true, anchor: "crm.record", tourLast: false, assistantOpen: false })).toBe(false);
+  });
+
+  it("anchorInDialog reads the closest dialog", () => {
+    expect(anchorInDialog({ closest: (s: string) => (s === '[role="dialog"]' ? {} : null) } as never)).toBe(true);
+    expect(anchorInDialog({ closest: () => null } as never)).toBe(false);
+    expect(anchorInDialog(null)).toBe(false);
+  });
+
+  it("the last stop says Done in the card and the popover, and the others say Next", () => {
+    expect(nextLabel(true)).toBe("Done");
+    expect(nextLabel(false)).toBe("Next");
+    expect(nextLabel(undefined)).toBe("Next");
+    const card = (isLast: boolean) =>
+      renderToStaticMarkup(
+        createElement(GuideStepCardBody, {
+          view: { say: "x", index: 5, total: 5, missing: false, isLast },
+          onNext: () => {},
+          onEnd: () => {},
+        }),
+      );
+    expect(card(true)).toContain("Done");
+    expect(card(true)).not.toContain(">Next<");
+    expect(card(false)).toContain(">Next<");
+    const pop = (last: boolean) =>
+      renderToStaticMarkup(createElement(GuidePopoverBody, { say: "x", onNext: () => {}, onEnd: () => {}, last }));
+    expect(pop(true)).toContain(">Done<");
+    expect(pop(false)).toContain(">Next<");
+    const dock = readFileSync(join(__dirname, "AssistantDock.tsx"), "utf-8");
+    expect(dock).toContain("nextLabel(tourView.isLast)");
+  });
+
+  it("the host removes ?guide= through the router, and puts the live region on body", () => {
+    const host = readFileSync(join(__dirname, "GuideHost.tsx"), "utf-8")
+      .replace(/\r\n/g, "\n")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    expect(host).toContain("router.replace(withoutGuideParam(");
+    expect(host).toContain("scroll: false");
+    expect(host).not.toMatch(/history\.replaceState/);
+    expect(host).toMatch(/createPortal\(\s*<div role="status" aria-live="polite" data-guide-live=""[\s\S]*?document\.body/);
+  });
+
+  it("the welcome dialog and the shell read set the hold", () => {
+    const steps = readFileSync(join(__dirname, "welcomeSteps.ts"), "utf-8");
+    expect(steps).toContain("setGuideHold(open)");
+    const prefs = readFileSync(join(__dirname, "shellPrefs.ts"), "utf-8");
+    expect(prefs.indexOf("setGuideHold(true)")).toBeGreaterThan(-1);
+    expect(prefs.indexOf("setGuideHold(true)")).toBeLessThan(prefs.indexOf("setGuideAllowed(guideOn(body))"));
   });
 });

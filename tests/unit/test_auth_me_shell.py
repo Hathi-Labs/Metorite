@@ -287,6 +287,18 @@ class TestTheTourMark:
         assert stored["chat_first_message_at"] == STAMP
         assert "|| EXCLUDED.shell_prefs" in sql
 
+    def test_a_layout_save_that_names_the_tour_mark_still_keeps_the_stored_one(self, fake: _FakeDB) -> None:
+        """An old tab copies the whole answer back. A layout save never writes
+        ``tour_seen_at``, whether the body says null or a time."""
+        for sent in (None, STAMP):
+            fake.stored = json.dumps({"answered": "skipped", "tour_seen_at": STAMP})
+            body = {"answered": "skipped", "chat_first_message_at": None, "tour_seen_at": sent}
+            res = _client(_user()).put("/auth/me/shell", json=body)
+            assert res.status_code == 200, res.text
+            [(sql, params)] = _writes(fake)[-1:]
+            assert "ARRAY['tour_seen_at'], COALESCE(user_settings.shell_prefs->'tour_seen_at'" in sql
+            assert json.loads(params["shell_prefs"])["tour_seen_at"] is None
+
     def test_a_layout_save_keeps_only_the_marks_it_omits(self, fake: _FakeDB) -> None:
         """A body that names the nudge mark keeps the tour mark alone, so an
         explicit null still clears the nudge mark (CF-2)."""

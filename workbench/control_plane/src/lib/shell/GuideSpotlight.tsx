@@ -34,6 +34,7 @@ import { createPortal } from "react-dom";
 import { PANEL_LAYERS, PANEL_SURFACES } from "@/components/ui/AnchoredPanel";
 import Button from "@/components/ui/Button";
 
+import { nextLabel } from "./guide";
 import { WATCHED_ATTRIBUTES, isShown } from "./guideAnchor";
 
 export type GuideSpotlightProps = {
@@ -60,8 +61,17 @@ export type GuideSpotlightProps = {
    * step line is in the strip or the chat's step card (WS-OB GD-4, spec §4.3),
    * so a second copy would only cover it.
    */
-  popover?: boolean;
+  popover?: boolean | ((inDialog: boolean) => boolean);
+  /** The last stop: the primary button says "Done", and pressing it ends the tour. */
+  last?: boolean;
 };
+
+/** Whether an anchor sits inside an open dialog (a `Modal`, the CRM record sheet). */
+export const DIALOG = '[role="dialog"]';
+export function anchorInDialog(el: Pick<HTMLElement, "closest"> | null): boolean {
+  return !!el?.closest(DIALOG);
+}
+
 
 export const DEFAULT_WAIT_MS = 3000;
 export const POPOVER_WIDTH = 320;
@@ -305,7 +315,9 @@ export function stepLabel(step: { index: number; total: number }): string {
  * region: `GuideHost` owns the one that announces each step at every width, so
  * a desktop does not announce the line twice.
  */
-export function GuidePopoverBody(p: Pick<GuideSpotlightProps, "say" | "step" | "onNext" | "onBack" | "onEnd">) {
+export function GuidePopoverBody(
+  p: Pick<GuideSpotlightProps, "say" | "step" | "onNext" | "onBack" | "onEnd" | "last">,
+) {
   return (
     <>
       <p className="text-sm text-foreground">{p.say}</p>
@@ -321,7 +333,7 @@ export function GuidePopoverBody(p: Pick<GuideSpotlightProps, "say" | "step" | "
         </Button>
         {p.onNext ? (
           <Button variant="primary" size="sm" onClick={p.onNext}>
-            Next
+            {nextLabel(p.last)}
           </Button>
         ) : null}
       </div>
@@ -377,7 +389,7 @@ function observeDom(onChange: () => void): () => void {
 }
 
 export function GuideSpotlight(props: GuideSpotlightProps) {
-  const { anchor, say, step, onNext, onBack, onEnd, waitMs = DEFAULT_WAIT_MS, popover = true } = props;
+  const { anchor, say, step, onNext, onBack, onEnd, last, waitMs = DEFAULT_WAIT_MS, popover = true } = props;
   // Latest callbacks, so a parent re-render never restarts the wait.
   const latest = useRef(props);
   latest.current = props;
@@ -456,6 +468,7 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
 
   if (!el || !box) return null;
   const ring = clampRing(ringBox(box.rect), { width: window.innerWidth, height: window.innerHeight });
+  const drawPopover = typeof popover === "function" ? popover(anchorInDialog(el)) : popover;
 
   return createPortal(
     <>
@@ -465,7 +478,7 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
         style={{ left: ring.left, top: ring.top, width: ring.width, height: ring.height }}
         className={`pointer-events-none fixed ${PANEL_LAYERS.top} rounded-lg ring-2 ring-primary`}
       />
-      {popover ? (
+      {drawPopover ? (
       <div
         ref={popRef}
         role="group"
@@ -474,7 +487,7 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
         style={{ left: box.pop.left, top: box.pop.top, width: box.pop.width }}
         className={`fixed ${PANEL_LAYERS.top} p-3 ${PANEL_SURFACES.panel}`}
       >
-        <GuidePopoverBody say={say} step={step} onNext={onNext} onBack={onBack} onEnd={onEnd} />
+        <GuidePopoverBody say={say} step={step} onNext={onNext} onBack={onBack} onEnd={onEnd} last={last} />
       </div>
       ) : null}
     </>,

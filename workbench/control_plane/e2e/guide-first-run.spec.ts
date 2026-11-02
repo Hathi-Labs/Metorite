@@ -53,9 +53,13 @@ interface Store {
   puts: Record<string, unknown>[];
 }
 
-async function stub(page: Page, opts: { me?: unknown; guide?: boolean | "missing" } = {}): Promise<Store> {
+async function stub(
+  page: Page,
+  opts: { me?: unknown; guide?: boolean | "missing"; neverAsked?: boolean } = {},
+): Promise<Store> {
   const store: Store = { puts: [] };
-  let layout: Record<string, unknown> = { ...SKIPPED };
+  // `neverAsked`: the server holds no answer, so the welcome picker opens.
+  let layout: Record<string, unknown> = { ...SKIPPED, ...(opts.neverAsked ? { answered: null } : {}) };
   const guide = opts.guide ?? true;
   await page.addInitScript(() => {
     localStorage.setItem("cc-shell-bar", "1");
@@ -279,6 +283,94 @@ for (const guide of [false, "missing"] as const) {
     expect(tourPuts(store)).toHaveLength(0);
   });
 }
+
+test("End, then Take the tour again on / with no reload starts it, and Back then Reload does not", async ({ page }) => {
+  await stub(page);
+  await page.goto("/?guide=home.tour");
+  await expect(popover(page)).toContainText("1 of 5");
+  // The router drops the parameter, so its own copy of the address changes too.
+  await expect.poll(() => new URL(page.url()).search).toBe("");
+  await popover(page).getByRole("button", { name: "End tour" }).click();
+  await expect(ring(page)).toHaveCount(0);
+
+  // Same page, no reload: the account menu's row goes to /?guide=home.tour again.
+  await accountTrigger(page).click();
+  await accountMenu(page).getByRole("button", { name: "Take the tour" }).click();
+  await expect(popover(page)).toContainText("1 of 5");
+  await expect.poll(() => new URL(page.url()).search).toBe("");
+  await popover(page).getByRole("button", { name: "End tour" }).click();
+  await expect(ring(page)).toHaveCount(0);
+
+  // Back and Reload do not bring the ended tour back.
+  await page.goBack();
+  await page.waitForTimeout(800);
+  await expect(ring(page)).toHaveCount(0);
+  expect(new URL(page.url()).search).toBe("");
+  await page.reload();
+  await expect(page.locator('[data-guide="home.app-list"]')).toBeVisible();
+  await page.waitForTimeout(800);
+  await expect(ring(page)).toHaveCount(0);
+  expect(await stored(page)).toBeNull();
+});
+
+test("the welcome picker holds ?guide=home.tour until it closes, then stop 1 rings", async ({ page }) => {
+  await stub(page, { neverAsked: true });
+  await page.goto("/?guide=home.tour");
+  const picker = page.getByRole("dialog", { name: "What will you do most here?" });
+  await expect(picker).toBeVisible();
+  await page.waitForTimeout(1200);
+  await expect(ring(page)).toHaveCount(0);
+  await expect(popover(page)).toHaveCount(0);
+  await picker.getByRole("button", { name: "Skip for now" }).click();
+  await expect(picker).toHaveCount(0);
+  await expect(ring(page)).toBeVisible();
+  await expect(popover(page)).toContainText("1 of 5");
+});
+
+test("the last stop says Done and Done ends the tour", async ({ page }) => {
+  await stub(page);
+  await page.goto("/?guide=home.tour");
+  await expect(popover(page)).toContainText("1 of 5");
+  await nextTo5(page, 1);
+  await expect(card(page).getByRole("button", { name: "Next" })).toHaveCount(0);
+  await card(page).getByRole("button", { name: "Done" }).click();
+  await expect(ring(page)).toHaveCount(0);
+  expect(await stored(page)).toBeNull();
+});
+
+test("an anchor inside a dialog gets the popover, and the live region survives a Modal", async ({ page }) => {
+  await stub(page);
+  await page.goto("/?guide=home.tour");
+  await nextTo5(page, 1);
+  await expect(card(page)).toBeVisible();
+  // Stop 5 hides the popover for the card. Put the ringed field in a dialog.
+  await page.evaluate(() => {
+    document.querySelector('[data-guide="chat.message-field"]')?.closest("div")?.setAttribute("role", "dialog");
+    window.dispatchEvent(new Event("resize"));
+  });
+  // (stop 5 draws the card alone: the dialog rule applies at every stop)
+  await expect(popover(page)).toHaveCount(1);
+  // The popover sits above a dialog (z-90), and its element is on top at its centre.
+  const onTop = await page.evaluate(() => {
+    const el = document.querySelector("[data-guide-popover]") as HTMLElement;
+    const r = el.getBoundingClientRect();
+    return document.elementFromPoint(r.x + r.width / 2, r.y + 8)?.closest("[data-guide-popover]") !== null;
+  });
+  expect(onTop).toBe(true);
+
+  // A real Modal: "Change my layout" opens the welcome picker while the tour runs.
+  await page.evaluate(() => document.querySelector('[data-guide="chat.message-field"]')?.closest("div")?.removeAttribute("role"));
+  // The dev tools badge sits over the account avatar in a dev build, so the click is sent to the element.
+  await accountTrigger(page).dispatchEvent("click");
+  await accountMenu(page).getByRole("button", { name: "Change my layout" }).click();
+  await expect(page.getByRole("dialog", { name: "What will you do most here?" })).toBeVisible();
+  const hidden = await page.evaluate(() => {
+    const live = document.querySelector("[data-guide-live]");
+    for (let n: Element | null = live; n; n = n.parentElement) if (n.getAttribute("aria-hidden") === "true") return true;
+    return live === null;
+  });
+  expect(hidden).toBe(false);
+});
 
 test.describe("phone", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });

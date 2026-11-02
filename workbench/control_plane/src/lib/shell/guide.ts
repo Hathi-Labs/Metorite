@@ -36,6 +36,15 @@
  * the read answers, a start or a resume waits. With `guide` false, every
  * start, resume and offer is refused, so no entry and no AG-UI event can
  * run a tour. A missing field reads as off.
+ *
+ * ## The hold (GD-4 repair 2, `assistant_guide.md` §4.1)
+ *
+ * The first sign-in dialog (the welcome picker) covers the page. A start or a
+ * resume that comes while it is open waits, like one that waits for the
+ * switch, and runs when the dialog closes. The dialog sets the hold through
+ * `setWelcomeOpen` (`welcomeSteps.ts`), and the shell read sets it ahead of
+ * the dialog (`shellPrefs.ts`), so the switch cannot answer first. No code
+ * looks for the dialog in the page.
  */
 
 import { useSyncExternalStore } from "react";
@@ -144,6 +153,11 @@ export function stepAnchor(step: GuideStep | undefined): string | null {
   return step && step.kind === "point" ? step.anchor : null;
 }
 
+/** The label of the primary button: "Done" on the last stop, where it ends the tour, else "Next". */
+export function nextLabel(last: boolean | undefined): string {
+  return last ? "Done" : "Next";
+}
+
 /** Whether a phase has a tour on screen. */
 export function isActive(s: Pick<GuideState, "phase">): boolean {
   return s.phase === "opening" || s.phase === "pointing" || s.phase === "missing";
@@ -167,7 +181,9 @@ export function createGuideRunner(opts: GuideRunnerOptions) {
   let here: string | null = null;
   /** The switch: `true` on, `false` off, `null` not known yet. */
   let allowed: boolean | null = opts.allowed ?? null;
-  /** A start or a resume that came before the switch was known. One at most. */
+  /** The welcome dialog is open, or is about to open: a start or a resume waits. */
+  let held = false;
+  /** A start or a resume that came before the switch was known, or while held. One at most. */
   let pending: { kind: "start"; id: string; source: GuideSource } | { kind: "resume" } | null = null;
   const notify = () => {
     for (const l of [...listeners]) l();
@@ -239,13 +255,30 @@ export function createGuideRunner(opts: GuideRunnerOptions) {
         return false;
       }
       if (allowed === false) return false;
-      if (allowed === null) {
+      if (allowed === null || held) {
         pending = { kind: "start", id: guide.id, source };
         return false;
       }
       enter(guide, 0, source);
       return true;
     },
+
+    /**
+     * The welcome dialog is open (or about to open) or it closed. Open: a
+     * start or a resume waits. Closed: the one that waited runs now, if the
+     * switch is on.
+     */
+    setHeld(next: boolean): void {
+      if (next === held) return;
+      held = next;
+      if (held || allowed !== true) return;
+      const waiting = pending;
+      pending = null;
+      if (waiting?.kind === "start") api.start(waiting.id, waiting.source);
+      else if (waiting?.kind === "resume") api.resume();
+    },
+    /** Whether a start waits for the welcome dialog. */
+    held: (): boolean => held,
 
     /** Whether the switch is on. `null` until the read answers. */
     allowed: (): boolean | null => allowed,
@@ -267,6 +300,7 @@ export function createGuideRunner(opts: GuideRunnerOptions) {
         if (state.offer) return set({ ...state, offer: null });
         return notify();
       }
+      // While held, `start` and `resume` park it again for the close.
       if (waiting?.kind === "start") api.start(waiting.id, waiting.source);
       else if (waiting?.kind === "resume") api.resume();
       notify();
@@ -276,7 +310,7 @@ export function createGuideRunner(opts: GuideRunnerOptions) {
     resume(): boolean {
       if (isActive(state)) return false;
       if (allowed === false) return false;
-      if (allowed === null) {
+      if (allowed === null || held) {
         pending = pending ?? { kind: "resume" };
         return false;
       }
@@ -431,6 +465,8 @@ export const guideView = () => runner.view();
 export const guideState = () => runner.get();
 /** `shellPrefs.ts` passes `guide` from `GET /auth/me/shell` here (GD-5a). */
 export const setGuideAllowed = (on: boolean | null) => runner.setAllowed(on);
+/** `welcomeSteps.ts` and `shellPrefs.ts` hold a start while the welcome dialog is open. */
+export const setGuideHold = (on: boolean) => runner.setHeld(on);
 export const __guideRunner = runner;
 
 /** The tour, live. */

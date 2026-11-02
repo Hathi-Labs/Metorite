@@ -41,7 +41,7 @@ import { invalidate, onClear, peek, put } from "@/lib/dataCache";
 import { chatScope, type ChatSession } from "@/lib/sessions";
 import { useCachedResource } from "@/lib/useCachedResource";
 
-import { setGuideAllowed } from "./guide";
+import { setGuideAllowed, setGuideHold } from "./guide";
 import { EMPTY_SHELL, shellLayout, type ShellLayout, type StoredShell } from "./presets";
 import { asLayout, readCachedLayout, writeCachedLayout, writeNudgeRetired } from "./shellCache";
 import { shellNavOn } from "./shellNav";
@@ -129,6 +129,10 @@ export async function readShellPrefs(): Promise<StoredShell> {
   const layout = asLayout(body);
   if (!layout) throw new Error("shell layout: not a layout");
   confirmed = layout;
+  // A member the server never asked sees the welcome picker next. The guide
+  // holds a start for it BEFORE the switch answers, or the tour would begin
+  // under the dialog. The dialog's close lets it go (`welcomeSteps.ts`).
+  if (layout.answered === null && shellNavOn() && !askedHere) setGuideHold(true);
   // The one read tells the guide whether its entries may show (GD-5a).
   setGuideAllowed(guideOn(body));
   return layout;
