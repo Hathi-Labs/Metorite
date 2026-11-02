@@ -924,12 +924,9 @@ def test_r8_a_member_with_no_row_starts_at_the_people_seed(world) -> None:
     _due(world, email, "Call the Acme buyer", datetime(2099, 3, 10, 12, tzinfo=UTC))
     with world.p.admin_engine.begin() as c:
         c.execute(text(
-            "INSERT INTO people (id, name, email, status, skills, source, source_key, "
-            "organization_id, updated_by, updated_at, working_hours) VALUES "
-            "(gen_random_uuid(), 'Seeded', :e, 'active', ARRAY[]::text[], 'manual', :k, "
-            "CAST(:o AS uuid), 'test', now(), CAST(:wh AS jsonb))"),
-            {"e": email, "k": f"manual:{email}", "o": org,
-             "wh": json.dumps({"start": "11:00", "end": "19:00"})})
+            "UPDATE people SET working_hours = CAST(:wh AS jsonb) "
+            "WHERE organization_id = CAST(:o AS uuid) AND email = :e"),
+            {"e": email, "o": org, "wh": json.dumps({"start": "11:00", "end": "19:00"})})
 
     async def day_of() -> Any:
         async with tenant_session(org) as db:

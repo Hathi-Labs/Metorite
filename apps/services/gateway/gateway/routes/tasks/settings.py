@@ -291,8 +291,7 @@ async def work_schedule_seeds(db: Any, emails: list[str]) -> dict[str, dict[str,
         # past RLS. An unbound GUC matches no row, so it fails closed.
         async with db.begin_nested():
             rows = (await db.execute(text(
-                "SELECT DISTINCT ON (lower(email)) lower(email) AS member, "
-                "working_hours FROM people "
+                "SELECT lower(email) AS member, working_hours FROM people "
                 "WHERE lower(email) = ANY(CAST(:emails AS text[])) "
                 f"  AND organization_id = {_BOUND_ORG}"),
                 {"emails": list(emails)})).fetchall()
