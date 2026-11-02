@@ -165,6 +165,7 @@ async def draft_agenda(
             temperature=0.3,
             max_tokens=700,
             response_format={"type": "json_object"},
+            job="writing",
         )
         raw = resp.choices[0].message.content or ""
         start, end = raw.find("{"), raw.rfind("}")

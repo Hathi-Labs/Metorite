@@ -1,7 +1,7 @@
 # Web research — Mira reads the web at large, on open-source parts (WS-WEB)
 
-> **Product:** Metorite · **Feature:** web search, page and file reading, crawling, browsing and research jobs for the one assistant · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 🔨 **IN BUILD.** WEB-1 (the fetch guard) is built, 2026-11-01, and WEB-2 is next. `web_search` and `fetch_page` existed before WEB-0 (§2).
+> **Product:** Metorite · **Feature:** web search, page and file reading, crawling, browsing and research jobs for the one assistant · **Updated:** 2026-11-02 · **Owner:** vjvarada
+> **Status:** 🔨 **IN BUILD.** WEB-1 (the fetch guard) is built, 2026-11-01. WEB-2 (the local HTML reader) is built dark behind `WEB_RESEARCH_ORGS`, 2026-11-02, with Trafilatura in a child process. WEB-2b must merge before that flag flips. WEB-10, the goal record, is built on 2026-11-01 (§6.1): the table `goal_records` and its store, with no caller yet. WEB-3 is next. `web_search` and `fetch_page` existed before WEB-0 (§2).
 > **Verified against code on 2026-11-01 at `f59a636b5`.** Each path in §12 was read on that commit.
 > **Board:** WS-WEB in `work_plan.md` §2.1. **Decision:** D148. D85, D117, D124, D129, D130 and D139 bind it.
 > **Metorite:** project "Agent Tooling", epic 1235, this spec task 1237. The slices WEB-1 to WEB-12 are tasks 1259 to 1270, in order.
@@ -83,13 +83,30 @@ The guard picks the reader by the content type.
 
 | Input | Reader | Licence | Where it runs |
 |---|---|---|---|
-| HTML | **Trafilatura** (main text, title, author, date, as Markdown) | Apache-2.0 | In the orchestrator |
+| HTML | **Trafilatura** (main text, title, author, date, as Markdown) | Apache-2.0 | In a child process of the gateway |
 | HTML that needs JavaScript | **Crawl4AI** on Playwright Chromium | Apache-2.0 | The web worker (§5) |
-| PDF, DOCX, PPTX, XLSX, CSV, EPUB | **MarkItDown** | MIT | In the orchestrator |
+| PDF, DOCX, PPTX, XLSX, CSV, EPUB | **MarkItDown** | MIT | In a child process of the gateway |
 | A hard PDF (tables, scans, layout) | **Docling** | MIT | The web worker |
 | Any page, when the owner opts in | Jina Reader (`r.jina.ai`) | Hosted | A third party |
 
-**Fallback order for HTML:** Trafilatura. Then the worker render when the text is empty or too short. Then Jina, only when `WEB_READER_REMOTE=jina` is set.
+**Fallback order for HTML:** Trafilatura. Then the worker render when the text is empty or too short. Then Jina, only when `WEB_READER_REMOTE=jina` is set and the local text is under 200 characters.
+
+**As built, WEB-2 (2026-11-01).** The rules are rule 8 of the module docstring of `web_tools.py`.
+
+- `WEB_RESEARCH_ORGS` turns the local reader on for an org. `web_research_on` is its one reader. The tool reads it on each call, and the org comes from the run binding. Off, `fetch_page` gives the WEB-1 output, byte for byte.
+- Trafilatura 2.3.1 reads an HTML type: `text/html`, `application/xhtml+xml` or no type. It gets the first 192 KiB, as text and never as bytes, because it inflates bytes that look compressed.
+- **Trafilatura work runs in a child process, because a regex holds the GIL.** A thread cannot bound it. One public page with a long `<meta name="author">` value stopped the event loop for 21 s, and no timeout could fire. The parent never imports Trafilatura.
+- **WEB-3 (MarkItDown, pdfplumber) and each later parser must run the same way.**
+- The child is `web_reader_worker.py`, started as a script with `python -I` and never with `-m`. A `-m` start runs the package `__init__` and costs about 1.2 seconds more. The child gets the `child_env` allowlist, so no API key and no database URL reach it. On Linux it caps its address space at 512 MiB and its CPU time at 10 seconds. The parent kills and reaps it at 8 seconds.
+- One child serves one read, and that costs about 0.25 s on Linux and 1.2 s on the dev PC. A warm pool is a later optimisation, and only if that cost is bad.
+- A read takes a slot before the child starts: 4 in the process and 2 for each org. With no slot, the read gives the strip at once and does not wait.
+- No slot, a missing package, a crash, a bad answer, a timeout or an empty result gives the regex strip of WEB-1. Each fault writes one log line.
+- The header lines are URL, Title, Date and Type. A line appears only when it has a value. `Date:` appears only when a `meta` tag, a `time` tag or a JSON-LD date field of the page states that date. A date in prose, a heading, a footer or a URL gives no line.
+- The charset comes from the HTTP header, and then from a `<meta>` tag in the first 4 KiB.
+- A binary type gets the WEB-3 line and no body. A body whose first 64 KiB decode to more than 10 percent NUL and U+FFFD characters gets the same line.
+- Each other type gets the regex strip, and one line says that its reader comes with WEB-3.
+- `WEB_READER_REMOTE=jina` asks Jina last, only when the local text is under 200 characters. Jina's text wins when it is longer.
+- Fences: `tests/unit/test_web_readers.py` and `tests/unit/test_no_agpl_dependency.py`.
 
 ### 3.3 Search providers
 
@@ -152,6 +169,26 @@ A research job needs more than one turn. The goal record comes from DeepSeek Har
 - **Permission to continue is not durable.** A restart asks again before a new round.
 
 The table is tenant-scoped. WS-43 CA runs and Studio builds can use the same record later.
+
+### 6.1 The record as built (WEB-10)
+
+WEB-10 built the record and its store only. It added no route, no tool, no pack and no flag. WEB-11 is the first caller.
+
+- **Table.** `goal_records`, from the migration that creates it (325). It has the tenant `organization_id` and FORCE RLS. The name is generic, because CA runs and Studio builds use it later.
+- **Columns.** `organization_id`, `id`, `member_email`, `kind` (default `research`), `objective` (1 to 2000 characters), `state`, `version`, `round_count`, `round_cap`, `cost_used_credits`, `cost_cap_credits`, `block_code`, `job_id`, `created_at`, `updated_at` and `finished_at`.
+- **`job_id`** names the `jobs` row that runs the goal. It has no foreign key. The goal is the state of the job, and the `jobs` queue stays as it is.
+- **States.** `active` and `blocked` are open. `done`, `failed` and `cancelled` are final. A goal in a final state does not change again, and its `finished_at` is set.
+- **Block codes.** The closed set is `cap_reached`, `needs_member` and `source_unreachable`. A CHECK holds the set, and the store holds one sentence for the member for each code. A goal is `blocked` if and only if it has a code.
+- **Caps.** The round cap is a count of rounds, from 1 to 10000, and 40 for research. The cost cap is in AI credits, as NUMERIC(14, 4), the type of `usage_event.billed_credits`.
+- **The cap rule.** A goal reaches its cap when `round_count >= round_cap` or `cost_used_credits >= cost_cap_credits`. The write that reaches a cap moves the goal to `blocked` with `cap_reached`. A CHECK keeps each active goal under both caps.
+- **A round.** The worker records a round when it ends, so the cost cap stops the next round. A blocked or final goal takes no round.
+- **Compare-and-set.** The token is the `version` integer. Each write names the version that the caller read, and raises it by one. A stale token raises `StaleGoal`, and nothing changes. A trigger refuses an UPDATE that does not raise the version by exactly one.
+- **The objective never changes.** The store refuses a change. A trigger refuses a change of the objective, the member, the kind, the id, the org and `created_at`.
+- **Who reads.** A goal is private to its member. The store filters each statement on `member_email`, and RLS filters on the org. No share to a group or to the org is in this slice.
+- **Permission to continue is not durable.** No column holds a permission, a consent or an approval. A restart asks the member again before a new round.
+- **Retention.** No pruning yet.
+- **The store.** `packages/acb_common/acb_common/goal_store.py` is the one writer. It takes an async session that the caller opened with `tenant_session(org)`, and it opens none. It lives in `acb_common` because WEB-11 runs in the orchestrator, and the orchestrator cannot import gateway code.
+- **The member purge** deletes the member's goals of the bound org.
 
 ---
 
@@ -248,6 +285,7 @@ Research of 2026-11-01. The licence and the last commit of each repo were read f
 Each path was read on `f59a636b5`.
 
 - `packages/acb_skills/acb_skills/web_tools.py` (`web_search`, `fetch_page`, `_serpapi_search`)
+- `packages/acb_skills/acb_skills/web_reader_worker.py` (the Trafilatura child)
 - `packages/acb_skills/acb_skills/egress.py` (the egress card)
 - `packages/acb_skills/AGENTS.md` (item 4 names the web tools)
 - `apps/services/orchestrator/orchestrator/_tool_injection.py` (line 48, line 2032)
@@ -258,6 +296,11 @@ Each path was read on `f59a636b5`.
 - `packages/acb_skills/acb_skills/tool_packs.py` (`PACKS`, `MAX_PACK_TOOLS`)
 - `project-docs/specs/maf_coding_engine.md` §18 (CA-4, the coding session's network)
 
+WEB-10 added these two paths on 2026-11-01:
+
+- `infra/postgres/325_goal_records.sql` (the table `goal_records`)
+- `packages/acb_common/acb_common/goal_store.py` (the one writer of `goal_records`)
+
 ---
 
 ## 13. Verification commands
@@ -266,7 +309,8 @@ Each path was read on `f59a636b5`.
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"   # R8 needs a database (WEB-10, WEB-11)
 uv run python scripts/affected_tests.py --run
 uv run pytest tests/unit/test_web_fetch_guard.py tests/unit/test_web_readers.py tests/unit/test_web_search_providers.py -q
-uv run ruff check packages/acb_skills apps/services/orchestrator
+uv run pytest tests/unit/test_goal_record_r8.py -q -rs                 # WEB-10. R8: it skips with no database
+uv run ruff check packages/acb_skills packages/acb_common apps/services/orchestrator --select F821,F601,F602,F502,F7,B006   # the blocking set of pr-check. The full set holds old findings
 bash scripts/ci_local.sh
 ```
 
@@ -282,6 +326,9 @@ bash scripts/ci_local.sh
 | No AGPL package in our Python or Node lock files | New with WEB-2: `tests/unit/test_no_agpl_dependency.py` |
 | A browse write asks on the card | New with WEB-9: `tests/unit/test_browse_session.py` |
 | A new table is tenant-scoped | `tests/unit/test_tenant_coverage.py` |
+| Org B reads no goal of org A, a member reads only their own goals, a stale write changes nothing, and the cap stops a job with `cap_reached` | WEB-10: `tests/unit/test_goal_record_r8.py` (R8) |
+| The objective never changes, each UPDATE raises the version by one, and no column holds a permission | WEB-10: same file |
+| The member purge deletes the member's goals of the bound org only | WEB-10: same file, and `tests/unit/test_admin_member_purge.py` |
 
 ---
 

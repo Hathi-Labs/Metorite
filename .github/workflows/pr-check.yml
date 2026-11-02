@@ -502,10 +502,15 @@ jobs:
               tests/unit/test_projects_search_description_r8.py \
               tests/unit/test_staging_minimise_r8.py \
               tests/unit/test_studio_objects_r8.py \
+              tests/unit/test_studio_query_r8.py \
+              tests/unit/test_goal_record_r8.py \
+              tests/unit/test_studio_objects_batch_r8.py \
+              tests/unit/test_no_person_present_r8.py \
               tests/unit/test_studio_packages_r8.py \
               tests/unit/test_studio_action_door_r8.py \
               tests/unit/test_studio_packages_versions_r8.py \
               tests/unit/test_package_host_store_r8.py \
+              tests/unit/test_workflows_lifecycle_rls_r8.py \
               tests/unit/test_staging_export.py
 
       - name: Write the measured timings
@@ -718,7 +723,11 @@ jobs:
       - name: Install deps
         run: npm ci --no-audit --no-fund
 
+      # tsc used 2,256 MB on main on 2026-11-02 (--extendedDiagnostics). That
+      # is over Node's default heap, so a small PR ran out of memory here.
       - name: Typecheck
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: npx tsc --noEmit -p tsconfig.json
 
       # Two-speed CI (2026-10-19): the process fences (design-system regexes,

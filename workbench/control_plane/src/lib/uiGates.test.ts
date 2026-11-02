@@ -38,7 +38,7 @@ function bareOutlines(file: string): number {
 const OUTLINE_DEBT: Record<string, number> = {
   "app/agents/page.tsx": 8,
   "app/build/apps/[slug]/edit/page.tsx": 2,
-  "app/build/apps/page.tsx": 1,
+  "app/studio/components/AppsGallery.tsx": 1,
   "app/calendar/components/CalendarSettings.tsx": 5,
   "app/calendar/components/PlanDayPanel.tsx": 3,
   "app/chat/page.tsx": 1,
@@ -89,7 +89,7 @@ const OUTLINE_DEBT: Record<string, number> = {
   "app/whatsapp/page.tsx": 1,
   "app/whatsapp/settings/categories/page.tsx": 1,
   "app/whatsapp/settings/replies/page.tsx": 3,
-  "app/workflows/[id]/page.tsx": 1,
+  "app/studio/workflows/[id]/page.tsx": 1,
   "app/workflows/components/ModuleStudio.tsx": 1,
   "components/AddAgentWizard.tsx": 1,
   "components/AgentChat.tsx": 2,

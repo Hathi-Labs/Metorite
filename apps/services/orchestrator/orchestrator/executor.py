@@ -40,6 +40,7 @@ from typing import Any, AsyncIterator, Callable, Iterator
 from acb_audit import AuditEvent, record
 from acb_common import get_logger, get_settings
 from acb_common.child_env import child_env, copilot_env
+from acb_common.no_person import no_person_present
 from acb_llm.run_errors import run_error_event
 from acb_skills.ask_tools import QUESTION_HEADER_MAX as _QUESTION_HEADER_MAX
 from acb_skills.ask_tools import QUESTION_TEXT_MAX as _QUESTION_TEXT_MAX
@@ -2067,7 +2068,13 @@ def resolve_user_input(
     Future resolves with ``{"answer": "", "declined": True}`` and the run
     goes on: each parking site reads it with ``ask_tools.is_declined``. The
     key goes only on a decline, so every answer is exactly as before.
+
+    AUTO-7a: a run with no person present answers no card and no question,
+    of its own run or of a live chat, so it resolves nothing.
     """
+    if no_person_present():
+        _log.warning("executor.user_input_no_person", request_id=request_id[:12])
+        return False
     fut = _pending_user_input.get(request_id)
     if fut is None or fut.done():
         return False
@@ -8776,7 +8783,14 @@ async def _llm_recovery(
             tier=LLMTier.TIER_2,
             messages=recovery_msgs,
             max_tokens=400,
+            job="writing",
         )
+        if not (content or "").strip():
+            # No recovery text (task 1128). Send no blank reply and no stock
+            # apology as a finished run. None makes the caller go on to the
+            # self-mutation step and raise the first error, with its class.
+            _log.warning("self_anneal.llm_recovery_empty", agent=agent_name)
+            return None
         _log.info("self_anneal.llm_recovery_success", agent=agent_name)
         return {"result": {"role": "assistant", "content": content}}
     except Exception as llm_exc:

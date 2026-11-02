@@ -33,6 +33,7 @@ under `project-docs/specs/`.
 - action_broker/ -- Approval-gated source-of-truth write executor: authority-tier disposition and a fail-closed handler registry.
   - ⚠️ **The queue binds the tenant.** Each `pending_actions` read and write opens `acb_graph.tenant_session(org)`, and `org` is `current_tenant()`, never a proposal field. Do not add a `get_session()` here. Fences: `test_action_broker_tenancy_r8.py` (R8), `test_action_broker.py`.
   - `ACTION_BROKER_ENFORCE` ships OFF in every environment, so the posture is audit-and-chokepoint. Flipping it is OWNER-GATE, and it stays blocked on BO-1d (`work_plan.md` WS-1).
+  - ⚠️ **A run with no person present settles nothing** (AUTO-7a). `approve` and `reject` answer `no_person_present` first, with no read and no write, and the audit records the refusal. Fences: `test_no_person_present.py`, `test_no_person_present_r8.py` (R8).
   - The task connector registry stays empty. Fence: `test_no_task_provider_connectors.py`.
 - customer_console/ -- WS-31, the operator-side subscription, seat and AI-metering engine (spec `customer_console.md`).
   - ⚠️ **A different plane and a different database.** It is cross-tenant by design, so it has its OWN engine (`customer_console/db.py`, in `test_db_engine_seam.py::_ALLOWED_SYNC`). Its OWN migration ladder is `infra/customer_console/`, **never** `infra/postgres/`. `CUSTOMER_CONSOLE_DATABASE_URL` has no default.
@@ -63,6 +64,7 @@ under `project-docs/specs/`.
     - ⚠️ `walk_chain` does not read `MAX_CHAIN_ATTEMPTS`. Cap the list with `attempts[:router_mod.MAX_CHAIN_ATTEMPTS]` before you hand it over.
     - 🔴 Use `anyio.from_thread.run`, NEVER `asyncio.run`, for a stream. Close every provider stream through `router.aclose_quietly`. **H-80** holds the threadpool hazard.
     - Fences: `test_customer_console_router.py::TestAStreamFailsOverBeforeItsFirstFrame` (R8), `test_router_failover.py::TestTheStreamWalk`. Spec: `ai_metering_and_analytics.md` §8.6.
+  - ⚠️ **A thinking parameter reaches only a step whose model takes it** (task 1128). The chat `_kwargs_for` calls `reasoning.reasoning_params_for` for each step. It drops `thinking` and `reasoning_effort` when litellm refuses them for that step's model. litellm runs here with no `drop_params`, so one such step would answer 400. Fence: `test_llm_jobs.py::test_the_console_chat_path_runs_the_step_filter`.
   - ⚠️ **An image follows the chat model when it can** (`router.resolve_vision_chain`). The declared task resolves FIRST, then the lift, then the fall to `tier-vision`, then a 400.
     - 🔴 `model_profile.reads_images` is the ONE source for the flag, and `router._models_that_read_images` is its one reader on the serving path. Nothing sniffs `messages`. A blind step never enters the lift chain (**H-81**).
     - Fence: `test_customer_console_router.py::TestTheRouterImageRule`. Spec: `ai_metering_and_analytics.md` §8.5.

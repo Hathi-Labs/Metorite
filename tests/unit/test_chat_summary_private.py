@@ -69,6 +69,10 @@ STAGING_BLANK = ROOT / "infra" / "staging" / "minimise.sql"
 IMPORTERS: dict[Path, frozenset[str]] = {
     GATEWAY / "routes" / "rooms.py": frozenset({"clear_on_share"}),
     GATEWAY / "routes" / "admin" / "members.py": frozenset({"clear_for_member"}),
+    # PZ-35 (Settings): the routes of "Recent chats", Forget and the export.
+    GATEWAY / "routes" / "admin" / "assistant_profile.py": frozenset({
+        "list_for_member", "clear_one_for_member",
+        "clear_for_member"}),
 }
 
 #: (c) PZ-33b: the job module, `gateway/chat_summary_job.py`. It runs the

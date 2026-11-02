@@ -100,6 +100,7 @@ async def _get(org: str, user: UserContext) -> dict:
     # PZ-25: ``enabled`` is an answer, not part of the stored profile. So is
     # ``apps``, the app settings over their defaults (BR-2a-1).
     assert isinstance(out.pop("enabled"), bool)
+    assert isinstance(out.pop("summaries_enabled"), bool)
     out.pop("apps")
     return out
 

@@ -169,12 +169,15 @@ function SumCheckLines({ check }: { check: SumCheckView }) {
 export function SumDialog({
   q,
   busy,
+  error = null,
   onSave,
   onClose,
   onConfirm,
 }: {
   q: Question;
   busy: boolean;
+  /** The reason that a save was refused, next to the button. The pick stays. */
+  error?: string | null;
   onSave: (keys: string[]) => void;
   onClose: () => void;
   /** CRM-Q32-8: Confirm of a proposal of a member, from the picker too. */
@@ -201,6 +204,11 @@ export function SumDialog({
         onToggle={(key) => setPicked((now) => toggleSum(q, now, key))}
         onConfirm={onConfirm}
       />
+      {error && (
+        <p role="alert" className="px-4 pb-2 text-xs text-destructive">
+          {error}
+        </p>
+      )}
       <div className="flex flex-wrap justify-end gap-2 border-t border-border p-3">
         <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
           {CANCEL_LABEL}

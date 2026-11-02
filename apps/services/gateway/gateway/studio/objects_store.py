@@ -11,7 +11,8 @@ org. An INSERT writes no ``organization_id``: the column DEFAULT reads the
 bound tenant, and each statement filters on ``_BOUND_ORG`` too.
 
 **The caller owns the transaction.** No function here commits, rolls back or
-opens a transaction. So C1b can put several calls in one transaction. A
+opens a transaction. A query (C2a) and a batch (C1b) each open a SAVEPOINT,
+and it ends nothing of the caller's transaction. A
 refusal before a statement raises a :class:`ObjectStoreError`, a
 :class:`~acb_common.studio_fields.FieldError` or a
 :class:`~acb_common.studio_fields.RecordError`, and the session stays usable.
@@ -42,13 +43,93 @@ transactions each hold it, and then each waits for the other before it can
 take the exclusive lock of a registry change. That is a deadlock.
 ``test_studio_objects_r8.py`` runs the interleaving that deadlocked before.
 
-**Reads are by id only.** The list, the filter and the sort are C2. The one
-other read is :func:`get_object_by_name`: the door (B2) reads an object of one
-package by the name in its manifest. Each record
-function names the package, the object and the record. A statement finds the
-record only when the object row of the bound org has that package. So a door
-of one package cannot read or write a record of another package, also with a
-true object id.
+**The wait for the org lock is bounded.** A waiter holds a pool connection for
+the whole wait, so the writers of one org can delay each other tenant.
+:func:`_lock_org` waits at most :data:`ORG_LOCK_WAIT_MS`, for every caller.
+Past that it raises :class:`StoreBusy`, in its own SAVEPOINT, so the caller's
+transaction stays usable. The old ``lock_timeout`` comes back as soon as the
+lock is held, so the bound covers the wait only. The bound limits the delay and
+does not end it, so B2b admits a bounded number of writers for each org.
+
+**The reads.** :func:`get_record` reads one record by its id. The door (B2)
+reads an object of one package by the name in its manifest
+(:func:`get_object_by_name`). :func:`query_records` (C2a) reads a page of the
+records of one object, with a filter and a sort. Each record function names
+the package and the object. A statement finds a record only when the object
+row of the bound org has that package. So a door of one package cannot read
+or write a record of another package, also with a true object id.
+
+**The query (C2a).** ``acb_common.studio_query`` holds the grammar: the
+shape, the ops of each type and the caps. This module holds the SQL, because
+it is the one module with SQL of the four tables. :func:`build_query` and
+:func:`build_count` are pure, and they bind each field key and each value.
+The SQL text takes a column name and an operator from a constant map only.
+One statement reads a page and its total, so one snapshot serves both. The
+candidates of each part are the hot rows of one hot condition, or the
+records of the object by the records index. Each other condition tests the
+candidate id. A condition that reads ``data`` runs after a lookup of the
+record by its primary key, so it runs only on the candidates that the hot
+conditions keep. With a filter on a field that is not hot, the guard
+``hot_or_small`` counts those candidates in the same statement (at most
+:data:`~acb_common.studio_query.SMALL_OBJECT`). A MATERIALIZED CTE then holds
+them, and the count and the page read it. The statement also checks that
+each field it reads as hot is still hot. If not, the store reads the fields
+again and runs the query once more. The whole call has one deadline. Its
+statements run in a SAVEPOINT, and each gets the time that is left as a LOCAL
+``statement_timeout``. A timeout rolls back the SAVEPOINT only, so the
+caller's transaction stays usable, and the old timeout comes back.
+⚠️ ``v_num`` takes no index condition as the app role, because no ``numeric``
+comparison is LEAKPROOF (``docs/rls_and_indexes.md``). So a number filter
+reads the hot rows of its field. A sort on a number still reads the index in
+order.
+
+**The batch (C1b).** :func:`apply_writes` is the one path of a record write.
+:func:`create_record`, :func:`update_record` and :func:`delete_record` are a
+batch of one, with the same signatures and answers, so no single call skips
+a rule. The lock order is the org lock once, then the object rows in
+ascending object id (``FOR KEY SHARE``), then the record rows in ascending
+``(object_id, record_id)`` (``FOR NO KEY UPDATE``). The store then applies
+the writes in list order. The checks run after all the writes, so a stock
+move is judged on the net. ``range`` runs on the last value of each written
+record. ``unique`` and ``group_sum_min`` run once for each key that
+``studio_rules.touched_keys`` names. The whole batch runs in one SAVEPOINT.
+Any error rolls back the SAVEPOINT and raises :class:`BatchError`, so the
+caller's transaction stays usable with its earlier work.
+
+**The rules (C1b).** ``acb_common.studio_rules`` holds the grammar, and
+``studio_objects.constraints`` holds the rules of an object.
+:func:`set_constraints` replaces them, under the org lock and then the
+``FOR UPDATE`` of the object row, in that order. A declaration does not check
+old data. A rule binds each later write, and a ``unique`` key that clashes
+already is refused only when a later write touches it. A field that a rule
+holds cannot turn cold while the rule stands. A rule that the store cannot
+read fails closed: each write of its object is refused.
+
+**On a floor of 0 or less, a write that does not lower a group never reads
+the group.** The store adds up the net change of the batch on each key of
+``group_sum_min``, in exact ``Decimal``, from the values that it read under
+its locks. With a net change of zero or more, it skips the sum. The org lock
+makes that safe, and a group with no rows starts at a sum of 0, which meets
+the floor. So a receipt on a broken key passes, and a repair is possible. A
+floor above 0 always reads its group, because a new group starts below it. A
+key with no rows passes, because a group that no longer exists holds nothing
+to break. A key with rows and no amount sums to 0, and the floor judges it.
+
+**Why the checks are correct.** Under READ COMMITTED, a check and a write of
+two transactions can pass each other, unless the writers run one at a time.
+Every record write takes the exclusive org lock first, and holds it to the
+end of its transaction. Each check runs in a later statement, so its new
+snapshot holds each earlier committed write of the org. A database unique
+index cannot hold these rules, because no tenant gets DDL. A check reuses the
+builders of C2a, so it reads the hot rows only, under the deadline of
+``_time_limit``.
+
+⚠️ **The known limit.** The org lock serializes all record writes of one
+org, also the writes of an object with no rule. A finer lock is a later
+slice. A writer that skips the store skips the rules: raw SQL, and the
+cascade of a package hard delete. A write that lowers a group past about
+500,000 rows can reach ``query_timeout``, and so can each write on a floor
+above 0. A running balance table is a later slice.
 
 ⚠️ The store does not authenticate. It only scopes. The actor of a write is
 an argument that the caller takes from the session, never from request input
@@ -59,13 +140,19 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
+from acb_common import studio_query
+from acb_common.paging import page_line
 from acb_common.studio_fields import (
+    HOT_TEXT_CHARS,
     MAX_FIELDS_PER_OBJECT,
     MAX_HOT_BACKFILL,
     MAX_HOT_PER_OBJECT,
@@ -83,7 +170,27 @@ from acb_common.studio_fields import (
     stored_field,
     validate_record,
 )
+from acb_common.studio_query import Condition, Query, QueryError
+from acb_common.studio_rules import (
+    MAX_WRITES_PER_BATCH,
+    RANGE,
+    UNIQUE,
+    Rule,
+    add_change,
+    check_group_sum,
+    check_kind_known,
+    check_range,
+    check_rule_is_hot,
+    check_rules_fit,
+    check_unique_count,
+    floor_holds_at_zero,
+    key_filter,
+    parse_rules,
+    stored_rules,
+    touched_keys,
+)
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 
@@ -94,13 +201,28 @@ _ORG_LOCK_SQL = (
     f"'studio_objects:' || CAST({_BOUND_ORG} AS text), 0))"
 )
 
+#: The longest wait for the org lock, in milliseconds. A waiter holds a pool
+#: connection for the whole wait, and it can try again, so the pool matters more.
+ORG_LOCK_WAIT_MS = 1_000
+
+#: The old ``lock_timeout`` and the bound, in one statement. ``set_config`` as
+#: a function, so the value is a bind.
+_LOCK_WAIT_SQL = "SELECT current_setting('lock_timeout'), set_config('lock_timeout', :ms, true)"
+_LOCK_WAIT_BACK_SQL = "SELECT set_config('lock_timeout', :ms, true)"
+#: The SQLSTATEs of a wait that gives up: ``lock_timeout`` stopped it, or
+#: Postgres picked it as the victim of a deadlock.
+_BUSY_SQLSTATES = ("55P03", "40P01")
+_BUSY_MESSAGE = "This app is busy. Try again in a moment."
+
 #: A backfill reads and writes the records in pages of this size.
 BACKFILL_PAGE = 2_000
 
 _NAME_RE = re.compile(NAME_PATTERN, re.ASCII)
 _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 
-_OBJECT_COLUMNS = "id::text, package_id::text, name, label, created_by, created_at, updated_at"
+_OBJECT_COLUMNS = (
+    "id::text, package_id::text, name, label, created_by, created_at, updated_at, constraints"
+)
 _RECORD_COLUMNS = "id::text, object_id::text, data, created_by, updated_by, created_at, updated_at"
 #: The value columns of a hot row, as ``jsonb_to_recordset`` reads them.
 _HOT_SET = "AS x(k text, t text, n numeric, ts timestamptz, b boolean)"
@@ -157,11 +279,25 @@ _LOCK_OBJECT_SQL = _GET_OBJECT_SQL + " FOR UPDATE"
 
 #: A record write takes the weakest lock that a registry change waits for.
 #: The foreign key check of the record takes the same lock. The object must be
-#: of the package that the caller names.
+#: of the package that the caller names. The org lock came in an earlier
+#: statement, so this snapshot holds the last rules of the object.
 _SHARE_OBJECT_SQL = (
-    "SELECT id FROM studio_objects "
+    "SELECT name, constraints FROM studio_objects "
     f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
     "AND package_id = CAST(:pid AS uuid) FOR KEY SHARE"
+)
+
+#: A declaration locks the object row of the package that the caller names.
+_LOCK_PACKAGE_OBJECT_SQL = (
+    f"SELECT {_OBJECT_COLUMNS} FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
+    "AND package_id = CAST(:pid AS uuid) FOR UPDATE"
+)
+
+_SET_RULES_SQL = (
+    "UPDATE studio_objects SET constraints = CAST(:rules AS jsonb), updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
+    f"AND package_id = CAST(:pid AS uuid) RETURNING {_OBJECT_COLUMNS}"
 )
 
 #: The object of a record statement is of the package that the caller names.
@@ -257,6 +393,9 @@ _GET_RECORD_SQL = (
     f"AND id = CAST(:rid AS uuid) AND {_IN_PACKAGE}"
 )
 
+#: A batch locks each record that it changes, before its first write.
+_LOCK_RECORD_SQL = _GET_RECORD_SQL + " FOR NO KEY UPDATE"
+
 #: The record and its hot rows, in one statement. The DELETE takes the hot
 #: rows of the keys that hold no value now, and the INSERT writes the others.
 #: The two touch different rows.
@@ -306,7 +445,35 @@ class FieldKeyTaken(ObjectStoreError):
 
 
 class BudgetExceeded(ObjectStoreError):
-    """A cap of the registry: hot fields, fields, objects, or the backfill size."""
+    """A cap: hot fields, fields, objects, the backfill size, or the size of a batch."""
+
+
+class RecordNotFound(ObjectStoreError):
+    """A write names no such object or record in the package of the batch."""
+
+
+class StoreBusy(ObjectStoreError):
+    """The org lock did not come in time. The write ran no statement, and the
+    caller's transaction stays usable. A caller may try again, and a route
+    answers 503 with ``Retry-After``."""
+
+    code = "store_busy"
+
+
+class BatchError(Exception):
+    """One refused batch. Its SAVEPOINT rolled back, so it wrote nothing.
+
+    ``index`` is the place of the write in the list. A rule runs after all
+    the writes, so its index is the first write that touched the key.
+    ``cause`` is the error. A database error keeps its text to ``cause``,
+    because that text holds the statement and its binds, and so member data.
+    """
+
+    def __init__(self, index: int, cause: Exception) -> None:
+        said = cause if isinstance(cause, ValueError) else type(cause).__name__
+        super().__init__(f"Write {index} of the batch: {said}")
+        self.index = index
+        self.cause = cause
 
 
 @dataclass(frozen=True)
@@ -321,6 +488,7 @@ class StudioObject:
     created_at: datetime
     updated_at: datetime
     fields: tuple[FieldSpec, ...]
+    constraints: tuple[Rule, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -334,6 +502,18 @@ class Record:
     updated_by: str
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True)
+class Write:
+    """One write of a batch. ``create`` takes ``data``. ``update`` takes
+    ``record_id`` and ``data``, the fields that change. ``delete`` takes
+    ``record_id``."""
+
+    op: str
+    object_id: str
+    record_id: str | None = None
+    data: Mapping[str, Any] | None = None
 
 
 def _actor(actor: object) -> str:
@@ -360,7 +540,8 @@ def _object(row: Any, fields: Sequence[FieldSpec]) -> StudioObject:
     return StudioObject(
         id=str(row[0]), package_id=str(row[1]), name=str(row[2]),
         label=None if row[3] is None else str(row[3]), created_by=str(row[4]),
-        created_at=row[5], updated_at=row[6], fields=tuple(fields))
+        created_at=row[5], updated_at=row[6], fields=tuple(fields),
+        constraints=stored_rules(_json(row[7])))
 
 
 def _record(row: Any) -> Record:
@@ -385,8 +566,35 @@ async def _fields(db: Any, object_id: str) -> list[FieldSpec]:
     return [stored_field(str(r[0]), str(r[1]), _json(r[2]), bool(r[3])) for r in rows]
 
 
+def _sqlstate(exc: DBAPIError) -> str | None:
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return None if code is None else str(code)
+
+
 async def _lock_org(db: Any) -> None:
-    await db.execute(text(_ORG_LOCK_SQL))
+    """Take the advisory lock of the org, and wait at most
+    :data:`ORG_LOCK_WAIT_MS`. Each write and each registry change comes here.
+
+    The wait sits in its own SAVEPOINT, because a lock timeout aborts the
+    transaction around it. The lock stays when the SAVEPOINT releases. Raises
+    :class:`StoreBusy` at the bound, and when Postgres picks this wait as the
+    victim of a deadlock.
+
+    ⚠️ A deadlock on a later statement stays a database error. So a caller that
+    holds ``apps`` FOR UPDATE takes the org lock first.
+    """
+    wait = await db.execute(text(_LOCK_WAIT_SQL), {"ms": str(ORG_LOCK_WAIT_MS)})
+    old = str(wait.one()[0])
+    try:
+        async with db.begin_nested():
+            await db.execute(text(_ORG_LOCK_SQL))
+    except DBAPIError as exc:
+        if _sqlstate(exc) in _BUSY_SQLSTATES:
+            raise StoreBusy(_BUSY_MESSAGE) from None
+        raise
+    finally:
+        await db.execute(text(_LOCK_WAIT_BACK_SQL), {"ms": old})
 
 
 async def _org_hot(db: Any) -> int:
@@ -547,6 +755,16 @@ async def _backfill(db: Any, oid: str, field: FieldSpec) -> int:
         after = str(page[-1][0])
 
 
+def _check_no_rule_reads(rules: Sequence[Rule], key: str) -> None:
+    """A field that turns cold loses its hot rows, so a rule that reads them
+    would pass each write with no check."""
+    for rule in rules:
+        if key in rule.hot_keys():
+            raise ObjectStoreError(
+                f"Field `{key}` must stay hot, because rule `{rule.name}` reads it. "
+                "Remove the rule first.")
+
+
 async def set_field_hot(db: Any, object_id: str, key: str, hot: bool) -> bool:
     """Turn the field *key* of the object *object_id* hot, or not hot.
 
@@ -554,14 +772,16 @@ async def set_field_hot(db: Any, object_id: str, key: str, hot: bool) -> bool:
     the caller's transaction. Raises :class:`BudgetExceeded` past the hot
     budget, or when the object holds more than
     :data:`~acb_common.studio_fields.MAX_HOT_BACKFILL` records. A field that
-    turns cold loses its hot rows. Answers False when the bound org holds no
-    such object or field.
+    turns cold loses its hot rows. A field that a rule reads stays hot, and
+    the store raises :class:`ObjectStoreError`. Answers False when the bound
+    org holds no such object or field.
     """
     oid = _uuid(object_id, "object_id")
     if type(hot) is not bool:
         raise ObjectStoreError("hot must be true or false")
     await _lock_org(db)
-    if (await db.execute(text(_LOCK_OBJECT_SQL), {"oid": oid})).first() is None:
+    row = (await db.execute(text(_LOCK_OBJECT_SQL), {"oid": oid})).first()
+    if row is None:
         return False
     fields = await _fields(db, oid)
     current = next((f for f in fields if f.key == key), None)
@@ -570,6 +790,7 @@ async def set_field_hot(db: Any, object_id: str, key: str, hot: bool) -> bool:
     if current.hot == hot:
         return True
     if not hot:
+        _check_no_rule_reads(_object(row, fields).constraints, key)
         await db.execute(text(_SET_HOT_SQL), {"oid": oid, "key": key, "hot": False})
         await db.execute(text(_UNHOT_SQL), {"oid": oid, "key": key})
         return True
@@ -597,15 +818,29 @@ async def drop_object(db: Any, object_id: str) -> bool:
     return (await db.execute(text(_DROP_OBJECT_SQL), {"oid": oid})).first() is not None
 
 
-async def _locked_fields(db: Any, oid: str, pid: str) -> list[FieldSpec] | None:
-    """Take the org lock, then lock the object row for a record write, then
-    read its fields. None when the bound org holds no object of the id in the
-    package *pid*."""
+async def set_constraints(db: Any, object_id: str, constraints: Any, *,
+                          package_id: str) -> StudioObject | None:
+    """Replace the rules of the object *object_id* of the package *package_id*.
+    Answers None when the bound org holds no such object in that package.
+
+    ``studio_rules.parse_rules`` checks the shape before any statement, and
+    ``studio_rules.check_rules_fit`` checks the rules against the fields. Each
+    raises :class:`~acb_common.studio_rules.ConstraintError`. This function
+    never turns a field hot. The org lock comes first, then the object row.
+    ⚠️ A declaration does not check old data. A rule binds each later write.
+    """
+    oid = _uuid(object_id, "object_id")
+    pid = _uuid(package_id, "package_id")
+    rules = parse_rules(constraints)
     await _lock_org(db)
-    if (await db.execute(text(_SHARE_OBJECT_SQL), {"oid": oid, "pid": pid})).first() is None:
+    binds = {"oid": oid, "pid": pid}
+    if (await db.execute(text(_LOCK_PACKAGE_OBJECT_SQL), binds)).first() is None:
         return None
-    # A second statement, so its snapshot follows the lock (READ COMMITTED).
-    return await _fields(db, oid)
+    fields = await _fields(db, oid)
+    check_rules_fit(rules, fields)
+    row = (await db.execute(text(_SET_RULES_SQL), {
+        **binds, "rules": json.dumps([r.stored() for r in rules], ensure_ascii=False)})).one()
+    return _object(row, fields)
 
 
 async def create_record(db: Any, actor: str, object_id: str, data: Mapping[str, Any], *,
@@ -615,18 +850,13 @@ async def create_record(db: Any, actor: str, object_id: str, data: Mapping[str, 
 
     Each value is checked by ``studio_fields.validate_record``, and a bad one
     raises :class:`FieldError` with its field key. The record and its hot rows
-    go in one statement.
+    go in one statement. This is a batch of one, so a rule of the object runs,
+    and a refusal raises
+    :class:`~acb_common.studio_rules.ConstraintViolation`.
     """
     who = _actor(actor)
-    oid = _uuid(object_id, "object_id")
-    fields = await _locked_fields(db, oid, _uuid(package_id, "package_id"))
-    if fields is None:
-        return None
-    clean = validate_record(fields, data)
-    row = (await db.execute(text(_CREATE_RECORD_SQL), {
-        "oid": oid, "data": record_json(clean), "actor": who,
-        "hot": _hot_rows(fields, clean)})).first()
-    return None if row is None else _record(row)
+    made = await _one_write(db, who, package_id, Write("create", object_id, data=data))
+    return made if isinstance(made, Record) else None
 
 
 async def get_record(db: Any, object_id: str, record_id: str, *,
@@ -646,39 +876,838 @@ async def update_record(db: Any, actor: str, object_id: str, record_id: str,
 
     *changes* names the fields that change. A ``None`` value clears a field.
     The merged record is checked whole, so a required field stays filled.
-    The record and its hot rows change in one statement.
+    The record and its hot rows change in one statement. This is a batch of
+    one, so a rule of the object runs.
     """
     who = _actor(actor)
-    oid = _uuid(object_id, "object_id")
-    rid = _uuid(record_id, "record_id")
-    pid = _uuid(package_id, "package_id")
-    if not isinstance(changes, Mapping):
-        raise ObjectStoreError("changes must be an object of field values")
-    fields = await _locked_fields(db, oid, pid)
-    if fields is None:
-        return None
-    current = (await db.execute(text(_GET_RECORD_SQL + " FOR NO KEY UPDATE"), {
-        "oid": oid, "rid": rid, "pid": pid})).first()
-    if current is None:
-        return None
-    merged = {**_json(current[2]), **dict(changes)}
-    clean = validate_record(fields, merged)
-    row = (await db.execute(text(_UPDATE_RECORD_SQL), {
-        "oid": oid, "rid": rid, "pid": pid, "data": record_json(clean), "actor": who,
-        "hot": _hot_rows(fields, clean)})).first()
-    return None if row is None else _record(row)
+    write = Write("update", object_id, record_id, changes)
+    done = await _one_write(db, who, package_id, write)
+    return done if isinstance(done, Record) else None
 
 
 async def delete_record(db: Any, object_id: str, record_id: str, *,
                         package_id: str) -> bool:
     """Delete the record *record_id* of the object *object_id* of the package
     *package_id*, and its hot rows by cascade. Answers False when the bound org
-    holds no such record."""
-    oid = _uuid(object_id, "object_id")
-    rid = _uuid(record_id, "record_id")
-    pid = _uuid(package_id, "package_id")
-    if await _locked_fields(db, oid, pid) is None:
-        return False
-    return (await db.execute(text(_DELETE_RECORD_SQL), {
-        "oid": oid, "rid": rid, "pid": pid})).first() is not None
+    holds no such record. This is a batch of one, so a rule of the object runs."""
+    # A delete writes no actor, so this path takes none.
+    return await _one_write(db, "", package_id, Write("delete", object_id, record_id)) is True
 
+
+# --- the query (C2a) --------------------------------------------------------
+#
+# ⚠️ An f-string below takes only an int index, a module constant, or a local
+# that holds SQL built here. A field key and a value are always binds.
+# `test_studio_query.py` reads the source of each `_q_*` and `build_*`
+# function, and fails on any other name in an f-string.
+#
+# The shape of one page statement (one snapshot serves the page and its total):
+#
+#   v     the count of the fields that the query reads as hot and that are
+#         hot now. A field that turned cold after the store read the fields
+#         has lost its hot rows, so the store reads the fields again.
+#   g     (a filter on a field that is not hot) the count of the candidates
+#         that the hot conditions keep, up to one past SMALL_OBJECT. `m` reads
+#         nothing when it passes SMALL_OBJECT, in the same snapshot.
+#   t     the count of the records that match, up to the cap
+#   p     the ids of the page: the candidates, then each condition, then the
+#         order and the page. A sort reads the head (the records with a value,
+#         in the order of the hot index) and the tail (the records with no
+#         value, in the order of the id). `hc` counts the head, so the tail
+#         reads only the rows that the page needs, and none when the head
+#         fills the page.
+#   r     each record of the page, by its primary key
+#
+# The candidates of a part are the hot rows of one condition (`d`), or the
+# records of the object (`r0`). Each other condition tests the candidate id.
+# A condition that reads `data` reads it after a lookup of the record by its
+# key (`LATERAL ... OFFSET 0`), so it runs only on the candidates that the
+# hot conditions keep. With a filter on a field that is not hot, the
+# candidates go into the MATERIALIZED CTE `m` once, and the count and the
+# page read `m` (at most SMALL_OBJECT records, by the guard).
+
+#: The object of a query, of the package that the caller names. No lock.
+_QUERY_OBJECT_SQL = (
+    "SELECT id FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
+    "AND package_id = CAST(:pid AS uuid)"
+)
+
+#: The org and the object of each alias of the two record tables. One
+#: constant each, so each part of a query names the same org and object.
+_OF_ORG = f"organization_id = {_BOUND_ORG}"
+_OF_OBJECT = "object_id = CAST(:oid AS uuid)"
+
+#: The columns of a record, in the order that `_record` reads them.
+_QUERY_COLUMNS = (
+    "r.id::text, r.object_id::text, r.data, r.created_by, r.updated_by, "
+    "r.created_at, r.updated_at"
+)
+_RECORD_ROW = "r.id, r.object_id, r.data, r.created_by, r.updated_by, r.created_at, r.updated_at"
+
+#: The value column of `studio_record_hot` for each type of the op table.
+_HOT_COLUMN: Mapping[str, str] = {
+    "text": "v_text", "email": "v_text", "select": "v_text", "number": "v_num",
+    "money": "v_num", "date": "v_ts", "datetime": "v_ts", "checkbox": "v_bool",
+}
+assert set(_HOT_COLUMN) == set(studio_query.OPS_BY_TYPE), "each type of the op table has a column"
+
+#: The SQL type of each value column.
+_SQL_TYPE: Mapping[str, str] = {
+    "v_text": "text", "v_num": "numeric", "v_ts": "timestamptz", "v_bool": "boolean",
+}
+
+#: The comparison of each op that compares.
+_CMP: Mapping[str, str] = {"eq": "=", "ne": "<>", "lt": "<", "lte": "<=", "gt": ">", "gte": ">="}
+
+#: The count of the guard stops one past the limit, and `m` needs it at the limit.
+_GUARD_CAP = "CAST(:small AS bigint) + 1"
+_GUARD_GATE = "(SELECT g.n FROM g) <= CAST(:small AS bigint)"
+
+#: The fields that the query reads as hot and that are hot now.
+_STILL_HOT_SQL = (
+    f"SELECT count(*) AS n FROM studio_object_fields f WHERE f.{_OF_ORG} AND f.{_OF_OBJECT} "
+    "AND f.hot AND f.key = ANY(CAST(:hk AS text[]))"
+)
+
+_TIMEOUT_READ_SQL = "SELECT current_setting('statement_timeout')"
+#: ``SET LOCAL`` as a function, so the value is a bind.
+_TIMEOUT_SQL = "SELECT set_config('statement_timeout', :ms, true)"
+#: The SQLSTATE of a statement that the timeout cancelled.
+_QUERY_CANCELED = "57014"
+_TIMEOUT_MESSAGE = "The query took too long. Narrow the filter."
+_RULE_TIMEOUT_MESSAGE = "The rules of this object took too long to check. The batch wrote nothing."
+_CHANGED_MESSAGE = "The fields of this object changed during the query. Try again."
+
+#: The clock of the deadline. A test replaces it.
+_clock = time.monotonic
+
+
+@dataclass(frozen=True)
+class RecordPage:
+    """One page of the records of a query (C2a)."""
+
+    records: tuple[Record, ...]
+    #: The count of the records that match, when it is below
+    #: :data:`~acb_common.studio_query.TOTAL_CAP`. Else None.
+    total: int | None
+    #: :data:`~acb_common.studio_query.TOTAL_CAP` when the count reached it.
+    #: Else None.
+    total_at_least: int | None
+    offset: int
+    limit: int
+    #: The line of ``paging.page_line``: "" when the page holds everything.
+    line: str
+
+
+def _needs_row(cond: Condition) -> bool:
+    """True when the SQL of *cond* reads ``data``: each condition on a field
+    that is not hot, ``contains``, and a text of 256 characters or more."""
+    if not cond.field.hot:
+        return True
+    if cond.op == "contains":
+        return True
+    if _HOT_COLUMN[cond.field.type] == "v_text" and cond.op in ("eq", "ne"):
+        return len(cond.value) >= HOT_TEXT_CHARS
+    if _HOT_COLUMN[cond.field.type] == "v_text" and cond.op == "in":
+        return any(len(v) >= HOT_TEXT_CHARS for v in cond.value)
+    return False
+
+
+def _drive_rank(cond: Condition) -> int | None:
+    """How well the hot rows of *cond* serve as the candidates: 0 for an
+    index condition (a text match, a time), 1 for a scan of the field, 2 for
+    any value, 3 for ``ne`` (it keeps most rows). None when *cond* cannot
+    give the candidates."""
+    if not cond.field.hot or _needs_row(cond):
+        return None
+    if cond.op == "is_empty":
+        return None if cond.value else 2
+    if cond.op == "ne":
+        return 3
+    if cond.field.type == "checkbox" and not cond.value:
+        return None  # it matches a record with no hot row
+    col = _HOT_COLUMN[cond.field.type]
+    if col == "v_ts" or (col == "v_text" and cond.op in ("eq", "in")):
+        return 0
+    return 1
+
+
+def _q_hot_row(i: int, rid: str) -> str:
+    """The hot row of the field of condition *i*, for the record id *rid*."""
+    return (
+        f"SELECT 1 FROM studio_record_hot h{i} "
+        f"WHERE h{i}.{_OF_ORG} AND h{i}.{_OF_OBJECT} "
+        f"AND h{i}.field_key = CAST(:fk{i} AS text) AND h{i}.record_id = {rid}"
+    )
+
+
+def _q_data(kind: str, i: int) -> str:
+    """The value of a field that is not hot, read from ``data`` with the
+    bound key of condition *i*, in the SQL type of its hot column."""
+    kref = f"CAST(:fk{i} AS text)"
+    if kind in ("text", "email", "select"):
+        return f"(r.data ->> {kref})"
+    if kind == "number":
+        return (f"(CASE WHEN jsonb_typeof(r.data -> {kref}) = 'number' "
+                f"THEN CAST(r.data ->> {kref} AS numeric) END)")
+    if kind == "money":
+        return (f"(CASE WHEN jsonb_typeof(r.data -> {kref} -> 'minor') = 'number' "
+                f"THEN CAST(r.data -> {kref} ->> 'minor' AS numeric) END)")
+    if kind == "date":
+        return (f"(CASE WHEN jsonb_typeof(r.data -> {kref}) = 'string' "
+                f"THEN CAST((r.data ->> {kref}) || 'T00:00:00Z' AS timestamptz) END)")
+    if kind == "datetime":
+        return (f"(CASE WHEN jsonb_typeof(r.data -> {kref}) = 'string' "
+                f"THEN CAST(r.data ->> {kref} AS timestamptz) END)")
+    return (f"(CASE WHEN jsonb_typeof(r.data -> {kref}) = 'boolean' "
+            f"THEN CAST(r.data ->> {kref} AS boolean) END)")
+
+
+def _q_compare(expr: str, i: int, cond: Condition, params: dict[str, Any]) -> str:
+    """A comparison of *expr* with the value of condition *i*."""
+    kind = _SQL_TYPE[_HOT_COLUMN[cond.field.type]]
+    if cond.op == "in":
+        params[f"v{i}"] = list(cond.value)
+        return f"{expr} = ANY(CAST(:v{i} AS {kind}[]))"
+    params[f"v{i}"] = cond.value
+    if cond.until is not None:  # eq on a day
+        params[f"u{i}"] = cond.until
+        return f"{expr} >= CAST(:v{i} AS {kind}) AND {expr} < CAST(:u{i} AS {kind})"
+    cmp = _CMP[cond.op]
+    return f"{expr} {cmp} CAST(:v{i} AS {kind})"
+
+
+def _q_text_eq(h: str, i: int, value: str, params: dict[str, Any]) -> str:
+    """Text eq on the hot row *h*. ``v_text`` holds the first 256 characters,
+    so a value of 256 or more is checked against ``data`` too."""
+    params[f"v{i}"] = value
+    if len(value) < HOT_TEXT_CHARS:
+        return f"{h}.v_text = CAST(:v{i} AS text)"
+    params[f"p{i}"] = value[:HOT_TEXT_CHARS]
+    return (f"{h}.v_text = CAST(:p{i} AS text) "
+            f"AND r.data ->> CAST(:fk{i} AS text) = CAST(:v{i} AS text)")
+
+
+def _q_text_in(h: str, i: int, values: Sequence[str], params: dict[str, Any]) -> str:
+    """Text ``in`` on the hot row *h*, with the check of :func:`_q_text_eq`."""
+    longs = [v for v in values if len(v) >= HOT_TEXT_CHARS]
+    params[f"v{i}"] = [v for v in values if len(v) < HOT_TEXT_CHARS]
+    frag = f"{h}.v_text = ANY(CAST(:v{i} AS text[]))"
+    if not longs:
+        return frag
+    params[f"p{i}"] = [v[:HOT_TEXT_CHARS] for v in longs]
+    params[f"l{i}"] = longs
+    return (f"({frag} OR ({h}.v_text = ANY(CAST(:p{i} AS text[])) "
+            f"AND r.data ->> CAST(:fk{i} AS text) = ANY(CAST(:l{i} AS text[]))))")
+
+
+def _q_contains(h: str, i: int, pattern: str, params: dict[str, Any]) -> str:
+    """Text ``contains`` on the hot row *h*. A ``v_text`` of 256 characters
+    may hold a cut text, so the test then reads ``data``."""
+    params[f"v{i}"] = pattern
+    return (f"((char_length({h}.v_text) < {HOT_TEXT_CHARS} "
+            f"AND {h}.v_text ILIKE CAST(:v{i} AS text) ESCAPE '\\') "
+            f"OR (char_length({h}.v_text) = {HOT_TEXT_CHARS} "
+            f"AND r.data ->> CAST(:fk{i} AS text) ILIKE CAST(:v{i} AS text) ESCAPE '\\'))")
+
+
+def _q_frag(h: str, i: int, cond: Condition, params: dict[str, Any]) -> str:
+    """The test of the value of condition *i* on the hot row *h*."""
+    col = _HOT_COLUMN[cond.field.type]
+    if col == "v_text" and cond.op == "eq":
+        return _q_text_eq(h, i, cond.value, params)
+    if col == "v_text" and cond.op == "ne":
+        return f"NOT ({_q_text_eq(h, i, cond.value, params)})"
+    if col == "v_text" and cond.op == "in":
+        return _q_text_in(h, i, cond.value, params)
+    if cond.op == "contains":
+        return _q_contains(h, i, cond.value, params)
+    hcol = f"{h}.{col}"
+    return _q_compare(hcol, i, cond, params)
+
+
+def _q_hot(i: int, cond: Condition, params: dict[str, Any], rid: str) -> str:
+    """Condition *i* on a hot field: a test of its hot row ``h<i>``. A record
+    with no value has no hot row, so only ``is_empty`` matches it."""
+    params[f"fk{i}"] = cond.field.key
+    row = _q_hot_row(i, rid)
+    if cond.op == "is_empty":
+        return f"NOT EXISTS ({row})" if cond.value else f"EXISTS ({row})"
+    if cond.field.type == "checkbox" and not cond.value:
+        # Not ticked: no ticked hot row, so a record with no value matches too.
+        params[f"v{i}"] = True
+        return f"NOT EXISTS ({row} AND h{i}.v_bool = CAST(:v{i} AS boolean))"
+    frag = _q_frag(f"h{i}", i, cond, params)
+    return f"EXISTS ({row} AND {frag})"
+
+
+def _q_cold(i: int, cond: Condition, params: dict[str, Any]) -> str:
+    """Condition *i* on a field that is not hot: a test of ``data``. A missing
+    value reads as NULL, so only ``is_empty`` matches it."""
+    params[f"fk{i}"] = cond.field.key
+    if cond.op == "is_empty":
+        if cond.value:
+            return f"(r.data -> CAST(:fk{i} AS text)) IS NULL"
+        return f"(r.data -> CAST(:fk{i} AS text)) IS NOT NULL"
+    expr = _q_data(cond.field.type, i)
+    if cond.op == "contains":
+        params[f"v{i}"] = cond.value
+        return f"{expr} ILIKE CAST(:v{i} AS text) ESCAPE '\\'"
+    if cond.field.type == "checkbox" and not cond.value:
+        return f"{expr} IS NOT TRUE"  # false, or no value
+    return _q_compare(expr, i, cond, params)
+
+
+def _q_lookup(rid: str) -> str:
+    """The record of the id *rid*, by its primary key. ``OFFSET 0`` keeps it
+    a lookup for each candidate, so the planner cannot scan the table."""
+    return (f"CROSS JOIN LATERAL (SELECT {_RECORD_ROW} FROM studio_records r "
+            f"WHERE r.{_OF_ORG} AND r.{_OF_OBJECT} AND r.id = {rid} OFFSET 0) r")
+
+
+def _q_where(conditions: Sequence[Condition], params: dict[str, Any], rid: str,
+             skip: int | None = None, only_hot: bool = False) -> str:
+    """Each condition, with its index in *conditions*, so one statement holds
+    one bind for each condition. *only_hot* leaves out a field that is not hot."""
+    parts = [_IN_PACKAGE]
+    for i, cond in enumerate(conditions):
+        if i == skip or (only_hot and not cond.field.hot):
+            continue
+        parts.append(_q_hot(i, cond, params, rid) if cond.field.hot else _q_cold(i, cond, params))
+    return " AND ".join(parts)
+
+
+def _q_source(conditions: Sequence[Condition], params: dict[str, Any]) -> tuple[str, int | None]:
+    """The candidates ``c`` of a part, and the condition that they meet
+    already: the hot rows of the best condition, or the records of the object."""
+    ranked = sorted((rank, j) for j, cond in enumerate(conditions)
+                    if (rank := _drive_rank(cond)) is not None)
+    if not ranked:
+        # In the order of the id: the records index `(org, object, id)` gives
+        # it, so a LIMIT stops on the index and no plan scans the table.
+        return (f"(SELECT r0.id FROM studio_records r0 "
+                f"WHERE r0.{_OF_ORG} AND r0.{_OF_OBJECT} ORDER BY r0.id) c"), None
+    j = ranked[0][1]
+    cond = conditions[j]
+    params[f"fk{j}"] = cond.field.key
+    frag = "TRUE" if cond.op == "is_empty" else _q_frag("d", j, cond, params)
+    return (f"(SELECT d.record_id AS id FROM studio_record_hot d "
+            f"WHERE d.{_OF_ORG} AND d.{_OF_OBJECT} AND d.field_key = CAST(:fk{j} AS text) "
+            f"AND {frag}) c"), j
+
+
+def _q_filtered(conditions: Sequence[Condition], params: dict[str, Any], what: str,
+                only_hot: bool = False, gate: str = "TRUE") -> str:
+    """``SELECT what`` from the candidates ``c`` that meet each condition.
+    *gate* is a test of the whole statement, as the guard of ``m``."""
+    source, skip = _q_source(conditions, params)
+    used = [c for c in conditions if c.field.hot or not only_hot]
+    lookup = f" {_q_lookup('c.id')}" if any(_needs_row(c) for c in used) else ""
+    where = _q_where(conditions, params, "c.id", skip, only_hot)
+    return f"SELECT {what} FROM {source}{lookup} WHERE {gate} AND {where}"
+
+
+def _q_count(conditions: Sequence[Condition], params: dict[str, Any], cap: str,
+             only_hot: bool = False) -> str:
+    """The count of the candidates that meet each condition, up to *cap*."""
+    counted = _q_filtered(conditions, params, "1", only_hot)
+    return f"SELECT count(*) AS n FROM ({counted} LIMIT {cap}) x"
+
+
+def _q_head(query: Query, params: dict[str, Any], what: str) -> str:
+    """``SELECT what`` from the records with a value of the sort field that
+    meet each condition, driven by the hot rows ``s`` of the sort field."""
+    assert query.sort is not None
+    params["sk"] = query.sort.field.key
+    lookup = f" {_q_lookup('s.record_id')}" if any(_needs_row(c) for c in query.conditions) else ""
+    where = _q_where(query.conditions, params, "s.record_id")
+    return (f"SELECT {what} FROM studio_record_hot s{lookup} "
+            f"WHERE s.{_OF_ORG} AND s.{_OF_OBJECT} AND s.field_key = CAST(:sk AS text) "
+            f"AND {where}")
+
+
+def _q_sorted_ids(query: Query, params: dict[str, Any]) -> str:
+    """The ids of the page of a sort, as the head and then the tail. ``hc``
+    is the count of the head up to the end of the page."""
+    assert query.sort is not None
+    col = _HOT_COLUMN[query.sort.field.type]
+    kind = _SQL_TYPE[col]
+    dirn = " DESC" if query.sort.desc else ""
+    head = _q_head(query, params, f"0 AS part, s.{col} AS k, s.record_id AS id")
+    no_value = Condition(query.sort.field, "is_empty", True)
+    tail = _q_filtered((*query.conditions, no_value), params,
+                       f"1 AS part, CAST(NULL AS {kind}) AS k, c.id AS id")
+    return (f"({head} ORDER BY s.{col}{dirn}, s.record_id{dirn} "
+            "LIMIT :lim OFFSET :off) "
+            f"UNION ALL ({tail} ORDER BY c.id "
+            "LIMIT (SELECT greatest(0, CAST(:lim AS bigint) "
+            "- least(CAST(:lim AS bigint), greatest(0, hc.n - :off))) FROM hc) "
+            "OFFSET (SELECT greatest(0, CAST(:off AS bigint) - hc.n) FROM hc))")
+
+
+def _q_small_ids(query: Query, params: dict[str, Any]) -> str:
+    """The ids of the page from ``m``, the candidates of a filter on a field
+    that is not hot. ``m`` holds at most SMALL_OBJECT records, so the order
+    is a sort in memory."""
+    if query.sort is None:
+        return ("SELECT 0 AS part, CAST(NULL AS text) AS k, m.id AS id FROM m "
+                "ORDER BY m.id LIMIT :lim OFFSET :off")
+    params["sk"] = query.sort.field.key
+    col = _HOT_COLUMN[query.sort.field.type]
+    dirn = " DESC" if query.sort.desc else ""
+    return ("SELECT CASE WHEN s.k IS NULL THEN 1 ELSE 0 END AS part, s.k AS k, m.id AS id "
+            f"FROM m LEFT JOIN LATERAL (SELECT s.{col} AS k FROM studio_record_hot s "
+            f"WHERE s.{_OF_ORG} AND s.{_OF_OBJECT} AND s.field_key = CAST(:sk AS text) "
+            "AND s.record_id = m.id OFFSET 0) s ON true "
+            f"ORDER BY 1, 2{dirn}, (CASE WHEN s.k IS NULL THEN NULL ELSE m.id END){dirn}, 3 "
+            "LIMIT :lim OFFSET :off")
+
+
+def build_query(query: Query, *, object_id: str, package_id: str, limit: int,
+                offset: int) -> tuple[str, dict[str, Any]]:
+    """The one statement of a page of *query*: its SQL and its binds. Pure.
+
+    Each row holds the total (``t.n``), the count of the guard (``g.n``, or
+    NULL with no filter on a field that is not hot), the count of the fields
+    that are still hot (``v.n``) and one record. A page past the end gives one
+    row with the counts and no record. With no sort, the records
+    come in the order of their id. With a sort, the records with a value come
+    first, in the order of the hot index and then the id, both in the
+    direction of the sort. The records with no value come after, in the
+    ascending order of their id.
+    """
+    params: dict[str, Any] = {"oid": object_id, "pid": package_id, "lim": limit,
+                              "off": offset, "cap": studio_query.TOTAL_CAP,
+                              "hk": list(query.hot_keys())}
+    dirn = " DESC" if query.sort is not None and query.sort.desc else ""
+    guard = "CAST(NULL AS bigint)"
+    if query.cold():
+        params["small"] = studio_query.SMALL_OBJECT
+        count_hot = _q_count(query.conditions, params, _GUARD_CAP, only_hot=True)
+        found = _q_filtered(query.conditions, params, "c.id AS id", gate=_GUARD_GATE)
+        with_sql = f"WITH g AS ({count_hot}), m AS MATERIALIZED ({found}), "
+        guard = "(SELECT g.n FROM g)"
+        total = "SELECT count(*) AS n FROM (SELECT 1 FROM m LIMIT :cap) x"
+        ids = _q_small_ids(query, params)
+    elif query.sort is not None:
+        count_head = _q_head(query, params, "1")
+        with_sql = ("WITH hc AS MATERIALIZED (SELECT count(*) AS n FROM "
+                    f"({count_head} LIMIT CAST(:lim AS bigint) + CAST(:off AS bigint)) x), ")
+        total = _q_count(query.conditions, params, ":cap")
+        ids = _q_sorted_ids(query, params)
+    else:
+        with_sql = "WITH "
+        total = _q_count(query.conditions, params, ":cap")
+        page = _q_filtered(query.conditions, params,
+                           "0 AS part, CAST(NULL AS text) AS k, c.id AS id")
+        ids = f"{page} ORDER BY c.id LIMIT :lim OFFSET :off"
+    return (f"{with_sql}v AS ({_STILL_HOT_SQL}), t AS ({total}), p AS ({ids}) "
+            f"SELECT t.n, {guard}, v.n, {_QUERY_COLUMNS} FROM t CROSS JOIN v "
+            f"LEFT JOIN (p {_q_lookup('p.id')}) ON true "
+            f"ORDER BY p.part, p.k{dirn}, (CASE WHEN p.part = 0 THEN p.id END){dirn}, p.id"), params
+
+
+def build_count(conditions: Sequence[Condition], *, object_id: str, package_id: str,
+                cap: int) -> tuple[str, dict[str, Any]]:
+    """The count of the records that meet *conditions*, up to *cap*, as the
+    CTE ``t`` of :func:`build_query` reads it. Pure."""
+    params: dict[str, Any] = {"oid": object_id, "pid": package_id, "cap": cap}
+    return _q_count(conditions, params, ":cap"), params
+
+
+def build_group_sum(conditions: Sequence[Condition], field_key: str, *, object_id: str,
+                    package_id: str) -> tuple[str, dict[str, Any]]:
+    """The sum of the hot field *field_key* over the records that meet
+    *conditions*, for ``group_sum_min`` (C1b). Pure.
+
+    The candidates are those of a query, so each part names the org, the
+    object and the package, and each key and value is a bind. Each candidate
+    reads its hot row of the field by the primary key. A record with no value
+    has no hot row, and adds nothing to the sum.
+
+    The answer is NULL only when the key has no rows, and then the rule passes
+    (``studio_rules.check_group_sum``). A key with rows and no amount gives 0.
+    """
+    params: dict[str, Any] = {"oid": object_id, "pid": package_id, "sk": field_key}
+    ids = _q_filtered(conditions, params, "c.id AS id")
+    return (f"SELECT CASE WHEN count(*) > 0 THEN coalesce(sum(s.v_num), 0) END FROM ({ids}) g "
+            "LEFT JOIN LATERAL (SELECT s.v_num FROM studio_record_hot s "
+            f"WHERE s.{_OF_ORG} AND s.{_OF_OBJECT} AND s.field_key = CAST(:sk AS text) "
+            "AND s.record_id = g.id OFFSET 0) s ON true"), params
+
+
+def _is_timeout(exc: DBAPIError) -> bool:
+    """True when the LOCAL ``statement_timeout`` cancelled the statement."""
+    return _sqlstate(exc) == _QUERY_CANCELED
+
+
+class _Timed:
+    """The session of a query, under one deadline. Before each statement it
+    sets the LOCAL ``statement_timeout`` to the time that is left, and it
+    refuses with ``query_timeout`` when none is left."""
+
+    def __init__(self, db: Any, deadline: float, message: str) -> None:
+        self._db = db
+        self._deadline = deadline
+        self._message = message
+
+    async def execute(self, stmt: Any, params: dict[str, Any]) -> Any:
+        left = self._deadline - _clock()
+        if left <= 0:
+            raise QueryError(studio_query.TIMEOUT, self._message)
+        await self._db.execute(text(_TIMEOUT_SQL), {"ms": str(max(1, int(left * 1000)))})
+        return await self._db.execute(stmt, params)
+
+
+@asynccontextmanager
+async def _time_limit(db: Any, deadline: float,
+                      message: str = _TIMEOUT_MESSAGE) -> AsyncIterator[_Timed]:
+    """Run the statements of a query in a SAVEPOINT, under one deadline.
+
+    A timeout aborts the SAVEPOINT only, so the caller's transaction stays
+    usable. The old timeout comes back after each query, also after a success.
+    The checks of a batch (C1b) use it too, with their own *message*.
+    """
+    old = str((await db.execute(text(_TIMEOUT_READ_SQL))).scalar_one())
+    try:
+        async with db.begin_nested():
+            yield _Timed(db, deadline, message)
+    except DBAPIError as exc:
+        if _is_timeout(exc):
+            raise QueryError(studio_query.TIMEOUT, message) from None
+        raise
+    finally:
+        await db.execute(text(_TIMEOUT_SQL), {"ms": old})
+
+
+def _check_hot_or_small(rows: Sequence[Any], query: Query) -> None:
+    """``hot_or_small``: a filter on a field that is not hot reads ``data``,
+    so it runs only when the hot filters leave at most
+    :data:`~acb_common.studio_query.SMALL_OBJECT` records. The page statement
+    holds the count, so a write between two statements cannot pass the guard."""
+    guard, small = rows[0][1], studio_query.SMALL_OBJECT
+    if guard is not None and int(guard) > small:
+        key = query.cold()[0].field.key
+        raise QueryError(
+            studio_query.NOT_INDEXED,
+            f"Field `{key}` is not hot, and the filter leaves more than {small} records to "
+            "check. Turn it hot, or add a filter on a hot field.", key)
+
+
+async def _read_page(timed: _Timed, oid: str, pid: str, filter: Any, sort: Any, size: int,
+                     start: int) -> list[Any]:
+    """The fields, then the page statement. A field that turned cold after
+    the store read the fields has lost its hot rows, so the statement says so,
+    and the store reads the fields and runs the query once more."""
+    for _ in range(2):
+        query = studio_query.parse_query(await _fields(timed, oid), filter, sort)
+        sql, params = build_query(query, object_id=oid, package_id=pid, limit=size, offset=start)
+        rows = (await timed.execute(text(sql), params)).all()
+        if int(rows[0][2]) == len(query.hot_keys()):
+            _check_hot_or_small(rows, query)
+            return rows
+    raise QueryError(studio_query.TIMEOUT, _CHANGED_MESSAGE)
+
+
+async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any = None,
+                        sort: Any = None, limit: Any = None,
+                        offset: Any = None) -> RecordPage | None:
+    """One page of the records of the object *object_id* of the package
+    *package_id*, with a filter and a sort (C2a). Answers None when the bound
+    org holds no such object in that package.
+
+    ``acb_common.studio_query`` checks the input. A refusal raises
+    :class:`~acb_common.studio_query.QueryError`, and the session stays
+    usable. The whole call has one deadline of
+    :data:`~acb_common.studio_query.TIMEOUT_MS`. One statement reads the
+    page, its total and the guard, so a write between two statements cannot
+    put a record on the page twice or pass the guard. If a field turns cold
+    twice during the call, the store raises ``query_timeout``, and the caller
+    may try again. A record with no value of the sort field comes
+    after the records with a value. The total is exact below
+    :data:`~acb_common.studio_query.TOTAL_CAP`.
+    """
+    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    oid = _uuid(object_id, "object_id")
+    pid = _uuid(package_id, "package_id")
+    start, size = studio_query.page_bounds(offset, limit)
+    studio_query.check_shape(filter, sort)
+    async with _time_limit(db, deadline) as timed:
+        found = await timed.execute(text(_QUERY_OBJECT_SQL), {"oid": oid, "pid": pid})
+        if found.first() is None:
+            return None
+        rows = await _read_page(timed, oid, pid, filter, sort, size, start)
+    count = int(rows[0][0])
+    records = tuple(_record(row[3:]) for row in rows if row[3] is not None)
+    exact = count < studio_query.TOTAL_CAP
+    shown = len(records)
+    reach = studio_query.MAX_OFFSET
+    if exact:
+        line = page_line(count, start, shown, noun="records", reach=reach)
+    else:
+        line = page_line(None, start, shown, more=shown == size, noun="records", reach=reach)
+    return RecordPage(records=records, total=count if exact else None,
+                      total_at_least=None if exact else count, offset=start, limit=size,
+                      line=line)
+
+
+# --- the batch (C1b) --------------------------------------------------------
+#
+# The steps of one batch, in one SAVEPOINT:
+#
+#   1. the org lock, once
+#   2. the object rows, in ascending object id, then the fields and the rules
+#   3. the record rows, in ascending (object_id, record_id)
+#   4. the writes, in list order
+#   5. `range` on the last value of each written record
+#   6. `unique` and `group_sum_min`, once for each touched key. On a floor of
+#      0 or less, a key that the batch does not lower reads nothing.
+#
+# Steps 5 and 6 run after all the writes, so a stock move is judged on the net.
+# Step 6 reads in a later statement than the lock, so its snapshot holds each
+# committed write of the org (READ COMMITTED).
+
+_WRITE_OPS = ("create", "update", "delete")
+
+
+@dataclass(frozen=True)
+class _Held:
+    """An object of a batch, under its row lock."""
+
+    name: str
+    fields: list[FieldSpec]
+    rules: tuple[Rule, ...]
+
+
+@dataclass
+class _Mark:
+    """One record that a batch writes. ``before`` is its data before the
+    batch, and ``after`` its data now. None means no such record."""
+
+    object_id: str
+    index: int
+    before: dict[str, Any] | None
+    after: dict[str, Any] | None
+
+
+class _Batch:
+    """The state of one batch. ``index`` names the write that runs now, so an
+    error gets its place in the list."""
+
+    def __init__(self, who: str, pid: str, steps: Sequence[Write]) -> None:
+        self.who = who
+        self.pid = pid
+        self.steps = steps
+        self.objects: dict[str, _Held] = {}
+        self.marks: dict[tuple[str, str], _Mark] = {}
+        self.index = 0
+
+
+def _clean_write(write: Any) -> Write:
+    """One write with its ids in the UUID form. Runs no statement."""
+    if not isinstance(write, Write) or write.op not in _WRITE_OPS:
+        raise ObjectStoreError(f"A write is a Write with the op {', '.join(_WRITE_OPS)}.")
+    oid = _uuid(write.object_id, "object_id")
+    if write.op == "create":
+        if write.record_id is not None:
+            raise ObjectStoreError("A create takes no record_id, because the store gives the id.")
+        return replace(write, object_id=oid)
+    rid = _uuid(write.record_id, "record_id")
+    if write.op == "update" and not isinstance(write.data, Mapping):
+        raise ObjectStoreError("changes must be an object of field values")
+    if write.op == "delete" and write.data is not None:
+        raise ObjectStoreError("A delete takes no data.")
+    return replace(write, object_id=oid, record_id=rid)
+
+
+def _clean_writes(writes: Any) -> list[Write]:
+    """The checks of a batch that need no statement, the cap first."""
+    if isinstance(writes, str | bytes | Mapping) or not isinstance(writes, Sequence):
+        raise ObjectStoreError("writes must be a list of writes")
+    if len(writes) > MAX_WRITES_PER_BATCH:
+        raise BudgetExceeded(f"A batch holds at most {MAX_WRITES_PER_BATCH} writes.")
+    out = []
+    for i, write in enumerate(writes):
+        try:
+            out.append(_clean_write(write))
+        except ObjectStoreError as exc:
+            raise BatchError(i, exc) from exc
+    return out
+
+
+async def _lock_objects(db: Any, batch: _Batch) -> None:
+    """Step 2. The second statement of each object follows its row lock."""
+    first: dict[str, int] = {}
+    for i, step in enumerate(batch.steps):
+        first.setdefault(step.object_id, i)
+    for oid in sorted(first):
+        batch.index = first[oid]
+        row = (await db.execute(text(_SHARE_OBJECT_SQL), {"oid": oid, "pid": batch.pid})).first()
+        if row is None:
+            raise RecordNotFound("This package holds no such object.")
+        batch.objects[oid] = _Held(str(row[0]), await _fields(db, oid), stored_rules(_json(row[1])))
+
+
+async def _lock_records(db: Any, batch: _Batch) -> None:
+    """Step 3. A record that two writes name is locked once."""
+    first: dict[tuple[str, str], int] = {}
+    for i, step in enumerate(batch.steps):
+        if step.record_id is not None:
+            first.setdefault((step.object_id, step.record_id), i)
+    for (oid, rid), index in sorted(first.items()):
+        batch.index = index
+        row = (await db.execute(text(_LOCK_RECORD_SQL), {
+            "oid": oid, "rid": rid, "pid": batch.pid})).first()
+        if row is None:
+            raise RecordNotFound("This package holds no such record.")
+        data = dict(_json(row[2]))
+        batch.marks[(oid, rid)] = _Mark(oid, index, data, data)
+
+
+def _live_mark(batch: _Batch, step: Write) -> _Mark:
+    """The mark of the record of an update or a delete. An earlier write of
+    the batch may have deleted it."""
+    mark = batch.marks[(step.object_id, str(step.record_id))]
+    if mark.after is None:
+        raise RecordNotFound("An earlier write of this batch deleted this record.")
+    return mark
+
+
+async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
+    """Step 4, for one write. Only this function runs the three write statements."""
+    oid = step.object_id
+    held = batch.objects[oid]
+    if step.op == "create":
+        clean = validate_record(held.fields, step.data)
+        row = (await db.execute(text(_CREATE_RECORD_SQL), {
+            "oid": oid, "data": record_json(clean), "actor": batch.who,
+            "hot": _hot_rows(held.fields, clean)})).one()
+        made = _record(row)
+        batch.marks[(oid, made.id)] = _Mark(oid, batch.index, None, clean)
+        return made
+    mark = _live_mark(batch, step)
+    binds = {"oid": oid, "rid": step.record_id, "pid": batch.pid}
+    if step.op == "delete":
+        await db.execute(text(_DELETE_RECORD_SQL), binds)
+        mark.after = None
+        return True
+    clean = validate_record(held.fields, {**(mark.after or {}), **dict(step.data or {})})
+    row = (await db.execute(text(_UPDATE_RECORD_SQL), {
+        **binds, "data": record_json(clean), "actor": batch.who,
+        "hot": _hot_rows(held.fields, clean)})).one()
+    mark.after = clean
+    return _record(row)
+
+
+def _check_records(batch: _Batch) -> dict[tuple[str, Rule, tuple[Any, ...]], int]:
+    """Step 5, and the keys of step 6, each with its first write. On a floor
+    of 0 or less, a key that the batch does not lower stays out: the values of
+    the batch prove that its sum cannot fall, and the org lock holds each
+    other writer out. A floor above 0 always stays in."""
+    keys: dict[tuple[str, Rule, tuple[Any, ...]], int] = {}
+    nets: dict[tuple[str, Rule, tuple[Any, ...]], Decimal] = {}
+    for mark in sorted(batch.marks.values(), key=lambda m: m.index):
+        batch.index = mark.index
+        held = batch.objects[mark.object_id]
+        for rule in held.rules:
+            check_kind_known(rule, held.name)
+            check_rule_is_hot(rule, held.name, held.fields)
+            if rule.kind == RANGE and mark.after is not None:
+                check_range(rule, held.name, mark.after)
+            for key in touched_keys(rule, mark.before, mark.after):
+                at = (mark.object_id, rule, key)
+                keys.setdefault(at, mark.index)
+                if floor_holds_at_zero(rule):
+                    nets[at] = add_change(rule, key, mark.before, mark.after,
+                                          nets.get(at, Decimal(0)))
+    return {at: index for at, index in keys.items() if at not in nets or nets[at] < 0}
+
+
+async def _check_key(timed: _Timed, oid: str, pid: str, held: _Held, rule: Rule,
+                     key: tuple[Any, ...]) -> None:
+    """Step 6, for one key. The filter of the key runs through the grammar of
+    C2a, and the statement comes from its builders. So it reads hot rows only.
+    The one exception is a key of 256 characters or more: C2a has no hot
+    candidates for it, so it reads the records of the object, under the deadline."""
+    conditions = studio_query.parse_query(held.fields, key_filter(rule, key)).conditions
+    if rule.kind == UNIQUE:
+        sql, params = build_count(conditions, object_id=oid, package_id=pid, cap=2)
+        count = (await timed.execute(text(sql), params)).scalar_one()
+        check_unique_count(rule, held.name, int(count))
+        return
+    sql, params = build_group_sum(conditions, str(rule.field), object_id=oid, package_id=pid)
+    total = (await timed.execute(text(sql), params)).scalar_one()
+    check_group_sum(rule, held.name, None if total is None else Decimal(total))
+
+
+async def _check_keys(db: Any, batch: _Batch,
+                      keys: Mapping[tuple[str, Rule, tuple[Any, ...]], int]) -> None:
+    """Step 6, under one deadline. A timeout refuses the batch."""
+    if not keys:
+        return
+    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    async with _time_limit(db, deadline, _RULE_TIMEOUT_MESSAGE) as timed:
+        for (oid, rule, key), index in keys.items():
+            batch.index = index
+            await _check_key(timed, oid, batch.pid, batch.objects[oid], rule, key)
+
+
+async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
+    """The six steps, in their order. The caller holds the SAVEPOINT."""
+    await _lock_org(db)
+    await _lock_objects(db, batch)
+    await _lock_records(db, batch)
+    answers: list[Record | bool] = []
+    for i, step in enumerate(batch.steps):
+        batch.index = i
+        answers.append(await _apply_write(db, batch, step))
+    await _check_keys(db, batch, _check_records(batch))
+    return answers
+
+
+async def _apply_batch(db: Any, who: str, pid: str, steps: list[Write]) -> list[Record | bool]:
+    """The one path of a record write. An error rolls back the SAVEPOINT as it
+    leaves the block, so the batch writes nothing and the caller's earlier work
+    stays."""
+    if not steps:
+        return []
+    batch = _Batch(who, pid, steps)
+    try:
+        async with db.begin_nested():
+            answers = await _run_steps(db, batch)
+    except Exception as exc:
+        raise BatchError(batch.index, exc) from exc
+    return answers
+
+
+async def apply_writes(db: Any, actor: str, *, package_id: str,
+                       writes: Sequence[Write]) -> list[Record | bool]:
+    """Apply *writes* to the package *package_id*, all or none (C1b).
+
+    Answers one item for each write: the :class:`Record` of a create or an
+    update, and True for a delete. *writes* holds at most
+    :data:`~acb_common.studio_rules.MAX_WRITES_PER_BATCH` writes, and a longer
+    list raises :class:`BudgetExceeded` before any statement. Any other error
+    rolls back the batch and raises :class:`BatchError`, with the place of the
+    write and the cause. The cause of a broken rule is a
+    :class:`~acb_common.studio_rules.ConstraintViolation`. The cause of a
+    write that names no such object or record is a :class:`RecordNotFound`.
+    A timeout in a check gives ``query_timeout``. The caller's transaction
+    stays usable with its earlier work.
+    """
+    who = _actor(actor)
+    pid = _uuid(package_id, "package_id")
+    return await _apply_batch(db, who, pid, _clean_writes(writes))
+
+
+async def _one_write(db: Any, who: str, package_id: str, write: Write) -> Record | bool | None:
+    """A batch of one, for the three record functions. Each raises the cause
+    of a refusal, and answers None for a record that is not there."""
+    pid = _uuid(package_id, "package_id")
+    try:
+        return (await _apply_batch(db, who, pid, _clean_writes([write])))[0]
+    except BatchError as exc:
+        if isinstance(exc.cause, RecordNotFound):
+            return None
+        raise exc.cause from None
