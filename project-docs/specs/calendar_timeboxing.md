@@ -427,12 +427,15 @@ in 3 of 3 runs.
 - The row text comes from the level only ("First today.").
 
 **Modes.** `off` runs the LLM call only. `shadow` runs the LLM call, asks
-`decide` beside it and logs the comparison. In `shadow` the member never waits
-for the shadow: `shadow(..., detach=True)` returns the old answer at once, and
-the shadow ends in a background task, bounded by `SHADOW_BOUND_S` and logged.
-Only the day plan sets `detach`. The email and feed callers keep the wait. A
-fault in the shadow path is logged and gives the old answer. `on` lets
-`decide` answer. A failure of `decide` (unavailable, timeout past
+`decide` beside it and logs the comparison. `on` lets `decide` answer.
+
+**Shadow.** The member never waits for the shadow. `shadow(..., detach=True)`
+returns the old answer at once. It ends in a background task, bounded
+by `SHADOW_BOUND_S` and logged. Only the day plan sets `detach`, so the email and
+feed callers keep the wait. A fault in the shadow path is logged and gives the
+old answer.
+
+**Fallback.** A failure of `decide` (unavailable, timeout past
 `ON_BOUND_S`, a bad or partial answer) falls back to the LLM call, and then to
 the priority order.
 
