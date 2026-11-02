@@ -497,16 +497,20 @@ def _crm_own_tool_scope() -> set[str]:
 
 
 def test_the_crm_pack_holds_nine_tools_of_the_crm_assistant() -> None:
-    """The pack is a subset of ``own_tool_scope`` (21 tools): the 4 reads, the
-    4 writes and ``crm_search_notes``. The other 12 are the shared ``crm_*``
-    reads that the orchestrator holds already. Mutation: add a tool the owner
-    lacks, or drop one of the 9 -> red."""
+    """The pack is a subset of ``own_tool_scope`` (22 tools): the 4 reads, the
+    4 writes and ``crm_search_notes``. The other 13 are the shared ``crm_*``
+    reads that the orchestrator holds already. ``crm_change_history`` is one
+    of them since WS-CRM CRM-M1: the read of the CRM Change history, which
+    the orchestrator also holds. Mutation: add a tool the owner lacks, or
+    drop one of the 9 -> red."""
     scope = _crm_own_tool_scope()
-    assert len(scope) == 21, "non-vacuity: the owner still declares 21 tools"
+    assert len(scope) == 22, "non-vacuity: the owner still declares 22 tools"
     family = sf.SKILL_FAMILIES["crm-records"]
     assert tuple(family["tools"]) == CRM_TOOLS and family["owner"] == CRM
     assert set(family["tools"]) <= scope
-    assert len(scope - set(family["tools"])) == 12
+    assert len(scope - set(family["tools"])) == 13
+    assert "crm_change_history" in scope - set(family["tools"])
+    assert "crm_change_history" in _orchestrator_scope()
 
 
 def test_no_crm_pack_tool_is_in_another_pack() -> None:
