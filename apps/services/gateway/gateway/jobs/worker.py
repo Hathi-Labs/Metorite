@@ -82,6 +82,11 @@ a session that broke during a run. ``jobs.claim_failed`` (warning) is a run
 that raised out of :func:`run_one`. ``jobs.tick`` (info) sums one tick that
 ran a job.
 
+**No person present (AUTO-7a).** No person watches a job. So :func:`_call`
+marks each handler with ``acb_common.no_person.no_person_scope``, in both
+modes, and a handler cannot approve its own write. The mark ends with the
+handler. The loop of the worker stays unmarked.
+
 **Restart and a killed worker.** The state is in Postgres only. A worker
 that dies mid-job drops its connection, so the row lock goes. The row stays
 ``running`` until ``lease_until`` passes, and then the next claim takes it.
@@ -110,6 +115,7 @@ from typing import Any
 
 from acb_common import get_logger, get_settings
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.no_person import no_person_scope
 
 from gateway.jobs import queue
 
@@ -251,8 +257,9 @@ async def _call(run: Callable[[], Awaitable[None]], attempt: _Attempt) -> None:
     limit = HANDLER_TIMEOUT
     scope = asyncio.timeout(limit)
     try:
-        async with scope:
-            await run()
+        with no_person_scope():
+            async with scope:
+                await run()
     except Exception as exc:
         if scope.expired():
             attempt.timeout = HandlerTimeout(f"the handler timed out after {limit:g} s")
