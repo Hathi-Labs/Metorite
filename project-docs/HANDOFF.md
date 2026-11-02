@@ -1598,6 +1598,7 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `git grep -n "await _get_db()" -- apps/services/gateway/gateway/routes/workflows/`.
   Each hit is an unbound read or write on a FORCE RLS table. This entry is
   open until the only hits left are tenant-discovery reads.
+- **State (2026-11-03):** Part (b) is built: the scans bind each listed org, and the list `WORKFLOW_UNATTENDED_ORGS` ships empty.
 - **Added:** 2026-10-15 · PR #1052 review round 1
 
 ### H-320 · An unticked checkbox has no visible edge · [AGENT]

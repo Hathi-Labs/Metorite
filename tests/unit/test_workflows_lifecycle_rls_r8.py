@@ -41,7 +41,9 @@ Mutations this suite catches (R7):
 * ``_execute_run`` falls back to ``current_tenant()``: the ambient case of
   section 5 goes red;
 * the org read from the trigger payload: the payload case goes red;
-* ``resume_run`` passes the caller's org: the row org case goes red.
+* ``resume_run`` passes the caller's org: the row org case goes red;
+* part (b), section 9: the allowlist check dropped in a scan or a sweep, or
+  the org bind dropped in ``_scan_org``, turns its case red.
 
 ⚠️ **R8.** The subject is a policy. A Python fake agrees with whatever SQL it
 is handed. The gate is ``TENANT_LADDER_DATABASE_URL``, never ``DATABASE_URL``.
@@ -58,6 +60,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,7 +72,7 @@ pytest.importorskip("sqlalchemy")
 
 from acb_common.db import bind_tenant, release_tenant
 from fastapi import HTTPException
-from gateway.routes.workflows import service
+from gateway.routes.workflows import scheduler, service, unattended
 from gateway.routes.workflows.engine import handlers
 from gateway.routes.workflows.engine.graph import NODE_TYPES, compile_graph
 from gateway.routes.workflows.engine.handlers import NodeExecutionError
@@ -155,6 +158,27 @@ def _write_then_gate(write: dict, after: dict) -> dict:
     return compile_graph({"nodes": nodes, "edges": edges})
 
 
+def _wait_then_module(module_id: str) -> dict:
+    """trigger -> wait (an hour) -> module -> output. The wait pauses the run."""
+    nodes = [
+        _node("start", "trigger", {"kind": "manual"}),
+        _node("hold", "wait", {"seconds": 3600}),
+        _node("step", "module", {"module_id": module_id}),
+        _node("done", "output", {"value": "end"}),
+    ]
+    edges = [
+        {"id": f"{a}->{b}", "source": a, "target": b}
+        for a, b in (("start", "hold"), ("hold", "step"), ("step", "done"))
+    ]
+    return compile_graph({"nodes": nodes, "edges": edges})
+
+
+#: The section-9 workflows that hold a schedule trigger.
+_TICKERS = ("Tick in A", "Tick in B", "Tick A reaches B", "Gone in A", "Gone in B")
+#: Every section-9 workflow. Its run rows are reset before each case.
+_UNATTENDED_NAMES = (*_TICKERS, "Wait in A", "Wait in B", "Health in A", "Health in B")
+
+
 def _exec_sql_file(conn, sql: str) -> None:
     with conn.connection.dbapi_connection.cursor() as cur:
         cur.execute(sql)
@@ -215,17 +239,32 @@ def _seed_org_work(conn, org: str, tag: str) -> dict[str, str]:
     }
 
 
-def _seed_workflow(conn, org: str, tag: str, name: str, serialized: dict) -> str:
+def _seed_workflow(
+    conn, org: str, tag: str, name: str, serialized: dict, *, with_version: bool = True,
+) -> str:
+    """A published workflow. ``with_version=False`` leaves its latest version
+    out, as a workflow whose published version went missing."""
     wid = str(uuid.uuid4())
     conn.execute(text(
         "INSERT INTO workflows (id, name, description, owner_email, status, "
         "latest_version, organization_id) VALUES (:id, :n, '', :o, 'published', "
         "1, :org)"), {"id": wid, "n": name, "o": _OWNERS[tag], "org": org})
-    conn.execute(text(
-        "INSERT INTO workflow_versions (workflow_id, version, serialized, "
-        "published_by, organization_id) VALUES (:w, 1, CAST(:s AS jsonb), "
-        "'seed', :org)"), {"w": wid, "s": json.dumps(serialized), "org": org})
+    if with_version:
+        conn.execute(text(
+            "INSERT INTO workflow_versions (workflow_id, version, serialized, "
+            "published_by, organization_id) VALUES (:w, 1, CAST(:s AS jsonb), "
+            "'seed', :org)"), {"w": wid, "s": json.dumps(serialized), "org": org})
     return wid
+
+
+def _seed_schedule(conn, org: str, workflow_id: str) -> None:
+    """A schedule trigger that is due. ``_reset_unattended`` re-arms it."""
+    conn.execute(text(
+        "INSERT INTO workflow_triggers (workflow_id, kind, config, enabled, "
+        "last_fired_at, organization_id) VALUES (CAST(:w AS uuid), 'schedule', "
+        "CAST(:c AS jsonb), false, now() - make_interval(mins => 10), "
+        "CAST(:o AS uuid))"),
+        {"w": workflow_id, "c": json.dumps({"cron": "* * * * *"}), "o": org})
 
 
 def _grant_app_role(ded_admin_url, dedicated: str) -> None:
@@ -333,6 +372,24 @@ def promoted():
         }
         for name, (tag, serialized) in gated.items():
             wf[name] = _seed_workflow(conn, orgs[tag], tag, name, serialized)
+        # Part (b): schedules, waits and health. Each ticker holds a trigger.
+        part_b: dict[str, tuple[str, dict, bool]] = {
+            "Tick in A": ("A", _one_step("module", {"module_id": work_a["module"]}), True),
+            "Tick in B": ("B", _one_step("module", {"module_id": work_b["module"]}), True),
+            "Tick A reaches B": (
+                "A", _one_step("module", {"module_id": work_b["module"]}), True),
+            "Gone in A": ("A", _one_step("module", {"module_id": work_a["module"]}), False),
+            "Gone in B": ("B", _one_step("module", {"module_id": work_b["module"]}), False),
+            "Wait in A": ("A", _wait_then_module(work_a["module"]), True),
+            "Wait in B": ("B", _wait_then_module(work_b["module"]), True),
+            "Health in A": ("A", _one_step("module", {"module_id": work_a["module"]}), True),
+            "Health in B": ("B", _one_step("module", {"module_id": work_b["module"]}), True),
+        }
+        for name, (tag, serialized, has_version) in part_b.items():
+            wf[name] = _seed_workflow(
+                conn, orgs[tag], tag, name, serialized, with_version=has_version)
+            if name in _TICKERS:
+                _seed_schedule(conn, orgs[tag], wf[name])
 
     class _NS:
         pass
@@ -464,7 +521,9 @@ def _run_published(
     return _run_row(promoted, started["run_id"])
 
 
-def _start_at_the_seam(promoted, name: str, org: str, *, ambient: str | None = None) -> str:
+def _start_at_the_seam(
+    promoted, name: str, org: str, *, ambient: str | None = None, trigger_kind: str = "api",
+) -> str:
     """Start one workflow at ``start_run``, under the agent door's refusal.
 
     Nothing live starts a Projects node with an org. This call proves what the
@@ -478,7 +537,7 @@ def _start_at_the_seam(promoted, name: str, org: str, *, ambient: str | None = N
             workflow_name=name,
             version=1,
             serialized=serialized,
-            trigger_kind="api",
+            trigger_kind=trigger_kind,
             trigger_payload={},
             started_by="h328",
             organization_id=org,
@@ -853,6 +912,381 @@ def test_a_resumed_run_takes_its_org_from_the_run_row(promoted, monkeypatch):
 
     assert _on_app_role(promoted, None, approve)["ok"] is True
     assert seen["organization_id"] == promoted.org_a
+
+
+# ── 9. Part (b): the scans and the sweeps bind each LISTED org ───────────────
+#
+# ``WORKFLOW_UNATTENDED_ORGS`` ships empty. These cases run as the NOBYPASSRLS
+# role. They prove two rules for each scan and sweep. With the list empty, the
+# scan starts no run, writes no run row, claims no tick and sends nothing, for
+# any org. With org A listed, A's work runs in A, and B's work does not run.
+# A skip is not a pass.
+#
+# Mutations this section catches (R7):
+#
+# * the allowlist check dropped in ``_scan_once``, ``scan_due_waits``,
+#   ``reconcile_orphaned_runs``, ``record_skipped_run`` or
+#   ``evaluate_automation_health``: the empty-list case and the "B does not
+#   run" case of that scan go red;
+# * the org bind dropped in ``_scan_org``, so ``start_run`` gets no org: the
+#   listed case goes red, because the run row cannot be written;
+# * ``_scan_org`` reading the ambient tenant: the ambient case goes red.
+
+
+def _list_orgs(monkeypatch, *orgs: str) -> None:
+    """Set ``WORKFLOW_UNATTENDED_ORGS`` for one case. No arg is the shipped
+    default, an empty list."""
+    monkeypatch.delenv("WORKFLOW_SCHEDULER_ENABLED", raising=False)
+    monkeypatch.setattr(
+        unattended, "get_settings",
+        lambda: SimpleNamespace(workflow_unattended_orgs=",".join(orgs)),
+    )
+
+
+def _spy(monkeypatch) -> SimpleNamespace:
+    """Record every start, resume, skipped-run write, node execution and tool
+    call. Each spy calls the real function after it records."""
+    from acb_common.no_person import no_person_present
+
+    calls = SimpleNamespace(starts=[], resumes=[], skips=[], executed=[], tools=[])
+    real_start, real_resume = scheduler.start_run, scheduler.resume_run
+    real_skip, real_execute = scheduler.record_skipped_run, service.execute_workflow
+    real_tool, real_notify = service.execute_tool, service.notify_owner_whatsapp
+
+    async def start(**kw):
+        calls.starts.append(kw)
+        return await real_start(**kw)
+
+    async def resume(run_id, **kw):
+        calls.resumes.append((run_id, kw))
+        return await real_resume(run_id, **kw)
+
+    async def skip(**kw):
+        calls.skips.append(kw)
+        return await real_skip(**kw)
+
+    async def execute(*a, **kw):
+        calls.executed.append(no_person_present())
+        return await real_execute(*a, **kw)
+
+    async def tool(*a, **kw):
+        calls.tools.append(a)
+        return await real_tool(*a, **kw)
+
+    async def notify(*a, **kw):
+        calls.tools.append(a)
+        return await real_notify(*a, **kw)
+
+    monkeypatch.setattr(scheduler, "start_run", start)
+    monkeypatch.setattr(scheduler, "resume_run", resume)
+    monkeypatch.setattr(scheduler, "record_skipped_run", skip)
+    monkeypatch.setattr(service, "execute_workflow", execute)
+    monkeypatch.setattr(service, "execute_tool", tool)
+    monkeypatch.setattr(service, "notify_owner_whatsapp", notify)
+    return calls
+
+
+def _reset_unattended(promoted, *due: str) -> None:
+    """Delete every run row of the section-9 workflows and re-arm the
+    triggers. A name in *due* has a schedule that is ten minutes late. The
+    other triggers are off, so they cannot fire."""
+    with promoted.admin_engine.begin() as c:
+        for name in _UNATTENDED_NAMES:
+            c.execute(text(
+                "DELETE FROM workflow_runs WHERE workflow_id = CAST(:w AS uuid)"),
+                {"w": promoted.wf[name]})
+            c.execute(text(
+                "UPDATE workflows SET status = 'published', disabled_reason = NULL, "
+                "disabled_at = NULL WHERE id = CAST(:w AS uuid)"), {"w": promoted.wf[name]})
+        for name in _TICKERS:
+            c.execute(text(
+                "UPDATE workflow_triggers SET enabled = :on, "
+                "last_fired_at = now() - make_interval(mins => 10) "
+                "WHERE workflow_id = CAST(:w AS uuid)"),
+                {"w": promoted.wf[name], "on": name in due})
+
+
+def _runs_of(promoted, name: str) -> list:
+    with promoted.admin_engine.connect() as c:
+        return list(c.execute(text(
+            "SELECT status, error, node_results, trigger_kind, started_by, "
+            "CAST(organization_id AS text) AS org FROM workflow_runs "
+            "WHERE workflow_id = CAST(:w AS uuid) ORDER BY started_at"),
+            {"w": promoted.wf[name]}).fetchall())
+
+
+def _all_unattended_runs(promoted) -> int:
+    return sum(len(_runs_of(promoted, n)) for n in _UNATTENDED_NAMES)
+
+
+def _fired_at(promoted, name: str):
+    with promoted.admin_engine.connect() as c:
+        return c.execute(text(
+            "SELECT last_fired_at FROM workflow_triggers "
+            "WHERE workflow_id = CAST(:w AS uuid)"), {"w": promoted.wf[name]}).scalar_one()
+
+
+def _park_wait(promoted, name: str, org: str) -> str:
+    """A scheduled run that stopped at a long wait, whose deadline has passed."""
+    run_id = _start_at_the_seam(promoted, name, org, trigger_kind="schedule")
+    assert _run_row(promoted, run_id).status == "paused"
+    with promoted.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE workflow_run_pauses SET snapshot = jsonb_set(snapshot, "
+            "'{resume_at}', to_jsonb(CAST(:t AS double precision))) "
+            "WHERE run_id = CAST(:r AS uuid)"), {"t": time.time() - 10, "r": run_id})
+    return run_id
+
+
+def _orphan(promoted, name: str, org: str) -> str:
+    with promoted.admin_engine.begin() as c:
+        return str(c.execute(text(
+            "INSERT INTO workflow_runs (workflow_id, workflow_name, version, "
+            "trigger_kind, status, started_by, organization_id) VALUES "
+            "(CAST(:w AS uuid), :n, 1, 'schedule', 'running', 'seed', CAST(:o AS uuid)) "
+            "RETURNING id"), {"w": promoted.wf[name], "n": name, "o": org}).scalar_one())
+
+
+def _status_of(promoted, run_id: str):
+    with promoted.admin_engine.connect() as c:
+        return c.execute(text(
+            "SELECT status, error, finished_at FROM workflow_runs "
+            "WHERE id = CAST(:r AS uuid)"), {"r": run_id}).fetchone()
+
+
+def _seed_failures(promoted, name: str, org: str, n: int = 5) -> None:
+    with promoted.admin_engine.begin() as c:
+        for i in range(n):
+            c.execute(text(
+                "INSERT INTO workflow_runs (workflow_id, workflow_name, version, "
+                "trigger_kind, status, error, started_by, started_at, organization_id) "
+                "VALUES (CAST(:w AS uuid), :n, 1, 'schedule', 'failed', 'boom', "
+                "'scheduler', now() - make_interval(mins => :i), CAST(:o AS uuid))"),
+                {"w": promoted.wf[name], "n": name, "i": i + 1, "o": org})
+
+
+def _workflow_status(promoted, name: str) -> str:
+    with promoted.admin_engine.connect() as c:
+        return c.execute(text(
+            "SELECT status FROM workflows WHERE id = CAST(:w AS uuid)"),
+            {"w": promoted.wf[name]}).scalar_one()
+
+
+# 9.1 The schedule scan
+
+
+def test_with_the_list_empty_the_schedule_scan_starts_and_writes_nothing(promoted, monkeypatch):
+    """Every org has a due schedule, and the list is empty. Nothing moves."""
+    _list_orgs(monkeypatch)
+    calls = _spy(monkeypatch)
+    _reset_unattended(promoted, "Tick in A", "Tick in B", "Tick A reaches B", "Gone in A")
+    before = {n: _fired_at(promoted, n) for n in _TICKERS}
+
+    assert _on_app_role(promoted, None, scheduler._scan_once) == 0
+
+    assert (calls.starts, calls.skips, calls.executed, calls.tools) == ([], [], [], [])
+    assert _all_unattended_runs(promoted) == 0
+    assert {n: _fired_at(promoted, n) for n in _TICKERS} == before  # no tick claimed
+
+
+@pytest.mark.parametrize("ambient", [None, "B"])
+def test_a_listed_org_runs_its_due_schedule_in_its_own_org(promoted, monkeypatch, ambient):
+    """Org A is listed. A's tick runs in A, marked as a run with no person.
+    B's tick does not run, and its claim stays. Org B bound in the context
+    must not choose the org."""
+    _list_orgs(monkeypatch, promoted.org_a)
+    calls = _spy(monkeypatch)
+    _reset_unattended(promoted, "Tick in A", "Tick in B")
+    b_before = _fired_at(promoted, "Tick in B")
+
+    ambient_org = promoted.org_b if ambient == "B" else None
+    assert _on_app_role(promoted, ambient_org, scheduler._scan_once) == 1
+
+    runs = _runs_of(promoted, "Tick in A")
+    assert len(runs) == 1
+    row = runs[0]
+    assert (row.status, row.error, row.org) == ("succeeded", None, promoted.org_a)
+    assert (row.trigger_kind, row.started_by) == ("schedule", "scheduler")
+    assert _step_result(row)["output"] == {"marker": "module-A"}
+
+    assert _runs_of(promoted, "Tick in B") == []
+    assert _fired_at(promoted, "Tick in B") == b_before
+    assert [str(k["organization_id"]).lower() for k in calls.starts] == [promoted.org_a]
+    # AUTO-7a: the run executed with the "no person present" mark set.
+    assert calls.executed == [True]
+
+
+def test_a_scheduled_run_never_reads_another_orgs_module(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a)
+    _reset_unattended(promoted, "Tick A reaches B")
+    assert _on_app_role(promoted, None, scheduler._scan_once) == 1
+    (row,) = _runs_of(promoted, "Tick A reaches B")
+    assert (row.status, row.org) == ("failed", promoted.org_a)
+    step = _step_result(row)
+    assert step["status"] == "error" and "module not found" in step["error"]
+    assert "module-B" not in json.dumps(step)
+
+
+def test_a_claimed_tick_with_a_missing_version_leaves_a_row_in_its_own_org(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a)
+    _reset_unattended(promoted, "Gone in A", "Gone in B")
+    assert _on_app_role(promoted, None, scheduler._scan_once) == 0
+
+    (row,) = _runs_of(promoted, "Gone in A")
+    assert (row.status, row.org) == ("cancelled", promoted.org_a)
+    assert "republish" in row.error
+    assert _runs_of(promoted, "Gone in B") == []
+
+
+# 9.2 The wait scan
+
+
+def test_with_the_list_empty_the_wait_scan_resumes_nothing(promoted, monkeypatch):
+    _list_orgs(monkeypatch)
+    _reset_unattended(promoted)
+    run_a = _park_wait(promoted, "Wait in A", promoted.org_a)
+    run_b = _park_wait(promoted, "Wait in B", promoted.org_b)
+    calls = _spy(monkeypatch)
+
+    assert _on_app_role(promoted, None, scheduler.scan_due_waits) == 0
+
+    assert (calls.resumes, calls.executed, calls.tools) == ([], [], [])
+    for run_id in (run_a, run_b):
+        assert _run_row(promoted, run_id).status == "paused"
+        assert _pause_statuses(promoted, run_id) == ["pending"]
+
+
+def test_a_listed_org_resumes_its_matured_wait_in_its_own_org(promoted, monkeypatch):
+    _list_orgs(monkeypatch, promoted.org_a)
+    _reset_unattended(promoted)
+    run_a = _park_wait(promoted, "Wait in A", promoted.org_a)
+    run_b = _park_wait(promoted, "Wait in B", promoted.org_b)
+    calls = _spy(monkeypatch)
+
+    assert _on_app_role(promoted, None, scheduler.scan_due_waits) == 1
+
+    row = _run_row(promoted, run_a)
+    assert (row.status, row.error, row.org) == ("succeeded", None, promoted.org_a)
+    assert _step_result(row)["output"] == {"marker": "module-A"}
+    assert _run_row(promoted, run_b).status == "paused"
+    assert _pause_statuses(promoted, run_b) == ["pending"]
+    assert [(r, str(k["organization_id"]).lower()) for r, k in calls.resumes] == [
+        (run_a, promoted.org_a)]
+    assert calls.executed == [True]  # AUTO-7a: the resumed run is marked too
+
+
+# 9.3 The sweeps
+
+
+def test_with_the_list_empty_the_startup_sweep_touches_no_run(promoted, monkeypatch):
+    _list_orgs(monkeypatch)
+    _reset_unattended(promoted)
+    orphans = [_orphan(promoted, "Tick in A", promoted.org_a),
+               _orphan(promoted, "Tick in B", promoted.org_b)]
+
+    assert _on_app_role(promoted, None, service.reconcile_orphaned_runs) == 0
+
+    assert [_status_of(promoted, r).status for r in orphans] == ["running", "running"]
+
+
+def test_the_startup_sweep_reconciles_only_listed_orgs(promoted, monkeypatch):
+    """The sweep marks an orphan ``failed`` and sends nothing and spends
+    nothing. It covers listed orgs only, because a ``failed`` unattended row
+    counts toward the auto-disable streak."""
+    _list_orgs(monkeypatch, promoted.org_a)
+    calls = _spy(monkeypatch)
+    _reset_unattended(promoted)
+    run_a = _orphan(promoted, "Tick in A", promoted.org_a)
+    run_b = _orphan(promoted, "Tick in B", promoted.org_b)
+
+    assert _on_app_role(promoted, None, service.reconcile_orphaned_runs) == 1
+
+    done = _status_of(promoted, run_a)
+    assert done.status == "failed" and done.finished_at is not None
+    assert "interrupted by a platform restart" in done.error
+    assert _status_of(promoted, run_b).status == "running"
+    assert (calls.executed, calls.tools, calls.starts) == ([], [], [])
+
+
+def test_a_skipped_run_row_needs_a_listed_org(promoted, monkeypatch):
+    _reset_unattended(promoted)
+
+    def skip(org: str):
+        async def body():
+            return await service.record_skipped_run(
+                workflow_id=promoted.wf["Tick in A"], workflow_name="Tick in A",
+                version=1, trigger_kind="schedule", trigger_payload={},
+                reason="tick skipped", organization_id=org)
+        return _on_app_role(promoted, None, body)
+
+    _list_orgs(monkeypatch)
+    assert skip(promoted.org_a) is None
+    assert _runs_of(promoted, "Tick in A") == []
+
+    _list_orgs(monkeypatch, promoted.org_a)
+    assert skip(promoted.org_b) is None
+    assert _runs_of(promoted, "Tick in A") == []
+    assert skip(promoted.org_a) is not None
+    (row,) = _runs_of(promoted, "Tick in A")
+    assert (row.status, row.org) == ("cancelled", promoted.org_a)
+
+
+def _health(promoted, name: str, org: str | None) -> bool:
+    async def body():
+        return await service.evaluate_automation_health(
+            promoted.wf[name], name, trigger_kind="schedule", status="failed",
+            organization_id=org)
+    return _on_app_role(promoted, None, body)
+
+
+def test_the_health_policy_counts_only_a_listed_org(promoted, monkeypatch):
+    _reset_unattended(promoted)
+    _seed_failures(promoted, "Health in A", promoted.org_a)
+    _seed_failures(promoted, "Health in B", promoted.org_b)
+
+    _list_orgs(monkeypatch)
+    assert _health(promoted, "Health in A", promoted.org_a) is False
+    assert _workflow_status(promoted, "Health in A") == "published"
+
+    _list_orgs(monkeypatch, promoted.org_a)
+    assert _health(promoted, "Health in B", promoted.org_b) is False
+    assert _workflow_status(promoted, "Health in B") == "published"
+    # A run with no org keeps the old unbound read, and RLS gives it no row.
+    assert _health(promoted, "Health in A", None) is False
+    assert _workflow_status(promoted, "Health in A") == "published"
+
+    assert _health(promoted, "Health in A", promoted.org_a) is True
+    assert _workflow_status(promoted, "Health in A") == "disabled"
+    assert _workflow_status(promoted, "Health in B") == "published"
+
+
+# 9.4 The approver reads a refusal
+
+
+def test_the_approver_reads_the_refusal_through_the_broker(promoted, monkeypatch):
+    """``broker.execute`` wrapped a refusal of the handler as ``ok: True``. The
+    approver then saw a success while the run stayed cancelled."""
+    import action_broker.broker as broker
+    from action_broker.broker import AuthorityTier
+    from gateway.routes.workflows.broker_handlers import _resume_run_handler
+
+    monkeypatch.setitem(broker._HANDLERS, "workflow.resume_run", _resume_run_handler)
+    monkeypatch.setattr(broker, "record", lambda *_a, **_k: None)
+    run_id = _pause_at_the_gate(promoted, "Gated task in C")
+    target = promoted.work_c["task"]
+    before = _task_row(promoted, target), _activities(promoted, target)
+    proposal = broker.propose(
+        actor="workflow:Gated task in C", action="workflow.resume_run",
+        target=f"workflow_run:{run_id}", payload={"run_id": run_id},
+        authority=AuthorityTier.SUGGEST, destructive=False)
+
+    async def body():
+        return await broker.execute(proposal)
+
+    res = _on_app_role(promoted, promoted.org_c, body)
+    assert res["ok"] is False and "Projects tasks" in res["error"], res
+    assert (_task_row(promoted, target), _activities(promoted, target)) == before
+    assert _run_row(promoted, run_id).status == "cancelled"
 
 
 # ── 8. CI must run this suite ────────────────────────────────────────────────

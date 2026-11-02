@@ -567,6 +567,14 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_kb_flags.py.
     knowledge_sync: str = ""
 
+    # H-328 part (b): the orgs whose UNATTENDED workflow runs may start. A
+    # schedule tick, a matured wait and the startup sweep act only for an org
+    # in this comma list. Empty, the default, means no org, and there is no
+    # `*`. The one reader is `gateway.routes.workflows.unattended`. A run can
+    # send mail or WhatsApp and spend credits, so a flip is the owner's. Fence:
+    # tests/unit/test_workflows_unattended_flag.py.
+    workflow_unattended_orgs: str = ""
+
     reach_enabled: bool = False
     reach_orgs: str = ""
     reach_members: str = ""

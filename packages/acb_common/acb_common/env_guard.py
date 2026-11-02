@@ -174,6 +174,11 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
     # not cover it.
     "ASSISTANT_CHAT_SUMMARY_ORGS",
+    # H-328 part (b): the orgs whose unattended workflow runs may start. A run
+    # can send mail or WhatsApp and spend credits with no person present, so
+    # only the operator writes it. The `WORKFLOW_` prefix covers it too, and
+    # the exact name keeps the fence if that prefix ever narrows.
+    "WORKFLOW_UNATTENDED_ORGS",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).
