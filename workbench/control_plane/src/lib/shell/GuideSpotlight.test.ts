@@ -166,11 +166,34 @@ describe("rule 2b: the ring stays inside the window", () => {
   });
 });
 
+function fakeScroller(seen: { top: number; behavior?: string }[]) {
+  // A port from y=100 to y=500, scrolled to 0. A target at 600 to 640 sits below it.
+  return {
+    scrollTop: 0,
+    scrollHeight: 2000,
+    clientTop: 0,
+    clientHeight: 400,
+    getBoundingClientRect: () => ({ top: 100 }),
+    scrollTo: (o: { top: number; behavior?: ScrollBehavior }) => void seen.push({ top: o.top, behavior: o.behavior }),
+  };
+}
+const BELOW = { getBoundingClientRect: () => ({ top: 600, bottom: 640 }) };
+
 describe("rule 3: scroll into view", () => {
-  it("scrolls with block nearest", () => {
-    const seen: unknown[] = [];
-    scrollAnchorIntoView({ scrollIntoView: (o?: unknown) => void seen.push(o) } as HTMLElement, false);
-    expect(seen).toEqual([{ block: "nearest", behavior: "smooth" }]);
+  it("scrolls ONE scroller by the least distance, as block nearest does", () => {
+    const seen: { top: number; behavior?: string }[] = [];
+    scrollAnchorIntoView(BELOW, false, fakeScroller(seen));
+    // The target's bottom (640) meets the port's bottom (500): 140 down.
+    expect(seen).toEqual([{ top: 140, behavior: "smooth" }]);
+  });
+
+  it("moves nothing when no box above the anchor scrolls", () => {
+    expect(() => scrollAnchorIntoView(BELOW, false, null)).not.toThrow();
+  });
+
+  it("never calls scrollIntoView, which moves the app shell too (scrollWithin.test.ts)", () => {
+    expect(CODE).not.toMatch(/\.scrollIntoView\s*\(/);
+    expect(CODE).toMatch(/!p\.hasAttribute\("data-app-shell"\)/);
   });
 });
 
@@ -293,11 +316,8 @@ describe("rule 8: reduced motion", () => {
   });
 
   it("scrolls with auto under reduced motion", () => {
-    const seen: { behavior?: string }[] = [];
-    scrollAnchorIntoView(
-      { scrollIntoView: (o?: unknown) => void seen.push(o as { behavior?: string }) } as HTMLElement,
-      true,
-    );
+    const seen: { top: number; behavior?: string }[] = [];
+    scrollAnchorIntoView(BELOW, true, fakeScroller(seen));
     expect(seen[0].behavior).toBe("auto");
   });
 });

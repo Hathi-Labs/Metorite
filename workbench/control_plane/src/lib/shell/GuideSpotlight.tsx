@@ -33,6 +33,7 @@ import { createPortal } from "react-dom";
 
 import { PANEL_LAYERS, PANEL_SURFACES } from "@/components/ui/AnchoredPanel";
 import Button from "@/components/ui/Button";
+import { revealWithin, type ScrollBox, type Span } from "@/lib/scrollWithin";
 
 import { nextLabel } from "./guide";
 import { WATCHED_ATTRIBUTES, isShown } from "./guideAnchor";
@@ -185,9 +186,31 @@ export function scrollBehaviorFor(reduced: boolean): ScrollBehavior {
   return reduced ? "auto" : "smooth";
 }
 
-/** Scroll the anchor into view with the least movement. */
-export function scrollAnchorIntoView(el: Pick<HTMLElement, "scrollIntoView">, reduced: boolean): void {
-  el.scrollIntoView({ block: "nearest", behavior: scrollBehaviorFor(reduced) });
+/**
+ * The nearest box above the anchor that scrolls, inside the app shell. It never
+ * returns the shell or a box above it, so no ancestor of the shell moves
+ * (`src/lib/scrollWithin.ts`, fence `scrollWithin.test.ts`). Null when none
+ * scrolls, for example an anchor in the sidebar.
+ */
+export function scrollerOf(el: Element): HTMLElement | null {
+  for (let p = el.parentElement; p && !p.hasAttribute("data-app-shell"); p = p.parentElement) {
+    const overflow = getComputedStyle(p).overflowY;
+    if ((overflow === "auto" || overflow === "scroll") && p.scrollHeight > p.clientHeight) return p;
+  }
+  return null;
+}
+
+/**
+ * Show the anchor with the least movement of ONE scroller, the rule of
+ * `block: "nearest"`. `Element.scrollIntoView` would also move the boxes above
+ * it, the app shell too (owner report, 2026-10-10).
+ */
+export function scrollAnchorIntoView(
+  el: { getBoundingClientRect(): Span },
+  reduced: boolean,
+  scroller: ScrollBox | null | undefined,
+): void {
+  revealWithin(scroller, el, scrollBehaviorFor(reduced));
 }
 
 // ------------------------------------------------------------------- keys ---
@@ -410,7 +433,7 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
       observe: observeDom,
       schedule: domScheduler,
       onFound: (found) => {
-        scrollAnchorIntoView(found, isReduced);
+        scrollAnchorIntoView(found, isReduced, scrollerOf(found));
         setEl(found);
       },
       onMissing: (id) => latest.current.onMissing?.(id),
