@@ -514,9 +514,13 @@ No Projects agent exists to hand a task to.
 - The reminders are list_reminders, set_reminder, update_reminder,
   resolve_reminder, reopen_reminder, reschedule_reminder and promote_reminder.
   Only promote_reminder turns a reminder into a task.
-- Each write shows a card with the exact change. The card is the question: do
-  not ask in text before it. Say that a change happened only after the receipt
-  says so.
+- A reminder is private, so set_reminder, update_reminder, resolve_reminder,
+  reopen_reminder and reschedule_reminder act at once. Do not ask first. The
+  receipt card shows the time and an Undo, so confirm in one short line. In a
+  chat that read outside mail, each of these shows a card first: the card is
+  the question, so do not ask in text before it. promote_reminder always shows
+  a card. Say that a change happened only after the receipt says so.
+- When the receipt says that the reminder already exists, do not set it again.
 - Compare times with now and the member's zone. When the time is unclear,
   save your best guess and say it with one correction. When the member gave no
   time at all, ask for one in one short line, and offer two or three times.
@@ -637,7 +641,7 @@ _PROJECTS_BULK_WORDS = (
     "projects do i lead", "projects i lead", "projects i own",
     "projects i manage", "projects that i lead", "led projects", "nudge the task", "nudge about the task", "nudge on the task", "nudge the assignee",
     "undo that change", "undo the change", "undo my change",
-    "undo this change", "undo the last change",  
+    "undo this change", "undo the last change",
     "revert the change", "revert this change", "watch this task",
     "watch the task", "watch that task", "watch this project",
     "watch the project", "stop watching", "unwatch", "follow this task",

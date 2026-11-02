@@ -18,6 +18,7 @@ import {
   calendarLinkFromSearch,
   parseLinkClock,
   parseLinkDate,
+  REMINDER_PARAM,
   scrollTopFor,
 } from "./calendarLink";
 
@@ -99,6 +100,54 @@ describe("calendarLinkFromSearch", () => {
   });
 });
 
+describe("the reminder link (WS-66 RX-2)", () => {
+  const RID = "e1f8fad5-d9cb-469f-a165-70867728950e";
+
+  it("reads /calendar?reminder=<id> as a link that names a reminder and no day", () => {
+    const link = calendarLinkFromSearch(q(`${REMINDER_PARAM}=${RID}`))!;
+    expect(link.reminder).toBe(RID);
+    expect(link.date).toBeNull();
+    expect(link.at).toBeNull();
+    expect(calendarLinkFromSearch(q(`reminder=${RID.toUpperCase()}`))!.reminder).toBe(RID);
+  });
+
+  it("keeps the day and the time when the link has them too", () => {
+    const link = calendarLinkFromSearch(q(`date=2026-10-14&at=14:00&reminder=${RID}`))!;
+    expect(link.reminder).toBe(RID);
+    expect(link.date?.getDate()).toBe(14);
+    expect(link.at).toEqual({ hour: 14, minute: 0 });
+  });
+
+  it("refuses an id that is not a UUID, so the page does what a bare /calendar does", () => {
+    for (const bad of ["", "abc", "../x", `${RID}x`, "javascript:alert(1)"]) {
+      expect(calendarLinkFromSearch(q(`reminder=${encodeURIComponent(bad)}`)), bad).toBeNull();
+    }
+    expect(calendarLinkFromSearch(q(`date=2026-10-14&reminder=nope`))!.reminder).toBeNull();
+  });
+
+  it("the page marks the row, opens the sheet on a phone, and says so for a reminder that is not open", () => {
+    const view = readFileSync(new URL("../CalendarView.tsx", import.meta.url), "utf-8").replace(/\r\n/g, "\n");
+    expect(view).toMatch(/setMarkReminder\(link\.reminder\)/);
+    expect(view).toContain("marked={markReminder}");
+    expect(view).toContain("if (isMobile) setRemSheet(true);");
+    expect(view).toContain("That reminder is closed, or it is not yours.");
+  });
+});
+
+describe("the New reminder job (WS-66 RX-6)", () => {
+  const view = readFileSync(new URL("../CalendarView.tsx", import.meta.url), "utf-8").replace(/\r\n/g, "\n");
+
+  it("?do=new-reminder opens the form through the one job door, and saves nothing", () => {
+    expect(view).toContain('<ShellJob');
+    expect(view).toContain('id="new-reminder"');
+    expect(view).toContain("ready={remShown}");
+    // The opener only opens the form: it calls no create.
+    const open = view.slice(view.indexOf('id="new-reminder"'));
+    expect(open.slice(0, open.indexOf("/>")).includes("createReminder")).toBe(false);
+    expect(open).toContain('setRemForm({ mode: "new"');
+  });
+});
+
 describe("scrollTopFor", () => {
   it("lands one hour above the time, as the page lands above the current hour", () => {
     expect(scrollTopFor({ hour: 14, minute: 0 }, 46)).toBe(13 * 46);
@@ -149,7 +198,8 @@ describe("the page reads the link", () => {
     expect(view).toMatch(/onClick=\{\(\) => pickAnchor\(startOfDay\(new Date\(\)\)\)\}/);
     expect(view).toMatch(/const step = \(dir: 1 \| -1\) =>\s*pickAnchor\(/);
     expect(view).toMatch(/pickAnchor\(d\);\s*setMode\("day"\)/);
-    expect(view.match(/setAnchor\(/g)).toHaveLength(2); // the link, and pickAnchor
+    // The link, pickAnchor, and the day of a linked reminder (RX-2).
+    expect(view.match(/setAnchor\(/g)).toHaveLength(3);
     expect(view.match(/setMode\(/g)).toHaveLength(3); // the link, pickMode, the month pick
   });
 });

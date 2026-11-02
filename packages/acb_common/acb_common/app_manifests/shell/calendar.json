@@ -22,6 +22,26 @@
         "href": "/calendar",
         "meaning": "plan, schedule or look at their day, their calendar or their agenda",
         "feature": "tasks"
+      },
+      {
+        "id": "set-reminder",
+        "label": "New reminder",
+        "position": 35,
+        "words": [
+          "remind",
+          "reminder",
+          "nudge"
+        ],
+        "icon": "BellPlus",
+        "app": "/calendar",
+        "href": "/calendar?do=new-reminder",
+        "meaning": "set a reminder for themselves at a time. A reminder is a moment, not a task: it asks the member at that time",
+        "fields": {
+          "title": "what to remind them of, in their own words, without 'remind me to'"
+        },
+        "feature": "projects",
+        "bar_feature": "projects",
+        "note": "RX-6 (2026-11-02): the capture job stopped taking 'remind'. This job opens the New reminder form on /calendar. It saves nothing when it opens. The job needs feature:projects, because the reminder routes answer 403 to a member who holds feature:tasks only. So the pane alone does not gate it, and bar_feature keeps the bar from offering it to that member."
       }
     ],
     "nav": [
