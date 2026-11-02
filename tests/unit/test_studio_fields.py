@@ -423,7 +423,8 @@ _TABLE_SQL = re.compile(
 
 def test_one_writer_of_the_four_tables() -> None:
     """Only `gateway/studio/objects_store.py` runs SQL against the four tables.
-    C2 adds its query module to this list in its own slice."""
+    The query of C2a lives there too, and `acb_common/studio_query.py` holds
+    its grammar with no SQL. So the list stays one module."""
     hits = sorted({p.relative_to(_ROOT).as_posix() for p in _python_files()
                    if _TABLE_SQL.search(p.read_text(encoding="utf-8", errors="replace"))})
     assert hits == ["apps/services/gateway/gateway/studio/objects_store.py"], hits
@@ -435,7 +436,8 @@ def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
     workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
     block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
     assert block, "the --must-run argument list is missing"
-    assert re.search(r"^[ \t]+tests/unit/test_studio_objects_r8\.py(?: \\)?$", block.group(1), re.M)
+    for suite in ("test_studio_objects_r8", "test_studio_query_r8"):
+        assert re.search(rf"^[ \t]+tests/unit/{suite}\.py(?: \\)?$", block.group(1), re.M), suite
 
 
 def test_the_store_imports_the_one_check() -> None:
