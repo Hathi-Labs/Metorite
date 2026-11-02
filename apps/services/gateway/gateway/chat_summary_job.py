@@ -76,6 +76,7 @@ from gateway.assistant_summaries import (
     IDLE,
     KIND,
     TYPED_ROWS_MIN,
+    WORDS_MAX,
     JobChat,
     check_answer,
     mark,
@@ -307,7 +308,7 @@ async def _store(org: str, claim: queue.Claim, sid: str, through: str, chat: Job
                  raw: Any, now: datetime) -> None:
     """Steps 9 and 10: check the answer, check the room again, and write the
     summary with the mark in the WHERE."""
-    answer = check_answer(raw, member_words(chat.rows, chat.member))
+    answer = check_answer(raw, member_words(chat.rows, chat.member, limit=WORDS_MAX))
     if answer is None:
         await _skip(org, claim, "nothing_kept", now)
         return

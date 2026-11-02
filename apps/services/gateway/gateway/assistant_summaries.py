@@ -134,6 +134,12 @@ FOLLOW_UP_MAX = 120
 INPUT_MAX = 12_000
 #: The longest row id that a mark or a summary may name.
 THROUGH_MAX = 200
+#: The most characters of typed words that :func:`check_answer` grounds a
+#: line against in the job. The check is pure Python on the event loop of the
+#: shared worker, and its time grows with the words: about 0.4 s for 20,000
+#: characters and 12 s for 520,000, measured on 2026-11-02. A thread shares the
+#: GIL with the loop, so it would not bound the work. This cap does.
+WORDS_MAX = 24_000
 
 #: The id of the brief row of a day, as ``routes/chat_brief.brief_message_id``
 #: makes it. ``tests/unit/test_chat_summary.py`` holds the two together.
@@ -215,10 +221,25 @@ def member_texts(rows: Iterable[Any], member: Any) -> list[str]:
     return out
 
 
-def member_words(rows: Iterable[Any], member: Any) -> str:
+def member_words(rows: Iterable[Any], member: Any, *, limit: int | None = None) -> str:
     """The typed words of *member* in the chat. :func:`check_answer` grounds
-    a line against them. ``""`` grounds nothing."""
-    return _ROW_BREAK.join(member_texts(rows, member))
+    a line against them. ``""`` grounds nothing.
+
+    With *limit*, the newest whole rows that fit in *limit* characters, and
+    no part of a row: a cut row could hold the first digits of a number as a
+    run that the member never typed. A typed row is shorter than
+    :data:`WORDS_MAX`, so the newest row always fits."""
+    texts = member_texts(rows, member)
+    if limit is not None:
+        kept: list[str] = []
+        room = max(0, int(limit))
+        for words in reversed(texts):
+            if len(words) > room:
+                break
+            kept.append(words)
+            room -= len(words) + len(_ROW_BREAK)
+        texts = kept[::-1]
+    return _ROW_BREAK.join(texts)
 
 
 def prompt_rows(rows: Iterable[Any], member: Any, *,

@@ -595,6 +595,29 @@ def test_pz33b_the_boundary_a_real_letter_splits_a_number(text: str) -> None:
     assert summaries.check_answer(_answer(text), words) is None
 
 
+# ── PZ-33b: the bound on the words of the check (round 3, F12) ─────────────
+
+
+def test_pz33b_the_words_of_the_check_keep_the_newest_whole_rows() -> None:
+    rows = [_row(f"m{i}", "user", f"{i:03d} " + "x" * 996, author_email=MEMBER)
+            for i in range(60)]
+    words = summaries.member_words(rows, MEMBER, limit=summaries.WORDS_MAX)
+    assert len(words) <= summaries.WORDS_MAX
+    parts = words.split(summaries._ROW_BREAK)
+    assert parts[-1].startswith("059"), "the newest row must go in"
+    assert all(len(p) == 1000 for p in parts), "no row is cut"
+    assert summaries.member_words(rows, MEMBER) == summaries._ROW_BREAK.join(
+        summaries.member_texts(rows, MEMBER)), "no limit, every row"
+    one = [_row("m1", "user", "y" * 1500, author_email=MEMBER)]
+    assert summaries.member_words(one, MEMBER, limit=summaries.WORDS_MAX) == "y" * 1500
+
+
+def test_pz33b_the_job_grounds_on_the_capped_words() -> None:
+    source = (ROOT / "apps/services/gateway/gateway/chat_summary_job.py").read_text(
+        encoding="utf-8")
+    assert "member_words(chat.rows, chat.member, limit=WORDS_MAX)" in source
+
+
 # ── PZ-33b: the bound on the shared worker ─────────────────────────────────
 
 
