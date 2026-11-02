@@ -477,8 +477,10 @@ async def _chat_marked(ctx: Any, organization_id: str | None = None) -> bool:
         return False
     if (ctx or {}).get(CHAT_MARK_KEY) is True:
         return True
-    token = bind_tenant(organization_id) if organization_id and not current_tenant() else None
+    token = None
     try:
+        if organization_id and not current_tenant():
+            token = bind_tenant(organization_id)
         return await session_mark_state(ctx, fail_closed=True) != MARK_CLEAR
     except Exception:  # fail closed: an unreadable mark reads as marked
         return True
