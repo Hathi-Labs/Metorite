@@ -198,7 +198,7 @@ the one D12 names, and no second grammar exists here (R7, fence in §15).
 - **Versions with bytes** stay out of the first release. `agent_file_history`
   keeps the metadata. §13 Q6 asks whether to keep the last five bodies.
 - ~~**Folders** are not built. Labels and filters do the work. A member who
-  wants a folder makes a project.~~ **Changed by D150, 2026-11-02.** Folders
+  wants a folder makes a project.~~ **Changed by D162, 2026-11-02.** Folders
   are two small tables, `artifact_folder` and `artifact_folder_item`,
   tenant-scoped under R5. §6.0 holds the rule.
 - **Comments** on an artifact are not built. A comment goes on the task the
@@ -299,7 +299,7 @@ The design system binds: one look, `AppTopBar`, headless primitives from
 `src/components/ui/`, status colour from `src/lib/statusAccent.ts`, and the
 `--cat-1…12` ramp for the kind chips. Nothing here draws its own palette.
 
-### 6.0 One system, reached from the chat (D150)
+### 6.0 One system, reached from the chat (D162)
 
 The owner asked for one system that is accessible from the chat window, and
 not a separate Artifacts app (2026-11-02). This section wins where §6.1 to
@@ -580,7 +580,7 @@ reads nothing (R8, two-org fixture). The card's event carries the `id`.
 
 ### AM-2 · The library — AGENT-SAFE
 
-The Files library reads the registry (§6.0, D150). It gets the rail, the
+The Files library reads the registry (§6.0, D162). It gets the rail, the
 folders, the filters, server
 search, star, rename, trash and restore. It gets the artifact page with the
 provenance strip, the CSV table view and the read-only storage meter. The
@@ -713,7 +713,7 @@ others gate the slice they name.
 | Q4 | Deleting a chat | Trash its scratch artifacts, keep the kept ones | AM-5 |
 | Q5 | Links for people outside the organization | Not in this release. Later as an org switch, off by default, signed URL with expiry | AM-3 external half |
 | Q6 | Keep the bodies of old versions | Last five, text kinds under 1 MB, text only | AM-9 |
-| Q7 | Folders, and where the library lives | **Decided: D150, 2026-11-02.** One library, reached from the chat, with flat private folders | AM-2 |
+| Q7 | Folders, and where the library lives | **Decided: D162, 2026-11-02.** One library, reached from the chat, with flat private folders | AM-2 |
 
 ---
 

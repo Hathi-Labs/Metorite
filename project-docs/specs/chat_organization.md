@@ -1,9 +1,9 @@
 # Chat organization — topics, picking up a chat, and one search
 
-> **Status:** ACTIVE (D151, 2026-11-02). Nothing is built. Verified against
+> **Status:** ACTIVE (D163, 2026-11-02). Nothing is built. Verified against
 > code on 2026-11-02 at `origin/main` `ce29836ea`.
 > **Board:** WS-CO. **Owner of the file half:** `artifact_management.md` §6.0
-> (D150). This spec owns topics, the join, and the full-screen chat.
+> (D162). This spec owns topics, the join, and the full-screen chat.
 > **Extends:** `personalization.md` §15 (PZ-33, D142), `navigation_shell.md`
 > §7.1 and `knowledge_base.md` §13 (KB-9a). It replaces none of them.
 
@@ -59,7 +59,7 @@ search, and three company features (§8).
 | Knowledge gaps: different askers, masked text, no model | `gateway/routes/knowledge/gaps.py`, `kb_gaps` (293) | §8.3 shows it |
 | Teams | `src/lib/centers.ts` | Seeds the company list |
 
-## 4. The decisions (D151)
+## 4. The decisions (D163)
 
 `work_plan.md` §3 records these. The owner accepted the agent's proposal.
 
