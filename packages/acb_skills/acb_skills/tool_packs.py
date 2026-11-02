@@ -542,8 +542,8 @@ No Projects agent exists to hand a task to.
   task. The tool plans every move before the card. Read the receipt, and never
   move a task again that it lists as moved.
 - Three or more related changes with different values are ONE call: update_tasks,
-  with one row for each task. One change to one task is update_task. Two changes
-  are two update_task calls in the same step. One value across many tasks is
+  with one row for each task. One or two changes use the single-task edit of the
+  core pack, two calls in the same step. One value across many tasks is
   bulk_update.
 - bulk_update makes one change across up to 50 named tasks. Its action is
   archive or unarchive, never delete. merge_tasks merges tasks of one project.

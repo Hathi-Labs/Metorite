@@ -3326,7 +3326,7 @@ def _hint_value(key: str, value: Any) -> str:
     if isinstance(value, (list, tuple)):
         return ", ".join(str(v) for v in value) or "none"
     if key in ("due_at", "start_date") and isinstance(value, str) and _ISO_DAY.match(value):
-        day = date.fromisoformat(value[:10])
+        day = date.fromisoformat(value.split("T", 1)[0])
         return f"{day.day} {day:%b} {day.year}"
     if key == "estimate_mins" and isinstance(value, int) and not isinstance(value, bool):
         hours, mins = divmod(value, 60)
