@@ -13,7 +13,7 @@ tools say ``False``, by what each tool does:
 * (B) sends, or opens an outbound path. It stays withheld.
 * (C) writes a store that a later run reads. It stays withheld.
 
-RX-1 (D162, owner directive of 2026-11-01) moves two rows. A write that the
+RX-1 (D168, owner directive of 2026-11-01) moves two rows. A write that the
 member approves on a server-built card stays, so the four CRM record writes
 leave the withheld set of the CRM assistant. A class C Projects tool leaves a
 held chat, so those tools join the withheld set of the Projects assistant. A
@@ -82,13 +82,13 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         "apply_settings_to_mailboxes",
     }),
     "crm-assistant": frozenset({
-        # RX-1 (D162): the four record writes stay, each behind its own card.
+        # RX-1 (D168): the four record writes stay, each behind its own card.
         "web_search", "fetch_page", "run_workflow",
         "save_memory", "save_note",
     }),
     "projects-assistant": frozenset({
         "web_search", "fetch_page", "save_memory", "save_note",
-        # RX-1 (D162): class C is off in a held chat. Each is hard to undo,
+        # RX-1 (D168): class C is off in a held chat. Each is hard to undo,
         # acts on many rows, tells another person or changes who gets a report.
         "add_report_recipient", "archive_project", "archive_task", "attach_to_task",
         "bulk_update", "convert_folder_to_project", "delete_area", "delete_attachment",

@@ -631,7 +631,7 @@ mark. An e2e with a stubbed brief.
    without it. A reversible act on the member's own work, such as mark done
    or snooze, writes at once. An Undo toast follows (D-CF-5 as decided,
    2026-10-22). The Undo uses the task store's existing undo seam
-   (`UndoToast`), never a second one. D162: an act that writes at once reads
+   (`UndoToast`), never a second one. D168: an act that writes at once reads
    `egress.write_must_show_card` first. A held chat shows the card.
 3. "Open" calls `show_in_app`.
 4. An unknown `kind` draws `GenUIFallback`.

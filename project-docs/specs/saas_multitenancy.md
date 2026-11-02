@@ -2161,9 +2161,13 @@ constructed without one **refuses to run** rather than defaulting.
 > and each sweeps exactly its own. Proven two-org against a real Postgres by
 > `tests/live/live_ws27aa.py`.
 >
-> **`_pm_task_updater` beside it is still open** — it patches ONE task by id on
-> the unbound seam, so it wants the task's own organization threaded from the
-> node config, not a loop. It belongs to WS-29's H4 slice, not to Projects.
+> **H-328 part (a) closed `_pm_task_updater` beside it for a run with an org
+> (2026-11-02).** It patches ONE task by id through `_run_session(org)`, with the
+> org of the run. A run with no org keeps the unbound seam until parts (b) and
+> (c). No live door reaches this write yet: `run_published_workflow` refuses a
+> task node, because a run does not check which tasks a member can see. It
+> belongs to WS-29's H4 slice, not to Projects. Fence:
+> `tests/unit/test_workflows_lifecycle_rls_r8.py`.
 
 #### MT-1e · Redis: prefixes enforced by the client · ◐ **WRAPPER BUILT, ONE CALL SITE CONVERTED (EM-T2b, BUILT, not merged)**
 

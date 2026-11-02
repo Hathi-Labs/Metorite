@@ -23,7 +23,7 @@ What breaks it (R7), each run red by hand on this branch:
 * put "You cannot add a CC or a BCC." back in ``compose_reply``;
 * put "or ask again in a new chat" back in ``EGRESS_HOLD_NOTE_PACK_OTHER``.
 
-RX-1 (D162, owner report of 2026-11-01). The same fence binds the two texts of
+RX-1 (D168, owner report of 2026-11-01). The same fence binds the two texts of
 a held pack of Projects or the CRM. A held chat keeps those writes behind their
 cards, so no text may send the member to a new chat or to the app.
 """

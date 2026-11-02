@@ -920,6 +920,10 @@ DEBT: dict[str, str] = {
     "DELETE /api/auth/me/assistant-profile": "P-8",
     "DELETE /api/auth/me/assistant-profile/interview": "P-8",
     "DELETE /api/auth/me/assistant-profile/interview/{}": "P-8",
+    # PZ-35: the chat summaries. A chat write to them is a 422 today, as for
+    # the interview reset above.
+    "DELETE /api/auth/me/assistant-profile/summaries": "P-8",
+    "DELETE /api/auth/me/assistant-profile/summaries/{}": "P-8",
     "DELETE /api/settings/branding": "P-8",
     "GET /api/auth/me": "P-8",
     "GET /api/auth/me/agent-access": "P-8",
@@ -927,6 +931,7 @@ DEBT: dict[str, str] = {
     "GET /api/auth/me/assistant-profile/address": "P-8",
     "GET /api/auth/me/assistant-profile/block": "P-8",
     "GET /api/auth/me/assistant-profile/export": "P-8",
+    "GET /api/auth/me/assistant-profile/summaries": "P-8",
     "GET /api/auth/me/shell": "P-8",
     "GET /api/settings/appearance": "P-8",
     "GET /api/settings/branding": "P-8",
@@ -1015,7 +1020,7 @@ DEBT_CEILING: dict[str, int] = {
     "agents": 20,
     "chat": 25,
     "shell": 15,
-    "settings": 21,
+    "settings": 24,  # PZ-35 added the three chat summary actions.
     "admin": 36,
     "integrations": 19,
 }

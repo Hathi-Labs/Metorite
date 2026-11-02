@@ -442,7 +442,7 @@ def _covered_chain(
     """True when a covered run is the run that starts now or a run above it.
 
     Each run boundary binds the answer as ``egress.COVERED_CHAIN_KEY``, beside
-    ``no_egress`` (RX-1, D162). The parent's key passes down, so a grandchild of
+    ``no_egress`` (RX-1, D168). The parent's key passes down, so a grandchild of
     a covered run keeps the answer. The cover of the parent is asked again, as
     in :func:`_delegated_no_egress`, and that can only add the key. The values
     come from the server-bound run, never from a request.
@@ -524,7 +524,7 @@ def _is_egress(tool: Any) -> bool:
 
 def _is_held_off(tool: Any, owner: str | None = None) -> bool:
     """True for a Projects or CRM write that a held chat does not hold (RX-1,
-    D162): the rule ``acb_skills.egress.is_held_off_write``. *owner* names the
+    D168): the rule ``acb_skills.egress.is_held_off_write``. *owner* names the
     agent of the run, so its own tools count too."""
     try:
         from acb_skills.egress import is_held_off_write
@@ -2516,8 +2516,10 @@ def _inject_agent_tools(
     # ── Published workflows as tools (workflows_app.md F13) ────────────────
     # Same stance as app tools: org-internal governed automations, always
     # offered (list/run/status trio, not one tool per workflow), gated
-    # through the same _gate_injected_tool pipeline below. Any write inside
-    # a workflow is already broker-gated / approval-noded.
+    # through the same _gate_injected_tool pipeline below. A `tool` node that
+    # writes outward is broker-gated and approval-noded. A `pm_task` or
+    # `pm_lifecycle` node has no such gate, so `run_workflow` refuses a
+    # workflow that holds one (`service._member_blind_write_nodes`).
     #
     # The trio is appended AFTER scope filtering, so the S2 skill toggle is
     # honored HERE: an explicit admin disable of the 'workflows' family
@@ -3020,7 +3022,7 @@ def _apply_no_egress(
 
 
 def _apply_chat_hold(agents: list[Any], agent_name: str | None) -> None:
-    """D162 on a run that binds ``no_egress=False`` (RX-1).
+    """D168 on a run that binds ``no_egress=False`` (RX-1).
 
     A top-level run of an owner of ``egress.HELD_WRITE_OWNERS`` holds its own
     class C tools, and H-236 does not reach it, because the mark lives on the
@@ -3057,7 +3059,7 @@ def _apply_chat_hold(agents: list[Any], agent_name: str | None) -> None:
 # 2. The scope of the owner, per call (``tool_packs.owner_scope``), as the
 #    OUTERMOST wrapper, with the permission gate inside it.
 # 3. The held set, at load: a held pack drops each tool that :func:`_is_egress`
-#    or :func:`_is_held_off` names (RX-1, D162). ⚠️ This drop is the ONLY
+#    or :func:`_is_held_off` names (RX-1, D168). ⚠️ This drop is the ONLY
 #    held-set control of a pack run. A pack run gets no
 #    ``EgressGuardProvider``, so no ``WithholdEgressTools`` and no
 #    ``RefuseEgressTools`` stand behind it (audit of 2026-10-26, §4.5).

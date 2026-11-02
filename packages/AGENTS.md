@@ -58,7 +58,7 @@ Shared settings, logging, the activity and cost feed, and utilities.
 Each module below holds ONE rule. Do not copy its rule into a caller.
 - `today.py`: today's date of a chat run. Fence: `tests/unit/test_crm_answer_consistency.py`.
 - `priority.py`: the server-side priority matrix (D78). The gateway and the chat skills import it. Fences: `tests/unit/test_chat_priority_levels.py`, `tests/unit/test_priority_shared.py`.
-- `card_body.py`: the body of a confirmation card (RX-1, D162). Each short field shows, and only long text may be cut. The Projects tools and the CRM tools read it. Fence: `tests/unit/test_card_body.py`.
+- `card_body.py`: the body of a confirmation card (RX-1, D168). Each short field shows, and only long text may be cut. The Projects tools and the CRM tools read it. Fence: `tests/unit/test_card_body.py`.
 - `mentions.py`: the parser of an @mention. The gateway and the Projects cards read it, so a card and its write agree. Fence: `tests/unit/test_held_card_promises.py`.
 - `_log.py` (`attributed_agent`, `automation_agent_scope`, `chat_agent_label`, `attributed_openai`): the agent name of a model call. Do not read `ctx["agent"]` for a report in a third place. Fence: `tests/unit/test_usage_attribution.py`.
 - `pg_text.storable(value)`: it changes each NUL and each lone surrogate to U+FFFD, at any depth. A writer of model, tool or client text calls it before `json.dumps` and before the bind. Fence: `tests/unit/test_chat_nul_persist.py`.
@@ -75,6 +75,9 @@ Each module below holds ONE rule. Do not copy its rule into a caller.
   - ⚠️ Each function takes an async session that the caller opened with `tenant_session(org)`. No function takes an org or opens a session. The member is a required argument, and each statement filters on it. The caller resolves the member from a trusted source, never from request input.
   - ⚠️ Each write names `expected_version`. A stale one raises `StaleGoal`, and nothing changes. `cap_block` is the one cap rule, and the write that reaches a cap blocks the goal with `cap_reached`. `BLOCK_CODES` is the closed set, with one sentence for the member for each code.
   - The objective never changes. Store no permission to continue. A restart asks the member again. The member purge names `goal_records`. Fences: `tests/unit/test_goal_record_r8.py` (R8), `tests/unit/test_tenant_coverage.py`.
+- `no_person.py`: the ONE mark of a run with no person present (WS-AUTO AUTO-7a, `proactive_agent.md` §4.2). It imports the standard library only, because `action_broker` and `acb_skills` both read it and neither may depend on the other.
+  - `no_person_scope` is the one setter, and only `gateway/jobs/worker.py` and `gateway/routes/workflows/service.py` call it. No tool reads or sets the mark. No function clears it. A task and `asyncio.to_thread` inherit it, and `carry_run_context` carries it onto the Copilot SDK thread.
+  - ⚠️ An HTTP call does not carry the mark, and a tool acts as its member over HTTP. So no tool may name a route that approves or answers. A bare `run_in_executor` drops it too. Fences: `tests/unit/test_no_person_present.py`, `tests/unit/test_no_person_present_r8.py` (R8).
 
 ### acb_audit/
 Audit event recording.
