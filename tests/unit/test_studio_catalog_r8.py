@@ -31,6 +31,34 @@ A second mutation: read with a session that bypasses RLS (a superuser or
 BYPASSRLS engine). Both ``test_r8_an_org_sees_its_own_published_workflows``
 and ``test_r8_an_org_never_sees_another_orgs_workflow`` go red. The
 independent verifier ran it on 2026-10-31 and got ``2 failed, 3 passed``.
+
+**STU-B1c (the rows of the caller's own packages).** Code:
+``actions.package_rows`` over ``packages_store.list_package_actions``.
+
+a. The owner sees five rows for each object and one for each named action.
+b. Another member and org B see none of those rows. A member with no package
+   sees none.
+c. Two packages with one object name give two rows with different ``app``.
+d. A named action whose target the catalog does not serve is left out.
+e. ``?app=`` narrows to one package.
+f. The statement count of the route does not grow with the packages.
+g. ``catalog_rows`` holds no row of source ``package``.
+
+**The mutations (B1c, run 2026-11-02, with both catalog suites).**
+
+* M1. ``packages_store._ACTIONS_SQL``: drop ``owner_email = :m``. Four R8
+  tests go red, among them ``test_r8_another_member_of_the_org_sees_only_their_own_rows``.
+* M2. Same SQL: drop the ``organization_id`` bound. No R8 test goes red,
+  because FORCE RLS still binds the org. The hermetic
+  ``test_the_statement_binds_the_org_and_the_member_and_loads_no_manifest``
+  goes red.
+* M3. ``actions.package_rows``: read once for each package.
+  ``test_r8_the_statement_count_does_not_grow_with_the_packages`` goes red.
+* M4. ``actions.catalog_rows``: add the package rows.
+  ``test_a_fence_catalog_rows_holds_no_package_row`` goes red.
+* M5 (own). ``actions.package_rows``: ignore ``?app=``.
+  ``test_r8_the_app_filter_narrows_to_one_package`` and
+  ``test_the_app_filter_narrows_to_one_package`` go red.
 """
 
 from __future__ import annotations
