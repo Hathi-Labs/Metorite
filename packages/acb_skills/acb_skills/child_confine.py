@@ -116,6 +116,29 @@ SECCOMP_DENIED: dict[str, int] = {
     "sched_setaffinity": 203,
     "ioprio_set": 251,
     "sched_setattr": 314,
+    # WEB-2b repair 1. Landlock covers TRUNCATE by path only from ABI 3, and it
+    # never covers metadata. So a parser bug could shrink, chmod, chown or
+    # relabel a file of the gateway user on an older kernel. These x86-64 calls
+    # change a file in place. The child never needs one.
+    "truncate": 76,
+    "chmod": 90,
+    "fchmod": 91,
+    "chown": 92,
+    "fchown": 93,
+    "lchown": 94,
+    "utime": 132,
+    "setxattr": 188,
+    "lsetxattr": 189,
+    "fsetxattr": 190,
+    "removexattr": 197,
+    "lremovexattr": 198,
+    "fremovexattr": 199,
+    "utimes": 235,
+    "fchownat": 260,
+    "futimesat": 261,
+    "fchmodat": 268,
+    "utimensat": 280,
+    "fchmodat2": 452,
 }
 _SYS_FCNTL = 72
 _SYS_IOCTL = 16
@@ -392,13 +415,14 @@ def close_inherited_fds() -> None:
         # The listing holds its own descriptor open. That one fails on close.
         found = [int(name) for name in os.listdir("/proc/self/fd")]
     except (OSError, ValueError):
-        limit = 4096
-        with contextlib.suppress(Exception):
-            import resource
+        # No listing: close every number up to the HARD limit. A number above
+        # it cannot exist. With no hard limit the range is unbounded, so refuse.
+        import resource
 
-            soft = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
-            limit = soft if 0 < soft < 1 << 20 else limit
-        os.closerange(3, limit)
+        hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+        if hard == resource.RLIM_INFINITY or hard < 0:
+            raise Refused("unavailable") from None
+        os.closerange(3, min(hard, 2**31 - 1))
         return
     for fd in found:
         if fd >= 3:

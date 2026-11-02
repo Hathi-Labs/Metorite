@@ -79,6 +79,13 @@ def _load(path: Path, name: str) -> Any:
 
 _CC = _load(SHARED, "web2b_child_confine_under_test")
 LANDLOCK_ABI = _CC.landlock_abi()
+#: A Linux host with no Landlock below the web floor: the real child answers
+#: ``unavailable`` there, so a test that needs a page to read skips. The CI
+#: guard at the end of this file fails when CI would skip them.
+needs_a_confinable_host = pytest.mark.skipif(
+    sys.platform == "linux" and LANDLOCK_ABI < 1,
+    reason="this Linux kernel has no Landlock, so the real child fails closed here",
+)
 
 
 # ── 1. The shared module ────────────────────────────────────────────────────
@@ -194,9 +201,24 @@ def signal_parent():
 def unix():
     socket.socket(socket.AF_UNIX, socket.SOCK_STREAM).close()
 
+def truncate_env():
+    os.truncate(secret, 0)
+
+def chmod_env():
+    os.chmod(secret, 0)
+
+def seccomp_mode():
+    # PR_GET_SECCOMP. /proc is outside the read dirs, so the status file is not
+    # readable here. The prctl answer is the same fact: 2 is a filter.
+    import ctypes
+    return "mode" + str(ctypes.CDLL(None, use_errno=True).prctl(21, 0, 0, 0, 0))
+
 def attacks(_html=""):
     return {
         "secret_file": attempt(lambda: read(secret)),
+        "truncate_env": attempt(truncate_env),
+        "chmod_env": attempt(chmod_env),
+        "seccomp": seccomp_mode(),
         "write_file": attempt(write),
         "tcp_connect": attempt(connect),
         "tcp_inherited_socket": attempt(connect_inherited),
@@ -221,11 +243,22 @@ sys.exit(w.main())
 '''
 
 
+_SECRET_TEXT = "DATABASE_URL=postgresql://u:web2bcanary@h/db\n"
+
+
+def _secret_state(tmp_path: Path) -> tuple[int, int]:
+    """``(size, mode)`` of the ``.env`` stand-in of :func:`_probe`."""
+    st = (tmp_path / "opt" / "acb" / "app" / ".env").stat()
+    return st.st_size, st.st_mode & 0o7777
+
+
 def _probe(tmp_path: Path, mode: str, port: int, *extra: str) -> dict[str, str]:
     app = tmp_path / "opt" / "acb" / "app"
     app.mkdir(parents=True, exist_ok=True)
     secret = app / ".env"
-    secret.write_text("DATABASE_URL=postgresql://u:web2bcanary@h/db\n", encoding="utf-8")
+    secret.unlink(missing_ok=True)
+    secret.write_text(_SECRET_TEXT, encoding="utf-8")
+    secret.chmod(0o644)
     done = subprocess.run(
         [sys.executable, "-I", "-c", _PROBE, str(WORKER), mode, str(secret),
          str(app / "written.txt"), str(port), *extra],
@@ -260,6 +293,9 @@ class TestTheConfinement:
         assert got["unix_socket"] == "allowed", got
         assert got["signal_parent"] == "allowed", got
         assert got["fork"] == "allowed", got
+        assert got["truncate_env"] == "allowed" and got["chmod_env"] == "allowed", got
+        assert _secret_state(tmp_path) == (0, 0), "the control did not harm the stand-in"
+        assert got["seccomp"] == "mode0", got
 
     def test_the_real_main_refuses_each_attack(self, tmp_path, listener) -> None:
         got = _probe(tmp_path, "confine", listener)
@@ -270,10 +306,21 @@ class TestTheConfinement:
         assert got["tcp_connect"] == "refused:EPERM", got  # seccomp: no new socket
         assert got["unix_socket"] == "refused:EPERM", got
         assert got["signal_parent"] == "refused:EPERM", got
+        # The filter is in force: PR_GET_SECCOMP answers 2 (a filter).
+        assert got["seccomp"] == "mode2", got
         # The descriptor that the parent could pass on is shut before anything.
         assert got["tcp_inherited_socket"] == "refused:EBADF", got
         if os.geteuid() != 0:  # root ignores RLIMIT_NPROC
             assert got["fork"] in ("refused:EAGAIN", "refused:EWOULDBLOCK"), got
+
+    def test_the_child_cannot_shrink_or_chmod_the_env_file(self, tmp_path, listener) -> None:
+        """Repair 1, P1 and P2. Below Landlock ABI 3 a truncate by path is
+        outside Landlock, and no ABI covers a mode change. The filter refuses
+        both, so the file keeps its size and its mode."""
+        got = _probe(tmp_path, "confine", listener)
+        assert got["truncate_env"] == "refused:EPERM", got
+        assert got["chmod_env"] == "refused:EPERM", got
+        assert _secret_state(tmp_path) == (len(_SECRET_TEXT), 0o644)
 
     @pytest.mark.skipif(LANDLOCK_ABI < 4, reason=(
         f"Landlock ABI {LANDLOCK_ABI} has no network rules; ABI 4 (Linux 6.7) adds TCP. "
@@ -503,6 +550,7 @@ class TestTheFallback:
         assert "Home menu item" in out and "Title:" not in out
         assert log.reasons == ["unavailable"]
 
+    @needs_a_confinable_host
     async def test_a_normal_page_still_reads_in_the_real_confined_child(self) -> None:
         """No fake and no patch: the worker as the parent starts it. On Linux
         it is confined, so the preload must leave the read nothing to open."""
@@ -511,9 +559,109 @@ class TestTheFallback:
         assert page.date == "2026-10-05"
         assert len(page.text) > 200
 
+    @needs_a_confinable_host
     async def test_the_confined_child_reads_a_page_with_a_changed_cwd(
             self, tmp_path, monkeypatch) -> None:
         """The cwd is the app dir on the box. The read dirs must not need it."""
         monkeypatch.chdir(tmp_path)
         page = await web_tools._child_read(_fixture("menu_page.html"))
         assert page is not None and page.title == "Julia Pro: a large 3D printer"
+
+
+# ── 7. Repair round 1 ───────────────────────────────────────────────────────
+
+_FD_FALLBACK = '''
+import importlib.util, os, resource, sys
+spec = importlib.util.spec_from_file_location("c", sys.argv[1])
+c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
+mode = sys.argv[2]
+soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+def no_listing(_path):
+    raise OSError("no /proc")
+os.listdir = no_listing
+if mode == "high":
+    if hard != resource.RLIM_INFINITY and hard < 6000:
+        print("skip"); sys.exit(0)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (6000, hard))
+    fd = os.open(sys.argv[1], os.O_RDONLY)
+    high = os.dup2(fd, 5000)
+    c.close_inherited_fds()
+    try:
+        os.fstat(high); print("open")
+    except OSError:
+        print("closed")
+else:
+    real = resource.getrlimit
+    resource.getrlimit = lambda _n: (1024, resource.RLIM_INFINITY)
+    try:
+        c.close_inherited_fds(); print("no refusal")
+    except c.Refused as exc:
+        print("refused:" + exc.reason)
+'''
+
+
+def _fd_fallback(mode: str) -> str:
+    done = subprocess.run([sys.executable, "-I", "-c", _FD_FALLBACK, str(SHARED), mode],
+                          capture_output=True, encoding="utf-8", timeout=60, check=False)
+    assert done.stdout, done.stderr[-1500:]
+    return done.stdout.strip()
+
+
+@posix_only
+class TestTheFdFallback:
+    def test_with_no_proc_listing_an_fd_above_4095_is_closed(self) -> None:
+        got = _fd_fallback("high")
+        if got == "skip":
+            pytest.skip("the hard RLIMIT_NOFILE of this host is below 6000")
+        assert got == "closed"
+
+    def test_with_no_hard_limit_the_helper_refuses(self) -> None:
+        assert _fd_fallback("infinity") == "refused:unavailable"
+
+
+_OCR_FDS = '''
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("o", sys.argv[1])
+o = importlib.util.module_from_spec(spec); spec.loader.exec_module(o)
+keep = os.open(sys.argv[1], os.O_RDONLY)
+os.set_inheritable(keep, True)
+def fake_spec(_raw):
+    seen = [n for n in range(3, 64) if os.path.exists("/proc/self/fd/%d" % n)]
+    print(json.dumps({"open": seen, "kept": keep}), file=sys.stderr)
+    raise o._Refused("failed")
+o._spec = fake_spec
+sys.exit(o.main(["worker", "{}"]))
+'''
+
+
+class TestTheOcrChildClosesFds:
+    def test_main_closes_the_fds_before_anything_else(self) -> None:
+        tree = ast.parse(OCR_WORKER.read_text(encoding="utf-8"))
+        main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+        calls = sorted((n.end_lineno, n.end_col_offset, ast.unparse(n.func))
+                       for n in ast.walk(main) if isinstance(n, ast.Call))
+        names = [c for _l, _c, c in calls if c != "time.monotonic"]
+        assert names[0] == "_cc.close_inherited_fds", names
+
+    def test_the_parent_passes_no_fd_on_purpose(self) -> None:
+        source = (PKG / "attachment_ocr.py").read_text(encoding="utf-8")
+        assert "pass_fds" not in source
+
+    @linux_only
+    def test_the_real_ocr_main_leaves_no_inherited_fd(self) -> None:
+        done = subprocess.run([sys.executable, "-I", "-c", _OCR_FDS, str(OCR_WORKER)],
+                              capture_output=True, encoding="utf-8", timeout=60, check=False)
+        got = json.loads(done.stderr.strip().splitlines()[-1])
+        assert got["kept"] >= 3 and got["open"] == [], got
+
+
+class TestTheCiGuard:
+    def test_ci_runs_on_a_kernel_with_landlock_abi_four(self) -> None:
+        """R7. Every confinement test skips when Landlock is missing. On a CI
+        runner that would read green. So this test FAILS there instead."""
+        if not (os.environ.get("GITHUB_ACTIONS") == "true" and sys.platform == "linux"
+                and os.uname().machine == "x86_64"):
+            pytest.skip("only a GitHub Actions run on Linux x86-64 needs this guard")
+        assert LANDLOCK_ABI >= 4, (
+            f"the CI runner offers Landlock ABI {LANDLOCK_ABI}: the confinement tests "
+            "would skip or prove less than the box (ABI 4) has")

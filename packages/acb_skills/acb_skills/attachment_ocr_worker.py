@@ -388,6 +388,9 @@ def _read(data: bytes, spec: dict[str, Any], started: float, engine: Any) -> Non
 def main(argv: list[str]) -> int:
     started = time.monotonic()
     try:
+        # First: the parent passes no descriptor on purpose (no pass_fds), and
+        # close_fds is not in force under uvloop (WEB-2b repair 1).
+        _cc.close_inherited_fds()
         spec = _spec(argv[1] if len(argv) > 1 else "")
         _limit_self(spec)
         _check_landlock(spec)

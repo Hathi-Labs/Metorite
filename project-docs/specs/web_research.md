@@ -115,7 +115,11 @@ The guard picks the reader by the content type.
 - The child can read the Python and library dirs only. It cannot write, open a socket or signal its parent.
 - The floor is Landlock ABI 1. A kernel with no Landlock, a machine that is not x86-64 or a second thread gives `{"fault": "unavailable"}`, and the read falls to the strip.
 - `close_fds` is not in force under uvloop, so the child shuts the fds itself. The parent kills the process group at the end of each read, also when the leader exited 0.
-- Fence: `tests/unit/test_web_reader_confine.py`. The TCP rule of ABI 4 is proved on CI only.
+- The seccomp deny list also holds `truncate`. It holds the calls that change a file in place too. These are `chmod`, `chown`, `utime` and the `xattr` families, each with its `f`, `l` and `at` forms. Landlock covers a truncate by path only from ABI 3, and it never covers a mode change. So the list protects `.env` at every ABI. `ftruncate` is not on the list. It needs an open writable fd, and Landlock refuses that open.
+- The floor stays at ABI 1. The box runs ABI 4. A floor of 4 would turn the reader off on every older kernel, and the deny list closes the gap that ABI 1 leaves.
+- The OCR child now closes its inherited fds first too. The OCR parent passes no fd on purpose. With no `/proc/self/fd` listing, the close runs to the hard `RLIMIT_NOFILE`, and a hard limit of infinity refuses.
+- The parent kills the group after the reap. The group id can then go only to a new session leader, such as a concurrent reader or OCR child. That read falls to the strip. This has no security effect, and we accept it.
+- Fence: `tests/unit/test_web_reader_confine.py`. The TCP rule of ABI 4 is proved on CI only. A test fails on GitHub Actions when the runner has an ABI below 4.
 
 ### 3.3 Search providers
 

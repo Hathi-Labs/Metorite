@@ -1013,7 +1013,10 @@ async def _child_read(html: str) -> _Local | None:
         # Always, also when the leader has exited 0 (WEB-2b). A grandchild that
         # it forked stays in the group and must not outlive the read, while
         # the slot goes back. The group id is the pid of the leader, and a
-        # live member keeps that id from any other process.
+        # live member keeps that id from any other process. After the reap the
+        # pgid can go only to a NEW session leader. In practice that is a
+        # concurrent reader or OCR child, and its read then falls to the strip.
+        # It has no security effect.
         _kill_group(proc)
         # Always: a child that exited can still hold an unread pipe open.
         await _reap(proc, answer)
