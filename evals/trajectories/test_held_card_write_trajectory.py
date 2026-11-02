@@ -109,3 +109,12 @@ def test_an_mcp_tool_with_a_borrowed_name_stays_egress() -> None:
                         additional_properties={"_mcp_is_tool": True})
     assert eg.is_held_card_write(born) is False
     assert eg.is_egress_tool(born) is True
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """The decision ships behind ``HELD_CARD_WRITES_ORGS``. This locks it with the
+    switch on."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
