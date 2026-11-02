@@ -383,6 +383,19 @@ async def test_9_a_mark_of_a_row_that_through_covers_refuses(db) -> None:
     assert _row(db, sid)["member_summary"]["mark"]["through"] == "m4"
 
 
+async def test_9_a_mark_of_a_row_that_through_ms_covers_refuses(db) -> None:
+    """A clear can name a newer row than the mark. Its time still covers the
+    row of the mark, so the mark refuses. A newer row still takes a mark."""
+    sid = _chat(db, org=db.org_a, user_id=ALICE, subjects=(ALICE,))
+    _message(db, org=db.org_a, sid=sid, mid="m4", ts=2_000)
+    async with tenant_engine_scope(_app_dsn(db)):
+        assert await _in(db.org_a, summaries.clear_for_member, ALICE) >= 1
+        for through, ms in (("m3", 1_000), ("m4", 2_000)):
+            assert await _in(db.org_a, summaries.mark, sid, through=through, at=NOW,
+                             through_ms=ms) is False, through
+        assert await _in(db.org_a, summaries.mark, sid, through="m5", at=NOW, through_ms=3_000)
+
+
 async def test_9_a_newer_mark_wins_over_an_older_write(db) -> None:
     sid = _chat(db, org=db.org_a, user_id=ALICE, subjects=(ALICE,))
     async with tenant_engine_scope(_app_dsn(db)):
@@ -1132,6 +1145,29 @@ async def test_3_a_forget_before_the_mark_wins(job, monkeypatch) -> None:
     assert job.console.calls == []
     stored = _summary(job, sid)
     assert stored["through"] == newest and "text" not in stored and "mark" not in stored
+
+
+async def test_3_a_forget_behind_a_new_row_wins_too(job, monkeypatch) -> None:
+    """The review's probe ``test_r3_5``. A new row comes, then a Forget, both
+    after the handler read the chat. The clear names the new row, so the row
+    ids differ, and only the time of the waterline stops the mark."""
+    from gateway import chat_summary_job
+
+    sid, _newest = _job_chat(job, org=job.org_a)
+    real = chat_summary_job.read_job_chat
+
+    async def read_then_row_then_forget(db: Any, session_id: str) -> Any:
+        chat = await real(db, session_id)
+        _row_at(job, job.org_a, sid, "m20", "user", "Hello again.", T)
+        async with tenant_session(job.org_a) as other:
+            assert await summaries.clear_for_member(other, ASHA) >= 1
+        return chat
+
+    monkeypatch.setattr(chat_summary_job, "read_job_chat", read_then_row_then_forget)
+    assert await _tick(job, job.org_a) == Counter(done=1)
+    assert job.console.calls == []
+    stored = _summary(job, sid)
+    assert stored["through"] == "m20" and "text" not in stored and "mark" not in stored
 
 
 async def test_3_a_402_gives_up_out_of_credits_and_the_mark_stays(job) -> None:

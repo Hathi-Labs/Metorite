@@ -660,7 +660,9 @@ READ_SQL = "SELECT member_summary FROM chat_session WHERE id = :sid"
 #: and only one of them may make the call. A chat whose `through` names the
 #: row refuses too: a clear takes the mark away and leaves `through`, so a
 #: Forget or a Delete just before the mark must win, and no call may run on
-#: the rows that it covered.
+#: the rows that it covered. Row ids alone are not enough: a new row can come
+#: before the clear, and the clear then names that row. So a chat whose stored
+#: `through_ms` is at or after the time of the marked row refuses too.
 MARK_SQL = f"""
 UPDATE chat_session
    SET member_summary =
@@ -676,6 +678,10 @@ UPDATE chat_session
    AND NOT {_OFF}
    AND (member_summary -> 'mark' ->> 'through') IS DISTINCT FROM CAST(:through AS text)
    AND (member_summary ->> 'through') IS DISTINCT FROM CAST(:through AS text)
+   AND NOT COALESCE(
+         CASE WHEN jsonb_typeof(member_summary -> 'through_ms') = 'number'
+              THEN CAST(member_summary ->> 'through_ms' AS numeric) END
+         >= CAST(:through_ms AS bigint), false)
 RETURNING id
 """
 
@@ -744,7 +750,8 @@ async def mark(db: Any, session_id: str, *, through: str, at: datetime,
     starts on, and the time. The summary that is there stays. Answers False
     when no chat has the id, when the chat reads ``off``, when the mark
     already names *through* (another claim holds that call), and when
-    ``through`` already names it (a summary, a Delete or a Forget covers it).
+    ``through`` already names it or ``through_ms`` is at or after
+    *through_ms* (a summary, a Delete or a Forget covers it).
 
     *through_ms* is the time of that row. It stays in the mark, so a paid call
     that stores nothing still leaves a waterline (:attr:`Stored.waterline`)."""
