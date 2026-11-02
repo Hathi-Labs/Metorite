@@ -1729,8 +1729,7 @@ personal records.
 (`gateway/rooms.py:141` `room_is_solo`). A WhatsApp chat, a shared room, a
 chat with another agent and an archived chat get no summary. A mentioned
 agent in the chat makes it a chat with another agent, and a row of another
-agent does too. A chat that can hold mail text gets no summary either (see
-"Mail" below).
+agent does too.
 
 **Two slices (audit of 2026-10-31).** PZ-33 lands as two PRs. PZ-33a is the
 store: the migration, the one module with the answer checks, the solo SQL,
@@ -1854,17 +1853,19 @@ key is the pair of the chat and the id of its newest row. The handler is
 
 1. Check `routing_is_on()`. If it is False, give up with `RouterOff`.
 2. Read the chat in a short `tenant_session(org)`.
-3. Check the flag, the solo rule, the member's switch, the member's status
-   and the mail mark.
+3. Check the flag, the solo rule, the member's switch, the member's
+   learning switch and the member's status.
 4. If `through` is the newest row id, settle `done` with no call.
 5. If `mark.through` is that id and no result exists, call `queue.give_up`
-   with `SummaryUncertain`.
+   with `SummaryUncertain`. This check comes before the new-turn rule,
+   because the mark holds the waterline of its own rows.
 6. Commit the mark in its own short session, before the call. The mark
    refuses a row that it names already. Two claims can both read no mark.
    The one that loses gives up with `SummaryUncertain`, so only one call
-   runs. The mark also refuses a row that `through` names. A clear takes the
-   mark away and leaves `through`. So a Forget or a Delete before the mark
-   wins, and no call runs.
+   runs. The mark also refuses a row that `through` names, and a row at or
+   before the stored `through_ms`. A clear takes the mark away and leaves
+   `through`. So a Forget or a Delete before the mark wins, and no call
+   runs. This holds also when a new row came before the clear.
 7. Call the model with no session open (see "The model call").
 8. Open a new session. Run `hold`, write the result and run `complete`
    together.
@@ -1884,7 +1885,9 @@ Delete, a Forget and a share each leave that waterline, so a row that they
 covered does not come back.
 
 A new call needs a new turn of the member after the waterline. A new turn is
-a typed row or a card answer. A brief or a reminder is not one.
+a new typed row of the member. A card answer, a reply of Mira, a brief and a
+reminder are not one, because the prompt cannot see them. Round 2 counted a
+card answer, and the owner's prompt rule of 2026-11-02 took that rule away.
 
 The waterline is the newer of `through_ms` and `mark.through_ms`. A failed
 call or an answer that keeps nothing leaves only the mark. So a row of Mira
@@ -1925,7 +1928,13 @@ calls.
   `acompletion_stream_text`. H-287 (`HANDOFF.md:211`) lists three paths
   that write no usage row. PZ-33 adds no fourth.
 - The input is at most 12,000 characters, the newest rows first. The answer
-  is at most 300 tokens.
+  is at most 300 tokens. `check_answer` grounds a line on the newest whole
+  typed rows that fit in 24,000 characters (`WORDS_MAX`). The check is pure
+  Python on the event loop of the shared worker, and it took 12 seconds on
+  520,000 characters. A thread shares the GIL with the loop, so the cap
+  bounds the work and a thread would not.
+- The system prompt ends with the house voice of a summary
+  (`voice_prompt("summary", json=True)`), because the member reads the note.
 - The call sends `thinking={"type": "disabled"}`. `tier-fast` binds a DeepSeek
   model that thinks by default, and the vendor counts the reasoning tokens
   in the cap. With no such field, the reasoning spends the 300 tokens, and
@@ -1937,45 +1946,40 @@ calls.
   waits 120 seconds, and the shared worker waits with it. A call over the
   limit gives up with `SummaryFailed`.
 
-**What the prompt may keep (D-PZ-28).** The prompt asks for what the member
-asked, decided or promised, and for the result of what Mira did for them. It
-asks for the follow-ups. A follow-up is an act that the member or Mira said
-would happen later.
+**What the prompt may keep (D-PZ-28).** The owner decided on 2026-11-02 that
+the prompt holds the member's own words only. The prompt asks for what the
+member asked, decided or promised, and for the open follow-ups, from their
+own words. A follow-up is an act that the member said would happen later.
 
 What goes into the prompt:
 
-- Each row of the member, through `assistant_profile.typed_text`
-  (`packages/acb_common/acb_common/assistant_profile.py:788`). A pasted mail and a message of more than
-  1,500 characters give `""`, so they stay out. PZ-31 and PZ-32 use the
-  same rule for "typed".
-- The `content` text of each row whose author is Mira, and nothing else. A
-  row of another agent stays out. Tool events, reasoning, custom events and
-  the brief row (`brief-<date>`, `routes/chat_brief.py:114`) stay out.
+- The earlier summary of the chat, when one exists.
+- Each typed row of the member after the waterline, through
+  `assistant_summaries.member_texts` and `assistant_profile.typed_text`
+  (`packages/acb_common/acb_common/assistant_profile.py:844`). A pasted mail
+  with a header line, and a message of more than 1,500 characters, give
+  `""`, so they stay out. A card answer stays out, because it quotes the
+  question that the model wrote. PZ-31 and PZ-32 use the same rule for
+  "typed".
+- Nothing else. No row of Mira, no tool event, no sub-agent result, no
+  reasoning, no custom event, no row of another author, and no brief row.
 
-**Mail.** A reply of Mira can quote what a tool read, and `check_answer`
-cannot tell that from her own words. So a chat that can hold mail text gets
-no summary and no call. Two checks decide it, in this order:
+**Why the member's words only.** A reply of Mira can restate a mail or a CRM
+timeline. It can also restate a WhatsApp message, a captured task, a workflow
+output or the facts of an open mail page. `check_answer` cannot tell that from her own
+words, and round 2 found that no list of tools closes the class. So the
+prompt never holds a reply of Mira.
 
-1. **The tool events, the durable rule (`MAIL_EVENTS_SQL`).** `ELIGIBLE_SQL`
-   refuses a chat when an agent row shows the email agent, or a mail tool, in
-   `tool_events`. The rule reads the whole JSON text, so it covers
-   `subAgentTools` and the args of `call_agent` and `delegate_to_agent`. A
-   value that is not an array counts as mail. The fold writes `tool_events`
-   from the events of the run, and no write can shrink it. A match in a
-   `result` is a false positive, and that is safe.
-2. **The mail mark in Redis (`holds_mail`).** It covers a run that the fold
-   did not write yet. Alone it is not enough, because it can expire after 400
-   days, be lost with Redis, or fail to write. It is absent from each chat
-   older than 2026-10-16. A fault or a read over 2 seconds counts as mail.
+Round 2 had a mail rule over the tool
+events and the Redis mail mark. That rule had no job left, so round 3 took it
+out.
 
-The rule writes no mark, because a mark changes the write rights of a chat.
+**Known limit.** A row that the app sends for the member reads as typed text,
+and it can carry a mail subject. Three examples are a tapped brief pill
+(`reach/plan.py`), the Fix prompt (`fixDialog.tsx`, `buildFixPrompt`) and a
+prefilled Ask. Nothing on such a row tells it from typed text.
 
-**Known limit.** A tap on a brief pill sends its line as a plain `user` row,
-and nothing on the row tells it from typed text. The line can quote a mail
-subject (`reach/plan.py`), so that subject can reach the prompt as a turn of
-the member.
-
-What the code drops from the answer:
+What the code drops from the answer:What the code drops from the answer:
 
 - A line with a sensitive word (`assistant_profile.is_sensitive`,
   `packages/acb_common/acb_common/assistant_profile.py:1098`), unless the member's typed rows hold it
@@ -2348,37 +2352,22 @@ two exceptions are the probes with a real letter between the digit groups
   `IDLE_SQL` selects the candidates in one statement:
   - `ELIGIBLE_SQL`: Mira, the web, not archived, not `off`, and
     `SOLO_ROOM_SQL`. No `chat_session_agent` row and no agent row of the
-    chat names another agent.
+    chat names another agent. `IDLE_SQL` is one statement. Round 2 ran the
+    window first in a MATERIALIZED step for the mail rule. With that rule
+    gone, the plain form took 1.0 seconds on 8,000 chats, and the step took
+    1.5 seconds.
   - The newest row is 30 minutes to 7 days old, and no run is open.
   - The newest row id is neither `through` nor `mark.through`.
   - The chat holds 2 short user rows or more.
 - **The checks of the seed in Python.** The seed reads the newest 20 short
   user rows of each candidate and counts the typed rows (`member_texts`).
-  A new turn must be after the waterline (`new_turn`, `rows_after`). It reads the
-  switch of each active member through `MEMBERS_APP_SQL`, and calls
-  `my_day_loop.departed` once for each member. It then reads the mail mark
-  (`mail_state`). It reads at most 60 candidates (`SEED_SCAN_MAX`) and
-  enqueues at most 5 jobs (`SUMMARY_SEED_MAX`).
-- **The durable mail rule.** `MAIL_EVENTS_SQL` is a term of `ELIGIBLE_SQL`, so
-  the seed and the handler both read it. `MAIL_TOOLS` comes from the code:
-  each tool of a family that an agent of `UNTRUSTED_INPUT_AGENTS` owns, and
-  `MAIL_CORE_TOOLS` (`query_history`, `read_attachment`, `search_company`). A
-  fence reads `_TOOLS` of the email agent, because the gateway cannot import
-  it. The rule matches a name as a whole JSON string, which is wider than
-  `"name": "<tool>"`. `IDLE_SQL` runs the window first, so this read stays on
-  the chats of the window.
-- **The tools that are not in the rule.** `retrieve_entity_context` and
-  `retrieve_sales_context` read the entity graph, which holds no mail text.
-  `needs_attention` reads Projects runs. `search_timeline` and
-  `recall_timeline` read Graphiti, whose writers refuse a run that holds mail.
-- **The mail mark.** `assistant_summaries.mail_state` asks
-  `acb_skills.egress.run_holds_mail("orchestrator", {"session_id": ...})`, the
-  one predicate of the chat memory stores. It binds the org for the read,
-  as `chat_fold._run_holds_mail` does, because a frame with no tenant reads
-  as clear. It has 2 seconds, and a fault or a timeout reads as mail. The
-  first fault ends the loop of the seed for that tick, so a hung Redis costs
-  one read. The handler checks the mark again before its own mark, through
-  `holds_mail`. A chat with the mark gets no call and no mark.
+  A typed row must be after the waterline (`rows_after`). It reads the
+  switch of each active member through `MEMBERS_APP_SQL`, and the learning
+  switch through `member_learning_on`. It skips a chat whose newest row id
+  is blank. It calls `my_day_loop.departed` once for each member, and the
+  first failed read ends the loop for that tick. It reads at most 60
+  candidates (`SEED_SCAN_MAX`) and enqueues at most 5 jobs
+  (`SUMMARY_SEED_MAX`).
 - **The job.** `gateway/chat_summary_job.py` registers the detached,
   idempotent kind `assistant.chat_summary` with 3 tries, and adds the seed
   hook. `gateway/main.py` imports it beside `gateway.brief.run`. The
@@ -2390,10 +2379,10 @@ two exceptions are the probes with a real letter between the digit groups
   `chat_session.user_id`. A chat that fails a rule settles `done` with no
   call. The chat must be a row of the bound org, and `ELIGIBLE_SQL` must
   pass. `through` must be the newest row, with no summary of it yet. The
-  chat must be idle with no open run. It must hold 2 typed rows, and a new
-  turn must be after the waterline. The switch must be on, the member must
-  not have left, and the mark must be clear. A failed status read raises
-  before the mark, so the queue tries again.
+  chat must be idle with no open run. It must hold 2 typed rows, and a
+  typed row must be after the waterline. The switch and the learning switch
+  must be on, and the member must not have left. A failed status read
+  raises before the mark, so the queue tries again.
 - **The give-ups.**
   - `RouterOff`: the Router is off. The job makes no call and writes no
     mark.
@@ -2409,8 +2398,8 @@ two exceptions are the probes with a real letter between the digit groups
   `job_member_scope(member, app="chat")`.
   That helper is `run_context_scope` and `bind_run_context`, with the
   member verified. It also drops a member that the task held before. The
-  prompt holds the earlier summary and the rows after `through_ms`, through
-  `prompt_rows`.
+  prompt holds the earlier summary and the member's typed rows after
+  `through_ms`, through `prompt_rows`, and nothing else.
 - **The write.** `check_answer`, then `room_is_solo(resolve_room_access(...))`
   again, then `hold`, `write_marked` and `complete` in one session. An
   answer that keeps nothing settles `done` with no write. An empty or cut
@@ -2419,15 +2408,19 @@ two exceptions are the probes with a real letter between the digit groups
 - **A Delete.** The job honours `off` when it is there. It also honours the
   `through` waterline, which is what a Delete of PZ-35 leaves. A Forget or a
   Delete before the mark wins, because the mark refuses a row that `through`
-  names.
+  names or that `through_ms` covers.
 - **The waterline of a paid call.** `mark` stores `through_ms`, the time of
   its row. `Stored.waterline` is the newer of the two, and `IDLE_SQL` and
   `nothing_new` read it.
 - **The member's switch** is `apps.chat.summaries` of the profile
   (`assistant_summaries.switch_on`). PZ-35 declares the key. Until then, a
   stored `false` turns it off, and a missing value reads on.
+- **The learning switch.** A member whose `learning` is `false` gets no new
+  summary (`member_learning_on`, D-PZ-36, an agent default).
 - Fences:
-  - `test_chat_summary_r8.py`: items 1 to 5, on a real database (R8).
+  - `test_chat_summary_r8.py`: items 1 to 5, on a real database (R8). One
+    test puts a token in each place where a stranger writes, and reads the
+    payload at the Console seam: no token reaches it or the stored text.
   - `test_chat_summary.py`: the digit rule and its probes, the switch and
     the dedupe key.
   - `test_chat_summary_private.py`: fence (c) lists the job module with its
@@ -2520,9 +2513,11 @@ decision are in this table:
 
 - **The owner saw and accepted these in chat** on 2026-10-30 ("go ahead with
   your recommendations"): D-PZ-24, D-PZ-31, D-PZ-32 and D-PZ-34.
+- **The owner decided D-PZ-28 again on 2026-11-02:** the summary prompt holds
+  the member's own words only.
 - **These are the agent's design defaults** under that blanket answer:
-  D-PZ-25 to D-PZ-30, D-PZ-33 and D-PZ-35. The owner did not see them one by
-  one, and may overrule any of them.
+  D-PZ-25 to D-PZ-27, D-PZ-29, D-PZ-30, D-PZ-33, D-PZ-35 and D-PZ-36. The
+  owner did not see them one by one, and may overrule any of them.
 
 | # | Question | Decision |
 |---|---|---|
@@ -2530,7 +2525,7 @@ decision are in this table:
 | **D-PZ-25** | Where does a summary live? | A nullable JSONB column, `chat_session.member_summary`, that one module reads and writes. Not a new table (§15.3) |
 | **D-PZ-26** | When is a chat idle, and which job writes? | 30 minutes after its newest row, with no open run. A seed hook of the job queue and the detached kind `assistant.chat_summary`. No second scheduler |
 | **D-PZ-27** | Who pays for the call? | The org, in AI credits. `tier-fast` through `acompletion_with_fallback` with the Router on, so the Router writes a usage row. With the Router off, no call runs. At most one call for each chat and newest row |
-| **D-PZ-28** | What may a summary keep? | What the member asked, decided or promised, and the follow-ups. No sensitive value, address or long number that the member did not type. Nothing of a pasted mail or a tool result. No inference of mood, health, traits or money |
+| **D-PZ-28** | What may a summary keep? | What the member asked, decided or promised, and the follow-ups. The owner decided on 2026-11-02 that the prompt holds the member's own words only: no reply of Mira, no tool text, no card answer and no row of another author. No sensitive value, address or long number that the member did not type. No inference of mood, health, traits or money |
 | **D-PZ-29** | Every turn, or the first turn only? | Every turn of the chat, with the same bytes. The first turn that finds no stored block builds it |
 | **D-PZ-30** | Which reader gives the open tasks? | `my_due_tasks`, the reader of the needs feed and so of the day's brief. No `loop.snapshot` on a chat turn |
 | **D-PZ-31** | How does a promise become a task? | `create_personal_task` with `offer=true`: once in a chat, typed words only, on the web, on its one card |
@@ -2538,6 +2533,7 @@ decision are in this table:
 | **D-PZ-33** | What do Delete and Off do? | Delete removes the summary, and that chat gets no new one. Off stops new summaries and the chats of the briefing. The kept ones stay in the list until the member deletes them |
 | **D-PZ-34** | Where does long-term recall live? | MEM-2, one full-text search over past chats and their summaries. Mem0 and Graphiti stay retired (D132) |
 | **D-PZ-35** | Who may turn the summary job on in production? | The owner only (§6 D4), because the job spends each org's credits with no request of the member. Each other flip of §15 is gate `enforcement-flip` |
+| **D-PZ-36** | Does "Let the assistant remember what I tell it" off stop summaries? | Yes, an agent default that the owner may overrule. Off stops every write (§7 item 3), and a summary is a new note about the member. The seed and the job skip the member. The kept summaries stay until the member deletes them |
 
 ### 15.12 Open questions for the owner
 
