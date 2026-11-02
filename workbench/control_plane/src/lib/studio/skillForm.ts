@@ -6,7 +6,7 @@
  * Fence: `app/studio/components/SkillForm.test.ts`.
  */
 import type { CatalogAction, Skill, SkillBody } from "./skillsApi";
-import { placeOfFailure, type ErrorPlace } from "./skillErrors";
+import { WORDS, placeOfFailure, type ErrorPlace } from "./skillErrors";
 
 /** One WS-67 tool pack: the most actions a skill holds (F2a `MAX_ACTIONS`). */
 export const MAX_ACTIONS = 35;
@@ -139,4 +139,65 @@ export function placeErrors(place: ErrorPlace): FormErrors {
   if (place.place === "action") out.actions[place.index] = place.text;
   else out[place.place] = place.text;
   return out;
+}
+
+/** Clear the errors that name the picker or one of its rows. The list changed. */
+export function withoutRowErrors(errors: FormErrors): FormErrors {
+  return { ...errors, picker: undefined, actions: {} };
+}
+
+/**
+ * The browser check before a call, so a blank form never reaches the server.
+ * The name is checked on create only, because an existing skill keeps its name.
+ * Answers `null` when the form is fine.
+ */
+export function checkValues(values: FormValues, creating: boolean): FormErrors | null {
+  const out: FormErrors = { actions: {} };
+  if (creating && !values.name.trim()) out.name = WORDS.nameEmpty;
+  if (!values.description.trim()) out.description = WORDS.descriptionEmpty;
+  if (!values.instructions.trim()) out.instructions = WORDS.instructionsEmpty;
+  return out.name || out.description || out.instructions ? out : null;
+}
+
+/**
+ * How a failed load of one skill shows. Only a 404 (and a 422 for a bad id)
+ * means "not here". Any other failure, a miss of the network (0) too, can be
+ * tried again.
+ */
+export function loadFailure(status: number): "missing" | "failed" {
+  return status === 404 || status === 422 ? "missing" : "failed";
+}
+
+/** The reason that Publish is off, or `null` when it can run. */
+export function publishBlock(skill: Pick<Skill, "current_version"> | null, dirty: boolean): string | null {
+  if (!skill || skill.current_version == null) return "Save a version first.";
+  if (dirty) return "Save a version first. Publish uses the saved text.";
+  return null;
+}
+
+/** The element id of each error place. The form draws these ids, and the focus move reads them. */
+export const ERROR_IDS = {
+  name: "skill-name",
+  description: "skill-description",
+  instructions: "skill-instructions",
+  picker: "skill-picker-error",
+  action: (index: number) => `skill-action-error-${index}`,
+  move: "skill-move-error",
+  form: "skill-form-error",
+} as const;
+
+/**
+ * The element that takes focus after a failed call: the first error in the
+ * order name, description, instructions, picker, action row, move, form.
+ */
+export function firstErrorId(errors: FormErrors): string | null {
+  if (errors.name) return ERROR_IDS.name;
+  if (errors.description) return ERROR_IDS.description;
+  if (errors.instructions) return ERROR_IDS.instructions;
+  if (errors.picker) return ERROR_IDS.picker;
+  const rows = Object.keys(errors.actions).map(Number).filter((i) => errors.actions[i]).sort((a, b) => a - b);
+  if (rows.length) return ERROR_IDS.action(rows[0]);
+  if (errors.move) return ERROR_IDS.move;
+  if (errors.form) return ERROR_IDS.form;
+  return null;
 }

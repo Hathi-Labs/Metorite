@@ -26,18 +26,24 @@ import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
 import {
   EMPTY_FORM,
+  ERROR_IDS,
   MAX_ACTIONS,
   NO_ERRORS,
+  checkValues,
   classWord,
   createSubmitGuard,
   errorsOf,
+  firstErrorId,
+  loadFailure,
   movesOf,
   pickableActions,
+  publishBlock,
   stateTarget,
   toBody,
   toCreate,
   toggleAction,
   valuesOf,
+  withoutRowErrors,
   type FormErrors,
   type FormValues,
 } from "@/lib/studio/skillForm";
@@ -51,6 +57,8 @@ import {
   type CatalogAction,
   type Skill,
 } from "@/lib/studio/skillsApi";
+import { CHANGED_ELSEWHERE } from "@/lib/studio/skillErrors";
+import { useLeaveGuard } from "@/lib/studio/useLeaveGuard";
 import SkillStateBadge from "./SkillStateBadge";
 
 const MOVE_LABEL = { publish: "Publish", pause: "Pause", resume: "Resume" } as const;
@@ -80,14 +88,17 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
   const [skill, setSkill] = useState<Skill | null>(null);
   const [values, setValues] = useState<FormValues>(EMPTY_FORM);
   const [saved, setSaved] = useState<FormValues>(EMPTY_FORM);
-  const [loading, setLoading] = useState(Boolean(skillId));
-  const [missing, setMissing] = useState(false);
+  const [load, setLoad] = useState<"loading" | "ok" | "missing" | "failed">(skillId ? "loading" : "ok");
+  const live = useRef(true);
+  /** Set when the form leaves on purpose (a created skill), so the leave guard stays quiet. */
+  const leaving = useRef(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [errors, setErrors] = useState<FormErrors>(NO_ERRORS);
   const [notice, setNotice] = useState<string | null>(null);
   const [sentence, setSentence] = useState("");
   const [catalog, setCatalog] = useState<CatalogAction[]>([]);
   const [catalogFailed, setCatalogFailed] = useState(false);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
   const [filter, setFilter] = useState("");
 
   useEffect(() => {
@@ -96,38 +107,64 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
       if (!live) return;
       if (reply.ok) setCatalog(pickableActions(reply.data.actions ?? []));
       else setCatalogFailed(true);
+      setCatalogLoaded(true);
     });
     return () => {
       live = false;
     };
   }, []);
 
-  useEffect(() => {
-    if (!skillId) return;
-    let live = true;
-    getSkill(skillId).then((reply) => {
-      if (!live) return;
+  /** Read the skill. `quiet` keeps the form on screen (Reload), and a miss shows under the buttons. */
+  const readSkill = useCallback(
+    async (quiet: boolean) => {
+      if (!skillId) return;
+      if (!quiet) setLoad("loading");
+      const reply = await getSkill(skillId);
+      if (!live.current) return;
       if (reply.ok) {
         const v = valuesOf(reply.data.skill, reply.data.version?.body ?? null);
         setSkill(reply.data.skill);
         setValues(v);
         setSaved(v);
+        setErrors(NO_ERRORS);
+        setNotice(null);
+        setLoad("ok");
+      } else if (quiet) {
+        setErrors({ actions: {}, move: "The skill did not load. Try again." });
       } else {
-        setMissing(true);
+        setLoad(loadFailure(reply.status));
       }
-      setLoading(false);
-    });
+    },
+    [skillId],
+  );
+
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    live.current = true;
+    void readSkill(false);
     return () => {
-      live = false;
+      live.current = false;
     };
-  }, [skillId]);
+  }, [readSkill]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const titles = useMemo(() => new Map(catalog.map((a) => [a.id, a])), [catalog]);
   const dirty = JSON.stringify(values) !== JSON.stringify(saved);
   const set = (patch: Partial<FormValues>) => {
     setValues((v) => ({ ...v, ...patch }));
+    // A row error names a position, so a new list drops it.
+    if (patch.actions) setErrors(withoutRowErrors);
     setNotice(null);
   };
+
+  useLeaveGuard(dirty, leaving);
+
+  // After a failed call, focus goes to the first error: name, description,
+  // instructions, picker, action row, then the move and the form.
+  useEffect(() => {
+    const id = firstErrorId(errors);
+    if (id) document.getElementById(id)?.focus();
+  }, [errors]);
 
   const onStarter = () => {
     setValues((v) => ({ ...v, ...applyStarter(v, sentence) }));
@@ -139,24 +176,33 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
       setBusy("save");
       setErrors(NO_ERRORS);
       setNotice(null);
-      if (!skillId) {
-        const reply = await createSkill(toCreate(values));
-        if (reply.ok) {
-          router.replace(`/studio/skills/${reply.data.skill.id}`);
+      try {
+        const missed = checkValues(values, !skillId);
+        if (missed) {
+          setErrors(missed);
           return;
         }
-        setErrors(errorsOf("create", reply.status, reply.detail));
-      } else {
-        const reply = await saveSkillVersion(skillId, toBody(values));
-        if (reply.ok) {
-          setSkill(reply.data.skill);
-          setSaved(values);
-          setNotice(`Saved as version ${reply.data.version.version}.`);
+        if (!skillId) {
+          const reply = await createSkill(toCreate(values));
+          if (reply.ok) {
+            leaving.current = true;
+            router.replace(`/studio/skills/${reply.data.skill.id}`);
+            return;
+          }
+          setErrors(errorsOf("create", reply.status, reply.detail));
         } else {
-          setErrors(errorsOf("version", reply.status, reply.detail));
+          const reply = await saveSkillVersion(skillId, toBody(values));
+          if (reply.ok) {
+            setSkill(reply.data.skill);
+            setSaved(values);
+            setNotice(`Saved as version ${reply.data.version.version}.`);
+          } else {
+            setErrors(errorsOf("version", reply.status, reply.detail));
+          }
         }
+      } finally {
+        setBusy(null);
       }
-      setBusy(null);
     });
   }, [guard, router, skillId, values]);
 
@@ -167,32 +213,41 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
         setBusy(move);
         setErrors(NO_ERRORS);
         setNotice(null);
-        const reply = await moveSkill(skillId, stateTarget(move));
-        if (reply.ok) {
-          setSkill(reply.data.skill);
-          setNotice(move === "publish" ? "Published." : move === "pause" ? "Paused." : "Resumed.");
-        } else {
-          setErrors(errorsOf("move", reply.status, reply.detail));
-          // A 409 means the skill moved under us: load it again.
-          if (reply.status === 409) {
-            const fresh = await getSkill(skillId);
-            if (fresh.ok) setSkill(fresh.data.skill);
+        try {
+          const reply = await moveSkill(skillId, stateTarget(move));
+          if (reply.ok) {
+            setSkill(reply.data.skill);
+            setNotice(move === "publish" ? "Published." : move === "pause" ? "Paused." : "Resumed.");
+          } else {
+            setErrors(errorsOf("move", reply.status, reply.detail));
           }
+        } finally {
+          setBusy(null);
         }
-        setBusy(null);
       });
     },
     [guard, skillId],
   );
 
-  if (loading) {
+  if (load === "loading") {
     return <p className="p-4 text-sm text-muted-foreground">Loading the skill…</p>;
   }
-  if (missing) {
+  if (load === "missing") {
     return (
       <div className="flex flex-col items-start gap-2 p-4">
         <p className="text-sm text-foreground">This skill is not here.</p>
         <Button variant="secondary" size="md" href="/studio">Back to Studio</Button>
+      </div>
+    );
+  }
+  if (load === "failed") {
+    return (
+      <div className="flex flex-col items-start gap-2 p-4">
+        <p role="alert" className="text-sm text-foreground">The skill did not load. Try again.</p>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="primary" size="md" onClick={() => void readSkill(false)}>Retry</Button>
+          <Button variant="secondary" size="md" href="/studio">Back to Studio</Button>
+        </div>
       </div>
     );
   }
@@ -202,6 +257,7 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
     (a) => !shown || a.title.toLowerCase().includes(shown) || a.id.toLowerCase().includes(shown),
   );
   const moves = skill ? movesOf(skill.state) : [];
+  const archived = skill?.state === "archived";
 
   return (
     <div className="pb-askbar flex-1 overflow-y-auto p-3 sm:p-4">
@@ -219,6 +275,7 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
               {skill.current_version ? `Version ${skill.current_version}` : "No version yet"}
             </span>
             <Badge tone="neutral" icon="Lock">Private</Badge>
+            {archived && <span className="text-xs text-muted-foreground">This skill is archived.</span>}
           </div>
         )}
 
@@ -249,18 +306,21 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
           hint={skillId ? "The name stays as it is. Only the text below changes in a new version." : undefined}>
           <Input id="skill-name" inputSize="lg" value={values.name} maxLength={NAME_MAX}
             readOnly={Boolean(skillId)} aria-invalid={Boolean(errors.name)}
+            aria-describedby={errors.name ? "skill-name-error" : undefined}
             onChange={(e) => set({ name: e.target.value })} />
         </Field>
 
         <Field label="Description (when to use it)" htmlFor="skill-description" error={errors.description}>
           <Textarea id="skill-description" rows={2} value={values.description} maxLength={DESCRIPTION_MAX}
             aria-invalid={Boolean(errors.description)}
+            aria-describedby={errors.description ? "skill-description-error" : undefined}
             onChange={(e) => set({ description: e.target.value })} />
         </Field>
 
         <Field label="Instructions" htmlFor="skill-instructions" error={errors.instructions}>
           <Textarea id="skill-instructions" rows={10} value={values.instructions}
             aria-invalid={Boolean(errors.instructions)}
+            aria-describedby={errors.instructions ? "skill-instructions-error" : undefined}
             onChange={(e) => set({ instructions: e.target.value })} />
         </Field>
 
@@ -269,7 +329,9 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
             <h2 className="text-sm font-semibold text-foreground">Actions</h2>
             <span className="text-xs text-muted-foreground">{values.actions.length} of {MAX_ACTIONS}</span>
           </div>
-          {errors.picker && <p role="alert" className="text-xs text-destructive">{errors.picker}</p>}
+          {errors.picker && (
+            <p role="alert" id={ERROR_IDS.picker} tabIndex={-1} className="text-xs text-destructive">{errors.picker}</p>
+          )}
 
           {values.actions.length > 0 && (
             <ol className="flex flex-col divide-y divide-border rounded-xl border border-border bg-card">
@@ -285,7 +347,9 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
                         onClick={() => set({ actions: toggleAction(values.actions, id) })} />
                     </div>
                     {errors.actions[index] && (
-                      <p role="alert" className="text-xs text-destructive">{errors.actions[index]}</p>
+                      <p role="alert" id={ERROR_IDS.action(index)} tabIndex={-1} className="text-xs text-destructive">
+                        {errors.actions[index]}
+                      </p>
                     )}
                   </li>
                 );
@@ -299,8 +363,13 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
             <p className="text-xs text-muted-foreground">The action list did not load. You can still save the text.</p>
           )}
           <ul className="max-h-64 overflow-y-auto rounded-xl border border-border bg-card">
-            {offered.length === 0 && !catalogFailed && (
-              <li className="px-3 py-2 text-xs text-muted-foreground">No action matches.</li>
+            {!catalogLoaded && (
+              <li className="px-3 py-2 text-xs text-muted-foreground">Loading the actions…</li>
+            )}
+            {catalogLoaded && offered.length === 0 && !catalogFailed && (
+              <li className="px-3 py-2 text-xs text-muted-foreground">
+                {shown ? "No action matches." : "No actions are available."}
+              </li>
             )}
             {offered.map((a) => {
               const on = values.actions.includes(a.id);
@@ -310,7 +379,7 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
                   <label className="cc-control flex cursor-pointer items-center gap-2 px-3 py-2 hover:bg-secondary">
                     <Checkbox checked={on} disabled={full}
                       onChange={() => set({ actions: toggleAction(values.actions, a.id) })} />
-                    <span className="min-w-0 flex-1 truncate text-sm text-foreground">{a.title}</span>
+                    <span className="min-w-0 flex-1 truncate text-sm text-foreground" title={a.title}>{a.title}</span>
                     <Badge tone="neutral" size="sm">{classWord(String(a.class))}</Badge>
                   </label>
                 </li>
@@ -319,20 +388,27 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
           </ul>
         </section>
 
-        {errors.form && <p role="alert" className="text-sm text-destructive">{errors.form}</p>}
+        {errors.form && (
+          <p role="alert" id={ERROR_IDS.form} tabIndex={-1} className="text-sm text-destructive">{errors.form}</p>
+        )}
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="submit" variant="primary" size="lg" icon="Save" loading={busy === "save"} disabled={busy !== null}>
+          <Button type="submit" variant="primary" size="lg" icon="Save" loading={busy === "save"} disabled={busy !== null || archived}
+            title={archived ? "This skill is archived." : undefined}>
             {skillId ? "Save version" : "Make skill"}
           </Button>
-          {moves.map((m) => (
-            <Button key={m} type="button" variant="secondary" size="lg" icon={MOVE_ICON[m]}
-              loading={busy === m} disabled={busy !== null || (m === "publish" && dirty)}
-              title={m === "publish" && dirty ? "Save a version first. Publish uses the saved text." : undefined}
-              onClick={() => void onMove(m)}>
-              {MOVE_LABEL[m]}
-            </Button>
-          ))}
+          {moves.map((m) => {
+            const block = m === "publish" ? publishBlock(skill, dirty) : null;
+            return (
+              <Button key={m} type="button" variant="secondary" size="lg" icon={MOVE_ICON[m]}
+                loading={busy === m} disabled={busy !== null || block !== null}
+                title={block ?? undefined}
+                onClick={() => void onMove(m)}>
+                {MOVE_LABEL[m]}
+              </Button>
+            );
+          })}
+          {dirty && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
           {notice && (
             <span role="status" className="inline-flex items-center gap-1 text-xs text-muted-foreground">
               <Icon name="Check" className="h-3.5 w-3.5" />
@@ -340,7 +416,16 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
             </span>
           )}
         </div>
-        {errors.move && <p role="alert" className="text-xs text-destructive">{errors.move}</p>}
+        {errors.move && (
+          <div className="flex flex-wrap items-center gap-2">
+            <p role="alert" id={ERROR_IDS.move} tabIndex={-1} className="text-xs text-destructive">{errors.move}</p>
+            {errors.move === CHANGED_ELSEWHERE && (
+              <Button type="button" variant="secondary" size="md" icon="RefreshCw" onClick={() => void readSkill(true)}>
+                Reload
+              </Button>
+            )}
+          </div>
+        )}
       </form>
     </div>
   );

@@ -22,11 +22,16 @@ describe("the Skills list", () => {
     expect(await loadSkillsView()).toEqual({ kind: "off" });
   });
 
-  it("is off on a network miss", async () => {
+  it("is off on a 403", async () => {
+    answer(403, { detail: "No" });
+    expect(await loadSkillsView()).toEqual({ kind: "off" });
+  });
+
+  it("is an error, with a retry, on a network miss (status 0)", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => {
       throw new TypeError("fetch failed");
     }));
-    expect(await loadSkillsView()).toEqual({ kind: "off" });
+    expect(await loadSkillsView()).toEqual({ kind: "error", detail: "The skills did not load. Try again." });
   });
 
   it("lists the rows on a 200", async () => {
@@ -42,7 +47,7 @@ describe("the Skills list", () => {
 
   it("is an error, with a retry, on a 500", async () => {
     answer(500, { detail: "boom" });
-    expect(await loadSkillsView()).toEqual({ kind: "error", detail: "boom" });
+    expect(await loadSkillsView()).toEqual({ kind: "error", detail: "The skills did not load. Try again." });
     expect(viewOfList({ ok: false, status: 502, detail: "x" }).kind).toBe("error");
   });
 });

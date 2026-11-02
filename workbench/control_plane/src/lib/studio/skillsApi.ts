@@ -134,22 +134,26 @@ export function listCatalogActions(): Promise<Reply<{ actions: CatalogAction[] }
 // ── The gallery reads the list as a state ──────────────────────────────────
 
 export type SkillsView =
-  /** The org is outside STUDIO_ORGS (404), or nobody is signed in (401), or the call missed. */
+  /** The org is outside STUDIO_ORGS (404), or nobody is signed in (401), or the member lacks access (403). */
   | { kind: "off" }
   | { kind: "error"; detail: string }
   | { kind: "ok"; skills: Skill[] };
 
+/** What the list shows when the call failed for a reason other than "off". */
+export const LIST_FAILED = "The skills did not load. Try again.";
+
 /**
  * A 404 is the normal answer on every org until `STUDIO_ORGS` lists it, so it
  * is "off": the present empty state, no button and no error. So are a 401 and
- * a miss of the network. Any other failure is an error the member can retry.
+ * a 403. A miss of the network (status 0) and a 5xx are errors the member can
+ * retry.
  */
 export function viewOfList(reply: Reply<{ skills: Skill[] }>): SkillsView {
   if (reply.ok) return { kind: "ok", skills: reply.data.skills ?? [] };
-  if (reply.status === 404 || reply.status === 401 || reply.status === 403 || reply.status === 0) {
+  if (reply.status === 404 || reply.status === 401 || reply.status === 403) {
     return { kind: "off" };
   }
-  return { kind: "error", detail: reply.detail };
+  return { kind: "error", detail: LIST_FAILED };
 }
 
 export async function loadSkillsView(): Promise<SkillsView> {

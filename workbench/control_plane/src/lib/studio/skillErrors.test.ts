@@ -2,21 +2,21 @@
 // that F2a has. Mutation: map `$.actions[2]` to row 0, and the row test fails.
 import { describe, expect, it } from "vitest";
 
-import { NAME_TAKEN, placeOfDetail, placeOfFailure } from "./skillErrors";
+import { ADD_A_VERSION, CHANGED_ELSEWHERE, NAME_TAKEN, placeOfDetail, placeOfFailure } from "./skillErrors";
 
 describe("placeOfDetail", () => {
   it("maps $.actions[i] to row i, with the text after the colon", () => {
     expect(placeOfDetail("$.actions[2]: the catalog serves no action 'x'")).toEqual({
-      place: "action", index: 2, text: "The catalog serves no action 'x'",
+      place: "action", index: 2, text: "This action is not in the catalog now. Remove it.",
     });
     expect(placeOfDetail("$.actions[11]: the action 'a' is in the list twice")).toMatchObject({
-      place: "action", index: 11,
+      place: "action", index: 11, text: "This action is in the list twice. Remove one.",
     });
   });
 
   it("maps $.actions to the picker", () => {
     expect(placeOfDetail("$.actions: a skill holds at most 35 actions")).toEqual({
-      place: "picker", text: "A skill holds at most 35 actions",
+      place: "picker", text: "A skill holds at most 35 actions. Remove some.",
     });
   });
 
@@ -39,6 +39,32 @@ describe("placeOfDetail", () => {
     expect(placeOfDetail("description: Input should be a valid string").place).toBe("description");
   });
 
+  it("writes each store text as one plain sentence", () => {
+    const text = (d: string) => placeOfDetail(d).text;
+    expect(text("name must not be empty")).toBe("Add a name.");
+    expect(text("name: Field required")).toBe("Add a name.");
+    expect(text("description must not be empty")).toBe("Write when to use this skill.");
+    expect(text("body.description must be a non-empty string")).toBe("Write when to use this skill.");
+    expect(text("body.instructions must be a non-empty string")).toBe("Write the instructions.");
+    expect(text("name holds at most 120 characters")).toBe("The name is too long. Use 120 characters or fewer.");
+    expect(text("description holds at most 1024 characters")).toBe("The description is too long. Use 1024 characters or fewer.");
+  });
+
+  it("never shows a body. or $. prefix, also for a text that no rule knows", () => {
+    for (const d of [
+      "body.instructions must be odd",
+      "body.actions must be a list of non-empty strings",
+      "$.actions[0]: something new",
+      "$.actions: something new",
+      "body.deep.thing is wrong",
+      "$.other: is wrong",
+    ]) {
+      expect(placeOfDetail(d).text).not.toMatch(/body\.|\$\./);
+    }
+    expect(placeOfDetail("body.deep.thing is wrong").text).toBe("Is wrong");
+    expect(placeOfDetail("body.instructions must be odd")).toEqual({ place: "instructions", text: "Must be odd" });
+  });
+
   it("shows a text with no known prefix whole, under the form", () => {
     const text = "The body nests deeper than 20 levels. Flatten it.";
     expect(placeOfDetail(text)).toEqual({ place: "form", text });
@@ -53,7 +79,15 @@ describe("placeOfFailure", () => {
   });
 
   it("puts a 409 of a move under the buttons", () => {
-    expect(placeOfFailure("move", 409, "Add a version first")).toEqual({ place: "move", text: "Add a version first" });
+    expect(placeOfFailure("move", 409, "Add a version first")).toEqual({ place: "move", text: ADD_A_VERSION });
+    expect(ADD_A_VERSION.endsWith(".")).toBe(true);
+  });
+
+  it("tells a 409 of a move that another tab changed the skill", () => {
+    expect(placeOfFailure("move", 409, "The skill changed while it moved. Load it again, then try again.")).toEqual({
+      place: "move", text: CHANGED_ELSEWHERE,
+    });
+    expect(CHANGED_ELSEWHERE).toBe("Another tab changed this skill. Reload to see it.");
   });
 
   it("maps a 422 of a publish to its action row", () => {

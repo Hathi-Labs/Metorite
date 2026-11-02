@@ -32,22 +32,65 @@ function upperFirst(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-function lowerFirst(text: string): string {
-  return text.charAt(0).toLowerCase() + text.slice(1);
-}
+/** Words that end a name badly when the cut lands on them. */
+const STOP_WORDS = new Set(["for", "to", "a", "the", "of", "and", "with"]);
+/** A sentence that starts with one of these is a clause: "Use this " + it. */
+const CLAUSE_WORDS = new Set(["when", "whenever", "if", "after", "before", "once"]);
+/** A sentence that starts with one of these is a noun phrase: "Use this for " + it. */
+const NOUN_WORDS = new Set(["a", "an", "the", "my", "our", "your", "this", "these", "some"]);
+/** Product names that stay as they are, and start a noun phrase. */
+const PROPER_NAMES = new Set(["gmail", "google", "slack", "zoho", "whatsapp", "outlook", "github", "excel", "notion", "jira", "hubspot", "linkedin"]);
 
 /** The name: the first six words, in sentence case, cut to 120 characters. */
 export function starterName(raw: string): string {
   const words = sentenceOf(raw).split(" ").filter(Boolean).slice(0, NAME_WORDS);
+  // After the cut, a closing stop-word ("... thread for") reads as broken.
+  while (words.length > 1 && STOP_WORDS.has(words[words.length - 1].toLowerCase().replace(/[.,;:!?-]+$/, ""))) {
+    words.pop();
+  }
   const joined = words.join(" ").replace(/[\s.,;:!?-]+$/, "");
   return upperFirst(joined).slice(0, NAME_MAX).trim();
 }
 
-/** The description: "Use this when " and the sentence, cut to 1024. */
+function isI(word: string): boolean {
+  return word === "I" || word.startsWith("I'") || word.startsWith("I’");
+}
+
+/** Lower the first letter, unless the word is "I", "I'm", an acronym or a product name. */
+function lowerFirstWord(sentence: string): string {
+  const first = sentence.split(" ")[0];
+  if (isI(first)) return sentence;
+  if (first.length > 1 && first.charAt(1) !== first.charAt(1).toLowerCase()) return sentence;
+  if (PROPER_NAMES.has(first.toLowerCase().replace(/[^a-z]/g, ""))) return sentence;
+  return sentence.charAt(0).toLowerCase() + sentence.slice(1);
+}
+
+/**
+ * The description: "Use this " and the sentence, cut to 1024. The words that
+ * join them depend on the first word of the sentence:
+ *   when, if, after ... : "Use this when I get a long thread"
+ *   to                  : "Use this to summarise ..."
+ *   a, the, my ...      : "Use this for a weekly report"
+ *   anything else       : "Use this to summarise ..." (an imperative verb)
+ */
 export function starterDescription(raw: string): string {
-  const sentence = sentenceOf(raw);
+  const sentence = sentenceOf(raw).replace(/\.$/, "").trim();
   if (!sentence) return "";
-  return `Use this when ${lowerFirst(sentence)}`.slice(0, DESCRIPTION_MAX);
+  const first = sentence.split(" ")[0];
+  const key = first.toLowerCase().replace(/[^a-z']/g, "");
+  const acronym = first.length > 1 && first.charAt(1) !== first.charAt(1).toLowerCase();
+  const noun = NOUN_WORDS.has(key) || PROPER_NAMES.has(key) || acronym;
+  const body = lowerFirstWord(sentence);
+  // A clause or "to" already joins itself to "Use this". "I" starts a clause with no "when".
+  const joined = isI(first)
+    ? `when ${body}`
+    : CLAUSE_WORDS.has(key) || key === "to"
+      ? body
+      : noun
+        ? `for ${body}`
+        : `to ${body}`;
+  const text = `Use this ${joined}`;
+  return text.slice(0, DESCRIPTION_MAX);
 }
 
 /** The instructions: a fixed Markdown skeleton that holds the sentence. */

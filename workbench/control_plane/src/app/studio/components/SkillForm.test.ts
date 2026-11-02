@@ -5,11 +5,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ERROR_IDS,
   MAX_ACTIONS,
+  checkValues,
   createSubmitGuard,
   errorsOf,
+  firstErrorId,
+  loadFailure,
   movesOf,
   pickableActions,
+  publishBlock,
+  withoutRowErrors,
   toBody,
   toCreate,
   toggleAction,
@@ -32,7 +38,7 @@ describe("the starter inside the form", () => {
   it("fills empty fields only", () => {
     const out = applyStarter({ name: "Mine", description: "", instructions: "" }, "Triage my inbox");
     expect(out.name).toBe("Mine");
-    expect(out.description).toBe("Use this when triage my inbox");
+    expect(out.description).toBe("Use this to triage my inbox");
   });
 });
 
@@ -85,7 +91,7 @@ describe("the errors", () => {
 
   it("maps each 422 prefix to its field", () => {
     expect(errorsOf("version", 422, "$.actions[2]: the catalog serves no action 'x'").actions).toEqual({
-      2: "The catalog serves no action 'x'",
+      2: "This action is not in the catalog now. Remove it.",
     });
     expect(errorsOf("version", 422, "$.actions: a skill holds at most 35 actions").picker).toBeTruthy();
     expect(errorsOf("version", 422, "body.description must be a non-empty string").description).toBeTruthy();
@@ -97,6 +103,62 @@ describe("the errors", () => {
   it("shows an unknown prefix whole, under the form", () => {
     const text = "The body nests deeper than 20 levels. Flatten it.";
     expect(errorsOf("create", 422, text)).toEqual({ actions: {}, form: text });
+  });
+});
+
+describe("a failed load", () => {
+  it("is missing for a 404 and a 422 only", () => {
+    expect(loadFailure(404)).toBe("missing");
+    expect(loadFailure(422)).toBe("missing");
+  });
+
+  it("can be tried again for a 5xx, a 502 and a miss of the network", () => {
+    expect(loadFailure(500)).toBe("failed");
+    expect(loadFailure(502)).toBe("failed");
+    expect(loadFailure(0)).toBe("failed");
+  });
+});
+
+describe("the browser check", () => {
+  it("stops a blank form with the plain sentences", () => {
+    expect(checkValues({ name: " ", description: "", instructions: "  ", actions: [] }, true)).toEqual({
+      actions: {},
+      name: "Add a name.",
+      description: "Write when to use this skill.",
+      instructions: "Write the instructions.",
+    });
+  });
+
+  it("does not ask an existing skill for a name", () => {
+    expect(checkValues({ name: "", description: "d", instructions: "i", actions: [] }, false)).toBeNull();
+  });
+});
+
+describe("the focus after a failed call", () => {
+  it("goes to the first error in the order of the form", () => {
+    const e = { actions: { 3: "x", 1: "y" }, picker: "p", instructions: "i", form: "f", move: "m" };
+    expect(firstErrorId(e)).toBe(ERROR_IDS.instructions);
+    expect(firstErrorId({ ...e, instructions: undefined })).toBe(ERROR_IDS.picker);
+    expect(firstErrorId({ ...e, instructions: undefined, picker: undefined })).toBe(ERROR_IDS.action(1));
+    expect(firstErrorId({ actions: {}, move: "m", form: "f" })).toBe(ERROR_IDS.move);
+    expect(firstErrorId({ actions: {}, form: "f" })).toBe(ERROR_IDS.form);
+    expect(firstErrorId({ actions: {}, name: "n", description: "d" })).toBe("skill-name");
+    expect(firstErrorId({ actions: {} })).toBeNull();
+  });
+});
+
+describe("Publish", () => {
+  it("is blocked with no version, and with unsaved edits", () => {
+    expect(publishBlock({ current_version: null }, false)).toBe("Save a version first.");
+    expect(publishBlock({ current_version: 2 }, true)).toContain("Save a version first.");
+    expect(publishBlock({ current_version: 2 }, false)).toBeNull();
+  });
+});
+
+describe("a changed list of actions", () => {
+  it("drops the picker error and every row error", () => {
+    const out = withoutRowErrors({ actions: { 0: "a" }, picker: "p", name: "n" });
+    expect(out).toEqual({ actions: {}, picker: undefined, name: "n" });
   });
 });
 

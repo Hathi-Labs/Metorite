@@ -1,15 +1,12 @@
 "use client";
 
-/** The state of a skill as a pill. The hue comes from `statusAccent.ts`. */
+/** The state of a skill as a pill. It is the shared `Badge`, in the tone of the state. */
 
-import { accentForHue } from "@/lib/statusAccent";
+import Badge, { type BadgeTone } from "@/components/ui/Badge";
 import { SKILL_STATE_HUE } from "@/lib/studio/skillForm";
 
+const TONE: Record<string, BadgeTone> = { gray: "neutral", amber: "warning", green: "success" };
+
 export default function SkillStateBadge({ state }: { state: string }) {
-  const accent = accentForHue(SKILL_STATE_HUE[state] ?? "gray");
-  return (
-    <span className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium ${accent.chip}`}>
-      {state}
-    </span>
-  );
+  return <Badge tone={TONE[SKILL_STATE_HUE[state] ?? "gray"]}>{state}</Badge>;
 }
