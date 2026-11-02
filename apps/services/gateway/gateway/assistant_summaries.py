@@ -295,17 +295,32 @@ def _reads_as_mark(ch: str) -> bool:
 def _read_digits(value: str) -> str:
     """*value* after NFKD, with each digit of any script as an ASCII digit.
     So a fullwidth, an Arabic-Indic, a Devanagari, a superscript and a
-    circled digit each read as the digit that it shows. A letter that reads
-    as a mark stays as it is, because NFKD turns some of them into real
+    circled digit each read as the digit that it shows.
+
+    A character is a letter only when its OWN category is a letter. NFKD turns
+    some symbols into letters (U+2122 to "TM", U+2116 to "No", U+2160 to "I"), and a
+    letter ends a digit run. So a character that is not a real letter keeps
+    its own form, or gives its digits only, and never a letter. A letter that
+    reads as a mark stays as it is, because NFKD turns some of them into real
     letters (U+02B0 to "h")."""
     out: list[str] = []
     for raw in value:
         if _reads_as_mark(raw):
             out.append(raw)
             continue
-        for ch in unicodedata.normalize("NFKD", raw):
-            digit = unicodedata.digit(ch, None)
-            out.append(ch if digit is None else str(digit))
+        parts = unicodedata.normalize("NFKD", raw)
+        if unicodedata.category(raw).startswith("L"):
+            out.append(parts)
+            continue
+        digits = [unicodedata.digit(ch, None) for ch in parts]
+        if all(d is None for d in digits):
+            out.append(raw)
+            continue
+        for ch, digit in zip(parts, digits, strict=True):
+            if digit is not None:
+                out.append(str(digit))
+            elif not unicodedata.category(ch).startswith("L"):
+                out.append(ch)
     return "".join(out)
 
 

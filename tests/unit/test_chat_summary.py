@@ -479,6 +479,11 @@ STRICT_DROPS: list[tuple[str, str, list[str], list[dict[str, object]] | None]] =
     ("a modifier h", "Call 98450\u02b012345 today.", [], None),
     ("a dental click", "Call 98450\u01c012345 today.", [], None),
     ("an alveolar click", "Call 98450\u01c312345 today.", [], None),
+    # Symbols that NFKD turns into letters (the review of round 2, F9).
+    ("a trade mark sign", "Call 98450\u212212345 today.", [], None),
+    ("a numero sign", "Call 98450\u211612345 today.", [], None),
+    ("a roman numeral one", "Call 98450\u216012345 today.", [], None),
+    ("a circled small a", "Call 98450\u24d012345 today.", [], None),
 ]
 
 
@@ -568,6 +573,11 @@ def test_pz33b_the_digit_runs() -> None:
     assert summaries.digit_runs("98450\u02b012345") == ["9845012345"]
     assert summaries.digit_runs("98450\u01c012345") == ["9845012345"]
     assert summaries.digit_runs("98450x12345") == ["98450", "12345"]
+    # A symbol is no letter, even when NFKD makes one of it.
+    for joint in ("\u2122", "\u2116", "\u2160", "\u24d0", "\u2121"):
+        assert summaries.digit_runs(f"98450{joint}12345") == ["9845012345"], joint
+    # A symbol that holds digits gives its digits, and no letter of it.
+    assert summaries.digit_runs("98450\u33e512345") == ["98450612345"]
     assert summaries.digit_runs("") == [] and summaries.digit_runs(None) == []
 
 
