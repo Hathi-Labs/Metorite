@@ -66,7 +66,7 @@ import re
 from typing import Any
 
 import httpx
-from acb_common import studio_fields
+from acb_common import studio_expr, studio_fields, studio_rules
 from acb_common.paging import paged
 from acb_common.studio_manifest import (
     BLOCKS,
@@ -751,6 +751,34 @@ def _describe_fields() -> dict[str, Any]:
             "max_label_chars": f.MAX_LABEL_CHARS,
             "max_many_items": f.MAX_MANY_ITEMS,
             "max_text_chars": f.MAX_TEXT_CHARS,
+        },
+        "computed": _describe_computed(),
+    }
+
+
+def _describe_computed() -> dict[str, Any]:
+    """The formula field (C7a): a rule of kind ``formula`` fills a target field.
+
+    A target is computed. The store writes it on each write, from the other
+    fields of the same record. A Form shows it read-only and sends no key for
+    it. A write that holds a key for it is refused, also with the same value.
+    """
+    x = studio_expr
+    return {
+        "rule": studio_rules.FORMULA,
+        "read_only": True,
+        "target_types": list(studio_rules.FORMULA_TARGET_TYPES),
+        "functions": list(x.FUNCTIONS),
+        "roundings": list(x.ROUNDINGS),
+        "limits": {
+            "max_depth": x.MAX_DEPTH,
+            "max_nodes": x.MAX_NODES,
+            "max_args": x.MAX_ARGS,
+            "max_steps": x.MAX_STEPS,
+            "max_formula_rules": studio_rules.MAX_COMPUTED_RULES,
+            "max_scale": x.MAX_SCALE,
+            "max_places": x.MAX_PLACES,
+            "max_text_literal_chars": x.MAX_LITERAL_TEXT,
         },
     }
 

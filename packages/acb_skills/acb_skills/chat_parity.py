@@ -120,7 +120,7 @@ APP_OF: tuple[tuple[str, str], ...] = (
     ("/api/signup", "admin"),
     ("/api/integrations", "integrations"),
     ("/api/agent-access", "integrations"),
-    # WS-STU. The gateway serves `/studio` (STU-B1). No UI request reaches it yet.
+    # WS-STU. The gateway serves `/studio` (STU-B1). The skill creator sends to it (STU-F2b).
     ("/api/studio", "studio"),
 )
 
@@ -1002,6 +1002,16 @@ DEBT: dict[str, str] = {
     "POST /api/integrations/mcp": "P-8",
     "POST /api/integrations/mcp/{}/test": "P-8",
     "POST /api/integrations/plugins": "P-8",
+    # ── AI Studio ──
+    # STU-F2b ships the skill creator UI ahead of its chat tools. F2d
+    # (Metorite task 1498) gives the `studio` pack studio_skill_save,
+    # studio_skill_state and studio_skill_list, and then these rows leave.
+    "GET /api/studio/actions": "P-9",
+    "GET /api/studio/skills": "P-9",
+    "GET /api/studio/skills/{}": "P-9",
+    "PATCH /api/studio/skills/{}/state": "P-9",
+    "POST /api/studio/skills": "P-9",
+    "POST /api/studio/skills/{}/versions": "P-9",
 }
 
 #: The most debt that each app may carry. A count may go down, never up.
@@ -1025,6 +1035,7 @@ DEBT_CEILING: dict[str, int] = {
     "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
     "admin": 36,
     "integrations": 19,
+    "studio": 6,  # STU-F2b: the skill creator, until F2d gives it chat tools.
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new
