@@ -4,7 +4,7 @@ Spec: ``project-docs/specs/ai_studio.md`` §3.1 and the §14 C1b row.
 
 **Pure.** No gateway import, no SQL and no I/O. ``objects_store.py`` holds the
 SQL, and it stays the one module with SQL of the object tables (the fence
-``test_one_writer_of_the_four_tables``). C6 and C7 reuse
+``test_one_writer_of_the_four_tables``). C6 and C7a reuse
 :class:`RuleViolation` and :func:`touched_keys`.
 
 **The shape.** A rule is a JSON object with a ``name``, a ``kind`` and an
@@ -24,6 +24,15 @@ rules. :data:`RULE_KINDS` is the closed list of kinds.
   the merged record only. A role guard waits for C8, a history row for C4, and
   an expression for C7. A machine reads no key, so :func:`touched_keys` answers
   none for it, and :func:`check_move` judges the net move of one record.
+* ``formula`` (C7a): ``{target, expr, scale?, rounding?, currency?}``. The store
+  computes the field *target* on each write, from the other fields of the same
+  record, with the closed tree of ``studio_expr.py``. The result is stored, so a
+  read never computes it, and a rule of C1b or C6 reads the stored result. A
+  caller cannot write a target, and any key for it is refused, also with the same
+  value. A number target names ``rounding`` and may name a ``scale`` of 0 to 4.
+  A money target names ``currency``. :func:`plan_formulas` checks the formulas of
+  an object as a set, and :func:`run_formulas` runs them in order of dependency.
+  A formula reads no key, so :func:`touched_keys` answers none for it.
 
 **A key.** A ``unique`` field and a group field have a type of
 :data:`KEY_TYPES`. A checkbox has two states and a money value has a currency,
@@ -48,12 +57,15 @@ names the rule, the object, the field keys and the declared bounds.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Context, Decimal
 from typing import Any
 
+from acb_common import studio_expr
+from acb_common.studio_expr import ExprError, Node
 from acb_common.studio_fields import (
     MAX_OPTION_CHARS,
     MAX_TEXT_CHARS,
@@ -81,6 +93,8 @@ MAX_MOVES = 64
 MAX_GUARD_ATOMS = 4
 #: The values of an ``in`` atom.
 MAX_GUARD_IN_VALUES = 20
+#: The computed rules of one object, inside :data:`MAX_RULES_PER_OBJECT`.
+MAX_COMPUTED_RULES = 8
 
 #: The closed ops of a guard atom. All but ``not_empty`` are ops of C2a.
 GUARD_OPS: tuple[str, ...] = (
@@ -94,12 +108,19 @@ RANGE = "range"
 UNIQUE = "unique"
 GROUP_SUM_MIN = "group_sum_min"
 STATE_MACHINE = "state_machine"
+FORMULA = "formula"
 
 #: The closed list of kinds.
-RULE_KINDS: tuple[str, ...] = (RANGE, UNIQUE, GROUP_SUM_MIN, STATE_MACHINE)
+RULE_KINDS: tuple[str, ...] = (RANGE, UNIQUE, GROUP_SUM_MIN, STATE_MACHINE, FORMULA)
 #: The kind of a stored rule that the checks cannot read. It is not in
 #: :data:`RULE_KINDS`, so :func:`check_kind_known` refuses each write.
 MALFORMED = "malformed"
+
+#: The field types that a formula can fill, and the static type of a tree for each.
+FORMULA_TARGET_TYPES: Mapping[str, str] = {
+    "number": "number", "money": "money", "text": "text", "checkbox": "bool", "date": "date"}
+#: The code of a refusal of a caller that writes a computed field.
+COMPUTED_FIELD = "computed_field"
 
 #: The field types of a ``unique`` field and of a group field.
 KEY_TYPES: tuple[str, ...] = ("text", "email", "select", "number", "date", "datetime")
@@ -110,10 +131,12 @@ _KIND_KEYS: Mapping[str, frozenset[str]] = {
     UNIQUE: frozenset({"fields"}),
     GROUP_SUM_MIN: frozenset({"field", "group_by", "min"}),
     STATE_MACHINE: frozenset({"field", "initial", "moves"}),
+    FORMULA: frozenset({"target", "expr", "scale", "rounding", "currency"}),
 }
 assert tuple(_KIND_KEYS) == RULE_KINDS, "each kind has its keys"
 
 _NAME_RE = re.compile(NAME_PATTERN, re.ASCII)
+_CURRENCY_RE = re.compile(r"[A-Z]{3}", re.ASCII)
 #: A bound runs through the one check of a number value.
 _BOUND = FieldSpec(key="bound", type="number")
 #: The default context rounds to 28 digits. A value holds 15 digits before the
@@ -148,6 +171,17 @@ class ConstraintViolation(RuleViolation):
     def __init__(self, rule: str, object_name: str, message: str) -> None:
         super().__init__(rule, message)
         self.object = object_name
+
+
+class FormulaError(RuleViolation):
+    """A write that a formula refuses (C7a). ``object`` is the object name and
+    ``code`` is a code of ``studio_expr``, or ``computed_field`` for a caller that
+    writes a target. The message never echoes a value."""
+
+    def __init__(self, rule: str, object_name: str, code: str, message: str) -> None:
+        super().__init__(rule, message)
+        self.object = object_name
+        self.code = code
 
 
 class MoveViolation(RuleViolation):
@@ -197,6 +231,13 @@ class Rule:
     #: A ``state_machine`` starts here, and it allows only these moves.
     initial: str | None = None
     moves: tuple[Move, ...] = ()
+    #: A ``formula`` fills ``target`` from ``expr``. ``scale`` and ``rounding``
+    #: are of a number target, and ``currency`` is of a money target.
+    target: str | None = None
+    expr: Node | None = None
+    scale: int | None = None
+    rounding: str | None = None
+    currency: str | None = None
 
     def stored(self) -> dict[str, Any]:
         """The JSON of this rule, as the store keeps it."""
@@ -214,6 +255,12 @@ class Rule:
             out["field"] = self.field
             out["initial"] = self.initial
             out["moves"] = [_stored_move(m) for m in self.moves]
+        if self.kind == FORMULA and self.expr is not None:
+            out["target"] = self.target
+            out["expr"] = studio_expr.node_json(self.expr)
+            for key in ("scale", "rounding", "currency"):
+                if getattr(self, key) is not None:
+                    out[key] = getattr(self, key)
         if self.min is not None:
             out["min"] = self.min
         if self.max is not None:
@@ -222,7 +269,7 @@ class Rule:
 
     def hot_keys(self) -> tuple[str, ...]:
         """The fields that must stay hot while this rule stands."""
-        if self.kind in (RANGE, STATE_MACHINE):
+        if self.kind in (RANGE, STATE_MACHINE, FORMULA):
             return ()
         return (*self.keys, self.field) if self.field is not None else self.keys
 
@@ -331,7 +378,7 @@ def _state(rule: str, label: str, value: Any) -> str:
 def _atom_scalar(rule: str, value: Any) -> Any:
     if isinstance(value, bool) or (isinstance(value, str) and len(value) <= MAX_TEXT_CHARS):
         return value
-    if isinstance(value, int | float) and value == value and abs(value) != float("inf"):
+    if isinstance(value, int | float) and math.isfinite(value):
         return value
     raise ConstraintError(
         rule, f"Rule `{rule}`: a guard `value` is one text, number or true or false.")
@@ -403,8 +450,36 @@ def _parse_machine(rule: str, spec: Mapping[str, Any], message: str | None) -> R
     return Rule(rule, STATE_MACHINE, message, field=field, initial=initial, moves=moves)
 
 
+def _expr_message(rule: str, exc: ExprError) -> str:
+    where = f" at `{exc.path}`" if exc.path else ""
+    return f"Rule `{rule}`{where}: {exc.message}"
+
+
+def _parse_formula(rule: str, spec: Mapping[str, Any], message: str | None) -> Rule:
+    target = _key(rule, "target", spec.get("target"))
+    if "expr" not in spec:
+        raise ConstraintError(rule, f"Rule `{rule}`: a formula needs `expr`.")
+    try:
+        expr = studio_expr.parse_expr(spec["expr"])
+    except ExprError as exc:
+        raise ConstraintError(rule, _expr_message(rule, exc)) from None
+    scale, rounding, currency = spec.get("scale"), spec.get("rounding"), spec.get("currency")
+    if "scale" in spec and (type(scale) is not int or not 0 <= scale <= studio_expr.MAX_SCALE):
+        raise ConstraintError(
+            rule, f"Rule `{rule}`: `scale` is a whole number from 0 to {studio_expr.MAX_SCALE}.")
+    if "rounding" in spec and (not isinstance(rounding, str)
+                               or rounding not in studio_expr.ROUNDINGS):
+        raise ConstraintError(
+            rule, f"Rule `{rule}`: `rounding` is {', '.join(studio_expr.ROUNDINGS)}.")
+    if "currency" in spec and (not isinstance(currency, str)
+                               or not _CURRENCY_RE.fullmatch(currency)):
+        raise ConstraintError(rule, f"Rule `{rule}`: `currency` is three capital letters, as INR.")
+    return Rule(rule, FORMULA, message, target=target, expr=expr, scale=scale,
+                rounding=rounding, currency=currency)
+
+
 _PARSERS = {RANGE: _parse_range, UNIQUE: _parse_unique, GROUP_SUM_MIN: _parse_group,
-            STATE_MACHINE: _parse_machine}
+            STATE_MACHINE: _parse_machine, FORMULA: _parse_formula}
 assert tuple(_PARSERS) == RULE_KINDS, "each kind has one parser"
 
 
@@ -438,6 +513,8 @@ def parse_rules(specs: Any) -> tuple[Rule, ...]:
         if rule.name in seen:
             raise ConstraintError(rule.name, f"Rule `{rule.name}`: each rule name must be unique.")
         seen.add(rule.name)
+    if sum(r.kind == FORMULA for r in rules) > MAX_COMPUTED_RULES:
+        raise ConstraintError("?", f"An object holds at most {MAX_COMPUTED_RULES} formula rules.")
     machines: set[str] = set()
     for rule in rules:
         if rule.kind == STATE_MACHINE:
@@ -541,6 +618,7 @@ def check_rules_fit(rules: Sequence[Rule], fields: Sequence[FieldSpec]) -> None:
     a field hot. It raises :class:`ConstraintError`.
     """
     by_key = {f.key: f for f in fields}
+    check_formulas([r for r in rules if r.kind == FORMULA], fields)
 
     def named(rule: Rule, key: str) -> FieldSpec:
         field = by_key.get(key)
@@ -551,6 +629,8 @@ def check_rules_fit(rules: Sequence[Rule], fields: Sequence[FieldSpec]) -> None:
     for rule in rules:
         if rule.kind == STATE_MACHINE:
             _fit_machine(rule, by_key)
+            continue
+        if rule.kind == FORMULA:
             continue
         if rule.field is not None:
             field = named(rule, rule.field)
@@ -592,7 +672,7 @@ def _stored_rule(item: Any) -> Rule:
     name = item.get("name") if isinstance(item, Mapping) else None
     if not isinstance(name, str) or not name:
         return Rule("?", MALFORMED)
-    if item.get("kind") == STATE_MACHINE:
+    if item.get("kind") in (STATE_MACHINE, FORMULA):
         # The one parser reads it. A role atom or a bad shape fails closed.
         try:
             return parse_rule(item)
@@ -697,9 +777,9 @@ def touched_keys(rule: Rule, before: Mapping[str, Any] | None,
     is the record after it (None for a delete). A ``group_sum_min`` key is
     touched by the old and the new key. A ``unique`` key is touched by the new
     key only: a delete or an old key cannot add a clash, so a check there
-    would only stop the repair of old duplicates. C6 and C7 reuse this hook.
+    would only stop the repair of old duplicates. C6 and C7a reuse this hook.
     """
-    if rule.kind in (RANGE, STATE_MACHINE):
+    if rule.kind in (RANGE, STATE_MACHINE, FORMULA):
         return []
     states: Collection[Mapping[str, Any] | None] = (
         (after,) if rule.kind == UNIQUE else (before, after))
@@ -853,3 +933,196 @@ def check_move(rule: Rule, object_name: str, before: Mapping[str, Any] | None,
                 return
             raise _refuse_move(rule, object_name, old, new, "the guard of this move does not hold.")
     raise _refuse_move(rule, object_name, old, new, f"`{key}` cannot make this move.")
+
+
+# --- the formulas (C7a) ------------------------------------------------------
+
+
+def _fit_target(rule: Rule, by_key: Mapping[str, FieldSpec]) -> FieldSpec:
+    """The target field of one formula, with the keys that its type takes."""
+    key = str(rule.target)
+    field = by_key.get(key)
+    if field is None:
+        raise ConstraintError(rule.name, f"Rule `{rule.name}`: `{key}` is not a field of this object.")
+    if field.type not in FORMULA_TARGET_TYPES or field.many:
+        raise ConstraintError(
+            rule.name, f"Rule `{rule.name}`: target `{key}` must be one number, money, text, "
+            "checkbox or date field.")
+    if field.required:
+        raise ConstraintError(
+            rule.name, f"Rule `{rule.name}`: target `{key}` cannot be required, because a "
+            "formula can give no value.")
+    is_number, is_money = field.type == "number", field.type == "money"
+    if is_number and rule.rounding is None:
+        raise ConstraintError(
+            rule.name, f"Rule `{rule.name}`: a number target needs `rounding`: "
+            f"{', '.join(studio_expr.ROUNDINGS)}.")
+    if not is_number and (rule.rounding is not None or rule.scale is not None):
+        raise ConstraintError(
+            rule.name, f"Rule `{rule.name}`: only a number target takes `scale` and `rounding`.")
+    if is_money != (rule.currency is not None):
+        raise ConstraintError(
+            rule.name, f"Rule `{rule.name}`: only a money target takes `currency`, and it needs one.")
+    return field
+
+
+def _fit_result(rule: Rule, field: FieldSpec, fields: Sequence[FieldSpec]) -> None:
+    try:
+        kind = studio_expr.check_expr(rule.expr or Node("bool"), fields, target=rule.target)
+    except ExprError as exc:
+        raise ConstraintError(rule.name, _expr_message(rule.name, exc)) from None
+    if kind != FORMULA_TARGET_TYPES[field.type]:
+        raise ConstraintError(
+            rule.name, f"Rule `{rule.name}`: the formula gives a {kind} value, and target "
+            f"`{field.key}` takes a {FORMULA_TARGET_TYPES[field.type]} value.")
+
+
+def formula_order(formulas: Sequence[Rule]) -> list[Rule] | None:
+    """The formulas in the order that they run: a formula runs after each
+    formula whose target it reads, and the rest keep their declared order.
+    None when the formulas read each other in a loop."""
+    targets = {str(r.target) for r in formulas}
+    waiting = list(formulas)
+    done: set[str] = set()
+    out: list[Rule] = []
+    while waiting:
+        ready = next(
+            (r for r in waiting
+             if all(k in done for k in studio_expr.expr_reads(r.expr or Node("bool")) & targets)),
+            None)
+        if ready is None:
+            return None
+        waiting.remove(ready)
+        done.add(str(ready.target))
+        out.append(ready)
+    return out
+
+
+def check_formulas(formulas: Sequence[Rule], fields: Sequence[FieldSpec]) -> None:
+    """Refuse the formulas of one object that do not fit its *fields*, as a set.
+
+    Each target is one plain field that no other formula fills. Each ref names
+    a field, and never its own target. A tree gives the type of its target. The
+    formulas read each other in no loop. Raises :class:`ConstraintError`.
+    """
+    by_key = {f.key: f for f in fields}
+    seen: set[str] = set()
+    for rule in formulas:
+        field = _fit_target(rule, by_key)
+        if field.key in seen:
+            raise ConstraintError(
+                rule.name, f"Rule `{rule.name}`: another formula fills `{field.key}` already.")
+        seen.add(field.key)
+        _fit_result(rule, field, fields)
+    if formula_order(formulas) is None:
+        raise ConstraintError(
+            formulas[0].name, "The formulas of this object read each other in a loop.")
+
+
+@dataclass(frozen=True)
+class FormulaPlan:
+    """The formulas of one object, checked once for a batch.
+
+    ``ordered`` holds each formula with its target field, in the order of run.
+    ``plain`` holds the fields that a caller may write: no target.
+    """
+
+    ordered: tuple[tuple[Rule, FieldSpec], ...]
+    fields: tuple[FieldSpec, ...]
+    plain: tuple[FieldSpec, ...]
+    targets: frozenset[str]
+
+
+def plan_formulas(rules: Sequence[Rule], object_name: str,
+                  fields: Sequence[FieldSpec]) -> FormulaPlan | None:
+    """The plan of the formulas of an object, or None when it has none.
+
+    The store runs this on each write, so a stored formula that does not fit
+    refuses the write (it fails closed). Raises :class:`FormulaError` with the
+    code ``declaration``.
+    """
+    formulas = [r for r in rules if r.kind == FORMULA]
+    if not formulas:
+        return None
+    if len(formulas) > MAX_COMPUTED_RULES:
+        raise FormulaError(
+            formulas[0].name, object_name, studio_expr.DECLARATION,
+            f"Object `{object_name}`: at most {MAX_COMPUTED_RULES} formula rules are allowed.")
+    try:
+        check_formulas(formulas, fields)
+    except ConstraintError as exc:
+        raise FormulaError(
+            exc.rule, object_name, studio_expr.DECLARATION,
+            f"Object `{object_name}`: {exc.message}") from None
+    ordered = formula_order(formulas) or []
+    by_key = {f.key: f for f in fields}
+    targets = frozenset(str(r.target) for r in formulas)
+    return FormulaPlan(
+        tuple((r, by_key[str(r.target)]) for r in ordered), tuple(fields),
+        tuple(f for f in fields if f.key not in targets), targets)
+
+
+def refuse_computed_keys(plan: FormulaPlan | None, object_name: str, data: Any) -> None:
+    """Refuse a write that holds a key of a target, also with the same value or
+    with no value. A caller never writes a computed field."""
+    if plan is None or not isinstance(data, Mapping):
+        return
+    for key in data:
+        if key in plan.targets:
+            rule = next(r for r, f in plan.ordered if f.key == key)
+            raise FormulaError(
+                rule.name, object_name, COMPUTED_FIELD,
+                f"Rule `{rule.name}` of object `{object_name}`: field `{key}` is computed. "
+                "Write no value for it.")
+
+
+def without_targets(plan: FormulaPlan | None, data: Mapping[str, Any]) -> dict[str, Any]:
+    """The record *data* with no target: the input of ``validate_record``."""
+    if plan is None:
+        return dict(data)
+    return {k: v for k, v in data.items() if k not in plan.targets}
+
+
+def run_formulas(plan: FormulaPlan | None, object_name: str,
+                 clean: Mapping[str, Any]) -> dict[str, Any]:
+    """The record *clean* with each target computed, in the order of the plan.
+
+    *clean* is the checked record with no target. A formula that reads an
+    earlier target reads its stored result. A null result leaves the target out.
+    The answer holds its keys in the order of the fields. Raises
+    :class:`FormulaError`, with the rule, the object and a code, and no value.
+    """
+    if plan is None:
+        return dict(clean)
+    record = dict(clean)
+    for rule, field in plan.ordered:
+        try:
+            value = studio_expr.evaluate(rule.expr or Node("bool"), record)
+            stored = studio_expr.store_result(
+                value, field, scale=rule.scale or 0, rounding=rule.rounding,
+                currency=rule.currency)
+        except ExprError as exc:
+            raise FormulaError(
+                rule.name, object_name, exc.code,
+                f"Rule `{rule.name}` of object `{object_name}`: {rule.message or exc.message}"
+            ) from None
+        if stored is None:
+            record.pop(field.key, None)
+        else:
+            record[field.key] = stored
+    return {f.key: record[f.key] for f in plan.fields if f.key in record}
+
+
+def rule_reads(rule: Rule) -> frozenset[str]:
+    """Every field key that *rule* reads. C9 reads it to decide that a formula
+    or a guard that reads a personal or restricted field makes its target the
+    same level. A target is written, so a formula does not read it. A rule of
+    an unknown kind reads nothing."""
+    if rule.kind == FORMULA:
+        return studio_expr.expr_reads(rule.expr) if rule.expr is not None else frozenset()
+    reads = set(rule.keys)
+    if rule.field is not None:
+        reads.add(rule.field)
+    if rule.kind == STATE_MACHINE:
+        reads.update(a.field for m in rule.moves for a in m.guard)
+    return frozenset(reads) if rule.kind in RULE_KINDS else frozenset()
