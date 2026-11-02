@@ -51,7 +51,7 @@ Store assumptions: tasks have status, assignee, due date, `blocked_by`. Often mi
   3. Project buffer = about 50% of the chain's summed length. Or sqrt(sum of squared (safe - aggressive)) (root-sum-square) to avoid oversizing on long chains.
   4. Feeding buffer on every non-critical path that merges into the chain. Same sizing, shorter.
   5. Target date = chain end + project buffer.
-  6. Fever chart: x = % of critical chain complete, y = % of project buffer consumed. Zones green / yellow / red. Example: 10 of 25 buffer days used = 40% penetration (yellow). [W: sciforma page above. Https://success.sciforma.com/en/node/71682] Rule: act when buffer use runs ahead of chain progress.
+  6. Fever chart: x = % of critical chain complete, y = % of project buffer consumed. Zones green / yellow / red. Example: 10 of 25 buffer days used = 40% penetration (yellow). [W: sciforma page above. https://success.sciforma.com/en/node/71682] Rule: act when buffer use runs ahead of chain progress.
 - **Show:** one number: "Planned finish Mar 14, buffer 8 days, 20% used, 40% done: green."
 - **Ask:** "Is this date firm?" and "Who is on this full-time vs part-time?" (only if load data absent).
 - **Fails:** members hear "your estimates are cut" (frame as "most likely time, protected by a shared buffer"). Projects under about 8 tasks (just use one buffer). Chain changes when resources change (recompute weekly). No resource data means CCPM degrades to CPM plus a buffer.
