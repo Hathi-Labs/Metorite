@@ -117,7 +117,7 @@ The journal's `permission.decision` lines count each tool call. In `projects-pla
 | `link_tasks_batch` | `projects-plan` | exists |
 | `create_tags`, `create_types` | `projects-structure` | exists |
 | **`change_statuses`** (PJP-3) | `projects-structure` | add, rename, recategorise, recolour or reorder a lane |
-| **`update_tasks`** (PJP-4) | `projects-bulk` | a different date, start, estimate, owner, status or title on each task |
+| **`update_tasks`** (PJP-4) | `projects-bulk` | a different date, start, estimate, status, title, priority, tags or type on each task. Owners change through `assign` (see PJP-8) |
 
 A delete stays a single guarded act (class C). No batch tool deletes.
 
@@ -216,6 +216,8 @@ So the slug must join `TOOL_PACKS` on production BEFORE the release that ships P
 **PJP-8 `find_constraint(project_id)`, a read.** For each owner, it reads open work against capacity (`team_capacity`). It also reads the owner's share of chain work and the age of their queue. For each status, it reads the median age of the tasks that wait in it. The tool names ONE constraint with its evidence.
 
 The rules then give the model the five focusing steps in plain words. Protect the constraint's time. Move other work away from it. Then add help. Each proposed move comes on one `update_tasks` card.
+
+A move of work to another person changes the owner. `update_task` has no owner field, because `assign` owns that write. So PJP-8 adds owner rows to the batch: an `assignees` key on `update_tasks` rows through the same check as `assign`, or a batch `assign`. The choice is PJP-8's, and it adds no second check.
 
 **PJP-9 flow health (lean).** It extends the existing reads.
 - `analytics_load` gains work in progress per person and per status.
