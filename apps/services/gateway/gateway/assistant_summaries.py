@@ -928,34 +928,29 @@ OPEN_RUN_SQL = """EXISTS (
 #: `:typed_min` short user rows or more. The seed then counts the typed rows
 #: of the member in Python (`member_texts`). `through_ms` is the waterline
 #: that a summary, a Delete or a Forget left, and `mark_ms` is the one that a
-#: paid call left. The window runs first, in its own
-#: step: :data:`ELIGIBLE_SQL` reads the JSON of each agent row, and that read
-#: must stay on the chats of this window, not on each chat of the org.
+#: paid call left. One statement, with the window in the WHERE. Round 2 ran
+#: the window first in a MATERIALIZED step, because the mail rule read the JSON
+#: of each agent row. That rule is gone, and on 8,000 chats with 300 in the
+#: window the plain form took 1.0 s and the step 1.5 s (measured 2026-11-02).
 IDLE_SQL = f"""
-WITH recent AS MATERIALIZED (
-    SELECT c.id AS chat_id, newest.id AS newest_id, newest.timestamp_ms AS newest_ms
-      FROM chat_session c
-     CROSS JOIN LATERAL (
-           SELECT m.id, m.timestamp_ms FROM chat_message m
-            WHERE m.session_id = c.id
-            ORDER BY m.timestamp_ms DESC, m.id DESC
-            LIMIT 1) AS newest
-     WHERE c.organization_id = {_BOUND_ORG}
-       AND newest.timestamp_ms BETWEEN :since_ms AND :idle_ms
-)
-SELECT s.id, s.user_id, r.newest_id, r.newest_ms,
+SELECT s.id, s.user_id, newest.id AS newest_id, newest.timestamp_ms AS newest_ms,
        s.member_summary -> 'through_ms' AS through_ms,
        s.member_summary -> 'mark' -> 'through_ms' AS mark_ms
-  FROM recent r
-  JOIN chat_session s ON s.id = r.chat_id
+  FROM chat_session s
+ CROSS JOIN LATERAL (
+       SELECT m.id, m.timestamp_ms FROM chat_message m
+        WHERE m.session_id = s.id
+        ORDER BY m.timestamp_ms DESC, m.id DESC
+        LIMIT 1) AS newest
  WHERE {ELIGIBLE_SQL}
-   AND r.newest_id IS DISTINCT FROM (s.member_summary ->> 'through')
-   AND r.newest_id IS DISTINCT FROM (s.member_summary -> 'mark' ->> 'through')
+   AND newest.timestamp_ms BETWEEN :since_ms AND :idle_ms
+   AND newest.id IS DISTINCT FROM (s.member_summary ->> 'through')
+   AND newest.id IS DISTINCT FROM (s.member_summary -> 'mark' ->> 'through')
    AND NOT {OPEN_RUN_SQL}
    AND (SELECT count(*) FROM chat_message u
          WHERE u.session_id = s.id AND u.role = 'user'
            AND length(u.content) <= :typed_max) >= :typed_min
- ORDER BY r.newest_ms DESC, s.id
+ ORDER BY newest.timestamp_ms DESC, s.id
  LIMIT :scan
 """
 
