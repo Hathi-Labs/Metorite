@@ -978,6 +978,22 @@ async def test_off_the_boundary_asks_redis_nothing(monkeypatch) -> None:
         assert await ti._chat_marked(ctx) is False
 
 
+async def test_off_a_held_run_reads_no_crm_mode(monkeypatch, crm_tools) -> None:
+    """With the switch off a held run reads nothing, as before the slice. Mutation:
+    drop the switch from ``_drop_mirror_record_writes`` -> a read -> red."""
+    from acb_skills import crm_tools as crm
+
+    async def trap() -> str:
+        raise AssertionError("no read with the switch off")
+
+    monkeypatch.setattr(crm, "crm_mode", trap)
+    _switch(monkeypatch, "")
+    agents = [_agent_with([crm_tools["create_lead"]])]
+    with _bound(no_egress=True):
+        await ti._drop_mirror_record_writes(agents)
+    assert [_name(t) for t in agents[0].default_options["tools"]] == ["create_lead"]
+
+
 def test_off_no_run_gets_the_chat_hold(monkeypatch, projects_tools) -> None:
     """Mutation: ignore the switch in ``_apply_chat_hold`` -> red."""
     _switch(monkeypatch, "")

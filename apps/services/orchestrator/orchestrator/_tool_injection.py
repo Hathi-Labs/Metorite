@@ -1709,11 +1709,12 @@ async def _drop_mirror_record_writes(agents: list[Any]) -> None:
     ``egress.HELD_CARD_WRITE_TOOLS``, so a held chat keeps them, and in Mirror
     mode a write would reach Zoho. A run in a covered chain reads nothing: the
     egress control drops the writes there (``egress.covered_chain``), and a
-    covered run sends no request that it does not need (H-236).
+    covered run sends no request that it does not need (H-236). With the org off
+    (``egress.held_card_writes_on``), a held run reads nothing too, as before.
     """
-    from acb_skills.egress import covered_chain
+    from acb_skills.egress import covered_chain, held_card_writes_on, no_egress_for_this_run
 
-    if covered_chain():
+    if covered_chain() or (no_egress_for_this_run() and not held_card_writes_on()):
         return
     held = {
         _tool_name(t)
@@ -3298,10 +3299,14 @@ async def _drop_pack_mirror_writes(
     the member (``acb_skills.crm_tools.crm_mode``) and reuses
     :data:`MIRROR_RECORD_WRITES`. RX-1: a held build reads it too, because the
     writes now stay in a held pack, and in Mirror mode a write would reach
-    Zoho. A failed read keeps the tools, and the 409 relay of the write tools
-    is the fallback, as in :func:`_drop_mirror_record_writes`.
+    Zoho. With the org off (``egress.held_card_writes_on``), a held build reads
+    nothing, as before. A failed read keeps the tools, and the 409 relay of the
+    write tools is the fallback, as in :func:`_drop_mirror_record_writes`.
     """
-    if not any(_tool_name(t) in MIRROR_RECORD_WRITES for t in tools):
+    from acb_skills.egress import held_card_writes_on
+
+    if ((held and not held_card_writes_on())
+            or not any(_tool_name(t) in MIRROR_RECORD_WRITES for t in tools)):
         return tools, dropped
     try:
         from acb_skills.crm_tools import crm_mode

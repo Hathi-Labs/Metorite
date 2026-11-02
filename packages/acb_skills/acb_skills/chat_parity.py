@@ -1032,5 +1032,8 @@ UNREAD_CEILING: dict[str, int] = {
     # The Undo of a profile tool: the verb comes with the card.
     "components/profile/ProfileToolCards.tsx": 1,
     # The reminder chips: `actRequest` returns the url, and the verb is set where it is sent.
-    "lib/shell/reminderOpen.ts": 4,
+    # RX-2: the Undo of a reminder receipt reads the same way (the fifth, and the
+    # one of `reminderReceipt.ts`).
+    "lib/reminderReceipt.ts": 1,
+    "lib/shell/reminderOpen.ts": 5,
 }
