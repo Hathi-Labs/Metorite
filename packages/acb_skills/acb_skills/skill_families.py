@@ -655,8 +655,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "Projects reminders",
         "summary": (
             "The member's own reminders, which are not tasks: set one, list "
-            "them, change the time, snooze, resolve, reopen, or promote one "
-            "to a task. It also holds the authority page of a project."
+            "them, change the time, snooze, resolve, reopen or promote one "
+            "to a task, and the authority pages of a project."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "

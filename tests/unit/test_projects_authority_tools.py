@@ -152,13 +152,13 @@ async def test_a_page_already_pinned_shows_no_card_and_hides_a_title_the_member_
     assert "«Launch rules» is already the authority page" in out
     calls += _gateway(monkeypatch, pins=[{**HIDDEN, "title": SECRET}])
     out = await skill_projects.pin_authority(PID, PAGE)
-    assert "a page you cannot read is already" in out and SECRET not in out
+    assert "a page hidden from you is already" in out and SECRET not in out
     assert asked == [] and writes(calls) == []
 
 
 @pytest.mark.parametrize(("status", "detail", "want"), [
     (403, "Not allowed", "may not change the authority page"),
-    (404, "Page not found", "was not found, or you cannot see it"),
+    (404, "Page not found", "was not found, or it is hidden from you"),
     (409, "This page is visible to fewer people than this project.",
      "«This page is visible to fewer people than this project.»"),
     (409, "Only a published page can be the authority of a project.",
@@ -185,7 +185,7 @@ async def test_an_unpin_names_the_title_only_for_a_page_the_member_can_read(monk
     assert out.startswith("Removed «Launch rules» as the authority page")
     calls = _gateway(monkeypatch, pins=[{**HIDDEN, "title": SECRET}])
     out = await skill_projects.unpin_authority(PID, PIN)
-    assert asked[-1]["detail"] == "«Product» / «Launch» · remove a page you cannot read"
+    assert asked[-1]["detail"] == "«Product» / «Launch» · remove a page hidden from you"
     assert SECRET not in asked[-1]["context"] and SECRET not in out
 
 
@@ -211,6 +211,6 @@ async def test_the_read_fences_titles_and_hides_a_page_the_member_cannot_read(mo
     calls = _gateway(monkeypatch, pins=pins)
     out = await skill_projects.project_authorities(PID)
     assert "(2 pins)" in out and "pin_id " + PIN in out
-    assert "a page you cannot read · stale" in out and SECRET not in out
+    assert "a page hidden from you · stale" in out and SECRET not in out
     assert "stale (" not in out, "a hidden page gives no reason"
     assert all(c["method"] == "GET" for c in calls)

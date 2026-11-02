@@ -122,7 +122,7 @@ async def project_authorities(project_id: str, include_removed: bool = False) ->
     out = [legend(), f"Authority pages of {data(node.get('name'))} ({len(rows)} pins):"]
     for row in rows:
         hidden = row.get("page_hidden") is True
-        name = "a page you cannot read" if hidden else data(row.get("title"))
+        name = "a page hidden from you" if hidden else data(row.get("title"))
         state = str(row.get("state") or "?")
         if state == "stale" and row.get("stale_reason"):
             state = f"stale ({data(row.get('stale_reason'))})"

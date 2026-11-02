@@ -2256,7 +2256,7 @@ async def revoke_access(project_id: str, grant: str) -> str:
 #: carries the route's own words (not published, or narrower than the project).
 _PIN_REFUSALS = {
     403: "The server says that you may not change the authority page of this project.",
-    404: "The project, the page or the pin was not found, or you cannot see it.",
+    404: "The project, the page or the pin was not found, or it is hidden from you.",
 }
 
 
@@ -2313,7 +2313,7 @@ async def pin_authority(project_id: str, page_id: str) -> str:
         return off
     same = next((r for r in held if str(r.get("page_id") or "").lower() == page), None)
     if same is not None:
-        name = "a page you cannot read" if same.get("page_hidden") is True else data(same.get("title"))
+        name = "a page hidden from you" if same.get("page_hidden") is True else data(same.get("title"))
         return (
             f"{name} is already the authority page of {data(node.get('name'))}. "
             f"Nothing changed.\n  project_id: {pid}\n  pin_id: {same.get('id')}"
@@ -2337,7 +2337,7 @@ async def pin_authority(project_id: str, page_id: str) -> str:
         row = (await post(f"/projects/nodes/{pid}/authorities", {"page_id": page})) or {}
     except GatewayRefusal as exc:
         return _pin_refusal(exc)
-    name = "a page you cannot read" if row.get("page_hidden") is True else data(row.get("title"))
+    name = "a page hidden from you" if row.get("page_hidden") is True else data(row.get("title"))
     return (
         f"{name} is now the authority page of {path}."
         f"\n  project_id: {pid}\n  pin_id: {row.get('id')}"
@@ -2369,7 +2369,7 @@ async def unpin_authority(project_id: str, pin_id: str) -> str:
         )
     pin = uuid_of(str(row.get("id")), "pin_id")
     path = await _project_path(node)
-    name = "a page you cannot read" if row.get("page_hidden") is True else data(row.get("title"))
+    name = "a page hidden from you" if row.get("page_hidden") is True else data(row.get("title"))
     impact = (
         f"{path} loses {name} as its authority page. A finding of the project "
         "stops quoting its rules to everyone who sees the project. The page itself stays"
