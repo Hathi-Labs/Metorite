@@ -33,6 +33,7 @@ under `project-docs/specs/`.
 - action_broker/ -- Approval-gated source-of-truth write executor: authority-tier disposition and a fail-closed handler registry.
   - ⚠️ **The queue binds the tenant.** Each `pending_actions` read and write opens `acb_graph.tenant_session(org)`, and `org` is `current_tenant()`, never a proposal field. Do not add a `get_session()` here. Fences: `test_action_broker_tenancy_r8.py` (R8), `test_action_broker.py`.
   - `ACTION_BROKER_ENFORCE` ships OFF in every environment, so the posture is audit-and-chokepoint. Flipping it is OWNER-GATE, and it stays blocked on BO-1d (`work_plan.md` WS-1).
+  - ⚠️ **A run with no person present settles nothing** (AUTO-7a). `approve` and `reject` answer `no_person_present` first, with no read and no write, and the audit records the refusal. Fences: `test_no_person_present.py`, `test_no_person_present_r8.py` (R8).
   - The task connector registry stays empty. Fence: `test_no_task_provider_connectors.py`.
 - customer_console/ -- WS-31, the operator-side subscription, seat and AI-metering engine (spec `customer_console.md`).
   - ⚠️ **A different plane and a different database.** It is cross-tenant by design, so it has its OWN engine (`customer_console/db.py`, in `test_db_engine_seam.py::_ALLOWED_SYNC`). Its OWN migration ladder is `infra/customer_console/`, **never** `infra/postgres/`. `CUSTOMER_CONSOLE_DATABASE_URL` has no default.

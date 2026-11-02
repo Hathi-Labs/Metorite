@@ -523,6 +523,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.brief_jobs_skipped", error=str(exc))
     try:
+        # The stub of `align.check` registers at import (WS-ALN ALN-1,
+        # gateway/align/check.py). Its own try, for the reason above.
+        from gateway.align import check as _align_check  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.align_jobs_skipped", error=str(exc))
+    try:
         from gateway.jobs.worker import start_job_worker
         _log.info("gateway.job_worker", started=await start_job_worker())
     except Exception as exc:

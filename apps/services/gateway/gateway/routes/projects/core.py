@@ -1894,7 +1894,7 @@ async def personal_tree_owner(db: Any, node_id: str) -> str | None:
 
 async def assert_move_keeps_privacy(
     db: Any, task: Any, new_project_id: str,
-) -> None:
+) -> str | None:
     """A task may only move INTO a personal project it already lives in.
 
     The rule in one sentence, covering all five combinations:
@@ -1925,6 +1925,11 @@ async def assert_move_keeps_privacy(
     incoherent whoever performs it. Phrasing it on the two PROJECTS rather than
     on the actor is also what lets an admin tidy somebody's own tree without a
     special case.
+
+    Answers the lower-case owner of the project that the task leaves, or None
+    for a team project. The read is here anyway, so ``tasks.move_task_in``
+    takes it to see a promotion (WS-ALN ALN-1) and adds no statement. A caller
+    that only guards ignores the answer. Fence: ``test_align_trigger.py``.
     """
     rows = (await db.execute(
         text(
@@ -1934,11 +1939,12 @@ async def assert_move_keeps_privacy(
         {"old": str(task.project_id), "new": str(new_project_id)},
     )).fetchall()
     owners = {str(r.id): (r.personal_owner or "").lower() or None for r in rows}
+    source = owners.get(str(task.project_id))
     destination = owners.get(str(new_project_id))
     if destination is None:
-        return  # moving into team work is always fine
-    if owners.get(str(task.project_id)) == destination:
-        return  # already inside that same person's private tree
+        return source  # moving into team work is always fine
+    if source == destination:
+        return source  # already inside that same person's private tree
     raise HTTPException(
         status_code=422,
         detail=(

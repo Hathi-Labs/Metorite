@@ -115,6 +115,8 @@ async def forget_member_profile(db: Any, email: str) -> None:
         text(CLEAR_FOR_MEMBER_SQL_TEMPLATE.replace("{org}", _BOUND_ORG)),
         {"email": email},
     )
+    # PZ-35: the chat summaries of the member go with the profile.
+    await clear_for_member(db, email)
     mark_changed(email)
 
 

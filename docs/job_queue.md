@@ -67,6 +67,9 @@ The writes of a handler and `done` commit together, or neither commits.
 - **A handler must use only the session that it receives.** A second session
   is a second transaction. Its writes commit when the try fails, and its
   locks can wait on the row lock of the run.
+- **A handler runs with no person present (AUTO-7a).** The worker marks each
+  handler in both modes (`acb_common.no_person`). A marked handler cannot
+  approve, reject, resume or answer anything, and each card denies.
 - **A `session` handler runs while a session is open.** Do not call a model
   or a provider inside it. Use the `detached` mode for that work.
 - **A `detached` handler runs with no session open.** Register it with
@@ -163,6 +166,15 @@ await queue.enqueue(db, "email.send_later", {"draft_id": draft_id},
 ```
 
 A kind matches `[a-z][a-z0-9_.]{0,63}`.
+
+**A producer on a member's write.** `align/trigger.py::enqueue_check` (WS-ALN
+ALN-1) enqueues `align.check` on the session of a task write, inside
+`db.begin_nested()`. So the write and the job commit together, and a failed
+enqueue rolls back the savepoint only. Without the savepoint, a Postgres error
+aborts the member's write. The gate needs the worker on and the org in
+`ALIGN_JOBS_ORGS`, because `prune` deletes no queued row. Copy this form for a
+new producer on a request path. `project_alignment.md` §5 holds the design, and
+`test_align_trigger.py` is the fence.
 
 ## 5a. The detached mode (BR-1b-a, built)
 
