@@ -214,6 +214,8 @@ describe("1. the answer of §14.1a", () => {
       groups: [],
       handled: [],
       handled_ok: false,
+      reminders_ahead: [],
+      reminder_subjects: {},
       needs: null,
       sources: {},
       source_apps: {},
@@ -1213,6 +1215,8 @@ describe("9. the life of a card (MD-2b)", () => {
     groups: [],
     handled: [],
     handled_ok: false,
+    reminders_ahead: [],
+    reminder_subjects: {},
     needs: null,
     sources,
     capped,
@@ -1416,7 +1420,10 @@ describe("9. the life of a card (MD-2b)", () => {
     expect(src).toMatch(/const hidden = useMemo\(\(\) => menuHidden\(menuOverlay, fetchedAt\)/);
     // The column drops a hidden card by its signal id, before the groups:
     // `columnView` takes the menu overlay as `hidden` (section 10 drives it).
-    expect(src).toMatch(/columnView\(feed\.answer, visit, \{ shown, marked: feed\.marked, hidden: feed\.hidden \}\)/);
+    // RX-3: the reminder cards join the set, so the band draws them. The set
+    // still starts from `feed.hidden` and never from `needsActs`.
+    expect(src).toMatch(/\.\.\.feed\.hidden,/);
+    expect(src).toMatch(/columnView\(feed\.answer, visit, \{ shown, marked: feed\.marked, hidden: apart \}\)/);
   });
 });
 

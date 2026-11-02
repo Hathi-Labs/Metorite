@@ -14,6 +14,7 @@ import { NAV_SECTIONS } from "@/lib/nav";
 import { relativeTime } from "@/lib/taskCard";
 
 import { orderCards } from "./presets";
+import { isReminderKind } from "./reminderKinds";
 import {
   KIND_ORDER,
   NEEDS_SOURCE_APP,
@@ -146,14 +147,28 @@ export interface NeedsGroup {
   items: NeedsItem[];
 }
 
+/** The reminder kinds that wait on the member. The bell lists them first (RX-3). */
+const FIRED_FIRST: readonly NeedsKind[] = ["reminder_due", "reminder_check"];
+
+/**
+ * Reminder rows shown before "Show all". Reminders sort first, so a long run
+ * of them would push every other row out of the seven. Three keep the rest in
+ * view, as the approval cap does for the admin's queue (RX-3).
+ */
+export const REMINDERS_SHOWN = 3;
+
 /**
  * The kind order, with the member's preset's first kind moved to the front
  * (NS-7, §8.1: the Sales manager reads replies first). A kind the feed does
  * not carry changes nothing.
  */
 export function kindOrder(first?: string): readonly NeedsKind[] {
-  if (!first || !(KIND_ORDER as readonly string[]).includes(first)) return KIND_ORDER;
-  return [first as NeedsKind, ...KIND_ORDER.filter((k) => k !== first)];
+  // RX-3: a reminder that fired and waits on the member sorts first in the
+  // bell, ahead of the server's order. The member's preset (NS-7) still moves
+  // its own kind in front of them.
+  const base: readonly NeedsKind[] = [...FIRED_FIRST, ...KIND_ORDER.filter((k) => !FIRED_FIRST.includes(k))];
+  if (!first || !(KIND_ORDER as readonly string[]).includes(first)) return base;
+  return [first as NeedsKind, ...base.filter((k) => k !== first)];
 }
 
 /**
@@ -183,14 +198,15 @@ export function shownNeeds(
   first?: string,
 ): { groups: NeedsGroup[]; hidden: number } {
   const order = kindOrder(first);
-  const sorted = first
-    ? order.flatMap((kind) => items.filter((i) => i.kind === kind))
-    : items;
+  // The cut runs over the kind order, with the reminders in front (RX-3).
+  const sorted = order.flatMap((kind) => items.filter((i) => i.kind === kind));
   let approvals = 0;
+  let reminders = 0;
   const shown = expanded
     ? sorted
     : sorted
         .filter((i) => i.kind !== "approval" || ++approvals <= APPROVALS_SHOWN)
+        .filter((i) => !isReminderKind(i.kind) || ++reminders <= REMINDERS_SHOWN)
         .slice(0, limit);
   return { groups: groupNeeds(shown, first), hidden: items.length - shown.length };
 }

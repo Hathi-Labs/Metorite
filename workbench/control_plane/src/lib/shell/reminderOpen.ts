@@ -404,6 +404,37 @@ export function refusalWords(
   return fallback;
 }
 
+/** One POST to a reminder route, read as a row. The one place that does it. */
+async function postReminder(
+  id: string,
+  url: string,
+  body: Record<string, string>,
+  fetchImpl: typeof fetch,
+): Promise<ActResult> {
+  try {
+    const res = await fetchImpl(url, {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data: unknown = await res.json().catch(() => null);
+    const row = res.ok ? readReminderRow(data) : null;
+    if (row) {
+      noteReminder(row, "chip");
+      return { ok: true, row };
+    }
+    // A 409 that says the reminder is closed: the model or another tab closed
+    // it. Keep the state, so the card draws no chip that can only fail again.
+    const detail = data && typeof data === "object" ? str((data as Record<string, unknown>).detail) : null;
+    const closedState = res.status === 409 ? closedStateOf409(detail) : null;
+    if (closedState) noteReminderState(id, closedState, null);
+    return { ok: false, words: refusalWords(res.status, data) };
+  } catch {
+    return { ok: false, words: UNREACHABLE_WORDS };
+  }
+}
+
 /**
  * Run one route chip. On success the newest row goes into the store, so the
  * card and the dock both see it. On a refusal the card shows the words.
@@ -415,28 +446,36 @@ export async function runReminderAct(
 ): Promise<ActResult> {
   const req = actRequest(id, act);
   if (!req || !UUID_RE.test(id)) return { ok: false, words: "This reminder cannot change here." };
-  try {
-    const res = await fetchImpl(req.url, {
-      method: "POST",
-      cache: "no-store",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(req.body),
-    });
-    const body: unknown = await res.json().catch(() => null);
-    const row = res.ok ? readReminderRow(body) : null;
-    if (row) {
-      noteReminder(row, "chip");
-      return { ok: true, row };
-    }
-    // A 409 that says the reminder is closed: the model or another tab closed
-    // it. Keep the state, so the card draws no chip that can only fail again.
-    const detail = body && typeof body === "object" ? str((body as Record<string, unknown>).detail) : null;
-    const closedState = res.status === 409 ? closedStateOf409(detail) : null;
-    if (closedState) noteReminderState(id, closedState, null);
-    return { ok: false, words: refusalWords(res.status, body) };
-  } catch {
-    return { ok: false, words: UNREACHABLE_WORDS };
-  }
+  return postReminder(id, req.url, req.body, fetchImpl);
+}
+
+/**
+ * The route call of a move to a named time (RX-3). `snooze` is the member's
+ * "later": the server takes a time after now, within a year. `reschedule`
+ * takes any time, and the band's Undo of a snooze uses it. Both want an ISO
+ * time WITH an offset.
+ */
+export function moveRequest(
+  id: string,
+  route: "snooze" | "reschedule",
+  fireAt: string,
+): { url: string; body: Record<string, string> } {
+  return {
+    url: `/api/projects/my/reminders/${encodeURIComponent(id)}/${route}`,
+    body: { fire_at: fireAt },
+  };
+}
+
+/** Move one reminder to `fireAt` through `/snooze` or `/reschedule` (RX-3). */
+export async function runReminderMove(
+  id: string,
+  route: "snooze" | "reschedule",
+  fireAt: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ActResult> {
+  if (!UUID_RE.test(id)) return { ok: false, words: "This reminder cannot change here." };
+  const req = moveRequest(id, route, fireAt);
+  return postReminder(id, req.url, req.body, fetchImpl);
 }
 
 // ── The words after a chip ───────────────────────────────────────────────────

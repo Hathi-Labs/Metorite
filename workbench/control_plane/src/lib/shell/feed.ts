@@ -39,6 +39,7 @@ import { isInAppPath } from "@/lib/inAppLink";
 import { NAV_SECTIONS } from "@/lib/nav";
 
 import { APP_NAMES, type FailedSource, appIcon, failedLines, isFailedSource } from "./myDay";
+import { isReminderKind } from "./reminderKinds";
 import {
   KIND_ORDER,
   type NeedsApp,
@@ -158,6 +159,25 @@ export interface HandledEntry {
   at: string | null;
 }
 
+/**
+ * One scheduled reminder of the rest of the member's day (RX-3). It is never
+ * a card, a needs row or a count: the Reminders band draws it as a quiet row.
+ */
+export interface AheadReminder {
+  id: string;
+  title: string;
+  kind: "action" | "notice";
+  /** ISO with an offset. */
+  fire_at: string;
+  important: boolean;
+}
+
+/** The object a reminder is linked to. `label` is null when the member may not see it. */
+export interface ReminderSubject {
+  kind: string;
+  label: string | null;
+}
+
 export interface FeedAnswer {
   cards: FeedCard[];
   /** The groups that hold a card, in the server's order. */
@@ -173,6 +193,13 @@ export interface FeedAnswer {
    * and it reads as false, so the summary makes no claim.
    */
   handled_ok: boolean;
+  /**
+   * The scheduled reminders of the rest of the member's day, soonest first
+   * (RX-3). An older gateway sends none, and it reads as empty.
+   */
+  reminders_ahead: AheadReminder[];
+  /** The linked object of each reminder on the band, by reminder id (RX-3). */
+  reminder_subjects: Record<string, ReminderSubject>;
   /** The needs view of the same run, or null from a gateway that sent none. */
   needs: NeedsFeed | null;
   /** Keyed by SOURCE id, as the server sends it: `reminders` is a source, not an app. */
@@ -321,6 +348,37 @@ function readHandled(raw: unknown): HandledEntry | null {
   };
 }
 
+/** The upcoming reminders of the band, each row with an id, a title and a real time. */
+function readAhead(raw: unknown): AheadReminder[] {
+  if (!Array.isArray(raw)) return [];
+  const out: AheadReminder[] = [];
+  for (const r of raw as Record<string, unknown>[]) {
+    if (!r || typeof r !== "object") continue;
+    if (typeof r.id !== "string" || !r.id || typeof r.title !== "string") continue;
+    if (typeof r.fire_at !== "string" || Number.isNaN(Date.parse(r.fire_at))) continue;
+    out.push({
+      id: r.id,
+      title: r.title,
+      kind: r.kind === "notice" ? "notice" : "action",
+      fire_at: r.fire_at,
+      important: r.important === true,
+    });
+  }
+  return out;
+}
+
+/** The `reminder_subjects` map, with each entry that is not well formed dropped. */
+function readSubjects(raw: unknown): Record<string, ReminderSubject> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, ReminderSubject> = {};
+  for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
+    const e = v as Record<string, unknown> | null;
+    if (!e || typeof e !== "object" || typeof e.kind !== "string" || !e.kind) continue;
+    out[id] = { kind: e.kind, label: typeof e.label === "string" && e.label ? e.label : null };
+  }
+  return out;
+}
+
 /** The `source_apps` map, with each entry that is not text dropped. */
 function readSourceApps(raw: unknown): Record<string, string> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
@@ -361,6 +419,8 @@ export function readFeedAnswer(raw: unknown): FeedAnswer {
     groups,
     handled,
     handled_ok: Array.isArray(body.handled) && body.handled_ok === true,
+    reminders_ahead: readAhead(body.reminders_ahead),
+    reminder_subjects: readSubjects(body.reminder_subjects),
     needs: body.needs && typeof body.needs === "object" ? readFeed(body.needs) : null,
     sources: body.sources && typeof body.sources === "object" ? (body.sources as FeedAnswer["sources"]) : {},
     source_apps: readSourceApps(body.source_apps),
@@ -839,6 +899,9 @@ export function actSpent(act: FeedAct, marked: ReadonlySet<string>): boolean {
  */
 export function cardHidden(card: FeedCard, marked: ReadonlySet<string>): boolean {
   if (marked.size === 0) return false;
+  // RX-3: a reminder card has no `tap` act. The band's Done and Snooze mark
+  // its own id, so the card leaves the band, the bell and the count together.
+  if (isReminderKind(card.kind) && marked.has(card.signal_id)) return true;
   const closed = new Set<string>();
   for (const act of card.acts) if (actSpent(act, marked)) for (const k of CLOSES[act.act ?? ""] ?? []) closed.add(k);
   return closed.has(card.kind) && card.folded.every((k) => closed.has(k));

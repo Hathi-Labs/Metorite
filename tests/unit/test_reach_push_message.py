@@ -66,7 +66,8 @@ def test_hidden_details_leave_no_title_or_time_in_the_payload() -> None:
     raw = msg.payload()
     data = json.loads(raw)
     assert data == {"title": "Metorite: a reminder", "body": ORG,
-                    "url": f"/chat?reminder={RID}", "tag": RID}
+                    "url": f"/chat?reminder={RID}", "tag": RID,
+                    "reminder_id": RID, "kind": "reminder_due"}
     for secret in ("Acme", "buyer", "9:30", "AM", "PM"):
         assert secret not in raw
     # The same holds for the other two kinds.
@@ -88,3 +89,21 @@ def test_a_long_title_is_clipped_and_a_bad_zone_falls_back_to_utc() -> None:
 def test_the_payload_url_passes_the_sender_s_path_check() -> None:
     # `PushMessage.payload` raises on a url that is not a path on this app.
     assert build("reminder_due", ROW, ORG, False).payload()
+
+
+def test_the_payload_carries_what_the_buttons_need_and_stays_small() -> None:
+    """RX-4. The worker adds Done and "In 1 hour" from `reminder_id` and
+    `kind`. Mutation: drop `reminder_id=rid` from `build` and this fails."""
+    for kind in push_message.KINDS:
+        msg = build(kind, ROW, ORG, hide_details=False)
+        data = json.loads(msg.payload())
+        assert data["reminder_id"] == RID
+        assert data["kind"] == kind
+    # A push service carries about 4 KB. A long title is clipped at 80 characters.
+    long_row = {**ROW, "title": "x" * 500}
+    raw = build("reminder_due", long_row, "O" * 60, hide_details=False).payload()
+    assert len(raw.encode("utf-8")) < 600
+
+
+def test_a_message_with_no_reminder_keeps_the_four_keys() -> None:
+    assert set(json.loads(PushMessage(title="T", url="/x", tag="g").payload())) == {"title", "url", "tag"}

@@ -1652,6 +1652,39 @@ class FeedRun:
     tz: ZoneInfo
     needs_view: dict[str, Any] | None = None
     closed: handled.HandledRun | None = None
+    #: The Reminders band's extra read (RX-3), for the read only: the
+    #: upcoming rows and the linked objects. None when it did not run.
+    band: dict[str, Any] | None = None
+    #: False when the band read failed, so the answer is served and not stored.
+    band_ok: bool = True
+
+
+async def _reminder_band(user: UserContext, signals: list[Signal],
+                         sources: dict[str, str], now: datetime) -> tuple[dict[str, Any], bool]:
+    """The Reminders band of My Day beyond the cards (RX-3): the scheduled
+    reminders of the rest of the member's day, and the linked object of each
+    reminder on the band. It reads only when the reminders source answered
+    ``ok``, so a flag off or a member without ``projects`` costs nothing.
+    The rows are never needs rows and never a card: they take no slot of
+    ``limit`` and raise no count. A failed read gives an empty band and
+    ``False``, so the cache does not store the answer."""
+    empty: dict[str, Any] = {"rows": [], "subjects": {}}
+    if sources.get("reminders") != "ok":
+        return empty, True
+    from gateway.routes.projects import reminders
+
+    fired = [
+        (s.entity["id"], str(s.facts["subject_kind"]), str(s.facts["subject_id"]))
+        for s in signals
+        if s.signal_id.startswith("reminders:")
+        and s.facts.get("subject_kind") and s.facts.get("subject_id")
+    ]
+    try:
+        return await reminders.my_day_band(user, now=now, subjects=fired), True
+    except Exception as exc:
+        logger.warning("shell.feed reminder band failed",
+                       extra={"error": type(exc).__name__})
+        return empty, False
 
 
 async def feed_cards(user: UserContext, now: datetime | None = None, *,
@@ -1706,15 +1739,18 @@ async def feed_cards(user: UserContext, now: datetime | None = None, *,
     # (MD-2c), so the feed's worst case does not grow.
     cards = build_cards(signals, now, tz, today)
     closed: handled.HandledRun | None = None
+    band: dict[str, Any] | None = None
+    band_ok = True
     if read:
-        joined, closed = await asyncio.gather(
+        joined, closed, (band, band_ok) = await asyncio.gather(
             state.apply_state(user, cards, now),
             handled.handled_run(user, now, budget_s=state.STATE_TIMEOUT_S),
+            _reminder_band(user, signals, sources, now),
         )
     else:
         joined = await state.apply_state(user, cards, now)
     return FeedRun(joined.cards, joined, signals, found, sources, capped, now, tz,
-                   needs_view, closed)
+                   needs_view, closed, band, band_ok)
 
 
 async def feed_answer(user: UserContext, size: int) -> cache.Computed:
@@ -1738,10 +1774,18 @@ async def feed_answer(user: UserContext, size: int) -> cache.Computed:
         "handled": closed.entries,
         "handled_ok": closed.ok,
     }
+    # RX-3: the Reminders band's extra rows, sent only when there are some, so
+    # an answer with none keeps its bytes. `reminders_ahead` is never a card,
+    # a group or a count. `reminder_subjects` names the linked object of each
+    # reminder on the band, by reminder id.
+    if (fr.band or {}).get("rows"):
+        body["reminders_ahead"] = fr.band["rows"]
+    if (fr.band or {}).get("subjects"):
+        body["reminder_subjects"] = fr.band["subjects"]
     # The next time edge (§8.4 item 2): what the clock changes, and when.
     edges = [*cache.signal_edges(fr.signals), *cache.day_edges(joined.day, tz, now)]
     edges += [e for e in (needs._instant(a.next_edge) for a in fr.found.values())
               if e is not None]
     if joined.snooze_edge is not None:
         edges.append(joined.snooze_edge)
-    return cache.Computed(body, tuple(edges), cache.storable(body, state_ok=joined.ok))
+    return cache.Computed(body, tuple(edges), cache.storable(body, state_ok=joined.ok and fr.band_ok))

@@ -961,7 +961,10 @@ def _reminder_signal(row: dict[str, Any]) -> Signal:
         facts={"fire_at": fire_at,
                "waiting_since": _iso(row.get("step_at")) or fire_at,
                "cycles": int(row.get("cycles") or 0),
-               "notice": row.get("kind") == "notice"},
+               "notice": row.get("kind") == "notice",
+               # RX-3: the linked object, so My Day's band can name it.
+               "subject_kind": row.get("subject_kind"),
+               "subject_id": row.get("subject_id")},
         href=href, acts=(link("open-reminder", "Open", href),),
         at=fire_at, urgent_at=fire_at if kind == "reminder_due" else None,
     )
