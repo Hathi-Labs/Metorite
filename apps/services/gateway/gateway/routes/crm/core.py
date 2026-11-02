@@ -703,7 +703,7 @@ SYSTEM_FIELDS: dict[str, tuple[SystemField, ...]] = {
         _sf("status_id", "Stage", "select"),
         _sf("amount", "Amount", "currency"),
         _sf("currency", "Currency", "text"),
-        _sf("probability", "Probability", "percent"),
+        _sf("probability", "Win chance", "percent"),
         _sf("expected_close_date", "Closing date", "date"),
         _sf("next_step", "Next step", "text"),
         _sf("lead_id", "Lead", "lookup", "leads"),

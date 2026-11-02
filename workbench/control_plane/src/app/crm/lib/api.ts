@@ -69,6 +69,13 @@ import type {
 } from "./types";
 import type { CrmModule, ModuleListResponse, ModuleRecordPage } from "./modules";
 
+/**
+ * What a refusal with no detail says (CRM-U17a). One sentence for every CRM
+ * refusal that has nothing better, with no status code in it. Anything that
+ * turns a failure into words reads it from here.
+ */
+export const TRY_AGAIN = "That did not work. Try again.";
+
 export class CrmError extends Error {
   status: number;
   /**
@@ -121,7 +128,7 @@ export async function call<T>(path: string, init?: RequestInit): Promise<T> {
       error?: string;
     };
     throw new CrmError(
-      detailOf(body) || `Gateway error ${res.status}`,
+      detailOf(body) || TRY_AGAIN,
       res.status,
       codeOf(body),
       fieldOf(body),
