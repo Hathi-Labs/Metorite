@@ -398,6 +398,16 @@ _MINE_FOR_UPDATE_SQL = (
 #: Serialises the creates of ONE member in one organization, to the commit.
 _CREATE_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
 
+
+def create_lock_key(tenant: str | None, member: str) -> str:
+    """The advisory-lock key of one member's creates, in one tenant (RX-7).
+
+    The tenant is part of the key, so one address that holds a seat in two
+    organizations does not make one org's create wait on the other's.
+    Fence: ``tests/unit/test_reminder_create_lock_key.py``.
+    """
+    return f"reminder_create:{tenant or ''}:{member}"
+
 _OPEN_NEAR_SQL = (
     "SELECT * FROM reminders "
     "WHERE member_email = :me AND state = ANY(:states) "
@@ -588,7 +598,7 @@ async def create_reminder(
     async with _tenant_session() as db:
         await db.execute(
             text(_CREATE_LOCK_SQL),
-            {"key": f"reminder_create:{current_tenant() or ''}:{me}"},
+            {"key": create_lock_key(current_tenant(), me)},
         )
         twin = await _open_twin(db, me, title, fire_at, subject_kind, subject_id)
         if twin is not None:
