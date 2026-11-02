@@ -64,8 +64,10 @@ function Control({ field, draft, id, errorId, onChange, onBlur }: ControlProps) 
       return <Textarea {...common} rows={4} value={String(draft)} onChange={(e) => onChange(e.target.value)} />;
     case "checkbox":
       return (
-        <Checkbox id={id} onBlur={onBlur} aria-required={field.required || undefined} {...bad}
-          checked={draft === true} onChange={(e) => onChange(e.target.checked)} />
+        <span className="inline-flex size-6 items-center justify-center">
+          <Checkbox id={id} onBlur={onBlur} aria-required={field.required || undefined} {...bad}
+            checked={draft === true} onChange={(e) => onChange(e.target.checked)} />
+        </span>
       );
     case "select":
       return (
@@ -83,7 +85,7 @@ function Control({ field, draft, id, errorId, onChange, onBlur }: ControlProps) 
         <div role="group" aria-label={labelOf(field)} aria-required={field.required || undefined}
           {...bad} className="flex flex-wrap gap-x-4 gap-y-1.5">
           {(field.options ?? []).map((o, i) => (
-            <label key={o} className="inline-flex items-center gap-1.5 text-xs text-foreground">
+            <label key={o} className="inline-flex min-h-6 items-center gap-1.5 text-xs text-foreground">
               <Checkbox id={i === 0 ? id : undefined} onBlur={onBlur} checked={picked.includes(o)}
                 aria-invalid={errorId ? true : undefined}
                 onChange={(e) => onChange(e.target.checked ? [...picked, o] : picked.filter((x) => x !== o))} />
