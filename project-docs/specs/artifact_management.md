@@ -694,23 +694,66 @@ version stepper and a diff view on the artifact page.
 
 ### AM-10 · A chat's files outlive the chat — AGENT-SAFE, HIGH tier (D162.8)
 
-The chat delete route moves the chat's files to a kept folder (§7.3) in
-place of `purge_thread_files`. Every door that makes a new chat keeps its
-purge of the new id. A migration (next free number, R1) adds two nullable
-columns to `artifacts`: `source_title TEXT` and `source_deleted_at
-TIMESTAMPTZ` (R6). The library shows a file of a deleted chat as "From
-chat: <title> · deleted". HIGH tier: it deletes, moves and guards member
-files, so it takes the full loop.
+Audited GO-NARROWED on 2026-11-02 (spec-auditor). HIGH tier: it deletes,
+moves and guards member files, so it takes the full loop with Opus.
 
-Done when, as R8 tests on a real database:
-- A chat with two outputs, one upload and one zip is deleted. Its owner
-  still reads all four, with the same bytes and hashes.
-- A new chat made with the same id lists no file, and reads none of the
-  four. The H-227 tests still pass.
-- Each moved `artifacts` row keeps `session_id`, and has `source_title`
-  and `source_deleted_at`.
-- A failed move keeps the chat and answers 503.
-- Another member of the organization reads none of the four.
+**The registry decides.** When `registry.enabled()` is false, no
+`artifacts` row exists, so nothing could find a moved file. Then the delete
+purges as today. When it is true, the delete keeps the files.
+
+**The work:**
+
+1. **Migration** (next free number at build time, R1): two nullable columns
+   on `artifacts`, `source_title TEXT` and `source_deleted_at TIMESTAMPTZ`,
+   with `ADD COLUMN IF NOT EXISTS` and no default (R6).
+2. **The kept folder.** One prefix that no thread slug can produce. The
+   builder verifies it against the slug grammar of `agent_paths`, for example
+   `outputs/kept/<uuid>/`. The server mints the UUID. Under it sit the
+   chat's `inputs/`, its `outputs/`, the loose files it began, and its zips.
+3. **The move** replaces the first `purge_thread_files` call in
+   `delete_session` (`routes/chat.py`). The order: the files on disk first,
+   then the blob rows, the history rows and the `artifacts` rows in one
+   transaction, as the purge orders its own steps. A retry after a half-done
+   move finishes it, and never collides on `artifacts_store_key`. A failure
+   raises, so the route answers 503 and keeps the chat, as today. The
+   best-effort pass after the row delete moves a late file into the same
+   kept folder.
+4. **The purge and `session_paths` skip the kept prefix.** A moved history
+   row keeps the old `session_id`. So without this, a later
+   `prepare_new_session` with the same id would delete the kept files.
+5. **The `_sync_purge` defect** (`acb_memory/blob_store.py`). Each purge
+   also deletes the `artifacts` rows of the same paths, in the same
+   transaction. This closes the "First" note of AM-2.
+6. **The read.** `GET /artifacts/{id}/content` loads the row under the
+   tenant session, requires `can_read(row, user.email)`, and streams the
+   bytes from `agent_blob` by agent, instance and path. It uses the size cap
+   and the `Content-Disposition` of `GET /agent/artifacts/file`. It answers
+   404 for a row the member may not read, and when the registry is off. No
+   other route reads a kept file. AM-2's viewer reuses it.
+7. **The list.** The `session_id` filter of `GET /artifacts` leaves out a
+   row with `source_deleted_at`, so a new chat that reuses the id lists
+   none of them. A list or get row says the source is deleted.
+8. **The dialog.** With the registry on, the delete dialog reads "Delete
+   this chat? Its N files stay in Files.", with N from the registry. With it
+   off, the dialog is as today. The "From chat: <title> · deleted" label is
+   AM-2's.
+
+**Done when**, as R8 tests on a real database, in a new file named in the PR:
+- A chat with two outputs, one upload and one zip is deleted with the
+  registry on. Its owner reads all four through the content route, with the
+  same bytes and SHA-256.
+- A new chat made with the same id lists none of them, reads none of them,
+  and does not delete them, through `prepare_new_session` too.
+- Each moved `artifacts` row keeps `session_id`, and has `source_title` and
+  `source_deleted_at`.
+- An injected failure partway through the move answers 503 and keeps the
+  chat. A second delete finishes the move.
+- Another member, and a member of another organization, get 404 from the
+  content route.
+- With the registry off, the delete purges as today.
+- A purge leaves no `artifacts` row with no bytes.
+- `tests/unit/test_h227_thread_scope.py`, `test_h201_artifact_routes.py` and
+  `test_artifact_registry.py` still pass.
 
 ### Later, not here
 
@@ -728,7 +771,7 @@ bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
 uv run pytest tests/unit/test_artifact_registry.py tests/unit/test_artifact_access.py \
   tests/unit/test_artifact_sweep.py tests/unit/test_artifact_routes.py -q
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_tenancy_boundary.py -q
-uv run pytest tests/unit/test_h201_artifact_routes.py tests/unit/test_h227_thread_files.py -q
+uv run pytest tests/unit/test_h201_artifact_routes.py tests/unit/test_h227_thread_scope.py -q
 
 # Frontend
 cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/artifacts src/lib/shell/seams.test.ts src/lib/nav.test.ts
