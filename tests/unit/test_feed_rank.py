@@ -79,8 +79,18 @@ class TestTheTable:
         assert min(needs) > max(others)
 
     def test_the_needs_kinds_keep_the_needs_feeds_own_order(self):
+        """RX-7: the needs list puts the two fired reminder kinds FIRST, so
+        the bell's cut cannot drop them. The My Day rank keeps them below the
+        five others (the test above), so they are the one named exception.
+        Mutation: move `needs_reply` ahead of `overdue` in `KIND_ORDER`, and
+        this fails."""
+        def kept(kinds):
+            return [k for k in kinds if k not in ("reminder_due", "reminder_check")]
+
         by_base = sorted(KIND_ORDER, key=lambda k: -feed_rank.BASE[k])
-        assert by_base == sorted(KIND_ORDER, key=KIND_ORDER.__getitem__)
+        assert kept(by_base) == kept(sorted(KIND_ORDER, key=KIND_ORDER.__getitem__))
+        first = sorted(KIND_ORDER, key=KIND_ORDER.__getitem__)[:2]
+        assert first == ["reminder_due", "reminder_check"]
 
     def test_an_unknown_kind_raises(self):
         # An MD-9 kind, which no slice has added yet.

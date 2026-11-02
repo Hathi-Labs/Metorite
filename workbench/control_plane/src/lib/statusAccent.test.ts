@@ -11,10 +11,16 @@
  * keyword and the positional fallback are asserted here for that reason.
  */
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
   ACCENT_HUES,
+  COLOR_ALIASES,
+  GRAY_SATURATION,
+  HUE_BANDS,
   type AccentHue,
   PROJECT_STATE_ORDER,
   PROJECT_STATES,
@@ -410,5 +416,34 @@ describe("the project run-state vocabulary", () => {
 
   it("accepts the stored spelling case-insensitively", () => {
     expect(projectState("ON_HOLD")?.label).toBe("Paused");
+  });
+});
+
+// PJP-1 (D168.2): one colour vocabulary. `hues.py` holds the same tables, and
+// `tests/unit/test_hues.py` compares them with this same fixture.
+describe("hex colours map to the six hues", () => {
+  const fixture = JSON.parse(
+    readFileSync(resolve(__dirname, "../../../../tests/fixtures/hue_vocabulary.json"), "utf-8"),
+  );
+
+  it("matches the parity fixture", () => {
+    expect(COLOR_ALIASES).toEqual(fixture.aliases);
+    expect(GRAY_SATURATION).toBe(fixture.gray_saturation);
+    expect(HUE_BANDS.map((b) => [b.hue, b.from, b.to])).toEqual(fixture.bands);
+  });
+
+  it("maps every code of the fixture, and the seven of production", () => {
+    for (const [code, hue] of Object.entries(fixture.hex)) {
+      expect(resolveHue({ color: code })).toBe(hue);
+    }
+    expect(resolveHue({ color: "#eab308" })).toBe("amber");
+  });
+
+  it("a stored hex beats the category", () => {
+    expect(resolveHue({ color: "#6366F1", category: "done" })).toBe("blue");
+  });
+
+  it("text that is not a colour still falls through", () => {
+    expect(resolveHue({ color: "#12", category: "done" })).toBe("green");
   });
 });

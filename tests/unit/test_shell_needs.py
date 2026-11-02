@@ -1121,7 +1121,23 @@ class TestTheReminderSource:
         assert order[-1] == "approvals"
         assert order.index("reminders") == order.index("approvals") - 1
 
-    def test_the_three_kinds_come_last_and_oldest_first(self):
-        assert [k for k, _ in sorted(shell.KIND_ORDER.items(), key=lambda kv: kv[1])][-3:] == [
-            "reminder_due", "reminder_check", "reminder_unconfirmed"]
+    def test_the_fired_kinds_come_first_and_the_unconfirmed_last(self):
+        """RX-7. Mutation: put `reminder_due` back after `needs_reply` in
+        `KIND_ORDER` and this fails, and so does the cut test below."""
+        order = [k for k, _ in sorted(shell.KIND_ORDER.items(), key=lambda kv: kv[1])]
+        assert order[:2] == ["reminder_due", "reminder_check"]
+        assert order[-1] == "reminder_unconfirmed"
         assert all(shell.NEWEST_FIRST[k] is False for k in shell.REMINDER_KINDS)
+
+    def test_the_cut_keeps_a_fired_reminder_behind_thirty_other_rows(self):
+        """RX-7. The server keeps the first `size` rows. Thirty overdue tasks
+        and one fired reminder: the reminder stays."""
+        at = "2026-11-02T08:00:00+00:00"
+        rows = [{"id": f"tasks:{n}", "kind": "overdue", "app": "projects", "at": at}
+                for n in range(30)]
+        rows.append({"id": "reminders:r-1", "kind": "reminder_due", "app": "calendar", "at": at})
+        rows.append({"id": "reminders:r-2", "kind": "reminder_check", "app": "calendar", "at": at})
+        cut = shell._fit(rows, shell.DEFAULT_LIMIT)
+        ids = [i["id"] for i in cut["items"]]
+        assert ids[:2] == ["reminders:r-1", "reminders:r-2"]
+        assert cut["count"] == shell.DEFAULT_LIMIT and cut["total"] == 32

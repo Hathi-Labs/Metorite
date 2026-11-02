@@ -126,13 +126,14 @@ describe("readFeed", () => {
   });
 
   it("puts approvals right after the overdue rows", () => {
-    expect(KIND_ORDER.slice(0, 5)).toEqual(["overdue", "approval", "due_today", "notification", "needs_reply"]);
+    expect(KIND_ORDER.slice(2, 7)).toEqual(["overdue", "approval", "due_today", "notification", "needs_reply"]);
   });
 
   // WS-66 RM-2b. Mutation: take a reminder kind out of KIND_ORDER and the bell
   // row below is dropped by `isItem`, so this fails.
-  it("puts the three reminder kinds last, and keeps a reminder row", () => {
-    expect(KIND_ORDER.slice(5)).toEqual(["reminder_due", "reminder_check", "reminder_unconfirmed"]);
+  it("puts the fired reminder kinds first, the unconfirmed last, and keeps a reminder row", () => {
+    expect(KIND_ORDER.slice(0, 2)).toEqual(["reminder_due", "reminder_check"]);
+    expect(KIND_ORDER.at(-1)).toBe("reminder_unconfirmed");
     const due = item({
       id: "reminders:r1",
       app: "calendar",

@@ -178,7 +178,7 @@ const ACCENTS: Record<AccentHue, StatusAccent> = {
  * free text, and its own map accepted these names until this module took it
  * over. So a stored `sky` or `rose` still draws, as the nearest hue here.
  */
-const COLOR_ALIASES: Record<string, AccentHue> = {
+export const COLOR_ALIASES: Record<string, AccentHue> = {
   grey: "gray",
   gray: "gray",
   red: "red",
@@ -197,6 +197,54 @@ const COLOR_ALIASES: Record<string, AccentHue> = {
   rose: "red",
   pink: "violet",
 };
+
+/**
+ * Hex colour → hue (PJP-1, D168.2). A saturation under `GRAY_SATURATION` is
+ * gray. Otherwise the hue angle picks a band: `[from, to)` in degrees, and
+ * red wraps through 0. `skill_projects/hues.py` holds the same numbers, and a
+ * parity test holds the two together through a JSON fixture.
+ */
+export const GRAY_SATURATION = 0.3;
+export const HUE_BANDS: ReadonlyArray<{ hue: AccentHue; from: number; to: number }> = [
+  { hue: "red", from: 345, to: 15 },
+  { hue: "amber", from: 15, to: 65 },
+  { hue: "green", from: 65, to: 170 },
+  { hue: "blue", from: 170, to: 250 },
+  { hue: "violet", from: 250, to: 345 },
+];
+
+/** The hue of a `#RGB` or `#RRGGBB` code, or null when the text is not hex. */
+export function hueOfHex(value: string): AccentHue | null {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(value.trim());
+  if (!m) return null;
+  let h = m[1];
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const r = parseInt(h.slice(0, 2), 16) / 255;
+  const g = parseInt(h.slice(2, 4), 16) / 255;
+  const b = parseInt(h.slice(4, 6), 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return "gray";
+  // Round both, as the server does: the two float paths differ in the last
+  // bit, and a code on a band edge must land on the same side of it.
+  const round6 = (x: number) => Math.round(x * 1e6) / 1e6;
+  const sat = round6(d / (1 - Math.abs(2 * l - 1)));
+  if (sat < GRAY_SATURATION) return "gray";
+  let deg: number;
+  if (max === r) deg = 60 * (((g - b) / d) % 6);
+  else if (max === g) deg = 60 * ((b - r) / d + 2);
+  else deg = 60 * ((r - g) / d + 4);
+  if (deg < 0) deg += 360;
+  deg = round6(deg);
+  for (const band of HUE_BANDS) {
+    const inBand =
+      band.from < band.to ? deg >= band.from && deg < band.to : deg >= band.from || deg < band.to;
+    if (inBand) return band.hue;
+  }
+  return "red";
+}
 
 /**
  * A CRM stage type → hue (WS-53 CRM-C2).
@@ -309,6 +357,10 @@ export interface AccentInput {
 export function resolveHue(input: AccentInput): AccentHue {
   const stored = input.color?.trim().toLowerCase();
   if (stored && stored in COLOR_ALIASES) return COLOR_ALIASES[stored];
+  if (stored) {
+    const fromHex = hueOfHex(stored);
+    if (fromHex) return fromHex;
+  }
 
   const category = input.category?.trim().toLowerCase();
   if (category && category in CATEGORY_HUES) return CATEGORY_HUES[category];

@@ -451,16 +451,18 @@ async def get_user_settings(user: UserContext = Depends(get_current_user)):
         return await _load(db, _uid(user))
 
 
-@router.put("/settings", response_model=UserSettingsModel)
-async def put_user_settings(
-    patch: UserSettingsPatch,
-    user: UserContext = Depends(get_current_user),
-):
-    """Partial update — only the provided fields change (upsert)."""
-    uid = _uid(user)
-    fields = {k: v for k, v in patch.model_dump().items() if v is not None}
+async def write_member_settings(uid: str, fields: dict[str, Any]) -> None:
+    """The one write of a member's settings row (upsert of ``fields``).
+
+    ``PUT /tasks/settings`` and ``PUT /auth/me/zone`` (RX-7) both call it, so
+    a second writer of the row never exists. ``uid`` is the session's address
+    and the tenant is the bound one. Neither comes from a request body.
+    """
+    if not fields:
+        return
     import json
     _jsonb_cols = {"energy_windows", "day_templates"}
+    fields = dict(fields)
     if "day_templates" in fields:
         fields["day_templates"] = json.dumps(
             _day_templates(fields["day_templates"]))
@@ -468,27 +470,37 @@ async def put_user_settings(
         # Validate + JSON-encode for the JSONB column.
         fields["energy_windows"] = json.dumps(
             _energy_windows(fields["energy_windows"]))
-    if fields:
-        # JSONB columns need an explicit ::jsonb cast on the bind param.
-        # The space before the cast matters — SQLAlchemy's bind-param
-        # scanner mis-parses a bind name immediately followed by a
-        # Postgres "::" cast (drops the last character of the name,
-        # leaves literal cast text the driver can't parse); see
-        # tests/unit/test_sql_bindparam_jsonb_cast.py.
-        def _ph(k: str) -> str:
-            return f":{k} ::jsonb" if k in _jsonb_cols else f":{k}"
-        async with _tenant_session() as db:
-            # A first write makes the row, and `_load` then stops reading the
-            # People seed (D-PC-16). So a new row carries the seed, as the two
-            # shell writes do. The shell's zone save (RX-5) makes this row for
-            # a member who never opened Calendar. An existing row takes
-            # `fields` only. The read decides the seed, and nothing else.
-            seed: dict[str, int] = {}
-            if (await db.execute(text(_HAS_ROW_SQL), {"uid": uid})).first() is None:
-                got = await _seed_from_work_schedule(db, uid)
-                seed = {k: v for k, v in got.items() if k not in fields}
-            await db.execute(
-                text(upsert_settings_sql([*fields, *seed], _ph, update=list(fields))),
-                {"uid": uid, **fields, **seed})
+    # JSONB columns need an explicit ::jsonb cast on the bind param.
+    # The space before the cast matters — SQLAlchemy's bind-param
+    # scanner mis-parses a bind name immediately followed by a
+    # Postgres "::" cast (drops the last character of the name,
+    # leaves literal cast text the driver can't parse); see
+    # tests/unit/test_sql_bindparam_jsonb_cast.py.
+    def _ph(k: str) -> str:
+        return f":{k} ::jsonb" if k in _jsonb_cols else f":{k}"
+    async with _tenant_session() as db:
+        # A first write makes the row, and `_load` then stops reading the
+        # People seed (D-PC-16). So a new row carries the seed, as the two
+        # shell writes do. The shell's zone save (RX-5) makes this row for
+        # a member who never opened Calendar. An existing row takes
+        # `fields` only. The read decides the seed, and nothing else.
+        seed: dict[str, int] = {}
+        if (await db.execute(text(_HAS_ROW_SQL), {"uid": uid})).first() is None:
+            got = await _seed_from_work_schedule(db, uid)
+            seed = {k: v for k, v in got.items() if k not in fields}
+        await db.execute(
+            text(upsert_settings_sql([*fields, *seed], _ph, update=list(fields))),
+            {"uid": uid, **fields, **seed})
+
+
+@router.put("/settings", response_model=UserSettingsModel)
+async def put_user_settings(
+    patch: UserSettingsPatch,
+    user: UserContext = Depends(get_current_user),
+):
+    """Partial update — only the provided fields change (upsert)."""
+    uid = _uid(user)
+    await write_member_settings(
+        uid, {k: v for k, v in patch.model_dump().items() if v is not None})
     async with _tenant_session() as db:
         return await _load(db, uid)

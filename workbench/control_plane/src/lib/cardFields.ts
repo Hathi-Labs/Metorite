@@ -32,6 +32,7 @@ export type FieldKind =
   | "tag"
   | "status"
   | "category"
+  | "color"
   | "person"
   | "project"
   | "date"
@@ -77,7 +78,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "capacity": { label: "Capacity" },
   "category": { label: "Category", kind: "category" },
   "close_after_months": { label: "Close after (months)" },
-  "color": { label: "Colour", kind: "words" },
+  "color": { label: "Colour", kind: "color" },
   "comment": { label: "Comment" },
   "config": { label: "Settings" },
   "contact": { label: "Contact" },

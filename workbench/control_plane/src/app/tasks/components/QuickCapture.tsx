@@ -14,7 +14,7 @@ import { captureDestinations, destinations, useCompanyTree } from "../lib/compan
 import { parseProjectToken } from "../lib/quickAdd";
 import { dueInstantForDay } from "@/app/projects/lib/quickAdd";
 import { PAST_FIELD_WORDS, gridZone, instantIso } from "@/lib/reminderClock";
-import { createReminder } from "@/lib/reminderWrite";
+import { createReminder, createdWords } from "@/lib/reminderWrite";
 
 // Ubiquitous capture (C2) + Mind Sweep (C3/C4). A global palette openable from
 // any Tasks view via a hotkey (C) or a button. Single mode = rapid-fire
@@ -132,6 +132,12 @@ function QuickCapturePanel() {
     setRemindSaving(false);
     if (!got.ok) {
       setRemindError(got.words);
+      return;
+    }
+    if (got.already) {
+      // RX-7: a repeat wrote nothing. Say so, and keep the line, so the member
+      // does not think a second reminder was made.
+      setRemindError(createdWords(got, { ms }, zone));
       return;
     }
     setValue("");
