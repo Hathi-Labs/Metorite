@@ -166,6 +166,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # child spends model tokens at the org's cost, so only the owner writes it
     # (work_plan.md §6 D4).
     "SPAWN_SUBAGENTS_ORGS",
+    # WS-67 RX-1: the orgs where a chat that read outside mail keeps the writes
+    # that a card shows. It moves a guard, so only the operator writes it.
+    "HELD_CARD_WRITES_ORGS",
     # WS-63 PZ-33: the orgs that get a summary of each private chat. The job
     # spends the org's AI credits with no request of the member, so only the
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
@@ -307,6 +310,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-66 RM-1: reminders. CALENDAR_REMINDERS is the switch of the reminder
     # routes, so a tenant that set it could turn them on for every org.
     "CALENDAR_REMINDERS",
+    # WS-CAL CE-4: events. CALENDAR_EVENTS is the switch of the event store,
+    # so a tenant that set it could turn it on for every org.
+    "CALENDAR_EVENTS",
     # WS-BRIEF BR-1a: the shared job queue. JOB_QUEUE is the switch of the job
     # worker, so a tenant that set it could start the worker for every org.
     "JOB_QUEUE",

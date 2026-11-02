@@ -35,7 +35,7 @@ import {
   projectsKey,
 } from "@/app/projects/lib/api";
 import { taskDeepLink, taskRef } from "@/app/projects/lib/card";
-import { dueInstantForDay } from "@/app/projects/lib/quickAdd";
+import { dueDayOf, dueInstantForDay } from "@/app/projects/lib/quickAdd";
 import { taskWhere } from "@/app/projects/lib/tree";
 import { useCachedResource } from "@/lib/useCachedResource";
 import { EditableTaskTitle, TaskHeaderRow } from "@/components/TaskPanelHeader";
@@ -390,12 +390,13 @@ export function TaskDetail({
   // information, not a control.
   const sync = syncBadge(item.syncState);
 
-  const dueValue = item.dueAt ? item.dueAt.slice(0, 10) : "";
+  // RX-7: the day of the instant in this browser, not its first ten characters (the UTC date).
+  const dueValue = item.dueAt ? dueDayOf(item.dueAt) : "";
   // The promised-by date on the waiting-for record (null = no promise made).
   // `promiseLate` highlights only an EXPLICIT promise that has passed — when
   // there is none the Due field above already carries the overdue styling, so
   // the panel never says the same thing twice in two places.
-  const promisedValue = item.expectedBy ? item.expectedBy.slice(0, 10) : "";
+  const promisedValue = item.expectedBy ? dueDayOf(item.expectedBy) : "";
   const promiseLate = !!item.expectedBy && isWaitingOverdue(item);
 
   // S6e — the overlay strip: the member's own facts, drawn in both modes.

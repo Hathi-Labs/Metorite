@@ -1120,7 +1120,7 @@ export function isReminderReceipt(e: ToolEvent): boolean {
 }
 
 /** The reminder card of one receipt, with the same store note as a plain receipt. */
-function ReminderReceiptHost({ event: e }: { event: ToolEvent }) {
+function ReminderReceiptHost({ event: e, mine }: { event: ToolEvent; mine: boolean }) {
   const result = (e.result || "").trim();
   const receipt = readReminderReceipt(e.name, result);
   const openTask = useOpenTask();
@@ -1134,7 +1134,7 @@ function ReminderReceiptHost({ event: e }: { event: ToolEvent }) {
   if (!receipt) return null;
   const meta = ACTION_META[e.name] ?? { icon: "Bell", label: genericLabel(e.name) };
   const label = receipt.already ? ALREADY_HEAD : meta.label;
-  return <ReminderReceiptCard id={e.id} label={label} receipt={receipt} openTask={openTask} />;
+  return <ReminderReceiptCard id={e.id} label={label} receipt={receipt} openTask={openTask} mine={mine} />;
 }
 
 /** A label for a tool this file has no entry for — the generic card. */
@@ -1145,7 +1145,14 @@ function genericLabel(name: string): string {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
-export default function ProjectToolCards({ toolEvents }: { toolEvents?: ToolEvent[] }) {
+export default function ProjectToolCards({
+  toolEvents,
+  mine = true,
+}: {
+  toolEvents?: ToolEvent[];
+  /** False when another member ran the turn: a reminder receipt then offers no act (RX-7). */
+  mine?: boolean;
+}) {
   const dismissed = useDismissedToolCards();
   const all = (toolEvents ?? []).filter(
     (e) => !dismissed.has(e.id) && hasProjectCard(e),
@@ -1168,7 +1175,7 @@ export default function ProjectToolCards({ toolEvents }: { toolEvents?: ToolEven
     // A reminder the chat set, changed or moved draws as the reminder itself
     // (RX-2). A refusal or a cancel still draws as a plain receipt.
     if (isReminderReceipt(e)) {
-      items.push(<ReminderReceiptHost key={e.id} event={e} />);
+      items.push(<ReminderReceiptHost key={e.id} event={e} mine={mine} />);
       continue;
     }
     // A write, known or new. A new one draws the generic receipt from its

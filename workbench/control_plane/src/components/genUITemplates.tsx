@@ -57,6 +57,7 @@ import { useNumberSystem } from "@/lib/numberSystem";
 import { hasMoreToTheRight } from "@/lib/scrollCue";
 import PlanCardBody from "@/components/PlanCardBody";
 import Badge from "@/components/ui/Badge";
+import { Input } from "@/components/ui/Input";
 import RecommendedBadge, { RECOMMENDED_RING } from "@/components/RecommendedBadge";
 import { pickedFromAnswer } from "@/lib/askAnswers";
 import { sentFormValues } from "@/lib/askOutcome";
@@ -103,7 +104,9 @@ import {
   runReminderAct,
   useKnownReminder,
 } from "@/lib/shell/reminderOpen";
-import { gridZone, laterPresets } from "@/lib/reminderClock";
+import { laterPresets } from "@/lib/reminderClock";
+import { useMemberZone } from "@/lib/shell/memberZone";
+import { snoozeZone } from "@/lib/shell/reminderBand";
 import { statusAccent } from "@/lib/statusAccent";
 import { priorityChip } from "@/lib/taskCard";
 import { TYPE } from "@/lib/typeScale";
@@ -1659,6 +1662,14 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
   const { shown, categoryAt, primaryAt } = gridColumns(labels, kinds);
   const base = str(data.openBase, "/projects?task=");
   const [sort, setSort] = useState<{ col: number; dir: 1 | -1 } | null>(null);
+  // A Studio table (`data.filterable`) shows a box that keeps the rows whose
+  // cells hold the typed words (STU-D2a). Other grids draw as they did.
+  const filterable = data.filterable === true;
+  const [filter, setFilter] = useState("");
+  const query = filterable ? filter.trim().toLowerCase() : "";
+  const kept = query
+    ? rows.filter((r) => arr(r.cells).some((c) => cellText(c).toLowerCase().includes(query)))
+    : rows;
   const boxRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
@@ -1687,9 +1698,9 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
       el.removeEventListener("scroll", check);
       observer?.disconnect();
     };
-  }, [mode, rows.length]);
+  }, [mode, kept.length]);
   const sorted = sort
-    ? [...rows].sort((a, b) => {
+    ? [...kept].sort((a, b) => {
       const av = arr(a.cells)[sort.col];
       const bv = arr(b.cells)[sort.col];
       const an = typeof av === "number" ? av : parseFloat(cellText(av));
@@ -1697,7 +1708,7 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
       if (Number.isFinite(an) && Number.isFinite(bn)) return (an - bn) * sort.dir;
       return cellText(av).localeCompare(cellText(bv)) * sort.dir;
     })
-    : rows;
+    : kept;
   const cellOf = (r: Data, c: GridColumn) => (
     <GridCell kind={c.kind} cell={arr(r.cells)[c.index]}
       category={categoryAt >= 0 ? arr(r.cells)[categoryAt] : undefined} />
@@ -1716,13 +1727,19 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
     <div ref={boxRef} data-grid-layout={mode} className={`${G_FRAME} ${T_BLUE}`} style={CARD_BOX}>
       <TemplateHead icon="table-2" title={data.title != null ? str(data.title) : null} />
       <TemplateBody>
+      {filterable && (
+        <div style={{ marginBottom: 6 }}>
+          <Input inputSize="sm" icon="Search" value={filter} placeholder="Filter rows"
+            aria-label="Filter rows" onChange={(e) => setFilter(e.target.value)} />
+        </div>
+      )}
       {mode === "stacked" ? (
         <div style={{ maxHeight: 420, overflowY: "auto" }}>
-          {rows.map((r, i) => {
+          {kept.map((r, i) => {
             const facts = shown.filter((c) => c.role === "secondary" && !isEmptyCell(arr(r.cells)[c.index]));
             return (
               <div key={str(r.id) || i} data-grid-row="" style={{ padding: "6px 0",
-                borderBottom: i < rows.length - 1 ? "1px solid var(--border)" : "none" }}>
+                borderBottom: i < kept.length - 1 ? "1px solid var(--border)" : "none" }}>
                 <div style={{ ...CELL, overflowWrap: "anywhere" }}>
                   {lead && <span style={{ ...MUTED, marginRight: 4 }}>{cellText(arr(r.cells)[lead.index])}</span>}
                   {titleOf(r)}
@@ -1745,7 +1762,7 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
               </div>
             );
           })}
-          {rows.length === 0 && <div style={{ ...MUTED, padding: 8 }}>No rows.</div>}
+          {kept.length === 0 && <div style={{ ...MUTED, padding: 8 }}>{query ? "No rows match." : "No rows."}</div>}
         </div>
       ) : (
         <>
@@ -1781,7 +1798,7 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
                   </tr>
                 ))}
                 {sorted.length === 0 && (
-                  <tr><td colSpan={Math.max(1, shown.length)} style={{ ...MUTED, padding: 8 }}>No rows.</td></tr>
+                  <tr><td colSpan={Math.max(1, shown.length)} style={{ ...MUTED, padding: 8 }}>{query ? "No rows match." : "No rows."}</td></tr>
                 )}
               </tbody>
             </table>
@@ -1881,6 +1898,9 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   const resolution = known ? known.row.resolution : data.resolution == null ? null : str(data.resolution);
   const [busy, setBusy] = useState(false);
   const [said, setSaid] = useState<string | null>(null);
+  // The presets of "Later" read the member's SAVED zone, as the window of My
+  // Day does, else the browser's (RX-7).
+  const laterZone = snoozeZone(useMemberZone());
   // "Later" asks for a time first: three presets, then `/snooze` (RX-2).
   const [choosing, setChoosing] = useState(false);
   const acts = ctx?.onAction ? reminderActs({ state, resolution, via: known?.via }) : [];
@@ -1892,7 +1912,7 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
       setChoosing(false);
       return;
     }
-    const zone = gridZone(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    const zone = laterZone;
     const preset = laterPresets(Date.now(), zone).find((p) => p.label === words);
     if (!preset) return;
     setChoosing(false);
@@ -1938,7 +1958,7 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           )}
           {acts.length > 0 && choosing && (
             <SuggestionPills
-              suggestions={laterPresets(Date.now(), gridZone(Intl.DateTimeFormat().resolvedOptions().timeZone)).map((p) => p.label).concat("Back")}
+              suggestions={laterPresets(Date.now(), laterZone).map((p) => p.label).concat("Back")}
               onPick={(words) => void pickLater(words)}
               label="Remind me again"
               align="start"

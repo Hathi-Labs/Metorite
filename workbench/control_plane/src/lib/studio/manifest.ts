@@ -55,6 +55,8 @@ export interface ObjectDef {
   name: string;
   label?: string | null;
   fields?: FieldDef[];
+  // The constraints and state machines of the object (C6).
+  rules?: Record<string, unknown>[];
 }
 
 export interface ActionDef {

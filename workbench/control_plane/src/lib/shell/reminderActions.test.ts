@@ -107,7 +107,7 @@ describe("Snooze", () => {
     const d = deps();
     const choice = snoozeChoices(NOW)[2];
     expect(await snoozeReminder(ROW, choice, d)).toBe(true);
-    expect(d.move).toHaveBeenCalledWith(ID, "snooze", localIso(choice.at));
+    expect(d.move).toHaveBeenCalledWith(ID, "snooze", choice.iso);
     expect(actsSnapshot().removed.has(ROW.key)).toBe(true);
     expect(d.said[0].words).toMatch(/^Snoozed to tomorrow /);
   });

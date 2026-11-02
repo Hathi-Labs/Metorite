@@ -183,7 +183,7 @@ export default function MyDay() {
         its one h1 there too. */}
     <AppTopBar title={home.label} icon={home.icon} />
     <div className="min-h-0 flex-1 overflow-auto">
-    <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-10 xl:max-w-6xl" data-testid="my-day">
+    <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-10 xl:max-w-6xl" data-guide="home.my-day" data-testid="my-day">
       <div>
         {now ? (
           // The one page header (`pageHeading.test.ts`): the same title

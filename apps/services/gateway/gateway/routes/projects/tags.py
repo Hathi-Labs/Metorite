@@ -39,18 +39,18 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     clean_payload,
+    governed_tasks_scope,
+    hue_values,
+    is_org_wide,
     load_visible_project,
     org_wide_exists,
-    governed_tasks_scope,
-    is_org_wide,
     refuse_org_wide_rescope,
     refuse_org_wide_write,
     require_known_tenant,
-    require_same_tenant,
     require_org_vocabulary_edit,
-    require_known_tenant,
     require_org_vocabulary_write,
     require_row,
+    require_same_tenant,
     resolve_visibility,
     root_project_id,
     router,
@@ -360,7 +360,7 @@ async def create_tag(
     project_id: str, payload: TagIn,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    values = clean_payload(payload)
+    values = hue_values(clean_payload(payload))
     name = normalise_tag(values.get("name"))
     if name is None:
         raise HTTPException(status_code=422, detail="A tag needs a name.")
@@ -435,7 +435,7 @@ async def patch_tag(
     tag — and quietly doing the destructive one because the names collided is
     the kind of surprise that makes people stop using a rename button.
     """
-    values = clean_payload(payload)
+    values = hue_values(clean_payload(payload))
     values.pop("scope", None)     # WS-27bj: selects where a NEW row lands only
     new_name = normalise_tag(values.get("name")) if "name" in values else None
     if "name" in values and new_name is None:

@@ -190,6 +190,14 @@
           "pattern": "^[a-z][a-z0-9_]{0,47}$",
           "title": "Name",
           "type": "string"
+        },
+        "rules": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Rules",
+          "type": "array"
         }
       },
       "required": [

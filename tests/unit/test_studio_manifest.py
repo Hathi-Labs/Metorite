@@ -143,7 +143,7 @@ def test_code_block_is_reserved_for_l1():
 
 @pytest.mark.parametrize(
     "key,slice_id",
-    [("rules", "C6"), ("state_machine", "C6"), ("states", "C6"), ("formula", "C7"), ("code", "L1")],
+    [("rules", "C6"), ("state_machine", "C6"), ("states", "C6"), ("code", "L1")],
 )
 def test_reserved_key(key, slice_id):
     d = doc()
@@ -152,11 +152,99 @@ def test_reserved_key(key, slice_id):
     assert f"`{key}` is reserved for slice {slice_id} and v1 does not accept it" in e.message
 
 
-@pytest.mark.parametrize("ftype", ["formula", "rollup"])
-def test_formula_field_type_is_reserved_for_c7(ftype):
+def test_rules_is_lifted_in_an_object_only() -> None:
+    """C6 lifted `rules` at `objects[*].rules`. Elsewhere it stays reserved."""
+    d = doc()
+    d["contributes"] = {"rules": []}
+    one(d, "$.contributes.rules", contains="C6")
     d = copy.deepcopy(EXAMPLE)
-    d["objects"][0]["fields"][2]["type"] = ftype
-    one(d, "$.objects[0].fields[2].type", contains="C7")
+    d["shell"]["rules"] = []
+    one(d, "$.shell.rules", contains="C6")
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"][0]["rules"] = []
+    one(d, "$.objects[0].fields[0].rules", contains="C6")
+
+
+_VISIT_MACHINE = {
+    "name": "visit_flow", "kind": "state_machine", "field": "status", "initial": "planned",
+    "moves": [{"from": "planned", "to": "on site"}, {"from": "on site", "to": "done"}],
+}
+
+
+def test_a_state_machine_validates_in_an_object() -> None:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["rules"] = [_VISIT_MACHINE]
+    assert validate_manifest(d) == []
+
+
+def test_a_rule_that_does_not_fit_gets_a_path() -> None:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["rules"] = [{**_VISIT_MACHINE, "initial": "nope"}]
+    one(d, "$.objects[0].rules", contains="initial")
+
+
+def test_a_role_guard_in_a_manifest_waits_for_c8() -> None:
+    d = copy.deepcopy(EXAMPLE)
+    moves = [{"from": "planned", "to": "done", "role": "director"}]
+    d["objects"][0]["rules"] = [{**_VISIT_MACHINE, "moves": moves}]
+    one(d, "$.objects[0].rules", contains="C8")
+
+
+def test_the_manifest_rules_equal_the_store_rules() -> None:
+    """A5 passes the manifest list unchanged to `set_constraints`: the one parser."""
+    from acb_common.studio_rules import parse_rules
+
+    (rule,) = parse_rules([_VISIT_MACHINE])
+    assert rule.stored() == _VISIT_MACHINE
+
+
+def test_rollup_field_type_is_reserved_for_c7b():
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"][2]["type"] = "rollup"
+    one(d, "$.objects[0].fields[2].type", contains="C7b")
+
+
+def test_formula_field_type_names_the_rules_list():
+    """A formula has one spelling: a rule of kind `formula` (C7a)."""
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"][2]["type"] = "formula"
+    e = one(d, "$.objects[0].fields[2].type", contains="`rules`")
+    assert "kind `formula`" in e.message
+
+
+def test_the_formula_key_is_no_longer_reserved():
+    """`RESERVED_KEYS` dropped `formula` (C7a): a rule uses `expr`, so the key is dead."""
+    from acb_common.studio_manifest import RESERVED_KEYS
+
+    assert "formula" not in RESERVED_KEYS
+
+
+_TOTAL_FORMULA = {
+    "name": "visit_cost", "kind": "formula", "target": "cost", "rounding": "half_up",
+    "expr": {"fn": "mul", "args": [{"ref": "hours"}, {"num": "1.5"}]},
+}
+
+
+def test_a_formula_validates_in_an_object() -> None:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"] += [{"key": "hours", "type": "number"},
+                                  {"key": "cost", "type": "number"}]
+    d["objects"][0]["rules"] = [_TOTAL_FORMULA]
+    assert validate_manifest(d) == []
+
+
+def test_a_formula_that_does_not_fit_gets_a_path() -> None:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"] += [{"key": "cost", "type": "number"}]
+    d["objects"][0]["rules"] = [_TOTAL_FORMULA]
+    one(d, "$.objects[0].rules", contains="expr")
+
+
+def test_the_manifest_formula_equals_the_store_formula() -> None:
+    from acb_common.studio_rules import parse_rules
+
+    (rule,) = parse_rules([_TOTAL_FORMULA])
+    assert rule.stored() == _TOTAL_FORMULA
 
 
 def test_unknown_top_level_key():
@@ -683,6 +771,18 @@ def test_a_shell_file_with_an_unknown_point_is_refused():
     assert [e.path for e in errs] == ["$.contributes"]
     assert "wallpaper" in errs[0].message
     assert len(errs[0].message.split()) <= 25
+
+
+def test_a_package_cannot_declare_a_guide_anchor():
+    # assistant_guide.md section 5.7: the guide rings only anchors of the shipped shell files.
+    d = copy.deepcopy(EXAMPLE)
+    d.setdefault("contributes", {})["anchors"] = [{"id": "x"}]
+    errs = validate_manifest(d)
+    assert [e.path for e in errs] == ["$.contributes"]
+    assert "anchors" in errs[0].message
+    home = json.loads((SHELL_DIR / "home.json").read_text(encoding="utf-8"))
+    assert home["contributes"]["anchors"], "the shell file lost its anchors"
+    assert validate_manifest(home) == []
 
 
 def test_a_system_file_with_an_unknown_top_level_key_is_refused():

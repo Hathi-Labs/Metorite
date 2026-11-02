@@ -456,6 +456,19 @@ class Settings(BaseSettings):
     # gate `enforcement-flip`. Fence: tests/unit/test_reminders_r8.py.
     calendar_reminders: bool = False
 
+    # ── Calendar events (WS-CAL CE-4, D138, 2026-10-31) ─────────────────────
+    #
+    # `calendar_events` is the switch of the event store, default OFF. With
+    # it off, each route under `/tasks/calendar/entries` answers 404 and
+    # writes nothing, and `GET /projects/my/calendar` gives the body of today
+    # with no `entries` key. `/version` carries the value as
+    # `calendar_events`. The one reader is `events_enabled()` in
+    # gateway/routes/tasks/entries.py. The browser half is
+    # `NEXT_PUBLIC_CALENDAR_EVENTS` (CE-5). Spec
+    # project-docs/specs/calendar_events_reminders.md §9. A flip on a box is
+    # gate `enforcement-flip`. Fence: tests/unit/test_calendar_entries_r8.py.
+    calendar_events: bool = False
+
     # ── The shared job queue (WS-BRIEF BR-1a, 2026-10-28) ───────────────────
     #
     # `job_queue` is the switch of the job worker in the gateway, default
@@ -907,6 +920,20 @@ class Settings(BaseSettings):
     # D4). The dev-phase window does not open it.
     # Fence: tests/unit/test_spawn_subagents.py.
     spawn_subagents_orgs: str = ""
+
+    # ── The held card writes of a chat that read outside mail (WS-67 RX-1) ──
+    #
+    # `held_card_writes_orgs` lists the organization ids where a held chat keeps
+    # the writes that a card shows (`work_plan.md`, the decision of RX-1), or
+    # `*` for each one. Empty means off, and a held chat then works as it did
+    # before the slice. The one reader is `egress.held_card_writes_on`, and it
+    # fails closed. It is the kill switch of the decision: the name ends in
+    # `_orgs`, so a SIGHUP applies a change with no restart (`docs/flag_reload.md`).
+    #
+    # A value on a box is an `enforcement-flip`. It moves what a chat that read
+    # mail may write, so name the flag and the box in the same message.
+    # Fence: tests/unit/test_held_card_writes.py.
+    held_card_writes_orgs: str = ""
 
     # ── Web research (WS-WEB, D148, `web_research.md` §3.2 and §11) ─────────
     #

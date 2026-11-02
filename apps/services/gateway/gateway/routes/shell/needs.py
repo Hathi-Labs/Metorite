@@ -201,11 +201,16 @@ HIDDEN_DISPOSITIONS = frozenset(NOT_NOW_DISPOSITIONS)
 
 #: The order of the feed, by kind (§7.2 contract). An approval comes right
 #: after an overdue task, because an agent's work waits on it.
-KIND_ORDER = {"overdue": 0, "approval": 1, "due_today": 2, "notification": 3,
-              "needs_reply": 4,
-              # WS-66 RM-2b (calendar_events_reminders.md §5.6): the member's
-              # own reminders, last of the needs kinds.
-              "reminder_due": 5, "reminder_check": 6, "reminder_unconfirmed": 7}
+KIND_ORDER = {
+    # WS-66 RX-7: a reminder that fired and waits on the member sorts FIRST,
+    # as the bell draws it (`myDay.ts` `FIRED_FIRST`). The cut to `size` keeps
+    # the first rows, so a fired reminder must not sit behind 30 other rows.
+    "reminder_due": 0, "reminder_check": 1,
+    "overdue": 2, "approval": 3, "due_today": 4, "notification": 5,
+    "needs_reply": 6,
+    # WS-66 RM-2b (calendar_events_reminders.md §5.6): a reminder that Metorite
+    # stopped checking is the last of the needs kinds.
+    "reminder_unconfirmed": 7}
 #: The kinds that take only the room the member's own rows leave inside the
 #: limit. An admin's approvals must never push out their own work.
 YIELDING_KINDS = frozenset({"approval"})

@@ -31,8 +31,10 @@ from skill_projects.reads import _day, _task_line, legend
 from skill_projects.writes import (
     CANCELLED,
     MAX_BATCH,
+    _access_lines,
     _confirm,
     _fields_block,
+    _held_chat,
     _node,
     _priority_card,
     _resolve_assignee,
@@ -219,7 +221,7 @@ def _clean_area_name(name: str) -> str:
     return clean
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def create_area(name: str) -> str:
     """Make a new area: a category for the member's private tasks in My
     Tasks, such as Home or Finance. Nobody else sees it. The card shows the
@@ -566,7 +568,7 @@ async def _change_view(
     return f"Saved view {data(label or row.get('name'))}.\n  view_id: {vid}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def save_view(
     project_id: str,
     name: str = "",
@@ -615,7 +617,7 @@ async def save_view(
         shown.update(_config_card(payload["config"]))
     if not await _confirm(
         title="Save this view?",
-        detail=f"{data(label)} [{kind}] in {data(node.get('name'))}",
+        detail=f"{data(label)} in {data(node.get('name'))}",
         context=_fields_block({**shown, "project": data(node.get("name"))}),
     ):
         return CANCELLED
@@ -623,7 +625,7 @@ async def save_view(
     return f"Saved view {data(row.get('name') or label)} [{kind}] in {data(node.get('name'))}.\n  view_id: {row.get('id')}"
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 @takes_priority
 async def capture_intake(
     title: str,
@@ -688,10 +690,15 @@ async def capture_intake(
     card: dict[str, Any] = {}
     origin = source.strip()[:80]
     reference = source_ref.strip()[:200]
+    held = await _held_chat()
     if origin:
         payload["source"] = origin
-        if origin.lower() == "email":
-            card["mailbox"] = mailbox_line(where)
+    if held or origin.lower() == "email":
+        # RX-1: a held chat says it from the server's answer, because a steered
+        # model would leave out `source`.
+        card["mailbox"] = mailbox_line(where)
+    if held:
+        card.update(await _access_lines(str(payload["project_id"])))
     if reference:
         payload["source_ref"] = reference
     if not await _confirm(
@@ -717,7 +724,7 @@ async def capture_intake(
     )
 
 
-@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
 async def triage_intake(
     task_id: str, action: str, status: str = "", duplicate_of: str = "", until: str = ""
 ) -> str:
@@ -777,7 +784,7 @@ async def triage_intake(
     return "\n".join([f"Intake: {verb}.", *_task_line(merged)])
 
 
-@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False)
+@_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def mark_notifications_read(ids: str = "", all_unread: bool = False) -> str:
     """Clear the bell: mark the listed notification ids read
     (comma-separated, from notifications), or every unread one with

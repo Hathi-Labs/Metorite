@@ -1105,18 +1105,24 @@ async def test_a_live_org_or_a_failed_mode_read_keeps_the_writes(monkeypatch, mo
     assert {t.__name__ for t in build.tools} == CRM_NINE and build.dropped == ()
 
 
-async def test_a_held_crm_pack_drops_the_four_writes_and_reads_no_mode(monkeypatch) -> None:
-    """A held pack (the chat read mail) drops each egress tool: the four
-    writes. It reads nothing for the Mirror drop. Mutation: read the mode in a
-    held build -> ``calls`` is not empty -> red."""
+@pytest.mark.parametrize(("mode", "gone"), [
+    ("live", frozenset()), ("mirror", ti.MIRROR_RECORD_WRITES),
+], ids=["native", "mirror"])
+async def test_a_held_crm_pack_keeps_the_writes_and_mirror_still_takes_three(
+    monkeypatch, mode: str, gone: frozenset[str],
+) -> None:
+    """RX-1 (D169). A held pack keeps the four writes behind their cards. The
+    Mirror drop runs in a held build too, or a held write would reach Zoho.
+    Mutation: skip the read of the mode in a held build -> the three writes
+    stay in Mirror mode -> red."""
     calls: list[str] = []
-    _mode(monkeypatch, "mirror", calls)
+    _mode(monkeypatch, mode, calls)
     with _run():
         await eg.mark_untrusted_answer()  # the chat read mail on an earlier turn
         build = await _build("crm-records", _crm_module())
-    assert build.held is True and calls == []
-    assert set(build.dropped) == CRM_WRITES
-    assert {t.__name__ for t in build.tools} == CRM_NINE - CRM_WRITES
+    assert build.held is True and calls == ["read"]
+    assert set(build.dropped) == gone
+    assert {t.__name__ for t in build.tools} == CRM_NINE - gone
 
 
 async def test_the_crm_held_drop_follows_is_egress(monkeypatch) -> None:
@@ -1125,7 +1131,7 @@ async def test_the_crm_held_drop_follows_is_egress(monkeypatch) -> None:
     _mode(monkeypatch, "live")
     module = _crm_module()
     with _run(no_egress=True):
-        assert set((await _build("crm-records", module)).dropped) == CRM_WRITES
+        assert (await _build("crm-records", module)).dropped == ()
         monkeypatch.setattr(ti, "_is_egress", lambda t: ti._tool_name(t) == "get_record")
         assert (await _build("crm-records", module)).dropped == ("get_record",)
         monkeypatch.setattr(ti, "_is_egress", lambda t: False)
@@ -1133,11 +1139,11 @@ async def test_the_crm_held_drop_follows_is_egress(monkeypatch) -> None:
     assert open_build.dropped == () and len(open_build.tools) == 9
 
 
-async def test_a_marked_mail_chat_holds_the_crm_pack_and_shows_no_card(monkeypatch) -> None:
-    """The chat read mail (``email`` pack), then the member asks for a CRM
-    write. The CRM pack builds held: no write tool is on the list, so no card
-    shows, the owner's or the untrusted one. Mutation: build the pack open in
-    a marked chat -> ``create_lead`` is on the list -> red."""
+async def test_a_marked_mail_chat_holds_the_crm_pack_with_its_writes(monkeypatch) -> None:
+    """RX-1 (D169). The chat read mail (``email`` pack), then the member asks
+    for a CRM write. The CRM pack builds held, and each write stays, because its
+    own card is the guard. The build shows no card. Mutation: take ``create_lead``
+    off ``HELD_CARD_WRITE_TOOLS`` -> the held pack drops it -> red."""
     _mode(monkeypatch, "live")
     cards: list[str] = []
 
@@ -1149,8 +1155,8 @@ async def test_a_marked_mail_chat_holds_the_crm_pack_and_shows_no_card(monkeypat
     with _run():
         await eg.mark_untrusted_session(EA)  # what an email pack call does first
         build = await _build("crm-records", _crm_module())
-    assert build.held is True and "create_lead" not in {t.__name__ for t in build.tools}
-    assert cards == []
+    assert build.held is True and "create_lead" in {t.__name__ for t in build.tools}
+    assert cards == [], "a build shows no card"
 
 
 async def test_a_crm_pack_run_with_no_user_refuses() -> None:
@@ -1479,3 +1485,12 @@ def test_the_child_build_calls_the_one_builder_and_copies_no_body() -> None:
         assert body not in src, body
     assert "_pack_builder()" in src
     assert at._pack_builder() is ti._pack_tools
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
