@@ -148,11 +148,19 @@ from acb_common.assistant_profile import (  # noqa: F401 — re-exported names
 )
 from fastapi import Body, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
+from gateway.assistant_summaries import (
+    clear_for_member,
+    clear_one_for_member,
+    list_for_member,
+)
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.admin.me import me_router
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
+
+#: The most chat summaries that Settings lists (the store caps at the same 50).
+SUMMARIES_MAX = 50
 
 FactKind = Literal["about", "routine", "preference", "work", "relationship"]
 #: The areas of the interview (PZ-26). ``AREAS`` is the one table.
@@ -574,6 +582,8 @@ def _check_caps(stored: Any) -> None:
 
 #: The 422 of a chat write that asks to forget the whole profile.
 FORGET_ALL_IN_SETTINGS = "forget everything in Settings, not from the chat"
+#: The 422 of a summary delete from the chat (PZ-35).
+SUMMARIES_IN_SETTINGS = "delete chat summaries in Settings, not from the chat"
 
 
 def _last(record: dict[str, Any]) -> str:
@@ -759,7 +769,7 @@ async def get_assistant_profile(
     app shows the page, the account row and the My Day name only when it is
     true. The key is not part of the stored shape, and no write takes it.
     """
-    from acb_common.assistant_profile import enabled_for
+    from acb_common.assistant_profile import chat_summary_for, enabled_for
 
     uid = _member(user)
     try:
@@ -775,6 +785,9 @@ async def get_assistant_profile(
     raw = row[0] if row is not None else None
     out: dict[str, Any] = stored_profile(raw)
     out["enabled"] = enabled_for(getattr(user, "organization_id", None))
+    # PZ-35: Settings shows "Recent chats" only with the summary flag on.
+    # Like ``enabled``, the key is not part of the stored shape.
+    out["summaries_enabled"] = chat_summary_for(getattr(user, "organization_id", None))
     out["apps"] = apps
     return out
 
@@ -864,6 +877,30 @@ async def get_assistant_profile_block(
     return JSONResponse({"enabled": True, "text": text}, headers=headers)
 
 
+def _summary_json(one: Any) -> dict[str, Any]:
+    """One chat summary as the routes show it."""
+    return {
+        "id": one.session_id,
+        "title": one.title,
+        "date": one.updated_at.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if one.updated_at else None,
+        "text": one.text,
+        "follow_ups": list(one.follow_ups),
+    }
+
+
+def _summaries_text(shown: list[dict[str, Any]]) -> str:
+    """The short block of the text export. Empty with no summary."""
+    if not shown:
+        return ""
+    lines = ["", "", "Recent chats"]
+    for one in shown:
+        head = " - ".join(p for p in ((one["date"] or "")[:10], one["title"]) if p)
+        lines.append(f"- {head}: {one['text']}" if one["text"] else f"- {head}")
+        lines += [f"    Next: {f}" for f in one["follow_ups"]]
+    return "\n".join(lines)
+
+
 #: The file names of the two exports (PZ-9).
 EXPORT_FILES: dict[str, tuple[str, str]] = {
     "json": ("assistant-profile.json", "application/json"),
@@ -891,26 +928,34 @@ async def export_assistant_profile(
     member with no profile gets the empty profile, never a 404. A failed
     read answers 503, never the empty profile.
     """
-    from acb_common.assistant_profile import render_export
+    from acb_common.assistant_profile import EXPORT_EMPTY, render_export
 
     uid = _member(user)
     try:
         async with _tenant_session() as db:
             row = await _read(db, uid)
+            listed = await list_for_member(db, uid, SUMMARIES_MAX + 1)
     except Exception as exc:
         logger.warning("auth.assistant_profile.export_failed",
                        extra={"error": type(exc).__name__})
         raise HTTPException(status_code=503, detail="unavailable") from exc
     raw = row[0] if row is not None else None
     text = render_export(raw)
+    shown = [_summary_json(one) for one in listed[:SUMMARIES_MAX]]
+    if shown and text == EXPORT_EMPTY:
+        # A member with no profile but with summaries: the empty line would
+        # say "keeps nothing" and then list summaries.
+        text = ""
     name, media = EXPORT_FILES[format]
     if format == "text":
-        content = text + "\n"
+        content = (text + _summaries_text(shown)).lstrip("\n") + "\n"
     else:
         content = json.dumps({
             "exported_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "member": uid,
             "profile": stored_profile(raw),
+            "summaries": shown,
+            "more": len(listed) > SUMMARIES_MAX,
             "text": text,
         }, ensure_ascii=False, indent=2) + "\n"
     return Response(content=content, media_type=media, headers={
@@ -986,8 +1031,82 @@ async def delete_assistant_profile(
 
     async def _run(db: Any) -> None:
         await db.execute(_sql(_FORGET_SQL), {"uid": uid})
+        # PZ-35: Forget clears the chat summaries too, in the same
+        # transaction. A summary that was off stays off, and ``apps`` stays.
+        await clear_for_member(db, uid)
 
     await _write(uid, "forget", _run)
+    return Response(status_code=204)
+
+
+# ── Recent chats (PZ-35, ``personalization.md`` §15.5) ──────────────────────
+#
+# The member lists, deletes and deletes all of the summaries of their own solo
+# chats. The member comes from the session and the org from the bound session
+# (R5). No route takes a member in the path, the query or the body.
+
+
+@me_router.get("/me/assistant-profile/summaries",
+               summary="The caller's chat summaries (PZ-35)")
+async def list_chat_summaries(
+    user: UserContext = Depends(get_current_user),
+) -> JSONResponse:
+    """``{"summaries": [...], "more": bool}``, newest first, at most 50. A
+    failed read answers 503, never an empty list."""
+    uid = _member(user)
+    try:
+        async with _tenant_session() as db:
+            listed = await list_for_member(db, uid, SUMMARIES_MAX + 1)
+    except Exception as exc:
+        logger.warning("auth.assistant_profile.summaries_failed",
+                       extra={"error": type(exc).__name__})
+        raise HTTPException(status_code=503, detail="unavailable") from exc
+    return JSONResponse(
+        {"summaries": [_summary_json(one) for one in listed[:SUMMARIES_MAX]],
+         "more": len(listed) > SUMMARIES_MAX},
+        headers={"Cache-Control": "no-store"})
+
+
+@me_router.delete("/me/assistant-profile/summaries/{session_id}", status_code=204,
+                  response_class=Response,
+                  summary="Delete the summary of one chat (PZ-35)")
+async def delete_chat_summary(
+    session_id: str,
+    user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
+) -> Response:
+    """The summary goes, and a new one may come after a new message (owner
+    decision of 2026-11-02). A chat of another member answers 404 and stays
+    as it was. A chat write (``X-Profile-Via``) is a 422, as for Forget."""
+    uid = _member(user)
+    if _via(x_profile_via) is not None:
+        raise _refuse(SUMMARIES_IN_SETTINGS)
+
+    async def _run(db: Any) -> None:
+        if not await clear_one_for_member(db, session_id, uid):
+            raise HTTPException(status_code=404, detail="Not found")
+
+    await _write(uid, "summary_delete", _run)
+    return Response(status_code=204)
+
+
+@me_router.delete("/me/assistant-profile/summaries", status_code=204,
+                  response_class=Response,
+                  summary="Delete every chat summary of the caller (PZ-35)")
+async def delete_chat_summaries(
+    user: UserContext = Depends(get_current_user),
+    x_profile_via: str | None = Header(default=None),
+) -> Response:
+    """Delete all: each summary goes, as Delete does for one. A chat write
+    (``X-Profile-Via``) is a 422."""
+    uid = _member(user)
+    if _via(x_profile_via) is not None:
+        raise _refuse(SUMMARIES_IN_SETTINGS)
+
+    async def _run(db: Any) -> None:
+        await clear_for_member(db, uid)
+
+    await _write(uid, "summary_delete_all", _run)
     return Response(status_code=204)
 
 

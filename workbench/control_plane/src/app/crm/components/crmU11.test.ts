@@ -830,7 +830,7 @@ describe("the Edit dialog (A10)", () => {
     expect(html).toMatch(/checked=""\/>Amount</);
     expect(html).toContain("Warn when a deal stays more than");
     expect(html).toContain('value="9"');
-    expect(html).toContain("Show this column on the board");
+    expect(html).toContain("Hide on the board");
     expect(html).toContain(">Save<");
     expect(html).toContain(">Cancel<");
     expect(html).toContain("Delete stage");

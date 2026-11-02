@@ -199,8 +199,10 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
   );
 
   const store = useCrmStore();
-  // The mirrored generic Zoho modules, for the rail (CRM-Q6b). Native: none.
-  const { modules, loading: modulesLoading } = useModules(ctx.mode === "mirror");
+  // The generic modules, for the rail (CRM-Q6b). Mirror: each mirrored module.
+  // Native (CRM-U17a): each module that still holds records. The server
+  // decides which, so both modes read them.
+  const { modules, loading: modulesLoading } = useModules(true);
   // CRM-Q17a-2 item 7: in Mirror mode, the source's names of the core
   // entities. CRM-Z10g: in Native mode, the names that an admin stored. A
   // CRM with no name, or a Mirror org off the list, keeps the CRM's names.
@@ -1119,6 +1121,9 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
               dealStatuses={store.dealStatuses}
               leadStatuses={store.leadStatuses}
               lostReasons={store.lostReasons}
+              vocabularyState={store.vocabularyState}
+              vocabularyError={store.vocabularyError}
+              onRetryVocabulary={() => void store.loadVocabulary()}
               saving={store.saving}
               readOnly={ctx.mode === "mirror"}
               studioAdmin={studioAdmin}

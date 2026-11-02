@@ -37,7 +37,7 @@ import {
   listQuery,
   queryString,
 } from "./filters";
-import type { SettingsDraft } from "./settings";
+import type { SettingsDraft, VocabularyState } from "./settings";
 import { cardSortQuery, type CardSort } from "./nextActivity";
 import {
   applyPatches,
@@ -121,6 +121,13 @@ type CrmState = {
   dealStatuses: Status[];
   leadStatuses: Status[];
   lostReasons: LostReason[];
+  /**
+   * CRM-U17a: whether the vocabulary above has been read. The three lists
+   * start empty, and an empty list before the first read is not an empty
+   * answer. "failed" keeps the reason in `vocabularyError`.
+   */
+  vocabularyState: VocabularyState;
+  vocabularyError: string | null;
   /** Loaded lazily for the convert modal's match resolution. */
   contacts: Contact[];
   organizations: Organization[];
@@ -315,6 +322,8 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   dealStatuses: [],
   leadStatuses: [],
   lostReasons: [],
+  vocabularyState: "loading",
+  vocabularyError: null,
   contacts: [],
   organizations: [],
   record: null,
@@ -357,15 +366,17 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   },
 
   async loadVocabulary() {
+    // A re-read after a write keeps "loaded": the rows stay on screen.
+    if (get().vocabularyState !== "loaded") set({ vocabularyState: "loading", vocabularyError: null });
     try {
       const [dealStatuses, leadStatuses, lostReasons] = await Promise.all([
         api.listStatuses("deal"),
         api.listStatuses("lead"),
         api.listLostReasons(),
       ]);
-      set({ dealStatuses, leadStatuses, lostReasons });
+      set({ dealStatuses, leadStatuses, lostReasons, vocabularyState: "loaded", vocabularyError: null });
     } catch (err) {
-      set({ error: message(err) });
+      set({ error: message(err), vocabularyState: "failed", vocabularyError: message(err) });
     }
   },
 
