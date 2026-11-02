@@ -5177,7 +5177,7 @@ Owner decision, 2026-11-02, in chat. Board: **WS-CRM**. Owning spec: `specs/crm_
 
 **Fence.** `tests/unit/test_crm_pipelines_native.py` and `tests/unit/test_crm_phases.py`, planned in CRM-M3 and CRM-M5. Until they exist, this decision is **advisory**.
 
-### D168 — A held chat keeps writes that a card shows (2026-11-01)
+### D169 — A held chat keeps writes that a card shows (2026-11-01)
 
 Owner directive, 2026-11-01, in chat. Board: **WS-67**, slice RX-1, Metorite epic task 1402. It narrows what H-236 and EM-G11d hold in a chat that read outside mail. It reverses nothing in D85.
 

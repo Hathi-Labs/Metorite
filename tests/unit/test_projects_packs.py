@@ -202,7 +202,7 @@ async def test_each_built_pack_holds_exactly_its_familys_names(store) -> None:
 
 
 async def test_a_held_pack_drops_exactly_the_held_off_writes(store) -> None:
-    """RX-1 (D168). No Projects tool is an egress tool, and parity with the
+    """RX-1 (D169). No Projects tool is an egress tool, and parity with the
     owner's own held run stands: a held pack drops the class C writes that a
     held chat does not hold, and each other tool stays. Mutation: a Projects
     tool that says ``open_world=True`` -> the held pack drops it -> red."""

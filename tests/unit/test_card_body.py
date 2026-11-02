@@ -1,6 +1,6 @@
 """RX-1: the one rule of a card body (``acb_common.card_body``).
 
-D168 rests on the member's click on a server-built card, so the card must show
+D169 rests on the member's click on a server-built card, so the card must show
 the exact change. Each case names the mutation that turns it red (R7).
 
 Run: ``uv run pytest tests/unit/test_card_body.py -q``.

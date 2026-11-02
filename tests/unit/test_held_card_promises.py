@@ -1,6 +1,6 @@
-"""RX-1 (D168): the card must keep its promise.
+"""RX-1 (D169): the card must keep its promise.
 
-D168 rests on one sentence: the member's click on a server-built card is the
+D169 rests on one sentence: the member's click on a server-built card is the
 guard. The threat: an attacker controls one inbound email, and the member clicks
 Approve on most cards. So a card that hides a change is no guard. Each case here
 is a finding of the adversarial review of RX-1, and each names the mutation that
@@ -481,7 +481,7 @@ def test_the_card_and_the_gateway_read_one_parser() -> None:
 
 
 def test_an_agent_assignee_refusal_claims_no_cause_and_names_no_app() -> None:
-    """D168 item 7. The text said "sandboxed turn" in a mail hold, and sent the member
+    """D169 item 7. The text said "sandboxed turn" in a mail hold, and sent the member
     to the Projects app. Mutation: put either back -> red."""
     assert "sandboxed" not in W.AGENT_ASSIGNEE_REFUSED
     _no_app(W.AGENT_ASSIGNEE_REFUSED)

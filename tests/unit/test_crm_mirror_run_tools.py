@@ -157,7 +157,7 @@ async def test_a_run_in_a_covered_chain_reads_nothing(monkeypatch) -> None:
 
 
 async def test_a_held_run_reads_the_mode_because_it_keeps_the_writes(monkeypatch) -> None:
-    """RX-1 (D168): a held chat keeps the record writes behind their cards. So
+    """RX-1 (D169): a held chat keeps the record writes behind their cards. So
     the Mirror drop runs in a held run too, or a write would reach Zoho. Each
     write still says open_world=True, because the list keeps it, never a
     claim. Mutation: skip the read in a no_egress run -> the writes stay in

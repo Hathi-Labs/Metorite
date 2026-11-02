@@ -2017,7 +2017,7 @@ def handoff_ended(
 # ``FunctionInvocationContext.add_tools`` (``PROGRESSIVE_TOOLS``, an
 # experimental feature), and answers the rules of the pack. The model sees
 # the new tools on its next request. The persona does not change in the turn.
-# RX-1 (D168): at a cap, a sticky pack moves out for the load, so a new need
+# RX-1 (D169): at a cap, a sticky pack moves out for the load, so a new need
 # never loses to an old pack. Else no tool leaves the run. The next turn holds the
 # pack by layer (a) only after one of its tools ran (:func:`note_used`, in the
 # pack call). A mere load is not sticky: a wrong pack never becomes sticky.

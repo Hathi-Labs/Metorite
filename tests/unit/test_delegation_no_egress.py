@@ -322,7 +322,7 @@ def test_the_open_world_tools_are_pinned_and_the_egress_set_is_the_rule() -> Non
     want = (EXPECTED_OPEN_WORLD | specialists | (eg.STORE_WRITES & set(names))) - eg.DELEGATION_TOOLS
     # EM-CR and H-374: the card-bound sends stay in a held run although they send.
     want -= set(eg.CARD_BOUND_SEND_TOOLS)
-    # RX-1 (D168): the listed writes stay, outside a covered chain. This frame
+    # RX-1 (D169): the listed writes stay, outside a covered chain. This frame
     # binds no chain. test_a_covered_parent_calls_crm_assistant binds one.
     want -= set(eg.HELD_CARD_WRITE_TOOLS)
     assert egress == want, (sorted(egress - want), sorted(want - egress))
@@ -2796,7 +2796,7 @@ def test_the_stream_boundary_reads_the_mark_from_redis(sandbox, monkeypatch) -> 
 def test_a_top_level_run_in_a_marked_chat_holds_no_class_c_tool(
     sandbox, monkeypatch,  # noqa: F811
 ) -> None:
-    """D168 item 3 claimed this, and the code did not do it: a top-level run binds
+    """D169 item 3 claimed this, and the code did not do it: a top-level run binds
     ``no_egress=False``. Mutation: drop ``_apply_chat_hold`` -> red."""
     _register_every_annotation()
     thread = new_thread()

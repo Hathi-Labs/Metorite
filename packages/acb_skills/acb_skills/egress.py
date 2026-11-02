@@ -25,14 +25,14 @@ Such a run holds only:
    While ``EMAIL_HELD_CARD_SEND`` is on, :data:`HELD_CARD_SEND_TOOLS` join
    too (§21 of ``email_app_master_plan.md``), each behind the held card
    that the gateway records. With the switch off, none of them joins.
-5. the first-party writes of :data:`HELD_CARD_WRITE_TOOLS` (RX-1, D168), in a
+5. the first-party writes of :data:`HELD_CARD_WRITE_TOOLS` (RX-1, D169), in a
    run under no covered run (:func:`covered_chain`). Each shows its exact
    change on one server-built card, and the member's click on that card is
    the guard, as for ``send_draft``. ``open_world`` does not decide for these.
    A Projects or CRM write stays only through the list
    (:func:`is_held_card_write`), and a held chat holds no other write of
    those owners (:func:`is_held_off_write`). A covered run, and each run under
-   it, keeps the older rule: D168 speaks of a chat that read outside mail.
+   it, keeps the older rule: D169 speaks of a chat that read outside mail.
    ``HELD_CARD_WRITES_ORGS`` is the kill switch (:func:`held_card_writes_on`).
    With the org off, no write joins this list, and a held chat works as it did
    before the slice.
@@ -139,11 +139,11 @@ __all__ = [
 #: The artifact-context key. ``True`` means this run holds no egress tool.
 NO_EGRESS_KEY = "no_egress"
 #: The artifact-context key that says a covered run is this run or a run above
-#: it (RX-1, D168). Each run boundary binds it (``_tool_injection._covered_chain``),
+#: it (RX-1, D169). Each run boundary binds it (``_tool_injection._covered_chain``),
 #: and it never comes from a request. :func:`covered_chain` is its one reader.
 COVERED_CHAIN_KEY = "covered_chain"
 #: The artifact-context key that holds the session mark as a run boundary read
-#: it (RX-1, D168): ``False`` for a clear chat, ``True`` for a marked chat or a
+#: it (RX-1, D169): ``False`` for a clear chat, ``True`` for a marked chat or a
 #: fault. A sync reader cannot ask Redis, so each run boundary asks once and
 #: binds the answer. :func:`chat_marked_now` is its one reader, and a frame with
 #: no key reads as marked.
@@ -809,7 +809,7 @@ EGRESS_HOLD_NOTE_PACK_CARDS = (
 #: the chat read mail from outside senders. The email texts talk about email
 #: tools, ``send_draft`` and ``schedule_send``, so a write needs its own words.
 #:
-#: RX-1 (D168, owner report of 2026-11-01). These texts said that the pack held
+#: RX-1 (D169, owner report of 2026-11-01). These texts said that the pack held
 #: no write, and they sent the member to the app or to a new chat. The model
 #: then refused a reminder that it could set. A held pack keeps each write of
 #: :data:`HELD_CARD_WRITE_TOOLS`, so the note tells the model to call it. For
@@ -1267,7 +1267,7 @@ def _pin(names: str) -> frozenset[str]:
 CARD_WRITE_KEY = "card_write"
 
 #: The first-party writes that stay in a held chat, each with its whole
-#: parameter set, EXACTLY (RX-1, D168, owner directive of 2026-11-01).
+#: parameter set, EXACTLY (RX-1, D169, owner directive of 2026-11-01).
 #:
 #: **The rule.** Keep the guard on what leaves Metorite. A write that the member
 #: approves on a server-built card stays. Each tool here reads first, then shows
@@ -1456,7 +1456,7 @@ def is_card_bound_send(item: Any) -> bool:
 
 
 def is_held_card_write(item: Any) -> bool:
-    """True for a first-party write that stays in a held chat (RX-1, D168).
+    """True for a first-party write that stays in a held chat (RX-1, D169).
 
     The three tests of :func:`is_card_bound_send`, and each one fails closed:
     the name is on :data:`HELD_CARD_WRITE_TOOLS`, the tool's own annotation
@@ -1530,14 +1530,14 @@ def is_held_off_write(item: Any, *, owner: str | None = None) -> bool:
 
 
 def is_held_chat_off(item: Any, *, owner: str | None = None) -> bool:
-    """True when a chat that read outside mail may not hold *item* (D168)."""
+    """True when a chat that read outside mail may not hold *item* (D169)."""
     return is_egress_tool(item) or is_held_off_write(item, owner=owner)
 
 
 def covered_chain() -> bool:
     """True when a covered run is the run on this frame or a run above it.
 
-    THE reader of :data:`COVERED_CHAIN_KEY` (RX-1, D168). H-236 holds such a run
+    THE reader of :data:`COVERED_CHAIN_KEY` (RX-1, D169). H-236 holds such a run
     for the member data of a sandboxed turn, not for mail. So a listed write
     with ``open_world=True`` stays off there, and this chain keeps every fence
     of H-236 as it was. Only an explicit True counts. A frame with no key reads
@@ -1640,7 +1640,7 @@ async def write_must_show_card(ctx: Mapping[str, Any] | None = None) -> bool:
 
 
 def held_card_writes_on(org: object = None) -> bool:
-    """True when D168 binds organization *org*. THE reader of the kill switch.
+    """True when D169 binds organization *org*. THE reader of the kill switch.
 
     ``HELD_CARD_WRITES_ORGS`` is a comma list of organization ids, or ``*`` for
     each one. Empty means off. *org* defaults to the bound tenant of the run, and
@@ -1671,7 +1671,7 @@ def held_card_writes_on(org: object = None) -> bool:
 
 async def chat_is_held(ctx: Mapping[str, Any] | None = None) -> bool:
     """True when a card write of the run on this frame follows the rules of a
-    held chat (RX-1, D168): the switch is on, and the chat read outside mail.
+    held chat (RX-1, D169): the switch is on, and the chat read outside mail.
 
     THE reader for a write that must refuse a parameter, refuse a cut card, or
     say more on its card in a held chat. It reads the mark of the session, with
@@ -1765,7 +1765,7 @@ class ChatHoldProvider(ContextProvider):
     A top-level run binds ``no_egress=False``, also in a chat that read mail,
     because its own egress tools ask a card. So the middleware of
     :class:`EgressGuardProvider` never reaches it. This pair does the one thing
-    that D168 adds: while the chat is marked (:func:`chat_marked_now`, read at
+    that D169 adds: while the chat is marked (:func:`chat_marked_now`, read at
     each request, so a mark in the middle of the turn counts), no such write
     reaches the model, and a call of one answers the held text. A clear chat
     keeps its tools. It touches no egress tool. Attach it through

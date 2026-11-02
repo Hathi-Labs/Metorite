@@ -1111,7 +1111,7 @@ async def test_a_live_org_or_a_failed_mode_read_keeps_the_writes(monkeypatch, mo
 async def test_a_held_crm_pack_keeps_the_writes_and_mirror_still_takes_three(
     monkeypatch, mode: str, gone: frozenset[str],
 ) -> None:
-    """RX-1 (D168). A held pack keeps the four writes behind their cards. The
+    """RX-1 (D169). A held pack keeps the four writes behind their cards. The
     Mirror drop runs in a held build too, or a held write would reach Zoho.
     Mutation: skip the read of the mode in a held build -> the three writes
     stay in Mirror mode -> red."""
@@ -1140,7 +1140,7 @@ async def test_the_crm_held_drop_follows_is_egress(monkeypatch) -> None:
 
 
 async def test_a_marked_mail_chat_holds_the_crm_pack_with_its_writes(monkeypatch) -> None:
-    """RX-1 (D168). The chat read mail (``email`` pack), then the member asks
+    """RX-1 (D169). The chat read mail (``email`` pack), then the member asks
     for a CRM write. The CRM pack builds held, and each write stays, because its
     own card is the guard. The build shows no card. Mutation: take ``create_lead``
     off ``HELD_CARD_WRITE_TOOLS`` -> the held pack drops it -> red."""

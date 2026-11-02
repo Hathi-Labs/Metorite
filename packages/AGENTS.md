@@ -58,7 +58,7 @@ Shared settings, logging, the activity and cost feed, and utilities.
 Each module below holds ONE rule. Do not copy its rule into a caller.
 - `today.py`: today's date of a chat run. Fence: `tests/unit/test_crm_answer_consistency.py`.
 - `priority.py`: the server-side priority matrix (D78). The gateway and the chat skills import it. Fences: `tests/unit/test_chat_priority_levels.py`, `tests/unit/test_priority_shared.py`.
-- `card_body.py`: the body of a confirmation card (RX-1, D168). Each short field shows, and only long text may be cut. The Projects tools and the CRM tools read it. Fence: `tests/unit/test_card_body.py`.
+- `card_body.py`: the body of a confirmation card (RX-1, D169). Each short field shows, and only long text may be cut. The Projects tools and the CRM tools read it. Fence: `tests/unit/test_card_body.py`.
 - `mentions.py`: the parser of an @mention. The gateway and the Projects cards read it, so a card and its write agree. Fence: `tests/unit/test_held_card_promises.py`.
 - `_log.py` (`attributed_agent`, `automation_agent_scope`, `chat_agent_label`, `attributed_openai`): the agent name of a model call. Do not read `ctx["agent"]` for a report in a third place. Fence: `tests/unit/test_usage_attribution.py`.
 - `pg_text.storable(value)`: it changes each NUL and each lone surrogate to U+FFFD, at any depth. A writer of model, tool or client text calls it before `json.dumps` and before the bind. Fence: `tests/unit/test_chat_nul_persist.py`.
