@@ -94,7 +94,7 @@ def _held(monkeypatch: Any) -> None:
     monkeypatch.setattr(eg, "chat_is_held", chat_is_held)
 
 
-async def test_r8_the_audience_names_who_holds_it_and_who_does_not(live) -> None:
+async def test_r8_the_audience_names_who_holds_it_and_who_does_not(live) -> None:  # noqa: F811
     pid = _private(live, _name())
     res = await _audience(live, LEAD, pid, people=f"{VIEWER},{OUTSIDER}")
     assert res.status_code == 200, res.text
@@ -106,7 +106,7 @@ async def test_r8_the_audience_names_who_holds_it_and_who_does_not(live) -> None
     assert got["count"] >= 3
 
 
-async def test_r8_an_org_grant_is_everyone(live) -> None:
+async def test_r8_an_org_grant_is_everyone(live) -> None:  # noqa: F811
     pid = _private(live, _name())
     d._grant(live.seeder, pid, "org")
     got = (await _audience(live, LEAD, pid, people=OUTSIDER)).json()
@@ -114,7 +114,7 @@ async def test_r8_an_org_grant_is_everyone(live) -> None:
     assert got["without_access"] == []
 
 
-async def test_r8_a_grant_on_a_parent_counts(live) -> None:
+async def test_r8_a_grant_on_a_parent_counts(live) -> None:  # noqa: F811
     parent = _private(live, _name())
     d._grant(live.seeder, parent, OUTSIDER)
     child = _child(live, parent)
@@ -122,7 +122,7 @@ async def test_r8_a_grant_on_a_parent_counts(live) -> None:
     assert got["without_access"] == [], got
 
 
-async def test_r8_a_project_the_member_cannot_see_is_a_404(live) -> None:
+async def test_r8_a_project_the_member_cannot_see_is_a_404(live) -> None:  # noqa: F811
     pid = _private(live, _name())
     other = _private(live, _name())
     d._grant(live.seeder, other, OUTSIDER)
@@ -131,7 +131,7 @@ async def test_r8_a_project_the_member_cannot_see_is_a_404(live) -> None:
     assert res.status_code == 404, "a member names no project that they cannot see"
 
 
-async def test_r8_a_move_names_who_it_opens_the_row_to(live) -> None:
+async def test_r8_a_move_names_who_it_opens_the_row_to(live) -> None:  # noqa: F811
     here = _private(live, _name())
     there = _private(live, _name())
     d._grant(live.seeder, there, OUTSIDER)
@@ -142,14 +142,14 @@ async def test_r8_a_move_names_who_it_opens_the_row_to(live) -> None:
     assert OUTSIDER not in back["gains"], "a move that narrows opens the row to nobody"
 
 
-async def test_r8_the_read_writes_nothing(live) -> None:
+async def test_r8_the_read_writes_nothing(live) -> None:  # noqa: F811
     pid = _private(live, _name())
     before = _grant_rows(live, pid)
     await _audience(live, LEAD, pid, people=OUTSIDER)
     assert _grant_rows(live, pid) == before
 
 
-async def test_r8_a_held_assign_card_names_who_it_opens_the_task_to(live, monkeypatch) -> None:
+async def test_r8_a_held_assign_card_names_who_it_opens_the_task_to(live, monkeypatch) -> None:  # noqa: F811
     """The card, through the real route. Mutation: drop the read in ``assign`` -> red."""
     from skill_projects import writes as W
 
@@ -160,7 +160,7 @@ async def test_r8_a_held_assign_card_names_who_it_opens_the_task_to(live, monkey
     assert f"gives access to: «{OUTSIDER}»" in asked[0]["context"]
 
 
-async def test_r8_a_held_comment_card_names_the_task_audience(live, monkeypatch) -> None:
+async def test_r8_a_held_comment_card_names_the_task_audience(live, monkeypatch) -> None:  # noqa: F811
     """``audience`` of the watcher read is the list that ``add_comment`` reads."""
     from skill_projects import writes as W
 

@@ -34,8 +34,8 @@ from skill_projects import writes as W
 
 from tests.unit._crm_agent_fakes import approve as crm_approve
 from tests.unit._projects_agent_fakes import approve, fake_gateway, writes
-from tests.unit.test_crm_agent_write import _gateway as crm_gateway
 from tests.unit.test_crm_agent_write import _M as CRM
+from tests.unit.test_crm_agent_write import _gateway as crm_gateway
 
 PID = "0f8fad5b-d9cb-469f-a165-70867728950e"
 DEST = "1f8fad5b-d9cb-469f-a165-70867728950e"

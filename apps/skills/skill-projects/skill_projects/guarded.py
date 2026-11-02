@@ -75,7 +75,6 @@ from skill_projects.writes import (
     _REOPENING,
     CANCELLED,
     CARD_CONTEXT_LIMIT,
-    CARD_NOTE,
     FORGED_BATCH_ROWS,
     MAX_BATCH,
     OVERLAY_ARGUMENTS,

@@ -31,7 +31,7 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from acb_common.mentions import mention_targets, new_mentions
+from acb_common.mentions import mention_targets, new_mentions  # noqa: F401 — the route modules
 from fastapi import Depends, Query
 from gateway.routes.projects.core import (
     Page,

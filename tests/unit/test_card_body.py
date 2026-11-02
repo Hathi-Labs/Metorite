@@ -110,9 +110,9 @@ def test_a_body_that_lost_its_type_still_refuses_in_plain_words() -> None:
     assert "Shorten the long text" in cb.cut_refusal(str(body) + "\nmore")
 
 
-@pytest.mark.parametrize("value", ["a\nstatus: done", "a\r\nb", "a\tb  c", "a b"])
+@pytest.mark.parametrize("value", ["a\nstatus: done", "a\r\nb", "a\tb  c", "a" + chr(0x2028) + "b"])
 def test_a_value_holds_one_line(value: str) -> None:
     """Rule 4: a value with a newline can forge a line. Mutation: return the value
     as it is -> red."""
     assert "\n" not in cb.one_line(value)
-    assert " " not in cb.one_line(value)
+    assert chr(0x2028) not in cb.one_line(value)
