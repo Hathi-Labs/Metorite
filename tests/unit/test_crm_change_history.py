@@ -303,8 +303,8 @@ def test_each_area_has_an_undo_except_the_setup() -> None:
     from gateway.routes.crm import change_log
 
     assert change_log.undo_areas() == set(change_log.AREAS) - {"setup"}
-    assert change_log.ADMIN_AREAS <= set(change_log.AREAS)
-    assert {"view", "rule"} & change_log.ADMIN_AREAS == set()
+    assert change_log.ADMIN_AREAS.issubset(change_log.AREAS)
+    assert change_log.ADMIN_AREAS.isdisjoint({"view", "rule"})
 
 
 def _migration() -> str:
@@ -768,12 +768,14 @@ async def test_a_rule_logs_its_scope_and_its_channel(ns, app_engine) -> None:  #
     admin = _admin(ns.org_a)
     token = bind_tenant(ns.org_a)
     try:
-        async with tenant_engine_scope(ns.app_url.render_as_string(hide_password=False)):
-            async with tenant_session(ns.org_a) as db:
-                await rules.add_rule(db, ns.org_a, admin, "All amounts net of GST", "org",
-                                     rules.ORIGIN_SETTINGS)
-                await rules.add_rule(db, ns.org_a, admin, "Round to lakhs", "me",
-                                     rules.ORIGIN_CHAT)
+        async with (
+            tenant_engine_scope(ns.app_url.render_as_string(hide_password=False)),
+            tenant_session(ns.org_a) as db,
+        ):
+            await rules.add_rule(db, ns.org_a, admin, "All amounts net of GST", "org",
+                                 rules.ORIGIN_SETTINGS)
+            await rules.add_rule(db, ns.org_a, admin, "Round to lakhs", "me",
+                                 rules.ORIGIN_CHAT)
     finally:
         release_tenant(token)
     rows = {r.summary: r for r in _rows(ns, ns.org_a)}
