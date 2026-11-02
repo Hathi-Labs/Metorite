@@ -3309,6 +3309,14 @@ def _update_arg(key: str, value: Any) -> Any:
     return value if key == "estimate_mins" else str(value)
 
 
+#: The order of a row's hint after the status and its subtasks line.
+_UPDATE_HINT_ORDER = (
+    "due_at", "start_date", "estimate_mins", "type", "priority", "important", "leveraged", "tags",
+)
+#: The words of the single-task card for a hint key.
+_UPDATE_HINT_LABEL = {"due_at": "due", "start_date": "start", "estimate_mins": "estimate"}
+
+
 class _UpdateRow(_BatchRow):
     """One row of an `update_tasks` call: one `update_task`, planned by
     `_plan_task_edit` and sent on the route of `update_task`."""
@@ -3330,17 +3338,31 @@ class _UpdateRow(_BatchRow):
 
     @property
     def hint(self) -> str:
-        """What the row changes, as before → after."""
+        """What the row changes, as before → after. The facts with the most
+        effect come first, and the text of a title or description comes last.
+        The hint is never cut: a row too long for the card is refused."""
         if self.plan is None:
             return ""
-        before = self.plan.before
+        card, before = self.plan.card, self.plan.before
+        first = ("status", "subtasks", *_UPDATE_HINT_ORDER)
+        last = ("title", "description")
+        keys = [k for k in first if k in card]
+        keys += [k for k in card if k not in first and k not in last]
+        keys += [k for k in last if k in card]
         parts = []
-        for key, value in self.plan.card.items():
+        for key in keys:
+            value = card[key]
+            if isinstance(value, (list, tuple)):
+                value = ", ".join(str(v) for v in value)
+            name = _UPDATE_HINT_LABEL.get(key, key)
             if key in before and before[key] != value:
-                parts.append(f"{key}: {before[key]} → {value}")
+                old = before[key]
+                if isinstance(old, (list, tuple)):
+                    old = ", ".join(str(v) for v in old)
+                parts.append(f"{name}: {old} → {value}")
             else:
-                parts.append(f"{key} → {value}")
-        return _unfence(", ".join(parts))[:300]
+                parts.append(f"{name} → {value}")
+        return _unfence(", ".join(parts))
 
     async def send(self) -> Any:
         assert self.plan is not None
@@ -3386,6 +3408,11 @@ def _update_rows(changes: str) -> list[_UpdateRow] | str:
 
 async def _update_plan(row: _UpdateRow) -> None:
     """Read the task and plan the row through `_plan_task_edit`. Reads only."""
+    est = row.args.get("estimate_mins")
+    if est not in (None, "", 0, "0") and _int_or_none(est) is None:
+        row.task = (await _task(row.task_id))[1]
+        row.why = "the estimate must be a whole number of minutes"
+        return
     try:
         row.task = (await _task(row.task_id))[1]
         planned = await _plan_task_edit(row.task, **row.args)
@@ -3403,7 +3430,15 @@ async def _update_plan(row: _UpdateRow) -> None:
             "then change this task on its own"
         )
     else:
+        from acb_skills.ask_tools import _ROW_HINT_MAX
+
         row.plan = planned
+        if len(row.hint) > _ROW_HINT_MAX:
+            row.plan = None
+            row.why = (
+                "the change is too long to show in full on one card row. "
+                "Change this task on its own"
+            )
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
@@ -3415,7 +3450,9 @@ async def update_tasks(changes: str) -> str:
     {"task_id": "<full_id>", "due": "2026-03-01", "status": "Done"}. A row
     takes the same arguments as update_task: title, description, status, due,
     start, estimate_mins, tags, clear, priority, important, leveraged, type,
-    fields and include_subtasks. The tool checks every row first. A row that
+    fields and include_subtasks. To change owners, use assign. Rows apply in
+    card order, so put a parent with include_subtasks before its child. The
+    tool checks every row first. A row that
     update_task would refuse is named on the card and left out. A row that
     needs an include_subtasks answer is left out too, with no question. The
     member sees ONE card with a checkbox for each row, shown as before →

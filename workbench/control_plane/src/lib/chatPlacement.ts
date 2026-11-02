@@ -183,6 +183,8 @@ const WRITE: readonly string[] = [
   "file_tasks",
   // Several links between tasks, one card with rows (2026-10-19).
   "link_tasks_batch",
+  // Several edits, a different change for each task, one card with rows.
+  "update_tasks",
   "watch",
   "complete",
   "defer",

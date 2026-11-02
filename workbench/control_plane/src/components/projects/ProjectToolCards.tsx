@@ -150,6 +150,7 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   move_task: { icon: "MoveRight", label: "Task moved" },
   file_tasks: { icon: "MoveRight", label: "Tasks filed" },
   link_tasks_batch: { icon: "Link", label: "Tasks linked" },
+  update_tasks: { icon: "PenLine", label: "Tasks updated" },
   watch: { icon: "Eye", label: "Watching changed" },
   complete: { icon: "CheckCircle2", label: "Task done" },
   defer: { icon: "CalendarClock", label: "Deferred" },
@@ -914,6 +915,8 @@ export const BATCH_TOOLS: ReadonlyMap<string, BatchKind> = new Map<string, Batch
   // 2026-10-19: `writes.py` `link_tasks_batch` prints each link made as the
   // row of its first task, with the link in the row's facts.
   ["link_tasks_batch", { rows: "task", maybe: "Links may have been made" }],
+  // WS-PJP PJP-4: `writes.py` `update_tasks` prints each task changed as a task row.
+  ["update_tasks", { rows: "task", maybe: "Tasks may have been updated" }],
 ]);
 
 const NL = "\n";

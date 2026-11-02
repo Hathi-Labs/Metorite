@@ -180,7 +180,7 @@ async def test_twelve_rows_draw_one_card_with_twelve_rows(monkeypatch) -> None:
     assert card["title"] == "Update these tasks?"
     assert [r["id"] for r in card["rows"]] == [f"row-{n}" for n in range(1, 13)]
     assert card["rows"][0]["label"] == "#101 Task 1"
-    assert card["rows"][0]["hint"].startswith("due_at: 2026-01-01 → 2026-02-01")
+    assert card["rows"][0]["hint"] == "due: 2026-01-01 → 2026-02-01, priority → Low Priority"
     assert len(_patched(calls)) == 12
     assert out.splitlines()[0] == "Changed 12 tasks:"
     assert "Do not change them again" in out
@@ -296,6 +296,55 @@ async def test_a_row_with_the_answer_goes_on_the_card(monkeypatch) -> None:
     )
     assert len(asked) == 1
     assert _patched(calls)[0]["params"] == {"include_subtasks": True}
+
+
+async def test_a_long_description_never_hides_the_status_or_the_cascade(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    PARENTS.add(_tid(1))
+    await skill_projects.update_tasks(
+        _changes(
+            {
+                "task_id": _tid(1),
+                "description": "long words " * 300,
+                "status": "Done",
+                "include_subtasks": "yes",
+            }
+        )
+    )
+    hint = asked[0]["rows"][0]["hint"]
+    assert hint.startswith("status → Done, subtasks → ")
+    assert "finish" in hint or "too" in hint
+    assert hint.rstrip().endswith("long words")
+    patch_body = _patched(calls)[0]["json"]
+    assert patch_body["status_id"] == DONE and "description" in patch_body
+
+
+async def test_a_row_too_long_for_the_card_is_refused_not_cut(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    calls = fake_gateway(monkeypatch, responder)
+    out = await skill_projects.update_tasks(
+        _changes(
+            {"task_id": _tid(1), "description": "x" * 5000},
+            {"task_id": _tid(2), "due": "2026-03-01"},
+        )
+    )
+    assert "too long to show in full" in out
+    assert [r["id"] for r in asked[0]["rows"]] == ["row-2"]
+    assert [c["path"].split("/")[3] for c in _patched(calls)] == [_tid(2)]
+
+
+async def test_a_bad_estimate_refuses_the_row(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    out = await skill_projects.update_tasks(
+        _changes(
+            {"task_id": _tid(1), "estimate_mins": "1h", "due": "2026-03-01"},
+            {"task_id": _tid(2), "due": "2026-03-01"},
+        )
+    )
+    assert "row 1 #101 «Task 1»: the estimate must be a whole number of minutes" in out
+    assert [r["id"] for r in asked[0]["rows"]] == ["row-2"]
 
 
 # ── 6. A row sends what update_task sends ───────────────────────────────────
