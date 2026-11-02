@@ -315,11 +315,19 @@ def test_the_sdk_ask_user_handler_parks_nothing_in_a_marked_run() -> None:
     async def main() -> Any:
         with no_person_scope():
             handler = executor._make_user_input_handler("thread-1")
-        return await contextvars.Context().run(
+        task = contextvars.Context().run(
             asyncio.get_running_loop().create_task, handler({"question": "Approve?"}, None),
         )
+        # Bound the wait. A handler that parks a card waits for an answer that
+        # no one gives, so the broken code must fail here and not hang.
+        return await asyncio.wait_for(task, timeout=5)
 
-    assert asyncio.run(main()) == {"answer": "", "wasFreeform": True}
+    try:
+        got = asyncio.run(main())
+    except TimeoutError:
+        executor._pending_user_input.clear()
+        pytest.fail("the handler parked a card in a marked run and waited for an answer")
+    assert got == {"answer": "", "wasFreeform": True}
     assert not executor._pending_user_input
 
 
@@ -401,8 +409,10 @@ def test_every_card_reader_closes_for_a_marked_run() -> None:
         token = executor._active_run_queue.set(queue)
         try:
             with no_person_scope():
-                said = await ask_questions(json.dumps(
-                    {"questions": [{"header": "Go", "question": INJECTED_PAGE}]}))
+                # Bound the wait. A reader that draws a card waits for an
+                # answer that no one gives, and the test must fail, not hang.
+                said = await asyncio.wait_for(ask_questions(json.dumps(
+                    {"questions": [{"header": "Go", "question": INJECTED_PAGE}]})), 5)
                 return said, cards_refused(), ask_tools.confirmation_channel_open()
         finally:
             executor._active_run_queue.reset(token)
@@ -930,12 +940,19 @@ def test_no_tool_or_request_field_names_the_mark() -> None:
 
 #: The routes that approve, reject or answer. A tool that calls one over HTTP
 #: acts as its member, and the mark does not cross HTTP.
+#: A formatted value of an f-string reads as ``{}`` here, so a route with an
+#: id in it is written ``/agent-runs/{}/resume``.
 _APPROVAL_ROUTES = ("/actions/pending", "/respond-input", "/archive-approval",
-                    "/agent-runs/{run_id}/activities", "/agent-runs/{run_id}/resume")
+                    "/agent-runs/{}/activities", "/agent-runs/{}/resume")
 _TOOL_ROOTS = ("apps/agents", "apps/skills", "packages/acb_skills", "skills")
 #: The route table of the Projects tools. It names each route, and it holds a
 #: decision for each. ``test_the_run_tools_stay_planned`` fences the two rows.
-_ROUTE_TABLES = frozenset({"apps/skills/skill-projects/skill_projects/manifest.py"})
+#: ``chat_parity.py`` is a map of UI routes to the chat tool for each. It is
+#: data: it imports no HTTP client and calls no route.
+_ROUTE_TABLES = frozenset({
+    "apps/skills/skill-projects/skill_projects/manifest.py",
+    "packages/acb_skills/acb_skills/chat_parity.py",
+})
 
 
 def _strings_that_run(tree: ast.AST) -> list[str]:
@@ -948,8 +965,16 @@ def _strings_that_run(tree: ast.AST) -> list[str]:
             if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
                     and isinstance(first.value.value, str)):
                 docs.add(id(first.value))
-    return [n.value for n in ast.walk(tree)
-            if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs]
+    out: list[str] = []
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in docs:
+            out.append(n.value)
+        elif isinstance(n, ast.JoinedStr):
+            # An f-string is one route. Each formatted value reads as ``{}``.
+            out.append("".join(
+                p.value if isinstance(p, ast.Constant) and isinstance(p.value, str) else "{}"
+                for p in n.values))
+    return out
 
 
 def test_no_tool_names_a_route_that_approves_or_answers() -> None:
@@ -964,6 +989,26 @@ def test_no_tool_names_a_route_that_approves_or_answers() -> None:
         "A tool acts as its member over HTTP, and the mark does not cross HTTP. "
         "So this route takes the call as a person's. Do not add this call."
     )
+
+
+def _routes_in(source: str) -> list[str]:
+    tree = ast.parse(source)
+    return [r for v in _strings_that_run(tree) for r in _APPROVAL_ROUTES if r in v]
+
+
+def test_the_route_scan_reads_an_f_string() -> None:
+    resume = 'url = f"/projects/agent-runs/{run_id}/resume"'
+    acts = 'url = f"/projects/agent-runs/{run_id}/activities"'
+    assert _routes_in(resume) == ["/agent-runs/{}/resume"]
+    assert _routes_in(acts) == ["/agent-runs/{}/activities"]
+    # A plain string of each route still matches.
+    assert _routes_in('u = "/api/actions/pending"') == ["/actions/pending"]
+    assert _routes_in('u = "/agent/respond-input"') == ["/respond-input"]
+    assert _routes_in('u = "/agent/archive-approval"') == ["/archive-approval"]
+    assert _routes_in('u = "/agent-runs/{}/resume"') == ["/agent-runs/{}/resume"]
+    # An unrelated f-string does not match.
+    assert _routes_in('u = f"/projects/tasks/{task_id}/comments"') == []
+    assert _routes_in('u = f"/agent-runs/{run_id}/status"') == []
 
 
 def test_the_run_tools_stay_planned() -> None:
