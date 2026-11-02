@@ -39,6 +39,8 @@ not a pass.
   goes red.
 * M5. The migration: drop the trigger ``pm_project_authorities_same_org``.
   ``test_the_database_refuses_a_hand_written_cross_org_pin`` goes red.
+* M8. ``G/authorities.py``: drop ``dependencies=_ENABLED`` from the routes.
+  ``test_with_the_flag_off_all_three_routes_answer_404_and_write_nothing`` goes red.
 * M7. ``G/authorities.py`` ``_view``: drop the ``page_hidden`` mask of ``stale_reason``.
   ``test_a_hidden_page_shows_no_reason_and_no_version_but_keeps_the_state`` goes red.
 * M6. ``G/authorities.py`` ``_stale_reason``: always ``None``.
@@ -105,6 +107,7 @@ def _knowledge_on(monkeypatch):
     settings = get_settings()
     monkeypatch.setattr(settings, "knowledge_enabled", True, raising=False)
     monkeypatch.setattr(settings, "knowledge_orgs", "*", raising=False)
+    monkeypatch.setattr(settings, "authority_pins_orgs", "*", raising=False)
 
 
 def _authorities_module():
@@ -754,6 +757,26 @@ class TestTheRead:
         mine = _item(await _list(live, LEAD, live.team), pin)
         assert mine["page_hidden"] is False
         assert mine["stale_reason"] == "changed" and mine["page_version"] == 2
+
+    async def test_with_the_flag_off_all_three_routes_answer_404_and_write_nothing(
+        self, live, monkeypatch,
+    ):
+        from acb_common import get_settings
+
+        page = _page(live, live.space_org, "Rules flag")
+        pin = (await _pin(live, LEAD, live.team, page)).json()["id"]
+        before = len(_rows(live, "SELECT 1 FROM pm_project_authorities"))
+        for off in ("", live.org_b):
+            monkeypatch.setattr(get_settings(), "authority_pins_orgs", off, raising=False)
+            assert (await _as(live, LEAD, "GET", _path(live.team))).status_code == 404
+            assert (await _pin(live, LEAD, live.team, page)).status_code == 404
+            r = await _as(live, LEAD, "DELETE", f"{_path(live.team)}/{pin}")
+            assert r.status_code == 404
+        assert len(_rows(live, "SELECT 1 FROM pm_project_authorities")) == before
+        assert _rows(live, "SELECT state FROM pm_project_authorities WHERE id ="
+                           " CAST(:i AS uuid)", i=pin)[0].state == "active"
+        monkeypatch.setattr(get_settings(), "authority_pins_orgs", live.org, raising=False)
+        assert (await _as(live, LEAD, "GET", _path(live.team))).status_code == 200
 
     async def test_a_member_who_cannot_see_the_project_reads_404(self, live):
         r = await _as(live, OUTSIDER, "GET", _path(live.hidden))

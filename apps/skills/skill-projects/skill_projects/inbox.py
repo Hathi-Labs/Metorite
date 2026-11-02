@@ -112,7 +112,13 @@ async def project_authorities(project_id: str, include_removed: bool = False) ->
     include_removed=true lists removed pins too."""
     pid, node = await _node(project_id)
     params = {"include_removed": True} if include_removed else None
-    rows = ((await get(f"/projects/nodes/{pid}/authorities", params)) or {}).get("rows") or []
+    try:
+        got = (await get(f"/projects/nodes/{pid}/authorities", params)) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return "Authority pages are not on for this organization yet."
+        raise
+    rows = got.get("rows") or []
     out = [legend(), f"Authority pages of {data(node.get('name'))} ({len(rows)} pins):"]
     for row in rows:
         hidden = row.get("page_hidden") is True

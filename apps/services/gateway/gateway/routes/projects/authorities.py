@@ -5,7 +5,8 @@ the file that creates ``pm_project_authorities``.
 
 THE one writer of ``pm_project_authorities``. A pin names the Knowledge page
 that holds the rules of one project. ALN-5 reads the pins to find the rules.
-This slice has three routes and no UI, no flag, no job and no event.
+This slice has three routes and no UI, no job and no event. The flag
+``AUTHORITY_PINS_ORGS`` (default empty) keeps all three at 404.
 
 * ``GET    /nodes/{project_id}/authorities``
 * ``POST   /nodes/{project_id}/authorities``  body ``{"page_id": ...}``
@@ -53,6 +54,7 @@ from __future__ import annotations
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import get_settings
 from fastapi import Depends, HTTPException, Response
 from gateway.routes.projects.authority import assert_may_write_grant, in_personal_tree
 from gateway.routes.projects.core import (
@@ -66,6 +68,29 @@ from gateway.routes.projects.core import (
 from gateway.routes.projects.notifications import project_grant_holders
 from pydantic import BaseModel
 from sqlalchemy import text
+
+
+def authority_pins_allowed(organization_id: str | None) -> bool:
+    """True when ``AUTHORITY_PINS_ORGS`` holds the org, or holds ``*``. Default OFF.
+
+    The org comes from the session, never from request input (R5). It reads
+    ``get_settings()`` on each call, so a flag reload needs no restart.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    raw = str(getattr(get_settings(), "authority_pins_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
+
+
+async def require_authority_pins(user: UserContext = Depends(get_current_user)) -> None:
+    """404 while ``AUTHORITY_PINS_ORGS`` does not hold the caller's org."""
+    if not authority_pins_allowed(getattr(user, "organization_id", None)):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+_ENABLED = [Depends(require_authority_pins)]
 
 #: The 403 of a pin on a node of a personal tree.
 PERSONAL_PIN_REFUSED = (
@@ -183,7 +208,7 @@ async def _refuse_if_narrower(
         raise HTTPException(status_code=409, detail=NARROWER_REFUSED)
 
 
-@router.get("/nodes/{project_id}/authorities")
+@router.get("/nodes/{project_id}/authorities", dependencies=_ENABLED)
 async def list_authorities(
     project_id: str, include_removed: bool = False,
     user: UserContext = Depends(get_current_user),
@@ -214,7 +239,7 @@ async def list_authorities(
         return {"rows": out, "total": len(out)}
 
 
-@router.post("/nodes/{project_id}/authorities", status_code=201)
+@router.post("/nodes/{project_id}/authorities", status_code=201, dependencies=_ENABLED)
 async def pin_authority(
     project_id: str, payload: PinIn, response: Response,
     user: UserContext = Depends(get_current_user),
@@ -281,7 +306,7 @@ async def pin_authority(
             "title": page.title, "space_id": str(page.space_id)}})
 
 
-@router.delete("/nodes/{project_id}/authorities/{pin_id}")
+@router.delete("/nodes/{project_id}/authorities/{pin_id}", dependencies=_ENABLED)
 async def remove_authority(
     project_id: str, pin_id: str,
     user: UserContext = Depends(get_current_user),

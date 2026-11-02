@@ -2260,6 +2260,25 @@ _PIN_REFUSALS = {
 }
 
 
+#: The answer while ``AUTHORITY_PINS_ORGS`` does not hold the org. The routes
+#: answer 404, and a tool makes no card.
+PINS_OFF = "Authority pages are not on for this organization yet. Nothing was changed."
+
+
+async def _pins_or_off(pid: str) -> tuple[list[dict[str, Any]], str]:
+    """``(pins, "")``, or ``([], PINS_OFF)`` when the flag is off. This read
+    runs BEFORE any card. A 404 here, for a project the member just read, is
+    the flag. Any other refusal is raised again."""
+    pid = uuid_of(pid, "project_id")
+    try:
+        got = (await get(f"/projects/nodes/{pid}/authorities")) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return [], PINS_OFF
+        raise
+    return got.get("rows") or [], ""
+
+
 def _pin_refusal(exc: GatewayRefusal) -> str:
     """One plain sentence for a 403, 404 or 409 of the authority routes.
 
@@ -2289,7 +2308,9 @@ async def pin_authority(project_id: str, page_id: str) -> str:
     refused = grant_refusal(node)
     if refused:
         return refused
-    held = ((await get(f"/projects/nodes/{pid}/authorities")) or {}).get("rows") or []
+    held, off = await _pins_or_off(pid)
+    if off:
+        return off
     same = next((r for r in held if str(r.get("page_id") or "").lower() == page), None)
     if same is not None:
         name = "a page you cannot read" if same.get("page_hidden") is True else data(same.get("title"))
@@ -2336,7 +2357,9 @@ async def unpin_authority(project_id: str, pin_id: str) -> str:
     refused = grant_refusal(node)
     if refused:
         return refused
-    rows = ((await get(f"/projects/nodes/{pid}/authorities")) or {}).get("rows") or []
+    rows, off = await _pins_or_off(pid)
+    if off:
+        return off
     wanted = str(pin_id or "").strip().lower()
     row = next((r for r in rows if str(r.get("id") or "").lower() == wanted), None)
     if row is None:

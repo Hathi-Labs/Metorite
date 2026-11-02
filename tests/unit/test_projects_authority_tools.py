@@ -103,6 +103,27 @@ async def test_a_pin_shows_one_card_first_and_then_writes(monkeypatch) -> None:
     assert "«Launch rules»" in out, "a title that people wrote is fenced by data()"
 
 
+async def test_with_the_flag_off_no_tool_makes_a_card_or_a_write(monkeypatch) -> None:
+    """The route answers 404 while AUTHORITY_PINS_ORGS lacks the org. The tool
+    reads first, so a flag that is off shows no card and sends no POST."""
+    asked = approve(monkeypatch)
+
+    def off(call: dict) -> Any:
+        if call["path"].endswith("/authorities") or "/authorities/" in call["path"]:
+            return FakeResponse({"detail": "Not Found"}, 404)
+        return LAUNCH if call["path"] == f"/projects/nodes/{PID}" else {"rows": []}
+
+    calls = fake_gateway(monkeypatch, off)
+    outs = [
+        await skill_projects.pin_authority(PID, PAGE),
+        await skill_projects.unpin_authority(PID, PIN),
+        await skill_projects.project_authorities(PID),
+    ]
+    assert all("not on for this organization yet" in o for o in outs), outs
+    assert asked == [], "no confirmation was requested"
+    assert [c for c in calls if c["method"] != "GET"] == [], "no POST or DELETE was sent"
+
+
 async def test_a_declined_card_writes_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = _gateway(monkeypatch, pins=[])
