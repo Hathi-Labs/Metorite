@@ -90,7 +90,6 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
   const [catalogFailed, setCatalogFailed] = useState(false);
   const [filter, setFilter] = useState("");
 
-  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     let live = true;
     listCatalogActions().then((reply) => {
@@ -122,7 +121,6 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
       live = false;
     };
   }, [skillId]);
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   const titles = useMemo(() => new Map(catalog.map((a) => [a.id, a])), [catalog]);
   const dirty = JSON.stringify(values) !== JSON.stringify(saved);
@@ -206,7 +204,7 @@ export default function SkillForm({ skillId }: { skillId?: string }) {
   const moves = skill ? movesOf(skill.state) : [];
 
   return (
-    <div className="flex-1 overflow-y-auto p-3 sm:p-4">
+    <div className="pb-askbar flex-1 overflow-y-auto p-3 sm:p-4">
       <form
         className="mx-auto flex max-w-2xl flex-col gap-4"
         onSubmit={(e) => {

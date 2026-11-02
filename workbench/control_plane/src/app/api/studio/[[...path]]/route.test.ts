@@ -21,8 +21,8 @@ vi.mock("@/lib/gateway", () => ({
     Authorization: "Bearer internal",
     ...extra,
   }),
-  gatewayFetch: async (url: string, init: RequestInit) => {
-    seen.push({ url, init });
+  gatewayFetch: async (url: string, init: unknown) => {
+    seen.push({ url, init: init as RequestInit });
     return reply();
   },
 }));
@@ -30,7 +30,7 @@ vi.mock("@/lib/gateway", () => ({
 import { DELETE, GET, PATCH, POST, PUT } from "./route";
 
 const ctx = (path?: string[]) => ({ params: Promise.resolve({ path }) });
-const req = (url: string, init?: RequestInit) => new NextRequest(url, init);
+const req = (url: string, init?: ConstructorParameters<typeof NextRequest>[1]) => new NextRequest(url, init);
 
 beforeEach(() => {
   seen.length = 0;

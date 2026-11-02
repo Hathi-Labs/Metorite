@@ -33,10 +33,10 @@ function upperFirst(text: string): string {
 export function placeOfDetail(detail: string): ErrorPlace {
   const text = detail.trim();
 
-  const row = /^\$\.actions\[(\d+)\]:\s*(.*)$/s.exec(text);
+  const row = /^\$\.actions\[(\d+)\]:\s*([\s\S]*)$/.exec(text);
   if (row) return { place: "action", index: Number(row[1]), text: upperFirst(row[2]) };
 
-  const picker = /^\$\.actions:\s*(.*)$/s.exec(text);
+  const picker = /^\$\.actions:\s*([\s\S]*)$/.exec(text);
   if (picker) return { place: "picker", text: upperFirst(picker[1]) };
 
   const body = /^body\.(description|instructions|actions)\b/.exec(text);

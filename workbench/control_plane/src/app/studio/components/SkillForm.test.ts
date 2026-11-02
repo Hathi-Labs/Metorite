@@ -120,16 +120,17 @@ describe("a double submit", () => {
   });
 
   it("sends one POST to create on a double click", async () => {
-    const fetchMock = vi.fn(
-      async (..._args: unknown[]) =>
-        new Response(JSON.stringify({ skill: { id: "s1" }, version: null }), { status: 201 }),
-    );
+    const urls: string[] = [];
+    const fetchMock = vi.fn(async (url: string) => {
+      urls.push(url);
+      return new Response(JSON.stringify({ skill: { id: "s1" }, version: null }), { status: 201 });
+    });
     vi.stubGlobal("fetch", fetchMock);
     const guard = createSubmitGuard();
     const click = () => guard.run(() => createSkill(toCreate(FORM)));
     await Promise.all([click(), click()]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/studio/skills");
+    expect(urls).toEqual(["/api/studio/skills"]);
   });
 
   it("lets a later submit through once the first answered", async () => {
