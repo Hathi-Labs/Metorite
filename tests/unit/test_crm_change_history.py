@@ -1122,3 +1122,98 @@ def test_a_row_never_changes_and_one_row_is_undone_once(ns, app_engine) -> None:
         c.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": ns.org_a})
         insert(c, organization_id=ns.org_b)
     assert uuid.UUID(first)
+
+
+#: Each column of the guard of migration 332 → an SQL value that differs.
+_OTHER_VALUE: dict[str, str] = {
+    "id": "gen_random_uuid()",
+    "organization_id": "CAST(:org_b AS uuid)",
+    "at": "at - interval '1 day'",
+    "actor_email": "'other@crm-m1.test'",
+    "via": "'chat'",
+    "approved_by": "'other@crm-m1.test'",
+    "ladder_level": "'own'",
+    "area": "'view'",
+    "action": "'delete'",
+    "entity_id": "'other'",
+    "summary": "'other'",
+    "before": "'{\"a\": 1}'::jsonb",
+    "after": "'{\"a\": 2}'::jsonb",
+    "mode": "'mirror'",
+    "reversible": "NOT reversible",
+    "private_to": "'other@crm-m1.test'",
+    "undoes_id": "gen_random_uuid()",
+}
+
+
+@_DB_GATE
+def test_the_guard_refuses_a_column_change_that_sets_undone_by_too(
+    ns, app_engine,  # noqa: F811
+) -> None:
+    """P3d (fix round 1). Each UPDATE changes one other column AND sets
+    ``undone_by`` on a row whose ``undone_by`` is NULL. The ``undone_by``
+    block of the trigger lets that pass, so only the column block can
+    refuse it. It runs as the table owner, which RLS does not bind.
+    Mutation: drop one column from the guard of migration 332 → red."""
+    from sqlalchemy.exc import DBAPIError
+
+    with ns.admin_engine.begin() as c:
+        row = str(c.execute(text(
+            "INSERT INTO crm_change_log (organization_id, actor_email, via, approved_by, "
+            "ladder_level, area, action, entity_id, summary, before, after, reversible) "
+            "VALUES (CAST(:o AS uuid), :a, 'ui', :a, 'team', 'deal_stage', 'change', 'e1', "
+            "'s', '{}'::jsonb, '{}'::jsonb, true) RETURNING id"),
+            {"o": ns.org_a, "a": ADMIN}).scalar())
+    columns = set(_OTHER_VALUE) | {"undone_by"}
+    with ns.admin_engine.begin() as c:
+        names = {r[0] for r in c.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'crm_change_log'"))}
+    assert names == columns, "a new column needs a line in the guard and here"
+    passed = []
+    for column, value in _OTHER_VALUE.items():
+        try:
+            with ns.admin_engine.begin() as c:
+                c.execute(text(
+                    f"UPDATE crm_change_log SET {column} = {value}, "
+                    "undone_by = gen_random_uuid() WHERE id = CAST(:i AS uuid)"),
+                    {"i": row, "org_b": ns.org_b})
+            passed.append(column)
+        except DBAPIError as exc:
+            if "a change row never changes" not in str(exc):
+                passed.append(f"{column} (refused by another rule: {exc.orig})")
+    assert not passed, f"the guard let these columns change: {passed}"
+    # The control: `undone_by` alone is set once, and never again.
+    with ns.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_change_log SET undone_by = gen_random_uuid() "
+                       "WHERE id = CAST(:i AS uuid)"), {"i": row})
+    with pytest.raises(DBAPIError, match="undone_by is set once"), \
+            ns.admin_engine.begin() as c:
+        c.execute(text("UPDATE crm_change_log SET undone_by = gen_random_uuid() "
+                       "WHERE id = CAST(:i AS uuid)"), {"i": row})
+
+
+@_DB_GATE
+async def test_the_undo_of_a_pipeline_rename_refuses_a_newer_rename(
+    ns, app_engine,  # noqa: F811
+) -> None:
+    """P3d (fix round 1). Rename a pipeline twice, then undo the first
+    rename: 409 ``changed_since``, and the newer name stays. Mutation: drop
+    the check of ``pipelines._undo_rename`` → the old name comes back → red."""
+    _settings(ns, ns.org_a, "native")
+    pipeline = _pipeline(ns, ns.org_a, "Sales")
+    admin = _admin(ns.org_a)
+    for name in ("Sales B", "Sales C"):
+        r = await _call(ns, admin, "PATCH", f"/crm/pipelines/{pipeline}", {"name": name})
+        assert r.status_code == 200, r.text
+    first, second = _rows(ns, ns.org_a)
+    assert (first.after, second.after) == ({"name": "Sales B"}, {"name": "Sales C"})
+    refused = await _call(ns, admin, "POST", f"/crm/change-history/{first.id}/undo")
+    assert _undo_code(refused) == (409, "changed_since"), refused.text
+    assert _one(ns, "SELECT name FROM crm_pipelines WHERE id = CAST(:i AS uuid)",
+                i=pipeline) == "Sales C"
+    assert len(_rows(ns, ns.org_a)) == 2
+    back = await _call(ns, admin, "POST", f"/crm/change-history/{second.id}/undo")
+    assert back.status_code == 200, back.text
+    assert _one(ns, "SELECT name FROM crm_pipelines WHERE id = CAST(:i AS uuid)",
+                i=pipeline) == "Sales B"
