@@ -35,7 +35,8 @@ and a state-machine guard read the stored result. Org B sees no formula of org A
 * M3. ``studio_expr._divide``: skip the rounding at the node.
   ``test_r8_a_tie_rounds_at_the_node_and_at_the_target`` goes red.
 * M4. ``objects_store._apply_write``: on an update, read ``mark.before`` in place of
-  the merged record. ``test_r8_an_update_recomputes_from_the_merged_record`` goes red.
+  the merged record. ``test_r8_a_batch_recomputes_each_write_in_order`` goes red (two updates of one record: the
+  second must read the first).
 * M5. ``objects_store._apply_write``: run the formulas on the raw data, before
   ``validate_record``. ``test_r8_the_formula_reads_the_checked_record`` goes red.
 * M6. ``studio_expr._apply``: drop the null rule.
