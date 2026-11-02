@@ -42,7 +42,7 @@ export default function BlocksPreviewPage() {
     <div className="flex h-full flex-col">
       <AppTopBar title="Block preview" subtitle="Table, Form and Detail on sample records"
         back={{ href: "/studio", label: "Back to Studio" }} />
-      <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-3 sm:gap-4 sm:p-4">
+      <div className="pb-askbar flex flex-1 flex-col gap-3 overflow-y-auto p-3 sm:gap-4 sm:p-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone="warning" icon="FlaskConical">Sample data</Badge>
           <span className="text-xs text-muted-foreground">

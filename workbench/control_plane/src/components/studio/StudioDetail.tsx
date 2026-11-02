@@ -5,9 +5,11 @@
  * of one record. It shows each field by its type, in the order of `fields`.
  * A select draws as a chip (`Badge`), an address as a link only when it
  * passes the same check as the server (`safeHref`), and a missing value as a
- * dash. The sheet is generic. A caller adds its own actions beside it.
+ * dash. A value reads as the Table reads it: the words come from
+ * `displayValue`, and a select or person draws through `ValueElement`, as a
+ * Table cell does. The sheet is generic. A caller adds its own actions beside it.
  */
-import Badge from "@/components/ui/Badge";
+import { ValueElement } from "@/components/CardFieldValue";
 import { displayValue, labelOf, safeHref } from "@/lib/studio/blocks";
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
 
@@ -20,7 +22,7 @@ function Value({ field, value }: { field: FieldSpec; value: unknown }) {
     case "multiSelect":
       return (
         <span className="inline-flex flex-wrap gap-1">
-          {items.map((v, i) => <Badge key={i} tone="neutral">{String(v)}</Badge>)}
+          {items.map((v, i) => <ValueElement key={i} item={{ text: String(v), named: true }} kind="tag" />)}
         </span>
       );
     case "url":
@@ -35,8 +37,13 @@ function Value({ field, value }: { field: FieldSpec; value: unknown }) {
           })}
         </span>
       );
-    case "email":
     case "person":
+      return (
+        <span className="inline-flex flex-wrap gap-1">
+          {items.map((v, i) => <ValueElement key={i} item={{ text: String(v), named: true }} kind="person" />)}
+        </span>
+      );
+    case "email":
       return <span className="break-all">{text}</span>;
     case "longText":
       return <span className="whitespace-pre-wrap break-words">{text}</span>;

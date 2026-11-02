@@ -8,6 +8,7 @@
  * `createContext`: a server route reaches `lib/studio` (see `fieldCheck.ts`).
  * Fence: `blocks.test.ts`.
  */
+import { formatCardDate } from "@/lib/cardFields";
 import { type FieldSpec, checkValue } from "./fieldCheck";
 import type { FieldType } from "./manifest";
 
@@ -51,12 +52,12 @@ export function parseFields(raw: unknown): FieldSpec[] {
 
 // --- the Table ---------------------------------------------------------------
 
-/** The cell kind of `dataGridLayout.ts` that draws a field type. */
-export function cellKindFor(type: FieldType): "text" | "date" | "tag" | "person" {
+/**
+ * The cell kind of `dataGridLayout.ts` that draws a field type. A date has no
+ * kind of its own: `displayValue` words it, once, for the Table and the Detail.
+ */
+export function cellKindFor(type: FieldType): "text" | "tag" | "person" {
   switch (type) {
-    case "date":
-    case "datetime":
-      return "date";
     case "select":
     case "multiSelect":
       return "tag";
@@ -78,11 +79,24 @@ export function minorDigits(currency: string): number {
   }
 }
 
+const pad = (n: number): string => String(n).padStart(2, "0");
+
 function scalarText(f: FieldSpec, v: unknown): string {
   if (v === null || v === undefined) return "";
   switch (f.type) {
     case "checkbox":
       return v === true ? "Yes" : "No";
+    case "date":
+      return typeof v === "string" ? formatCardDate(v) : "";
+    case "datetime": {
+      // The viewer's local time, with the time, as the Table words a day.
+      if (typeof v !== "string") return "";
+      const d = new Date(v);
+      if (Number.isNaN(d.getTime())) return v;
+      return formatCardDate(
+        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`,
+      );
+    }
     case "money": {
       if (!isObject(v) || typeof v.minor !== "number" || typeof v.currency !== "string") return "";
       const d = minorDigits(v.currency);
@@ -104,7 +118,10 @@ function scalarText(f: FieldSpec, v: unknown): string {
   }
 }
 
-/** The words of one stored value, for a cell and for the Detail sheet. */
+/**
+ * The words of one stored value. The ONE formatter: a Table cell and the
+ * Detail sheet both call it, and `blocks.test.ts` holds them to the same text.
+ */
 export function displayValue(f: FieldSpec, v: unknown): string {
   if (Array.isArray(v)) return v.map((x) => scalarText(f, x)).filter(Boolean).join(", ");
   return scalarText(f, v);
@@ -170,8 +187,6 @@ export function emptyDraft(f: FieldSpec): Draft {
     default: return "";
   }
 }
-
-const pad = (n: number): string => String(n).padStart(2, "0");
 
 function scalarDraft(f: FieldSpec, v: unknown): string {
   if (v === null || v === undefined) return "";

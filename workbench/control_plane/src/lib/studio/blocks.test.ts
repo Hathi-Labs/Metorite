@@ -250,7 +250,7 @@ describe("Table: the D1 bind path with field types", () => {
     expect(html).toContain("aria-label=\"Filter rows\"");
   });
   it("takes the cell kinds from the field types", () => {
-    expect(cellKindFor("date")).toBe("date");
+    expect(cellKindFor("date")).toBe("text");
     expect(cellKindFor("select")).toBe("tag");
     expect(cellKindFor("person")).toBe("person");
     expect(cellKindFor("money")).toBe("text");
@@ -269,5 +269,67 @@ describe("Table: the D1 bind path with field types", () => {
     put<Row[]>(sourceKey(door, source), SAMPLE_ROWS);
     const plain = { type: "template", props: { name: "dataGrid", source, data: { fields } } };
     expect(draw(plain)).not.toContain("Filter rows");
+  });
+});
+
+describe("the Table and the Detail read a value the same way", () => {
+  const door: StudioDataDoor = { scope: "same:draft", read: async () => [], run: async () => ({ ok: true }) };
+  const source = { action: "object:visit.list" };
+  const drawTable = (f: FieldSpec, row: Row) => {
+    clearAll();
+    put<Row[]>(sourceKey(door, source), [row]);
+    return renderToStaticMarkup(createElement(StudioDataContext.Provider, { value: door },
+      createElement(GenerativeUINode, { spec: tableBlock([f], source), onAction: noop })));
+  };
+  const drawDetail = (f: FieldSpec, row: Row) =>
+    renderToStaticMarkup(createElement(StudioDetail, { fields: [f], record: row }));
+  const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  for (const f of SAMPLE_FIELDS) {
+    it(f.type + ": one text in both blocks", () => {
+      const row = { id: "r1", [f.key]: SAMPLE_ROWS[0][f.key] };
+      const want = esc(displayValue(f, row[f.key]));
+      expect(want).not.toBe("");
+      // A multi value is words in the Detail and a chip each in the Table, so
+      // each item is looked for on its own.
+      const parts = Array.isArray(row[f.key]) ? (row[f.key] as string[]) : [want];
+      const table = drawTable(f, row);
+      const detail = drawDetail(f, row);
+      for (const part of parts) {
+        expect(table, "table " + f.key).toContain(esc(String(part)));
+        expect(detail, "detail " + f.key).toContain(esc(String(part)));
+      }
+    });
+  }
+
+  it("words a date as a day, and no raw ISO text shows in either block", () => {
+    const f: FieldSpec = { key: "d", type: "date" };
+    const row = { id: "r1", d: "2026-11-04" };
+    expect(displayValue(f, "2026-11-04")).toBe("4 Nov 2026");
+    expect(drawTable(f, row)).toContain("4 Nov 2026");
+    expect(drawDetail(f, row)).toContain("4 Nov 2026");
+    expect(drawDetail(f, row)).not.toContain("2026-11-04");
+  });
+
+  it("words a datetime in local time, with the time", () => {
+    const f: FieldSpec = { key: "t", type: "datetime" };
+    const d = new Date("2026-11-04T04:30:00Z");
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    const text = displayValue(f, "2026-11-04T04:30:00Z");
+    expect(text).toMatch(/^\d{1,2} \w{3} \d{4}, \d{2}:\d{2}$/);
+    expect(text.endsWith(", " + hh + ":" + mm)).toBe(true);
+    expect(drawDetail(f, { t: "2026-11-04T04:30:00Z" })).not.toContain("T04:30:00Z");
+  });
+
+  it("draws a select and a person as the same chip in both blocks", () => {
+    for (const [type, value] of [["select", "Planned"], ["multiSelect", ["Urgent", "Audit"]], ["person", "asha@example.com"]] as const) {
+      const f: FieldSpec = { key: "k", type, options: ["Planned", "Urgent", "Audit"] };
+      const row = { id: "r1", k: value };
+      const chips = (html: string) => (html.match(/(?:border-cat-\d+\/30|bg-secondary text-muted-foreground px-1)/g) ?? []).sort();
+      const t = chips(drawTable(f, row));
+      expect(t.length, type).toBeGreaterThan(0);
+      expect(chips(drawDetail(f, row)), type).toEqual(t);
+    }
   });
 });
