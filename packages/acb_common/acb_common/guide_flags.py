@@ -4,9 +4,11 @@
 Empty opens none. The default is OFF. The reader runs on each call, so a
 reload of the settings (SIGHUP) takes effect with no restart.
 
-The one consumer is ``GET /auth/me/shell`` (``routes/admin/me.py``), which
-returns the answer as ``guide``. With ``guide`` false, the control plane
-shows no entry of the tour and starts none (``src/lib/shell/guide.ts``).
+It lives in ``acb_common``, so every service reads one rule. The consumers
+are ``GET /auth/me/shell`` in the gateway (``routes/admin/me.py``), which
+returns the answer as ``guide``, and the orchestrator's guide tools (GD-7).
+With ``guide`` false, the control plane shows no entry of the tour and
+starts none (``src/lib/shell/guide.ts``).
 """
 
 from __future__ import annotations

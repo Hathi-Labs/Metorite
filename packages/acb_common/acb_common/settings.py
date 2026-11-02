@@ -629,7 +629,7 @@ class Settings(BaseSettings):
     studio_orgs: str = ""
     # WS-OB GD-5a: GUIDE_ORGS lists the org ids whose members see the entries
     # of the guide's tour (the welcome button and the account menu row). `*`
-    # opens every org. Empty opens none. Reader: `gateway.guide.flags.
+    # opens every org. Empty opens none. Reader: `acb_common.guide_flags.
     # guide_allowed`, returned as `guide` from GET /auth/me/shell. Spec:
     # assistant_guide.md section 7.
     guide_orgs: str = ""

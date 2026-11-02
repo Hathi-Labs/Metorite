@@ -316,7 +316,7 @@ class TestTheTourMark:
 def _guide_orgs(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
     from types import SimpleNamespace
 
-    import gateway.guide.flags as flags
+    import acb_common.guide_flags as flags
 
     monkeypatch.setattr(flags, "get_settings", lambda: SimpleNamespace(guide_orgs=raw))
 

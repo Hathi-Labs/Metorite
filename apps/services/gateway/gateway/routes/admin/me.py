@@ -22,7 +22,7 @@ from acb_auth.permissions import CAPABILITIES
 from acb_common import get_logger
 from acb_common.app_manifests.shell_manifest import load_vocabulary
 from fastapi import APIRouter, Body, Depends, HTTPException
-from gateway.guide.flags import guide_allowed
+from acb_common.guide_flags import guide_allowed
 from gateway.routes.admin._common import _tenant_session, get_org_id
 from pydantic import (
     BaseModel,

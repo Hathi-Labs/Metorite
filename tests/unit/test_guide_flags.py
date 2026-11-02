@@ -1,7 +1,7 @@
 """``GUIDE_ORGS``, the switch of the guide's tour (WS-OB GD-5a).
 
 Spec: ``project-docs/specs/assistant_guide.md`` §7. The one reader is
-``gateway.guide.flags``. ``test_auth_me_shell.py`` proves that
+``acb_common.guide_flags``. ``test_auth_me_shell.py`` proves that
 ``GET /auth/me/shell`` returns it as ``guide`` for the session's org.
 """
 from __future__ import annotations
@@ -9,7 +9,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
-from gateway.guide import flags
+from acb_common import guide_flags as flags
 
 
 def _settings(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
