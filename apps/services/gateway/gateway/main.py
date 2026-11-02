@@ -526,7 +526,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # The chat summary kind and its seed hook register at import (WS-63
         # PZ-33b, gateway/chat_summary_job.py). Dark: the seed needs
         # ASSISTANT_CHAT_SUMMARY_ORGS and the Router on. Its own try, as above.
-        import gateway.chat_summary_job  # noqa: F401
+        from gateway import chat_summary_job  # noqa: F401
     except Exception as exc:
         _log.warning("gateway.chat_summary_jobs_skipped", error=str(exc))
     try:
