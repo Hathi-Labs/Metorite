@@ -1,4 +1,4 @@
-"""The action door of AI Studio, first cut (STU-B2a, ``ai_studio.md`` §3.2).
+"""The action door of AI Studio (STU-B2a and STU-B2b-1, ``ai_studio.md`` §3.2).
 
 ``POST /studio/apps/{app_id}/actions/{action}`` runs one action that a Studio
 package declares. The route registers on the router of ``actions.py``, as
@@ -26,11 +26,21 @@ package declares. The route registers on the router of ``actions.py``, as
    that fails gets 503 ``catalog_unavailable``.
 6. The approval. Class B and class C get 403 ``approval_required``. No card
    exists yet (B2c), so nothing runs.
-7. The executor. B2a opens one executor: ``object:<name>.get``. It parses the
-   body here, and only here. An object name that the package does not hold
-   gets 404 ``object_missing``, and a record id that names nothing gets 404
-   ``Not found``. Each other class A action gets 403 ``source_not_open`` (B2b
-   names the next executors).
+7. The executor. The door opens two: ``object:<name>.get`` (B2a) and
+   ``object:<name>.list`` (B2b-1). Each one parses the body here, and only
+   here. An object name that the package does not hold gets 404
+   ``object_missing``, and a record id that names nothing gets 404 ``Not
+   found``. Each other class A action gets 403 ``source_not_open`` (B2b-2 and
+   B2b-3 name the next executors).
+
+**The list.** An empty body means ``{}``. The door accepts only the keys of
+:data:`LIST_INPUT_KEYS`, and ``limit`` and ``offset`` must each be an ``int``.
+So a refused body reads nothing, and ``Infinity`` never reaches
+``paging.bounds``, which raises ``OverflowError`` on it. Then
+``objects_store.query_records`` checks the rest, and it is the one grammar. A
+:class:`~acb_common.studio_query.QueryError` gets 422 ``{code, message,
+field}``. ``query_timeout`` gets 503 with ``Retry-After``. The store leaves
+the session usable after each refusal.
 
 **Tenancy and the member (R5).** The org is the bound session
 (``_tenant_session()``), and the member is ``user.email``. No check reads an
@@ -41,7 +51,8 @@ as ``organization_id`` in a body changes nothing.
 ``app_audit`` row (kind ``action``) through ``record_app_audit_bound``. The
 row holds the action id, its ``uses``, its class and the outcome, and no
 record data. Each text in it has at most :data:`MAX_AUDIT_TEXT` characters.
-A 404 before the package writes no row.
+A 404 before the package writes no row. A refused query gives the row its
+code in ``reason``, and never its input.
 
 ⚠️ **The audit is best-effort, on purpose, for a class A read only.** It
 opens its own session after the read, and a failed audit logs and never
@@ -59,7 +70,7 @@ import uuid
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from acb_common import get_logger
+from acb_common import get_logger, studio_query
 from acb_common.app_manifests.base import OP_PATTERN
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, UsesRef, parse_uses
 from fastapi import Depends, HTTPException, Request
@@ -69,12 +80,17 @@ from gateway.routes.studio import actions, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store, packages_store
 
-__all__ = ["MAX_AUDIT_TEXT", "OPEN_EXECUTORS", "REFUSALS", "router"]
+__all__ = ["LIST_INPUT_KEYS", "MAX_AUDIT_TEXT", "OPEN_EXECUTORS", "REFUSALS", "router"]
 
 _log = get_logger("gateway.studio.invoke")
 
-#: The executors that B2a opens, as (source, op). An object ``get`` only.
-OPEN_EXECUTORS: frozenset[tuple[str, str | None]] = frozenset({("object", "get")})
+#: The executors that the door opens, as (source, op): the object ``get`` of
+#: B2a and the object ``list`` of B2b-1.
+OPEN_EXECUTORS: frozenset[tuple[str, str | None]] = frozenset(
+    {("object", "get"), ("object", "list")})
+
+#: The keys of the body of a list. The one input schema is their only source.
+LIST_INPUT_KEYS: frozenset[str] = frozenset(studio_query.list_input_schema()["properties"])
 
 #: The A2 action id (``ActionDef.id``). A path ``action`` of another shape
 #: names nothing, so the door reads nothing for it.
@@ -99,7 +115,7 @@ REFUSALS: dict[str, str] = {
         "The catalog does not serve this action now, so change the action in the manifest."),
     APPROVAL_REQUIRED: (
         "This action writes data and needs an approval, which this door cannot ask for yet."),
-    SOURCE_NOT_OPEN: "This door runs only the get action of an object for now.",
+    SOURCE_NOT_OPEN: "This door runs only the get and list actions of an object for now.",
 }
 
 #: The 503 of a catalog that fails, and the 404 of an object that the package
@@ -108,6 +124,12 @@ CATALOG_DOWN = "The action catalog is not available now, so try the action again
 NO_OBJECT = "This package holds no object for this action yet, so define the object first."
 
 BAD_RECORD_ID = "Send the record id as a UUID in the key id of a JSON object."
+BAD_LIST_INPUT = (
+    "Send a JSON object with only filter, sort, limit and offset, "
+    "and whole numbers for limit and offset.")
+
+#: The header value of a 503 ``query_timeout``, in seconds.
+RETRY_AFTER = "2"
 
 
 @dataclasses.dataclass
@@ -119,6 +141,8 @@ class _Outcome:
     cls: str | None = None
     refusal: str | None = None
     record: objects_store.Record | None = None
+    page: objects_store.RecordPage | None = None
+    query_error: studio_query.QueryError | None = None
     missing: bool = False
     object_missing: bool = False
     invalid: bool = False
@@ -150,7 +174,8 @@ def _declared(manifest: dict[str, Any], action: str) -> dict[str, Any] | None:
 
 def refusal_for(ref: UsesRef, cls: str | None) -> str | None:
     """The refusal code of an action of *ref* and class *cls*, or None when
-    B2a runs it. *cls* is None when no source gives the action a class."""
+    an open executor runs it. *cls* is None when no source gives the action a
+    class."""
     if cls is None:
         return NOT_IN_CATALOG
     if cls == "X":
@@ -171,20 +196,37 @@ async def _catalog_class(uses: str) -> str | None:
     return None
 
 
-def _record_id(raw: bytes) -> str | None:
-    """The record id of the body *raw*, or None. The door parses the body
+def _json_object(raw: bytes) -> dict[str, Any] | None:
+    """The JSON object of the body *raw*, or None. The door parses the body
     here, after the switch and the package. A body that is not JSON, or that
     nests too deep to parse, gives None."""
-    if not raw:
-        return None
     try:
         payload = json.loads(raw)
     except (ValueError, RecursionError):
         return None
-    if not isinstance(payload, dict):
-        return None
-    found = payload.get("id")
+    return payload if isinstance(payload, dict) else None
+
+
+def _record_id(raw: bytes) -> str | None:
+    """The record id of the body *raw*, or None."""
+    found = (_json_object(raw) or {}).get("id")
     return found if isinstance(found, str) else None
+
+
+def _list_input(raw: bytes) -> dict[str, Any]:
+    """The input of a list, from the body *raw*. An empty body means ``{}``.
+
+    It refuses a key outside :data:`LIST_INPUT_KEYS`, and a ``limit`` or an
+    ``offset`` that is not an ``int``. So a bool, a null, a float and
+    ``Infinity`` stop here. The sentence never echoes a key or a value.
+    """
+    if not raw:
+        return {}
+    payload = _json_object(raw)
+    if (payload is None or not LIST_INPUT_KEYS.issuperset(payload)
+            or any(type(payload[k]) is not int for k in ("limit", "offset") if k in payload)):
+        raise studio_query.QueryError(studio_query.VALUE_INVALID, BAD_LIST_INPUT)
+    return payload
 
 
 async def _run_object_get(db: Any, package: packages_store.Package, ref: UsesRef,
@@ -213,6 +255,47 @@ async def _run_object_get(db: Any, package: packages_store.Package, ref: UsesRef
         out.record = rec
 
 
+async def _run_object_list(db: Any, package: packages_store.Package, ref: UsesRef,
+                           raw: bytes, out: _Outcome) -> None:
+    """Read one page of the records of the object *ref* of *package*. The body
+    is checked first, so a refused body reads nothing."""
+    try:
+        body = _list_input(raw)
+        obj = await objects_store.get_object_by_name(
+            db, str(ref.object), package_id=package.id)
+        if obj is None:
+            out.object_missing = True
+            return
+        # The store checks each id and the input before its first statement,
+        # and a timeout rolls back its SAVEPOINT only. So a refusal here
+        # leaves the session usable.
+        page = await objects_store.query_records(
+            db, package_id=package.id, object_id=obj.id, filter=body.get("filter"),
+            sort=body.get("sort"), limit=body.get("limit"), offset=body.get("offset"))
+    except studio_query.QueryError as exc:
+        out.query_error = exc
+        return
+    except objects_store.ObjectStoreError:
+        # The body named no id, so this is a stored name or id that the store
+        # refuses. The package holds no object that the action can read.
+        out.object_missing = True
+        return
+    if page is None:
+        out.object_missing = True
+    else:
+        out.page = page
+
+
+def _query_refusal(exc: studio_query.QueryError) -> HTTPException:
+    """The answer to a refused query. A timeout is 503, because the same call
+    can work later. Each other code is 422."""
+    if exc.code == studio_query.TIMEOUT:
+        return HTTPException(status_code=503, detail={"code": exc.code, "message": exc.message},
+                             headers={"Retry-After": RETRY_AFTER})
+    return HTTPException(status_code=422, detail={
+        "code": exc.code, "message": exc.message, "field": exc.field})
+
+
 def _audit_detail(out: _Outcome) -> dict[str, Any]:
     """The audit row of *out*: the action, its class and the outcome. It holds
     no record data and no value of the body, and each text is capped."""
@@ -220,6 +303,9 @@ def _audit_detail(out: _Outcome) -> dict[str, Any]:
         outcome, reason = "failed", CATALOG_UNAVAILABLE
     elif out.refusal is not None:
         outcome, reason = "refused", out.refusal
+    elif out.query_error is not None:
+        timed_out = out.query_error.code == studio_query.TIMEOUT
+        outcome, reason = "failed" if timed_out else "refused", out.query_error.code
     elif out.invalid:
         outcome, reason = "refused", "bad_input"
     elif out.object_missing:
@@ -233,6 +319,28 @@ def _audit_detail(out: _Outcome) -> dict[str, Any]:
     if reason is not None:
         detail["reason"] = reason
     return detail
+
+
+def _answer(out: _Outcome) -> dict[str, Any]:
+    """The answer of the call *out*, or the refusal that it raises."""
+    if out.catalog_down:
+        raise HTTPException(status_code=503, detail={
+            "code": CATALOG_UNAVAILABLE, "message": CATALOG_DOWN})
+    if out.refusal is not None:
+        raise HTTPException(status_code=403, detail={
+            "code": out.refusal, "message": REFUSALS[out.refusal]})
+    if out.query_error is not None:
+        raise _query_refusal(out.query_error)
+    if out.invalid:
+        raise HTTPException(status_code=422, detail=BAD_RECORD_ID)
+    if out.object_missing:
+        raise HTTPException(status_code=404, detail={
+            "code": OBJECT_MISSING, "message": NO_OBJECT})
+    if out.page is not None:
+        return dataclasses.asdict(out.page)
+    if out.missing or out.record is None:
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    return {"record": dataclasses.asdict(out.record)}
 
 
 @router.post("/apps/{app_id}/actions/{action}")
@@ -268,7 +376,8 @@ async def invoke_action(
                 out.cls = OBJECT_OP_CLASSES.get(str(ref.op))
                 out.refusal = refusal_for(ref, out.cls)
                 if out.refusal is None:
-                    await _run_object_get(db, package, ref, raw, out)
+                    run = _run_object_list if ref.op == "list" else _run_object_get
+                    await run(db, package, ref, raw, out)
     if ref is not None and out.uses is not None and ref.source != "object":
         try:
             out.cls = await _catalog_class(out.uses)
@@ -279,17 +388,4 @@ async def invoke_action(
             out.refusal = refusal_for(ref, out.cls)
     await record_app_audit_bound(app_id=package.id, user_email=user.email, kind="action",
                                  detail=_audit_detail(out))
-    if out.catalog_down:
-        raise HTTPException(status_code=503, detail={
-            "code": CATALOG_UNAVAILABLE, "message": CATALOG_DOWN})
-    if out.refusal is not None:
-        raise HTTPException(status_code=403, detail={
-            "code": out.refusal, "message": REFUSALS[out.refusal]})
-    if out.invalid:
-        raise HTTPException(status_code=422, detail=BAD_RECORD_ID)
-    if out.object_missing:
-        raise HTTPException(status_code=404, detail={
-            "code": OBJECT_MISSING, "message": NO_OBJECT})
-    if out.missing or out.record is None:
-        raise HTTPException(status_code=404, detail=NOT_FOUND)
-    return {"record": dataclasses.asdict(out.record)}
+    return _answer(out)

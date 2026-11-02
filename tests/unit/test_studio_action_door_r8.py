@@ -1,6 +1,6 @@
-"""The action door of AI Studio on a real database (STU-B2a, R8).
+"""The action door of AI Studio on a real database (STU-B2a and STU-B2b-1, R8).
 
-Spec: ``project-docs/specs/ai_studio.md`` §3.2 and §14 B2a. Code:
+Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a and B2b-1. Code:
 ``gateway/routes/studio/invoke.py`` over ``gateway/studio/packages_store.py``
 (A3) and ``gateway/studio/objects_store.py`` (C1). The hermetic half is
 ``test_studio_action_door.py``.
@@ -39,6 +39,23 @@ j. An action that is not an A2 action id is 404, and writes no row.
 k. An object that the package lacks is 404 ``object_missing``, and a record
    id that names nothing is 404 ``Not found``. The audit row tells them apart.
 l. A catalog that fails is 503 ``catalog_unavailable``, and the row lands.
+
+**Acceptance (B2b-1).**
+
+m. The owner lists a filtered, sorted page with the right total, and each call
+   writes one audit row in the bound org. The row holds no record data.
+n. Another member and org B get 404 ``Not found``, and no row names the
+   package.
+o. An object of another package gets 404 ``object_missing``, also when the
+   door holds a true object id. Two packages with one object name each read
+   their own records.
+p. The five refused codes get 422 ``{code, message, field}``, and the real
+   ``query_timeout`` gets 503 with ``Retry-After: 2``.
+q. An extra key, ``limit: true`` and ``limit: Infinity`` get 422 and read
+   nothing.
+r. A value that Postgres refuses (a NUL, a lone surrogate) gets 422, never 500.
+s. After each refusal the door session runs a statement, and the audit row
+   lands. A real timeout changes nothing for the next call.
 
 **The mutations (R7).** Commit before each, and restore with git after.
 Each result below was run on 2026-11-01, with both B2a suites.
@@ -102,8 +119,9 @@ import pytest
 pytest.importorskip("sqlalchemy")
 
 from acb_auth import UserContext, UserRole, build_access
-from acb_common import get_settings
+from acb_common import get_settings, studio_query
 from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.studio_query import QueryError
 from fastapi import HTTPException
 from gateway.routes.studio import invoke
 from gateway.studio import objects_store, packages_store
@@ -178,6 +196,19 @@ async def _call(org: str, email: str, pid: str, action: str,
         return 200, found
     except HTTPException as exc:
         return exc.status_code, exc.detail
+    finally:
+        release_tenant(token)
+
+
+async def _refusal(org: str, email: str, pid: str, action: str,
+                   payload: Any = None) -> HTTPException:
+    """The refusal of the handler, whole, so a test can read its headers."""
+    token = bind_tenant(org)
+    try:
+        with pytest.raises(HTTPException) as refused:
+            await invoke.invoke_action(pid, action, request=_Request(payload),
+                                       user=_user(org, email))
+        return refused.value
     finally:
         release_tenant(token)
 
@@ -383,7 +414,7 @@ def test_r8_each_write_verb_writes_nothing(world) -> None:
 def test_r8_a_source_that_is_not_an_object_never_runs(world) -> None:
     async def go() -> dict[str, tuple[int, Any]]:
         return {a: await _call(world.a, ANA, world.pkg, a, {"id": world.rec})
-                for a in ("flow", "flow_b", "propose", "pages", "find")}
+                for a in ("flow", "flow_b", "propose", "pages")}
 
     got = {a: (s, d["code"]) for a, (s, d) in _run(world, go).items()}
     assert got == {
@@ -392,10 +423,20 @@ def test_r8_a_source_that_is_not_an_object_never_runs(world) -> None:
         "flow_b": (403, "not_in_catalog"),
         "propose": (403, "approval_required"),
         "pages": (403, "source_not_open"),
-        "find": (403, "source_not_open"),
     }
     classes = {r[3]["action"]: r[3]["class"] for r in _audits(world, world.pkg)}
-    assert classes == {"flow": "B", "flow_b": None, "propose": "B", "pages": "A", "find": "A"}
+    assert classes == {"flow": "B", "flow_b": None, "propose": "B", "pages": "A"}
+
+
+def test_r8_a_class_a_row_of_another_source_is_source_not_open(world, monkeypatch) -> None:
+    """A workflow row is class B today. If a row ever reads class A, the door
+    still stops, because the list opens one verb of one source."""
+    async def _rows() -> list[dict[str, Any]]:
+        return [{"id": f"workflow:{world.wf_a}", "class": "A"}]
+
+    monkeypatch.setattr(invoke.actions, "catalog_rows", _rows)
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "flow", {}))
+    assert (status, detail["code"]) == (403, "source_not_open")
 
 
 # ── f, g and h. The package, the record and the body ───────────────────────
@@ -472,6 +513,201 @@ def test_r8_a_body_that_names_another_org_changes_nothing(world) -> None:
     assert got["record"]["id"] == world.rec
     rows = _audits(world, world.pkg)
     assert [(r[0], r[1]) for r in rows] == [(world.a, ANA)]
+
+
+# ── m to s. The list ───────────────────────────────────────────────────────
+
+
+_LIST_OUTCOME = {"action": "find", "uses": "object:visit.list", "class": "A"}
+
+#: One input for each refused code of the real grammar, and the field it names.
+_REFUSED: list[tuple[str, dict[str, Any], str | None]] = [
+    ("query_field_unknown", {"filter": [{"field": "nope", "op": "eq", "value": "x"}]}, "nope"),
+    ("query_op_not_allowed",
+     {"filter": [{"field": "status", "op": "contains", "value": "x"}]}, "status"),
+    ("query_value_invalid",
+     {"filter": [{"field": "status", "op": "eq", "value": "lost"}]}, "status"),
+    ("query_not_indexed", {"sort": {"field": "site"}}, "site"),
+    ("query_too_big", {"offset": 10_001}, None),
+]
+
+
+async def _add_records(org: str, oid: str, pid: str, rows: list[tuple[str, str]]) -> list[str]:
+    ids = []
+    async with tenant_session(org) as db:
+        for site, status in rows:
+            rec = await objects_store.create_record(
+                db, ANA, oid, {"site": site, "status": status, "notes": "x"}, package_id=pid)
+            assert rec is not None
+            ids.append(rec.id)
+    return ids
+
+
+def _watch_the_door_session(monkeypatch) -> list[int]:
+    """After each refused query, run one statement on the door's own session.
+    The list that it answers holds one 1 for each statement that ran."""
+    real = objects_store.query_records
+    ran: list[int] = []
+
+    async def spy(db: Any, **kw: Any) -> Any:
+        try:
+            return await real(db, **kw)
+        except QueryError:
+            ran.append((await db.execute(text("SELECT 1"))).scalar_one())
+            raise
+
+    monkeypatch.setattr(objects_store, "query_records", spy)
+    return ran
+
+
+def test_r8_the_owner_lists_a_filtered_sorted_page_and_one_audit_row(world) -> None:
+    async def go() -> list[tuple[int, Any]]:
+        ids = await _add_records(world.a, world.obj, world.pkg, [
+            ("Plant 1", "done"), ("Plant 2", "planned"), ("Plant 3", "done"), ("Depot", "planned"),
+        ])
+        world.ids = ids
+        body = {"filter": [{"field": "site", "op": "contains", "value": "Plant"}],
+                "sort": {"field": "status", "dir": "asc"}, "limit": 2}
+        return [await _call(world.a, ANA, world.pkg, "find", body),
+                await _call(world.a, ANA, world.pkg, "find", {**body, "offset": 2})]
+
+    (status1, first), (status2, second) = _run(world, go)
+    assert (status1, status2) == (200, 200), (first, second)
+    # Four records of five match, and `done` sorts before `planned`.
+    assert (first["total"], first["total_at_least"], first["offset"], first["limit"]) == (
+        4, None, 0, 2)
+    assert first["line"] == "Showing 1-2 of 4. Call again with offset=2 for the rest."
+    assert [r["data"]["status"] for r in first["records"]] == ["done", "done"]
+    assert {r["data"]["site"] for r in first["records"]} == {"Plant 1", "Plant 3"}
+    assert (second["total"], second["offset"]) == (4, 2)
+    assert [r["data"]["status"] for r in second["records"]] == ["planned", "planned"]
+    assert {r["data"]["site"] for r in second["records"]} == {"Plant 2", _DATA["site"]}
+    assert set(first["records"][0]) == {"id", "object_id", "data", "created_by", "updated_by",
+                                        "created_at", "updated_at"}
+    rows = _audits(world, world.pkg)
+    assert rows == [(world.a, ANA, "action", {**_LIST_OUTCOME, "outcome": "ran"})] * 2
+    # The row holds no record data and no value of the filter.
+    for value in (*_DATA.values(), "Plant"):
+        assert value not in json.dumps(rows[0][3])
+
+
+def test_r8_an_empty_body_lists_the_first_page(world) -> None:
+    status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, "find"))
+    assert status == 200, got
+    assert [r["id"] for r in got["records"]] == [world.rec]
+    assert (got["total"], got["offset"], got["limit"], got["line"]) == (1, 0, 25, "")
+
+
+def test_r8_another_member_and_org_b_get_404_on_a_list(world) -> None:
+    async def go() -> list[tuple[int, Any]]:
+        return [await _call(world.a, BEN, world.pkg, "find", {}),
+                await _call(world.b, ANA, world.pkg, "find", {}),
+                await _call(world.a, ANA, world.pkg_b, "find", {})]
+
+    assert _run(world, go) == [(404, NOT_FOUND)] * 3
+    assert _audits(world, world.pkg) == [] and _audits(world, world.pkg_b) == []
+
+
+def test_r8_two_packages_with_one_object_name_read_their_own_records(world) -> None:
+    async def go() -> list[tuple[int, Any]]:
+        return [await _call(world.a, ANA, world.pkg, "find", {}),
+                await _call(world.a, ANA, world.pkg2, "find", {})]
+
+    (_, mine), (_, other) = _run(world, go)
+    assert [r["id"] for r in mine["records"]] == [world.rec]
+    assert [r["id"] for r in other["records"]] == [world.rec2]
+
+
+def test_r8_an_object_that_the_package_lacks_is_object_missing_on_a_list(world) -> None:
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg_empty, "find", {}))
+    assert (status, detail) == (404, {"code": "object_missing", "message": invoke.NO_OBJECT})
+    assert [r[3] for r in _audits(world, world.pkg_empty)] == [{
+        **_LIST_OUTCOME, "outcome": "not_found", "reason": "object_missing"}]
+
+
+def test_r8_a_true_object_id_of_another_package_is_object_missing(world, monkeypatch) -> None:
+    """The name read answers the object of the OTHER package, so the door holds
+    a true id. `query_records` still takes the package of the path, so the
+    store answers None and the door reads no record (the drop of `package_id`)."""
+    real = objects_store.get_object_by_name
+
+    async def wrong(db: Any, name: str, *, package_id: str) -> Any:
+        return await real(db, name, package_id=world.pkg2)
+
+    monkeypatch.setattr(objects_store, "get_object_by_name", wrong)
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", {}))
+    assert (status, detail) == (404, {"code": "object_missing", "message": invoke.NO_OBJECT})
+
+
+@pytest.mark.parametrize("code,body,field", _REFUSED, ids=[c for c, _, _ in _REFUSED])
+def test_r8_each_refused_query_is_422_and_the_session_stays_usable(
+        world, monkeypatch, code, body, field) -> None:
+    ran = _watch_the_door_session(monkeypatch)
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", body))
+    assert status == 422, detail
+    assert set(detail) == {"code", "message", "field"}
+    assert (detail["code"], detail["field"]) == (code, field)
+    assert ran == [1]
+    assert [r[3] for r in _audits(world, world.pkg)] == [{
+        **_LIST_OUTCOME, "outcome": "refused", "reason": code}]
+
+
+def test_r8_a_real_timeout_is_503_with_retry_after_and_the_session_stays_usable(
+        world, monkeypatch) -> None:
+    """A second connection holds a lock on the record table, so Postgres itself
+    cancels the page statement at the 1 ms limit. The clock stands still, so
+    the store's own check never fires first."""
+    ran = _watch_the_door_session(monkeypatch)
+    monkeypatch.setattr(studio_query, "TIMEOUT_MS", 1)
+    monkeypatch.setattr(objects_store, "_clock", lambda: 0.0)
+    with world.p.admin_engine.begin() as lock:
+        lock.execute(text("LOCK TABLE studio_records IN ACCESS EXCLUSIVE MODE"))
+        refused = _run(world, lambda: _refusal(world.a, ANA, world.pkg, "find", {}))
+    assert refused.status_code == 503
+    assert refused.detail["code"] == "query_timeout"
+    assert set(refused.detail) == {"code", "message"}
+    assert refused.headers == {"Retry-After": "2"}
+    assert ran == [1]
+    assert [r[3] for r in _audits(world, world.pkg)] == [{
+        **_LIST_OUTCOME, "outcome": "failed", "reason": "query_timeout"}]
+    # The limit of the store goes back, and the next call lists the page.
+    monkeypatch.setattr(studio_query, "TIMEOUT_MS", 5_000)
+    status, got = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", {}))
+    assert (status, got["total"]) == (200, 1)
+
+
+@pytest.mark.parametrize("body", [
+    {"package_id": str(uuid.uuid4())},
+    {"organization_id": str(uuid.uuid4())},
+    {"limit": 1, "owner_email": BEN},
+    {"limit": True},
+    {"offset": False},
+    {"limit": float("inf")},
+    {"offset": float("inf")},
+    {"limit": float("nan")},
+    {"limit": None},
+], ids=["package", "org", "member", "limit_true", "offset_false", "limit_inf", "offset_inf",
+        "limit_nan", "limit_null"])
+def test_r8_a_refused_body_is_422_and_reads_nothing(world, monkeypatch, body) -> None:
+    def _no_read(*_: Any, **__: Any) -> Any:
+        raise AssertionError("a refused body must read nothing")
+
+    monkeypatch.setattr(objects_store, "get_object_by_name", _no_read)
+    monkeypatch.setattr(objects_store, "query_records", _no_read)
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", body))
+    assert (status, detail) == (422, {"code": "query_value_invalid",
+                                      "message": invoke.BAD_LIST_INPUT, "field": None})
+    assert [r[3] for r in _audits(world, world.pkg)] == [{
+        **_LIST_OUTCOME, "outcome": "refused", "reason": "query_value_invalid"}]
+
+
+@pytest.mark.parametrize("op,value", [("eq", "a\x00b"), ("eq", "\ud800"),
+                                      ("contains", "a\x00b"), ("contains", "\ud800"),
+                                      ("in", ["a\x00b"]), ("in", ["\ud800"])])
+def test_r8_a_value_that_postgres_refuses_is_422_never_500(world, op, value) -> None:
+    body = {"filter": [{"field": "site", "op": op, "value": value}]}
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", body))
+    assert (status, detail["code"], detail["field"]) == (422, "query_value_invalid", "site")
 
 
 # ── i. The switch ──────────────────────────────────────────────────────────
