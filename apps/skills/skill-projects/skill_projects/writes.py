@@ -1753,7 +1753,8 @@ async def _comment_tells(tid: str, text: str) -> dict[str, Any]:
     comment reaches them too (``notifications.task_audience``)."""
     who = mention_targets(text)
     if await _held_chat():
-        read = (await get(f"/projects/tasks/{tid}/watchers")) or {}
+        task_id = uuid_of(tid, "task_id")
+        read = (await get(f"/projects/tasks/{task_id}/watchers")) or {}
         who.extend(str(person) for person in read.get("audience") or [])
     return {"sent to": ", ".join(dict.fromkeys(who))} if who else {}
 
