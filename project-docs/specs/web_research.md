@@ -1,7 +1,7 @@
 # Web research — Mira reads the web at large, on open-source parts (WS-WEB)
 
 > **Product:** Metorite · **Feature:** web search, page and file reading, crawling, browsing and research jobs for the one assistant · **Updated:** 2026-11-02 · **Owner:** vjvarada
-> **Status:** 🔨 **IN BUILD.** WEB-1 (the fetch guard) is built, 2026-11-01. WEB-2 (the local HTML reader) is built dark behind `WEB_RESEARCH_ORGS`, 2026-11-02, with Trafilatura in a child process. WEB-2b must merge before that flag flips. WEB-10, the goal record, is built on 2026-11-01 (§6.1): the table `goal_records` and its store, with no caller yet. WEB-3 is next. `web_search` and `fetch_page` existed before WEB-0 (§2).
+> **Status:** 🔨 **IN BUILD.** WEB-1 (the fetch guard) is built, 2026-11-01. WEB-2 (the local HTML reader) is built dark behind `WEB_RESEARCH_ORGS`, 2026-11-02, with Trafilatura in a child process. WEB-2b (the confinement of that child) is built, 2026-11-02, and it must merge before that flag flips. WEB-10, the goal record, is built on 2026-11-01 (§6.1): the table `goal_records` and its store, with no caller yet. WEB-3 is next. `web_search` and `fetch_page` existed before WEB-0 (§2).
 > **Verified against code on 2026-11-01 at `f59a636b5`.** Each path in §12 was read on that commit.
 > **Board:** WS-WEB in `work_plan.md` §2.1. **Decision:** D148. D85, D117, D124, D129, D130 and D139 bind it.
 > **Metorite:** project "Agent Tooling", epic 1235, this spec task 1237. The slices WEB-1 to WEB-12 are tasks 1259 to 1270, in order.
@@ -107,6 +107,15 @@ The guard picks the reader by the content type.
 - Each other type gets the regex strip, and one line says that its reader comes with WEB-3.
 - `WEB_READER_REMOTE=jina` asks Jina last, only when the local text is under 200 characters. Jina's text wins when it is longer.
 - Fences: `tests/unit/test_web_readers.py` and `tests/unit/test_no_agpl_dependency.py`.
+
+**As built, WEB-2b (2026-11-02).** The reader child is confined before it reads a page.
+
+- `acb_skills/child_confine.py` is the one confinement module. The OCR child and the web child load it by path. WEB-3 and each later parser use it.
+- The order of `main()` is the control. It closes every fd from 3 up and sets the limits. Then it confines (Landlock and seccomp), runs one warm-up page and closes the limits. Only then does it read the page.
+- The child can read the Python and library dirs only. It cannot write, open a socket or signal its parent.
+- The floor is Landlock ABI 1. A kernel with no Landlock, a machine that is not x86-64 or a second thread gives `{"fault": "unavailable"}`, and the read falls to the strip.
+- `close_fds` is not in force under uvloop, so the child shuts the fds itself. The parent kills the process group at the end of each read, also when the leader exited 0.
+- Fence: `tests/unit/test_web_reader_confine.py`. The TCP rule of ABI 4 is proved on CI only.
 
 ### 3.3 Search providers
 
