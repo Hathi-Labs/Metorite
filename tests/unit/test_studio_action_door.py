@@ -48,6 +48,8 @@ These turn a test of this file red:
   ``test_a_malformed_body_from_an_org_outside_the_switch_is_404``.
 * M11. Drop the ``try`` around the catalog read.
   ``test_a_catalog_that_fails_is_503_and_audited``.
+* L1 to L4, and L6 to L12 and L14, of B2b-1 turn a test of this file red. L5
+  and L13 need the real store, so only the R8 suite sees them.
 """
 
 from __future__ import annotations
@@ -613,10 +615,20 @@ class TestTheList:
                    if sql == objects_store._OBJECT_BY_NAME_SQL]
         assert by_name == [{"pid": pid, "name": "visit"}]
 
-    def test_the_page_says_the_limit_that_the_store_cut(self, world):
+    @pytest.mark.parametrize("body,offset,limit", [
+        ({"limit": 1000}, 0, 100),
+        ({"limit": 0}, 0, 25),
+        ({"limit": -3}, 0, 25),
+        ({"offset": -5}, 0, 25),
+    ], ids=["over", "zero", "negative", "offset"])
+    def test_an_int_out_of_range_takes_the_bounds_and_the_page_says_so(
+            self, world, body, offset, limit):
+        """The door checks the type. ``paging.bounds`` is the one rule of the
+        range, and the answer holds the values that it used."""
         pid, _, _ = _setup(world)
-        r = _call(_client(world), pid, "find", {"limit": 1000})
-        assert (r.status_code, r.json()["limit"]) == (200, 100)
+        r = _call(_client(world), pid, "find", body)
+        assert r.status_code == 200, r.text
+        assert (r.json()["offset"], r.json()["limit"]) == (offset, limit)
 
     @pytest.mark.parametrize("key", ["package_id", "organization_id", "owner_email", "member",
                                      "id", "Filter", "page", ""])
@@ -643,6 +655,13 @@ class TestTheList:
         r = _raw(_client(world), pid, "find", content)
         assert r.status_code == 422, r.text
         assert r.json()["detail"]["message"] == invoke.BAD_LIST_INPUT
+        _read_nothing(world)
+
+    def test_a_number_too_long_to_parse_is_422_never_500(self, world):
+        """``json.loads`` raises ``ValueError`` past 4,300 digits."""
+        pid, _, _ = _setup(world)
+        r = _raw(_client(world), pid, "find", '{"offset": ' + "9" * 5000 + "}")
+        assert r.status_code == 422, r.text
         _read_nothing(world)
 
     @pytest.mark.parametrize("content", ["[]", '"text"', "7", "null", "{not json", "   ",

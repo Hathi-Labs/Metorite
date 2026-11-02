@@ -103,6 +103,52 @@ Each result below was run on 2026-11-01, with both B2a suites.
   ``get_package`` does not find. ``test_r8_another_member_of_the_org_gets_404``,
   ``test_r8_org_b_gets_404_also_with_the_same_email``,
   ``test_r8_a_code_app_is_404`` and four hermetic tests go red.
+
+**The mutations of B2b-1.** Each result below was run on 2026-11-02, on both
+door suites and ``test_one_writer_of_the_four_tables``.
+
+* L1. ``OPEN_EXECUTORS``: drop the list entry. 76 tests go red, first
+  ``test_a_list_is_class_a_and_it_runs``.
+* L2. ``_run_object_list``: drop the ``QueryError`` catch. 62 tests go red,
+  among them ``test_r8_each_refused_query_is_422_and_the_session_stays_usable``
+  and ``test_each_refused_query_is_422_with_its_code``.
+* L3. ``_query_refusal``: answer 422 for a timeout. ``test_a_query_timeout_is_503_with_retry_after``
+  and ``test_r8_a_real_timeout_is_503_with_retry_after_and_the_session_stays_usable``
+  go red.
+* L4. ``_list_input``: skip the key check. 13 tests go red, among them
+  ``test_a_key_outside_the_schema_is_422_and_reads_nothing`` and
+  ``test_r8_a_refused_body_is_422_and_reads_nothing``.
+* L5. ``_run_object_list``: pass ``obj.package_id`` to the store in place of
+  the package of the path. Only
+  ``test_r8_a_true_object_id_of_another_package_is_object_missing`` goes red,
+  because the fake of the hermetic half cannot tell the two apart.
+* L6a. ``invoke_action``: open the session with the ``organization_id`` of the
+  body. ``test_the_session_takes_no_org_or_package_from_the_request``,
+  ``test_r8_a_refused_body_is_422_and_reads_nothing`` and two B2a tests go red.
+* L6b. Add ``package_id`` to the accepted keys, and pass it to the store.
+  ``test_the_accepted_keys_are_the_properties_of_the_input_schema`` and two
+  refused-body tests go red. With the key check in place, a body cannot name
+  a package at all, so no narrower mutation reaches the store.
+* L7. ``_query_refusal``: drop the ``Retry-After`` header. The two tests of L3
+  go red.
+* L8. ``_list_input``: use ``isinstance`` for the int check, so a bool passes.
+  Two ``limit`` and ``offset`` tests of each suite go red.
+* L9. ``_list_input``: drop the int check. 18 tests go red, among them
+  ``test_a_limit_or_offset_that_is_not_an_int_is_422_and_reads_nothing``.
+* L10. ``_run_object_list``: treat None from the store as a page.
+  ``test_none_from_the_store_is_404_object_missing`` and
+  ``test_r8_a_true_object_id_of_another_package_is_object_missing`` go red.
+* L11. ``_run_object_list``: check the body after the object read. 37 tests go
+  red, because a refused body then reads the object.
+* L12. ``_run_object_list``: drop the ``ObjectStoreError`` catch.
+  ``test_an_id_that_the_store_refuses_is_404_object_missing`` goes red.
+* L13. ``objects_store._time_limit``: drop the SAVEPOINT. Only
+  ``test_r8_a_real_timeout_is_503_with_retry_after_and_the_session_stays_usable``
+  goes red. So that test holds a real cancel by Postgres.
+* L14. ``REFUSALS``: put back the old text.
+  ``test_the_refusal_text_names_each_open_verb`` goes red.
+* L15. ``invoke.py``: name ``studio_records`` in a SQL text.
+  ``test_one_writer_of_the_four_tables`` goes red.
 """
 
 from __future__ import annotations
