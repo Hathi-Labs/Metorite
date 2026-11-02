@@ -16,6 +16,7 @@ from typing import Any
 
 from acb_auth import require_feature_router, require_permission
 from acb_common import get_logger
+from acb_llm.jobs import THINKING_OFF
 from fastapi import APIRouter, HTTPException
 
 # The shared gateway engine (BO-10 / D-CRM-4) — see the DB section below for
@@ -64,7 +65,11 @@ router = APIRouter(
 #: 1338 adds a faster path through ``decide`` (``calendar_decide.py``). This
 #: call is its fallback. Fence: ``tests/unit/test_calendar_plan_llm.py`` and
 #: ``tests/unit/test_tasks_ai_no_thinking.py``.
-NO_THINKING: dict[str, str] = {"type": "disabled"}
+#:
+#: The value is the seam's own (``acb_llm.jobs.THINKING_OFF``, task 1128), so
+#: the repo holds one literal. The seam drops it for a model that does not
+#: take it. Each call sends a copy, ``dict(NO_THINKING)``.
+NO_THINKING: dict[str, str] = THINKING_OFF
 
 
 # ── People directory (HR) access ─────────────────────────────────────────────

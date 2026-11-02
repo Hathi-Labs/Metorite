@@ -42,7 +42,8 @@ def test_the_core_route_bullet_offers_every_pack_before_the_agent() -> None:
 def test_a_private_task_is_made_at_once() -> None:
     """Mutation: drop "Do not ask which project" -> red."""
     rules = _flat(tp._PROJECTS_RULES)
-    assert 'For "remind me", "my own task" or "a private task", call it at once.' in rules
+    assert 'For "my own task" or "a private task", call it at once.' in rules
+    assert 'Not for "remind me": load projects-reminders.' in rules
     assert "Do not ask which project." in rules
     assert "create_personal_task, in the member's own personal project" in rules
 

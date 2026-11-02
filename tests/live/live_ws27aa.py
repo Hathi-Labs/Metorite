@@ -223,7 +223,7 @@ async def sweep_checks(orgs):
     """Two orgs, identical policies, identically stale tasks."""
     # Alpha's scheduled workflow runs the REAL closure — resolution, binding
     # and sweep, exactly as the engine node reaches it.
-    result = await wf_service._pm_lifecycle_sweeper(A_WF)()
+    result = await wf_service._pm_lifecycle_sweeper(A_WF, None)()
     check("alpha sweep touched one project", result["projects"], 1)
     check("alpha sweep archived one task", result["archived"], 1)
     check("alpha's stale task is archived", await archived(A_TASK), True)
@@ -232,7 +232,7 @@ async def sweep_checks(orgs):
 
     # The mirror — without it, a sweep matching NOTHING would pass the
     # isolation assertion for the wrong reason.
-    result = await wf_service._pm_lifecycle_sweeper(B_WF)()
+    result = await wf_service._pm_lifecycle_sweeper(B_WF, None)()
     check("beta sweep archived one task", result["archived"], 1)
     check("beta's stale task is archived", await archived(B_TASK), True)
 
@@ -258,7 +258,7 @@ async def sweep_checks(orgs):
 
     # The orphan workflow cannot sweep at all.
     try:
-        await wf_service._pm_lifecycle_sweeper(ORPHAN_WF)()
+        await wf_service._pm_lifecycle_sweeper(ORPHAN_WF, None)()
         check("a workflow with no resolvable org cannot sweep",
               "no exception", "NodeExecutionError")
     except Exception as exc:

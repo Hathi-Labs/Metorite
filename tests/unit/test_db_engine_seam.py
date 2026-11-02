@@ -459,7 +459,12 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: `test_workflows_tool_rls_r8.py` fences the path under FORCE RLS.
 #: 70 → 69: the same PR, review round 1. `resume_run` moved to
 #: `_run_session(org)`, and the approval handler passes the approver's org.
-H2_BASELINE_ELSEWHERE = 69
+#: 69 → 67: H-328 part (a) (2026-11-02). In routes/workflows/service.py, the
+#: module read and `_pm_task_updater` moved to `_run_session(org)` with the
+#: run's org (-2). `_resolve_workflow_organization` stays counted until no
+#: caller remains. `test_workflows_lifecycle_rls_r8.py` fences the path
+#: under FORCE RLS.
+H2_BASELINE_ELSEWHERE = 67
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files

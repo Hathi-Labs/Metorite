@@ -79,6 +79,8 @@ async def resolve_with_llm(
     try:
         raw = await complete(
             tier=LLMTier.TIER_1,
+            # One integer: a pick among the candidates (task 1128).
+            job="structured",
             messages=[
                 {"role": "system", "content": "Reply with a single integer. No prose."},
                 {"role": "user", "content": prompt},
