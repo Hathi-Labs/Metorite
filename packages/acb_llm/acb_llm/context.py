@@ -249,6 +249,7 @@ async def acompletion_with_fallback(
     temperature: float = 0.2,
     source: str | None = None,
     feature: str | None = None,
+    job: str | None = None,
     **extra: Any,
 ) -> tuple[Any, str]:
     """Run a chat completion on ``model``, fitting the input to its context
@@ -275,13 +276,21 @@ async def acompletion_with_fallback(
     call alone, through ``acb_common.automation_agent_scope``. A chat agent
     the task already holds keeps its own name. It never reaches litellm or
     the Router payload.
+
+    ``job`` names the kind of work: ``structured``, ``writing`` or
+    ``judgement`` (task 1128). :mod:`acb_llm.jobs` turns it into the
+    request settings, and its docstring holds the table. A ``thinking`` or
+    ``reasoning_effort`` that the caller sends itself wins. Two guards run
+    for every call, with a job or not: JSON mode gets the word "json"
+    (:func:`acb_llm.jobs.ensure_json_word`), and an empty answer logs
+    ``acb_llm.empty_answer`` (:func:`acb_llm.jobs.note_empty_answer`).
     """
     _source = source if source is not None else _infer_app_source()
     if not feature:
         return await _complete_with_fallback(
             model=model, fallback_model=fallback_model, messages=messages,
             max_tokens=max_tokens, temperature=temperature, source=_source,
-            extra=extra,
+            job=job, extra=extra,
         )
     from acb_common._log import automation_agent_scope
 
@@ -289,7 +298,7 @@ async def acompletion_with_fallback(
         return await _complete_with_fallback(
             model=model, fallback_model=fallback_model, messages=messages,
             max_tokens=max_tokens, temperature=temperature, source=_source,
-            extra=extra,
+            job=job, extra=extra,
         )
 
 
@@ -302,6 +311,7 @@ async def _complete_with_fallback(
     temperature: float,
     source: str | None,
     extra: dict[str, Any],
+    job: str | None = None,
 ) -> tuple[Any, str]:
     """The body of :func:`acompletion_with_fallback`, with ``source`` resolved."""
     import litellm as _litellm
@@ -312,8 +322,18 @@ async def _complete_with_fallback(
         _ensure_keys_loaded,
         ensure_model_registered,
     )
+    from acb_llm.jobs import (
+        apply_job,
+        ensure_json_word,
+        note_empty_answer,
+        params_for_model,
+    )
 
     _source = source
+    # Task 1128: the job sets thinking and the cap floor, before the fit,
+    # because the fit reserves the cap. Both arms then send the same request.
+    max_tokens, extra = apply_job(job, max_tokens=max_tokens, extra=extra)
+    messages = ensure_json_word(messages, extra.get("response_format"))
 
     # ── H-171: our own Router bills this, or nobody does ────────────────
     #
@@ -339,6 +359,9 @@ async def _complete_with_fallback(
         fitted_for_router, _ = fit_messages_to_context(
             messages, model, max_output_tokens=max_tokens,
         )
+        # The Console drops a thinking parameter that a chain step's model
+        # does not take (`customer_console/reasoning.py`), and the Router arm
+        # logs an empty answer.
         return await completion_on_router(
             tier=model,
             messages=fitted_for_router,
@@ -346,6 +369,7 @@ async def _complete_with_fallback(
             temperature=temperature,
             source=_source,
             extra=extra,
+            job=job,
         )
 
     _litellm.drop_params = True
@@ -367,11 +391,14 @@ async def _complete_with_fallback(
         try:
             resp = await acompletion(
                 model=resolved, messages=fitted,
-                temperature=temperature, max_tokens=max_tokens, **extra,
+                temperature=temperature, max_tokens=max_tokens,
+                # A thinking parameter only for a model that takes it.
+                **params_for_model(extra, resolved),
             )
             if is_fallback:
                 _log.info("acb_llm.fallback_succeeded",
                           model=resolved, truncated=was_truncated)
+            note_empty_answer(resp, model=resolved, job=job, max_tokens=max_tokens)
             # Usage + cost + live activation. This is the completion path email
             # and the task manager use (client.complete covers agent runs), so
             # emitting here is what makes those apps observable. Best-effort.

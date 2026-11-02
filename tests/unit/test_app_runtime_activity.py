@@ -166,6 +166,43 @@ async def test_ai_complete_emits_error_end_on_failure(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["", "   "])
+async def test_ai_complete_with_no_text_is_an_error_not_a_200(
+    monkeypatch: pytest.MonkeyPatch, content: str,
+) -> None:
+    """Task 1128: a blank answer read as a real one in the app. It is a 502
+    with a clear detail now. The spent tokens are still recorded, and the
+    presence key closes with an error."""
+    _patch_common(monkeypatch)
+    calls: list[dict[str, Any]] = []
+    audits: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        runtime, "publish_app_activity",
+        lambda slug, **fields: calls.append({"slug": slug, **fields}),
+    )
+
+    async def _audit(**kw: Any) -> None:
+        audits.append(kw)
+
+    monkeypatch.setattr(runtime, "record_app_audit", _audit)
+    seen: dict[str, Any] = {}
+
+    async def _blank(**kwargs: Any) -> tuple[Any, str]:
+        seen.update(kwargs)
+        return _FakeResponse(content=content), "deepseek/deepseek-v4-pro"
+
+    monkeypatch.setattr("acb_llm.acompletion_with_fallback", _blank)
+
+    with pytest.raises(HTTPException) as excinfo:
+        await ai_complete("filament-tracker", AiCompleteRequest(prompt="hi"), user=VIEWER)
+    assert excinfo.value.status_code == 502
+    assert excinfo.value.detail == runtime.EMPTY_AI_ANSWER
+    assert seen["job"] == "writing"
+    assert [a["tokens_out"] for a in audits] == [5]
+    assert calls[-1]["phase"] == "end" and calls[-1]["status"] == "error"
+
+
+@pytest.mark.asyncio
 async def test_ai_complete_budget_exhausted_never_touches_presence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,7 +1,7 @@
 # Web research — Mira reads the web at large, on open-source parts (WS-WEB)
 
 > **Product:** Metorite · **Feature:** web search, page and file reading, crawling, browsing and research jobs for the one assistant · **Updated:** 2026-11-01 · **Owner:** vjvarada
-> **Status:** 📐 **SPEC ONLY (WEB-0).** Nothing new is built. `web_search` and `fetch_page` exist today (§2).
+> **Status:** 🔨 **IN BUILD.** WEB-1 (the fetch guard) is built, 2026-11-01. WEB-10, the goal record, is built on 2026-11-01 (§6.1): the table `goal_records` and its store, with no caller yet. WEB-2 is next. `web_search` and `fetch_page` existed before WEB-0 (§2).
 > **Verified against code on 2026-11-01 at `f59a636b5`.** Each path in §12 was read on that commit.
 > **Board:** WS-WEB in `work_plan.md` §2.1. **Decision:** D148. D85, D117, D124, D129, D130 and D139 bind it.
 > **Metorite:** project "Agent Tooling", epic 1235, this spec task 1237. The slices WEB-1 to WEB-12 are tasks 1259 to 1270, in order.
@@ -57,7 +57,7 @@ The owner wants Mira to do in chat what a research agent does: search the web at
 | A browser on the box | `apps/services/meeting_bot/` | Playwright 1.48 with Chromium in its own container. Proof that a browser worker can run here |
 | The coding session's network | `maf_coding_engine.md` §18.4 CA-4 (task 1032) | Spec only: an egress proxy with an allow-list, `web_fetch` and `web_search` inside the sandbox |
 
-**⚠️ A finding.** The direct fallback of `fetch_page` follows redirects and checks no address. A redirect to a private address is not refused in that code. The egress card checks no address, so nothing else closes it. The code also sends a private target to Jina before any check. WEB-1 fixes it first.
+**⚠️ A finding.** The direct fallback of `fetch_page` follows redirects and checks no address. A redirect to a private address is not refused in that code. The egress card checks no address, so nothing else closes it. The code also sends a private target to Jina before any check. WEB-1 closed it first, on 2026-11-01.
 
 ---
 
@@ -73,9 +73,9 @@ Every web read goes through one function. The rules:
 2. **Address.** Resolve the host. Refuse it unless each address is public. Connect to the address that was checked. The rule is `acb_common.public_address`, which the gateway already uses. WEB-1 makes `web_tools.py` use it too, so the gateway and the orchestrator share one copy.
 3. **Redirects.** Follow them by hand, at most 5. Each hop passes rules 1 and 2 again.
 4. **Caps.** 20 seconds and 15 MB for each read. The reader output has its own cap, and an overflow spills through CTX-1 with a locator.
-5. **Type.** HTML, PDF, the Office types, CSV, JSON, plain text and images. Any other type is refused with its name.
-6. **The mark.** `UntrustedFrame` wraps the output as outside text. The header (title, final URL, date, type) goes inside the frame, because a page controls it.
-7. **Jina.** A target passes rules 1 to 3 before any reader sees it, Jina included.
+5. **Type.** HTML, PDF, the Office types, CSV, JSON, plain text and images. The guard refuses any other type and names it. WEB-3 builds this refusal, and WEB-1 refuses no type.
+6. **The mark.** `UntrustedFrame` wraps the output as outside text. The header (title, the URL that gave the text, date, type) goes inside the frame, because a page controls it. WEB-2 adds the title and the date, because its reader reads them from the page.
+7. **Jina.** A target passes rules 1 to 3 before any reader sees it, Jina included. Jina gets the URL of the call after the walk ends. Each hop that the walk reached passes the check first. A network fault can end the walk early. Then Jina's own network follows the hops that the walk did not reach.
 
 ### 3.2 Readers
 
@@ -152,6 +152,26 @@ A research job needs more than one turn. The goal record comes from DeepSeek Har
 - **Permission to continue is not durable.** A restart asks again before a new round.
 
 The table is tenant-scoped. WS-43 CA runs and Studio builds can use the same record later.
+
+### 6.1 The record as built (WEB-10)
+
+WEB-10 built the record and its store only. It added no route, no tool, no pack and no flag. WEB-11 is the first caller.
+
+- **Table.** `goal_records`, from the migration that creates it (325). It has the tenant `organization_id` and FORCE RLS. The name is generic, because CA runs and Studio builds use it later.
+- **Columns.** `organization_id`, `id`, `member_email`, `kind` (default `research`), `objective` (1 to 2000 characters), `state`, `version`, `round_count`, `round_cap`, `cost_used_credits`, `cost_cap_credits`, `block_code`, `job_id`, `created_at`, `updated_at` and `finished_at`.
+- **`job_id`** names the `jobs` row that runs the goal. It has no foreign key. The goal is the state of the job, and the `jobs` queue stays as it is.
+- **States.** `active` and `blocked` are open. `done`, `failed` and `cancelled` are final. A goal in a final state does not change again, and its `finished_at` is set.
+- **Block codes.** The closed set is `cap_reached`, `needs_member` and `source_unreachable`. A CHECK holds the set, and the store holds one sentence for the member for each code. A goal is `blocked` if and only if it has a code.
+- **Caps.** The round cap is a count of rounds, from 1 to 10000, and 40 for research. The cost cap is in AI credits, as NUMERIC(14, 4), the type of `usage_event.billed_credits`.
+- **The cap rule.** A goal reaches its cap when `round_count >= round_cap` or `cost_used_credits >= cost_cap_credits`. The write that reaches a cap moves the goal to `blocked` with `cap_reached`. A CHECK keeps each active goal under both caps.
+- **A round.** The worker records a round when it ends, so the cost cap stops the next round. A blocked or final goal takes no round.
+- **Compare-and-set.** The token is the `version` integer. Each write names the version that the caller read, and raises it by one. A stale token raises `StaleGoal`, and nothing changes. A trigger refuses an UPDATE that does not raise the version by exactly one.
+- **The objective never changes.** The store refuses a change. A trigger refuses a change of the objective, the member, the kind, the id, the org and `created_at`.
+- **Who reads.** A goal is private to its member. The store filters each statement on `member_email`, and RLS filters on the org. No share to a group or to the org is in this slice.
+- **Permission to continue is not durable.** No column holds a permission, a consent or an approval. A restart asks the member again before a new round.
+- **Retention.** No pruning yet.
+- **The store.** `packages/acb_common/acb_common/goal_store.py` is the one writer. It takes an async session that the caller opened with `tenant_session(org)`, and it opens none. It lives in `acb_common` because WEB-11 runs in the orchestrator, and the orchestrator cannot import gateway code.
+- **The member purge** deletes the member's goals of the bound org.
 
 ---
 
@@ -258,6 +278,11 @@ Each path was read on `f59a636b5`.
 - `packages/acb_skills/acb_skills/tool_packs.py` (`PACKS`, `MAX_PACK_TOOLS`)
 - `project-docs/specs/maf_coding_engine.md` §18 (CA-4, the coding session's network)
 
+WEB-10 added these two paths on 2026-11-01:
+
+- `infra/postgres/325_goal_records.sql` (the table `goal_records`)
+- `packages/acb_common/acb_common/goal_store.py` (the one writer of `goal_records`)
+
 ---
 
 ## 13. Verification commands
@@ -266,7 +291,8 @@ Each path was read on `f59a636b5`.
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"   # R8 needs a database (WEB-10, WEB-11)
 uv run python scripts/affected_tests.py --run
 uv run pytest tests/unit/test_web_fetch_guard.py tests/unit/test_web_readers.py tests/unit/test_web_search_providers.py -q
-uv run ruff check packages/acb_skills apps/services/orchestrator
+uv run pytest tests/unit/test_goal_record_r8.py -q -rs                 # WEB-10. R8: it skips with no database
+uv run ruff check packages/acb_skills packages/acb_common apps/services/orchestrator --select F821,F601,F602,F502,F7,B006   # the blocking set of pr-check. The full set holds old findings
 bash scripts/ci_local.sh
 ```
 
@@ -282,6 +308,9 @@ bash scripts/ci_local.sh
 | No AGPL package in our Python or Node lock files | New with WEB-2: `tests/unit/test_no_agpl_dependency.py` |
 | A browse write asks on the card | New with WEB-9: `tests/unit/test_browse_session.py` |
 | A new table is tenant-scoped | `tests/unit/test_tenant_coverage.py` |
+| Org B reads no goal of org A, a member reads only their own goals, a stale write changes nothing, and the cap stops a job with `cap_reached` | WEB-10: `tests/unit/test_goal_record_r8.py` (R8) |
+| The objective never changes, each UPDATE raises the version by one, and no column holds a permission | WEB-10: same file |
+| The member purge deletes the member's goals of the bound org only | WEB-10: same file, and `tests/unit/test_admin_member_purge.py` |
 
 ---
 

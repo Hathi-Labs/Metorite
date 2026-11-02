@@ -430,6 +430,22 @@ def test_the_studio_skill_tables_are_tenant_scoped(table: str) -> None:
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
 
 
+@pytest.mark.parametrize("table", ["package_install", "package_contribution"])
+def test_the_package_registry_tables_are_tenant_scoped(table: str) -> None:
+    """WS-PKG PKG-4 (``package_host.md`` §5.1). An install and its claims
+    hold the apps that one organization installed and who sees them. The
+    tables may not be exempt, and the committed policy phase must carry each
+    (R5)."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
 @pytest.mark.parametrize(
     "table", ["studio_objects", "studio_object_fields", "studio_records", "studio_record_hot"],
 )
@@ -445,6 +461,20 @@ def test_the_studio_object_tables_are_tenant_scoped(table: str) -> None:
         encoding="utf-8",
     )
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
+def test_the_goal_record_table_is_tenant_scoped() -> None:
+    """WS-WEB WEB-10 (``web_research.md`` §6). A goal record holds the
+    objective of one member of one organization. The table may not be
+    exempt, and the committed policy phase must carry it (R5)."""
+    gen = _generator()
+    assert "goal_records" in gen.discover_tables()
+    assert "goal_records" not in gen.EXEMPT
+    assert "goal_records" not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert "ALTER TABLE goal_records FORCE  ROW LEVEL SECURITY" in policies
 
 
 def test_generated_policies_carry_all_four_load_bearing_clauses() -> None:

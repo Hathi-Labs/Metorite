@@ -48,7 +48,8 @@ import hashlib
 import inspect
 import json
 import typing
-from typing import Any, Callable, Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # The registry (code-declared data; keep alphabetised inside each family)
@@ -610,7 +611,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "Many tasks at once, and the acts that are hard to undo: "
             "create, file, merge or bulk-edit tasks, archive, restore, "
             "move or delete a task or a project, comments and attachments, "
-            "reminders, a nudge, a revert, watch, and the edit forms."
+            "a nudge, a revert, watch, and the edit forms."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for bulk work "
@@ -618,7 +619,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "turn needs them. It holds the tools to create, file, merge and "
             "bulk-edit tasks, to archive, restore, move and delete a task "
             "or a project, to edit or delete a comment or an attachment, "
-            "the reminders, a nudge, a revert, a watch, and the edit forms. "
+            "a nudge, a revert, a watch, and the edit forms. "
             "Each act asks the member first. A run loads a pack only where "
             "tool packs are on, so until then this switch has no effect."
         ),
@@ -636,21 +637,45 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "edit_comment",
             "edit_task",
             "file_tasks",
-            "list_reminders",
             "merge_tasks",
             "move_project",
             "my_led_projects",
             "nudge_task",
+            "revert_activity",
+            "unarchive_project",
+            "unarchive_task",
+            "watch",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    "projects-reminders": {
+        "label": "Projects reminders",
+        "summary": (
+            "The member's own reminders, which are not tasks: set one, list "
+            "them, change the time, snooze, resolve, reopen, or promote one "
+            "to a task."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for the "
+            "member's reminders, for the main assistant to load when a turn "
+            "says \"remind me\" or names a reminder. A reminder is its own "
+            "object. It is not a task, and it may name a task as its "
+            "subject. The pack holds the tools to set, list, change, "
+            "reschedule, resolve, reopen and promote a reminder. Each write "
+            "asks the member first. A run loads a pack only where tool "
+            "packs are on, so until then this switch has no effect."
+        ),
+        "tools": (
+            "list_reminders",
             "promote_reminder",
             "reopen_reminder",
             "reschedule_reminder",
             "resolve_reminder",
-            "revert_activity",
             "set_reminder",
-            "unarchive_project",
-            "unarchive_task",
             "update_reminder",
-            "watch",
         ),
         "owner": "projects-assistant",
         "core": False,
@@ -659,14 +684,14 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     },
     # STU-G1 (ai_studio.md section 6.2): the AI Studio builder tools, for the
     # one assistant to hold in a Studio turn. The owner is `studio-builder`,
-    # which is NOT a second assistant. Seven stateless tools (G2 added the interview and the plan card): no draft store
+    # which is NOT a second assistant. Eight stateless tools (G1b added the describe tool, G2 the interview and the plan card): no draft store
     # exists. A run loads a pack only where tool packs are on, and the pack
     # builds nothing for an org that STUDIO_ORGS does not hold.
     "studio": {
         "label": "AI Studio builder",
         "summary": (
             "Build an AI Studio app: draft a manifest from a brief, patch it, "
-            "check it, outline it, list the actions it may use, ask the interview and show the plan card."
+            "check it, outline it, list the actions it may use, read the live schema, ask the interview and show the plan card."
         ),
         "description": (
             "A tool pack: the builder tools of AI Studio, for the main "
@@ -677,6 +702,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "so until then this switch has no effect."
         ),
         "tools": (
+            "studio_describe",
             "studio_draft",
             "studio_interview",
             "studio_list_actions",
@@ -1043,10 +1069,6 @@ def families_for_scope(
     del tool_scope  # reserved for S2 (declared-vs-effective display)
     out: list[str] = []
     for slug, fam in injected_families().items():
-        if not fam.get("scope_governed"):
-            out.append(slug)
-        elif resolved_scope is None:
-            out.append(slug)
-        elif resolved_scope & frozenset(fam["tools"]):
+        if not fam.get("scope_governed") or resolved_scope is None or resolved_scope & frozenset(fam["tools"]):
             out.append(slug)
     return out
