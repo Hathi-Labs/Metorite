@@ -18,9 +18,10 @@
  * **The chips** (§5.7 item 3). Done and Drop act at once through
  * `/resolve`, and Undo puts the reminder back through `/reopen` (D-CF-5).
  * Not yet moves it to the smart slot through `/reschedule` and says the new
- * time. Later and Make it a task send the member's words to the model, so
- * the model asks for a time, or shows the one confirm of `promote_reminder`.
- * No chip calls `/promote` itself.
+ * time. Later acts at once too (RX-2): the card offers three presets, 1 hour,
+ * This evening and Tomorrow morning, and a pick calls `/snooze`. Make it a
+ * task sends the member's words to the model, which shows the one confirm of
+ * `promote_reminder`. No chip calls `/promote` itself.
  *
  * **The Calendar** (RM-5) closes and opens a reminder through the same
  * `runReminderAct`, and its other writes read `refusalWords` and
@@ -39,10 +40,15 @@ import type { AssistantFacts } from "./assistant";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** The reminder id in `raw`, lower case, or undefined when it is not a UUID. */
+export function parseReminderId(raw: string | null | undefined): string | undefined {
+  const text = raw?.trim() ?? "";
+  return UUID_RE.test(text) ? text.toLowerCase() : undefined;
+}
+
 /** The reminder id of a chat link, or undefined when it is not a UUID. */
 export function reminderParam(params: URLSearchParams): string | undefined {
-  const raw = params.get("reminder")?.trim() ?? "";
-  return UUID_RE.test(raw) ? raw.toLowerCase() : undefined;
+  return parseReminderId(params.get("reminder"));
 }
 
 /** The route that opens a reminder in one chat. */
@@ -332,8 +338,6 @@ export const REMINDER_CHIPS: Readonly<Record<ReminderAct, string>> = {
   undo: "Undo",
 };
 
-/** The member's turn that "Later" sends: the model asks for a time. */
-export const LATER_TURN = "Snooze this reminder";
 /** The member's turn that "Make it a task" sends: the model shows the confirm. */
 export const TASK_TURN = "Make it a task";
 
@@ -354,19 +358,29 @@ export function actOfWords(words: string): ReminderAct | null {
   return null;
 }
 
-/** The member's turn of a chip that the model answers, or null for a route act. */
+/** The member's turn of a chip that the model answers (only Make it a task), or null for a route act. */
 export function actTurn(act: ReminderAct): string | null {
-  if (act === "later") return LATER_TURN;
   if (act === "task") return TASK_TURN;
   return null;
+}
+
+/** The time that a "Later" preset picked: ISO with the offset, and the zone. */
+export interface LaterTime {
+  fireAt: string;
+  tz: string;
 }
 
 /**
  * The route call of a chip, through the Projects proxy, or null for a chip
  * that the model answers. The bodies are the RM-1 routes' own: `/resolve`
- * takes `action`, `/reschedule` takes `fire_at`, and `/reopen` takes none.
+ * takes `action`, `/reschedule` takes `fire_at`, `/snooze` takes `fire_at`
+ * and `tz`, and `/reopen` takes none. "Later" needs the picked time (`later`).
  */
-export function actRequest(id: string, act: ReminderAct): { url: string; body: Record<string, string> } | null {
+export function actRequest(
+  id: string,
+  act: ReminderAct,
+  later?: LaterTime,
+): { url: string; body: Record<string, string> } | null {
   const base = `/api/projects/my/reminders/${encodeURIComponent(id)}`;
   switch (act) {
     case "done":
@@ -377,6 +391,8 @@ export function actRequest(id: string, act: ReminderAct): { url: string; body: R
       return { url: `${base}/reschedule`, body: { fire_at: "smart" } };
     case "undo":
       return { url: `${base}/reopen`, body: {} };
+    case "later":
+      return later ? { url: `${base}/snooze`, body: { fire_at: later.fireAt, tz: later.tz } } : null;
     default:
       return null;
   }
@@ -412,8 +428,9 @@ export async function runReminderAct(
   id: string,
   act: ReminderAct,
   fetchImpl: typeof fetch = fetch,
+  later?: LaterTime,
 ): Promise<ActResult> {
-  const req = actRequest(id, act);
+  const req = actRequest(id, act, later);
   if (!req || !UUID_RE.test(id)) return { ok: false, words: "This reminder cannot change here." };
   try {
     const res = await fetchImpl(req.url, {
@@ -496,6 +513,7 @@ export function actResultWords(act: ReminderAct, row: ReminderRow, zone?: string
     case "drop":
       return "Dropped. The reminder is closed.";
     case "not_yet":
+    case "later":
       return movedLine(row.fire_at, row.tz ?? zone, now);
     case "undo":
       return "The reminder is open again.";

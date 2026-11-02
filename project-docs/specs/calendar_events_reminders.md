@@ -26,6 +26,11 @@
   2026-10-30.** RE-9 splits into RE-9a and RE-9b. See §5.6 and §10.1.
   **RE-9a (the push message builder and the "Hide details on the lock
   screen" setting) is BUILT, 2026-10-30, dark.** It sends nothing.
+  **RX-2 (a reminder write in chat acts at once, with an Undo and a reminder
+  receipt card) and RX-6 (the other doors: the `set-reminder` job, the Tasks
+  quick capture and "Remind me" on a task) are BUILT 2026-11-02**, behind
+  `CALENDAR_REMINDERS`. A chat that read outside mail keeps the one card
+  (`egress.write_must_show_card`).
   **RE-9b (a due reminder sends a real web push) is BUILT 2026-10-31.** It is
   not dark. It sends wherever `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS`
   are on, and production has both on. Its code is in migration 318 and in
@@ -944,13 +949,13 @@ adds the route. RM-1 added each row as a planned tool. RM-3 made it real.
 
 | Tool | Does | Confirm |
 |---|---|---|
-| `set_reminder` | Makes a reminder: `title`, `at` or `in_minutes`, `kind`, `subject_kind` and `subject_id`, `estimate_minutes`, `important` | One card, until CF-6 |
+| `set_reminder` | Makes a reminder: `title`, `at` or `in_minutes`, `kind`, `subject_kind` and `subject_id`, `estimate_minutes`, `important` | Acts at once, with an Undo (RX-2). One card in a chat that read outside mail |
 | `list_reminders` | Lists my reminders by state and window | A read |
-| `update_reminder` | Changes the text, the time, the kind, the link, the estimate or `important` (PATCH) | One card, until CF-6 |
-| `resolve_reminder` | Done or drop | One card, until CF-6. Its Undo is `reopen_reminder` |
-| `reopen_reminder` | The Undo of a done or a drop (§5.3) | One card, until CF-6 |
+| `update_reminder` | Changes the text, the time, the kind, the link, the estimate or `important` (PATCH) | Acts at once, with an Undo for the title, the kind and the time (RX-2). One card in a chat that read outside mail |
+| `resolve_reminder` | Done or drop | Acts at once (RX-2). Its Undo is `reopen_reminder`. One card in a chat that read outside mail |
+| `reopen_reminder` | The Undo of a done or a drop (§5.3) | Acts at once (RX-2). One card in a chat that read outside mail |
 | `promote_reminder` | Makes a private task in my personal project, and ends the reminder | One card. It cannot reopen |
-| `reschedule_reminder` | A snooze, a named time, or `smart` (§5.5) | One card, until CF-6 |
+| `reschedule_reminder` | A snooze, a named time, or `smart` (§5.5) | Acts at once, with an Undo (RX-2). One card in a chat that read outside mail |
 
 **As built (RM-3, 2026-10-25).** RM-1 built eight routes, and RM-3 built
 the seven tools over them. `reschedule_reminder` reaches two routes:
@@ -960,10 +965,65 @@ in `reads.py`, the five class B writes are in `writes.py`, and
 `SENDS`, so RM-3 closes gap G24 of `projects_agent_parity.md` §3.3. The fence
 is `tests/unit/test_reminder_tools.py`.
 
-- **Confirm.** One card for each write, until CF-6 exists. Then set,
-  update, resolve, reopen and reschedule act at once with Undo. RM-3 shows
-  each card through `writes._confirm`, the one door. It adds no second card
-  door and no act-at-once path (`chat_first_surface.md`, CF-6).
+- **Confirm.** A reminder is private and reaches nobody else. Undo reverses
+  it. So **RX-2 (owner, 2026-11-01)** made set, update, resolve, reopen and
+  reschedule act at once in a chat that read no outside mail. The receipt is
+  the reminder (see "The receipt" below).
+- **A chat that read outside mail keeps the card.** This is the owner rule. A
+  top-level chat binds `no_egress=False`, also after it read mail, because the
+  mark lives on the session. So `no_egress` alone is not enough.
+  `egress.write_must_show_card` is the one reader. It reads
+  `no_egress_for_this_run`, then the mark through `run_holds_mail`. The card
+  shows for a held run, a run with no context, and a run that cannot ask the
+  member. It shows for a delegated run, and for a run with no session or no
+  tenant. A marked session, an unknown mark and a Redis fault show it too. The
+  card goes through `writes._confirm`, the one door.
+  `writes._reminder_acts_at_once` is the only caller. It is not a general CF-6
+  seam. Only these five tools read it.
+- **One reminder for one ask.** With no card, a model retry, a double tool
+  call or a double click reaches `POST /my/reminders` twice. So the route takes
+  a transaction-level advisory lock on the member. It then looks for an open
+  reminder of that member with the same normalised title and the same link,
+  within one minute of `fire_at`. It answers that row with 200 and
+  `already: true`, and it writes no row and no ledger row. The window is one
+  minute because `in_minutes` reads the clock on each call, so a retry names a
+  later instant. A different link is a different reminder. The chat receipt
+  says "Reminder already set" and shows no Undo, and the pack rule tells the
+  model not to set it again. The fence is `tests/unit/test_reminders_r8.py`.
+- **A shared chat.** The reminder belongs to the member whose message started
+  the run. `X-User-Email` comes from the run binding. `_confirm` binds no
+  responder, so any member who can send in the room could approve the card.
+  So acting at once loses no authority. `reminder_events` keeps the record
+  (`created`, with `source` `chat`). A plain card wrote no row of its own. The
+  other member sees the receipt, and Undo and Change time answer 404 for that
+  member, so the card says "private to its owner".
+- **The promote keeps its card.** `promote_reminder` stays class C. It makes a
+  task and cannot reopen. The five other tools stay class B in the manifest.
+  The fence is `tests/unit/test_reminder_acts_at_once.py`. The pins in
+  `test_projects_agent_writes.py` bind a held run to the five tools.
+- **The receipt (RX-2).** A due date is a day. A reminder is a moment. So the
+  receipt of `set_reminder`, `update_reminder` and `reschedule_reminder` is a
+  card of its own (`ReminderReceiptCard.tsx`), not a plain result row. The
+  card shows a Bell, the title, the exact time ("Today, 5:00 PM IST"), the
+  relative time ("in 2 hours") and the linked task.
+- **Three acts on the receipt.** **Undo** puts the write back. **Change time**
+  opens the presets of "Later" and a date and a time, and calls `/reschedule`.
+  **See in Calendar** opens `/calendar?reminder=<id>`. That link opens the
+  Reminders panel and marks the row.
+- **What Undo does.** The card reads machine lines of the receipt:
+  `fire_at`, `zone`, `task_id`, `undo` and `was_*`. Undo drops a new reminder.
+  It moves a move back. It restores the title, the kind and the time of an
+  update. A change of notes, link, estimate or `important` shows no Undo.
+  Undo acts on the member's own reminder only, and any other member gets 404.
+  A fired reminder is still open, so Undo still drops it. A closed reminder
+  answers 409, and the card shows those words.
+- **A task receipt says it is a task.** `create_personal_task` and
+  `create_task` print "Private task captured" and "Task created". A "Make it a
+  reminder" act on a task receipt is deferred.
+- **Later acts at once (RX-2).** The chip "Later" of a fired reminder no
+  longer sends "Snooze this reminder" to the model. It shows three presets:
+  1 hour, This evening and Tomorrow morning. A pick calls `/snooze`. "Make it
+  a task" still sends its words to the model.
 - **Two gates before the card** (review round 1). Each write asks
   `writes._reminder_gate` first. With `CALENDAR_REMINDERS` off, the routes
   answer 404, so the tool refuses and says that reminders are not on. A
@@ -1029,12 +1089,21 @@ is `tests/unit/test_reminder_tools.py`.
   row prints `reminder_id:`, never `full_id:`, because a `full_id:` line opens
   a task in the chat cards. Only the promote prints a `full_id:`, the one of
   the task that it made.
-- **"Remind me to…" in the command bar.** The `capture` job stops taking it.
-  A new `set-reminder` job opens the composer of §6.1 filled. This waits for
-  the composer (CE-3 and RM-5). RM-3 did not build the job or the `capture`
-  change.
-- **Not in RM-3.** Act at once and Undo (CF-6), the command-bar job and the
-  `capture` change (CE-3, RM-5), and the WhatsApp acts (RM-9).
+- **"Remind me to…" in the command bar (RX-6, built).** The `capture` job
+  stopped taking the words "remind" and "reminder". The `set-reminder` job,
+  "New reminder", opens `/calendar?do=new-reminder`, and the Calendar opens its
+  New reminder form. The job saves nothing when it opens. It needs
+  `feature:projects`, because the routes answer 403 to a member with `tasks`
+  alone. The Calendar pane takes `tasks`, so `bar_feature` gates the job in the
+  command bar too. The composer of CE-3 is not built, so the job fills the
+  title only.
+- **The other doors (RX-6, built).** The Tasks quick capture, kind "Remind",
+  now makes a real reminder at a date and a time through the create route.
+  It no longer sets `defer_until`, and it makes no task. The task detail has a
+  **Remind me** act. It sets a reminder linked to the task
+  (`subject_kind=task`). The due date stays a day.
+- **Not built yet.** The WhatsApp acts (RM-9), the "Make it a reminder" act on
+  a task receipt, the composer of CE-3, and the held-chat slice RX-1.
 
 ### 5.9 Web push on iOS and Android
 
@@ -1168,8 +1237,8 @@ it opens (`navigation_shell.md` §5.1).
 | Job | Opens | Fields |
 |---|---|---|
 | `new-event` (new) | `/calendar?do=new-event` | `title`, `start`, `end`, `people` |
-| `set-reminder` (new) | `/calendar?do=new-reminder` | `title`, `at`, `task` |
-| `capture` (exists) | `/tasks?do=capture` | Its description stops at tasks. "Reminder" moves to `set-reminder` |
+| `set-reminder` (built, RX-6) | `/calendar?do=new-reminder` | `title` now. `at` and `task` wait for CE-3 |
+| `capture` (exists) | `/tasks?do=capture` | Its description stops at tasks (RX-6). "Reminder" moved to `set-reminder` |
 
 "Meet Sharath 8:30-10:30 tomorrow" picks `new-event` with the title "Meet
 Sharath", the times and the person. The composer opens filled. The member

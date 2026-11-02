@@ -1491,22 +1491,44 @@ def no_egress_for_this_run() -> bool:
 
 
 async def write_must_show_card(ctx: Mapping[str, Any] | None = None) -> bool:
-    """True when a write of the run on this frame must show its card (RX-1).
+    """True when a write of the run on this frame must show its card (RX-2).
 
-    THE one reader for a write that a rule lets act at once with no card. CF-6
-    plans such a rule for the reminder writes (``chat_first_surface.md``). A held
-    chat keeps those writes BECAUSE of the card, so the act-at-once path asks
-    this first, and it shows the card when the answer is True.
+    THE one reader for a write that a rule lets act at once with no card, such
+    as the reminder writes of WS-66 RX-2. The owner rule: a chat that read
+    outside mail never acts at once. It shows the card.
 
-    It reads :func:`no_egress_for_this_run` first, which fails closed and covers
-    a pack call (``tool_packs.owner_scope`` binds the held answer). Then it reads
-    the mark of the session, with a Redis fault read as marked, because an open
-    run in a marked chat is not ``no_egress``. Fence:
-    ``tests/unit/test_held_card_writes.py``.
+    :func:`no_egress_for_this_run` alone does not answer this. A top-level chat
+    run binds ``no_egress=False``, also in a chat that read mail, because the
+    mark lives on the SESSION. So this reads the run first, then the mark
+    through :func:`run_holds_mail`, the one predicate of a run that holds mail.
+
+    Each test fails closed, and a True shows the card:
+
+    * the run may not send, or the frame holds no run;
+    * the run cannot ask the member, so it cannot show a receipt with an Undo
+      either (:func:`_card_can_show`);
+    * a delegated run. A child in the batch path holds a session of its own, so
+      it cannot read the mark of its chat, and no chat draws its receipt;
+    * the frame names no tenant or no session, so no key finds a mark;
+    * the session is marked, the state is unknown, or Redis faults.
+
+    Any fault of the read reads True. *ctx* is the bound artifact context. Omit
+    it to read the context of this frame. No request field reaches this
+    function. Fence: ``tests/unit/test_reminder_acts_at_once.py``.
     """
+    from acb_skills.write_artifact import DELIVER_TO
+
     if no_egress_for_this_run():
         return True
-    return await session_mark_state(ctx, fail_closed=True) != MARK_CLEAR
+    bound = _bound_context() if ctx is None else ctx
+    if not _card_can_show(bound) or bound.get(DELIVER_TO):
+        return True
+    if _session_of(ctx) is None:
+        return True
+    try:
+        return await run_holds_mail(str(bound.get("agent_name") or ""), ctx)
+    except Exception:  # fail closed: the card shows
+        return True
 
 
 def _egress_answer(name: str) -> str:
