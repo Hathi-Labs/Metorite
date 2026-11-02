@@ -180,7 +180,7 @@ async def test_twelve_rows_draw_one_card_with_twelve_rows(monkeypatch) -> None:
     assert card["title"] == "Update these tasks?"
     assert [r["id"] for r in card["rows"]] == [f"row-{n}" for n in range(1, 13)]
     assert card["rows"][0]["label"] == "#101 Task 1"
-    assert card["rows"][0]["hint"] == "due: 2026-01-01 → 2026-02-01, priority → Low Priority"
+    assert card["rows"][0]["hint"] == "due: 1 Jan 2026 → 1 Feb 2026, priority → Low Priority"
     assert len(_patched(calls)) == 12
     assert out.splitlines()[0] == "Changed 12 tasks:"
     assert "Do not change them again" in out
@@ -368,6 +368,16 @@ async def test_a_hint_reads_like_the_single_task_card(monkeypatch) -> None:
     )
     hints = [r["hint"] for r in asked[0]["rows"]]
     assert hints == ["estimate: none → 1h 30m", "estimate: none → 4h"]
+
+
+async def test_a_hint_shows_a_date_as_words(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    await skill_projects.update_tasks(
+        _changes({"task_id": _tid(1), "due": "2026-03-03"}, {"task_id": _tid(2), "due": "2026-03-04"})
+    )
+    hint = asked[0]["rows"][0]["hint"]
+    assert hint.startswith("due: 1 Jan 2026 → 3 Mar 2026"), hint
 
 
 # ── 6. A row sends what update_task sends ───────────────────────────────────

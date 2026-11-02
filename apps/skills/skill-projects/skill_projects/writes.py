@@ -3313,6 +3313,10 @@ def _update_arg(key: str, value: Any) -> Any:
 _UPDATE_HINT_ORDER = (
     "due_at", "start_date", "estimate_mins", "type", "priority", "important", "leveraged", "tags",
 )
+#: A date at the start of a value: ``2026-03-03`` or ``2026-03-03T…``.
+_ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}(?:$|T)")
+
+
 def _hint_value(key: str, value: Any) -> str:
     """A value of a row hint, in the words of the single-task card: "none"
     for an empty value, a list as a comma list, and an estimate in hours and
@@ -3321,6 +3325,9 @@ def _hint_value(key: str, value: Any) -> str:
         return "none"
     if isinstance(value, (list, tuple)):
         return ", ".join(str(v) for v in value) or "none"
+    if key in ("due_at", "start_date") and isinstance(value, str) and _ISO_DAY.match(value):
+        day = date.fromisoformat(value[:10])
+        return f"{day.day} {day:%b} {day.year}"
     if key == "estimate_mins" and isinstance(value, int) and not isinstance(value, bool):
         hours, mins = divmod(value, 60)
         return " ".join(p for p in (f"{hours}h" if hours else "", f"{mins}m" if mins else "") if p) or "0m"
