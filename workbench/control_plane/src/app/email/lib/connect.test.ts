@@ -188,6 +188,13 @@ describe("the callback page gives guided copy (done-when 4)", () => {
     expect(`${v.title} ${v.body}`).not.toMatch(/unexpected error/i);
   });
 
+  // EM-G11a: the Note Taker and the digest send with no click, so this page
+  // must not say that Metorite sends mail only when told to.
+  it("consent_declined makes no promise about what Metorite sends", () => {
+    const body = callbackView({ ...base, error: "consent_declined" }).body;
+    expect(body).not.toMatch(/send|only as you/i);
+  });
+
   it("consent_declined says the member cancelled, never 'unexpected error'", () => {
     const v = callbackView({ ...base, error: "consent_declined" });
     expect(v.kind).toBe("consent_declined");

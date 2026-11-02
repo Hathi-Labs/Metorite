@@ -932,7 +932,7 @@ export function callbackView(params: {
       title: "You cancelled the connection",
       body:
         `${name} did not give Metorite access to your mailbox, so nothing was connected. ` +
-        "Try again when you are ready. Metorite reads and sends mail only as you tell it to.",
+        "Try again when you are ready.",
     };
   }
   // EM-G7 item 2: Google lets a member clear a permission on its consent
