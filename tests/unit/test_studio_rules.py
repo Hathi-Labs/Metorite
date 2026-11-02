@@ -662,3 +662,349 @@ def test_a_hostile_key_or_value_never_reaches_the_sql_of_a_check() -> None:
     assert "DROP TABLE" not in sql
     assert hostile in params.values()
     assert params["sk"] == hostile
+
+
+# ── C6: the state machine (WS-STU STU-C6) ──────────────────────────────────
+#
+# Mutations (R7) and the test that goes red for each. Commit before each.
+#   M1. check_move: drop the from/to match (let any change pass).
+#       test_a_change_needs_a_declared_move, test_a_move_that_is_not_declared_is_refused
+#   M2. check_move: the guard reads `before`.
+#       test_the_guard_reads_the_merged_record_after_the_change
+#   M3. check_move: skip the create check.
+#       test_a_create_must_hold_the_initial_state
+#   M4. touched_keys: remove STATE_MACHINE from the early return.
+#       test_a_state_machine_touches_no_key
+#   M5. _parse_atom / _parse_move: a role key passes.
+#       test_a_role_guard_waits_for_c8
+#   M6. objects_store: judge each write, not the net (before = state of the last write).
+#       test_r8_a_batch_judges_the_net_move (test_studio_state_machine_r8.py)
+
+_PO_SPECS: list[dict[str, Any]] = [
+    {"key": "status", "type": "select", "options": ["draft", "approved", "sent", "void"]},
+    {"key": "total", "type": "number"},
+    {"key": "note", "type": "text"},
+    {"key": "urgent", "type": "checkbox"},
+    {"key": "due", "type": "date"},
+    {"key": "at", "type": "datetime"},
+    {"key": "price", "type": "money"},
+    {"key": "tags", "type": "multiSelect", "options": ["a", "b"]},
+    {"key": "mode", "type": "select", "options": ["a", "b"]},
+]
+PO_FIELDS = [sf.parse_field_spec(s) for s in _PO_SPECS]
+
+_MACHINE: dict[str, Any] = {
+    "name": "po_flow", "kind": "state_machine", "field": "status", "initial": "draft",
+    "moves": [
+        {"from": "draft", "to": "approved"},
+        {"from": "draft", "to": "sent"},
+        {"from": "approved", "to": "sent",
+         "guard": [{"field": "total", "op": "lte", "value": 1000}]},
+        {"from": "approved", "to": "void"},
+    ],
+}
+
+
+def _machine(**over: Any) -> sr.Rule:
+    return sr.parse_rule({**_MACHINE, **over})
+
+
+def _bad_machine(**over: Any) -> ConstraintError:
+    with pytest.raises(ConstraintError) as info:
+        sr.parse_rule({**_MACHINE, **over})
+    return info.value
+
+
+def test_a_machine_parses_and_round_trips() -> None:
+    rule = _machine()
+    assert rule.kind == sr.STATE_MACHINE and rule.field == "status" and rule.initial == "draft"
+    assert len(rule.moves) == 4
+    assert rule.stored() == _MACHINE
+    assert sr.stored_rules([rule.stored()]) == (rule,)
+
+
+def test_the_kind_is_the_fourth_of_the_closed_list() -> None:
+    assert sr.RULE_KINDS == ("range", "unique", "group_sum_min", "state_machine")
+    assert sr.STATE_MACHINE in sr._PARSERS and sr.STATE_MACHINE in sr._KIND_KEYS
+
+
+@pytest.mark.parametrize("over", [
+    {"field": "Status"}, {"field": None}, {"initial": ""}, {"initial": 3},
+    {"initial": "x" * 81}, {"moves": []}, {"moves": "draft"}, {"moves": [3]},
+    {"moves": [{"from": "draft"}]}, {"moves": [{"from": "draft", "to": "draft"}]},
+    {"moves": [{"from": "a", "to": "b"}, {"from": "a", "to": "b"}]},
+    {"moves": [{"from": "a", "to": "b", "extra": 1}]},
+    {"extra": 1},
+])
+def test_a_bad_machine_shape_is_refused(over: dict[str, Any]) -> None:
+    exc = _bad_machine(**over)
+    assert exc.rule == "po_flow"
+    assert len(exc.message.split()) <= 30
+
+
+def test_a_machine_holds_at_most_64_moves() -> None:
+    moves = [{"from": f"s{i}", "to": f"s{i + 1}"} for i in range(sr.MAX_MOVES)]
+    assert len(_machine(moves=moves).moves) == sr.MAX_MOVES
+    moves.append({"from": "s64", "to": "s65"})
+    assert "1 to 64 moves" in _bad_machine(moves=moves).message
+
+
+def test_a_guard_holds_at_most_4_atoms() -> None:
+    atom = {"field": "total", "op": "gte", "value": 1}
+    ok = [{"from": "draft", "to": "sent", "guard": [atom] * 4}]
+    assert len(_machine(moves=ok).moves[0].guard) == 4
+    bad = [{"from": "draft", "to": "sent", "guard": [atom] * 5}]
+    assert "1 to 4 atoms" in _bad_machine(moves=bad).message
+    empty = [{"from": "draft", "to": "sent", "guard": []}]
+    assert "1 to 4 atoms" in _bad_machine(moves=empty).message
+
+
+@pytest.mark.parametrize("atom", [
+    {"field": "total", "op": "contains", "value": 1},
+    {"field": "total", "op": "lte"},
+    {"field": "total", "op": "is_empty", "value": 1},
+    {"field": "total", "op": "in", "value": 3},
+    {"field": "total", "op": "in", "value": []},
+    {"field": "total", "op": "eq", "value": {"a": 1}},
+    {"field": "total", "op": "eq", "value": [1]},
+    {"field": "total", "op": "eq", "value": None},
+    {"field": "Total", "op": "eq", "value": 1},
+    {"field": "total", "op": "eq", "value": 1, "or": []},
+    "total > 1",
+])
+def test_a_bad_atom_is_refused(atom: Any) -> None:
+    moves = [{"from": "draft", "to": "sent", "guard": [atom]}]
+    assert _bad_machine(moves=moves).rule == "po_flow"
+
+
+def test_an_in_atom_holds_at_most_20_values() -> None:
+    atom = {"field": "total", "op": "in", "value": list(range(sr.MAX_GUARD_IN_VALUES))}
+    moves = [{"from": "draft", "to": "sent", "guard": [atom]}]
+    assert _machine(moves=moves).moves[0].guard[0].value == tuple(range(20))
+    atom["value"] = list(range(21))
+    assert "1 to 20 values" in _bad_machine(moves=moves).message
+
+
+@pytest.mark.parametrize("key", ["role", "roles"])
+def test_a_role_guard_waits_for_c8(key: str) -> None:
+    on_move = [{"from": "draft", "to": "sent", key: "director"}]
+    on_atom = [{"from": "draft", "to": "sent", "guard": [
+        {"field": "total", "op": "gte", "value": 1, key: "director"}]}]
+    for moves in (on_move, on_atom):
+        msg = _bad_machine(moves=moves).message
+        assert "C8" in msg and "role" in msg
+
+
+def test_a_stored_machine_with_a_role_fails_closed() -> None:
+    item = {**_MACHINE, "moves": [{"from": "draft", "to": "sent", "role": "director"}]}
+    (rule,) = sr.stored_rules([item])
+    assert rule.kind == sr.MALFORMED
+    with pytest.raises(RuleViolation):
+        sr.check_kind_known(rule, "po")
+
+
+def test_a_stored_machine_of_a_bad_shape_fails_closed() -> None:
+    (rule,) = sr.stored_rules([{"name": "m", "kind": "state_machine", "field": "status"}])
+    assert rule.kind == sr.MALFORMED and rule.name == "m"
+
+
+def test_a_field_has_one_machine() -> None:
+    other = {**_MACHINE, "name": "second"}
+    with pytest.raises(ConstraintError, match="one state machine"):
+        sr.parse_rules([_MACHINE, other])
+    assert len(sr.parse_rules([_MACHINE, {**other, "field": "mode", "initial": "a"}])) == 2
+
+
+def test_the_machine_shares_the_16_rule_cap() -> None:
+    rules = [{**_MACHINE, "name": f"m{i}", "field": f"f{i}"} for i in range(17)]
+    with pytest.raises(ConstraintError, match="at most 16"):
+        sr.parse_rules(rules)
+
+
+def test_a_machine_fits_a_select() -> None:
+    sr.check_rules_fit([_machine()], PO_FIELDS)
+
+
+@pytest.mark.parametrize("over,needle", [
+    ({"field": "total"}, "must be one select"),
+    ({"field": "tags"}, "must be one select"),
+    ({"field": "ghost"}, "not a field"),
+    ({"initial": "nope"}, "initial"),
+    ({"moves": [{"from": "draft", "to": "nope"}]}, "moves[0].to"),
+    ({"moves": [{"from": "nope", "to": "sent"}]}, "moves[0].from"),
+])
+def test_a_machine_that_does_not_fit_is_refused(over: dict[str, Any], needle: str) -> None:
+    with pytest.raises(ConstraintError, match=re.escape(needle)):
+        sr.check_rules_fit([_machine(**over)], PO_FIELDS)
+
+
+def test_a_machine_field_may_be_cold() -> None:
+    assert not next(f for f in PO_FIELDS if f.key == "status").hot
+    sr.check_rules_fit([_machine()], PO_FIELDS)
+    assert _machine().hot_keys() == ()
+
+
+@pytest.mark.parametrize("atom,needle", [
+    ({"field": "ghost", "op": "eq", "value": 1}, "not a field"),
+    ({"field": "price", "op": "eq", "value": 1}, "cannot test"),
+    ({"field": "tags", "op": "is_empty"}, "cannot test"),
+    ({"field": "note", "op": "lt", "value": "a"}, "cannot test"),
+    ({"field": "at", "op": "gt", "value": "2026-01-01T00:00:00Z"}, "cannot test"),
+    ({"field": "total", "op": "eq", "value": "ten"}, "value of that field"),
+    ({"field": "mode", "op": "eq", "value": "zzz"}, "value of that field"),
+    ({"field": "due", "op": "eq", "value": "2026-02-30"}, "value of that field"),
+    ({"field": "urgent", "op": "eq", "value": 1}, "value of that field"),
+])
+def test_a_guard_that_does_not_fit_is_refused(atom: dict[str, Any], needle: str) -> None:
+    moves = [{"from": "draft", "to": "sent", "guard": [atom]}]
+    with pytest.raises(ConstraintError, match=needle):
+        sr.check_rules_fit([_machine(moves=moves)], PO_FIELDS)
+
+
+def test_the_guard_ops_are_a_subset_of_the_c2a_table() -> None:
+    """A fence. A guard op is an op of the query grammar, bar `not_empty`, which
+    is the negation of `is_empty`. No type gains an op that C2a lacks."""
+    assert set(sr.GUARD_OPS) - {"not_empty"} <= set(sq.OPS)
+    for kind, ops in sr.GUARD_OPS_BY_TYPE.items():
+        assert ops - {"not_empty"} <= sq.OPS_BY_TYPE[kind], kind
+        assert ("not_empty" in ops) == ("is_empty" in sq.OPS_BY_TYPE[kind]), kind
+    assert "money" not in sr.GUARD_OPS_BY_TYPE
+    assert not sr.GUARD_OPS_BY_TYPE["datetime"] & {"lt", "lte", "gt", "gte"}
+
+
+def _check(before: dict[str, Any] | None, after: dict[str, Any] | None,
+           rule: sr.Rule | None = None) -> None:
+    sr.check_move(rule or _machine(), "po", before, after)
+
+
+def _refused(before: dict[str, Any] | None, after: dict[str, Any] | None,
+             rule: sr.Rule | None = None) -> sr.MoveViolation:
+    with pytest.raises(sr.MoveViolation) as info:
+        _check(before, after, rule)
+    return info.value
+
+
+def test_a_create_must_hold_the_initial_state() -> None:
+    _check(None, {"status": "draft"})
+    err = _refused(None, {"status": "sent"})
+    assert err.rule == "po_flow" and err.object == "po"
+    assert err.from_state is None and err.to_state == "sent"
+    assert _refused(None, {"note": "x"}).to_state is None
+
+
+def test_a_change_needs_a_declared_move() -> None:
+    _check({"status": "draft"}, {"status": "approved"})
+    err = _refused({"status": "sent"}, {"status": "draft"})
+    assert (err.from_state, err.to_state) == ("sent", "draft")
+
+
+def test_a_move_that_is_not_declared_is_refused() -> None:
+    # draft -> void is a pair of declared states and not a declared move.
+    assert "cannot make this move" in str(_refused({"status": "draft"}, {"status": "void"}))
+
+
+def test_an_unchanged_state_passes() -> None:
+    _check({"status": "approved", "total": 5}, {"status": "approved", "total": 9})
+    _check({"status": "legacy"}, {"status": "legacy", "note": "x"})
+
+
+def test_a_cleared_state_is_refused() -> None:
+    assert "cannot be cleared" in str(_refused({"status": "draft"}, {"note": "x"}))
+    assert "cannot be cleared" in str(_refused({"status": "draft"}, {"status": ""}))
+
+
+def test_a_stored_state_that_is_not_declared_is_refused() -> None:
+    err = _refused({"status": "legacy"}, {"status": "sent"})
+    assert err.from_state is None and err.to_state == "sent"
+    assert "not declared" in str(err)
+    assert "legacy" not in str(err)
+
+
+def test_a_delete_is_not_a_move() -> None:
+    _check({"status": "sent"}, None)
+    _check(None, None)
+
+
+def test_the_guard_reads_the_merged_record_after_the_change() -> None:
+    """approved -> sent needs total <= 1000. The total is in `after`."""
+    _check({"status": "approved", "total": 5000}, {"status": "sent", "total": 900})
+    err = _refused({"status": "approved", "total": 900}, {"status": "sent", "total": 5000})
+    assert "guard" in str(err)
+
+
+def test_a_failed_guard_refuses_and_a_blank_value_fails_a_numeric_atom() -> None:
+    _refused({"status": "approved"}, {"status": "sent"})
+    _check({"status": "approved"}, {"status": "sent", "total": 1000})
+
+
+def test_a_refusal_never_echoes_a_guard_value() -> None:
+    moves = [{"from": "draft", "to": "sent",
+              "guard": [{"field": "note", "op": "eq", "value": "SECRET-GUARD-VALUE"}]}]
+    err = _refused({"status": "draft"}, {"status": "sent", "note": "other"},
+                   _machine(moves=moves))
+    assert "SECRET-GUARD-VALUE" not in str(err) and "other" not in str(err)
+    assert err.rule == "po_flow"
+
+
+def test_the_message_of_the_rule_replaces_the_default() -> None:
+    err = _refused({"status": "sent"}, {"status": "draft"}, _machine(message="No way back."))
+    assert str(err).endswith("No way back.")
+
+
+@pytest.mark.parametrize("op,value,data,holds", [
+    ("eq", "a", {"mode": "a"}, True), ("eq", "a", {"mode": "b"}, False),
+    ("eq", "a", {}, False), ("ne", "a", {"mode": "b"}, True), ("ne", "a", {}, True),
+    ("ne", "a", {"mode": "a"}, False), ("in", ("a", "b"), {"mode": "b"}, True),
+    ("in", ("a",), {"mode": "b"}, False), ("in", ("a",), {}, False),
+    ("is_empty", None, {}, True), ("is_empty", None, {"mode": "a"}, False),
+    ("not_empty", None, {"mode": "a"}, True), ("not_empty", None, {}, False),
+    ("lt", 5, {"mode": 4}, True), ("lt", 5, {"mode": 5}, False),
+    ("lte", 5, {"mode": 5}, True), ("gt", 5, {"mode": 6}, True),
+    ("gt", 5, {"mode": 5}, False), ("gte", 5, {"mode": 5}, True),
+    ("gte", 5, {}, False), ("gte", 5, {"mode": "x"}, False),
+])
+def test_each_guard_op(op: str, value: Any, data: dict[str, Any], holds: bool) -> None:
+    assert sr.guard_holds([sr.Atom("mode", op, value)], data) is holds
+
+
+def test_every_atom_of_a_guard_must_hold() -> None:
+    both = [sr.Atom("total", "gte", 1), sr.Atom("note", "not_empty")]
+    assert sr.guard_holds(both, {"total": 2, "note": "x"})
+    assert not sr.guard_holds(both, {"total": 2})
+    assert not sr.guard_holds(both, {"note": "x"})
+    assert sr.guard_holds([], {})
+
+
+def test_a_create_takes_the_initial_state_when_the_field_is_absent() -> None:
+    rules = (_machine(),)
+    assert sr.with_initial(rules, {"total": 1}) == {"total": 1, "status": "draft"}
+    assert sr.with_initial(rules, {"status": "sent"}) == {"status": "sent"}
+    assert sr.with_initial(rules, "not a record") == "not a record"
+    assert sr.with_initial((), {"total": 1}) == {"total": 1}
+
+
+def test_with_initial_never_changes_its_input() -> None:
+    data = {"total": 1}
+    sr.with_initial((_machine(),), data)
+    assert data == {"total": 1}
+
+
+def test_a_state_machine_touches_no_key() -> None:
+    rule = _machine()
+    assert sr.touched_keys(rule, None, {"status": "draft"}) == []
+    assert sr.touched_keys(rule, {"status": "draft"}, {"status": "sent"}) == []
+    assert sr.touched_keys(rule, {"status": "draft"}, None) == []
+
+
+def test_the_store_runs_the_machine_in_the_record_check_and_makes_the_initial_state() -> None:
+    src = _STORE.read_text(encoding="utf-8")
+    check = src[src.index("def _check_records"):src.index("async def _check_key(")]
+    assert "STATE_MACHINE" in check and "check_move(rule, held.name, mark.before, mark.after)" in check
+    assert "with_initial(held.rules, step.data)" in src
+
+
+def test_the_manifest_uses_the_one_parser() -> None:
+    src = (_ROOT / "packages/acb_common/acb_common/studio_manifest.py").read_text(encoding="utf-8")
+    assert "parse_rules" in src and "check_rules_fit" in src
+    for second in ("def parse_rule", "def _parse_machine", "MAX_MOVES ="):
+        assert second not in src, second

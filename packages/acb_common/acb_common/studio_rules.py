@@ -18,6 +18,12 @@ rules. :data:`RULE_KINDS` is the closed list of kinds.
   sum of a hot number field over the records with the same group values
   stays at least ``min``. "Stock never below zero" is this kind over a ledger.
   A record with no value in a group field joins no group.
+* ``state_machine`` (C6): ``{field, initial, moves: [{from, to, guard?}]}``.
+  One select field moves only along the declared moves. A guard is a closed
+  list of at most 4 atoms ``{field, op, value?}``, and all must hold. It reads
+  the merged record only. A role guard waits for C8, a history row for C4, and
+  an expression for C7. A machine reads no key, so :func:`touched_keys` answers
+  none for it, and :func:`check_move` judges the net move of one record.
 
 **A key.** A ``unique`` field and a group field have a type of
 :data:`KEY_TYPES`. A checkbox has two states and a money value has a currency,
@@ -49,6 +55,8 @@ from decimal import Context, Decimal
 from typing import Any
 
 from acb_common.studio_fields import (
+    MAX_OPTION_CHARS,
+    MAX_TEXT_CHARS,
     NAME_PATTERN,
     FieldError,
     FieldSpec,
@@ -56,6 +64,7 @@ from acb_common.studio_fields import (
     is_blank,
     storable_text,
 )
+from acb_common.studio_query import OPS_BY_TYPE
 
 # --- the caps ---------------------------------------------------------------
 
@@ -66,13 +75,28 @@ MAX_WRITES_PER_BATCH = 50
 MAX_RULE_MESSAGE_CHARS = 200
 #: A ``group_sum_min`` groups by one or two fields.
 MAX_GROUP_FIELDS = 2
+#: The moves of one state machine.
+MAX_MOVES = 64
+#: The atoms of one guard. All of them must hold.
+MAX_GUARD_ATOMS = 4
+#: The values of an ``in`` atom.
+MAX_GUARD_IN_VALUES = 20
+
+#: The closed ops of a guard atom. All but ``not_empty`` are ops of C2a.
+GUARD_OPS: tuple[str, ...] = (
+    "eq", "ne", "lt", "lte", "gt", "gte", "in", "is_empty", "not_empty")
+_ORDER_OPS = frozenset({"lt", "lte", "gt", "gte"})
+_NO_VALUE_OPS = frozenset({"is_empty", "not_empty"})
+#: A role guard waits for C8, which gives the store the roles of the actor.
+_ROLE_KEYS = frozenset({"role", "roles"})
 
 RANGE = "range"
 UNIQUE = "unique"
 GROUP_SUM_MIN = "group_sum_min"
+STATE_MACHINE = "state_machine"
 
 #: The closed list of kinds.
-RULE_KINDS: tuple[str, ...] = (RANGE, UNIQUE, GROUP_SUM_MIN)
+RULE_KINDS: tuple[str, ...] = (RANGE, UNIQUE, GROUP_SUM_MIN, STATE_MACHINE)
 #: The kind of a stored rule that the checks cannot read. It is not in
 #: :data:`RULE_KINDS`, so :func:`check_kind_known` refuses each write.
 MALFORMED = "malformed"
@@ -85,6 +109,7 @@ _KIND_KEYS: Mapping[str, frozenset[str]] = {
     RANGE: frozenset({"field", "min", "max"}),
     UNIQUE: frozenset({"fields"}),
     GROUP_SUM_MIN: frozenset({"field", "group_by", "min"}),
+    STATE_MACHINE: frozenset({"field", "initial", "moves"}),
 }
 assert tuple(_KIND_KEYS) == RULE_KINDS, "each kind has its keys"
 
@@ -125,6 +150,37 @@ class ConstraintViolation(RuleViolation):
         self.object = object_name
 
 
+class MoveViolation(RuleViolation):
+    """A write that a state machine refuses (C6). ``from_state`` and
+    ``to_state`` are declared states, or None when the state is not one. The
+    message never echoes a guard value."""
+
+    def __init__(self, rule: str, object_name: str, from_state: str | None,
+                 to_state: str | None, message: str) -> None:
+        super().__init__(rule, message)
+        self.object = object_name
+        self.from_state = from_state
+        self.to_state = to_state
+
+
+@dataclass(frozen=True)
+class Atom:
+    """One test of a guard on the merged record. ``value`` is a tuple for ``in``."""
+
+    field: str
+    op: str
+    value: Any = None
+
+
+@dataclass(frozen=True)
+class Move:
+    """One allowed move of a state machine, with the guard that must hold."""
+
+    from_state: str
+    to_state: str
+    guard: tuple[Atom, ...] = ()
+
+
 @dataclass(frozen=True)
 class Rule:
     """One constraint of an object, after :func:`parse_rules`."""
@@ -138,6 +194,9 @@ class Rule:
     keys: tuple[str, ...] = ()
     min: int | float | None = None
     max: int | float | None = None
+    #: A ``state_machine`` starts here, and it allows only these moves.
+    initial: str | None = None
+    moves: tuple[Move, ...] = ()
 
     def stored(self) -> dict[str, Any]:
         """The JSON of this rule, as the store keeps it."""
@@ -151,6 +210,10 @@ class Rule:
         if self.kind == GROUP_SUM_MIN:
             out["field"] = self.field
             out["group_by"] = list(self.keys)
+        if self.kind == STATE_MACHINE:
+            out["field"] = self.field
+            out["initial"] = self.initial
+            out["moves"] = [_stored_move(m) for m in self.moves]
         if self.min is not None:
             out["min"] = self.min
         if self.max is not None:
@@ -159,9 +222,23 @@ class Rule:
 
     def hot_keys(self) -> tuple[str, ...]:
         """The fields that must stay hot while this rule stands."""
-        if self.kind == RANGE:
+        if self.kind in (RANGE, STATE_MACHINE):
             return ()
         return (*self.keys, self.field) if self.field is not None else self.keys
+
+
+def _stored_atom(atom: Atom) -> dict[str, Any]:
+    out: dict[str, Any] = {"field": atom.field, "op": atom.op}
+    if atom.op not in _NO_VALUE_OPS:
+        out["value"] = list(atom.value) if atom.op == "in" else atom.value
+    return out
+
+
+def _stored_move(move: Move) -> dict[str, Any]:
+    out: dict[str, Any] = {"from": move.from_state, "to": move.to_state}
+    if move.guard:
+        out["guard"] = [_stored_atom(a) for a in move.guard]
+    return out
 
 
 # --- the declaration --------------------------------------------------------
@@ -235,7 +312,99 @@ def _parse_group(rule: str, spec: Mapping[str, Any], message: str | None) -> Rul
                 min=_bound(rule, "min", spec.get("min")))
 
 
-_PARSERS = {RANGE: _parse_range, UNIQUE: _parse_unique, GROUP_SUM_MIN: _parse_group}
+def _role_refused(rule: str, spec: Mapping[str, Any]) -> ConstraintError | None:
+    if _ROLE_KEYS & {str(k) for k in spec}:
+        return ConstraintError(
+            rule, f"Rule `{rule}`: a role guard waits for slice C8, so a move takes none yet.")
+    return None
+
+
+def _state(rule: str, label: str, value: Any) -> str:
+    if (not isinstance(value, str) or not value.strip() or len(value) > MAX_OPTION_CHARS
+            or not storable_text(value)):
+        raise ConstraintError(
+            rule, f"Rule `{rule}`: `{label}` is one option of the field, as text of 1 to "
+            f"{MAX_OPTION_CHARS} characters.")
+    return value
+
+
+def _atom_scalar(rule: str, value: Any) -> Any:
+    if isinstance(value, bool) or (isinstance(value, str) and len(value) <= MAX_TEXT_CHARS):
+        return value
+    if isinstance(value, int | float) and value == value and abs(value) != float("inf"):
+        return value
+    raise ConstraintError(
+        rule, f"Rule `{rule}`: a guard `value` is one text, number or true or false.")
+
+
+def _parse_atom(rule: str, spec: Any) -> Atom:
+    if not isinstance(spec, Mapping):
+        raise ConstraintError(rule, f"Rule `{rule}`: a guard atom is an object with `field` and `op`.")
+    refusal = _role_refused(rule, spec)
+    if refusal is not None:
+        raise refusal
+    extra = sorted(str(k) for k in spec if k not in ("field", "op", "value"))
+    if extra:
+        safe = extra[0] if _NAME_RE.fullmatch(extra[0]) else "?"
+        raise ConstraintError(rule, f"Rule `{rule}`: `{safe}` is not a key of a guard atom.")
+    field = _key(rule, "field", spec.get("field"))
+    op = spec.get("op")
+    if not isinstance(op, str) or op not in GUARD_OPS:
+        raise ConstraintError(rule, f"Rule `{rule}`: a guard `op` is {', '.join(GUARD_OPS)}.")
+    if op in _NO_VALUE_OPS:
+        if "value" in spec:
+            raise ConstraintError(rule, f"Rule `{rule}`: op `{op}` takes no `value`.")
+        return Atom(field, op)
+    if "value" not in spec:
+        raise ConstraintError(rule, f"Rule `{rule}`: op `{op}` needs a `value`.")
+    value = spec["value"]
+    if op == "in":
+        if not isinstance(value, list) or not 1 <= len(value) <= MAX_GUARD_IN_VALUES:
+            raise ConstraintError(
+                rule, f"Rule `{rule}`: op `in` takes a list of 1 to {MAX_GUARD_IN_VALUES} values.")
+        return Atom(field, op, tuple(_atom_scalar(rule, v) for v in value))
+    return Atom(field, op, _atom_scalar(rule, value))
+
+
+def _parse_guard(rule: str, value: Any) -> tuple[Atom, ...]:
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_GUARD_ATOMS:
+        raise ConstraintError(
+            rule, f"Rule `{rule}`: a `guard` is a list of 1 to {MAX_GUARD_ATOMS} atoms.")
+    return tuple(_parse_atom(rule, a) for a in value)
+
+
+def _parse_move(rule: str, spec: Any) -> Move:
+    if not isinstance(spec, Mapping):
+        raise ConstraintError(rule, f"Rule `{rule}`: a move is an object with `from` and `to`.")
+    refusal = _role_refused(rule, spec)
+    if refusal is not None:
+        raise refusal
+    extra = sorted(str(k) for k in spec if k not in ("from", "to", "guard"))
+    if extra:
+        safe = extra[0] if _NAME_RE.fullmatch(extra[0]) else "?"
+        raise ConstraintError(rule, f"Rule `{rule}`: `{safe}` is not a key of a move.")
+    origin, target = _state(rule, "from", spec.get("from")), _state(rule, "to", spec.get("to"))
+    if origin == target:
+        raise ConstraintError(rule, f"Rule `{rule}`: a move must change the state.")
+    guard = _parse_guard(rule, spec["guard"]) if "guard" in spec else ()
+    return Move(origin, target, guard)
+
+
+def _parse_machine(rule: str, spec: Mapping[str, Any], message: str | None) -> Rule:
+    field = _key(rule, "field", spec.get("field"))
+    initial = _state(rule, "initial", spec.get("initial"))
+    raw = spec.get("moves")
+    if not isinstance(raw, list) or not 1 <= len(raw) <= MAX_MOVES:
+        raise ConstraintError(rule, f"Rule `{rule}`: `moves` is a list of 1 to {MAX_MOVES} moves.")
+    moves = tuple(_parse_move(rule, m) for m in raw)
+    pairs = [(m.from_state, m.to_state) for m in moves]
+    if len(set(pairs)) != len(pairs):
+        raise ConstraintError(rule, f"Rule `{rule}`: a move is declared twice.")
+    return Rule(rule, STATE_MACHINE, message, field=field, initial=initial, moves=moves)
+
+
+_PARSERS = {RANGE: _parse_range, UNIQUE: _parse_unique, GROUP_SUM_MIN: _parse_group,
+            STATE_MACHINE: _parse_machine}
 assert tuple(_PARSERS) == RULE_KINDS, "each kind has one parser"
 
 
@@ -269,6 +438,13 @@ def parse_rules(specs: Any) -> tuple[Rule, ...]:
         if rule.name in seen:
             raise ConstraintError(rule.name, f"Rule `{rule.name}`: each rule name must be unique.")
         seen.add(rule.name)
+    machines: set[str] = set()
+    for rule in rules:
+        if rule.kind == STATE_MACHINE:
+            if rule.field in machines:
+                raise ConstraintError(
+                    rule.name, f"Rule `{rule.name}`: a field has one state machine.")
+            machines.add(str(rule.field))
     return rules
 
 
@@ -292,6 +468,71 @@ def _hot(rule: Rule, field: FieldSpec) -> None:
             rule.name, f"Rule `{rule.name}`: field `{field.key}` must be hot. Turn it hot first.")
 
 
+def _guard_ops() -> Mapping[str, frozenset[str]]:
+    """The ops of a guard atom for each field type: the table of C2a, with
+    ``not_empty`` beside ``is_empty``. A money field takes no guard yet. A
+    datetime orders as text would, which is wrong with a fraction of a second,
+    so it takes no order op."""
+    out: dict[str, frozenset[str]] = {}
+    for kind, ops in OPS_BY_TYPE.items():
+        if kind == "money":
+            continue
+        allowed = {op for op in ops if op in GUARD_OPS}
+        if kind == "datetime":
+            allowed -= _ORDER_OPS
+        if "is_empty" in allowed:
+            allowed.add("not_empty")
+        out[kind] = frozenset(allowed)
+    return out
+
+
+#: The closed table: the guard ops of each field type.
+GUARD_OPS_BY_TYPE: Mapping[str, frozenset[str]] = _guard_ops()
+
+
+def _fit_atom(rule: Rule, atom: Atom, by_key: Mapping[str, FieldSpec]) -> None:
+    field = by_key.get(atom.field)
+    if field is None:
+        raise ConstraintError(
+            rule.name, f"Rule `{rule.name}`: `{atom.field}` is not a field of this object.")
+    allowed = GUARD_OPS_BY_TYPE.get(field.type, frozenset())
+    if field.many or atom.op not in allowed:
+        raise ConstraintError(
+            rule.name, f"Rule `{rule.name}`: a guard cannot test field `{field.key}` with op `{atom.op}`.")
+    if atom.op in _NO_VALUE_OPS:
+        return
+    for value in atom.value if atom.op == "in" else (atom.value,):
+        try:
+            same = check_value(field, value) == value
+        except FieldError:
+            same = False
+        if not same:
+            raise ConstraintError(
+                rule.name, f"Rule `{rule.name}`: a guard value for field `{field.key}` must be a "
+                "value of that field, written as the store keeps it.")
+
+
+def _fit_machine(rule: Rule, by_key: Mapping[str, FieldSpec]) -> None:
+    field = by_key.get(str(rule.field))
+    if field is None:
+        raise ConstraintError(
+            rule.name, f"Rule `{rule.name}`: `{rule.field}` is not a field of this object.")
+    if field.type != "select" or field.many:
+        raise ConstraintError(
+            rule.name, f"Rule `{rule.name}`: field `{field.key}` must be one select.")
+    options = set(field.options or ())
+    states = [("initial", rule.initial)]
+    for i, move in enumerate(rule.moves):
+        states += [(f"moves[{i}].from", move.from_state), (f"moves[{i}].to", move.to_state)]
+    for label, state in states:
+        if state not in options:
+            raise ConstraintError(
+                rule.name, f"Rule `{rule.name}`: `{label}` is not an option of field `{field.key}`.")
+    for move in rule.moves:
+        for atom in move.guard:
+            _fit_atom(rule, atom, by_key)
+
+
 def check_rules_fit(rules: Sequence[Rule], fields: Sequence[FieldSpec]) -> None:
     """Refuse a rule that does not fit the *fields* of the object.
 
@@ -308,6 +549,9 @@ def check_rules_fit(rules: Sequence[Rule], fields: Sequence[FieldSpec]) -> None:
         return field
 
     for rule in rules:
+        if rule.kind == STATE_MACHINE:
+            _fit_machine(rule, by_key)
+            continue
         if rule.field is not None:
             field = named(rule, rule.field)
             _number_field(rule, field)
@@ -348,6 +592,12 @@ def _stored_rule(item: Any) -> Rule:
     name = item.get("name") if isinstance(item, Mapping) else None
     if not isinstance(name, str) or not name:
         return Rule("?", MALFORMED)
+    if item.get("kind") == STATE_MACHINE:
+        # The one parser reads it. A role atom or a bad shape fails closed.
+        try:
+            return parse_rule(item)
+        except ConstraintError:
+            return Rule(name, MALFORMED)
     if not _can_run(item):
         return Rule(name, MALFORMED)
     keys = item.get("fields") if item.get("kind") == UNIQUE else item.get("group_by")
@@ -449,7 +699,7 @@ def touched_keys(rule: Rule, before: Mapping[str, Any] | None,
     key only: a delete or an old key cannot add a clash, so a check there
     would only stop the repair of old duplicates. C6 and C7 reuse this hook.
     """
-    if rule.kind == RANGE:
+    if rule.kind in (RANGE, STATE_MACHINE):
         return []
     states: Collection[Mapping[str, Any] | None] = (
         (after,) if rule.kind == UNIQUE else (before, after))
@@ -495,3 +745,104 @@ def add_change(rule: Rule, key: tuple[Any, ...], before: Mapping[str, Any] | Non
 def key_filter(rule: Rule, key: tuple[Any, ...]) -> list[dict[str, Any]]:
     """The filter of the query grammar that finds the records of *key*."""
     return [{"field": k, "op": "eq", "value": v} for k, v in zip(rule.keys, key, strict=True)]
+
+
+# --- the state machine (C6) --------------------------------------------------
+
+
+def with_initial(rules: Sequence[Rule], data: Any) -> Any:
+    """The data of a create, with ``initial`` in each machine field that it
+    leaves out. Any other data comes back as it is."""
+    if not isinstance(data, Mapping):
+        return data
+    out: dict[str, Any] | None = None
+    for rule in rules:
+        if rule.kind == STATE_MACHINE and rule.field is not None and rule.field not in data:
+            out = dict(data) if out is None else out
+            out[rule.field] = rule.initial
+    return data if out is None else out
+
+
+def _atom_holds(atom: Atom, data: Mapping[str, Any]) -> bool:
+    """One atom against the merged record. An error of type fails closed."""
+    value = data.get(atom.field)
+    blank = is_blank(value)
+    if atom.op == "is_empty":
+        return blank
+    if atom.op == "not_empty":
+        return not blank
+    if blank:
+        return atom.op == "ne"
+    try:
+        if atom.op == "eq":
+            return bool(value == atom.value)
+        if atom.op == "ne":
+            return bool(value != atom.value)
+        if atom.op == "in":
+            return value in atom.value
+        if atom.op == "lt":
+            return bool(value < atom.value)
+        if atom.op == "lte":
+            return bool(value <= atom.value)
+        if atom.op == "gt":
+            return bool(value > atom.value)
+        if atom.op == "gte":
+            return bool(value >= atom.value)
+    except TypeError:
+        return False
+    return False
+
+
+def guard_holds(guard: Sequence[Atom], data: Mapping[str, Any]) -> bool:
+    """True when every atom holds on the merged record *data*."""
+    return all(_atom_holds(a, data) for a in guard)
+
+
+def _states(rule: Rule) -> set[str]:
+    """The states that the machine declares."""
+    return {str(rule.initial)} | {s for m in rule.moves for s in (m.from_state, m.to_state)}
+
+
+def _declared(rule: Rule, state: Any) -> str | None:
+    """*state* when the machine declares it, else None. A refusal names no other."""
+    return state if isinstance(state, str) and state in _states(rule) else None
+
+
+def _refuse_move(rule: Rule, object_name: str, old: Any, new: Any, why: str) -> MoveViolation:
+    return MoveViolation(
+        rule.name, object_name, _declared(rule, old), _declared(rule, new),
+        f"Rule `{rule.name}` of object `{object_name}`: {rule.message or why}")
+
+
+def check_move(rule: Rule, object_name: str, before: Mapping[str, Any] | None,
+               after: Mapping[str, Any] | None) -> None:
+    """Judge the net move of one record against the state machine *rule*.
+
+    *before* is the record before the batch (None for a create), and *after*
+    is the record after it (None for a delete). A delete is not a move. A
+    create must hold ``initial``. An unchanged state passes. A change needs a
+    declared move whose guard holds on *after*, the merged record. A cleared
+    state, and a state that is not a declared one, are refused.
+    """
+    if after is None:
+        return
+    key = str(rule.field)
+    new = after.get(key)
+    if before is None:
+        if new != rule.initial:
+            raise _refuse_move(
+                rule, object_name, None, new, f"a new record starts in `{rule.initial}`.")
+        return
+    old = before.get(key)
+    if old == new:
+        return
+    if is_blank(new):
+        raise _refuse_move(rule, object_name, old, None, f"`{key}` cannot be cleared.")
+    if _declared(rule, old) is None:
+        raise _refuse_move(rule, object_name, old, new, f"`{key}` holds a state that is not declared.")
+    for move in rule.moves:
+        if move.from_state == old and move.to_state == new:
+            if guard_holds(move.guard, after):
+                return
+            raise _refuse_move(rule, object_name, old, new, "the guard of this move does not hold.")
+    raise _refuse_move(rule, object_name, old, new, f"`{key}` cannot make this move.")

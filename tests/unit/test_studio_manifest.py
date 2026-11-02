@@ -143,13 +143,53 @@ def test_code_block_is_reserved_for_l1():
 
 @pytest.mark.parametrize(
     "key,slice_id",
-    [("rules", "C6"), ("state_machine", "C6"), ("states", "C6"), ("formula", "C7"), ("code", "L1")],
+    [("state_machine", "C6"), ("states", "C6"), ("formula", "C7"), ("code", "L1")],
 )
 def test_reserved_key(key, slice_id):
     d = doc()
     d[key] = []
     e = one(d, f"$.{key}", contains=slice_id)
     assert f"`{key}` is reserved for slice {slice_id} and v1 does not accept it" in e.message
+
+
+def test_top_level_rules_is_not_a_v1_key() -> None:
+    """C6 lifted `rules` as an object key. At the top it is an unknown key."""
+    d = doc()
+    d["rules"] = []
+    one(d, "$.rules", contains="not a v1 manifest key")
+
+
+_VISIT_MACHINE = {
+    "name": "visit_flow", "kind": "state_machine", "field": "status", "initial": "planned",
+    "moves": [{"from": "planned", "to": "on site"}, {"from": "on site", "to": "done"}],
+}
+
+
+def test_a_state_machine_validates_in_an_object() -> None:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["rules"] = [_VISIT_MACHINE]
+    assert validate_manifest(d) == []
+
+
+def test_a_rule_that_does_not_fit_gets_a_path() -> None:
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["rules"] = [{**_VISIT_MACHINE, "initial": "nope"}]
+    one(d, "$.objects[0].rules", contains="initial")
+
+
+def test_a_role_guard_in_a_manifest_waits_for_c8() -> None:
+    d = copy.deepcopy(EXAMPLE)
+    moves = [{"from": "planned", "to": "done", "role": "director"}]
+    d["objects"][0]["rules"] = [{**_VISIT_MACHINE, "moves": moves}]
+    one(d, "$.objects[0].rules", contains="C8")
+
+
+def test_the_manifest_rules_equal_the_store_rules() -> None:
+    """A5 passes the manifest list unchanged to `set_constraints`: the one parser."""
+    from acb_common.studio_rules import parse_rules
+
+    (rule,) = parse_rules([_VISIT_MACHINE])
+    assert rule.stored() == _VISIT_MACHINE
 
 
 @pytest.mark.parametrize("ftype", ["formula", "rollup"])
