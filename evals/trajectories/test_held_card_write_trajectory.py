@@ -1,4 +1,4 @@
-"""Golden trajectory: a chat that read mail still sets the reminder (RX-1, D150).
+"""Golden trajectory: a chat that read mail still sets the reminder (RX-1, D151).
 
 Owner report of 2026-11-01. In one chat the owner read mail, sent mail, and said
 "Remind me to call Rajendra". The chat refused, and it named a new chat. This
@@ -32,16 +32,16 @@ from orchestrator import _tool_injection as ti
 
 from tests.unit._egress_mark_store import install_memory_mark_store
 
-ORG = "aaaaaaaa-0000-0000-0000-0000000d0150"
-SESSION = "chat-d150"
+ORG = "aaaaaaaa-0000-0000-0000-0000000d0151"
+SESSION = "chat-d151"
 MEMBER = "jane@acme.test"
 REMIND = "remind me to call Rajendra at 5"
 
 
 def _ctx() -> dict[str, Any]:
-    return {"run_id": "r-d150", "session_id": SESSION, "agent_name": "orchestrator",
+    return {"run_id": "r-d151", "session_id": SESSION, "agent_name": "orchestrator",
             "member": MEMBER, "batch_thread": False, "no_egress": False,
-            "workspace_root": "/tmp/orch-d150", tp.PACK_RUN_KEY: "rk-d150"}
+            "workspace_root": "/tmp/orch-d151", tp.PACK_RUN_KEY: "rk-d151"}
 
 
 async def _mark_chat() -> None:

@@ -313,7 +313,7 @@ def test_the_open_world_tools_are_pinned_and_the_egress_set_is_the_rule() -> Non
     want = (EXPECTED_OPEN_WORLD | specialists | (eg.STORE_WRITES & set(names))) - eg.DELEGATION_TOOLS
     # EM-CR and H-374: the card-bound sends stay in a held run although they send.
     want -= set(eg.CARD_BOUND_SEND_TOOLS)
-    # RX-1 (D150): the listed writes stay, outside a covered chain. This frame
+    # RX-1 (D151): the listed writes stay, outside a covered chain. This frame
     # binds no chain. test_a_covered_parent_calls_crm_assistant binds one.
     want -= set(eg.HELD_CARD_WRITE_TOOLS)
     assert egress == want, (sorted(egress - want), sorted(want - egress))

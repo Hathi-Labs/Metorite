@@ -574,7 +574,7 @@ async def test_the_load_of_email_leaves_no_room_for_setup_and_the_next_turn_keep
     hand-off is open from then on (fix round 1). A mail tool runs, so ``email``
     is sticky. Turn 2: ``email`` is held, ``email-setup``
     cannot fit beside it, so the plan reaches no owner. The hand-off is open,
-    and the rules route the setup work to the email assistant. RX-1 (D150): the
+    and the rules route the setup work to the email assistant. RX-1 (D151): the
     run also offers ``email-setup``, because a load would move the sticky
     ``email`` out. Mutation: refuse the setup load with the old text, or keep the
     hand-off closed after it → the two texts point at each other → red. Mutation: reach the owner

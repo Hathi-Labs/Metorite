@@ -442,7 +442,7 @@ def _covered_chain(
     """True when a covered run is the run that starts now or a run above it.
 
     Each run boundary binds the answer as ``egress.COVERED_CHAIN_KEY``, beside
-    ``no_egress`` (RX-1, D150). The parent's key passes down, so a grandchild of
+    ``no_egress`` (RX-1, D151). The parent's key passes down, so a grandchild of
     a covered run keeps the answer. The cover of the parent is asked again, as
     in :func:`_delegated_no_egress`, and that can only add the key. The values
     come from the server-bound run, never from a request.
@@ -493,7 +493,7 @@ def _is_egress(tool: Any) -> bool:
 
 def _is_held_off(tool: Any) -> bool:
     """True for a Projects or CRM write that a held chat does not hold (RX-1,
-    D150): the rule ``acb_skills.egress.is_held_off_write``."""
+    D151): the rule ``acb_skills.egress.is_held_off_write``."""
     try:
         from acb_skills.egress import is_held_off_write
     except ImportError:  # no acb_skills means no pack tool was built at all
@@ -2985,7 +2985,7 @@ def _apply_no_egress(
 # 2. The scope of the owner, per call (``tool_packs.owner_scope``), as the
 #    OUTERMOST wrapper, with the permission gate inside it.
 # 3. The held set, at load: a held pack drops each tool that :func:`_is_egress`
-#    or :func:`_is_held_off` names (RX-1, D150). ⚠️ This drop is the ONLY
+#    or :func:`_is_held_off` names (RX-1, D151). ⚠️ This drop is the ONLY
 #    held-set control of a pack run. A pack run gets no
 #    ``EgressGuardProvider``, so no ``WithholdEgressTools`` and no
 #    ``RefuseEgressTools`` stand behind it (audit of 2026-10-26, §4.5).

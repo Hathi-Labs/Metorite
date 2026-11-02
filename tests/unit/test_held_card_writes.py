@@ -1,4 +1,4 @@
-"""RX-1 (D150): a held chat keeps the writes that a card shows.
+"""RX-1 (D151): a held chat keeps the writes that a card shows.
 
 Owner directive of 2026-11-01. In one chat the owner read mail, sent mail and
 then said "Remind me to call Rajendra". The chat answered that it held no tool
@@ -6,7 +6,7 @@ that creates anything, and that a new chat would do it. The rule of this slice:
 keep the guard on what leaves Metorite, and keep a write that the member
 approves on a server-built card.
 
-``project-docs/work_plan.md`` D150, ``one_assistant_context.md`` §4.2.3, and
+``project-docs/work_plan.md`` D151, ``one_assistant_context.md`` §4.2.3, and
 ``acb_skills.egress.HELD_CARD_WRITE_TOOLS``. This file is the table of the rule.
 Each case names, in its docstring, the mutation that turns it red (R7).
 
@@ -351,7 +351,7 @@ def _calls(fn: ast.AsyncFunctionDef, names: set[str]) -> list[int]:
 @pytest.mark.parametrize("name", sorted(KEPT_PROJECTS))
 def test_a_kept_projects_write_awaits_its_card_before_any_write(name: str) -> None:
     """Mutation: remove the card from a kept tool -> red. A tool with no card
-    is not on this list by the rule of D150."""
+    is not on this list by the rule of D151."""
     fn = _skill_functions()[name]
     doors = _calls(fn, _DOORS)
     assert doors, f"{name} shows no card"
@@ -491,7 +491,7 @@ def test_a_held_chat_drops_class_c_from_a_delegated_run(monkeypatch, projects_to
 
 @pytest.mark.parametrize("name", sorted(KEPT_CRM))
 def test_a_covered_chain_keeps_the_crm_writes_off(name: str, crm_tools) -> None:
-    """H-236 holds a covered run for the data of a sandboxed turn, and D150 speaks
+    """H-236 holds a covered run for the data of a sandboxed turn, and D151 speaks
     of a chat that read mail. So a run under a covered run holds no CRM write, as
     it did. ``test_a_covered_parent_calls_crm_assistant_and_the_writes_are_gone``
     proves it through the executor. Mutation: drop ``covered_chain`` from

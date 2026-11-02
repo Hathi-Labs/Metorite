@@ -5009,7 +5009,7 @@ Owner directive, 2026-10-31, in chat. It ends the trial that D143 point 2 opened
 5. **New work targets glass.** An agent no longer writes a classic fallback. An agent looks at each surface fresh, and tunes it for glass.
 6. **This closes D143 point 2, and it ends the exceptions to D69.1 and D69.3.** The look is one again, and `DESIGN_SYSTEM.md` §0 says so.
 
-### D150 — A held chat keeps writes that a card shows (2026-11-01)
+### D151 — A held chat keeps writes that a card shows (2026-11-01)
 
 Owner directive, 2026-11-01, in chat. Board: **WS-67**, slice RX-1, Metorite epic task 1402. It narrows what H-236 and EM-G11d hold in a chat that read outside mail. It reverses nothing in D85.
 
