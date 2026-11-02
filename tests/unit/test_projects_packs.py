@@ -66,9 +66,13 @@ from tests.unit.test_tool_packs_choice import (
 REPO = Path(__file__).resolve().parents[2]
 PA = "projects-assistant"
 PROJECTS_DIR = REPO / "apps" / "agents" / "agent-projects"
-SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "projects-reminders")
-SIZES = {"projects": 23, "projects-plan": 35, "projects-structure": 34, "projects-bulk": 22,
-         "projects-reminders": 9}
+SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "projects-reminders",
+         "projects-reports")
+#: After PJP-2 (project_planning.md section 3.3): the 11 report tools left plan, the 10 inbox,
+#: area and notification tools left structure for reminders. PJP-4 added update_tasks to
+#: bulk, and ALN-2a added the two decision tools to reminders.
+SIZES = {"projects": 23, "projects-plan": 24, "projects-structure": 24, "projects-bulk": 22,
+         "projects-reminders": 19, "projects-reports": 11}
 UUID = tc.UUID
 
 #: The nine tools that make ONE card for a batch, raised inside the tool body.
@@ -539,7 +543,7 @@ def test_the_core_rules_name_the_other_packs_and_no_tool_of_them() -> None:
     assert "call load_skill_tools with the pack that you need" not in rules.lower()
     for slug in SLUGS[1:]:
         assert tp.PACKS[slug].rules.count("Use them yourself.") == 1
-    assert max(len(tp.rules_for(slug)) for slug in SLUGS) < 3450  # OA-8g: was 3300; MT-1228: was 3400
+    assert max(len(tp.rules_for(slug)) for slug in SLUGS) < 3500  # OA-8g: was 3300; MT-1228: was 3400; PJP-2: was 3450
 
 
 # ── 7. A covered organization ───────────────────────────────────────────────
@@ -715,7 +719,7 @@ async def test_the_loader_adds_a_projects_pack_of_strict_function_tools(store) -
     with _in_run(loader):
         answer, passed = await _call(loader, "projects-plan", live)
     assert passed is False
-    assert answer.startswith("Loaded the Projects planning and reports tools (35 tools)"), answer
+    assert answer.startswith("Loaded the Projects planning tools (24 tools)"), answer
     assert "PROJECTS PLANNING TOOLS." in answer
     added = live[5:]
     assert [_name(t) for t in added] == list(_family("projects-plan"))
@@ -810,18 +814,24 @@ def test_the_core_rules_name_the_loader_while_the_owner_is_reached() -> None:
         assert tp._PROJECTS_ROUTE_LINE not in block, slug
 
 
-async def test_projects_is_not_reached_when_a_pack_cannot_fit(
-    store, agents,
-) -> None:
-    """``email`` is held, so ``projects-plan`` (35 tools) does not fit under
-    110 even with the specialist slot freed. The specialist and the hand-off
-    stay. Mutation: drop the cap from ``plan_loader`` -> the owner is reached
-    -> red."""
+async def test_projects_is_reached_while_email_is_held(store, agents) -> None:
+    """PJP-2 (project_planning.md section 3.3): ``email`` is held (base 87), and
+    the largest Projects pack is 24 tools, so 87 - 1 + 24 = 110 fits. The owner
+    is reached and the specialist leaves. Before PJP-2 plan (35 tools) did not
+    fit, and the hand-off stayed. Mutation: grow a pack past 24 tools -> the
+    owner is not reached -> red."""
     applied = await L._apply(agents, "check my inbox", allowed=PROJ | {"email"})
     assert applied is not None and applied.record.slugs == ("email",)
-    assert PA not in applied.record.via_loader
-    assert _specialist(agents[0])
-    assert tp.delegation_refusal(PA, {tp.PACKS_KEY: applied.record}) is None
+    assert PA in applied.record.via_loader
+    assert not _specialist(agents[0])
+
+
+def test_projects_is_not_reached_when_a_pack_cannot_fit() -> None:
+    """The cap still binds: at a current count of 90, the 24-tool pack does not
+    fit (90 - 1 + 24 = 113). Mutation: drop the cap from ``plan_loader`` -> the
+    owner is reached -> red."""
+    plan = tp.plan_loader(PROJ, ("email",), current=90, removable={PA: 1})
+    assert PA not in plan.via_loader
 
 
 async def test_a_refused_projects_load_opens_the_hand_off(
@@ -889,17 +899,16 @@ def test_there_are_compound_words_that_also_match_the_core_word() -> None:
 def test_a_compound_word_loads_its_specific_pack_at_the_measured_base(
     slug: str, word: str, orchestrator,
 ) -> None:
-    """The word also matches the core word, and the two cannot fit at the real
-    base (56). The specific pack takes the place of the core pack. Mutation:
-    drop ``replaces_core`` from the choice -> the core pack stays, the specific
-    pack is skipped, and its word loads nothing it names -> red."""
+    """The word also matches the core word. After PJP-2 the two fit at the
+    real base (56), so the core pack stays beside the specific pack (before,
+    plan and structure were too big and replaced it). Mutation: grow a pack
+    past the cap -> the core pack leaves -> red."""
     base = _real_base(orchestrator)
     n = len(_family("projects")) + len(_family(slug))
     choice = tp.choose(_surface_turn(f"Show the {word}"), allowed=EVERY, base_tools=base)
-    if base + n > tp.MAX_REQUEST_TOOLS:  # plan (35) and structure (34)
-        assert choice.slugs == (slug,), (word, choice)
-    else:  # bulk (28) fits beside the core pack at the real base
-        assert slug == "projects-bulk" and choice.slugs == ("projects", slug), (word, choice)
+    # PJP-2: every pack is 24 tools or fewer, so each fits beside the core pack at 56.
+    assert base + n <= tp.MAX_REQUEST_TOOLS, "no Projects pack is too big for the core"
+    assert choice.slugs == ("projects", slug), (word, choice)
 
 
 def test_a_capacity_question_on_the_projects_page_loads_the_planning_pack(
@@ -907,14 +916,15 @@ def test_a_capacity_question_on_the_projects_page_loads_the_planning_pack(
 ) -> None:
     """Surface ``projects`` loads the core pack. "team capacity" matches the
     planning pack. Both cannot fit at the real base, so the planning pack
-    stays. Mutation: drop ``replaces_core`` -> only the core pack loads and
-    the capacity tools are missing -> red."""
+    stays. PJP-2: the pack is 24 tools now, so both fit at the real base and
+    the core pack stays. Mutation: drop the planning words -> only the core
+    pack loads and the capacity tools are missing -> red."""
     base = _real_base(orchestrator)
     for surface in ("projects", "tasks", "calendar"):
         choice = tp.choose(
             _surface_turn("Who has spare team capacity?", surface),
             allowed=EVERY, base_tools=base)
-        assert choice.slugs == ("projects-plan",), (surface, choice)
+        assert choice.slugs == ("projects", "projects-plan"), (surface, choice)
     only = tp.choose(_surface_turn("", "projects"), allowed=EVERY, base_tools=base)
     assert only.slugs == ("projects",), "the surface alone still loads the core pack"
 
@@ -942,14 +952,17 @@ async def test_an_access_request_on_the_projects_page_keeps_the_specialist(
     store, agents,
 ) -> None:
     """"Grant Priya access to this project" on /projects loads the core pack.
-    The structure pack cannot join it (113 tools), so the specialist tool
-    stays, the persona keeps its line, and the rules route the work to
-    ``call_agent``. Mutation: drop ``_specialist_leaves`` from
+    PJP-2: the packs fit now, but the production ``TOOL_PACKS`` list lacks
+    ``projects-reports`` until the owner adds it. ``plan_loader`` needs EVERY
+    pack of the owner in the list, so the owner is not reached. The
+    specialist tool stays, the persona keeps its line, and the rules route the
+    work to ``call_agent``. Mutation: drop ``_specialist_leaves`` from
     ``PackRun.of`` -> the specialist leaves and the access work has no tool
     and no path -> red."""
     persona = agents[0].default_options["instructions"]
     applied = await _apply_on(
-        agents, "Grant Priya access to this project", "projects", PROJ)
+        agents, "Grant Priya access to this project", "projects",
+        PROJ - {"projects-reports"})
     assert applied is not None and applied.record.slugs == ("projects",)
     assert applied.record.replaced == frozenset() and applied.record.via_loader == frozenset()
     assert _specialist(agents[0]), "the specialist stays"
@@ -960,6 +973,55 @@ async def test_an_access_request_on_the_projects_page_keeps_the_specialist(
     assert "call_agent" in tp._PROJECTS_ROUTE_LINE and PA in tp._PROJECTS_ROUTE_LINE
     with L._in_run(applied):
         assert tp.delegation_refusal(PA) is None
+
+
+async def test_an_access_request_reaches_the_owner_once_the_flag_line_has_every_pack(
+    store, agents,
+) -> None:
+    """The same request with the full list (PJP-2 adds ``projects-reports``):
+    the core pack loads, the owner is reached through the loader, and the
+    specialist leaves. Mutation: drop ``via_loader`` from the plan -> the
+    specialist stays and the model hands off -> red."""
+    applied = await _apply_on(
+        agents, "Grant Priya access to this project", "projects", PROJ)
+    assert applied is not None and applied.record.slugs == ("projects",)
+    assert applied.record.via_loader == {PA}
+    assert not _specialist(agents[0]), "the hand-off leaves"
+
+
+# ── PJP-2 fence (project_planning.md section 10) ─────────────────────────────
+
+#: Production's TOOL_PACKS on 2026-11-02 (owner-only, work_plan.md section 6 D4).
+PRODUCTION_PACKS = frozenset({
+    "email", "email-setup", "crm-records", "projects", "projects-plan",
+    "projects-structure", "projects-bulk", "projects-reminders",
+})
+
+
+def test_each_other_projects_pack_fits_beside_the_core_pack_and_the_owner_is_reached() -> None:
+    """R7 fence of PJP-2. At the real base (56) with the core pack held (79),
+    each other Projects pack is 31 tools or fewer (79 - 1 + 31 = 109), and
+    ``plan_loader`` puts the owner in ``via_loader``. Mutation: add tools to a
+    pack until it holds 33 -> red."""
+    core = len(_family("projects"))
+    assert 56 + core == 79
+    for slug in SLUGS[1:]:
+        assert len(_family(slug)) <= 31, slug
+        assert 79 - 1 + len(_family(slug)) <= tp.MAX_REQUEST_TOOLS, slug
+    plan = tp.plan_loader(
+        PRODUCTION_PACKS | {"projects-reports"}, ("projects",), current=79,
+        removable={PA: 1})
+    assert PA in plan.via_loader
+
+
+def test_the_owner_is_not_reached_until_projects_reports_is_in_the_flag_line() -> None:
+    """The flag line matters: ``plan_loader`` needs EVERY pack of the owner in
+    the allow list. Today's production list lacks ``projects-reports``, so the
+    hand-off stays until the owner adds the slug. Mutation: let ``plan_loader``
+    skip a missing pack -> the owner is reached with a pack the run cannot
+    load -> red."""
+    plan = tp.plan_loader(PRODUCTION_PACKS, ("projects",), current=79, removable={PA: 1})
+    assert PA not in plan.via_loader
 
 
 async def test_the_specialist_leaves_when_the_run_holds_every_projects_pack() -> None:
@@ -1038,9 +1100,10 @@ def test_a_mixed_email_turn_keeps_email_and_the_core_pack_at_the_measured_base(
 def test_a_dropped_core_pack_is_recorded_in_skipped() -> None:
     """Where the drop is valid it shows in ``Choice.skipped``. Mutation: do
     not record it -> no log line shows the drop -> red."""
+    # PJP-2: at base 56 the two fit, so the drop needs a bigger base (79 + 24 > 110 at 75).
     choice = tp.choose(
         _surface_turn("Who has spare team capacity?", "projects"),
-        allowed=EVERY, base_tools=56)
+        allowed=EVERY, base_tools=75)
     assert choice.slugs == ("projects-plan",) and "projects" in choice.skipped
 
 
@@ -1073,9 +1136,12 @@ def test_the_reminder_tools_are_in_one_pack_that_the_words_load() -> None:
     seven = {"list_reminders", "promote_reminder", "reopen_reminder",
              "reschedule_reminder", "resolve_reminder", "set_reminder",
              "update_reminder"}
-    # WS-ALN ALN-2a: the other Projects packs are full, so the two tools of a
-    # decision sit here too.
-    assert set(_family("projects-reminders")) == seven | {"answer_decision", "my_decisions"}
+    # WS-ALN ALN-2a: the two tools of a decision sit here too.
+    organising = {"capture_intake", "intake_queue", "triage_intake", "create_area",
+                  "delete_area", "rename_area", "my_areas", "my_contexts",
+                  "notifications", "mark_notifications_read"}  # PJP-2: moved from structure
+    assert set(_family("projects-reminders")) == seven | organising | {"answer_decision", "my_decisions"}
+    assert not organising & set(_family("projects-structure"))
     assert not seven & set(_family("projects-bulk"))
     assert not seven & set(_family("projects"))
 

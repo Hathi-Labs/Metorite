@@ -50,7 +50,7 @@ PA = "projects-assistant"
 EA = "email-assistant"
 CRM = "crm-assistant"
 PROJ = frozenset(("projects", "projects-plan", "projects-structure", "projects-bulk",
-                  "projects-reminders"))
+                  "projects-reminders"))  # PJP-2: production's list, with no projects-reports
 UUID = "0b0b0b0b-0000-4000-8000-0000000000b1"
 #: The turn of OA-8e run 4 on the Tasks page. The surface loads the core
 #: pack, and the plan and structure packs cannot join it, so the specialist
@@ -360,16 +360,19 @@ def test_the_chat_file_tools_equal_the_projects_chat_file_writers() -> None:
 
 
 async def test_a_report_then_a_hand_off_stays_open(store, agents, monkeypatch) -> None:
-    """On a Projects page, "show the stuck tasks" loads ``projects-plan`` in
-    place of the core pack, and the specialist stays. The model draws
+    """On a Projects page, "show the status report" loads ``projects-reports``
+    beside the core pack (PJP-2: the report tools left the plan pack). The
+    reminders pack is out of the list, so the owner is not reached and the
+    specialist stays. The model draws
     ``status_report``, then routes a structure step to ``call_agent``. The
     report wrote only a chat file, so the hand-off runs, and nothing says
     that the report "already did this work". Mutation: drop the
     ``CHAT_FILE_TOOLS`` skip in ``pack_write_refusal`` -> red."""
     ran = L._fake_run_agent(monkeypatch)
     fake_gateway(monkeypatch, _gateway)
-    applied = await _apply_on(agents, "Show the stuck tasks", "projects")
-    assert applied is not None and applied.record.slugs == ("projects-plan",), "non-vacuity"
+    applied = await _apply_on(agents, "Show the status report", "projects",
+                              (PROJ | {"projects-reports"}) - {"projects-reminders"})
+    assert applied is not None and "projects-reports" in applied.record.slugs, "non-vacuity"
     assert PA not in applied.record.replaced
     assert ta.get_annotations("status_report")["read_only"] is False, "non-vacuity"
     with L._in_run(applied):
@@ -545,7 +548,7 @@ def test_an_older_refusal_keeps_its_text_and_the_new_one_only_adds() -> None:
     """Every answer of OA-7c and OA-7i stays as it was. Only where the old
     rule gives None may OA-8i refuse. Mutation: return the OA-8i answer first
     -> red."""
-    full = _record(tuple(PROJ))
+    full = _record(tp.owner_packs(PA))  # PJP-2: every pack, projects-reports too
     full.write_refusal(PA, "create_task")
     assert full.refusal(PA) == tp.PACKS["projects"].delegation_refusal
     reached = _record((), via=(PA,))

@@ -437,7 +437,7 @@ class WorkGateway:
         if rest == "my/inbox":
             rows = [t for t in TASKS if ME in t["assignees"] and not t.get("completed_at")]
             return {"rows": rows, "total": len(rows)}
-        if rest in ("my/reminders", "intake"):
+        if rest in ("my/reminders", "intake", "reports"):
             return {"rows": [], "total": 0}
         if rest == "my/areas":
             return {"rows": []}

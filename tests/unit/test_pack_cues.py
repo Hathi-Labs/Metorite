@@ -40,12 +40,13 @@ WHEN = {
     "projects": (
         "Load for tasks, projects and my work: find, create, update, assign and complete. "
         "Also for a question on a named project or task."),
-    "projects-plan": "Load for team load, capacity, status reports, a timeline, a plan from a goal, task links, repeats, new projects or export.",
-    "projects-structure": "Load to change statuses, task types, custom fields, tags, project access, saved views, areas, notifications or the intake queue.",
+    "projects-plan": "Load for team load, capacity, a timeline, a plan from a goal, task links, repeats or new projects.",
+    "projects-structure": "Load to change statuses, task types, custom fields, tags, project access or saved views.",
     "projects-bulk": "Load for many tasks at once, and to archive, delete, move, merge, attach a file, watch, nudge or undo a change.",
     "projects-reminders": (
-        'Load for "remind me", and to list, move, snooze or resolve a reminder. '
-        "A reminder is not a task."),
+        'Load for "remind me", and to list, move or resolve a reminder. '
+        "Also for my areas, task inbox and notifications."),
+    "projects-reports": "Load for a status report, saved reports, who gets a report and when, or to export tasks.",
     # STU-G1: the Studio builder pack.
     "studio": (
         "Load to build an app in AI Studio: draft, change and check its manifest, "
