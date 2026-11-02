@@ -740,6 +740,58 @@ def test_r8_a_parent_that_the_batch_writes_too_is_locked_once_and_computed_last(
     assert (got["name"], got["balance"], got["twice"]) == ("renamed", 5, 10)
 
 
+def test_r8_the_parents_of_a_batch_lock_in_ascending_record_id(world) -> None:
+    """Two batches that lock the same parents in opposite orders would deadlock.
+    The lock statements of one batch that touches three parents are recorded.
+    The writes name the parents in descending order, so only the sort is left."""
+    async def go() -> tuple[list[str], list[str]]:
+        acc, ent = await _objects(world.a, world.pkg_a, [BAL])
+        parents = [await _acct(world.a, acc) for _ in range(3)]
+        ids = sorted(p.id for p in parents)
+        locks: list[str] = []
+        eng = get_engine().sync_engine
+
+        def _on(conn: Any, cursor: Any, statement: str, params: Any, *a: Any) -> None:
+            if statement.rstrip().endswith("FOR NO KEY UPDATE") and "FROM studio_records" in statement:
+                got = params if isinstance(params, dict) else dict(zip(("oid", "rid", "pid"), params, strict=False))
+                locks.append(str(got.get("rid") or got.get("rid_1")))
+
+        async with tenant_session(world.a) as db:
+            event.listen(eng, "before_cursor_execute", _on)
+            try:
+                await store.apply_writes(db, ANA, package_id=ent.package_id, writes=[
+                    _entry(ent, rid, days=1) for rid in reversed(ids)])
+            finally:
+                event.remove(eng, "before_cursor_execute", _on)
+        return ids, [r for r in locks if r in ids]
+
+    ids, locked = _go(world, go)
+    assert locked == ids, (locked, ids)
+
+
+def test_r8_a_derived_write_checks_the_plain_fields_of_the_parent(world) -> None:
+    """`validate_record` owns the limit of 10^15 on a number. The stored parent
+    holds a plain number past it (raw SQL, as an old row could). The recompute
+    must refuse the batch with the field error, and the batch writes nothing.
+    A roll-up result is checked by `rollup_result`, so a result cannot show the
+    gap. The plain fields of the parent are what the derived write must check."""
+    fields = [*_ACCOUNT, {"key": "big", "type": "number"}]
+
+    async def go() -> tuple[BatchError, int, Any]:
+        acc, ent = await _objects(world.a, world.pkg_a, [BAL], account_fields=fields)
+        p = await _acct(world.a, acc)
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE studio_records SET data = data || "
+                           "CAST('{\"big\": 2000000000000000}' AS jsonb) "
+                           "WHERE id = CAST(:r AS uuid)"), {"r": p.id})
+        err = await _refused(world.a, ent, _entry(ent, p, days=5))
+        return err, _rows(world, ent), _data(world, p.id)["balance"]
+
+    err, rows, balance = _go(world, go)
+    assert isinstance(err.cause, sf.FieldError) and "big" in str(err.cause)
+    assert rows == 0 and balance == 0
+
+
 # -- two real connections -----------------------------------------------------------
 
 

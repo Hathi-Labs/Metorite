@@ -1926,3 +1926,25 @@ def test_a_hostile_where_value_never_reaches_the_rollup_sql() -> None:
     with pytest.raises(sq.QueryError):  # not an option of the field
         store.build_rollup(rule, _child_fields(), object_id=OID, package_id=PID,
                            parent_id=_PARENT_ID)
+
+
+def test_each_table_of_the_rollup_sql_names_the_org() -> None:
+    """RLS hides a missing bind from every R8 test, so the text is the fence.
+    Each alias of `studio_records` and `studio_record_hot` carries the org
+    predicate, for each aggregate, with and without `where`."""
+    fields = _child_fields()
+    specs = [_SUM, _rollup(name="c", agg="count", field=None),
+             _rollup(name="lo", agg="min", field="day", target="first_day"),
+             _rollup(name="hi", agg="max", field="day", target="first_day"),
+             _rollup(name="w", where=_APPROVED),
+             _rollup(name="wc", agg="count", field=None, where=_APPROVED)]
+    for rule in sr.parse_rules(specs):
+        sql = store.build_rollup(rule, fields, object_id=OID, package_id=PID,
+                                 parent_id=_PARENT_ID)[0]
+        aliases = _aliases(sql)
+        assert aliases, sql
+        for alias in aliases:
+            assert f"{alias}.{_OF_ORG}" in sql, (rule.name, alias, sql)
+        # every table that holds a row of a tenant is read through an alias
+        assert len(aliases) == len(re.findall(r"\bstudio_\w+\s+\w+", sql)), sql
+        assert sql.count(_OF_ORG) >= len(aliases), sql
