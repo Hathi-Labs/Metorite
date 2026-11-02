@@ -46,7 +46,10 @@ __all__ = [
     "enabled",
     "extract_text",
     "get_artifact",
+    "keep_in_session",
     "list_artifacts",
+    "move_in_session",
+    "purge_in_session",
     "register_in_session",
     "title_of",
     "trash_in_session",
@@ -328,13 +331,137 @@ def trash_in_session(session: Any, *, agent_name: str, instance: str, path: str)
         return 0
 
 
+# ── The delete of a chat (AM-10, §7.3, D162.8) ──────────────────────────────
+#
+# The blob store calls these inside the transaction of its own purge or keep
+# (``blob_store._sync_purge`` and ``_sync_keep``), so the registry and the
+# store change together or not at all. Unlike the register and the trash,
+# they run with the flag off too: a row with no bytes is a defect whatever
+# the flag says. *where* is the blob store's filter of a thread folder or of
+# one loose file, with ``{t}`` for the alias.
+
+#: The longest ``source_title`` the delete writes, the same as ``title``.
+_SOURCE_TITLE_MAX = 500
+
+
+def purge_in_session(
+    session: Any, *, instance: str, prefixes: tuple[str, ...],
+    paths: tuple[tuple[str, str], ...], kept: str,
+) -> int:
+    """Delete the rows of the files that a chat purge deletes (AM-10 item 5).
+
+    The same rows as the purge of ``agent_blob``: under each thread folder
+    of *prefixes*, of any agent, and at each ``(agent, path)`` of *paths*,
+    under *instance* and the older ``''`` key. A row in the kept folder
+    *kept* never goes. A share and a member overlay go by cascade. Returns
+    the rows deleted. It raises, so the purge fails as one.
+    """
+    from sqlalchemy import text
+
+    gone = 0
+    for prefix in prefixes:
+        gone += session.execute(
+            text(
+                "DELETE FROM artifacts WHERE instance IN (:i, '') "
+                "AND left(path, length(:p)) = :p AND left(path, length(:kept)) <> :kept"
+            ),
+            {"i": instance, "p": prefix, "kept": kept},
+        ).rowcount or 0
+    for agent, path in paths:
+        gone += session.execute(
+            text(
+                "DELETE FROM artifacts WHERE agent_name = :a AND instance IN (:i, '') "
+                "AND path = :p AND left(path, length(:kept)) <> :kept"
+            ),
+            {"a": agent, "i": instance, "p": path, "kept": kept},
+        ).rowcount or 0
+    return gone
+
+
+def move_in_session(session: Any, *, where: str, to: str, params: dict[str, Any]) -> int:
+    """Move the rows of *where* to the kept path *to* (AM-10 item 3).
+
+    *to* is the blob store's SQL for the new path, with ``{t}`` for the
+    alias. The id, the owner, the chat and every other column stay. A retry,
+    or a late file of the same name, can find a row that an earlier move put
+    at the kept path. Then the kept row takes the newer bytes, as
+    ``agent_blob`` does, and keeps its id, and the newer row goes. So the
+    move never collides on ``artifacts_store_key``. Returns the rows moved.
+    """
+    from sqlalchemy import text
+
+    session.execute(
+        text(
+            "UPDATE artifacts t SET sha256 = src.sha256, size = src.size, "
+            " mime_type = src.mime_type, kind = src.kind, search_tsv = src.search_tsv, "
+            " version = CASE WHEN t.sha256 = src.sha256 THEN t.version ELSE t.version + 1 END, "
+            " updated_at = now(), last_activity_at = now() "
+            f"FROM artifacts src WHERE {where.format(t='src')} AND src.status = 'active' "
+            "AND t.organization_id = src.organization_id AND t.agent_name = src.agent_name "
+            f"AND t.instance = src.instance AND t.path = {to.format(t='src')}"
+        ),
+        params,
+    )
+    session.execute(
+        text(
+            f"DELETE FROM artifacts src WHERE {where.format(t='src')} AND EXISTS ("
+            "SELECT 1 FROM artifacts t WHERE t.organization_id = src.organization_id "
+            "AND t.agent_name = src.agent_name AND t.instance = src.instance "
+            f"AND t.path = {to.format(t='src')})"
+        ),
+        params,
+    )
+    return session.execute(
+        text(
+            f"UPDATE artifacts SET path = {to.format(t='artifacts')}, updated_at = now() "
+            f"WHERE {where.format(t='artifacts')}"
+        ),
+        params,
+    ).rowcount or 0
+
+
+def keep_in_session(
+    session: Any, *, session_id: str, kept: str, owner_email: str,
+    source_title: str | None,
+) -> None:
+    """Name the deleted chat on its rows (AM-10, §7.3).
+
+    Each row in the kept folder *kept* belongs to *owner_email*, the member
+    who deleted the chat (``_may_delete_session``), and names the chat when
+    it named none. Each row of the chat that names no deleted chat yet gets
+    the chat's title and the time of the delete. So ``GET /artifacts`` with
+    the chat's id lists none of them for a new chat with that id. The rows
+    of an older chat with the same id keep their own title.
+    """
+    from sqlalchemy import text
+
+    title = (source_title or "").strip()[:_SOURCE_TITLE_MAX] or None
+    params = {"sid": session_id, "kp": kept, "owner": owner_email, "title": title}
+    session.execute(
+        text(
+            "UPDATE artifacts SET owner_email = :owner, "
+            " session_id = COALESCE(session_id, :sid), updated_at = now() "
+            "WHERE left(path, length(:kp)) = :kp"
+        ),
+        params,
+    )
+    session.execute(
+        text(
+            "UPDATE artifacts SET source_title = :title, source_deleted_at = now() "
+            "WHERE source_deleted_at IS NULL "
+            "AND (session_id = :sid OR left(path, length(:kp)) = :kp)"
+        ),
+        params,
+    )
+
+
 # ── Reads (AM-1 half of §5.2 and §8) ─────────────────────────────────────────
 
 _COLUMNS = (
     "id, owner_email, agent_name, instance, path, sha256, size, mime_type, "
     "version, kind, title, made_by, via, session_id, run_id, project_id, "
     "task_id, scope, labels, status, keep, expires_at, trashed_at, created_at, "
-    "updated_at, last_activity_at"
+    "updated_at, last_activity_at, source_title, source_deleted_at"
 )
 
 
@@ -354,6 +481,8 @@ def can_read(row: dict[str, Any], member_email: str) -> bool:
 def _row(r: Any) -> dict[str, Any]:
     d = dict(r._mapping) if hasattr(r, "_mapping") else dict(r)
     d["id"] = str(d["id"])
+    # AM-10: the chat the file came from is deleted. The title stays.
+    d["source_deleted"] = d.get("source_deleted_at") is not None
     for key in ("project_id", "task_id"):
         if d.get(key) is not None:
             d[key] = str(d[key])
@@ -409,7 +538,9 @@ async def list_artifacts(
         where.append("via = :via")
         params["via"] = via[:80]
     if session_id:
-        where.append("session_id = :sid")
+        # AM-10: a file of a DELETED chat with this id is not this chat's. A
+        # client chooses a chat's id, so a new chat can reuse an old id.
+        where.append("session_id = :sid AND source_deleted_at IS NULL")
         params["sid"] = session_id[:200]
     if scope in ("personal", "project", "org"):
         where.append("scope = :scope")

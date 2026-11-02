@@ -66,6 +66,8 @@ from pathlib import Path
 
 __all__ = [
     "AGENT_NAME_RE",
+    "KEPT_DIR",
+    "KEPT_PREFIX",
     "RUN_DATA_DIR",
     "SKILLS_REL",
     "SKILL_AUTHOR_MARKER",
@@ -85,11 +87,13 @@ __all__ = [
     "clone_root",
     "ensure_state_dir",
     "instance_slug",
+    "is_kept_rel",
     "is_loose_rel",
     "is_other_thread_rel",
     "is_tenant_instance",
     "is_thread_slug",
     "is_valid_agent_name",
+    "kept_rel",
     "own_skill_names",
     "refused_write",
     "require_agent_name",
@@ -368,13 +372,87 @@ def run_data_rel(organization_id: object, thread_id: object) -> str:
     return f"{RUN_DATA_DIR}/{instance_slug(org)}/{thread_slug(thread_id)}"
 
 
+# ── The kept folder: the files of a deleted chat (WS-60 AM-10, D162.8) ──────
+#
+# A client chooses a chat's id, so a deleted chat's thread folders must leave
+# the reach of a new chat with the same id (H-227). With the artifact registry
+# on, the delete MOVES them to ``outputs/.kept/<kept id>/``, and the library
+# reads them through the registry. :func:`kept_rel` is the one layout. The
+# kept id names the chat, so the thread slug drops out of the path:
+#
+# =========================  =========================================
+# Path in the working dir    Kept path
+# =========================  =========================================
+# ``inputs/<slug>/a.pdf``    ``outputs/.kept/<id>/inputs/a.pdf``
+# ``outputs/<slug>/a.md``    ``outputs/.kept/<id>/outputs/a.md``
+# ``outputs/a.md`` (loose)   ``outputs/.kept/<id>/loose/outputs/a.md``
+# =========================  =========================================
+#
+# A loose file keeps its own head under ``loose/``, so it never takes the
+# name of a thread file. The path stays short, because a Windows dev box
+# refuses a path of 260 characters or more.
+#
+# ⚠️ No thread slug can be ``.kept``: :func:`instance_slug` strips a leading
+# dot, and :data:`_THREAD_SLUG_RE` needs a letter or a digit first. The name
+# starts with a dot, so :func:`is_blocked_rel` refuses it in every reader, the
+# tree walks prune it, and ``TenantFileStore`` refuses a dot part.
+# :func:`is_other_thread_rel` names it another chat's folder for every caller.
+
+#: The folder under ``outputs/`` that holds the kept files of deleted chats.
+KEPT_DIR = ".kept"
+#: The path prefix of every kept file. ``acb_memory.blob_store`` keeps a copy
+#: of it for its SQL, and ``tests/unit/test_am10_kept_chat_files.py`` checks
+#: that the two agree.
+KEPT_PREFIX = f"outputs/{KEPT_DIR}/"
+
+_KEPT_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def kept_rel(kept_id: str, rel: str = "", slug: str | None = None) -> str:
+    """Where a deleted chat's file goes: the ONE layout of the kept folder.
+
+    *kept_id* is a lower-case UUID that the server made. *rel* is the file's
+    path in its working dir, and *slug* is the chat's thread slug. A path in
+    the chat's own thread folder, ``<head>/<slug>/...``, goes to
+    ``outputs/.kept/<id>/<head>/...``. The folder itself goes to
+    ``outputs/.kept/<id>/<head>``. Any other path goes to
+    ``outputs/.kept/<id>/loose/<rel>``. An empty *rel* gives the kept folder.
+    Raises ``ValueError`` for any other id, or for a *rel* that is kept already.
+    """
+    if not isinstance(kept_id, str) or not _KEPT_ID_RE.fullmatch(kept_id):
+        raise ValueError("not a kept id")
+    parts = _rel_parts(rel)
+    if is_kept_rel("/".join(parts)):
+        raise ValueError("the path is already kept")
+    if not parts:
+        tail: list[str] = []
+    elif slug and len(parts) >= 2 and parts[0] in THREAD_HEADS and parts[1] == slug:
+        tail = [parts[0], *parts[2:]]
+    else:
+        tail = ["loose", *parts]
+    return "/".join(["outputs", KEPT_DIR, kept_id, *tail])
+
+
+def is_kept_rel(rel: str) -> bool:
+    """True when *rel* lies in the kept folder, ``outputs/.kept/``."""
+    parts = _rel_parts(rel)
+    return (
+        len(parts) >= 2 and parts[0].lower() == "outputs"
+        and parts[1].lower() == KEPT_DIR
+    )
+
+
 def is_other_thread_rel(rel: str, own_slug: str | None) -> bool:
     """True when *rel* lies in the folder of a thread that is not *own_slug*.
 
     The ONE rule for "another chat's folder": its output folder (§16.3) and,
     since H-227, its upload folder, ``inputs/<thread slug>/``. The session
     routes, ``write_artifact``, ``share_artifact`` and ``save_note`` all ask it.
+    The kept folder of deleted chats (:func:`is_kept_rel`, AM-10) is another
+    chat's folder for every session.
     """
+    if is_kept_rel(rel):
+        return True
     parts = _rel_parts(rel)
     return (
         len(parts) >= 2 and parts[0] in THREAD_HEADS

@@ -108,6 +108,28 @@ def _caller_tenant(organization_id: str | None) -> str | None:
 # Internal sync core (runs in a thread; each helper opens its own session)
 # ---------------------------------------------------------------------------
 
+#: Upsert the current content of one file. :func:`_sync_put` and the kept
+#: packages of :func:`_sync_keep` run it.
+_PUT_BLOB_SQL = (
+    "INSERT INTO agent_blob "
+    "(agent_name, instance, path, folder, content, sha256, size, "
+    " mime_type, updated_at) "
+    "VALUES (:a, :i, :p, :f, :c, :sha, :sz, :m, now()) "
+    "ON CONFLICT (agent_name, instance, path) DO UPDATE SET "
+    "content = EXCLUDED.content, sha256 = EXCLUDED.sha256, "
+    "size = EXCLUDED.size, mime_type = EXCLUDED.mime_type, "
+    "updated_at = now()"
+)
+#: Append one version-history row, deduped per instance, so two people who
+#: write byte-identical content each keep their own provenance.
+_PUT_HISTORY_SQL = (
+    "INSERT INTO agent_file_history "
+    "(agent_name, instance, path, folder, sha256, size, mime_type, "
+    " action, run_id, session_id, actor) "
+    "VALUES (:a, :i, :p, :f, :sha, :sz, :m, :act, :rid, :sid, :actor) "
+    "ON CONFLICT (agent_name, instance, path, sha256, action) DO NOTHING"
+)
+
 
 def _sync_put(
     agent_name: str,
@@ -134,29 +156,14 @@ def _sync_put(
     with tenant_session(organization_id) as s:
         # Upsert current content.
         s.execute(
-            text(
-                "INSERT INTO agent_blob "
-                "(agent_name, instance, path, folder, content, sha256, size, "
-                " mime_type, updated_at) "
-                "VALUES (:a, :i, :p, :f, :c, :sha, :sz, :m, now()) "
-                "ON CONFLICT (agent_name, instance, path) DO UPDATE SET "
-                "content = EXCLUDED.content, sha256 = EXCLUDED.sha256, "
-                "size = EXCLUDED.size, mime_type = EXCLUDED.mime_type, "
-                "updated_at = now()"
-            ),
+            text(_PUT_BLOB_SQL),
             {"a": agent_name, "i": instance, "p": path, "f": folder, "c": data,
              "sha": sha, "sz": size, "m": mime_type},
         )
         # Append a version-history row (deduped per instance, so two people
         # writing byte-identical content each keep their own provenance).
         s.execute(
-            text(
-                "INSERT INTO agent_file_history "
-                "(agent_name, instance, path, folder, sha256, size, mime_type, "
-                " action, run_id, session_id, actor) "
-                "VALUES (:a, :i, :p, :f, :sha, :sz, :m, :act, :rid, :sid, :actor) "
-                "ON CONFLICT (agent_name, instance, path, sha256, action) DO NOTHING"
-            ),
+            text(_PUT_HISTORY_SQL),
             {"a": agent_name, "i": instance, "p": path, "f": folder, "sha": sha,
              "sz": size, "m": mime_type, "act": action, "rid": run_id,
              "sid": session_id, "actor": actor},
@@ -294,7 +301,22 @@ def _sync_history(
     ]
 
 
+#: A row under ``inputs/`` or ``outputs/``, the folders a chat writes. (The
+#: "kept" of this name is the three folders that the store keeps. It is NOT
+#: the kept folder of AM-10 below.)
 _IN_KEPT_TREE = "(left(path, 7) = 'inputs/' OR left(path, 8) = 'outputs/')"
+
+#: The kept folder of deleted chats (WS-60 AM-10, D162.8). It is a copy of
+#: ``acb_skills.agent_paths.KEPT_PREFIX``, because this package sits below
+#: acb_skills. ``tests/unit/test_am10_kept_chat_files.py`` checks that the
+#: two agree.
+KEPT_PREFIX = "outputs/.kept/"
+
+#: A row outside the kept folder. Bind ``:kept`` to :data:`KEPT_PREFIX`. A
+#: kept row keeps the session id of its deleted chat, so the purge and
+#: :func:`session_paths` must never reach it. Without this, a new chat with
+#: the same id would delete the kept files (AM-10 item 4).
+_NOT_KEPT = "left(path, length(:kept)) <> :kept"
 
 #: A row that a run with no chat wrote, which no chat may claim or purge
 #: (H-227, PR #616). Two forms. Since H-227 the actor is ``batch``. Before
@@ -306,6 +328,13 @@ _RUN_ROW = (
     "(actor = 'batch' OR (actor = 'agent' AND coalesce(run_id, '') <> '' "
     "AND session_id = agent_name || ':' || run_id))"
 )
+
+#: The rows of a thread folder (``:p``) or of one loose file (``:a``, ``:p``),
+#: under the instance ``:i`` or the older ``''`` key. ``{t}`` is the alias.
+#: left() and not LIKE: a slug may hold '_', which LIKE reads as any one
+#: character.
+_UNDER_PREFIX = "{t}.instance IN (:i, '') AND left({t}.path, length(:p)) = :p"
+_AT_PATH = "{t}.agent_name = :a AND {t}.instance IN (:i, '') AND {t}.path = :p"
 
 
 def _sync_session_paths(
@@ -319,9 +348,10 @@ def _sync_session_paths(
             text(
                 "SELECT DISTINCT agent_name, path FROM agent_file_history "
                 "WHERE session_id = :sid AND instance IN (:i, '') "
-                f"AND action <> 'delete' AND NOT {_RUN_ROW} AND {_IN_KEPT_TREE}"
+                f"AND action <> 'delete' AND NOT {_RUN_ROW} AND {_IN_KEPT_TREE} "
+                f"AND {_NOT_KEPT}"
             ),
-            {"sid": session_id, "i": instance},
+            {"sid": session_id, "i": instance, "kept": KEPT_PREFIX},
         ).fetchall()
     return [(str(r[0]), str(r[1])) for r in rows]
 
@@ -334,38 +364,170 @@ def _sync_purge(
     from acb_graph import tenant_session
     from sqlalchemy import text
 
+    from acb_memory import artifacts as _artifacts
+
     gone = 0
     with tenant_session(organization_id) as s:
         for prefix in prefixes:
-            # left() and not LIKE: a slug may hold '_', which LIKE reads as
-            # any one character.
             for table in ("agent_blob", "agent_file_history"):
                 gone += s.execute(
                     text(
-                        f"DELETE FROM {table} WHERE instance IN (:i, '') "
-                        "AND left(path, length(:p)) = :p"
+                        f"DELETE FROM {table} WHERE {_UNDER_PREFIX.format(t=table)} "
+                        f"AND {_NOT_KEPT}"
                     ),
-                    {"i": instance, "p": prefix},
+                    {"i": instance, "p": prefix, "kept": KEPT_PREFIX},
                 ).rowcount or 0
         for agent, path in paths:
             for table in ("agent_blob", "agent_file_history"):
                 gone += s.execute(
                     text(
-                        f"DELETE FROM {table} WHERE agent_name = :a "
-                        "AND instance IN (:i, '') AND path = :p"
+                        f"DELETE FROM {table} WHERE {_AT_PATH.format(t=table)} "
+                        f"AND {_NOT_KEPT}"
                     ),
-                    {"a": agent, "i": instance, "p": path},
+                    {"a": agent, "i": instance, "p": path, "kept": KEPT_PREFIX},
                 ).rowcount or 0
         if session_id:
             gone += s.execute(
                 text(
                     "DELETE FROM agent_file_history WHERE session_id = :sid "
-                    f"AND NOT {_RUN_ROW} AND instance IN (:i, '') AND {_IN_KEPT_TREE}"
+                    f"AND NOT {_RUN_ROW} AND instance IN (:i, '') AND {_IN_KEPT_TREE} "
+                    f"AND {_NOT_KEPT}"
                 ),
-                {"sid": session_id, "i": instance},
+                {"sid": session_id, "i": instance, "kept": KEPT_PREFIX},
             ).rowcount or 0
+        # AM-10 item 5: the registry rows of the same paths go in the same
+        # transaction, so no `artifacts` row is left with no bytes.
+        gone += _artifacts.purge_in_session(
+            s, instance=instance, prefixes=prefixes, paths=paths,
+            kept=KEPT_PREFIX,
+        )
         s.commit()
     return gone
+
+
+#: The new path of a moved row. ``:dst`` is the caller's kept path. A thread
+#: folder (:data:`_UNDER_PREFIX`) keeps what lies below ``:p``, and a loose
+#: file (:data:`_AT_PATH`) takes ``:dst`` itself. ``{t}`` is the alias.
+_PREFIX_TO = ":dst || substr({t}.path, length(:p) + 1)"
+_PATH_TO = "CAST(:dst AS text)"
+
+
+def _move_rows(s: Any, *, where: str, to: str, params: dict) -> int:
+    """Move the ``agent_blob`` and ``agent_file_history`` rows of *where* to
+    the path *to*. The bytes and the hashes do not change.
+
+    A retry, or a late file of the same name, can meet a row that an earlier
+    move put at the kept path. So each table first drops the row that the
+    move would collide with. The newer bytes win in ``agent_blob``. In
+    ``agent_file_history`` a version that is already kept does not move twice.
+    """
+    from sqlalchemy import text
+
+    moved = 0
+    s.execute(text(
+        f"DELETE FROM agent_blob t USING agent_blob src WHERE {where.format(t='src')} "
+        "AND t.agent_name = src.agent_name AND t.instance = src.instance "
+        f"AND t.path = {to.format(t='src')}"), params)
+    moved += s.execute(text(
+        f"UPDATE agent_blob SET path = {to.format(t='agent_blob')}, folder = 'outputs', "
+        f"updated_at = now() WHERE {where.format(t='agent_blob')}"), params).rowcount or 0
+    s.execute(text(
+        f"DELETE FROM agent_file_history src WHERE {where.format(t='src')} AND EXISTS ("
+        "SELECT 1 FROM agent_file_history t WHERE t.agent_name = src.agent_name "
+        f"AND t.instance = src.instance AND t.path = {to.format(t='src')} "
+        "AND t.sha256 = src.sha256 AND t.action = src.action)"), params)
+    moved += s.execute(text(
+        f"UPDATE agent_file_history SET path = {to.format(t='agent_file_history')}, "
+        f"folder = 'outputs' WHERE {where.format(t='agent_file_history')}"),
+        params).rowcount or 0
+    return moved
+
+
+@dataclass(frozen=True)
+class KeptPackage:
+    """A zip of ``package_artifacts`` that a chat delete keeps (AM-10).
+
+    A zip lives on disk only, so the delete stores it at its kept *path*,
+    under the store key of the chat's own working dir.
+    """
+
+    agent_name: str
+    instance: str
+    path: str
+    data: bytes
+    mime_type: str = "application/zip"
+
+
+def _sync_keep(
+    instance: str, organization_id: str | None, *,
+    kept: str, prefixes: tuple[tuple[str, str], ...],
+    paths: tuple[tuple[str, str, str], ...], packages: tuple[KeptPackage, ...],
+    session_id: str, owner_email: str, source_title: str | None,
+) -> int:
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    from acb_memory import artifacts as _artifacts
+
+    if not kept.startswith(KEPT_PREFIX) or not kept.endswith("/") or not owner_email:
+        raise ValueError("a keep needs a kept folder and an owner")
+    targets = [dst for _src, dst in prefixes] + [dst for _a, _src, dst in paths]
+    if any(not dst.startswith(kept) for dst in targets) or any(
+        src.startswith(KEPT_PREFIX) for src, _dst in prefixes
+    ) or any(src.startswith(KEPT_PREFIX) for _a, src, _dst in paths):
+        raise ValueError("a keep moves into its own kept folder, and from outside it")
+    moved = 0
+    with tenant_session(organization_id) as s:
+        for prefix, dst in prefixes:
+            params = {"i": instance, "p": prefix, "dst": dst}
+            moved += _move_rows(s, where=_UNDER_PREFIX, to=_PREFIX_TO, params=params)
+            moved += _artifacts.move_in_session(
+                s, where=_UNDER_PREFIX, to=_PREFIX_TO, params=params,
+            )
+        for agent, path, dst in paths:
+            params = {"a": agent, "i": instance, "p": path, "dst": dst}
+            moved += _move_rows(s, where=_AT_PATH, to=_PATH_TO, params=params)
+            moved += _artifacts.move_in_session(s, where=_AT_PATH, to=_PATH_TO, params=params)
+        for pkg in packages:
+            if not pkg.path.startswith(kept) or folder_of(pkg.path) != "outputs":
+                raise ValueError("a kept package lies outside its kept folder")
+            sha = _sha256(pkg.data)
+            s.execute(text(_PUT_BLOB_SQL), {
+                "a": pkg.agent_name, "i": pkg.instance, "p": pkg.path, "f": "outputs",
+                "c": pkg.data, "sha": sha, "sz": len(pkg.data), "m": pkg.mime_type,
+            })
+            s.execute(text(_PUT_HISTORY_SQL), {
+                "a": pkg.agent_name, "i": pkg.instance, "p": pkg.path, "f": "outputs",
+                "sha": sha, "sz": len(pkg.data), "m": pkg.mime_type, "act": "create",
+                "rid": None, "sid": session_id, "actor": "agent",
+            })
+            prov = _artifacts.Provenance(
+                owner_email=owner_email, made_by=pkg.agent_name, via="chat",
+                session_id=session_id,
+            )
+            if _artifacts.register_in_session(
+                s, agent_name=pkg.agent_name, instance=pkg.instance, path=pkg.path,
+                data=pkg.data, sha256=sha, mime_type=pkg.mime_type, prov=prov,
+            ) is None:
+                # Fail the whole move: the chat stays, and a retry stores it.
+                raise RuntimeError("a kept package has no registry row")
+            moved += 1
+        # The rest of the chat's history goes, as the purge removes it, so no
+        # new chat with this id can claim a file through it. A kept row stays.
+        s.execute(
+            text(
+                "DELETE FROM agent_file_history WHERE session_id = :sid "
+                f"AND NOT {_RUN_ROW} AND instance IN (:i, '') AND {_IN_KEPT_TREE} "
+                f"AND {_NOT_KEPT}"
+            ),
+            {"sid": session_id, "i": instance, "kept": KEPT_PREFIX},
+        )
+        _artifacts.keep_in_session(
+            s, session_id=session_id, kept=kept, owner_email=owner_email,
+            source_title=source_title,
+        )
+        s.commit()
+    return moved
 
 
 # ---------------------------------------------------------------------------
@@ -526,9 +688,11 @@ async def purge_files(
     * every row at each ``(agent, path)`` of *paths* (the loose files the chat
       began);
     * every history row of *session_id* under ``inputs/`` or ``outputs/``,
-      except a row of a run with no chat (``_RUN_ROW``), which no chat wrote.
+      except a row of a run with no chat (``_RUN_ROW``), which no chat wrote;
+    * the ``artifacts`` rows of the same files (AM-10 item 5).
 
-    Unlike :func:`delete_file` it keeps no delete row: a chat id can come back
+    A row in the kept folder (:data:`KEPT_PREFIX`) never goes. Unlike
+    :func:`delete_file` it keeps no delete row: a chat id can come back
     from a client, and a row that names it would hand the next owner of the
     id its files. Returns the rows deleted. Raises on a database error, so
     the caller can log that the purge did not finish.
@@ -536,6 +700,44 @@ async def purge_files(
     return await asyncio.to_thread(
         _sync_purge, instance, _caller_tenant(organization_id),
         prefixes=tuple(prefixes), paths=tuple(paths), session_id=session_id,
+    )
+
+
+async def keep_files(
+    *, instance: str, kept: str, session_id: str, owner_email: str,
+    organization_id: str | None = None, source_title: str | None = None,
+    prefixes: tuple[tuple[str, str], ...] = (),
+    paths: tuple[tuple[str, str, str], ...] = (),
+    packages: tuple[KeptPackage, ...] = (),
+) -> int:
+    """Move the stored files of a deleted chat into its kept folder (AM-10).
+
+    The twin of :func:`purge_files`, for when the artifact registry is on.
+    *kept* is ``outputs/.kept/<kept id>/``, and the caller computes each
+    destination with ``acb_skills.agent_paths.kept_rel``, the one layout.
+    In one tenant and ONE transaction, under *instance* and the older ``''``
+    key:
+
+    * each ``(prefix, dst)`` of *prefixes*: every row under the thread folder
+      *prefix*, of any agent, moves to *dst* and keeps what lies below it;
+    * each ``(agent, path, dst)`` of *paths*: the rows of one loose file
+      move to *dst*;
+    * the rows are the ``agent_blob``, ``agent_file_history`` and
+      ``artifacts`` rows, with their bytes and their hashes. A retry and a
+      late file never collide on a store key;
+    * each zip of *packages* is stored and registered at its kept path;
+    * the chat's other history rows go, as in the purge;
+    * each ``artifacts`` row of the chat gets ``source_title`` and
+      ``source_deleted_at``, and each kept row belongs to *owner_email*.
+
+    Returns the rows moved. Raises on a database error, and then nothing
+    changed, so the caller keeps the chat.
+    """
+    return await asyncio.to_thread(
+        _sync_keep, instance, _caller_tenant(organization_id),
+        kept=kept, prefixes=tuple(prefixes), paths=tuple(paths),
+        packages=tuple(packages), session_id=session_id,
+        owner_email=owner_email, source_title=source_title,
     )
 
 

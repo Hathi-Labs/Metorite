@@ -49,6 +49,7 @@ __all__ = [
     "ensure_dir",
     "is_file",
     "list_dir",
+    "move_file",
     "open_read",
     "publish_bytes",
     "publish_stream",
@@ -548,6 +549,50 @@ def unlink(root: Path, rel: str) -> bool:
             if _stat.S_ISDIR(st.st_mode):
                 raise IsADirectoryError(rel)
             os.unlink(parts[-1], dir_fd=parent_fd)
+            return True
+    except FileNotFoundError:
+        return False
+
+
+def move_file(root: Path, src_rel: str, dst_rel: str) -> bool:
+    """Move the regular file ``root/src_rel`` to ``root/dst_rel``, in one rename.
+
+    Both paths stay beneath *root*. The parent dirs of *dst_rel* are made on
+    demand, and no link is followed on either side. A file at *dst_rel* is
+    replaced, so a second move of the same name finishes the first. A link,
+    a dir or a device at *src_rel* raises :class:`UnsafePath`, and nothing
+    moves. ``False`` when *src_rel* was absent. The chat delete of AM-10
+    moves a deleted chat's files with it.
+    """
+    src, dst = split_rel(src_rel), split_rel(dst_rel)
+    if not src or not dst:
+        raise UnsafePath("A move needs two file names.")
+    if not _FD_WALK:
+        try:
+            src_parent = _windows_dir(root, src[:-1], create=False)
+        except FileNotFoundError:
+            return False
+        source = src_parent / src[-1]
+        if not source.exists() and not source.is_symlink():
+            return False
+        if source.is_symlink() or source.is_junction() or not source.is_file():
+            raise UnsafePath("The path is not a regular file.")
+        dst_parent = _windows_dir(root, dst[:-1], create=True)
+        target = dst_parent / dst[-1]
+        if target.is_symlink() or target.is_junction():
+            raise UnsafePath("The path has a symbolic link in it.")
+        os.replace(source, target)
+        return True
+    try:
+        with _dir_fd(root, src[:-1]) as src_fd:
+            try:
+                st = os.stat(src[-1], dir_fd=src_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return False
+            if not _stat.S_ISREG(st.st_mode):
+                raise UnsafePath("The path is not a regular file.")
+            with _dir_fd(root, dst[:-1], create=True) as dst_fd:
+                os.replace(src[-1], dst[-1], src_dir_fd=src_fd, dst_dir_fd=dst_fd)
             return True
     except FileNotFoundError:
         return False

@@ -44,6 +44,7 @@ import json
 import mimetypes
 import os
 import stat as _stat_mod
+import uuid
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Literal
@@ -1262,7 +1263,7 @@ async def _session_may_read_loose(
 
 
 class ThreadPurgeFailed(RuntimeError):
-    """The files of a chat could not all be removed. The chat must stay."""
+    """The files of a chat could not all be removed or kept. The chat must stay."""
 
 
 async def purge_thread_files(
@@ -1346,14 +1347,9 @@ async def _purge_thread_files(
     """Read first, then change (fix round 2 of PR #616). Every read that can
     fail runs before the first removal, so a failure changes nothing. The
     disk goes before the store, so a retry still finds the rows it needs."""
-    from acb_memory import file_history, purge_files, session_paths
+    from acb_memory import purge_files
     from acb_skills import safe_open
-    from acb_skills.agent_paths import (
-        THREAD_HEADS,
-        is_loose_rel,
-        tenant_instance,
-        thread_slug,
-    )
+    from acb_skills.agent_paths import THREAD_HEADS, tenant_instance, thread_slug
 
     key = tenant_instance(organization_id)
     try:
@@ -1361,30 +1357,7 @@ async def _purge_thread_files(
     except ValueError:
         slug = None  # an id that names no folder has no thread folders
     # 1. The reads. `session_paths` raises on a database error.
-    began: list[tuple[str, str]] = []
-    for agent, path in await session_paths(
-        session_id, instance=key, organization_id=organization_id,
-    ):
-        if not is_loose_rel(path):
-            continue
-        rows: list[dict] = []
-        for instance in (key, ""):
-            rows += await file_history(
-                agent, path, 1000, instance=instance, organization_id=organization_id,
-            )
-        if not rows:
-            # The chat wrote at this path, so its history cannot be empty: the
-            # read failed. Stop before anything goes.
-            raise ThreadPurgeFailed(f"no history read for {path[:120]}")
-        if _first_writer(rows) != session_id:
-            continue
-        newest = _last_write(rows)
-        if newest is not None and newest.get("session_id") != session_id:
-            # Fix round 3: another session wrote the bytes that lie there now
-            # (main let any session change a loose file). They are not this
-            # chat's to delete. Only this chat's rows go, in step 3.
-            continue
-        began.append((agent, path))
+    began = await _began_loose(session_id, organization_id, key)
     dirs = {ws.parent.name: ws for ws in await asyncio.to_thread(_tenant_dirs, organization_id)}
     # The chat's own working dir, for its zips (a read, so it comes first).
     chat_dir = await _chat_dir(session_id, member, organization_id, slug)
@@ -1413,6 +1386,304 @@ async def _purge_thread_files(
         "workspace.thread_purged", session_id=session_id[:12],
         dirs=len(dirs), loose=len(began), rows=gone,
     )
+
+
+async def _began_loose(
+    session_id: str, organization_id: str, key: str,
+) -> list[tuple[str, str]]:
+    """``(agent, path)`` of each loose file that *session_id* began, and of
+    which it still wrote the newest bytes (:func:`_first_writer`).
+
+    The purge deletes these, and the keep (AM-10) moves them. It reads only,
+    so a failure changes nothing. ``session_paths`` raises on a database
+    error, and an empty history raises :class:`ThreadPurgeFailed`. A kept
+    path is never loose here: ``session_paths`` leaves the kept folder out.
+    """
+    from acb_memory import file_history, session_paths
+    from acb_skills.agent_paths import is_kept_rel, is_loose_rel
+
+    began: list[tuple[str, str]] = []
+    for agent, path in await session_paths(
+        session_id, instance=key, organization_id=organization_id,
+    ):
+        if not is_loose_rel(path) or is_kept_rel(path):
+            continue
+        rows: list[dict] = []
+        for instance in (key, ""):
+            rows += await file_history(
+                agent, path, 1000, instance=instance, organization_id=organization_id,
+            )
+        if not rows:
+            # The chat wrote at this path, so its history cannot be empty: the
+            # read failed. Stop before anything goes.
+            raise ThreadPurgeFailed(f"no history read for {path[:120]}")
+        if _first_writer(rows) != session_id:
+            continue
+        newest = _last_write(rows)
+        if newest is not None and newest.get("session_id") != session_id:
+            # Fix round 3: another session wrote the bytes that lie there now
+            # (main let any session change a loose file). They are not this
+            # chat's to delete. Only this chat's rows go, in step 3.
+            continue
+        began.append((agent, path))
+    return began
+
+
+# ---------------------------------------------------------------------------
+# The keep (WS-60 AM-10, artifact_management.md §7.3, D162.8)
+# ---------------------------------------------------------------------------
+# With the artifact registry on, a chat delete keeps every file of the chat.
+# The files leave the chat's reach for the kept folder
+# ``outputs/.kept/<kept id>/`` (``agent_paths.kept_rel``), and the registry
+# rows keep the chat as their source. ``GET /artifacts/{id}/content`` is the
+# one reader of a kept file. With the registry off, the delete purges.
+
+#: The namespace of :func:`kept_folder_id`. A constant, so each try of one
+#: delete names the same folder.
+_KEPT_NAMESPACE = uuid.UUID("5d1f3a2e-8c4b-4e0a-9f6d-2b7c1e9a4d30")
+
+
+def kept_folder_id(organization_id: str, session_id: str, created_at: str) -> str:
+    """The kept id of one chat (AM-10): the same for each try of one delete.
+
+    The server makes it from the chat's tenant, its id, and the time when
+    the server made the chat's row. A client chooses the id, never the time.
+    So a new chat with the same id gets a new folder, and a retry after a
+    half-done move finishes the move into the same folder.
+    """
+    return str(uuid.uuid5(_KEPT_NAMESPACE, f"{organization_id}\n{session_id}\n{created_at}"))
+
+
+async def keep_thread_files(
+    session_id: str, organization_id: str | None, *, owner: str, kept_id: str,
+    source_title: str | None = None, member: str | None = None,
+    best_effort: bool = False,
+) -> None:
+    """Move the files of a deleted chat to its kept folder (AM-10).
+
+    The twin of :func:`purge_thread_files`, for the same files, when the
+    artifact registry is on. The delete route calls it BEFORE it deletes the
+    row, so a failure raises :class:`ThreadPurgeFailed`, the chat stays, and
+    the member can try again. After the row is gone the route calls it once
+    more with *best_effort* and the same *kept_id*, for a file that a run
+    wrote in between. It moves, in every tenant dir of the caller's
+    organization, and with the safe opener:
+
+    * ``inputs/<thread slug>/`` and ``outputs/<thread slug>/``;
+    * each loose file that this chat began (:func:`_began_loose`);
+    * the zips of ``package_artifacts`` in the chat's own working dir,
+      resolved for *member*. A zip is never in the blob store, so the keep
+      stores it at its kept path, and the registry can then find it.
+
+    Then ``acb_memory.keep_files`` moves their rows in one transaction. The
+    kept rows belong to *owner*, the member who deletes, and name the chat
+    as their source with *source_title*. The organization is the caller's,
+    from the authenticated identity. A failure is logged as
+    ``workspace.thread_keep_failed``.
+    """
+    if not session_id or not organization_id or not owner:
+        if not best_effort:
+            raise ThreadPurgeFailed("a keep needs a chat, a tenant and an owner")
+        return
+    try:
+        await _keep_thread_files(
+            session_id, organization_id, owner=owner, kept_id=kept_id,
+            source_title=source_title, member=member,
+        )
+    except Exception as exc:
+        _log.warning(
+            "workspace.thread_keep_failed", session_id=session_id[:12],
+            error=str(exc)[:200], best_effort=best_effort,
+        )
+        if not best_effort:
+            raise ThreadPurgeFailed(str(exc)[:200]) from exc
+
+
+async def _keep_thread_files(
+    session_id: str, organization_id: str, *, owner: str, kept_id: str,
+    source_title: str | None, member: str | None,
+) -> None:
+    """Read first, then the disk, then the store, as the purge orders it.
+
+    Every read that can fail runs before the first move. A failure on the
+    disk leaves each moved file in the kept folder and every row where it
+    was. A retry moves the rest into the same folder, and the store step,
+    which is idempotent, then moves every row at once.
+    """
+    from acb_memory import keep_files
+    from acb_skills.agent_paths import THREAD_HEADS, kept_rel, tenant_instance, thread_slug
+
+    key = tenant_instance(organization_id)
+    kept = kept_rel(kept_id) + "/"
+    try:
+        slug: str | None = thread_slug(session_id)
+    except ValueError:
+        slug = None  # an id that names no folder has no thread folders
+    # 1. The reads.
+    began = await _began_loose(session_id, organization_id, key)
+    dirs = {ws.parent.name: ws for ws in await asyncio.to_thread(_tenant_dirs, organization_id)}
+    chat_dir = await _chat_dir(session_id, member, organization_id, slug)
+    # 2. The disk.
+    moved = 0
+    if slug:
+        for ws in dirs.values():
+            for head in THREAD_HEADS:
+                moved += await asyncio.to_thread(
+                    _keep_tree, ws, f"{head}/{slug}", kept_id, slug,
+                )
+    for agent, path in began:
+        if agent in dirs:
+            moved += await asyncio.to_thread(_keep_one, dirs[agent], path, kept_id, slug)
+    packages: tuple = ()
+    if slug and chat_dir is not None:
+        packages = await asyncio.to_thread(
+            _keep_packages, chat_dir, session_id, slug, kept_id, dirs, key,
+        )
+    # 3. The store. `kept_rel` is the one layout, so the store moves each row
+    # to the path that the disk step gave its file.
+    prefixes = tuple(
+        (f"{head}/{slug}/", kept_rel(kept_id, f"{head}/{slug}", slug) + "/")
+        for head in THREAD_HEADS
+    ) if slug else ()
+    rows = await keep_files(
+        instance=key, organization_id=organization_id, kept=kept,
+        prefixes=prefixes,
+        paths=tuple((agent, path, kept_rel(kept_id, path, slug)) for agent, path in began),
+        packages=packages, session_id=session_id, owner_email=owner,
+        source_title=source_title,
+    )
+    _log.info(
+        "workspace.thread_kept", session_id=session_id[:12], dirs=len(dirs),
+        loose=len(began), files=moved, packages=len(packages), rows=rows,
+    )
+
+
+def _keep_tree(ws: Path, rel: str, kept_id: str, slug: str) -> int:
+    """Move each regular file below ``ws/rel`` to the kept folder. Returns how many.
+
+    Then ``rel`` goes, as the purge removes it, with what is left: links,
+    empty dirs and nothing else. No link is followed, and a link at ``rel``
+    itself is removed as a link.
+    """
+    from acb_skills import safe_open
+    from acb_skills.agent_paths import kept_rel
+
+    try:
+        files = safe_open.walk_files(ws, rel)
+    except safe_open.UnsafePath:
+        _log.warning("workspace.thread_keep_link", path=rel)
+        files = []
+    moved = 0
+    for path, _size, _mtime in files:
+        try:
+            moved += bool(safe_open.move_file(ws, path, kept_rel(kept_id, path, slug)))
+        except safe_open.UnsafePath:
+            _log.warning("workspace.thread_keep_link", path=path[:200])
+    try:
+        safe_open.remove_tree(ws, rel)
+    except safe_open.UnsafePath:
+        _log.warning("workspace.thread_keep_link", path=rel)
+    return moved
+
+
+def _keep_one(ws: Path, rel: str, kept_id: str, slug: str | None) -> int:
+    """Move the loose file ``ws/rel`` to the kept folder. 1 when it moved."""
+    from acb_skills import safe_open
+    from acb_skills.agent_paths import kept_rel
+
+    try:
+        return int(safe_open.move_file(ws, rel, kept_rel(kept_id, rel, slug)))
+    except (safe_open.UnsafePath, IsADirectoryError, OSError):
+        _log.warning("workspace.thread_keep_move_failed", path=rel[:200])
+        return 0
+
+
+def _package_store_key(
+    chat_dir: Path, dirs: dict[str, Path], key: str,
+) -> tuple[str, str] | None:
+    """The store key of the chat's own working dir, for its kept zips, or ``None``.
+
+    A tenant dir takes the caller's tenant key, never its marker (as
+    :func:`_tenant_history` does). Any other state dir must carry the key
+    that its own name is the slug of, so a marker that a container rewrote
+    cannot send a zip to another member's partition. Any other dir takes the
+    key of the gateway's write-through (:func:`_blob_key_for_workspace`).
+    """
+    from acb_skills.agent_paths import instance_slug, is_tenant_instance, state_root
+
+    try:
+        real = chat_dir.resolve()
+        root = state_root().resolve()
+    except (OSError, RuntimeError):
+        return None
+    for agent, ws in dirs.items():
+        with contextlib.suppress(OSError, RuntimeError):
+            if ws.resolve() == real:
+                return agent, key
+    agent, instance = _blob_key_for_workspace(chat_dir)
+    if real.parent.parent == root and (
+        not instance or instance_slug(instance) != real.name
+        or (is_tenant_instance(instance) and instance != key)
+    ):
+        return None
+    return agent, instance
+
+
+def _keep_packages(
+    chat_dir: Path, session_id: str, slug: str, kept_id: str,
+    dirs: dict[str, Path], key: str,
+) -> tuple:
+    """Move the zips of ``package_artifacts`` in ``outputs/<slug>/`` of the
+    chat's own dir to the kept folder, and read each kept zip.
+
+    A tenant dir's thread folder moved already (:func:`_keep_tree`), with
+    its zips. Only a ``.zip`` right in the folder counts
+    (``is_thread_package_rel``), as in :func:`_purge_packages`. Returns one
+    ``KeptPackage`` for each, which the store step stores and registers.
+    """
+    from acb_memory import KeptPackage
+    from acb_skills import safe_open
+    from acb_skills.agent_paths import kept_rel
+
+    folder = f"outputs/{slug}"
+    try:
+        entries = safe_open.list_dir(chat_dir, folder)
+    except safe_open.UnsafePath:
+        _log.warning("workspace.thread_keep_link", path=folder)
+        entries = None
+    for name, kind in entries or []:
+        rel = f"{folder}/{name}"
+        if kind == "file" and is_thread_package_rel(rel, session_id):
+            try:
+                safe_open.move_file(chat_dir, rel, kept_rel(kept_id, rel, slug))
+            except (safe_open.UnsafePath, OSError):
+                _log.warning("workspace.thread_keep_move_failed", path=rel[:200])
+    if entries is not None and not safe_open.list_dir(chat_dir, folder):
+        with contextlib.suppress(safe_open.UnsafePath, OSError):
+            safe_open.remove_tree(chat_dir, folder)
+    store_key = _package_store_key(chat_dir, dirs, key)
+    try:
+        kept_entries = safe_open.list_dir(chat_dir, kept_rel(kept_id, folder, slug))
+    except safe_open.UnsafePath:
+        _log.warning("workspace.thread_keep_link", path=folder)
+        kept_entries = None
+    found = []
+    for name, kind in kept_entries or []:
+        rel = f"{folder}/{name}"
+        if kind != "file" or not is_thread_package_rel(rel, session_id):
+            continue
+        if store_key is None:
+            _log.warning("workspace.kept_package_unkeyed", path=rel[:200])
+            continue
+        data = safe_open.read_bytes(
+            chat_dir, kept_rel(kept_id, rel, slug), limit=_MAX_FILE_BYTES,
+        )
+        if data is not None:
+            found.append(KeptPackage(
+                agent_name=store_key[0], instance=store_key[1],
+                path=kept_rel(kept_id, rel, slug), data=data,
+            ))
+    return tuple(found)
 
 
 async def _chat_dir(

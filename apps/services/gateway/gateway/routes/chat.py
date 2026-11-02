@@ -497,6 +497,28 @@ def _may_delete_session(
         return row is not None
 
 
+def _session_source(
+    session_id: str, *, organization_id: str | None,
+) -> tuple[str | None, str] | None:
+    """The chat's title and the time the server made its row, or ``None``.
+
+    The delete of AM-10 names the kept folder from that time
+    (``workspace.kept_folder_id``) and keeps the title on each file. A
+    client sets neither: ``_upsert_session`` names no ``created_at``.
+    """
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    with tenant_session(organization_id) as s:
+        row = s.execute(
+            text("SELECT title, created_at FROM chat_session WHERE id = :id"),
+            {"id": session_id},
+        ).first()
+    if row is None:
+        return None
+    return row[0], row[1].isoformat()
+
+
 def _delete_session(
     session_id: str, user_id: str, *, organization_id: str | None,
 ) -> bool:
@@ -1076,7 +1098,13 @@ async def delete_session(
     session_id: str,
     user: UserContext = Depends(get_current_user),
 ) -> None:
-    from gateway.routes.workspace import ThreadPurgeFailed, purge_thread_files
+    from acb_memory import artifacts as registry
+    from gateway.routes.workspace import (
+        ThreadPurgeFailed,
+        keep_thread_files,
+        kept_folder_id,
+        purge_thread_files,
+    )
 
     email, org = user.email or "default", user.organization_id
     if not await asyncio.to_thread(
@@ -1085,22 +1113,66 @@ async def delete_session(
         raise HTTPException(status_code=404, detail="Session not found")
     # H-227 (PR #616 review): a client chooses a session id, so a member who
     # knows this id could make a new session with it. The files of the chat
-    # go first, so a failed purge keeps the chat and the member can try
-    # again (fix round 2). A second pass after the delete sweeps a file that
-    # a run wrote in between.
+    # go first, so a failure keeps the chat and the member can try again
+    # (fix round 2). A second pass after the delete sweeps a file that a run
+    # wrote in between.
+    # WS-60 AM-10 (D162.8): with the registry on, the files are KEPT. They
+    # move out of the chat's reach into the member's library, and each keeps
+    # the chat as its source. With it off, no row could find a moved file,
+    # so they are purged as before.
+    keep = registry.enabled()
+    kept_id, title = "", None
+    if keep and org:
+        source = await asyncio.to_thread(_session_source, session_id, organization_id=org)
+        if source is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        title, created_at = source
+        kept_id = kept_folder_id(org, session_id, created_at)
     try:
         # The member who deletes resolves the chat's own dir, for its zips.
-        await purge_thread_files(session_id, org, member=email)
+        if kept_id:
+            await keep_thread_files(
+                session_id, org, owner=email, kept_id=kept_id,
+                source_title=title, member=email,
+            )
+        else:
+            await purge_thread_files(session_id, org, member=email)
     except ThreadPurgeFailed:
         raise HTTPException(
             status_code=503,
-            detail="The files of this chat could not be removed, so the chat is kept. Try again.",
+            detail=(
+                "The files of this chat could not be moved to Files, so the chat is kept. Try again."
+                if kept_id else
+                "The files of this chat could not be removed, so the chat is kept. Try again."
+            ),
         ) from None
     found = await asyncio.to_thread(_delete_session, session_id, email, organization_id=org)
     if not found:
         raise HTTPException(status_code=404, detail="Session not found")
     await _bump_my_day_after_delete(org)
-    await purge_thread_files(session_id, org, best_effort=True)
+    if kept_id:
+        if await _no_new_chat(session_id, org):
+            await keep_thread_files(
+                session_id, org, owner=email, kept_id=kept_id, source_title=title,
+                best_effort=True,
+            )
+    else:
+        await purge_thread_files(session_id, org, best_effort=True)
+
+
+async def _no_new_chat(session_id: str, org: str | None) -> bool:
+    """True when no chat holds *session_id* again, after a delete (AM-10).
+
+    The late keep pass moves a file to the member who deleted. A new chat
+    with the same id made in between holds files of its own, and its door
+    purged the old id first (``prepare_new_session``). So the pass runs only
+    while no row holds the id. A failed read skips the pass.
+    """
+    try:
+        return await asyncio.to_thread(_session_source, session_id, organization_id=org) is None
+    except Exception:
+        _log.warning("chat.keep_late_pass_skipped", session_id=session_id[:12], exc_info=True)
+        return False
 
 
 async def _bump_my_day_after_delete(org: str | None) -> None:
