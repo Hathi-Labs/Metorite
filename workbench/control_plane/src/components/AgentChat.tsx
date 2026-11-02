@@ -12,6 +12,7 @@ import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useState, useRef, useEffect, useCallback, useMemo, useReducer, useSyncExternalStore } from "react";
 import React from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import type { ArtifactEntry, ChatMessage } from "@/hooks/useAgentChat";
@@ -57,6 +58,7 @@ import {
   CONFIRMATION_RESOLVED,
   EMPTY_CONFIRMATIONS,
   confirmationReducer,
+  receiptLabel,
   settleAnswer,
   type PendingConfirmation,
 } from "@/lib/confirmationQueue";
@@ -293,6 +295,13 @@ interface AgentChatProps {
    */
   compact?: boolean;
   /**
+   * The full view's header slot (CO-0, owner 2026-11-02: one header row).
+   * A solo chat draws its Share there, in the dock's own header, and no
+   * agent row: the dock's title already names the chat. A room keeps its
+   * rows, because its people and its room toggle need them.
+   */
+  headSlot?: HTMLElement | null;
+  /**
    * The chat's chrome on a phone (WS-62 CF-8, `chat_first_surface.md` §4.8).
    * The host draws the one header row, so the agent row and the Share row
    * go. The composer keeps the field, Attach and Send, and the effort
@@ -365,6 +374,7 @@ export default function AgentChat({
   model: forcedModel,
   lockModel,
   compact,
+  headSlot = null,
   phoneChrome = false,
   moreActs,
   pendingInput,
@@ -1945,7 +1955,7 @@ export default function AgentChat({
     dispatchConfirmation({
       type: "answering",
       key: card.key,
-      label: card.detail || card.title,
+      label: receiptLabel(card),
       intent: rejecting ? "rejected" : "approved",
       afterId: visibleMessages.length ? visibleMessages[visibleMessages.length - 1].id : null,
       ...(rejecting ? { undo: true } : {}),
@@ -2235,6 +2245,10 @@ export default function AgentChat({
   const composerRowShown = !phoneChrome || !!runView || ringInComposer || composerOverflow || steerShown;
   // The phone's tap size, on Attach and on Send (CF-8).
   const tap = phoneChrome ? "h-11 w-11" : "h-8 w-8";
+  // A new chat in the full view centres its composer, with the greeting
+  // above it (CO-0, owner 2026-11-02). Two equal spaces, one above the
+  // greeting and one under the composer, hold it there.
+  const emptyHero = !loadingHistory && messages.length === 0 && !compact && !phoneChrome;
 
   return (
     <div className="flex h-full bg-background glass:bg-card">
@@ -2246,7 +2260,7 @@ export default function AgentChat({
           line on the thread's own column (50rem less the 16 px gutters is the
           thread's 48rem), so the name and Share line up with the messages.
           Classic keeps its two full-width rows: the wrapper is `contents`. */}
-      {!compact && !phoneChrome && (
+      {!compact && !phoneChrome && !(headSlot && !isRoom) && (
       <div data-chat-head="" className="contents glass:mx-auto glass:flex glass:w-full glass:max-w-[50rem] glass:shrink-0 glass:items-center glass:gap-2 glass:px-4">
       <div data-chat-agent-row="" className="flex items-center gap-2 h-9 px-4 border-b border-border bg-card/40 shrink-0 glass:min-w-0 glass:flex-1 glass:px-0 glass:border-transparent glass:bg-transparent glass:h-11">
         <div className={`w-2 h-2 rounded-full shrink-0 ${isRunActive ? "bg-warning motion-safe:animate-pulse" : "bg-success"}`} />
@@ -2278,6 +2292,15 @@ export default function AgentChat({
       </div>
       )}
 
+      {!compact && !phoneChrome && headSlot && !isRoom
+        ? createPortal(
+            <div data-chat-head="slot" className="flex items-center">
+              <RoomHeader room={room} presence={presence} onChanged={refreshRoom} />
+            </div>,
+            headSlot,
+          )
+        : null}
+
       {/* Missing integrations banner (compact) */}
       {!bannerDismissed && missingMandatory.length > 0 && (
         <div className="shrink-0 border-b border-warning/20 bg-warning/5 px-4 py-2 flex items-center gap-2 text-[11px]">
@@ -2289,7 +2312,7 @@ export default function AgentChat({
 
       {/* Message thread */}
       {/* CF-8: a 16 px gutter on the phone sheet, the full width between. */}
-      <div ref={threadRef} className={`flex-1 overflow-y-auto ${phoneChrome ? "px-4" : "px-3 sm:px-4"} py-4 relative scrollbar-thin`}>
+      <div ref={threadRef} className={`${emptyHero ? "flex flex-[1_1_0%] flex-col justify-end" : "flex-1"} overflow-y-auto ${phoneChrome ? "px-4" : "px-3 sm:px-4"} py-4 relative scrollbar-thin`}>
         {/* Scroll-to-bottom floating button */}
         {showScrollBtn && (
           <button onClick={scrollToBottom}
@@ -2330,7 +2353,7 @@ export default function AgentChat({
             </div>
           )}
           {!loadingHistory && messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center min-h-[50vh] gap-3 text-center">
+            <div className={`flex flex-col items-center justify-center gap-3 text-center ${emptyHero ? "pb-2" : "min-h-[50vh]"}`}>
               <AgentAvatar
                 libraryId={agentAvatars[currentAgentName]}
                 size={48}
@@ -2514,11 +2537,9 @@ export default function AgentChat({
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {runView ? (
               <RunStatusRow view={runView} placement="composer" />
-            ) : !compact && !phoneChrome ? (
-              <span className="hidden sm:inline text-[10px] glass:text-caption">
-                <kbd className="text-muted-foreground glass:font-sans">⏎</kbd> send · <kbd className="text-muted-foreground glass:font-sans">⇧ ⏎</kbd> new line
-              </span>
             ) : null}
+            {/* The keys moved to Send's tooltip (CO-0): a line of hints
+                under every message box read as clutter. */}
           </div>
           {/* A send during a run adds to the reply, or answers the one
               question that waits (`lib/typedAnswer.ts`). Said once, short. */}
@@ -2924,6 +2945,7 @@ export default function AgentChat({
           )}
         </div>
       </form>
+      {emptyHero ? <div aria-hidden data-chat-hero-space="" className="flex-[1_1_0%]" /> : null}
 
       {/* Artifact viewer modal */}
       {viewerEntry && (

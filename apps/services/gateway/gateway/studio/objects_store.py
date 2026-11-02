@@ -11,9 +11,8 @@ org. An INSERT writes no ``organization_id``: the column DEFAULT reads the
 bound tenant, and each statement filters on ``_BOUND_ORG`` too.
 
 **The caller owns the transaction.** No function here commits, rolls back or
-opens a transaction. So C1b can put several calls in one transaction. The
-one SAVEPOINT is the query's (C2a, below), and it ends nothing of the
-caller's transaction. A
+opens a transaction. A query (C2a) and a batch (C1b) each open a SAVEPOINT,
+and it ends nothing of the caller's transaction. A
 refusal before a statement raises a :class:`ObjectStoreError`, a
 :class:`~acb_common.studio_fields.FieldError` or a
 :class:`~acb_common.studio_fields.RecordError`, and the session stays usable.
@@ -43,6 +42,14 @@ never wait for each other. A shared lock for record writes fails here. Two
 transactions each hold it, and then each waits for the other before it can
 take the exclusive lock of a registry change. That is a deadlock.
 ``test_studio_objects_r8.py`` runs the interleaving that deadlocked before.
+
+**The wait for the org lock is bounded.** A waiter holds a pool connection for
+the whole wait, so the writers of one org can delay each other tenant.
+:func:`_lock_org` waits at most :data:`ORG_LOCK_WAIT_MS`, for every caller.
+Past that it raises :class:`StoreBusy`, in its own SAVEPOINT, so the caller's
+transaction stays usable. The old ``lock_timeout`` comes back as soon as the
+lock is held, so the bound covers the wait only. The bound limits the delay and
+does not end it, so B2b admits a bounded number of writers for each org.
 
 **The reads.** :func:`get_record` reads one record by its id. The door (B2)
 reads an object of one package by the name in its manifest
@@ -76,6 +83,54 @@ comparison is LEAKPROOF (``docs/rls_and_indexes.md``). So a number filter
 reads the hot rows of its field. A sort on a number still reads the index in
 order.
 
+**The batch (C1b).** :func:`apply_writes` is the one path of a record write.
+:func:`create_record`, :func:`update_record` and :func:`delete_record` are a
+batch of one, with the same signatures and answers, so no single call skips
+a rule. The lock order is the org lock once, then the object rows in
+ascending object id (``FOR KEY SHARE``), then the record rows in ascending
+``(object_id, record_id)`` (``FOR NO KEY UPDATE``). The store then applies
+the writes in list order. The checks run after all the writes, so a stock
+move is judged on the net. ``range`` runs on the last value of each written
+record. ``unique`` and ``group_sum_min`` run once for each key that
+``studio_rules.touched_keys`` names. The whole batch runs in one SAVEPOINT.
+Any error rolls back the SAVEPOINT and raises :class:`BatchError`, so the
+caller's transaction stays usable with its earlier work.
+
+**The rules (C1b).** ``acb_common.studio_rules`` holds the grammar, and
+``studio_objects.constraints`` holds the rules of an object.
+:func:`set_constraints` replaces them, under the org lock and then the
+``FOR UPDATE`` of the object row, in that order. A declaration does not check
+old data. A rule binds each later write, and a ``unique`` key that clashes
+already is refused only when a later write touches it. A field that a rule
+holds cannot turn cold while the rule stands. A rule that the store cannot
+read fails closed: each write of its object is refused.
+
+**On a floor of 0 or less, a write that does not lower a group never reads
+the group.** The store adds up the net change of the batch on each key of
+``group_sum_min``, in exact ``Decimal``, from the values that it read under
+its locks. With a net change of zero or more, it skips the sum. The org lock
+makes that safe, and a group with no rows starts at a sum of 0, which meets
+the floor. So a receipt on a broken key passes, and a repair is possible. A
+floor above 0 always reads its group, because a new group starts below it. A
+key with no rows passes, because a group that no longer exists holds nothing
+to break. A key with rows and no amount sums to 0, and the floor judges it.
+
+**Why the checks are correct.** Under READ COMMITTED, a check and a write of
+two transactions can pass each other, unless the writers run one at a time.
+Every record write takes the exclusive org lock first, and holds it to the
+end of its transaction. Each check runs in a later statement, so its new
+snapshot holds each earlier committed write of the org. A database unique
+index cannot hold these rules, because no tenant gets DDL. A check reuses the
+builders of C2a, so it reads the hot rows only, under the deadline of
+``_time_limit``.
+
+⚠️ **The known limit.** The org lock serializes all record writes of one
+org, also the writes of an object with no rule. A finer lock is a later
+slice. A writer that skips the store skips the rules: raw SQL, and the
+cascade of a package hard delete. A write that lowers a group past about
+500,000 rows can reach ``query_timeout``, and so can each write on a floor
+above 0. A running balance table is a later slice.
+
 ⚠️ The store does not authenticate. It only scopes. The actor of a write is
 an argument that the caller takes from the session, never from request input
 (R5, contract R11). The door (B2) checks the viewer.
@@ -91,6 +146,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from acb_common import studio_query
@@ -115,6 +171,24 @@ from acb_common.studio_fields import (
     validate_record,
 )
 from acb_common.studio_query import Condition, Query, QueryError
+from acb_common.studio_rules import (
+    MAX_WRITES_PER_BATCH,
+    RANGE,
+    UNIQUE,
+    Rule,
+    add_change,
+    check_group_sum,
+    check_kind_known,
+    check_range,
+    check_rule_is_hot,
+    check_rules_fit,
+    check_unique_count,
+    floor_holds_at_zero,
+    key_filter,
+    parse_rules,
+    stored_rules,
+    touched_keys,
+)
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
@@ -127,13 +201,28 @@ _ORG_LOCK_SQL = (
     f"'studio_objects:' || CAST({_BOUND_ORG} AS text), 0))"
 )
 
+#: The longest wait for the org lock, in milliseconds. A waiter holds a pool
+#: connection for the whole wait, and it can try again, so the pool matters more.
+ORG_LOCK_WAIT_MS = 1_000
+
+#: The old ``lock_timeout`` and the bound, in one statement. ``set_config`` as
+#: a function, so the value is a bind.
+_LOCK_WAIT_SQL = "SELECT current_setting('lock_timeout'), set_config('lock_timeout', :ms, true)"
+_LOCK_WAIT_BACK_SQL = "SELECT set_config('lock_timeout', :ms, true)"
+#: The SQLSTATEs of a wait that gives up: ``lock_timeout`` stopped it, or
+#: Postgres picked it as the victim of a deadlock.
+_BUSY_SQLSTATES = ("55P03", "40P01")
+_BUSY_MESSAGE = "This app is busy. Try again in a moment."
+
 #: A backfill reads and writes the records in pages of this size.
 BACKFILL_PAGE = 2_000
 
 _NAME_RE = re.compile(NAME_PATTERN, re.ASCII)
 _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 
-_OBJECT_COLUMNS = "id::text, package_id::text, name, label, created_by, created_at, updated_at"
+_OBJECT_COLUMNS = (
+    "id::text, package_id::text, name, label, created_by, created_at, updated_at, constraints"
+)
 _RECORD_COLUMNS = "id::text, object_id::text, data, created_by, updated_by, created_at, updated_at"
 #: The value columns of a hot row, as ``jsonb_to_recordset`` reads them.
 _HOT_SET = "AS x(k text, t text, n numeric, ts timestamptz, b boolean)"
@@ -190,11 +279,25 @@ _LOCK_OBJECT_SQL = _GET_OBJECT_SQL + " FOR UPDATE"
 
 #: A record write takes the weakest lock that a registry change waits for.
 #: The foreign key check of the record takes the same lock. The object must be
-#: of the package that the caller names.
+#: of the package that the caller names. The org lock came in an earlier
+#: statement, so this snapshot holds the last rules of the object.
 _SHARE_OBJECT_SQL = (
-    "SELECT id FROM studio_objects "
+    "SELECT name, constraints FROM studio_objects "
     f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
     "AND package_id = CAST(:pid AS uuid) FOR KEY SHARE"
+)
+
+#: A declaration locks the object row of the package that the caller names.
+_LOCK_PACKAGE_OBJECT_SQL = (
+    f"SELECT {_OBJECT_COLUMNS} FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
+    "AND package_id = CAST(:pid AS uuid) FOR UPDATE"
+)
+
+_SET_RULES_SQL = (
+    "UPDATE studio_objects SET constraints = CAST(:rules AS jsonb), updated_at = now() "
+    f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
+    f"AND package_id = CAST(:pid AS uuid) RETURNING {_OBJECT_COLUMNS}"
 )
 
 #: The object of a record statement is of the package that the caller names.
@@ -290,6 +393,9 @@ _GET_RECORD_SQL = (
     f"AND id = CAST(:rid AS uuid) AND {_IN_PACKAGE}"
 )
 
+#: A batch locks each record that it changes, before its first write.
+_LOCK_RECORD_SQL = _GET_RECORD_SQL + " FOR NO KEY UPDATE"
+
 #: The record and its hot rows, in one statement. The DELETE takes the hot
 #: rows of the keys that hold no value now, and the INSERT writes the others.
 #: The two touch different rows.
@@ -339,7 +445,35 @@ class FieldKeyTaken(ObjectStoreError):
 
 
 class BudgetExceeded(ObjectStoreError):
-    """A cap of the registry: hot fields, fields, objects, or the backfill size."""
+    """A cap: hot fields, fields, objects, the backfill size, or the size of a batch."""
+
+
+class RecordNotFound(ObjectStoreError):
+    """A write names no such object or record in the package of the batch."""
+
+
+class StoreBusy(ObjectStoreError):
+    """The org lock did not come in time. The write ran no statement, and the
+    caller's transaction stays usable. A caller may try again, and a route
+    answers 503 with ``Retry-After``."""
+
+    code = "store_busy"
+
+
+class BatchError(Exception):
+    """One refused batch. Its SAVEPOINT rolled back, so it wrote nothing.
+
+    ``index`` is the place of the write in the list. A rule runs after all
+    the writes, so its index is the first write that touched the key.
+    ``cause`` is the error. A database error keeps its text to ``cause``,
+    because that text holds the statement and its binds, and so member data.
+    """
+
+    def __init__(self, index: int, cause: Exception) -> None:
+        said = cause if isinstance(cause, ValueError) else type(cause).__name__
+        super().__init__(f"Write {index} of the batch: {said}")
+        self.index = index
+        self.cause = cause
 
 
 @dataclass(frozen=True)
@@ -354,6 +488,7 @@ class StudioObject:
     created_at: datetime
     updated_at: datetime
     fields: tuple[FieldSpec, ...]
+    constraints: tuple[Rule, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -367,6 +502,18 @@ class Record:
     updated_by: str
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True)
+class Write:
+    """One write of a batch. ``create`` takes ``data``. ``update`` takes
+    ``record_id`` and ``data``, the fields that change. ``delete`` takes
+    ``record_id``."""
+
+    op: str
+    object_id: str
+    record_id: str | None = None
+    data: Mapping[str, Any] | None = None
 
 
 def _actor(actor: object) -> str:
@@ -393,7 +540,8 @@ def _object(row: Any, fields: Sequence[FieldSpec]) -> StudioObject:
     return StudioObject(
         id=str(row[0]), package_id=str(row[1]), name=str(row[2]),
         label=None if row[3] is None else str(row[3]), created_by=str(row[4]),
-        created_at=row[5], updated_at=row[6], fields=tuple(fields))
+        created_at=row[5], updated_at=row[6], fields=tuple(fields),
+        constraints=stored_rules(_json(row[7])))
 
 
 def _record(row: Any) -> Record:
@@ -418,8 +566,35 @@ async def _fields(db: Any, object_id: str) -> list[FieldSpec]:
     return [stored_field(str(r[0]), str(r[1]), _json(r[2]), bool(r[3])) for r in rows]
 
 
+def _sqlstate(exc: DBAPIError) -> str | None:
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return None if code is None else str(code)
+
+
 async def _lock_org(db: Any) -> None:
-    await db.execute(text(_ORG_LOCK_SQL))
+    """Take the advisory lock of the org, and wait at most
+    :data:`ORG_LOCK_WAIT_MS`. Each write and each registry change comes here.
+
+    The wait sits in its own SAVEPOINT, because a lock timeout aborts the
+    transaction around it. The lock stays when the SAVEPOINT releases. Raises
+    :class:`StoreBusy` at the bound, and when Postgres picks this wait as the
+    victim of a deadlock.
+
+    ⚠️ A deadlock on a later statement stays a database error. So a caller that
+    holds ``apps`` FOR UPDATE takes the org lock first.
+    """
+    wait = await db.execute(text(_LOCK_WAIT_SQL), {"ms": str(ORG_LOCK_WAIT_MS)})
+    old = str(wait.one()[0])
+    try:
+        async with db.begin_nested():
+            await db.execute(text(_ORG_LOCK_SQL))
+    except DBAPIError as exc:
+        if _sqlstate(exc) in _BUSY_SQLSTATES:
+            raise StoreBusy(_BUSY_MESSAGE) from None
+        raise
+    finally:
+        await db.execute(text(_LOCK_WAIT_BACK_SQL), {"ms": old})
 
 
 async def _org_hot(db: Any) -> int:
@@ -580,6 +755,16 @@ async def _backfill(db: Any, oid: str, field: FieldSpec) -> int:
         after = str(page[-1][0])
 
 
+def _check_no_rule_reads(rules: Sequence[Rule], key: str) -> None:
+    """A field that turns cold loses its hot rows, so a rule that reads them
+    would pass each write with no check."""
+    for rule in rules:
+        if key in rule.hot_keys():
+            raise ObjectStoreError(
+                f"Field `{key}` must stay hot, because rule `{rule.name}` reads it. "
+                "Remove the rule first.")
+
+
 async def set_field_hot(db: Any, object_id: str, key: str, hot: bool) -> bool:
     """Turn the field *key* of the object *object_id* hot, or not hot.
 
@@ -587,14 +772,16 @@ async def set_field_hot(db: Any, object_id: str, key: str, hot: bool) -> bool:
     the caller's transaction. Raises :class:`BudgetExceeded` past the hot
     budget, or when the object holds more than
     :data:`~acb_common.studio_fields.MAX_HOT_BACKFILL` records. A field that
-    turns cold loses its hot rows. Answers False when the bound org holds no
-    such object or field.
+    turns cold loses its hot rows. A field that a rule reads stays hot, and
+    the store raises :class:`ObjectStoreError`. Answers False when the bound
+    org holds no such object or field.
     """
     oid = _uuid(object_id, "object_id")
     if type(hot) is not bool:
         raise ObjectStoreError("hot must be true or false")
     await _lock_org(db)
-    if (await db.execute(text(_LOCK_OBJECT_SQL), {"oid": oid})).first() is None:
+    row = (await db.execute(text(_LOCK_OBJECT_SQL), {"oid": oid})).first()
+    if row is None:
         return False
     fields = await _fields(db, oid)
     current = next((f for f in fields if f.key == key), None)
@@ -603,6 +790,7 @@ async def set_field_hot(db: Any, object_id: str, key: str, hot: bool) -> bool:
     if current.hot == hot:
         return True
     if not hot:
+        _check_no_rule_reads(_object(row, fields).constraints, key)
         await db.execute(text(_SET_HOT_SQL), {"oid": oid, "key": key, "hot": False})
         await db.execute(text(_UNHOT_SQL), {"oid": oid, "key": key})
         return True
@@ -630,15 +818,29 @@ async def drop_object(db: Any, object_id: str) -> bool:
     return (await db.execute(text(_DROP_OBJECT_SQL), {"oid": oid})).first() is not None
 
 
-async def _locked_fields(db: Any, oid: str, pid: str) -> list[FieldSpec] | None:
-    """Take the org lock, then lock the object row for a record write, then
-    read its fields. None when the bound org holds no object of the id in the
-    package *pid*."""
+async def set_constraints(db: Any, object_id: str, constraints: Any, *,
+                          package_id: str) -> StudioObject | None:
+    """Replace the rules of the object *object_id* of the package *package_id*.
+    Answers None when the bound org holds no such object in that package.
+
+    ``studio_rules.parse_rules`` checks the shape before any statement, and
+    ``studio_rules.check_rules_fit`` checks the rules against the fields. Each
+    raises :class:`~acb_common.studio_rules.ConstraintError`. This function
+    never turns a field hot. The org lock comes first, then the object row.
+    ⚠️ A declaration does not check old data. A rule binds each later write.
+    """
+    oid = _uuid(object_id, "object_id")
+    pid = _uuid(package_id, "package_id")
+    rules = parse_rules(constraints)
     await _lock_org(db)
-    if (await db.execute(text(_SHARE_OBJECT_SQL), {"oid": oid, "pid": pid})).first() is None:
+    binds = {"oid": oid, "pid": pid}
+    if (await db.execute(text(_LOCK_PACKAGE_OBJECT_SQL), binds)).first() is None:
         return None
-    # A second statement, so its snapshot follows the lock (READ COMMITTED).
-    return await _fields(db, oid)
+    fields = await _fields(db, oid)
+    check_rules_fit(rules, fields)
+    row = (await db.execute(text(_SET_RULES_SQL), {
+        **binds, "rules": json.dumps([r.stored() for r in rules], ensure_ascii=False)})).one()
+    return _object(row, fields)
 
 
 async def create_record(db: Any, actor: str, object_id: str, data: Mapping[str, Any], *,
@@ -648,18 +850,13 @@ async def create_record(db: Any, actor: str, object_id: str, data: Mapping[str, 
 
     Each value is checked by ``studio_fields.validate_record``, and a bad one
     raises :class:`FieldError` with its field key. The record and its hot rows
-    go in one statement.
+    go in one statement. This is a batch of one, so a rule of the object runs,
+    and a refusal raises
+    :class:`~acb_common.studio_rules.ConstraintViolation`.
     """
     who = _actor(actor)
-    oid = _uuid(object_id, "object_id")
-    fields = await _locked_fields(db, oid, _uuid(package_id, "package_id"))
-    if fields is None:
-        return None
-    clean = validate_record(fields, data)
-    row = (await db.execute(text(_CREATE_RECORD_SQL), {
-        "oid": oid, "data": record_json(clean), "actor": who,
-        "hot": _hot_rows(fields, clean)})).first()
-    return None if row is None else _record(row)
+    made = await _one_write(db, who, package_id, Write("create", object_id, data=data))
+    return made if isinstance(made, Record) else None
 
 
 async def get_record(db: Any, object_id: str, record_id: str, *,
@@ -679,41 +876,22 @@ async def update_record(db: Any, actor: str, object_id: str, record_id: str,
 
     *changes* names the fields that change. A ``None`` value clears a field.
     The merged record is checked whole, so a required field stays filled.
-    The record and its hot rows change in one statement.
+    The record and its hot rows change in one statement. This is a batch of
+    one, so a rule of the object runs.
     """
     who = _actor(actor)
-    oid = _uuid(object_id, "object_id")
-    rid = _uuid(record_id, "record_id")
-    pid = _uuid(package_id, "package_id")
-    if not isinstance(changes, Mapping):
-        raise ObjectStoreError("changes must be an object of field values")
-    fields = await _locked_fields(db, oid, pid)
-    if fields is None:
-        return None
-    current = (await db.execute(text(_GET_RECORD_SQL + " FOR NO KEY UPDATE"), {
-        "oid": oid, "rid": rid, "pid": pid})).first()
-    if current is None:
-        return None
-    merged = {**_json(current[2]), **dict(changes)}
-    clean = validate_record(fields, merged)
-    row = (await db.execute(text(_UPDATE_RECORD_SQL), {
-        "oid": oid, "rid": rid, "pid": pid, "data": record_json(clean), "actor": who,
-        "hot": _hot_rows(fields, clean)})).first()
-    return None if row is None else _record(row)
+    write = Write("update", object_id, record_id, changes)
+    done = await _one_write(db, who, package_id, write)
+    return done if isinstance(done, Record) else None
 
 
 async def delete_record(db: Any, object_id: str, record_id: str, *,
                         package_id: str) -> bool:
     """Delete the record *record_id* of the object *object_id* of the package
     *package_id*, and its hot rows by cascade. Answers False when the bound org
-    holds no such record."""
-    oid = _uuid(object_id, "object_id")
-    rid = _uuid(record_id, "record_id")
-    pid = _uuid(package_id, "package_id")
-    if await _locked_fields(db, oid, pid) is None:
-        return False
-    return (await db.execute(text(_DELETE_RECORD_SQL), {
-        "oid": oid, "rid": rid, "pid": pid})).first() is not None
+    holds no such record. This is a batch of one, so a rule of the object runs."""
+    # A delete writes no actor, so this path takes none.
+    return await _one_write(db, "", package_id, Write("delete", object_id, record_id)) is True
 
 
 # --- the query (C2a) --------------------------------------------------------
@@ -798,6 +976,7 @@ _TIMEOUT_SQL = "SELECT set_config('statement_timeout', :ms, true)"
 #: The SQLSTATE of a statement that the timeout cancelled.
 _QUERY_CANCELED = "57014"
 _TIMEOUT_MESSAGE = "The query took too long. Narrow the filter."
+_RULE_TIMEOUT_MESSAGE = "The rules of this object took too long to check. The batch wrote nothing."
 _CHANGED_MESSAGE = "The fields of this object changed during the query. Try again."
 
 #: The clock of the deadline. A test replaces it.
@@ -1137,11 +1316,30 @@ def build_count(conditions: Sequence[Condition], *, object_id: str, package_id: 
     return _q_count(conditions, params, ":cap"), params
 
 
+def build_group_sum(conditions: Sequence[Condition], field_key: str, *, object_id: str,
+                    package_id: str) -> tuple[str, dict[str, Any]]:
+    """The sum of the hot field *field_key* over the records that meet
+    *conditions*, for ``group_sum_min`` (C1b). Pure.
+
+    The candidates are those of a query, so each part names the org, the
+    object and the package, and each key and value is a bind. Each candidate
+    reads its hot row of the field by the primary key. A record with no value
+    has no hot row, and adds nothing to the sum.
+
+    The answer is NULL only when the key has no rows, and then the rule passes
+    (``studio_rules.check_group_sum``). A key with rows and no amount gives 0.
+    """
+    params: dict[str, Any] = {"oid": object_id, "pid": package_id, "sk": field_key}
+    ids = _q_filtered(conditions, params, "c.id AS id")
+    return (f"SELECT CASE WHEN count(*) > 0 THEN coalesce(sum(s.v_num), 0) END FROM ({ids}) g "
+            "LEFT JOIN LATERAL (SELECT s.v_num FROM studio_record_hot s "
+            f"WHERE s.{_OF_ORG} AND s.{_OF_OBJECT} AND s.field_key = CAST(:sk AS text) "
+            "AND s.record_id = g.id OFFSET 0) s ON true"), params
+
+
 def _is_timeout(exc: DBAPIError) -> bool:
     """True when the LOCAL ``statement_timeout`` cancelled the statement."""
-    orig = getattr(exc, "orig", None)
-    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
-    return code == _QUERY_CANCELED
+    return _sqlstate(exc) == _QUERY_CANCELED
 
 
 class _Timed:
@@ -1149,33 +1347,35 @@ class _Timed:
     sets the LOCAL ``statement_timeout`` to the time that is left, and it
     refuses with ``query_timeout`` when none is left."""
 
-    def __init__(self, db: Any, deadline: float) -> None:
+    def __init__(self, db: Any, deadline: float, message: str) -> None:
         self._db = db
         self._deadline = deadline
+        self._message = message
 
     async def execute(self, stmt: Any, params: dict[str, Any]) -> Any:
         left = self._deadline - _clock()
         if left <= 0:
-            raise QueryError(studio_query.TIMEOUT, _TIMEOUT_MESSAGE)
+            raise QueryError(studio_query.TIMEOUT, self._message)
         await self._db.execute(text(_TIMEOUT_SQL), {"ms": str(max(1, int(left * 1000)))})
         return await self._db.execute(stmt, params)
 
 
 @asynccontextmanager
-async def _time_limit(db: Any, deadline: float) -> AsyncIterator[_Timed]:
+async def _time_limit(db: Any, deadline: float,
+                      message: str = _TIMEOUT_MESSAGE) -> AsyncIterator[_Timed]:
     """Run the statements of a query in a SAVEPOINT, under one deadline.
 
     A timeout aborts the SAVEPOINT only, so the caller's transaction stays
-    usable (C1b joins several store calls in one). The old timeout comes back
-    after each query, also after a success.
+    usable. The old timeout comes back after each query, also after a success.
+    The checks of a batch (C1b) use it too, with their own *message*.
     """
     old = str((await db.execute(text(_TIMEOUT_READ_SQL))).scalar_one())
     try:
         async with db.begin_nested():
-            yield _Timed(db, deadline)
+            yield _Timed(db, deadline, message)
     except DBAPIError as exc:
         if _is_timeout(exc):
-            raise QueryError(studio_query.TIMEOUT, _TIMEOUT_MESSAGE) from None
+            raise QueryError(studio_query.TIMEOUT, message) from None
         raise
     finally:
         await db.execute(text(_TIMEOUT_SQL), {"ms": old})
@@ -1250,3 +1450,264 @@ async def query_records(db: Any, *, package_id: str, object_id: str, filter: Any
     return RecordPage(records=records, total=count if exact else None,
                       total_at_least=None if exact else count, offset=start, limit=size,
                       line=line)
+
+
+# --- the batch (C1b) --------------------------------------------------------
+#
+# The steps of one batch, in one SAVEPOINT:
+#
+#   1. the org lock, once
+#   2. the object rows, in ascending object id, then the fields and the rules
+#   3. the record rows, in ascending (object_id, record_id)
+#   4. the writes, in list order
+#   5. `range` on the last value of each written record
+#   6. `unique` and `group_sum_min`, once for each touched key. On a floor of
+#      0 or less, a key that the batch does not lower reads nothing.
+#
+# Steps 5 and 6 run after all the writes, so a stock move is judged on the net.
+# Step 6 reads in a later statement than the lock, so its snapshot holds each
+# committed write of the org (READ COMMITTED).
+
+_WRITE_OPS = ("create", "update", "delete")
+
+
+@dataclass(frozen=True)
+class _Held:
+    """An object of a batch, under its row lock."""
+
+    name: str
+    fields: list[FieldSpec]
+    rules: tuple[Rule, ...]
+
+
+@dataclass
+class _Mark:
+    """One record that a batch writes. ``before`` is its data before the
+    batch, and ``after`` its data now. None means no such record."""
+
+    object_id: str
+    index: int
+    before: dict[str, Any] | None
+    after: dict[str, Any] | None
+
+
+class _Batch:
+    """The state of one batch. ``index`` names the write that runs now, so an
+    error gets its place in the list."""
+
+    def __init__(self, who: str, pid: str, steps: Sequence[Write]) -> None:
+        self.who = who
+        self.pid = pid
+        self.steps = steps
+        self.objects: dict[str, _Held] = {}
+        self.marks: dict[tuple[str, str], _Mark] = {}
+        self.index = 0
+
+
+def _clean_write(write: Any) -> Write:
+    """One write with its ids in the UUID form. Runs no statement."""
+    if not isinstance(write, Write) or write.op not in _WRITE_OPS:
+        raise ObjectStoreError(f"A write is a Write with the op {', '.join(_WRITE_OPS)}.")
+    oid = _uuid(write.object_id, "object_id")
+    if write.op == "create":
+        if write.record_id is not None:
+            raise ObjectStoreError("A create takes no record_id, because the store gives the id.")
+        return replace(write, object_id=oid)
+    rid = _uuid(write.record_id, "record_id")
+    if write.op == "update" and not isinstance(write.data, Mapping):
+        raise ObjectStoreError("changes must be an object of field values")
+    if write.op == "delete" and write.data is not None:
+        raise ObjectStoreError("A delete takes no data.")
+    return replace(write, object_id=oid, record_id=rid)
+
+
+def _clean_writes(writes: Any) -> list[Write]:
+    """The checks of a batch that need no statement, the cap first."""
+    if isinstance(writes, str | bytes | Mapping) or not isinstance(writes, Sequence):
+        raise ObjectStoreError("writes must be a list of writes")
+    if len(writes) > MAX_WRITES_PER_BATCH:
+        raise BudgetExceeded(f"A batch holds at most {MAX_WRITES_PER_BATCH} writes.")
+    out = []
+    for i, write in enumerate(writes):
+        try:
+            out.append(_clean_write(write))
+        except ObjectStoreError as exc:
+            raise BatchError(i, exc) from exc
+    return out
+
+
+async def _lock_objects(db: Any, batch: _Batch) -> None:
+    """Step 2. The second statement of each object follows its row lock."""
+    first: dict[str, int] = {}
+    for i, step in enumerate(batch.steps):
+        first.setdefault(step.object_id, i)
+    for oid in sorted(first):
+        batch.index = first[oid]
+        row = (await db.execute(text(_SHARE_OBJECT_SQL), {"oid": oid, "pid": batch.pid})).first()
+        if row is None:
+            raise RecordNotFound("This package holds no such object.")
+        batch.objects[oid] = _Held(str(row[0]), await _fields(db, oid), stored_rules(_json(row[1])))
+
+
+async def _lock_records(db: Any, batch: _Batch) -> None:
+    """Step 3. A record that two writes name is locked once."""
+    first: dict[tuple[str, str], int] = {}
+    for i, step in enumerate(batch.steps):
+        if step.record_id is not None:
+            first.setdefault((step.object_id, step.record_id), i)
+    for (oid, rid), index in sorted(first.items()):
+        batch.index = index
+        row = (await db.execute(text(_LOCK_RECORD_SQL), {
+            "oid": oid, "rid": rid, "pid": batch.pid})).first()
+        if row is None:
+            raise RecordNotFound("This package holds no such record.")
+        data = dict(_json(row[2]))
+        batch.marks[(oid, rid)] = _Mark(oid, index, data, data)
+
+
+def _live_mark(batch: _Batch, step: Write) -> _Mark:
+    """The mark of the record of an update or a delete. An earlier write of
+    the batch may have deleted it."""
+    mark = batch.marks[(step.object_id, str(step.record_id))]
+    if mark.after is None:
+        raise RecordNotFound("An earlier write of this batch deleted this record.")
+    return mark
+
+
+async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
+    """Step 4, for one write. Only this function runs the three write statements."""
+    oid = step.object_id
+    held = batch.objects[oid]
+    if step.op == "create":
+        clean = validate_record(held.fields, step.data)
+        row = (await db.execute(text(_CREATE_RECORD_SQL), {
+            "oid": oid, "data": record_json(clean), "actor": batch.who,
+            "hot": _hot_rows(held.fields, clean)})).one()
+        made = _record(row)
+        batch.marks[(oid, made.id)] = _Mark(oid, batch.index, None, clean)
+        return made
+    mark = _live_mark(batch, step)
+    binds = {"oid": oid, "rid": step.record_id, "pid": batch.pid}
+    if step.op == "delete":
+        await db.execute(text(_DELETE_RECORD_SQL), binds)
+        mark.after = None
+        return True
+    clean = validate_record(held.fields, {**(mark.after or {}), **dict(step.data or {})})
+    row = (await db.execute(text(_UPDATE_RECORD_SQL), {
+        **binds, "data": record_json(clean), "actor": batch.who,
+        "hot": _hot_rows(held.fields, clean)})).one()
+    mark.after = clean
+    return _record(row)
+
+
+def _check_records(batch: _Batch) -> dict[tuple[str, Rule, tuple[Any, ...]], int]:
+    """Step 5, and the keys of step 6, each with its first write. On a floor
+    of 0 or less, a key that the batch does not lower stays out: the values of
+    the batch prove that its sum cannot fall, and the org lock holds each
+    other writer out. A floor above 0 always stays in."""
+    keys: dict[tuple[str, Rule, tuple[Any, ...]], int] = {}
+    nets: dict[tuple[str, Rule, tuple[Any, ...]], Decimal] = {}
+    for mark in sorted(batch.marks.values(), key=lambda m: m.index):
+        batch.index = mark.index
+        held = batch.objects[mark.object_id]
+        for rule in held.rules:
+            check_kind_known(rule, held.name)
+            check_rule_is_hot(rule, held.name, held.fields)
+            if rule.kind == RANGE and mark.after is not None:
+                check_range(rule, held.name, mark.after)
+            for key in touched_keys(rule, mark.before, mark.after):
+                at = (mark.object_id, rule, key)
+                keys.setdefault(at, mark.index)
+                if floor_holds_at_zero(rule):
+                    nets[at] = add_change(rule, key, mark.before, mark.after,
+                                          nets.get(at, Decimal(0)))
+    return {at: index for at, index in keys.items() if at not in nets or nets[at] < 0}
+
+
+async def _check_key(timed: _Timed, oid: str, pid: str, held: _Held, rule: Rule,
+                     key: tuple[Any, ...]) -> None:
+    """Step 6, for one key. The filter of the key runs through the grammar of
+    C2a, and the statement comes from its builders. So it reads hot rows only.
+    The one exception is a key of 256 characters or more: C2a has no hot
+    candidates for it, so it reads the records of the object, under the deadline."""
+    conditions = studio_query.parse_query(held.fields, key_filter(rule, key)).conditions
+    if rule.kind == UNIQUE:
+        sql, params = build_count(conditions, object_id=oid, package_id=pid, cap=2)
+        count = (await timed.execute(text(sql), params)).scalar_one()
+        check_unique_count(rule, held.name, int(count))
+        return
+    sql, params = build_group_sum(conditions, str(rule.field), object_id=oid, package_id=pid)
+    total = (await timed.execute(text(sql), params)).scalar_one()
+    check_group_sum(rule, held.name, None if total is None else Decimal(total))
+
+
+async def _check_keys(db: Any, batch: _Batch,
+                      keys: Mapping[tuple[str, Rule, tuple[Any, ...]], int]) -> None:
+    """Step 6, under one deadline. A timeout refuses the batch."""
+    if not keys:
+        return
+    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    async with _time_limit(db, deadline, _RULE_TIMEOUT_MESSAGE) as timed:
+        for (oid, rule, key), index in keys.items():
+            batch.index = index
+            await _check_key(timed, oid, batch.pid, batch.objects[oid], rule, key)
+
+
+async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
+    """The six steps, in their order. The caller holds the SAVEPOINT."""
+    await _lock_org(db)
+    await _lock_objects(db, batch)
+    await _lock_records(db, batch)
+    answers: list[Record | bool] = []
+    for i, step in enumerate(batch.steps):
+        batch.index = i
+        answers.append(await _apply_write(db, batch, step))
+    await _check_keys(db, batch, _check_records(batch))
+    return answers
+
+
+async def _apply_batch(db: Any, who: str, pid: str, steps: list[Write]) -> list[Record | bool]:
+    """The one path of a record write. An error rolls back the SAVEPOINT as it
+    leaves the block, so the batch writes nothing and the caller's earlier work
+    stays."""
+    if not steps:
+        return []
+    batch = _Batch(who, pid, steps)
+    try:
+        async with db.begin_nested():
+            answers = await _run_steps(db, batch)
+    except Exception as exc:
+        raise BatchError(batch.index, exc) from exc
+    return answers
+
+
+async def apply_writes(db: Any, actor: str, *, package_id: str,
+                       writes: Sequence[Write]) -> list[Record | bool]:
+    """Apply *writes* to the package *package_id*, all or none (C1b).
+
+    Answers one item for each write: the :class:`Record` of a create or an
+    update, and True for a delete. *writes* holds at most
+    :data:`~acb_common.studio_rules.MAX_WRITES_PER_BATCH` writes, and a longer
+    list raises :class:`BudgetExceeded` before any statement. Any other error
+    rolls back the batch and raises :class:`BatchError`, with the place of the
+    write and the cause. The cause of a broken rule is a
+    :class:`~acb_common.studio_rules.ConstraintViolation`. The cause of a
+    write that names no such object or record is a :class:`RecordNotFound`.
+    A timeout in a check gives ``query_timeout``. The caller's transaction
+    stays usable with its earlier work.
+    """
+    who = _actor(actor)
+    pid = _uuid(package_id, "package_id")
+    return await _apply_batch(db, who, pid, _clean_writes(writes))
+
+
+async def _one_write(db: Any, who: str, package_id: str, write: Write) -> Record | bool | None:
+    """A batch of one, for the three record functions. Each raises the cause
+    of a refusal, and answers None for a record that is not there."""
+    pid = _uuid(package_id, "package_id")
+    try:
+        return (await _apply_batch(db, who, pid, _clean_writes([write])))[0]
+    except BatchError as exc:
+        if isinstance(exc.cause, RecordNotFound):
+            return None
+        raise exc.cause from None

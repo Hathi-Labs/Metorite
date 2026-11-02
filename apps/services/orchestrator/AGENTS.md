@@ -42,6 +42,7 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
 9a. **The run's artifact context is a ContextVar, never a module dict** (spec `projects_ai_chat.md` §21.16).
    - `acb_skills.write_artifact.artifact_context()` is the one reader. `_run_sub_agent_streaming` derives its OWN copy, so the parent's value never changes.
    - Every Copilot path calls `copilot_agent.carry_run_context(agent)` before the agent opens a session. With no context, every reader fails closed. Fence: `test_h201_run_context.py`.
+   - The same carry takes the `no_person_present` mark onto the SDK thread (AUTO-7a). `resolve_user_input` refuses a marked run, so it answers no card of a live chat. Fence: `test_no_person_present.py`.
 10. `_tool_injection._collect_injectable_platform_tools()` holds the static tool collection. It is the read-only seam that the skills catalog builds on.
    - Register a newly injected tool in exactly one family, or `test_skills_registry.py` fails. A tool pack is never injected.
    - `_resolve_injected_scope(tool_scope, disabled_families=...)` intersects admin skill toggles with the declared scope. The core floor survives anything. Fence: `test_skill_toggle_enforcement.py`.

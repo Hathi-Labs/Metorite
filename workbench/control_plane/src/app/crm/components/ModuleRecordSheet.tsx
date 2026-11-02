@@ -35,7 +35,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import { useState } from "react";
 import * as api from "../lib/api";
 import { CrmError } from "../lib/api";
-import { isLocked, zohoCreatedLine, zohoLink } from "../lib/connect";
+import { humanizeKey, isLocked, zohoCreatedLine, zohoLink } from "../lib/connect";
 import { useCrmModeValue } from "../lib/modeContext";
 import { useOwners } from "../lib/useCrmMode";
 import type { CrmOwner } from "../lib/filterBar";
@@ -143,7 +143,7 @@ export default function ModuleRecordSheet({
     () => api.getModuleTimeline(module, id),
   );
   const timeline = moduleTimelineState(stream.data, stream.error);
-  const noun = page?.module.singular_label || page?.module.label || module;
+  const noun = page?.module.singular_label || page?.module.label || humanizeKey(module);
   return (
     <RecordModal
       title={

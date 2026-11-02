@@ -46,6 +46,9 @@ class _Result:
     def first(self) -> Any:
         return self._row
 
+    def fetchall(self) -> list[Any]:
+        return []
+
 
 class _FakeDB:
     """Records each statement. ``row`` is the member's stored column, or
@@ -72,6 +75,10 @@ class _FakeDB:
             raise RuntimeError("database away")
         sql, p = str(stmt), dict(params or {})
         self.sql.append((sql, p))
+        if "chat_session" in sql:
+            # PZ-35: Forget also clears the chat summaries. The SQL is proved
+            # in ``test_chat_summary_routes_r8.py`` (R8).
+            return _Result(None)
         if sql.startswith("SELECT 1 WHERE EXISTS"):
             # The alias check of PZ-5 (`email_in_org`).
             ok = self.in_org is None or p["email"] in self.in_org
@@ -172,6 +179,7 @@ def _stored(res: Any) -> dict[str, Any]:
     which the read adds."""
     body = res.json()
     assert isinstance(body.pop("enabled"), bool)
+    assert isinstance(body.pop("summaries_enabled"), bool)
     assert set(body.pop("apps")) == set(APP_PREFERENCES)
     return body
 
@@ -269,7 +277,7 @@ class TestThePut:
         ({"brief": {"enabled": 0}}, "true or false"),
         ({"brief": {"colour": "red"}}, "enabled, brief_time, closeout_time"),
         ({"brief": {}}, "at least one preference"),
-        ({"nobody": {"enabled": True}}, "the app is one of brief"),
+        ({"nobody": {"enabled": True}}, "the app is one of brief, chat"),
         ({"brief": {"enabled": True}, "other": {}}, "exactly one app"),
         ("brief", "exactly one app"),
     ])
@@ -560,7 +568,10 @@ class TestTheForget:
     def test_delete_sets_the_column_null(self, fake: _FakeDB) -> None:
         res = _client().delete(_URL)
         assert res.status_code == 204
-        [(sql, params)] = fake.sql
+        [(sql, params), (clear, clear_params)] = fake.sql
+        # PZ-35: Forget also clears the chat summaries, by the session's member.
+        assert "UPDATE chat_session AS s" in clear
+        assert clear_params == {"member": "ana@alpha.example"}
         assert sql.startswith("UPDATE user_settings SET assistant_profile = CASE WHEN")
         assert "ELSE NULL END" in sql
         assert "current_setting('app.tenant_id', true)" in sql
@@ -671,6 +682,9 @@ class TestTheMember:
                 # The row rule of the app settings (BR-2a-1 repair round 2)
                 # binds the member as ``:m``, as the brief's reader does.
                 assert params["m"] == "bo@alpha.example"
+            elif "chat_session" in sql:
+                # PZ-35: Forget clears the summaries of the session's member.
+                assert params == {"member": "bo@alpha.example"}
             else:
                 assert params["uid"] == "bo@alpha.example"
             assert not any("org" in k for k in params), params
@@ -820,7 +834,7 @@ class TestTheAddress:
         body = _client().get(_URL).json()
         # ``apps`` is the app settings of BR-2a-1, and never a name.
         assert set(body) == {"v", "learning", "address", "style", "aliases", "facts",
-                             "enabled", "apps"}
+                             "enabled", "summaries_enabled", "apps"}
         assert body["address"] == {"name": "VJ"}
         # The profile and the app settings (the row rule), and no name read.
         reads = ("SELECT assistant_profile", "SELECT user_id, assistant_profile -> 'apps'")
