@@ -2647,6 +2647,19 @@ html.ask-morph::view-transition-new(ask-panel) {
   animation: ask-panel-in var(--panel-duration) var(--panel-easing) both;
 }
 
+/* The Ask bar takes a new resting form (`lib/shell/askBarRest.ts`): the
+   field, the pill or the corner button springs into its place. Scale only:
+   an opacity under 1 on an ancestor of the glass would switch its blur off
+   until the fade ends. The morph to and from the chat draws its own glide. */
+@keyframes ask-rest-in {
+  from { transform: translateY(4px) scale(0.92); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  html:not(.ask-morph) [data-ask-form] {
+    animation: ask-rest-in var(--spring-duration) var(--spring-easing) both;
+  }
+}
+
 /* Subtle bounce for the scroll-to-bottom button */
 @keyframes bounce-subtle {
   0%, 100% { transform: translateY(0); }
