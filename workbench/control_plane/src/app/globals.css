@@ -1363,6 +1363,16 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
 .pb-nav {
   padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px));
 }
+/* Clearance for the floating Ask bar of the desktop shell (`ChatBar.tsx`,
+   `bottom-5`, a 44 px field). A page whose last line sits at the foot of its
+   scroller takes it, so the bar never covers that line. From `sm` up only:
+   the phone's Ask tab sits in the bottom nav, which `.pb-nav` clears. */
+@media (min-width: 640px) {
+  /* Unlayered, so it beats a Tailwind utility such as `p-4`, which sits in a layer. */
+  .pb-askbar {
+    padding-bottom: 5.5rem;
+  }
+}
 /* The shared toast viewport's bottom edge. On a phone it sits ABOVE the fixed
    bottom nav (the same 3.5rem + safe-area clearance as .pb-nav, plus a gap),
    or every toast covers the nav for its whole life. From `sm` up there is no
