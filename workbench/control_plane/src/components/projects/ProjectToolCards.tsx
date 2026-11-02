@@ -973,8 +973,8 @@ export function batchNotes(result: string): string[] {
     }
     if (/^\s*full_id:/i.test(line) || !line.trim()) continue;
     if (/listed above exist\. Never create them again/.test(line)) continue;
-    // The same line of the two batches of `writes.py` (`_batch_receipt`).
-    if (/listed above (?:moved|exist)\. Do not (?:move|link) them again/.test(line)) continue;
+    // The same line of the batches of `writes.py` (`_batch_receipt`).
+    if (/listed above (?:moved|exist|changed)\. Do not (?:move|link|change) them again/.test(line)) continue;
     kept.push(line);
   }
   return forPeopleFenced(kept.join(NL)).split(NL).filter((l) => l.trim());

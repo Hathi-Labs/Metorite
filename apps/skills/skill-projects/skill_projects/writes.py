@@ -3409,12 +3409,16 @@ def _update_rows(changes: str) -> list[_UpdateRow] | str:
 async def _update_plan(row: _UpdateRow) -> None:
     """Read the task and plan the row through `_plan_task_edit`. Reads only."""
     est = row.args.get("estimate_mins")
-    if est not in (None, "", 0, "0") and _int_or_none(est) is None:
-        row.task = (await _task(row.task_id))[1]
-        row.why = "the estimate must be a whole number of minutes"
-        return
+    # update_task's int argument refuses "1h" and 1.5. int() would drop the
+    # first and round the second, so the row says so instead.
+    bad_estimate = est not in (None, "", 0, "0") and (
+        _int_or_none(est) is None or (isinstance(est, float) and not est.is_integer())
+    )
     try:
         row.task = (await _task(row.task_id))[1]
+        if bad_estimate:
+            row.why = "the estimate must be a whole number of minutes"
+            return
         planned = await _plan_task_edit(row.task, **row.args)
     except GatewayRefusal as exc:
         if not _named_refusal(exc):

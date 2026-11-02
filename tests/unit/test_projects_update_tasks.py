@@ -347,6 +347,19 @@ async def test_a_bad_estimate_refuses_the_row(monkeypatch) -> None:
     assert [r["id"] for r in asked[0]["rows"]] == ["row-2"]
 
 
+async def test_a_fraction_of_a_minute_refuses_the_row(monkeypatch) -> None:
+    asked = approve(monkeypatch)
+    fake_gateway(monkeypatch, responder)
+    out = await skill_projects.update_tasks(
+        _changes(
+            {"task_id": _tid(1), "estimate_mins": 1.5},
+            {"task_id": _tid(2), "estimate_mins": 90.0},
+        )
+    )
+    assert "the estimate must be a whole number of minutes" in out
+    assert [r["id"] for r in asked[0]["rows"]] == ["row-2"]
+
+
 # ── 6. A row sends what update_task sends ───────────────────────────────────
 
 
