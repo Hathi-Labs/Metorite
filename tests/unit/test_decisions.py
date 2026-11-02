@@ -61,6 +61,7 @@ pytest.importorskip("gateway.routes.projects", reason="gateway not installed")
 
 from fastapi import HTTPException, Request
 from gateway.routes.projects import decisions
+from pydantic import ValidationError
 from sqlalchemy import text
 
 from tests.unit._tenant_ladder import tenant_engine_scope
@@ -226,7 +227,7 @@ def test_the_routes_are_mounted_and_there_is_no_ask_route() -> None:
 def test_the_answer_body_names_no_person() -> None:
     fields = set(decisions.AnswerIn.model_fields)
     assert fields == {"answer_key", "reason"}
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         decisions.AnswerIn(answer_key="yes", answered_by="someone@x.test")  # type: ignore[call-arg]
 
 
@@ -242,12 +243,11 @@ async def test_a_run_with_no_person_present_is_refused_before_any_read() -> None
             raise AssertionError("a marked run read or wrote")
 
     user = SimpleNamespace(email="d@x.test", agent=None, organization_id=str(uuid.uuid4()))
-    with no_person_scope():
-        with pytest.raises(HTTPException) as refused:
-            await asyncio.wait_for(
-                decisions.answer_decision(_Untouchable(), user, str(uuid.uuid4()), "yes", None),
-                _WAIT,
-            )
+    with no_person_scope(), pytest.raises(HTTPException) as refused:
+        await asyncio.wait_for(
+            decisions.answer_decision(_Untouchable(), user, str(uuid.uuid4()), "yes", None),
+            _WAIT,
+        )
     assert refused.value.status_code == 403
     assert refused.value.detail["error"] == NO_PERSON_PRESENT
     assert _Untouchable.calls == 0
@@ -644,6 +644,20 @@ class TestDecisionsOnARealDatabase:
             assert [d["state"] for d in on_task["decisions"]] == ["expired"]
         assert _row(w.p, str(expired)).answered_at is None
         assert _activities(w.p, w.task) == []
+
+    async def test_a_decider_who_lost_the_task_can_no_longer_answer(self, w):
+        lost = _seed_task(w.p, w.p.org_a, w.asker, grants=(w.asker, w.d))
+        async with _session(w.p) as (call, _):
+            made = await _ask(w.p, w.p.org_a, lost, w.d)
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM pm_project_grants WHERE subject = :s AND project_id "
+                               "= (SELECT project_id FROM pm_tasks WHERE id = CAST(:t AS uuid))"),
+                          {"s": w.d, "t": lost})
+            refused = await call(w.u_d, "POST", f"/projects/decisions/{made['id']}/answer",
+                                 {"answer_key": "yes"})
+            assert refused.status_code == 404
+        assert _row(w.p, made["id"]).answered_at is None
+        assert _activities(w.p, lost) == []
 
     async def test_an_answer_must_be_one_of_the_option_keys(self, w):
         async with _session(w.p) as (call, _):
