@@ -1,6 +1,6 @@
 # CRM-M — The CRM you talk to: say it, see it, keep it
 
-**Status: ACTIVE, 2026-11-02. Specified, and nothing is built.** Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
+**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is built on the branch `crm-m1-change-history-mt-22a37d3b` (2026-11-02), not merged. No other slice is built.** Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
 
 Every anchor below was re-read at `930839f2e`. §13 lists the few that moved.
 
@@ -211,7 +211,50 @@ R8 binds each slice with SQL. Run the SQL against a real database. Name the exac
 5. The log table has FORCE row level security. A test reads it as a second org and gets zero rows (R5, R8).
 6. The migration is expand/contract and takes the next free number at build time (R1, R6).
 
-**Fence.** `tests/unit/test_crm_change_history.py` (planned). It lists each config route and fails on a route with no log row.
+**Status.** PR 1 is built on the branch `crm-m1-change-history-mt-22a37d3b` (2026-11-02), not merged. PR 2 is not built. Done when 1 holds for the PR 1 routes, and done when 2, 3, 5 and 6 hold. Done when 4 waits for PR 2 and the cards of CRM-M2.
+
+**Fence.** Two test files hold this slice.
+
+- `tests/unit/test_crm_change_history.py`. Its static part lists each write route of `routes/crm/` in one list: logged, the Undo, pending for PR 2, or out. A new route in no list fails, and so does a logged route that does not reach `change_log.log_change`. Its R8 part has `_DB_GATE` and runs the real router as the app role.
+- `workbench/control_plane/src/app/crm/components/crmM1.test.ts`. It holds the section, the words of a row and the three notices.
+
+#### The routes of CRM-M1
+
+The table is the list of record. `test_crm_change_history.py` holds the same lists. "Undo" says whether an Undo can reverse the logged row.
+
+| Route | PR | Area | Ladder | Undo |
+|---|---|---|---|---|
+| `PATCH /crm/settings`, the access rule | 1 | `access` | company | Yes. It writes the old rule. |
+| `PATCH /crm/settings`, the mode | 1 | `setup` | company | No. A switch seeds or deletes the pipeline. |
+| `PUT /crm/settings/labels` | 1 | `record_names` | company | Yes. It writes the old names. |
+| `POST /crm/statuses/{kind}` | 1 | `deal_stage`, `lead_status` | team | Yes. It removes the stage, and refuses while records sit in it. |
+| `PATCH /crm/statuses/{kind}/{id}` | 1 | `deal_stage`, `lead_status` | team | Yes. In Mirror mode only the overlay columns write. The route logs nothing when it refuses a write. |
+| `POST /crm/lost-reasons` | 1 | `lost_reason` | team | Yes. It removes the reason, and refuses while a record names it. |
+| `PATCH /crm/lost-reasons/{id}` | 1 | `lost_reason` | team | Yes |
+| `PATCH /crm/pipelines/{id}` | 1 | `pipeline` | company | Yes. It writes the old name. |
+| `POST /crm/pipelines/{id}/stages` | 1 | `pipeline_stage` | team | Yes. It takes the stage out, and refuses while a deal of the pipeline sits in it. |
+| `DELETE /crm/pipelines/{id}/stages/{status_id}` | 1 | `pipeline_stage` | team | Yes. It puts the stage back at its old place. |
+| `POST`, `PATCH`, `DELETE /crm/views[/{id}]` | 1 | `view` | own | Yes. A deleted view comes back with its id and its owner. |
+| `POST /crm/rules`, `PATCH /crm/rules/{id}` | 1 | `rule` | team, or own for a member's rule | Yes |
+| `POST /crm/rules/pending/{id}` | 1 | `rule` | team, or own | Yes. The row says `chat` or `whatsapp`. |
+| Field rules, the conversion map, the field studio, the catalogue, the sync holds, the mapping plans and suggestions, the open questions | 2 | | | Pending. The row of a plan names the plan version. |
+| `DELETE` of a status, a lost reason or a rule, `PUT .../order`, `POST .../order/reset` | 2 | | | Pending. A delete card says "This cannot be undone". |
+| The cutover (`cutover.py`) and the start over (`POST /crm/reset`) | Out | | | No. Each is one-way and keeps its own audit line. |
+| Connect, disconnect, Sync now, the analysis rerun, the Zoho stage import, the legacy import, the mapping preview, the rule hold | Out | | | They change no set-up value, or they write nothing. |
+| Each record write: records, activities, deal contacts, module records, lead convert | Out | | | A record is not the set-up. |
+
+**What no Undo reverses.** The route logs a change of the mode, and no Undo reverses it. The cutover and the start over keep their own audit lines and write no Change history row. An Undo row cannot be undone either. A person makes the change again.
+
+#### Built as (PR 1)
+
+- **The seam.** `routes/crm/change_log.py::log_change` is the one writer of `crm_change_log`. Each logged route calls it with the session of its own write. So a write that rolls back leaves no row. It is not `acb_audit.record`, which writes outside the transaction.
+- **The table.** `crm_change_log` has the tenant `organization_id` and FORCE row level security. An index allows one Undo for each row. A trigger keeps a row fixed. Only `undone_by` changes, and only once. The CRM start over keeps the rows.
+- **Undo.** `POST /crm/change-history/{id}/undo` writes the stored "before" through the write helper of the route. Each module registers the Undo of its own areas. The Undo refuses with a plain reason in five cases. The change cannot be undone, or it is undone already. The CRM mode changed since. The thing changed again since. The thing is gone or holds records.
+- **Who reads.** An admin reads each row that is not private to another member. A member who is not an admin reads only their own changes. A private view and a member's own rule are private to that member.
+- **Through what.** Each PR 1 route writes `ui`. The confirm of a rule writes `chat` or `whatsapp`. CRM-M2 passes `chat` from its tools.
+- **The ladder.** `approved_by` is the actor in PR 1. A member's own rule is at the `own` level, and an org rule at the `team` level. The approval card is CRM-M2.
+- **The chat read.** `crm_change_history` reads `GET /crm/change-history` as the member. The orchestrator and the CRM assistant hold it.
+- **The section.** Settings → Change history is last in the rail, for an admin, in both modes. ⚠️ It shows no Undo button in PR 1. A new UI action needs a chat tool (owner rule, 2026-11-01, `tests/unit/test_chat_parity.py`), and the chat Undo is CRM-M2. So the button lands with CRM-M2.
 
 ### CRM-M2. Chat parity (#1432) — Wave 1
 

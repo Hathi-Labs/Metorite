@@ -374,6 +374,12 @@ def test_the_chat_parity_row_names_the_read() -> None:
     assert chat_parity.COVERED["GET /api/crm/change-history"] == "crm_change_history"
 
 
+def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
+    """An R8 suite that CI does not list still skips in silence when the
+    database gate is disarmed. Match the argument line, not a mention."""
+    workflow = (_ROOT / ".github" / "workflows" / "pr-check.yml").read_text(encoding="utf-8")
+    assert re.search(r"^\s+tests/unit/test_crm_change_history\.py \\?$", workflow, re.M)
+
 # ── The database tests ──────────────────────────────────────────────────────
 
 ADMIN = "admin@crm-m1.test"
