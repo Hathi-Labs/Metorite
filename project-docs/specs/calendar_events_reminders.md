@@ -906,6 +906,22 @@ Fences: `reminderBand.test.ts`, `reminderActions.test.ts`,
 `remindersBand.test.ts` and `test_shell_feed.py` (`TestTheReminderCards`).
 The real-database cases are in `test_reminder_loop.py` (`test_r8_the_band_*`).
 
+#### RX-7 (2026-11-02)
+
+RX-7 closes the findings that the reviews of RX-2, RX-3 and RX-5 left open. It is built on branch `rx7-follow`.
+
+1. **Snooze zone.** "This evening" and "Tomorrow morning" read the saved zone, not the browser zone. The one reader is `snoozeZone` in `reminderBand.ts`. The chat "Later" presets use it too. The receipt "Change time" already read the zone of the reminder.
+2. **The bell cut.** `needs.KIND_ORDER` now puts `reminder_due` and `reminder_check` first. This replaces the sentence above that said the server order does not change. The cut to 30 rows keeps a fired reminder. `feed_rank.BASE` keeps its values. The test of the needs order names the two kinds as the one exception.
+3. **A repeat.** `lib/reminderWrite.ts` reads `already`, and `createdWords` says that the reminder already exists, with its time.
+4. **A shared chat.** The receipt shows no Undo, Change time or See in Calendar when `ranByViewer` is false (`runMemberEmail` of the message).
+5. **The agent.** `agent-projects/instructions.md` says not to set a reminder that already exists.
+6. **The zone control.** The Calendar settings have a Time zone select. `taskStore.hydrate` and `CalendarView` write the browser zone only through `zoneToSave`, and only after the settings were read.
+7. **East of UTC+12.** The date inputs read a due instant through `dueDayOf`.
+8. **A member with no `feature:tasks`.** The new route `GET` and `PUT /auth/me/zone` (BFF `/api/auth/me/zone`) needs a signed-in member only. It writes through `write_member_settings`, the one write of the settings row. `saveZone.ts` uses it.
+9. **The create lock.** `create_lock_key` holds the tenant, and `test_reminder_create_lock_key.py` fences it.
+
+Fences: `reminderBand.test.ts`, `reminderWrite.test.ts`, `ReminderReceiptCard.test.ts`, `saveZone.test.ts`, `quickAdd.test.ts`, `test_shell_needs.py`, `test_feed_rank.py`, `test_auth_me_zone.py` and `test_auth_me_zone_r8.py`.
+
 ### 5.7 A tap opens the chat
 
 The owner's words: "When I open the reminder on mobile, it should open the
