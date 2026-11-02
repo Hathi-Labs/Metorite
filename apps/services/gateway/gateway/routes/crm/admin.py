@@ -31,9 +31,9 @@ database said no" into "Proposal still has 4 deals in it".
 and a PATCH of a status or a lost reason write one row through
 ``change_log.log_change``, in the same transaction, at the ``team`` level of
 the ladder. A refused write (409, 422) writes none, and a PATCH that changes
-no value writes none. Each Undo first checks that the row still holds the
-values of the change, so a row that changed again since is a 409
-``changed_since``. The Undo of a create deletes the row through the
+no value writes none. Each Undo first locks the row (``FOR UPDATE``) and
+checks that it still holds the values of the change, so a row that changed
+again since is a 409 ``changed_since``. The Undo of a create deletes the row through the
 helper of the DELETE route, and it refuses while records name the row. The
 Undo of a PATCH writes the old values through :func:`patch_status_in` or
 :func:`patch_lost_reason_in`, the helpers of the PATCH routes. The DELETE
@@ -843,8 +843,9 @@ _KIND_OF_AREA: dict[str, str] = {area: kind for kind, area in STATUS_AREAS.items
 
 
 async def _current(db: Any, table: str, record_id: str | None, area: str) -> Any:
-    """The row of a change, or 409 ``gone``."""
-    row = await load_row(db, table, str(record_id or "")) if record_id else None
+    """The row of a change, locked ``FOR UPDATE``, or 409 ``gone``. The lock
+    holds the values that the Undo checks until it writes."""
+    row = await load_row(db, table, str(record_id or ""), lock=True) if record_id else None
     if row is None:
         raise change_log.gone(area)
     return row

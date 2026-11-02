@@ -558,8 +558,9 @@ async def _undo_view(db: Any, user: Any, logged: Logged) -> None:
     if logged.action in (change_log.CREATE, change_log.CHANGE):
         # A create and a change alike: the view must still be there, with
         # the values that this change left. Else 409, and nothing moves.
+        # FOR UPDATE: the check holds until the write.
         current = (await db.execute(
-            text(f"SELECT {_COLUMNS} FROM crm_views WHERE id = CAST(:id AS uuid)"),
+            text(f"SELECT {_COLUMNS} FROM crm_views WHERE id = CAST(:id AS uuid) FOR UPDATE"),
             {"id": checked_uuid(view_id, "id")},
         )).first()
         if current is None:

@@ -307,6 +307,53 @@ def test_each_area_has_an_undo_except_the_setup() -> None:
     assert change_log.ADMIN_AREAS.isdisjoint({"view", "rule"})
 
 
+#: What locks the thing of an Undo: a read ``FOR UPDATE``, the lock seam of
+#: ``core.load_row``, the lock of the settings row, or ``admin._current``.
+_LOCKS = ("FOR UPDATE", "lock=True", "_LOCK_SETTINGS_SQL", "_current(")
+
+
+def _undo_functions(root: Path = _CRM) -> dict[str, tuple[str, dict[str, ast.AST]]]:
+    """``file::function`` → (its source, the functions of its module), for
+    each function that ``@change_log.undoes(...)`` registers."""
+    found: dict[str, tuple[str, dict[str, ast.AST]]] = {}
+    for path in sorted(root.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        funcs = {
+            n.name: n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
+        }
+        for fn in funcs.values():
+            if any(
+                isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+                and d.func.attr == "undoes" for d in fn.decorator_list
+            ):
+                found[f"{path.name}::{fn.name}"] = (_code(fn), funcs)
+    return found
+
+
+def _code(fn: Any) -> str:
+    """The statements of *fn*, with no docstring: its words are no code."""
+    body = fn.body[1:] if ast.get_docstring(fn) is not None else fn.body
+    return "\n".join(ast.unparse(s) for s in body)
+
+
+def test_each_undo_function_locks_its_thing_before_the_check() -> None:
+    """P3a (fix round 1). Each Undo reads its thing ``FOR UPDATE`` before it
+    checks the values, so a write between the check and the Undo waits.
+    Mutation: drop the lock of one Undo function → red by name."""
+    found = _undo_functions()
+    assert len(found) == 8, sorted(found)
+    late = []
+    for name, (source, funcs) in sorted(found.items()):
+        first_lock = min((source.find(m) for m in _LOCKS if m in source), default=-1)
+        first_check = source.find("changed_since")
+        if first_lock < 0 or (0 <= first_check < first_lock):
+            late.append(name)
+        if "_current(" in source:
+            assert "lock=True" in _code(funcs["_current"]), name
+    assert not late, f"Undo functions that check before a lock: {late}"
+
+
 def _migration() -> str:
     found = [
         p for p in sorted(_MIGRATIONS.glob("*.sql"))

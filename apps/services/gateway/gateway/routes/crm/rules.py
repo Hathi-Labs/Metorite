@@ -514,7 +514,10 @@ async def _undo_rule(db: Any, user: Any, logged: Logged) -> None:
         raise HTTPException(status_code=404, detail="Not Found")
     await _require_mirror(db, org)
     rule_id = str(logged.entity_id or "")
-    current = (await db.execute(text(_ONE_SQL), {"org": org, "id": rule_id})).first()
+    # FOR UPDATE: the check of the values holds until the write.
+    current = (await db.execute(
+        text(_ONE_SQL + " FOR UPDATE"), {"org": org, "id": rule_id},
+    )).first()
     if current is None:
         raise change_log.gone(logged.area)
     now = {"scope": _scope_word(current), "slug": str(current.slug), "body": str(current.body)}

@@ -373,8 +373,9 @@ async def remove_stage_in(
 
 @change_log.undoes("pipeline")
 async def _undo_rename(db: Any, user: Any, logged: Logged) -> None:
-    """Write the old name back through :func:`rename_pipeline_in`."""
-    row = await load_row(db, "crm_pipelines", str(logged.entity_id or ""))
+    """Write the old name back through :func:`rename_pipeline_in`. The row
+    is locked first, so the check of its name holds until the write."""
+    row = await load_row(db, "crm_pipelines", str(logged.entity_id or ""), lock=True)
     if row is None:
         raise change_log.gone(logged.area)
     if not change_log.same_values({"name": row.name}, logged.after):
@@ -387,14 +388,17 @@ async def _undo_rename(db: Any, user: Any, logged: Logged) -> None:
 
 @change_log.undoes("pipeline_stage")
 async def _undo_stage(db: Any, user: Any, logged: Logged) -> None:
-    """An added stage goes out. A removed stage goes back at its old place."""
+    """An added stage goes out. A removed stage goes back at its old place.
+    The pipeline row and the place of the stage are locked first."""
     pipeline_id = str(logged.entity_id or "")
-    if await load_row(db, "crm_pipelines", pipeline_id) is None:
+    if await load_row(db, "crm_pipelines", pipeline_id, lock=True) is None:
         raise change_log.gone(logged.area)
     if logged.action == change_log.CREATE:
         after = logged.after or {}
         status_id = str(after.get("status_id") or "")
-        place = (await db.execute(text(_PLACE_SQL), {"p": pipeline_id, "s": status_id})).first()
+        place = (await db.execute(
+            text(_PLACE_SQL + " FOR UPDATE"), {"p": pipeline_id, "s": status_id},
+        )).first()
         # The stage must still sit in the pipeline at the place of this
         # change. The name of the stage in "after" is for the reader only.
         if place is None or not change_log.same_values(

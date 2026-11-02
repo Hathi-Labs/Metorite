@@ -1645,9 +1645,17 @@ async def savepoint(db: Any) -> AsyncIterator[None]:
         yield
 
 
-async def load_row(db: Any, table: str, record_id: str) -> Any | None:
+async def load_row(
+    db: Any, table: str, record_id: str, *, lock: bool = False,
+) -> Any | None:
+    """One row by id, or None. ``lock=True`` reads it ``FOR UPDATE``, so a
+    check of its values holds until the write of the same transaction (the
+    Undo of a change, CRM-M1)."""
     return (await db.execute(
-        text(f"SELECT * FROM {table} WHERE id = CAST(:id AS uuid)"),
+        text(
+            f"SELECT * FROM {table} WHERE id = CAST(:id AS uuid)"
+            + (" FOR UPDATE" if lock else "")
+        ),
         {"id": record_id},
     )).fetchone()
 

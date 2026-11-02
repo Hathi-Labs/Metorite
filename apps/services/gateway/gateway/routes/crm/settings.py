@@ -783,8 +783,10 @@ async def write_settings_in(
 
 @change_log.undoes("access")
 async def _undo_access(db: Any, user: Any, logged: Logged) -> Any:
-    """Write the old access rule back through :func:`write_settings_in`."""
+    """Write the old access rule back through :func:`write_settings_in`.
+    The settings row is locked first, so the check holds until the write."""
     org = _organization(user)
+    await db.execute(text(_LOCK_SETTINGS_SQL), {"o": org})
     current = _wire(await read_settings(db, org))
     if not change_log.same_values(
         {k: getattr(current, k) for k in _SETTINGS_KEYS}, logged.after,
@@ -797,8 +799,10 @@ async def _undo_access(db: Any, user: Any, logged: Logged) -> Any:
 
 @change_log.undoes("record_names")
 async def _undo_record_names(db: Any, user: Any, logged: Logged) -> None:
-    """Write the old names back through :func:`save_labels_in`."""
+    """Write the old names back through :func:`save_labels_in`. The
+    settings row holds the names, and it is locked first."""
     org = _organization(user)
+    await db.execute(text(_LOCK_SETTINGS_SQL), {"o": org})
     current = await native_labels(db, org) or {}
     if _labels_plain(current) != (logged.after or {}).get("labels"):
         raise change_log.changed_since()
