@@ -963,8 +963,12 @@ describe("the chat's chrome on a phone (CF-8, chat_first_surface.md §4.8)", () 
   it("the chat drops its agent row and its Share row on the phone, and keeps the room on", () => {
     const src = chat();
     // One guard holds both rows: the glass head puts them on one line (GL-10).
-    expect(src).toMatch(/\{!compact && !phoneChrome && \(\s*<div data-chat-head=""[^>]*>\s*<div data-chat-agent-row=""/);
+    // A solo chat in the full view draws its Share in the dock's header slot
+    // instead, and no agent row (CO-0, owner 2026-11-02: one header row).
+    expect(src).toMatch(/\{!compact && !phoneChrome && !\(headSlot && !isRoom\) && \(\s*<div data-chat-head=""[^>]*>\s*<div data-chat-agent-row=""/);
     expect(src).toMatch(/<div data-chat-head=""[\s\S]*?data-chat-agent-row=""[\s\S]*?<div data-chat-room-row=""/);
+    expect(src).toMatch(/\{!compact && !phoneChrome && headSlot && !isRoom\s*\? createPortal\(\s*<div data-chat-head="slot"[^>]*>\s*<RoomHeader /);
+    expect(read("lib/shell/AssistantDock.tsx")).toContain("headSlot={columnForm ? headSlot : null}");
     expect(src).toContain("useRoom(sessionId, viewerEmail, { enabled: !compact });");
   });
 
