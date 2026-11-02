@@ -280,7 +280,17 @@ const domScheduler: Scheduler = {
 function observeDom(onChange: () => void): () => void {
   const mo = new MutationObserver(onChange);
   mo.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: WATCHED_ATTRIBUTES });
-  return () => mo.disconnect();
+  // A panel that slides in ends its move with no DOM change (the phone sheet rises
+  // under a transition), so the end of a move and a short poll check again.
+  document.addEventListener("transitionend", onChange, true);
+  document.addEventListener("animationend", onChange, true);
+  const poll = window.setInterval(onChange, 200);
+  return () => {
+    mo.disconnect();
+    document.removeEventListener("transitionend", onChange, true);
+    document.removeEventListener("animationend", onChange, true);
+    window.clearInterval(poll);
+  };
 }
 
 export function GuideSpotlight(props: GuideSpotlightProps) {
