@@ -2,8 +2,9 @@
 
 **Status: ACTIVE, 2026-11-02.** Verified against code on 2026-11-02, at
 `origin/main` `a5cbbdee2`. Board row: **WS-OB** (`work_plan.md` §2). Metorite:
-the Onboarding project, epic 669. OB-0 is built on a branch. The owner accepted
-§9 on 2026-11-02, recorded as **D150**.
+the Onboarding project, epics 669 and 1351. The owner accepted §9 on 2026-11-02,
+recorded as **D150**. The owner accepted §12.10 the same day, recorded as
+**D153**.
 
 **Source.** Owner report, 2026-11-01. The owner said that the first-run
 onboarding fails from the start. The founder's welcome dialog did not
@@ -84,7 +85,8 @@ These are the rules of the design. Each slice in §8 obeys them.
 | F3 | My Day, with the Get started card at the top | Nothing until the founder acts |
 | F4 | Each step ticks when its real row exists. The last one shows "You're set up", once | `setup` prefs (§7.2) |
 
-The founder's default steps, in this order:
+The founder's default steps of D150. ⚠️ D153 sets a new order, and §12.3 holds
+it:
 
 | Id | Step | Its act | Done when |
 |---|---|---|---|
@@ -181,16 +183,20 @@ already per member and per org (`239_user_settings_per_org.sql`).
 | **OB-1a** | `setup_status` and `GET /shell/setup`, with the steps of §4 and §5 | A test per step shows `open`, then `done` after its row lands. R8: a real database | AGENT-SAFE · MEDIUM |
 | **OB-1b** | The Get started card on My Day (§6), and the `setup` prefs key (§7.2) | A vitest test per rule of §6. An e2e test: hide, reload, still hidden | AGENT-SAFE · MEDIUM |
 | **OB-1c** | Invite on the card. One `InviteForm`, moved out of `OrganizationAdmin.tsx`, serves the card and Settings | One component in both places, with `lib/inviteSeat.ts` unchanged. An e2e test sends from the card | AGENT-SAFE · MEDIUM |
-| **OB-2** | One welcome dialog (F2, M2). The invite step leaves it, because the card does that now | A founder sees one dialog, then My Day with the card. The welcome e2e cases change in the same PR | AGENT-SAFE · LOW |
-| **OB-3** | Help → Get started opens the card again. It joins HLP-1 (task 673) | Clears `hidden_at`. One e2e test | AGENT-SAFE · LOW |
-| **OB-4** | The empty state of each live app teaches (P8), through `components/EmptyState.tsx` | Each live pane has one first act and one "Ask the assistant how". A source test lists the panes | AGENT-SAFE · LOW |
+| **OB-4** | One welcome dialog (F2, M2). The invite step leaves it, because the card does that now | A founder sees one dialog, then My Day with the card. The welcome e2e cases change in the same PR | AGENT-SAFE · LOW |
+| **HLP-1** | Help → Get started opens the card again. It is part of task 673 | Clears `hidden_at`. One e2e test | AGENT-SAFE · LOW |
+| **OB-2** | One useful answer after the first mail sync (§12.4). Task 671 | A new member who finishes the first sync sees one answer built from that mail | AGENT-SAFE · MEDIUM |
+| **OB-3** | The empty state of each live app teaches (P8), through `components/EmptyState.tsx`. Task 672 | Each live pane has one first act and one "Ask the assistant how". A source test lists the panes | AGENT-SAFE · LOW |
 | **OB-5** | The chat reads `setup_status`, and opens each step's form filled | A tool test per step. The chat never sends an invite itself (D89 jobs, D-PM-40) | AGENT-SAFE · MEDIUM |
 | **OB-6** | `connect_calendar` joins the registry | Waits on CE-10 | AGENT-SAFE · LOW |
 | **OB-7** | An admin sees which members have open steps. It joins SH-8 (task 953) | Waits on SH-8 | AGENT-SAFE · MEDIUM |
+| **OB-10 to OB-26** | The AI-led layer. §12.7 holds the order | Each task holds its own test | Mixed. OB-26 is OWNER-GATE |
 
-**Metorite tasks.** OB-0 is 1337, OB-0b is 1339 and OB-0c is 1340. OB-1 is
-670, with OB-1a 1341, OB-1b 1342 and OB-1c 1343. OB-2 is 1344, and OB-3 is in
-HLP-1 (673). OB-4 to OB-7 are 1345 to 1348. The design tasks 177 (the organization's path) and 178
+**Metorite tasks.** OB-0 is 1337, OB-0b is 1339, OB-0c is 1340 and OB-0d is
+1350. OB-1 is 670, with OB-1a 1341, OB-1b 1342 and OB-1c 1343. OB-2 is 671 and
+OB-3 is 672, and both predate this spec. OB-4 is 1344. OB-5 to OB-7 are 1346 to
+1348. OB-10 is 1345. OB-11 to OB-19 are 1352 to 1360. OB-20 to OB-26 are 1361
+to 1367. Epic 1351 holds the AI-led layer. The design tasks 177 (the organization's path) and 178
 (the member's path) close with §4 and §5.
 
 OB-8 (the phone push prompt) stays in `calendar_events_reminders.md` §10.4.
@@ -238,3 +244,190 @@ Each later slice adds its own command here, in the same PR.
 | The founder's mark leaves the address and keeps the rest | `src/lib/shell/welcomeSteps.test.ts`, "the founder's mark leaves the address" |
 | One `setup_status`, and no second status function | Advisory until OB-1a adds a source test |
 | A step is done from real state, never from a click | Advisory until OB-1a adds a test per step |
+
+## 12. The AI-led layer
+
+**Status: ACTIVE, 2026-11-02 (D153).** The owner gave this direction on 2026-11-02.
+Metorite urges a new admin to set up context and connect work surfaces. A person
+who joins an existing organization gets a different path.
+
+Metorite: epic 1351, OB-AI. §12.10 holds the decisions for the owner. The record
+is `research/ai_native_onboarding_2026-11.md`.
+
+**The rule of this section.** The card of §6 stays the base. Every step works
+with no AI. The assistant does the typing: it drafts, fills a form and explains.
+A person confirms. The layer sits behind the org flag `SETUP_ASSISTANT_ORGS`,
+default OFF.
+
+### 12.1 What other apps do
+
+The evidence is thin. Almost every number is the seller's own. No test was run
+on a B2B work operating system.
+
+| Source | What it does | Grade | What we take |
+|---|---|---|---|
+| Amplitude, A/B tests on its own AI chat | An empty chat box lost to clickable starts. One job-title question that routed to role-tailored clicks doubled new-user conversion. A chat-first Home raised engagement 55%. A chat-first chart empty state lost to an entry inside the workflow | Measured, no sample sizes | OB-10. Chat-first is a test per surface, not a rule |
+| Attio | A connected mailbox creates people you emailed or met, and a company per non-public domain. It shows a tracker, then "In sync". Bodies stay private | Vendor docs | OB-2, OB-17 |
+| Fyxer | It works inside the member's own Gmail. It says that early suggestions may be off. It has a scheduled briefing | Vendor docs | OB-2, and the daily return |
+| Stripe | Test mode works at once. A checklist of eight items gates going live | Vendor docs | Value before setup. We tick from server state, not the browser |
+| Linear | Separate admin and joiner checklists. Import stays an admin act | Vendor docs | §12.8. Import is never forced |
+| Notion, Slack, Canva, Miro | A person joins by email domain, under an admin's setting. Notion's Free plan makes domain joiners owners | Vendor docs | OB-22, with least privilege |
+| Claude, ChatGPT | An owner enables a connector, then each member signs in. Member memory stays off until the member turns it on | Vendor docs | The two gates of OB-15 |
+| Claude, Gemini | Memory import since about March 2026 | Vendor docs | OB-23 |
+| Microsoft Learning Agent | A guided journey of 5 to 10 minutes that asks questions. In preview, with no outcome data | Vendor notice | OB-21 |
+| Glean | First index takes 2 to 14 days, and users stay out until it ends | Vendor docs | The trap. OB-2 gives a first output from a small source |
+| Chameleon, Userpilot | User-launched tours complete at 64%, against 33.5% overall. Checklist completion has a median of 10.1% | Vendor data | Pull beats push. Checklist completion is not the metric |
+
+**What we do not take.** Perspective AI's "3.2x activation" claim carries
+selection bias. A forced import has no precedent. A setup score or streak grades
+the admin.
+
+**Not verified.** No first-run screen was captured for any product, and no
+joiner screen. No product documents an AI interview that sets up a company, so
+OB-12 and OB-13 are a bet. OB-25 closes what it can.
+
+### 12.2 The one measured win
+
+The welcome question already exists. OB-10 uses its answer. My Day and the empty
+chat show three clickable asks for that answer. An empty box never greets a new
+member.
+
+### 12.3 The new organization: company context
+
+No company profile exists today (`external_agent_access.md` §4, item 8). The
+assistant therefore knows almost nothing about a new company. This is the
+context that the admin is urged to give.
+
+1. **The draft (OB-12).** The assistant reads the admin's public website through
+   the one fetch guard. It drafts up to eight fields, and each field cites its
+   page. The admin accepts, edits or removes each field, then presses Save.
+   Nothing is written before Save (D110).
+2. **The gaps (OB-13).** The setup chat asks only what the site and the signup
+   did not answer. It asks three questions at most, one at a time. Each states
+   why it asks and what the answer changes.
+3. **The store (OB-11).** Confirmed facts are org-audience facts in Knowledge.
+   The profile is one read over them. A second store of company facts is a
+   defect.
+4. **The rest of the setup chat (OB-13).** It takes the open steps in order, and
+   it resumes from `setup_status` on any device.
+5. **Documents (OB-14).** A dropped deck gives the same proposals.
+6. **The team (OB-17).** The first sync proposes same-domain people from mail
+   headers. It fills `InviteForm`, and a person presses Send.
+7. **A first project (OB-18).** The chat proposes one, shows the plan card, and
+   writes only on a yes.
+
+The founder's list becomes `company_context`, `connect_email`,
+`connect_surfaces`, `invite_team` and `first_project` (D-OB-5). The setup chat
+ticks `ask_assistant` as a by-product, so that step moves to "More steps".
+
+### 12.4 Connect your work, then a first output
+
+**One panel (OB-15).** "Connect your work" ranks the surfaces by the welcome
+answer. Each row says what it unlocks, who connects it and its live state. The
+state comes from the one connection registry (D96). A row opens the app's own
+connect flow.
+
+**Two gates.** An admin enables an org-level connection. Each member connects
+their own mail and calendar. A member never sees an org-level act that they
+cannot do.
+
+**A first output in the same session (OB-2).** While the first sync runs,
+`OnboardingPanel.tsx` shows live counts of what it found. The sync reads the
+last 30 days first. The first answer is a prepared day with clickable items, and
+each item names its source. Older mail fills in behind it.
+
+**The daily return.** My Day is the return. The brief (WS-BRIEF) is the scheduled
+reason to come back, at a time that the member picks.
+
+### 12.5 Consent and trust (OB-16)
+
+- A plain panel comes before each provider screen: what Metorite reads, what it
+  never does without asking, and how to disconnect.
+- The notice of D-PZ-10 comes before any read of sent mail.
+- A write on the member's own work acts at once with Undo. An act that touches
+  another person asks first. An output to a non-member has a preview and an off
+  switch.
+- Website text and pasted text are untrusted data.
+
+**The limits of the providers.** Gmail runs in Testing mode: 100 users at most,
+7-day refresh tokens, and no CASA yet (tasks 601 and 648). So Connect breaks
+weekly, and OB-16 shows one-click Reconnect. A Microsoft tenant that needs admin
+consent gets a ready consent link that the member sends. OB-26 removes the
+"Unverified" label. Each failure is logged by cause, because no public data on
+consent drop-off exists.
+
+### 12.6 The urge (OB-19)
+
+The urge never blocks (P2). It shows an honest gap.
+
+- The card lists what the assistant can do today, and what the next connection
+  adds. It reads `setup_status`, so it stays true.
+- Each open step says what stays weak without it.
+- The setup coach nudges inside D110: one question a day, 14 days after a
+  dismiss, and "Don't ask again" stops it.
+- No score and no streak.
+
+### 12.7 The order
+
+| Wave | Slices | Why this order |
+|---|---|---|
+| 1. Plain and measured | OB-0c, OB-0d, OB-1a, OB-1b, OB-4, OB-10, OB-24 | The card, one dialog, the measured win, and the numbers |
+| 2. Connections | OB-1c, OB-15, OB-16, OB-2 | Value from the member's own data |
+| 3. The joiner | OB-20, OB-3, OB-5 | A member who joins sees their own work |
+| 4. The bet | OB-11, OB-12, OB-13, OB-19 | Company context, behind the flag |
+| 5. Depth | OB-17, OB-22, OB-14, OB-18, OB-21, OB-23 | After the first orgs are read by hand |
+| Owner | OB-26, tasks 601 and 648. OB-25 for legal advice | These cap one-click Connect, so start them now |
+
+### 12.8 The person who joins an existing organization
+
+This design is ours. No source documents a joiner screen that shows the team's
+work.
+
+**What differs.** The org already holds colleagues, work and context. So the
+joiner gets no company interview, and never sees `company_context`,
+`invite_team` or `first_project` unless their role does that act.
+
+- **The first day (OB-20).** The top of My Day shows who invited them, the
+  admin's note and the company in one paragraph. It shows their team, their
+  projects and the tasks assigned to them. It offers three asks grounded on what
+  they can read. Each row reads under the member's own session, so RLS and grants
+  bind it.
+- **Their steps.** `connect_email`, `ask_assistant`, `know_me` and `phone_push`
+  (§5). `know_me` is the interview of PZ-32.
+- **The admin's welcome (OB-21).** One note and up to three links.
+- **Join before create (OB-22).** A person who proved an address at a domain of
+  an opted-in org sees "Ask to join" before the org form. The request goes to the
+  queue of `colleague_onboarding.md` §6. The joiner gets the member role.
+- **Their other assistant (OB-23).** A pasted memory export arrives as proposals.
+  The member confirms each line. Only the member reads the profile (D-PZ-3).
+
+### 12.9 The measure (OB-24)
+
+These metrics are our own proposal, not benchmarks.
+
+| Metric | Definition |
+|---|---|
+| Activation | One accepted AI output on the member's own data in session one, plus a second on another day within 7 days |
+| Team | A second member active within 14 days of signup |
+| Connect rate | By surface and by failure cause |
+| Output outcome | Accepted, edited or rejected |
+| Guardrails | Undo rate, wrong-fact corrections, memory deletions |
+| Retention, later | Month-3 retention and the M12/M3 ratio (a16z) |
+
+Checklist completion and message count are not success metrics. With few
+signups a formal split has little power. So we read the first 20 orgs by hand,
+and we run a split only with enough volume.
+
+### 12.10 Decisions
+
+The owner accepted each default on 2026-11-02, recorded as **D153**.
+
+1. **D-OB-5. `company_context` is the founder's first step.** The list of §12.3
+   replaces D-OB-3. *Why:* the owner asked that a new admin set up context first.
+2. **D-OB-6. Metorite pays for the AI of setup, up to a cap per org.** No credits
+   leave a new org for it. *Why:* a founder must not meet a credit limit before
+   the first value. This is a commercial call.
+3. **D-OB-7. Join before create is OFF until an org admin turns it on.** *Why:*
+   it reveals that an org exists, and only the org should choose that.
+4. **D-OB-8. The AI layer ships behind `SETUP_ASSISTANT_ORGS`, and we read the
+   first 20 orgs by hand.** *Why:* it is a bet with no outside evidence.

@@ -114,6 +114,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - **Hold no session across a provider call or a model call.** ⚠️ Never call `_sync_account`, `_run_manual_sync` or `hold_mailbox` inside a `_tenant_session` block. Do not call a composed form such as `classify_matches` in a job body. Fences: `test_email_sync_one_at_a_time.py`, `test_email_draft_no_stall.py`.
    - **A disconnect stops the sync first**, with no block open. ⚠️ Never call a teardown leg from outside `teardown.py`. Never call `finish_teardowns` inside an open transaction. Fences: `test_email_disconnect_order.py`, `test_email_mailbox_teardown.py`.
    - ⚠️ `memory_purge.py` refuses a key with no account id, and `MemoryClient.delete_scope` refuses `"*"`. Keep the `email_mailbox_purges` write inside the `DELETE` block. Fences: `test_email_disconnect_memory_purge.py`, `test_email_mailbox_purge_durable.py`.
+   - **A blank rule answer** (task 1128). `_llm_pick_rule` and `_llm_pick_rules` raise `EmptyRuleAnswer`, a subclass of `LLMUnavailable`, so the mail stays for a later run. `engine.ask_rule_match` gives a live job `BLANK_RULE_TRIES` such answers for one mail, counted in tenant Redis. The mail then reads as "no rule matched". An outage has no limit, and a preview or a dry run spends no try. ⚠️ `teardown._mailbox_namespaces` must name each Redis namespace that a mailbox id starts. Fences: `test_llm_empty_answers.py`, `test_email_ai_cost.py::TestTheBlankLimit` (R8).
    - **The model cap.** Each model await sits inside `llm_slot`, or goes through `core._llm_json`. ⚠️ Wrap the leaf await only. Each call names its feature from `core.EMAIL_AI_FEATURES`. 🔴 `EMAIL_LLM_BUDGET_MODE=enforce` on a box is OWNER-GATE. Fences: `test_email_llm_cap.py`, `test_usage_attribution.py`.
    - 🔴 Do not write `body_html` in a new SQL text. `email_ingestion.html_tier` is the one reader of `EMAIL_HTML_FROM_PROVIDER`. Fences: `test_email_html_tier.py`, `test_email_html_hot_only.py`.
    - **The one-of rules.** `transport/attachments.py::_fetch_owned_attachment` is the one owned fetch of a file. `mailbox_identity.py` decides the label and the colour of a mailbox. `automation/identity.py` holds the "self" set, and a From header is not proof. `automation/rules.py::auto_run_on` is the one reader of `auto_run`. `senders._stored_unsubscribe_link` is the one read of a stored link. `insights_store.write_facts` is the one writer of `email_insights`. `classify_addresses` is the one classifier of the held card.
@@ -175,6 +176,8 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - The webhook trigger is public by token. `core.hook_url()` builds the hook URL. The browser must NEVER build one from `window.location`. A duplicate always gets a new hook token.
    - **Schedules are DB rows.** The claim is a CAS that commits BEFORE `start_run`, so each exit path calls `service.record_skipped_run()`. ⚠️ `_claim_baseline` arms a new schedule, because `compute_due_fire` only looks forward.
    - A resume replays with stored outputs, so no side effect repeats. At startup `reconcile_orphaned_runs()` runs BEFORE the scheduler. Auto-disable counts only `UNATTENDED_TRIGGERS`.
+   - ⚠️ **A run's nodes bind the run's org** (H-328 part (a)). `service.build_node_services` takes a required `organization_id` from the run, never from the ambient tenant or node input. The module read and the `pm_task` write open `_run_session(org)`. The sweep and the `notify.whatsapp` owner read open `_tenant_session(org)`. A run with no org keeps the old path until H4 slice 6c. Fence: `test_workflows_lifecycle_rls_r8.py`.
+   - ⚠️ **A task node has no member check.** `pm_task` and `pm_lifecycle` write `pm_tasks` by primary key, and `load_visible_task` never runs. So `run_published_workflow` refuses such a workflow, and `resume_run` closes a run that would reach such a node. Each refusal stays until a run checks a verified member. A new start path with an org must answer that question first. Fence: `test_workflows_lifecycle_rls_r8.py`.
    - Fences: `test_workflows_tool_contract.py`, `evals/trajectories/test_workflow_engine_trajectory.py`, `test_workflow_fixtures.py`.
 16. agents.json -- **The dynamic agent registry**, beside `pyproject.toml`.
 17. routes/signin.py + routes/signup.py + routes/seats.py + routes/admin/members.py -- **The Customer Console seam.** `acb_auth.console_resolve` is the ONE Console client, and the only reader of `CUSTOMER_CONSOLE_URL` and `CUSTOMER_CONSOLE_DEPLOYMENT_KEY`. The browser never holds the key.
@@ -326,6 +329,15 @@ why the strip is safe. Do not point one of them at the public hostname.
 5. Audit all write operations via acb_audit.record()
 6. A new `/projects` route needs an entry in `skill_projects/manifest.py` (item 12d).
 
+### Adding an AI call
+Every AI call names its job (task 1128). Pass `job="structured"`, `"writing"` or `"judgement"` to `acompletion_with_fallback`, `_llm_json`, `complete` or `completion_on_router`.
+- `acb_llm/jobs.py` holds the one table. A structured or writing job turns thinking off. A judgement job thinks, and its cap is at least 6000.
+- ⚠️ DeepSeek V4 counts its thinking against `max_tokens`. A small cap with thinking on returns no text.
+- A member or env tier keeps its tier, and the job still turns thinking off.
+- The Tasks calls send `thinking=dict(NO_THINKING)` (PR 1538). `tasks/core.py::NO_THINKING` is `acb_llm.jobs.THINKING_OFF`. Do not write a second literal of it.
+- An empty answer is no answer. Do not read it as "no match" or "nothing to say". The seam logs `acb_llm.empty_answer`, and the caller fails closed.
+- Fence: `tests/unit/test_llm_jobs.py`. It fails on a call with a cap under 2000 that names no job and sends no `thinking`. A call with no cap, or with a cap that the walk cannot read, counts as under 2000.
+
 ### Mutation inbox flow
 1. Pending commits listed via GET /agent/mutations/pending
 2. Approve: POST /agent/mutations/pending/{id}/approve -> git push (GitHub) or keep (local)
@@ -386,8 +398,8 @@ breaking it — **plus R11, which bites here hardest:**
 > explicitly, and refuse if the resolution finds nothing**: two sessions in that
 > order, the first deciding the tenant and writing nothing. Three built
 > examples, three stored facts: `routes/crm/auto_lead` (the mailbox owner's
-> org), `routes/workflows/service._pm_lifecycle_sweeper` (the workflow owner's
-> org — `workflows` has no `organization_id` column until H3 phase 1) and
+> org), `routes/workflows/service._pm_lifecycle_sweeper` (the run's org, or the
+> workflow owner's org for a run with no org until H4 slice 6c) and
 > `routes/projects/agent_dispatch` (the task's own org, carried **on the event
 > payload**, because an event consumer has nowhere legitimate to look one up —
 > the emitter stamps it inside its bound session). A consumer that refuses
