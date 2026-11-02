@@ -83,6 +83,10 @@ APP_PREFERENCES: dict[str, dict[str, Any]] = {
     # every active member gets the brief at 07:30 and the close-out at 18:30
     # in their zone, and each member can turn it off or move both.
     "brief": {"enabled": True, "brief_time": "07:30", "closeout_time": "18:30"},
+    # WS-63 PZ-35 (``personalization.md`` §15.5): "Keep chat summaries". The
+    # job of PZ-33b reads ``app_prefs(raw, "chat")["summaries"]`` and writes
+    # no new summary while it reads False.
+    "chat": {"summaries": True},
 }
 
 _CLOCK = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
