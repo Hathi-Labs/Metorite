@@ -14,6 +14,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 
 import Button from "@/components/ui/Button";
+import { useToast } from "@/components/ui/Toast";
 import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
@@ -23,7 +24,7 @@ import {
 import type { StudioDataDoor } from "@/lib/studio/dataDoor";
 import type { FieldSpec } from "@/lib/studio/fieldCheck";
 import {
-  type Drafts, blurProblem, checkForm, initialDrafts, sendRecord,
+  type Drafts, afterSend, blurProblem, checkForm, initialDrafts, sendRecord,
 } from "@/lib/studio/formModel";
 
 type Parts = Record<string, string>;
@@ -205,13 +206,16 @@ export interface StudioFormProps {
   extraArgs?: Record<string, unknown>;
   title?: string;
   submitLabel?: string;
+  /** The toast sentence after a save that worked. */
+  savedMessage?: string;
   /** Called after the door says ok. */
   onSaved?: () => void;
 }
 
 export function StudioForm({
-  fields, door, action, initial, extraArgs, title, submitLabel, onSaved,
+  fields, door, action, initial, extraArgs, title, submitLabel, savedMessage = "Saved", onSaved,
 }: StudioFormProps) {
+  const toast = useToast();
   const formId = useId().replace(/:/g, "");
   const [drafts, setDrafts] = useState<Drafts>(() => initialDrafts(fields, initial));
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -250,18 +254,15 @@ export function StudioForm({
     const out = await sendRecord(door, action, check.value, busy, extraArgs);
     setSubmitting(false);
     if (out.kind === "busy") return;
-    if (out.ok) {
-      setStatus({ ok: true, text: out.message ?? "Saved." });
+    const next = afterSend(fields, drafts, out, { savedMessage, reset: initial === undefined });
+    setDrafts(next.drafts);
+    setErrors(next.errors);
+    setStatus(next.status);
+    setFocusKey(next.focus);
+    if (next.toast) {
+      toast.show({ variant: "success", title: next.toast });
       onSaved?.();
-      return;
     }
-    // A 422: each known field shows its own sentence. The rest go in the line.
-    const known = new Set(fields.map((f) => f.key));
-    const mine = Object.fromEntries(Object.entries(out.fieldErrors).filter(([k]) => known.has(k)));
-    setErrors(mine);
-    const firstBad = fields.find((f) => f.key in mine)?.key ?? null;
-    setFocusKey(firstBad);
-    setStatus(firstBad ? null : { ok: false, text: out.message ?? "That did not work. Try again." });
   };
 
   return (

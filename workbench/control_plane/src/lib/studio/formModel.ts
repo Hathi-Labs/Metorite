@@ -75,6 +75,51 @@ export function readFieldErrors(data: unknown): Record<string, string> {
   return out;
 }
 
+export interface SendOutcome {
+  /** The drafts to show next. */
+  drafts: Drafts;
+  errors: Record<string, string>;
+  /** One short sentence for a toast, or null. */
+  toast: string | null;
+  /** The line under the button, or null. */
+  status: { ok: boolean; text: string } | null;
+  /** The key to focus, or null. */
+  focus: string | null;
+}
+
+/**
+ * What the form shows after a send. A save that worked says so in a toast,
+ * empties the form (a new record) and focuses the first field, so the member
+ * cannot save the same record twice by mistake. A refusal keeps the values.
+ */
+export function afterSend(
+  fields: readonly FieldSpec[],
+  drafts: Drafts,
+  out: Extract<SendResult, { kind: "sent" }>,
+  opts: { savedMessage: string; reset: boolean },
+): SendOutcome {
+  if (out.ok) {
+    return {
+      drafts: opts.reset ? initialDrafts(fields) : drafts,
+      errors: {},
+      toast: opts.savedMessage,
+      status: null,
+      focus: opts.reset ? (fields[0]?.key ?? null) : null,
+    };
+  }
+  // A 422: each known field shows its own sentence. The rest go in the line.
+  const known = new Set(fields.map((f) => f.key));
+  const mine = Object.fromEntries(Object.entries(out.fieldErrors).filter(([k]) => known.has(k)));
+  const firstBad = fields.find((f) => f.key in mine)?.key ?? null;
+  return {
+    drafts,
+    errors: mine,
+    toast: null,
+    status: firstBad ? null : { ok: false, text: out.message ?? ACTION_FAILED },
+    focus: firstBad,
+  };
+}
+
 /** Send a checked record through the door. A second call while one is pending is `busy`. */
 export async function sendRecord(
   door: StudioDataDoor,

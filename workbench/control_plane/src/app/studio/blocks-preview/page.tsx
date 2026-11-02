@@ -59,7 +59,7 @@ export default function BlocksPreviewPage() {
           <div className="grid grid-cols-1 gap-3 sm:gap-4 xl:grid-cols-2">
             <section aria-label="Form" className={PANEL}>
               <StudioForm fields={SAMPLE_FIELDS} door={door} action="object:visit.create"
-                title="New visit" submitLabel="Add visit" />
+                title="New visit" submitLabel="Add visit" savedMessage="Visit added" />
               <p className="mt-3 text-xs text-muted-foreground">
                 To see a refusal of the server, save with the title Duplicate.
               </p>

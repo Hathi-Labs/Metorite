@@ -22,7 +22,7 @@ import {
 import { StudioDataContext } from "./dataContext";
 import { type Row, type StudioDataDoor, sourceKey } from "./dataDoor";
 import { type FieldSpec, validateRecord } from "./fieldCheck";
-import { blurProblem, checkForm, initialDrafts, recordOf, sendRecord } from "./formModel";
+import { afterSend, blurProblem, checkForm, initialDrafts, recordOf, sendRecord } from "./formModel";
 import { SAMPLE_FIELDS, SAMPLE_ROWS, SAMPLE_TABLE_KEYS, makeSampleDoor } from "./sampleDoor";
 
 beforeEach(() => clearAll());
@@ -189,6 +189,44 @@ describe("Form: the submit goes through door.run once", () => {
     };
     const out = await sendRecord(door, "x", {}, { current: false });
     expect(out).toEqual({ kind: "sent", ok: false, message: "That did not work. Try again.", fieldErrors: {} });
+  });
+});
+
+describe("Form: after a send", () => {
+  const filled = { ...initialDrafts(SAMPLE_FIELDS), title: "A new visit", qty: "4" };
+  const opts = { savedMessage: "Visit added", reset: true };
+
+  it("a save that worked says so, empties the form and focuses the first field", () => {
+    const out = afterSend(SAMPLE_FIELDS, filled, { kind: "sent", ok: true, message: null, fieldErrors: {} }, opts);
+    expect(out.toast).toBe("Visit added");
+    expect(out.drafts).toEqual(initialDrafts(SAMPLE_FIELDS));
+    expect(out.drafts.title).toBe("");
+    expect(out.focus).toBe("title");
+    expect(out.errors).toEqual({});
+  });
+
+  it("a 422 keeps the values and shows no toast", () => {
+    const out = afterSend(SAMPLE_FIELDS, filled,
+      { kind: "sent", ok: false, message: "x", fieldErrors: { title: "Taken." } }, opts);
+    expect(out.toast).toBeNull();
+    expect(out.drafts).toBe(filled);
+    expect(out.errors).toEqual({ title: "Taken." });
+    expect(out.focus).toBe("title");
+  });
+
+  it("a failed run keeps the values and says why in the line", () => {
+    const out = afterSend(SAMPLE_FIELDS, filled,
+      { kind: "sent", ok: false, message: "That did not work. Try again.", fieldErrors: {} }, opts);
+    expect(out.toast).toBeNull();
+    expect(out.drafts).toBe(filled);
+    expect(out.status).toEqual({ ok: false, text: "That did not work. Try again." });
+  });
+
+  it("an edit form keeps its values after a save", () => {
+    const out = afterSend(SAMPLE_FIELDS, filled, { kind: "sent", ok: true, message: null, fieldErrors: {} },
+      { ...opts, reset: false });
+    expect(out.drafts).toBe(filled);
+    expect(out.toast).toBe("Visit added");
   });
 });
 
