@@ -205,7 +205,10 @@ KIND_ORDER = {"overdue": 0, "approval": 1, "due_today": 2, "notification": 3,
               "needs_reply": 4,
               # WS-66 RM-2b (calendar_events_reminders.md §5.6): the member's
               # own reminders, last of the needs kinds.
-              "reminder_due": 5, "reminder_check": 6, "reminder_unconfirmed": 7}
+              "reminder_due": 5, "reminder_check": 6, "reminder_unconfirmed": 7,
+              # WS-ALN ALN-2a (project_alignment.md §3.2): a decision that
+              # waits on the member by name. ALN-2b adds the provider.
+              "decision": 8}
 #: The kinds that take only the room the member's own rows leave inside the
 #: limit. An admin's approvals must never push out their own work.
 YIELDING_KINDS = frozenset({"approval"})
@@ -213,7 +216,7 @@ YIELDING_KINDS = frozenset({"approval"})
 NEWEST_FIRST = {"overdue": False, "approval": False, "due_today": False,
                 "notification": True, "needs_reply": False,
                 "reminder_due": False, "reminder_check": False,
-                "reminder_unconfirmed": False}
+                "reminder_unconfirmed": False, "decision": False}
 
 Item = dict[str, Any]
 Act = dict[str, Any]
@@ -493,7 +496,8 @@ async def _tasks_handled(user: UserContext, since: datetime) -> list[Closed]:
 #: `NOTIFICATION_KINDS` has a verb (`tests/unit/test_agent_runs_r8.py`).
 _VERB = {"assigned": "assigned you", "mention": "mentioned you on",
          "comment": "commented on", "nudge": "nudged you about",
-         "agent_question": "asked you about"}
+         "agent_question": "asked you about",
+         "decision": "asked you to decide on"}
 
 
 def _who(actor: Any) -> str:

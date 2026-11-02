@@ -793,6 +793,16 @@ class Settings(BaseSettings):
     # tests/unit/test_chat_summary.py.
     assistant_chat_summary_orgs: str = ""
 
+    # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, the decision routes answer 404, no decision is asked
+    # and no bell row is written, so nothing reaches a member. The one reader
+    # is `gateway.routes.projects.decisions.decisions_allowed`. A SIGHUP
+    # reload applies a change (`gateway/flag_reload.py`). Fence:
+    # tests/unit/test_decisions.py.
+    decisions_orgs: str = ""
+
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
     # ON makes `GET /search/company` rank newer records first inside each app,

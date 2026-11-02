@@ -1205,7 +1205,8 @@ def _names(titles: list[str]) -> str:
 #: line reads "Claude Code asked you a question on this task."
 _NOTE_WORDS = {"assigned": "gave you this task", "mention": "mentioned you on this task",
                "comment": "commented on this task", "nudge": "nudged you about this task",
-               "agent_question": "asked you a question on this task"}
+               "agent_question": "asked you a question on this task",
+               "decision": "asked you to decide on this task"}
 
 
 def _note_clause(facts: dict[str, Any], tz: ZoneInfo, today: date) -> tuple[str, str]:

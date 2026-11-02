@@ -171,6 +171,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
     # not cover it.
     "ASSISTANT_CHAT_SUMMARY_ORGS",
+    # WS-ALN ALN-2a: DECISIONS_ORGS opens "one person decides" for an org. A
+    # tenant that set it could open the bell row for every org on the box.
+    "DECISIONS_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",

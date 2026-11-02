@@ -942,8 +942,10 @@ def test_no_tool_or_request_field_names_the_mark() -> None:
 #: acts as its member, and the mark does not cross HTTP.
 #: A formatted value of an f-string reads as ``{}`` here, so a route with an
 #: id in it is written ``/agent-runs/{}/resume``.
+#: WS-ALN ALN-2a adds the answer of a decision. Only the named decider answers.
 _APPROVAL_ROUTES = ("/actions/pending", "/respond-input", "/archive-approval",
-                    "/agent-runs/{}/activities", "/agent-runs/{}/resume")
+                    "/agent-runs/{}/activities", "/agent-runs/{}/resume",
+                    "/decisions/{}/answer")
 _TOOL_ROOTS = ("apps/agents", "apps/skills", "packages/acb_skills", "skills")
 #: The route table of the Projects tools. It names each route, and it holds a
 #: decision for each. ``test_the_run_tools_stay_planned`` fences the two rows.
@@ -1001,6 +1003,8 @@ def test_the_route_scan_reads_an_f_string() -> None:
     acts = 'url = f"/projects/agent-runs/{run_id}/activities"'
     assert _routes_in(resume) == ["/agent-runs/{}/resume"]
     assert _routes_in(acts) == ["/agent-runs/{}/activities"]
+    answer = 'url = f"/projects/decisions/{decision_id}/answer"'
+    assert _routes_in(answer) == ["/decisions/{}/answer"]
     # A plain string of each route still matches.
     assert _routes_in('u = "/api/actions/pending"') == ["/actions/pending"]
     assert _routes_in('u = "/agent/respond-input"') == ["/respond-input"]

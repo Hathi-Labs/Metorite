@@ -1,7 +1,7 @@
 # Project alignment — Metorite checks work against the project's rules (WS-ALN)
 
 > **Product:** Metorite · **Feature:** the project of a task, the project's rules, and a check that asks a person · **Updated:** 2026-11-02 · **Owner:** vjvarada
-> **Status:** 📋 **SPEC, NOTHING BUILT.** ALN-0 (this spec) is the first slice. ALN-1 is next. The owner did not answer ALN-Q1 to ALN-Q5, and told us to start. The build runs on the working defaults of §14.
+> **Status:** 📋 **SPEC. ALN-2a (the table and the service of one person decides) is built on branch `ws-aln-2a-mt-94ca4c39`, in migration 330, dark behind `DECISIONS_ORGS`. The other slices are not built.** ALN-0 (this spec) is the first slice. ALN-1 is next. The owner did not answer ALN-Q1 to ALN-Q5, and told us to start. The build runs on the working defaults of §14.
 > **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §11 was read on that commit. Earlier task text came from a read at `308df8828`, and §2 lists each fact that changed.
 > **Board:** WS-ALN in `work_plan.md` §2.1. **Decision:** D160. D12, D75, D93, D100, D104, D105, D128, D131, D140, D145 and workflows G5 bind it.
 > **Metorite:** project "Projects/Tasks App", epic 1368, this spec task 1369. The questions are tasks 1370 to 1374. The slices ALN-1 to ALN-14 are tasks 1375 to 1388, in order.
@@ -95,7 +95,7 @@ The facts of task 1369 were re-read on `ce29836ea`. Two of them changed.
 
 ### 3.2 One person decides (ALN-2)
 
-Nothing today shows a question with named options to a named person, and records the answer on a task. ALN-2 adds that primitive. The shape is a new table `pm_decisions`, in migration 326 (recheck the number at dispatch, R1). `pm_intake` has fixed verbs, no named decider and no options. An `agent_runs` elicitation needs a run. The table reuses the bell, Reach and the My Day provider registry, and it runs no action. So it is not a third approval stack.
+Nothing today shows a question with named options to a named person, and records the answer on a task. ALN-2 adds that primitive. The shape is a new table `pm_decisions`, in migration 330 (other slices took 326 to 329, recheck at merge, R1). `pm_intake` has fixed verbs, no named decider and no options. An `agent_runs` elicitation needs a run. The table reuses the bell, Reach and the My Day provider registry, and it runs no action. So it is not a third approval stack.
 
 | Column | Meaning |
 |---|---|
@@ -337,7 +337,7 @@ Sources: `https://linear.app/docs/triage-intelligence` · `https://docs.coderabb
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
 | **ALN-1** (1375) | The durable trigger (§5), the flag `ALIGN_JOBS_ORGS` and a stub `align.check` handler. Needs ALN-0 | R8: a task change enqueues one job in the bound org, and the stub completes it. With the worker off or the org not listed, no row appears. An edit with the same text enqueues none. Org B sees none of org A's jobs. A failed enqueue never fails the write. With the flag off, no job row appears | HIGH | AGENT-SAFE |
-| **ALN-2a** (1376) | The table, the service (ask, answer, expire), the activity row, the bell kind, the verb, `REACH_CLASS` and `KIND_ORDER` (§3.2). Flag `DECISIONS_ORGS` (default empty). Needs ALN-0 | R8: a decision reaches its named person, and an answer writes one activity. A person outside the grant gets no row. A second answer is refused. An expired decision takes no answer | HIGH | AGENT-SAFE |
+| **ALN-2a** (1376, built, branch `ws-aln-2a-mt-94ca4c39`) | The table, the service (ask, answer, expire), the activity row, the bell kind, the verb, `REACH_CLASS` and `KIND_ORDER` (§3.2). Flag `DECISIONS_ORGS` (default empty). Needs ALN-0 | R8: a decision reaches its named person, and an answer writes one activity. A person outside the grant gets no row. A second answer is refused. An expired decision takes no answer | HIGH | AGENT-SAFE |
 | **ALN-2b** (1376) | The My Day provider and the task-card UI. `needs.py` offers only a link act until MD-8, so the act opens the task card. Needs ALN-2a | Visual review in four contexts. D145 preview first | STD | AGENT-SAFE |
 
 ### Phase 2 — The source of truth
