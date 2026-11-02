@@ -1,5 +1,5 @@
 -- ============================================================================
--- 327_reach_outbox_due_summary.sql — the outbox of Reach takes the morning
+-- 328_reach_outbox_due_summary.sql — the outbox of Reach takes the morning
 -- summary of due tasks.
 --
 -- What: one wider CHECK on `reach_outbox` (migration 266, widened by 271 and
