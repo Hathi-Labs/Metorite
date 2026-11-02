@@ -95,6 +95,32 @@ export interface ViewDef {
   text?: string | null;
 }
 
+// STU-D11a: how the views sit on a page. A view stays one block.
+export interface CellDef {
+  view: string;
+  // Columns the cell spans, 1 to 4, and never more than the page `cols`.
+  span?: number | null;
+}
+
+export interface SideDef {
+  view: string;
+}
+
+export interface TabDef {
+  id: string;
+  title: string;
+  cells: CellDef[];
+}
+
+export interface PageDef {
+  id: string;
+  title?: string | null;
+  cols?: number;
+  tabs?: TabDef[];
+  cells?: CellDef[];
+  side?: SideDef | null;
+}
+
 export interface Trigger {
   record?: string | null;
   when?: Record<string, unknown> | null;
@@ -165,6 +191,7 @@ export interface StudioManifest {
   objects?: ObjectDef[];
   actions?: ActionDef[];
   views?: ViewDef[];
+  pages?: PageDef[];
   workflows?: WorkflowDef[];
   skill?: Skill | null;
   shell?: Shell | null;
