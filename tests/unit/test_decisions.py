@@ -651,7 +651,7 @@ class TestDecisionsOnARealDatabase:
             assert late.status_code == 409 and late.json()["detail"] == "decision_expired"
             mine = (await call(w.u_d, "GET", "/projects/decisions")).json()["decisions"]
             assert mine == []
-            on_task = (await call(w.u_o, "GET", f"/projects/decisions?task_id={w.task}")).json()
+            on_task = (await call(w.u_d, "GET", f"/projects/decisions?task_id={w.task}")).json()
             assert [d["state"] for d in on_task["decisions"]] == ["expired"]
         assert _row(w.p, str(expired)).answered_at is None
         assert _activities(w.p, w.task) == []

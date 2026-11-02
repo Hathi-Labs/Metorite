@@ -656,7 +656,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "summary": (
             "The member's own reminders, which are not tasks: set one, list "
             "them, change the time, snooze, resolve, reopen, or promote one "
-            "to a task. It also holds the decisions that wait for the member."
+            "to a task, or answer a decision that waits for you."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "
