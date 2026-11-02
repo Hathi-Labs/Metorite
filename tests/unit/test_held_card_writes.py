@@ -326,7 +326,8 @@ def test_no_pack_tool_of_a_listed_owner_comes_from_mcp(projects_tools, crm_tools
 #: A form delegates its card to the class B tool that it wraps. A batch uses
 #: ``_ask_batch``, and ``test_projects_agent_writes.py`` holds that as a caller
 #: of ``_confirm``.
-_DOORS = {"_confirm", "_ask_batch", "update_task", "update_project", "request_confirmation"}
+_DOORS = {"_confirm", "_ask_batch", "_ask_reminder", "update_task", "update_project",
+          "request_confirmation"}
 _WRITES = {"post", "patch", "put", "delete", "post_file", "_post", "_patch", "_put", "_delete"}
 
 
@@ -529,9 +530,9 @@ def test_a_covered_run_keeps_its_pinned_class_c_tools(monkeypatch, projects_tool
     """H-236 did not change: a covered run with no mark keeps
     ``COVERED_PROJECTS_TOOLS``. Mutation: make ``_covered_hold`` False -> red."""
     monkeypatch.setattr(ti, "_run_covered", lambda *_a, **_k: True)
-    monkeypatch.setattr(ti, "read_untrusted_answer", lambda *_a: False)
     agents = [_agent_with([projects_tools["delete_task"]])]
-    ti._apply_no_egress(agents, PA)
+    with _bound(**{eg.CHAT_MARK_KEY: False}):
+        ti._apply_no_egress(agents, PA)
     assert [_name(t) for t in agents[0].default_options["tools"]] == ["delete_task"]
 
 
@@ -539,10 +540,60 @@ def test_a_covered_run_in_a_chat_that_read_mail_drops_them(monkeypatch, projects
     """The mail is what the member can act on, so the chat rule wins. Mutation:
     drop the mark from ``_covered_hold`` -> red."""
     monkeypatch.setattr(ti, "_run_covered", lambda *_a, **_k: True)
-    monkeypatch.setattr(ti, "read_untrusted_answer", lambda *_a: True)
     agents = [_agent_with([projects_tools["delete_task"]])]
-    ti._apply_no_egress(agents, PA)
+    with _bound(**{eg.CHAT_MARK_KEY: True}):
+        ti._apply_no_egress(agents, PA)
     assert agents[0].default_options["tools"] == []
+
+
+def test_a_frame_with_no_bound_mark_drops_them(monkeypatch, projects_tools) -> None:
+    """A path that bound no answer fails closed. Mutation: read a missing key as
+    clear -> red."""
+    monkeypatch.setattr(ti, "_run_covered", lambda *_a, **_k: True)
+    agents = [_agent_with([projects_tools["delete_task"]])]
+    with _bound(agent_name=PA):
+        ti._apply_no_egress(agents, PA)
+    assert agents[0].default_options["tools"] == []
+
+
+async def test_a_mark_survives_a_restart(store) -> None:
+    """The process cache is empty after a restart, and Redis keeps the mark. The
+    run boundary reads Redis, so ``_covered_hold`` sees it. Mutation: read
+    ``read_untrusted_answer`` at the boundary -> red."""
+    await _mark_chat()
+    eg._MARKED_SESSIONS.clear()
+    ctx = _run_ctx()
+    with _tenant(), _bound(**ctx):
+        assert eg.read_untrusted_answer() is False, "non-vacuity: the cache is empty"
+        assert await ti._chat_marked(ctx) is True
+
+
+async def test_a_fault_of_the_mark_reads_as_marked(monkeypatch) -> None:
+    """Mutation: read a fault as clear -> red."""
+
+    class _Broken:
+        async def exists(self, *_a: Any) -> int:
+            raise ConnectionError("down")
+
+    monkeypatch.setattr(eg, "get_tenant_redis", lambda: _Broken())
+    ctx = _run_ctx(member="")
+    with _tenant(), _bound(**ctx):
+        assert await ti._chat_marked(ctx) is True
+
+
+async def test_a_clear_chat_reads_clear(store) -> None:
+    """Non-vacuity of the two above."""
+    ctx = _run_ctx()
+    with _tenant(), _bound(**ctx):
+        assert await ti._chat_marked(ctx) is False
+
+
+async def test_a_parent_mark_passes_down(store) -> None:
+    """A child in a batch path holds a session of its own. Mutation: drop the
+    parent's key -> red."""
+    ctx = {"session_id": "child", eg.CHAT_MARK_KEY: True}
+    with _tenant():
+        assert await ti._chat_marked(ctx) is True
 
 
 async def test_the_guard_refuses_a_class_c_call_that_joined_later(projects_tools) -> None:
@@ -619,6 +670,299 @@ def test_the_reader_is_on_the_public_list() -> None:
     assert inspect.iscoroutinefunction(eg.write_must_show_card)
 
 
+# ── 8. A top-level run in a marked chat (D151 item 3) ───────────────────────
+
+
+def test_a_top_level_run_binds_no_egress_false_so_the_old_rule_missed_it(
+    projects_tools,
+) -> None:
+    """The finding: a class C tool is no egress tool, so only the chat hold can
+    take it from a run that binds ``no_egress=False``."""
+    assert eg.is_egress_tool(projects_tools["delete_task"]) is False
+    assert eg.is_held_off_write(projects_tools["delete_task"]) is True
+
+
+def test_a_run_that_holds_a_class_c_tool_gets_the_chat_hold(projects_tools) -> None:
+    """Mutation: drop ``_apply_chat_hold`` from the injection -> red."""
+    agents = [_agent_with([projects_tools["delete_task"], projects_tools["set_reminder"]])]
+    ti._apply_chat_hold(agents, PA)
+    assert _chat_holds(agents[0])
+
+
+def test_a_run_with_no_such_tool_keeps_its_agent_object(projects_tools) -> None:
+    """Each other run keeps its object. Mutation: wrap each agent -> red."""
+    agents = [_agent_with([projects_tools["set_reminder"]])]
+    plain = agents[0]
+    ti._apply_chat_hold(agents, PA)
+    assert agents[0] is plain
+
+
+def _chat_holds(agent: Any) -> list[Any]:
+    return [p for p in getattr(agent, "context_providers", None) or []
+            if isinstance(p, eg.ChatHoldProvider)]
+
+
+@pytest.mark.parametrize(("marked", "off"), [(True, True), (False, False)])
+def test_the_chat_hold_follows_the_mark(marked: bool, off: bool, projects_tools) -> None:
+    """A clear chat keeps its tools. Mutation: drop the mark from ``_off`` -> red."""
+    hold = eg.ChatHoldProvider(owner=PA)
+    with _bound(**{eg.CHAT_MARK_KEY: marked}):
+        assert hold._off(projects_tools["delete_task"]) is off
+        assert hold._off(projects_tools["set_reminder"]) is False
+
+
+def test_the_chat_hold_sees_a_mark_of_this_turn(projects_tools, monkeypatch) -> None:
+    """The boundary read clear, then the turn read mail. Mutation: read only the
+    bound answer -> red."""
+    monkeypatch.setattr(eg, "read_untrusted_answer", lambda *_a: True)
+    hold = eg.ChatHoldProvider(owner=PA)
+    with _bound(**{eg.CHAT_MARK_KEY: False}):
+        assert hold._off(projects_tools["delete_task"]) is True
+
+
+async def test_the_chat_hold_refuses_a_call_in_words_of_the_chat(projects_tools) -> None:
+    """The model names a tool that left. Mutation: drop the refuse half -> red."""
+    class _Context:
+        def __init__(self) -> None:
+            self.items: list[Any] = []
+
+        def extend_middleware(self, _source: str, items: list[Any]) -> None:
+            self.items.extend(items)
+
+    class _Call:
+        function = projects_tools["delete_task"]
+        result: Any = None
+
+    context = _Context()
+    await eg.ChatHoldProvider(owner=PA).before_run(
+        agent=None, session=None, context=context, state={})
+    ran: list[bool] = []
+
+    async def call_next() -> None:
+        ran.append(True)
+
+    call = _Call()
+    with _bound(**{eg.CHAT_MARK_KEY: True}):
+        await context.items[1].process(call, call_next)
+    assert ran == [] and "delete_task is off now" in call.result
+    assert "new chat" not in call.result
+
+
+# ── 9. A write of an owner that no pack family names (item 11) ─────────────
+
+
+def test_each_write_of_the_crm_agent_is_in_the_table() -> None:
+    """A row in ``test_crm_agent_write.py`` turned that fence green with no list
+    entry. This one reads the agent. Mutation: add a CRM write off the list -> red."""
+    tools = load_crm_module("rx1_crm_table")._agent_tools()
+    from acb_skills.tool_annotations import TOOL_ANNOTATIONS
+
+    wrote = {_name(t) for t in tools
+             if not (TOOL_ANNOTATIONS.get(_name(t)) or {}).get("read_only")}
+    assert wrote == KEPT_CRM
+
+
+def test_a_new_write_of_an_owner_outside_a_family_is_off_in_its_run() -> None:
+    """The rule read the pack families only. Mutation: drop ``_own_tool_of`` -> red."""
+    fn = _writer("merge_leads", ("a", "b"), open_world=False)
+    assert eg.is_egress_tool(fn) is False, "non-vacuity: H-236 alone keeps it"
+    assert eg.is_held_off_write(fn) is False, "non-vacuity: no family names it"
+    assert eg.is_held_off_write(fn, owner=CRM) is True
+    assert eg.is_held_chat_off(fn, owner=CRM) is True
+
+
+def test_a_held_delegated_run_of_the_owner_drops_it(monkeypatch) -> None:
+    """The seam of the finding. Mutation: drop ``owner`` from ``_apply_no_egress``
+    -> the write stays -> red."""
+    monkeypatch.setattr(ti, "_run_covered", lambda *_a, **_k: False)
+    agents = [_agent_with([_writer("merge_leads", ("a",), open_world=False)])]
+    with _bound(**{eg.CHAT_MARK_KEY: True}):
+        ti._apply_no_egress(agents, CRM)
+    assert agents[0].default_options["tools"] == []
+
+
+def test_the_owner_keeps_its_reads_and_the_platform_tools(monkeypatch) -> None:
+    """A read stays, and so does a tool that the platform injected. Mutation: drop
+    the platform test -> red."""
+    assert eg.is_held_off_write(_writer("read_lead", ("a",), read_only=True), owner=CRM) is False
+    fn = _writer("ask_member", ("a",))
+    assert eg.is_held_off_write(fn, owner=CRM) is True, "non-vacuity: no annotation is a write"
+    monkeypatch.setattr(eg, "_platform_owned", lambda *_a: True)
+    assert eg.is_held_off_write(fn, owner=CRM) is False
+
+
+def test_a_tool_of_another_owner_stays_out_of_the_rule() -> None:
+    """Mutation: drop the owner test -> each run of each agent loses it -> red."""
+    fn = _writer("my_own_write", ("a",), open_world=False)
+    assert eg.is_held_off_write(fn, owner="email-assistant") is False
+
+
+# ── 10. A bare name holds to the pin (item 12) ─────────────────────────────
+
+
+def test_a_bare_name_holds_to_the_pin_that_the_tool_registered(
+    monkeypatch, projects_tools, crm_tools,
+) -> None:
+    """``permission_policy._reaches_out`` passes a bare name, and the pin read
+    nothing for it. Mutation: answer True for a name -> red."""
+    from acb_skills import permission_policy as pp
+    from acb_skills import tool_annotations as ta
+
+    assert eg.is_held_card_write("create_lead") is True
+    assert pp._reaches_out({}, "create_lead", None) is False
+    monkeypatch.setitem(ta.CARD_WRITE_PARAMS, "create_lead", frozenset({"lead_name", "owner"}))
+    assert eg.is_held_card_write("create_lead") is False
+    assert pp._reaches_out({}, "create_lead", None) is True, "a drifted tool reaches out"
+
+
+def test_a_name_that_no_tool_registered_keeps_nothing(monkeypatch) -> None:
+    """Mutation: read a missing record as a match -> red."""
+    from acb_skills import tool_annotations as ta
+
+    monkeypatch.delitem(ta.CARD_WRITE_PARAMS, "create_lead")
+    assert eg.is_held_card_write("create_lead") is False
+
+
+# ── 11. The kill switch (item 13) ──────────────────────────────────────────
+
+
+def _switch(monkeypatch, value: str) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", value)
+
+
+def test_the_switch_is_off_by_default() -> None:
+    """So the merge changes nothing until a person flips it. Mutation: a default of
+    ``*`` -> red."""
+    from acb_common.settings import Settings
+
+    assert Settings.model_fields["held_card_writes_orgs"].default == ""
+
+
+def test_the_switch_turns_off_with_no_restart_and_no_tenant_writes_it() -> None:
+    """Mutation: a name with no ``_orgs`` -> a SIGHUP applies nothing -> red."""
+    from acb_common.env_guard import is_platform_env
+    from gateway.flag_reload import reloadable
+
+    assert reloadable("HELD_CARD_WRITES_ORGS")
+    assert is_platform_env("HELD_CARD_WRITES_ORGS")
+    example = (REPO / ".env.example").read_text(encoding="utf-8")
+    assert "\nHELD_CARD_WRITES_ORGS=\n" in example.replace("\r\n", "\n")
+
+
+@pytest.mark.parametrize(("value", "org", "on"), [
+    ("", "org-a", False),
+    ("*", "", True),
+    ("org-a", "org-a", True),
+    ("org-b,  ORG-A ", "org-a", True),
+    ("org-b", "org-a", False),
+    ("org-b", "", False),
+    (" , ", "org-a", False),
+])
+def test_the_reader_of_the_switch(value: str, org: str, on: bool, monkeypatch) -> None:
+    """Mutation: read a list as ``*`` -> red."""
+    _switch(monkeypatch, value)
+    if org:
+        assert eg.held_card_writes_on(org) is on
+        with _tenant(org):
+            assert eg.held_card_writes_on() is on
+    else:
+        assert eg.held_card_writes_on() is on
+
+
+def test_a_fault_of_the_settings_reads_off(monkeypatch) -> None:
+    """It fails closed to the state before the slice. Mutation: read a fault as on
+    -> red."""
+    import acb_common
+
+    def boom() -> Any:
+        raise RuntimeError("settings")
+
+    monkeypatch.setattr(acb_common, "get_settings", boom)
+    assert eg.held_card_writes_on("org-a") is False
+
+
+@pytest.mark.parametrize("name", sorted(KEPT_CRM))
+def test_off_a_crm_write_leaves_a_held_run(name: str, crm_tools, monkeypatch) -> None:
+    """Mutation: ignore the switch in ``is_held_card_write`` -> red."""
+    assert eg.is_egress_tool(crm_tools[name]) is False, "non-vacuity: on, it stays"
+    _switch(monkeypatch, "")
+    assert eg.is_held_card_write(crm_tools[name]) is False
+    assert eg.is_egress_tool(crm_tools[name]) is True
+
+
+@pytest.mark.parametrize("name", ["delete_task", "grant_access", "set_reminder", "create_task"])
+def test_off_a_projects_write_stays_as_it_did(name: str, projects_tools, monkeypatch) -> None:
+    """Off is the state before the slice: a held pack dropped no Projects tool.
+    Mutation: leave ``is_held_off_write`` on -> each write leaves -> red."""
+    _switch(monkeypatch, "")
+    assert eg.is_held_off_write(projects_tools[name]) is False
+    assert eg.is_held_chat_off(projects_tools[name]) is False
+
+
+async def test_off_the_held_read_of_a_tool_is_open(monkeypatch) -> None:
+    """Mutation: leave ``chat_is_held`` on -> a refusal of the old flow -> red."""
+    _switch(monkeypatch, "")
+    with _tenant(), _bound(**_run_ctx(no_egress=True)):
+        assert await eg.chat_is_held() is False
+
+
+async def test_on_the_held_read_of_a_tool_is_held(store) -> None:
+    """Non-vacuity of the case above, with no fake."""
+    with _tenant(), _bound(**_run_ctx(no_egress=True)):
+        assert await eg.chat_is_held() is True
+
+
+async def test_a_marked_top_level_run_is_held(store) -> None:
+    """Mutation: read ``no_egress`` alone -> red."""
+    await _mark_chat()
+    with _tenant(), _bound(**_run_ctx(no_egress=False)):
+        assert await eg.chat_is_held() is True
+
+
+async def test_a_covered_chain_with_no_mark_is_not_held(store) -> None:
+    """D151 item 5: a covered run keeps H-236 as it was. Mutation: drop the chain
+    test -> red."""
+    with _tenant(), _bound(**_run_ctx(no_egress=True, covered_chain=True)):
+        assert await eg.chat_is_held() is False
+
+
+def test_off_the_note_and_the_answer_are_the_old_words(monkeypatch) -> None:
+    """Mutation: ignore the switch in the two choosers -> red."""
+    _switch(monkeypatch, "")
+    ctx = _run_ctx(**{eg.PACK_CALL_KEY: True, "agent_name": PA})
+    monkeypatch.setattr(eg, "hold_is_for_mail", lambda *_a: True)
+    assert eg.egress_hold_note(ctx) == eg.EGRESS_HOLD_NOTE_PACK_NO_WRITES
+    assert eg.egress_held_answer("x", ctx) == eg.EGRESS_HELD_PACK_ANSWER_NO_WRITES.format(name="x")
+    assert "new chat" in eg.EGRESS_HOLD_NOTE_PACK_NO_WRITES, "the text of before the slice"
+    _switch(monkeypatch, "*")
+    assert eg.egress_hold_note(ctx) == eg.EGRESS_HOLD_NOTE_PACK_OTHER
+
+
+async def test_off_the_boundary_asks_redis_nothing(monkeypatch) -> None:
+    """The merge adds no Redis call to a run. Mutation: read first -> red."""
+
+    class _Trap:
+        async def exists(self, *_a: Any) -> int:
+            raise AssertionError("no read with the switch off")
+
+    monkeypatch.setattr(eg, "get_tenant_redis", lambda: _Trap())
+    _switch(monkeypatch, "")
+    ctx = _run_ctx()
+    with _tenant(), _bound(**ctx):
+        assert await ti._chat_marked(ctx) is False
+
+
+def test_off_no_run_gets_the_chat_hold(monkeypatch, projects_tools) -> None:
+    """Mutation: ignore the switch in ``_apply_chat_hold`` -> red."""
+    _switch(monkeypatch, "")
+    agents = [_agent_with([projects_tools["delete_task"]])]
+    plain = agents[0]
+    ti._apply_chat_hold(agents, PA)
+    assert agents[0] is plain
+
+
 # ── The texts reach the model ───────────────────────────────────────────────
 
 
@@ -632,3 +976,12 @@ async def test_the_rules_of_a_held_reminder_pack_say_that_the_write_works(store)
                                 ("projects-reminders",), (), ctx)
     assert block.endswith(eg.EGRESS_HOLD_NOTE_PACK_OTHER)
     assert "new chat" not in block
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")

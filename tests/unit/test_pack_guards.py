@@ -1485,3 +1485,12 @@ def test_the_child_build_calls_the_one_builder_and_copies_no_body() -> None:
         assert body not in src, body
     assert "_pack_builder()" in src
     assert at._pack_builder() is ti._pack_tools
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")

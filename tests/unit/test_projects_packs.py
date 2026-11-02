@@ -1086,3 +1086,12 @@ def test_a_plain_task_turn_loads_no_reminder_pack(words: str) -> None:
     "task" to the reminder words -> the pack joins a task turn -> red."""
     choice = tp.choose(_surface_turn(words), allowed=EVERY, base_tools=56)
     assert choice.slugs == ("projects",), (words, choice)
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")

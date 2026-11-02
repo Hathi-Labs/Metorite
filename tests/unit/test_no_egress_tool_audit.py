@@ -800,3 +800,12 @@ def test_a_new_marked_tool_is_held_until_it_has_a_pin(monkeypatch) -> None:
         "read_only": False, "destructive": True, "idempotent": False,
         "open_world": True, eg.CARD_BOUND_KEY: True}
     assert eg.is_egress_tool(share_mailbox) is True
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")

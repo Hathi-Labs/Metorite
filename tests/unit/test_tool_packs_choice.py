@@ -1708,3 +1708,12 @@ def test_a_missing_persona_bullet_raises_unless_the_owner_has_none_by_design(
         slug="x-pack", rules="X RULES", words=("xword",), delegation_refusal="Not run."))
     with pytest.raises(RuntimeError, match="x-agent"):
         tp.persona_for(persona, [("x-pack", False)], _bullets())
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")

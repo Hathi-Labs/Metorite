@@ -2707,3 +2707,12 @@ def test_only_platform_code_may_register_a_platform_callable() -> None:
     own = load("orchestrator._h236_registry_probe")
     assert eg._platform_owned(own.run_diagnostics, "run_diagnostics") is True
     assert eg._platform_owned(own.wrapper, "run_diagnostics") is True
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")

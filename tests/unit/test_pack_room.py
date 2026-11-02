@@ -371,6 +371,58 @@ async def test_a_pack_that_ran_in_this_turn_stays(store, monkeypatch) -> None:
     assert run.left == {"email-setup"} and "Email setup" in answer
 
 
+async def test_a_pack_with_a_tool_in_flight_stays(store, monkeypatch) -> None:
+    """``note_used`` runs after the tool returns, so a load could move ``email`` out
+    while a send card waited on the member. Mutation: drop ``ran`` from ``spare``
+    -> red."""
+    _stub_owners(monkeypatch)
+    await _seed_sticky("email", "email-setup", "crm-records")
+    run, live, key = await _full_run(("email", "email-setup", "crm-records"))
+    tp.pack_tool_runs("email", {tp.PACKS_KEY: run})
+    assert "email" not in run.noted, "non-vacuity: the tool has not returned"
+    assert "email" not in run.spare()
+    with _frame(run, key):
+        await _call(_loader(run, key), REMINDERS, live)
+    assert "email" not in run.left and run.left == {"email-setup"}
+
+
+async def test_a_tool_that_starts_while_a_load_builds_keeps_its_pack(store, monkeypatch) -> None:
+    """``spare`` was read before the build awaited, and a tool of that pack can
+    start in the gap. Mutation: use the old ``spare`` after the build -> red."""
+    _stub_owners(monkeypatch)
+    await _seed_sticky("email", "email-setup", "crm-records")
+    run, live, key = await _full_run(("email", "email-setup", "crm-records"))
+    real = ti._build_pack_for_load
+
+    async def build_while_a_card_opens(*args: Any, **kwargs: Any) -> Any:
+        tp.pack_tool_runs("email", {tp.PACKS_KEY: run})
+        return await real(*args, **kwargs)
+
+    loader = tp.LoadSkillTools(offered=(REMINDERS,), run_key=key, record=run,
+                               build=build_while_a_card_opens)
+    with _frame(run, key):
+        await _call(loader, REMINDERS, live)
+    assert "email" not in run.left
+
+
+async def test_the_pack_call_records_the_run_before_the_tool_body(store, monkeypatch) -> None:
+    """The record must come first: the body waits on the card. Mutation: record it
+    after the tool returns -> red."""
+    seen: list[bool] = []
+    run = None
+
+    async def waits_on_a_card() -> str:
+        seen.append("email" in run.ran)
+        return "sent"
+
+    run, _live, key = await _full_run(("email", "email-setup", "crm-records"))
+    monkeypatch.setattr(ti, "_gate_injected_tool", lambda fn: fn)
+    tool = ti._pack_call(waits_on_a_card, "email-assistant", False, key, "email")
+    with _frame(run, key):
+        assert await tool() == "sent"
+    assert seen == [True]
+
+
 async def test_a_pack_that_the_member_named_now_stays(store) -> None:
     """Mutation: drop ``_asked_now`` from ``PackRun.of`` -> ``crm-records`` is
     spare -> red."""
@@ -445,6 +497,35 @@ async def test_a_pack_that_left_opens_the_hand_off_that_the_loader_closed(store)
     assert "load_skill_tools" in (run.refusal("email-assistant") or "")
     run.leaves("email")
     assert run.refusal("email-assistant") is None
+
+
+async def test_off_a_load_moves_no_pack_out(store, monkeypatch) -> None:
+    """With the switch off, a load past a cap answers as it did before the slice.
+    Mutation: ignore the switch in ``spare`` -> red."""
+    from acb_common import get_settings
+
+    _stub_owners(monkeypatch)
+    await _seed_sticky("email", "email-setup", "crm-records")
+    run, live, key = await _full_run(("email", "email-setup", "crm-records"))
+    assert run.spare(), "non-vacuity: on, a pack can leave"
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "")
+    assert run.spare() == ()
+    with _frame(run, key):
+        answer, _ = await _call(_loader(run, key), REMINDERS, live)
+    assert run.left == set() and "spawn_subagents" in answer
+
+
+def test_off_layer_a_keeps_the_old_order_of_eviction(monkeypatch) -> None:
+    """With the switch off, the oldest sticky pack leaves, also when the member
+    named it now. Mutation: ignore the switch in ``choose`` -> red."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "")
+    choice = tp.choose(
+        _turn("remind me to answer the email from Ravi",
+              _sticky("email", "email-setup", "crm-records")),
+        allowed=EVERY, base_tools=30)
+    assert choice.evicted[0] == "email", choice
 
 
 async def test_a_pack_that_left_is_not_noted_by_a_call_in_flight(store) -> None:
@@ -582,3 +663,12 @@ def test_a_model_load_at_the_cap_works_in_a_real_run(store, monkeypatch) -> None
     assert "set_reminder" in second and "search_crm" not in second
     assert "find_tasks" in second, "only the oldest sticky pack left"
     assert "To make room, the CRM records tools left" in _tool_result(model.bodies[1], "c-load")
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")

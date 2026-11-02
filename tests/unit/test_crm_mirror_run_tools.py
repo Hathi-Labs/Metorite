@@ -173,3 +173,12 @@ async def test_a_held_run_reads_the_mode_because_it_keeps_the_writes(monkeypatch
     assert len(calls) == 1
     assert not _names(agents) & _WRITES
     assert all(TOOL_ANNOTATIONS[name]["open_world"] for name in _WRITES)
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")
