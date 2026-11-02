@@ -31,7 +31,15 @@ package declares. The route registers on the router of ``actions.py``, as
    read, because a wait on a slow client must not hold a pool connection. The
    read stops past :data:`MAX_BODY_BYTES`, and the answer is 413
    ``body_too_large``.
-8. The executor, in a new session. The door opens two: ``object:<name>.get``
+8. The second check, in a new session. :func:`_check` runs again: it reads
+   the package as this member, then checks the declaration and the class on
+   that fresh manifest. A slow client can pass the first check and hold the
+   read open. Without this check, it reads after it lost access or after the
+   package changed. The owner-only rule hides this today, but J2 (sharing) and
+   C8 (row rules) build on this door. A miss gets the same 404, and a
+   declaration that is gone gets the same 403. An action that now names
+   another source gets 403 ``source_not_open``.
+9. The executor, in that session. The door opens two: ``object:<name>.get``
    (B2a) and ``object:<name>.list`` (B2b-1). Each one parses the body here,
    and only here. An object name that the package does not hold gets 404
    ``object_missing``, and a record id that names nothing gets 404 ``Not
@@ -56,8 +64,9 @@ as ``organization_id`` in a body changes nothing.
 door serves or refuses, writes one ``app_audit`` row (kind ``action``) through
 ``record_app_audit_bound``. The row holds the action id, its ``uses``, its
 class and the outcome, and no record data. Each text in it has at most
-:data:`MAX_AUDIT_TEXT` characters. A 404 before the package writes no row. A
-refused query gives the row its code in ``reason``, and never its input. A raw
+:data:`MAX_AUDIT_TEXT` characters. A 404 at either read of the package writes
+no row. A refused query gives the row its code in ``reason``, and never its
+input. A raw
 fault, such as a failed statement, gets 500 and writes no row, because the
 session is not safe to write on.
 
@@ -317,16 +326,52 @@ async def _run_object_list(db: Any, package: packages_store.Package, ref: UsesRe
         out.page = page
 
 
-async def _run_executor(request: Request, package: packages_store.Package, ref: UsesRef,
+async def _check(db: Any, member: str, pid: str, action: str,
+                 out: _Outcome) -> tuple[packages_store.Package, UsesRef | None]:
+    """One run of the checks on the session *db*: the package as *member*, the
+    declaration, then the class of an object action. Each other source takes
+    its class from the catalog, outside the session.
+
+    The door runs this function twice: before the body read, and again after
+    it, on the fresh manifest. So it sets each field of *out* that it decides.
+    A package that *member* cannot read raises 404.
+    """
+    out.uses, out.cls, out.refusal = None, None, None
+    package = await packages_store.get_package(db, member, pid)
+    if package is None:
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    entry = _declared(package.manifest, action)
+    ref = None if entry is None else parse_uses(entry.get("uses"))
+    if entry is None or ref is None:
+        out.refusal = NOT_DECLARED
+        return package, ref
+    out.uses = str(entry["uses"])
+    if ref.source == "object":
+        out.cls = OBJECT_OP_CLASSES.get(str(ref.op))
+        out.refusal = refusal_for(ref, out.cls)
+    return package, ref
+
+
+async def _run_executor(request: Request, member: str, pid: str, action: str,
                         out: _Outcome) -> None:
-    """Read the body, then run the open executor of *ref* in a new session. No
-    session is open during the read, so a slow client holds no pool connection."""
+    """Read the body, check again, then run the open executor. No session is
+    open during the read, so a slow client holds no pool connection. The read
+    can last as long as the client wants, so the first check proves nothing
+    after it. The check and the executor share one session."""
     raw = await _read_body(request)
     if raw is None:
         out.too_large = True
         return
-    run = _run_object_list if ref.op == "list" else _run_object_get
     async with _tenant_session() as db:
+        package, ref = await _check(db, member, pid, action, out)
+        if out.refusal is not None or ref is None:
+            return
+        if ref.source != "object":
+            # The action named an object at the first check. The catalog gives
+            # no class in this session, and no other source has an executor.
+            out.refusal = SOURCE_NOT_OPEN
+            return
+        run = _run_object_list if ref.op == "list" else _run_object_get
         await run(db, package, ref, raw, out)
 
 
@@ -407,20 +452,8 @@ async def invoke_action(
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _app_id(app_id)
     out = _Outcome(action=action)
-    ref: UsesRef | None = None
     async with _tenant_session() as db:
-        package = await packages_store.get_package(db, user.email, pid)
-        if package is None:
-            raise HTTPException(status_code=404, detail=NOT_FOUND)
-        entry = _declared(package.manifest, action)
-        ref = None if entry is None else parse_uses(entry.get("uses"))
-        if entry is None or ref is None:
-            out.refusal = NOT_DECLARED
-        else:
-            out.uses = str(entry["uses"])
-            if ref.source == "object":
-                out.cls = OBJECT_OP_CLASSES.get(str(ref.op))
-                out.refusal = refusal_for(ref, out.cls)
+        package, ref = await _check(db, user.email, pid, action, out)
     if ref is not None and out.uses is not None and ref.source != "object":
         try:
             out.cls = await _catalog_class(out.uses)
@@ -430,7 +463,7 @@ async def invoke_action(
         else:
             out.refusal = refusal_for(ref, out.cls)
     elif ref is not None and out.refusal is None:
-        await _run_executor(request, package, ref, out)
+        await _run_executor(request, user.email, pid, action, out)
     await record_app_audit_bound(app_id=package.id, user_email=user.email, kind="action",
                                  detail=_audit_detail(out))
     return _answer(out)

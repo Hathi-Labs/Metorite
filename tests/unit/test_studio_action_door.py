@@ -376,7 +376,7 @@ class TestThePackage:
         assert r.status_code == 200, r.text
         assert world.session_args == [(), ()]
         reads = [p for sql, p in world.statements if sql == packages_store._GET_SQL]
-        assert reads == [{"m": ANA, "id": pid}]
+        assert reads == [{"m": ANA, "id": pid}] * 2
         assert world.audits[0]["user_email"] == ANA
 
 
@@ -584,8 +584,8 @@ NO_INPUT: dict[str, Any] = {"filter": None, "sort": None, "limit": None, "offset
 
 
 def _read_nothing(world: Any) -> None:
-    """The door read the package and nothing after it."""
-    assert [sql for sql, _ in world.statements] == [packages_store._GET_SQL]
+    """The door read the package, and no object and no record."""
+    assert {sql for sql, _ in world.statements} == {packages_store._GET_SQL}
     assert world.queries == []
 
 
@@ -916,6 +916,9 @@ class TestTheBodyRead:
         assert status == 200
         assert world.log == ["open", "close", "body", "open", "close", "audit"]
         assert body.reads == 1
+        # The check runs again after the read, in the session of the executor.
+        reads = [sql for sql, _ in world.statements if sql == packages_store._GET_SQL]
+        assert len(reads) == 2
 
     def test_a_raw_fault_writes_no_audit_row(self, world):
         """The door serves or refuses each other call. A raw fault is neither,
@@ -1005,6 +1008,16 @@ class TestTheTables:
     def test_the_refusal_text_names_each_open_verb(self):
         for _, verb in invoke.OPEN_EXECUTORS:
             assert str(verb) in invoke.REFUSALS["source_not_open"]
+
+    def test_one_check_runs_twice(self):
+        """One check before the body read and the same check after it. A
+        second read of a package in this module is a second copy of the rule."""
+        from pathlib import Path
+
+        src = Path(invoke.__file__).read_text(encoding="utf-8")
+        assert src.count("packages_store.get_package(") == 1
+        assert src.count("await _check(") == 2
+        assert src.count("_declared(package") == 1
 
     def test_each_refusal_is_one_short_sentence(self):
         assert set(invoke.REFUSALS) == {"not_declared", "class_x", "not_in_catalog",

@@ -59,6 +59,9 @@ s. After each refusal the door session runs a statement, and the audit row
 t. A body past the cap gets 413 and one audit row. A non-owner and an org
    outside the switch read no byte. No connection of the app role is in a
    transaction during the read.
+u. A change during the read is seen. A package that goes and an owner that
+   changes get 404. A declaration that changes gets 403. Neither reads a
+   record.
 
 **The mutations (R7).** Commit before each, and restore with git after.
 Each result below was run on 2026-11-01, with both B2a suites.
@@ -184,11 +187,23 @@ pass all 162 tests.
 * F11. ``_json_object``: catch only ``JSONDecodeError``.
   ``test_a_body_that_is_not_a_json_object_is_422_never_500`` and
   ``test_a_number_too_long_to_parse_is_422_never_500`` go red.
+
+**The mutations of the second check.** Each result below was run on 2026-11-02,
+on both door suites.
+
+* G1. ``_run_executor``: use the package and the reference of the first check.
+  Each case of ``test_r8_a_change_during_the_read_is_seen_and_reads_no_record``
+  and ``test_one_check_runs_twice`` go red.
+* G2. ``_run_executor``: drop the check of the source. The two ``now_door_op``
+  cases of that test go red.
+* G3. ``_check``: do not clear the outcome first. The two ``removed`` cases of
+  that test go red, because the row keeps the old ``uses``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import uuid
 from collections.abc import Awaitable, Callable
@@ -258,9 +273,10 @@ def _user(org: str, email: str) -> UserContext:
 
 class _Request:
     """The one part of a request that the handler reads: the stream of the
-    body. *on_read* runs at the read, and *fails* makes the read fail."""
+    body. *on_read* runs at the read, and it may be async. *fails* makes the
+    read fail."""
 
-    def __init__(self, payload: Any, on_read: Callable[[], None] | None = None,
+    def __init__(self, payload: Any, on_read: Callable[[], Any] | None = None,
                  fails: bool = False) -> None:
         self._raw = b"" if payload is None else json.dumps(payload).encode("utf-8")
         self._on_read = on_read
@@ -272,7 +288,9 @@ class _Request:
         if self._fails:
             raise OSError("the read of the body failed")
         if self._on_read is not None:
-            self._on_read()
+            done = self._on_read()
+            if inspect.isawaitable(done):
+                await done
         yield self._raw
 
 
@@ -847,6 +865,68 @@ def test_r8_the_switch_off_reads_no_byte(world, monkeypatch) -> None:
     status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, "find", request=request))
     assert (status, detail) == (404, NOT_FOUND)
     assert request.reads == 0
+
+
+# ── u. A change during the read ────────────────────────────────────────────
+
+
+async def _set_action(world: Any, action: str, uses: str | None) -> None:
+    """Replace or remove *action* in the draft manifest, through the store, in
+    a session of its own."""
+    async with tenant_session(world.a) as db:
+        package = await packages_store.get_package(db, ANA, world.pkg)
+        assert package is not None
+        manifest = dict(package.manifest)
+        kept = [a for a in manifest["actions"] if a["id"] != action]
+        manifest["actions"] = kept + ([{"id": action, "uses": uses}] if uses else [])
+        assert await packages_store.update_manifest(db, ANA, world.pkg, manifest) is not None
+
+
+async def _change(world: Any, change: str, action: str) -> None:
+    """One change, in a second session, while the door waits on the body."""
+    if change == "package_gone":
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM apps WHERE id = CAST(:p AS uuid)"), {"p": world.pkg})
+    elif change == "owner_changed":
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE apps SET owner_email = :o WHERE id = CAST(:p AS uuid)"),
+                      {"o": BEN, "p": world.pkg})
+    else:
+        await _set_action(world, action, {
+            "removed": None,
+            "now_deletes": "object:visit.delete",
+            "now_door_op": "knowledge.list_pages",
+        }[change])
+
+
+@pytest.mark.parametrize("action", ["find", "peek"])
+@pytest.mark.parametrize("change,answer,row", [
+    ("package_gone", (404, NOT_FOUND), None),
+    ("owner_changed", (404, NOT_FOUND), None),
+    ("removed", (403, "not_declared"), {"uses": None, "class": None}),
+    ("now_deletes", (403, "approval_required"), {"uses": "object:visit.delete", "class": "C"}),
+    ("now_door_op", (403, "source_not_open"), {"uses": "knowledge.list_pages", "class": None}),
+], ids=["package_gone", "owner_changed", "removed", "now_deletes", "now_door_op"])
+def test_r8_a_change_during_the_read_is_seen_and_reads_no_record(
+        world, monkeypatch, action, change, answer, row) -> None:
+    """A slow client passes the first check, and the change lands while the
+    door waits on the body. The door then reads no object and no record."""
+    def _no_read(*_: Any, **__: Any) -> Any:
+        raise AssertionError("the door read a record after the change")
+
+    for name in ("get_object_by_name", "get_record", "query_records"):
+        monkeypatch.setattr(objects_store, name, _no_read)
+    request = _Request({"id": world.rec} if action == "peek" else {},
+                       on_read=lambda: _change(world, change, action))
+    status, detail = _run(world, lambda: _call(world.a, ANA, world.pkg, action, request=request))
+    assert request.reads == 1
+    if row is None:
+        assert (status, detail) == answer
+        assert _audits(world, world.pkg) == []
+        return
+    assert (status, detail["code"]) == answer
+    assert [r[3] for r in _audits(world, world.pkg)] == [{
+        "action": action, **row, "outcome": "refused", "reason": answer[1]}]
 
 
 # ── i. The switch ──────────────────────────────────────────────────────────
