@@ -951,7 +951,8 @@ def test_r8_a_route_counts_late_work_by_the_day_of_its_reader(world) -> None:
 
     listed, stuck = _in_org(world, org, work)
     assert (task in [r["id"] for r in listed["rows"]]) is late
-    assert sum(r["n"] for r in stuck["overdue"]) == (1 if late else 0)
+    # The rows carry `overdue`, and `overdue_total` sums them (analytics.py).
+    assert stuck["overdue_total"] == (1 if late else 0)
 
 
 def test_r8_a_reminder_goes_before_a_morning_of_summaries(world) -> None:
