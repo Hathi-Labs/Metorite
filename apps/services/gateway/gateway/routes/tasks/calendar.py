@@ -939,6 +939,10 @@ async def _replan_core(
         if not c:
             continue
         was_scheduled = c["id"] in movable_ids
+        if o.get("not_today"):
+            # The plan ruled it out for today. Not a lack of time.
+            _miss(c["id"], c["title"], was_scheduled, "Not today, by your plan.")
+            continue
         is_one_thing = c["id"] == one_thing_id
         dur = max(5, int(c["estimate_mins"]))
         if used + dur > cap and not is_one_thing:

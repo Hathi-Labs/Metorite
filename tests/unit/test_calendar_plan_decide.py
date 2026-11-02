@@ -128,7 +128,9 @@ def _fake(monkeypatch, **kw) -> FakeDecide:
 
 
 def _ids(result) -> list[str]:
-    return [o["id"] for o in result[0]]
+    # The "not today" markers (task 1338 repair) trail the plan. They are not
+    # in the order.
+    return [o["id"] for o in result[0] if not o.get("not_today")]
 
 
 def test_the_order_follows_the_scores_and_a_tie_keeps_the_candidate_order(monkeypatch):
@@ -228,7 +230,15 @@ def test_shadow_keeps_the_old_answer_and_runs_decide(monkeypatch):
     _mode(monkeypatch, "shadow")
     fake = _fake(monkeypatch)
     old = Old()
-    res = _rank(_cands(3), old)
+
+    async def go():
+        res = await cd.rank_day(
+            old, _cands(3), NOTE, 360, None, None, [], member=ME,
+            default_prompt="DEFAULT", rank_fallback=cal._rank_fallback)
+        await asyncio.gather(*list(df._BACKGROUND))
+        return res
+
+    res = asyncio.run(go())
     assert old.calls == 1
     assert len(fake.calls) == 1
     assert _ids(res) == ["old1", "old2"]
@@ -310,3 +320,107 @@ def test_replan_core_goes_through_the_seam():
     src = inspect.getsource(cal._replan_core)
     assert "_calendar_decide.rank_day(" in src
     assert "member=uid" in src
+
+
+# ── Repair round: shadow detach, contained shadow, the not-today reason ─────
+
+def test_shadow_does_not_hold_the_answer_for_a_slow_shadow(monkeypatch):
+    import time
+
+    _mode(monkeypatch, "shadow")
+    fake = _fake(monkeypatch, delay=0.6)
+
+    async def go():
+        t0 = time.monotonic()
+        res = await cd.rank_day(
+            Old(), _cands(3), NOTE, 360, None, None, [], member=ME,
+            default_prompt="DEFAULT", rank_fallback=cal._rank_fallback)
+        took = time.monotonic() - t0
+        pending = list(df._BACKGROUND)
+        assert pending, "the shadow must run on in the background"
+        await asyncio.gather(*pending)
+        return res, took
+
+    res, took = asyncio.run(go())
+    assert took < 0.3, took
+    assert _ids(res) == ["old1", "old2"]
+    assert len(fake.calls) == 1
+    assert not df._BACKGROUND
+
+
+def test_a_fault_in_the_shadow_path_gives_the_old_answer(monkeypatch):
+    _mode(monkeypatch, "shadow")
+    _fake(monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("scope fault")
+
+    monkeypatch.setattr(cd, "job_member_scope", boom)
+    old = Old()
+    res = _rank(_cands(3), old)
+    assert old.calls == 1
+    assert _ids(res) == ["old1", "old2"]
+
+
+def test_other_shadow_callers_still_wait_for_the_shadow(monkeypatch):
+    # Only the day plan detaches. The default keeps the email and feed order.
+    import inspect
+
+    assert inspect.signature(df.shadow).parameters["detach"].default is False
+    assert inspect.signature(df.shadow).parameters["detach"].kind.name == "KEYWORD_ONLY"
+
+
+def test_a_not_today_task_is_marked_and_gets_its_own_reason(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    _mode(monkeypatch, "on")
+    _fake(monkeypatch, scores={"c0": 0.1, "c1": 2.8})
+    res = _rank(_cands(2), Old())
+    assert [o["id"] for o in res[0] if o.get("not_today")] == ["t1"]
+    # In the planner the movable t1 comes first, so it is c0.
+    _fake(monkeypatch, scores={"c0": 2.8, "c1": 0.1})
+
+    now = datetime(2026, 11, 2, 9, 0, tzinfo=UTC)
+
+    def item(i, sched):
+        return SimpleNamespace(
+            id=i, title=f"Task {i}", time_estimate_mins=30, energy=None,
+            importance=None, leveraged=None, deep_work=False, due_at=None,
+            context=None, scheduled_start=(now + timedelta(hours=1)).isoformat() if sched else None,
+            scheduled_end=(now + timedelta(hours=2)).isoformat() if sched else None,
+            flexible=True, disposition=None, is_mine=True)
+
+    class Src:
+        async def scheduled_today(self, *a):
+            return [item("t1", True)]
+
+        async def carry_forward(self, *a):
+            return []
+
+        async def candidates(self, *a):
+            return [item("t0", False)]
+
+        def to_item(self, r):
+            return r
+
+    async def prefs(db, uid):
+        return {"planning_prompt": "", "max_focus_run_mins": 90, "break_mins": 0,
+                "lunch_start_hour": None, "lunch_end_hour": None}
+
+    async def pad(db, uid, src):
+        return 1.0, None
+
+    async def tmpl(db, uid):
+        return []
+
+    monkeypatch.setattr(cal, "_planning_prefs", prefs)
+    monkeypatch.setattr(cal, "_estimate_pad", pad)
+    monkeypatch.setattr(cal, "_day_templates", tmpl)
+    req = cal.PlanDayRequest(
+        day_start=now.isoformat(), day_end=(now + timedelta(hours=8)).isoformat())
+    plan = asyncio.run(cal._replan_core(
+        None, ME, now, now + timedelta(hours=8), req, now, None, True, Src()))
+    assert [b.item_id for b in plan.blocks] == ["t0"]
+    assert [(e.item_id, e.reason) for e in plan.evicted] == [
+        ("t1", "Not today, by your plan.")]

@@ -1008,6 +1008,7 @@ async def shadow[T](
     module_slug: str | None = None,
     features: Collection[str] | None = None,
     record: Record | None = None,
+    detach: bool = False,
 ) -> T:
     """Run the old call, and in ``shadow`` mode ask ``decide`` beside it.
 
@@ -1065,8 +1066,31 @@ async def shadow[T](
     except BaseException:
         task.cancel()
         raise
+    if detach:
+        # The member's answer leaves now. The shadow ends in the background,
+        # still bounded by SHADOW_BOUND_S, and logs when it ends. A strong
+        # reference keeps the task from collection.
+        bg = asyncio.create_task(
+            _finish_shadow(task, ids, result, compare, record))
+        _BACKGROUND.add(bg)
+        bg.add_done_callback(_BACKGROUND.discard)
+        return result
     # The task is bounded by SHADOW_BOUND_S from its start, so this wait adds
     # at most that much to the old answer.
+    await _finish_shadow(task, ids, result, compare, record)
+    return result
+
+
+#: Strong references to the detached shadow tasks (asyncio keeps weak ones).
+_BACKGROUND: set[asyncio.Task] = set()
+
+
+async def _finish_shadow(
+    task: asyncio.Task, ids: Mapping[str, Any], result: Any,
+    compare: Callable[[Any, Any], Comparison | list[Comparison]],
+    record: Record | None,
+) -> None:
+    """Wait for the shadow request, log the comparison and record it."""
     asked = await task
     if asked is not None:
         made = _log_comparison(ids, result, asked, compare)
@@ -1076,7 +1100,6 @@ async def shadow[T](
             except Exception as exc:  # a lost row never breaks the old path
                 _log.warning("decide.shadow_record_failed", **ids,
                              error_type=type(exc).__name__)
-    return result
 
 
 def _log_comparison(

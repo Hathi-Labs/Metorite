@@ -244,10 +244,19 @@ async def rank_day(
                 agree=before == after, options=len(LEVELS),
                 fields={"top3_overlap": len(set(before) & set(after))})
 
-        with job_member_scope(member, app=MODULE_SLUG):
-            return await df.shadow(
-                FEATURE, old, build=_build, compare=_compare, ids=ids,
-                module_slug=MODULE_SLUG)
+        # A fault of the shadow never stops the member's answer. `detach`
+        # makes the answer leave at once: the shadow ends in the background.
+        try:
+            with job_member_scope(member, app=MODULE_SLUG):
+                return await df.shadow(
+                    FEATURE, old, build=_build, compare=_compare, ids=ids,
+                    module_slug=MODULE_SLUG, detach=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _log.warning("tasks.calendar.plan_shadow_failed",
+                         error_type=type(exc).__name__)
+            return await old()
 
     def _read(decision: Any) -> tuple[list[dict], Mapping[str, Any]]:
         plan = order_from(decision, cands, one_thing_id)
@@ -273,4 +282,10 @@ async def rank_day(
         {"id": c["id"], "preferred_energy": c.get("energy"),
          "rationale": "Priority-ranked."}
         for c in rank_fallback(cands[MAX_CANDIDATES:]))
+    # A "not today" task left the plan. Mark it, so the packer gives it its
+    # own reason and not "Didn't fit the time left".
+    planned = {o["id"] for o in plan}
+    plan.extend(
+        {"id": c["id"], "not_today": True}
+        for c in cands[:MAX_CANDIDATES] if c["id"] not in planned)
     return plan, None, None
