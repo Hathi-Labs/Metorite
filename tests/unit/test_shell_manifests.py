@@ -19,6 +19,7 @@ from acb_common.app_manifests.shell_manifest import (
     SYSTEM_POINTS,
     ShellManifestError,
     SystemContribution,
+    load_anchors,
     load_contributes,
     load_gates,
     load_jobs,
@@ -28,6 +29,7 @@ from gateway.routes.shell import intent
 
 ROOT = Path(__file__).resolve().parents[2]
 GENERATED = ROOT / "workbench/control_plane/src/lib/shell/jobs.generated.ts"
+ANCHORS_TS = ROOT / "workbench/control_plane/src/lib/shell/anchors.generated.ts"
 VOCABULARY = ROOT / "workbench/control_plane/src/lib/shell/vocabulary.generated.ts"
 ME = ROOT / "apps/services/gateway/gateway/routes/admin/me.py"
 REGISTRY = ROOT / "workbench/control_plane/src/lib/shell/registry.ts"
@@ -514,3 +516,43 @@ def test_contributes_loader_rejects_bad_files(tmp_path):
         attempt(a={"nav": [{"href": "/a?do=x"}]})
     with pytest.raises(ShellManifestError, match="only 'key'"):
         attempt(home={"cards": [{"key": "c", "feature": "x"}]})
+
+
+# ── GD-1: the anchors a guide may ring (assistant_guide.md §5.1) ────────────
+
+
+def test_anchors_ts_is_current():
+    want = _generator().render_anchors_ts(load_anchors())
+    have = ANCHORS_TS.read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert have == want, "anchors.generated.ts is stale: run `uv run python scripts/gen_shell_manifests.py`"
+
+
+def test_anchors_are_the_six_shell_parts():
+    got = load_anchors()
+    assert [a.full_id for a in got] == [
+        "chat.panel", "chat.message-field", "home.app-list", "home.ask", "home.my-day",
+        "home.account-menu",
+    ]
+    assert all(a.route.startswith("/") and a.label and a.does for a in got)
+
+
+def test_anchors_loader_rejects_bad_files(tmp_path):
+    def attempt(**files: dict):
+        for p in tmp_path.glob("*.json"):
+            p.unlink()
+        for name, contributes in files.items():
+            _vocab_write(tmp_path, name, contributes)
+        return load_anchors(tmp_path)
+
+    good = {"id": "x", "label": "X", "route": "/a", "does": "Does x."}
+    assert [a.full_id for a in attempt(a={"anchors": [good]})] == ["a.x"]
+    with pytest.raises(ShellManifestError, match="must hold exactly"):
+        attempt(a={"anchors": [{**good, "selector": "#x"}]})
+    with pytest.raises(ShellManifestError, match="must hold exactly"):
+        attempt(a={"anchors": [{"id": "x", "label": "X", "route": "/a"}]})
+    with pytest.raises(ShellManifestError, match="duplicate anchor id"):
+        attempt(a={"anchors": [good, good]})
+    with pytest.raises(ShellManifestError, match=r"no '[?]'"):
+        attempt(a={"anchors": [{**good, "route": "/a?x=1"}]})
+    with pytest.raises(ShellManifestError, match="lower-case"):
+        attempt(a={"anchors": [{**good, "id": "Bad Id"}]})

@@ -685,6 +685,18 @@ def test_a_shell_file_with_an_unknown_point_is_refused():
     assert len(errs[0].message.split()) <= 25
 
 
+def test_a_package_cannot_declare_a_guide_anchor():
+    # assistant_guide.md section 5.7: the guide rings only anchors of the shipped shell files.
+    d = copy.deepcopy(EXAMPLE)
+    d.setdefault("contributes", {})["anchors"] = [{"id": "x"}]
+    errs = validate_manifest(d)
+    assert [e.path for e in errs] == ["$.contributes"]
+    assert "anchors" in errs[0].message
+    home = json.loads((SHELL_DIR / "home.json").read_text(encoding="utf-8"))
+    assert home["contributes"]["anchors"], "the shell file lost its anchors"
+    assert validate_manifest(home) == []
+
+
 def test_a_system_file_with_an_unknown_top_level_key_is_refused():
     doc = json.loads((SHELL_DIR / "crm.json").read_text(encoding="utf-8"))
     doc["colour"] = "red"
