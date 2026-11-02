@@ -9,8 +9,10 @@
  * block by name. A view that `renderView` cannot draw shows a "not built yet" card.
  *
  * Layout. `cols` and `span` come from a closed class table, and no class is built from a
- * manifest value. Below `sm` the grid is one column in declared order. From `sm` up the
- * side view is a `w-[380px]` column beside the grid. Below `sm` it opens in a `Modal` sheet.
+ * manifest value. A narrow scroller (a phone at 390 px) gets one column in declared order.
+ * From `lg` up the side view is a `w-[380px]` column beside the grid. Below `lg` it opens in a
+ * `Modal` sheet. DESIGN_SYSTEM section 6 says `sm`, but the shell rail takes 260 px, so at 768 px
+ * a 380 px column left the grid 110 px (seen in the D11b capture).
  *
  * The page keeps its whole height and the Ask bar floats over it (`lib/shell/askBarRest.ts`),
  * so the scroller reserves no space for the bar. The shell owns the bar, the palette and the
@@ -26,34 +28,38 @@ import type { PageDef, ViewDef } from "@/lib/studio/manifest";
 import { buildPage } from "@/lib/studio/pageModel";
 import type { PageState } from "@/lib/studio/pageState";
 
-/** `cols` to the classes of the grid. One column below `sm`. */
+/**
+ * `cols` to the classes of the grid. The columns follow the width of the scroller, not the
+ * window (container queries), because the shell rail and the side column take width that
+ * the window does not show. A narrow scroller, such as a phone at 390 px, gets one column.
+ */
 const GRID: Record<number, string> = {
   1: "grid-cols-1",
-  2: "grid-cols-1 sm:grid-cols-2",
-  3: "grid-cols-1 sm:grid-cols-3",
-  4: "grid-cols-1 sm:grid-cols-4",
+  2: "grid-cols-1 @xl:grid-cols-2",
+  3: "grid-cols-1 @xl:grid-cols-2 @3xl:grid-cols-3",
+  4: "grid-cols-1 @xl:grid-cols-2 @3xl:grid-cols-3 @5xl:grid-cols-4",
 };
 
-/** `span` to its class. Below `sm` every cell takes the one column. */
+/** `span` to its class. A cell spans only where its columns exist, and one column holds every cell. */
 const SPAN: Record<number, string> = {
   1: "",
-  2: "sm:col-span-2",
-  3: "sm:col-span-3",
-  4: "sm:col-span-4",
+  2: "@xl:col-span-2",
+  3: "@3xl:col-span-3",
+  4: "@5xl:col-span-4",
 };
 
 const PANEL = "min-w-0 rounded-xl border border-border bg-card p-3 sm:p-4";
-const BELOW_SM = "(max-width: 639.98px)";
+const BELOW_LG = "(max-width: 1023.98px)";
 
 function subscribe(onChange: () => void): () => void {
-  const q = window.matchMedia(BELOW_SM);
+  const q = window.matchMedia(BELOW_LG);
   q.addEventListener("change", onChange);
   return () => q.removeEventListener("change", onChange);
 }
 
-/** True below `sm`. The server and the first render say false. */
-function useBelowSm(): boolean {
-  return useSyncExternalStore(subscribe, () => window.matchMedia(BELOW_SM).matches, () => false);
+/** True below `lg`. The server and the first render say false. */
+function useBelowLg(): boolean {
+  return useSyncExternalStore(subscribe, () => window.matchMedia(BELOW_LG).matches, () => false);
 }
 
 export interface StudioPageProps {
@@ -90,7 +96,7 @@ export default function StudioPage({
 }: StudioPageProps) {
   const built = buildPage(manifest, pageId, state.tab);
   const { page, cells } = built;
-  const narrow = useBelowSm();
+  const narrow = useBelowLg();
   const sideView = page.side && state.selected ? page.side : null;
   const side = sideView ? renderView(sideView) : null;
 
@@ -102,7 +108,7 @@ export default function StudioPage({
           tabs={page.tabs.map((t) => ({ id: t.id, label: t.title }))} />
       )}
       <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1 overflow-y-auto p-3 sm:p-4" data-page-scroller>
+        <div className="@container min-w-0 flex-1 overflow-y-auto p-3 sm:p-4" data-page-scroller>
           {toolbar && <div className="mb-3 flex flex-wrap items-center gap-2 sm:mb-4">{toolbar}</div>}
           {cells.length === 0 ? (
             <p className="text-sm text-muted-foreground">This page has no views.</p>
@@ -124,7 +130,7 @@ export default function StudioPage({
           )}
         </div>
         {sideView && !narrow && (
-          <aside aria-label="Details" className="hidden w-[380px] shrink-0 overflow-y-auto border-l border-border p-3 sm:block sm:p-4">
+          <aside aria-label="Details" className="hidden w-[380px] shrink-0 overflow-y-auto border-l border-border p-3 lg:block lg:p-4">
             <div className="mb-3 flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold text-foreground">Details</h2>
               <Button variant="ghost" size="icon-sm" icon="X" aria-label="Close details" onClick={onCloseSide} />
@@ -135,7 +141,7 @@ export default function StudioPage({
       </div>
       {sideView && narrow && (
         <Modal open onClose={onCloseSide} title="Details" placement="sheet" size="lg">
-          {side ?? <NotBuilt view={sideView} />}
+          <div className="overflow-y-auto p-3">{side ?? <NotBuilt view={sideView} />}</div>
         </Modal>
       )}
     </div>

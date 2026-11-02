@@ -41,18 +41,21 @@ function draw(
 }
 
 describe("the grid", () => {
-  it("uses one column below sm, and cols from sm up", () => {
-    for (const [cols, cls] of [[1, "grid-cols-1"], [2, "sm:grid-cols-2"], [3, "sm:grid-cols-3"], [4, "sm:grid-cols-4"]] as const) {
+  it("uses one column in a narrow scroller, and cols only as the scroller widens", () => {
+    for (const [cols, cls] of [[1, "grid-cols-1"], [2, "@xl:grid-cols-2"], [3, "@3xl:grid-cols-3"], [4, "@5xl:grid-cols-4"]] as const) {
       const html = draw([{ id: "p", cols, cells: [{ view: "a-table" }] }]);
-      expect(html).toContain("grid-cols-1");
+      expect(html).toContain("@container");
       expect(html).toContain(cls);
+      // The one-column rule: no grid-cols class takes effect without a width condition.
+      expect(html).toContain("grid-cols-1");
+      expect(html.match(/(?<![@\w:-])grid-cols-[2-9]/g)).toBeNull();
     }
   });
 
   it("gives each cell its span, and a span of 1 adds no class", () => {
     const html = draw([{ id: "p", cols: 3, cells: [{ view: "a-table", span: 2 }, { view: "b-board" }] }]);
-    expect(html.match(/sm:col-span-2/g)).toHaveLength(1);
-    expect(html).not.toContain("sm:col-span-1");
+    expect(html.match(/@xl:col-span-2/g)).toHaveLength(1);
+    expect(html).not.toContain("col-span-1");
   });
 
   it("calls renderView once for each cell, in order", () => {
@@ -115,6 +118,7 @@ describe("the side view", () => {
     const html = draw(PAGES, { selected: "v1" });
     expect(html).toContain("<aside");
     expect(html).toContain("w-[380px]");
+    expect(html).toContain("lg:block");
     expect(html).toContain('data-v="c-detail"');
   });
 
@@ -128,9 +132,9 @@ describe("the side view", () => {
     expect(draw([{ id: "p", cells: [{ view: "a-table" }] }], { selected: "v1" })).not.toContain("<aside");
   });
 
-  it("opens in a sheet Modal below sm", () => {
+  it("opens in a sheet Modal below lg", () => {
     expect(SRC).toMatch(/<Modal[^>]*placement="sheet"/);
-    expect(SRC).toContain("max-width: 639.98px");
+    expect(SRC).toContain("max-width: 1023.98px");
   });
 });
 
