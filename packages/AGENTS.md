@@ -68,6 +68,10 @@ Each module below holds ONE rule. Do not copy its rule into a caller.
 - `child_env.py`: the ONE env of every child process that the gateway starts, as an allowlist of literal names. Pass `env=` at every spawn and at every `CopilotClient(`. Never put `os.environ` in `extra=`.
 - Do not hand a spawn function to other code as a value. The one exception is `orchestrator/mutation_runner.py`, which keeps its own literal allowlist. Spec: `project-docs/specs/box_hardening.md` §5 BH-1.
 - Child env fences: `tests/unit/test_child_env_seam.py`, `tests/unit/test_copilot_child_env.py` and `tests/unit/test_child_env_call_sites.py`.
+- `goal_store.py`: the ONE writer of `goal_records`, the goal record of a long job (WS-WEB WEB-10, `web_research.md` §6.1). It is here because the orchestrator runs WEB-11 and cannot import gateway code.
+  - ⚠️ Each function takes an async session that the caller opened with `tenant_session(org)`. No function takes an org or opens a session. The member is a required argument, and each statement filters on it. The caller resolves the member from a trusted source, never from request input.
+  - ⚠️ Each write names `expected_version`. A stale one raises `StaleGoal`, and nothing changes. `cap_block` is the one cap rule, and the write that reaches a cap blocks the goal with `cap_reached`. `BLOCK_CODES` is the closed set, with one sentence for the member for each code.
+  - The objective never changes. Store no permission to continue. A restart asks the member again. The member purge names `goal_records`. Fences: `tests/unit/test_goal_record_r8.py` (R8), `tests/unit/test_tenant_coverage.py`.
 
 ### acb_audit/
 Audit event recording.
