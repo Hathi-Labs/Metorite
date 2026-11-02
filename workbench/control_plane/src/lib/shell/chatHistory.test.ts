@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ChatSession } from "@/lib/sessions";
 
-import { matchesQuery, mergeFileEntry, relativeAge, sessionTitle, splitSessions } from "./chatHistory";
+import { dateGroups, matchesQuery, mergeFileEntry, relativeAge, sessionTitle, splitSessions } from "./chatHistory";
 
 const NOW = Date.parse("2026-10-12T12:00:00Z");
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
@@ -92,3 +92,30 @@ describe("a chat's files", () => {
     expect(mergeFileEntry([], { path: "" }, "t")).toEqual([]);
   });
 });
+
+describe("the chat list by day (CO-0, owner 2026-11-02)", () => {
+  const H = 60 * 60 * 1000;
+  // A fixed local noon, so "today" and "yesterday" do not hang on the zone.
+  const noon = new Date(2026, 10, 2, 12, 0, 0).getTime();
+  const at = (ms: number) => ({ updatedAt: new Date(noon - ms).toISOString() });
+
+  it("puts each chat in its day group, newest group first, and leaves out an empty group", () => {
+    const groups = dateGroups([at(1 * H), at(20 * H), at(3 * 24 * H), at(40 * 24 * H), at(2 * H)], noon);
+    expect(groups.map((g) => [g.label, g.items.length])).toEqual([
+      ["Today", 2],
+      ["Yesterday", 1],
+      ["Previous 7 days", 1],
+      ["Older", 1],
+    ]);
+  });
+
+  it("keeps the order it was given inside a group", () => {
+    const a = at(1 * H), b = at(2 * H);
+    expect(dateGroups([a, b], noon)[0].items).toEqual([a, b]);
+  });
+
+  it("puts a chat with no date in Older", () => {
+    expect(dateGroups([{ updatedAt: "" }], noon)[0].label).toBe("Older");
+  });
+});
+

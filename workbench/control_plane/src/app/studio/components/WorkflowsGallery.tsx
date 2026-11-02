@@ -1,29 +1,26 @@
 "use client";
 
 /**
- * /workflows — the Workflows app home (spec: workflows_app.md F1, §5).
- * Two tabs: the workflow gallery and the Module Studio (org module library +
- * conversational generator).
+ * The workflow gallery, moved out of `/workflows` into the Studio library
+ * (`ai_studio.md` §14 E1). The Studio page owns the one page heading. This section
+ * heads itself with an `<h2>`. Module Studio now lives on a Studio tab.
  *
  * Data:  list    GET  /api/workflows
  *        create  POST /api/workflows
- *        modules /api/workflows/modules*
  */
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import Tabs from "@/components/Tabs";
 import FilterPills from "@/components/FilterPills";
-import ModuleStudio from "./components/ModuleStudio";
 import {
   createWorkflow,
   deleteWorkflow,
   duplicateWorkflow,
   listWorkflows,
-} from "./lib/api";
-import type { WorkflowSummary } from "./lib/types";
+} from "@/app/workflows/lib/api";
+import type { WorkflowSummary } from "@/app/workflows/lib/types";
 
 const STATUS_BADGE: Record<string, string> = {
   published: "bg-success/10 text-success border-success/20",
@@ -37,9 +34,8 @@ const RUN_DOT: Record<string, string> = {
   running: "bg-primary animate-pulse",
 };
 
-export default function WorkflowsPage() {
+export default function WorkflowsGallery() {
   const router = useRouter();
-  const [tab, setTab] = useState("workflows");
   const [rows, setRows] = useState<WorkflowSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -88,7 +84,7 @@ export default function WorkflowsPage() {
     setCreating(true);
     try {
       const wf = await createWorkflow("Untitled workflow");
-      router.push(`/workflows/${wf.id}`);
+      router.push(`/studio/workflows/${wf.id}`);
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
       setCreating(false);
@@ -101,7 +97,7 @@ export default function WorkflowsPage() {
       setActioning(id);
       try {
         const copy = await duplicateWorkflow(id);
-        router.push(`/workflows/${copy.id}`);
+        router.push(`/studio/workflows/${copy.id}`);
       } catch (err) {
         setError(String(err instanceof Error ? err.message : err));
         setActioning(null);
@@ -133,12 +129,10 @@ export default function WorkflowsPage() {
   );
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-border shrink-0">
+    <section className="flex flex-col" aria-label="Workflows">
+      <div className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-border shrink-0">
         <div>
-          <h1 className="text-base sm:text-lg font-bold text-foreground">
-            Workflows
-          </h1>
+          <h2 className="text-sm font-bold text-foreground">Workflows</h2>
           <p className="text-xs text-muted-foreground mt-0.5">
             Automate across your agents, tools and integrations
           </p>
@@ -146,37 +140,23 @@ export default function WorkflowsPage() {
         <div className="flex items-center gap-2">
           <button
             onClick={load}
-            title="Refresh"
+            title="Refresh workflows"
             className="p-2 rounded-lg border border-border text-muted-foreground hover:bg-secondary tech-transition"
           >
             <Icon name="RefreshCw" className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
           </button>
-          {tab === "workflows" && (
-            <Button size="lg" layout="flex items-center" onClick={onCreate} disabled={creating}>
-              {creating ? (
-                <Icon name="Loader2" className="w-4 h-4 animate-spin" />
-              ) : (
-                <Icon name="Plus" className="w-4 h-4" />
-              )}
-              New workflow
-            </Button>
-          )}
+          <Button size="lg" layout="flex items-center whitespace-nowrap shrink-0" onClick={onCreate} disabled={creating}>
+            {creating ? (
+              <Icon name="Loader2" className="w-4 h-4 animate-spin" />
+            ) : (
+              <Icon name="Plus" className="w-4 h-4" />
+            )}
+            New workflow
+          </Button>
         </div>
       </div>
 
-      <Tabs
-        tabs={[
-          { id: "workflows", label: "Workflows", icon: "Workflow", count: rows.length },
-          { id: "modules", label: "Module Studio", icon: "Boxes" },
-        ]}
-        activeTab={tab}
-        onTabChange={setTab}
-      />
-
-      {tab === "modules" ? (
-        <ModuleStudio />
-      ) : (
-        <>
+      <>
           <div className="flex items-center border-b border-border shrink-0">
             <FilterPills
               className="border-b-0 flex-1 min-w-0"
@@ -215,7 +195,7 @@ export default function WorkflowsPage() {
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto">
+          <div>
             <div className="p-4 sm:p-6">
               {loading && (
                 <div className="flex flex-col items-center justify-center h-40 gap-3">
@@ -261,9 +241,9 @@ export default function WorkflowsPage() {
                       key={wf.id}
                       role="button"
                       tabIndex={0}
-                      onClick={() => router.push(`/workflows/${wf.id}`)}
+                      onClick={() => router.push(`/studio/workflows/${wf.id}`)}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") router.push(`/workflows/${wf.id}`);
+                        if (e.key === "Enter") router.push(`/studio/workflows/${wf.id}`);
                       }}
                       onMouseLeave={() => {
                         if (confirmDelete === wf.id) setConfirmDelete(null);
@@ -319,6 +299,9 @@ export default function WorkflowsPage() {
                         </div>
                       )}
                       <div className="mt-3 flex items-center gap-3 text-[10px] text-muted-foreground">
+                        {wf.owner_email && (
+                          <span className="truncate">by {wf.owner_email.split("@")[0]}</span>
+                        )}
                         <span className="flex items-center gap-1">
                           <Icon name="Zap" className="w-3 h-3" />
                           {wf.trigger_count ?? 0} trigger
@@ -345,8 +328,7 @@ export default function WorkflowsPage() {
               )}
             </div>
           </div>
-        </>
-      )}
-    </div>
+      </>
+    </section>
   );
 }

@@ -67,6 +67,31 @@ export function relativeAge(updatedAt: string, now: number): string {
   return new Date(at).toLocaleDateString("en-IN", { day: "numeric", month: "short" });
 }
 
+/** The chat list's date groups, newest first. */
+export const DATE_GROUPS = ["Today", "Yesterday", "Previous 7 days", "Previous 30 days", "Older"] as const;
+
+/**
+ * The chats by day, newest group first (CO-0, owner 2026-11-02). A flat
+ * list of thirty chats reads as one wall. Topics replace the groups when
+ * CO-2 ships. A group with no chat is left out.
+ */
+export function dateGroups<T extends Pick<ChatSession, "updatedAt">>(
+  sessions: readonly T[],
+  now: number,
+): { label: (typeof DATE_GROUPS)[number]; items: T[] }[] {
+  const midnight = new Date(now);
+  midnight.setHours(0, 0, 0, 0);
+  const today = midnight.getTime();
+  const from = [today, today - DAY, today - 7 * DAY, today - 30 * DAY];
+  const out = DATE_GROUPS.map((label) => ({ label, items: [] as T[] }));
+  for (const s of sessions) {
+    const at = Date.parse(s.updatedAt) || 0;
+    const i = from.findIndex((start) => at >= start);
+    out[i < 0 ? DATE_GROUPS.length - 1 : i].items.push(s);
+  }
+  return out.filter((g) => g.items.length > 0);
+}
+
 /**
  * The words a search matches: the name and the last preview, folded. A
  * blank query keeps every chat.

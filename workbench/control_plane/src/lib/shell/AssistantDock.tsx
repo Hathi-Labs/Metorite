@@ -759,6 +759,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   const [listOpen, setListOpen] = useState(true);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
+  // The full view's chat draws its Share here: one header row (CO-0).
+  const [headSlot, setHeadSlot] = useState<HTMLElement | null>(null);
   const [viewerEntry, setViewerEntry] = useState<FileEntry | null>(null);
   const [fileUpdates, setFileUpdates] = useState<FileEntry[]>([]);
   const rootRef = useRef<HTMLElement>(null);
@@ -1114,6 +1116,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
             {phone ? null : "Files"}
           </Button>
         ) : null}
+        {columnForm ? <span ref={setHeadSlot} data-dock-head-slot="" className="flex shrink-0 items-center" /> : null}
         {/* The window controls, apart from the chat's own. */}
         <span aria-hidden className="mx-1 h-5 w-px shrink-0 bg-border" />
         {canDock ? (
@@ -1202,6 +1205,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 sessionId={active.id}
                 visible={st.open}
                 compact={form === "dock"}
+                headSlot={columnForm ? headSlot : null}
                 // CF-8: the sheet's one header row is this dock's. With the
                 // flag on, the chat draws no agent row and no Share row, and
                 // its composer is one field, Attach, "…" and Send. The
