@@ -48,6 +48,7 @@ from gateway.routes.projects import activities as _activities  # noqa: F401
 from gateway.routes.projects import agent_runs as _agent_runs  # noqa: F401
 from gateway.routes.projects import agent_summary as _agent_summary  # noqa: F401
 from gateway.routes.projects import assignees as _assignees  # noqa: F401
+from gateway.routes.projects import authorities as _authorities  # noqa: F401
 from gateway.routes.projects import admin as _admin  # noqa: F401
 from gateway.routes.projects import attachments as _attachments  # noqa: F401
 from gateway.routes.projects import bulk as _bulk  # noqa: F401
