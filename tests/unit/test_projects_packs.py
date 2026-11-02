@@ -826,11 +826,25 @@ async def test_projects_is_reached_while_email_is_held(store, agents) -> None:
     assert not _specialist(agents[0])
 
 
-def test_projects_is_not_reached_when_a_pack_cannot_fit() -> None:
-    """The cap still binds: at a current count of 90, the 24-tool pack does not
-    fit (90 - 1 + 24 = 113). Mutation: drop the cap from ``plan_loader`` -> the
-    owner is reached -> red."""
+def test_projects_is_reached_when_one_pack_fits_and_the_rest_stay_on_offer() -> None:
+    """PJP-2 (project_planning.md §3.3): the Projects owner is reached when
+    each of its packs is allowed and one of them fits. At a current count of
+    90, the 24-tool plan pack does not fit (90 - 1 + 24 = 113), but the
+    reports pack does. The plan pack stays on offer, so its load fails on the
+    cap and opens the hand-off (LOAD_NO_PATH). Mutation: require every pack
+    to fit -> the owner is not reached -> red. Mutation: offer only what fits
+    -> a load of the plan pack answers "unknown" and has no path -> red."""
     plan = tp.plan_loader(PROJ, ("email",), current=90, removable={PA: 1})
+    assert PA in plan.via_loader
+    assert "projects-plan" in plan.offered
+
+
+def test_projects_is_not_reached_when_no_pack_fits() -> None:
+    """The cap still binds: when no Projects pack fits, the specialist stays.
+    Mutation: drop the cap from ``plan_loader`` -> the owner is reached -> red."""
+    smallest = min(tp._tool_count(s) for s in PROJ if s != "projects")
+    current = tp.MAX_REQUEST_TOOLS - smallest + 2
+    plan = tp.plan_loader(PROJ, ("email",), current=current, removable={PA: 1})
     assert PA not in plan.via_loader
 
 
@@ -900,15 +914,23 @@ def test_a_compound_word_loads_its_specific_pack_at_the_measured_base(
     slug: str, word: str, orchestrator,
 ) -> None:
     """The word also matches the core word. After PJP-2 the two fit at the
-    real base (56), so the core pack stays beside the specific pack (before,
-    plan and structure were too big and replaced it). Mutation: grow a pack
-    past the cap -> the core pack leaves -> red."""
+    real base (56), but together they leave no room for a third Projects
+    pack, so the owner would not be reached and the specialist would stay.
+    The core pack steps aside, and the specific pack alone reaches the owner
+    (project_planning.md §3.3). Mutation: drop the step-aside -> the core
+    pack stays -> red."""
     base = _real_base(orchestrator)
     n = len(_family("projects")) + len(_family(slug))
     choice = tp.choose(_surface_turn(f"Show the {word}"), allowed=EVERY, base_tools=base)
     # PJP-2: every pack is 24 tools or fewer, so each fits beside the core pack at 56.
     assert base + n <= tp.MAX_REQUEST_TOOLS, "no Projects pack is too big for the core"
-    assert choice.slugs == ("projects", slug), (word, choice)
+    if slug == "projects-reports":
+        # The reports pack is small: the core and it leave room for one more
+        # Projects pack, so the owner is reached and both stay.
+        assert choice.slugs == ("projects", slug), (word, choice)
+        return
+    assert choice.slugs == (slug,), (word, choice)
+    assert "projects" in choice.skipped, (word, choice)
 
 
 def test_a_capacity_question_on_the_projects_page_loads_the_planning_pack(
@@ -916,15 +938,15 @@ def test_a_capacity_question_on_the_projects_page_loads_the_planning_pack(
 ) -> None:
     """Surface ``projects`` loads the core pack. "team capacity" matches the
     planning pack. Both cannot fit at the real base, so the planning pack
-    stays. PJP-2: the pack is 24 tools now, so both fit at the real base and
-    the core pack stays. Mutation: drop the planning words -> only the core
-    pack loads and the capacity tools are missing -> red."""
+    stays. PJP-2: both fit now, but the core pack steps aside so that the
+    owner is reached (project_planning.md §3.3). Mutation: drop the planning
+    words -> only the core pack loads and the capacity tools are missing -> red."""
     base = _real_base(orchestrator)
     for surface in ("projects", "tasks", "calendar"):
         choice = tp.choose(
             _surface_turn("Who has spare team capacity?", surface),
             allowed=EVERY, base_tools=base)
-        assert choice.slugs == ("projects", "projects-plan"), (surface, choice)
+        assert choice.slugs == ("projects-plan",), (surface, choice)
     only = tp.choose(_surface_turn("", "projects"), allowed=EVERY, base_tools=base)
     assert only.slugs == ("projects",), "the surface alone still loads the core pack"
 

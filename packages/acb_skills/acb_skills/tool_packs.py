@@ -442,7 +442,7 @@ No Projects agent exists to hand a task to.
 - Never name a tool to the member. Say what it does in product words.
 """
 
-_PROJECTS_PLAN_RULES = """PROJECTS PLANNING TOOLS. You hold the tools to plan and to report on projects. Use them yourself.
+_PROJECTS_PLAN_RULES = """PROJECTS PLANNING TOOLS. You hold the tools to plan projects. Use them yourself.
 No Projects agent exists to hand a task to.
 - While a Projects pack is held, do its work with its tools. Do not call
   call_agent for work that a held or offered pack covers.
@@ -846,8 +846,8 @@ PACKS: dict[str, Pack] = {
     ),
     "projects-reminders": Pack(
         slug="projects-reminders",
-        when=("Load for \"remind me\", and to list, move or resolve a reminder. "
-              "Also for my areas, task inbox and notifications."),
+        when=("Load for \"remind me\", or to list, move, snooze or resolve a reminder (not a task). "
+              "Also my areas, task inbox and notifications."),
         rules=_PROJECTS_REMINDERS_RULES,
         words=_PROJECTS_REMINDERS_WORDS,
         replaces_core="projects",
@@ -1592,6 +1592,49 @@ def choose(
             layers.pop(core, None)
             skipped.append(core)
 
+    # PJP-2 (project_planning.md §3.3): Projects packs step aside while they
+    # keep the loader from reaching their owner. Only two Projects packs fit
+    # in one request, so two held packs (the core and the plan packs, 103
+    # tools) leave no room for a third. The specialist then stayed, and the
+    # model handed off: the fault of 2026-11-02. A sticky pack that this
+    # turn's words did not ask for leaves first, the least recently used one
+    # first. Then the core pack leaves, then the last new pack. The model
+    # loads a pack again in the run when it needs a tool of it.
+    def _reached(slugs: Sequence[str], owner: str) -> bool:
+        plan = plan_loader(allow, slugs, current=_total(slugs),
+                           removable={owner: stays.get(owner, 0)})
+        return owner in plan.via_loader
+
+    def _fits_caps(slugs: Sequence[str]) -> bool:
+        return len(slugs) <= MAX_PACKS and _total(slugs) <= MAX_REQUEST_TOOLS
+
+    for owner in SPECIALIST_STAYS_UNTIL_REACHED:
+        trial, gone = list(order), []
+        while not _reached(trial, owner):
+            mine = [s for s in trial if (f := pack(s)) is not None and f.owner == owner]
+            if len(mine) < 2:
+                break
+            olds = [sticky[s] for s in mine if layers.get(s) == "sticky"]
+            cores = [s for s in mine if any(
+                (f := pack(o)) is not None and f.replaces_core == s for o in mine)]
+            if olds:
+                victim = min(olds, key=lambda e: (e.used, e.first)).slug
+            elif cores:
+                victim = cores[0]
+            else:
+                victim = mine[-1]
+            trial.remove(victim)
+            gone.append(victim)
+        # Keep the steps only when they reach the owner within the caps. Else
+        # the turn keeps its packs, and the cap below decides as before (a
+        # mixed email turn keeps email and the core pack).
+        if not gone or not _reached(trial, owner) or not _fits_caps(trial):
+            continue
+        for victim in gone:
+            order.remove(victim)
+            layers.pop(victim, None)
+            (evicted if victim in sticky else skipped).append(victim)
+
     def _over() -> bool:
         return len(order) > MAX_PACKS or _total(order) > MAX_REQUEST_TOOLS
 
@@ -2296,6 +2339,12 @@ def plan_loader(
     :func:`_beside_mcp`), and fits with the specialist gone (so *current* less
     *removable*). Else the specialist stays, as it did before OA-7i (fix
     round 1 of OA-7c: the hand-off stays open).
+
+    PJP-2 (project_planning.md §3.3): an owner of
+    :data:`SPECIALIST_STAYS_UNTIL_REACHED` is also reached when each of its
+    packs is allowed and ONE of them fits. Each of its packs stays on offer, so
+    a load that does not fit fails on the cap in ``_admit`` and opens the
+    hand-off (``via_failed``, :data:`LOAD_NO_PATH`).
     """
     held_set = frozenset(held)
     cut = dict(removable or {})
@@ -2306,6 +2355,7 @@ def plan_loader(
         return current - discount + _tool_count(slug) <= MAX_REQUEST_TOOLS
 
     via: set[str] = set()
+    by_load: set[str] = set()
     owners = dict.fromkeys(
         found.owner for found in PACKS.values() if is_pack(found.slug) and found.delegation_refusal)
     for owner in owners:
@@ -2318,6 +2368,17 @@ def plan_loader(
             continue
         if all(slug in pool and _fits(slug, cut.get(owner, 0)) for slug in rest):
             via.add(owner)
+        elif (owner in SPECIALIST_STAYS_UNTIL_REACHED
+              and all(slug in pool for slug in rest)
+              and any(_fits(slug, cut.get(owner, 0)) for slug in rest)):
+            # PJP-2 (project_planning.md §3.3): the Projects owner is reached
+            # when each of its packs is allowed and one of them fits. Only two
+            # Projects packs fit in one request, so "every pack fits" kept the
+            # specialist in almost every turn. A pack that does not fit stays
+            # on offer: its load fails on the cap in `_admit`, which marks
+            # `via_failed` and opens the hand-off (LOAD_NO_PATH).
+            via.add(owner)
+            by_load.add(owner)
     offered: list[str] = []
     for slug in pool or (loadable(allow, held_set) if spare else ()):
         owner = SKILL_FAMILIES[slug].get("owner")
@@ -2332,7 +2393,7 @@ def plan_loader(
                 and owner in SPECIALIST_STAYS_UNTIL_REACHED | PACK_ONLY_OWNERS
                 and not holds_owner and not available(str(owner))):
             continue
-        if _fits(slug, freed + (cut.get(str(owner), 0) if owner in via else 0)):
+        if owner in by_load or _fits(slug, freed + (cut.get(str(owner), 0) if owner in via else 0)):
             offered.append(slug)
     return LoaderPlan(offered=tuple(offered), via_loader=frozenset(via))
 

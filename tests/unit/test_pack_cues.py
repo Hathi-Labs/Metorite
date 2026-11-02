@@ -44,8 +44,8 @@ WHEN = {
     "projects-structure": "Load to change statuses, task types, custom fields, tags, project access or saved views.",
     "projects-bulk": "Load for many tasks at once, and to archive, delete, move, merge, attach a file, watch, nudge or undo a change.",
     "projects-reminders": (
-        'Load for "remind me", and to list, move or resolve a reminder. '
-        "Also for my areas, task inbox and notifications."),
+        'Load for "remind me", or to list, move, snooze or resolve a reminder (not a task). '
+        "Also my areas, task inbox and notifications."),
     "projects-reports": "Load for a status report, saved reports, who gets a report and when, or to export tasks.",
     # STU-G1: the Studio builder pack.
     "studio": (
@@ -139,7 +139,10 @@ def test_the_bulk_rule_reaches_the_persona_of_a_run_that_holds_the_core_pack() -
     # the two real bases. The 70 case keeps the "not offered" path under test.
     ("real base, trim off", 61, True),
     ("org on the CRM list, trim off", 64, True),
-    ("a larger base, trim off", 70, False),
+    # PJP-2: the Projects owner is reached when one pack fits, and a pack that
+    # does not fit stays on offer: its load fails on the cap and opens the
+    # hand-off (LOAD_NO_PATH, project_planning.md §3.3).
+    ("a larger base, trim off", 70, True),
     ("trim on", 52, True),
 ])
 def test_the_bulk_rule_has_a_path_at_each_real_base(
