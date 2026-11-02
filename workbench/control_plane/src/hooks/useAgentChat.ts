@@ -115,6 +115,12 @@ const HITL_CONTROL_EVENTS = new Set([
  */
 const NAVIGATE_EVENT = "navigate";
 
+/**
+ * The server named a guide (WS-OB GD-4). Like `navigate`, the live loop emits
+ * `onGuide` and the event draws nothing in the transcript.
+ */
+const GUIDE_EVENT = "guide";
+
 /** Tell the run state that a tool began or ended, so a Stop can say how many
  *  changes the run made (`lib/runStatus.ts`, UXD-4b). */
 function noteToolForRun(threadId: string, evt: { type?: unknown; id?: unknown; name?: unknown; success?: unknown }): void {
@@ -812,13 +818,17 @@ export function useAgentChat({
                     threadId,
                   });
                 }
+                if (evtName === GUIDE_EVENT) {
+                  const data = (evt.value ?? evt.data) as Record<string, unknown> | undefined;
+                  emitAgentEvent("onGuide", { guideId: String(data?.guide_id ?? ""), threadId });
+                }
                 // HITL control events (ask_questions / ask_user / confirm) are
                 // rendered by the inline ElicitationCard — they are NOT data to
                 // display.  Storing them in customEvents made them surface in the
                 // generic "Interactive view" AG-UI panel too, a duplicate that
                 // never cleared after the user answered.  Skip persisting them;
                 // the asking already shows in the thinking stream as a tool call.
-                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT) {
+                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT && evtName !== GUIDE_EVENT) {
                   upd((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;
@@ -1317,7 +1327,7 @@ export function useAgentChat({
                 }
                 // A replayed `navigate` moves no page (WS-62 CF-3 done-when 6),
                 // and it draws nothing either.
-                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT) {
+                if (!HITL_CONTROL_EVENTS.has(evtName) && evtName !== NAVIGATE_EVENT && evtName !== GUIDE_EVENT) {
                   updLast((m) => withCustomEvent(m, evtName, evt.value ?? evt.data));
                 }
                 break;

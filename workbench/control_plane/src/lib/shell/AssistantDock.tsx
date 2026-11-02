@@ -100,6 +100,8 @@ import {
 } from "@/lib/sessions";
 
 import { requestBrief } from "./briefTurn";
+import GuideStepCard from "./GuideStepCard";
+import { ANCHOR_MISSING_NOTE, endGuide, guideView, isActive as guideActive, nextStep, offerGuide, startGuide, useGuide } from "./guide";
 import { chatFirstOn } from "./chatFlag";
 import {
   REMINDER_HOLD_MS,
@@ -133,6 +135,7 @@ import {
   effectiveMode,
   focusAssistant,
   markBriefAsked,
+  guideAct,
   navigateAct,
   onChatLink,
   runMovesPage,
@@ -636,6 +639,29 @@ function PeekStrip({
     }
   }, []);
 
+  // WS-OB GD-4 (`assistant_guide.md` §4.3): while a tour runs, the strip shows
+  // its step line, with Next and End. A phone has no room for more.
+  const tour = useGuide();
+  const tourView = guideActive(tour) ? guideView() : null;
+  if (tourView) {
+    const words = tourView.missing ? `${tourView.say} ${ANCHOR_MISSING_NOTE}` : tourView.say;
+    return (
+      <div ref={rowRef} data-assistant-strip="" data-guide-strip="" className="flex h-14 w-full items-center gap-2 px-3">
+        <Icon name="Sparkles" size={18} className="shrink-0 text-primary" />
+        <span data-assistant-strip-text="" className="min-w-0 flex-1 line-clamp-2 text-xs text-foreground" title={words}>
+          {words}
+        </span>
+        <span className="shrink-0 text-xs text-muted-foreground">{tourView.index} of {tourView.total}</span>
+        <Button variant="ghost" size="sm" onClick={() => endGuide("end")}>
+          End
+        </Button>
+        <Button variant="primary" size="sm" onClick={nextStep}>
+          Next
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div
       ref={rowRef}
@@ -903,6 +929,14 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       // `runMovesPage`). The full view and a phone keep the chat as it is.
       if (!runMovesPage(live)) return;
       router.push(target.href);
+    },
+    // WS-OB GD-4: the run named a guide. It starts where the page may move
+    // (`guideAct`), and elsewhere the member taps the chip. The store checks the id.
+    onGuide: ({ guideId, threadId }) => {
+      const live = liveRef.current;
+      const act = guideAct({ open: live.open, threadId, activeId: live.activeId, guideId, phone, form: live.form });
+      if (act === "start" && guideId) startGuide(guideId, "agent");
+      else if (act === "offer" && guideId) offerGuide(guideId);
     },
     // WS-62 CF-3: the run opened a page with show_in_app. Once per turn is
     // the server's rule. The client checks the path again and acts.
@@ -1214,6 +1248,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 // the way (`chat_first_surface.md` §4.8).
                 phoneChrome={phoneChrome}
                 moreActs={moreActs}
+                aboveComposer={<GuideStepCard />}
                 persona={persona}
                 surface={surface}
                 memories={memories}

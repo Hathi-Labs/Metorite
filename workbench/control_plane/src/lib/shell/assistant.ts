@@ -278,6 +278,25 @@ export function navigateAct(a: {
 }
 
 /**
+ * What the assistant does when the live run names a guide (WS-OB GD-4,
+ * `assistant_guide.md` §3 G1). The same page-move rule as `navigateAct`: only
+ * while the member watches that chat, and a tour starts at once only beside
+ * the side panel (`runMovesPage`). Elsewhere (a phone, the full view) the run
+ * leaves a "Show me" chip and the member taps it.
+ */
+export function guideAct(a: {
+  open: boolean;
+  threadId: string | undefined;
+  activeId: string | null | undefined;
+  guideId: string | undefined;
+  phone: boolean;
+  form: AssistantMode;
+}): "start" | "offer" | "none" {
+  if (!a.open || !a.threadId || a.threadId !== a.activeId || !a.guideId) return "none";
+  return runMovesPage(a) ? "start" : "offer";
+}
+
+/**
  * The browser-session mark of the landing open (CF-2). `sessionStorage`, so
  * a new tab lands on the chat again and a reload in this tab does not.
  * ⚠️ The key keeps the shell prefix. A key that starts with "cc-" and then

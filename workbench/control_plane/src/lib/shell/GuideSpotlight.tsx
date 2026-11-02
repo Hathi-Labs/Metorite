@@ -34,6 +34,8 @@ import { createPortal } from "react-dom";
 import { PANEL_SURFACES } from "@/components/ui/AnchoredPanel";
 import Button from "@/components/ui/Button";
 
+import { WATCHED_ATTRIBUTES, isShown } from "./guideAnchor";
+
 export type GuideSpotlightProps = {
   /** An anchor id, e.g. "home.ask". Looks up `[data-guide="<anchor>"]`. */
   anchor: string;
@@ -53,6 +55,12 @@ export type GuideSpotlightProps = {
   onMissing?: (anchor: string) => void;
   /** How long to wait for the anchor, in ms. Default 3000. */
   waitMs?: number;
+  /**
+   * Draw the popover (default true). Off draws the ring alone. On a phone the
+   * step line is in the strip or the chat's step card (WS-OB GD-4, spec §4.3),
+   * so a second copy would only cover it.
+   */
+  popover?: boolean;
 };
 
 export const DEFAULT_WAIT_MS = 3000;
@@ -78,9 +86,19 @@ export function anchorSelector(id: string): string {
   return `[data-guide="${escapeId(id)}"]`;
 }
 
-/** The first element that carries the anchor, or null. */
+/** The first element of the list that `visible` accepts, or null. Pure, so a test drives it. */
+export function pickVisible<T>(els: Iterable<T>, visible: (el: T) => boolean): T | null {
+  for (const el of els) if (visible(el)) return el;
+  return null;
+}
+
+/**
+ * The first VISIBLE element that carries the anchor, or null. `home.ask` draws
+ * twice (the top bar and the assistant panel foot), and on a phone one copy can
+ * be hidden, so the first match in the tree is not always the one to ring.
+ */
 export function findAnchor(id: string, root: ParentNode = document): HTMLElement | null {
-  return root.querySelector<HTMLElement>(anchorSelector(id));
+  return pickVisible(root.querySelectorAll<HTMLElement>(anchorSelector(id)), isShown);
 }
 
 // ------------------------------------------------------------ wait, miss ---
@@ -164,12 +182,23 @@ export function bindEscape(
   return () => doc.removeEventListener("keydown", handler, true);
 }
 
+/**
+ * The guide's own parts. The step card lives inside the assistant panel, which
+ * is itself an anchor, so a press on Next there must not count as a press on
+ * the ringed part. The strip is outside, and its mark is here for the same reason.
+ */
+export const OWN_PART = "[data-guide-card],[data-guide-strip],[data-guide-popover]";
+
 /** Tell the tour the member pressed the anchor. The page keeps its own click. */
 export function bindAnchorClick(
   el: Pick<HTMLElement, "addEventListener" | "removeEventListener">,
   onClick: () => void,
 ): () => void {
-  const handler = () => onClick();
+  const handler = (e?: Event) => {
+    const t = e?.target as { closest?: (s: string) => unknown } | null | undefined;
+    if (t?.closest?.(OWN_PART)) return;
+    onClick();
+  };
   el.addEventListener("click", handler);
   return () => el.removeEventListener("click", handler);
 }
@@ -250,12 +279,12 @@ const domScheduler: Scheduler = {
 
 function observeDom(onChange: () => void): () => void {
   const mo = new MutationObserver(onChange);
-  mo.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-guide"] });
+  mo.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: WATCHED_ATTRIBUTES });
   return () => mo.disconnect();
 }
 
 export function GuideSpotlight(props: GuideSpotlightProps) {
-  const { anchor, say, step, onNext, onBack, onEnd, waitMs = DEFAULT_WAIT_MS } = props;
+  const { anchor, say, step, onNext, onBack, onEnd, waitMs = DEFAULT_WAIT_MS, popover = true } = props;
   // Latest callbacks, so a parent re-render never restarts the wait.
   const latest = useRef(props);
   latest.current = props;
@@ -303,9 +332,12 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
     // Scroll is captured: the element that scrolls is rarely an ancestor of the portal.
     window.addEventListener("scroll", place, true);
     window.addEventListener("resize", place);
+    // A panel that slides in ends its move after the ring first measured it.
+    window.addEventListener("transitionend", place, true);
     return () => {
       window.removeEventListener("scroll", place, true);
       window.removeEventListener("resize", place);
+      window.removeEventListener("transitionend", place, true);
     };
   }, [el, place, say]);
 
@@ -327,6 +359,7 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
         style={{ left: ring.left, top: ring.top, width: ring.width, height: ring.height }}
         className={`pointer-events-none fixed z-[90] rounded-lg ring-2 ring-primary ${motionClasses(reduced, "left,top,width,height")}`}
       />
+      {popover ? (
       <div
         ref={popRef}
         role="group"
@@ -337,6 +370,7 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
       >
         <GuidePopoverBody say={say} step={step} onNext={onNext} onBack={onBack} onEnd={onEnd} />
       </div>
+      ) : null}
     </>,
     document.body,
   );
