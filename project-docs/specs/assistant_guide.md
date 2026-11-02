@@ -1,11 +1,11 @@
 # The guide — the assistant answers how, and shows how
 
-**Status: PROPOSED, 2026-11-02.** Verified against code on 2026-11-02, at
+**Status: ACTIVE, 2026-11-02 (D167).** Verified against code on 2026-11-02, at
 `origin/main` `ac15809b1`. Board row: **WS-OB** (`work_plan.md` §2). Metorite:
 the Onboarding project, epic 1451.
 
-§8 holds the decisions for the owner, each with a default. No slice is
-dispatchable until the owner accepts §8 and this spec is ACTIVE.
+The owner answered the four questions of §8 on 2026-11-02, recorded as
+**D167**. The owner changed D-GD-3: practice records live only in the browser.
 
 **Source.** Owner direction, 2026-11-02, in chat:
 
@@ -32,7 +32,7 @@ can learn how to use the entire interface. And the interface should not just
 give an answer but also, on request, be able to show how it's done."
 ```
 
-The owner asked for the plan first. The build comes after the owner reads it.
+The owner asked for the plan first. The build starts with wave 1 of §7.
 
 ## 1. Scope and non-goals
 
@@ -45,8 +45,8 @@ The owner asked for the plan first. The build comes after the owner reads it.
   member through. The member presses each button.
 - **Do it for me.** The chat does the act with its own tools, then shows the
   result.
-- **Practice.** Sample values in a form that never saves, and practice records
-  that only the learner sees and that go away.
+- **Practice.** Sample records that live only in the browser tab. They never
+  reach the database, and End removes them at once (D-GD-3).
 - A chapter per app, offered on the first visit to that app.
 
 **Not in scope.**
@@ -54,8 +54,8 @@ The owner asked for the plan first. The build comes after the owner reads it.
 - A second chat or a second assistant. `navigation_shell.md` §7.1 keeps one
   assistant, and the guide runs inside it.
 - A second write path. "Do it for me" uses the chat tools of
-  `chat_parity.md`. The guide never clicks a button or submits a form in the
-  page (§3 G3).
+  `chat_parity.md`. Outside practice mode, the guide never clicks a button or
+  submits a form in the page (§3 G3).
 - A tour that starts by itself and blocks the page (§3 G1).
 - A guide to a `preview` pane, or to a pane that the member does not hold.
 - Videos, screen recordings and a public help website. HLP-3 (task 675) owns
@@ -76,13 +76,13 @@ The owner asked for the plan first. The build comes after the owner reads it.
 | A tour library | None in `workbench/control_plane/package.json` | GD-2 builds the spotlight on the design system |
 | A help corpus | None. HLP-3 says the docs folder holds no end-user docs | Nothing to answer "how do I" from (GD-3) |
 | First-use cards in Projects | PC-2, task 971 (epic 958): "Show me" in at most 3 steps | A consumer of this runner, not a second runner |
-
-| A practice or sample flag | None, in any table. STU-G4's preview store is specified only, and it holds Studio records (`ai_studio.md` §G4) | GD-11 adds the marker |
+| A practice or sample flag | None, in any table. STU-G4's preview store is specified only, and it holds Studio records (`ai_studio.md` §G4) | Practice needs none, because it stays in the browser (§5.6) |
+| One API client | None. The control plane makes 252 raw `fetch("/api/...")` calls in 67 files. `public/sw.js` serves web push | The practice guard wraps `fetch` in the tab (§5.6) |
 | A chat write today | Every Projects and CRM chat write asks on a card (`skill_projects/writes.py:164-181`). "Act at once with Undo" (D-CF-5) waits for CF-6, which is not built | "Do it for me" shows a card until CF-6 lands |
 | The CRM chat tools | `create_lead` and `convert_lead` only. No chat tool makes a deal, a contact or a company, and none deletes (`chat_parity.py`, P-3 debt) | "Do it for me" covers less in the CRM than in Projects |
 
 **What a write sets off.** §5.6 lists what fires when a task, a project or a
-CRM record is written. That list decides how practice records stay private.
+CRM record is written. That list is why practice never writes.
 
 ## 3. Principles
 
@@ -94,14 +94,15 @@ CRM record is written. That list decides how practice records stay private.
 - **G3. Point, do not click.** The guide rings the button, and the member
   presses it. Microsoft's Copilot "Highlights" works the same way. It matches
   `onboarding.md` P9: the chat fills the form, and the person presses the
-  button.
+  button. The one exception is practice mode, where no write leaves the tab
+  (§5.6). There the guide may play the clicks.
 - **G4. One write path.** "Do it for me" calls the chat tool that chat parity
   names. That tool keeps its card, its Undo and its refusals.
 - **G5. Ask at any time.** The tour lives in the chat. A question pauses it,
   and one chip continues it.
-- **G6. Practice never reaches a person.** A practice record sends no mail, no
-  notification and no workflow event. Only the learner sees it, and it goes
-  away.
+- **G6. Practice never leaves the browser.** A practice record is never sent
+  to the server. So it sends no mail, no notification and no event, and only
+  the learner sees it. End removes it at once.
 - **G7. Never point at what the member cannot use.** A guide checks the
   member's features, the admin flag and the live set before it opens a page.
 - **G8. One corpus.** A guide is data. The tour, the chat, the Help pages and
@@ -173,15 +174,21 @@ rings it.
 
 ### 4.5 Practice
 
-The member says "make a dummy project and walk me through it". The chat makes
-a practice project with a few tasks, marked **Practice** on every surface that
-shows it. Then it runs the guide on those records. When the guide ends, the
-chat asks "Remove the practice records?". A sweep removes any that stay after
-24 hours.
+The member says "make a dummy deal and show me", or presses "Practice it" under
+an answer. The tab enters **practice mode**. A bar across the top says
+"Practice: nothing is saved", with an End button.
 
-For the CRM, the default is sample values that never save (§4.3). A practice
-deal that stays waits for the owner's choice (D-GD-3), because every CRM record
-is visible to every member who holds the CRM (§5.6).
+1. The guide fills the form with sample values. Then the member presses Save,
+   or says "play it for me" and the guide presses it.
+2. The new record shows in the list, the board or the pipeline, marked
+   **Practice**. The server never sees it.
+3. The guide goes on with the record. It moves a deal to the next stage, or
+   adds a task to the practice project.
+4. End removes every practice record at once. A reload does the same.
+
+The member may say "add it for real". The guide then leaves practice mode,
+opens the same form with the same values, and the member presses Save. "Do it
+for me" also works, through the chat tool and its card (§4.4).
 
 ### 4.6 An app chapter
 
@@ -274,81 +281,73 @@ instead. Fence F3 lists the forms that opt in.
 
 ### 5.6 Practice records
 
-**What the audit found (2026-11-02).**
+**The owner's rule (D-GD-3).** Practice records live only in the frontend. They
+never touch the database, and they go away at once.
 
-- **No marker exists.** No table has a practice or sample flag.
-  `scripts/demo_seed/` builds a made-up organization, and it runs only on
-  loopback.
-- **The personal tree is private.** A task in the member's personal tree is
-  seen only by its owner, and its bell rows reach nobody else
-  (`routes/projects/core.py:1266-1345`, `notifications.py:177-208`). A root
-  node made through `/nodes` gets an org grant (`tree.py:1190-1199`). So a
-  practice project must sit under the personal tree.
-- **Four leaks stay in the personal tree.**
-  - **Events.** `core.emit` (55 call sites in 13 files) sends each write to the
-    event bus.
-  - **Links.** `link_from_text` links a `#N` in the text to a real task.
-  - **Workload.** `compute_load` counts personal tasks in the workload that
-    colleagues see (`people/core.py:322-339`).
-  - **Memory.** The memory pass reads the chat when the run ends
-    (`routes/agent.py:2742-2760`).
+**Why the database stays out.** The audit of 2026-11-02 found these facts.
 
-  Task numbers are also used up.
-- **Workflow triggers.** `workflows/triggers.py` reads through the unbound
-  `get_db()`, a known gap that H4 closes. Practice must not rely on that gap.
-- **The CRM is org-wide.** Every record is visible to every member who holds
-  the CRM. `owner_email` assigns, and it does not restrict (D-CRM-3). A CRM write
-  emits no event and no bell row.
-- **Lead conversion matches.** It matches a company by its exact name and a
-  contact by email (`crm/pipeline.py:794-851`). So a practice lead can attach to
-  a real company.
-- **Mirror mode.** An organization in mirror mode refuses a native create.
-- **Deletes are hard.** A task tombstone keeps its number. The chat has no
-  CRM delete.
+- No table has a practice or sample flag.
+- **The CRM is org-wide.** Every CRM record is visible to every member who
+  holds the CRM (D-CRM-3). Lead conversion matches a company by its exact name
+  and a contact by email (`crm/pipeline.py:794-851`).
+- **A Projects write sets off many things.**
+  - The event bus: `core.emit`, with 55 call sites.
+  - The bell: `notify`.
+  - Links to real tasks: `link_from_text`.
+  - The workload that colleagues see: `compute_load`.
+- **Deletes are hard.** A task tombstone keeps its number.
 
-**The design.**
+A row in the database would need a check at each of these places. A record that
+never leaves the tab needs none of them.
 
-1. **The marker.** One nullable column, `practice_until timestamptz`, on the
-   task table and the project-node table. Null means a real record. The
-   migration only adds the column (R6).
-2. **One way in.** A gateway route, `POST /shell/guide/practice`, makes the
-   records from a fixed template that the guide names. It calls the Projects
-   store functions, under the learner's personal tree. The model passes no
-   free text, so no `#N` reaches a link.
-3. **Four checks skip a practice row.** `core.emit`, `notify`,
-   `link_from_text` and `compute_load`. The MCP reads leave practice rows out,
-   so an outside agent sees none.
-4. **A visible mark.** Each Projects surface shows a "Practice" badge, in the
-   one status vocabulary (`statusAccent.ts`).
-5. **Removal.** "Remove the practice records" at the end of the guide. A sweep
-   removes any row past its `practice_until`. Both delete only rows that carry
-   the marker and that this member made. A used task number stays used.
-6. **Memory.** A guide run marks its turns, and the memory pass skips them, so
-   no sample fact becomes a memory (GD-13).
+**The practice guard.** One module, `src/lib/shell/practice.ts`, and no other
+place.
 
-**The CRM (D-GD-3).** The default teaches the CRM with sample values that never
-save (GD-8). A practice CRM record that stays needs one of two builds, and the
-owner chooses:
+1. **Per tab.** Practice mode starts when the member starts a practice guide.
+   It ends on End, at the last step, or on a reload. No other tab sees it.
+2. **The guard wraps `fetch`** in that tab while practice mode is on. The
+   control plane has no shared API client (§2), so `fetch` is the one point that
+   every request passes.
+3. **A known write answers in the tab.** Each practice template names its
+   routes. A POST to such a route returns a record whose id starts with
+   `practice-`. The guard keeps it in memory. A PATCH or DELETE of a
+   `practice-` id changes that record.
+4. **Every other write is blocked.** A POST, PATCH, PUT or DELETE to `/api/`
+   that no template handles never leaves the tab. It returns an error, and the
+   bar says "End practice to make real changes". The guard fails closed.
+5. **A known read merges.** A GET of a template's list route goes to the
+   server as normal. Then the guard adds the practice records to the answer.
+6. **The record shows its mark.** Each practice record carries
+   `practice: true`. The list, the board, the pipeline and the panel show the
+   "Practice" badge, in the one status vocabulary (`statusAccent.ts`).
+7. **The chat stays out of it.** The chat's write tools run on the server and
+   never see a practice record. In practice mode, the chat offers "play it for
+   me", and the runner does the step in the page.
+8. **Memory.** A practice run marks its turns, and the end-of-run memory pass
+   (`routes/agent.py:2742-2760`) skips them. No sample company becomes a fact
+   about the member (GD-13).
 
-- **(a) The marker on the CRM tables.** Every CRM read must hide a practice
-  row from every member except the maker. Lead conversion, the digest, the My
-  Day cards and the note vectors must skip it. Mirror-mode organizations get no
-  practice. Every CRM query changes, so the tier is HIGH.
-- **(b) A practice organization.** A separate tenant with sample data, where
-  RLS gives the isolation (D15). It needs an org switch and a seeded template,
-  and its CRM shows none of the company's own setup.
+**The limit.** A list that the server renders (a React Server Component) does
+not pass through the tab's `fetch`, so a practice record cannot show in it. A
+template is allowed only where its list loads in the browser. Its e2e test
+proves that the record shows (F5).
+
+**The first templates.** CRM: a lead, a deal, a contact, a stage move and a
+note. Projects: a project, a subproject and three tasks.
 
 ### 5.7 Safety
 
-- The guide only points, opens and fills. It cannot click, submit, delete or
-  send.
+- Outside practice mode, the guide only points, opens and fills. It cannot
+  click, submit, delete or send. In practice mode, it may press a button,
+  because the guard blocks every write that it does not answer itself.
 - A `point` step takes an anchor id from the generated list. A guide cannot
   name a CSS selector, so text in an email or a CRM note cannot steer the ring.
 - A path passes `isInAppPath` and the member's pane check, on the server and
   in the client.
 - "Do it for me" adds no right. The tool refuses what the member cannot do, as
   it does now.
-- A practice record never reaches a person (G6). §5.6 holds the proof.
+- A practice record never leaves the tab (G6). §5.6 holds the guard, and F5
+  is its fence.
 
 ### 5.8 What we measure
 
@@ -382,9 +381,9 @@ The design task 178 closes with this spec.
 | **GD-8** | Sample values (§5.5), first in the CRM and Projects quick-create forms | A test per form. Save is never pressed. F3 lists the forms | AGENT-SAFE · MEDIUM |
 | **GD-9** | Do it for me (§4.4) | Offered only for a COVERED tool. An e2e test does an act and rings its result | AGENT-SAFE · MEDIUM |
 | **GD-10a, GD-10b, GD-10c** | One chapter per app: anchors, 5 to 10 guides, and the first-visit chip. GD-10a is Projects, with PC-2. GD-10b is CRM. GD-10c is the rest, one PR per app: Email, Calendar, Chat with Knowledge and Notes, WhatsApp, Admin | F1 and F2 pass for the app. Four captures of its chip | AGENT-SAFE · LOW |
-| **GD-11** | Practice in Projects (§5.6 items 1 to 5): the marker, the route, the four checks, the badge, removal and the sweep | F5 passes, and fails with each check removed. R8: a real database | AGENT-SAFE · HIGH (migration, delete) |
-| **GD-12** | Practice CRM records, build (a) or (b) of §5.6 | Waits on D-GD-3. F5 extends to the CRM reads | OWNER-GATE until D-GD-3 · HIGH |
-| **GD-13** | A guide run teaches the memory nothing (§5.6 item 6) | A test: a practice run's turns reach no memory write | AGENT-SAFE · MEDIUM |
+| **GD-11** | The practice guard (§5.6 items 1 to 7): practice mode, the bar, the `fetch` guard, "play it for me", and "add it for real" | F5 passes, and fails when a write reaches the network. Opus review, because it wraps every request of the tab | AGENT-SAFE · MEDIUM |
+| **GD-12** | The first practice templates (§5.6): CRM lead, deal, contact, stage move and note. Projects project, subproject and tasks | An e2e test per template: the record shows with its badge, and no request reaches the server | AGENT-SAFE · MEDIUM |
+| **GD-13** | A practice run teaches the memory nothing (§5.6 item 8) | A test: a practice run's turns reach no memory write | AGENT-SAFE · MEDIUM |
 | **GD-14** | The events of §5.8 and the weekly gap list | A test per event. The list shows on the admin's page | AGENT-SAFE · LOW |
 
 ## 7. The order
@@ -393,26 +392,39 @@ The design task 178 closes with this spec.
 |---|---|---|
 | 1. The tour | GD-1, GD-2, GD-3, GD-4, GD-5, with OB-4 and HLP-1 | The owner's first ask. It needs no AI |
 | 2. Ask and show | GD-6, GD-7, GD-8, GD-10a, GD-10b, GD-14 | "How do I" with Show me, in the two apps that new members open first |
-| 3. Do and practice | GD-9, GD-11, then GD-12 and GD-13, then GD-10c | Each write path waits on its own fence |
+| 3. Do and practice | GD-9, GD-11, GD-12, GD-13, then GD-10c | Practice needs the runner and the fill hook first |
 
 The guide ships dark behind `GUIDE_ORGS`, a per-organization list like
 `SETUP_ASSISTANT_ORGS`. The scripted tour costs no AI. A question costs one
 chat turn.
 
-## 8. Decisions for the owner
+## 8. Decisions (D167)
 
-Each has a default. The default holds when the owner accepts it.
+The owner answered on 2026-11-02, in chat. Three defaults stand. The owner
+changed D-GD-3.
 
-| Id | Question | Default | Why |
-|---|---|---|---|
-| **D-GD-1** | Does the tour start by itself at the first open? | **No.** The welcome dialog offers "Show me around", and the member presses it | Started tours complete about three times as often as pushed ones |
-| **D-GD-2** | Does "Do it for me" press the buttons on screen? | **No.** The chat acts with its own tools, then shows and rings the result | One write path (G4). A clicked button would be a second one, and it breaks when the page moves |
-| **D-GD-3** | Where do practice records live? | **Projects only, in the learner's personal tree (GD-11). The CRM teaches with sample values that never save.** A practice CRM record waits for build (a) or (b) of §5.6 | Every CRM record is visible org-wide, and lead conversion matches real records. A practice deal could show in a colleague's pipeline |
-| **D-GD-4** | Who pays for a guide question? | **Metorite, inside the D-OB-6 cap, for the first 14 days.** After that, a normal chat turn | The tour itself costs nothing. Questions are part of setup |
+| Id | Question | The owner's answer |
+|---|---|---|
+| **D-GD-1** | Does the tour start by itself at the first open? | **No.** The welcome dialog offers "Show me around", and the member presses it. Help and the chat start it too |
+| **D-GD-2** | Does "Do it for me" press the buttons on screen? | **No.** The chat acts with its own tool and card, then opens and rings the result. Practice mode is the one place where the guide presses (§5.6) |
+| **D-GD-3** | Where do practice records live? | **Only in the browser.** They never touch the database, and they go away at once. A real record is made only when the member asks for one (§4.5, §5.6) |
+| **D-GD-4** | Who pays for a guide question? | **Metorite, inside the D-OB-6 cap, for the first 14 days.** After that, a normal chat turn |
 
-This spec amends `onboarding.md` §1 and P2 when it turns ACTIVE. A pushed tour
-of coach marks stays out. A tour that the member starts, run by the chat, is
-in.
+The owner's words on D-GD-3:
+
+```text
+"Figure out a system where dummy data can be added and immediately be removed.
+Possibly have this done only in the frontend for the trial and showing, and
+don't even need to touch the database. I'm just testing over here the auto
+system, which doesn't actually add any record but just shows for demo. Unless
+the user actually wants to add in series data"
+```
+
+"Series data" reads as "real data". The audit of §5.6 explains why this rule
+is also the safe one.
+
+This spec amends `onboarding.md` §1 and P2. A pushed tour of coach marks stays
+out. A tour that the member starts, run by the chat, is in.
 
 ## 9. Fences
 
@@ -422,14 +434,14 @@ in.
 | **F2** | `tests/unit/test_guides.py` | A step's path is not a live in-app path, its anchor is unknown, its `do_tool` is not COVERED, or its feature does not match its app |
 | **F3** | `src/lib/shell/guideFill.test.ts` | A `fill` step names a form without the hook, or the hook presses Save |
 | **F4** | `src/lib/shell/guide.test.ts` | The tour starts with no member act, or Escape leaves the ring on the page |
-| **F5** | `tests/unit/test_practice_records.py` (GD-11), R8 | A practice row emits an event, writes a bell row, makes a link, counts in a colleague's workload, shows to another member or to an MCP read, or survives the sweep |
+| **F5** | `src/lib/shell/practice.test.ts` and `e2e/guide-practice.spec.ts` (GD-11, GD-12) | A write in practice mode reaches the network, a write that no template handles is not blocked, the guide presses outside practice mode, or End or a reload leaves a practice record |
 
 ## 10. Verification
 
 ```bash
 uv run pytest tests/unit/test_guide_anchors.py tests/unit/test_guides.py -q
-cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/shell/guide.test.ts src/lib/shell/guideFill.test.ts
-cd workbench/control_plane && npx playwright test e2e/guide-tour.spec.ts
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/shell/guide.test.ts src/lib/shell/guideFill.test.ts src/lib/shell/practice.test.ts
+cd workbench/control_plane && npx playwright test e2e/guide-tour.spec.ts e2e/guide-practice.spec.ts
 ```
 
 Each UI slice also runs the visual review: light mode, compact density, a

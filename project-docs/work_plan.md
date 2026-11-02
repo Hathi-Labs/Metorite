@@ -180,7 +180,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-DOC | **Docs and repo cleanup** | 🟢 active · M1 | none yet | Metorite: epic 522 (Developer Workflow) · next DOC-1, DOC-2 |
 | WS-BRIEF | **Core brief**: brief tasks with no earlier plan line | 🟢 active · M1 | `specs/core_brief.md` (PROPOSED) | Metorite: epics 479 (Proactive Intelligence) and 480 (Secrets & Security), connectors in epic 481, automations in sub-epic AUTO of epic 479 · gate AUTO-3 (the trust ladder) · BR-1a built, dark (`JOB_QUEUE`, `docs/job_queue.md`) · AUTO-2 built, dark (`UNATTENDED_LEDGER`, `docs/job_queue.md` §9) · BR-4 slice 1 built: migration 315 and `gateway/brief/store.py`, with no producer · next BR-1b-a, BR-2a |
 | WS-IR | **Issue Reporting** | 🟢 active · M0 | none yet | Metorite: epic 475 (Observability & Alerts) · D126 · next IR-0, IR-1, IR-2 |
-| WS-OB | **Onboarding and Help** | 🟢 active · M1 | `specs/onboarding.md` (D150, D153). OB-8: `specs/calendar_events_reminders.md` §10.4 | Metorite: Onboarding project, epic 669 · OB-0 (the founder's welcome closes at once) and OB-0b (a new founder lands with no apps, HIGH) MERGED 2026-11-02 · next OB-0c, OB-0d, OB-1a, OB-1b, OB-4, OB-10, OB-24 · AI-led layer: epic 1351, `specs/onboarding.md` §12, D153 · The guide (tour, Show me, practice): `specs/assistant_guide.md`, PROPOSED, epic GD · HLP-1, ADM-1. OB-8 (the chat push prompt) BUILT 2026-10-30, dark |
+| WS-OB | **Onboarding and Help** | 🟢 active · M1 | `specs/onboarding.md` (D150, D153). OB-8: `specs/calendar_events_reminders.md` §10.4 | Metorite: Onboarding project, epic 669 · OB-0 (the founder's welcome closes at once) and OB-0b (a new founder lands with no apps, HIGH) MERGED 2026-11-02 · next OB-0c, OB-0d, OB-1a, OB-1b, OB-4, OB-10, OB-24 · AI-led layer: epic 1351, `specs/onboarding.md` §12, D153 · The guide (tour, Show me, practice): `specs/assistant_guide.md`, D167, epic 1451, next GD-1 to GD-5 · HLP-1, ADM-1. OB-8 (the chat push prompt) BUILT 2026-10-30, dark |
 
 ### 2.2 Earlier rows (WS-0 to WS-67)
 
@@ -5112,6 +5112,21 @@ Owner directive, 2026-11-02, in chat. Board: **WS-CO**, owner `specs/chat_organi
 9. **Three company features.** A pointer to a chat already shared with the member, a suggestion to save to Knowledge (D104 stands), and the Knowledge gap count at 5 askers or more. The count is KB-9a, which reads no chat, so D142.2 stands.
 
 Fence: named per slice in `chat_organization.md` §13. Advisory until each slice builds.
+
+### D167 — The guide: a tour the member starts, Show me, and practice that stays in the browser (2026-11-02)
+
+Owner direction and decision, 2026-11-02, in chat, on the four questions of `specs/assistant_guide.md` §8. Board: **WS-OB**. Metorite: epic 1451.
+
+```text
+"Would it be possible to have an onboarding tour when you open the app for the
+first time so that a user gets familiar with the entire user interface quickly?
+The side chat actually walks somebody through the entire user flow."
+```
+
+1. **D-GD-1. The tour is offered, never pushed.** The welcome dialog offers "Show me around", and Help and the chat start it too. It has five stops, and the member can ask a question at each one.
+2. **D-GD-2. The guide points, and the member presses.** "Do it for me" uses the chat parity tool and its card, then rings the result. Practice mode is the one place where the guide presses a button.
+3. **D-GD-3. Practice records live only in the browser.** They never touch the database, and End or a reload removes them at once. A guard on the tab's `fetch` answers the writes that a practice template knows and blocks every other write. A real record is made only when the member asks for one. The owner changed the default here.
+4. **D-GD-4. Metorite pays for guide questions for the first 14 days,** inside the cap of D-OB-6. After that, a guide question is a normal chat turn.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
