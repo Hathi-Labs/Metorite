@@ -91,6 +91,7 @@ from typing import Any, Literal
 from acb_auth import UserContext, agent_oauth, get_current_user
 from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE, actor_via_for
 from acb_common import get_logger
+from acb_common.no_person import NO_PERSON_PRESENT, NO_PERSON_TEXT, no_person_present
 from fastapi import Depends, HTTPException, Query, Response
 from gateway.routes.projects.core import (
     TaskModel,
@@ -898,6 +899,19 @@ class _Written:
         self.commented = commented
 
 
+def _refuse_a_marked_prompt(kind: str, run_id: str) -> None:
+    """AUTO-7a (``proactive_agent.md`` §4.2). A prompt is a person's word, and
+    it answers the open question. A run with no person present gets 403
+    ``no_person_present``, before any read or write. The mark is a ContextVar,
+    so it binds an in-process caller. An HTTP call does not carry it."""
+    if kind == "prompt" and no_person_present():
+        _log.warning("agent_runs.no_person_refused", run_id=run_id)
+        raise HTTPException(
+            status_code=403,
+            detail={"error": NO_PERSON_PRESENT, "message": NO_PERSON_TEXT},
+        )
+
+
 async def _write_activity(
     db: Any,
     run: Any,
@@ -931,9 +945,13 @@ async def _write_activity(
 
     SW-11a. *quiet* keeps the timeline comment and sends no bell: Resume
     writes a note to the agent, not a comment to people (spec §12.7).
+
+    AUTO-7a. This is the one write path of an activity, so a marked prompt
+    stops here (:func:`_refuse_a_marked_prompt`).
     """
     run_id = str(run.id)
     task_id = str(run.task_id)
+    _refuse_a_marked_prompt(kind, run_id)
     found = await _existing_activity(db, run_id, key)
     if found is not None:
         return _Written(found, False, False)

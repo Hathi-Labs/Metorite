@@ -104,7 +104,7 @@ The server marks each unattended run `no person present`. The mark never comes f
 
 **AUTO-7 extends a mark that exists.** `ask_tools._CARDS_REFUSED` (`packages/acb_skills/acb_skills/ask_tools.py` line 57) is set at `executor.py` line 6018 from `shows_cards`. **A caveat:** the Copilot SDK JSON-RPC thread may read a fresh context. So a fence must verify the `carry_run_context` claim, and must not trust it.
 
-- **AUTO-7a.** A second ContextVar `no_person_present`, which only server code sets. It is set in the job worker's handler dispatch and in the non-manual `_execute_run`. Refusals sit in `broker.approve` and `reject`, in the workflow resume, and in the elicitation answer. `request_confirmation` returns deny.
+- **AUTO-7a.** A second ContextVar `no_person_present`, which only server code sets. It is set in the job worker's handler dispatch, and in `_execute_run` for a trigger in `UNATTENDED_TRIGGERS` (`schedule`, `webhook` and `event`). An `api` run stays unmarked, because a chat starts it and its card can reach that chat. A known gap: an `api` run that a marked run starts loses the mark after a person approves its gate. AUTO-8 must close that gap before it lets an unattended turn write. Refusals sit in `broker.approve` and `reject`, in the workflow resume, and in the elicitation answer. `request_confirmation` returns deny.
 - **AUTO-7b.** Park and ask. An action that needs a person parks and asks through a decision (ALN-2a, task 1376) or through Reach. Until ALN-2a exists, a marked run fails closed.
 
 ### 4.3 A candidate check before any model call
@@ -297,7 +297,7 @@ Each path was read on `ce29836ea`.
 
 | Rule | Fence |
 |---|---|
-| An unattended run cannot approve its own action | New with AUTO-7: `tests/unit/test_unattended_no_self_approval.py`. A mutation that drops the mark turns it red |
+| An unattended run cannot approve its own action | AUTO-7a: `tests/unit/test_no_person_present.py`, `tests/unit/test_no_person_present_r8.py` (R8) and `evals/trajectories/test_no_person_trajectory.py`. A mutation that drops the mark turns it red |
 | An unattended path sends only through Reach | New with AUTO-6: a scan in `tests/unit/test_unattended_silent.py` for a direct send, a bell write or a mail call in the new modules |
 | A run with no candidate makes no model call | New with AUTO-8: `tests/unit/test_headless_turn.py` (R8) |
 | A turn stops at its credit cap | New with AUTO-8: same file |

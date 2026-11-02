@@ -143,6 +143,8 @@ const PREVIEW_BAR_HOME: Record<string, string> = {
   // My Tasks left the nav at the OP-4 flip (2026-10-25). The page still
   // routes, and still draws its bar until the OP-4 retire.
   "/tasks": "app/tasks/page.tsx",
+  // AI Studio A1 (`ai_studio.md` §14): the one library pane, preview.
+  "/studio": "app/studio/page.tsx",
 };
 
 /** My Day at `/`, behind `NEXT_PUBLIC_MY_DAY`. Not a nav pane, so apart. */
