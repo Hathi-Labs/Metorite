@@ -190,8 +190,11 @@ function AskBarFoot() {
   const [inside, setInside] = useState(false);
   const [hover, setHover] = useState(false);
   const [opened, setOpened] = useState(false);
+  // A member who never wrote to the assistant meets the field and its nudge
+  // (CF-2). The bar starts to rest after the first message or the X.
+  const [nudge, setNudge] = useState(false);
   const folded = folds.has(app);
-  const hold = !folded && (inside || hover || opened || sheet);
+  const hold = !folded && (inside || hover || opened || sheet || nudge);
   const { rest, lift } = useAskRest(wrapRef, app, hold);
   const form: AskRest = folded ? "corner" : hold ? "full" : rest;
 
@@ -263,7 +266,7 @@ function AskBarFoot() {
       >
         {form === "full" ? (
           <div data-ask-form="full">
-            <AskField placement="foot" sheet={sheet} running={running} onFold={() => fold(true)} />
+            <AskField placement="foot" sheet={sheet} running={running} onFold={() => fold(true)} onNudge={setNudge} />
           </div>
         ) : (
           <AskRestButton form={form} running={running} folded={folded} onOpen={() => expand()} />
@@ -337,6 +340,7 @@ export function AskField({
   sheet = false,
   running = 0,
   onFold,
+  onNudge,
 }: {
   placement?: "bar" | "foot";
   sheet?: boolean;
@@ -344,6 +348,8 @@ export function AskField({
   running?: number;
   /** Fold the bar into the corner on this app. Only the foot has it. */
   onFold?: () => void;
+  /** Told whether the first-message nudge shows under the field. */
+  onNudge?: (shows: boolean) => void;
 } = {}) {
   const foot = placement === "foot";
   const { here, panes } = useHere();
@@ -652,7 +658,7 @@ export function AskField({
       {/* CF-2: one nudge under the field, for a member who never wrote to
           the assistant. Behind the chat-first flag. It hides while the
           results show, so it never covers them. */}
-      <ChatNudge placement="field" hidden={panel} />
+      <ChatNudge placement="field" hidden={panel} onShow={onNudge} />
     </form>
   );
 }

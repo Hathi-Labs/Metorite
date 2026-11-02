@@ -184,7 +184,7 @@ describe("the bar at the foot reserves no space (source)", () => {
   const bar = read("lib/shell/ChatBar.tsx");
 
   it("takes its form from the page, and holds it while the member uses it", () => {
-    expect(bar).toMatch(/const hold = !folded && \(inside \|\| hover \|\| opened \|\| sheet\);/);
+    expect(bar).toMatch(/const hold = !folded && \(inside \|\| hover \|\| opened \|\| sheet \|\| nudge\);/);
     expect(bar).toMatch(/const \{ rest, lift \} = useAskRest\(wrapRef, app, hold\);/);
     expect(bar).toMatch(/const form: AskRest = folded \? "corner" : hold \? "full" : rest;/);
   });
@@ -198,6 +198,12 @@ describe("the bar at the foot reserves no space (source)", () => {
   it("each form is the one box the chat morphs into", () => {
     // `morphAskBox` finds the bar by `data-ask-surface`, in any form.
     expect(bar.match(/data-ask-surface=/g)?.length).toBe(2);
+  });
+
+  it("holds the field while the first-message nudge shows (CF-2)", () => {
+    expect(bar).toContain("onNudge={setNudge}");
+    expect(bar).toContain('<ChatNudge placement="field" hidden={panel} onShow={onNudge} />');
+    expect(read("lib/shell/ChatNudge.tsx")).toMatch(/useEffect\(\(\) => \{\s*onShow\?\.\(shows\);\s*\}, \[onShow, shows\]\);/);
   });
 
   it("keeps the guide's Ask anchor in every form (D167)", () => {
