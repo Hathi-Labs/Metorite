@@ -76,6 +76,27 @@ describe("/api/studio proxy", () => {
     expect(seen[0].init.headers).toEqual(seen[1].init.headers);
   });
 
+  it("forwards no header of the browser: the gateway call holds only the gatewayHeaders keys", async () => {
+    const hostile = {
+      "x-user-email": "evil@example.com",
+      "x-org-id": "other-org",
+      authorization: "Bearer evil",
+      cookie: "session=stolen",
+      "x-forwarded-for": "10.0.0.1",
+    };
+    await GET(req("http://x/api/studio/skills", { headers: hostile }), ctx(["skills"]));
+    await PATCH(
+      req("http://x/api/studio/skills/s1/state", { method: "PATCH", headers: hostile, body: "{}" }),
+      ctx(["skills", "s1", "state"]),
+    );
+    expect(seen).toHaveLength(2);
+    for (const call of seen) {
+      const headers = call.init.headers as Record<string, string>;
+      expect(Object.keys(headers).every((k) => k === "Authorization" || k === "Content-Type")).toBe(true);
+      expect(headers.Authorization).toBe("Bearer internal");
+    }
+  });
+
   it("sends a PUT and a DELETE (DELETE with no body)", async () => {
     await PUT(req("http://x/api/studio/a", { method: "PUT", body: "{}" }), ctx(["a"]));
     await DELETE(req("http://x/api/studio/a", { method: "DELETE" }), ctx(["a"]));
