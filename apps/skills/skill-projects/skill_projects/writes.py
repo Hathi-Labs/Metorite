@@ -1595,6 +1595,88 @@ async def update_task(
     and no answer, the tool asks first. The card shows each change as before
     → after, and the timeline records every change."""
     tid, task = await _task(task_id)
+    plan = await _plan_task_edit(
+        task,
+        title=title,
+        description=description,
+        status=status,
+        due=due,
+        start=start,
+        estimate_mins=estimate_mins,
+        tags=tags,
+        clear=clear,
+        priority=priority,
+        important=important,
+        leveraged=leveraged,
+        importance=importance,
+        type=type,
+        fields=fields,
+        include_subtasks=include_subtasks,
+    )
+    if isinstance(plan, str):
+        return plan
+    if plan.question:
+        return plan.question
+    if not await _confirm(
+        title="Update this task?",
+        detail=plan.detail,
+        context=_fields_block(plan.card, before=plan.before),
+    ):
+        return CANCELLED
+    updated = await patch(f"/projects/tasks/{tid}", plan.payload, params=plan.params)
+    updated["assignees"] = task.get("assignees") or []
+    lane = plan.lane
+    return "\n".join(
+        [
+            "Updated:",
+            *_task_line(updated, str(lane.get("name")) if lane else ""),
+            *level_note(priority, updated),
+            *_subtask_receipt(updated, "subtasks_completed", "complete"),
+        ]
+    )
+
+
+class _EditPlan:
+    """What one task edit will send and show: the output of `_plan_task_edit`."""
+
+    def __init__(self) -> None:
+        #: The PATCH body.
+        self.payload: dict[str, Any] = {}
+        #: The values before the edit, for the card.
+        self.before: dict[str, Any] = {}
+        #: The card: each change by name.
+        self.card: dict[str, Any] = {}
+        #: The card's detail line.
+        self.detail = ""
+        #: The status lane of the edit, when it sets one.
+        self.lane: dict[str, Any] | None = None
+        #: The query parameters of the PATCH.
+        self.params: dict[str, Any] = {}
+        #: The include_subtasks ask, when the edit needs an answer first.
+        self.question = ""
+
+
+async def _plan_task_edit(
+    task: dict[str, Any],
+    *,
+    title: str = "",
+    description: str = "",
+    status: str = "",
+    due: str = "",
+    start: str = "",
+    estimate_mins: int = 0,
+    tags: str = "",
+    clear: str = "",
+    priority: str = "",
+    important: str = "",
+    leveraged: str = "",
+    importance: Any = None,
+    type: str = "",
+    fields: str = "",
+    include_subtasks: str = "",
+) -> _EditPlan | str:
+    """Check one edit of *task* and plan it, with no write and no card: the
+    plan, or the refusal text. `update_task` and `update_tasks` both call it."""
     flags = priority_fields(
         priority=priority,
         important=important,
@@ -1641,8 +1723,10 @@ async def update_task(
         lane=lane,
         include_subtasks=include_subtasks,
     )
+    plan = _EditPlan()
     if extra.question:
-        return extra.question
+        plan.question = extra.question
+        return plan
     payload.update(extra.payload)
     taken = {**(stated if isinstance(stated, dict) else flags), **extra.payload}
     cleared = _edit_clears(clear, taken, task, before)
@@ -1658,20 +1742,9 @@ async def update_task(
     if payload.get("description"):
         # A description edit tells each address that it adds (`tasks.patch_task`).
         card.update(_told(payload["description"], old=task.get("description") or ""))
-    if not await _confirm(
-        title="Update this task?", detail=detail, context=_fields_block(card, before=before)
-    ):
-        return CANCELLED
-    updated = await patch(f"/projects/tasks/{tid}", payload, params=extra.params)
-    updated["assignees"] = task.get("assignees") or []
-    return "\n".join(
-        [
-            "Updated:",
-            *_task_line(updated, str(lane.get("name")) if lane else ""),
-            *level_note(priority, updated),
-            *_subtask_receipt(updated, "subtasks_completed", "complete"),
-        ]
-    )
+    plan.card, plan.detail = card, detail
+    plan.payload, plan.before, plan.lane, plan.params = payload, before, lane, extra.params
+    return plan
 
 
 def _edit_clears(
