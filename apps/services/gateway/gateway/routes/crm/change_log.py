@@ -6,7 +6,7 @@ Spec: ``project-docs/specs/crm_conversational.md`` §8 CRM-M1 and §4 (D164).
     POST  /crm/change-history/{change_id}/undo    undo one change
 
 **The one seam.** :func:`log_change` is the ONE writer of ``crm_change_log``
-(migration 331). Each logged config route calls it with the session of its
+(migration 332). Each logged config route calls it with the session of its
 own write, so the row commits or rolls back with the change. It is NOT
 ``acb_audit.record``: that writes best-effort and outside the transaction,
 and an Undo needs a log that holds only changes that happened. A route that
@@ -69,7 +69,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 #: Through what a change came. CRM-M1 writes ``ui``, and the confirm of a
-#: business rule writes ``chat`` or ``whatsapp``. The CHECK of migration 331
+#: business rule writes ``chat`` or ``whatsapp``. The CHECK of migration 332
 #: holds the same five words.
 VIA_UI = "ui"
 VIA_CHAT = "chat"
@@ -110,7 +110,7 @@ ADMIN_AREAS: frozenset[str] = frozenset({
     "lost_reason", "pipeline", "pipeline_stage",
 })
 
-#: The longest summary. The CHECK of migration 331 holds the same number.
+#: The longest summary. The CHECK of migration 332 holds the same number.
 SUMMARY_MAX = 500
 
 
