@@ -108,6 +108,25 @@ class TestOutboundStaysOff:
                     f"{section} gets {name}")
 
 
+class TestStudioSwitch:
+    @needs_bash
+    def test_the_gateway_lists_every_org_for_studio(self, tmp_path):
+        """STUDIO_ORGS is not a name of the SWITCH pattern, so the flags file
+        cannot carry it. One fixed line in `gateway_env` lets the owner preview
+        the skill creator (STU-F2b). The stack holds made-up orgs only."""
+        assert _print_env(tmp_path)["gateway"]["STUDIO_ORGS"] == "*"
+
+    @needs_bash
+    def test_the_web_app_does_not_get_it(self, tmp_path):
+        assert "STUDIO_ORGS" not in _print_env(tmp_path)["web"]
+
+    def test_the_line_is_fixed_in_the_gateway_function_only(self):
+        assert BODY.count("STUDIO_ORGS") >= 1
+        gateway = BODY.split("gateway_env() {", 1)[1].split("\n}\n", 1)[0]
+        assert '"STUDIO_ORGS=*"' in gateway
+        assert "STUDIO_ORGS" not in FLAGS.read_text(encoding="utf-8")
+
+
 class TestProductionParity:
     @needs_bash
     def test_the_gateway_connects_as_the_non_superuser_app_role(self, tmp_path):
