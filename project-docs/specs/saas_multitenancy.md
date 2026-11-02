@@ -2419,6 +2419,7 @@ claim as a filter.
   join-vs-create chooser (AccessGate); `/signup` declares it creates a NEW
   organization; `/signin` states the fork. No selection UI yet — every member is
   single-org today, so the "list" auto-selects trivially.
+- ⚠️ **Moved before the launch by D152, 2026-11-02.** The owner directed that one person may belong to many orgs and create more. Slice C is PLN-26 (Metorite task 1489), and slice B is PLN-27 (task 1490). `seat_plans.md` §8a owns the screens and the signup check. This section keeps the binding.
 - **Slice B — the session claim (UNBUILT).** At sign-in completion, when the
   registry resolve returns MORE than one admissible organization (today that arm
   REFUSES with `WorkspaceChooserRequired`), render the chooser and carry the

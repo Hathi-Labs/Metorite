@@ -1,6 +1,6 @@
 # Seat plans — one price per seat, AI included, sold worldwide (WS-PLN)
 
-- **Product:** Metorite · **Feature:** seat tiers, individual mode and global sales · **Updated:** 2026-11-02 · **Owner:** vjvarada
+- **Product:** Metorite · **Feature:** seat tiers, individual mode, many orgs per person and global sales · **Updated:** 2026-11-02 · **Owner:** vjvarada
 - **Status:** 📐 **SPECIFIED, NOT BUILT.** The owner answered PLN-Q1, Q3, Q4 and Q5 on 2026-11-01. §3 is the proposed offer. The owner confirms it in the pull request that adds this spec (PLN-Q2).
 - **Verified against code on 2026-11-02 at `2d15a28a1`.** Each path in §2 was read on that commit. Re-verify each anchor at dispatch.
 - **Board:** WS-PLN in `work_plan.md` §2.1. **Decision:** D152. §10 lists each decision that it amends or keeps.
@@ -14,7 +14,7 @@
 
 The owner does not want to charge for a seat and then charge again for AI compute. A customer buys **one seat tier**. The tier holds a monthly AI allowance and a set of features. An org mixes tiers, one tier for each member, and an admin sets the mix.
 
-**One person is an org of one.** An individual account is an organization with one member and private defaults. It is not a second data model, so the upgrade to a team moves no data.
+**One person is an org of one.** An individual account is an organization with one member and private defaults. It is not a second data model, so the upgrade to a team moves no data. The same person may also belong to many orgs (§8a).
 
 **Sold worldwide from day 1.** The world pays in USD and India pays in INR. Both go live together.
 
@@ -34,7 +34,7 @@ The owner does not want to charge for a seat and then charge again for AI comput
 
 **Non-goals.**
 
-- **One login in two organizations.** One address holds one organization in the first release (PLN-Q5). A switcher is its own HIGH-tier workstream.
+- **One view of work across orgs.** One person may belong to many orgs (§8a), and each org stays its own tenant.
 - **Team back to individual.** A member who leaves does not take a personal copy (D63 seals the tree).
 - **SSO, SAML, SCIM, audit export, a data region choice and approved AI providers.** These are org-wide, so they belong to a later Enterprise add-on and not to a seat tier.
 - **More than one language.** The product stays in English at launch.
@@ -61,6 +61,9 @@ Each row is a measured fact and what it means for this work.
 | A Console migration runs with no backup of the Console database. | H-170, task 507 | CLAUDE.md §3a rule 1 asks for a backup first. Task 507 comes before the first Console migration of this workstream reaches production. |
 | A new root project starts org-visible. | `gateway/routes/projects/tree.py:1192` | In an individual org this becomes a leak at the upgrade. PLN-23 and PLN-31 close it. |
 | Signup asks for a company, a slug and a team size up to 10. It asks for no country. | `gateway/routes/signup.py:154`, `SignUpForm.tsx` | PLN-21 and PLN-42 change it. |
+| One identity may hold many Console memberships. The tenant plane allows one person row per address. | `infra/customer_console/001_customer_console.sql` (`org_membership`), `infra/postgres/162_app_user_email_case.sql` (`app_user_email_lower_key`) | PLN-26 changes the tenant plane (MT-1k slice C). |
+| Signup refuses an address that already has an org (`AlreadyMember`). The resolve refuses a person in two orgs (`WorkspaceChooserRequired`). | `gateway/routes/signup.py`, `acb_auth/console_resolve.py` | PLN-28 and PLN-27 replace both refusals. |
+| A Gmail-style account switcher is built and dark. | `components/AccountSwitcher.tsx`, `accountMenu` in `lib/shell/shellNav.ts` (MT-1k slice A2) | PLN-29 adds the orgs to it. |
 | `/v1/images/generations` exists in the Router. Nothing calls it, and no migration binds `tier-image`. | `customer_console/main.py:9834`, `015_tier_pricing.sql` | ⚠️ Image generation is not a product feature yet. PLN-19 makes it one. |
 | `/v1/audio/speech` exists. No migration binds `tier-tts`, and no screen reads aloud. | `customer_console/main.py:9952`, `016_tier_task.sql` | Read aloud is not built. PLN-18 builds it. Check `tier_binding` on production at dispatch. |
 | The only microphone code is in Notes and WhatsApp calls. | `app/notes/lib/recorder.ts`, `app/whatsapp/lib/callAudio.ts` | Dictation is not built. PLN-18 builds it. |
@@ -194,6 +197,99 @@ Each mechanism reads the tier row. The Router refuses an AI tier that the seat l
 
 ---
 
+## 8a. One person, many organizations
+
+**Owner directive, 2026-11-02:** "one person, with their email, should be allowed to be part of multiple organisations and create multiple orgs. The UI/UX to manage this should be considered and taken care of." The owner then added: "when they sign up, we should see if the email ID only is part of an existing organization." This replaces the answer to PLN-Q5.
+
+**Who owns what.** This section owns what a person sees and may do. `saas_multitenancy.md` MT-1k owns how a request binds to one org (slices B and C). `onboarding.md` OB-22 owns join by domain.
+
+### 8a.1 The rules
+
+1. **One verified address may belong to many orgs, and may create more.** The Console already allows this, because `org_membership` keys on the org and the identity.
+2. **Each org stays its own tenant.** No record, memory, chat, connection or count crosses from one org to another (D15, R11). §8a.3 names the one exception, an unread count.
+3. **Each org pays for its own seat for the person.** The tier, the allowance and the bill are per org. An individual account and a company membership are two orgs and two seats.
+4. **The active org is a session claim.** The gateway binds a request to the claim only if the identity holds an active membership there (PLN-27). The claim selects, and it never admits.
+5. **The tenant plane holds one person row per org** (PLN-26). Today `app_user_email_lower_key` allows one row per address. A read that joins on the address alone could then reach a second org. PLN-26 finds and fences each one.
+6. **A person leaves an org by their own act.** The last owner cannot leave until another member holds the owner role.
+7. **The match uses the exact address, never the domain.** Join by domain stays OB-22, OFF by default (D-OB-7).
+8. **Two layers stay apart.** The A2 switcher changes the signed-in account, which is the address. The org claim picks one org of that account. A change of account never carries an org claim with it.
+
+### 8a.2 Signup checks the address first
+
+The check runs after "Verify your email" and before the org form (PLN-28). It never runs before verification, because a list of orgs would tell a stranger where an address works.
+
+The screen shows four groups, in this order:
+
+1. **Your organizations.** Each org where the address holds an active membership, with its name, logo and the person's role. "Open" signs in to it.
+2. **Invitations.** Each pending invite to the address, with the org and the person who sent it. "Join" accepts it, and "Decline" removes it.
+3. **Ask to join.** OB-22's row, only for an org that turned on join by domain.
+4. **Start something new.** "Just me" or "My team" (PLN-21).
+
+If the first three groups are empty, the screen goes straight to the fourth. A suspended or removed membership does not appear. The `AlreadyMember` refusal goes.
+
+The lookup reads the address of the verified session only, never an address in the request. Its answer is the same for an unknown address and for an address with no org.
+
+### 8a.3 The one menu
+
+The account switcher of MT-1k slice A2 becomes the one place to change org (PLN-29). It lives in `components/AccountSwitcher.tsx`, with its rows in `accountMenu` of `lib/shell/shellNav.ts`. A second switcher is a defect (D89).
+
+```text
+┌────────────────────────────────────┐
+│ Riya Shah · riya@acmelabs.com      │
+│   ✓ Acme Labs                      │
+│     Riya's workspace               │
+│     Northwind Traders          ●   │
+│   + Create an organization         │
+│     Manage organizations           │
+├────────────────────────────────────┤
+│ riya.shah@gmail.com                │
+│     Riya's side project            │
+├────────────────────────────────────┤
+│   + Add another account            │
+│     Settings · Sign out            │
+└────────────────────────────────────┘
+```
+
+1. The menu groups the orgs under each signed-in account. The current org has a check mark.
+2. A dot marks unread notices in another org. A server read counts them for each membership of that identity. It reads the RLS-exempt set of `user_identity` and `org_membership` that MT-1k names. Only the count leaves that read, with no name, title or id of a record.
+3. "Create an organization" opens the fourth group of §8a.2, and then the new org.
+4. "Manage organizations" opens the page of §8a.5.
+5. ⌘K offers "Switch to <org>" from the same list, through the one palette (D89).
+6. A switch reloads at `/` and clears the org's browser state. Every open tab follows (A2 rules 3 and 6).
+
+### 8a.4 Always clear which org
+
+1. The sidebar caption shows the org's name or logo (D51.2). The browser tab title reads "<page> · <org>".
+2. No org gets its own colour, because the look stays one (`DESIGN_SYSTEM.md`). The logo carries the identity.
+3. A link to a record in another org of the same person offers "Open in <org>". It never shows "not found" (task 1062).
+4. A push notice names its org, and a tap opens that org.
+5. Mira says which org a chat belongs to, when a person asks about the work of another org.
+
+### 8a.5 The Your organizations page
+
+The page is `/people/me/organizations`, a personal tab beside My profile and My access. Every member reaches it, as every member reaches My access.
+
+- One row for each org: the name, the logo, the role, the seat tier and the last use, with "Open" and "Leave".
+- The pending invites, with "Join" and "Decline".
+- The default org, which is where sign-in lands.
+- "Create an organization".
+
+**Leave** asks once, and it says what happens before the person confirms. A leave revokes the org claim at once, and the person's agent tokens for that org (D97). Mira can do each act from chat (chat-first parity), and she asks the person to confirm a leave.
+
+### 8a.6 Sign-in
+
+1. **One org:** sign-in opens it.
+2. **More than one:** sign-in opens the default org, else the last used org. PLN-27 stores both for each identity. The resolve returns the list instead of the refusal `WorkspaceChooserRequired`.
+3. **No org:** sign-in shows the screen of §8a.2.
+
+### 8a.7 What stays inside each org
+
+Seats, tiers, the allowance and the bill stay inside each org. So do Mira's memory and chats, connected mail, calendars and WhatsApp, and notifications, except the count of §8a.3. An external agent's token belongs to one org, and the connect screen names it (D97).
+
+**Not in the first release:** one view of work across orgs, moving a record between orgs, and one connection shared by two orgs.
+
+---
+
 ## 9. Selling worldwide
 
 ### 9.1 Prices and currency
@@ -261,6 +357,8 @@ Each seat holds AI that costs real money, and a global signup page is a target. 
 | **D66, D67, D94** | Kept. |
 | **D12, D15** | Kept. An individual is a row, not a tenant model. |
 | **D36** | Kept. Customer zero is an existing org, so §9.7 covers it. |
+| **D51.3, MT-1k** | Amended. Slices B and C move before the launch (§8a). |
+| **D153, D-OB-7** | Kept. The signup check matches the exact address only, so join by domain stays OFF. |
 | **`launch_surface.md` §4 and CLAUDE.md §2** | Each one carries a banner now. Their text changes at PLN-50. |
 
 ---
@@ -277,7 +375,7 @@ Each seat holds AI that costs real money, and a global signup page is a target. 
 | PLN-Q2 | 1276 | The offer of §3 | 🟡 Open. The owner confirms it in the PR of this spec. |
 | PLN-Q3 | 1277 | Allowance rules | ✅ Answered. §4. |
 | PLN-Q4 | 1278 | Existing orgs | ✅ Answered. The date stays open. §9.7. |
-| PLN-Q5 | 1279 | One login in two orgs | ✅ Answered. Not in the first release. |
+| PLN-Q5 | 1279 | One login in many orgs | 🔁 Reversed by the owner on 2026-11-02. One person may belong to many orgs. §8a. |
 | PLN-Q6 | 1319 | Seller and global provider | 🔴 Open. It blocks PLN-41 and PLN-43. |
 | PLN-Q7 | 1404 | The default AI route | 🔴 Open. It blocks PLN-45 and the rate card numbers. |
 
@@ -331,6 +429,10 @@ The flag `SEAT_ALLOWANCE_ORGS` stays default OFF. With it off, nothing changes. 
 | PLN-24 | 1297 | Mira sets up a person | MEDIUM | AGENT-SAFE. An eval over USD 0.50 needs the owner. | PLN-20 | The interview picks the individual script by the kind. Five first-run chats read right. | Interview tests |
 | PLN-21 | 1294 | Signup: "Just me" or "My team" | MEDIUM | AGENT-SAFE | PLN-20, PLN-1, PLN-42 | `signup.test.ts` covers both paths and both flag positions, with four captures. | `signup.test.ts` |
 | PLN-25 | 1298 | Billing for one person | MEDIUM | AGENT-SAFE | PLN-3, PLN-8, PLN-10, PLN-20 | Each state passes in vitest, with four captures. | Plan card tests |
+| PLN-26 | 1489 | One address in many orgs: a person row per org (MT-1k slice C) | HIGH | AGENT-SAFE | Task 507 for production, the H6 re-key | Two orgs each hold one address on a real database, and RLS keeps each row in its org. Every join on `app_user.email` also joins on the org. It ships behind `MULTI_ORG_ENABLED`, default OFF, and single-org sign-in does not change. | `test_multi_org_person_rows_r8.py` |
+| PLN-27 | 1490 | The active org as a session claim, and where sign-in lands (MT-1k slice B) | HIGH | AGENT-SAFE | PLN-26 | A claim for an org without a membership is refused. After a switch, the next request binds to the new org. A change of account never carries an org claim. The default and last used org are stored. | `test_org_claim_r8.py` |
+| PLN-28 | 1491 | Signup checks the verified address | HIGH | AGENT-SAFE | PLN-21, and PLN-26 for a second org | A verified address sees its orgs and invites. The lookup reads the session address only. An unverified request sees none, and a domain match shows no org. | `test_signup_existing_orgs.py` |
+| PLN-29 | 1492 | The one org menu and the Your organizations page | HIGH | AGENT-SAFE | PLN-26, PLN-27, task 1062 | Switch, create, leave, default and invites work from the menu, the page and chat. The last owner cannot leave. A leave revokes the claim and the org's agent tokens. The unread count carries no name, title or id. Four captures. | `test_leave_org_r8.py` |
 
 ### 11.5 Phase 5, money
 
@@ -399,7 +501,7 @@ The critical path runs through money:
 | **1. Foundations** | November to December 2026 | Identity, usage rows and the catalog come first. Pilots keep running on flat ₹500. |
 | **2. Seat tiers** | December 2026 to January 2027 | The owner can grant tiers by hand from here (§9.7). |
 | **3. Allowance, dark** | January 2027 | Pilots give real burn per tier, and that sizes the allowance. |
-| **4. Individual mode** | January to February 2027 | It needs the account kind and the plan card. |
+| **4. Individual mode and many orgs** | January to February 2027 | It needs the account kind, the plan card and one person in many orgs. |
 | **5. Money** | February 2027 | ⚠️ PLN-43 Part A and the provider's approval start by January. Both wait on people outside the team. |
 | **6. Upgrade** | February to March 2027 | It needs both rails and the privacy defaults. |
 | **7. What the tiers sell** | Beside Phases 4 to 6 | Pro needs image and research. Max needs video. |
@@ -466,6 +568,7 @@ Survey of 2026-11-02. The notes are filed in full on epic 1273.
 - **Max may launch before video works.** §3.2 keeps the row off the page, so Max then sells on capacity, agents and code.
 - **The exchange rate moves.** An INR price is a dated row, so the operator can reprice new sales. Live subscriptions keep their price.
 - **A US or EU route can cost more than DeepSeek's own API.** PLN-Q7 weighs this, and the rate card uses the real cost.
+- **Many orgs touch the sign-in path of every member.** PLN-26 adds the new key first and drops the old one a release later (R6). PLN-27 keeps the claim a filter on the memberships, never a source of truth.
 - **Merge order.** PLN-9 and PKG-7 share one seam. Whichever lands second extends the first.
 
 ---
