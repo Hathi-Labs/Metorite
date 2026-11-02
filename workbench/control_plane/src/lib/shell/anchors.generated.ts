@@ -16,6 +16,7 @@ export type GuideAnchorId =
   | "crm.pipeline"
   | "crm.stage-column"
   | "crm.record-panel"
+  | "crm.timeline-tab"
   | "crm.add-note"
   | "crm.search"
   | "home.app-list"
@@ -59,6 +60,12 @@ export const GENERATED_ANCHORS: readonly GuideAnchor[] = [
     label: "Record panel",
     route: "/crm",
     does: "Opens beside the list when a record is picked. It shows the record and its timeline.",
+  },
+  {
+    id: "crm.timeline-tab",
+    label: "Timeline tab",
+    route: "/crm",
+    does: "Opens the timeline of the open record, where notes, calls and tasks are logged.",
   },
   {
     id: "crm.add-note",

@@ -87,7 +87,7 @@ export const GENERATED_GUIDES: readonly Guide[] = [
     steps: [
       { kind: "open", say: "Open the Deals tab of the CRM.", path: "/crm?tab=deals" },
       { kind: "point", say: "Open any deal on the board.", anchor: "crm.pipeline" },
-      { kind: "point", say: "The deal opens here.", anchor: "crm.record-panel" },
+      { kind: "point", say: "Open Timeline.", anchor: "crm.timeline-tab" },
       { kind: "point", say: "Write your note here, then press Log.", anchor: "crm.add-note" },
     ],
     doTool: null,

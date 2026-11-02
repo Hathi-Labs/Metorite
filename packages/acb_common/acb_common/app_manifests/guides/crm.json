@@ -149,8 +149,8 @@
       },
       {
         "kind": "point",
-        "anchor": "crm.record-panel",
-        "say": "The deal opens here."
+        "anchor": "crm.timeline-tab",
+        "say": "Open Timeline."
       },
       {
         "kind": "point",

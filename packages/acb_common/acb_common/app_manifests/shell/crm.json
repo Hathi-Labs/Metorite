@@ -118,6 +118,12 @@
         "does": "Opens beside the list when a record is picked. It shows the record and its timeline."
       },
       {
+        "id": "timeline-tab",
+        "label": "Timeline tab",
+        "route": "/crm",
+        "does": "Opens the timeline of the open record, where notes, calls and tasks are logged."
+      },
+      {
         "id": "add-note",
         "label": "Note field",
         "route": "/crm",
