@@ -426,7 +426,7 @@ export default function Sidebar() {
       }}
       className={`sidebar-rail shrink-0 border-r flex flex-col overflow-hidden bg-sidebar border-sidebar-border glass:m-2 glass:rounded-2xl glass:border-r-0 glass:glass-chrome-flat ${
         collapsed && !peekOpen ? "w-14" : "w-64"
-      } ${peeking ? "absolute inset-y-0 left-0 z-40" : ""} ${peekOpen ? "shadow-2xl glass:shadow-glass" : ""}`}
+      } ${peeking ? "absolute inset-y-0 left-0 z-40" : ""} ${peekOpen ? "shadow-2xl" : ""}`}
     >
       {/* Header. With the full-width shell bar, the bar carries the logo and
           the fold control instead, so the logo stays in view when this rail
