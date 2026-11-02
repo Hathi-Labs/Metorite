@@ -72,8 +72,15 @@ of more than :data:`LABEL_MAX` characters after the trim, and a NUL
 (``records.refuse_nul``) are each a 422. The write is one ``UPDATE`` guarded
 on ``mode = 'native'`` in its own WHERE, so a mode change between a read and
 the write cannot land a name on a Mirror CRM. ``GET /crm/mode`` serves the
-stored names in Native mode, with no ``CRM_FILL_RANK_ORGS`` gate. It writes
-no audit line, as ``PATCH /crm/settings`` writes none.
+stored names in Native mode, with no ``CRM_FILL_RANK_ORGS`` gate.
+
+**Change history (WS-CRM CRM-M1, ``crm_conversational.md`` §8).** The rename
+and ``PATCH /crm/settings`` write one row each through
+``change_log.log_change``, in the transaction of the write, at the
+``company`` level. A change of the access rule (area ``access``) and of the
+names (``record_names``) can be undone. A change of the mode (``setup``) is
+logged and cannot be undone. The start over keeps its ``acb_audit`` line and
+writes no Change history row: it is one-way.
 """
 
 from __future__ import annotations
@@ -86,12 +93,14 @@ from acb_auth import UserContext, get_current_user, require_permission
 from acb_common import get_logger
 from fastapi import Depends, HTTPException
 from gateway.connections import store
+from gateway.routes.crm import change_log
 from gateway.routes.crm.access import (
     ACCESS_MODES,
     ADMIN_PERMISSION,
     DEFAULT_ACCESS,
     read_settings,
 )
+from gateway.routes.crm.change_log import Change, Logged, log_change
 from gateway.routes.crm.connection import (
     _CONNECT_LOCK_SQL,
     OWNING_APP,
@@ -591,25 +600,70 @@ async def put_crm_labels(
     """Rename the core records of a Native CRM. See the module doc."""
     org = _organization(user)
     cleaned = clean_labels(payload.labels if payload is not None else {})
-    stored = (
-        json.dumps({slug: name.model_dump() for slug, name in cleaned.items()})
-        if cleaned else None
-    )
     async with _tenant_session() as db:
-        row = (await db.execute(text(_SAVE_LABELS_SQL), {
-            "o": org,
-            "labels": stored,
-            "updated_by": (user.email or "").strip().lower() or None,
-        })).first()
-        if row is None:
-            current = await read_settings(db, org)
-            mirror = getattr(current, "mode", None) == "mirror"
-            raise HTTPException(
-                status_code=409,
-                detail=dict(_MIRROR_LABELS if mirror else _NOT_NATIVE),
-            )
-        result = stored_labels(from_jsonb(row.labels))
+        result = await save_labels_in(db, org, user, cleaned)
     return LabelsOut(labels=result)
+
+
+#: The stored names, held until the write commits, so the "before" of the
+#: Change history row is the value that this write replaces.
+_LOCK_LABELS_SQL = (
+    "SELECT labels FROM crm_settings "
+    "WHERE organization_id = CAST(:o AS uuid) FOR UPDATE"
+)
+
+
+def _labels_plain(labels: dict[str, EntityLabel]) -> dict[str, Any]:
+    return {slug: name.model_dump() for slug, name in labels.items()}
+
+
+async def save_labels_in(
+    db: Any, org: str, user: Any, cleaned: dict[str, EntityLabel],
+    *, undoes: str | None = None,
+) -> dict[str, EntityLabel]:
+    """The body of ``PUT /crm/settings/labels``, in the caller's transaction.
+
+    The route and the Undo of a change both call it. It logs one row at the
+    ``company`` level when the names change (CRM-M1).
+    """
+    stored = json.dumps(_labels_plain(cleaned)) if cleaned else None
+    held = (await db.execute(text(_LOCK_LABELS_SQL), {"o": org})).first()
+    before = stored_labels(from_jsonb(held.labels)) if held is not None else {}
+    row = (await db.execute(text(_SAVE_LABELS_SQL), {
+        "o": org,
+        "labels": stored,
+        "updated_by": (user.email or "").strip().lower() or None,
+    })).first()
+    if row is None:
+        current = await read_settings(db, org)
+        mirror = getattr(current, "mode", None) == "mirror"
+        raise HTTPException(
+            status_code=409,
+            detail=dict(_MIRROR_LABELS if mirror else _NOT_NATIVE),
+        )
+    result = stored_labels(from_jsonb(row.labels))
+    if _labels_plain(before) != _labels_plain(result):
+        await log_change(db, user, Change(
+            area="record_names", action=change_log.CHANGE,
+            summary="Changed the names of the record types",
+            ladder=change_log.COMPANY,
+            before={"labels": _labels_plain(before)},
+            after={"labels": _labels_plain(result)},
+        ), undoes=undoes)
+    return result
+
+
+def _clean_settings(values: dict[str, Any]) -> dict[str, Any]:
+    """The access value and the groups of a settings write, checked. 422 else."""
+    if "access" in values:
+        if values["access"] is None:
+            raise HTTPException(
+                status_code=422, detail="'access' cannot be null.",
+            )
+        _check_access(values["access"])
+    if "access_groups" in values:
+        values["access_groups"] = _clean_groups(values["access_groups"] or [])
+    return values
 
 
 @router.patch(
@@ -621,62 +675,137 @@ async def patch_crm_settings(
 ) -> CrmSettingsModel:
     """Change the mode, the access rule or its groups. See the module doc."""
     org = _organization(user)
-    values = payload.model_dump(exclude_unset=True)
-    if "access" in values:
-        if values["access"] is None:
-            raise HTTPException(
-                status_code=422, detail="'access' cannot be null.",
-            )
-        _check_access(values["access"])
-    if "access_groups" in values:
-        values["access_groups"] = _clean_groups(values["access_groups"] or [])
+    values = _clean_settings(payload.model_dump(exclude_unset=True))
     async with _tenant_session() as db:
-        current = _wire(await read_settings(db, org))
-        mode_changes = (
-            "mode" in values and _check_mode(current.mode, values["mode"])
-        )
-        resetting = mode_changes and values["mode"] is None
-        if resetting:
-            # Serialise with any other write of this settings row, then count.
-            await db.execute(text(
-                "SELECT 1 FROM crm_settings "
-                "WHERE organization_id = CAST(:o AS uuid) FOR UPDATE"), {"o": org})
-            await _check_reset_allowed(db, org)
-        merged = {
-            "organization_id": org,
-            "mode": values.get("mode", current.mode),
-            "access": values.get("access", current.access),
-            "access_groups": values.get("access_groups", current.access_groups),
-            "updated_by": (user.email or "").strip().lower() or None,
-            "expected_mode": current.mode,
-        }
-        row = (await db.execute(text(_UPSERT_SQL), merged)).first()
-        if row is None:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "The CRM mode changed while this request ran. Load the "
-                    "settings again, then send the change again."
-                ),
-            )
-        if mode_changes and merged["mode"] == "native":
-            await seed_native_pipeline(db, org)
-        if resetting:
-            await _reset_setup(db, org)
-        result = _wire(row)
+        result, resetting = await write_settings_in(db, org, user, values)
     # After the commit: the access rule and the mode change what My Day may
     # show, so the org's feed version moves (WS-58 MD-3e, `my_day_feed.md`
     # §5.8 item 2). Nothing with MY_DAY_CACHE off. `bump_org_safe` waits a
     # short time at most and never raises, so Redis never fails or holds a
     # write that already committed (the MD-3c rule for another app's write).
-    from gateway.routes.shell import cache as feed_cache
-
-    await feed_cache.bump_org_safe(org)
+    await _bump_feed(org)
     if resetting:
         # Drop the credential too: revoke best-effort, delete the blob. A
         # `connected` row never gets here (409 above).
         await disconnect_zoho(org)
     return result
+
+
+async def _bump_feed(org: str) -> None:
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_org_safe(org)
+
+
+#: The settings that a Change history row of this route holds.
+_SETTINGS_KEYS: tuple[str, ...] = ("mode", "access", "access_groups")
+
+#: The name of each mode, and of each access rule, in a summary.
+_MODE_WORDS: dict[str | None, str] = {
+    "native": "Native", "mirror": "Zoho mirror", None: "not chosen",
+}
+_ACCESS_WORDS: dict[str, str] = {
+    "admins": "admins only", "everyone": "everyone with CRM access",
+    "groups": "the chosen groups",
+}
+
+
+async def write_settings_in(
+    db: Any, org: str, user: Any, values: dict[str, Any],
+    *, undoes: str | None = None,
+) -> tuple[CrmSettingsModel, bool]:
+    """The body of ``PATCH /crm/settings``, in the caller's transaction.
+
+    Returns the new settings and whether the setup went back to not chosen.
+    The route and the Undo of an access change both call it. It logs one
+    row at the ``company`` level when a value changes (CRM-M1). A change of
+    the mode is the area ``setup``, and no Undo can reverse it: a switch
+    seeds or deletes the pipeline in the same transaction.
+    """
+    current = _wire(await read_settings(db, org))
+    mode_changes = (
+        "mode" in values and _check_mode(current.mode, values["mode"])
+    )
+    resetting = mode_changes and values["mode"] is None
+    if resetting:
+        # Serialise with any other write of this settings row, then count.
+        await db.execute(text(
+            "SELECT 1 FROM crm_settings "
+            "WHERE organization_id = CAST(:o AS uuid) FOR UPDATE"), {"o": org})
+        await _check_reset_allowed(db, org)
+    merged = {
+        "organization_id": org,
+        "mode": values.get("mode", current.mode),
+        "access": values.get("access", current.access),
+        "access_groups": values.get("access_groups", current.access_groups),
+        "updated_by": (user.email or "").strip().lower() or None,
+        "expected_mode": current.mode,
+    }
+    row = (await db.execute(text(_UPSERT_SQL), merged)).first()
+    if row is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The CRM mode changed while this request ran. Load the "
+                "settings again, then send the change again."
+            ),
+        )
+    if mode_changes and merged["mode"] == "native":
+        await seed_native_pipeline(db, org)
+    if resetting:
+        await _reset_setup(db, org)
+    result = _wire(row)
+    before, after = change_log.diff(
+        {k: getattr(current, k) for k in _SETTINGS_KEYS},
+        {k: getattr(result, k) for k in _SETTINGS_KEYS},
+    )
+    if "mode" in after:
+        await log_change(db, user, Change(
+            area="setup", action=change_log.CHANGE,
+            summary=(
+                f"Changed the CRM setup from {_MODE_WORDS.get(current.mode, current.mode)} "
+                f"to {_MODE_WORDS.get(result.mode, result.mode)}"
+            ),
+            ladder=change_log.COMPANY, before=before, after=after,
+            reversible=False,
+        ), undoes=undoes)
+    elif after:
+        await log_change(db, user, Change(
+            area="access", action=change_log.CHANGE,
+            summary=(
+                "Changed who can open the CRM to "
+                f"{_ACCESS_WORDS.get(result.access, result.access)}"
+            ),
+            ladder=change_log.COMPANY, before=before, after=after,
+        ), undoes=undoes)
+    return result, resetting
+
+
+@change_log.undoes("access")
+async def _undo_access(db: Any, user: Any, logged: Logged) -> Any:
+    """Write the old access rule back through :func:`write_settings_in`."""
+    org = _organization(user)
+    current = _wire(await read_settings(db, org))
+    if not change_log.same_values(
+        {k: getattr(current, k) for k in _SETTINGS_KEYS}, logged.after,
+    ):
+        raise change_log.changed_since()
+    values = {k: v for k, v in (logged.before or {}).items() if k in ("access", "access_groups")}
+    await write_settings_in(db, org, user, _clean_settings(values), undoes=logged.id)
+    return lambda: _bump_feed(org)
+
+
+@change_log.undoes("record_names")
+async def _undo_record_names(db: Any, user: Any, logged: Logged) -> None:
+    """Write the old names back through :func:`save_labels_in`."""
+    org = _organization(user)
+    current = await native_labels(db, org) or {}
+    if _labels_plain(current) != (logged.after or {}).get("labels"):
+        raise change_log.changed_since()
+    old = (logged.before or {}).get("labels") or {}
+    raw = {slug: LabelIn(**entry) for slug, entry in old.items() if isinstance(entry, dict)}
+    await save_labels_in(db, org, user, clean_labels(raw), undoes=logged.id)
+    return None
 
 
 # ── The start over (WS-53 CRM-X0) ───────────────────────────────────────────

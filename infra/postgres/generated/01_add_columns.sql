@@ -878,3 +878,7 @@ ALTER TABLE studio_record_hot
 ALTER TABLE goal_records
     ADD COLUMN IF NOT EXISTS organization_id UUID
     DEFAULT current_setting('app.tenant_id', true)::uuid;
+
+ALTER TABLE crm_change_log
+    ADD COLUMN IF NOT EXISTS organization_id UUID
+    DEFAULT current_setting('app.tenant_id', true)::uuid;

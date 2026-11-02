@@ -92,7 +92,9 @@ EMPTIED = (
 #: What the start over keeps. The same set as ``core.RESET_KEEPS``.
 KEPT = ("crm_settings", "crm_views", "crm_sync_runs", "crm_auto_lead_cursors",
         # CRM-Q33: a business rule describes the business, not the account.
-        "crm_business_rules")
+        "crm_business_rules",
+        # CRM-M1: the Change history is the record of what changed.
+        "crm_change_log")
 ALL = EMPTIED + KEPT
 
 

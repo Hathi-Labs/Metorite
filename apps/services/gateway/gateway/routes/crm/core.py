@@ -2799,9 +2799,11 @@ RESET_TABLES: tuple[str, ...] = (
 #: views, the run history, and the cursor of the mail hook (not a record).
 #: CRM-Q33: the business rules too. A rule describes the business ("all
 #: amounts net of GST"), never the old Zoho account.
+#: CRM-M1: the Change history too. It is the record of what changed, and a
+#: start over does not erase it. The Undo of a row whose thing went refuses.
 RESET_KEEPS: tuple[str, ...] = (
     "crm_settings", "crm_views", "crm_sync_runs", "crm_auto_lead_cursors",
-    "crm_business_rules",
+    "crm_business_rules", "crm_change_log",
 )
 
 

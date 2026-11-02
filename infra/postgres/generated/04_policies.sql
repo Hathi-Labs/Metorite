@@ -1537,3 +1537,10 @@ DROP POLICY IF EXISTS goal_records_tenant_isolation ON goal_records;
 CREATE POLICY goal_records_tenant_isolation ON goal_records
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE crm_change_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_change_log FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS crm_change_log_tenant_isolation ON crm_change_log;
+CREATE POLICY crm_change_log_tenant_isolation ON crm_change_log
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

@@ -49,6 +49,8 @@ INJECTABLE_PLATFORM_TOOLS = {
     "crm_deal_contacts", "crm_list_owners", "crm_report", "crm_aggregate",
     "crm_stage_dwell", "crm_list_modules", "crm_list_module_records",
     "crm_get_module_record",
+    # WS-CRM CRM-M1 (2026-11-02): the read of the CRM Change history.
+    "crm_change_history",
     # H-315 (2026-10-15): the `documents` family, a deck or a report as a PDF.
     "make_document",
     # projects_ai_chat.md §14.10 (2026-10-16): a report as a chat card and a PDF.
@@ -84,7 +86,10 @@ SCOPED_AGENTS = {
     # 25 since CRM-Q33 (2026-10-18): the chat answers first and keeps a
     # business rule that the member says, so it holds crm_propose_rule. A run
     # of an org off CRM_ANSWER_FIRST_ORGS drops it.
-    "agent-orchestrator": 25,
+    # 26 since CRM-M1 (2026-11-02): "What changed last Tuesday?" is a chat
+    # read of the CRM Change history (crm_conversational.md §8), so the chat
+    # holds crm_change_history. It reads only.
+    "agent-orchestrator": 26,
 }
 
 

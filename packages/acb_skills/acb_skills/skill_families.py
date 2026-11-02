@@ -199,11 +199,14 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "member: list and open records with field labels, the fields, "
             "pipelines, deal contacts and owners, the four reports, "
             "server-side totals by group, stage dwell, the mirrored Zoho "
-            "modules, and a search of note text by meaning. A member without "
-            "CRM access gets a refusal."
+            "modules, a search of note text by meaning, and the Change "
+            "history of the CRM set-up. A member without CRM access gets a "
+            "refusal."
         ),
         "tools": (
             "crm_aggregate",
+            # WS-CRM CRM-M1: the Change history of the CRM set-up.
+            "crm_change_history",
             "crm_deal_contacts",
             "crm_get_module_record",
             "crm_get_record",

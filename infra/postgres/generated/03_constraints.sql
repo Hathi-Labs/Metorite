@@ -2605,3 +2605,15 @@ ALTER TABLE goal_records ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE goal_records ADD CONSTRAINT goal_records_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS goal_records_org_idx ON goal_records (organization_id);
+
+-- crm_change_log
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM crm_change_log WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: crm_change_log still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE crm_change_log ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE crm_change_log ADD CONSTRAINT crm_change_log_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS crm_change_log_org_idx ON crm_change_log (organization_id);

@@ -26,6 +26,16 @@ admin edits the source columns and ``hidden``, and a ``ui_*`` field is 422.
 ``ON DELETE RESTRICT``, so Postgres would refuse it anyway — but it would
 surface as a driver IntegrityError and a 500. Counting first turns "the
 database said no" into "Proposal still has 4 deals in it".
+
+**Change history** (WS-CRM CRM-M1, ``crm_conversational.md`` §8). A create
+and a PATCH of a status or a lost reason write one row through
+``change_log.log_change``, in the same transaction, at the ``team`` level of
+the ladder. A refused write (409, 422) writes none, and a PATCH that changes
+no value writes none. The Undo of a create deletes the row through the
+helper of the DELETE route, and it refuses while records name the row. The
+Undo of a PATCH writes the old values through :func:`patch_status_in` or
+:func:`patch_lost_reason_in`, the helpers of the PATCH routes. The DELETE
+routes log in PR 2.
 """
 
 from __future__ import annotations
@@ -35,7 +45,9 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_permission
 from fastapi import Depends, HTTPException
+from gateway.routes.crm import change_log
 from gateway.routes.crm.access import ADMIN_PERMISSION
+from gateway.routes.crm.change_log import Change, Logged, log_change, quoted
 from gateway.routes.crm.core import (
     MIRROR_OVERLAY_COLUMNS,
     STAGE_REQUIREABLE_FIELDS,
@@ -48,6 +60,7 @@ from gateway.routes.crm.core import (
     current_tenant,
     insert_row,
     is_mirror_mode,
+    load_row,
     read_status,
     read_statuses,
     require_row,
@@ -433,6 +446,44 @@ async def _check_visibility(
         )
 
 
+# ── Change history (CRM-M1) ─────────────────────────────────────────────────
+
+#: URL segment → the area of its rows in the Change history.
+STATUS_AREAS: dict[str, str] = {"deal": "deal_stage", "lead": "lead_status"}
+#: The noun of each kind in a summary.
+_STATUS_NOUNS: dict[str, str] = {"deal": "deal stage", "lead": "lead status"}
+
+#: The columns of a status that a create row keeps as its "after".
+STATUS_LOG_KEYS: tuple[str, ...] = (
+    "name", "color", "position", "type", "is_default", "probability",
+    "required_fields", "max_dwell_days", "hidden", "ui_position",
+    "ui_probability", "ui_color",
+)
+#: The columns of a lost reason that a create row keeps.
+REASON_LOG_KEYS: tuple[str, ...] = ("label", "position", "hidden")
+
+#: Each field of a PATCH, in the words of a summary.
+_FIELD_WORDS: dict[str, str] = {
+    "name": "name", "label": "name", "color": "colour", "ui_color": "colour",
+    "position": "place", "ui_position": "place", "type": "type",
+    "is_default": "default", "probability": "win chance",
+    "ui_probability": "win chance", "required_fields": "required fields",
+    "max_dwell_days": "warning days", "hidden": "hidden",
+}
+
+
+def _snapshot(row: Any, keys: tuple[str, ...]) -> dict[str, Any]:
+    return {k: getattr(row, k) for k in keys if hasattr(row, k)}
+
+
+def _change_summary(noun: str, name: Any, before: dict[str, Any],
+                    after: dict[str, Any], name_key: str) -> str:
+    if set(after) == {name_key}:
+        return f"Renamed the {noun} {quoted(before[name_key])} to {quoted(after[name_key])}"
+    words = sorted({_FIELD_WORDS.get(k, k) for k in after})
+    return f"Changed the {noun} {quoted(name)}: {', '.join(words)}"
+
+
 # ── Statuses ────────────────────────────────────────────────────────────────
 
 @router.get("/statuses/{kind}", response_model=list[StatusModel])
@@ -468,6 +519,12 @@ async def create_status(
         row = await insert_row(db, table, values)
         if kind == "deal":
             await add_stage_to_default_pipeline(db, str(row.id))
+        await log_change(db, user, Change(
+            area=STATUS_AREAS[kind], action=change_log.CREATE,
+            summary=f"Added the {_STATUS_NOUNS[kind]} {quoted(row.name)}",
+            ladder=change_log.TEAM, entity_id=str(row.id),
+            after=_snapshot(row, STATUS_LOG_KEYS),
+        ))
         return status_wire(await read_status(db, table, str(row.id)) or row)
 
 
@@ -559,18 +616,76 @@ async def patch_status(
     overlay is 409, and "Reset to Zoho" is a PATCH of ``ui_probability`` and
     ``ui_color`` to ``null``.
     """
-    table, _ = _kind(kind)
+    _kind(kind)
     values = payload.model_dump(exclude_unset=True)
     async with _tenant_session() as db:
-        row = await require_row(db, table, status_id, "Status")
-        mirror = await _check_mode(db, table, values)
-        _validate_status(kind, values, existing=row)
-        _validate_overlay(values)
-        if not mirror:
-            await _check_visibility(db, kind, table, values, row)
-        if values:
-            await update_row(db, table, status_id, values, touch=False)
-        return status_wire(await read_status(db, table, status_id) or row)
+        return await patch_status_in(db, user, kind, status_id, values)
+
+
+async def patch_status_in(
+    db: Any, user: Any, kind: str, status_id: str, values: dict[str, Any],
+    *, undoes: str | None = None,
+) -> StatusModel:
+    """The body of ``PATCH /crm/statuses/{kind}/{id}``, in the caller's
+    transaction. The route and the Undo of a change both call it, so an
+    Undo meets every check of the route. It logs one row when a value
+    changes (CRM-M1)."""
+    table, _ = _kind(kind)
+    row = await require_row(db, table, status_id, "Status")
+    mirror = await _check_mode(db, table, values)
+    _validate_status(kind, values, existing=row)
+    _validate_overlay(values)
+    if not mirror:
+        await _check_visibility(db, kind, table, values, row)
+    if values:
+        updated = await update_row(db, table, status_id, values, touch=False)
+        before, after = change_log.diff(
+            {k: getattr(row, k, None) for k in values},
+            {k: getattr(updated, k, None) for k in values},
+        )
+        if after:
+            await log_change(db, user, Change(
+                area=STATUS_AREAS[kind], action=change_log.CHANGE,
+                summary=_change_summary(
+                    _STATUS_NOUNS[kind], row.name, before, after, "name"),
+                ladder=change_log.TEAM, entity_id=str(row.id),
+                before=before, after=after,
+            ), undoes=undoes)
+    return status_wire(await read_status(db, table, status_id) or row)
+
+
+async def status_in_use(db: Any, kind: str, status_id: str) -> int:
+    """The records that sit in one status."""
+    _, referencing = _kind(kind)
+    return int((await db.execute(
+        text(
+            f"SELECT count(*) FROM {referencing} "
+            "WHERE status_id = CAST(:status_id AS uuid)"
+        ),
+        {"status_id": status_id},
+    )).scalar() or 0)
+
+
+async def delete_status_in(db: Any, kind: str, status_id: str) -> Any:
+    """The body of ``DELETE /crm/statuses/{kind}/{id}``. Returns the row that
+    went. The Undo of a create calls it too."""
+    table, _ = _kind(kind)
+    row = await require_row(db, table, status_id, "Status")
+    in_use = await status_in_use(db, kind, status_id)
+    if in_use:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This status still holds {in_use} record(s). Move them "
+                "to another status first — deleting it would orphan them."
+            ),
+        )
+    await assert_writable(db, current_tenant(), table)
+    await db.execute(
+        text(f"DELETE FROM {table} WHERE id = CAST(:id AS uuid)"),
+        {"id": status_id},
+    )
+    return row
 
 
 @router.delete("/statuses/{kind}/{status_id}", dependencies=ADMIN_ONLY)
@@ -578,29 +693,9 @@ async def delete_status(
     kind: str, status_id: str,
     user: UserContext = Depends(get_current_user),
 ) -> dict:
-    table, referencing = _kind(kind)
+    _kind(kind)
     async with _tenant_session() as db:
-        await require_row(db, table, status_id, "Status")
-        in_use = (await db.execute(
-            text(
-                f"SELECT count(*) FROM {referencing} "
-                "WHERE status_id = CAST(:status_id AS uuid)"
-            ),
-            {"status_id": status_id},
-        )).scalar() or 0
-        if int(in_use):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"This status still holds {int(in_use)} record(s). Move them "
-                    "to another status first — deleting it would orphan them."
-                ),
-            )
-        await assert_writable(db, current_tenant(), table)
-        await db.execute(
-            text(f"DELETE FROM {table} WHERE id = CAST(:id AS uuid)"),
-            {"id": status_id},
-        )
+        await delete_status_in(db, kind, status_id)
         return {"deleted": status_id, "kind": kind}
 
 
@@ -648,6 +743,12 @@ async def create_lost_reason(
         if values.get("position") is None:
             values["position"] = await _next_position(db, "crm_lost_reasons")
         row = await insert_row(db, "crm_lost_reasons", values)
+        await log_change(db, user, Change(
+            area="lost_reason", action=change_log.CREATE,
+            summary=f"Added the lost reason {quoted(row.label)}",
+            ladder=change_log.TEAM, entity_id=str(row.id),
+            after=_snapshot(row, REASON_LOG_KEYS),
+        ))
         return _reason_wire(row)
 
 
@@ -662,13 +763,65 @@ async def patch_lost_reason(
     """Relabel, reorder or hide a lost reason. In Mirror mode, hide only."""
     values = payload.model_dump(exclude_unset=True)
     async with _tenant_session() as db:
-        row = await require_row(db, "crm_lost_reasons", reason_id, "Lost reason")
-        await _check_mode(db, "crm_lost_reasons", values)
-        if values:
-            row = await update_row(
-                db, "crm_lost_reasons", reason_id, values, touch=False,
-            )
+        return await patch_lost_reason_in(db, user, reason_id, values)
+
+
+async def patch_lost_reason_in(
+    db: Any, user: Any, reason_id: str, values: dict[str, Any],
+    *, undoes: str | None = None,
+) -> LostReasonModel:
+    """The body of ``PATCH /crm/lost-reasons/{id}``, in the caller's
+    transaction. The route and the Undo of a change both call it. It logs
+    one row when a value changes (CRM-M1)."""
+    row = await require_row(db, "crm_lost_reasons", reason_id, "Lost reason")
+    await _check_mode(db, "crm_lost_reasons", values)
+    if not values:
         return _reason_wire(row)
+    updated = await update_row(
+        db, "crm_lost_reasons", reason_id, values, touch=False,
+    )
+    before, after = change_log.diff(
+        {k: getattr(row, k, None) for k in values},
+        {k: getattr(updated, k, None) for k in values},
+    )
+    if after:
+        await log_change(db, user, Change(
+            area="lost_reason", action=change_log.CHANGE,
+            summary=_change_summary("lost reason", row.label, before, after, "label"),
+            ladder=change_log.TEAM, entity_id=str(row.id),
+            before=before, after=after,
+        ), undoes=undoes)
+    return _reason_wire(updated)
+
+
+#: The records that may cite a lost reason. Both keys are ON DELETE SET NULL.
+_REASON_REFERENCES: tuple[str, ...] = ("crm_deals", "crm_leads")
+
+
+async def reason_in_use(db: Any, reason_id: str) -> int:
+    """The records that cite one lost reason."""
+    total = 0
+    for table in _REASON_REFERENCES:
+        total += int((await db.execute(
+            text(
+                f"SELECT count(*) FROM {table} "
+                "WHERE lost_reason_id = CAST(:reason_id AS uuid)"
+            ),
+            {"reason_id": reason_id},
+        )).scalar() or 0)
+    return total
+
+
+async def delete_lost_reason_in(db: Any, reason_id: str) -> Any:
+    """The body of ``DELETE /crm/lost-reasons/{id}``. Returns the row that
+    went. The Undo of a create calls it too."""
+    row = await require_row(db, "crm_lost_reasons", reason_id, "Lost reason")
+    await assert_writable(db, current_tenant(), "crm_lost_reasons")
+    await db.execute(
+        text("DELETE FROM crm_lost_reasons WHERE id = CAST(:id AS uuid)"),
+        {"id": reason_id},
+    )
+    return row
 
 
 @router.delete("/lost-reasons/{reason_id}", dependencies=ADMIN_ONLY)
@@ -678,10 +831,74 @@ async def delete_lost_reason(
     """Deleting a lost reason is safe: both FKs are ``ON DELETE SET NULL``, so
     the records that cited it keep their ``lost_note`` and lose the label."""
     async with _tenant_session() as db:
-        await require_row(db, "crm_lost_reasons", reason_id, "Lost reason")
-        await assert_writable(db, current_tenant(), "crm_lost_reasons")
-        await db.execute(
-            text("DELETE FROM crm_lost_reasons WHERE id = CAST(:id AS uuid)"),
-            {"id": reason_id},
-        )
+        await delete_lost_reason_in(db, reason_id)
         return {"deleted": reason_id}
+
+
+# ── The Undo of a change (CRM-M1) ───────────────────────────────────────────
+
+_KIND_OF_AREA: dict[str, str] = {area: kind for kind, area in STATUS_AREAS.items()}
+
+
+async def _current(db: Any, table: str, record_id: str | None, area: str) -> Any:
+    """The row of a change, or 409 ``gone``."""
+    row = await load_row(db, table, str(record_id or "")) if record_id else None
+    if row is None:
+        raise change_log.gone(area)
+    return row
+
+
+@change_log.undoes("deal_stage", "lead_status")
+async def _undo_status(db: Any, user: Any, logged: Logged) -> None:
+    """A create goes, unless records sit in it. A PATCH goes back."""
+    kind = _KIND_OF_AREA[logged.area]
+    table, _ = _kind(kind)
+    row = await _current(db, table, logged.entity_id, logged.area)
+    if logged.action == change_log.CREATE:
+        held = await status_in_use(db, kind, str(row.id))
+        if held:
+            raise change_log.in_use(
+                f"The {_STATUS_NOUNS[kind]} {quoted(row.name)} now holds {held} "
+                "record(s). Move them to another stage first."
+            )
+        await delete_status_in(db, kind, str(row.id))
+        await log_change(db, user, Change(
+            area=logged.area, action=change_log.DELETE,
+            summary=f"Removed the {_STATUS_NOUNS[kind]} {quoted(row.name)}",
+            ladder=change_log.TEAM, entity_id=str(row.id),
+            before=_snapshot(row, STATUS_LOG_KEYS),
+        ), undoes=logged.id)
+        return None
+    if not change_log.same_values(_snapshot(row, STATUS_LOG_KEYS), logged.after):
+        raise change_log.changed_since()
+    await patch_status_in(
+        db, user, kind, str(row.id), dict(logged.before or {}), undoes=logged.id,
+    )
+    return None
+
+
+@change_log.undoes("lost_reason")
+async def _undo_lost_reason(db: Any, user: Any, logged: Logged) -> None:
+    """A create goes, unless a record cites it. A PATCH goes back."""
+    row = await _current(db, "crm_lost_reasons", logged.entity_id, logged.area)
+    if logged.action == change_log.CREATE:
+        held = await reason_in_use(db, str(row.id))
+        if held:
+            raise change_log.in_use(
+                f"The lost reason {quoted(row.label)} is on {held} record(s) now, "
+                "so the Undo cannot remove it."
+            )
+        await delete_lost_reason_in(db, str(row.id))
+        await log_change(db, user, Change(
+            area="lost_reason", action=change_log.DELETE,
+            summary=f"Removed the lost reason {quoted(row.label)}",
+            ladder=change_log.TEAM, entity_id=str(row.id),
+            before=_snapshot(row, REASON_LOG_KEYS),
+        ), undoes=logged.id)
+        return None
+    if not change_log.same_values(_snapshot(row, REASON_LOG_KEYS), logged.after):
+        raise change_log.changed_since()
+    await patch_lost_reason_in(
+        db, user, str(row.id), dict(logged.before or {}), undoes=logged.id,
+    )
+    return None
