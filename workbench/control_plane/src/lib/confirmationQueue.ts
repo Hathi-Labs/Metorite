@@ -30,6 +30,7 @@
  * environment. Fence: `src/lib/confirmationQueue.test.ts`.
  */
 
+import { unfenced } from "@/lib/fencedText";
 import { replyFromEvent, type ReplyForm } from "@/lib/replyCard";
 import { classOf, kindOf, sendCanGo, type PersonClass, type SendRowKind } from "@/lib/sendCard";
 
@@ -288,6 +289,17 @@ export const EMPTY_CONFIRMATIONS: ConfirmationQueueState = {
 };
 
 /** The line of a receipt, in plain words. */
+/**
+ * The words of a receipt: the card's detail, else its title. A fenced card
+ * marks the member's own values with «marks», which the card draws as
+ * values. The receipt line is plain text, so the marks go (owner report,
+ * 2026-11-02: "Approved · «Video and Marketing»").
+ */
+export function receiptLabel(card: Pick<PendingConfirmation, "detail" | "title" | "fenced">): string {
+  const text = card.detail || card.title;
+  return card.fenced ? unfenced(text) : text;
+}
+
 export function receiptText(r: ConfirmationReceipt): string {
   switch (r.kind) {
     case "applying":

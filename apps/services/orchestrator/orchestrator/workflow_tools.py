@@ -188,8 +188,12 @@ def load_workflow_tools(agent_name: str) -> list[Any]:
             "get_workflow_run",
             {"read_only": True, "destructive": False, "idempotent": True, "open_world": False},
         )
-        # Not destructive itself: any outward write INSIDE the workflow is
-        # already broker-gated / approval-noded — that is the whole point.
+        # Not destructive itself. Each `tool` node that writes outward is
+        # broker-gated, and publish asks for an approval node before it. A
+        # `pm_task` or `pm_lifecycle` node has neither gate, and it writes
+        # Projects with no card. So `run_published_workflow` refuses a
+        # workflow that holds one (`_member_blind_write_nodes`), and this
+        # tool never reaches those nodes.
         # H-236: open_world, because a workflow node can call an outside URL
         # (``http.request``) with the payload the agent passes. A run that a
         # covered Projects run delegates to does not get it.
