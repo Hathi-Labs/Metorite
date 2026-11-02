@@ -57,6 +57,7 @@ import {
   CONFIRMATION_RESOLVED,
   EMPTY_CONFIRMATIONS,
   confirmationReducer,
+  receiptLabel,
   settleAnswer,
   type PendingConfirmation,
 } from "@/lib/confirmationQueue";
@@ -1934,7 +1935,7 @@ export default function AgentChat({
     dispatchConfirmation({
       type: "answering",
       key: card.key,
-      label: card.detail || card.title,
+      label: receiptLabel(card),
       intent: rejecting ? "rejected" : "approved",
       afterId: visibleMessages.length ? visibleMessages[visibleMessages.length - 1].id : null,
       ...(rejecting ? { undo: true } : {}),
