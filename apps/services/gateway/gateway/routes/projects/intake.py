@@ -80,6 +80,7 @@ from gateway.routes.projects.core import (
     wire,
 )
 from gateway.routes.projects.filters import parse_when
+from gateway.routes.projects.personal import stored_due
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -308,7 +309,8 @@ async def capture_intake(
                 {"leveraged": payload.leveraged}
                 if payload.leveraged is not None else {}
             ),
-            "due_at": payload.due_at,
+            # A chat date has no time, so it takes the one date seam (RX-5).
+            "due_at": await stored_due(db, actor(user).lower(), payload.due_at),
             "task_number": await next_task_number(db, root),
             "created_by": actor(user),
             # The task's own source speaks the CHECK'd vocabulary; the

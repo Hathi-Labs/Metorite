@@ -7,12 +7,15 @@ filter normalises the user's selections to canonical cleanup categories.
 """
 from __future__ import annotations
 
+import contextlib
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 from gateway.routes import email as m
 from gateway.routes.email.automation.identity import SELF_ADDRESSES_SQL
+from gateway.routes.projects.due_day import day_start
 
 
 def _is_owner_read(sql: str) -> bool:
@@ -409,6 +412,86 @@ async def test_commitments_read_the_one_seam_for_the_accounts_owner(
     assert not any("gtd_" in c[0] for c in db.calls)
 
 
+def _zoned_db(zone: str):
+    """``_commitments_db`` that also answers the read of the owner's zone."""
+    db = _commitments_db()
+    plain = db.execute.side_effect
+
+    async def execute(stmt, params=None):
+        got = await plain(stmt, params)
+        if "SELECT timezone FROM user_settings" in str(stmt):
+            got.fetchone.return_value = SimpleNamespace(timezone=zone)
+        return got
+
+    db.execute.side_effect = execute
+    return db
+
+
+class TestTheOneRuleOfLateWork:
+    """RX-5. A commitment is a ``pm_tasks`` row, so the digest reads it as My
+    Day reads it. Mutation: put back ``due < at`` and these fail."""
+
+    #: 08:00 in Kolkata on 6 November.
+    NOW = datetime(2026, 11, 6, 2, 30, tzinfo=UTC)
+    #: A task of 6 November that a chat stored at midnight UTC.
+    STORED = datetime(2026, 11, 6, 0, 0, tzinfo=UTC)
+
+    def test_the_task_of_the_reviewer_reads_due_today(self) -> None:
+        assert m.digest._overdue(self.STORED, "Asia/Kolkata", self.NOW) is False
+        assert m.digest._due_day(self.STORED, "Asia/Kolkata").isoformat() == "2026-11-06"
+
+    def test_a_row_with_no_date_is_never_late(self) -> None:
+        assert m.digest._overdue(None, "Asia/Kolkata", self.NOW) is False
+
+    @staticmethod
+    def _start_of_today(zone: str) -> datetime:
+        return day_start(zone, datetime.now(UTC)).astimezone(UTC)
+
+    async def test_the_first_second_of_today_is_not_overdue(self, monkeypatch) -> None:
+        """The old rule called this late for all of today."""
+        due = self._start_of_today("Asia/Kolkata")
+        _seam(monkeypatch, [_task("task-1", "Send quote", due=due)])
+        out = await m.digest._digest_commitments(_zoned_db("Asia/Kolkata"), "acc-1")
+        assert out[0]["overdue"] is False
+
+    async def test_the_last_second_of_yesterday_is_overdue(self, monkeypatch) -> None:
+        due = self._start_of_today("Asia/Kolkata") - timedelta(seconds=1)
+        _seam(monkeypatch, [_task("task-1", "Send quote", due=due)])
+        out = await m.digest._digest_commitments(_zoned_db("Asia/Kolkata"), "acc-1")
+        assert out[0]["overdue"] is True
+
+    async def test_the_date_is_the_date_of_the_owner(self, monkeypatch) -> None:
+        """Midnight in Auckland is the day before in UTC."""
+        due = self._start_of_today("Pacific/Auckland")
+        _seam(monkeypatch, [_task("task-1", "Send quote", due=due)])
+        out = await m.digest._digest_commitments(_zoned_db("Pacific/Auckland"), "acc-1")
+        local = due.astimezone(ZoneInfo("Pacific/Auckland"))
+        assert out[0]["due"] == local.strftime("%b %d") != due.strftime("%b %d")
+
+    async def test_a_promise_uses_the_same_rule(self, monkeypatch) -> None:
+        _seam(monkeypatch, [_task("task-1", "Send quote", due=self.STORED)])
+
+        async def owner(*_a, **_k):
+            return None
+
+        @contextlib.asynccontextmanager
+        async def session():
+            yield _zoned_db("Asia/Kolkata")
+
+        monkeypatch.setattr(m.digest, "_assert_account_owner", owner)
+        monkeypatch.setattr(m.digest, "_tenant_session", session)
+        got = await m.digest.promise_tasks(
+            SimpleNamespace(email="me@fracktal.in"), "acc-1", horizon_days=3, limit=8,
+            now=self.NOW)
+        assert got[0]["overdue"] is False
+
+    async def test_a_commitment_with_no_date_reads_no_zone(self, monkeypatch) -> None:
+        _seam(monkeypatch, [_task("task-1", "Call back")])
+        db = _commitments_db()
+        await m.digest._digest_commitments(db, "acc-1", include_undated=True)
+        assert not [c for c in db.calls if "user_settings" in c[0]]
+
+
 async def test_dashboard_mode_includes_undated_commitments(monkeypatch) -> None:
     """3 of the 4 live commitments had no due date and were invisible to the
     horizon filter. The dashboard (full) projection includes them; the emailed
@@ -553,6 +636,11 @@ class TestTheDigestDidNotChange:
     async def test_each_statement_and_parameter_is_the_old_one(self, monkeypatch) -> None:
         old_sql, _ = await self._run(monkeypatch, old=True)
         new_sql, _ = await self._run(monkeypatch, old=False)
+        # RX-5 adds one read on purpose: the owner's zone, for the one rule of
+        # late work. Each digest with a dated row reads it once.
+        zone = [c for c in new_sql if "SELECT timezone FROM user_settings" in c[0]]
+        assert len(zone) == 3
+        new_sql = [c for c in new_sql if "SELECT timezone FROM user_settings" not in c[0]]
         assert len(new_sql) == len(old_sql) > 20
         for (sql_new, p_new), (sql_old, p_old) in zip(new_sql, old_sql, strict=True):
             assert sql_new == sql_old

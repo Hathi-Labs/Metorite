@@ -77,6 +77,7 @@ from skill_projects.reads import (
     _number,
     _rule_text,
     _task_line,
+    _valid_zone,
     clock_of,
     for_the_model,
     no_card_channel,
@@ -4655,10 +4656,15 @@ async def create_personal_task(
 # off the routes answer 404, so the tool refuses. Both refusals send the
 # model to a private task with a block (``create_personal_task``).
 #
-# **Confirm, for now.** Each write shows ONE card through ``_confirm``, the
-# one door, until the act-at-once seam of CF-6 exists
-# (``chat_first_surface.md``). Then set, update, resolve, reopen and
-# reschedule act at once with Undo. The promote keeps its card: it is class C
+# **Act at once (WS-66 RX-2, owner 2026-11-01).** A reminder is private, it
+# reaches nobody else, and Undo reverses it. So set, update, resolve, reopen
+# and reschedule act at once in a chat that read no outside mail
+# (``_reminder_acts_at_once``), and the receipt carries the Undo (the ``undo:``
+# line of ``_reminder_receipt``). A chat that read outside mail, a held run, a
+# delegated run and a run whose mark is unknown keep the one card through
+# ``_confirm``, the one door (``egress.write_must_show_card``). There is no
+# general act-at-once seam here: CF-6 stays unbuilt, and only these five tools
+# read ``_reminder_acts_at_once``. The promote keeps its card: it is class C
 # and lives in ``guarded.py``.
 #
 # **Time.** The tool resolves it. ``at`` is ISO 8601 with an offset, a wall
@@ -4706,6 +4712,32 @@ async def _reminder_gate(tool: str) -> str:
     Then the flag (``reads.reminders_off``), one read of the list route.
     """
     return no_card_channel(tool) or await reminders_off()
+
+
+async def _reminder_acts_at_once() -> bool:
+    """True when a reminder write in this run needs no card (WS-66 RX-2).
+
+    The owner rule: a chat that read outside mail never acts at once. It shows
+    the card. ``egress.write_must_show_card`` is the one reader of that rule,
+    and it reads the mark of the session as well as ``no_egress``. A chat run
+    binds ``no_egress=False`` in a marked chat, so ``no_egress`` alone is not
+    enough. Any fault reads as the card. A run with no card channel never gets
+    here: ``_reminder_gate`` refused it first.
+    """
+    try:
+        from acb_skills.egress import write_must_show_card
+
+        return not await write_must_show_card()
+    except Exception:  # no platform package, or a fault: the card shows
+        return False
+
+
+async def _ask_reminder(title: str, detail: str, context: str) -> bool:
+    """``True`` to write: at once in a chat that read no outside mail, else
+    after the one card."""
+    if await _reminder_acts_at_once():
+        return True
+    return bool(await _confirm(title=title, detail=detail, context=context))
 
 
 class _When:
@@ -4879,12 +4911,47 @@ def _reminder_card(row: dict[str, Any] | None) -> dict[str, Any]:
     return card
 
 
-def _reminder_receipt(head: str, row: dict[str, Any], hint: str = "") -> str:
+#: What the model says after a write: the receipt card shows the time and the Undo.
+_RECEIPT_CARD = "The member sees a receipt card with an Undo, so say it in one short line."
+#: What the model says when the route found the same open reminder: no write.
+_ALREADY_SET = (
+    "This reminder exists, so no second one was set. Say so in one short line, "
+    "and do not set it again."
+)
+#: The fields that the Undo of ``update_reminder`` can put back.
+_UNDO_PATCH_FIELDS = frozenset({"title", "kind", "fire_at", "tz"})
+
+
+def _reminder_was(row: dict[str, Any] | None, payload: dict[str, Any]) -> dict[str, Any]:
+    """The stored values that a change replaced, for the Undo on the card."""
+    if row is None:
+        return {}
+    was: dict[str, Any] = {}
+    if "title" in payload:
+        was["title"] = _reminder_title(str(row.get("title") or ""))
+    if "kind" in payload:
+        was["kind"] = row.get("kind")
+    if "fire_at" in payload:
+        was["fire_at"] = row.get("fire_at")
+        was["zone"] = row.get("tz") if _valid_zone(row.get("tz")) else None
+    return was
+
+
+def _reminder_receipt(
+    head: str, row: dict[str, Any], hint: str = "", *,
+    undo: str = "", was: dict[str, Any] | None = None,
+) -> str:
     """The reply after a write: the SAVED row, in the route's own words.
 
     The time is ``saved_when(row)``, so it is the instant and the zone that
     the server stored. It is never the argument the tool was given. The last
     line is for the model only: the member's receipt does not show it.
+
+    The machine lines (``fire_at``, ``zone``, ``task_id``, ``undo`` and
+    ``was_*``) are for the receipt card of the app (WS-66 RX-2): it draws
+    the exact time, the relative time and the Undo from them. The member
+    never reads them. ``undo`` names the way back: ``drop`` (a new reminder),
+    ``reschedule`` or ``patch`` (the ``was_*`` values), else no Undo.
     """
     rid = row.get("id")
     if not rid:
@@ -4895,12 +4962,24 @@ def _reminder_receipt(head: str, row: dict[str, Any], hint: str = "") -> str:
     facts = [f"state {row.get('state') or '?'}", f"kind {row.get('kind') or 'action'}"]
     if row.get("important"):
         facts.append("important")
-    return "\n".join([
+    lines = [
         f"{head}: {data(row.get('title'))} at {saved_when(row)}.",
         "  " + " · ".join(facts) + " · private, yours. A reminder, not a task.",
         f"  reminder_id: {rid}",
-        for_the_model(f"{QUOTE_THE_TIME} {hint}".strip()),
-    ])
+    ]
+    if row.get("fire_at"):
+        lines.append(f"  fire_at: {row['fire_at']}")
+    if _valid_zone(row.get("tz")):
+        lines.append(f"  zone: {row['tz']}")
+    if row.get("subject_kind") == "task" and row.get("subject_id"):
+        lines.append(f"  task_id: {row['subject_id']}")
+    if undo:
+        lines.append(f"  undo: {undo}")
+        for key, value in (was or {}).items():
+            if value not in (None, ""):
+                lines.append(f"  was_{key}: {' '.join(str(value).split())}")
+    lines.append(for_the_model(f"{QUOTE_THE_TIME} {hint}".strip()))
+    return "\n".join(lines)
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
@@ -4934,7 +5013,9 @@ async def set_reminder(
     early"). subject_kind (task, email_thread, crm_contact, wa_chat or
     project) and subject_id link one object. estimate_minutes is your guess
     of how long the act takes. important is yes or no.
-    The member answers one card first. Then quote the time and the zone of
+    The reminder is saved at once, and the member sees a receipt with an
+    Undo. In a chat that read outside mail, the member answers one card first.
+    Always quote the time and the zone of
     the reply exactly, such as "Fri 31 Oct, 09:00 IST". Never say that a
     reminder is set when the reply does not say so. When reminders are not
     on, or this chat cannot ask the member, the reply says so: tell the
@@ -4975,12 +5056,14 @@ async def set_reminder(
     if flag:
         payload["important"] = card["important"] = True
     card["visible to"] = "you only"
-    if not await _confirm(
+    if not await _ask_reminder(
         title="Set this reminder?", detail=data(label), context=_fields_block(card),
     ):
         return _not_confirmed()
     row = await post(REMINDERS, payload) or {}
-    return _reminder_receipt("Reminder set", row)
+    if row.get("already") is True:
+        return _reminder_receipt("Reminder already set", row, _ALREADY_SET)
+    return _reminder_receipt("Reminder set", row, _RECEIPT_CARD, undo="drop")
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False)
@@ -5003,7 +5086,7 @@ async def update_reminder(
     changes. at and in_minutes take the time as set_reminder does, and a new
     time is a move the member asked for. clear empties notes, link or
     estimate. Pass the reminder_id that list_reminders or set_reminder
-    printed. The card shows the old and the new value. Then quote the time
+    printed. It acts at once, and the receipt has an Undo. Quote the time
     and the zone of the reply exactly."""
     gate = await _reminder_gate("update_reminder")
     if gate:
@@ -5029,14 +5112,20 @@ async def update_reminder(
     if not payload:
         return "Nothing to change. Pass at least one field."
     shown = card if row is not None else {**_reminder_card(None), **card}
-    if not await _confirm(
+    if not await _ask_reminder(
         title="Change this reminder?",
         detail=_reminder_named(row),
         context=_fields_block(shown, before=_reminder_before(row, card)),
     ):
         return _not_confirmed()
     saved = await patch(f"{REMINDERS}/{rid}", payload) or {}
-    return _reminder_receipt("Reminder changed", saved)
+    # Undo restores the title, the kind and the time. A change to any other
+    # field (notes, link, estimate, important) has no Undo on the card.
+    restorable = row is not None and set(payload) <= _UNDO_PATCH_FIELDS
+    return _reminder_receipt(
+        "Reminder changed", saved, _RECEIPT_CARD,
+        undo="patch" if restorable else "", was=_reminder_was(row, payload),
+    )
 
 
 def _reminder_words(
@@ -5133,7 +5222,7 @@ async def resolve_reminder(reminder_id: str, answer: str = "done") -> str:
     if row is None and whole:
         return _reminder_not_found()
     card = {**_reminder_card(row), "undo": "reopen the reminder"}
-    if not await _confirm(
+    if not await _ask_reminder(
         title="Mark this reminder done?" if word == "done" else "Drop this reminder?",
         detail=_reminder_named(row),
         context=_fields_block(card),
@@ -5158,7 +5247,7 @@ async def reopen_reminder(reminder_id: str) -> str:
     if row is not None and row.get("resolution") == "promoted":
         return "This reminder became a task, so it cannot reopen. The task is the record now."
     card = {**_reminder_card(row), "reopens": "it goes back to its state before the answer"}
-    if not await _confirm(
+    if not await _ask_reminder(
         title="Reopen this reminder?", detail=_reminder_named(row), context=_fields_block(card),
     ):
         return _not_confirmed()
@@ -5175,8 +5264,8 @@ async def reschedule_reminder(
     "later" or "snooze it for an hour": then the time must be within 366
     days, and smart is refused. With no snooze it is a move to a named time.
     at="smart" asks Metorite to pick the next good slot. If the server cannot
-    pick one yet, the reply says so and nothing moves: then name a time. The
-    card shows the old and the new time. Then quote the time and the zone of
+    pick one yet, the reply says so and nothing moves: then name a time. It
+    acts at once, and the receipt has an Undo. Quote the time and the zone of
     the reply exactly."""
     is_snooze = bool(_yes_no(snooze, "snooze"))
     gate = await _reminder_gate("reschedule_reminder")
@@ -5193,7 +5282,7 @@ async def reschedule_reminder(
         payload["tz"] = when.zone
     card = {**_reminder_card(row), **when.card_lines()}
     before = {"when": saved_when(row)} if row is not None else None
-    if not await _confirm(
+    if not await _ask_reminder(
         title="Snooze this reminder?" if is_snooze else "Move this reminder?",
         detail=_reminder_named(row),
         context=_fields_block(card, before=before),
@@ -5210,7 +5299,10 @@ async def reschedule_reminder(
                 + "\n" + for_the_model("Name a time, and move the reminder there.")
             )
         raise
-    return _reminder_receipt("Moved" if not is_snooze else "Snoozed", saved)
+    return _reminder_receipt(
+        "Moved" if not is_snooze else "Snoozed", saved, _RECEIPT_CARD,
+        undo="reschedule" if row is not None else "", was=_reminder_was(row, payload),
+    )
 
 
 #: The dispositions that reopen a finished task on the board when stated

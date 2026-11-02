@@ -42,7 +42,6 @@ import {
   openAssistant,
 } from "@/lib/shell/assistant";
 import {
-  LATER_TURN,
   REMINDER_CHIPS,
   REMINDER_HOLD_MS,
   isOpenFailure,
@@ -305,10 +304,19 @@ describe("the chips", () => {
     expect(movedLine(null, "Asia/Kolkata", now)).toBe("Moved.");
   });
 
-  it("Later and Make it a task send the member's words, and no chip calls /promote", () => {
-    expect(actTurn("later")).toBe(LATER_TURN);
+  it("Make it a task sends the member's words, Later acts at once, and no chip calls /promote", async () => {
+    expect(actTurn("later")).toBeNull();
     expect(actTurn("task")).toBe(TASK_TURN);
+    // Later needs the picked time. With none, it is no route call.
     expect(actRequest(RID, "later")).toBeNull();
+    expect(actRequest(RID, "later", { fireAt: "2026-10-31T10:00:00+05:30", tz: "Asia/Kolkata" })).toEqual({
+      url: `/api/projects/my/reminders/${RID}/snooze`,
+      body: { fire_at: "2026-10-31T10:00:00+05:30", tz: "Asia/Kolkata" },
+    });
+    const { calls, impl } = fakeFetch([200, { ...ROW, state: "scheduled", fire_at: "2026-10-31T04:30:00+00:00" }]);
+    const got = await runReminderAct(RID, "later", impl, { fireAt: "2026-10-31T10:00:00+05:30", tz: "Asia/Kolkata" });
+    expect(got.ok).toBe(true);
+    expect(calls[0].url).toBe(`/api/projects/my/reminders/${RID}/snooze`);
     expect(actRequest(RID, "task")).toBeNull();
     for (const act of Object.keys(REMINDER_CHIPS) as Array<keyof typeof REMINDER_CHIPS>) {
       expect(actRequest(RID, act)?.url ?? "").not.toContain("/promote");

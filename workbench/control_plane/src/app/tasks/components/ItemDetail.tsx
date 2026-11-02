@@ -15,6 +15,7 @@ import {
   durationLabel,
   formatStatus,
   initials,
+  dueLabel,
   isOverdue,
   relativeTime,
 } from "../lib/utils";
@@ -34,6 +35,7 @@ import {
   projectsKey,
 } from "@/app/projects/lib/api";
 import { taskDeepLink, taskRef } from "@/app/projects/lib/card";
+import { dueInstantForDay } from "@/app/projects/lib/quickAdd";
 import { taskWhere } from "@/app/projects/lib/tree";
 import { useCachedResource } from "@/lib/useCachedResource";
 import { EditableTaskTitle, TaskHeaderRow } from "@/components/TaskPanelHeader";
@@ -438,7 +440,7 @@ export function TaskDetail({
                 display={item.dueAt
                   ? <span className={`inline-flex items-center gap-1 ${overdue ? "font-medium text-destructive" : ""}`}>
                       {overdue ? <AppIcon name="AlertTriangle" className="h-3 w-3" /> : <AppIcon name="Clock" className="h-3 w-3" />}
-                      {relativeTime(item.dueAt)}
+                      {dueLabel(item.dueAt)}
                     </span>
                   : null}
               >
@@ -450,7 +452,7 @@ export function TaskDetail({
                       autoFocus
                       onChange={(e) => {
                         updateItem(item.id, {
-                          dueAt: e.target.value ? new Date(e.target.value).toISOString() : "",
+                          dueAt: e.target.value ? dueInstantForDay(e.target.value) : "",
                         });
                         close();
                       }}
@@ -661,11 +663,11 @@ export function TaskDetail({
                   display={item.expectedBy
                     ? <span className={`inline-flex items-center gap-1 ${promiseLate ? "font-medium text-destructive" : ""}`}>
                         {promiseLate ? <AppIcon name="AlertTriangle" className="h-3 w-3" /> : <AppIcon name="Clock" className="h-3 w-3" />}
-                        {relativeTime(item.expectedBy)}
+                        {dueLabel(item.expectedBy)}
                       </span>
                     : <span className="text-sm text-muted-foreground/70">
                         {item.dueAt
-                          ? `not promised — judged on due ${relativeTime(item.dueAt)}`
+                          ? `not promised — judged on due ${dueLabel(item.dueAt)}`
                           : "not promised"}
                       </span>}
                 >
@@ -678,7 +680,7 @@ export function TaskDetail({
                         onChange={(e) => {
                           updateItem(item.id, {
                             expectedBy: e.target.value
-                              ? new Date(e.target.value).toISOString() : "",
+                              ? dueInstantForDay(e.target.value) : "",
                           });
                           close();
                         }}
