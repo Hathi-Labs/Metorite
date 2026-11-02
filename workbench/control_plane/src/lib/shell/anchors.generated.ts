@@ -15,7 +15,6 @@ export type GuideAnchorId =
   | "crm.new"
   | "crm.pipeline"
   | "crm.stage-column"
-  | "crm.record-panel"
   | "crm.timeline-tab"
   | "crm.add-note"
   | "crm.search"
@@ -54,12 +53,6 @@ export const GENERATED_ANCHORS: readonly GuideAnchor[] = [
     label: "Stage column",
     route: "/crm",
     does: "Holds the cards that sit in one stage. A card moves to another stage by drag.",
-  },
-  {
-    id: "crm.record-panel",
-    label: "Record panel",
-    route: "/crm",
-    does: "Opens beside the list when a record is picked. It shows the record and its timeline.",
   },
   {
     id: "crm.timeline-tab",

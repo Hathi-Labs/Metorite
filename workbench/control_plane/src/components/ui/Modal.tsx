@@ -313,12 +313,6 @@ export type ModalProps = {
    * caller expresses a height. See `CALLER_SETS_MAX_HEIGHT`.
    */
   className?: string;
-  /**
-   * The CRM record panel is a guide anchor (`crm.record-panel`, WS-OB GD-10b).
-   * Only that one call site sets it. Every other dialog draws the same DOM as
-   * before. The attribute is a literal because fence F1 refuses an expression.
-   */
-  guideAnchor?: boolean;
   children?: React.ReactNode;
 };
 
@@ -337,7 +331,6 @@ export default function Modal({
   initialFocus,
   finalFocus,
   className = "",
-  guideAnchor = false,
   children,
 }: ModalProps) {
   /**
@@ -386,57 +379,6 @@ export default function Modal({
     return false;
   };
 
-  const popupProps = {
-    "aria-label": title ? undefined : label,
-    // Base UI does not set this. It is a hint for assistive tech that
-    // predates `inert` — and here it is doing real work, because the
-    // substrate marks the background with `aria-hidden` and a
-    // `data-base-ui-inert` marker rather than a real `inert` attribute
-    // (see this file's header).
-    "aria-modal": "true" as const,
-    initialFocus,
-    finalFocus: returnFocus,
-    className: `flex ${
-      CALLER_SETS_MAX_HEIGHT.test(className) ? "" : "max-h-full"
-    } w-full ${SIZES[size]} flex-col overflow-hidden rounded-lg border border-border bg-card shadow-lg outline-none glass:rounded-2xl glass:border-transparent glass:glass-menu-flat ${className}`,
-  };
-  const popupBody = (
-    <>
-      {title ? (
-        <header className="flex items-center gap-2 border-b border-border px-3 py-2">
-          {icon ? (
-            <Icon name={icon} className="h-4 w-4 shrink-0 text-muted-foreground" />
-          ) : null}
-          <div className="min-w-0 flex-1">
-            <Dialog.Title className="truncate text-sm font-medium text-foreground">
-              {title}
-            </Dialog.Title>
-            {description ? (
-              // NOT `truncate`. The title is one line by design; the
-              // description is a sentence, and on a phone
-              // `ImportClickUp`'s ("Every Preview writes nothing. Only
-              // the buttons that say so write.") clipped mid-word — which
-              // deletes the half that says which buttons.
-              <Dialog.Description className="text-xs text-muted-foreground">
-                {description}
-              </Dialog.Description>
-            ) : null}
-          </div>
-          {showClose ? (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              icon="X"
-              aria-label={closeLabel}
-              onClick={onClose}
-            />
-          ) : null}
-        </header>
-      ) : null}
-      {children}
-    </>
-  );
-
   return (
     <Dialog.Root
       open={open}
@@ -464,13 +406,53 @@ export default function Modal({
             `role="presentation"`, hidden while unmounted, and drops its own
             pointer events when closed. A raw div does none of that. */}
         <Dialog.Viewport className={`fixed inset-0 ${LAYERS[layer]} flex ${PLACEMENT[placement]}`}>
-          {guideAnchor ? (
-            <Dialog.Popup data-guide="crm.record-panel" {...popupProps}>
-              {popupBody}
-            </Dialog.Popup>
-          ) : (
-            <Dialog.Popup {...popupProps}>{popupBody}</Dialog.Popup>
-          )}
+          <Dialog.Popup
+            aria-label={title ? undefined : label}
+            // Base UI does not set this. It is a hint for assistive tech that
+            // predates `inert` — and here it is doing real work, because the
+            // substrate marks the background with `aria-hidden` and a
+            // `data-base-ui-inert` marker rather than a real `inert` attribute
+            // (see this file's header).
+            aria-modal="true"
+            initialFocus={initialFocus}
+            finalFocus={returnFocus}
+            className={`flex ${
+              CALLER_SETS_MAX_HEIGHT.test(className) ? "" : "max-h-full"
+            } w-full ${SIZES[size]} flex-col overflow-hidden rounded-lg border border-border bg-card shadow-lg outline-none glass:rounded-2xl glass:border-transparent glass:glass-menu-flat ${className}`}
+          >
+            {title ? (
+              <header className="flex items-center gap-2 border-b border-border px-3 py-2">
+                {icon ? (
+                  <Icon name={icon} className="h-4 w-4 shrink-0 text-muted-foreground" />
+                ) : null}
+                <div className="min-w-0 flex-1">
+                  <Dialog.Title className="truncate text-sm font-medium text-foreground">
+                    {title}
+                  </Dialog.Title>
+                  {description ? (
+                    // NOT `truncate`. The title is one line by design; the
+                    // description is a sentence, and on a phone
+                    // `ImportClickUp`'s ("Every Preview writes nothing. Only
+                    // the buttons that say so write.") clipped mid-word — which
+                    // deletes the half that says which buttons.
+                    <Dialog.Description className="text-xs text-muted-foreground">
+                      {description}
+                    </Dialog.Description>
+                  ) : null}
+                </div>
+                {showClose ? (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    icon="X"
+                    aria-label={closeLabel}
+                    onClick={onClose}
+                  />
+                ) : null}
+              </header>
+            ) : null}
+            {children}
+          </Dialog.Popup>
         </Dialog.Viewport>
       </Dialog.Portal>
     </Dialog.Root>

@@ -531,7 +531,7 @@ def test_anchors_are_the_shell_parts_and_the_crm_parts():
     got = load_anchors()
     assert [a.full_id for a in got] == [
         "chat.panel", "chat.message-field", "crm.new", "crm.pipeline", "crm.stage-column",
-        "crm.record-panel", "crm.timeline-tab", "crm.add-note", "crm.search", "home.app-list", "home.ask",
+        "crm.timeline-tab", "crm.add-note", "crm.search", "home.app-list", "home.ask",
         "home.my-day", "home.account-menu",
     ]
     assert all(a.route.startswith("/") and a.label and a.does for a in got)

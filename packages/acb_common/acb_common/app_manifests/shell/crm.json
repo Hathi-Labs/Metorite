@@ -112,12 +112,6 @@
         "does": "Holds the cards that sit in one stage. A card moves to another stage by drag."
       },
       {
-        "id": "record-panel",
-        "label": "Record panel",
-        "route": "/crm",
-        "does": "Opens beside the list when a record is picked. It shows the record and its timeline."
-      },
-      {
         "id": "timeline-tab",
         "label": "Timeline tab",
         "route": "/crm",
