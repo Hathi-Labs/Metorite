@@ -28,7 +28,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Query
 from gateway.routes.projects.authority import (
     assert_may_change_lead,
     assert_may_convert_node,
@@ -91,6 +91,7 @@ from gateway.routes.projects.core import (
     validate_icon_slot,
     validate_lifecycle_settings,
 )
+from gateway.routes.projects.notifications import project_audience
 from gateway.routes.projects.tasks import _narrow_agent_body
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -1874,6 +1875,33 @@ async def list_grants(
             "you_see_all": bool(vis.unrestricted),
             "groups": await org_groups(db, getattr(node, "organization_id", None)),
         }
+
+
+@router.get("/nodes/{project_id}/audience")
+async def read_project_audience(
+    project_id: str,
+    people: str = Query(default="", max_length=2000),
+    beyond: str = Query(default="", max_length=64),
+    user: UserContext = Depends(get_current_user),
+) -> dict:
+    """Who can open a project, and who a change would open it to (WS-67 RX-1).
+
+    The chat reads it before a card in a chat that read outside mail, because a
+    grant row does not answer this: a grant on a parent counts, and so does a
+    group. *people* is a comma list of addresses. *beyond* is the project that a
+    move leaves. The caller must see each project, and the 404 is the same for
+    each (R5). It writes nothing.
+    """
+    asked = list(dict.fromkeys(p.strip().lower() for p in people.split(",") if p.strip()))
+    async with _tenant_session() as db:
+        vis = await resolve_visibility(db, user)
+        node = await load_visible_project(db, vis, project_id)
+        if beyond:
+            await load_visible_project(db, vis, beyond)
+        return await project_audience(
+            db, str(node.id), vis.organization_id, people=asked,
+            beyond=str(beyond).strip().lower(),
+        )
 
 
 @router.post("/nodes/{project_id}/grants", status_code=201)

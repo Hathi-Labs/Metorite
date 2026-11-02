@@ -32,7 +32,9 @@ from skill_projects.writes import (
     CANCELLED,
     MAX_BATCH,
     _confirm,
+    _access_lines,
     _fields_block,
+    _held_chat,
     _node,
     _priority_card,
     _resolve_assignee,
@@ -657,10 +659,15 @@ async def capture_intake(
     card: dict[str, Any] = {}
     origin = source.strip()[:80]
     reference = source_ref.strip()[:200]
+    held = await _held_chat()
     if origin:
         payload["source"] = origin
-        if origin.lower() == "email":
-            card["mailbox"] = mailbox_line(where)
+    if held or origin.lower() == "email":
+        # RX-1: a held chat says it from the server's answer, because a steered
+        # model would leave out `source`.
+        card["mailbox"] = mailbox_line(where)
+    if held:
+        card.update(await _access_lines(str(payload["project_id"])))
     if reference:
         payload["source_ref"] = reference
     if not await _confirm(

@@ -151,9 +151,15 @@ async def list_watchers(
         vis = await resolve_visibility(db, user)
         await load_visible_task(db, vis, task_id)
         watchers = await watchers_of(db, task_id)
+        # RX-1: who a comment tells, for the card of a chat that read outside
+        # mail. The one list that `add_comment` reads.
+        from gateway.routes.projects.notifications import task_audience
+
+        audience = await task_audience(db, task_id)
     return {
         "watchers": watchers,
         "watching": actor(user).lower() in set(watchers),
+        "audience": sorted(audience),
     }
 
 

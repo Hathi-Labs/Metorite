@@ -179,10 +179,7 @@ def _guard_card(impact: str, rest: dict[str, Any]) -> str:
     The impact line is the tool's own sentence, so it is not fenced the way
     a member value is. Member values inside it already carry their fence.
     """
-    body = _fields_block(rest)
-    assert body.startswith(CARD_NOTE)
-    line = "impact: " + " ".join(impact.split())
-    return CARD_NOTE + "\n" + line + body[len(CARD_NOTE) :]
+    return _fields_block(rest, lead="impact: " + " ".join(impact.split()))
 
 
 def _open_count(summary: dict[str, Any]) -> int:

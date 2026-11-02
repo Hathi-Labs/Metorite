@@ -46,6 +46,15 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
+from acb_common.card_body import (
+    CARD_CLIP,
+    CUT_MARK,
+    CardWontFit,
+    card_body,
+    cut_refusal,
+    is_cut,
+)
+from acb_common.mentions import mention_targets, new_mentions
 
 from skill_projects import choices
 from skill_projects.client import (
@@ -102,8 +111,10 @@ except Exception:  # pragma: no cover — platform package absent in isolation
 
 #: ``request_confirmation`` clips ``context`` at 4000 characters. The clip is
 #: ours and visible, never the card silently losing whatever came last.
-CARD_CONTEXT_LIMIT = 4000
-_TRUNCATED = "… [truncated on this card; the full text is what gets written]"
+#: ``acb_common.card_body`` holds the rule: each short field shows, and only
+#: long text may be cut.
+CARD_CONTEXT_LIMIT = CARD_CLIP
+_TRUNCATED = CUT_MARK
 #: The fixed first line of every card body. The member signs as themselves.
 CARD_NOTE = "This change is recorded as yours, made through the Projects assistant."
 
@@ -117,18 +128,19 @@ LINK_TYPES = ("blocks", "relates_to", "duplicates")
 # ── The card ─────────────────────────────────────────────────────────────────
 
 
-def _fields_block(payload: dict[str, Any], *, before: dict[str, Any] | None = None) -> str:
+def _fields_block(
+    payload: dict[str, Any], *, before: dict[str, Any] | None = None, lead: str = "",
+) -> str:
     """The payload as the card body, rendered from what goes on the wire.
 
     ``before`` adds the current value beside each changed field, so a member
-    approving an update sees the change and not only the result.
+    approving an update sees the change and not only the result. *lead* is a
+    line that stays right under the fixed note. Each short field shows, and only
+    long text may be cut (``acb_common.card_body``). A body whose short fields do
+    not fit raises the refusal, in every chat.
     """
-    body = _card_lines(payload, before=before)
-    budget = CARD_CONTEXT_LIMIT - len(CARD_NOTE) - 1
-    if len(body) <= budget:
-        return f"{CARD_NOTE}\n{body}"
-    keep = max(0, budget - len(_TRUNCATED) - 1)
-    return f"{CARD_NOTE}\n{body[:keep]}\n{_TRUNCATED}"
+    note = f"{CARD_NOTE}\n{lead}" if lead else CARD_NOTE
+    return card_body(note, _card_rows(payload, before=before))
 
 
 def _fits_on_card(payload: dict[str, Any]) -> bool:
@@ -142,6 +154,13 @@ def _fits_on_card(payload: dict[str, Any]) -> bool:
 
 def _card_lines(payload: dict[str, Any], *, before: dict[str, Any] | None = None) -> str:
     """The card body before the clip: one ``key: value`` line per field."""
+    return "\n".join(line for _key, line in _card_rows(payload, before=before))
+
+
+def _card_rows(
+    payload: dict[str, Any], *, before: dict[str, Any] | None = None,
+) -> list[tuple[str, str]]:
+    """Each field of the card: its key, and its whole ``key: value`` line."""
 
     def shown(value: Any) -> Any:
         # A value that carries a fence is usually ours (`data()`, `_ref()`),
@@ -153,13 +172,61 @@ def _card_lines(payload: dict[str, Any], *, before: dict[str, Any] | None = None
             return " ".join(value.split()) if "«" in value else data(value)
         return value
 
-    lines: list[str] = []
+    rows: list[tuple[str, str]] = []
     for key, value in payload.items():
         if before is not None and key in before and before[key] != value:
-            lines.append(f"{key}: {shown(before[key])} → {shown(value)}")
+            rows.append((key, f"{key}: {shown(before[key])} → {shown(value)}"))
         else:
-            lines.append(f"{key}: {shown(value)}")
-    return "\n".join(lines)
+            rows.append((key, f"{key}: {shown(value)}"))
+    return rows
+
+
+#: The most characters of a name in the detail line of a card. ``ask_tools``
+#: clips that line at 500, so a long title would hide what comes after it.
+_DETAIL_NAME_MAX = 120
+
+
+def _brief(name: Any) -> str:
+    """*name*, fenced, short enough for the detail line. The card body shows
+    it whole."""
+    text = " ".join(str(name or "").split())
+    return data(text if len(text) <= _DETAIL_NAME_MAX else f"{text[:_DETAIL_NAME_MAX - 1]}…")
+
+
+async def _held_chat() -> bool:
+    """True when this chat read outside mail, and the switch is on (RX-1).
+
+    ``egress.chat_is_held`` is the reader, and it fails closed. With no platform
+    package, no run can be checked, so this reads as held.
+    """
+    try:
+        from acb_skills.egress import chat_is_held
+    except ImportError:
+        return True
+    return await chat_is_held()
+
+
+async def _held_param_refusal(tool: str, param: str) -> str:
+    """The answer of *tool* to *param* in a held chat, or ``""`` (RX-1). The
+    parameter is one of ``egress.HELD_REFUSED_PARAMS``."""
+    if not await _held_chat():
+        return ""
+    from acb_skills.egress import held_param_refusal
+
+    return held_param_refusal(tool, param)
+
+
+async def _check_card(context: str) -> None:
+    """Two refusals at the one door (RX-1). A body past the clip would lose its
+    tail in ``ask_tools`` with no mark, so no chat sends one. A held chat refuses
+    a cut card too, because a cut text is not consent there."""
+    if len(context) > CARD_CONTEXT_LIMIT:
+        raise CardWontFit(
+            "This change does not fit on one card, so nothing was changed. Split "
+            "the change, and call the tool once more."
+        )
+    if is_cut(context) and await _held_chat():
+        raise GatewayRefusal(cut_refusal(context))
 
 
 async def _confirm(
@@ -173,6 +240,7 @@ async def _confirm(
     """
     from acb_skills.ask_tools import request_confirmation
 
+    await _check_card(context)
     # `fenced`: every member value on these cards is in «marks» (`data()`),
     # so the client draws each one as a token and never shows the marks.
     if rows is None:
@@ -302,12 +370,14 @@ async def _resolve_status(project_id: str, status: str) -> dict[str, Any]:
     return await _named(await _statuses_of(project_id), status, "status", "statuses")
 
 
-#: H-236: the refusal of an agent assignee in a run that may not send.
+#: H-236: the refusal of an agent assignee in a run that may not send. Such a
+#: run holds for member data of a sandboxed turn, or for mail that a stranger
+#: wrote, so the text claims neither cause. D151 item 7: it names the act and
+#: the reason, and it sends the member to no app and no new chat.
 AGENT_ASSIGNEE_REFUSED = (
-    "This chat works with member data from a sandboxed turn, so it cannot "
-    "assign a task to an agent: an assigned agent starts a run of its own, "
-    "outside this chat's controls. Assign a person, or ask the member to "
-    "assign the agent in the Projects app."
+    "This chat cannot assign a task to an agent now. An assigned agent starts a "
+    "run of its own, outside the controls that hold this chat. Assign a person "
+    "here, and tell the member in one sentence why the agent is not assigned."
 )
 
 
@@ -366,7 +436,12 @@ async def _resolve_assignee(value: str, *, dispatch: bool = True) -> str:
     ``dispatch=False``, because taking an agent off a task starts nothing.
     """
     resolved = await _resolve_assignee_name(value)
-    return _refuse_agent_assignee(resolved) if dispatch else resolved
+    if not dispatch:
+        return resolved
+    # RX-1: a top-level run in a marked chat binds no `no_egress`.
+    if resolved.startswith("agent:") and await _held_chat():
+        raise AgentAssigneeRefused(AGENT_ASSIGNEE_REFUSED)
+    return _refuse_agent_assignee(resolved)
 
 
 async def _resolve_assignee_name(value: str) -> str:
@@ -424,6 +499,59 @@ async def _unknown_addresses(who: list[str]) -> list[str]:
 
 def _split(csv: str) -> list[str]:
     return [part.strip() for part in str(csv or "").split(",") if part.strip()]
+
+
+def _seen_by(view: dict[str, Any]) -> str:
+    """Who opens a project, in the words of a card (``GET .../audience``)."""
+    count = int(view.get("count") or 0)
+    if view.get("everyone"):
+        return f"everyone in the organization ({count} people)"
+    names = [str(name) for name in view.get("sample") or []]
+    more = count - len(names)
+    return ", ".join(names) + (f" and {more} more" if more > 0 else "") if names else "nobody"
+
+
+async def _access_lines(
+    project_id: str, people: list[str] | None = None, beyond: str = "",
+) -> dict[str, Any]:
+    """The lines of a held card: who sees the project, and who this opens it to.
+
+    ``seen by`` is who opens *project_id* (RX-1, P1). ``gives access to`` names
+    each of *people* who cannot open it now, because an assignment opens a task
+    to its assignee (``notifications.grant_holders``), and each person who opens
+    it and not *beyond*, because a move changes who sees a row (D-OP-14). The
+    server answers, from the one predicate. A failed read raises the refusal, so
+    a held chat shows no card that cannot say who sees the row. An agent is no
+    person here: it never opens a task by a grant.
+    """
+    pid = uuid_of(project_id, "project_id")
+    params: dict[str, str] = {}
+    humans = [p for p in people or [] if not p.startswith("agent:")]
+    if humans:
+        params["people"] = ",".join(humans)
+    if beyond:
+        params["beyond"] = uuid_of(beyond, "project_id")
+    view = (await get(f"/projects/nodes/{pid}/audience", params)) or {}
+    lines: dict[str, Any] = {"seen by": _seen_by(view)}
+    gives = [str(p) for p in [*(view.get("without_access") or []), *(view.get("gains") or [])]]
+    if gives:
+        more = int(view.get("gains_count") or 0) - len(view.get("gains") or [])
+        lines["gives access to"] = ", ".join(dict.fromkeys(gives)) + (
+            f" and {more} more" if more > 0 else "")
+    return lines
+
+
+def _told(text: Any, old: Any = None) -> dict[str, Any]:
+    """The ``sent to`` line of a text that tells a person (RX-1, P2).
+
+    Each address that the text @mentions is notified (``activities.add_comment``),
+    and an edit tells only the addresses it adds (``new_mentions``). The parser
+    is the gateway's own (``acb_common.mentions``), so the card and the write
+    agree. Empty when the text tells nobody.
+    """
+    who = new_mentions(str(old or ""), str(text or "")) if old is not None else (
+        mention_targets(str(text or "")))
+    return {"sent to": ", ".join(who)} if who else {}
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -943,7 +1071,8 @@ async def create_task(
     if isinstance(repeating, str):
         return repeating
     # After the argument checks, which answer with no call, and before the card.
-    stop = await space_refusal(pid, (await _node(pid))[1])
+    node = (await _node(pid))[1]
+    stop = await space_refusal(pid, node)
     if stop:
         return stop
     new = await _prepare_new_task(
@@ -974,22 +1103,29 @@ async def create_task(
     twin = (await choices.twin_flags(get, pid, [name])).get(0)
     if twin is not None:
         card["note"] = choices.twin_note(twin)
-    where = ""
-    if by_name is not None:
-        # The project came from a NAME, so the card names it, first (review
-        # P1). The id line alone would not tell the member where it goes.
-        card = {"project": data(by_name), **{k: v for k, v in card.items() if k != "project_id"}}
-        where = f" · in {data(by_name)}"
-    if new.payload.get("source") == "email":
-        # P9: the first line of the card says what leaves the mailbox.
-        shown = data(by_name or (await _node(pid))[1].get("name"))
-        card = {"mailbox": mailbox_line(shown), **card}
+    # The card names the project, first, however the model named it. The client
+    # hides a line that holds only an id, so an id line tells the member nothing
+    # (RX-1, review P1 of 2026-10-09). The parent gets its name the same way.
+    place = data(by_name or node.get("name"))
+    hidden = ("project_id", "parent_task_id")
+    card = {"project": place, **{k: v for k, v in card.items() if k not in hidden}}
+    if new.parent is not None:
+        card["parent"] = _ref(new.parent)
+    where = f" · in {place}"
+    held = await _held_chat()
+    if held:
+        card.update(await _access_lines(pid, new.who))
+    if held or new.payload.get("source") == "email":
+        # P9: the first line of the card says what leaves the mailbox. RX-1: a
+        # held chat says it from the server's answer, because a steered model
+        # would leave out `source`.
+        card = {"mailbox": mailbox_line(place), **card}
     # WS-47 WAC-4: a card that names the project by NAME must still bind the
     # project it resolved, and the people, for a Confirm on WhatsApp.
     _bind_card_facts(project_id=pid, assignees=sorted(new.who))
     if not await _confirm(
         title=repeating.card_title,
-        detail=f"{data(name)}{where} · status {new.status_label}"
+        detail=f"{_brief(name)}{where} · status {new.status_label}"
         + (f" · {', '.join(new.who)}" if new.who else "")
         + repeating.detail(),
         context=_fields_block(card),
@@ -1518,6 +1654,9 @@ async def update_task(
     if not payload:
         return "Nothing to change. Pass at least one field."
     card, detail = _edit_card(payload, before, extra, lane, task)
+    if payload.get("description"):
+        # A description edit tells each address that it adds (`tasks.patch_task`).
+        card.update(_told(payload["description"], old=task.get("description") or ""))
     if not await _confirm(
         title="Update this task?", detail=detail, context=_fields_block(card, before=before)
     ):
@@ -1585,10 +1724,13 @@ async def assign(task_id: str, assignees: str) -> str:
     if sorted(who) == sorted(current):
         return f"{_ref(task)} already has exactly those assignees."
     agents = [a for a in who if a.startswith("agent:") and a not in current]
-    context = _fields_block(
-        {"assignees": ", ".join(who) or "(nobody)"},
-        before={"assignees": ", ".join(current) or "(nobody)"},
-    )
+    shown: dict[str, Any] = {"assignees": ", ".join(who) or "(nobody)"}
+    added = [a for a in who if a not in current]
+    if added and await _held_chat():
+        # An assignment opens the task to its assignee (`grant_holders`).
+        access = await _access_lines(str(task.get("project_id")), added)
+        shown.update({k: v for k, v in access.items() if k == "gives access to"})
+    context = _fields_block(shown, before={"assignees": ", ".join(current) or "(nobody)"})
     if agents:
         context += f"\nAssigning {', '.join(agents)} starts an agent run on this task."
     strangers = await _unknown_addresses([a for a in who if a not in current])
@@ -1603,6 +1745,17 @@ async def assign(task_id: str, assignees: str) -> str:
     await put(f"/projects/tasks/{tid}/assignees", {"assignees": who})
     task["assignees"] = who
     return "\n".join(["Assigned:", *_task_line(task)])
+
+
+async def _comment_tells(tid: str, text: str) -> dict[str, Any]:
+    """The ``sent to`` line of a new comment: each address that it @mentions,
+    and in a held chat each person that the task already tells, because the
+    comment reaches them too (``notifications.task_audience``)."""
+    who = mention_targets(text)
+    if await _held_chat():
+        read = (await get(f"/projects/tasks/{tid}/watchers")) or {}
+        who.extend(str(person) for person in read.get("audience") or [])
+    return {"sent to": ", ".join(dict.fromkeys(who))} if who else {}
 
 
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
@@ -1621,7 +1774,7 @@ async def comment(task_id: str, body: str, reply_to: str = "") -> str:
     if not await _confirm(
         title="Post this comment?",
         detail=f"on {_ref(task)}",
-        context=_fields_block(payload),
+        context=_fields_block({**payload, **await _comment_tells(tid, text_body)}),
     ):
         return CANCELLED
     row = await post(f"/projects/tasks/{tid}/comments", payload)
@@ -2082,6 +2235,10 @@ async def _plan_move(
     if missing:
         return await _required_refusal(dest, missing, len(ids) > 1)
     card = _move_card(plan, tasks, dest_node, field_card, bool(wanted), count)
+    if await _held_chat():
+        # D-OP-14: a move changes who sees a row. The tasks of one call come
+        # from one project (`move.shared_source`).
+        card.update(await _access_lines(dest, beyond=str(tasks[0].get("project_id"))))
     drops = sorted(plan.get("drops") or [])
     if answers:
         # One task, with the answers: the promote door's route, which lands
@@ -3164,6 +3321,10 @@ async def create_project(
     label = str(name or "").strip()
     if not label:
         return "A project needs a name."
+    if lead.strip():
+        refused = await _held_param_refusal("create_project", "lead")
+        if refused:
+            return refused
     which = str(kind or "project").strip().lower()
     if which not in ("project", "folder"):
         return "kind is project or folder."
@@ -3348,6 +3509,10 @@ async def update_project(
     months are measured from. clear switches settings off: icon, icon_slot,
     archive_after_months, close_after_months (comma-separated)."""
     pid = uuid_of(project_id, "project_id")
+    if lead.strip():
+        refused = await _held_param_refusal("update_project", "lead")
+        if refused:
+            return refused
     node = await get(f"/projects/nodes/{pid}")
     settings = _project_settings(
         node, icon, icon_slot, archive_after_months, close_after_months, timezone, clear
@@ -3796,6 +3961,10 @@ async def create_type(
     org_wide=true mints it for every project, and the server decides
     whether the member may. An org-wide type cannot be the default.
     Deleting a type is a guarded act; tasks keep existing, untyped."""
+    if org_wide:
+        refused = await _held_param_refusal("create_type", "org_wide")
+        if refused:
+            return refused
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:
@@ -3937,6 +4106,10 @@ async def create_field(
     for select and multi_select. required=true means a task cannot MOVE
     into this project without a value. org_wide=true mints it for every
     project. The key is derived from the name and never changes."""
+    if org_wide:
+        refused = await _held_param_refusal("create_field", "org_wide")
+        if refused:
+            return refused
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:
@@ -4051,6 +4224,10 @@ async def create_tag(
     description. A tag typed onto a task registers itself; this is for
     naming one before it is used, or giving it a colour. org_wide=true
     mints it for every project. Deleting a tag is a guarded act."""
+    if org_wide:
+        refused = await _held_param_refusal("create_tag", "org_wide")
+        if refused:
+            return refused
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:
@@ -4162,7 +4339,10 @@ async def edit_comment(task_id: str, comment_id: str, body: str) -> str:
     if not await _confirm(
         title="Edit your comment?",
         detail=f"on {_ref(task)}",
-        context=_fields_block({"body": text_body}, before={"body": old.get("body")}),
+        context=_fields_block(
+            {"body": text_body, **_told(text_body, old=old.get("body") or "")},
+            before={"body": old.get("body")},
+        ),
     ):
         return CANCELLED
     await patch(f"/projects/comments/{aid}", {"body": text_body})

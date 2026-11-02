@@ -141,6 +141,8 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/nodes/{project_id}/archive", "archive_project", "C"),
     Route("POST", "/projects/nodes/{project_id}/unarchive", "unarchive_project", "C"),
     Route("GET", "/projects/nodes/{project_id}/grants", "project_access", "A"),
+    # RX-1: who can see a project, for the card of a held chat.
+    Route("GET", "/projects/nodes/{project_id}/audience", "project_access", "A"),
     # WS-64 OP-6b (D-OP-9 reverses D-PM-40): one grant per card. The route
     # decides who may write it (D-OP-11, `authority.assert_may_write_grant`).
     Route("POST", "/projects/nodes/{project_id}/grants", "grant_access", "C"),
