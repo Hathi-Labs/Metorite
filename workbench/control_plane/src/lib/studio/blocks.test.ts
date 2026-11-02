@@ -146,39 +146,33 @@ describe("Form: the draft and the value", () => {
 describe("Form: the submit goes through door.run once", () => {
   function slowDoor() {
     const runs: unknown[][] = [];
-    const waiting: (() => void)[] = [];
     const door: StudioDataDoor = {
       scope: "t:draft",
       read: async () => [],
       run: (action, args) => {
         runs.push([action, args]);
-        return new Promise((res) => { waiting.push(() => res({ ok: true })); });
+        return new Promise((res) => setTimeout(() => res({ ok: true }), 5));
       },
     };
-    return { door, runs, release: () => { while (waiting.length) waiting.shift()?.(); } };
+    return { door, runs };
   }
 
   it("a double submit calls door.run once (M3)", async () => {
-    const { door, runs, release } = slowDoor();
+    const { door, runs } = slowDoor();
     const busy = { current: false };
     const first = sendRecord(door, "object:visit.create", { title: "A" }, busy);
     const second = await sendRecord(door, "object:visit.create", { title: "A" }, busy);
     expect(second).toEqual({ kind: "busy" });
-    release();
     expect(await first).toMatchObject({ kind: "sent", ok: true });
     expect(runs).toEqual([["object:visit.create", { data: { title: "A" } }]]);
     // The guard lifts after the run, so a later submit goes through.
-    const again = sendRecord(door, "object:visit.create", { title: "B" }, busy);
-    release();
-    await again;
+    await sendRecord(door, "object:visit.create", { title: "B" }, busy);
     expect(runs).toHaveLength(2);
   });
 
   it("sends the id of an update beside the data", async () => {
-    const { door, runs, release } = slowDoor();
-    const p = sendRecord(door, "object:visit.update", { title: "A" }, { current: false }, { id: "v1" });
-    release();
-    await p;
+    const { door, runs } = slowDoor();
+    await sendRecord(door, "object:visit.update", { title: "A" }, { current: false }, { id: "v1" });
     expect(runs[0][1]).toEqual({ id: "v1", data: { title: "A" } });
   });
 
