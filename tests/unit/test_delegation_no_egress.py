@@ -2873,6 +2873,20 @@ def test_a_sub_run_binds_the_mark_of_its_chat(sandbox, monkeypatch) -> None:  # 
     assert _of(seen["inject"], CRM, "_for")[eg.CHAT_MARK_KEY] is True
 
 
+def test_a_sub_run_of_a_clear_chat_binds_the_clear_mark(sandbox, monkeypatch) -> None:  # noqa: F811
+    """An absent key reads as marked, so the marked case above cannot catch a
+    dropped key. A clear chat can. Mutation: drop ``chat_marked=`` from BOTH the
+    bind and the derive of ``_run_sub_agent_streaming`` -> the key is absent
+    -> red."""
+    _register_every_annotation()
+    seen = _boundaries(monkeypatch)
+    thread = new_thread()
+    _harness(monkeypatch, sandbox, {PA: _parent_calls(CRM), CRM: _Model([_say("ok")])})
+    _run_top(PA, ORG_B, thread=thread)
+    assert _of(seen["bind"], CRM)["chat_marked"] is False
+    assert _of(seen["inject"], CRM, "_for")[eg.CHAT_MARK_KEY] is False
+
+
 def test_a_batch_run_binds_the_chain_and_the_mark(sandbox, monkeypatch) -> None:  # noqa: F811
     """Mutation: drop either key from the bind of ``_run_agent_inner`` -> red."""
     _register_every_annotation()
