@@ -107,6 +107,8 @@ _DATETIME_RE = re.compile(
     re.ASCII,
 )
 _CURRENCY_RE = re.compile(r"[A-Z]{3}", re.ASCII)
+_UUID_FORM_RE = re.compile(
+    r"[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}", re.ASCII)
 _PHONE_RE = re.compile(r"\+[1-9][0-9]{7,14}", re.ASCII)
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}", re.ASCII)
 #: A simple address check, in the shape of the WHATWG form check, with a dot
@@ -594,14 +596,13 @@ def record_json(data: Mapping[str, Any]) -> str:
 
 
 def relation_key(value: str) -> str:
-    """The text that a hot relation row holds for the id *value*. An id that
-    is a UUID in any spelling gets the one lower-case form of a record id, so a
-    child that names its parent in capitals still joins it. Any other id stays
-    as it is. The id holds at most :data:`MAX_ID_CHARS` characters."""
-    try:
-        return str(uuid.UUID(value))
-    except ValueError:
-        return value
+    """The text that a hot relation row holds for the id *value*. An id of 32 hex
+    digits, with or without the four dashes and in any case, gets the one
+    lower-case form of a record id, so a child that names its parent in capitals
+    still joins it. Any other id stays as it is. The store reads a relation that
+    is not hot with the same rule (``_UUID_FORM`` in ``objects_store.py``). The id
+    holds at most :data:`MAX_ID_CHARS` characters."""
+    return str(uuid.UUID(value)) if _UUID_FORM_RE.fullmatch(value) else value
 
 
 def hot_value(field: FieldSpec, value: Any) -> dict[str, Any] | None:

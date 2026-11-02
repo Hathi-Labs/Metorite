@@ -342,6 +342,44 @@ def test_r8_a_hot_relation_filters_by_id_and_takes_no_sort(world) -> None:
     assert _go(world, go) == (2, 1, "query_op_not_allowed")
 
 
+def test_r8_a_relation_filter_agrees_on_a_hot_field_and_on_a_cold_twin(world) -> None:
+    """Each op of the relation row of the op table, on `rel` (hot) and `c_rel` (data).
+    An id in capitals, or with no dashes, is the same id in both."""
+    p1, p2 = str(uuid.uuid4()), str(uuid.uuid4())
+    fields = [{"key": "rel", "type": "relation", "to": "account", "hot": True},
+              {"key": "c_rel", "type": "relation", "to": "account"}, {"key": "tag", "type": "text"}]
+    rows = {"r1": p1, "r2": p1.upper(), "r3": p2.replace("-", ""), "r4": "ext-7", "r5": None}
+    cases = [("eq", p1, {"r1", "r2"}), ("eq", {"id": p2}, {"r3"}), ("ne", p1, {"r3", "r4"}),
+             ("in", [p1, "ext-7"], {"r1", "r2", "r4"}), ("is_empty", True, {"r5"}),
+             ("is_empty", False, {"r1", "r2", "r3", "r4"})]
+
+    async def go() -> list[str]:
+        async with tenant_session(world.a) as db:
+            obj = await store.define_object(db, ANA, package_id=world.pkg_a, name="link",
+                                            fields=fields)
+        assert obj is not None
+        made = {}
+        for label, ident in rows.items():
+            data: dict[str, Any] = {"tag": label}
+            if ident is not None:
+                data.update(rel={"id": ident}, c_rel={"id": ident})
+            made[label] = (await _put(world.a, obj, Write("create", obj.id, data=data)))[0].id
+        by_id = {v: k for k, v in made.items()}
+        wrong = []
+        for key in ("rel", "c_rel"):
+            for op, value, want in cases:
+                async with tenant_session(world.a) as db:
+                    page = await store.query_records(
+                        db, package_id=obj.package_id, object_id=obj.id,
+                        filter=[{"field": key, "op": op, "value": value}], limit=100)
+                got = {by_id[r.id] for r in page.records}
+                if got != want:
+                    wrong.append(f"{key} {op}: got {sorted(got)}, want {sorted(want)}")
+        return wrong
+
+    assert _go(world, go) == []
+
+
 # -- sum, count, min and max ------------------------------------------------------
 
 

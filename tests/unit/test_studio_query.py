@@ -447,6 +447,8 @@ _SQL_NAMES = frozenset({
     "rid", "frag", "row", "where", "dirn", "what", "source", "lookup", "head", "tail",
     "found", "total", "ids", "page", "counted", "count_head", "with_sql", "gate", "cap",
     "guard", "count_hot", "_STILL_HOT_SQL",
+    # C7b: the constant regex of a UUID id, for a relation that is not hot.
+    "_UUID_FORM",
 })
 
 

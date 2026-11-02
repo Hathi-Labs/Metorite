@@ -1127,6 +1127,10 @@ _HOT_COLUMN: Mapping[str, str] = {
 }
 assert set(_HOT_COLUMN) == set(studio_query.OPS_BY_TYPE), "each type of the op table has a column"
 
+#: The 32 hex digits of an id, with or without the four dashes. The same shape as
+#: `studio_fields._UUID_FORM_RE`, so a hot and a cold relation agree.
+_UUID_FORM = "'^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$'"
+
 #: The SQL type of each value column.
 _SQL_TYPE: Mapping[str, str] = {
     "v_text": "text", "v_num": "numeric", "v_ts": "timestamptz", "v_bool": "boolean",
@@ -1221,6 +1225,10 @@ def _q_data(kind: str, i: int) -> str:
     """The value of a field that is not hot, read from ``data`` with the
     bound key of condition *i*, in the SQL type of its hot column."""
     kref = f"CAST(:fk{i} AS text)"
+    if kind == "relation":
+        # The id, in the one form that `studio_fields.relation_key` gives a hot row.
+        rid = f"(CASE WHEN jsonb_typeof(r.data -> {kref}) = 'object' THEN r.data -> {kref} ->> 'id' END)"
+        return f"(CASE WHEN {rid} ~ {_UUID_FORM} THEN CAST({rid} AS uuid)::text ELSE {rid} END)"
     if kind in ("text", "email", "select"):
         return f"(r.data ->> {kref})"
     if kind == "number":
