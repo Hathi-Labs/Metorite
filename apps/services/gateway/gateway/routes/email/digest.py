@@ -852,6 +852,7 @@ async def _digest_brief(
              {"role": "user", "content": user_prompt}],
             max_tokens=160,
             feature="digest",
+            job="writing",
         )
         if isinstance(data, dict):
             brief = str(data.get("brief", "")).strip()[:280]
