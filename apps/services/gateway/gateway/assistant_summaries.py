@@ -33,9 +33,11 @@ the column, and when a module that is not on its list imports this one.
   ``last_preview`` or ``message_count``. So the chat keeps its place in the
   list, and the idle clock does not move. ``routes/chat.py`` keeps the same
   rule for an archive.
-* A summary that the member deleted reads ``{"v": 1, "off": true}``. No mark
-  and no write changes it, because each of those statements holds the rule in
-  its WHERE.
+* A Delete of the member (D-PZ-33, :func:`clear_one_for_member`) takes the
+  text, the follow-ups and the mark away, and leaves a waterline. A chat that
+  reads ``{"v": 1, "off": true}`` keeps it: no mark and no write changes it,
+  because each of those statements holds the rule in its WHERE. No route
+  writes ``off`` now. :func:`turn_off` is the guard that a test uses.
 * The job of PZ-33b marks the chat before its model call (:func:`mark`). It
   writes the result with the mark in the WHERE (:func:`write_marked`). So a
   Delete, a Forget or a share during the call wins, and the write changes
@@ -760,7 +762,8 @@ WRITE_MARKED_SQL = (
     + "RETURNING id\n"
 )
 
-#: The Delete of the member. No later mark or write changes the chat.
+#: The guard ``off``: no later mark or write changes the chat. No route writes
+#: it since D-PZ-33, because a Delete leaves a waterline instead.
 OFF_SQL = f"""
 UPDATE chat_session
    SET member_summary = jsonb_build_object('v', {VERSION}, 'off', true)
@@ -903,8 +906,8 @@ async def write_marked(db: Any, session_id: str, answer: Answer, *, through: str
                        through_ms: int, at: datetime) -> bool:
     """Store *answer* only while the mark of the chat names *through*.
 
-    The mark is in the WHERE, so a Delete (:func:`turn_off`) after the mark
-    wins, and this changes nothing. A newer mark wins too. Answers True when
+    The mark is in the WHERE, so a Delete or a Forget after the mark wins,
+    and this changes nothing. A newer mark wins too. Answers True when
     the summary is stored."""
     row = (await db.execute(text(WRITE_MARKED_SQL), {
         "sid": session_id,
@@ -915,8 +918,8 @@ async def write_marked(db: Any, session_id: str, answer: Answer, *, through: str
 
 
 async def turn_off(db: Any, session_id: str) -> bool:
-    """The Delete of the member: the chat reads ``{"v": 1, "off": true}``,
-    and no later mark or write changes it. Answers False when no chat has
+    """The guard ``off``: the chat reads ``{"v": 1, "off": true}``, and no
+    later mark or write changes it. No route calls it since D-PZ-33. Answers False when no chat has
     the id. The caller checks that the chat is the member's own."""
     row = (await db.execute(text(OFF_SQL), {"sid": session_id})).first()
     return row is not None
@@ -1045,7 +1048,7 @@ OPEN_RUN_SQL = """EXISTS (
 #: exact rule. Each new row moves `updated_at` (`routes/chat.py::
 #: _TOUCH_SESSION_SQL`), and `:since` is the window less `IDLE_SLACK`. Without
 #: it, each tick read every Mira chat of the org. On 8,000 chats with 300 in
-#: the window it took 7.0 s, and with it 29 ms (measured 2026-11-02, §15.3).
+#: the window it took 9.8 s, and with it 28 ms (measured 2026-11-02, §15.3).
 IDLE_SQL = f"""
 SELECT s.id, s.user_id, newest.id AS newest_id, newest.timestamp_ms AS newest_ms,
        s.member_summary -> 'through_ms' AS through_ms,

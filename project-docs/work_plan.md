@@ -252,7 +252,7 @@ These are the rows of the board before D118. Each row keeps its ID, so a spec th
 | WS-60 | Artifacts: one library | 🟢 open | `specs/artifact_management.md` | now in WS-CHAT |
 | WS-61 | Knowledge | 🟢 open | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | now in WS-KB |
 | WS-62 | Chat first | 🟢 open | `specs/chat_first_surface.md` | now in WS-CHAT |
-| WS-63 | Personalization | 🟢 open | `specs/personalization.md` | now in WS-CHAT · §15 (D142, 2026-10-30) adds PZ-33 to PZ-36 · PZ-33a and PZ-35 built (dark) 2026-11-01, PZ-33b (the summary job) built (dark) 2026-11-02. PZ-34 and PZ-36 are not built |
+| WS-63 | Personalization | 🟢 open | `specs/personalization.md` | now in WS-CHAT · §15 (D142, 2026-10-30) adds PZ-33 to PZ-36 · PZ-33a and PZ-35 built (dark) 2026-11-01, PZ-33b (the summary job) built (dark) 2026-11-02, and its round 4 adds the ONE typed mark (D-PZ-37, migration 333). PZ-34 and PZ-36 are not built |
 | WS-64 | One Projects app | 🟢 open | `specs/one_projects_app.md` | now in WS-PT |
 | WS-65 | Shared mailbox | 🟢 open | `specs/shared_mailbox.md` | now in WS-EM |
 | WS-66 | Reminders and web push | 🟢 open | `specs/calendar_events_reminders.md` §5 | now in WS-CAL |
@@ -4892,7 +4892,7 @@ The owner answered the proposal of the Metorite epic 1129, "Recent chats and ope
 7. **A chat opens with the recent chats (PZ-34).** One bounded block holds the newest 3 summaries and the member's open tasks that are due.
 8. **Dated facts (PZ-22, Metorite task 317).** A fact gains `since` and `superseded_by`. A replaced fact stays, hidden from the block.
 9. **Who flips (the agent's recommendation).** The production flip of `ASSISTANT_CHAT_SUMMARY_ORGS` is owner-only (§6 D4). Its job spends the org's credits with no request of the member. Each other flip of §15 is gate `enforcement-flip`. The owner did not see this item one by one, and may overrule it.
-10. **The defaults.** The owner saw items 1 to 8 in chat. D-PZ-25 to D-PZ-30 and D-PZ-35 of the spec's §15.11 are the agent's design defaults. The owner decided D-PZ-33 on 2026-11-02: a Delete removes the summary, and a new one may come later. The owner may overrule any of them. §15.12 holds five questions, each with a default.
+10. **The defaults.** The owner saw items 1 to 8 in chat. D-PZ-25 to D-PZ-30 and D-PZ-35 of the spec's §15.11 are the agent's design defaults. The owner decided D-PZ-33 on 2026-11-02: a Delete removes the summary, and a new one may come later. The owner decided D-PZ-37 on 2026-11-02: one positive typed mark. Only a message that the member typed in the message box counts as the member's words, for the summary and for the profile tools. The owner may overrule any of them. §15.12 holds five questions, each with a default.
 
 ### D143 — Aroh comes into Metorite. Its glass design language becomes the one look, staging first, and it stays revertable until the owner approves it (2026-10-31)
 
