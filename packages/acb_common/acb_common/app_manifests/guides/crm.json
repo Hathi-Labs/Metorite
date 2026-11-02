@@ -143,18 +143,19 @@
         "say": "Open the Deals tab of the CRM."
       },
       {
-        "kind": "say",
-        "say": "Click a card or a row to open its record."
+        "kind": "point",
+        "anchor": "crm.pipeline",
+        "say": "Open any deal on the board."
       },
       {
         "kind": "point",
         "anchor": "crm.record-panel",
-        "say": "The record opens here, with its timeline."
+        "say": "The deal opens here."
       },
       {
         "kind": "point",
         "anchor": "crm.add-note",
-        "say": "Type your note here, then press Log to save it."
+        "say": "Write your note here, then press Log."
       }
     ],
     "do_tool": null

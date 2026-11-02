@@ -86,9 +86,9 @@ export const GENERATED_GUIDES: readonly Guide[] = [
     asks: ["add a note to a deal", "log a note", "write a note on a lead", "how do I log a call", "add a note in the CRM"],
     steps: [
       { kind: "open", say: "Open the Deals tab of the CRM.", path: "/crm?tab=deals" },
-      { kind: "say", say: "Click a card or a row to open its record." },
-      { kind: "point", say: "The record opens here, with its timeline.", anchor: "crm.record-panel" },
-      { kind: "point", say: "Type your note here, then press Log to save it.", anchor: "crm.add-note" },
+      { kind: "point", say: "Open any deal on the board.", anchor: "crm.pipeline" },
+      { kind: "point", say: "The deal opens here.", anchor: "crm.record-panel" },
+      { kind: "point", say: "Write your note here, then press Log.", anchor: "crm.add-note" },
     ],
     doTool: null,
   },
