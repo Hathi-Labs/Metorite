@@ -419,16 +419,29 @@ in 3 of 3 runs.
   follow in priority order.
 - The order is the score, and a tie keeps the current order. The One Thing is
   first. A `not_today` task leaves the plan, unless the plan would be empty.
-  The packer still cuts to the capacity.
+  The plan carries it as a marker, and the packer gives it the reason "Not
+  today, by your plan." (never "Didn't fit the time left"). The packer still
+  cuts to the capacity.
 - Energy: a candidate keeps its own tag, and deep work is `high`. The others
   have no energy, and the packer takes the earliest fitting slot.
 - The row text comes from the level only ("First today.").
 
 **Modes.** `off` runs the LLM call only. `shadow` runs the LLM call, asks
-`decide` beside it and logs the comparison. `on` lets `decide` answer. A
-failure of `decide` (unavailable, timeout past `ON_BOUND_S`, a bad or partial
-answer) falls back to the LLM call, and then to the priority order. The worst
-wait is 10 s plus the LLM call, inside the 30 s limit of the BFF.
+`decide` beside it and logs the comparison. In `shadow` the member never waits
+for the shadow: `shadow(..., detach=True)` returns the old answer at once, and
+the shadow ends in a background task, bounded by `SHADOW_BOUND_S` and logged.
+Only the day plan sets `detach`. The email and feed callers keep the wait. A
+fault in the shadow path is logged and gives the old answer. `on` lets
+`decide` answer. A failure of `decide` (unavailable, timeout past
+`ON_BOUND_S`, a bad or partial answer) falls back to the LLM call, and then to
+the priority order.
+
+**Worst wait.** One `asyncio.wait_for(..., PLAN_RANK_BOUND_S)` of 20 s covers
+`rank_day` and its fallback together. On a timeout the plan uses the priority
+order, with the note "the AI model took too long". The request adds the
+database reads before the rank (about six indexed queries, with no statement
+timeout). Those take milliseconds. If they ran past 10 s, the total would
+pass the 30 s limit of the BFF, and that case is not bounded here.
 
 Fence: `tests/unit/test_calendar_plan_decide.py`. Any mode other than `off`
 on a box is an owner flip (`enforcement-flip`).
