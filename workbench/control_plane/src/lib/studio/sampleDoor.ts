@@ -58,6 +58,7 @@ export const SAMPLE_ROWS: Row[] = [
 ];
 
 const TAKEN = "Duplicate";
+const OVER_LIMIT = "Over limit";
 
 /** A fake door over `rows`. `delayMs` shows the pending state of a button. */
 export function makeSampleDoor(
@@ -80,6 +81,13 @@ export function makeSampleDoor(
       if (!checked.ok) {
         const fieldErrors = Object.fromEntries(checked.problems.map((p) => [p.field, p.message]));
         return { ok: false, message: "Fix the marked fields.", data: { fieldErrors } };
+      }
+      if (checked.value.title === OVER_LIMIT) {
+        // A rule refusal: no field is to blame (a RuleViolation of the store).
+        return {
+          ok: false, message: "That did not save.",
+          data: { rule: "visit_limit", message: "A day holds at most 2 visits. Pick another day." },
+        };
       }
       if (checked.value.title === TAKEN) {
         return {

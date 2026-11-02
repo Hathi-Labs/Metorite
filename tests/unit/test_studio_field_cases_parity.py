@@ -196,6 +196,10 @@ RECORDS: list[Any] = [
     {"title": 5, "qty": "x"},
     {"title": "Ship it", "done": None},
     {"title": "Ship it", "status": "  "},
+    {"title": "\x85"},
+    {"title": "\x1f"},
+    {"title": "\ufeff"},
+    {"title": "\u2028 "},
     [], "x", None,
 ]
 

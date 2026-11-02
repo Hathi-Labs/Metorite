@@ -9,7 +9,7 @@
  * Fence: `blocks.test.ts`.
  */
 import { formatCardDate } from "@/lib/cardFields";
-import { type FieldSpec, checkValue } from "./fieldCheck";
+import { type FieldSpec, checkValue, minorDigits } from "./fieldCheck";
 import type { FieldType } from "./manifest";
 
 /** What a control holds: text, a tick, a list of picks, or the parts of a compound field. */
@@ -70,14 +70,7 @@ export function cellKindFor(type: FieldType): "text" | "tag" | "person" {
 
 const LOCALE = "en-IN";
 
-/** The digits after the point of a currency: 2 for INR, 0 for JPY. */
-export function minorDigits(currency: string): number {
-  try {
-    return new Intl.NumberFormat(LOCALE, { style: "currency", currency }).resolvedOptions().maximumFractionDigits ?? 2;
-  } catch {
-    return 2;
-  }
-}
+export { minorDigits };
 
 const pad = (n: number): string => String(n).padStart(2, "0");
 

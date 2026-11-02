@@ -21,8 +21,8 @@ import {
 } from "./blocks";
 import { StudioDataContext } from "./dataContext";
 import { type Row, type StudioDataDoor, sourceKey } from "./dataDoor";
-import { type FieldSpec, validateRecord } from "./fieldCheck";
-import { afterSend, blurProblem, checkForm, initialDrafts, recordOf, sendRecord } from "./formModel";
+import { type FieldSpec, checkValue, validateRecord } from "./fieldCheck";
+import { afterSend, blurProblem, checkForm, initialDrafts, recordOf, sendRecord, statusLines } from "./formModel";
 import { SAMPLE_FIELDS, SAMPLE_ROWS, SAMPLE_TABLE_KEYS, makeSampleDoor } from "./sampleDoor";
 
 beforeEach(() => clearAll());
@@ -227,6 +227,102 @@ describe("Form: after a send", () => {
       { ...opts, reset: false });
     expect(out.drafts).toBe(filled);
     expect(out.toast).toBe("Visit added");
+  });
+});
+
+describe("Form: an edit", () => {
+  const fields: FieldSpec[] = [
+    { key: "title", type: "text", required: true },
+    { key: "due", type: "date" },
+    { key: "at", type: "datetime" },
+  ];
+  const initial = { title: "A", due: "2026-11-04", at: "2026-11-04T04:30:45Z" };
+
+  it("sends null for an optional field that the member cleared", () => {
+    const drafts = { ...initialDrafts(fields, initial), due: "" };
+    const r = checkForm(fields, drafts, initial);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.due).toBeNull();
+  });
+
+  it("sends nothing for a field that was blank and stays blank", () => {
+    const r = checkForm(fields, initialDrafts(fields, { title: "A" }), { title: "A" });
+    expect(r.ok && "due" in r.value).toBe(false);
+  });
+
+  it("keeps the stored datetime, with its seconds, when the field is untouched", () => {
+    const r = checkForm(fields, initialDrafts(fields, initial), initial);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.at).toBe("2026-11-04T04:30:45Z");
+  });
+
+  it("writes a changed datetime from the draft", () => {
+    const drafts = { ...initialDrafts(fields, initial), at: "2026-11-05T10:00" };
+    const r = checkForm(fields, drafts, initial);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(String(r.value.at)).toMatch(/^2026-11-0[45]T\d\d:\d\d:00Z$/);
+  });
+});
+
+describe("Form: a field with no control", () => {
+  it("a required many money field does not block the submit", () => {
+    const fields: FieldSpec[] = [
+      { key: "title", type: "text" },
+      { key: "prices", type: "money", many: true, required: true },
+    ];
+    const r = checkForm(fields, initialDrafts(fields));
+    expect(r.ok).toBe(true);
+    const html = renderToStaticMarkup(createElement(FormView, {
+      fields, drafts: initialDrafts(fields), errors: {}, formId: "g", onDraft: noop, onBlur: noop, onSubmit: noop,
+    }));
+    expect(html).toContain("has no editor yet");
+  });
+});
+
+describe("Form: the money message", () => {
+  it("names the decimals, not minor units", () => {
+    const f: FieldSpec = { key: "m", type: "money" };
+    const bad = draftToValue(f, { amount: "1.005", currency: "INR" });
+    const r = checkValue(f, bad);
+    expect(r).toEqual({ ok: false, message: "Enter an amount with at most 2 decimals." });
+    const e = checkValue(f, draftToValue(f, { amount: "1e3", currency: "INR" }));
+    expect(e.ok).toBe(false);
+    const jpy = checkValue(f, draftToValue(f, { amount: "1.5", currency: "JPY" }));
+    expect(jpy).toEqual({ ok: false, message: "Enter a whole amount, with no decimals." });
+  });
+});
+
+describe("Form: the refusal contract", () => {
+  const fields: FieldSpec[] = [{ key: "title", type: "text" }];
+  const drafts = { title: "x" };
+  const opts = { savedMessage: "Added", reset: true };
+
+  it("a rule refusal shows in the status line and keeps the values", () => {
+    const out = afterSend(fields, drafts,
+      { kind: "sent", ok: false, message: "A day holds at most 2.", fieldErrors: {}, rule: "stock_not_negative" }, opts);
+    expect(out.status?.text).toBe("Refused by stock_not_negative: A day holds at most 2.");
+    expect(out.errors).toEqual({});
+    expect(out.drafts).toBe(drafts);
+  });
+
+  it("a fieldErrors key that names no field joins the status line", () => {
+    const out = afterSend(fields, drafts,
+      { kind: "sent", ok: false, message: "No.", fieldErrors: { title: "Taken.", ghost: "Bad." } }, opts);
+    expect(out.errors).toEqual({ title: "Taken." });
+    expect(out.status?.text).toBe("ghost: Bad.");
+  });
+
+  it("a field error alone leaves the status line empty", () => {
+    expect(statusLines(fields, { message: "x", fieldErrors: { title: "Taken." } })).toEqual([]);
+  });
+
+  it("the sample door answers a rule refusal and a field refusal", async () => {
+    const door = makeSampleDoor(SAMPLE_FIELDS, SAMPLE_ROWS, 0);
+    const rule = await sendRecord(door, "object:visit.create", { title: "Over limit" }, { current: false });
+    expect(rule).toMatchObject({ kind: "sent", ok: false, rule: "visit_limit" });
+    if (rule.kind === "sent") expect(rule.message).toContain("at most 2");
+    const field = await sendRecord(door, "object:visit.create", { title: "Duplicate" }, { current: false });
+    expect(field).toMatchObject({ kind: "sent", ok: false, fieldErrors: { title: expect.any(String) } });
   });
 });
 

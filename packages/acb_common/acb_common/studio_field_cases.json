@@ -4391,12 +4391,190 @@
      "type": "checkbox"
     }
    ],
+   "data": {
+    "title": "\u0085"
+   },
+   "ok": false,
+   "error_field": "title"
+  },
+  {
+   "id": "record-17",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "\u001f"
+   },
+   "ok": false,
+   "error_field": "title"
+  },
+  {
+   "id": "record-18",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "\ufeff"
+   },
+   "ok": true,
+   "out": {
+    "title": "\ufeff"
+   }
+  },
+  {
+   "id": "record-19",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "\u2028 "
+   },
+   "ok": false,
+   "error_field": "title"
+  },
+  {
+   "id": "record-20",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
    "data": [],
    "ok": false,
    "record_error": true
   },
   {
-   "id": "record-17",
+   "id": "record-21",
    "fields": [
     {
      "key": "title",
@@ -4438,7 +4616,7 @@
    "record_error": true
   },
   {
-   "id": "record-18",
+   "id": "record-22",
    "fields": [
     {
      "key": "title",

@@ -65,6 +65,9 @@ const storable = (s: string): boolean => !s.includes("\u0000") && !LONE_SURROGAT
 /** The same set as Python `str.isspace`. */
 const SPACE = /[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/;
 
+/** Python `str.strip()` removes exactly `SPACE`. JS `trim()` differs (U+FEFF, the C0 separators, NEL). */
+const ONLY_SPACE = new RegExp("^" + SPACE.source + "*$");
+
 const fail = (message: string): CheckResult => ({ ok: false, message });
 const pass = (value: unknown): CheckResult => ({ ok: true, value });
 
@@ -91,13 +94,23 @@ function number(v: unknown): CheckResult {
     : fail("Enter a number below 10^15, written with no exponent.");
 }
 
+/** The digits after the point of a currency: 2 for INR, 0 for JPY. */
+export function minorDigits(currency: string): number {
+  try {
+    return new Intl.NumberFormat("en-IN", { style: "currency", currency }).resolvedOptions().maximumFractionDigits ?? 2;
+  } catch {
+    return 2;
+  }
+}
+
 function money(v: unknown): CheckResult {
   if (
     !isObject(v) || !sameKeys(v, ["minor", "currency"]) ||
     typeof v.minor !== "number" || !Number.isInteger(v.minor) ||
     Math.abs(v.minor) >= MAX_ABS_NUMBER
   ) {
-    return fail("Enter an amount as a whole number of minor units.");
+    const d = isObject(v) && typeof v.currency === "string" ? minorDigits(v.currency) : 2;
+    return fail(d === 0 ? "Enter a whole amount, with no decimals." : `Enter an amount with at most ${d} decimals.`);
   }
   if (typeof v.currency !== "string" || !/^[A-Z]{3}$/.test(v.currency)) {
     return fail("Enter a currency of three capital letters, as INR.");
@@ -304,7 +317,7 @@ export function checkValue(field: FieldSpec, value: unknown): CheckResult {
 
 /** A blank value: nothing, only white space, or an empty list. */
 export const isBlank = (v: unknown): boolean =>
-  v === null || v === undefined || (typeof v === "string" && v.trim() === "") ||
+  v === null || v === undefined || (typeof v === "string" && ONLY_SPACE.test(v)) ||
   (Array.isArray(v) && v.length === 0);
 
 /** A key of a record, safe to name in a message. */

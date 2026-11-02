@@ -61,7 +61,7 @@ export default function BlocksPreviewPage() {
               <StudioForm fields={SAMPLE_FIELDS} door={door} action="object:visit.create"
                 title="New visit" submitLabel="Add visit" savedMessage="Visit added" />
               <p className="mt-3 text-xs text-muted-foreground">
-                To see a refusal of the server, save with the title Duplicate.
+                To see a refusal of the server, save with the title Duplicate (a field) or Over limit (a rule).
               </p>
             </section>
 

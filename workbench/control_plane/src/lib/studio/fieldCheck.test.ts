@@ -105,6 +105,10 @@ describe("what the form needs beyond the golden file", () => {
     const r = validateRecord([{ key: "constructor", type: "text", required: true }], {});
     expect(r.ok).toBe(false);
   });
+  it("calls blank what Python strip() calls blank, and no more", () => {
+    expect(["\x85", "\x1f", "\x1c", "\u2028", " \t"].every(isBlank)).toBe(true);
+    expect(isBlank("\ufeff")).toBe(false);
+  });
   it("calls a blank value blank", () => {
     expect([null, undefined, "", "  ", []].every(isBlank)).toBe(true);
     expect([0, false, "a", [0]].some(isBlank)).toBe(false);

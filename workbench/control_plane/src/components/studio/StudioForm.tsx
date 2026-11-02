@@ -241,7 +241,7 @@ export function StudioForm({
     });
 
   const submit = async () => {
-    const check = checkForm(fields, drafts);
+    const check = checkForm(fields, drafts, initial);
     if (!check.ok) {
       setErrors(check.errors);
       setStatus(null);
