@@ -286,3 +286,22 @@ def test_round_4_the_saved_turn_keeps_the_mark_of_its_request(
     (prompt,) = saved
     assert prompt is not None and prompt.message_id == f"u-{kind}"
     assert prompt.member_typed is stored
+
+
+def test_round_4_prompt_to_save_never_marks_a_card_answer() -> None:
+    """``prompt_to_save`` refuses the mark of a card answer by itself, so a
+    caller that passes the mark of the request cannot mark one."""
+    from gateway.rooms import RoomAccess
+    from gateway.routes.agent import prompt_to_save
+
+    room = RoomAccess(session_id="t", email="a@x.test", role="owner", can_read=True,
+                      can_send=True, can_cancel=True, can_invite=True, can_manage=True,
+                      is_shared=False, members=["a@x.test"])
+
+    def save(**extra: Any) -> Any:
+        return prompt_to_save(thread_id="t", message_id="u1", text="Answer: yes",
+                              timestamp=1, actor="a@x.test", room=room, **extra)
+
+    assert save(typed=True).member_typed is True
+    assert save(typed=False).member_typed is False
+    assert save(typed=True, card_answer={"question": "Send it?"}).member_typed is False

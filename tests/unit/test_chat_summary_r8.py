@@ -1673,7 +1673,10 @@ async def test_round_4_the_filter_keeps_every_chat_that_the_exact_rule_keeps(job
     newest row (the seam, above), and a row may be up to ``IDLE_SLACK``
     ahead of its insert: the browser clock, or a first checkpoint."""
     hour = timedelta(hours=1)
-    slack = summaries.IDLE_SLACK - timedelta(minutes=1)
+    # The promise is one day, written here and not read from the module, so a
+    # smaller IDLE_SLACK fails this test.
+    promise = timedelta(days=1)
+    slack = promise - timedelta(minutes=1)
     edge = T - summaries.WINDOW + timedelta(minutes=1)
     # (newest row, how far the row is ahead of the insert that moved updated_at)
     shapes = {
@@ -1702,7 +1705,7 @@ async def test_round_4_the_filter_keeps_every_chat_that_the_exact_rule_keeps(job
     # The documented limit: a row more than IDLE_SLACK ahead of its insert.
     # The chat gets no summary, the safe way to fail.
     late, _ = _job_chat(job, org=job.org_a, newest=edge)
-    _set_updated(job, late, edge - summaries.IDLE_SLACK - hour)
+    _set_updated(job, late, edge - promise - hour)
     assert late in await _idle_ids(job, job.org_a, T, exact=True)
     assert late not in await _idle_ids(job, job.org_a, T, exact=False)
 
