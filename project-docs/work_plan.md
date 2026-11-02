@@ -5078,6 +5078,7 @@ Owner directive, 2026-11-02, in chat. Board: **WS-60**, owner `specs/artifact_ma
 
 ```text
 "when it comes down to artifacts and folders, I leave it up to you. Basically, some really good way in which we can organize all the files, artifacts, and all the things that we upload and create via the agent chat should be available and accessible somewhere. I was thinking that, instead of having a separate artifacts system, it's one system that is accessible from the chat window. Possibly later on, these artifacts can either be linked into knowledge base articles or themselves become available within company knowledge."
+"ensure that the files in the file viewer have a reference of the session they were generated in. we should be able to delete a session chat without deleting its generated files"
 ```
 
 1. **One library.** Each file that a member uploads or an agent makes in a chat has one row in `artifacts`. No second file system exists.
@@ -5086,7 +5087,9 @@ Owner directive, 2026-11-02, in chat. Board: **WS-60**, owner `specs/artifact_ma
 4. **Folders exist, flat and private.** This replaces `artifact_management.md` §4.4, which refused folders. A folder belongs to one member, has one level, and a file can sit in several. A folder is a label, and it holds no grant. Sharing stays Share and a project, in the D12 grammar, so no second grant vocabulary starts.
 5. **A move never cuts a file from its chat.** The chat link stays, and the file stays in its chat's list.
 6. **Knowledge stays D104.** "Save to Knowledge" is a member's act. It copies the text into a space with the artifact id as provenance. An agent never publishes, and the file stays private. The screen says who will read the copy before the member confirms.
-7. **Open, and not decided here:** whether chat topics are per member or per organization, the rule for joining an old chat, and who pays for the idle-chat job (D142.9).
+7. **Every file names its chat** (owner, 2026-11-02, second message). The library shows the chat each file came from, and opens it. A file keeps the chat's title after the chat is deleted, marked deleted.
+8. **Deleting a chat keeps its files.** The delete moves them out of the chat's reach into the member's library, so a new chat that reuses the id gets none of them (H-227 stands). The delete dialog says how many files stay. This answers `artifact_management.md` §13 Q4, whose default trashed the scratch files. Slice AM-10.
+9. **Decided in D163, not here:** chat topics, the rule for joining an old chat, and who pays for the idle-chat job.
 
 Fence: advisory until AM-2. `nav.test.ts` fences the sidebar row when it goes.
 

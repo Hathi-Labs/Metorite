@@ -317,6 +317,12 @@ not a separate Artifacts app (2026-11-02). This section wins where §6.1 to
   sharing stays §5.
 - **The detail panel** shows the source chat, the folders, the version and
   the acts: Open, Use in a chat, Share and Save to Knowledge.
+- **Every file names its chat** (D162.7). The panel shows "From chat" with
+  the chat's title, and opens the chat. A file of a deleted chat shows the
+  title it had, marked deleted, with no link. A file from another app names
+  the app.
+- **Deleting a chat keeps its files** (D162.8). The dialog reads "Delete
+  this chat? Its 3 files stay in Files." §7.3 holds the rule.
 - **Save to Knowledge** is D104. The panel asks for a space and says who
   will read the copy. The file stays private, and the panel links to the
   page.
@@ -457,12 +463,30 @@ attach moves `last_activity_at`, so a thing in use never expires.
 
 ### 7.3 Deleting a chat
 
-Today `purge_thread_files` removes the chat's files at once. With the
-registry on, deleting a chat **trashes** its personal scratch artifacts and
-**keeps** every kept one. A kept artifact loses its `session_id` link and
-keeps its row and bytes. That is ChatGPT's "deleting a chat does not delete a
-file in the Library". It is also what the owner asked for when they said
-artifacts are "smartly stored away". §13 Q4 confirms it.
+~~Today `purge_thread_files` removes the chat's files at once. With the
+registry on, deleting a chat trashes its scratch artifacts and keeps the
+kept ones, which lose their `session_id` link.~~ **Changed by D162, 2026-11-02.**
+
+Deleting a chat keeps **every** file, and each file keeps its chat as its
+source. The owner: "we should be able to delete a session chat without
+deleting its generated files".
+
+- **Why the files cannot simply stay put.** A client chooses a chat's id,
+  so after a delete a member who knows the id can make a new chat with it.
+  The thread folders `inputs/<slug>/` and `outputs/<slug>/` would then hand
+  that chat the old files. That is H-227, and `purge_thread_files` exists to
+  stop it.
+- **So the delete moves them.** The chat's folders, its loose files and its
+  zips move to a kept folder that the server names with a new UUID, owned by
+  the member who deletes. No client can name it. The blob rows, the history
+  rows and the `artifacts` rows move with them, and the bytes and their
+  hashes do not change.
+- **The source stays.** Each `artifacts` row keeps `session_id`, and gets
+  `source_title`, the chat's title at the delete, and `source_deleted_at`.
+- **A room.** Only a member who may delete the chat deletes it
+  (`_may_delete_session`), and that member keeps the files.
+- **A failed move** keeps the chat, as a failed purge does today, and the
+  member can try again.
 
 ### 7.4 The sweep
 
@@ -668,6 +692,26 @@ Closes Metorite task #137 with #116's memory work.
 `artifact_versions` with the last five bodies for text kinds under 1 MB, the
 version stepper and a diff view on the artifact page.
 
+### AM-10 · A chat's files outlive the chat — AGENT-SAFE, HIGH tier (D162.8)
+
+The chat delete route moves the chat's files to a kept folder (§7.3) in
+place of `purge_thread_files`. Every door that makes a new chat keeps its
+purge of the new id. A migration (next free number, R1) adds two nullable
+columns to `artifacts`: `source_title TEXT` and `source_deleted_at
+TIMESTAMPTZ` (R6). The library shows a file of a deleted chat as "From
+chat: <title> · deleted". HIGH tier: it deletes, moves and guards member
+files, so it takes the full loop.
+
+Done when, as R8 tests on a real database:
+- A chat with two outputs, one upload and one zip is deleted. Its owner
+  still reads all four, with the same bytes and hashes.
+- A new chat made with the same id lists no file, and reads none of the
+  four. The H-227 tests still pass.
+- Each moved `artifacts` row keeps `session_id`, and has `source_title`
+  and `source_deleted_at`.
+- A failed move keeps the chat and answers 503.
+- Another member of the organization reads none of the four.
+
 ### Later, not here
 
 Live artifacts (#167, its own spec). Folding `pm_task_attachments` into the
@@ -710,7 +754,7 @@ others gate the slice they name.
 | Q1 | Does every artifact start **personal**, including one an agent makes on a shared project's task? | Yes. Personal, and attaching to the task widens it through the task | AM-3 |
 | Q2 | Scratch expiry and trash window | 90 days of no use, then 30 days in trash | AM-5 |
 | Q3 | Quotas | **Decided: owner, 2026-10-20 (D108).** 5 GB per member, and 5 GB × `seats_purchased` per organization, pooled. Refuse writes at 100 %, deletes always work | AM-5 |
-| Q4 | Deleting a chat | Trash its scratch artifacts, keep the kept ones | AM-5 |
+| Q4 | Deleting a chat | **Decided: D162, 2026-11-02.** Keep every file, moved out of the chat's reach, with the chat as its source | AM-10 |
 | Q5 | Links for people outside the organization | Not in this release. Later as an org switch, off by default, signed URL with expiry | AM-3 external half |
 | Q6 | Keep the bodies of old versions | Last five, text kinds under 1 MB, text only | AM-9 |
 | Q7 | Folders, and where the library lives | **Decided: D162, 2026-11-02.** One library, reached from the chat, with flat private folders | AM-2 |
