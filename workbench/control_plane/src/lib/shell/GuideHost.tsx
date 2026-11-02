@@ -13,6 +13,8 @@
  * - It opens the assistant where the step needs it: the panel for a `chat.*`
  *   anchor, and on a phone the peek strip (`assistant_guide.md` §4.3), which
  *   shows the step line with Next and End.
+ * - It holds the ONE live region that announces each step's line, at every
+ *   width. The popover, the step card and the strip hold none.
  * - Escape ends the tour in the same frame (G10). The page stays where it is.
  * - A start of the tour (`home.tour`) from any entry stamps `tour_seen_at`
  *   in the shell prefs (GD-5a). A resume after a reload does not.
@@ -22,8 +24,8 @@
  * still leaves the address.
  */
 
-import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useRef } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useRef } from "react";
 
 import {
   GUIDE_MENU_EVENT,
@@ -41,7 +43,7 @@ import {
   useGuide,
   withoutGuideParam,
 } from "./guide";
-import { assistantState, openAssistant, setAssistantMode } from "./assistant";
+import { assistantState, openAssistant, setAssistantMode, useAssistant } from "./assistant";
 import GuideSpotlight, { bindEscape } from "./GuideSpotlight";
 import { markTourSeen } from "./shellPrefs";
 
@@ -52,15 +54,26 @@ const DRAWER_ANCHOR = "home.app-list";
 export const isChatAnchor = (anchor: string | null): boolean => !!anchor && anchor.startsWith("chat.");
 
 /**
- * Whether the spotlight draws its popover. On a phone the strip or the step
- * card carries the line, except under the Menu drawer. On the tour's last
- * stop the step card carries the app chips (GD-5a). That stop rings the
- * message field, and a popover above the field would cover the chips, so the
- * card alone carries the line there.
+ * Whether the spotlight draws its popover. The line shows ONCE. The popover
+ * shows only when neither the step card nor the phone strip is on screen:
+ *
+ * - The step card sits in the assistant, so with the assistant open (the side
+ *   panel on a desktop) the card carries the line.
+ * - On a phone the strip or the sheet's card carries it. The one exception is
+ *   the Menu drawer stop, whose strip is under the drawer.
+ * - On the tour's last stop the card carries the app chips (GD-5a), and a
+ *   popover above the message field would cover them.
  */
-export function showsPopover(a: { phone: boolean; anchor: string; tourLast: boolean }): boolean {
+export function showsPopover(a: {
+  phone: boolean;
+  anchor: string;
+  tourLast: boolean;
+  /** The assistant is open, in any form. */
+  assistantOpen: boolean;
+}): boolean {
   if (a.tourLast && isChatAnchor(a.anchor)) return false;
-  return !a.phone || a.anchor === DRAWER_ANCHOR;
+  if (a.phone) return a.anchor === DRAWER_ANCHOR;
+  return !a.assistantOpen;
 }
 
 /**
@@ -85,10 +98,14 @@ export function assistantFor(a: {
   return needs && !a.open ? "dock" : null;
 }
 
-export default function GuideHost({ phone = false }: { phone?: boolean }) {
+function GuideHostInner({ phone = false }: { phone?: boolean }) {
   const g = useGuide();
   const pathname = usePathname();
   const router = useRouter();
+  const assistant = useAssistant();
+  // The address, reactive: a client move to `/?guide=home.tour` (the account
+  // menu's "Take the tour" from another page) starts the guide too.
+  const searchKey = useSearchParams()?.toString() ?? "";
   const active = isActive(g);
   const view = active ? guideView() : null;
   const anchor = view?.anchor ?? null;
@@ -101,17 +118,20 @@ export default function GuideHost({ phone = false }: { phone?: boolean }) {
 
   // The two ways in that a member made earlier: the link they followed, or a
   // stored mark of this tab. A mount with neither starts nothing.
+  const mounted = useRef(false);
   useEffect(() => {
     const id = guideFromSearch(window.location.search);
     if (id !== null) {
       startGuide(id, "url");
-      // Out of the address, so a reload resumes and does not start again.
+      // Out of the address at once, so a reload resumes and does not start
+      // again, and the flag read (which can be slow) never holds it there.
       const { pathname: p, search, hash } = window.location;
       window.history.replaceState(window.history.state, "", withoutGuideParam(p, search, hash));
-    } else {
+    } else if (!mounted.current) {
       resumeGuide();
     }
-  }, []);
+    mounted.current = true;
+  }, [searchKey]);
 
   // GD-5a: a member started the tour, from any entry. The record keeps the
   // first start, and a resume after a reload is not a start.
@@ -156,18 +176,42 @@ export default function GuideHost({ phone = false }: { phone?: boolean }) {
     window.dispatchEvent(new CustomEvent(GUIDE_MENU_EVENT, { detail: wantMenu ? "open" : "close" }));
   }, [wantMenu]);
 
-  if (!view || g.phase !== "pointing" || !view.anchor) return null;
+  const spot =
+    view && g.phase === "pointing" && view.anchor ? (
+      <GuideSpotlight
+        key={`${view.guide.id}:${g.step}`}
+        anchor={view.anchor}
+        say={view.say}
+        step={{ index: view.index, total: view.total }}
+        onNext={nextStep}
+        onEnd={() => endGuide("end")}
+        popover={showsPopover({
+          phone,
+          anchor: view.anchor,
+          tourLast: view.guide.id === TOUR_GUIDE_ID && view.isLast,
+          assistantOpen: assistant.open,
+        })}
+        onAnchorClick={nextStep}
+        onMissing={guideAnchorMissing}
+      />
+    ) : null;
   return (
-    <GuideSpotlight
-      key={`${view.guide.id}:${g.step}`}
-      anchor={view.anchor}
-      say={view.say}
-      step={{ index: view.index, total: view.total }}
-      onNext={nextStep}
-      onEnd={() => endGuide("end")}
-      popover={showsPopover({ phone, anchor: view.anchor, tourLast: view.guide.id === TOUR_GUIDE_ID && view.isLast })}
-      onAnchorClick={nextStep}
-      onMissing={guideAnchorMissing}
-    />
+    <>
+      {/* The ONE live region of the guide: it announces each step's line, on
+          a desktop and on a phone. It stays in the tree, so a change of its
+          text is announced. */}
+      <div role="status" aria-live="polite" data-guide-live="" className="sr-only">
+        {view ? view.say : ""}
+      </div>
+      {spot}
+    </>
+  );
+}
+
+export default function GuideHost({ phone = false }: { phone?: boolean }) {
+  return (
+    <Suspense fallback={null}>
+      <GuideHostInner phone={phone} />
+    </Suspense>
   );
 }

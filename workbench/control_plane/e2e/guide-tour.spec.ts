@@ -80,6 +80,13 @@ test.describe("desktop", () => {
     const box = await ring(page).boundingBox();
     const nav = await page.locator('[data-guide="home.app-list"]').boundingBox();
     expect(box && nav && Math.abs(box.x - (nav.x - 4)) < 3 && Math.abs(box.y - (nav.y - 4)) < 3).toBe(true);
+    // The popover sits beside the tall sidebar and never covers it.
+    const pop = (await popover(page).boundingBox())!;
+    expect(pop.x).toBeGreaterThanOrEqual(nav!.x + nav!.width);
+    const vp = page.viewportSize()!;
+    expect(pop.x + pop.width).toBeLessThanOrEqual(vp.width);
+    expect(pop.y).toBeGreaterThanOrEqual(0);
+    expect(pop.y + pop.height).toBeLessThanOrEqual(vp.height);
 
     // The address lost the parameter, so a reload resumes and does not restart.
     expect(new URL(page.url()).search).toBe("");
@@ -132,11 +139,22 @@ test.describe("desktop", () => {
     await expect(popover(page)).toContainText("1 of 5");
     await popover(page).getByRole("button", { name: "Next" }).click();
     await popover(page).getByRole("button", { name: "Next" }).click();
-    await expect(popover(page)).toContainText("3 of 5");
+    await expect(page.locator("[data-guide-card]")).toContainText("3 of 5");
     await expect(page.locator('[data-guide="chat.panel"]')).toHaveAttribute("data-assistant", "dock");
     await expect(ring(page)).toBeVisible();
     await expect(page.locator("[data-guide-card]")).toContainText("Ask me how to do anything");
-    await expect(page.locator("[data-guide-card]")).toContainText("3 of 5");
+    // The line shows once: the side panel is open, so the card carries it and no popover shows.
+    await expect(popover(page)).toHaveCount(0);
+    // One live region announces each step, at every width.
+    await expect(page.locator('[aria-live="polite"][data-guide-live]')).toHaveText(/Ask me how to do anything/);
+    await expect(page.locator('[data-guide-live]')).toHaveCount(1);
+    // The ring holds inside the window, so its whole line shows.
+    const vp = page.viewportSize()!;
+    const b = (await ring(page).boundingBox())!;
+    expect(b.x).toBeGreaterThanOrEqual(0);
+    expect(b.y).toBeGreaterThanOrEqual(0);
+    expect(b.x + b.width).toBeLessThanOrEqual(vp.width);
+    expect(b.y + b.height).toBeLessThanOrEqual(vp.height);
     // The message field stays open and usable.
     await expect(page.locator("[data-assistant] textarea")).toBeEnabled();
   });
@@ -154,9 +172,11 @@ test.describe("desktop", () => {
     await stub(page);
     await page.goto("/?guide=nope.tour");
     await expect(page.locator('[data-guide="home.app-list"]')).toBeVisible();
-    await page.waitForTimeout(500);
+    // The host takes the parameter out of the address at once, so wait for that
+    // state. On a cold server the host loads late.
+    await expect.poll(() => new URL(page.url()).search).toBe("");
     await expect(ring(page)).toHaveCount(0);
-    expect(new URL(page.url()).search).toBe("");
+    expect(await stored(page)).toBeNull();
   });
 });
 
@@ -185,10 +205,23 @@ test.describe("phone", () => {
       expect(b, `stop ${i + 1} ring`).not.toBeNull();
       expect(b!.width).toBeGreaterThan(0);
       expect(b!.height).toBeGreaterThan(0);
-      expect(b!.x + b!.width).toBeGreaterThan(0);
-      expect(b!.y + b!.height).toBeGreaterThan(0);
-      expect(b!.x).toBeLessThan(vp.width);
-      expect(b!.y).toBeLessThan(vp.height);
+      // The ring holds inside the window, so its whole line shows.
+      expect(b!.x).toBeGreaterThanOrEqual(0);
+      expect(b!.y).toBeGreaterThanOrEqual(0);
+      expect(b!.x + b!.width).toBeLessThanOrEqual(vp.width);
+      expect(b!.y + b!.height).toBeLessThanOrEqual(vp.height);
+      // One live region announces the step, though the popover is off on a phone.
+      await expect(page.locator('[aria-live="polite"][data-guide-live]')).toContainText(says[i]);
+      await expect(page.locator('[aria-live="polite"]:not([data-guide-live])').filter({ hasText: says[i] })).toHaveCount(0);
+      if (i === 0) {
+        // The popover is the first thing at the point of its Next button: nothing covers it.
+        const nb = (await carrier(i).getByRole("button", { name: "Next" }).boundingBox())!;
+        const onTop = await page.evaluate(
+          ([x, y]) => !!document.elementFromPoint(x, y)?.closest("[data-guide-popover]"),
+          [nb.x + nb.width / 2, nb.y + nb.height / 2],
+        );
+        expect(onTop).toBe(true);
+      }
       // On a phone only one copy of the line shows: the popover is for the drawer stop alone.
       await expect(popover(page)).toHaveCount(i === 0 ? 1 : 0);
       if (i < 4) {
@@ -199,5 +232,19 @@ test.describe("phone", () => {
     await carrier(4).getByRole("button", { name: "End tour" }).click();
     await expect(ring(page)).toHaveCount(0);
     expect(await stored(page)).toBeNull();
+  });
+
+  test("a tap on the drawer scrim removes the ring, and the step is missing, not detached", async ({ page }) => {
+    await stub(page);
+    await page.goto("/?guide=home.tour");
+    await expect(popover(page)).toContainText("1 of 5");
+    await expect(ring(page)).toBeVisible();
+    // The Menu drawer scrim is the top left of the window, above the sheet.
+    await page.mouse.click(195, 20);
+    // The ringed list left the page: the ring and the popover go with it.
+    await expect(ring(page)).toHaveCount(0);
+    await expect(popover(page)).toHaveCount(0);
+    // The anchor does not return, so the step is missing: the strip says so, and Next still works.
+    await expect(page.locator("[data-guide-strip]")).toContainText("I can't point at it on this screen.");
   });
 });

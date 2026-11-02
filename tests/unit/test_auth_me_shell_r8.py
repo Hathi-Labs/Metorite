@@ -181,6 +181,34 @@ async def test_the_tour_mark_merges_with_the_server_s_time_and_each_save_keeps_i
     assert raw["tour_seen_at"] == seen
 
 
+async def test_the_first_tour_start_stays_and_the_nudge_mark_still_takes_the_new_time(db) -> None:
+    """WS-OB GD-5a: a second stamp of ``tour_seen_at`` keeps the stored time
+    (COALESCE in SQL). The nudge mark is not changed by this: a second stamp
+    of it still overwrites. A stored JSON null does not count as a time."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        # A stored null (a layout save that never named the mark) takes the first start.
+        await _put(db.org_a, user, {"answered": "skipped"})
+        first = (await _put(db.org_a, user, {"tour_seen_at": "2001-01-01T00:00:00.000Z"}))["tour_seen_at"]
+        assert first is not None
+        second = await _put(db.org_a, user, {"tour_seen_at": "2002-02-02T00:00:00.000Z"})
+        assert second["tour_seen_at"] == first
+        # Both marks in one stamp: the tour mark stays, the nudge mark is written.
+        a = await _put(db.org_a, user, {"chat_first_message_at": "2026-10-21T09:00:00.000Z"})
+        b = await _put(db.org_a, user, {"chat_first_message_at": "2026-10-22T09:00:00.000Z",
+                                        "tour_seen_at": "2003-03-03T00:00:00.000Z"})
+        assert a["tour_seen_at"] == first
+        assert (b["chat_first_message_at"], b["tour_seen_at"]) == ("2026-10-22T09:00:00.000Z", first)
+        # An old tab's save carries the answer's `guide` and still saves.
+        c = await _put(db.org_a, user, {"preset": "engineer", "answered": "answered",
+                                        "pins": ["/tasks"], "guide": True})
+        assert (c["pins"], c["tour_seen_at"]) == (["/tasks"], first)
+    [(_, raw)] = _stored(db, email)
+    assert "guide" not in raw
+
+
 async def test_the_nudge_mark_round_trips_and_a_layout_save_keeps_it(db) -> None:
     """WS-62 CF-2: ``chat_first_message_at`` rides the jsonb column, and a
     later layout save that does not name it keeps it (§4.7, D-CF-7)."""

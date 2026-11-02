@@ -121,14 +121,26 @@ class TestValidation:
         # The tour mark takes the same rule (WS-OB GD-5a).
         {"tour_seen_at": "yesterday"},
         {"tour_seen_at": 1_700_000_000},
-        # `guide` is the server's fact, never a field the client writes.
-        {"pins": [], "guide": True},
-        {"guide": False},
     ])
     def test_a_bad_layout_is_refused_and_writes_nothing(self, fake: _FakeDB, body: dict) -> None:
         res = _client(_user()).put("/auth/me/shell", json=body)
         assert res.status_code == 422, res.text
         assert fake.sql == []
+
+    def test_a_tab_on_the_old_bundle_saves_with_the_answer_s_guide(self, fake: _FakeDB) -> None:
+        """`guide` is the server's fact. An old tab spreads the whole answer
+        back into its save, so the PUT drops `guide` and saves the rest. It
+        is never stored. Without this every sidebar save of that tab was a
+        422 until a reload."""
+        for guide in (True, False):
+            fake.sql.clear()
+            body = {"preset": "engineer", "answered": "answered", "pins": ["/tasks"], "guide": guide}
+            res = _client(_user()).put("/auth/me/shell", json=body)
+            assert res.status_code == 200, res.text
+            [(_, params)] = _writes(fake)
+            stored = json.loads(params["shell_prefs"])
+            assert "guide" not in stored
+            assert stored["pins"] == ["/tasks"]
 
     def test_a_good_layout_is_stored_with_its_names(self, fake: _FakeDB) -> None:
         body = {"preset": "engineer", "answered": "answered",
@@ -250,6 +262,20 @@ class TestTheTourMark:
         assert me._stamp(written["tour_seen_at"]) == written["tour_seen_at"]
         assert written["tour_seen_at"] > "2026-01-01"
         assert "|| EXCLUDED.shell_prefs" in sql
+
+    def test_the_tour_mark_keeps_a_stored_time_in_sql(self, fake: _FakeDB) -> None:
+        """The first start stays on the server. The R8 twin proves the value."""
+        res = _client(_user()).put("/auth/me/shell", json={"tour_seen_at": STAMP})
+        assert res.status_code == 200, res.text
+        [(sql, _)] = _writes(fake)
+        assert ("ARRAY['tour_seen_at'], COALESCE(NULLIF(user_settings.shell_prefs->'tour_seen_at', "
+                "CAST('null' AS jsonb)), EXCLUDED.shell_prefs->'tour_seen_at'), true)") in sql
+
+    def test_the_nudge_mark_alone_still_takes_the_new_time(self, fake: _FakeDB) -> None:
+        res = _client(_user()).put("/auth/me/shell", json={"chat_first_message_at": STAMP})
+        assert res.status_code == 200, res.text
+        [(sql, _)] = _writes(fake)
+        assert "tour_seen_at" not in sql
 
     def test_both_marks_alone_are_one_stamp(self, fake: _FakeDB) -> None:
         body = {"chat_first_message_at": STAMP, "tour_seen_at": STAMP}

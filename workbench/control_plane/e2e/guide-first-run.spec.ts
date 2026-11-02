@@ -102,14 +102,32 @@ const accountMenu = (page: Page) => page.getByRole("dialog", { name: "Account an
 const tourPuts = (store: Store) => store.puts.filter((p) => "tour_seen_at" in p);
 
 /**
- * Next through the stops, from `from` to 5 of 5. On the last stop the step
- * card in the side chat carries the line and the chips, and no popover
- * covers it.
+ * The three welcome buttons stand in one column of equal width: no row wraps,
+ * so none stands alone (desktop and 390 px).
+ */
+async function expectCleanButtons(page: Page): Promise<void> {
+  const names = ["Explore on my own first", "Show me around", "Invite my team"];
+  const boxes = [];
+  for (const name of names) boxes.push((await welcome(page).getByRole("button", { name }).boundingBox())!);
+  for (let i = 1; i < boxes.length; i++) {
+    expect(boxes[i].y).toBeGreaterThan(boxes[i - 1].y + boxes[i - 1].height - 1);
+    expect(Math.abs(boxes[i].x - boxes[0].x)).toBeLessThan(2);
+    expect(Math.abs(boxes[i].width - boxes[0].width)).toBeLessThan(2);
+  }
+}
+
+/**
+ * Next through the stops, from `from` to 5 of 5. The line shows ONCE. Stops 1
+ * and 2 ring a part of the page, and the popover carries the line. From stop 3
+ * the side panel is open, so the step card carries it, and the last stop's
+ * card also carries the chips. No popover covers either.
  */
 async function nextTo5(page: Page, from: number): Promise<void> {
+  const line = (i: number) => (i <= 2 ? popover(page) : card(page));
   for (let i = from; i < 5; i++) {
-    await expect(popover(page)).toContainText(`${i} of 5`);
-    await popover(page).getByRole("button", { name: "Next" }).click();
+    await expect(line(i)).toContainText(`${i} of 5`);
+    await expect(i <= 2 ? card(page) : popover(page)).toHaveCount(0);
+    await line(i).getByRole("button", { name: "Next" }).click();
   }
   await expect(card(page)).toContainText("5 of 5");
   await expect(ring(page)).toBeVisible();
@@ -124,6 +142,7 @@ test("a founder: Show me around closes the welcome, runs to 5 of 5, and a chip o
   await expect(welcome(page)).toBeVisible();
   // Nothing starts before the founder presses the button (D-GD-1).
   await expect(ring(page)).toHaveCount(0);
+  await expectCleanButtons(page);
   await welcome(page).getByRole("button", { name: "Show me around" }).click();
 
   // The dialog closes at once, by the path of "Explore on my own first".
@@ -158,10 +177,43 @@ test("a founder: Show me around closes the welcome, runs to 5 of 5, and a chip o
   expect(Object.keys(tourPuts(store)[0])).toEqual(["tour_seen_at"]);
 
   await chips.getByRole("button", { name: "Projects" }).click();
-  await expect(page).toHaveURL(/\/projects$/);
+  // A cold dev server compiles /projects on this first visit.
+  await expect(page).toHaveURL(/\/projects$/, { timeout: 30_000 });
   await expect(ring(page)).toHaveCount(0);
   await expect(card(page)).toHaveCount(0);
   expect(await stored(page)).toBeNull();
+});
+
+test("a member on another page: Take the tour goes to / and stop 4 rings My Day", async ({ page }) => {
+  await stub(page);
+  await page.goto("/projects");
+  await expect(aside(page)).toBeVisible();
+  await accountTrigger(page).click();
+  await accountMenu(page).getByRole("button", { name: "Take the tour" }).click();
+  await expect(accountMenu(page)).toHaveCount(0);
+  // The row navigates to the guide link and does not start the tour in place.
+  await expect(page).toHaveURL(/localhost:\d+\/$/);
+  await expect(popover(page)).toContainText("1 of 5");
+
+  // Stop 4 rings My Day, which lives on `/`. The tour used to miss it from here.
+  await popover(page).getByRole("button", { name: "Next" }).click();
+  await popover(page).getByRole("button", { name: "Next" }).click();
+  await expect(card(page)).toContainText("3 of 5");
+  await card(page).getByRole("button", { name: "Next" }).click();
+  await expect(card(page)).toContainText("4 of 5");
+  await expect(card(page)).not.toContainText("can't point");
+  const target = page.locator('[data-guide="home.my-day"]');
+  await expect(target).toBeVisible();
+  await expect(ring(page)).toBeVisible();
+  const r = (await ring(page).boundingBox())!;
+  const t = (await target.boundingBox())!;
+  const vp = page.viewportSize()!;
+  // The ring is on My Day (its box, held inside the window), and it shows whole.
+  expect(Math.abs(r.x - Math.max(4, t.x - 4))).toBeLessThan(3);
+  expect(r.x).toBeGreaterThanOrEqual(0);
+  expect(r.y).toBeGreaterThanOrEqual(0);
+  expect(r.x + r.width).toBeLessThanOrEqual(vp.width);
+  expect(r.y + r.height).toBeLessThanOrEqual(vp.height);
 });
 
 test("a member: Take the tour in the account menu runs to the end, and a reload starts nothing", async ({ page }) => {
@@ -234,6 +286,7 @@ test.describe("phone", () => {
   test("a founder on a phone runs to 5 of 5, and a chip opens its app with the sheet out of the way", async ({ page }) => {
     await stub(page, { me: FOUNDER });
     await page.goto("/?welcome=new-org");
+    await expectCleanButtons(page);
     await welcome(page).getByRole("button", { name: "Show me around" }).click();
     await expect(page.getByRole("dialog", { name: "Your organization is ready" })).toHaveCount(0, { timeout: 1_000 });
     // Stop 1 is under the Menu drawer, stops 2 and 4 use the strip, stop 3 the card.
@@ -249,7 +302,8 @@ test.describe("phone", () => {
     // The strip stays one line: it never draws a chip.
     await expect(page.locator("[data-guide-strip] [data-guide-chips]")).toHaveCount(0);
     await chips.getByRole("button", { name: "Projects" }).click();
-    await expect(page).toHaveURL(/\/projects$/);
+    // A cold dev server compiles /projects on this first visit.
+    await expect(page).toHaveURL(/\/projects$/, { timeout: 30_000 });
     await expect(ring(page)).toHaveCount(0);
     expect(await page.evaluate(() => document.querySelector('[data-assistant="full"]') === null)).toBe(true);
   });

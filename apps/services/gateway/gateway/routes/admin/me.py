@@ -355,7 +355,8 @@ class ShellPrefs(BaseModel):
     about the layout, and the welcome dialog's one write must not bring the
     nudge back. A body that names it null clears it on purpose.
 
-    ``tour_seen_at`` (WS-OB GD-5a) follows the same rules. The client sends it
+    ``tour_seen_at`` (WS-OB GD-5a) follows the same rules, and the first
+    start stays: a stored time is never overwritten (``stamp-first``). The client sends it
     alone when the member starts the tour (``markTourSeen``). A body that
     names it with a time stores the SERVER's time (``_server_stamp``), so a
     wrong device clock never reaches the record.
@@ -448,7 +449,26 @@ _SET_STAMP = (
     "CASE WHEN jsonb_typeof(user_settings.shell_prefs) = 'object' "
     "THEN user_settings.shell_prefs ELSE CAST('{}' AS jsonb) END || EXCLUDED.shell_prefs"
 )
-_SET_BY_MODE = {"layout": _SET_LAYOUT, "layout-keep": _SET_LAYOUT_KEEP, "stamp": _SET_STAMP}
+#: ``stamp-first``: a ``stamp`` that also keeps a stored ``tour_seen_at``. The
+#: first start of the tour stays on the server (WS-OB GD-5a). Only the tour
+#: mark keeps its first value. The nudge mark still takes the new one.
+#: ``NULLIF`` turns a stored JSON null into "none", so the new time lands then.
+_SET_STAMP_FIRST = (
+    f"jsonb_set({_SET_STAMP}, ARRAY['tour_seen_at'], "
+    "COALESCE(NULLIF(user_settings.shell_prefs->'tour_seen_at', CAST('null' AS jsonb)), "
+    "EXCLUDED.shell_prefs->'tour_seen_at'), true)"
+)
+_SET_BY_MODE = {
+    "layout": _SET_LAYOUT,
+    "layout-keep": _SET_LAYOUT_KEEP,
+    "stamp": _SET_STAMP,
+    "stamp-first": _SET_STAMP_FIRST,
+}
+
+#: Fields of the ANSWER that are facts of the server, not of the layout. A
+#: tab on an older bundle spreads the whole answer back into its save, so the
+#: PUT drops these before it validates, and never stores them.
+READ_ONLY_ANSWER_KEYS: tuple[str, ...] = ("guide",)
 
 
 def _server_stamp() -> str:
@@ -604,6 +624,8 @@ async def put_my_shell(
     mode = "layout"
     keep: tuple[str, ...] = ()
     if body is not None:
+        # An old tab sends back the answer it read, ``guide`` included.
+        body = {k: v for k, v in body.items() if k not in READ_ONLY_ANSWER_KEYS}
         try:
             model = ShellPrefs.model_validate(body)
         except ValidationError as exc:
@@ -628,6 +650,9 @@ async def put_my_shell(
         # GD-5a: the tour mark is the SERVER's time, never the device's.
         if prefs.get("tour_seen_at") is not None:
             prefs["tour_seen_at"] = _server_stamp()
+            # The first start stays: a stored time wins over this one.
+            if mode == "stamp":
+                mode = "stamp-first"
     try:
         async with _tenant_session() as db:
             stored = await _write_shell(db, uid, prefs, mode, keep)

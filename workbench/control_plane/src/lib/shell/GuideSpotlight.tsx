@@ -31,7 +31,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { PANEL_SURFACES } from "@/components/ui/AnchoredPanel";
+import { PANEL_LAYERS, PANEL_SURFACES } from "@/components/ui/AnchoredPanel";
 import Button from "@/components/ui/Button";
 
 import { WATCHED_ATTRIBUTES, isShown } from "./guideAnchor";
@@ -67,8 +67,12 @@ export const DEFAULT_WAIT_MS = 3000;
 export const POPOVER_WIDTH = 320;
 const POPOVER_FALLBACK_HEIGHT = 120;
 const RING_PAD = 4;
+/** The ring line is 2 px outside its box, so a ring held this far from the window edge shows whole. */
+export const RING_INSET = 4;
 const GAP = 12;
 const MARGIN = 8;
+/** An anchor this tall (a share of the window) gets the popover beside it, not below it. */
+const TALL_SHARE = 0.4;
 
 type Rect = { left: number; top: number; right: number; bottom: number; width: number; height: number };
 
@@ -152,6 +156,16 @@ export function watchAnchor(o: {
 }
 
 // ---------------------------------------------------------------- motion ---
+//
+// The ring and the popover have NO transition. Both follow their anchor on
+// every scroll frame, and a transition on left, top, width or height makes
+// them trail it (`DESIGN_SYSTEM.md` section 11, `motion.test.ts` G3). A class
+// is never built at run time either: Tailwind would not generate it. Rule 8
+// of `GuideSpotlight.test.ts` holds both.
+//
+// Layer: both sit on the design system's `top` panel layer (`PANEL_LAYERS`),
+// above the phone Menu drawer (z-70) and a Modal (z-50). The popover comes
+// after the ring in the tree, so it paints over it. No z value is written here.
 
 export function prefersReducedMotion(win: { matchMedia?: (q: string) => { matches: boolean } } | undefined): boolean {
   return win?.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
@@ -164,11 +178,6 @@ export function scrollBehaviorFor(reduced: boolean): ScrollBehavior {
 /** Scroll the anchor into view with the least movement. */
 export function scrollAnchorIntoView(el: Pick<HTMLElement, "scrollIntoView">, reduced: boolean): void {
   el.scrollIntoView({ block: "nearest", behavior: scrollBehaviorFor(reduced) });
-}
-
-/** The transition classes. Empty under reduced motion: no transition, no animation. */
-export function motionClasses(reduced: boolean, props: string): string {
-  return reduced ? "" : `transition-[${props}] duration-150 ease-out`;
 }
 
 // ------------------------------------------------------------------- keys ---
@@ -211,24 +220,71 @@ export function bindAnchorClick(
 
 // -------------------------------------------------------------- placement ---
 
+type Box = { left: number; top: number; width: number; height: number };
+type Viewport = { width: number; height: number };
+
 /** The ring box: the anchor's box plus a small pad. */
-export function ringBox(rect: Rect, pad = RING_PAD): { left: number; top: number; width: number; height: number } {
+export function ringBox(rect: Rect, pad = RING_PAD): Box {
   return { left: rect.left - pad, top: rect.top - pad, width: rect.width + pad * 2, height: rect.height + pad * 2 };
 }
 
 /**
- * Where the popover sits. It prefers below the anchor, flips above when below
- * has no room, and clamps to the window on every side. The width shrinks on a
- * narrow window, so it fits at 390 px.
+ * The ring box held inside the window, `inset` from every edge, so the whole
+ * line shows. An anchor taller than the window (My Day) or a panel that fills
+ * it (the phone sheet) would otherwise ring off screen.
+ */
+export function clampRing(box: Box, viewport: Viewport, inset = RING_INSET): Box {
+  const left = Math.max(inset, box.left);
+  const top = Math.max(inset, box.top);
+  const right = Math.min(viewport.width - inset, box.left + box.width);
+  const bottom = Math.min(viewport.height - inset, box.top + box.height);
+  return { left, top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+}
+
+/** The part of the anchor that is inside the window. The popover places against this. */
+export function visibleRect(rect: Rect, viewport: Viewport): Rect {
+  const left = Math.min(Math.max(rect.left, 0), viewport.width);
+  const top = Math.min(Math.max(rect.top, 0), viewport.height);
+  const right = Math.max(left, Math.min(rect.right, viewport.width));
+  const bottom = Math.max(top, Math.min(rect.bottom, viewport.height));
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+/**
+ * Where the popover sits. Beside a tall anchor, or when neither below nor
+ * above has room, it goes to the right of an anchor on the left half and to
+ * the left of one on the right half, so it never covers the anchor when the
+ * window has room. Otherwise it prefers below, flips above when below has no
+ * room, and clamps to the window on every side. The width shrinks on a narrow
+ * window, so it fits at 390 px.
  */
 export function placePopover(
   rect: Rect,
   size: { width: number; height: number },
-  viewport: { width: number; height: number },
-): { left: number; top: number; width: number; side: "below" | "above" } {
+  viewport: Viewport,
+): { left: number; top: number; width: number; side: "below" | "above" | "right" | "left" } {
   const width = Math.min(size.width, Math.max(0, viewport.width - MARGIN * 2));
   const spaceBelow = viewport.height - rect.bottom - GAP - MARGIN;
   const spaceAbove = rect.top - GAP - MARGIN;
+  const vertical = size.height <= spaceBelow || size.height <= spaceAbove;
+  if (rect.height >= viewport.height * TALL_SHARE || !vertical) {
+    const spaceRight = viewport.width - rect.right - GAP - MARGIN;
+    const spaceLeft = rect.left - GAP - MARGIN;
+    const rightFits = spaceRight >= width;
+    const leftFits = spaceLeft >= width;
+    if (rightFits || leftFits) {
+      const onLeftHalf = rect.left + rect.width / 2 < viewport.width / 2;
+      const right = onLeftHalf ? rightFits : !leftFits;
+      const rawLeft = right ? rect.right + GAP : rect.left - GAP - width;
+      const rawTop = rect.top + rect.height / 2 - size.height / 2;
+      return {
+        left: Math.max(MARGIN, Math.min(rawLeft, viewport.width - MARGIN - width)),
+        top: Math.max(MARGIN, Math.min(rawTop, viewport.height - MARGIN - size.height)),
+        width,
+        side: right ? "right" : "left",
+      };
+    }
+  }
   const below = size.height <= spaceBelow || spaceBelow >= spaceAbove;
   const rawTop = below ? rect.bottom + GAP : rect.top - GAP - size.height;
   const top = Math.max(MARGIN, Math.min(rawTop, viewport.height - MARGIN - size.height));
@@ -245,19 +301,14 @@ export function stepLabel(step: { index: number; total: number }): string {
 }
 
 /**
- * The popover's content. Exported so a test reads its markup. The live region
- * holds the line for a screen reader, and the visible copy is hidden from it,
- * so the line is not read twice.
+ * The popover's content. Exported so a test reads its markup. It holds NO live
+ * region: `GuideHost` owns the one that announces each step at every width, so
+ * a desktop does not announce the line twice.
  */
 export function GuidePopoverBody(p: Pick<GuideSpotlightProps, "say" | "step" | "onNext" | "onBack" | "onEnd">) {
   return (
     <>
-      <div role="status" aria-live="polite" className="sr-only">
-        {p.say}
-      </div>
-      <p aria-hidden="true" className="text-sm text-foreground">
-        {p.say}
-      </p>
+      <p className="text-sm text-foreground">{p.say}</p>
       <div className="mt-3 flex items-center gap-2">
         <span className="mr-auto text-xs text-muted-foreground">{p.step ? stepLabel(p.step) : ""}</span>
         {p.onBack ? (
@@ -266,7 +317,7 @@ export function GuidePopoverBody(p: Pick<GuideSpotlightProps, "say" | "step" | "
           </Button>
         ) : null}
         <Button variant="ghost" size="sm" onClick={p.onEnd}>
-          End
+          End tour
         </Button>
         {p.onNext ? (
           <Button variant="primary" size="sm" onClick={p.onNext}>
@@ -276,6 +327,32 @@ export function GuidePopoverBody(p: Pick<GuideSpotlightProps, "say" | "step" | "
       </div>
     </>
   );
+}
+
+/**
+ * Watch an anchor that is on screen. When it leaves the tree or hides (a tap
+ * on the drawer scrim removes the Menu drawer), `onGone` runs once and the
+ * watch stops. Pure, so a test drives it. Returns the cancel function.
+ */
+export function watchDetached(o: {
+  isGone: () => boolean;
+  observe: (onChange: () => void) => () => void;
+  onGone: () => void;
+}): () => void {
+  let done = false;
+  let stop: (() => void) | null = null;
+  const check = () => {
+    if (done || !o.isGone()) return;
+    done = true;
+    stop?.();
+    o.onGone();
+  };
+  stop = o.observe(check);
+  if (done) stop();
+  return () => {
+    done = true;
+    stop?.();
+  };
 }
 
 const domScheduler: Scheduler = {
@@ -306,14 +383,14 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
   latest.current = props;
   const popRef = useRef<HTMLDivElement | null>(null);
   const [el, setEl] = useState<HTMLElement | null>(null);
-  const [reduced, setReduced] = useState(false);
+  // Grows when the ringed anchor leaves the page, so the wait for it starts again.
+  const [attempt, setAttempt] = useState(0);
   const [box, setBox] = useState<{ rect: Rect; pop: ReturnType<typeof placePopover> } | null>(null);
 
   useEffect(() => {
     setEl(null);
     setBox(null);
     const isReduced = prefersReducedMotion(window);
-    setReduced(isReduced);
     return watchAnchor({
       anchor,
       waitMs,
@@ -326,7 +403,22 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
       },
       onMissing: (id) => latest.current.onMissing?.(id),
     });
-  }, [anchor, waitMs]);
+  }, [anchor, waitMs, attempt]);
+
+  // The anchor leaves the tree or hides: the ring goes at once, and the wait
+  // for the anchor starts again. If it does not return, `onMissing` runs.
+  useEffect(() => {
+    if (!el) return;
+    return watchDetached({
+      isGone: () => !el.isConnected || !isShown(el),
+      observe: observeDom,
+      onGone: () => {
+        setEl(null);
+        setBox(null);
+        setAttempt((n) => n + 1);
+      },
+    });
+  }, [el]);
 
   const place = useCallback(() => {
     if (!el) return;
@@ -336,10 +428,8 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
       width: POPOVER_WIDTH,
       height: pr && pr.height > 0 ? pr.height : POPOVER_FALLBACK_HEIGHT,
     };
-    setBox({
-      rect: r,
-      pop: placePopover(r, size, { width: window.innerWidth, height: window.innerHeight }),
-    });
+    const vp = { width: window.innerWidth, height: window.innerHeight };
+    setBox({ rect: r, pop: placePopover(visibleRect(r, vp), size, vp) });
   }, [el]);
 
   useLayoutEffect(() => {
@@ -365,7 +455,7 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
   }, [el]);
 
   if (!el || !box) return null;
-  const ring = ringBox(box.rect);
+  const ring = clampRing(ringBox(box.rect), { width: window.innerWidth, height: window.innerHeight });
 
   return createPortal(
     <>
@@ -373,7 +463,7 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
         aria-hidden="true"
         data-guide-ring=""
         style={{ left: ring.left, top: ring.top, width: ring.width, height: ring.height }}
-        className={`pointer-events-none fixed z-[90] rounded-lg ring-2 ring-primary ${motionClasses(reduced, "left,top,width,height")}`}
+        className={`pointer-events-none fixed ${PANEL_LAYERS.top} rounded-lg ring-2 ring-primary`}
       />
       {popover ? (
       <div
@@ -382,7 +472,7 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
         aria-label="Guide"
         data-guide-popover=""
         style={{ left: box.pop.left, top: box.pop.top, width: box.pop.width }}
-        className={`fixed z-[91] p-3 ${PANEL_SURFACES.panel} ${motionClasses(reduced, "left,top")}`}
+        className={`fixed ${PANEL_LAYERS.top} p-3 ${PANEL_SURFACES.panel}`}
       >
         <GuidePopoverBody say={say} step={step} onNext={onNext} onBack={onBack} onEnd={onEnd} />
       </div>

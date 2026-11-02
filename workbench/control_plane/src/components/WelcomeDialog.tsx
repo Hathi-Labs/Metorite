@@ -115,7 +115,7 @@ export function appChoices(sections: readonly NavSection[]): NavSection[] {
  * dialog by the same path as "Explore on my own first", then starts the
  * tour. The tour never starts by itself (D-GD-1, `assistant_guide.md` §4.1).
  */
-function InviteBody({ onDone, onTour }: { onDone: () => void; onTour?: () => void }) {
+export function InviteBody({ onDone, onTour }: { onDone: () => void; onTour?: () => void }) {
   return (
     <div className="flex flex-col gap-4 p-4">
       <p className="text-sm text-muted-foreground">
@@ -124,16 +124,19 @@ function InviteBody({ onDone, onTour }: { onDone: () => void; onTour?: () => voi
         — each teammate gets an email, signs in with their own address, and lands
         straight in your workspace.
       </p>
-      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
-        <Button variant="secondary" onClick={onDone}>
+      {/* Three buttons do not fit one row in this dialog, and a wrapped row
+          left "Invite my team" alone. With the tour button they stand in ONE
+          column, each the full width. Two buttons keep the row. */}
+      <div className={onTour ? "flex flex-col gap-2" : "flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end"}>
+        <Button variant="secondary" className={onTour ? "w-full" : ""} onClick={onDone}>
           Explore on my own first
         </Button>
         {onTour ? (
-          <Button variant="secondary" onClick={onTour}>
+          <Button variant="secondary" className="w-full" onClick={onTour}>
             Show me around
           </Button>
         ) : null}
-        <Link href="/settings/organization" onClick={onDone}>
+        <Link href="/settings/organization" onClick={onDone} className={onTour ? "block" : undefined}>
           <Button className="w-full">Invite my team</Button>
         </Link>
       </div>

@@ -19,12 +19,14 @@ import {
   anchorSelector,
   bindAnchorClick,
   bindEscape,
-  motionClasses,
+  clampRing,
   placePopover,
   prefersReducedMotion,
   ringBox,
   scrollAnchorIntoView,
+  visibleRect,
   watchAnchor,
+  watchDetached,
 } from "./GuideSpotlight";
 
 const SRC = readFileSync(join(__dirname, "GuideSpotlight.tsx"), "utf-8");
@@ -126,6 +128,44 @@ describe("rule 2: ring, in a portal, that takes no pointer", () => {
   });
 });
 
+describe("rule 2b: the ring stays inside the window", () => {
+  const vp = { width: 1280, height: 900 };
+
+  it("leaves a ring that fits as it is", () => {
+    const box = ringBox({ left: 100, top: 50, right: 180, bottom: 90, width: 80, height: 40 });
+    expect(clampRing(box, vp)).toEqual(box);
+  });
+
+  it("holds a ring taller than the window to the window, inset so the whole line shows", () => {
+    // My Day was 1555 px tall in a 900 px window.
+    const tall = ringBox({ left: 300, top: 40, right: 1100, bottom: 1595, width: 800, height: 1555 });
+    const c = clampRing(tall, vp);
+    expect(c.top).toBeGreaterThanOrEqual(4);
+    expect(c.top + c.height).toBeLessThanOrEqual(900 - 4);
+    expect(c.left).toBe(tall.left);
+  });
+
+  it("holds a ring that starts at the window edge, or fills the window (390 px)", () => {
+    const phone = { width: 390, height: 852 };
+    const sheet = clampRing(ringBox({ left: 0, top: 0, right: 390, bottom: 852, width: 390, height: 852 }), phone);
+    expect(sheet).toEqual({ left: 4, top: 4, width: 382, height: 844 });
+    const edge = clampRing(ringBox({ left: 0, top: 100, right: 256, bottom: 500, width: 256, height: 400 }), phone);
+    expect(edge.left).toBe(4);
+    expect(edge.left + edge.width).toBeLessThanOrEqual(386);
+  });
+
+  it("never gives a negative size for an anchor wholly off screen", () => {
+    const c = clampRing(ringBox({ left: 2000, top: 2000, right: 2080, bottom: 2040, width: 80, height: 40 }), vp);
+    expect(c.width).toBe(0);
+    expect(c.height).toBe(0);
+  });
+
+  it("cuts the anchor to the window for the popover", () => {
+    const v = visibleRect({ left: 300, top: 40, right: 1100, bottom: 1595, width: 800, height: 1555 }, vp);
+    expect([v.top, v.bottom, v.height]).toEqual([40, 900, 860]);
+  });
+});
+
 describe("rule 3: scroll into view", () => {
   it("scrolls with block nearest", () => {
     const seen: unknown[] = [];
@@ -149,11 +189,30 @@ describe("rule 4: focus stays on the page", () => {
 });
 
 describe("rule 5: announce", () => {
-  it("puts the line in a polite live region, and the popover has a name", () => {
+  it("holds NO live region: GuideHost owns the one that announces each step at every width", () => {
     const html = renderToStaticMarkup(createElement(GuidePopoverBody, { say: "Ask here", onEnd: () => {} }));
-    expect(html).toMatch(/role="status"[^>]*aria-live="polite"|aria-live="polite"[^>]*role="status"/);
     expect(html).toContain("Ask here");
+    expect(html).not.toMatch(/aria-live|role="status"|aria-hidden/);
+    expect(CODE).not.toMatch(/aria-live|role="status"/);
+    // The popover keeps a name.
     expect(CODE).toMatch(/role="group"\s+aria-label="Guide"/);
+    // The host holds exactly one live region, in the tree for every width.
+    const host = readFileSync(join(__dirname, "GuideHost.tsx"), "utf-8").replace(/\r\n/g, "\n");
+    expect(host.match(/aria-live="polite"/g)).toHaveLength(1);
+    expect(host).toContain("data-guide-live");
+    // The step card and the strip add none.
+    for (const f of ["GuideStepCard.tsx", "AssistantDock.tsx"]) {
+      const src = readFileSync(join(__dirname, f), "utf-8");
+      const guide = f === "GuideStepCard.tsx" ? src : src.slice(src.indexOf("data-guide-strip"), src.indexOf("data-guide-strip") + 900);
+      expect(guide).not.toMatch(/aria-live="polite"/);
+    }
+  });
+
+  it("labels the end button End tour, as the card and the strip do", () => {
+    const html = renderToStaticMarkup(createElement(GuidePopoverBody, { say: "x", onEnd: () => {} }));
+    expect(html).toContain("End tour");
+    expect(readFileSync(join(__dirname, "AssistantDock.tsx"), "utf-8")).toContain("End tour");
+    expect(readFileSync(join(__dirname, "GuideStepCard.tsx"), "utf-8")).toContain("End tour");
   });
 
   it("shows 2 of 5 in the muted token, and Next and Back only when given", () => {
@@ -217,9 +276,23 @@ describe("rule 8: reduced motion", () => {
     expect(prefersReducedMotion(undefined)).toBe(false);
   });
 
-  it("has no transition class, and scrolls with auto", () => {
-    expect(motionClasses(true, "left,top")).toBe("");
-    expect(motionClasses(false, "left,top")).toContain("transition");
+  it("has no transition at all, so the ring follows its anchor with no lag", () => {
+    // The old file built `transition-[${props}]` at run time. Tailwind never
+    // generated that class, so `duration-150` alone gave `transition: all`.
+    // Nothing here moves by transition: no class, no style, no template.
+    expect(CODE).not.toMatch(/transition(?!end)|duration-|ease-|animate-|animation(?!end)|motion-safe|motion-reduce/i);
+    expect(CODE).not.toMatch(/motionClasses/);
+    // A class is never built at run time from a variable, whatever its name.
+    const classNames = [...CODE.matchAll(/className=\{`([^`]*)`\}/g)].map((m) => m[1]);
+    for (const c of classNames) {
+      for (const hole of c.matchAll(/\$\{([^}]*)\}/g)) expect(hole[1]).toMatch(/^PANEL_(SURFACES|LAYERS)\.\w+$/);
+    }
+    // The ring takes no pointer. Both parts sit on the design system's top layer, and write no z value.
+    expect(CODE).toMatch(/data-guide-ring=""[\s\S]*?className=\{`pointer-events-none fixed \$\{PANEL_LAYERS\.top\} [^`$]*`\}/);
+    expect(CODE).not.toMatch(/z-\[|z-\d/);
+  });
+
+  it("scrolls with auto under reduced motion", () => {
     const seen: { behavior?: string }[] = [];
     scrollAnchorIntoView(
       { scrollIntoView: (o?: unknown) => void seen.push(o as { behavior?: string }) } as HTMLElement,
@@ -269,9 +342,88 @@ describe("rule 9: popover placement", () => {
     expect(placePopover(at(310, 100), size, { width: 300, height: 800 }).width).toBe(284);
   });
 
+  it("sits beside a tall anchor: right of a left sidebar, left of a right panel", () => {
+    // A sidebar: 256 wide, the full height. The popover goes to its right and clears it.
+    const sidebar = at(0, 0, 256, 800);
+    const r = placePopover(sidebar, size, vp);
+    expect(r.side).toBe("right");
+    expect(r.left).toBeGreaterThanOrEqual(256);
+    // The side panel: 400 wide at the right edge. The popover goes to its left.
+    const panel = at(880, 0, 400, 800);
+    const l = placePopover(panel, size, vp);
+    expect(l.side).toBe("left");
+    expect(l.left + l.width).toBeLessThanOrEqual(880);
+    // Neither covers its anchor.
+    expect(r.top).toBeGreaterThanOrEqual(8);
+    expect(r.top + 120).toBeLessThanOrEqual(800 - 8);
+  });
+
+  it("sits beside an anchor when neither below nor above has room", () => {
+    const wide = at(100, 30, 200, 740);
+    expect(placePopover(wide, size, vp).side).toBe("right");
+  });
+
+  it("falls back to below or above when the window has no room beside a tall anchor", () => {
+    const narrow = { width: 390, height: 800 };
+    const sheet = at(0, 100, 390, 500);
+    const p = placePopover(sheet, size, narrow);
+    expect(["below", "above"]).toContain(p.side);
+    expect(p.left).toBeGreaterThanOrEqual(8);
+    expect(p.left + p.width).toBeLessThanOrEqual(390 - 8);
+  });
+
   it("stays inside the window on a short viewport", () => {
     const p = placePopover(at(100, 60, 80, 40), size, { width: 390, height: 200 });
     expect(p.top).toBeGreaterThanOrEqual(8);
     expect(p.top + 120).toBeLessThanOrEqual(200 - 8);
+  });
+});
+
+describe("rule 10: a ringed anchor that leaves the page", () => {
+  function rig(gone: { v: boolean }) {
+    let change: () => void = () => {};
+    let observing = false;
+    const calls = { gone: 0 };
+    const cancel = watchDetached({
+      isGone: () => gone.v,
+      observe: (cb) => {
+        change = cb;
+        observing = true;
+        return () => {
+          observing = false;
+        };
+      },
+      onGone: () => void calls.gone++,
+    });
+    return { calls, cancel, change: () => change(), observing: () => observing };
+  }
+
+  it("does nothing while the anchor stays, and calls onGone once when it leaves", () => {
+    const gone = { v: false };
+    const w = rig(gone);
+    w.change();
+    expect(w.calls.gone).toBe(0);
+    expect(w.observing()).toBe(true);
+    gone.v = true;
+    w.change();
+    w.change();
+    expect(w.calls.gone).toBe(1);
+    expect(w.observing()).toBe(false);
+  });
+
+  it("stops watching on cancel", () => {
+    const gone = { v: false };
+    const w = rig(gone);
+    w.cancel();
+    gone.v = true;
+    w.change();
+    expect(w.calls.gone).toBe(0);
+    expect(w.observing()).toBe(false);
+  });
+
+  it("starts the wait again when the anchor goes, so a miss is a missing step", () => {
+    expect(CODE).toMatch(/watchDetached\(\{[\s\S]*?isGone: \(\) => !el\.isConnected \|\| !isShown\(el\)/);
+    expect(CODE).toMatch(/setAttempt\(\(n\) => n \+ 1\)/);
+    expect(CODE).toMatch(/\[anchor, waitMs, attempt\]/);
   });
 });

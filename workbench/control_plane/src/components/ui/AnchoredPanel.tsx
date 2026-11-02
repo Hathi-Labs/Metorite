@@ -84,7 +84,7 @@ export function pointAnchor(x: number, y: number): PanelAnchor {
  */
 export type PanelLayer = "popover" | "top";
 
-const PANEL_LAYERS: Record<PanelLayer, string> = {
+export const PANEL_LAYERS: Record<PanelLayer, string> = {
   popover: "z-[60]",
   top: "z-[90]",
 };

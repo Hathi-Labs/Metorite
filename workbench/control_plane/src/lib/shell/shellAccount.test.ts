@@ -45,6 +45,9 @@ vi.mock("@/components/AccessProvider", () => ({
   }),
 }));
 
+// "Take the tour" goes to `/?guide=home.tour` with the router (WS-OB GD-5a).
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
+
 vi.mock("next-auth/react", () => ({
   useSession: () => ({ data: { user: { name: "Asha Rao", email: "asha@example.com" } } }),
   signOut: vi.fn(async () => undefined),

@@ -51,6 +51,12 @@ export const GUIDE_MENU_EVENT = "cc-guide-menu";
 export const GUIDE_PARAM = "guide";
 /** The first-run tour (GD-3, GD-5a). */
 export const TOUR_GUIDE_ID = "home.tour";
+/**
+ * Where an entry that is not on `/` sends the member to take the tour. Stop 4
+ * rings My Day, which lives on `/` only, so the entry navigates here and the
+ * host starts the guide from the address (F4). It never starts in place.
+ */
+export const TOUR_HREF = `/?${GUIDE_PARAM}=${TOUR_GUIDE_ID}`;
 /** The most app chips the tour's last stop offers (GD-5a). */
 export const TOUR_CHIP_MAX = 6;
 

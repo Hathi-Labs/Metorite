@@ -653,7 +653,7 @@ function PeekStrip({
         </span>
         <span className="shrink-0 text-xs text-muted-foreground">{tourView.index} of {tourView.total}</span>
         <Button variant="ghost" size="sm" onClick={() => endGuide("end")}>
-          End
+          End tour
         </Button>
         <Button variant="primary" size="sm" onClick={nextStep}>
           Next

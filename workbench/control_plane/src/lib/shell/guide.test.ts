@@ -93,11 +93,11 @@ describe("F4: a guide starts only on a member act", () => {
       }
     };
     walk(SRC);
-    // GD-5a: the founder's "Show me around" and the account menu's "Take the
-    // tour" (the foot menu and the phone drawer). Each one is a click, so each
-    // is a member act.
+    // GD-5a: the founder's "Show me around" is a click, so it is a member act.
+    // The welcome dialog arms on `/` only (`SignUpForm`), where stop 4 lives.
+    // The account menu and the phone drawer do NOT start in place. They go to
+    // `/?guide=home.tour`, which the host reads (stop 4 lives on `/` only).
     expect(callers.sort()).toEqual([
-      "components/AccountSwitcher.tsx",
       "components/WelcomeDialog.tsx",
       "lib/shell/AssistantDock.tsx",
       "lib/shell/GuideHost.tsx",
@@ -108,6 +108,21 @@ describe("F4: a guide starts only on a member act", () => {
     const host = readFileSync(join(__dirname, "GuideHost.tsx"), "utf-8");
     expect(host).toContain('startGuide(id, "url")');
     expect(host).toContain("resumeGuide()");
+  });
+
+  it("the host starts a guide in ONE place: inside the ?guide= handler, never on mount", () => {
+    // The host is on the caller whitelist above, so a start anywhere else in
+    // the file would pass that test. Count the calls and read where each sits.
+    const host = readFileSync(join(__dirname, "GuideHost.tsx"), "utf-8")
+      .replace(/\r\n/g, "\n")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    expect(host.match(/\bstartGuide\(/g) ?? []).toHaveLength(1);
+    expect(host.match(/\bacceptGuideOffer\(|\bofferGuide\(|\b__guideRunner\b/g) ?? []).toHaveLength(0);
+    // The call sits in the branch where an id came out of the address.
+    const handler = host.match(/const id = guideFromSearch\([^)]*\);\s*if \(id !== null\) \{([\s\S]*?)\n    \} else/);
+    expect(handler, "the ?guide= handler").not.toBeNull();
+    expect(handler![1]).toContain('startGuide(id, "url")');
   });
 
   it("an unknown id is ignored with a warning, and nothing is stored", () => {
@@ -602,14 +617,21 @@ describe("GD-5a: the app chips of the tour's last stop", () => {
 
 describe("GD-5a: the last stop's card is not covered", () => {
   it("the tour's last stop rings the message field with no popover, on any screen", () => {
-    expect(showsPopover({ phone: false, anchor: "chat.message-field", tourLast: true })).toBe(false);
-    expect(showsPopover({ phone: true, anchor: "chat.message-field", tourLast: true })).toBe(false);
+    for (const assistantOpen of [false, true]) {
+      expect(showsPopover({ phone: false, anchor: "chat.message-field", tourLast: true, assistantOpen })).toBe(false);
+      expect(showsPopover({ phone: true, anchor: "chat.message-field", tourLast: true, assistantOpen })).toBe(false);
+    }
   });
-  it("every other stop keeps the GD-4 rule", () => {
-    expect(showsPopover({ phone: false, anchor: "chat.panel", tourLast: false })).toBe(true);
-    expect(showsPopover({ phone: false, anchor: "chat.message-field", tourLast: false })).toBe(true);
-    expect(showsPopover({ phone: false, anchor: "home.ask", tourLast: true })).toBe(true);
-    expect(showsPopover({ phone: true, anchor: "home.app-list", tourLast: false })).toBe(true);
-    expect(showsPopover({ phone: true, anchor: "home.ask", tourLast: false })).toBe(false);
+  it("the line shows once: the popover shows only when neither the card nor the strip is on screen", () => {
+    // Desktop: the side panel is closed, so no card. The popover carries the line.
+    expect(showsPopover({ phone: false, anchor: "home.ask", tourLast: true, assistantOpen: false })).toBe(true);
+    expect(showsPopover({ phone: false, anchor: "home.app-list", tourLast: false, assistantOpen: false })).toBe(true);
+    // Desktop: the side panel is open, so the card carries the line and no popover shows.
+    expect(showsPopover({ phone: false, anchor: "chat.panel", tourLast: false, assistantOpen: true })).toBe(false);
+    expect(showsPopover({ phone: false, anchor: "home.my-day", tourLast: false, assistantOpen: true })).toBe(false);
+    // Phone: the strip or the sheet's card carries it, except under the Menu drawer.
+    expect(showsPopover({ phone: true, anchor: "home.app-list", tourLast: false, assistantOpen: true })).toBe(true);
+    expect(showsPopover({ phone: true, anchor: "home.ask", tourLast: false, assistantOpen: true })).toBe(false);
+    expect(showsPopover({ phone: true, anchor: "home.ask", tourLast: false, assistantOpen: false })).toBe(false);
   });
 });
