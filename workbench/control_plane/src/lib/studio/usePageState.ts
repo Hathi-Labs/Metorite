@@ -34,6 +34,14 @@ export function mergePageQuery(current: string, state: PageState, page?: PageTab
   return next.toString();
 }
 
+/**
+ * Whether the unmount of the page writes the pending filter. It does when an edit waits and the
+ * member is still on this page. A member who left for another route must not be pulled back.
+ */
+export function shouldFlushOnUnmount(hasPending: boolean, here: string, pagePath: string): boolean {
+  return hasPending && here === pagePath;
+}
+
 export interface PageStateApi {
   state: PageState;
   /** Show a tab. Adds a history entry. */
@@ -94,7 +102,12 @@ export function usePageState(page?: PageTabs): PageStateApi {
 
   useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current);
-  }, []);
+    // An edit typed in the last 300 ms is written now, so it is not lost.
+    if (shouldFlushOnUnmount(Object.keys(pending.current).length > 0, window.location.pathname, live.current.pathname)) {
+      timer.current = null;
+      write((s) => s, "replace");
+    }
+  }, [write]);
 
   return useMemo(() => ({ state, setTab, setSelected, setFilter }), [state, setTab, setSelected, setFilter]);
 }

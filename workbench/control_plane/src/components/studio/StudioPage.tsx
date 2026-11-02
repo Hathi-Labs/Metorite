@@ -18,7 +18,7 @@
  * so the scroller reserves no space for the bar. The shell owns the bar, the palette and the
  * bell. This page mounts none of them.
  */
-import { Fragment, useSyncExternalStore, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 
 import { AppTopBar, type AppTopBarBack } from "@/components/AppTopBar";
 import Tabs from "@/components/Tabs";
@@ -33,22 +33,29 @@ import type { PageState } from "@/lib/studio/pageState";
  * window (container queries), because the shell rail and the side column take width that
  * the window does not show. A narrow scroller, such as a phone at 390 px, gets one column.
  */
-const GRID: Record<number, string> = {
+export const GRID: Record<number, string> = {
   1: "grid-cols-1",
   2: "grid-cols-1 @xl:grid-cols-2",
   3: "grid-cols-1 @xl:grid-cols-2 @3xl:grid-cols-3",
   4: "grid-cols-1 @xl:grid-cols-2 @3xl:grid-cols-3 @5xl:grid-cols-4",
 };
 
-/** `span` to its class. A cell spans only where its columns exist, and one column holds every cell. */
-const SPAN: Record<number, string> = {
+/**
+ * `span` to its class. A cell spans as many columns as the grid has at each step, up to its
+ * span, so it fills its row at every width. `StudioPage.test.ts` checks each step.
+ */
+export const SPAN: Record<number, string> = {
   1: "",
   2: "@xl:col-span-2",
-  3: "@3xl:col-span-3",
-  4: "@5xl:col-span-4",
+  3: "@xl:col-span-2 @3xl:col-span-3",
+  4: "@xl:col-span-2 @3xl:col-span-3 @5xl:col-span-4",
 };
 
-const PANEL = "min-w-0 rounded-xl border border-border bg-card p-3 sm:p-4";
+/**
+ * The frame of a block that draws none: the "not built" card, and the Detail and the Form in
+ * the preview. A block that draws its own card (the table, the board) takes no second frame.
+ */
+export const PANEL = "min-w-0 rounded-xl border border-border bg-card p-3 sm:p-4";
 const BELOW_LG = "(max-width: 1023.98px)";
 
 function subscribe(onChange: () => void): () => void {
@@ -82,11 +89,24 @@ export interface StudioPageProps {
   toolbar?: ReactNode;
 }
 
-function NotBuilt({ view }: { view: string }) {
+/** The member sees the title of a view, and the id only when the view has no title. */
+function titleOf(views: readonly ViewDef[] | null | undefined, id: string): string {
+  const t = views?.find((v) => v.id === id)?.title;
+  return typeof t === "string" && t.trim() ? t : id;
+}
+
+/** The focus target after the side view closes: the control that opened it, or the scroller. */
+export interface Focusable { isConnected: boolean; focus: () => void }
+export function restoreFocus(opener: Focusable | null, fallback: Focusable | null): void {
+  const target = opener && opener.isConnected ? opener : fallback;
+  target?.focus();
+}
+
+function NotBuilt({ view, label }: { view: string; label: string }) {
   return (
     <div className={PANEL} data-not-built={view}>
       <p className="text-sm font-medium text-foreground">This block is not built yet</p>
-      <p className="mt-1 text-xs text-muted-foreground">The view {view} has no block that can draw it.</p>
+      <p className="mt-1 text-xs text-muted-foreground">It cannot draw “{label}”.</p>
     </div>
   );
 }
@@ -99,6 +119,17 @@ export default function StudioPage({
   const narrow = useBelowLg();
   const sideView = page.side && state.selected ? page.side : null;
   const side = sideView ? renderView(sideView) : null;
+  const scroller = useRef<HTMLDivElement>(null);
+  const sideOpen = sideView !== null;
+
+  // "Close details" unmounts the column and drops focus to <body>. Give it back to the control
+  // that opened the column, or to the scroller when that control is gone.
+  useEffect(() => {
+    if (!sideOpen) return;
+    const active = document.activeElement;
+    const opener = active instanceof HTMLElement && active !== document.body ? active : null;
+    return () => restoreFocus(opener, scroller.current);
+  }, [sideOpen]);
 
   return (
     <div className="flex h-full flex-col">
@@ -108,7 +139,8 @@ export default function StudioPage({
           tabs={page.tabs.map((t) => ({ id: t.id, label: t.title }))} />
       )}
       <div className="flex min-h-0 flex-1">
-        <div className="@container min-w-0 flex-1 overflow-y-auto p-3 sm:p-4" data-page-scroller>
+        <div ref={scroller} tabIndex={-1} data-page-scroller
+          className="@container min-w-0 flex-1 overflow-y-auto px-4 py-3 outline-none sm:px-6 sm:py-4">
           {toolbar && <div className="mb-3 flex flex-wrap items-center gap-2 sm:mb-4">{toolbar}</div>}
           {cells.length === 0 ? (
             <p className="text-sm text-muted-foreground">This page has no views.</p>
@@ -119,9 +151,9 @@ export default function StudioPage({
                 return (
                   <Fragment key={`${c.view}:${i}`}>
                     {node == null || node === false ? (
-                      <div className={SPAN[c.span] ?? ""}><NotBuilt view={c.view} /></div>
+                      <div className={`min-w-0 ${SPAN[c.span] ?? ""}`}><NotBuilt view={c.view} label={titleOf(manifest.views, c.view)} /></div>
                     ) : (
-                      <section aria-label={c.view} className={`${PANEL} ${SPAN[c.span] ?? ""}`}>{node}</section>
+                      <section aria-label={titleOf(manifest.views, c.view)} className={`min-w-0 ${SPAN[c.span] ?? ""}`}>{node}</section>
                     )}
                   </Fragment>
                 );
@@ -135,13 +167,13 @@ export default function StudioPage({
               <h2 className="text-sm font-semibold text-foreground">Details</h2>
               <Button variant="ghost" size="icon-sm" icon="X" aria-label="Close details" onClick={onCloseSide} />
             </div>
-            {side ?? <NotBuilt view={sideView} />}
+            {side ?? <NotBuilt view={sideView} label={titleOf(manifest.views, sideView)} />}
           </aside>
         )}
       </div>
       {sideView && narrow && (
         <Modal open onClose={onCloseSide} title="Details" placement="sheet" size="lg">
-          <div className="overflow-y-auto p-3">{side ?? <NotBuilt view={sideView} />}</div>
+          <div className="overflow-y-auto p-3">{side ?? <NotBuilt view={sideView} label={titleOf(manifest.views, sideView)} />}</div>
         </Modal>
       )}
     </div>

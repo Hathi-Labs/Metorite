@@ -215,3 +215,19 @@ describe("a hostile URL", () => {
     expect(hist.url).not.toContain("sel=");
   });
 });
+
+describe("an edit typed in the last 300 ms", () => {
+  it("is written when the page unmounts on its own path, and not when the member left it", async () => {
+    const { shouldFlushOnUnmount } = await import("@/lib/studio/usePageState");
+    expect(shouldFlushOnUnmount(true, "/studio/page-preview", "/studio/page-preview")).toBe(true);
+    expect(shouldFlushOnUnmount(false, "/studio/page-preview", "/studio/page-preview")).toBe(false);
+    expect(shouldFlushOnUnmount(true, "/studio", "/studio/page-preview")).toBe(false);
+  });
+
+  it("is flushed by the unmount cleanup, not dropped", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("./usePageState.ts", import.meta.url), "utf-8");
+    const cleanup = src.slice(src.indexOf("useEffect(() => () =>"));
+    expect(cleanup).toMatch(/shouldFlushOnUnmount\([\s\S]*write\(\(s\) => s, "replace"\)/);
+  });
+});

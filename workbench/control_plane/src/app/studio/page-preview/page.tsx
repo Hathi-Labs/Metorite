@@ -18,7 +18,8 @@ import { Suspense, useMemo, useState } from "react";
 import GenerativeUINode from "@/components/GenerativeUINode";
 import StudioDetail from "@/components/studio/StudioDetail";
 import StudioForm from "@/components/studio/StudioForm";
-import StudioPage from "@/components/studio/StudioPage";
+import RecordsStatus from "@/components/studio/RecordsStatus";
+import StudioPage, { PANEL } from "@/components/studio/StudioPage";
 import Badge from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Input";
 import SelectButton from "@/components/ui/SelectButton";
@@ -28,6 +29,7 @@ import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, type StudioDataDoor, sourceKey } from "@/lib/studio/dataDoor";
 import type { StudioManifest } from "@/lib/studio/manifest";
 import { buildPage } from "@/lib/studio/pageModel";
+import { type FilterDraft, filterInputValue } from "@/lib/studio/pageState";
 import samplePage from "@/lib/studio/samplePage.json";
 import { SAMPLE_FIELDS, SAMPLE_TABLE_KEYS, makeSampleDoor } from "@/lib/studio/sampleDoor";
 import { usePageState } from "@/lib/studio/usePageState";
@@ -60,8 +62,8 @@ function PreviewBody() {
   const base = useMemo(() => makeSampleDoor(), []);
   const q = state.filters[FILTER] ?? "";
   const door = useMemo(() => filteredDoor(base, q), [base, q]);
-  const [draft, setDraft] = useState<string | null>(null);
-  const { data } = useCachedResource<Row[]>(sourceKey(base, LIST), () => base.read(LIST));
+  const [draft, setDraft] = useState<FilterDraft | null>(null);
+  const { data, loading, error, refresh } = useCachedResource<Row[]>(sourceKey(base, LIST), () => base.read(LIST));
   const allRows = data ?? [];
   const record = allRows.find((r) => String(r.id) === state.selected);
 
@@ -77,13 +79,19 @@ function PreviewBody() {
       case "visit-board": return <GenerativeUINode spec={board} />;
       case "visit-form":
         return (
-          <StudioForm fields={SAMPLE_FIELDS} door={door} action="object:visit.create"
-            title="New visit" submitLabel="Add visit" savedMessage="Visit added" />
+          <div className={PANEL}>
+            <StudioForm fields={SAMPLE_FIELDS} door={door} action="object:visit.create"
+              title="New visit" submitLabel="Add visit" savedMessage="Visit added" />
+          </div>
         );
       case "visit-detail":
-        return record
-          ? <StudioDetail fields={SAMPLE_FIELDS} record={record} />
-          : <p className="text-sm text-muted-foreground">That record is not in the sample list.</p>;
+        return (
+          <div className={PANEL}>
+            {record
+              ? <StudioDetail fields={SAMPLE_FIELDS} record={record} />
+              : <p className="text-sm text-muted-foreground">That record is not in the sample list.</p>}
+          </div>
+        );
       default: return null;
     }
   };
@@ -103,12 +111,13 @@ function PreviewBody() {
           <>
             <Badge tone="warning" icon="FlaskConical">Sample data</Badge>
             <Input icon="Search" inputSize="sm" placeholder="Filter by title" aria-label="Filter by title"
-              className="w-48" value={draft ?? q}
-              onChange={(e) => { setDraft(e.target.value); setFilter(FILTER, e.target.value); }}
+              className="w-48" value={filterInputValue(draft, q)}
+              onChange={(e) => { setDraft({ base: q, text: e.target.value }); setFilter(FILTER, e.target.value); }}
               onBlur={() => setDraft(null)} />
             <SelectButton label="Open record" value={state.selected ?? ""} widthClass="w-48"
               options={allRows.map((r) => ({ value: String(r.id), label: String(r.title) }))}
               onChange={(v) => setSelected(v || null)} />
+            <RecordsStatus loading={loading} error={error} onRetry={refresh} />
           </>
         }
       />

@@ -15,7 +15,7 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
-import StudioPage from "@/components/studio/StudioPage";
+import StudioPage, { GRID, SPAN, restoreFocus } from "@/components/studio/StudioPage";
 import type { PageDef, ViewDef } from "@/lib/studio/manifest";
 import { EMPTY_PAGE_STATE, type PageState } from "@/lib/studio/pageState";
 
@@ -175,5 +175,107 @@ describe("the shell stays the shell's", () => {
 
   it("reserves no space for the Ask bar", () => {
     expect(SRC.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain("pb-askbar");
+  });
+});
+
+describe("a span at each container step", () => {
+  // The container steps in order, with the base (no query) first.
+  const STEPS = ["", "@xl", "@3xl", "@5xl"];
+  /** The value of a class family at a step: the last class at or below the step. */
+  function at(classes: string, family: RegExp, step: number, dflt: number): number {
+    let v = dflt;
+    for (const c of classes.split(/\s+/).filter(Boolean)) {
+      const m = c.match(/^(?:(@\w+):)?(.+)$/);
+      const idx = STEPS.indexOf(m?.[1] ?? "");
+      const f = m?.[2].match(family);
+      if (idx >= 0 && idx <= step && f) v = Number(f[1]);
+    }
+    return v;
+  }
+
+  it("never asks for more columns than the grid has, and fills the row up to its span", () => {
+    for (let cols = 1; cols <= 4; cols++) {
+      for (let span = 1; span <= cols; span++) {
+        STEPS.forEach((_, step) => {
+          const columns = at(GRID[cols], /^grid-cols-(\d)$/, step, 1);
+          const spans = at(SPAN[span], /^col-span-(\d)$/, step, 1);
+          expect(spans, `cols ${cols} span ${span} at step ${STEPS[step] || "base"}`).toBe(Math.min(span, columns));
+        });
+      }
+    }
+  });
+
+  it("puts the span of 3 at the 2-column step, where the Board filled half a row", () => {
+    expect(SPAN[3]).toContain("@xl:col-span-2");
+    expect(SPAN[4]).toContain("@3xl:col-span-3");
+  });
+});
+
+describe("a view with a title", () => {
+  const titled: ViewDef[] = [{ id: "d-chart", block: "chart", title: "Weekly chart" }, { id: "a-table", block: "table" }];
+  const PAGES: PageDef[] = [{ id: "p", cells: [{ view: "d-chart" }, { view: "a-table" }] }];
+
+  it("shows the title and never the id in the not-built card and the section label", () => {
+    const html = draw(PAGES, {}, (id) => (id === "d-chart" ? null : createElement("i", null, id)), titled);
+    expect(html).toContain("It cannot draw “Weekly chart”.");
+    expect(html).not.toContain("The view d-chart");
+    expect(html).toContain('aria-label="a-table"');
+    const ok = draw(PAGES, {}, (id) => createElement("i", null, id), titled);
+    expect(ok).toContain('aria-label="Weekly chart"');
+    expect(ok).not.toContain('aria-label="d-chart"');
+  });
+
+  it("falls back to the id for a view with no title", () => {
+    const html = draw(PAGES, {}, () => null, titled);
+    expect(html).toContain("It cannot draw “a-table”.");
+  });
+});
+
+describe("one frame for a cell", () => {
+  it("wraps a block in a plain section, so a block with its own card gets no second card", () => {
+    const html = draw([{ id: "p", cells: [{ view: "a-table" }] }]);
+    const section = html.match(/<section[^>]*>/)?.[0] ?? "";
+    expect(section).not.toMatch(/border|bg-card|p-3|rounded/);
+  });
+
+  it("frames the not-built card", () => {
+    const html = draw([{ id: "p", cells: [{ view: "a-table" }] }], {}, () => null);
+    expect(html).toMatch(/class="[^"]*rounded-xl border border-border bg-card[^"]*" data-not-built/);
+  });
+});
+
+describe("the gutter", () => {
+  it("gives the scroller the gutter of the Tabs bar", () => {
+    const html = draw([{ id: "p", tabs: [{ id: "t", title: "T", cells: [{ view: "a-table" }] }] }]);
+    expect(html.match(/data-page-scroller[^>]*/)?.[0] ?? html.match(/<div[^>]*data-page-scroller/)?.[0]).toBeTruthy();
+    const tabs = html.match(/<div[^>]*role="tablist"/)?.[0] ?? "";
+    const scroller = html.match(/<div[^>]*data-page-scroller[^>]*>/)?.[0] ?? "";
+    for (const g of ["px-4", "sm:px-6"]) {
+      expect(tabs).toContain(g);
+      expect(scroller).toContain(g);
+    }
+  });
+});
+
+describe("focus after the side view closes", () => {
+  const el = (connected: boolean) => ({ isConnected: connected, focus: vi.fn() });
+
+  it("returns focus to the control that opened it", () => {
+    const opener = el(true), scroller = el(true);
+    restoreFocus(opener, scroller);
+    expect(opener.focus).toHaveBeenCalledTimes(1);
+    expect(scroller.focus).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the scroller when the opener is gone or unknown", () => {
+    const gone = el(false), scroller = el(true);
+    restoreFocus(gone, scroller);
+    restoreFocus(null, scroller);
+    expect(gone.focus).not.toHaveBeenCalled();
+    expect(scroller.focus).toHaveBeenCalledTimes(2);
+  });
+
+  it("makes the scroller focusable by code", () => {
+    expect(draw([{ id: "p", cells: [{ view: "a-table" }] }])).toMatch(/<div[^>]*tabindex="-1"[^>]*data-page-scroller|<div[^>]*data-page-scroller[^>]*tabindex="-1"/);
   });
 });

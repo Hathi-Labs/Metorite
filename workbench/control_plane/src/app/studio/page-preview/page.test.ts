@@ -45,4 +45,14 @@ describe("/studio/page-preview", () => {
     expect(b.cells.some((c) => c.span > 1)).toBe(true);
     expect(buildPage(m, null, "plan").cells.map((c) => c.view)).toEqual(["visit-board"]);
   });
+
+  it("shows the load and error states of the records, with a Retry", () => {
+    expect(SRC).toMatch(/const \{ data, loading, error, refresh \}/);
+    expect(SRC).toMatch(/<RecordsStatus loading=\{loading\} error=\{error\} onRetry=\{refresh\}/);
+  });
+
+  it("keys the filter input on the URL value, so Back is not overridden by the typed text", () => {
+    expect(SRC).toContain("filterInputValue(draft, q)");
+    expect(SRC).toMatch(/setDraft\(\{ base: q, text: e\.target\.value \}\)/);
+  });
 });
