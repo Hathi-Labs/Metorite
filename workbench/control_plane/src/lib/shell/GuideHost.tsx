@@ -14,6 +14,12 @@
  *   anchor, and on a phone the peek strip (`assistant_guide.md` §4.3), which
  *   shows the step line with Next and End.
  * - Escape ends the tour in the same frame (G10). The page stays where it is.
+ * - A start of the tour (`home.tour`) from any entry stamps `tour_seen_at`
+ *   in the shell prefs (GD-5a). A resume after a reload does not.
+ *
+ * The store refuses every start while `GUIDE_ORGS` is off for the org
+ * (`guide.ts`, GD-5a), so `?guide=` here then starts nothing. The parameter
+ * still leaves the address.
  */
 
 import { usePathname, useRouter } from "next/navigation";
@@ -31,17 +37,31 @@ import {
   nextStep,
   resumeGuide,
   startGuide,
+  TOUR_GUIDE_ID,
   useGuide,
   withoutGuideParam,
 } from "./guide";
 import { assistantState, openAssistant, setAssistantMode } from "./assistant";
 import GuideSpotlight, { bindEscape } from "./GuideSpotlight";
+import { markTourSeen } from "./shellPrefs";
 
 /** The one phone stop whose strip is under the Menu drawer, so its popover stays. */
 const DRAWER_ANCHOR = "home.app-list";
 
 /** Whether the anchor sits inside the assistant. */
 export const isChatAnchor = (anchor: string | null): boolean => !!anchor && anchor.startsWith("chat.");
+
+/**
+ * Whether the spotlight draws its popover. On a phone the strip or the step
+ * card carries the line, except under the Menu drawer. On the tour's last
+ * stop the step card carries the app chips (GD-5a). That stop rings the
+ * message field, and a popover above the field would cover the chips, so the
+ * card alone carries the line there.
+ */
+export function showsPopover(a: { phone: boolean; anchor: string; tourLast: boolean }): boolean {
+  if (a.tourLast && isChatAnchor(a.anchor)) return false;
+  return !a.phone || a.anchor === DRAWER_ANCHOR;
+}
 
 /**
  * Where the assistant must be for a step (`assistant_guide.md` §4.3).
@@ -93,6 +113,12 @@ export default function GuideHost({ phone = false }: { phone?: boolean }) {
     }
   }, []);
 
+  // GD-5a: a member started the tour, from any entry. The record keeps the
+  // first start, and a resume after a reload is not a start.
+  useEffect(() => {
+    if (active && g.guideId === TOUR_GUIDE_ID && g.source !== "resume") void markTourSeen();
+  }, [active, g.guideId, g.source]);
+
   // Escape ends the tour, with no timer and no exit move. Bound once, before
   // any spotlight, so the reason is Escape.
   useEffect(() => bindEscape(document, () => endGuide("escape")), []);
@@ -139,7 +165,7 @@ export default function GuideHost({ phone = false }: { phone?: boolean }) {
       step={{ index: view.index, total: view.total }}
       onNext={nextStep}
       onEnd={() => endGuide("end")}
-      popover={!phone || view.anchor === DRAWER_ANCHOR}
+      popover={showsPopover({ phone, anchor: view.anchor, tourLast: view.guide.id === TOUR_GUIDE_ID && view.isLast })}
       onAnchorClick={nextStep}
       onMissing={guideAnchorMissing}
     />

@@ -285,6 +285,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
     - ⚠️ A route answers a refusal with `exc.detail_for(user.email)` only. It never sends `ClaimTaken.holder`, because that can name the private install of another member.
     - `sharing.py` is the ONE share rule of a private install: an address, not the owner, and made by the owner. The member purge and the resolve read it. Do not copy the SQL.
     - Fences: `test_package_host_store.py`, `test_package_host_store_r8.py`, `test_admin_member_purge.py`.
+22f. guide/ -- **The guide's tour** (WS-OB GD-5a, `assistant_guide.md` §7). `flags.py` is the one reader of `GUIDE_ORGS`. `routes/admin/me.py` returns it as `guide` on each answer of `/auth/me/shell`. ⚠️ The org is `user.organization_id` from the session, never request input (R5). `guide` is never stored: `ShellPrefs` refuses it in a body. The same file keeps `tour_seen_at`, a key-only stamp with the server's time. Fences: `test_guide_flags.py`, `test_auth_me_shell.py`, `test_auth_me_shell_r8.py`.
 
 ## Work Guidance
 

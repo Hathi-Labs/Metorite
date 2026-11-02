@@ -247,7 +247,7 @@ export type AccountMenuItem =
   | { kind: "add-account" }
   | ({ kind: "link" } & AccountLink)
   | { kind: "colour-mode" }
-  | { kind: "action"; id: "change-layout"; label: string; icon: string }
+  | { kind: "action"; id: "change-layout" | "take-tour"; label: string; icon: string }
   | { kind: "sign-out" }
   | { kind: "sign-out-all" }
   | { kind: "brand" };
@@ -278,6 +278,17 @@ export const CHANGE_LAYOUT_ITEM: AccountMenuItem = {
 };
 
 /**
+ * WS-OB GD-5a: start the guide's tour (`assistant_guide.md` §4.1), for every
+ * member, while `GUIDE_ORGS` holds the org. HLP-1 moves it under Help.
+ */
+export const TAKE_TOUR_ITEM: Extract<AccountMenuItem, { kind: "action" }> = {
+  kind: "action",
+  id: "take-tour",
+  label: "Take the tour",
+  icon: "Compass",
+};
+
+/**
  * The account menu, in its groups (owner, 2026-10-14: "Combine it with the
  * pop-up settings that show up for profile, access, appearance, light mode,
  * layout change").
@@ -288,7 +299,8 @@ export const CHANGE_LAYOUT_ITEM: AccountMenuItem = {
  * 3. **You**: My Profile and My access.
  * 4. **Settings**: Appearance, "Assistant settings" when `opts.assistant` is
  *    true (PZ-25, PZ-28), the colour mode, and "Change my layout" while the
- *    shell nav is on (NS-7 asks the question only then).
+ *    shell nav is on (NS-7 asks the question only then). "Take the tour"
+ *    follows it when `opts.tour` is true (the guide's switch, GD-5a).
  * 5. **Sign out**, then "Sign out of all accounts" with another account held.
  * 6. **Our signature**: the comet and the word "Metorite", a quiet row at the
  *    end (owner, 2026-10-14). It is not a control.
@@ -303,7 +315,7 @@ export const CHANGE_LAYOUT_ITEM: AccountMenuItem = {
  */
 export function accountMenu(
   sections: readonly NavSection[],
-  opts: { layout: boolean; switcher: boolean; others: number; pages?: boolean; assistant?: boolean },
+  opts: { layout: boolean; switcher: boolean; others: number; pages?: boolean; assistant?: boolean; tour?: boolean },
 ): AccountMenuGroup[] {
   const links = accountLinks(sections, { assistant: opts.assistant });
   const link = (l: AccountLink): AccountMenuItem => ({ kind: "link", ...l });
@@ -326,6 +338,7 @@ export function accountMenu(
         ...links.filter((l) => SETTINGS_PAGES.has(l.href)).map(link),
         { kind: "colour-mode" },
         ...(opts.layout ? [CHANGE_LAYOUT_ITEM] : []),
+        ...(opts.tour ? [TAKE_TOUR_ITEM] : []),
       ],
     },
     {

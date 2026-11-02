@@ -14,7 +14,7 @@ implementation too many; the server decides and the client renders.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from acb_auth import UserContext, get_current_user
@@ -22,8 +22,16 @@ from acb_auth.permissions import CAPABILITIES
 from acb_common import get_logger
 from acb_common.app_manifests.shell_manifest import load_vocabulary
 from fastapi import APIRouter, Body, Depends, HTTPException
+from gateway.guide.flags import guide_allowed
 from gateway.routes.admin._common import _tenant_session, get_org_id
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+)
 
 me_router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -273,7 +281,7 @@ MAX_PINS = 24
 MAX_CARDS = 8
 MAX_JOBS = 16
 
-#: The longest ISO 8601 timestamp the nudge mark takes (WS-62 CF-2).
+#: The longest ISO 8601 timestamp a mark takes (WS-62 CF-2, WS-OB GD-5a).
 MAX_STAMP = 40
 
 
@@ -284,6 +292,9 @@ def _stamp(v: Any) -> str | None:
     time of the member's first message to the assistant, or the time they
     dismissed the nudge. The server keeps the time, and never reads it as a
     gate: the nudge shows while it is null, and never again after.
+
+    ``tour_seen_at`` (WS-OB GD-5a, `assistant_guide.md` §5.3) is the time the
+    member first started the tour. It is a record for GD-14, and no gate.
     """
     if not isinstance(v, str) or not v or len(v) > MAX_STAMP:
         return None
@@ -343,6 +354,11 @@ class ShellPrefs(BaseModel):
     NOT name it keeps the stored value (``_write_shell``): a layout save is
     about the layout, and the welcome dialog's one write must not bring the
     nudge back. A body that names it null clears it on purpose.
+
+    ``tour_seen_at`` (WS-OB GD-5a) follows the same rules. The client sends it
+    alone when the member starts the tour (``markTourSeen``). A body that
+    names it with a time stores the SERVER's time (``_server_stamp``), so a
+    wrong device clock never reaches the record.
     """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -356,6 +372,7 @@ class ShellPrefs(BaseModel):
     new_order: list[str] | None = Field(
         default=None, alias="newOrder", max_length=MAX_JOBS)
     chat_first_message_at: str | None = Field(default=None, max_length=MAX_STAMP)
+    tour_seen_at: str | None = Field(default=None, max_length=MAX_STAMP)
 
     @field_validator("preset")
     @classmethod
@@ -364,11 +381,11 @@ class ShellPrefs(BaseModel):
             raise ValueError(f"unknown preset: {v[:40]}")
         return v
 
-    @field_validator("chat_first_message_at")
+    @field_validator("chat_first_message_at", "tour_seen_at")
     @classmethod
-    def _chat_first_message_at(cls, v: str | None) -> str | None:
+    def _a_mark(cls, v: str | None, info: ValidationInfo) -> str | None:
         if v is not None and _stamp(v) is None:
-            raise ValueError("chat_first_message_at is an ISO 8601 timestamp")
+            raise ValueError(f"{info.field_name} is an ISO 8601 timestamp")
         return v
 
     @field_validator("pins", "known")
@@ -393,30 +410,50 @@ class ShellPrefs(BaseModel):
 EMPTY_SHELL: dict[str, Any] = {
     "preset": None, "answered": None, "pins": None, "known": None,
     "cardOrder": None, "newOrder": None, "chat_first_message_at": None,
+    "tour_seen_at": None,
 }
 
-#: The one key of the layout that a save keeps when the body omits it.
-KEPT_KEYS: tuple[str, ...] = ("chat_first_message_at",)
+#: The marks of the layout. A save keeps each one that the body omits.
+KEPT_KEYS: tuple[str, ...] = ("chat_first_message_at", "tour_seen_at")
 
 #: How a write changes an existing row's ``shell_prefs`` (WS-62 CF-2). Each
 #: is ONE statement, so two writes never race through a read-then-write
 #: (review of #1206). ``CAST``, not ``::``, beside a bind
 #: (``test_sql_bindparam_jsonb_cast.py``).
 #:
-#: ``layout``: the body is the whole layout, mark included. It replaces.
+#: ``layout``: the body is the whole layout, marks included. It replaces.
 _SET_LAYOUT = "EXCLUDED.shell_prefs"
-#: ``layout-keep``: the body is the whole layout and omits the mark. The
-#: stored mark survives, in SQL.
-_SET_LAYOUT_KEEP = (
-    "jsonb_set(EXCLUDED.shell_prefs, ARRAY['chat_first_message_at'], "
-    "COALESCE(user_settings.shell_prefs->'chat_first_message_at', CAST('null' AS jsonb)), true)"
-)
-#: ``stamp``: the body is the mark alone. It merges into the stored layout.
+
+
+def _set_layout_keep(keys: tuple[str, ...]) -> str:
+    """``layout-keep``: the body is the whole layout and omits the marks in
+    *keys*. Each stored mark survives, in SQL. A key is a name of
+    :data:`KEPT_KEYS`, never request input, so it may stand in the text."""
+    expr = "EXCLUDED.shell_prefs"
+    for key in keys:
+        if key not in KEPT_KEYS:
+            raise ValueError(f"not a mark: {key}")
+        expr = (
+            f"jsonb_set({expr}, ARRAY['{key}'], "
+            f"COALESCE(user_settings.shell_prefs->'{key}', CAST('null' AS jsonb)), true)"
+        )
+    return expr
+
+
+#: The keep of a save that omits every mark, which is each layout save.
+_SET_LAYOUT_KEEP = _set_layout_keep(KEPT_KEYS)
+#: ``stamp``: the body is one mark or more, alone. It merges into the
+#: stored layout.
 _SET_STAMP = (
     "CASE WHEN jsonb_typeof(user_settings.shell_prefs) = 'object' "
     "THEN user_settings.shell_prefs ELSE CAST('{}' AS jsonb) END || EXCLUDED.shell_prefs"
 )
 _SET_BY_MODE = {"layout": _SET_LAYOUT, "layout-keep": _SET_LAYOUT_KEEP, "stamp": _SET_STAMP}
+
+
+def _server_stamp() -> str:
+    """Now, in UTC, as the ISO 8601 text that ``_stamp`` reads back."""
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def stored_shell(raw: Any) -> dict[str, Any]:
@@ -450,7 +487,17 @@ def stored_shell(raw: Any) -> dict[str, Any]:
         "cardOrder": _list("cardOrder", SHELL_CARDS, MAX_CARDS),
         "newOrder": _list("newOrder", _job_ids(), MAX_JOBS),
         "chat_first_message_at": _stamp(raw.get("chat_first_message_at")),
+        "tour_seen_at": _stamp(raw.get("tour_seen_at")),
     }
+
+
+def _answer(layout: dict[str, Any], user: UserContext) -> dict[str, Any]:
+    """The layout, and ``guide``: true when ``GUIDE_ORGS`` holds the
+    session's org (WS-OB GD-5a). The org comes from the session, never from
+    the request (R5). ``guide`` is a fact of the server, not of the layout,
+    so ``ShellPrefs`` refuses it in a body."""
+    org = getattr(user, "organization_id", None)
+    return {**layout, "guide": guide_allowed(str(org) if org else None)}
 
 
 def _member(user: UserContext) -> str:
@@ -481,6 +528,7 @@ async def _read_shell(db: Any, uid: str) -> Any:
 
 async def _write_shell(
     db: Any, uid: str, prefs: dict[str, Any] | None, mode: str = "layout",
+    keep: tuple[str, ...] = KEPT_KEYS,
 ) -> Any:
     """Store the layout, or reset it with ``None``. Returns the stored column.
 
@@ -492,7 +540,8 @@ async def _write_shell(
     ``mode`` picks the one-statement expression for an existing row
     (``_SET_BY_MODE``). The read before the write decides the seed only. It
     never carries a value into the write, so a concurrent stamp and a star
-    save cannot write each other over (review of #1206).
+    save cannot write each other over (review of #1206). ``keep`` names the
+    marks that a ``layout-keep`` write keeps: the ones the body omitted.
     """
     from gateway.routes.tasks.settings import (
         _BOUND_ORG,
@@ -513,8 +562,8 @@ async def _write_shell(
     def _ph(k: str) -> str:
         return ":shell_prefs ::jsonb" if k == "shell_prefs" else f":{k}"
 
-    sql = upsert_settings_sql(
-        cols, _ph, update=["shell_prefs"], merge={"shell_prefs": _SET_BY_MODE[mode]})
+    merge = _set_layout_keep(keep) if mode == "layout-keep" else _SET_BY_MODE[mode]
+    sql = upsert_settings_sql(cols, _ph, update=["shell_prefs"], merge={"shell_prefs": merge})
     row = (await db.execute(text(f"{sql} RETURNING shell_prefs"), params)).first()
     return row[0] if row is not None else prefs
 
@@ -525,17 +574,18 @@ async def get_my_shell(user: UserContext = Depends(get_current_user)) -> dict[st
 
     A failed read answers 503, never an empty layout. All-null means "ask the
     first sign-in question", and a database fault must not ask it again.
+    The answer also carries ``guide`` (``_answer``, WS-OB GD-5a).
     """
     uid = _member(user)
     if not uid:
-        return dict(EMPTY_SHELL)
+        return _answer(dict(EMPTY_SHELL), user)
     try:
         async with _tenant_session() as db:
             row = await _read_shell(db, uid)
     except Exception as exc:
         _log.warning("auth.shell.read_failed", error=str(exc)[:160])
         raise HTTPException(status_code=503, detail="unavailable") from exc
-    return stored_shell(row[0]) if row is not None else dict(EMPTY_SHELL)
+    return _answer(stored_shell(row[0]) if row is not None else dict(EMPTY_SHELL), user)
 
 
 @me_router.put("/me/shell", summary="Save or reset the caller's shell layout (NS-7)")
@@ -552,6 +602,7 @@ async def put_my_shell(
         raise HTTPException(status_code=403, detail="Sign in to save a layout")
     prefs: dict[str, Any] | None = None
     mode = "layout"
+    keep: tuple[str, ...] = ()
     if body is not None:
         try:
             model = ShellPrefs.model_validate(body)
@@ -563,19 +614,24 @@ async def put_my_shell(
         if model.answered == "answered" and model.preset is None:
             raise HTTPException(status_code=422, detail="An answer names its preset")
         named = model.model_fields_set
-        if named == set(KEPT_KEYS):
-            # The mark alone (`markChatFirstMessage`): merge it, keep the rest.
+        if named and named <= set(KEPT_KEYS):
+            # Marks alone (`markChatFirstMessage`, `markTourSeen`): merge
+            # them, keep the rest.
             mode = "stamp"
-            prefs = {k: getattr(model, k) for k in KEPT_KEYS}
+            prefs = {k: getattr(model, k) for k in KEPT_KEYS if k in named}
         else:
             prefs = model.model_dump(by_alias=True)
-            # A key the body did not name keeps its stored value (CF-2).
-            if any(k not in named for k in KEPT_KEYS):
+            # A mark the body did not name keeps its stored value (CF-2).
+            keep = tuple(k for k in KEPT_KEYS if k not in named)
+            if keep:
                 mode = "layout-keep"
+        # GD-5a: the tour mark is the SERVER's time, never the device's.
+        if prefs.get("tour_seen_at") is not None:
+            prefs["tour_seen_at"] = _server_stamp()
     try:
         async with _tenant_session() as db:
-            stored = await _write_shell(db, uid, prefs, mode)
+            stored = await _write_shell(db, uid, prefs, mode, keep)
     except Exception as exc:
         _log.warning("auth.shell.write_failed", error=str(exc)[:160])
         raise HTTPException(status_code=503, detail="unavailable") from exc
-    return stored_shell(stored) if stored is not None else dict(EMPTY_SHELL)
+    return _answer(stored_shell(stored) if stored is not None else dict(EMPTY_SHELL), user)

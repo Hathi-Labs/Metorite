@@ -27,6 +27,15 @@
  * taps. Nothing here starts one on mount. A reload resumes from
  * `sessionStorage`, which a member act wrote earlier. An id that is not in
  * the generated table is ignored, with a warning.
+ *
+ * ## The switch (GD-5a, `assistant_guide.md` §7)
+ *
+ * `GUIDE_ORGS` on the gateway decides, per organization, and
+ * `GET /auth/me/shell` says it as `guide`. `shellPrefs.ts` passes the answer
+ * here (`setGuideAllowed`). This store is the ONE place that checks it. Until
+ * the read answers, a start or a resume waits. With `guide` false, every
+ * start, resume and offer is refused, so no entry and no AG-UI event can
+ * run a tour. A missing field reads as off.
  */
 
 import { useSyncExternalStore } from "react";
@@ -40,9 +49,13 @@ export const GUIDE_STORAGE_KEY = "metorite.guide.v1";
 export const GUIDE_MENU_EVENT = "cc-guide-menu";
 /** The URL parameter a link carries. */
 export const GUIDE_PARAM = "guide";
+/** The first-run tour (GD-3, GD-5a). */
+export const TOUR_GUIDE_ID = "home.tour";
+/** The most app chips the tour's last stop offers (GD-5a). */
+export const TOUR_CHIP_MAX = 6;
 
 export type GuidePhase = "idle" | "opening" | "pointing" | "missing" | "ended";
-export type GuideSource = "button" | "url" | "agent" | "resume";
+export type GuideSource = "button" | "url" | "agent" | "resume" | "welcome" | "account-menu";
 export type GuideEndReason = "done" | "escape" | "end";
 
 export type GuideState = {
@@ -82,6 +95,11 @@ export type GuideRunnerOptions = {
   /** The telemetry line (`guide_anchor_missing`). */
   log: (event: string, data: Record<string, unknown>) => void;
   isPath: (href: string) => boolean;
+  /**
+   * The switch at mount (GD-5a). `null`: not known yet, so a start waits.
+   * Omitted, it is `null`. A test that is not about the switch passes `true`.
+   */
+  allowed?: boolean | null;
 };
 
 /** A stored value, or null when it is broken or names no guide. */
@@ -141,6 +159,13 @@ export function createGuideRunner(opts: GuideRunnerOptions) {
   let state: GuideState = IDLE;
   const listeners = new Set<() => void>();
   let here: string | null = null;
+  /** The switch: `true` on, `false` off, `null` not known yet. */
+  let allowed: boolean | null = opts.allowed ?? null;
+  /** A start or a resume that came before the switch was known. One at most. */
+  let pending: { kind: "start"; id: string; source: GuideSource } | { kind: "resume" } | null = null;
+  const notify = () => {
+    for (const l of [...listeners]) l();
+  };
 
   const guideOf = (id: string | null): Guide | undefined => (id ? opts.guides.find((g) => g.id === id) : undefined);
   const set = (next: GuideState) => {
@@ -195,20 +220,60 @@ export function createGuideRunner(opts: GuideRunnerOptions) {
       };
     },
 
-    /** A member act starts a guide. Returns false for an id that is not in the table. */
+    /**
+     * A member act starts a guide. Returns true when it started now. An id
+     * that is not in the table is refused, with a warning. With the switch
+     * off it is refused. Before the switch is known it waits, and the answer
+     * starts it or drops it (`setAllowed`).
+     */
     start(id: string, source: GuideSource): boolean {
       const guide = guideOf(id);
       if (!guide || guide.steps.length === 0) {
         opts.warn(`[guide] unknown guide id ignored: ${JSON.stringify(id)}`);
         return false;
       }
+      if (allowed === false) return false;
+      if (allowed === null) {
+        pending = { kind: "start", id: guide.id, source };
+        return false;
+      }
       enter(guide, 0, source);
       return true;
+    },
+
+    /** Whether the switch is on. `null` until the read answers. */
+    allowed: (): boolean | null => allowed,
+
+    /**
+     * The read of `GET /auth/me/shell` answered (GD-5a). On: a start or a
+     * resume that waited runs now. Off: it is dropped, and a tour or an
+     * offer on screen ends. `null` (a change of member) waits for the next
+     * read, and keeps what waits.
+     */
+    setAllowed(next: boolean | null): void {
+      if (next === allowed) return;
+      allowed = next;
+      if (next === null) return notify();
+      const waiting = pending;
+      pending = null;
+      if (next === false) {
+        if (isActive(state)) return api.end("end");
+        if (state.offer) return set({ ...state, offer: null });
+        return notify();
+      }
+      if (waiting?.kind === "start") api.start(waiting.id, waiting.source);
+      else if (waiting?.kind === "resume") api.resume();
+      notify();
     },
 
     /** Read the tab's storage after a reload. It starts nothing without a stored mark. */
     resume(): boolean {
       if (isActive(state)) return false;
+      if (allowed === false) return false;
+      if (allowed === null) {
+        pending = pending ?? { kind: "resume" };
+        return false;
+      }
       const store = opts.storage();
       if (!store) return false;
       let raw: string | null = null;
@@ -298,6 +363,7 @@ export function createGuideRunner(opts: GuideRunnerOptions) {
         opts.warn(`[guide] unknown guide id ignored: ${JSON.stringify(id)}`);
         return false;
       }
+      if (allowed !== true) return false;
       if (isActive(state)) return false;
       set({ ...state, offer: { guideId: guide.id, title: guide.title } });
       return true;
@@ -357,9 +423,35 @@ export const acceptGuideOffer = () => runner.acceptOffer();
 export const dismissGuideOffer = () => runner.dismissOffer();
 export const guideView = () => runner.view();
 export const guideState = () => runner.get();
+/** `shellPrefs.ts` passes `guide` from `GET /auth/me/shell` here (GD-5a). */
+export const setGuideAllowed = (on: boolean | null) => runner.setAllowed(on);
 export const __guideRunner = runner;
 
 /** The tour, live. */
 export function useGuide(): GuideState {
   return useSyncExternalStore(runner.subscribe, runner.get, () => IDLE);
+}
+
+const getAllowed = () => runner.allowed() === true;
+const getServerAllowed = () => false;
+
+/** Whether an entry of the tour may show (GD-5a). False until the read says on. */
+export function useGuideAllowed(): boolean {
+  return useSyncExternalStore(runner.subscribe, getAllowed, getServerAllowed);
+}
+
+/** One app chip of the tour's last stop (GD-5a, `assistant_guide.md` §4.1). */
+export type TourChip = { href: string; label: string; icon: string };
+
+/**
+ * The chips of the tour's last stop: the live apps the member holds, in nav
+ * order, at most `TOUR_CHIP_MAX`. `held` is what `starrableHeld` returns over
+ * the member's `visibleSections` with the preview flag off, the sidebar's own
+ * filter. So no chip names a preview pane or a pane the member does not hold.
+ */
+export function tourChips(
+  held: readonly { href: string; label: string; icon: string }[],
+  max: number = TOUR_CHIP_MAX,
+): TourChip[] {
+  return held.slice(0, Math.max(0, max)).map(({ href, label, icon }) => ({ href, label, icon }));
 }

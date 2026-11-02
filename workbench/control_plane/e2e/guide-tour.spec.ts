@@ -32,7 +32,9 @@ const MEMBER = {
   organization: { id: "org1", slug: "acme", display_name: "Acme" },
 };
 
-const ANSWERED = { preset: "engineer", answered: "answered", pins: null, known: null, cardOrder: null, newOrder: null };
+// GD-5a: `guide` is GUIDE_ORGS for the org. Off, the runner starts nothing
+// (`e2e/guide-first-run.spec.ts` holds that side).
+const ANSWERED = { preset: "engineer", answered: "answered", pins: null, known: null, cardOrder: null, newOrder: null, guide: true };
 
 async function stub(page: Page): Promise<void> {
   await page.addInitScript(() => {

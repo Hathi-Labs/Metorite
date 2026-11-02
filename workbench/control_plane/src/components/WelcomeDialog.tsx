@@ -28,6 +28,9 @@
  *    `?welcome=new-org`, which `SignUpForm` appends to its post-create
  *    redirect. It says "your organization is ready" and "here is where you
  *    add your team". With the question on, it is the step after the apps.
+ *    With the guide's switch on for the org (`GUIDE_ORGS`, WS-OB GD-5a), it
+ *    also offers "Show me around", which closes the dialog and starts the
+ *    tour (`assistant_guide.md` §4.1).
  *
  * ⚠️ A read that fails asks nothing. "Never asked" is a fact only the server
  * knows, and asking on a fault would ask a member who already answered.
@@ -69,6 +72,7 @@ import { useToast } from "@/components/ui/Toast";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { visibleSections, type NavSection } from "@/lib/nav";
 import { chatFirstOn } from "@/lib/shell/chatFlag";
+import { TOUR_GUIDE_ID, startGuide, useGuideAllowed } from "@/lib/shell/guide";
 import {
   ANSWERS,
   EMPTY_SHELL,
@@ -105,7 +109,13 @@ export function appChoices(sections: readonly NavSection[]): NavSection[] {
     .filter((g) => g.items.length > 0);
 }
 
-function InviteBody({ onDone }: { onDone: () => void }) {
+/**
+ * The founder's welcome. With `onTour` (the guide's switch is on for the
+ * org, WS-OB GD-5a), it offers "Show me around". That button closes the
+ * dialog by the same path as "Explore on my own first", then starts the
+ * tour. The tour never starts by itself (D-GD-1, `assistant_guide.md` §4.1).
+ */
+function InviteBody({ onDone, onTour }: { onDone: () => void; onTour?: () => void }) {
   return (
     <div className="flex flex-col gap-4 p-4">
       <p className="text-sm text-muted-foreground">
@@ -114,10 +124,15 @@ function InviteBody({ onDone }: { onDone: () => void }) {
         — each teammate gets an email, signs in with their own address, and lands
         straight in your workspace.
       </p>
-      <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
         <Button variant="secondary" onClick={onDone}>
           Explore on my own first
         </Button>
+        {onTour ? (
+          <Button variant="secondary" onClick={onTour}>
+            Show me around
+          </Button>
+        ) : null}
         <Link href="/settings/organization" onClick={onDone}>
           <Button className="w-full">Invite my team</Button>
         </Link>
@@ -140,6 +155,8 @@ function WelcomeDialogInner() {
   const { isMobile } = useViewMode();
   const noAppsStep = skipsAppsStep({ chatFirst, phone: isMobile });
   const shell = useShellPrefs();
+  // GD-5a: "Show me around" shows only while `GUIDE_ORGS` holds the org.
+  const tourOn = useGuideAllowed();
   const { access, loading } = useAccess();
   const sections = visibleSections(loading ? null : access.features, access.is_admin);
 
@@ -418,7 +435,19 @@ function WelcomeDialogInner() {
       {/* The Modal primitive renders children bare — every consumer pads its
           own body (owner report 2026-08-24: this one didn't, and the text sat
           flush against the dialog edges). */}
-      <InviteBody onDone={close} />
+      <InviteBody
+        onDone={close}
+        // GD-5a: only with the guide's switch on for the org. The same
+        // instant close as "Explore on my own first" (OB-0), then the tour.
+        onTour={
+          tourOn
+            ? () => {
+                close();
+                startGuide(TOUR_GUIDE_ID, "welcome");
+              }
+            : undefined
+        }
+      />
     </Modal>
   );
 }

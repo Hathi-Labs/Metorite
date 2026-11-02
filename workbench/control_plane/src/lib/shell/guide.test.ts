@@ -12,18 +12,24 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { guideAct } from "./assistant";
-import { assistantFor } from "./GuideHost";
+import { assistantFor, showsPopover } from "./GuideHost";
 import { GuideStepCardBody } from "./GuideStepCard";
 import { OWN_PART, bindAnchorClick, bindEscape, pickVisible } from "./GuideSpotlight";
 import {
   ANCHOR_MISSING_NOTE,
   GUIDE_STORAGE_KEY,
+  TOUR_CHIP_MAX,
+  TOUR_GUIDE_ID,
   createGuideRunner,
   guideFromSearch,
   parseStored,
+  tourChips,
   withoutGuideParam,
+  type GuideSource,
 } from "./guide";
 import { GENERATED_GUIDES, type Guide } from "./guides.generated";
+import { visibleSections } from "@/lib/nav";
+import { starrableHeld } from "./presets";
 
 const TOUR: Guide = {
   id: "t.tour",
@@ -42,11 +48,12 @@ const TOUR: Guide = {
 };
 const BAD_OPEN: Guide = { ...TOUR, id: "t.bad", steps: [{ kind: "open", say: "Go.", path: "//evil.com" }] };
 
-function rig(guides: readonly Guide[] = [TOUR, BAD_OPEN]) {
+function rig(guides: readonly Guide[] = [TOUR, BAD_OPEN], allowed: boolean | null = true) {
   const data = new Map<string, string>();
   const warns: string[] = [];
   const logs: { event: string; data: Record<string, unknown> }[] = [];
   const runner = createGuideRunner({
+    allowed,
     guides,
     storage: () => ({
       getItem: (k) => data.get(k) ?? null,
@@ -86,8 +93,15 @@ describe("F4: a guide starts only on a member act", () => {
       }
     };
     walk(SRC);
-    // GD-5a adds buttons here. Each one is a click, so each is a member act.
-    expect(callers.sort()).toEqual(["lib/shell/AssistantDock.tsx", "lib/shell/GuideHost.tsx"]);
+    // GD-5a: the founder's "Show me around" and the account menu's "Take the
+    // tour" (the foot menu and the phone drawer). Each one is a click, so each
+    // is a member act.
+    expect(callers.sort()).toEqual([
+      "components/AccountSwitcher.tsx",
+      "components/WelcomeDialog.tsx",
+      "lib/shell/AssistantDock.tsx",
+      "lib/shell/GuideHost.tsx",
+    ]);
   });
 
   it("the host starts only from the address, and reads storage otherwise", () => {
@@ -404,6 +418,7 @@ describe("the shipped table", () => {
   it("the tour runs from its first step", () => {
     const data = new Map<string, string>();
     const runner = createGuideRunner({
+      allowed: true,
       guides: GENERATED_GUIDES,
       storage: () => ({
         getItem: (k) => data.get(k) ?? null,
@@ -416,5 +431,185 @@ describe("the shipped table", () => {
     });
     expect(runner.start("home.tour", "button")).toBe(true);
     expect(runner.view()).toMatchObject({ index: 1, total: 5, anchor: "home.app-list" });
+  });
+});
+
+describe("GD-5a: the switch (GUIDE_ORGS) gates every start in ONE place", () => {
+  const SOURCES: GuideSource[] = ["button", "url", "agent", "welcome", "account-menu"];
+
+  it("off refuses every source, the offer and the resume, and stores nothing", () => {
+    const { runner, data } = rig([TOUR, BAD_OPEN], false);
+    for (const s of SOURCES) expect(runner.start("t.tour", s)).toBe(false);
+    expect(runner.get().phase).toBe("idle");
+    expect(runner.offer("t.tour")).toBe(false);
+    runner.acceptOffer();
+    expect(runner.get().phase).toBe("idle");
+    data.set(GUIDE_STORAGE_KEY, JSON.stringify({ guideId: "t.tour", step: 2 }));
+    expect(runner.resume()).toBe(false);
+    expect(runner.get().phase).toBe("idle");
+    expect(runner.allowed()).toBe(false);
+  });
+
+  it("before the read answers, a start waits, and on starts it with its own source", () => {
+    const { runner, data } = rig([TOUR, BAD_OPEN], null);
+    expect(runner.start("t.tour", "url")).toBe(false);
+    expect(runner.get().phase).toBe("idle");
+    expect(data.size).toBe(0);
+    runner.setAllowed(true);
+    expect(runner.get()).toMatchObject({ phase: "pointing", guideId: "t.tour", step: 0, source: "url" });
+  });
+
+  it("before the read answers, a start waits, and off drops it", () => {
+    const { runner, data } = rig([TOUR, BAD_OPEN], null);
+    runner.start("t.tour", "url");
+    runner.setAllowed(false);
+    expect(runner.get().phase).toBe("idle");
+    expect(data.size).toBe(0);
+    // A later on does not bring the dropped start back.
+    runner.setAllowed(true);
+    expect(runner.get().phase).toBe("idle");
+  });
+
+  it("a resume after a reload waits for the read too", () => {
+    const { runner, data } = rig([TOUR, BAD_OPEN], null);
+    data.set(GUIDE_STORAGE_KEY, JSON.stringify({ guideId: "t.tour", step: 2 }));
+    expect(runner.resume()).toBe(false);
+    expect(runner.get().phase).toBe("idle");
+    runner.setAllowed(true);
+    expect(runner.get()).toMatchObject({ phase: "pointing", step: 2, source: "resume" });
+  });
+
+  it("an unknown id is refused at once, with its warning, whatever the switch", () => {
+    const { runner, warns } = rig([TOUR, BAD_OPEN], null);
+    expect(runner.start("nope.tour", "url")).toBe(false);
+    expect(warns).toHaveLength(1);
+    runner.setAllowed(true);
+    expect(runner.get().phase).toBe("idle");
+  });
+
+  it("off after on ends a tour on screen, and removes an offer", () => {
+    const a = rig();
+    a.runner.start("t.tour", "welcome");
+    expect(a.runner.get().source).toBe("welcome");
+    a.runner.setAllowed(false);
+    expect(a.runner.get()).toMatchObject({ phase: "ended", reason: "end" });
+    expect(a.data.size).toBe(0);
+    const b = rig();
+    expect(b.runner.offer("t.tour")).toBe(true);
+    b.runner.setAllowed(false);
+    expect(b.runner.get().offer).toBeNull();
+  });
+
+  it("a new member (null) keeps a tour on screen and waits for their own read", () => {
+    const { runner } = rig();
+    runner.start("t.tour", "account-menu");
+    runner.setAllowed(null);
+    expect(runner.get().phase).toBe("pointing");
+    expect(runner.start("t.tour", "button")).toBe(false);
+    runner.setAllowed(true);
+    expect(runner.get()).toMatchObject({ phase: "pointing", step: 0, source: "button" });
+  });
+
+  it("the singleton waits for the read: no read, no tour", () => {
+    // Fail closed: a runner made without the switch treats it as not known.
+    const runner = createGuideRunner({
+      guides: [TOUR],
+      storage: () => undefined,
+      warn: () => {},
+      log: () => {},
+      isPath: () => true,
+    });
+    expect(runner.allowed()).toBeNull();
+    expect(runner.start("t.tour", "button")).toBe(false);
+    expect(runner.get().phase).toBe("idle");
+    const guide = readFileSync(join(__dirname, "guide.ts"), "utf-8");
+    expect(guide).not.toMatch(/allowed:\s*true/);
+  });
+
+  it("the shell read is the one writer of the switch", () => {
+    const prefs = readFileSync(join(__dirname, "shellPrefs.ts"), "utf-8");
+    expect(prefs).toContain("setGuideAllowed(guideOn(body));");
+    expect(prefs).toContain("setGuideAllowed(null);");
+  });
+});
+
+describe("GD-5a: the app chips of the tour's last stop", () => {
+  const ALL = visibleSections(
+    ["tasks", "projects", "email", "chat", "people", "approvals", "calendar", "crm", "notes", "whatsapp", "artifacts", "knowledge"],
+    true,
+    false,
+  );
+
+  it("the tour id is the shipped guide's", () => {
+    expect(GENERATED_GUIDES.some((g) => g.id === TOUR_GUIDE_ID)).toBe(true);
+  });
+
+  it("at most six, in nav order, from the held live apps", () => {
+    const held = starrableHeld(ALL);
+    const chips = tourChips(held);
+    expect(chips.length).toBe(Math.min(TOUR_CHIP_MAX, held.length));
+    expect(chips.map((c) => c.href)).toEqual(held.slice(0, TOUR_CHIP_MAX).map((p) => p.href));
+    for (const c of chips) expect(Object.keys(c).sort()).toEqual(["href", "icon", "label"]);
+  });
+
+  it("names no pane the member does not hold, and no preview pane", () => {
+    const few = tourChips(starrableHeld(visibleSections(["tasks"], false, false)));
+    expect(few.map((c) => c.href)).not.toContain("/projects");
+    const preview = visibleSections(["crm"], false, true).flatMap((s) => s.items).filter((p) => p.launch === "preview");
+    const live = tourChips(starrableHeld(ALL)).map((c) => c.href);
+    for (const p of preview) expect(live).not.toContain(p.href);
+    expect(tourChips(starrableHeld(visibleSections(null, false, false)))).toEqual([]);
+  });
+
+  it("the card draws one chip per app on the last stop, and none without", () => {
+    const chips = [
+      { href: "/tasks", label: "My Tasks", icon: "CheckSquare" },
+      { href: "/projects", label: "Projects", icon: "FolderKanban" },
+    ];
+    const html = renderToStaticMarkup(
+      createElement(GuideStepCardBody, {
+        view: { say: "Try it.", index: 5, total: 5, missing: false },
+        onNext: () => {},
+        onEnd: () => {},
+        chips,
+        onChip: () => {},
+      }),
+    );
+    expect(html).toContain("data-guide-chips");
+    for (const t of ["My Tasks", "Projects", "5 of 5", "End tour"]) expect(html).toContain(t);
+    const none = renderToStaticMarkup(
+      createElement(GuideStepCardBody, {
+        view: { say: "Try it.", index: 4, total: 5, missing: false },
+        onNext: () => {},
+        onEnd: () => {},
+      }),
+    );
+    expect(none).not.toContain("data-guide-chips");
+  });
+
+  it("a chip ends the tour as done and opens its app, and marks the chapter seam", () => {
+    const card = readFileSync(join(__dirname, "GuideStepCard.tsx"), "utf-8");
+    expect(card).toContain("// GD-10: start the app's chapter");
+    // Ended as done, the sheet out of the way on a phone (the chat link's
+    // one rule), and then the app.
+    expect(card).toMatch(/endGuide\("done"\);[\s\S]*?onChatLink\(\{ phone: isMobile, chatFirst: chatFirstOn\(\) \}\)[\s\S]*?router\.push\(c\.href\);/);
+    expect(card).toContain("view.guide.id === TOUR_GUIDE_ID && view.isLast");
+    // The phone strip stays one line: it draws no chip.
+    const dock = readFileSync(join(__dirname, "AssistantDock.tsx"), "utf-8");
+    expect(dock).not.toContain("tourChips");
+  });
+});
+
+describe("GD-5a: the last stop's card is not covered", () => {
+  it("the tour's last stop rings the message field with no popover, on any screen", () => {
+    expect(showsPopover({ phone: false, anchor: "chat.message-field", tourLast: true })).toBe(false);
+    expect(showsPopover({ phone: true, anchor: "chat.message-field", tourLast: true })).toBe(false);
+  });
+  it("every other stop keeps the GD-4 rule", () => {
+    expect(showsPopover({ phone: false, anchor: "chat.panel", tourLast: false })).toBe(true);
+    expect(showsPopover({ phone: false, anchor: "chat.message-field", tourLast: false })).toBe(true);
+    expect(showsPopover({ phone: false, anchor: "home.ask", tourLast: true })).toBe(true);
+    expect(showsPopover({ phone: true, anchor: "home.app-list", tourLast: false })).toBe(true);
+    expect(showsPopover({ phone: true, anchor: "home.ask", tourLast: false })).toBe(false);
   });
 });

@@ -47,7 +47,8 @@ import {
   type OtherAccount,
 } from "@/lib/accountSwitch";
 import type { NavSection } from "@/lib/nav";
-import { accountMenu, type AccountLink, type AccountMenuItem } from "@/lib/shell/shellNav";
+import { TOUR_GUIDE_ID, startGuide, useGuideAllowed } from "@/lib/shell/guide";
+import { TAKE_TOUR_ITEM, accountMenu, type AccountLink, type AccountMenuItem } from "@/lib/shell/shellNav";
 import { CHANGE_LAYOUT } from "@/lib/shell/shellPrefs";
 import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 
@@ -499,6 +500,8 @@ export function AccountFoot({
   // WS-63 PZ-25: the "Assistant settings" row, only with the profile on for this org.
   // Read here, where the foot always mounts, so the row is known at open.
   const assistant = useAssistantProfileEnabled();
+  // WS-OB GD-5a: "Take the tour", only while GUIDE_ORGS holds the org.
+  const tour = useGuideAllowed();
   // With the switcher off, the session names the account. Access answers
   // first in a fresh tab, so it stands in until the session does.
   const fallback = session?.user?.email ? session : access.email ? { user: { email: access.email } } : null;
@@ -620,6 +623,7 @@ export function AccountFoot({
               sections={sections}
               layout={layout}
               assistant={assistant}
+              tour={tour}
               onChanged={() => void reload(true)}
               onCover={setCover}
               onDone={close}
@@ -635,6 +639,8 @@ export function AccountFoot({
 /** What each `action` item sends. One line per action id. */
 const ACTIONS: Record<Extract<AccountMenuItem, { kind: "action" }>["id"], () => void> = {
   "change-layout": () => window.dispatchEvent(new CustomEvent(CHANGE_LAYOUT)),
+  // WS-OB GD-5a: the menu closes first (`done`), then the tour starts.
+  "take-tour": () => startGuide(TOUR_GUIDE_ID, "account-menu"),
 };
 
 /** One rhythm for every row of the menu, a link or a button. */
@@ -665,6 +671,7 @@ export function AccountFootMenu({
   onDone,
   pages = true,
   assistant = false,
+  tour = false,
 }: {
   accounts: Accounts;
   orgName: string;
@@ -674,6 +681,8 @@ export function AccountFootMenu({
   pages?: boolean;
   /** True adds the "Assistant settings" row to Settings (PZ-25, PZ-28). `AccountFoot` reads it. */
   assistant?: boolean;
+  /** True adds "Take the tour" to Settings (WS-OB GD-5a). `AccountFoot` reads the guide's switch. */
+  tour?: boolean;
   onChanged: () => void;
   /**
    * Raises and lowers the cover, which `AccountFoot` holds, outside this menu.
@@ -708,7 +717,7 @@ export function AccountFootMenu({
     }
   };
 
-  const groups = accountMenu(sections, { layout, switcher: accounts.enabled, others: others.length, pages, assistant });
+  const groups = accountMenu(sections, { layout, switcher: accounts.enabled, others: others.length, pages, assistant, tour });
 
   const row = (item: AccountMenuItem) => {
     switch (item.kind) {
@@ -1073,6 +1082,8 @@ export function DrawerAccountFoot({
 }) {
   const { accounts } = useAccounts();
   const { data: session } = useSession();
+  // WS-OB GD-5a: "Take the tour", only while GUIDE_ORGS holds the org.
+  const tour = useGuideAllowed();
   if (!session?.user) return <>{children}</>;
   const others = accounts.enabled ? accounts.others.length : 0;
   const row =
@@ -1101,6 +1112,22 @@ export function DrawerAccountFoot({
           <Icon name="LayoutTemplate" size={16} className="shrink-0" />
           Change my layout
         </button>
+      )}
+      {/* GD-5a: the drawer closes first, then the tour starts. */}
+      {you && tour && (
+        <Button
+          variant="ghost"
+          size="none"
+          layout="flex items-center"
+          onClick={() => {
+            onNavigate?.();
+            startGuide(TOUR_GUIDE_ID, "account-menu");
+          }}
+          className="w-full gap-3 px-3 py-2.5 text-sm"
+        >
+          <Icon name={TAKE_TOUR_ITEM.icon} size={16} className="shrink-0" />
+          {TAKE_TOUR_ITEM.label}
+        </Button>
       )}
       {children}
       <button type="button" onClick={() => void signOutAll()} className={row}>

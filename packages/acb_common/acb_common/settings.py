@@ -608,6 +608,12 @@ class Settings(BaseSettings):
     # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:
     # ai_studio.md section 3.2.
     studio_orgs: str = ""
+    # WS-OB GD-5a: GUIDE_ORGS lists the org ids whose members see the entries
+    # of the guide's tour (the welcome button and the account menu row). `*`
+    # opens every org. Empty opens none. Reader: `gateway.guide.flags.
+    # guide_allowed`, returned as `guide` from GET /auth/me/shell. Spec:
+    # assistant_guide.md section 7.
+    guide_orgs: str = ""
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_subject: str = ""
