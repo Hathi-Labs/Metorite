@@ -2964,8 +2964,8 @@ async def run_agent_stream_endpoint(
     if _resume:
         _typed = ""  # a Continue turn: the member typed nothing (PZ-6a)
         _typed_mark = False  # and its row is not typed (D-PZ-37)
-        if _prompt is not None:
-            _prompt = _prompt.model_copy(update={"member_typed": False})
+        _prompt = None if _prompt is None else _prompt.model_copy(
+            update={"member_typed": False})
     if _resume and req.thread_id:
         _note = await _resume_note_for(req.thread_id, actor_email, _room_org)
         if _note is not None:
@@ -3059,7 +3059,7 @@ async def run_agent_stream_endpoint(
     # grounds no profile write, and it may only ask the confirm card of one
     # (`profile_tools._ground`). A Continue, a card answer, a steer follow-up
     # and a paste send none, so they never get that card (PZ-32 repair 1).
-    from acb_common.assistant_profile import typed_text as _typed_text  # noqa: PLC0415
+    from acb_common.assistant_profile import typed_text as _typed_text
 
     _member_sent = bool(
         _typed_text(_sent_words).strip()
