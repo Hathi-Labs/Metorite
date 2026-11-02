@@ -17,7 +17,7 @@ import GenerativeUINode from "@/components/GenerativeUINode";
 import StudioDetail from "@/components/studio/StudioDetail";
 import StudioForm from "@/components/studio/StudioForm";
 import Badge from "@/components/ui/Badge";
-import { Select } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
 import { tableBlock } from "@/lib/studio/blocks";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, sourceKey } from "@/lib/studio/dataDoor";
@@ -68,10 +68,9 @@ export default function BlocksPreviewPage() {
             <section aria-label="Detail" className={PANEL}>
               <div className="mb-3 flex items-center justify-between gap-2">
                 <h2 className="text-sm font-semibold text-foreground">Detail</h2>
-                <Select inputSize="sm" aria-label="Record" value={record ? String(record.id) : ""}
-                  className="w-48" onChange={(e) => setPicked(e.target.value)}>
-                  {rows.map((r) => <option key={String(r.id)} value={String(r.id)}>{String(r.title)}</option>)}
-                </Select>
+                <SelectButton label="Record" value={record ? String(record.id) : ""} widthClass="w-48"
+                  options={rows.map((r) => ({ value: String(r.id), label: String(r.title) }))}
+                  onChange={setPicked} />
               </div>
               {record && <StudioDetail fields={SAMPLE_FIELDS} record={record} />}
             </section>

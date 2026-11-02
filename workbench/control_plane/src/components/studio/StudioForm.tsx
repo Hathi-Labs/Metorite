@@ -15,7 +15,8 @@ import { useEffect, useId, useRef, useState } from "react";
 
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
-import { Input, Select, Textarea } from "@/components/ui/Input";
+import { Input, Textarea } from "@/components/ui/Input";
+import SelectButton from "@/components/ui/SelectButton";
 import {
   type Draft, isLines, labelOf, manyUnsupported,
 } from "@/lib/studio/blocks";
@@ -68,10 +69,13 @@ function Control({ field, draft, id, errorId, onChange, onBlur }: ControlProps) 
       );
     case "select":
       return (
-        <Select {...common} value={String(draft)} onChange={(e) => onChange(e.target.value)}>
-          <option value="">Choose one</option>
-          {(field.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
-        </Select>
+        <SelectButton id={id} label={labelOf(field)} value={String(draft)} prompt="Choose one"
+          widthClass="w-full" invalid={errorId !== undefined} describedBy={errorId}
+          options={[
+            ...(field.required ? [] : [{ value: "", label: "No choice" }]),
+            ...(field.options ?? []).map((o) => ({ value: o, label: o })),
+          ]}
+          onChange={onChange} />
       );
     case "multiSelect": {
       const picked = Array.isArray(draft) ? draft : [];
@@ -261,7 +265,11 @@ export function StudioForm({
   return (
     <FormView fields={fields} drafts={drafts} errors={errors} formId={formId} title={title}
       submitLabel={submitLabel} submitting={submitting} status={status}
-      onDraft={(key, d) => setDrafts((prev) => ({ ...prev, [key]: d }))}
+      onDraft={(key, d) => {
+        setDrafts((prev) => ({ ...prev, [key]: d }));
+        // A field that shows an error checks again as the member fixes it.
+        if (errors[key]) setError(key, blurProblem(fields, { ...drafts, [key]: d }, key));
+      }}
       onBlur={(key) => setError(key, blurProblem(fields, drafts, key))}
       onSubmit={() => { void submit(); }} />
   );
