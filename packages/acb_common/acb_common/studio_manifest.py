@@ -31,6 +31,7 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -85,6 +86,10 @@ CONTRIBUTION_POINTS: tuple[str, ...] = (
 #: A `contributes` key is a point of section 4 or a P0-only key that the shell loader reads.
 #: The loader owns the second list (`_CONTRIBUTES_KEYS`), so this module keeps no copy of it.
 ALLOWED_POINTS: frozenset[str] = frozenset(CONTRIBUTION_POINTS) | frozenset(_P0_POINTS)
+
+#: Points that only a shipped `system` file holds. An anchor is the guide's contract with the
+#: shipped shell code (assistant_guide.md section 5.7), so a package never declares one.
+SYSTEM_ONLY_POINTS: frozenset[str] = frozenset({"anchors"})
 
 #: The error type of a field that only a `studio` manifest must hold.
 _STUDIO_NEEDS = "studio_needs_field"
@@ -318,9 +323,12 @@ class Manifest(_Strict):
     @field_validator("contributes")
     @classmethod
     def _points_are_known(
-        cls, v: dict[str, list[dict[str, Any]]]
+        cls, v: dict[str, list[dict[str, Any]]], info: ValidationInfo
     ) -> dict[str, list[dict[str, Any]]]:
-        unknown = sorted(set(v) - ALLOWED_POINTS)
+        allowed = ALLOWED_POINTS
+        if info.data.get("kind") != "system":
+            allowed = ALLOWED_POINTS - SYSTEM_ONLY_POINTS
+        unknown = sorted(set(v) - allowed)
         if unknown:
             raise PydanticCustomError("unknown_point", "Unknown point.", {"point": unknown[0]})
         return v
