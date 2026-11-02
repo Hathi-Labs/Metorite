@@ -39,8 +39,8 @@
   2026-11-02.** The day rule is not dark: it binds wherever the code ships
   (§5.11). The push is dark behind `DUE_PUSH_ORGS` (migration 327,
   `reach/due_push.py`). Repair round 1 (2026-11-02) sent the Tasks date
-  picks and `capture_intake` through the day rule, added the shell's zone
-  save, and added the plan phase of the reminder tick.
+  picks and `capture_intake` through the day rule. It also added the shell's
+  zone save and the plan phase of the reminder tick.
 - **Board row:** **WS-CAL**. WS-66 for reminders and web push sits under
   it.
 - **Asked by:** the owner, 2026-10-15. The Calendar must hold more than
