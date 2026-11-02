@@ -50,6 +50,7 @@ export function ReminderFormModal({
   zone,
   initial,
   heading,
+  initialTitle,
   onSubmit,
   onClose,
 }: {
@@ -60,13 +61,15 @@ export function ReminderFormModal({
   initial?: { date: string; time: string };
   /** For `move`, the title that stays. */
   heading?: string;
+  /** For `new`, a title the command bar filled. The member can change it. */
+  initialTitle?: string;
   /** Resolves to the words of a refusal, or null when the save worked. */
   onSubmit: (value: ReminderFormValue) => Promise<string | null>;
   onClose: () => void;
 }) {
   const ids = useId();
   const [start] = useState(() => initial ?? defaultWhen(Date.now(), zone));
-  const [title, setTitle] = useState("");
+  const [title, setTitle] = useState(initialTitle ?? "");
   const [date, setDate] = useState(start.date);
   const [time, setTime] = useState(start.time);
   const [kind, setKind] = useState<ReminderKind>("action");

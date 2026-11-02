@@ -302,7 +302,6 @@ class TestTheTtl:
 
     @pytest.mark.parametrize("card", [
         {"why_key": "starts_in", "folded": []},
-        {"why_key": "due_soon", "folded": []},
         {"why_key": "days_late", "folded": ["block_soon"]},
     ])
     def test_a_countdown_holds_60_seconds_at_most(self, card):

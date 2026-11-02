@@ -116,6 +116,21 @@ _LIST_SQL = (
     "AND owner_email = :m ORDER BY updated_at DESC, id"
 )
 
+#: The catalog read of B1c. One statement for all packages of the member. It
+#: reads the object names and the action ids and targets with jsonb path
+#: reads, so it never loads a whole manifest. ``:app`` is NULL for no filter.
+_ACTIONS_SQL = (
+    "SELECT id::text AS id, "
+    "coalesce(jsonb_path_query_array(manifest, '$.objects[*].name'), '[]'::jsonb) AS objects, "
+    "(SELECT coalesce(jsonb_agg(jsonb_build_object("
+    "'id', x->'id', 'uses', x->'uses', 'title', x->'title')), '[]'::jsonb) "
+    "FROM jsonb_array_elements(CASE WHEN jsonb_typeof(manifest->'actions') = 'array' "
+    "THEN manifest->'actions' ELSE '[]'::jsonb END) AS x) AS actions "
+    f"FROM apps WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m AND (CAST(:app AS uuid) IS NULL OR id = CAST(:app AS uuid)) "
+    "ORDER BY updated_at DESC, id"
+)
+
 _UPDATE_SQL = (
     "UPDATE apps SET manifest = CAST(:manifest AS jsonb), name = :name, "
     "description = :desc, updated_at = now() "
@@ -215,6 +230,16 @@ class Package:
     live_version: int | None
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True)
+class PackageActions:
+    """What the catalog needs of one package (STU-B1c): the names of its
+    objects, and each named action as ``(id, uses, title)``."""
+
+    id: str
+    objects: tuple[str, ...]
+    actions: tuple[tuple[str, str, str | None], ...]
 
 
 def _new_id() -> uuid.UUID:
@@ -387,6 +412,29 @@ async def list_packages(db: Any, member: str) -> list[Package]:
     """The packages that *member* owns in the bound org, newest change first."""
     rows = (await db.execute(text(_LIST_SQL), {"m": _member(member)})).all()
     return [_package(r) for r in rows]
+
+
+def _jsonb(value: Any) -> Any:
+    return json.loads(value) if isinstance(value, str | bytes) else value
+
+
+async def list_package_actions(db: Any, member: str, *,
+                               package_id: str | None = None) -> list[PackageActions]:
+    """The objects and named actions of the packages that *member* owns in the
+    bound org, in ONE statement however many packages exist. With
+    *package_id*, only that package. The draft manifest is the source."""
+    pid = None if package_id is None else _package_id(package_id)
+    rows = (await db.execute(text(_ACTIONS_SQL), {"m": _member(member), "app": pid})).all()
+    out: list[PackageActions] = []
+    for row in rows:
+        names = tuple(n for n in (_jsonb(row[1]) or []) if isinstance(n, str))
+        named: list[tuple[str, str, str | None]] = []
+        for a in _jsonb(row[2]) or []:
+            if isinstance(a, dict) and isinstance(a.get("id"), str) and isinstance(a.get("uses"), str):
+                title = a.get("title")
+                named.append((a["id"], a["uses"], title if isinstance(title, str) else None))
+        out.append(PackageActions(id=str(row[0]), objects=names, actions=tuple(named)))
+    return out
 
 
 async def update_manifest(db: Any, member: str, package_id: str,

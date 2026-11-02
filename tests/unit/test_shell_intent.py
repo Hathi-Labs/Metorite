@@ -360,10 +360,16 @@ class TestOneJobList:
     def test_each_job_is_gated_on_its_apps_own_feature(self):
         """A job's feature is its own `feature` in `registry.ts` when it names
         one, else its pane's. The Integrations pane is open to every member
-        since D-EA-9, and its two org jobs still need `integrations`."""
+        since D-EA-9, and its two org jobs still need `integrations`. RX-6:
+        the Calendar pane takes `tasks`, and the reminder routes need
+        `projects`, so `set-reminder` names that feature of its own."""
         ts, nav = self._ts_jobs(), self._nav_gates()
         own = self._ts_job_features()
-        assert own == {"add-mcp": "integrations", "review-integrations": "integrations"}
+        assert own == {
+            "add-mcp": "integrations",
+            "review-integrations": "integrations",
+            "set-reminder": "projects",
+        }
         for job in intent.JOBS:
             app = ts[job.id][0]
             assert app in nav, f"{job.id}: app {app} is not a nav pane"

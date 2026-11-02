@@ -362,7 +362,7 @@ sets the group. A ticket that adds a kind adds its row in the same PR.
 | Kind | Old-path group |
 |---|---|
 | `overdue` | Needs you |
-| `due_today` | Now when it is due within 2 hours, else Needs you |
+| `due_today` | Needs you. A due date is a day, so no hour moves it into Now (RX-5, `calendar_events_reminders.md` §5.11) |
 | `notification` | Needs you for `assigned`, `mention` and `nudge`. For your information for `comment` |
 | `approval` | Needs you |
 | `needs_reply` | Needs you |
@@ -1552,7 +1552,8 @@ members of an edit. There are two versions instead:
 
 **3. Countdowns.** A card can count down in its why line, as "Starts in 20
 min" does. While the answer holds one, it is valid for 60 seconds at most.
-The why keys that count down are `starts_in` and `due_soon`.
+The why key that counts down is `starts_in`. RX-5 removed `due_soon`, because
+a due date has no hour.
 
 **4. The keys,** all through `tenant_redis.key()`. The active set holds the
 session's exact address. Each key that names a member uses the lower case.

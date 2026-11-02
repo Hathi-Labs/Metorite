@@ -66,9 +66,9 @@ from gateway.routes.projects.core import (
     assert_assignable_here,
     assert_epic_has_no_parent,
     assert_holds_tasks,
-    assert_not_archived,
     assert_move_keeps_privacy,
     assert_no_task_cycle,
+    assert_not_archived,
     clean_payload,
     count_where,
     diff_changes,
@@ -85,6 +85,7 @@ from gateway.routes.projects.core import (
     now,
     parent_lane_status,
     parse_precondition,
+    reader_day_start,
     record_activity,
     record_field_change,
     remap_one_status,
@@ -735,6 +736,7 @@ async def list_tasks(
             parent_task_id=parent_task_id, status_id=status_id,
             status_category=status_category, assignee=assignee,
             assignees=assignees, unassigned=unassigned, overdue=overdue,
+            day_start=await reader_day_start(db, actor(user).lower()) if overdue else None,
             due_before=due_before, importance_gte=importance_gte, q=q,
             tags=tags, tags_all=tags_all, include_archived=include_archived,
             archived_only=archived_only,
@@ -911,6 +913,15 @@ async def time_spent_mins(db: Any, task_id: str) -> int:
 
 # ── Writes ──────────────────────────────────────────────────────────────────
 
+async def _store_due(db: Any, user: UserContext, values: dict[str, Any]) -> None:
+    """A date-only ``due_at`` becomes local noon of the member who writes
+    (``personal.stored_due``, RX-5). ``personal`` imports this module."""
+    if values.get("due_at"):
+        from gateway.routes.projects.personal import stored_due
+
+        values["due_at"] = await stored_due(db, actor(user).lower(), values["due_at"])
+
+
 @router.post("/tasks", status_code=201)
 async def create_task(
     payload: TaskCreateIn, user: UserContext = Depends(get_current_user),
@@ -936,6 +947,7 @@ async def create_task(
     values["created_by"] = actor(user)
 
     async with _tenant_session() as db:
+        await _store_due(db, user, values)
         vis = await resolve_visibility(db, user)
         # FOR SHARE: a concurrent move of this project to the top (a space)
         # waits for this insert (`core.load_visible_project`).
@@ -1087,6 +1099,7 @@ async def patch_task(
     custom = values.pop("custom_fields", None)
 
     async with _tenant_session() as db:
+        await _store_due(db, user, values)
         vis = await resolve_visibility(db, user)
         before = await load_visible_task(db, vis, task_id)
 

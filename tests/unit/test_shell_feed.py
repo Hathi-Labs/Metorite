@@ -1660,8 +1660,15 @@ class TestTheReminderCards:
         async def my_open_cards(user, *, now, limit):
             return rows[:limit], None
 
+        async def my_day_band(user, *, now, subjects):
+            self.seen_subjects = subjects
+            return self.band
+
+        self.band = {"rows": [], "subjects": {}}
+        self.seen_subjects = None
         monkeypatch.setattr(rem, "reminders_enabled", lambda: True)
         monkeypatch.setattr(rem, "my_open_cards", my_open_cards)
+        monkeypatch.setattr(rem, "my_day_band", my_day_band)
 
     def test_a_reminder_is_one_card_and_one_bell_row(self, fakes, monkeypatch):
         self._on(monkeypatch, [self._row("r-1"), self._row("r-2", step="check_back")])
@@ -1675,6 +1682,54 @@ class TestTheReminderCards:
         assert answer["source_apps"]["reminders"] == "calendar"
         bell = [i["id"] for i in answer["needs"]["items"] if i["app"] == "calendar"]
         assert sorted(bell) == ["reminders:r-1", "reminders:r-2"]
+
+    def test_the_band_rows_are_never_a_card_a_bell_row_or_a_count(self, fakes, monkeypatch):
+        """RX-3: today's upcoming reminders ride in `reminders_ahead` and
+        nowhere else, so they raise no count and take no slot."""
+        self._on(monkeypatch, [self._row("r-1")])
+        self.band = {
+            "rows": [{"id": "r-9", "title": "Stand-up notes", "kind": "action",
+                      "fire_at": (NOW + timedelta(hours=3)).isoformat(), "important": False}],
+            "subjects": {"r-1": {"kind": "task", "label": "Invoice"}},
+        }
+        answer = run_feed(member(*FULL))
+        assert [r["id"] for r in answer["reminders_ahead"]] == ["r-9"]
+        assert answer["reminder_subjects"] == {"r-1": {"kind": "task", "label": "Invoice"}}
+        assert not [c for c in answer["cards"] if "r-9" in c["signal_id"]]
+        assert "reminders:r-9" not in [i["id"] for i in answer["needs"]["items"]]
+        assert answer["needs"]["totals"]["reminders"] == 1
+
+    def test_the_band_asks_for_the_linked_object_of_a_fired_reminder(self, fakes, monkeypatch):
+        self._on(monkeypatch, [self._row("r-1", subject_kind="task", subject_id="t-1"),
+                               self._row("r-2")])
+        run_feed(member(*FULL))
+        assert self.seen_subjects == [("r-1", "task", "t-1")]
+
+    def test_a_failed_band_read_gives_an_empty_band_and_is_not_stored(self, fakes, monkeypatch):
+        import gateway.routes.projects.reminders as rem
+
+        self._on(monkeypatch, [self._row("r-1")])
+
+        async def boom(user, *, now, subjects):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(rem, "my_day_band", boom)
+        fr = _bound(lambda: feed.feed_cards(member(*FULL), read=True))
+        assert fr.band == {"rows": [], "subjects": {}}
+        assert fr.band_ok is False
+        # The fired card still shows: only the upcoming rows are lost.
+        assert [c for c in fr.cards if c["signal_id"] == "reminders:r-1"]
+
+    def test_with_the_flag_off_the_band_reads_nothing(self, fakes, monkeypatch):
+        import gateway.routes.projects.reminders as rem
+
+        async def boom(*a, **k):
+            raise AssertionError("the band was read with the flag off")
+
+        monkeypatch.setattr(rem, "my_day_band", boom)
+        answer = run_feed(member(*FULL))
+        assert "reminders_ahead" not in answer
+        assert "reminder_subjects" not in answer
 
     def test_with_the_flag_off_there_is_no_card_and_no_row(self, fakes):
         answer = run_feed(member(*FULL))

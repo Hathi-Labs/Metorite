@@ -1212,6 +1212,16 @@ def actor(user: Any) -> str:
     return email or "anonymous"
 
 
+async def reader_day_start(db: Any, email: str) -> datetime:
+    """The instant that *email*'s own today started: the value of
+    ``:day_start`` in ``due_day.overdue_sql`` (RX-5). *email* is the reader, so
+    a card and the count of a shared board agree for the one who reads them.
+    ``personal`` imports this module, so the import waits for the call."""
+    from gateway.routes.projects.personal import member_day_start
+
+    return await member_day_start(db, email)
+
+
 def now() -> datetime:
     """The one clock this package reads, so tests can freeze it in one place."""
     return datetime.now(UTC)
