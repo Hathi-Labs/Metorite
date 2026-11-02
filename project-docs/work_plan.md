@@ -167,11 +167,12 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-KB | **Knowledge** | 🟢 active · M2 | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | Metorite: project Knowledge · no P0 or P1 · next H-401, KC-1 |
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_graph.md` · `specs/knowledge_base.md` §20 · `specs/company_context.md` | Metorite: epic 783 (Knowledge) · D128, D132 · 2026-10-29: KG-0 written, KG-1, KG-2 and KG-3a built · next KG-4 and KG-9, then KG-3b after the KG-2 backfill |
 | WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a |
-| WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · Stage 1 in M1, Stage 2 in M2 (D146) | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141, D146 · STU-0 merged · next B1 (the read-only action catalog), then the Stage 1 slices of §15 |
+| WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · Stage 1 in M1, Stage 2 in M2 (D146) | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141, D146 · Stage 1 merged except A1 and E1 (this PR), F2b and F2c · Stage 2 in build: A3, A4, B2a, C1, G1b and G2 merged, C2a in the gates · next C1b, C6, C7, B1c and B2b, then D2, D3, D11, G3 and F2b · epic 491 holds the plan · finish line of Stage 2: K3 |
 | WS-PKG | **Package host**: every app is a package, and Metorite reshapes itself around the organization and the person | 🟢 active · started 2026-11-01 (D147) · M1 | `specs/package_host.md` | Metorite: project "Package Host", epic 1234 · D89, D127, D136, D141, D146, D147 · Studio H1, H2, J2, J3 and M1 run on this registry · next PKG-1 (one manifest source for the ⌘K jobs, no behaviour change), then PKG-2, PKG-3 and PKG-4 |
 | WS-WEB | **Web research**: search, read any page or file, crawl, browse and research jobs for Mira, on open-source parts | 🟢 active · started 2026-11-01 (D148) · M1 | `specs/web_research.md` | Metorite: project "Agent Tooling", epic 1235 · D85, D117, D139, D148 · WS-43 CA-4 (task 1032) calls this service · gates WEB-Q1 (SearXNG) for WEB-5 · 2026-11-01: WEB-1 built (the fetch guard) and WEB-10 built (the goal record, `goal_records`, no caller yet), next WEB-2, then WEB-3 and WEB-4 |
 | WS-ALN | **Project alignment**: Metorite knows the project of each task, checks work against the project's accepted rules, and asks a person and the lead when work deviates | 🟢 active · started 2026-11-02 (D160) · M2 | `specs/project_alignment.md` | Metorite: project "Projects/Tasks App", epic 1368 · reports to WS-PT · D75, D100, D104, D140, D160 and workflows G5 · ALN-Q1 to ALN-Q5 run on working defaults, which are not owner decisions (`project_alignment.md` §14) · ALN-0 is this spec · next ALN-1 (the durable trigger), ALN-2a and ALN-4 in parallel, then ALN-5, ALN-6, ALN-7 · ALN-5 needs the rule store of SW-31 (task 1048) |
 | WS-AUTO | **Proactive agent**: Mira acts for each person without being asked, within limits that the person sees | 🟢 active · started 2026-11-02 (D161) · M2 | `specs/proactive_agent.md` | Metorite: project "Automations", epic 807 · D103, D124, D131, D161 and workflows G5 · AUTO-2 first slice and AUTO-3 (D131) are merged · AUTO-Q1 runs on a working default, which is not an owner decision (`proactive_agent.md` §12) · H-328 (task 856) blocks any second org · next AUTO-7a and AUTO-6 in parallel, then AUTO-8, AUTO-1, AUTO-4, AUTO-5, AUTO-9, AUTO-10 |
+| WS-CO | **Chat organization**: topics, picking up a chat, one search, and the full-screen chat | 🟢 active · started 2026-11-02 (D162, D163) · M1 | `specs/chat_organization.md` · `specs/artifact_management.md` §6.0 | next CO-0 (AGENT-SAFE). CO-1 waits for the PZ-33b question on numbers, and its flip is owner-only |
 | WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) · `specs/glass_look.md` (phase GL, D143) | Metorite: epic 492, sub-epic UX-D, task 1125 (GL) · UI-G1 is built · **GL (owner, 2026-10-31): Aroh's glass look, LIVE in production since 2026-10-31 05:38 UTC behind `NEXT_PUBLIC_UI_LOOK` (GL-9 done on the owner's word; staging no longer exists). GL-0 to GL-4 built (gate and tokens, primitives, shell, chat). GL-10, GL-11 and GL-12 are built (GL-12, 2026-11-01: the Ask bar at the foot, no top bar, Needs you beside its sidebar row) (GL-11, 2026-11-01: desktop proportions, raised chat cards, the full-height sidebar with hover to expand) (cards, rail, chat edge). **GL-Z1 is built, 2026-10-31 (D149): glass is the only look, and the Design switch and the gate are gone.** Next GL-Z2 (fold each `glass:` class into a plain class, then delete the classic token blocks), then GL-5 and GL-6** · then UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
 | WS-CHAT | **AI chat**: Mira, the one assistant | 🟢 active · M1 | `specs/one_assistant_context.md` · `specs/chat_first_surface.md` | Metorite: project AI Chat Interface, epic 470 · a parallel session owns it · next #469 with BR-5, #471, WS-58, SUB-1 (the sub-agent policy for OA-9) |
@@ -5071,6 +5072,46 @@ Owner directive, 2026-11-02, in chat, the same approval as D160. Board: **WS-AUT
 7. **The build order** is H-328, AUTO-7a, AUTO-8, AUTO-6, AUTO-1, AUTO-4, AUTO-5, AUTO-9, AUTO-10.
 
 **What stays open.** AUTO-Q1 (`proactive_agent.md` §12). The build runs on its working default, which is not an owner decision.
+### D162 — Files are one library, reached from the chat (2026-11-02)
+
+Owner directive, 2026-11-02, in chat. Board: **WS-60**, owner `specs/artifact_management.md` §6.0 and slice AM-2. The owner left the design to the agent, so this decision is the agent's and the owner can reopen it.
+
+```text
+"when it comes down to artifacts and folders, I leave it up to you. Basically, some really good way in which we can organize all the files, artifacts, and all the things that we upload and create via the agent chat should be available and accessible somewhere. I was thinking that, instead of having a separate artifacts system, it's one system that is accessible from the chat window. Possibly later on, these artifacts can either be linked into knowledge base articles or themselves become available within company knowledge."
+"ensure that the files in the file viewer have a reference of the session they were generated in. we should be able to delete a session chat without deleting its generated files"
+```
+
+1. **One library.** Each file that a member uploads or an agent makes in a chat has one row in `artifacts`. No second file system exists.
+2. **The chat is the door.** The chat rail gets a Chats and Files switch, and Files is the library. When AM-2 ships, the Artifacts row leaves the sidebar. `/artifacts` and `/artifacts/<id>` stay as routes, so each link still works. A chat's own Files panel is the same library, filtered to that chat.
+3. **Filing is automatic.** The library sorts each file by chat, type, day and who made it, and by topic when chat topics ship. A member never has to file anything.
+4. **Folders exist, flat and private.** This replaces `artifact_management.md` §4.4, which refused folders. A folder belongs to one member, has one level, and a file can sit in several. A folder is a label, and it holds no grant. Sharing stays Share and a project, in the D12 grammar, so no second grant vocabulary starts.
+5. **A move never cuts a file from its chat.** The chat link stays, and the file stays in its chat's list.
+6. **Knowledge stays D104.** "Save to Knowledge" is a member's act. It copies the text into a space with the artifact id as provenance. An agent never publishes, and the file stays private. The screen says who will read the copy before the member confirms.
+7. **Every file names its chat** (owner, 2026-11-02, second message). The library shows the chat each file came from, and opens it. A file keeps the chat's title after the chat is deleted, marked deleted.
+8. **Deleting a chat keeps its files.** The delete moves them out of the chat's reach into the member's library, so a new chat that reuses the id gets none of them (H-227 stands). The delete dialog says how many files stay. This answers `artifact_management.md` §13 Q4, whose default trashed the scratch files. Slice AM-10.
+9. **Decided in D163, not here:** chat topics, the rule for joining an old chat, and who pays for the idle-chat job.
+
+Fence: advisory until AM-2. `nav.test.ts` fences the sidebar row when it goes.
+
+### D163 — Chats sort themselves, and a chat picks up where it left off (2026-11-02)
+
+Owner directive, 2026-11-02, in chat. Board: **WS-CO**, owner `specs/chat_organization.md`. The agent proposed this, and the owner accepted all of it.
+
+```text
+"wait, I'm happy with all of these." ... "You can go ahead."
+```
+
+1. **Company list, private contents.** One short topic list for the organization, seeded from its teams. Which chats sit in a topic stays private to whoever can see the chat.
+2. **A new topic starts private.** The AI makes it for one member. At 3 or more members with a similar topic, an admin gets one click to add it, and sees the count and no name.
+3. **Three outcomes for a new message.** Join the old chat, start a new chat that carries its summary, or start clean. This narrows the rule that a question asked hours later starts clean (`assistant.ts`), only on a confident match.
+4. **Only a solo chat joins.** No room, no archived chat, no live run, and no chat near the context limit.
+5. **The destination shows before the send.** A chip in the composer is the override. After a reply, the undo removes the turn and resends the words to a new chat.
+6. **The same record outranks similar words.** Corrections lower how often a member's chats join.
+7. **Metorite absorbs the idle-chat pass.** It never debits a company's credits. This changes the credit note of D142.9. The production flip stays owner-only, and the cap comes from a measured run on Fracktal.
+8. **Shadow, then Fracktal, then everyone.**
+9. **Three company features.** A pointer to a chat already shared with the member, a suggestion to save to Knowledge (D104 stands), and the Knowledge gap count at 5 askers or more. The count is KB-9a, which reads no chat, so D142.2 stands.
+
+Fence: named per slice in `chat_organization.md` §13. Advisory until each slice builds.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
