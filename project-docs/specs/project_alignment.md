@@ -3,7 +3,7 @@
 > **Product:** Metorite · **Feature:** the project of a task, the project's rules, and a check that asks a person · **Updated:** 2026-11-02 · **Owner:** vjvarada
 > **Status:** 📋 **SPEC, NOTHING BUILT.** ALN-0 (this spec) is the first slice. ALN-1 is next. The owner did not answer ALN-Q1 to ALN-Q5, and told us to start. The build runs on the working defaults of §14.
 > **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §11 was read on that commit. Earlier task text came from a read at `308df8828`, and §2 lists each fact that changed.
-> **Board:** WS-ALN in `work_plan.md` §2.1. **Decision:** D151. D12, D75, D93, D100, D104, D105, D128, D131, D140, D145 and workflows G5 bind it.
+> **Board:** WS-ALN in `work_plan.md` §2.1. **Decision:** D160. D12, D75, D93, D100, D104, D105, D128, D131, D140, D145 and workflows G5 bind it.
 > **Metorite:** project "Projects/Tasks App", epic 1368, this spec task 1369. The questions are tasks 1370 to 1374. The slices ALN-1 to ALN-14 are tasks 1375 to 1388, in order.
 > **Research first:** the comment "Research notes, 2026-11-02 (project alignment)" on epic 1368, copied into §9.
 > **Gate summary:** every slice is AGENT-SAFE. The flag that spends credits stays the owner's flip. An eval over USD 0.50 needs the owner's OK. Each slice that changes what a member sees follows the D145 loop.
@@ -330,7 +330,7 @@ Sources: `https://linear.app/docs/triage-intelligence` · `https://docs.coderabb
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **ALN-0** (task 1369) | This spec, D151, the board row | `spec-auditor` returns GO for ALN-1. `test_index_completeness.py` and `test_decision_ids.py` pass | LOW | AGENT-SAFE |
+| **ALN-0** (task 1369) | This spec, D160, the board row | `spec-auditor` returns GO for ALN-1. `test_index_completeness.py` and `test_decision_ids.py` pass | LOW | AGENT-SAFE |
 
 ### Phase 1 — Foundations
 

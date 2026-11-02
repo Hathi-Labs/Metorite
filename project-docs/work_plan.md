@@ -143,7 +143,7 @@ The core function brief sets the phases (D119). Customer zero comes first inside
 12. **A real second organization**: MT-1j-exec provisions it and runs the smoke. E-58 and BR-14 follow.
 13. **Pay** (Phase 2): H-14, the rate card and the spend gate (D123), SC-5, H-292 and H-287.
 14. **The Phase 2 brief tasks**: BR-10, BR-11, BR-12, BR-9, BR-8, BR-13 and BR-15.
-15. **Project alignment and the proactive agent** (M2, D151 and D153): the order is in `specs/project_alignment.md` §10 and `specs/proactive_agent.md` §9. H-328 comes first for any second org.
+15. **Project alignment and the proactive agent** (M2, D160 and D161): the order is in `specs/project_alignment.md` §10 and `specs/proactive_agent.md` §9. H-328 comes first for any second org.
 
 **The full item list is in Metorite**, in the HathiLabs project Metorite, under the epics that §2.1 names.
 
@@ -170,8 +170,8 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · Stage 1 in M1, Stage 2 in M2 (D146) | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141, D146 · STU-0 merged · next B1 (the read-only action catalog), then the Stage 1 slices of §15 |
 | WS-PKG | **Package host**: every app is a package, and Metorite reshapes itself around the organization and the person | 🟢 active · started 2026-11-01 (D147) · M1 | `specs/package_host.md` | Metorite: project "Package Host", epic 1234 · D89, D127, D136, D141, D146, D147 · Studio H1, H2, J2, J3 and M1 run on this registry · next PKG-1 (one manifest source for the ⌘K jobs, no behaviour change), then PKG-2, PKG-3 and PKG-4 |
 | WS-WEB | **Web research**: search, read any page or file, crawl, browse and research jobs for Mira, on open-source parts | 🟢 active · started 2026-11-01 (D148) · M1 | `specs/web_research.md` | Metorite: project "Agent Tooling", epic 1235 · D85, D117, D139, D148 · WS-43 CA-4 (task 1032) calls this service · gates WEB-Q1 (SearXNG) for WEB-5 · 2026-11-01: WEB-1 built (the fetch guard) and WEB-10 built (the goal record, `goal_records`, no caller yet), next WEB-2, then WEB-3 and WEB-4 |
-| WS-ALN | **Project alignment**: Metorite knows the project of each task, checks work against the project's accepted rules, and asks a person and the lead when work deviates | 🟢 active · started 2026-11-02 (D151) · M2 | `specs/project_alignment.md` | Metorite: project "Projects/Tasks App", epic 1368 · reports to WS-PT · D75, D100, D104, D140, D151 and workflows G5 · ALN-Q1 to ALN-Q5 run on working defaults, which are not owner decisions (`project_alignment.md` §14) · ALN-0 is this spec · next ALN-1 (the durable trigger), ALN-2a and ALN-4 in parallel, then ALN-5, ALN-6, ALN-7 · ALN-5 needs the rule store of SW-31 (task 1048) |
-| WS-AUTO | **Proactive agent**: Mira acts for each person without being asked, within limits that the person sees | 🟢 active · started 2026-11-02 (D153) · M2 | `specs/proactive_agent.md` | Metorite: project "Automations", epic 807 · D103, D124, D131, D153 and workflows G5 · AUTO-2 first slice and AUTO-3 (D131) are merged · AUTO-Q1 runs on a working default, which is not an owner decision (`proactive_agent.md` §12) · H-328 (task 856) blocks any second org · next AUTO-7a and AUTO-6 in parallel, then AUTO-8, AUTO-1, AUTO-4, AUTO-5, AUTO-9, AUTO-10 |
+| WS-ALN | **Project alignment**: Metorite knows the project of each task, checks work against the project's accepted rules, and asks a person and the lead when work deviates | 🟢 active · started 2026-11-02 (D160) · M2 | `specs/project_alignment.md` | Metorite: project "Projects/Tasks App", epic 1368 · reports to WS-PT · D75, D100, D104, D140, D160 and workflows G5 · ALN-Q1 to ALN-Q5 run on working defaults, which are not owner decisions (`project_alignment.md` §14) · ALN-0 is this spec · next ALN-1 (the durable trigger), ALN-2a and ALN-4 in parallel, then ALN-5, ALN-6, ALN-7 · ALN-5 needs the rule store of SW-31 (task 1048) |
+| WS-AUTO | **Proactive agent**: Mira acts for each person without being asked, within limits that the person sees | 🟢 active · started 2026-11-02 (D161) · M2 | `specs/proactive_agent.md` | Metorite: project "Automations", epic 807 · D103, D124, D131, D161 and workflows G5 · AUTO-2 first slice and AUTO-3 (D131) are merged · AUTO-Q1 runs on a working default, which is not an owner decision (`proactive_agent.md` §12) · H-328 (task 856) blocks any second org · next AUTO-7a and AUTO-6 in parallel, then AUTO-8, AUTO-1, AUTO-4, AUTO-5, AUTO-9, AUTO-10 |
 | WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) · `specs/glass_look.md` (phase GL, D143) | Metorite: epic 492, sub-epic UX-D, task 1125 (GL) · UI-G1 is built · **GL (owner, 2026-10-31): Aroh's glass look, LIVE in production since 2026-10-31 05:38 UTC behind `NEXT_PUBLIC_UI_LOOK` (GL-9 done on the owner's word; staging no longer exists). GL-0 to GL-4 built (gate and tokens, primitives, shell, chat). GL-10, GL-11 and GL-12 are built (GL-12, 2026-11-01: the Ask bar at the foot, no top bar, Needs you beside its sidebar row) (GL-11, 2026-11-01: desktop proportions, raised chat cards, the full-height sidebar with hover to expand) (cards, rail, chat edge). **GL-Z1 is built, 2026-10-31 (D149): glass is the only look, and the Design switch and the gate are gone.** Next GL-Z2 (fold each `glass:` class into a plain class, then delete the classic token blocks), then GL-5 and GL-6** · then UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
 | WS-CHAT | **AI chat**: Mira, the one assistant | 🟢 active · M1 | `specs/one_assistant_context.md` · `specs/chat_first_surface.md` | Metorite: project AI Chat Interface, epic 470 · a parallel session owns it · next #469 with BR-5, #471, WS-58, SUB-1 (the sub-agent policy for OA-9) |
@@ -179,7 +179,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-DOC | **Docs and repo cleanup** | 🟢 active · M1 | none yet | Metorite: epic 522 (Developer Workflow) · next DOC-1, DOC-2 |
 | WS-BRIEF | **Core brief**: brief tasks with no earlier plan line | 🟢 active · M1 | `specs/core_brief.md` (PROPOSED) | Metorite: epics 479 (Proactive Intelligence) and 480 (Secrets & Security), connectors in epic 481, automations in sub-epic AUTO of epic 479 · gate AUTO-3 (the trust ladder) · BR-1a built, dark (`JOB_QUEUE`, `docs/job_queue.md`) · AUTO-2 built, dark (`UNATTENDED_LEDGER`, `docs/job_queue.md` §9) · BR-4 slice 1 built: migration 315 and `gateway/brief/store.py`, with no producer · next BR-1b-a, BR-2a |
 | WS-IR | **Issue Reporting** | 🟢 active · M0 | none yet | Metorite: epic 475 (Observability & Alerts) · D126 · next IR-0, IR-1, IR-2 |
-| WS-OB | **Onboarding and Help** | 🟢 active · M1 | `specs/onboarding.md` (D150). OB-8: `specs/calendar_events_reminders.md` §10.4 | Metorite: Onboarding project, epic 669 · OB-0 (the founder's welcome closes at once) BUILT 2026-11-02 on a branch · OB-0b (a new founder lands with no apps, HIGH) BUILT on a branch · next OB-0c, OB-1a, OB-1b, OB-2 · HLP-1, ADM-1. OB-8 (the chat push prompt) BUILT 2026-10-30, dark |
+| WS-OB | **Onboarding and Help** | 🟢 active · M1 | `specs/onboarding.md` (D150, D153). OB-8: `specs/calendar_events_reminders.md` §10.4 | Metorite: Onboarding project, epic 669 · OB-0 (the founder's welcome closes at once) and OB-0b (a new founder lands with no apps, HIGH) MERGED 2026-11-02 · next OB-0c, OB-0d, OB-1a, OB-1b, OB-4, OB-10, OB-24 · AI-led layer: epic 1351, `specs/onboarding.md` §12, D153 · HLP-1, ADM-1. OB-8 (the chat push prompt) BUILT 2026-10-30, dark |
 
 ### 2.2 Earlier rows (WS-0 to WS-67)
 
@@ -5021,7 +5021,24 @@ Owner decision, 2026-11-02, in chat, on the four defaults of `specs/onboarding.m
 3. **D-OB-3. The founder's four default steps** are `invite_team`, `connect_email`, `first_project` and `ask_assistant`.
 4. **D-OB-4. The card leaves My Day for good when the last step is done.** A later setup item goes to the setup coach (D110), not back onto the card.
 
-### D151 — Metorite checks work against the project's accepted rules, and asks a person when work deviates (2026-11-02)
+### D153 — Onboarding: the AI-led layer, company context first (2026-11-02)
+
+Owner direction and decision, 2026-11-02, in chat, on the four defaults of `specs/onboarding.md` §12.10. Board: **WS-OB**. Metorite: epic 1351. The owner accepted each default.
+
+```text
+"If the user is being onboarded into a completely brand-new organization and
+that Android user is an admin, we should urge them to set up context, make
+separate different kinds of connections, etc., to onboard themselves onto the
+platform. If a person is being onboarded onto an existing platform, then the
+onboarding experience would be different."
+```
+
+1. **D-OB-5. `company_context` is the founder's first step.** The order is `company_context`, `connect_email`, `connect_surfaces`, `invite_team`, `first_project`. The setup chat ticks `ask_assistant` as a by-product. This replaces D-OB-3.
+2. **D-OB-6. Metorite pays for the AI of setup, up to a cap per organization.** No credits leave a new organization for it.
+3. **D-OB-7. Join before create stays OFF until an organization's admin turns it on.** A person who joins by domain gets the member role.
+4. **D-OB-8. The AI layer ships behind `SETUP_ASSISTANT_ORGS`, and we read the first 20 organizations by hand.** The evidence for it is thin. The card of D150 stays the base, and every step works with no AI.
+
+### D160 — Metorite checks work against the project's accepted rules, and asks a person when work deviates (2026-11-02)
 
 Owner directive, 2026-11-02, in chat. Board: **WS-ALN**. Owning spec: `specs/project_alignment.md`. Metorite: project "Projects/Tasks App", epic 1368, spec task 1369. It extends D75, D100, D104 and D140, and changes none of their rules.
 
@@ -5041,9 +5058,9 @@ The owner asked for this after the request that Metorite should know the project
 
 **What stays open.** ALN-Q1 to ALN-Q5 (`project_alignment.md` §14).
 
-### D153 — Mira acts for each person without being asked, within limits that the person sees (2026-11-02)
+### D161 — Mira acts for each person without being asked, within limits that the person sees (2026-11-02)
 
-Owner directive, 2026-11-02, in chat, the same approval as D151. Board: **WS-AUTO**. Owning spec: `specs/proactive_agent.md`. Metorite: project "Automations", epic 807, spec task 1396. It extends D103, D124, D129 and D131, and changes none of their rules.
+Owner directive, 2026-11-02, in chat, the same approval as D160. Board: **WS-AUTO**. Owning spec: `specs/proactive_agent.md`. Metorite: project "Automations", epic 807, spec task 1396. It extends D103, D124, D129 and D131, and changes none of their rules.
 
 1. **The workflows engine owns the triggers.** There is no second scheduler (workflows G5).
 2. **The job queue owns the capped headless turn.** It runs on `jobs/worker.py` with `unattended.run_guarded`, with a credit cap on each turn.
