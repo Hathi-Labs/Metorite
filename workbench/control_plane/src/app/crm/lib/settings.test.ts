@@ -152,7 +152,7 @@ describe("reorderFailureMessage", () => {
     // is how somebody drags again and makes it worse.
     const message = reorderFailureMessage(["Status not found"], 4);
     expect(message).toContain("1 of 4");
-    expect(message).toContain("the order shown is the server's");
+    expect(message).toContain("the saved order, not the one you dropped");
     expect(message).toContain("Status not found");
   });
 });
@@ -231,7 +231,7 @@ describe("validateStatusDraft", () => {
       "deal"
     );
     expect(message).toContain("always forecasts 100%");
-    expect(message).toContain("Set probability to 100");
+    expect(message).toContain("Set the win chance to 100");
   });
 
   it("names the rule when a lost stage would not forecast 0", () => {
@@ -267,7 +267,7 @@ describe("validateStatusDraft", () => {
     // Migration 288 gave `crm_lead_statuses` a win chance, with the same rule.
     expect(
       validateStatusDraft({ name: "Qualified", type: "won", probability: 40 }, "lead")
-    ).toContain("Set probability to 100");
+    ).toContain("Set the win chance to 100");
     expect(
       validateStatusDraft({ name: "Qualified", type: "won", probability: 100 }, "lead")
     ).toBeNull();
@@ -365,7 +365,7 @@ describe("validateStatusDraft · stage discipline", () => {
     // intermittent bug.
     expect(
       validateStatusDraft({ ...base, required_fields: ["amont"] }, "deal")
-    ).toContain("amont");
+    ).toContain("Amont");
   });
 
   it("accepts an empty requirement set — that is how a stage stops asking", () => {

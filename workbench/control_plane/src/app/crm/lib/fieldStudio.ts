@@ -21,6 +21,7 @@
 // red.
 
 import { call, CrmError } from "./api";
+import { humanizeKey } from "./connect";
 import { type FieldDef } from "./fields";
 import {
   FIELD_TYPES,
@@ -91,9 +92,9 @@ export const TARGET_LABELS: Record<LookupTarget, string> = {
   deals: "Deals",
 };
 
-/** The label of a type word. A word that the studio does not know reads as it is. */
+/** The label of a type word. A word that the studio does not know reads as a name. */
 export function typeLabel(type: string): string {
-  return (TYPE_LABELS as Record<string, string>)[type] ?? type;
+  return (TYPE_LABELS as Record<string, string>)[type] ?? humanizeKey(type);
 }
 
 /** True for a type word of the studio. */

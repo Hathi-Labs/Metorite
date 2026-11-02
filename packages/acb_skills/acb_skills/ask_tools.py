@@ -39,6 +39,8 @@ import re as _re
 from collections.abc import Iterator as _Iterator
 from typing import Any
 
+from acb_common.no_person import no_person_present as _no_person_present
+
 # ── A run with no card channel (WS-47 WAC-3) ──────────────────────────────────
 #
 # A run that the server starts for a channel with no cards (WhatsApp) has no
@@ -80,8 +82,12 @@ def refuse_cards() -> _Iterator[None]:
 
 
 def cards_refused() -> bool:
-    """True inside :func:`refuse_cards`: this run has no card channel."""
-    return _CARDS_REFUSED.get()
+    """True inside :func:`refuse_cards`: this run has no card channel.
+
+    A run with no person present has none either (AUTO-7a). So each reader
+    of this switch closes for that run too.
+    """
+    return _CARDS_REFUSED.get() or _no_person_present()
 
 
 def refuse_cards_for_run(refused: bool) -> _contextvars.Token[bool]:
@@ -94,8 +100,10 @@ def refuse_cards_for_run(refused: bool) -> _contextvars.Token[bool]:
     its caller allowed. Give the token to :func:`release_cards_switch`.
 
     It is a ContextVar, so it covers the callers of ``run_agent_stream`` on
-    MAF, whose tools run in the run's context. A Copilot SDK tool that runs
-    in a JSON-RPC thread reads a fresh context, so it is NOT covered. The
+    MAF, whose tools run in the run's context. A Copilot SDK tool starts on a
+    JSON-RPC thread with a fresh context. ``carry_run_context`` runs it in a
+    copy of the run's context, so it is covered too. An agent that the carry
+    cannot wrap is not. Fence: ``tests/unit/test_no_person_present.py``. The
     email chat route that passed ``shows_cards=False`` is gone (WS-17
     EM-G11f3). The chat pane of the Email app runs on ``/agent/run/stream``."""
     return _CARDS_REFUSED.set(bool(refused) or _CARDS_REFUSED.get())
@@ -1448,6 +1456,11 @@ async def request_confirmation(
         id the card offered. It is EMPTY, and so falsy, when the member did
         not approve, or when the answer named an id the card did not offer.
 
+        In a run with no person present (AUTO-7a) it denies first, before
+        every path, whatever ``non_interactive_default`` says. A denial is
+        ``False``, an empty ``frozenset`` with ``rows``, and ``None`` with
+        ``reply`` or ``with_answer``.
+
         Inside :func:`refuse_cards` (WS-47 WAC-3) it denies at once, before
         any channel is tried, whatever ``non_interactive_default`` says.
         One exception comes first (WS-47 WAC-4): the WhatsApp profile parks
@@ -1464,6 +1477,12 @@ async def request_confirmation(
     _rows = clean_card_rows(rows)
     _reply = clean_reply_form(reply)
     _with_answer = _check_card_args(request_id, with_answer, _rows)
+    if _no_person_present():
+        # AUTO-7a: before every path, the WhatsApp paths too. A run with no
+        # person cannot ask anyone, and no argument of a tool changes that.
+        if _reply is not None or _with_answer:
+            return None
+        return frozenset() if _rows is not None else False
     # H-391: an email card in a WhatsApp run parks for the member's reply
     # code, or takes the yes of the code that approved it. Anything else
     # goes on below, as before.
