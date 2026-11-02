@@ -171,6 +171,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
     # not cover it.
     "ASSISTANT_CHAT_SUMMARY_ORGS",
+    # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
+    # A queued row waits for the worker, so only the operator writes it
+    # (project_alignment.md §5 item 8).
+    "ALIGN_JOBS_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",
@@ -313,6 +317,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-OB OB-8: the push prompt. PUSH_PROMPT_ORGS opens the chat sheet for an
     # org, so a tenant that set it could open the sheet for every org.
     "PUSH_PROMPT_",
+    # RX-5: the morning summary push. DUE_PUSH_ORGS opens it for an org, so a
+    # tenant that set it could send a push to the members of every org.
+    "DUE_PUSH_",
     # STU-B1: STUDIO_ORGS opens the AI Studio catalog for an org.
     "STUDIO_",
     # Agent runtime, sandbox and models.

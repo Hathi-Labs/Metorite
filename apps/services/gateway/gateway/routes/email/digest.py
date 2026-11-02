@@ -385,7 +385,7 @@ async def _digest_commitments(
     The reads are :func:`_commitments_core`, which raises. This wrapper keeps
     the digest best-effort (WS-58 MD-3d), and its output does not change."""
     try:
-        at, picked, latest = await _commitments_core(
+        zone, at, picked, latest = await _commitments_core(
             db, account_id, horizon_days=horizon_days, limit=limit,
             include_undated=include_undated)
     except Exception as exc:  # noqa: BLE001
@@ -404,9 +404,10 @@ async def _digest_commitments(
         thread_id = _origin_of(it).get("thread_id") or None
         out.append({
             "title": (it.title or "(untitled)"),
-            # 'Mon DD', as Postgres `to_char(due_at, 'Mon DD')` wrote it.
-            "due": due.strftime("%b %d") if due else None,
-            "overdue": bool(due is not None and due < at),
+            # 'Mon DD', as Postgres `to_char(due_at, 'Mon DD')` wrote it, in
+            # the owner's zone, so the date is the one that My Day shows.
+            "due": _due_day(due, zone).strftime("%b %d") if due else None,
+            "overdue": _overdue(due, zone, at),
             "task_id": str(it.id),
             "thread_id": thread_id,
             "message_id": latest.get(str(thread_id)) if thread_id else None,
@@ -414,16 +415,33 @@ async def _digest_commitments(
     return out
 
 
+def _due_day(due: datetime, zone: Any) -> Any:
+    """The local date of *due*, in the mailbox owner's zone."""
+    from gateway.routes.projects.due_day import local_date
+
+    return local_date(zone, due)
+
+
+def _overdue(due: datetime | None, zone: Any, at: datetime) -> bool:
+    """The one rule of late work (RX-5, ``routes/projects/due_day.py``). A
+    commitment is a ``pm_tasks`` row, so it reads as My Day reads it: late from
+    the day after its date, in the owner's zone."""
+    from gateway.routes.projects.due_day import is_overdue, local_date
+
+    return due is not None and is_overdue(due, zone, local_date(zone, at))
+
+
 async def _commitments_core(
     db: Any, account_id: str, *, horizon_days: int, limit: int,
     include_undated: bool = False, commitment: bool = False,
     this_tenant: bool = False, now: datetime | None = None,
     owner: str | None = None,
-) -> tuple[datetime, list[tuple[Any, datetime | None]], dict[str, str]]:
-    """The reads of :func:`_digest_commitments`, with no ``try``: the instant
-    of the horizon, the picked ``(task, due)`` pairs (soonest first, undated
-    last, at most ``limit``), and the latest message of each linked thread.
-    It RAISES on any error (WS-58 MD-3d).
+) -> tuple[Any, datetime, list[tuple[Any, datetime | None]], dict[str, str]]:
+    """The reads of :func:`_digest_commitments`, with no ``try``: the stored
+    zone of the mailbox owner, the instant of the horizon, the picked ``(task,
+    due)`` pairs (soonest first, undated last, at most ``limit``), and the
+    latest message of each linked thread. It RAISES on any error (WS-58 MD-3d).
+    The zone costs one read, and only when a picked row has a date (RX-5).
 
     ``commitment`` keeps only a promise, a task with ``origin.commitment =
     true`` (``capture_email.py``, ``item_lens.items_by_origin``). The digest
@@ -434,6 +452,7 @@ async def _commitments_core(
     None reads the wall clock, as the digest always did. ``owner`` is the
     mailbox owner that the caller's own owner check proved, so the core
     reads no owner row again. None reads it, as the digest always did."""
+    from gateway.routes.projects.personal import stored_zone
     from gateway.routes.tasks.item_source import item_source
 
     uid = owner
@@ -444,7 +463,7 @@ async def _commitments_core(
         uid = str(getattr(row, "user_id", "") or "") if row else ""
     at = now if now is not None else datetime.now(UTC)
     if not uid:
-        return at, [], {}
+        return None, at, [], {}
     # Only a promise read passes the flag, so the digest's call keeps its
     # exact arguments.
     flags = {"commitment": True} if commitment else {}
@@ -460,6 +479,7 @@ async def _commitments_core(
     # Soonest first, undated last: the order the SQL gave with NULLS LAST.
     picked.sort(key=lambda p: (p[1] is None, p[1] or at))
     picked = picked[:limit]
+    zone = await stored_zone(db, uid) if any(d is not None for _, d in picked) else None
     threads = sorted({
         str(_origin_of(it).get("thread_id"))
         for it, _due in picked if _origin_of(it).get("thread_id")
@@ -469,7 +489,7 @@ async def _commitments_core(
         rows = (await db.execute(text(_latest_message_sql(this_tenant)), {
             "aid": account_id, "tids": threads})).fetchall()
         latest = {str(r.thread_id): str(r.message_id) for r in rows}
-    return at, picked, latest
+    return zone, at, picked, latest
 
 
 #: The left pad of the statement below, as the digest always sent it.
@@ -513,7 +533,7 @@ async def promise_tasks(
     async with _tenant_session() as db:
         await _assert_account_owner(
             db, account_id, user.email or "anonymous", this_tenant=True, level="read")
-        at, picked, latest = await _commitments_core(
+        zone, at, picked, latest = await _commitments_core(
             db, account_id, horizon_days=horizon_days, limit=limit,
             commitment=True, this_tenant=True, now=now,
             owner=user.email or "anonymous")
@@ -526,7 +546,7 @@ async def promise_tasks(
             "task_id": str(it.id),
             "title": it.title or "(untitled)",
             "due_at": due.isoformat(),
-            "overdue": due < at,
+            "overdue": _overdue(due, zone, at),
             "thread_id": thread_id,
             "message_id": latest.get(str(thread_id)) if thread_id else None,
             # The D78 level, which the feed's old-path weight reads.

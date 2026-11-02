@@ -34,7 +34,7 @@ REGISTRY = ROOT / "workbench/control_plane/src/lib/shell/registry.ts"
 INTENT = ROOT / "apps/services/gateway/gateway/routes/shell/intent.py"
 
 ORDER = [
-    "capture", "compose", "plan-day", "new-project", "new-chat", "invite", "new-lead",
+    "capture", "compose", "plan-day", "set-reminder", "new-project", "new-chat", "invite", "new-lead",
     "new-deal", "log-call", "find-record", "add-mcp", "review-integrations",
     "connect-agent", "find-person", "find-knowledge", "write-page", "add-product",
     "add-topic", "edit-profile", "appearance", "whatsapp-reply", "find-chat-file",
@@ -43,9 +43,11 @@ ORDER = [
 
 #: (id, label, meaning, feature, href, fields, admin, (fallback_feature, fallback_href))
 PRE_SLICE_PY = [
-    ('capture', 'New task', 'add a task, a to-do or a reminder for themselves', 'projects', '/projects?do=capture', {'title': "the task itself, in the member's own words, without 'remind me to'"}, False, ('tasks', '/tasks?do=capture')),
+    # RX-6 (2026-11-02): the capture job stopped taking a reminder. The set-reminder job is new.
+    ('capture', 'New task', 'add a task or a to-do for themselves. A reminder is a different job: set-reminder', 'projects', '/projects?do=capture', {'title': "the task itself, in the member's own words"}, False, ('tasks', '/tasks?do=capture')),
     ('compose', 'Write an email', 'write, send or reply to an email', 'email', '/email?do=compose', {'to': 'who the email goes to: a name or an email address', 'subject': 'a short subject line for the email'}, False, (None, None)),
     ('plan-day', 'Plan my day', 'plan, schedule or look at their day, their calendar or their agenda', 'tasks', '/calendar', {}, False, (None, None)),
+    ('set-reminder', 'New reminder', 'set a reminder for themselves at a time. A reminder is a moment, not a task: it asks the member at that time', 'projects', '/calendar?do=new-reminder', {'title': "what to remind them of, in their own words, without 'remind me to'"}, False, (None, None)),
     ('new-project', 'New space', 'start a new space, project or department board in Projects', 'projects', '/projects?do=new-project', {}, False, (None, None)),
     ('new-chat', 'New chat', 'start a new conversation with the AI assistant', 'chat', '/chat?do=new-chat', {}, False, (None, None)),
     ('invite', 'Invite a member', 'invite a new person to join the organization', None, '/settings/organization?do=invite', {}, True, (None, None)),
@@ -70,9 +72,10 @@ PRE_SLICE_PY = [
 
 #: (id, label, words, app, href, icon, own feature, fallback)
 PRE_SLICE_TS = [
-    ('capture', 'New task', ['task', 'todo', 'to-do', 'capture', 'add', 'remind', 'reminder', 'note'], '/projects', '/projects?do=capture', 'CirclePlus', None, ('tasks', '/tasks?do=capture')),
+    ('capture', 'New task', ['task', 'todo', 'to-do', 'capture', 'add', 'note'], '/projects', '/projects?do=capture', 'CirclePlus', None, ('tasks', '/tasks?do=capture')),
     ('compose', 'Write an email', ['email', 'mail', 'compose', 'send', 'message', 'write'], '/email', '/email?do=compose', 'PenSquare', None, None),
     ('plan-day', 'Plan my day', ['calendar', 'schedule', 'plan', 'day', 'timebox', 'today', 'agenda'], '/calendar', '/calendar', 'CalendarClock', None, None),
+    ('set-reminder', 'New reminder', ['remind', 'reminder', 'nudge'], '/calendar', '/calendar?do=new-reminder', 'BellPlus', 'projects', None),
     ('new-project', 'New space', ['space', 'project', 'workspace', 'department', 'board'], '/projects', '/projects?do=new-project', 'FolderPlus', None, None),
     ('new-chat', 'New chat', ['chat', 'conversation', 'assistant', 'ai', 'talk', 'thread'], '/chat', '/chat?do=new-chat', 'MessageSquarePlus', None, None),
     ('invite', 'Invite a member', ['invite', 'join', 'onboard', 'welcome', 'newcomer'], '/settings/organization', '/settings/organization?do=invite', 'UserPlus', None, None),
@@ -189,7 +192,7 @@ def test_manifest_files_ship():
     count = sum(
         len(json.loads(f.read_text(encoding="utf-8"))["contributes"].get("jobs", [])) for f in files
     )
-    assert count == len(ORDER) == 23
+    assert count == len(ORDER) == 24
     assert not (shell_manifest.SHELL_DIR / "__init__.py").exists()
 
 

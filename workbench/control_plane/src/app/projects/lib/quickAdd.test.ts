@@ -13,6 +13,7 @@ import { dayKey } from "./calendar";
 import { UNSET } from "./grouping";
 import {
   EMPTY_PLAN,
+  dueDayOf,
   dueInstantForDay,
   mergePlans,
   quickAddPrefill,
@@ -85,6 +86,28 @@ describe("quickAddPrefill per axis", () => {
   it("treats 'none' and unknown future axes as a plain add, never an error", () => {
     expect(quickAddPrefill("none", "all")).toEqual(EMPTY_PLAN);
     expect(quickAddPrefill("phase", "beta")).toEqual(EMPTY_PLAN);
+  });
+});
+
+describe("dueDayOf — the date input of a due value", () => {
+  it("reads a pick back as the day that was picked", () => {
+    expect(dueDayOf(dueInstantForDay("2026-11-06"))).toBe("2026-11-06");
+  });
+
+  it("keeps a plain date, which a model draft holds", () => {
+    expect(dueDayOf("2026-11-06")).toBe("2026-11-06");
+  });
+
+  it("reads an instant as a day of this browser, not as its UTC date", () => {
+    // West of UTC the late hour is the next UTC date, and east of it the early
+    // hour is the UTC date before.
+    expect(dueDayOf(new Date(2026, 10, 6, 23, 30).toISOString())).toBe("2026-11-06");
+    expect(dueDayOf(new Date(2026, 10, 6, 0, 30).toISOString())).toBe("2026-11-06");
+  });
+
+  it("gives an empty input for no value and for a value that does not parse", () => {
+    expect(dueDayOf("")).toBe("");
+    expect(dueDayOf("next week")).toBe("");
   });
 });
 

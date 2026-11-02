@@ -125,7 +125,8 @@ def test_the_filters_are_build_task_filters_plus_three() -> None:
     the scope's to decide, and ``viewer`` is the caller, never the query."""
     builder = set(inspect.signature(build_task_filters).parameters)
     own = set(route.FILTER_KEYS) - set(route.DATE_FILTERS)
-    assert own == builder - {"include_archived", "archived_only", "viewer"}
+    # `day_start` is the reader's own today, never the query's (RX-5).
+    assert own == builder - {"include_archived", "archived_only", "viewer", "day_start"}
     assert set(route.DATE_FILTERS) == {"created_after", "completed_after", "completed_before"}
 
 

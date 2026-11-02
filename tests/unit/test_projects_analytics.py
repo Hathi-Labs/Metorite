@@ -120,7 +120,7 @@ class TestTheSqlKeepsItsShape:
     def test_overdue_means_past_due_AND_open(self):
         # A finished task with a past due date is not overdue, it is done.
         # `open_where` carries the open half, so this only adds the date.
-        assert "t.due_at IS NOT NULL AND t.due_at < now()" in SOURCE
+        assert "t.due_at IS NOT NULL AND {overdue_sql()}" in SOURCE
 
     def test_the_named_list_is_capped_and_the_total_travels_with_it(self):
         assert MAX_NAMED > 0

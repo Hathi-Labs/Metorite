@@ -161,7 +161,9 @@ async def test_my_day_lists_the_feed_by_kind(reads: dict) -> None:
     (lst,) = v.ui
     sections = lst.interactive["action"]["sections"]
     assert [s["title"] for s in sections] == ["🔴 Overdue", "✋ Approvals", "📅 Due today"]
-    assert sections[0]["rows"][0]["description"].startswith("Snowflake X1 · 3 days ago")
+    # A due date is a day, so a due row of this view names no span of time (RX-5).
+    assert sections[0]["rows"][0]["description"] == "Snowflake X1 · overdue"
+    assert sections[2]["rows"][0]["description"] == "Snowflake X1 · due today"
 
 
 async def test_due_today_and_overdue_split_the_due_work(reads: dict) -> None:
@@ -170,7 +172,10 @@ async def test_due_today_and_overdue_split_the_due_work(reads: dict) -> None:
     assert due.text.startswith("*Due today* — 1 task")
     assert late.text.startswith("*Overdue* — 1 task")
     row = late.ui[0].interactive["action"]["sections"][0]["rows"][0]
-    assert row["title"] == "Fix the extruder" and "late" in row["description"]
+    assert row["title"] == "Fix the extruder" and "3 days late" in row["description"]
+    # A due date is a day, so no row names a clock (RX-5).
+    today = due.ui[0].interactive["action"]["sections"][0]["rows"][0]
+    assert today["title"] == "Order nozzles" and "due today" in today["description"]
     assert "Someday thing" not in repr(due.ui[0].interactive), "a Someday task showed"
 
 
@@ -208,8 +213,12 @@ class TestTheClock:
 
     async def test_the_split_follows_the_views_clock(self, reads, monkeypatch):
         # Non-vacuity: the freeze reaches the split. Four hours on, the task
-        # due in three hours is late, and none is due today.
+        # due in three hours is still due today, because a due date is a day
+        # (RX-5). One day on, it is late.
         monkeypatch.setattr(views, "_now", lambda: NOW + timedelta(hours=4))
+        late = await views.run("overdue", reads["ctx"])
+        assert late.text.startswith("*Overdue* — 1 task"), late.text
+        monkeypatch.setattr(views, "_now", lambda: NOW + timedelta(days=1))
         late = await views.run("overdue", reads["ctx"])
         assert late.text.startswith("*Overdue* — 2 tasks"), late.text
 

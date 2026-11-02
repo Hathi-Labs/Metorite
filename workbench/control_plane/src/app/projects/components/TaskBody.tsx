@@ -99,6 +99,7 @@ import { TagPicker } from "./TagPicker";
 import { RepeatEditor } from "./RepeatEditor";
 import { RelationsBlock } from "./RelationsBlock";
 import { AttachmentViewer } from "./AttachmentViewer";
+import { RemindMeModal } from "@/components/RemindMeModal";
 import { useSubtaskComplete } from "./useSubtaskComplete";
 import { durationLabel } from "@/lib/taskCard";
 import {
@@ -363,6 +364,9 @@ export function TaskBody({
   urgentWindowHours,
 }: TaskBodyProps) {
   const toast = useToast();
+  // RX-6 — "Remind me": a reminder at a time, linked to this task. The due
+  // date stays a day. The form is mounted only while it is open.
+  const [remindOpen, setRemindOpen] = useState(false);
   // WS-57 TR-5 — the `#123` pills in the description and the comments read
   // this task's root only, as the gateway's links from text do.
   const refResolver = taskRefResolverFor(task.root_project_id);
@@ -930,6 +934,17 @@ export function TaskBody({
               }}
             >
               Attach
+            </Button>
+            {/* RX-6 — a reminder is a moment, a due date is a day. This sets a
+                reminder at a time, linked to the task, on the Calendar. */}
+            <Button
+              variant="secondary"
+              size="sm"
+              icon="BellPlus"
+              onClick={() => setRemindOpen(true)}
+              title="Remind me about this task at a time. The due date stays as it is."
+            >
+              Remind me
             </Button>
             {/* D77 — watching is the member's own notification choice on
                 the SHARED task, so it lives in the body both apps host.
@@ -1604,6 +1619,7 @@ export function TaskBody({
         }}
       />
       {subtaskComplete.dialog}
+      {remindOpen && <RemindMeModal taskId={task.id} taskTitle={task.title} onClose={() => setRemindOpen(false)} />}
     </>
   );
 }
