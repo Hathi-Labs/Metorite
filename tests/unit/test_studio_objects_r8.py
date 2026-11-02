@@ -55,7 +55,7 @@ i. Only a Studio package owns an object. An App Workshop app owns none
   ``test_r8_a_hot_field_fills_its_row_on_each_write`` goes red.
 * M6. The migration: drop the CHECK ``studio_records_data_size``.
   ``test_r8_an_oversize_record_is_refused`` goes red.
-* M10. ``objects_store._locked_fields``: drop ``await _lock_org(db)``, the old
+* M10. ``objects_store._run_steps``: drop ``await _lock_org(db)``, the old
   lock order. ``test_r8_joined_calls_in_two_sessions_never_deadlock`` goes red
   with "deadlock detected".
 * M11. ``objects_store``: drop the package filter from ``_SHARE_OBJECT_SQL``
@@ -289,13 +289,28 @@ def test_the_migration_holds_the_rls_the_keys_and_the_caps() -> None:
 
 
 def test_the_store_holds_no_route_and_no_transaction() -> None:
-    """The caller owns the transaction, so C1b can join several calls."""
+    """The caller owns the transaction, so C1b can join several calls.
+
+    The three exceptions are the SAVEPOINT of a query (C2a, `_time_limit`),
+    of a batch (C1b, `_apply_batch`) and of the wait for the org lock
+    (`_lock_org`). Each opens it with `begin_nested()`, and it ends nothing of
+    the caller's transaction. The scan reads each node of the module, so a
+    method of a class or a lambda counts too. Exactly three `begin_nested`
+    exist, one in each of these functions."""
     src = _STORE.read_text(encoding="utf-8")
     assert "APIRouter" not in src and "gateway.routes" not in src
     found: list[str] = []
-    for node in ast.walk(ast.parse(src)):
-        if isinstance(node, ast.Attribute) and node.attr in (
-                "commit", "rollback", "begin", "begin_nested"):
+    tree = ast.parse(src)
+    everywhere = [n for n in ast.walk(tree)
+                  if isinstance(n, ast.Attribute) and n.attr == "begin_nested"]
+    owners = [f for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef)
+              and f.name in ("_time_limit", "_apply_batch", "_lock_org")]
+    assert len(owners) == 3, "one each of `_time_limit`, `_apply_batch` and `_lock_org`"
+    inside = [n for f in owners for n in ast.walk(f)
+              if isinstance(n, ast.Attribute) and n.attr == "begin_nested"]
+    assert len(everywhere) == 3 and len(inside) == 3, [n.lineno for n in everywhere]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in ("commit", "rollback", "begin"):
             found.append(node.attr)
         if isinstance(node, ast.Name) and node.id in (
                 "tenant_session", "get_db", "get_session_factory"):

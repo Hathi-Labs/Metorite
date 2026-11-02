@@ -4406,7 +4406,11 @@ Done when:
    they hold no label (CRM-Q26 item 9).
 8. One request goes to `tier-powerful`. The prompt holds the numbers as
    JSON, and the rule to use only these numbers and add none. It holds no
-   record name, no note text and no email address. `max_tokens` is 800.
+   record name, no note text and no email address. `max_tokens` is 1500.
+   The request names the job `writing`, so it asks for no thinking
+   (`acb_llm.jobs`, task 1128). At 800, the model used the whole cap on 6
+   of 6 calls on production. An empty answer logs
+   `crm.digest.empty_answer` and counts as `empty`, not as a rejection.
 9. One formatter writes each number for the prompt and for the check. The
    code finds each number of the text in the input. A text with a number
    that is not in the input is not stored, and the try counts.
@@ -4416,8 +4420,8 @@ Done when:
     member, the step skips and logs a count.
 11. **Cost bound.** One request for each org and week, and 3 tries at most
     in a week (`tries`). The input is 8,000 characters at most, about 2,000
-    tokens, and the output is 800 tokens at most. So an org spends 3
-    requests at most, about 8,400 tokens, in one week.
+    tokens, and the output is 1500 tokens at most. So an org spends 3
+    requests at most, about 10,500 tokens, in one week.
 12. A test with a fake model asserts the bound of item 11. The credits of a
     real run are a post-flip check, below, not part of the build.
 13. **Delivery, in the app.** `GET /crm/digests?limit=4` serves the newest
@@ -4526,7 +4530,7 @@ The build made these choices, which the list above does not name.
 of 6 stages, 3 months and the labels is about 4,580 characters of input,
 about 1,150 tokens, with the house voice. With a text of about 250 tokens,
 one week costs about 1,400 tokens on `tier-powerful`. The bound is 3 requests of at most 2,000
-tokens in and 800 out, so 8,400 tokens for each org and week. The post-flip
+tokens in and 1500 out, so 10,500 tokens for each org and week. The post-flip
 check above reads the real credits.
 
 R8: `tests/unit/test_crm_digest_r8.py`, with the start over in

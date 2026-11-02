@@ -23,9 +23,16 @@ not write a second copy of that seam. A bare test file name is under
    - The guard follows at most 5 redirects by hand. A read stops at 20 seconds and 15 MB. `_client` is the one client builder, with no redirect, no proxy from the env and no cookie.
    - The jar of a walk keeps only a host-only cookie, and the hop asks the jar for its `Cookie` line.
    - The text work runs on the event loop with its own bounds: `MAX_HTML_BYTES` for the strip and `MAX_MARKDOWN_BYTES` for Jina. A decode gives the loop a turn after each step.
-   - Jina Reader gets the URL of the call only after the walk ends. Each hop that the walk reached passes the guard first. Jina's text wins, and the direct read is the fallback.
-   - `frame_page` wraps the output in a `WEB PAGE` block of `UntrustedFrame`. The URL and the type sit inside it. A refusal is one line that names the host of the URL of the call. It never names the path or the host of a redirect.
+   - Jina Reader gets the URL of the call only after the walk ends. Each hop that the walk reached passes the guard first. For an org off `WEB_RESEARCH_ORGS`, Jina's text wins, and the direct read is the fallback.
+   - `frame_page` wraps the output in a `WEB PAGE` block of `UntrustedFrame`. The URL, the title, the date and the type sit inside it. A refusal is one line that names the host of the URL of the call. It never names the path or the host of a redirect.
    - Fence: `test_web_fetch_guard.py`.
+   - WEB-2: `web_research_on(org)` is the ONE reader of `WEB_RESEARCH_ORGS`. `fetch_page` reads it on each call, with the org of the run binding. Off, the output is the WEB-1 output, byte for byte.
+   - On, Trafilatura reads an HTML type. Only `web_reader_worker._extract_markdown` imports it, as `from trafilatura import extract`, with no `url=`. It gets text, never bytes, of at most `MAX_LOCAL_HTML_BYTES`.
+   - Trafilatura work runs in a child process, because a regex holds the GIL, so a thread cannot bound it. `web_tools.py` never imports it. WEB-3 and each later parser must run the same way.
+   - The child starts as `python -I <path>`, never with `-m`, with the `child_env` allowlist. On Linux it caps its memory and its CPU time. The parent kills and reaps it at `READER_TIMEOUT_S`.
+   - A read takes a slot before the child starts: `MAX_READER_CHILDREN` in the process and `MAX_READER_CHILDREN_PER_ORG` for each org. With no slot it does not wait. No slot and each fault give the regex strip, and each fault writes one log line.
+   - `Date:` appears only when a tag or a JSON-LD date field of the page states that date. A `<meta>` tag can name the charset. A binary body gets one line and no text. Each other type gets the strip and one line about WEB-3.
+   - Jina gets a URL only when `WEB_READER_REMOTE=jina` and the local text is shorter than `MIN_LOCAL_CHARS`. Fences: `test_web_readers.py`, `test_no_agpl_dependency.py`.
 5. write_artifact.py -- the `write_artifact` tool, which surfaces created files in the UI.
    - The chat shows a card for each file, so the tool texts tell the model to paste no link. Fence: `test_artifact_link_prompts.py`.
    - It owns the run's artifact context, the ContextVar seam that every workspace tool reads through `artifact_context()`. Never add a module-level dict for run state.
@@ -132,6 +139,10 @@ not write a second copy of that seam. A bare test file name is under
 5n-1. knowledge_tools.py + knowledge_manifest.py -- `read_page` and `list_spaces` (spec `knowledge_base.md` §8.1). They read `/knowledge` as the run's member and take no SQL.
    - A new Knowledge route needs a row in `acb_common/app_manifests/knowledge.py` (MCP-P1a, D136). `knowledge_manifest.py` re-exports those rows, so the chat and the MCP door read one table. The row names a chat tool or the slice that plans one. It also names a door op, or why the door does not serve the row. `propose_page` and `propose_edit` show one card before they send.
    - Fences: `test_knowledge_tools.py`, `test_knowledge_chat_coverage.py`, `test_kb_proposals.py`.
+5n-2. chat_parity.py -- the ONE parity table of the whole control plane (spec `chat_parity.md`, Metorite task 1238). It is data, and it imports nothing.
+   - Each request of the UI has one row: `COVERED` with a tool, `EXEMPT` with a kind of `EXEMPT_KINDS`, or `DEBT` with a wave. Projects rows stay in `skill_projects.manifest` (F3), and Knowledge rows in its manifest. Do not copy them here.
+   - `DEBT_CEILING` and `UNREAD_CEILING` only go down. Lower a number in the change that pays the debt.
+   - Fence: `test_chat_parity.py`.
 5o. reports.py -- `make_report`, the ONE report tool of the chat (spec `projects_ai_chat.md` §14.10). It keeps no copy of the checks of `documents.py`.
    - `by_code` is the ONE gate of a report that a tool builds from its own reads. Fences: `test_chat_reports.py`, `test_reports_by_code.py`.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox. It is advisory only: it never blocks a write and never raises.

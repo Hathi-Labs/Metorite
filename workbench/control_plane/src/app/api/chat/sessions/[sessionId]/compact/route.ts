@@ -15,7 +15,13 @@ export const dynamic = "force-dynamic";
  *   { messages: ChatMessage[], keepLast?: number }
  *
  * Response:
- *   { messages: ChatMessage[], compacted: boolean, removedCount: number }
+ *   { messages: ChatMessage[], compacted: boolean, removedCount: number,
+ *     error?: string }
+ *
+ * ⚠️ A summary that fails or comes back blank KEEPS every message (task
+ * 1128). It answers 502 with `compacted: false` and the messages as sent.
+ * Dropping the old messages with no summary lost them for the agent: a blank
+ * answer passed the `??` fallback, because `""` is not null.
  */
 
 const LITELLM_BASE_URL =
@@ -24,7 +30,20 @@ const LITELLM_BASE_URL =
   "http://127.0.0.1:8080/v1";
 const LITELLM_KEY =
   process.env.LITELLM_MASTER_KEY ?? "";
+// The body sends no `thinking` (task 1128), because `deepseek/deepseek-chat`
+// does not think. Off the Router, the gateway's local `/v1` path forwards named
+// fields only, so the field would reach no model. With the Router on, the
+// gateway forwards the whole body, and the Console filters the field for each
+// step of the chain.
 const COMPACT_MODEL = process.env.SUGGESTION_MODEL ?? "deepseek/deepseek-chat";
+
+/** The answer when no summary came back: nothing is removed. */
+function keepEverything(messages: StoredMessage[], error: string) {
+  return NextResponse.json(
+    { messages, compacted: false, removedCount: 0, error },
+    { status: 502 },
+  );
+}
 
 function v1Base(): string {
   const base = LITELLM_BASE_URL.replace(/\/+$/, "");
@@ -117,10 +136,14 @@ export async function POST(
     }
 
     const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
+      choices?: { message?: { content?: string | null } }[];
     };
-    const summary =
-      data.choices?.[0]?.message?.content?.trim() ?? "(Summary unavailable)";
+    const summary = (data.choices?.[0]?.message?.content ?? "").trim();
+    if (!summary) {
+      // A blank answer is no summary. Keep the old messages (task 1128).
+      console.warn("[compact] summary_empty: kept every message");
+      return keepEverything(messages, "summary_empty");
+    }
 
     const summaryMessage: StoredMessage = {
       id: `compact-${Date.now()}`,
@@ -137,18 +160,9 @@ export async function POST(
       removedCount: toSummarize.length,
     });
   } catch (err) {
-    // On LLM failure, still compact — just without a summary (drop old messages).
-    // Better to lose the summary than block the user.
-    const fallbackMessage: StoredMessage = {
-      id: `compact-${Date.now()}`,
-      role: "system",
-      content: `[CONTEXT COMPACTED — ${toSummarize.length} earlier message(s) removed. Summary generation failed: ${String(err)}]`,
-      timestamp: Date.now(),
-    };
-    return NextResponse.json({
-      messages: [fallbackMessage, ...toKeep],
-      compacted: true,
-      removedCount: toSummarize.length,
-    });
+    // A failed summary removes nothing either (task 1128). The chat goes on
+    // with every message, and the gateway fits the context window itself.
+    console.warn(`[compact] summary_failed: kept every message: ${String(err)}`);
+    return keepEverything(messages, "summary_failed");
   }
 }

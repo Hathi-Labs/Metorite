@@ -65,6 +65,8 @@ async def answer(query: str, *, user_email: str | None = None, trace_id: str | N
 
     raw = await complete(
         tier=LLMTier.TIER_2,
+        # A cited answer that a person reads (task 1128).
+        job="writing",
         messages=[
             {"role": "system", "content": system + "\n\n" + voice_prompt("chat")},
             {"role": "user", "content": user_content},
