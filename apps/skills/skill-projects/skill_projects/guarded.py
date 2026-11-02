@@ -38,6 +38,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from acb_common.card_body import CardWontFit
+
 from skill_projects import client as _client
 from skill_projects.client import (
     GatewayRefusal,
@@ -73,7 +75,6 @@ from skill_projects.writes import (
     _REOPENING,
     CANCELLED,
     CARD_CONTEXT_LIMIT,
-    CARD_NOTE,
     FORGED_BATCH_ROWS,
     MAX_BATCH,
     OVERLAY_ARGUMENTS,
@@ -179,10 +180,7 @@ def _guard_card(impact: str, rest: dict[str, Any]) -> str:
     The impact line is the tool's own sentence, so it is not fenced the way
     a member value is. Member values inside it already carry their fence.
     """
-    body = _fields_block(rest)
-    assert body.startswith(CARD_NOTE)
-    line = "impact: " + " ".join(impact.split())
-    return CARD_NOTE + "\n" + line + body[len(CARD_NOTE) :]
+    return _fields_block(rest, lead="impact: " + " ".join(impact.split()))
 
 
 def _open_count(summary: dict[str, Any]) -> int:
@@ -1208,7 +1206,10 @@ async def bulk_update(
     # its full title as the tooltip. Only a card too long for the limit clips
     # the titles, and the clip comes BEFORE the fence (owner, 2026-10-07).
     whole = {f"task {i + 1}": _ref(t) for i, t in enumerate(tasks)}
-    fits = len(_guard_card(impact, {**rest, **whole})) <= CARD_CONTEXT_LIMIT
+    try:
+        fits = len(_guard_card(impact, {**rest, **whole})) <= CARD_CONTEXT_LIMIT
+    except CardWontFit:
+        fits = False
     for i, t in enumerate(tasks):
         rest[f"task {i + 1}"] = whole[f"task {i + 1}"] if fits else _short_ref(t)
     if not await _confirm(
@@ -2461,7 +2462,7 @@ async def set_report_schedule(report_id: str, enabled: bool) -> str:
 # ── A reminder becomes a task (WS-66 RM-3, D114) ─────────────────────────────
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False, card_write=True)
 async def promote_reminder(reminder_id: str) -> str:
     """Make one of the member's OPEN reminders a private task in their own
     personal project ("make it a task"). The task takes the reminder's
