@@ -796,9 +796,22 @@ WRITE_TOOL_NAMES: frozenset[str] = frozenset({
 #: ``member_message`` stays as it was, for the answer check.
 #: PZ-31: the member's own typed steers of the run are typed words too. They
 #: live in a separate holder (:func:`count_member_steers`).
+#: D-PZ-37 (the owner, 2026-11-02): the chat route binds the words only when
+#: the request carries the ONE mark of a message that the member typed in the
+#: message box. A tapped pill, a choice, a card action, a feed starter and the
+#: Fix prompt carry no mark, so they bind "".
 #: Fence: ``tests/unit/test_profile_write_tools.py``.
 MEMBER_TYPED: contextvars.ContextVar[str] = contextvars.ContextVar(
     "assistant_profile_member_typed", default="")
+
+#: D-PZ-37: True when the member sent words in this turn, typed or tapped. A
+#: tap grounds nothing, so a profile write of it asks the confirm card and
+#: never saves at once (``profile_tools._ground``). A Continue, a card answer,
+#: a steer follow-up and a paste send no words, so they get no card (PZ-32
+#: repair round 1). Only :func:`member_typed` binds it, with its ``sent``
+#: keyword. The default is False. Fence: ``tests/unit/test_profile_pz32.py``.
+MEMBER_SENT: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "assistant_profile_member_sent", default=False)
 
 
 class _Steers:
@@ -856,14 +869,19 @@ def typed_text(text: Any) -> str:
 
 
 @contextlib.contextmanager
-def member_typed(text: Any) -> Iterator[None]:
+def member_typed(text: Any, *, sent: Any = False) -> Iterator[None]:
     """Bind the member's typed text of one turn. Closing restores the value
     it found, and never raises.
 
     It also binds a new steer holder that counts no steer (PZ-31). So a
     binder inside a run, such as the WhatsApp Confirm scope, never reads the
-    steers of the run around it."""
+    steers of the run around it.
+
+    *sent* is :data:`MEMBER_SENT` (D-PZ-37): True when the member sent words
+    in this turn, typed or tapped. Only ``True`` counts. A text that
+    :func:`typed_text` keeps is always sent, so a typed turn needs no flag."""
     token = MEMBER_TYPED.set(typed_text(text))
+    sent_token = MEMBER_SENT.set(sent is True or bool(typed_text(text).strip()))
     steers = _STEERS.set(_Steers())
     try:
         yield
@@ -873,9 +891,20 @@ def member_typed(text: Any) -> Iterator[None]:
         except (ValueError, RuntimeError):
             _STEERS.set(None)
         try:
+            MEMBER_SENT.reset(sent_token)
+        except (ValueError, RuntimeError):
+            MEMBER_SENT.set(False)
+        try:
             MEMBER_TYPED.reset(token)
         except (ValueError, RuntimeError):
             MEMBER_TYPED.set("")
+
+
+def member_sent() -> bool:
+    """True when the member sent words in this turn, typed or tapped
+    (:data:`MEMBER_SENT`, D-PZ-37). It grounds nothing. It only lets a
+    profile write ask the confirm card. Never raises."""
+    return MEMBER_SENT.get() is True
 
 
 def _member_key(value: Any) -> str:
