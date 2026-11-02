@@ -866,6 +866,8 @@ _READERS = frozenset({
     "packages/acb_skills/acb_skills/ask_tools.py",
     "apps/services/action_broker/action_broker/broker.py",
     "apps/services/gateway/gateway/routes/projects/agent_runs.py",
+    # WS-ALN ALN-2a: the answer of a decision.
+    "apps/services/gateway/gateway/routes/projects/decisions.py",
     "apps/services/gateway/gateway/routes/workflows/service.py",
     "apps/services/orchestrator/orchestrator/executor.py",
 })

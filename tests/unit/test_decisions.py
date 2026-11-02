@@ -171,7 +171,6 @@ def test_a_decision_is_named_in_each_place_a_bell_kind_must_be() -> None:
     assert "decision" in NOTIFICATION_KINDS
     assert set(NOTIFICATION_KINDS) <= set(needs._VERB)
     assert needs._VERB["decision"]
-    assert "decision" in needs.KIND_ORDER and "decision" in needs.NEWEST_FIRST
     assert classes.REACH_CLASS["decision"] == "interrupt"
     assert "decision" in feed._NOTE_WORDS
 

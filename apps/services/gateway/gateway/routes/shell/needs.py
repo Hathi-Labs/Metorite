@@ -205,10 +205,7 @@ KIND_ORDER = {"overdue": 0, "approval": 1, "due_today": 2, "notification": 3,
               "needs_reply": 4,
               # WS-66 RM-2b (calendar_events_reminders.md §5.6): the member's
               # own reminders, last of the needs kinds.
-              "reminder_due": 5, "reminder_check": 6, "reminder_unconfirmed": 7,
-              # WS-ALN ALN-2a (project_alignment.md §3.2): a decision that
-              # waits on the member by name. ALN-2b adds the provider.
-              "decision": 8}
+              "reminder_due": 5, "reminder_check": 6, "reminder_unconfirmed": 7}
 #: The kinds that take only the room the member's own rows leave inside the
 #: limit. An admin's approvals must never push out their own work.
 YIELDING_KINDS = frozenset({"approval"})
@@ -216,7 +213,7 @@ YIELDING_KINDS = frozenset({"approval"})
 NEWEST_FIRST = {"overdue": False, "approval": False, "due_today": False,
                 "notification": True, "needs_reply": False,
                 "reminder_due": False, "reminder_check": False,
-                "reminder_unconfirmed": False, "decision": False}
+                "reminder_unconfirmed": False}
 
 Item = dict[str, Any]
 Act = dict[str, Any]
@@ -497,6 +494,9 @@ async def _tasks_handled(user: UserContext, since: datetime) -> list[Closed]:
 _VERB = {"assigned": "assigned you", "mention": "mentioned you on",
          "comment": "commented on", "nudge": "nudged you about",
          "agent_question": "asked you about",
+         # WS-ALN ALN-2a. A decision is not in KIND_ORDER yet: that registry
+         # is for the kinds that a needs provider gives, and its rank rows
+         # (`feed_rank.BASE`) go with the provider of ALN-2b.
          "decision": "asked you to decide on"}
 
 
