@@ -871,6 +871,30 @@ async def test_the_undo_of_an_added_pipeline_stage_that_moved_since_is_refused(
 
 
 @_DB_GATE
+async def test_a_member_who_lost_admin_cannot_undo_their_own_admin_change(
+    ns, app_engine,  # noqa: F811
+) -> None:
+    """P2b (fix round 1). A member renamed a stage as an admin, then lost
+    admin. They still read their own row, and its Undo is a 403
+    ``admin_only``: an admin area needs an admin. Nothing changes.
+    Mutation: drop the guard in ``change_log.undo_change`` → 200 → red."""
+    _settings(ns, ns.org_a, "native", access="everyone")
+    ids = _seed(ns, ns.org_a)
+    as_admin = _admin(ns.org_a, MEMBER)
+    r = await _call(ns, as_admin, "PATCH", f"/crm/statuses/deal/{ids['open']}", {"name": "Q"})
+    assert r.status_code == 200, r.text
+    demoted = _member(ns.org_a)
+    [row] = (await _history(ns, demoted))["rows"]
+    assert row["area"] == "deal_stage" and row["can_undo"] is False
+    refused = await _call(ns, demoted, "POST", f"/crm/change-history/{row['id']}/undo")
+    assert _undo_code(refused) == (403, "admin_only"), refused.text
+    assert _one(ns, "SELECT name FROM crm_deal_statuses WHERE id = CAST(:i AS uuid)",
+                i=ids["open"]) == "Q"
+    rows = _rows(ns, ns.org_a)
+    assert len(rows) == 1 and rows[0].undone_by is None
+
+
+@_DB_GATE
 async def test_a_private_view_shows_to_its_owner_only_and_a_member_reads_their_own(
     ns, app_engine,  # noqa: F811
 ) -> None:
