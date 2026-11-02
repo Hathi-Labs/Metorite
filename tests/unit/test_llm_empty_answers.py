@@ -17,6 +17,8 @@ Mutations this file catches (R7):
 * The template fill writes the raw ``{{...}}`` text on a blank answer.
 * The subject fill of a rule draft runs after the thread check, so a failed
   fill leaves the thread with no draft.
+* The thread check trashes the old rule draft before the model runs, so a
+  NO_DRAFT answer or an empty To leaves the thread with no draft.
 * The self-anneal finishes the run with ``""`` or a stock reply. A blank
   recovery must return None, so the first error is raised.
 * The graphiti gate drops the episode on a blank answer, or logs no warning.
@@ -353,11 +355,12 @@ def _old_draft_db() -> AsyncMock:
     text = "Thanks, we are on it."
     row = SimpleNamespace(id="d1", provider_message_id="old-draft", body_text=text)
     db = AsyncMock()
-    db.execute.side_effect = [
+    reads = [
         MagicMock(fetchone=MagicMock(return_value=row)),
         MagicMock(fetchone=MagicMock(return_value=SimpleNamespace(draft_text=text))),
-        MagicMock(),
     ]
+    # The look before the model runs, the look before the trash, the delete.
+    db.execute.side_effect = [*reads, *reads, MagicMock()]
     return db
 
 
@@ -427,6 +430,104 @@ async def test_a_good_subject_fill_still_replaces_the_old_draft(monkeypatch) -> 
     assert done == ["DRAFT_EMAIL"]
     assert order == ["fill", "trash"]
     assert provider.create_draft.await_args.kwargs["subject"] == "Price list for 200 brackets"
+
+
+def _ai_draft_patches(monkeypatch, *, answer: str, order: list[str]) -> Any:
+    """The AI draft path of a rule, with the model and the context faked."""
+    from gateway.routes.email.automation import actions
+
+    async def agent(*_a: Any, **_kw: Any) -> str:
+        order.append("model")
+        return answer
+
+    monkeypatch.setattr(actions, "draft_skip_in_pair", AsyncMock(return_value=None))
+    monkeypatch.setattr(actions, "_build_reply_context",
+                        AsyncMock(return_value={"body": "hi"}))
+    monkeypatch.setattr(actions, "_rule_draft_files", AsyncMock(return_value=None))
+    monkeypatch.setattr(actions, "_agent_draft_reply", agent)
+    monkeypatch.setattr(actions, "_upsert_local_draft", AsyncMock(return_value="local-1"))
+    monkeypatch.setattr(actions, "_record_rule_draft", AsyncMock())
+    return actions
+
+
+def _ai_rule_call(actions: Any, db: Any, provider: Any, *, sender: str = "x@y.com") -> Any:
+    # An AI draft reads the assistant settings first. No row means the defaults.
+    db.execute.side_effect = [
+        MagicMock(fetchone=MagicMock(return_value=None)), *db.execute.side_effect]
+    return actions._apply_rule_actions(
+        db, provider, "m1", "pm-1", [{"type": "DRAFT_EMAIL"}],
+        {"from": sender, "subject": "Quote", "body": "Send it.", "thread_id": "t1",
+         "self": "me@y.com"},
+        "", "", "me@y.com", account_id="acc-1")
+
+
+async def test_a_no_draft_answer_keeps_the_old_draft(monkeypatch) -> None:
+    """The thread check trashed the old draft before the model ran. A NO_DRAFT
+    answer then left the thread with no draft."""
+    order: list[str] = []
+    actions = _ai_draft_patches(monkeypatch, answer="NO_DRAFT", order=order)
+    provider = SimpleNamespace(trash_message=AsyncMock(), create_draft=AsyncMock())
+
+    done = await _ai_rule_call(actions, _old_draft_db(), provider)
+
+    assert done == [] and order == ["model"]
+    provider.trash_message.assert_not_awaited()
+    provider.create_draft.assert_not_awaited()
+
+
+async def test_an_empty_to_keeps_the_old_draft(monkeypatch) -> None:
+    order: list[str] = []
+    actions = _ai_draft_patches(monkeypatch, answer="Hello Ravi", order=order)
+    provider = SimpleNamespace(trash_message=AsyncMock(), create_draft=AsyncMock())
+
+    done = await _ai_rule_call(actions, _old_draft_db(), provider, sender="")
+
+    assert done == []
+    provider.trash_message.assert_not_awaited()
+    provider.create_draft.assert_not_awaited()
+
+
+async def test_a_good_ai_draft_trashes_the_old_one_after_the_model(monkeypatch) -> None:
+    order: list[str] = []
+    actions = _ai_draft_patches(monkeypatch, answer="Hello Ravi", order=order)
+
+    async def trash(_pid: str) -> None:
+        order.append("trash")
+
+    async def create(**_kw: Any) -> str:
+        order.append("create")
+        return "new-draft"
+
+    provider = SimpleNamespace(trash_message=trash, create_draft=create)
+
+    done = await _ai_rule_call(actions, _old_draft_db(), provider)
+
+    assert done == ["DRAFT_EMAIL"]
+    assert order == ["model", "trash", "create"]
+
+
+async def test_a_draft_edited_while_the_model_wrote_is_kept(monkeypatch) -> None:
+    """The second look runs just before the trash, so an edit that came in
+    while the model wrote still wins."""
+    order: list[str] = []
+    actions = _ai_draft_patches(monkeypatch, answer="Hello Ravi", order=order)
+    original = "Thanks, we are on it."
+    row = lambda body: SimpleNamespace(id="d1", provider_message_id="old", body_text=body)  # noqa: E731
+    orig = SimpleNamespace(draft_text=original)
+    db = AsyncMock()
+    db.execute.side_effect = [
+        MagicMock(fetchone=MagicMock(return_value=row(original))),
+        MagicMock(fetchone=MagicMock(return_value=orig)),
+        MagicMock(fetchone=MagicMock(return_value=row("My own words"))),
+        MagicMock(fetchone=MagicMock(return_value=orig)),
+    ]
+    provider = SimpleNamespace(trash_message=AsyncMock(), create_draft=AsyncMock())
+
+    done = await _ai_rule_call(actions, db, provider)
+
+    assert done == []
+    provider.trash_message.assert_not_awaited()
+    provider.create_draft.assert_not_awaited()
 
 
 @pytest.mark.parametrize(("error", "text"), [

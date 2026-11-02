@@ -31,6 +31,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - ⚠️ A mode change needs a restart. 🔴 **Any value other than empty on a box is OWNER-GATE (H-166)**, and so is `DECIDE_ENABLED`.
    - `_ask_all` holds the one email cap permit. Never call `ask` or `shadow` inside `llm_slot`.
    - Fences: `test_email_decide_shadow.py`, `test_email_decide_questions.py`, `test_email_decide_on.py`, `test_email_llm_cap.py`, `test_email_insights_screen.py`.
+   - `my_day.day_plan` (`DAY_PLAN_FEATURES`) ranks "Rebuild my day" through `routes/tasks/calendar_decide.py`. It is not in `MY_DAY_FEATURES`, which holds the eight feed features. It may run `on`, and the LLM call is its fallback. Fence: `test_calendar_plan_decide.py`.
 0f. routes/workspace.py -- **The session file routes** (`maf_coding_engine.md` §7.5, §16.3).
    - **Every route that reads or writes a file by path opens it with `acb_skills.safe_open`.**
    - A session of a shared agent sees only its own `outputs/<thread slug>/` and `inputs/<thread slug>/`. `agent_paths.is_other_thread_rel` is the one rule. A loose file opens only for the session that began it.
@@ -285,6 +286,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
     - ⚠️ A route answers a refusal with `exc.detail_for(user.email)` only. It never sends `ClaimTaken.holder`, because that can name the private install of another member.
     - `sharing.py` is the ONE share rule of a private install: an address, not the owner, and made by the owner. The member purge and the resolve read it. Do not copy the SQL.
     - Fences: `test_package_host_store.py`, `test_package_host_store_r8.py`, `test_admin_member_purge.py`.
+22f. align/ -- **The project alignment check** (WS-ALN, `project_alignment.md`). `trigger.py` is the producer of `align.check`, and `check.py` holds its handler, a stub until ALN-7. `create_task`, `patch_task` and `move_task_in` call `trigger.enqueue_check` on the session of the write, inside its `_tenant_session`. ⚠️ No hook sits on `insert_row` or `update_row`. ⚠️ `jobs_enabled` is the one reader of `ALIGN_JOBS_ORGS`. It runs first and touches no database, and it needs `worker.worker_enabled` too, because `prune` deletes no queued row. ⚠️ Each statement runs in `db.begin_nested()`, and the error is swallowed there, so a failed enqueue never fails the write. The log line holds the error class, never task text. ⚠️ A personal task gets no job, and a move gets one only when it leaves a personal project. `core.assert_move_keeps_privacy` answers the owner of the project that the task leaves, so the move adds no read. Fence: `test_align_trigger.py` (R8).
 
 ## Work Guidance
 

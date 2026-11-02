@@ -488,6 +488,7 @@ async def acompletion_stream_text(
     first_chunk_s: float | None = None,
     idle_s: float | None = None,
     total_s: float | None = None,
+    job: str | None = None,
     **extra: Any,
 ) -> tuple[str, str]:
     """Streaming counterpart of :func:`acompletion_with_fallback` for callers
@@ -509,6 +510,12 @@ async def acompletion_stream_text(
 
     ``feature`` names the call, as :func:`acompletion_with_fallback` takes it.
 
+    ``job`` names the kind of work (:mod:`acb_llm.jobs`, task 1128), as on
+    :func:`acompletion_with_fallback`. It sets thinking and the cap floor,
+    adds the word "json" to a JSON-mode request, and drops a thinking
+    parameter that the model does not take. A stream that ends with no text
+    logs ``acb_llm.empty_answer``, and the caller keeps its own rule for it.
+
     ``first_chunk_s``, ``idle_s`` and ``total_s`` bound the stream. ``None``
     takes the module constant. A stream past a bound raises a
     :class:`StreamTimeout` subclass, and the caller decides what to do.
@@ -519,7 +526,7 @@ async def acompletion_stream_text(
         return await _stream_text(
             model=model, messages=messages, max_tokens=max_tokens,
             temperature=temperature, on_delta=on_delta, source=_source,
-            extra=extra, **bounds,
+            extra=extra, job=job, **bounds,
         )
     from acb_common._log import automation_agent_scope
 
@@ -527,7 +534,7 @@ async def acompletion_stream_text(
         return await _stream_text(
             model=model, messages=messages, max_tokens=max_tokens,
             temperature=temperature, on_delta=on_delta, source=_source,
-            extra=extra, **bounds,
+            extra=extra, job=job, **bounds,
         )
 
 
@@ -570,6 +577,7 @@ async def _stream_text(
     first_chunk_s: float | None = None,
     idle_s: float | None = None,
     total_s: float | None = None,
+    job: str | None = None,
 ) -> tuple[str, str]:
     """The body of :func:`acompletion_stream_text`, with ``source`` resolved.
 
@@ -586,14 +594,25 @@ async def _stream_text(
         _ensure_keys_loaded,
         ensure_model_registered,
     )
+    from acb_llm.jobs import (
+        apply_job,
+        ensure_json_word,
+        is_empty_answer,
+        note_empty_answer,
+        params_for_model,
+    )
 
     _source = source
+    # Task 1128: the job sets thinking and the cap floor, before the fit.
+    max_tokens, extra = apply_job(job, max_tokens=max_tokens, extra=extra)
+    messages = ensure_json_word(messages, extra.get("response_format"))
     _litellm.drop_params = True
     _litellm.suppress_debug_info = True
     await _ensure_keys_loaded()
 
     resolved = resolve_underlying_model(model)
     ensure_model_registered(resolved)
+    extra = params_for_model(extra, resolved)
     fitted, _was_truncated = fit_messages_to_context(
         messages, model, max_output_tokens=max_tokens,
     )
@@ -667,13 +686,22 @@ async def _stream_text(
                     pass
     # Rebuild a response object from the chunks so usage/cost accounting fires
     # for streamed calls too. Best-effort — never fail the draft over it.
+    rebuilt = None
     try:
         rebuilt = _litellm.stream_chunk_builder(chunks, messages=fitted)
         if rebuilt is not None:
             _emit_usage(resolved, "", rebuilt, source=_source)
     except Exception:  # noqa: BLE001
         pass
-    return "".join(content_parts), resolved
+    text = "".join(content_parts)
+    if not text.strip():
+        # A blank stream is a failure that the caller reads as "no draft".
+        # Log it, as the non-streaming arm does.
+        note_empty_answer(
+            rebuilt if rebuilt is not None and is_empty_answer(rebuilt)
+            else {"model": resolved},
+            model=resolved, job=job, max_tokens=max_tokens)
+    return text, resolved
 
 
 # ── Server-side run-context assembler (C2) ──────────────────────────────────
