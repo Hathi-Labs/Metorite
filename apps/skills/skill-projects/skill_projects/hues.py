@@ -59,9 +59,11 @@ def _hex_hue(code: str) -> str:
         digits = "".join(c * 2 for c in digits)
     r, g, b = (int(digits[i : i + 2], 16) / 255 for i in (0, 2, 4))
     h, _light, sat = colorsys.rgb_to_hls(r, g, b)
-    if sat < GRAY_SATURATION:
+    # Round both, as the client does: the two float paths differ in the last
+    # bit, and a code on a band edge must land on the same side of it.
+    if round(sat, 6) < GRAY_SATURATION:
         return "gray"
-    deg = h * 360
+    deg = round(h * 360, 6)
     for hue, start, end in HUE_BANDS:
         if (start <= deg < end) if start < end else (deg >= start or deg < end):
             return hue

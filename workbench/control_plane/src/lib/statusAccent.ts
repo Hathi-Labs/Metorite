@@ -227,13 +227,17 @@ export function hueOfHex(value: string): AccentHue | null {
   const l = (max + min) / 2;
   const d = max - min;
   if (d === 0) return "gray";
-  const sat = d / (1 - Math.abs(2 * l - 1));
+  // Round both, as the server does: the two float paths differ in the last
+  // bit, and a code on a band edge must land on the same side of it.
+  const round6 = (x: number) => Math.round(x * 1e6) / 1e6;
+  const sat = round6(d / (1 - Math.abs(2 * l - 1)));
   if (sat < GRAY_SATURATION) return "gray";
   let deg: number;
   if (max === r) deg = 60 * (((g - b) / d) % 6);
   else if (max === g) deg = 60 * ((b - r) / d + 2);
   else deg = 60 * ((r - g) / d + 4);
   if (deg < 0) deg += 360;
+  deg = round6(deg);
   for (const band of HUE_BANDS) {
     const inBand =
       band.from < band.to ? deg >= band.from && deg < band.to : deg >= band.from || deg < band.to;

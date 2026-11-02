@@ -59,6 +59,8 @@
   "#f00": "red",
   "#0f0": "green",
   "#00f": "blue",
-  "#f0f": "violet"
+  "#f0f": "violet",
+  "#00ae91": "blue",
+  "#004237": "blue"
  }
 }
