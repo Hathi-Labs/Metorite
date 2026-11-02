@@ -1,7 +1,7 @@
 """WS-67 OA-8b: the Projects tool packs (dark behind ``TOOL_PACKS``).
 
 ``project-docs/specs/one_assistant_context.md`` §4.3.3 and §4.5 (OA-8b). The
-Projects assistant's 120 own tools become four packs of the one assistant:
+Projects assistant's 121 own tools become four packs of the one assistant:
 ``projects`` (the core pack), ``projects-plan``, ``projects-structure`` and
 ``projects-bulk``. Each case names, in its docstring, the mutation that turns
 it red (R7). What is locked:
@@ -67,13 +67,13 @@ REPO = Path(__file__).resolve().parents[2]
 PA = "projects-assistant"
 PROJECTS_DIR = REPO / "apps" / "agents" / "agent-projects"
 SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "projects-reminders")
-SIZES = {"projects": 23, "projects-plan": 35, "projects-structure": 34, "projects-bulk": 21,
+SIZES = {"projects": 23, "projects-plan": 35, "projects-structure": 34, "projects-bulk": 22,
          "projects-reminders": 7}
 UUID = tc.UUID
 
-#: The eight tools that make ONE card for a batch, raised inside the tool body.
+#: The nine tools that make ONE card for a batch, raised inside the tool body.
 BATCH_TOOLS = {
-    "projects-bulk": ("bulk_update", "create_tasks", "file_tasks", "merge_tasks"),
+    "projects-bulk": ("bulk_update", "create_tasks", "file_tasks", "merge_tasks", "update_tasks"),
     "projects-structure": ("create_tags", "create_types"),
     "projects-plan": ("link_tasks_batch", "propose_plan"),
 }
@@ -121,7 +121,7 @@ def test_the_four_families_equal_the_owners_tools() -> None:
     tool is in two packs. Mutation: drop a tool from a family, add a name the
     owner lacks, or copy one tool into two families -> red."""
     union = [name for slug in SLUGS for name in _family(slug)]
-    assert len(union) == 120 == len(set(union)), "no tool is in two packs"
+    assert len(union) == 121 == len(set(union)), "no tool is in two packs"
     assert set(union) == set(skill_projects.__all__) == _own_tool_scope()
     for slug in SLUGS:
         assert sf.SKILL_FAMILIES[slug]["owner"] == PA and sf.is_pack(slug)
@@ -247,7 +247,7 @@ async def test_the_unknown_argument_answer_survives_the_pack(store) -> None:
 
 
 async def test_the_pack_copies_the_tool_and_never_changes_the_cached_one(store) -> None:
-    """Every run builds the packs again, and the owner's 120 tools are cached.
+    """Every run builds the packs again, and the owner's 121 tools are cached.
     Mutation: ``_pack_call`` sets ``func`` on the owner's tool itself -> the
     cached tool holds the wrapper of the first run, and a second run
     wraps a wrapper -> red."""
@@ -265,7 +265,7 @@ async def test_the_pack_copies_the_tool_and_never_changes_the_cached_one(store) 
 
 
 def test_the_owner_tools_are_cached_until_the_owner_changes() -> None:
-    """120 models for each run cost time. Mutation: no cache -> a second call
+    """121 models for each run cost time. Mutation: no cache -> a second call
     returns other objects -> red. Mutation: a cache that ignores the module
     -> a patched owner keeps the old tools -> red."""
     import types
@@ -307,7 +307,7 @@ def test_pack_call_wraps_the_function_and_keeps_the_class() -> None:
 
 def test_the_catalog_prices_every_projects_pack_from_its_tools() -> None:
     """``_pack_tools_by_name`` read ``__name__``, so a ``FunctionTool`` had no
-    name and priced nothing. Mutation: read ``__name__`` again -> the 120
+    name and priced nothing. Mutation: read ``__name__`` again -> the 121
     Projects tools are absent -> red."""
     import gateway.routes.integrations_skills as sk
 
@@ -597,7 +597,7 @@ def test_the_covered_check_reads_the_run_binding_not_a_request_field() -> None:
 
 
 async def test_each_batch_tool_is_marked_gated_in_its_pack(store) -> None:
-    """The eight batch tools raise their card inside the tool body, and the
+    """The nine batch tools raise their card inside the tool body, and the
     pack wrapper is marked, so the assembly gates none of them a second time.
     Mutation: drop ``__cc_gated__`` from ``_pack_call`` -> red."""
     seen = 0
@@ -607,7 +607,7 @@ async def test_each_batch_tool_is_marked_gated_in_its_pack(store) -> None:
         for name in names:
             assert held[name].func.__cc_gated__ is True, name
             seen += 1
-    assert seen == 8
+    assert seen == 9
 
 
 async def test_a_batch_tool_shows_one_card_through_the_real_assembly(
@@ -679,7 +679,7 @@ async def test_no_projects_tool_takes_an_organization_or_a_member_argument(store
             declared = set(tool.input_model.model_fields)
             assert not declared & identity, (_name(tool), sorted(declared & identity))
             seen += 1
-    assert seen == 120
+    assert seen == 121
 
 
 async def test_a_pack_call_outside_its_run_refuses(store) -> None:
@@ -996,7 +996,7 @@ async def test_a_covered_org_is_offered_no_projects_pack(store, agents, _broker)
 
 
 def test_the_skills_catalog_builds_the_projects_tools_once() -> None:
-    """P3. ``GET /skills`` used to build 4 x 120 tools for each request. It
+    """P3. ``GET /skills`` used to build 4 x 121 tools for each request. It
     reads the per-owner cache of the run path. Mutation: call
     ``owner_tools`` again -> the objects differ between calls -> red."""
     import gateway.routes.integrations_skills as sk

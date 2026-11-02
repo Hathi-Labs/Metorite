@@ -137,6 +137,7 @@ from skill_projects.writes import (
     update_status,
     update_tag,
     update_task,
+    update_tasks,
     update_type,
     watch,
 )
@@ -212,6 +213,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "unlink_tasks",
     "update_project",
     "update_task",
+    "update_tasks",
     "watch",
     # Class B — the rest: vocabulary, a comment of one's own, the repeat
     # rule, the private capture and the overlay (S2b)

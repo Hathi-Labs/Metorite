@@ -792,6 +792,13 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
             f'{{"from_task_id": "{UUID}", "to_task_id": "{OTHER}", "type": "duplicates"}}]',
         }
     ],
+    # WS-PJP PJP-4 — several edits, a different change for each task, one card.
+    "update_tasks": [
+        {
+            "changes": f'[{{"task_id": "{UUID}", "title": "A"}}, '
+            f'{{"task_id": "{OTHER}", "title": "B"}}]',
+        }
+    ],
     # 2026-10-18 — several tasks filed into their projects, one card with rows.
     "file_tasks": [
         {
@@ -1054,7 +1061,7 @@ def test_every_class_b_tool_awaits_the_one_confirm_door() -> None:
     )
     assert "_confirm" in {getattr(n.func, "id", "") for n in ast.walk(shared)
                           if isinstance(n, ast.Call)}
-    batches = {"file_tasks", "link_tasks_batch"}
+    batches = {"file_tasks", "link_tasks_batch", "update_tasks"}
     for fn in ast.walk(tree):
         if not isinstance(fn, ast.AsyncFunctionDef) or fn.name not in _class_b_built():
             continue

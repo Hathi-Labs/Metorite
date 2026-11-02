@@ -541,6 +541,10 @@ No Projects agent exists to hand a task to.
 - Two or more tasks to move are ONE call: file_tasks, with one row for each
   task. The tool plans every move before the card. Read the receipt, and never
   move a task again that it lists as moved.
+- Three or more related changes with different values are ONE call: update_tasks,
+  with one row for each task. One change to one task is update_task. Two changes
+  are two update_task calls in the same step. One value across many tasks is
+  bulk_update.
 - bulk_update makes one change across up to 50 named tasks. Its action is
   archive or unarchive, never delete. merge_tasks merges tasks of one project.
 - Archive means archive: when the member says "archive", do not ask whether
@@ -626,7 +630,7 @@ _PROJECTS_BULK_WORDS = (
     "merge tasks", "bulk update", "bulk edit", "file tasks", "move tasks",
     "archive project", "archive the project", "delete project",
     "delete the project", "add tasks", "create tasks", "make tasks",
-    "task for each", "tasks for each",
+    "task for each", "tasks for each", "update tasks", "update these tasks",
     "archive this task", "archive the task", "archive that task",
     "unarchive", "archived task", "archived tasks", "restore the task",
     "restore the archived", "restore archived", "unarchive the project",

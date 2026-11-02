@@ -3257,6 +3257,201 @@ async def link_tasks_batch(links: str) -> str:
     return _batch_receipt(LINK_WORDS, head, out, chosen, left, list(stuck))
 
 
+# ── update_tasks: several edits, a different change for each task ───────────
+
+#: The keys of one `update_tasks` row: `update_task`'s own arguments.
+UPDATE_ROW_KEYS = (
+    "task_id",
+    "title",
+    "description",
+    "status",
+    "due",
+    "start",
+    "estimate_mins",
+    "tags",
+    "clear",
+    "priority",
+    "important",
+    "leveraged",
+    "type",
+    "fields",
+    "include_subtasks",
+)
+
+UPDATE_FORMAT = (
+    'changes is a JSON list with one object per task, for example [{"task_id": '
+    '"<full_id>", "due": "2026-03-01"}, {"task_id": "<full_id>", "status": "Done"}]. '
+    "A row takes the arguments of update_task."
+)
+
+UPDATE_WORDS = _BatchWords(
+    tool="update_tasks",
+    noun="task",
+    done="Changed",
+    do="change",
+    undone="not changed",
+    maybe="changed",
+    again="changed. Do not change them again",
+)
+
+
+def _update_arg(key: str, value: Any) -> Any:
+    """One row value as `update_task` takes it. A list joins with commas
+    and an object is JSON, so a model may send either shape."""
+    if value is None:
+        return 0 if key == "estimate_mins" else ""
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(v) for v in value)
+    if isinstance(value, dict):
+        return json.dumps(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return value if key == "estimate_mins" else str(value)
+
+
+class _UpdateRow(_BatchRow):
+    """One row of an `update_tasks` call: one `update_task`, planned by
+    `_plan_task_edit` and sent on the route of `update_task`."""
+
+    def __init__(self, index: int, task_id: str, args: dict[str, Any]) -> None:
+        super().__init__(index)
+        self.task_id = task_id
+        self.args = args
+        self.task: dict[str, Any] = {}
+        self.plan: _EditPlan | None = None
+
+    @property
+    def ready(self) -> bool:
+        return not self.why and self.plan is not None
+
+    @property
+    def ref(self) -> str:
+        return _ref(self.task) if self.task else _hidden(self.task_id)
+
+    @property
+    def hint(self) -> str:
+        """What the row changes, as before → after."""
+        if self.plan is None:
+            return ""
+        before = self.plan.before
+        parts = []
+        for key, value in self.plan.card.items():
+            if key in before and before[key] != value:
+                parts.append(f"{key}: {before[key]} → {value}")
+            else:
+                parts.append(f"{key} → {value}")
+        return _unfence(", ".join(parts))[:300]
+
+    async def send(self) -> Any:
+        assert self.plan is not None
+        tid = uuid_of(self.task_id, "task_id")
+        updated = await patch(
+            f"/projects/tasks/{tid}", self.plan.payload, params=self.plan.params
+        )
+        updated["assignees"] = self.task.get("assignees") or []
+        return updated
+
+    def done(self, result: Any) -> list[str]:
+        assert self.plan is not None
+        lane = self.plan.lane
+        return [
+            *_task_line(result, str(lane.get("name")) if lane else ""),
+            *level_note(str(self.args.get("priority") or ""), result),
+            *_subtask_receipt(result, "subtasks_completed", "complete"),
+        ]
+
+
+def _update_rows(changes: str) -> list[_UpdateRow] | str:
+    """The rows of ``changes``, or the refusal that names the bad row."""
+    parsed = _json_rows(changes, UPDATE_ROW_KEYS, UPDATE_FORMAT, "update_tasks")
+    if isinstance(parsed, str):
+        return parsed
+    rows: list[_UpdateRow] = []
+    seen: dict[str, int] = {}
+    for i, item in enumerate(parsed, start=1):
+        try:
+            task_id = uuid_of(item.get("task_id"), f"Row {i}: task_id")
+        except GatewayRefusal as exc:
+            return f"{exc} Nothing was changed."
+        if task_id in seen:
+            return (
+                f"Rows {seen[task_id]} and {i} name the same task. Put every change of one "
+                "task in one row. Nothing was changed."
+            )
+        seen[task_id] = i
+        args = {k: _update_arg(k, v) for k, v in item.items() if k != "task_id"}
+        rows.append(_UpdateRow(i, task_id, args))
+    return rows
+
+
+async def _update_plan(row: _UpdateRow) -> None:
+    """Read the task and plan the row through `_plan_task_edit`. Reads only."""
+    try:
+        row.task = (await _task(row.task_id))[1]
+        planned = await _plan_task_edit(row.task, **row.args)
+    except GatewayRefusal as exc:
+        if not _named_refusal(exc):
+            raise
+        row.why = _refusal_words(exc)
+        return
+    if isinstance(planned, str):
+        row.why = _row_reason(planned)
+    elif planned.question:
+        # No prompt in the middle of a batch: the row names its own answer.
+        row.why = (
+            "the task has open subtasks. Ask the member whether to finish them too, "
+            "then change this task on its own"
+        )
+    else:
+        row.plan = planned
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
+async def update_tasks(changes: str) -> str:
+    """Change many tasks with ONE approval, a different change for each task.
+    Use it for 3 or more related changes. For 1 or 2 changes, call
+    update_task once for each. For ONE value across many tasks, use
+    bulk_update. changes is a JSON list with one object per task:
+    {"task_id": "<full_id>", "due": "2026-03-01", "status": "Done"}. A row
+    takes the same arguments as update_task: title, description, status, due,
+    start, estimate_mins, tags, clear, priority, important, leveraged, type,
+    fields and include_subtasks. The tool checks every row first. A row that
+    update_task would refuse is named on the card and left out. A row that
+    needs an include_subtasks answer is left out too, with no question. The
+    member sees ONE card with a checkbox for each row, shown as before →
+    after, unticks a wrong one, and approves once. The receipt names each
+    task changed and each one that was not, with why. Never change a task
+    again that the receipt lists."""
+    rows = _update_rows(changes)
+    if isinstance(rows, str):
+        return rows
+    await _each_at_once(rows, _update_plan)
+    ready = [r for r in rows if r.ready]
+    stuck = [r for r in rows if not r.ready]
+    if not ready:
+        return "\n".join(
+            ["No change of these can be made. Nothing was changed."]
+            + [f"not changed: row {r.index} {r.ref}: {r.why}" for r in stuck]
+        )
+    body = {
+        f"cannot change {k}": f"{r.ref}: {_row_reason(r.why)}" for k, r in enumerate(stuck, start=1)
+    }
+    # No count on the card: a count goes stale when the member unticks a row.
+    more = " and the tasks below" if len(ready) > 1 else ""
+    asked = await _ask_batch(
+        "Update these tasks?",
+        f"{ready[0].ref}{more} · untick a task to leave it out",
+        body,
+        list(ready),
+    )
+    if isinstance(asked, str):
+        return asked
+    chosen, left = asked
+    out = await _apply_batch(chosen)
+    head = f"Changed {out.made} task{'s' if out.made != 1 else ''}:"
+    return _batch_receipt(UPDATE_WORDS, head, out, chosen, left, list(stuck))
+
+
 @_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
 async def watch(target_id: str, kind: str = "task", stop: bool = False) -> str:
     """Watch a task or a project for the member, so its changes reach their
