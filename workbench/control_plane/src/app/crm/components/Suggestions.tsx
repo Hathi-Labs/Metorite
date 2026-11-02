@@ -86,6 +86,8 @@ function message(err: unknown, fallback: string): string {
 export function useSuggestionActions(listLabel: (slug: EntitySlug) => string) {
   const toast = useToast();
   const [busy, setBusy] = useState<string | null>(null);
+  // The reason of a refused "Use", for the preview Modal to show inside it.
+  const [modalError, setModalError] = useState<string | null>(null);
 
   async function undo(o: { slot: OverlayInUse["slot"] }) {
     const label = listLabel(SLOT_SLUG[o.slot]);
@@ -101,11 +103,18 @@ export function useSuggestionActions(listLabel: (slug: EntitySlug) => string) {
     }
   }
 
-  async function apply(s: Suggestion): Promise<boolean> {
+  /**
+   * `closeFirst` is set when the preview Modal asked (CRM-U17a). It runs
+   * before the toast of a use that worked. A failure keeps the Modal open and
+   * shows its reason inside it (`modalError`), with no toast.
+   */
+  async function apply(s: Suggestion, closeFirst?: () => void): Promise<boolean> {
     const label = listLabel(SLOT_SLUG[s.slot]);
     setBusy(s.slot);
+    setModalError(null);
     try {
       await api.approveSuggestion(s.slot, s.version);
+      closeFirst?.();
       toast.show({
         key: `crm-suggest:${s.slot}`,
         variant: "success",
@@ -114,7 +123,8 @@ export function useSuggestionActions(listLabel: (slug: EntitySlug) => string) {
       });
       return true;
     } catch (err) {
-      toast.show({ key: `crm-suggest:${s.slot}`, variant: "error", title: message(err, "That did not save.") });
+      if (closeFirst) setModalError(message(err, "That did not save."));
+      else toast.show({ key: `crm-suggest:${s.slot}`, variant: "error", title: message(err, "That did not save.") });
       return false;
     } finally {
       setBusy(null);
@@ -136,7 +146,7 @@ export function useSuggestionActions(listLabel: (slug: EntitySlug) => string) {
     }
   }
 
-  return { busy, apply, undo, dismiss };
+  return { busy, apply, undo, dismiss, modalError, clearError: () => setModalError(null) };
 }
 
 /**
@@ -272,12 +282,15 @@ export function SuggestionPanel({
   suggestion,
   listLabel,
   busy,
+  error = null,
   onUse,
   onClose,
 }: {
   suggestion: Suggestion;
   listLabel: string;
   busy: boolean;
+  /** The reason that "Use" was refused, next to its button. */
+  error?: string | null;
   onUse: () => void;
   onClose: () => void;
 }) {
@@ -300,6 +313,11 @@ export function SuggestionPanel({
         preview={res.data ?? null}
         previewFailed={!res.data && res.error !== null}
       />
+      {error && (
+        <p role="alert" className="px-4 pb-2 text-xs text-destructive">
+          {error}
+        </p>
+      )}
       <div className="flex flex-wrap justify-end gap-2 border-t border-border p-3">
         <Button variant="ghost" size="sm" onClick={onClose} disabled={busy}>
           Close
@@ -358,9 +376,13 @@ export function SlotSuggestionArea({
           suggestion={suggestion}
           listLabel={listLabel}
           busy={actions.busy === suggestion.slot}
-          onClose={() => setOpen(false)}
+          error={actions.modalError}
+          onClose={() => {
+            setOpen(false);
+            actions.clearError();
+          }}
           onUse={() => {
-            void actions.apply(suggestion).then((done) => done && setOpen(false));
+            void actions.apply(suggestion, () => setOpen(false));
           }}
         />
       )}
@@ -400,10 +422,14 @@ export default function SuggestionsCard() {
           suggestion={previewing}
           listLabel={labelOf(SLOT_SLUG[previewing.slot])}
           busy={actions.busy === previewing.slot}
-          onClose={() => setPreviewingSlot(null)}
+          error={actions.modalError}
+          onClose={() => {
+            setPreviewingSlot(null);
+            actions.clearError();
+          }}
           onUse={() => {
             const s = previewing;
-            void actions.apply(s).then((done) => done && setPreviewingSlot(null));
+            void actions.apply(s, () => setPreviewingSlot(null));
           }}
         />
       )}
