@@ -12,6 +12,7 @@ against the code first.
 
 | Record | Date | What it holds | Cited by |
 |---|---|---|---|
+| `ai_native_onboarding_2026-11.md` | 2026-11 | How the best products onboard a creator and a joiner, with the evidence graded | `specs/onboarding.md` §12 |
 | `plane_pm_research_2026-08.md` | 2026-08 | A read of Plane (AGPL-3.0, patterns only), with the verdicts P-1 to P-31 | `specs/project_management_app.md` |
 | `paca_pm_research_2026-08.md` | 2026-08 | A read of Paca (Apache-2.0), with the adopt, adapt and refuse table | `specs/project_management_app.md`, `specs/workflows_app.md` |
 | `note_taker_research_2026-07.md` | 2026-07 | The evidence base of the note taker | `specs/note_taker_app.md` |
