@@ -573,9 +573,10 @@ async def test_the_load_of_email_leaves_no_room_for_setup_and_the_next_turn_keep
     The refusal sends the model to ``call_agent`` for the setup work, and the
     hand-off is open from then on (fix round 1). A mail tool runs, so ``email``
     is sticky. Turn 2: ``email`` is held, ``email-setup``
-    cannot fit, so the plan reaches no owner. The hand-off is open, the rules
-    route the setup work to the email assistant, and the run is the run of
-    OA-7c. Mutation: refuse the setup load with the old text, or keep the
+    cannot fit beside it, so the plan reaches no owner. The hand-off is open,
+    and the rules route the setup work to the email assistant. RX-1 (D169): the
+    run also offers ``email-setup``, because a load would move the sticky
+    ``email`` out. Mutation: refuse the setup load with the old text, or keep the
     hand-off closed after it → the two texts point at each other → red. Mutation: reach the owner
     in turn 2 → the setup work has no path → red."""
     ran = _fake_run_agent(monkeypatch)
@@ -606,7 +607,8 @@ async def test_the_load_of_email_leaves_no_room_for_setup_and_the_next_turn_keep
     applied2 = await _apply(two, "")
     assert applied2 is not None and applied2.record.slugs == ("email",)
     assert applied2.record.via_loader == frozenset() and applied2.record.replaced == {EA}
-    assert _provider(two[0]) is None
+    offer = _provider(two[0])
+    assert offer is not None and offer.loader.offered == ("email-setup",)
     persona = two[0].default_options["instructions"]
     assert tp._EMAIL_SETUP_ROUTE_LINE in persona and tp._EMAIL_SETUP_LOAD_LINE not in persona
     with _in_run(applied2):
@@ -833,3 +835,12 @@ async def test_an_owner_with_no_bullet_and_no_exemption_is_not_reached(
     assert _crm_tool_present(agents[0])
     assert agents[0].default_options["instructions"] == persona
     assert applied is None or applied.record.via_loader == frozenset()
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")

@@ -32,6 +32,8 @@ from acb_auth.agent_oauth import ACTOR_VIA_PATTERN, PROJECTS_WRITE, client_label
 from acb_common import get_logger
 from acb_common.priority import importance_for
 from fastapi import Depends, Header, HTTPException, Query
+from gateway.align.trigger import enqueue_check
+from gateway.db import current_tenant
 from gateway.routes.projects.authority import (
     assert_may_delete_task,
     assert_may_move_task,
@@ -64,9 +66,9 @@ from gateway.routes.projects.core import (
     assert_assignable_here,
     assert_epic_has_no_parent,
     assert_holds_tasks,
-    assert_not_archived,
     assert_move_keeps_privacy,
     assert_no_task_cycle,
+    assert_not_archived,
     clean_payload,
     count_where,
     diff_changes,
@@ -83,6 +85,7 @@ from gateway.routes.projects.core import (
     now,
     parent_lane_status,
     parse_precondition,
+    reader_day_start,
     record_activity,
     record_field_change,
     remap_one_status,
@@ -733,6 +736,7 @@ async def list_tasks(
             parent_task_id=parent_task_id, status_id=status_id,
             status_category=status_category, assignee=assignee,
             assignees=assignees, unassigned=unassigned, overdue=overdue,
+            day_start=await reader_day_start(db, actor(user).lower()) if overdue else None,
             due_before=due_before, importance_gte=importance_gte, q=q,
             tags=tags, tags_all=tags_all, include_archived=include_archived,
             archived_only=archived_only,
@@ -909,6 +913,15 @@ async def time_spent_mins(db: Any, task_id: str) -> int:
 
 # ── Writes ──────────────────────────────────────────────────────────────────
 
+async def _store_due(db: Any, user: UserContext, values: dict[str, Any]) -> None:
+    """A date-only ``due_at`` becomes local noon of the member who writes
+    (``personal.stored_due``, RX-5). ``personal`` imports this module."""
+    if values.get("due_at"):
+        from gateway.routes.projects.personal import stored_due
+
+        values["due_at"] = await stored_due(db, actor(user).lower(), values["due_at"])
+
+
 @router.post("/tasks", status_code=201)
 async def create_task(
     payload: TaskCreateIn, user: UserContext = Depends(get_current_user),
@@ -934,6 +947,7 @@ async def create_task(
     values["created_by"] = actor(user)
 
     async with _tenant_session() as db:
+        await _store_due(db, user, values)
         vis = await resolve_visibility(db, user)
         # FOR SHARE: a concurrent move of this project to the top (a space)
         # waits for this insert (`core.load_visible_project`).
@@ -1021,6 +1035,12 @@ async def create_task(
                 wanted=first_assignees, current=set(),
             ) if first_assignees else None
         )
+        # WS-ALN ALN-1 (`project_alignment.md` §5). In THIS transaction, so a
+        # crash can lose neither half alone. `target` is the row of the
+        # project, so a personal task (§1.2) costs no read and gets no job.
+        # Fence: `test_the_seam_*` in `test_align_trigger.py`.
+        if not getattr(target, "personal_owner", None):
+            await enqueue_check(db, task_id, current_tenant(), row=row, known_team=True)
         result = row_to_dict(row, TaskModel)
 
     await emit("pm.task.created", {
@@ -1079,6 +1099,7 @@ async def patch_task(
     custom = values.pop("custom_fields", None)
 
     async with _tenant_session() as db:
+        await _store_due(db, user, values)
         vis = await resolve_visibility(db, user)
         before = await load_visible_task(db, vis, task_id)
 
@@ -1172,6 +1193,13 @@ async def patch_task(
             await ensure_watchers(
                 db, task_id, mentioned["notified"], by=actor(user),
             )
+
+        # WS-ALN ALN-1 (`project_alignment.md` §5 item 2). In THIS transaction.
+        # Given `before`, `enqueue_check` does nothing unless the checked text
+        # changed, so an edit of a due date costs nothing. It also reads the
+        # project, because no row here says whether the task is personal.
+        # Fence: `test_align_trigger.py`.
+        await enqueue_check(db, task_id, current_tenant(), row=after, before=before)
 
         result = row_to_dict(after, TaskModel)
         # WS-55 EA-12c — the pill survives an edit. The client merges this
@@ -1278,6 +1306,9 @@ async def move_task_in(
     #: D-PM-38 decision 4 — the descendants this move takes along, read and
     #: checked BEFORE any write. `None` when the caller did not ask.
     subtree: list[Any] | None = None
+    #: WS-ALN ALN-1. True when this move takes the task out of a personal
+    #: project into a team project.
+    promoted = False
 
     if payload.parent_task_id is not None or "parent_task_id" in payload.model_fields_set:
         new_parent = payload.parent_task_id
@@ -1305,7 +1336,8 @@ async def move_task_in(
         # project it already lives in. Checked after the visibility load so
         # a caller who cannot see the destination still gets 404 and never
         # learns from a 422 that it exists (R5: 404, never 403).
-        await assert_move_keeps_privacy(db, task, str(payload.project_id))
+        left_owner = await assert_move_keeps_privacy(db, task, str(payload.project_id))
+        promoted = bool(left_owner) and not getattr(dest, "personal_owner", None)
         # WS-64 OP-8 (D-OP-14). A move to another project changes who sees
         # the task, so it needs the delete authority on the task as it is.
         # After the 404 and the shape refusals, before any write.
@@ -1469,6 +1501,15 @@ async def move_task_in(
                 user=None,
             )
             moved_ids.append(str(child.id))
+
+    # WS-ALN ALN-1 (`project_alignment.md` §5 item 3). A move out of a personal
+    # project is the moment a personal note becomes project work. A move that
+    # stays personal, or between two team projects, enqueues nothing. Each
+    # descendant comes through this seam, so each one gets its own job. On the
+    # caller's session, so the move and the job commit together. Fence:
+    # `test_align_trigger.py`.
+    if promoted:
+        await enqueue_check(db, task_id, current_tenant(), row=row, known_team=True)
 
     result = row_to_dict(row, TaskModel)
     result["notified"] = notified["notified"]

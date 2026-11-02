@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { PROFILE_USED_EVENT, profileMarkShown, profileUsedIn } from "@/lib/profileMark";
+import { PROFILE_USED_EVENT, profileMarkShown, profileUsedIn, ranByViewer } from "@/lib/profileMark";
 
 const src = (p: string) => readFileSync(join(__dirname, "..", "..", p), "utf-8");
 
@@ -71,5 +71,19 @@ describe("where the mark lives", () => {
   it("AgentChat does not know the mark", () => {
     expect(src("src/components/AgentChat.tsx")).not.toContain("profileUsedIn");
     expect(src("src/components/AgentChat.tsx")).not.toContain("profileMarkShown");
+  });
+});
+
+// RX-7: a reminder receipt asks the same question, "did the reader run the turn?".
+// Mutation: make `ranByViewer` always return true, and the second test fails.
+describe("ranByViewer", () => {
+  it("is true for the member who ran the turn, for a live turn and for no reader", () => {
+    expect(ranByViewer({ runMemberEmail: "ana@alpha.example" }, "Ana@Alpha.example")).toBe(true);
+    expect(ranByViewer({}, "ana@alpha.example")).toBe(true);
+    expect(ranByViewer({ runMemberEmail: "ana@alpha.example" }, undefined)).toBe(true);
+  });
+
+  it("is false when another member ran the turn", () => {
+    expect(ranByViewer({ runMemberEmail: "ana@alpha.example" }, "bo@alpha.example")).toBe(false);
   });
 });

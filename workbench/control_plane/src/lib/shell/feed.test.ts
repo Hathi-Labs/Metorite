@@ -214,6 +214,8 @@ describe("1. the answer of §14.1a", () => {
       groups: [],
       handled: [],
       handled_ok: false,
+      reminders_ahead: [],
+      reminder_subjects: {},
       needs: null,
       sources: {},
       source_apps: {},
@@ -230,14 +232,15 @@ describe("1. the answer of §14.1a", () => {
   });
 
   it("shows a clock time or a day at the right, never a duration (visual review, item 4)", () => {
-    // The why line already says "Due in 1 h 5 min.", so the right-hand time
-    // says WHEN, through the clock Today draws (`fmtClock`): "17:00",
-    // "Yesterday", "Mon". Local times, so the test holds in any zone.
+    // The why line says how long, so the right-hand time says WHEN, through
+    // the clock Today draws (`fmtClock`): "17:00", "Yesterday", "Mon". Local
+    // times, so the test holds in any zone. A task due today has no hour, so
+    // it draws no clock (RX-5).
     const now = new Date(2026, 9, 14, 12, 0).getTime();
     const at = (d: Date) => ({ kind: "overdue", at: d.toISOString() });
     const today = new Date(2026, 9, 14, 17, 0);
     expect(cardTime(at(today), now)).toBe(fmtClock(today));
-    expect(cardTime({ kind: "due_today", at: today.toISOString() }, now)).toBe(fmtClock(today));
+    expect(cardTime({ kind: "due_today", at: today.toISOString() }, now)).toBe("");
     expect(cardTime(at(new Date(2026, 9, 13, 9, 0)), now)).toBe("Yesterday");
     expect(cardTime(at(new Date(2026, 9, 15, 9, 0)), now)).toBe("Tomorrow");
     const monday = new Date(2026, 9, 12, 9, 0);
@@ -1213,6 +1216,8 @@ describe("9. the life of a card (MD-2b)", () => {
     groups: [],
     handled: [],
     handled_ok: false,
+    reminders_ahead: [],
+    reminder_subjects: {},
     needs: null,
     sources,
     capped,
@@ -1416,7 +1421,10 @@ describe("9. the life of a card (MD-2b)", () => {
     expect(src).toMatch(/const hidden = useMemo\(\(\) => menuHidden\(menuOverlay, fetchedAt\)/);
     // The column drops a hidden card by its signal id, before the groups:
     // `columnView` takes the menu overlay as `hidden` (section 10 drives it).
-    expect(src).toMatch(/columnView\(feed\.answer, visit, \{ shown, marked: feed\.marked, hidden: feed\.hidden \}\)/);
+    // RX-3: the reminder cards join the set, so the band draws them. The set
+    // still starts from `feed.hidden` and never from `needsActs`.
+    expect(src).toMatch(/\.\.\.feed\.hidden,/);
+    expect(src).toMatch(/columnView\(feed\.answer, visit, \{ shown, marked: feed\.marked, hidden: apart \}\)/);
   });
 });
 

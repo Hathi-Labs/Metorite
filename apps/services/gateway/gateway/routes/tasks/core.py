@@ -59,10 +59,12 @@ router = APIRouter(
 #: The email status call had the same fault and the same fix
 #: (``replyzero._STATUS_THINKING``).
 #:
-#: ⚠️ **One exception: the day plan** (``calendar._llm_rank_day``). Task 1123
-#: lets it think, with a cap of ``PLAN_MAX_TOKENS`` that leaves room for it.
-#: Fence: ``tests/unit/test_tasks_ai_no_thinking.py``, which names the
-#: exception.
+#: The day plan (``calendar._llm_rank_day``) follows the same rule since
+#: 2026-11-01. It asks for no reasoning on ``tier-fast``, because at 8000
+#: tokens with thinking on, one call outran the 30 s limit of the BFF. Task
+#: 1338 adds a faster path through ``decide`` (``calendar_decide.py``). This
+#: call is its fallback. Fence: ``tests/unit/test_calendar_plan_llm.py`` and
+#: ``tests/unit/test_tasks_ai_no_thinking.py``.
 #:
 #: The value is the seam's own (``acb_llm.jobs.THINKING_OFF``, task 1128), so
 #: the repo holds one literal. The seam drops it for a model that does not
