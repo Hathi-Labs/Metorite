@@ -200,6 +200,10 @@ describe("the bar at the foot reserves no space (source)", () => {
     expect(bar.match(/data-ask-surface=/g)?.length).toBe(2);
   });
 
+  it("keeps the guide's Ask anchor in every form (D167)", () => {
+    expect(bar.match(/data-guide="home\.ask"/g)?.length).toBe(2);
+  });
+
   it("springs a new form in with scale alone, and holds still for reduced motion", () => {
     const css = read("app/globals.css");
     expect(css).toMatch(/@keyframes ask-rest-in \{\s*from \{ transform: translateY\(4px\) scale\(0\.92\); \}\s*\}/);

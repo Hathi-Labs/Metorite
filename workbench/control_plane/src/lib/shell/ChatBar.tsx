@@ -301,9 +301,11 @@ function AskRestButton({
       >
         <div className="glass:glass-glow-ring" />
       </div>
+      {/* The guide's "Ask field" anchor holds in every form (D167). */}
       <button
         type="button"
         data-ask-surface=""
+        data-guide="home.ask"
         aria-label={running > 0 ? `${name}. ${running} running` : name}
         title={name}
         onClick={onOpen}
