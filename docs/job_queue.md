@@ -67,6 +67,9 @@ The writes of a handler and `done` commit together, or neither commits.
 - **A handler must use only the session that it receives.** A second session
   is a second transaction. Its writes commit when the try fails, and its
   locks can wait on the row lock of the run.
+- **A handler runs with no person present (AUTO-7a).** The worker marks each
+  handler in both modes (`acb_common.no_person`). A marked handler cannot
+  approve, reject, resume or answer anything, and each card denies.
 - **A `session` handler runs while a session is open.** Do not call a model
   or a provider inside it. Use the `detached` mode for that work.
 - **A `detached` handler runs with no session open.** Register it with

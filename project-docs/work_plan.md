@@ -162,16 +162,17 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-CAL | **Calendar**: events, reminders, external sync | 🟢 active · M1 | `specs/calendar_focus_os.md` · `specs/calendar_events_reminders.md` | Metorite: project Calendar App · CE-0 decided (D138, 2026-10-29) · RE-9b BUILT 2026-10-31 (migration 318). Not dark: it sends wherever `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` are on (production: both on) · next CE-1, CE-3, CE-4, then CE-10 with CE-11 |
 | WS-PP | **People and Profile** | 🟢 active · M1 | `specs/people_center_app.md` | Metorite: project My Profile · next E-58 |
 | WS-EM | **Email** | 🟢 active · M0 | `specs/email_app_master_plan.md` · `specs/shared_mailbox.md` | Metorite: project My Email · Gmail in test mode (D122.4) · next E-05, E-09, E-11 |
-| WS-CRM | **CRM**: native mode, the Zoho mirror, and the cutover from one to the other | 🟢 active · M1 | `specs/crm_platform.md` | Metorite: epic 477, cutover sub-epic CRM-Z10 · CRM-Z10f decided (D133) · next H-333, CRM-Z10a to Z10e (the switch, owner ask 2026-10-28), CRM-U13, the whole-app UX batch, H-366 |
+| WS-CRM | **CRM**: native mode, the Zoho mirror, and the cutover from one to the other | 🟢 active · M1 | `specs/crm_platform.md` | Metorite: epic 477, cutover sub-epic CRM-Z10 · CRM-Z10f decided (D133) · next H-333, CRM-Z10a to Z10e (the switch, owner ask 2026-10-28), CRM-U13, the whole-app UX batch, H-366· CRM-M, the CRM you talk to: `specs/crm_conversational.md` (D164 to D166), epic #1429, next CRM-M1 (Change history, #1431) |
 | WS-WA | **WhatsApp** | 🟡 gated · M2 | `specs/whatsapp_message_manager.md` · `specs/whatsapp_assistant_channel.md` | Metorite: epic 476 · D115 freeze, lifted for brief task 8 only (D122.3) · next BR-8a, E-20 |
 | WS-KB | **Knowledge** | 🟢 active · M2 | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | Metorite: project Knowledge · no P0 or P1 · next H-401, KC-1 |
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_graph.md` · `specs/knowledge_base.md` §20 · `specs/company_context.md` | Metorite: epic 783 (Knowledge) · D128, D132 · 2026-10-29: KG-0 written, KG-1, KG-2 and KG-3a built · next KG-4 and KG-9, then KG-3b after the KG-2 backfill |
 | WS-MCP | **MCP, external agents and agent coordination**: every app over the MCP, and many agents on one board | 🟢 active · M2 | `specs/external_agent_access.md` · `specs/agent_coordination.md` (D140) | Metorite: epics 321 (coordination, D135 and D140), 354 (MCP gaps) and 495 (parity, D124 and D136, M3) · MCP-P1a built dark 2026-10-30 (`external_agent_access.md` §19) · next tasks 1045 and 1054, SW-4, SW-10b (the sweep on staging first), then SW-29a and SW-30a, and MCP-P1b and MCP-P2a |
 | WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · Stage 1 in M1, Stage 2 in M2 (D146) | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141, D146 · Stage 1 merged except A1 and E1 (this PR), F2b and F2c · Stage 2 in build: A3, A4, B2a, C1, G1b and G2 merged, C2a in the gates · next C1b, C6, C7, B1c and B2b, then D2, D3, D11, G3 and F2b · epic 491 holds the plan · finish line of Stage 2: K3 |
 | WS-PKG | **Package host**: every app is a package, and Metorite reshapes itself around the organization and the person | 🟢 active · started 2026-11-01 (D147) · M1 | `specs/package_host.md` | Metorite: project "Package Host", epic 1234 · D89, D127, D136, D141, D146, D147 · Studio H1, H2, J2, J3 and M1 run on this registry · next PKG-1 (one manifest source for the ⌘K jobs, no behaviour change), then PKG-2, PKG-3 and PKG-4 |
-| WS-WEB | **Web research**: search, read any page or file, crawl, browse and research jobs for Mira, on open-source parts | 🟢 active · started 2026-11-01 (D148) · M1 | `specs/web_research.md` | Metorite: project "Agent Tooling", epic 1235 · D85, D117, D139, D148 · WS-43 CA-4 (task 1032) calls this service · gates WEB-Q1 (SearXNG) for WEB-5 · 2026-11-01: WEB-1 built (the fetch guard) and WEB-10 built (the goal record, `goal_records`, no caller yet), next WEB-2, then WEB-3 and WEB-4 |
+| WS-WEB | **Web research**: search, read any page or file, crawl, browse and research jobs for Mira, on open-source parts | 🟢 active · started 2026-11-01 (D148) · M1 | `specs/web_research.md` | Metorite: project "Agent Tooling", epic 1235 · D85, D117, D139, D148 · WS-43 CA-4 (task 1032) calls this service · gates WEB-Q1 (SearXNG) for WEB-5 · 2026-11-01: WEB-1 built (the fetch guard). WEB-10 built (the goal record, `goal_records`, no caller yet). WEB-2 built dark behind `WEB_RESEARCH_ORGS` (the local HTML reader). Next WEB-3, then WEB-4 |
 | WS-ALN | **Project alignment**: Metorite knows the project of each task, checks work against the project's accepted rules, and asks a person and the lead when work deviates | 🟢 active · started 2026-11-02 (D160) · M2 | `specs/project_alignment.md` | Metorite: project "Projects/Tasks App", epic 1368 · reports to WS-PT · D75, D100, D104, D140, D160 and workflows G5 · ALN-Q1 to ALN-Q5 run on working defaults, which are not owner decisions (`project_alignment.md` §14) · ALN-0 is this spec · next ALN-1 (the durable trigger), ALN-2a and ALN-4 in parallel, then ALN-5, ALN-6, ALN-7 · ALN-5 needs the rule store of SW-31 (task 1048) |
 | WS-AUTO | **Proactive agent**: Mira acts for each person without being asked, within limits that the person sees | 🟢 active · started 2026-11-02 (D161) · M2 | `specs/proactive_agent.md` | Metorite: project "Automations", epic 807 · D103, D124, D131, D161 and workflows G5 · AUTO-2 first slice and AUTO-3 (D131) are merged · AUTO-Q1 runs on a working default, which is not an owner decision (`proactive_agent.md` §12) · H-328 (task 856) blocks any second org · next AUTO-7a and AUTO-6 in parallel, then AUTO-8, AUTO-1, AUTO-4, AUTO-5, AUTO-9, AUTO-10 |
+| WS-CO | **Chat organization**: topics, picking up a chat, one search, and the full-screen chat | 🟢 active · started 2026-11-02 (D162, D163) · M1 | `specs/chat_organization.md` · `specs/artifact_management.md` §6.0 | next CO-0 (AGENT-SAFE). CO-1 waits for the PZ-33b question on numbers, and its flip is owner-only |
 | WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) · `specs/glass_look.md` (phase GL, D143) | Metorite: epic 492, sub-epic UX-D, task 1125 (GL) · UI-G1 is built · **GL (owner, 2026-10-31): Aroh's glass look, LIVE in production since 2026-10-31 05:38 UTC behind `NEXT_PUBLIC_UI_LOOK` (GL-9 done on the owner's word; staging no longer exists). GL-0 to GL-4 built (gate and tokens, primitives, shell, chat). GL-10, GL-11 and GL-12 are built (GL-12, 2026-11-01: the Ask bar at the foot, no top bar, Needs you beside its sidebar row) (GL-11, 2026-11-01: desktop proportions, raised chat cards, the full-height sidebar with hover to expand) (cards, rail, chat edge). **GL-Z1 is built, 2026-10-31 (D149): glass is the only look, and the Design switch and the gate are gone.** Next GL-Z2 (fold each `glass:` class into a plain class, then delete the classic token blocks), then GL-5 and GL-6** · then UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
 | WS-CHAT | **AI chat**: Mira, the one assistant | 🟢 active · M1 | `specs/one_assistant_context.md` · `specs/chat_first_surface.md` | Metorite: project AI Chat Interface, epic 470 · a parallel session owns it · next #469 with BR-5, #471, WS-58, SUB-1 (the sub-agent policy for OA-9) |
@@ -179,7 +180,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-DOC | **Docs and repo cleanup** | 🟢 active · M1 | none yet | Metorite: epic 522 (Developer Workflow) · next DOC-1, DOC-2 |
 | WS-BRIEF | **Core brief**: brief tasks with no earlier plan line | 🟢 active · M1 | `specs/core_brief.md` (PROPOSED) | Metorite: epics 479 (Proactive Intelligence) and 480 (Secrets & Security), connectors in epic 481, automations in sub-epic AUTO of epic 479 · gate AUTO-3 (the trust ladder) · BR-1a built, dark (`JOB_QUEUE`, `docs/job_queue.md`) · AUTO-2 built, dark (`UNATTENDED_LEDGER`, `docs/job_queue.md` §9) · BR-4 slice 1 built: migration 315 and `gateway/brief/store.py`, with no producer · next BR-1b-a, BR-2a |
 | WS-IR | **Issue Reporting** | 🟢 active · M0 | none yet | Metorite: epic 475 (Observability & Alerts) · D126 · next IR-0, IR-1, IR-2 |
-| WS-OB | **Onboarding and Help** | 🟢 active · M1 | `specs/onboarding.md` (D150, D153). OB-8: `specs/calendar_events_reminders.md` §10.4 | Metorite: Onboarding project, epic 669 · OB-0 (the founder's welcome closes at once) and OB-0b (a new founder lands with no apps, HIGH) MERGED 2026-11-02 · next OB-0c, OB-0d, OB-1a, OB-1b, OB-4, OB-10, OB-24 · AI-led layer: epic 1351, `specs/onboarding.md` §12, D153 · HLP-1, ADM-1. OB-8 (the chat push prompt) BUILT 2026-10-30, dark |
+| WS-OB | **Onboarding and Help** | 🟢 active · M1 | `specs/onboarding.md` (D150, D153). OB-8: `specs/calendar_events_reminders.md` §10.4 | Metorite: Onboarding project, epic 669 · OB-0 (the founder's welcome closes at once) and OB-0b (a new founder lands with no apps, HIGH) MERGED 2026-11-02 · next OB-0c, OB-0d, OB-1a, OB-1b, OB-4, OB-10, OB-24 · AI-led layer: epic 1351, `specs/onboarding.md` §12, D153 · The guide (tour, Show me, practice): `specs/assistant_guide.md`, D167, epic 1451, next GD-1 to GD-5 · HLP-1, ADM-1. OB-8 (the chat push prompt) BUILT 2026-10-30, dark |
 
 ### 2.2 Earlier rows (WS-0 to WS-67)
 
@@ -251,7 +252,7 @@ These are the rows of the board before D118. Each row keeps its ID, so a spec th
 | WS-60 | Artifacts: one library | 🟢 open | `specs/artifact_management.md` | now in WS-CHAT |
 | WS-61 | Knowledge | 🟢 open | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | now in WS-KB |
 | WS-62 | Chat first | 🟢 open | `specs/chat_first_surface.md` | now in WS-CHAT |
-| WS-63 | Personalization | 🟢 open | `specs/personalization.md` | now in WS-CHAT · §15 (D142, 2026-10-30) adds PZ-33 to PZ-36, not built |
+| WS-63 | Personalization | 🟢 open | `specs/personalization.md` | now in WS-CHAT · §15 (D142, 2026-10-30) adds PZ-33 to PZ-36 · PZ-33a and PZ-35 built (dark) 2026-11-01, the rest not built |
 | WS-64 | One Projects app | 🟢 open | `specs/one_projects_app.md` | now in WS-PT |
 | WS-65 | Shared mailbox | 🟢 open | `specs/shared_mailbox.md` | now in WS-EM |
 | WS-66 | Reminders and web push | 🟢 open | `specs/calendar_events_reminders.md` §5 | now in WS-CAL |
@@ -4734,6 +4735,8 @@ Owner decision, 2026-10-27 (see D129). Metorite #820. It clears the WS-7 gate on
 
 ### D133 — A cutover org keeps its CRM labels. Fracktal cuts over first (2026-10-27)
 
+*Amended by D164 (2026-11-02): a trust ladder sets who approves a CRM change. Own-space changes act at once with Undo.*
+
 Owner decision, 2026-10-27 (see D129). Metorite #805 and #806. It amends D95.2 for a cutover org only. `crm_platform.md` §18.9.1 already amended D95.2 for Mirror mode.
 
 1. **Labels.** An org that moves from Mirror to Native keeps the labels that it had in Mirror mode, for example "Existing Sites". They become native labels, and the admin can rename them. A new Native org still starts with "Companies".
@@ -4889,7 +4892,7 @@ The owner answered the proposal of the Metorite epic 1129, "Recent chats and ope
 7. **A chat opens with the recent chats (PZ-34).** One bounded block holds the newest 3 summaries and the member's open tasks that are due.
 8. **Dated facts (PZ-22, Metorite task 317).** A fact gains `since` and `superseded_by`. A replaced fact stays, hidden from the block.
 9. **Who flips (the agent's recommendation).** The production flip of `ASSISTANT_CHAT_SUMMARY_ORGS` is owner-only (§6 D4). Its job spends the org's credits with no request of the member. Each other flip of §15 is gate `enforcement-flip`. The owner did not see this item one by one, and may overrule it.
-10. **The defaults.** The owner saw items 1 to 8 in chat. D-PZ-25 to D-PZ-30, D-PZ-33 and D-PZ-35 of the spec's §15.11 are the agent's design defaults. The owner may overrule any of them. §15.12 holds five questions, each with a default.
+10. **The defaults.** The owner saw items 1 to 8 in chat. D-PZ-25 to D-PZ-30 and D-PZ-35 of the spec's §15.11 are the agent's design defaults. The owner decided D-PZ-33 on 2026-11-02: a Delete removes the summary, and a new one may come later. The owner may overrule any of them. §15.12 holds five questions, each with a default.
 
 ### D143 — Aroh comes into Metorite. Its glass design language becomes the one look, staging first, and it stays revertable until the owner approves it (2026-10-31)
 
@@ -5071,6 +5074,108 @@ Owner directive, 2026-11-02, in chat, the same approval as D160. Board: **WS-AUT
 7. **The build order** is H-328, AUTO-7a, AUTO-8, AUTO-6, AUTO-1, AUTO-4, AUTO-5, AUTO-9, AUTO-10.
 
 **What stays open.** AUTO-Q1 (`proactive_agent.md` §12). The build runs on its working default, which is not an owner decision.
+### D162 — Files are one library, reached from the chat (2026-11-02)
+
+Owner directive, 2026-11-02, in chat. Board: **WS-60**, owner `specs/artifact_management.md` §6.0 and slice AM-2. The owner left the design to the agent, so this decision is the agent's and the owner can reopen it.
+
+```text
+"when it comes down to artifacts and folders, I leave it up to you. Basically, some really good way in which we can organize all the files, artifacts, and all the things that we upload and create via the agent chat should be available and accessible somewhere. I was thinking that, instead of having a separate artifacts system, it's one system that is accessible from the chat window. Possibly later on, these artifacts can either be linked into knowledge base articles or themselves become available within company knowledge."
+"ensure that the files in the file viewer have a reference of the session they were generated in. we should be able to delete a session chat without deleting its generated files"
+```
+
+1. **One library.** Each file that a member uploads or an agent makes in a chat has one row in `artifacts`. No second file system exists.
+2. **The chat is the door.** The chat rail gets a Chats and Files switch, and Files is the library. When AM-2 ships, the Artifacts row leaves the sidebar. `/artifacts` and `/artifacts/<id>` stay as routes, so each link still works. A chat's own Files panel is the same library, filtered to that chat.
+3. **Filing is automatic.** The library sorts each file by chat, type, day and who made it, and by topic when chat topics ship. A member never has to file anything.
+4. **Folders exist, flat and private.** This replaces `artifact_management.md` §4.4, which refused folders. A folder belongs to one member, has one level, and a file can sit in several. A folder is a label, and it holds no grant. Sharing stays Share and a project, in the D12 grammar, so no second grant vocabulary starts.
+5. **A move never cuts a file from its chat.** The chat link stays, and the file stays in its chat's list.
+6. **Knowledge stays D104.** "Save to Knowledge" is a member's act. It copies the text into a space with the artifact id as provenance. An agent never publishes, and the file stays private. The screen says who will read the copy before the member confirms.
+7. **Every file names its chat** (owner, 2026-11-02, second message). The library shows the chat each file came from, and opens it. A file keeps the chat's title after the chat is deleted, marked deleted.
+8. **Deleting a chat keeps its files.** The delete moves them out of the chat's reach into the member's library, so a new chat that reuses the id gets none of them (H-227 stands). The delete dialog says how many files stay. This answers `artifact_management.md` §13 Q4, whose default trashed the scratch files. Slice AM-10.
+9. **Decided in D163, not here:** chat topics, the rule for joining an old chat, and who pays for the idle-chat job.
+
+Fence: advisory until AM-2. `nav.test.ts` fences the sidebar row when it goes.
+
+### D163 — Chats sort themselves, and a chat picks up where it left off (2026-11-02)
+
+Owner directive, 2026-11-02, in chat. Board: **WS-CO**, owner `specs/chat_organization.md`. The agent proposed this, and the owner accepted all of it.
+
+```text
+"wait, I'm happy with all of these." ... "You can go ahead."
+```
+
+1. **Company list, private contents.** One short topic list for the organization, seeded from its teams. Which chats sit in a topic stays private to whoever can see the chat.
+2. **A new topic starts private.** The AI makes it for one member. At 3 or more members with a similar topic, an admin gets one click to add it, and sees the count and no name.
+3. **Three outcomes for a new message.** Join the old chat, start a new chat that carries its summary, or start clean. This narrows the rule that a question asked hours later starts clean (`assistant.ts`), only on a confident match.
+4. **Only a solo chat joins.** No room, no archived chat, no live run, and no chat near the context limit.
+5. **The destination shows before the send.** A chip in the composer is the override. After a reply, the undo removes the turn and resends the words to a new chat.
+6. **The same record outranks similar words.** Corrections lower how often a member's chats join.
+7. **Metorite absorbs the idle-chat pass.** It never debits a company's credits. This changes the credit note of D142.9. The production flip stays owner-only, and the cap comes from a measured run on Fracktal.
+8. **Shadow, then Fracktal, then everyone.**
+9. **Three company features.** A pointer to a chat already shared with the member, a suggestion to save to Knowledge (D104 stands), and the Knowledge gap count at 5 askers or more. The count is KB-9a, which reads no chat, so D142.2 stands.
+
+Fence: named per slice in `chat_organization.md` §13. Advisory until each slice builds.
+
+### D167 — The guide: a tour the member starts, Show me, and practice that stays in the browser (2026-11-02)
+
+Owner direction and decision, 2026-11-02, in chat, on the four questions of `specs/assistant_guide.md` §8. Board: **WS-OB**. Metorite: epic 1451.
+
+```text
+"Would it be possible to have an onboarding tour when you open the app for the
+first time so that a user gets familiar with the entire user interface quickly?
+The side chat actually walks somebody through the entire user flow."
+```
+
+1. **D-GD-1. The tour is offered, never pushed.** The welcome dialog offers "Show me around", and Help and the chat start it too. It has five stops, and the member can ask a question at each one.
+2. **D-GD-2. The guide points, and the member presses.** "Do it for me" uses the chat parity tool and its card, then rings the result. Practice mode is the one place where the guide presses a button.
+3. **D-GD-3. Practice records live only in the browser.** They never touch the database, and End or a reload removes them at once. A guard on the tab's `fetch` answers the writes that a practice template knows and blocks every other write. A real record is made only when the member asks for one. The owner changed the default here.
+4. **D-GD-4. Metorite pays for guide questions for the first 14 days,** inside the cap of D-OB-6. After that, a guide question is a normal chat turn.
+
+### D164 — The CRM changes by a trust ladder, and every change lands in Change history (2026-11-02)
+
+Owner decision, 2026-11-02, in chat. Board: **WS-CRM**. Owning spec: `specs/crm_conversational.md` §4. Metorite: sub-epic #1429, slice CRM-M1 (#1431). It amends D133, which says an admin approves each change that the AI proposes. It changes no other rule of D133.
+
+1. **Own space acts at once, with Undo.** My view, my board columns, my card fields and my reminders need no card.
+2. **A team-level change goes to the sales lead.** A stage, a picklist value or a field in one pipeline. A rep's request lands on one card for the lead.
+3. **A company-level change needs an admin or a named sales lead.** A new pipeline or module, a scope change or a bulk owner change. One card with a preview.
+4. **Four acts always ask.** A delete, a send to outside people, money and member roles. No rule turns this off.
+5. **Every change lands in Change history** with who, when, through what, before and after. Undo restores the earlier value and logs a new row.
+6. **An AI proposal never applies by itself.** It is a card in "Needs your input" (D134).
+7. **D131 stays.** D131 governs the automations that Mira runs. This ladder governs the CRM's own set-up.
+
+**Why.** D133 asks an admin to approve every change. That blocks a rep who wants to show one more field on their own board. The ladder keeps the admin check where the risk is.
+
+**Fence.** `tests/unit/test_crm_change_history.py`, planned in CRM-M1. Until it exists, this decision is **advisory**.
+
+### D165 — CRM scopes: Mine, My team and Everyone, set for each org. The default stays Everyone (2026-11-02)
+
+Owner decision, 2026-11-02, in chat. Board: **WS-CRM**. Owning spec: `specs/crm_conversational.md` (slice CRM-M6, #1434). It replaces `crm_app.md` D-CRM-3 and the owner's answer of 2026-10-12 that "everyone sees all". It adds no third visibility mechanism (D12).
+
+1. **Each org turns scopes on.** The default stays Everyone. With scopes off, no read changes.
+2. **Deals and leads follow `owner_email`.** Contacts and companies stay open to sales. A hidden deal shows as "<name> holds a deal here", with no detail.
+3. **The three words are Mine, My team and Everyone.** A rep sees no switch. A scope only widens what a person sees.
+4. **The teams are the existing ones.** `org_group` and its `lead` flag, with `reader_scope`. No member-keyed RLS policy, no `crm_teams` table, and no walk of `manager_id` as an ACL.
+5. **A record with no owner goes to the lead's queue.**
+6. **A narrow `crm:` permission sets scopes.** `admin:access:manage` also allows escalation, so the slice does not reuse it.
+7. **Every CRM read follows the scope.** That includes chat, search, notes, exports, reports and the weekly digest.
+
+**Why.** Reps will get access to the CRM. A lead needs to see a team and a rep needs to see only their own. One missed read leaks data, so CRM-M6 is HIGH tier with a full review.
+
+**Fence.** `tests/unit/test_crm_scope_reads.py`, planned in CRM-M6. It lists each CRM read and fails on a miss. Until it exists, this decision is **advisory**.
+
+### D166 — Many CRM pipelines. A stage name shares one row, and a Phase groups the stages (2026-11-02)
+
+Owner decision, 2026-11-02, in chat. Board: **WS-CRM**. Owning spec: `specs/crm_conversational.md` (slices CRM-M3 to CRM-M5, #1097, #1098 and #1433). It closes `crm_app.md` D-CRM-11 for Native mode. It replaces the advice of 2026-10-30 that each pipeline should own its stage rows.
+
+1. **Native mode may create many pipelines**, for deals and for leads. A Mirror org cannot create one until it switches.
+2. **A stage name shares one row across pipelines.** The shape matches Zoho, so the switch from Zoho stays safe. Two pipelines can both have a "Proposal" stage.
+3. **Win chance and the warn limit sit on the pipeline membership.** The clamp of D-CRM-10 moves with them.
+4. **A Phase is the shared group of stages.** It copies `pm_task_statuses.category` and D79. Deal phases are Qualify, Propose, Close, Won, Lost and On hold. Lead phases are New, Contacted, Qualified, Converted and Dropped.
+5. **All deals is a board of phases.** A card keeps its stage as a pill. A drag to a phase picks the stage, or asks when two stages match.
+6. **D-CRM-10 stands.** `type` keeps its job and drives the math. No parallel forecast enum is added.
+
+**Why.** The store holds many pipelines already. One row for each stage name keeps the Zoho shape, and the Phase gives one picture across them. This is the pattern that Tasks uses for projects.
+
+**Fence.** `tests/unit/test_crm_pipelines_native.py` and `tests/unit/test_crm_phases.py`, planned in CRM-M3 and CRM-M5. Until they exist, this decision is **advisory**.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
