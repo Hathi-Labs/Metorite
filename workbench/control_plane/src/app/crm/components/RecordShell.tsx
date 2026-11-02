@@ -76,6 +76,7 @@ export function RecordModal({
       size="4xl"
       placement={isMobile ? "sheet" : "end"}
       closeLabel="Close record"
+      guideAnchor
       className="h-full"
     >
       {children}

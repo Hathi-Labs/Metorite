@@ -62,6 +62,13 @@ export interface BoardColumnProps extends FrameProps {
   overlay?: React.ReactNode;
   /** The body element. A board that draws `<li>` cards asks for `ul`. */
   as?: "div" | "ul";
+  /**
+   * The CRM names its first stage column as a guide anchor (`crm.stage-column`,
+   * WS-OB GD-10b). Only that call site sets it. Every other board draws the
+   * same DOM as before. The attribute is a literal because fence F1 refuses an
+   * expression.
+   */
+  guideAnchor?: boolean;
   children?: React.ReactNode;
 }
 
@@ -77,23 +84,25 @@ export function BoardColumn({
   hidden = false,
   overlay,
   as = "div",
+  guideAnchor = false,
   children,
   ...frame
 }: BoardColumnProps) {
   const Body = as;
   const EmptyBox = as === "ul" ? "li" : "div";
-  return (
-    // A group, not a `<section>` landmark: twelve CRM lanes made twelve
-    // landmarks, and a landmark list of lanes helps nobody find the page.
-    <div
-      role="group"
-      aria-label={header?.title}
-      {...frame}
-      className={[
-        "tech-transition relative flex w-72 shrink-0 flex-col rounded-lg border border-border bg-muted/30 p-2",
-        dropTarget ? "ring-2 ring-primary/40" : "",
-      ].join(" ")}
-    >
+  const frameProps = {
+    role: "group",
+    "aria-label": header?.title,
+    ...frame,
+    className: [
+      "tech-transition relative flex w-72 shrink-0 flex-col rounded-lg border border-border bg-muted/30 p-2",
+      dropTarget ? "ring-2 ring-primary/40" : "",
+    ].join(" "),
+  };
+  // A group, not a `<section>` landmark: twelve CRM lanes made twelve
+  // landmarks, and a landmark list of lanes helps nobody find the page.
+  const lane = (
+    <>
       {overlay}
       {header ? <BoardColumnHead header={header} actions={headerActions} hidden={hidden} /> : null}
       {totals ? <div className="px-1 pb-2 text-[10px] text-muted-foreground">{totals}</div> : null}
@@ -114,7 +123,14 @@ export function BoardColumn({
           <QuickAdd label={addLabel} onAdd={onAdd} />
         </div>
       ) : null}
+    </>
+  );
+  return guideAnchor ? (
+    <div data-guide="crm.stage-column" {...frameProps}>
+      {lane}
     </div>
+  ) : (
+    <div {...frameProps}>{lane}</div>
   );
 }
 

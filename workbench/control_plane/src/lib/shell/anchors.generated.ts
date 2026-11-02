@@ -12,6 +12,12 @@ export type GuideAnchor = {
 export type GuideAnchorId =
   | "chat.panel"
   | "chat.message-field"
+  | "crm.new"
+  | "crm.pipeline"
+  | "crm.stage-column"
+  | "crm.record-panel"
+  | "crm.add-note"
+  | "crm.search"
   | "home.app-list"
   | "home.ask"
   | "home.my-day"
@@ -29,6 +35,42 @@ export const GENERATED_ANCHORS: readonly GuideAnchor[] = [
     label: "Message field",
     route: "/",
     does: "Takes the member's message to the assistant.",
+  },
+  {
+    id: "crm.new",
+    label: "New button",
+    route: "/crm",
+    does: "Opens the form that adds a record to the tab in view.",
+  },
+  {
+    id: "crm.pipeline",
+    label: "Pipeline board",
+    route: "/crm",
+    does: "Shows the cards of the board, one lane for each stage.",
+  },
+  {
+    id: "crm.stage-column",
+    label: "Stage column",
+    route: "/crm",
+    does: "Holds the cards that sit in one stage. A card moves to another stage by drag.",
+  },
+  {
+    id: "crm.record-panel",
+    label: "Record panel",
+    route: "/crm",
+    does: "Opens beside the list when a record is picked. It shows the record and its timeline.",
+  },
+  {
+    id: "crm.add-note",
+    label: "Note field",
+    route: "/crm",
+    does: "Takes the text of a note, a call or a task for the open record. The Log button saves it.",
+  },
+  {
+    id: "crm.search",
+    label: "Search box",
+    route: "/crm",
+    does: "Finds records of the tab in view by name.",
   },
   {
     id: "home.app-list",

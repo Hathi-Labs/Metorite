@@ -773,6 +773,7 @@ export function SearchBox({
       placeholder={`${filterWord()} ${label}…`}
       aria-label={`${filterWord()} ${label}`}
       data-page-filter={label}
+      data-guide="crm.search"
     />
   );
 }
