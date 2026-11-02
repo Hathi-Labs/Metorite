@@ -355,7 +355,7 @@ class _SeedDB:
         self.inside.append(self._depth > 0)
         if self.fail and "FROM people" in text_:
             raise RuntimeError("relation people does not exist")
-        rows = ([SimpleNamespace(working_hours=None)]
+        rows = ([SimpleNamespace(member="me@x.example", working_hours=None)]
                 if "FROM people" in text_ else [])
         return SimpleNamespace(fetchone=lambda: rows[0] if rows else None,
                                fetchall=lambda: rows, mappings=lambda: rows)

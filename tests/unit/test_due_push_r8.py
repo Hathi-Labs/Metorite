@@ -33,6 +33,19 @@ Run (one R8 suite at a time, because the ``promoted`` fixture drops
 * M8, the date seam. ``personal.stored_due``: return the value as it came.
   ``test_r8_each_write_of_a_chat_date_reaches_the_seam`` and
   ``test_r8_a_date_only_write_is_noon_in_the_zone_of_the_member``.
+* M9, the reader's day. ``tasks.list_tasks``: drop ``day_start`` from the
+  filter. ``analytics.stuck``: bind the UTC day.
+  ``test_r8_a_route_counts_late_work_by_the_day_of_its_reader``.
+* M10, the case of the zone. ``personal.stored_zone``: match ``user_id = :uid``.
+  ``test_r8_a_mixed_case_row_keeps_its_zone``.
+* M11, the order of the send. ``outbox._PLANNED_PUSHES_SQL``: drop the first
+  sort key. ``test_r8_a_reminder_goes_before_a_morning_of_summaries``.
+* M12, the quiet tick. ``due_push._open_slots``: read ``member_day`` for each
+  member with no row. ``test_r8_a_quiet_tick_costs_a_few_statements``.
+* M13, the seed. ``due_push._open_slots``: read no seed.
+  ``test_r8_a_member_with_no_row_starts_at_the_people_seed``.
+* M14, the deadline of a plan. ``due_push.plan_org``: drop the check of
+  ``stopping``. ``test_r8_a_plan_out_of_time_stops_between_two_members``.
 
 ⚠️ It SKIPS without ``TENANT_LADDER_DATABASE_URL``, and a skip is not a pass.
 """
@@ -40,6 +53,7 @@ Run (one R8 suite at a time, because the ``promoted`` fixture drops
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from collections import Counter
 from datetime import UTC, date, datetime, timedelta
@@ -48,24 +62,28 @@ from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 
 pytest.importorskip("sqlalchemy")
 
+from acb_auth import get_current_user
 from acb_auth.permissions import EffectiveAccess
 from acb_auth.roles import UserContext, UserRole
 from acb_common import get_settings
-from acb_common.db import bind_tenant, release_tenant, tenant_session
+from acb_common.db import bind_tenant, get_engine, release_tenant, tenant_session
+from fastapi import FastAPI
 from gateway import outbound_guard
 from gateway.reach import due_push, outbox
 from gateway.reach.push_message import DUE_TAG, DUE_TTL_S
 from gateway.reminders import loop
-from gateway.routes.projects import due_day, personal, tasks
+from gateway.routes import projects as projects_package
+from gateway.routes.projects import due_day, intake, personal, tasks
 from gateway.routes.projects import reminders as rm
 from gateway.routes.projects.analytics import load_sql, overdue_by_project_sql
 from gateway.routes.shell import cache, feed, needs
 from gateway.routes.shell.state import Day
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.exc import DBAPIError
 
 from tests.unit._tenant_ladder import _exec_file, tenant_engine_scope
@@ -174,6 +192,7 @@ def _wipe(p: Any) -> None:
                     "DELETE FROM pm_task_statuses", "DELETE FROM pm_projects",
                     "DELETE FROM reach_outbox", "DELETE FROM push_subscriptions",
                     "DELETE FROM user_settings",
+                    "DELETE FROM people WHERE email LIKE '%@rx5.test'",
                     "DELETE FROM app_user WHERE email LIKE '%@rx5.test'"):
             c.execute(text(sql))
 
@@ -685,10 +704,14 @@ def test_r8_each_write_of_a_chat_date_reaches_the_seam(world) -> None:
         mine = await personal.capture(personal.CaptureIn(title="Private", due_at="2099-03-10"),
                                       user=user)
         kept.append(await stored(mine["id"]))
+        taken = await intake.capture_intake(
+            intake.IntakeIn(project_id=project, title="By chat too", due_at="2099-03-10"),
+            user=user)
+        kept.append(await stored(taken["task"]["id"]))
         return kept
 
-    created, patched, timed, captured = _in_org(world, org, work)
-    assert created == captured == _la(10, 12)
+    created, patched, timed, captured, in_intake = _in_org(world, org, work)
+    assert created == captured == in_intake == _la(10, 12)
     assert patched == _la(12, 12)
     assert timed == datetime(2099, 3, 12, 17, 0, tzinfo=IST)
 
@@ -734,6 +757,205 @@ def test_r8_the_counts_of_a_board_use_the_same_rule(world) -> None:
         return sum(int(r.overdue) for r in by_project), int(row.overdue), int(row.due_next_7d)
 
     assert _in_org(world, org, work) == (1, 1, 1)
+
+
+def test_r8_a_mixed_case_row_keeps_its_zone(world) -> None:
+    """A row keys on the session's spelling, and a due read holds the lower
+    case. So the member's zone and their day come from that row."""
+    org = world.p.org_b
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE user_settings SET user_id = :mixed WHERE user_id = :u"),
+                  {"mixed": world.wendy.title(), "u": world.wendy})
+
+    async def work() -> tuple[Any, datetime]:
+        async with tenant_session(org) as db:
+            return (await personal.stored_zone(db, world.wendy),
+                    await personal.stored_due(db, world.wendy, "2099-03-10"))
+
+    zone, due = _in_org(world, org, work)
+    assert zone == "America/Los_Angeles"
+    assert due == _la(10, 12)
+
+
+def test_r8_a_mixed_case_row_loses_to_the_exact_spelling(world) -> None:
+    """Two spellings of one address: the exact one wins, as ``_load`` rules."""
+    org = world.p.org_b
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO user_settings (organization_id, user_id, timezone, updated_at) "
+            "VALUES (CAST(:o AS uuid), :u, 'Pacific/Auckland', now() + interval '1 day')"),
+            {"o": org, "u": world.wendy.title()})
+
+    async def work() -> Any:
+        async with tenant_session(org) as db:
+            return await personal.stored_zone(db, world.wendy)
+
+    assert _in_org(world, org, work) == "America/Los_Angeles"
+
+
+async def _read_as(user: UserContext, org: str, *paths: str) -> list[Any]:
+    """Each path through the real routes, as *user* in *org*."""
+    app = FastAPI()
+    app.include_router(projects_package.router)
+    app.dependency_overrides[get_current_user] = lambda: user
+    token = bind_tenant(org)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://projects.test") as client:
+            answers = [await client.get(path) for path in paths]
+    finally:
+        release_tenant(token)
+    assert [a.status_code for a in answers] == [200] * len(paths), answers[0].text[:300]
+    return [a.json() for a in answers]
+
+
+def test_r8_a_route_counts_late_work_by_the_day_of_its_reader(world) -> None:
+    """A task on a day edge of the reader reads late or not by THEIR day, on
+    the list filter and on Stuck.
+
+    At any instant one of the two zones below has a date other than the UTC
+    date, so the reader's rule and the UTC rule split this task. Whichever way
+    it falls, a route that binds the UTC day answers the other way."""
+    org = world.p.org_b
+    now = datetime.now(UTC)
+    zone = "Pacific/Kiritimati" if now.hour >= 11 else "Pacific/Pago_Pago"
+    reader, utc = due_day.day_start(zone, now), due_day.day_start("UTC", now)
+    assert reader != utc
+    due = min(reader, utc) + abs(reader - utc) / 2
+    late = due < reader
+    assert late is not (due < utc)
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE user_settings SET timezone = :z WHERE user_id = :u"),
+                  {"z": zone, "u": world.asha})
+    task = _due(world, world.asha, "On the edge", due)
+    project = world.homes[org][0]
+    user = UserContext(email=world.asha, role=UserRole.EMPLOYEE,
+                       access=EffectiveAccess(role_granted=frozenset({"feature:projects"})))
+
+    async def work() -> list[Any]:
+        return await _read_as(
+            user, org, f"/projects/tasks?overdue=true&project_id={project}",
+            f"/projects/analytics/stuck?project_id={project}")
+
+    listed, stuck = _in_org(world, org, work)
+    assert (task in [r["id"] for r in listed["rows"]]) is late
+    assert sum(r["n"] for r in stuck["overdue"]) == (1 if late else 0)
+
+
+def test_r8_a_reminder_goes_before_a_morning_of_summaries(world) -> None:
+    """Older summaries of members who sort first still wait behind a reminder
+    row, so one read of a short batch takes the reminders."""
+    org = world.p.org_b
+    insert = ("INSERT INTO reach_outbox (organization_id, member_email, channel, kind, "
+              "dedupe_key, body, state, created_at) VALUES (CAST(:o AS uuid), :m, 'web_push', "
+              ":k, :key, :k, 'planned', now() - make_interval(mins => :ago))")
+    with world.p.admin_engine.begin() as c:
+        for n in range(5):
+            c.execute(text(insert), {"o": org, "m": f"aaa{n}@rx5.test", "k": "due_summary",
+                                     "key": f"due_summary:aaa{n}", "ago": 60})
+        for n, kind in enumerate(("reminder_due", "reminder_check")):
+            c.execute(text(insert), {"o": org, "m": f"zzz{n}@rx5.test", "k": kind,
+                                     "key": f"{kind}:zzz{n}", "ago": 1})
+        kinds = dict(c.execute(text(
+            "SELECT id::text, kind FROM reach_outbox WHERE organization_id = CAST(:o AS uuid)"),
+            {"o": org}).all())
+
+    async def work() -> tuple[list[str], list[str]]:
+        return (await outbox.planned_pushes(org, limit=2),
+                await outbox.planned_pushes(org, limit=7))
+
+    first_two, every = _in_org(world, org, work)
+    assert {kinds[i] for i in first_two} == {"reminder_due", "reminder_check"}
+    assert [kinds[i] for i in every[2:]] == ["due_summary"] * 5
+
+
+def _quiet_members(world: Any, count: int) -> list[str]:
+    """*count* active members of org B with no settings row."""
+    tag = uuid.uuid4().hex[:6]
+    made = [f"quiet{n}-{tag}@rx5.test" for n in range(count)]
+    with world.p.admin_engine.begin() as c:
+        for email in made:
+            c.execute(text(
+                "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+                "VALUES (:e, :e, 'employee', 'active', CAST(:o AS uuid))"),
+                {"e": email, "o": world.p.org_b})
+    return made
+
+
+def _plan_counted(world: Any, org: str, at: datetime) -> tuple[Counter, int]:
+    """One plan of *org*, and the statements that it sent."""
+    sent: list[str] = []
+
+    def note(_conn: Any, _cur: Any, statement: str, *_rest: Any) -> None:
+        sent.append(statement)
+
+    async def go() -> Counter:
+        async with tenant_engine_scope(_dsn(world.p.app_url)):
+            engine = get_engine().sync_engine
+            event.listen(engine, "before_cursor_execute", note)
+            token = bind_tenant(org)
+            try:
+                return await due_push.plan_org(org, at)
+            finally:
+                release_tenant(token)
+                event.remove(engine, "before_cursor_execute", note)
+
+    counts = asyncio.run(go())
+    return counts, len(sent)
+
+
+def test_r8_a_quiet_tick_costs_a_few_statements(world) -> None:
+    """A hundred members with no settings row, and no slot open. The count of
+    the statements does not grow with the members."""
+    org = world.p.org_b
+    at = datetime(2099, 3, 10, 13, 0, tzinfo=UTC)  # no member's day just started
+    _, few = _plan_counted(world, org, at)
+    _quiet_members(world, 100)
+    counts, many = _plan_counted(world, org, at)
+    assert not counts
+    assert many <= 8, many
+    assert many <= few + 4, (few, many)
+
+
+def test_r8_a_member_with_no_row_starts_at_the_people_seed(world) -> None:
+    """The set read gives the day of one member, the same as ``member_day``."""
+    org = world.p.org_b
+    email = _quiet_members(world, 1)[0]
+    _due(world, email, "Call the Acme buyer", datetime(2099, 3, 10, 12, tzinfo=UTC))
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO people (id, name, email, status, skills, source, source_key, "
+            "organization_id, updated_by, updated_at, working_hours) VALUES "
+            "(gen_random_uuid(), 'Seeded', :e, 'active', ARRAY[]::text[], 'manual', :k, "
+            "CAST(:o AS uuid), 'test', now(), CAST(:wh AS jsonb))"),
+            {"e": email, "k": f"manual:{email}", "o": org,
+             "wh": json.dumps({"start": "11:00", "end": "19:00"})})
+
+    async def day_of() -> Any:
+        async with tenant_session(org) as db:
+            return await loop.member_day(db, email)
+
+    assert _in_org(world, org, day_of).start_hour == 10
+    assert not _plan(world, org, datetime(2099, 3, 10, 9, 59, tzinfo=UTC))
+    assert _plan(world, org, datetime(2099, 3, 10, 10, 0, tzinfo=UTC))["due_planned"] == 1
+
+
+def test_r8_a_plan_out_of_time_stops_between_two_members(world) -> None:
+    """A plan that runs out of time starts no other member, and the next tick
+    plans the rest."""
+    org = world.p.org_b
+    _due(world, world.asha, "One", _ist(10, 12))
+    _due(world, world.dev, "Two", _ist(10, 12))
+    answers = iter([False, True])
+
+    def stopping() -> bool:
+        return next(answers, True)
+
+    at = _ist(10, 8, 0)
+    first = _in_org(world, org, lambda: due_push.plan_org(org, at, stopping))
+    assert first["due_planned"] == 1
+    assert _plan(world, org, at)["due_planned"] == 1
+    assert len(_rows(world, world.asha)) == len(_rows(world, world.dev)) == 1
 
 
 def test_the_day_of_a_member_is_the_day_of_the_row() -> None:

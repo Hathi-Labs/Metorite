@@ -8,6 +8,7 @@ Spec: ``project-docs/specs/calendar_events_reminders.md`` §5.11. The real SQL i
 from __future__ import annotations
 
 import re
+from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,6 +17,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from acb_common.env_guard import is_platform_env
 from gateway.reach import due_push, flags
+from gateway.reminders import loop
 from gateway.routes.projects import due_day, personal
 from gateway.routes.projects.filters import build_task_filters
 from gateway.routes.shell import feed, feed_rank, needs
@@ -78,7 +80,32 @@ class TestTheRule:
         assert due_day.not_overdue_sql() == "t.due_at >= :day_start"
 
 
+#: A due date against the clock, in either order and any case. ``:now`` and
+#: ``:at`` are the binds that stand for the clock.
+_CLOCK = r"(?:now\(\)|:now\b|:at\b|current_timestamp|clock_timestamp\(\)|statement_timestamp\(\))"
+_CLOCK_COMPARE = re.compile(
+    rf"\bdue_at\s*(?:<=?|>=?)\s*{_CLOCK}|{_CLOCK}\s*(?:<=?|>=?)\s*(?:\w+\.)?due_at\b",
+    re.IGNORECASE)
+
+
 class TestOneDefinition:
+    @pytest.mark.parametrize("sql", [
+        "t.due_at < now()", "t.due_at <= NOW()", "due_at<now()", "t.due_at > now()",
+        "t.due_at < :now", "t.due_at < :at", "t.due_at < CURRENT_TIMESTAMP",
+        "t.due_at < current_timestamp", "t.due_at < clock_timestamp()",
+        "now() > t.due_at", "NOW() >= due_at", ":now > t.due_at",
+        "CURRENT_TIMESTAMP > t.due_at",
+    ])
+    def test_each_spelling_of_the_clock_is_a_hit(self, sql):
+        assert _CLOCK_COMPARE.search(sql)
+
+    @pytest.mark.parametrize("sql", [
+        "t.due_at < :day_start", "t.due_at >= :day_start", "t.due_at < :due_before",
+        "t.due_at < CAST(:until AS date)", "t.due_at IS NOT NULL", "t.due_at < :nowhere",
+    ])
+    def test_the_day_rule_is_no_hit(self, sql):
+        assert not _CLOCK_COMPARE.search(sql)
+
     def test_no_statement_of_the_gateway_compares_a_due_date_with_the_clock(self):
         """The day rule binds ``:day_start``. A new ``due_at < now()`` is a
         second definition of late work. Two reads stay on the clock, and
@@ -86,9 +113,8 @@ class TestOneDefinition:
         kept = {"routes/projects/item_lens.py": 2, "routes/projects/core.py": 1,
                 "routes/projects/due_day.py": 1}
         found: dict[str, int] = {}
-        pattern = re.compile(r"due_at\s*(<=?|>=?)\s*now\(\)")
         for path in _GATEWAY.rglob("*.py"):
-            hits = len(pattern.findall(path.read_text(encoding="utf-8")))
+            hits = len(_CLOCK_COMPARE.findall(path.read_text(encoding="utf-8")))
             if hits:
                 found[path.relative_to(_GATEWAY).as_posix()] = hits
         assert found == kept
@@ -151,12 +177,15 @@ class TestADateOnlyValue:
     def test_the_tools_that_take_a_date_reach_the_seam(self):
         tasks = (_GATEWAY / "routes/projects/tasks.py").read_text(encoding="utf-8")
         mine = (_GATEWAY / "routes/projects/personal.py").read_text(encoding="utf-8")
+        intake = (_GATEWAY / "routes/projects/intake.py").read_text(encoding="utf-8")
         # POST /projects/tasks and PATCH /projects/tasks/{id}: create_task,
         # create_tasks and update_task.
         assert tasks.count("await _store_due(db, user, values)") == 2
         # The one capture path, and organize.
         assert 'await stored_due(db, email, values["due_at"])' in mine
         assert "await stored_due(db, email, payload.due_at)" in mine
+        # capture_intake.
+        assert "await stored_due(db, actor(user).lower(), payload.due_at)" in intake
 
 
 # ── My Day ─────────────────────────────────────────────────────────────────
@@ -250,6 +279,85 @@ class TestTheGroup:
 
     def test_a_card_folds_as_before(self):
         assert feed_rank.base("overdue") > feed_rank.base("due_today")
+
+
+# ── The plan phase of the tick ─────────────────────────────────────────────
+
+
+class TestThePlanPhase:
+    """A morning of summaries never delays a reminder step of a later org."""
+
+    @pytest.fixture
+    def tick(self, monkeypatch):
+        calls: list[str] = []
+        box = SimpleNamespace(calls=calls, clock=0.0, cost=0.0)
+
+        async def orgs():
+            return ["a", "b", "c"]
+
+        async def run_org(org, now):
+            calls.append(f"run:{org}")
+            return Counter()
+
+        async def plan_org(org, now, stopping=None):
+            calls.append(f"plan:{org}")
+            box.clock += box.cost
+            return Counter(due_planned=1)
+
+        async def send(orgs_, now, out):
+            calls.append("send")
+
+        monkeypatch.setattr(loop, "loop_enabled", lambda: True)
+        monkeypatch.setattr(loop, "_orgs", orgs)
+        monkeypatch.setattr(loop, "run_org", run_org)
+        monkeypatch.setattr(loop.due_push, "plan_org", plan_org)
+        monkeypatch.setattr(loop, "_send_phase", send)
+        monkeypatch.setattr(loop, "_monotonic", lambda: box.clock)
+        monkeypatch.setattr(loop, "_plan_turn", 0)
+        loop._stopping.clear()
+        return box
+
+    async def test_each_reminder_step_comes_before_any_plan(self, tick):
+        out = await loop.run_tick(datetime(2026, 11, 2, 12, tzinfo=UTC))
+        assert tick.calls == ["run:a", "run:b", "run:c", "plan:a", "plan:b", "plan:c", "send"]
+        assert out["a"]["due_planned"] == 1
+
+    async def test_a_phase_out_of_time_starts_no_other_org(self, tick):
+        tick.cost = loop.PLAN_PHASE_S
+        await loop.run_tick(datetime(2026, 11, 2, 12, tzinfo=UTC))
+        assert [c for c in tick.calls if c.startswith("plan")] == ["plan:a"]
+        assert tick.calls[-1] == "send"
+
+    async def test_each_tick_starts_at_the_next_org(self, tick):
+        tick.cost = loop.PLAN_PHASE_S
+        for _ in range(3):
+            await loop.run_tick(datetime(2026, 11, 2, 12, tzinfo=UTC))
+        assert [c for c in tick.calls if c.startswith("plan")] == ["plan:a", "plan:b", "plan:c"]
+
+    async def test_a_plan_that_raises_stops_no_other_org(self, tick, monkeypatch):
+        async def plan_org(org, now, stopping=None):
+            tick.calls.append(f"plan:{org}")
+            if org == "a":
+                raise RuntimeError("boom")
+            return Counter(due_planned=1)
+
+        monkeypatch.setattr(loop.due_push, "plan_org", plan_org)
+        out = await loop.run_tick(datetime(2026, 11, 2, 12, tzinfo=UTC))
+        assert "a" not in out and out["b"]["due_planned"] == 1
+
+    async def test_the_plan_reads_the_deadline_of_the_phase(self, tick, monkeypatch):
+        """``plan_org`` stops between two members by the phase's own clock."""
+        seen: list[bool] = []
+
+        async def plan_org(org, now, stopping=None):
+            seen.append(stopping())
+            tick.clock += loop.PLAN_PHASE_S
+            seen.append(stopping())
+            return Counter()
+
+        monkeypatch.setattr(loop.due_push, "plan_org", plan_org)
+        await loop.run_tick(datetime(2026, 11, 2, 12, tzinfo=UTC))
+        assert seen == [False, True]
 
 
 # ── The flag ───────────────────────────────────────────────────────────────

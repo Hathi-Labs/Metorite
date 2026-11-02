@@ -169,6 +169,10 @@ async def _build(kind: str, data: dict[str, Any]) -> Any:
 # ── Small text helpers ──────────────────────────────────────────────────────
 
 
+#: The words of a due row on the My Day view, in place of a span of time.
+_DUE_WORDS = {"due_today": "due today", "overdue": "overdue"}
+
+
 def _now() -> datetime:
     """The one clock of the views. It gives the member's today, which splits
     overdue work from work due today, and it words "in 2 h".
@@ -316,9 +320,10 @@ async def view_my_day(ctx: Any, *, only: str | None = None) -> View:
                          for k, n in counts.items() if k in dict(_KINDS))
     sections = []
     for kind, label in _KINDS:
-        # A due date is a day, so a task due today names no hour (RX-5).
+        # A due date is a day, so a due row names no hour (RX-5). This read
+        # holds no zone, so only the Overdue view counts the days.
         rows = [_row(i.get("title"), str(i.get("detail") or ""),
-                     "due today" if kind == "due_today" else _when(i.get("at"), now))
+                     _DUE_WORDS.get(kind) or _when(i.get("at"), now))
                 for i in items if i.get("kind") == kind]
         sections.append((label, rows))
     total = len(items) + (1 if capped else 0)

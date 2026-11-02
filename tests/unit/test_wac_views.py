@@ -161,7 +161,9 @@ async def test_my_day_lists_the_feed_by_kind(reads: dict) -> None:
     (lst,) = v.ui
     sections = lst.interactive["action"]["sections"]
     assert [s["title"] for s in sections] == ["🔴 Overdue", "✋ Approvals", "📅 Due today"]
-    assert sections[0]["rows"][0]["description"].startswith("Snowflake X1 · 3 days ago")
+    # A due date is a day, so a due row of this view names no span of time (RX-5).
+    assert sections[0]["rows"][0]["description"] == "Snowflake X1 · overdue"
+    assert sections[2]["rows"][0]["description"] == "Snowflake X1 · due today"
 
 
 async def test_due_today_and_overdue_split_the_due_work(reads: dict) -> None:

@@ -186,6 +186,14 @@ async def calendar_prefs(db: Any, user_id: str) -> dict[str, Any]:
     return out
 
 
+#: The row of an address in any case, for a caller with no session spelling.
+#: The session's own spelling wins, then the newest row. ``_load`` and
+#: ``personal.stored_zone`` read through it, so the zone of a route and the
+#: zone of a background unit come from one row.
+ANY_CASE_MATCH = (" AND lower(user_id) = lower(:uid)"
+                  " ORDER BY (user_id = :uid) DESC, updated_at DESC LIMIT 1")
+
+
 async def _load(db: Any, user_id: str, *, any_case: bool = False) -> UserSettingsModel:
     # The row of the BOUND tenant (WS-58 MD-3c fix round 1). Since migration
     # 239 a member has one row for each organization. The predicate is beside
@@ -195,9 +203,7 @@ async def _load(db: Any, user_id: str, *, any_case: bool = False) -> UserSetting
     # `any_case` (WS-66 RM-2, `member_settings`): the address matches in any
     # case, for a caller with no session spelling. The session's own spelling
     # wins, then the newest row.
-    match = (" AND lower(user_id) = lower(:uid)"
-             " ORDER BY (user_id = :uid) DESC, updated_at DESC LIMIT 1"
-             if any_case else " AND user_id = :uid")
+    match = ANY_CASE_MATCH if any_case else " AND user_id = :uid"
     row = (await db.execute(text(
         f"SELECT * FROM user_settings WHERE organization_id = {_BOUND_ORG}" + match),
         {"uid": user_id})).fetchone()
@@ -260,6 +266,16 @@ async def _seed_from_work_schedule(db: Any, user_id: str) -> dict[str, int]:
     77's own defaults in place. A calendar that fails to open because the HR
     table is missing would be a worse product than one that opens at 07:00.
     """
+    email = (user_id or "").strip().lower()
+    return (await work_schedule_seeds(db, [email])).get(email, {})
+
+
+async def work_schedule_seeds(db: Any, emails: list[str]) -> dict[str, dict[str, int]]:
+    """The seed of each address in *emails*, in lower case, in one read of
+    ``people`` and one read of the policy. An address with no directory row
+    has no key. The one body of the seed, for a member and for a whole org
+    (``reach.due_push``, which reads it on every tick). Never raises.
+    """
     try:
         from gateway.work_schedule import (
             calendar_seed,
@@ -274,14 +290,16 @@ async def _seed_from_work_schedule(db: Any, user_id: str) -> dict[str, int]:
         # may hold a ``people`` row in two orgs, and the owner role reads
         # past RLS. An unbound GUC matches no row, so it fails closed.
         async with db.begin_nested():
-            row = (await db.execute(text(
-                "SELECT working_hours FROM people "
-                "WHERE lower(email) = :email "
-                f"  AND organization_id = {_BOUND_ORG} LIMIT 1"),
-                {"email": (user_id or "").strip().lower()})).fetchone()
-            if row is None:
+            rows = (await db.execute(text(
+                "SELECT DISTINCT ON (lower(email)) lower(email) AS member, "
+                "working_hours FROM people "
+                "WHERE lower(email) = ANY(CAST(:emails AS text[])) "
+                f"  AND organization_id = {_BOUND_ORG}"),
+                {"emails": list(emails)})).fetchall()
+            if not rows:
                 return {}
-            return calendar_seed(person_schedule(await load_policy(db), row))
+            policy = await load_policy(db)
+            return {str(r.member): calendar_seed(person_schedule(policy, r)) for r in rows}
     except Exception as exc:
         _log.warning("tasks.settings.work_schedule_seed_failed",
                      error=str(exc)[:160])
@@ -379,6 +397,11 @@ def _energy_windows(val: Any) -> list[dict]:
 _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 
 
+_HAS_ROW_SQL = (
+    f"SELECT 1 FROM user_settings WHERE organization_id = {_BOUND_ORG} AND user_id = :uid"
+)
+
+
 def upsert_settings_sql(
     cols: list[str],
     placeholder: Callable[[str], str] | None = None,
@@ -460,7 +483,17 @@ async def put_user_settings(
         def _ph(k: str) -> str:
             return f":{k} ::jsonb" if k in _jsonb_cols else f":{k}"
         async with _tenant_session() as db:
-            await db.execute(text(upsert_settings_sql(list(fields), _ph)),
-                             {"uid": uid, **fields})
+            # A first write makes the row, and `_load` then stops reading the
+            # People seed (D-PC-16). So a new row carries the seed, as the two
+            # shell writes do. The shell's zone save (RX-5) makes this row for
+            # a member who never opened Calendar. An existing row takes
+            # `fields` only. The read decides the seed, and nothing else.
+            seed: dict[str, int] = {}
+            if (await db.execute(text(_HAS_ROW_SQL), {"uid": uid})).first() is None:
+                got = await _seed_from_work_schedule(db, uid)
+                seed = {k: v for k, v in got.items() if k not in fields}
+            await db.execute(
+                text(upsert_settings_sql([*fields, *seed], _ph, update=list(fields))),
+                {"uid": uid, **fields, **seed})
     async with _tenant_session() as db:
         return await _load(db, uid)

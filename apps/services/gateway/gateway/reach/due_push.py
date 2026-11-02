@@ -8,9 +8,10 @@ the first title. A tap opens My Day. The rest of the day stays quiet.
 
 **Two steps, as a reminder push has.**
 
-* :func:`plan_org` — ``reminders.loop.run_tick`` calls it once for each org,
-  beside the steps of the org and before the send phase. It makes no network
-  call. It writes one planned ``web_push`` row through ``outbox.plan_push``.
+* :func:`plan_org` — the plan phase of ``reminders.loop.run_tick`` calls it once
+  for each org, after the steps of every org and before the send phase. It
+  makes no network call. It writes one planned ``web_push`` row through
+  ``outbox.plan_push``.
 * :func:`read_facts` — the claim of ``push_channel._send_one`` calls it. It
   reads the tasks again on the claim's own session, and builds the message.
   There is no second send path: ``send_planned``, ``claim_push``,
@@ -47,10 +48,18 @@ rows. The first title is the oldest deadline, the first row of My Day's order.
 ``CALENDAR_REMINDERS``) and ``flags.due_push_allowed`` (``DUE_PUSH_ORGS``,
 default empty). No ``REACH_*`` flag gates it.
 
+**A quiet tick costs a few statements.** The plan runs each minute, for each
+org, all day. So :func:`_open_slots` reads each member's day in one read, and a
+member with no settings row takes the People seed from one set read
+(``tasks.settings.work_schedule_seeds``). A member costs a statement only in
+the window of the day start, once.
+
 **The caps.** The kind has no cap of its own (``push_channel.cap_of``), because
 the key gives one a day. A cap counts its own kind only, and the WhatsApp reads
 name ``channel = 'whatsapp'``, so this row never counts against another cap.
-It is no ``urgent`` kind, so quiet hours hold it back at the send.
+It is no ``urgent`` kind, so a row that reaches the send in quiet hours ends
+``skipped``, with the reason ``quiet``, and no push goes for that day. It also
+sorts after every reminder row (``outbox._PLANNED_PUSHES_SQL``).
 
 **The outbox holds no title.** ``body`` is the fixed text :data:`BODY`, and the
 send step builds the words from a fresh read.
@@ -96,7 +105,7 @@ _BOUND_ORG = "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)"
 #: Each active member of the bound org with the row of ``tasks.settings._load``
 #: (any case: the lower spelling, then the newest). ``NULLIF`` is the rule of
 #: ``_load``, which reads a stored 0 as the default hour. A member with no row
-#: reads their day through ``member_day``, because People seeds it.
+#: reads their day from the People seed, because ``_load`` does.
 _MEMBERS_SQL = (
     "SELECT DISTINCT ON (lower(u.email)) lower(u.email) AS member, s.timezone, "
     "NULLIF(s.day_start_hour, 0) AS day_start_hour, s.user_id IS NOT NULL AS has_row "
@@ -195,14 +204,20 @@ async def _mark_checked(org: str, slot: Slot) -> None:
 
 async def _open_slots(db: Any, now: datetime) -> list[Slot]:
     """The active members of the bound org whose day started in the window,
-    with no row yet. One read, plus the seed read of a member with no row."""
-    from gateway.reminders.loop import member_day
+    with no row yet. One read of the members, one set read of the seed of the
+    members with no settings row, and one read of the keys. No read for each
+    member: this runs on each tick, all day."""
     from gateway.routes.shell.state import settings_day
+    from gateway.routes.tasks.settings import UserSettingsModel, work_schedule_seeds
 
+    rows = (await db.execute(text(_MEMBERS_SQL))).all()
+    unseeded = [str(r.member) for r in rows if not r.has_row]
+    seeds = await work_schedule_seeds(db, unseeded) if unseeded else {}
     slots: list[Slot] = []
-    for row in (await db.execute(text(_MEMBERS_SQL))).all():
+    for row in rows:
         member = str(row.member)
-        day = settings_day(row) if row.has_row else await member_day(db, member)
+        day = settings_day(row if row.has_row
+                           else UserSettingsModel(**seeds.get(member, {})))
         if not push_channel.too_late(KIND, day.day_start(now), now):
             slots.append(Slot(member, day.feed_day(now)))
     if not slots:

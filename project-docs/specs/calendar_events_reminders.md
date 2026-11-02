@@ -38,7 +38,9 @@
   **RX-5 (a due date is a day, and the morning summary push) is BUILT,
   2026-11-02.** The day rule is not dark: it binds wherever the code ships
   (§5.11). The push is dark behind `DUE_PUSH_ORGS` (migration 327,
-  `reach/due_push.py`).
+  `reach/due_push.py`). Repair round 1 (2026-11-02) sent the Tasks date
+  picks and `capture_intake` through the day rule, added the shell's zone
+  save, and added the plan phase of the reminder tick.
 - **Board row:** **WS-CAL**. WS-66 for reminders and web push sits under
   it.
 - **Asked by:** the owner, 2026-10-15. The Calendar must hold more than
@@ -1122,13 +1124,30 @@ The order of the needs kinds stays: overdue, approval, due today, notification,
 reply.
 
 **A date with no time.** `personal.stored_due` is the one seam. A date-only
-value becomes noon of that date in the zone of the member who writes. The
-client sends the same instant for the same pick. A value with a time and an
-offset stays as it came. So an MCP `due_at` with a time keeps it.
+value becomes noon of that date in the zone of the member who writes. A value
+with a time and an offset stays as it came. So an MCP `due_at` with a time keeps
+it.
 
-`create_task`, `create_tasks`, `update_task` and `create_personal_task` all
-reach the seam, through `POST /projects/tasks`, `PATCH /projects/tasks/{id}`,
-`POST /projects/my/tasks` and organize.
+A date picker sends the same noon, through `dueInstantForDay`. Quick capture
+sends 09:00 of the picked local day, which is the same day.
+`app/tasks/lib/duePick.test.ts` refuses a picker that parses a date input as
+midnight UTC.
+
+`create_task`, `create_tasks`, `update_task`, `create_personal_task` and
+`capture_intake` all reach the seam. Their routes are `POST /projects/tasks`,
+`PATCH /projects/tasks/{id}`, `POST /projects/my/tasks`, `POST /projects/intake`
+and organize.
+
+**The zone.** The member's day needs a saved zone. The shell saves the browser's
+zone once, for a member whose saved zone is the default
+(`lib/shell/saveZone.ts`). So a member who stays on My Day does not stay on UTC.
+"UTC" is the column default, and it is also the answer for a member with no row.
+Any other saved zone stays.
+
+A write that makes the member's row carries the People seed
+(`put_user_settings`, D-PC-16), so the save does not move their day hours. The
+route needs `feature:tasks`, so a member who does not hold it stays on the
+default.
 
 **Where the rule binds.**
 
@@ -1148,9 +1167,10 @@ reach the seam, through `POST /projects/tasks`, `PATCH /projects/tasks/{id}`,
 | `item_lens` upcoming hard dates | A hard date is a fixed appointment of the Calendar, so it is a moment |
 | `analytics_pulse` focus and waiting lines | The report states one UTC day, and its text says so |
 | The UTC day of `analytics_conflicts` and the capacity arithmetic | They place work on a calendar. They do not say that a task is late |
-| `automation.apply_task_patch` and `intake.py` | No member writes, so no member zone exists. A date-only value stays as it came |
+| `automation.apply_task_patch` | No member writes, so no member zone exists. A date-only value stays as it came |
 | The `legend` of the chat reads (`skill_projects/reads.py`) | It gives the UTC date, because the member's zone costs one more call for each tool. A count in the answer is the member's own, from the server |
-| Rows that chat stored before RX-5 | A row at midnight UTC can be a real time. No backfill guesses. West of UTC such a row reads a day early until somebody edits it |
+| Rows that chat or a Tasks date picker stored before RX-5 | A row at midnight UTC can be a real time. No backfill guesses. West of UTC such a row reads a day early until somebody edits it |
+| The "Defer until" picks of the Tasks app | A defer date says when a task comes back, so no overdue rule reads it. It stays at midnight UTC |
 | Email commitments, CRM stage limits, Knowledge review dates and Calendar blocks | Each is another object with its own rule |
 
 **The morning summary.** `reach/due_push.py` plans one web push row of the kind
@@ -1175,16 +1195,27 @@ title. A tap opens My Day.
    again, so a task closed since the plan drops out.
 6. **The send.** `send_planned`, `claim_push`, `finish_push` and `push.sender`,
    with no second path and no ledger row. A member with no device ends as
-   `skipped`, reason `no_device`. Quiet hours hold it back, as they hold any
-   kind that is not `urgent`.
-7. **The caps.** It counts against no other cap. The key gives at most one a
+   `skipped`, reason `no_device`.
+7. **Quiet hours.** A row that reaches the send in quiet hours ends as
+   `skipped`, reason `quiet`. It does not wait, so no push goes for that day.
+   Each kind that is not `urgent` follows this rule.
+8. **The order.** The read of planned rows sorts `due_summary` after each
+   reminder kind. So an exact-time reminder never waits behind a summary.
+9. **The caps.** It counts against no other cap. The key gives at most one a
    day.
-8. **Who.** Each active member who holds `feature:projects`. The org comes from
-   the loop and the member from `app_user`, never from input.
-9. **The flag.** `DUE_PUSH_ORGS`, a comma list of org ids or `*`, default empty.
-   `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` must be on too. A SIGHUP reload
-   applies a change. A flip in production reaches real people, so it is the
-   owner's.
+10. **The plan phase.** `run_tick` runs the reminder steps of every org first.
+    One plan phase and then the send phase follow. So a morning of summaries
+    never delays a reminder step of another org. `PLAN_PHASE_S` (10 s) bounds
+    the phase, and each tick starts it at the next org. A member with no turn
+    waits for the next tick.
+11. **The cost.** A quiet tick costs a few statements: one read of the members,
+    one set read of the People seed and one read of the keys.
+12. **Who.** Each active member who holds `feature:projects`. The org comes from
+    the loop and the member from `app_user`, never from input.
+13. **The flag.** `DUE_PUSH_ORGS`, a comma list of org ids or `*`, default empty.
+    `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` must be on too. A SIGHUP reload
+    applies a change. A flip in production reaches real people, so it is the
+    owner's.
 
 Fences: `tests/unit/test_due_day.py` holds the rule, and it refuses a new
 `due_at < now()` in the gateway. `tests/unit/test_due_push_r8.py` runs the

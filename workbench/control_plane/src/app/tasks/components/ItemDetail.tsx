@@ -35,6 +35,7 @@ import {
   projectsKey,
 } from "@/app/projects/lib/api";
 import { taskDeepLink, taskRef } from "@/app/projects/lib/card";
+import { dueInstantForDay } from "@/app/projects/lib/quickAdd";
 import { taskWhere } from "@/app/projects/lib/tree";
 import { useCachedResource } from "@/lib/useCachedResource";
 import { EditableTaskTitle, TaskHeaderRow } from "@/components/TaskPanelHeader";
@@ -451,7 +452,7 @@ export function TaskDetail({
                       autoFocus
                       onChange={(e) => {
                         updateItem(item.id, {
-                          dueAt: e.target.value ? new Date(e.target.value).toISOString() : "",
+                          dueAt: e.target.value ? dueInstantForDay(e.target.value) : "",
                         });
                         close();
                       }}
@@ -679,7 +680,7 @@ export function TaskDetail({
                         onChange={(e) => {
                           updateItem(item.id, {
                             expectedBy: e.target.value
-                              ? new Date(e.target.value).toISOString() : "",
+                              ? dueInstantForDay(e.target.value) : "",
                           });
                           close();
                         }}

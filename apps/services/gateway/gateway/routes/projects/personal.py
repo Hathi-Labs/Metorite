@@ -1518,12 +1518,16 @@ async def stored_zone(db: Any, email: str) -> str | None:
     holds the gateway role ``acb_app`` in production (measured 2026-10-16),
     and the predicate is defence in depth: it names the session's tenant, as
     ``tasks.settings._load`` does. Each caller reads
-    inside a tenant session, and an unbound session reads no row (UTC)."""
-    from gateway.routes.tasks.settings import _BOUND_ORG
+    inside a tenant session, and an unbound session reads no row (UTC).
+
+    ⚠️ The address matches in any case (RX-5). A row keys on the session's
+    spelling, and a caller here holds the lower case. An exact match read a
+    mixed-case row as no row, so a member's own zone read as UTC."""
+    from gateway.routes.tasks.settings import _BOUND_ORG, ANY_CASE_MATCH
 
     row = (await db.execute(
         text(f"SELECT timezone FROM user_settings WHERE organization_id = {_BOUND_ORG}"
-             " AND user_id = :uid"),
+             + ANY_CASE_MATCH),
         {"uid": email},
     )).fetchone()
     return None if row is None else getattr(row, "timezone", None)
