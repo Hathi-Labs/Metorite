@@ -37,11 +37,13 @@ from gateway.routes.projects.core import (
     mine_binds,
     mine_clause,
     node_kind,
+    reader_day_start,
     resolve_visibility,
     router,
     task_visibility_clause,
     triage_exclusion_clause,
 )
+from gateway.routes.projects.due_day import not_overdue_sql, overdue_sql
 from gateway.routes.projects.filters import build_task_filters
 from sqlalchemy import text
 
@@ -185,10 +187,11 @@ def _summary_sql(where: str) -> str:
         "       NOT EXISTS (SELECT 1 FROM pm_projects pj"
         "                    WHERE pj.id = t.project_id"
         "                      AND pj.personal_owner IS NOT NULL)  AS on_board,"
-        "       (t.due_at IS NOT NULL AND t.due_at < now()"
+        f"       (t.due_at IS NOT NULL AND {overdue_sql()}"
         "        AND s.category <> ALL(CAST(:closed AS text[])))  AS is_overdue,"
-        "       (t.due_at IS NOT NULL AND t.due_at >= now()"
-        "        AND t.due_at < now() + make_interval(days => :soon_days)"
+        f"       (t.due_at IS NOT NULL AND {not_overdue_sql()}"
+        "        AND t.due_at < CAST(:day_start AS timestamptz)"
+        "                       + make_interval(days => :soon_days)"
         "        AND s.category <> ALL(CAST(:closed AS text[])))  AS is_due_soon"
         "  FROM pm_tasks t"
         "  JOIN pm_task_statuses s ON s.id = t.status_id"
@@ -388,6 +391,7 @@ async def my_summary(user: UserContext = Depends(get_current_user)) -> dict[str,
             **await mine_binds(db, vis.email),
             "closed": sorted(CLOSING_CATEGORIES),
             "soon_days": DUE_SOON_DAYS,
+            "day_start": await reader_day_start(db, vis.email),
         }
         rows = list((await db.execute(text(_summary_sql(where)), params)).fetchall())
         node_ids = sorted({

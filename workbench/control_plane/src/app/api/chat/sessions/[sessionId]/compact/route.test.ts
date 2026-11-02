@@ -6,11 +6,13 @@
 // so the agent lost them. A failed call dropped them too. Now both answer 502
 // with `compacted: false` and the messages as sent.
 //
-// The body sends no `thinking`, because `deepseek/deepseek-chat` does not
-// think. Off the Router, the gateway's local `/v1` path forwards named fields
-// only. With the Router on, the gateway forwards the whole body.
+// The default model is the tier name `tier-fast`, which the Router and the
+// local path both accept. A bare model id gets a 400 from the Router. The
+// body asks for no thinking. Off the Router, the gateway's local `/v1` path
+// forwards named fields only. With the Router on, the Console filters it.
 //
-// Mutations: put back the `??` fallback, and the blank test fails. Drop the
+// Mutations: put `deepseek/deepseek-chat` back as the default, and the first
+// test fails. Put back the `??` fallback, and the blank test fails. Drop the
 // messages in the catch again, and the failure test fails.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
@@ -61,7 +63,8 @@ describe("/api/chat/sessions/[id]/compact", () => {
     expect(data.removedCount).toBe(4);
     expect(data.messages).toHaveLength(7);
     expect(data.messages[0].content).toContain("Acme deal at stage 3");
-    expect(seam.bodies[0]).not.toHaveProperty("thinking");
+    expect(seam.bodies[0].model).toBe("tier-fast");
+    expect(seam.bodies[0].thinking).toEqual({ type: "disabled" });
   });
 
   it.each([[""], ["   "], [null]])("keeps every message on a blank summary (%j)", async (content) => {

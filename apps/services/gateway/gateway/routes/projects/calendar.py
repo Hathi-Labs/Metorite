@@ -54,6 +54,7 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     load_visible_project,
+    reader_day_start,
     resolve_visibility,
     router,
     row_to_dict,
@@ -279,7 +280,9 @@ async def get_calendar(
         extra_clauses, extra_params = build_task_filters(
             status_id=status_id, status_category=status_category,
             assignee=assignee, assignees=assignees, unassigned=unassigned,
-            overdue=overdue, importance_gte=importance_gte, q=q, tags=tags,
+            overdue=overdue,
+            day_start=await reader_day_start(db, actor(user).lower()) if overdue else None,
+            importance_gte=importance_gte, q=q, tags=tags,
             tags_all=tags_all, include_archived=include_archived,
             archived_only=archived_only,
             watching=watching, viewer=actor(user) if watching else None,

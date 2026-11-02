@@ -156,7 +156,7 @@ class Fakes:
         self.slow_mailbox: set[str] = set()
         self.tasks: dict[str, list[dict]] = {
             ME: [
-                _task("t-late", "Ship the extruder", now - timedelta(hours=2)),
+                _task("t-late", "Ship the extruder", now - timedelta(days=1)),
                 _task("t-old", "File the VAT return", now - timedelta(days=3)),
                 _task("t-soon", "Call the supplier", later_today),
                 _task("t-next", "Plan the launch", now + timedelta(days=3)),
@@ -596,9 +596,20 @@ class TestTheClock:
         ]
 
     def test_the_split_follows_the_routes_clock(self, monkeypatch, fakes):
-        # Non-vacuity: the freeze reaches the split. One minute past t-soon's
-        # deadline, the route calls it overdue. This was the CI failure.
+        # Non-vacuity: the freeze reaches the split, for a read that gives no
+        # date. Past the hour of t-soon it stays due today (RX-5). One minute
+        # into the next UTC day, the route calls it overdue.
+        real = fakes.my_due_tasks
+
+        async def no_date(user, *, limit):
+            answer = await real(user, limit=limit)
+            return {"rows": answer["rows"], "timezone": "UTC"}
+
+        monkeypatch.setattr(personal, "my_due_tasks", no_date)
         _freeze(monkeypatch, LATER_TODAY + timedelta(minutes=1))
+        rows = {i["id"]: i for i in run(member(*ALL))["items"]}
+        assert rows["tasks:t-soon"]["kind"] == "due_today"
+        _freeze(monkeypatch, fakes.tomorrow + timedelta(minutes=1))
         rows = {i["id"]: i for i in run(member(*ALL))["items"]}
         assert rows["tasks:t-soon"]["kind"] == "overdue"
 
@@ -645,7 +656,7 @@ class TestTheCaps:
 
     def _flood(self, fakes, overdue: int, due_today: int) -> None:
         fakes.tasks[ME] = (
-            [_task(f"t-o{n:02}", "x", NOW - timedelta(hours=n + 1)) for n in range(overdue)]
+            [_task(f"t-o{n:02}", "x", NOW - timedelta(days=n + 1)) for n in range(overdue)]
             + [_task(f"t-d{n:02}", "x", LATER_TODAY) for n in range(due_today)])
         fakes.pending[ORG] = [
             {"id": f"pa-{n:02}", "actor": "agent:x", "action": "crm.zoho_update",
