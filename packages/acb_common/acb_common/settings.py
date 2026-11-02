@@ -456,6 +456,19 @@ class Settings(BaseSettings):
     # gate `enforcement-flip`. Fence: tests/unit/test_reminders_r8.py.
     calendar_reminders: bool = False
 
+    # ── Calendar events (WS-CAL CE-4, D138, 2026-10-31) ─────────────────────
+    #
+    # `calendar_events` is the switch of the event store, default OFF. With
+    # it off, each route under `/tasks/calendar/entries` answers 404 and
+    # writes nothing, and `GET /projects/my/calendar` gives the body of today
+    # with no `entries` key. `/version` carries the value as
+    # `calendar_events`. The one reader is `events_enabled()` in
+    # gateway/routes/tasks/entries.py. The browser half is
+    # `NEXT_PUBLIC_CALENDAR_EVENTS` (CE-5). Spec
+    # project-docs/specs/calendar_events_reminders.md §9. A flip on a box is
+    # gate `enforcement-flip`. Fence: tests/unit/test_calendar_entries_r8.py.
+    calendar_events: bool = False
+
     # ── The shared job queue (WS-BRIEF BR-1a, 2026-10-28) ───────────────────
     #
     # `job_queue` is the switch of the job worker in the gateway, default
@@ -603,6 +616,12 @@ class Settings(BaseSettings):
     # opens none. Reader: `gateway.push.flags.prompt_allowed`. Spec:
     # calendar_events_reminders.md section 10.4.
     push_prompt_orgs: str = ""
+    # RX-5: DUE_PUSH_ORGS lists the org ids whose members get the morning
+    # summary push of due tasks. `*` opens every org. Empty opens none. It
+    # reaches a real person, so a flip in production is the owner's. Reader:
+    # `gateway.reach.flags.due_push_allowed`. Spec:
+    # calendar_events_reminders.md section 5.11.
+    due_push_orgs: str = ""
     # STU-B1: STUDIO_ORGS lists the org ids that may read the AI Studio
     # action catalog (GET /studio/actions). `*` opens every org. Empty opens
     # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:
@@ -792,6 +811,19 @@ class Settings(BaseSettings):
     # flip is owner-only (D-PZ-35, `work_plan.md` §6 D4). Fence:
     # tests/unit/test_chat_summary.py.
     assistant_chat_summary_orgs: str = ""
+
+    # ── The trigger of the project alignment check (WS-ALN ALN-1, D160) ─────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. A task write of a listed org enqueues one `align.check`
+    # job, and only while `job_queue` is on too. `prune` deletes no queued
+    # row, so a queue with no worker would grow without a bound
+    # (`project_alignment.md` §5 item 8). The one reader is
+    # `gateway/align/trigger.py::jobs_enabled`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). The handler of ALN-1 is a stub, so a
+    # flip spends nothing, and it is gate `enforcement-flip`. Fence:
+    # tests/unit/test_align_trigger.py.
+    align_jobs_orgs: str = ""
 
     # ── The authority page of a project (WS-ALN ALN-4) ───────────────────────
     #

@@ -43,6 +43,8 @@ import { useOverflowTip } from "@/components/ui/OverflowTip";
 import { LEGEND, parseTaskRows, taskRowFacts, type ProjectTaskRow } from "@/lib/projectToolRows";
 import { statusAccent } from "@/lib/statusAccent";
 import { noteReminderReceipt } from "@/lib/shell/reminderOpen";
+import { ALREADY_HEAD, readReminderReceipt } from "@/lib/reminderReceipt";
+import ReminderReceiptCard from "./ReminderReceiptCard";
 import { glassToneFrame } from "@/components/glassCard";
 
 // ── Tool → card routing ───────────────────────────────────────────────────────
@@ -135,7 +137,8 @@ export const OPENS_APP: Record<string, { app: "reports"; label: string }> = {
  * This card is the receipt: what changed, and a jump to the row.
  */
 const ACTION_META: Record<string, { icon: string; label: string }> = {
-  create_task: { icon: "Plus", label: "Task created" },
+  // RX-2: a task receipt wears a checked clipboard, and a reminder receipt wears a Bell.
+  create_task: { icon: "ClipboardCheck", label: "Task created" },
   update_task: { icon: "PenLine", label: "Task updated" },
   assign: { icon: "UserPlus", label: "Assignees changed" },
   comment: { icon: "MessageSquare", label: "Comment posted" },
@@ -166,7 +169,7 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   update_tag: { icon: "PenLine", label: "Tag updated" },
   edit_comment: { icon: "MessageSquare", label: "Comment edited" },
   set_recurrence: { icon: "Repeat", label: "Repeat rule set" },
-  create_personal_task: { icon: "Plus", label: "Private task captured" },
+  create_personal_task: { icon: "ClipboardCheck", label: "Private task captured" },
   set_my_overlay: { icon: "SlidersHorizontal", label: "Your triage updated" },
   // S3 — the guarded acts. Same receipt: the card BEFORE the act carried
   // the counts, this one says what the route reported.
@@ -635,7 +638,9 @@ export function forPeople(result: string): string {
 export function forPeopleFenced(result: string): string {
   return withoutLegend(result)
     .split("\n")
-    .filter((l) => !/^\s*(?:[a-z_]+_id|link|done):/.test(l))
+    // `fire_at`, `zone`, `undo` and `was_*` are the lines of a reminder
+    // receipt (RX-2): its card reads them, a person does not.
+    .filter((l) => !/^\s*(?:[a-z_]+_id|link|done|fire_at|zone|undo|was_[a-z_]+):/.test(l))
     // A gateway refusal leads with the route (`Projects PUT /projects/...: `).
     // The member needs the reason, not the address it came from.
     .map((l) =>
@@ -1108,6 +1113,32 @@ function BatchReceiptCard({ event: e }: { event: ToolEvent }) {
   );
 }
 
+/** Whether a tool event is the receipt of a reminder write that happened. */
+export function isReminderReceipt(e: ToolEvent): boolean {
+  const result = (e.result || "").trim();
+  return (
+    classifyActionResult(result, e.status, e.name) === "done" && readReminderReceipt(e.name, result) !== null
+  );
+}
+
+/** The reminder card of one receipt, with the same store note as a plain receipt. */
+function ReminderReceiptHost({ event: e }: { event: ToolEvent }) {
+  const result = (e.result || "").trim();
+  const receipt = readReminderReceipt(e.name, result);
+  const openTask = useOpenTask();
+  // The page's store learns the new state, as for any receipt (RM-4).
+  useEffect(() => {
+    if (!isFreshReceipt(e)) return;
+    noteReminderReceipt(e.name, result);
+    announceChange(e.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `endedAt` is read once, at the transition to done
+  }, [e.id]);
+  if (!receipt) return null;
+  const meta = ACTION_META[e.name] ?? { icon: "Bell", label: genericLabel(e.name) };
+  const label = receipt.already ? ALREADY_HEAD : meta.label;
+  return <ReminderReceiptCard id={e.id} label={label} receipt={receipt} openTask={openTask} />;
+}
+
 /** A label for a tool this file has no entry for — the generic card. */
 function genericLabel(name: string): string {
   const words = name.replace(/_/g, " ").trim();
@@ -1134,6 +1165,12 @@ export default function ProjectToolCards({ toolEvents }: { toolEvents?: ToolEven
     const meta = INFO_META[e.name];
     if (meta) {
       items.push(<InfoCard key={e.id} event={e} icon={meta.icon} label={meta.label} />);
+      continue;
+    }
+    // A reminder the chat set, changed or moved draws as the reminder itself
+    // (RX-2). A refusal or a cancel still draws as a plain receipt.
+    if (isReminderReceipt(e)) {
+      items.push(<ReminderReceiptHost key={e.id} event={e} />);
       continue;
     }
     // A write, known or new. A new one draws the generic receipt from its

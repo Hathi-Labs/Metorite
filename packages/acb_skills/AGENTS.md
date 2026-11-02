@@ -94,6 +94,7 @@ not write a second copy of that seam. A bare test file name is under
    - A held run keeps a card-bound send only through `is_card_bound_send`, which pins the exact parameters.
    - TRUST IS BY IDENTITY. Register a platform tool with `_register_platform_callable` and a wrapper with `_register_platform_wrapper`. Never follow `__wrapped__`.
    - `session_is_marked` FAILS CLOSED on unknown. Fences: `test_delegation_no_egress.py`, `test_email_chat_reply.py`, `test_egress_card_bound_pin.py`.
+   - `write_must_show_card` is the ONE reader for a write that a rule lets act at once. It reads `no_egress_for_this_run`, then the mark through `run_holds_mail`, because a chat run binds `no_egress=False` in a marked chat. No run context, no card channel, a delegated run, no session, an unknown mark and a Redis fault each show the card. Fence: `test_reminder_acts_at_once.py`.
 5g-1. held_card.py -- the rules of a held send card. `held_card_send_enabled` is the ONE reader of `EMAIL_HELD_CARD_SEND`, and it fails closed. The client mirrors the marks in `sendCard.ts`. Fence: `test_held_send_classes.py`.
 5h. tool_annotations.py -- `annotate()` has NO default for `open_world`. Every tool of every in-repo agent states it. `risk_summary_block(own=)` reads the agent's own tool list, never the process-wide registry.
 5i. tool_guard.py -- the ONE per-run middleware pair (`WithholdTools`, `RefuseTools`). Do not write a third copy of the pair.
@@ -101,6 +102,7 @@ not write a second copy of that seam. A bare test file name is under
    - A tool reads `confirmation_channel_open()` after a denial, or before a card to choose a narrower act. It never approves a write.
    - One reader reads it before a card to ask a card in place of a refusal: `profile_tools._card_channel` (PZ-32). Only the approve of that card writes.
    - `refuse_cards()` is the scope of a run with no card channel. Fences: `test_wac_bot_run.py`, `test_wac_writes.py`.
+   - A run with no person present (`acb_common.no_person`, AUTO-7a) denies first, before each WhatsApp path, whatever `non_interactive_default` says. `cards_refused()` reads the mark too, so each reader closes. Fence: `test_no_person_present.py`.
    - `responder=` binds a card to the run's own member. Any other answer, and an answer with no responder, is a REJECT. The gateway takes the responder from the session. Fence: `test_profile_pz32.py`.
 5k. agent_site.py -- the ONE builder of an agent install (spec `box_hardening.md` §5 BH-7).
    - Installs go into `/var/lib/acb-gateway/agent-site` with `uv pip install --target`, never into the shared venv.

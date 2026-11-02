@@ -70,7 +70,8 @@ import {
 import { useAssistantProfileEnabled } from "@/lib/useAssistantProfileEnabled";
 import { rowMeta, rowName } from "@/lib/shell/navNeeds";
 import { useNavNeeds } from "@/lib/shell/useNavNeeds";
-import { shouldPollWorkspace } from "@/lib/access";
+import { canUseFeature, shouldPollWorkspace } from "@/lib/access";
+import { useSaveZone } from "@/lib/shell/saveZone";
 import { useShellPending, useShellPrefs } from "@/lib/shell/shellPrefs";
 import OrgBrandLockup from "@/components/OrgBrandLockup";
 import { SidebarFoldProvider } from "@/components/SidebarFold";
@@ -168,6 +169,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (signedInAs && inShell) clearSignOutNotice();
   }, [signedInAs, inShell]);
+  // RX-5: a member who stays on My Day still gets a saved zone. It replaces the
+  // UTC default only.
+  useSaveZone(inShell ? signedInAs : null, cacheOrg, canUseFeature(access, "tasks"));
   // The chat caches follow the same rule (PR #652): one namespace per account.
   // `useChatScope` binds the member's namespace, and a switch deletes nothing.
   // `useChatSignOutClear` clears the namespace of an account that signed out,

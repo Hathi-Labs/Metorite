@@ -29,11 +29,13 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 
 pytest.importorskip("sqlalchemy")
 
+from gateway.routes.projects import due_day
 from sqlalchemy import create_engine, text
 
 from tests.unit._tenant_ladder import apply_ladder
@@ -409,7 +411,8 @@ class TestOverdueIsByProject:
         with db.connect() as c:
             rows = c.execute(
                 text(overdue_by_project_sql(where)),
-                {"pid": tree["parent"], "closed": ["cancelled", "done"]},
+                {"pid": tree["parent"], "closed": ["cancelled", "done"],
+                 "day_start": due_day.day_start("UTC", datetime.now(UTC))},
             ).fetchall()
         by_name = {r.name: int(r.overdue) for r in rows}
         assert by_name[tree["child_name"]] == 3
@@ -439,6 +442,7 @@ class TestOverdueIsByProject:
         with db.connect() as c:
             rows = c.execute(
                 text(overdue_by_project_sql(where)),
-                {"pid": tree["parent"], "closed": ["cancelled", "done"]},
+                {"pid": tree["parent"], "closed": ["cancelled", "done"],
+                 "day_start": due_day.day_start("UTC", datetime.now(UTC))},
             ).fetchall()
         assert rows == []

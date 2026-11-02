@@ -920,6 +920,10 @@ DEBT: dict[str, str] = {
     "DELETE /api/auth/me/assistant-profile": "P-8",
     "DELETE /api/auth/me/assistant-profile/interview": "P-8",
     "DELETE /api/auth/me/assistant-profile/interview/{}": "P-8",
+    # PZ-35: the chat summaries. A chat write to them is a 422 today, as for
+    # the interview reset above.
+    "DELETE /api/auth/me/assistant-profile/summaries": "P-8",
+    "DELETE /api/auth/me/assistant-profile/summaries/{}": "P-8",
     "DELETE /api/settings/branding": "P-8",
     "GET /api/auth/me": "P-8",
     "GET /api/auth/me/agent-access": "P-8",
@@ -927,6 +931,7 @@ DEBT: dict[str, str] = {
     "GET /api/auth/me/assistant-profile/address": "P-8",
     "GET /api/auth/me/assistant-profile/block": "P-8",
     "GET /api/auth/me/assistant-profile/export": "P-8",
+    "GET /api/auth/me/assistant-profile/summaries": "P-8",
     "GET /api/auth/me/shell": "P-8",
     "GET /api/settings/appearance": "P-8",
     "GET /api/settings/branding": "P-8",
@@ -1015,7 +1020,7 @@ DEBT_CEILING: dict[str, int] = {
     "agents": 20,
     "chat": 25,
     "shell": 15,
-    "settings": 21,
+    "settings": 24,  # PZ-35 added the three chat summary actions.
     "admin": 36,
     "integrations": 19,
 }
@@ -1032,5 +1037,11 @@ UNREAD_CEILING: dict[str, int] = {
     # The Undo of a profile tool: the verb comes with the card.
     "components/profile/ProfileToolCards.tsx": 1,
     # The reminder chips: `actRequest` returns the url, and the verb is set where it is sent.
-    "lib/shell/reminderOpen.ts": 4,
+    # RX-2 to RX-4 (epic task 1402): Done, Snooze, Later, Undo and Change time
+    # of a reminder go through `postReminder` and `moveRequest`, so the fence
+    # cannot read the verb. Each act has a chat tool: resolve_reminder,
+    # reschedule_reminder and reopen_reminder. The receipt's Change time is the
+    # one of `reminderReceipt.ts`.
+    "lib/reminderReceipt.ts": 1,
+    "lib/shell/reminderOpen.ts": 8,
 }

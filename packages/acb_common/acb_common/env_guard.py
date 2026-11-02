@@ -171,6 +171,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
     # not cover it.
     "ASSISTANT_CHAT_SUMMARY_ORGS",
+    # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
+    # A queued row waits for the worker, so only the operator writes it
+    # (project_alignment.md §5 item 8).
+    "ALIGN_JOBS_ORGS",
     # WS-ALN ALN-4: AUTHORITY_PINS_ORGS opens the pin of a Knowledge page to a
     # project for an org. A pin changes what a finding quotes, so only the
     # owner writes it.
@@ -304,6 +308,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-66 RM-1: reminders. CALENDAR_REMINDERS is the switch of the reminder
     # routes, so a tenant that set it could turn them on for every org.
     "CALENDAR_REMINDERS",
+    # WS-CAL CE-4: events. CALENDAR_EVENTS is the switch of the event store,
+    # so a tenant that set it could turn it on for every org.
+    "CALENDAR_EVENTS",
     # WS-BRIEF BR-1a: the shared job queue. JOB_QUEUE is the switch of the job
     # worker, so a tenant that set it could start the worker for every org.
     "JOB_QUEUE",
@@ -317,6 +324,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-OB OB-8: the push prompt. PUSH_PROMPT_ORGS opens the chat sheet for an
     # org, so a tenant that set it could open the sheet for every org.
     "PUSH_PROMPT_",
+    # RX-5: the morning summary push. DUE_PUSH_ORGS opens it for an org, so a
+    # tenant that set it could send a push to the members of every org.
+    "DUE_PUSH_",
     # STU-B1: STUDIO_ORGS opens the AI Studio catalog for an org.
     "STUDIO_",
     # Agent runtime, sandbox and models.
