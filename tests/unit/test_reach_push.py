@@ -420,7 +420,7 @@ def test_r8_a_due_reminder_sends_one_push_within_90_s_of_fire_at(world, app_engi
     assert post["headers"]["Urgency"] == "high" and post["headers"]["TTL"] == "3600"
     [payload] = _payloads(world, ALICE)
     assert payload == {"title": "Get a haircut at 3:00 PM", "body": _org_name(world, org),
-                       "url": f"/chat?reminder={rid}", "tag": rid,
+                       "url": f"/chat?reminder={rid}", "tag": rid, "renotify": True,
                        # RX-4: the worker adds Done and In 1 hour from these two.
                        "reminder_id": rid, "kind": "reminder_due"}
 

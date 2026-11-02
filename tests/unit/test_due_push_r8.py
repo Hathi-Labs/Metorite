@@ -65,6 +65,8 @@ Run (one R8 suite at a time, because the ``promoted`` fixture drops
   ``test_r8_no_summary_on_a_company_holiday``.
 * M21, the partial day. ``_AWAY_ON_SQL``: add ``'partial'``.
   ``test_r8_a_partial_day_off_still_gets_the_summary``.
+* M22, the next occurrence. ``recurrence.spawn_successor``: pass no
+  ``day_start``. ``test_r8_a_recurring_task_keeps_the_occurrence_of_today``.
 
 ⚠️ It SKIPS without ``TENANT_LADDER_DATABASE_URL``, and a skip is not a pass.
 """
@@ -98,7 +100,7 @@ from gateway.reach.push_message import DUE_TAG, DUE_TTL_S
 from gateway.reminders import loop
 from gateway.routes import projects as projects_package
 from gateway.routes.email import digest
-from gateway.routes.projects import bulk, due_day, intake, personal, tasks
+from gateway.routes.projects import bulk, due_day, intake, personal, recurrence, tasks
 from gateway.routes.projects import reminders as rm
 from gateway.routes.projects.analytics import load_sql, overdue_by_project_sql
 from gateway.routes.shell import cache, feed, needs
@@ -744,6 +746,34 @@ def test_r8_each_write_of_a_chat_date_reaches_the_seam(world) -> None:
     assert due_day.local_date("America/Los_Angeles", bulk_one) == date(2099, 3, 13)
 
 
+def test_r8_a_recurring_task_keeps_the_occurrence_of_today(world) -> None:
+    """The close reads the wall clock, so the step lands in the part of today
+    that has passed. The old rule called that passed, and skipped the day."""
+    org = world.p.org_b
+    project, _lane = world.homes[org]
+    now = datetime.now(UTC)
+    start = due_day.day_start("Asia/Kolkata", now)
+    today = start + (now - start) / 2
+    task = _due(world, world.asha, "The daily report", today - timedelta(days=1))
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            "WITH r AS (INSERT INTO pm_recurrences (organization_id, project_id, freq, created_by) "
+            "VALUES (CAST(:o AS uuid), CAST(:p AS uuid), 'daily', :e) RETURNING id) "
+            "UPDATE pm_tasks SET recurrence_id = (SELECT id FROM r) WHERE id = CAST(:t AS uuid)"),
+            {"o": org, "p": project, "e": world.asha, "t": task})
+
+    async def work() -> datetime:
+        async with tenant_session(org) as db:
+            row = (await db.execute(text("SELECT * FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
+                                    {"t": task})).first()
+            made = await recurrence.spawn_successor(db, row, actor_id=world.asha)
+            return (await db.execute(
+                text("SELECT due_at FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
+                {"t": made})).scalar_one()
+
+    assert _in_org(world, org, work) == today
+
+
 def test_r8_a_mail_draft_of_a_date_is_noon_of_the_member(world) -> None:
     """Both capture paths of ``capture_email`` call ``_draft_due``. A value with
     a time parses as it always did, and a value that does not parse is None."""
@@ -1171,7 +1201,8 @@ def test_r8_the_leave_of_another_org_says_nothing(world) -> None:
     with world.p.admin_engine.begin() as c:
         c.execute(text(
             "INSERT INTO people_absences (organization_id, person_id, starts_on, ends_on, kind, "
-            "created_by) VALUES (CAST(:o AS uuid), CAST(:p AS uuid), :a, :a, 'away', 'h@rx5.test')"),
+            "created_by) VALUES (CAST(:o AS uuid), CAST(:p AS uuid), :a, :a, 'away', "
+            "'h@rx5.test')"),
             {"o": world.p.org_a, "p": person, "a": date(2099, 3, 10)})
     _due(world, world.asha, "Call the Acme buyer", _ist(10, 12))
     _ticks(world, _ist(10, 8, 0))
@@ -1184,4 +1215,3 @@ def test_the_day_of_a_member_is_the_day_of_the_row() -> None:
                                           _ist(10, 11, 59)) is False
     assert day.feed_day(_ist(10, 8)) == date(2099, 3, 10)
     assert due_push.dedupe_key("a@b", date(2099, 3, 10)) == "due_summary:a@b:2099-03-10"
-
