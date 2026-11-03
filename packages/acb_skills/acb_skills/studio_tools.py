@@ -70,6 +70,7 @@ from typing import Any
 
 import httpx
 from acb_common import studio_expr, studio_fields, studio_rules
+from acb_common.card_body import CardBody, CardWontFit, card_body, cut_refusal, is_cut, one_line
 from acb_common.paging import paged
 from acb_common.studio_manifest import (
     BLOCKS,
@@ -831,15 +832,14 @@ MAX_SKILL_TEXT_CHARS = 12_000
 #: The most characters of the description that one read shows.
 MAX_SKILL_DESCRIPTION_CHARS = 2_000
 
-#: The characters of the instructions that the publish card shows.
-CARD_INSTRUCTION_CHARS = 1_500
-
-#: The characters of the description on the card, the action lines on the
-#: card, and the longest action id on a card line. The context of a card stays
-#: under 4,000 characters: 150 + 300 + 1,500 + 10 x 120 + 300 = 3,450.
-CARD_DESCRIPTION_CHARS = 300
-CARD_ACTION_LINES = 10
+#: The longest action id on a line of a read. A card shows each id whole
+#: (``acb_common.card_body``), so this limit is not on the card.
 CARD_ACTION_CHARS = 100
+
+#: The fixed first line of each card. ``card_body`` puts it first.
+_SAVE_NOTE = "Approve to save this. Nothing goes live. Reject to save nothing."
+_LIVE_NOTE = "Approve to make this skill live for Mira. Reject to leave it as it is."
+_PAUSE_NOTE = "It stops for Mira. Resume it to start it again."
 
 #: The states that ``studio_skill_state`` accepts. A skill is archived or sent
 #: back to a draft in Studio, and not from chat.
@@ -856,6 +856,8 @@ _NOT_YOURS = "No skill of yours has this id, or AI Studio is not open for this o
 _CUT_READ = ("A read in chat shows only part of the stored {what}, so a text sent here would "
              "lose the rest. Nothing was saved. Change the {what} in Studio, which shows the "
              "whole text.")
+_WONT_FIT = ("The name and the actions of this skill do not fit on one card, so nothing was "
+             "changed. Use a shorter name or fewer actions, then call the tool once more.")
 _ERROR_PATH = r"^(\$[^\s:]*|body[\w.]*)(?::|\s)"
 _CLASS_ORDER = {"X": 0, "C": 1, "B": 2, "A": 3}
 
@@ -1167,14 +1169,14 @@ async def _held_save(
     on and write, or the refusal. A version is read again after ``approved``,
     and a skill that moved gets no write. A create has nothing stored to move:
     the route refuses a name that the member holds."""
-    try:
-        classes = _class_map(await _read_catalog())
-    except _Refused as exc:
-        return _refusal(str(exc))  # no card when the classes cannot be shown
     body = change["body"]
     number = (_skill_of(first).get("current_version") or 0) + 1 if first else 1
-    context = _card_context({"name": change["name"]}, {"version": number, "body": body}, classes,
-                            "Approve to save this. Nothing goes live. Reject to save nothing.")
+    try:
+        classes = _class_map(await _read_catalog())
+        context = await _card(_SAVE_NOTE, _skill_rows(
+            {"name": change["name"]}, {"version": number, "body": body}, classes))
+    except _Refused as exc:
+        return _refusal(str(exc))  # no card when the card cannot show the change
     detail = f"Version {number}. This is a save, not a publish."
     decision = await _decide(title, detail, context)
     if decision != "approved":
@@ -1193,20 +1195,18 @@ def _bare(text: str) -> str:
     return text.replace("«", "").replace("»", "")
 
 
-def _excerpt(value: Any, limit: int) -> str:
-    """The first *limit* characters of *value* on one line, inside « ». A cut
-    text ends with the count of the rest."""
-    one = _bare(" ".join(str(value or "").split()))
-    if len(one) <= limit:
-        return "«" + one + "»"
-    shown = _clip(one, limit)
-    rest = len(one) - (limit - 3)
-    return "«" + shown.removesuffix("...") + f"» and {rest} more characters"
+def _shown(value: Any) -> str:
+    """*value* whole, as one value of a card inside « ». It holds one line and
+    no control character, so it cannot forge a line of the card, and no
+    guillemet of its own, so it cannot close the fence."""
+    text = "".join(ch if ch >= " " else " " for ch in str("" if value is None else value))
+    return "«" + _bare(one_line(text)) + "»"
 
 
 def _action_lines(ids: list[str], classes: dict[str, str]) -> list[str]:
-    """One summary line, and the first lines of the actions with their class.
-    The riskiest classes come first, so a hidden line is the least risky."""
+    """One summary line, and one line for each action with its class. The
+    riskiest classes come first. Each line is a short row of the card, so
+    nothing cuts it."""
     if not ids:
         return ["Actions (0): none"]
     tagged = sorted(((classes.get(a, "?"), a) for a in ids),
@@ -1215,31 +1215,55 @@ def _action_lines(ids: list[str], classes: dict[str, str]) -> list[str]:
     for cls, _ in tagged:
         counts[cls] = counts.get(cls, 0) + 1
     summary = ", ".join(f"{cls} x{n}" for cls, n in sorted(counts.items()))
-    lines = [f"Actions ({len(ids)}): {summary}"]
-    lines += [f"- {_excerpt(a, CARD_ACTION_CHARS)} (class {_clip(cls, 4)})"
-              for cls, a in paged(tagged, 0, 0, default=CARD_ACTION_LINES,
-                                  maximum=CARD_ACTION_LINES).items]
-    rest = len(tagged) - CARD_ACTION_LINES
-    if rest > 0:
-        lines.append(f"and {rest} more actions")
-    return lines
+    return [f"Actions ({len(ids)}): {summary}",
+            *(f"- {_shown(a)} (class {_clip(cls, 4)})" for cls, a in tagged)]
 
 
-def _card_context(skill: dict[str, Any], version: dict[str, Any], classes: dict[str, str],
-                  closing: str = "Approve to make this skill live for Mira. Reject to leave it as it is.",
-                  ) -> str:
-    """The text of the publish card. It shows what goes live: the name, the
-    version, the description, the first part of the instructions, and each
-    action with its class. Each member text sits inside « »."""
+def _skill_rows(
+    skill: dict[str, Any], version: dict[str, Any], classes: dict[str, str],
+) -> list[tuple[str, str]]:
+    """The rows of the card of a save, a publish or a resume: what is written
+    or goes live. The name, the version and each action with its class are
+    short rows. The description and the instructions are long text."""
     body = _body_of(version)
-    return "\n".join([
-        f"Skill: {_name(skill.get('name', ''), True)}",
-        f"Version: {version.get('version')}",
-        f"Description: {_excerpt(body.get('description'), CARD_DESCRIPTION_CHARS)}",
-        f"Instructions: {_excerpt(body.get('instructions'), CARD_INSTRUCTION_CHARS)}",
-        *_action_lines(_actions_in(body), classes),
-        closing,
-    ])
+    return [
+        ("skill", f"Skill: {_shown(skill.get('name', ''))}"),
+        ("version", f"Version: {version.get('version')}"),
+        *(("actions", line) for line in _action_lines(_actions_in(body), classes)),
+        ("description", f"Description: {_shown(body.get('description'))}"),
+        # card_body cuts only the keys of D169 item 9, so the instructions
+        # ride as ``body``. :func:`_card` gives the cut its real name.
+        ("body", f"Instructions: {_shown(body.get('instructions'))}"),
+    ]
+
+
+async def _chat_is_held() -> bool:
+    """True when a cut card must refuse (D169 item 9). ``egress.chat_is_held``
+    is the one reader. A fault of the read counts as held."""
+    from acb_skills import egress
+
+    try:
+        return bool(await egress.chat_is_held())
+    except Exception:
+        return True
+
+
+async def _card(note: str, rows: list[tuple[str, str]]) -> CardBody:
+    """THE one builder of a skill card (``acb_common.card_body``, D169 item 9).
+
+    *note* is the first line. A short row shows whole, and only the description
+    and the instructions may be cut. A cut card ends with ``CUT_MARK``. Raise
+    :class:`_Refused`, so that no card shows, when the short rows do not fit,
+    or when a chat that read outside mail would get a cut card."""
+    try:
+        made = card_body(note, rows)
+    except CardWontFit:
+        raise _Refused(_WONT_FIT) from None
+    # The refusal names the parameter that the model sends.
+    made = CardBody(made, (("instructions" if k == "body" else k) for k in made.cut), made.room)
+    if is_cut(made) and await _chat_is_held():
+        raise _Refused(cut_refusal(made))
+    return made
 
 
 def _snapshot(reply: _Reply) -> tuple[Any, Any, Any]:
@@ -1269,7 +1293,8 @@ async def _decide(title: str, detail: str, context: str) -> str:
 
 
 def _not_done(what: str, decision: str, context: str) -> dict[str, Any]:
-    return _refusal(f"{what} The decision was {decision}.", decision=decision, context=context)
+    return _refusal(f"{what} The decision was {decision}.", decision=decision,
+                    context=str(context))
 
 
 async def _publish_after_card(sid: str, first: _Reply) -> dict[str, Any]:
@@ -1283,12 +1308,12 @@ async def _publish_after_card(sid: str, first: _Reply) -> dict[str, Any]:
         return _refusal(_NO_VERSION)
     try:
         classes = _class_map(await _read_catalog())
+        context = await _card(_LIVE_NOTE, _skill_rows(skill, version, classes))
     except _Refused as exc:
-        return _refusal(str(exc))  # no card when the classes cannot be shown
+        return _refusal(str(exc))  # no card when the card cannot show the change
     verb = "Resume" if skill.get("state") == "paused" else "Publish"
     title = f"{verb} {_name(skill.get('name', ''), True)}?"
     detail = f"Version {version.get('version')}. The skill goes live for Mira."
-    context = _card_context(skill, version, classes)
     decision = await _decide(title, detail, context)
     if decision != "approved":
         return _not_done("The skill was not made live.", decision, context)
@@ -1334,7 +1359,7 @@ async def studio_skill_state(skill_id: str, state: str) -> dict[str, Any]:
             return await _publish_after_card(sid, first)
         if await _must_ask():
             name = _name(current.get("name", ""), True)
-            context = f"Skill: {name}\nIt stops for Mira. Resume it to start it again."
+            context = await _card(_PAUSE_NOTE, [("skill", f"Skill: {_shown(current.get('name', ''))}")])
             decision = await _decide(f"Pause {name}?", "The skill stops for Mira.", context)
             if decision != "approved":
                 return _not_done("The skill was not paused.", decision, context)
