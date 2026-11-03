@@ -38,6 +38,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from acb_common.card_body import CardWontFit
+from acb_common.no_person import NO_PERSON_TEXT, no_person_present
+
 from skill_projects import client as _client
 from skill_projects.client import (
     GatewayRefusal,
@@ -49,7 +52,7 @@ from skill_projects.client import (
     post_file,
     uuid_of,
 )
-from skill_projects.inbox import _area_key, _clean_area_name, _my_area, subject_words
+from skill_projects.inbox import DECISIONS_OFF, _area_key, _clean_area_name, _my_area, subject_words
 from skill_projects.priority import (
     Removed,
     card_view,
@@ -73,7 +76,6 @@ from skill_projects.writes import (
     _REOPENING,
     CANCELLED,
     CARD_CONTEXT_LIMIT,
-    CARD_NOTE,
     FORGED_BATCH_ROWS,
     MAX_BATCH,
     OVERLAY_ARGUMENTS,
@@ -179,10 +181,7 @@ def _guard_card(impact: str, rest: dict[str, Any]) -> str:
     The impact line is the tool's own sentence, so it is not fenced the way
     a member value is. Member values inside it already carry their fence.
     """
-    body = _fields_block(rest)
-    assert body.startswith(CARD_NOTE)
-    line = "impact: " + " ".join(impact.split())
-    return CARD_NOTE + "\n" + line + body[len(CARD_NOTE) :]
+    return _fields_block(rest, lead="impact: " + " ".join(impact.split()))
 
 
 def _open_count(summary: dict[str, Any]) -> int:
@@ -1208,7 +1207,10 @@ async def bulk_update(
     # its full title as the tooltip. Only a card too long for the limit clips
     # the titles, and the clip comes BEFORE the fence (owner, 2026-10-07).
     whole = {f"task {i + 1}": _ref(t) for i, t in enumerate(tasks)}
-    fits = len(_guard_card(impact, {**rest, **whole})) <= CARD_CONTEXT_LIMIT
+    try:
+        fits = len(_guard_card(impact, {**rest, **whole})) <= CARD_CONTEXT_LIMIT
+    except CardWontFit:
+        fits = False
     for i, t in enumerate(tasks):
         rest[f"task {i + 1}"] = whole[f"task {i + 1}"] if fits else _short_ref(t)
     if not await _confirm(
@@ -2250,6 +2252,87 @@ async def revoke_access(project_id: str, grant: str) -> str:
     )
 
 
+# ── One person decides (WS-ALN ALN-2a, D-OP-9) ──────────────────────────────
+
+#: What the member reads for a 403, a 404 or a 409 of the answer route.
+_DECISION_REFUSALS = {
+    403: "The server says that a person must answer this decision.",
+    404: "The decision was not found, or it does not name you.",
+}
+
+
+def _decision_refusal(exc: GatewayRefusal) -> str:
+    """One plain sentence for a 403, 404, 409 or 422 of the answer route."""
+    status = getattr(exc, "status", None)
+    if status in _DECISION_REFUSALS:
+        return f"{REFUSED} {_DECISION_REFUSALS[status]} Nothing was changed."
+    if status == 409:
+        said = str(getattr(exc, "detail", "") or "")
+        late = "expired" in said
+        why = "The decision expired." if late else "The decision already has an answer."
+        return f"{REFUSED} {why} Nothing was changed."
+    if status == 422:
+        return f"{REFUSED} The answer is not one of the options. Nothing was changed."
+    raise exc
+
+
+@_annotate(read_only=False, destructive=True, idempotent=True, open_world=False)
+async def answer_decision(decision_id: str, answer_key: str) -> str:
+    """Answer one decision that names the member. decision_id and the option
+    keys come from my_decisions. ONE decision per call. A run that no person
+    watches cannot answer, and the tool refuses it before any card. The card
+    shows the question, the option and the task. The answer goes on the task
+    as a comment, and it runs no action. The server decides if the answer
+    stands, and a refusal comes back in one sentence."""
+    if no_person_present():
+        return f"{REFUSED} {NO_PERSON_TEXT} Nothing was changed."
+    if _many(decision_id):
+        return f"answer_decision {ONE_ACT.replace('id', 'decision_id')}"
+    did = uuid_of(decision_id, "decision_id")
+    key = str(answer_key or "").strip()
+    try:
+        rows = ((await get("/projects/decisions")) or {}).get("decisions") or []
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return DECISIONS_OFF
+        raise
+    row = next((r for r in rows if str(r.get("id") or "").lower() == did), None)
+    if row is None:
+        return (
+            "No open decision like that waits for you. my_decisions lists them, "
+            "each with a decision_id."
+        )
+    label = next(
+        (str(o.get("label")) for o in row.get("options") or [] if o.get("key") == key), None
+    )
+    if label is None:
+        keys = ", ".join(str(o.get("key")) for o in row.get("options") or [])
+        return f"answer_key must be one of: {keys}. Nothing was done."
+    task = uuid_of(str(row.get("subject_id")), "task_id")
+    try:
+        title = data(((await get(f"/projects/tasks/{task}")) or {}).get("title"))
+    except GatewayRefusal:
+        title = f"task {task}"
+    impact = (
+        "your answer goes on the task as a comment that everyone who can open the task "
+        "reads. It runs no action. The decision takes one answer"
+    )
+    if not await _confirm(
+        title="Answer this decision?",
+        detail=f"{title} · {data(label)}",
+        context=_guard_card(
+            impact,
+            {"question": data(row.get("question")), "answer": data(label), "task": title},
+        ),
+    ):
+        return CANCELLED
+    try:
+        await post(f"/projects/decisions/{did}/answer", {"answer_key": key})
+    except GatewayRefusal as exc:
+        return _decision_refusal(exc)
+    return f"Answered {data(row.get('question'))} with {data(label)}.{chr(10)}  decision_id: {did}"
+
+
 # ── Who gets a report, and when (WS-64 OP-6d, D-OP-9) ───────────────────────
 
 
@@ -2461,7 +2544,7 @@ async def set_report_schedule(report_id: str, enabled: bool) -> str:
 # ── A reminder becomes a task (WS-66 RM-3, D114) ─────────────────────────────
 
 
-@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
+@_annotate(read_only=False, destructive=True, idempotent=False, open_world=False, card_write=True)
 async def promote_reminder(reminder_id: str) -> str:
     """Make one of the member's OPEN reminders a private task in their own
     personal project ("make it a task"). The task takes the reminder's
@@ -2528,6 +2611,7 @@ __all__ = [  # noqa: RUF022 — grouped by what they act on
     "attach_to_task",
     "grant_access",
     "revoke_access",
+    "answer_decision",
     "add_report_recipient",
     "remove_report_recipient",
     "set_report_schedule",

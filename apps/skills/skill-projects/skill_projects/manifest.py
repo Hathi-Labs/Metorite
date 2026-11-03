@@ -141,10 +141,18 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/nodes/{project_id}/archive", "archive_project", "C"),
     Route("POST", "/projects/nodes/{project_id}/unarchive", "unarchive_project", "C"),
     Route("GET", "/projects/nodes/{project_id}/grants", "project_access", "A"),
+    # RX-1: who can see a project, for the card of a held chat.
+    Route("GET", "/projects/nodes/{project_id}/audience", "project_access", "A"),
     # WS-64 OP-6b (D-OP-9 reverses D-PM-40): one grant per card. The route
     # decides who may write it (D-OP-11, `authority.assert_may_write_grant`).
     Route("POST", "/projects/nodes/{project_id}/grants", "grant_access", "C"),
     Route("DELETE", "/projects/nodes/{project_id}/grants/{grant_id}", "revoke_access", "C"),
+    # WS-ALN ALN-2a (D-OP-9): one person decides. The reader is the decider
+    # only, and the route is dark behind DECISIONS_ORGS. The answer is the
+    # person's word: the tool refuses a run with no person present, then raises
+    # one card, and the route refuses an agent connection.
+    Route("GET", "/projects/decisions", "my_decisions", "A"),
+    Route("POST", "/projects/decisions/{decision_id}/answer", "answer_decision", "C"),
     # ── tasks.py ─────────────────────────────────────────────────────────
     Route("GET", "/projects/tasks", "list_tasks", "A"),
     Route("GET", "/projects/tasks/{task_id}", "task_detail", "A"),
@@ -956,6 +964,10 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     ("POST", "/projects/tasks/{task_id}/attachments"): {"file": "attach_to_task.file_name"},
     # WS-64 OP-6b: the one field of a grant.
     ("POST", "/projects/nodes/{project_id}/grants"): {"subject": "grant_access.subject"},
+    # WS-ALN ALN-2a: the one field of an answer.
+    ("POST", "/projects/decisions/{decision_id}/answer"): {
+        "answer_key": "answer_decision.answer_key"
+    },
     # WS-64 OP-6d: one address, and the on/off of the schedule.
     ("POST", "/projects/reports/{report_id}/recipients"): {
         "payload": "add_report_recipient.recipient"
@@ -1182,7 +1194,18 @@ _TASK_PREFIX_REASON = (
 
 #: A field the chat does not set, and why. A reason names the tool or the
 #: rule that answers the need, so a reviewer can check the claim.
+#: RX-1: a field that the card of a chat that read outside mail sets from the rows
+#: it read. The model never names it.
+_HELD_CARD_REASON = "The card of a held chat sets it from the rows it read."
+
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    # WS-ALN ALN-2a: the list is the member's own, and the chat reads only that.
+    ("GET", "/projects/decisions"): {
+        "task_id": "my_decisions lists the decisions that name the member, across tasks."
+    },
+    ("POST", "/projects/decisions/{decision_id}/answer"): {
+        "reason": "The chat answer carries no reason. The card shows the option only."
+    },
     ("GET", "/projects/tasks"): {
         "parent_task_id": "Subtasks are read through task_detail, which lists them.",
         "status_id": (
@@ -1279,6 +1302,12 @@ FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
         "mapping": _MAPPING_CARD_REASON,
     },
     ("POST", "/projects/nodes/{project_id}/status-set"): {"mapping": _MAPPING_CARD_REASON},
+    # RX-1: a held card reads these. No tool argument names them.
+    ("GET", "/projects/nodes/{project_id}/audience"): {
+        "people": _HELD_CARD_REASON,
+        "beyond": _HELD_CARD_REASON,
+    },
+    ("GET", "/projects/tasks/{task_id}/watchers"): {"audience": _HELD_CARD_REASON},
     ("PATCH", "/projects/types/{type_id}"): {"scope": _SCOPE_AT_CREATE_REASON},
     ("POST", "/projects/nodes/{project_id}/fields"): {
         "field_key": "The route makes the key from the name.",

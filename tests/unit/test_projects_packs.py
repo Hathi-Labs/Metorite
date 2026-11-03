@@ -68,7 +68,7 @@ PA = "projects-assistant"
 PROJECTS_DIR = REPO / "apps" / "agents" / "agent-projects"
 SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "projects-reminders")
 SIZES = {"projects": 23, "projects-plan": 35, "projects-structure": 34, "projects-bulk": 21,
-         "projects-reminders": 7}
+         "projects-reminders": 9}
 UUID = tc.UUID
 
 #: The eight tools that make ONE card for a batch, raised inside the tool body.
@@ -121,7 +121,7 @@ def test_the_four_families_equal_the_owners_tools() -> None:
     tool is in two packs. Mutation: drop a tool from a family, add a name the
     owner lacks, or copy one tool into two families -> red."""
     union = [name for slug in SLUGS for name in _family(slug)]
-    assert len(union) == 120 == len(set(union)), "no tool is in two packs"
+    assert len(union) == 122 == len(set(union)), "no tool is in two packs"
     assert set(union) == set(skill_projects.__all__) == _own_tool_scope()
     for slug in SLUGS:
         assert sf.SKILL_FAMILIES[slug]["owner"] == PA and sf.is_pack(slug)
@@ -201,16 +201,18 @@ async def test_each_built_pack_holds_exactly_its_familys_names(store) -> None:
         assert build.dropped == () and build.skipped == (), slug
 
 
-async def test_a_held_pack_drops_nothing_because_no_projects_tool_is_egress(store) -> None:
-    """Parity with the owner's own run: the held set of the Projects assistant
-    is ``web_search``, ``fetch_page``, ``save_memory`` and ``save_note``, and
-    none of them is a Projects tool. Mutation: a Projects tool that says
-    ``open_world=True`` -> the held pack drops it -> red."""
+async def test_a_held_pack_drops_exactly_the_held_off_writes(store) -> None:
+    """RX-1 (D169). No Projects tool is an egress tool, and parity with the
+    owner's own held run stands: a held pack drops the class C writes that a
+    held chat does not hold, and each other tool stays. Mutation: a Projects
+    tool that says ``open_world=True`` -> the held pack drops it -> red."""
     for slug in SLUGS:
         build, _key = await _build(slug, no_egress=True)
         assert build is not None and build.held is True, slug
-        assert build.dropped == (), (slug, build.dropped)
-        assert [_name(t) for t in build.tools] == list(_family(slug)), slug
+        off = [name for name in _family(slug) if eg.is_held_off_write(name)]
+        assert list(build.dropped) == off, slug
+        assert [_name(t) for t in build.tools] == [n for n in _family(slug) if n not in off], slug
+        assert not [n for n in _family(slug) if ti._is_egress(n)], slug
 
 
 async def test_a_built_tool_keeps_the_owners_class_and_its_strict_schema(store) -> None:
@@ -677,7 +679,7 @@ async def test_no_projects_tool_takes_an_organization_or_a_member_argument(store
             declared = set(tool.input_model.model_fields)
             assert not declared & identity, (_name(tool), sorted(declared & identity))
             seen += 1
-    assert seen == 120
+    assert seen == 122
 
 
 async def test_a_pack_call_outside_its_run_refuses(store) -> None:
@@ -1071,7 +1073,9 @@ def test_the_reminder_tools_are_in_one_pack_that_the_words_load() -> None:
     seven = {"list_reminders", "promote_reminder", "reopen_reminder",
              "reschedule_reminder", "resolve_reminder", "set_reminder",
              "update_reminder"}
-    assert set(_family("projects-reminders")) == seven
+    # WS-ALN ALN-2a: the other Projects packs are full, so the two tools of a
+    # decision sit here too.
+    assert set(_family("projects-reminders")) == seven | {"answer_decision", "my_decisions"}
     assert not seven & set(_family("projects-bulk"))
     assert not seven & set(_family("projects"))
 
@@ -1084,3 +1088,12 @@ def test_a_plain_task_turn_loads_no_reminder_pack(words: str) -> None:
     "task" to the reminder words -> the pack joins a task turn -> red."""
     choice = tp.choose(_surface_turn(words), allowed=EVERY, base_tools=56)
     assert choice.slugs == ("projects",), (words, choice)
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")

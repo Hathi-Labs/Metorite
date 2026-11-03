@@ -1,0 +1,4661 @@
+{
+ "note": "Written by tests/unit/test_studio_field_cases_parity.py. Do not edit by hand.",
+ "values": [
+  {
+   "id": "text-0",
+   "field": {
+    "key": "f",
+    "type": "text"
+   },
+   "value": "Hello",
+   "ok": true,
+   "out": "Hello"
+  },
+  {
+   "id": "text-1",
+   "field": {
+    "key": "f",
+    "type": "text"
+   },
+   "value": 5,
+   "ok": false
+  },
+  {
+   "id": "text-2",
+   "field": {
+    "key": "f",
+    "type": "text"
+   },
+   "value": null,
+   "ok": false
+  },
+  {
+   "id": "text-3",
+   "field": {
+    "key": "f",
+    "type": "text"
+   },
+   "value": "a\u0000b",
+   "ok": false
+  },
+  {
+   "id": "text-4",
+   "field": {
+    "key": "f",
+    "type": "text"
+   },
+   "value": "",
+   "ok": true,
+   "out": ""
+  },
+  {
+   "id": "text-5",
+   "field": {
+    "key": "f",
+    "type": "text"
+   },
+   "value": "\ud800",
+   "ok": false
+  },
+  {
+   "id": "text-6",
+   "field": {
+    "key": "f",
+    "type": "text"
+   },
+   "value": {
+    "$repeat": "a",
+    "count": 2000
+   },
+   "ok": true,
+   "out_same": true
+  },
+  {
+   "id": "text-7",
+   "field": {
+    "key": "f",
+    "type": "text"
+   },
+   "value": {
+    "$repeat": "a",
+    "count": 2001
+   },
+   "ok": false
+  },
+  {
+   "id": "text-8",
+   "field": {
+    "key": "f",
+    "type": "text"
+   },
+   "value": {
+    "$repeat": "\ud83d\ude00",
+    "count": 2000
+   },
+   "ok": true,
+   "out_same": true
+  },
+  {
+   "id": "text-9",
+   "field": {
+    "key": "f",
+    "type": "text"
+   },
+   "value": {
+    "$repeat": "\ud83d\ude00",
+    "count": 2001
+   },
+   "ok": false
+  },
+  {
+   "id": "longText-0",
+   "field": {
+    "key": "f",
+    "type": "longText"
+   },
+   "value": "A long note.\nTwo lines.",
+   "ok": true,
+   "out": "A long note.\nTwo lines."
+  },
+  {
+   "id": "longText-1",
+   "field": {
+    "key": "f",
+    "type": "longText"
+   },
+   "value": 5,
+   "ok": false
+  },
+  {
+   "id": "longText-2",
+   "field": {
+    "key": "f",
+    "type": "longText"
+   },
+   "value": {
+    "$repeat": "a",
+    "count": 20000
+   },
+   "ok": true,
+   "out_same": true
+  },
+  {
+   "id": "longText-3",
+   "field": {
+    "key": "f",
+    "type": "longText"
+   },
+   "value": {
+    "$repeat": "a",
+    "count": 20001
+   },
+   "ok": false
+  },
+  {
+   "id": "longText-4",
+   "field": {
+    "key": "f",
+    "type": "longText"
+   },
+   "value": "a\u0000b",
+   "ok": false
+  },
+  {
+   "id": "number-0",
+   "field": {
+    "key": "f",
+    "type": "number"
+   },
+   "value": 42,
+   "ok": true,
+   "out": 42
+  },
+  {
+   "id": "number-1",
+   "field": {
+    "key": "f",
+    "type": "number"
+   },
+   "value": -3.5,
+   "ok": true,
+   "out": -3.5
+  },
+  {
+   "id": "number-2",
+   "field": {
+    "key": "f",
+    "type": "number"
+   },
+   "value": 0,
+   "ok": true,
+   "out": 0
+  },
+  {
+   "id": "number-3",
+   "field": {
+    "key": "f",
+    "type": "number"
+   },
+   "value": 0.0001,
+   "ok": true,
+   "out": 0.0001
+  },
+  {
+   "id": "number-4",
+   "field": {
+    "key": "f",
+    "type": "number"
+   },
+   "value": 999999999999999,
+   "ok": true,
+   "out": 999999999999999
+  },
+  {
+   "id": "number-5",
+   "field": {
+    "key": "f",
+    "type": "number"
+   },
+   "value": -999999999999999,
+   "ok": true,
+   "out": -999999999999999
+  },
+  {
+   "id": "number-6",
+   "field": {
+    "key": "f",
+    "type": "number"
+   },
+   "value": 1e-05,
+   "ok": false
+  },
+  {
+   "id": "number-7",
+   "field": {
+    "key": "f",
+    "type": "number"
+   },
+   "value": 1.5e-07,
+   "ok": false
+  },
+  {
+   "id": "number-8",
+   "field": {
+    "key": "f",
+    "type": "number"
+   },
+   "value": 1000000000000000,
+   "ok": false
+  },
+  {
+   "id": "number-9",
+   "field": {
+    "key": "f",
+    "type": "number"
+   },
+   "value": 1000000000000000.0,
+   "ok": false
+  },
+  {
+   "id": "number-10",
+   "field": {
+    "key": "f",
+    "type": "number"
+   },
+   "value": true,
+   "ok": false
+  },
+  {
+   "id": "number-11",
+   "field": {
+    "key": "f",
+    "type": "number"
+   },
+   "value": "5",
+   "ok": false
+  },
+  {
+   "id": "number-12",
+   "field": {
+    "key": "f",
+    "type": "number"
+   },
+   "value": null,
+   "ok": false
+  },
+  {
+   "id": "number-13",
+   "field": {
+    "key": "f",
+    "type": "number"
+   },
+   "value": [
+    1
+   ],
+   "ok": false
+  },
+  {
+   "id": "money-0",
+   "field": {
+    "key": "f",
+    "type": "money"
+   },
+   "value": {
+    "minor": 1999,
+    "currency": "INR"
+   },
+   "ok": true,
+   "out": {
+    "minor": 1999,
+    "currency": "INR"
+   }
+  },
+  {
+   "id": "money-1",
+   "field": {
+    "key": "f",
+    "type": "money"
+   },
+   "value": {
+    "minor": -5,
+    "currency": "USD"
+   },
+   "ok": true,
+   "out": {
+    "minor": -5,
+    "currency": "USD"
+   }
+  },
+  {
+   "id": "money-2",
+   "field": {
+    "key": "f",
+    "type": "money"
+   },
+   "value": {
+    "minor": 999999999999999,
+    "currency": "INR"
+   },
+   "ok": true,
+   "out": {
+    "minor": 999999999999999,
+    "currency": "INR"
+   }
+  },
+  {
+   "id": "money-3",
+   "field": {
+    "key": "f",
+    "type": "money"
+   },
+   "value": {
+    "minor": 1000000000000000,
+    "currency": "INR"
+   },
+   "ok": false
+  },
+  {
+   "id": "money-4",
+   "field": {
+    "key": "f",
+    "type": "money"
+   },
+   "value": {
+    "minor": 1.5,
+    "currency": "INR"
+   },
+   "ok": false
+  },
+  {
+   "id": "money-5",
+   "field": {
+    "key": "f",
+    "type": "money"
+   },
+   "value": {
+    "minor": true,
+    "currency": "INR"
+   },
+   "ok": false
+  },
+  {
+   "id": "money-6",
+   "field": {
+    "key": "f",
+    "type": "money"
+   },
+   "value": {
+    "minor": 100,
+    "currency": "inr"
+   },
+   "ok": false
+  },
+  {
+   "id": "money-7",
+   "field": {
+    "key": "f",
+    "type": "money"
+   },
+   "value": {
+    "minor": 100,
+    "currency": "INRX"
+   },
+   "ok": false
+  },
+  {
+   "id": "money-8",
+   "field": {
+    "key": "f",
+    "type": "money"
+   },
+   "value": {
+    "minor": 100
+   },
+   "ok": false
+  },
+  {
+   "id": "money-9",
+   "field": {
+    "key": "f",
+    "type": "money"
+   },
+   "value": {
+    "minor": 100,
+    "currency": "INR",
+    "extra": 1
+   },
+   "ok": false
+  },
+  {
+   "id": "money-10",
+   "field": {
+    "key": "f",
+    "type": "money"
+   },
+   "value": 100,
+   "ok": false
+  },
+  {
+   "id": "money-11",
+   "field": {
+    "key": "f",
+    "type": "money"
+   },
+   "value": "INR 100",
+   "ok": false
+  },
+  {
+   "id": "date-0",
+   "field": {
+    "key": "f",
+    "type": "date"
+   },
+   "value": "2024-02-29",
+   "ok": true,
+   "out": "2024-02-29"
+  },
+  {
+   "id": "date-1",
+   "field": {
+    "key": "f",
+    "type": "date"
+   },
+   "value": "2023-02-29",
+   "ok": false
+  },
+  {
+   "id": "date-2",
+   "field": {
+    "key": "f",
+    "type": "date"
+   },
+   "value": "2024-13-01",
+   "ok": false
+  },
+  {
+   "id": "date-3",
+   "field": {
+    "key": "f",
+    "type": "date"
+   },
+   "value": "2024-00-10",
+   "ok": false
+  },
+  {
+   "id": "date-4",
+   "field": {
+    "key": "f",
+    "type": "date"
+   },
+   "value": "2024-02-30",
+   "ok": false
+  },
+  {
+   "id": "date-5",
+   "field": {
+    "key": "f",
+    "type": "date"
+   },
+   "value": "2024-2-9",
+   "ok": false
+  },
+  {
+   "id": "date-6",
+   "field": {
+    "key": "f",
+    "type": "date"
+   },
+   "value": "0000-01-01",
+   "ok": false
+  },
+  {
+   "id": "date-7",
+   "field": {
+    "key": "f",
+    "type": "date"
+   },
+   "value": "0001-01-01",
+   "ok": true,
+   "out": "0001-01-01"
+  },
+  {
+   "id": "date-8",
+   "field": {
+    "key": "f",
+    "type": "date"
+   },
+   "value": "9999-12-31",
+   "ok": true,
+   "out": "9999-12-31"
+  },
+  {
+   "id": "date-9",
+   "field": {
+    "key": "f",
+    "type": "date"
+   },
+   "value": "2024-02-29 ",
+   "ok": false
+  },
+  {
+   "id": "date-10",
+   "field": {
+    "key": "f",
+    "type": "date"
+   },
+   "value": "\u0662\u0660\u0662\u0664-\u0660\u0661-\u0660\u0661",
+   "ok": false
+  },
+  {
+   "id": "date-11",
+   "field": {
+    "key": "f",
+    "type": "date"
+   },
+   "value": 20240229,
+   "ok": false
+  },
+  {
+   "id": "date-12",
+   "field": {
+    "key": "f",
+    "type": "date"
+   },
+   "value": null,
+   "ok": false
+  },
+  {
+   "id": "datetime-0",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "1999-12-31T23:59:00+05:30",
+   "ok": true,
+   "out": "1999-12-31T18:29:00Z"
+  },
+  {
+   "id": "datetime-1",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-01-01T00:00:00Z",
+   "ok": true,
+   "out": "2024-01-01T00:00:00Z"
+  },
+  {
+   "id": "datetime-2",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-01-01t00:00:00z",
+   "ok": true,
+   "out": "2024-01-01T00:00:00Z"
+  },
+  {
+   "id": "datetime-3",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-01-01T00:00:00.5Z",
+   "ok": true,
+   "out": "2024-01-01T00:00:00.500000Z"
+  },
+  {
+   "id": "datetime-4",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-01-01T00:00:00.123456Z",
+   "ok": true,
+   "out": "2024-01-01T00:00:00.123456Z"
+  },
+  {
+   "id": "datetime-5",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-01-01T00:00:00.1234567Z",
+   "ok": false
+  },
+  {
+   "id": "datetime-6",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-01-01T00:00:00",
+   "ok": false
+  },
+  {
+   "id": "datetime-7",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-01-01",
+   "ok": false
+  },
+  {
+   "id": "datetime-8",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-01-01T24:00:00Z",
+   "ok": false
+  },
+  {
+   "id": "datetime-9",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-01-01T00:60:00Z",
+   "ok": false
+  },
+  {
+   "id": "datetime-10",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-01-01T00:00:60Z",
+   "ok": false
+  },
+  {
+   "id": "datetime-11",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-02-30T00:00:00Z",
+   "ok": false
+  },
+  {
+   "id": "datetime-12",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-01-01T00:00:00+23:59",
+   "ok": true,
+   "out": "2023-12-31T00:01:00Z"
+  },
+  {
+   "id": "datetime-13",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-01-01T00:00:00+24:00",
+   "ok": false
+  },
+  {
+   "id": "datetime-14",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-01-01T00:00:00+05:60",
+   "ok": true,
+   "out": "2023-12-31T18:00:00Z"
+  },
+  {
+   "id": "datetime-15",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-01-01T00:00:00+23:60",
+   "ok": false
+  },
+  {
+   "id": "datetime-16",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "0001-01-01T00:00:00+01:00",
+   "ok": false
+  },
+  {
+   "id": "datetime-17",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "9999-12-31T23:59:59-01:00",
+   "ok": false
+  },
+  {
+   "id": "datetime-18",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "0001-01-01T00:00:00Z",
+   "ok": true,
+   "out": "0001-01-01T00:00:00Z"
+  },
+  {
+   "id": "datetime-19",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": "2024-03-01T00:30:00+01:00",
+   "ok": true,
+   "out": "2024-02-29T23:30:00Z"
+  },
+  {
+   "id": "datetime-20",
+   "field": {
+    "key": "f",
+    "type": "datetime"
+   },
+   "value": 20240101,
+   "ok": false
+  },
+  {
+   "id": "checkbox-0",
+   "field": {
+    "key": "f",
+    "type": "checkbox"
+   },
+   "value": true,
+   "ok": true,
+   "out": true
+  },
+  {
+   "id": "checkbox-1",
+   "field": {
+    "key": "f",
+    "type": "checkbox"
+   },
+   "value": false,
+   "ok": true,
+   "out": false
+  },
+  {
+   "id": "checkbox-2",
+   "field": {
+    "key": "f",
+    "type": "checkbox"
+   },
+   "value": 1,
+   "ok": false
+  },
+  {
+   "id": "checkbox-3",
+   "field": {
+    "key": "f",
+    "type": "checkbox"
+   },
+   "value": 0,
+   "ok": false
+  },
+  {
+   "id": "checkbox-4",
+   "field": {
+    "key": "f",
+    "type": "checkbox"
+   },
+   "value": "true",
+   "ok": false
+  },
+  {
+   "id": "checkbox-5",
+   "field": {
+    "key": "f",
+    "type": "checkbox"
+   },
+   "value": null,
+   "ok": false
+  },
+  {
+   "id": "select-0",
+   "field": {
+    "key": "f",
+    "type": "select",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": "Open",
+   "ok": true,
+   "out": "Open"
+  },
+  {
+   "id": "select-1",
+   "field": {
+    "key": "f",
+    "type": "select",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": "open",
+   "ok": false
+  },
+  {
+   "id": "select-2",
+   "field": {
+    "key": "f",
+    "type": "select",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": "Other",
+   "ok": false
+  },
+  {
+   "id": "select-3",
+   "field": {
+    "key": "f",
+    "type": "select",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": "",
+   "ok": false
+  },
+  {
+   "id": "select-4",
+   "field": {
+    "key": "f",
+    "type": "select",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": 5,
+   "ok": false
+  },
+  {
+   "id": "select-5",
+   "field": {
+    "key": "f",
+    "type": "select",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": null,
+   "ok": false
+  },
+  {
+   "id": "select-6",
+   "field": {
+    "key": "f",
+    "type": "select",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": [
+    "Open"
+   ],
+   "ok": false
+  },
+  {
+   "id": "multiSelect-0",
+   "field": {
+    "key": "f",
+    "type": "multiSelect",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": [
+    "Open"
+   ],
+   "ok": true,
+   "out": [
+    "Open"
+   ]
+  },
+  {
+   "id": "multiSelect-1",
+   "field": {
+    "key": "f",
+    "type": "multiSelect",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": [
+    "Open",
+    "Closed"
+   ],
+   "ok": true,
+   "out": [
+    "Open",
+    "Closed"
+   ]
+  },
+  {
+   "id": "multiSelect-2",
+   "field": {
+    "key": "f",
+    "type": "multiSelect",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": [],
+   "ok": true,
+   "out": []
+  },
+  {
+   "id": "multiSelect-3",
+   "field": {
+    "key": "f",
+    "type": "multiSelect",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": [
+    "Open",
+    "Open"
+   ],
+   "ok": false
+  },
+  {
+   "id": "multiSelect-4",
+   "field": {
+    "key": "f",
+    "type": "multiSelect",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": [
+    "Other"
+   ],
+   "ok": false
+  },
+  {
+   "id": "multiSelect-5",
+   "field": {
+    "key": "f",
+    "type": "multiSelect",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": "Open",
+   "ok": false
+  },
+  {
+   "id": "multiSelect-6",
+   "field": {
+    "key": "f",
+    "type": "multiSelect",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": [
+    "open"
+   ],
+   "ok": false
+  },
+  {
+   "id": "multiSelect-7",
+   "field": {
+    "key": "f",
+    "type": "multiSelect",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": [
+    5
+   ],
+   "ok": false
+  },
+  {
+   "id": "multiSelect-8",
+   "field": {
+    "key": "f",
+    "type": "multiSelect",
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": null,
+   "ok": false
+  },
+  {
+   "id": "person-0",
+   "field": {
+    "key": "f",
+    "type": "person"
+   },
+   "value": "ann@example.com",
+   "ok": true,
+   "out": "ann@example.com"
+  },
+  {
+   "id": "person-1",
+   "field": {
+    "key": "f",
+    "type": "person"
+   },
+   "value": "Ann@Example.com",
+   "ok": false
+  },
+  {
+   "id": "person-2",
+   "field": {
+    "key": "f",
+    "type": "person"
+   },
+   "value": "ann",
+   "ok": false
+  },
+  {
+   "id": "person-3",
+   "field": {
+    "key": "f",
+    "type": "person"
+   },
+   "value": "ann@example",
+   "ok": false
+  },
+  {
+   "id": "person-4",
+   "field": {
+    "key": "f",
+    "type": "person"
+   },
+   "value": "a b@example.com",
+   "ok": false
+  },
+  {
+   "id": "person-5",
+   "field": {
+    "key": "f",
+    "type": "person"
+   },
+   "value": 5,
+   "ok": false
+  },
+  {
+   "id": "person-6",
+   "field": {
+    "key": "f",
+    "type": "person"
+   },
+   "value": null,
+   "ok": false
+  },
+  {
+   "id": "person-7",
+   "field": {
+    "key": "f",
+    "type": "person"
+   },
+   "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx@example.com",
+   "ok": true,
+   "out": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx@example.com"
+  },
+  {
+   "id": "person-8",
+   "field": {
+    "key": "f",
+    "type": "person"
+   },
+   "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx@example.com",
+   "ok": false
+  },
+  {
+   "id": "relation-0",
+   "field": {
+    "key": "f",
+    "type": "relation"
+   },
+   "value": {
+    "id": "abc-1"
+   },
+   "ok": true,
+   "out": {
+    "id": "abc-1"
+   }
+  },
+  {
+   "id": "relation-1",
+   "field": {
+    "key": "f",
+    "type": "relation"
+   },
+   "value": {
+    "id": "rec:1.2_x"
+   },
+   "ok": true,
+   "out": {
+    "id": "rec:1.2_x"
+   }
+  },
+  {
+   "id": "relation-2",
+   "field": {
+    "key": "f",
+    "type": "relation"
+   },
+   "value": {
+    "id": ""
+   },
+   "ok": false
+  },
+  {
+   "id": "relation-3",
+   "field": {
+    "key": "f",
+    "type": "relation"
+   },
+   "value": {
+    "id": "-x"
+   },
+   "ok": false
+  },
+  {
+   "id": "relation-4",
+   "field": {
+    "key": "f",
+    "type": "relation"
+   },
+   "value": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "ok": true,
+   "out": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   }
+  },
+  {
+   "id": "relation-5",
+   "field": {
+    "key": "f",
+    "type": "relation"
+   },
+   "value": {
+    "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   },
+   "ok": false
+  },
+  {
+   "id": "relation-6",
+   "field": {
+    "key": "f",
+    "type": "relation"
+   },
+   "value": {
+    "id": "a b"
+   },
+   "ok": false
+  },
+  {
+   "id": "relation-7",
+   "field": {
+    "key": "f",
+    "type": "relation"
+   },
+   "value": {
+    "id": 5
+   },
+   "ok": false
+  },
+  {
+   "id": "relation-8",
+   "field": {
+    "key": "f",
+    "type": "relation"
+   },
+   "value": {
+    "id": "a",
+    "extra": 1
+   },
+   "ok": false
+  },
+  {
+   "id": "relation-9",
+   "field": {
+    "key": "f",
+    "type": "relation"
+   },
+   "value": {},
+   "ok": false
+  },
+  {
+   "id": "relation-10",
+   "field": {
+    "key": "f",
+    "type": "relation"
+   },
+   "value": "abc",
+   "ok": false
+  },
+  {
+   "id": "relation-11",
+   "field": {
+    "key": "f",
+    "type": "relation"
+   },
+   "value": null,
+   "ok": false
+  },
+  {
+   "id": "file-0",
+   "field": {
+    "key": "f",
+    "type": "file"
+   },
+   "value": {
+    "id": "123e4567-e89b-12d3-a456-426614174000"
+   },
+   "ok": true,
+   "out": {
+    "id": "123e4567-e89b-12d3-a456-426614174000"
+   }
+  },
+  {
+   "id": "file-1",
+   "field": {
+    "key": "f",
+    "type": "file"
+   },
+   "value": {
+    "id": "123E4567-E89B-12D3-A456-426614174000"
+   },
+   "ok": true,
+   "out": {
+    "id": "123e4567-e89b-12d3-a456-426614174000"
+   }
+  },
+  {
+   "id": "file-2",
+   "field": {
+    "key": "f",
+    "type": "file"
+   },
+   "value": {
+    "id": "123e4567e89b12d3a456426614174000"
+   },
+   "ok": true,
+   "out": {
+    "id": "123e4567-e89b-12d3-a456-426614174000"
+   }
+  },
+  {
+   "id": "file-3",
+   "field": {
+    "key": "f",
+    "type": "file"
+   },
+   "value": {
+    "id": "not-a-uuid"
+   },
+   "ok": false
+  },
+  {
+   "id": "file-4",
+   "field": {
+    "key": "f",
+    "type": "file"
+   },
+   "value": {
+    "id": "123e4567-e89b-12d3-a456-42661417400"
+   },
+   "ok": false
+  },
+  {
+   "id": "file-5",
+   "field": {
+    "key": "f",
+    "type": "file"
+   },
+   "value": {
+    "id": "123e4567-e89b-12d3-a456-426614174000",
+    "extra": 1
+   },
+   "ok": false
+  },
+  {
+   "id": "file-6",
+   "field": {
+    "key": "f",
+    "type": "file"
+   },
+   "value": {},
+   "ok": false
+  },
+  {
+   "id": "file-7",
+   "field": {
+    "key": "f",
+    "type": "file"
+   },
+   "value": "123e4567-e89b-12d3-a456-426614174000",
+   "ok": false
+  },
+  {
+   "id": "file-8",
+   "field": {
+    "key": "f",
+    "type": "file"
+   },
+   "value": null,
+   "ok": false
+  },
+  {
+   "id": "url-0",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "https://example.com/a?b=1#c",
+   "ok": true,
+   "out": "https://example.com/a?b=1#c"
+  },
+  {
+   "id": "url-1",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "http://localhost:8080",
+   "ok": true,
+   "out": "http://localhost:8080"
+  },
+  {
+   "id": "url-2",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "HTTPS://EXAMPLE.COM",
+   "ok": true,
+   "out": "HTTPS://EXAMPLE.COM"
+  },
+  {
+   "id": "url-3",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "https://example.com:65535",
+   "ok": true,
+   "out": "https://example.com:65535"
+  },
+  {
+   "id": "url-4",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "https://example.com:",
+   "ok": true,
+   "out": "https://example.com:"
+  },
+  {
+   "id": "url-5",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "ftp://example.com",
+   "ok": false
+  },
+  {
+   "id": "url-6",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "javascript:alert(1)",
+   "ok": false
+  },
+  {
+   "id": "url-7",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "https://user:pw@example.com",
+   "ok": false
+  },
+  {
+   "id": "url-8",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "https://@example.com",
+   "ok": false
+  },
+  {
+   "id": "url-9",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "https://example.com:99999",
+   "ok": false
+  },
+  {
+   "id": "url-10",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "https://example.com:abc",
+   "ok": false
+  },
+  {
+   "id": "url-11",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "https://a b.com",
+   "ok": false
+  },
+  {
+   "id": "url-12",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "https://",
+   "ok": false
+  },
+  {
+   "id": "url-13",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "http:example.com",
+   "ok": false
+  },
+  {
+   "id": "url-14",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "example.com",
+   "ok": false
+  },
+  {
+   "id": "url-15",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "",
+   "ok": false
+  },
+  {
+   "id": "url-16",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": 5,
+   "ok": false
+  },
+  {
+   "id": "url-17",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": {
+    "$repeat": "a",
+    "count": 2034,
+    "prefix": "https://x.com/"
+   },
+   "ok": true,
+   "out_same": true
+  },
+  {
+   "id": "url-18",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": {
+    "$repeat": "a",
+    "count": 2035,
+    "prefix": "https://x.com/"
+   },
+   "ok": false
+  },
+  {
+   "id": "url-19",
+   "field": {
+    "key": "f",
+    "type": "url"
+   },
+   "value": "https://example.com/\u0000",
+   "ok": false
+  },
+  {
+   "id": "email-0",
+   "field": {
+    "key": "f",
+    "type": "email"
+   },
+   "value": "ann@example.com",
+   "ok": true,
+   "out": "ann@example.com"
+  },
+  {
+   "id": "email-1",
+   "field": {
+    "key": "f",
+    "type": "email"
+   },
+   "value": "Ann@Example.COM",
+   "ok": true,
+   "out": "ann@example.com"
+  },
+  {
+   "id": "email-2",
+   "field": {
+    "key": "f",
+    "type": "email"
+   },
+   "value": "ann@example",
+   "ok": false
+  },
+  {
+   "id": "email-3",
+   "field": {
+    "key": "f",
+    "type": "email"
+   },
+   "value": "ann@",
+   "ok": false
+  },
+  {
+   "id": "email-4",
+   "field": {
+    "key": "f",
+    "type": "email"
+   },
+   "value": "@example.com",
+   "ok": false
+  },
+  {
+   "id": "email-5",
+   "field": {
+    "key": "f",
+    "type": "email"
+   },
+   "value": "a b@example.com",
+   "ok": false
+  },
+  {
+   "id": "email-6",
+   "field": {
+    "key": "f",
+    "type": "email"
+   },
+   "value": "a@-example.com",
+   "ok": false
+  },
+  {
+   "id": "email-7",
+   "field": {
+    "key": "f",
+    "type": "email"
+   },
+   "value": "a@example..com",
+   "ok": false
+  },
+  {
+   "id": "email-8",
+   "field": {
+    "key": "f",
+    "type": "email"
+   },
+   "value": 5,
+   "ok": false
+  },
+  {
+   "id": "email-9",
+   "field": {
+    "key": "f",
+    "type": "email"
+   },
+   "value": null,
+   "ok": false
+  },
+  {
+   "id": "email-10",
+   "field": {
+    "key": "f",
+    "type": "email"
+   },
+   "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx@example.com",
+   "ok": true,
+   "out": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx@example.com"
+  },
+  {
+   "id": "email-11",
+   "field": {
+    "key": "f",
+    "type": "email"
+   },
+   "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx@example.com",
+   "ok": false
+  },
+  {
+   "id": "phone-0",
+   "field": {
+    "key": "f",
+    "type": "phone"
+   },
+   "value": "+919876543210",
+   "ok": true,
+   "out": "+919876543210"
+  },
+  {
+   "id": "phone-1",
+   "field": {
+    "key": "f",
+    "type": "phone"
+   },
+   "value": "+12345678",
+   "ok": true,
+   "out": "+12345678"
+  },
+  {
+   "id": "phone-2",
+   "field": {
+    "key": "f",
+    "type": "phone"
+   },
+   "value": "+123456789012345",
+   "ok": true,
+   "out": "+123456789012345"
+  },
+  {
+   "id": "phone-3",
+   "field": {
+    "key": "f",
+    "type": "phone"
+   },
+   "value": "+1234567",
+   "ok": false
+  },
+  {
+   "id": "phone-4",
+   "field": {
+    "key": "f",
+    "type": "phone"
+   },
+   "value": "+1234567890123456",
+   "ok": false
+  },
+  {
+   "id": "phone-5",
+   "field": {
+    "key": "f",
+    "type": "phone"
+   },
+   "value": "919876543210",
+   "ok": false
+  },
+  {
+   "id": "phone-6",
+   "field": {
+    "key": "f",
+    "type": "phone"
+   },
+   "value": "+0123456789",
+   "ok": false
+  },
+  {
+   "id": "phone-7",
+   "field": {
+    "key": "f",
+    "type": "phone"
+   },
+   "value": "+91 9876543210",
+   "ok": false
+  },
+  {
+   "id": "phone-8",
+   "field": {
+    "key": "f",
+    "type": "phone"
+   },
+   "value": "+",
+   "ok": false
+  },
+  {
+   "id": "phone-9",
+   "field": {
+    "key": "f",
+    "type": "phone"
+   },
+   "value": 919876543210,
+   "ok": false
+  },
+  {
+   "id": "phone-10",
+   "field": {
+    "key": "f",
+    "type": "phone"
+   },
+   "value": null,
+   "ok": false
+  },
+  {
+   "id": "geo-0",
+   "field": {
+    "key": "f",
+    "type": "geo"
+   },
+   "value": {
+    "lat": 12.97,
+    "lng": 77.59
+   },
+   "ok": true,
+   "out": {
+    "lat": 12.97,
+    "lng": 77.59
+   }
+  },
+  {
+   "id": "geo-1",
+   "field": {
+    "key": "f",
+    "type": "geo"
+   },
+   "value": {
+    "lat": 90,
+    "lng": 180
+   },
+   "ok": true,
+   "out": {
+    "lat": 90,
+    "lng": 180
+   }
+  },
+  {
+   "id": "geo-2",
+   "field": {
+    "key": "f",
+    "type": "geo"
+   },
+   "value": {
+    "lat": -90,
+    "lng": -180
+   },
+   "ok": true,
+   "out": {
+    "lat": -90,
+    "lng": -180
+   }
+  },
+  {
+   "id": "geo-3",
+   "field": {
+    "key": "f",
+    "type": "geo"
+   },
+   "value": {
+    "lat": 91,
+    "lng": 0
+   },
+   "ok": false
+  },
+  {
+   "id": "geo-4",
+   "field": {
+    "key": "f",
+    "type": "geo"
+   },
+   "value": {
+    "lat": 0,
+    "lng": 181
+   },
+   "ok": false
+  },
+  {
+   "id": "geo-5",
+   "field": {
+    "key": "f",
+    "type": "geo"
+   },
+   "value": {
+    "lat": 0
+   },
+   "ok": false
+  },
+  {
+   "id": "geo-6",
+   "field": {
+    "key": "f",
+    "type": "geo"
+   },
+   "value": {
+    "lat": 1e-07,
+    "lng": 0
+   },
+   "ok": false
+  },
+  {
+   "id": "geo-7",
+   "field": {
+    "key": "f",
+    "type": "geo"
+   },
+   "value": {
+    "lat": "1",
+    "lng": 2
+   },
+   "ok": false
+  },
+  {
+   "id": "geo-8",
+   "field": {
+    "key": "f",
+    "type": "geo"
+   },
+   "value": {
+    "lat": true,
+    "lng": 2
+   },
+   "ok": false
+  },
+  {
+   "id": "geo-9",
+   "field": {
+    "key": "f",
+    "type": "geo"
+   },
+   "value": {
+    "lat": 1,
+    "lng": 2,
+    "extra": 3
+   },
+   "ok": false
+  },
+  {
+   "id": "geo-10",
+   "field": {
+    "key": "f",
+    "type": "geo"
+   },
+   "value": "12,77",
+   "ok": false
+  },
+  {
+   "id": "geo-11",
+   "field": {
+    "key": "f",
+    "type": "geo"
+   },
+   "value": null,
+   "ok": false
+  },
+  {
+   "id": "text-many-0",
+   "field": {
+    "key": "f",
+    "type": "text",
+    "many": true
+   },
+   "value": [
+    "a",
+    "b"
+   ],
+   "ok": true,
+   "out": [
+    "a",
+    "b"
+   ]
+  },
+  {
+   "id": "text-many-1",
+   "field": {
+    "key": "f",
+    "type": "text",
+    "many": true
+   },
+   "value": [],
+   "ok": true,
+   "out": []
+  },
+  {
+   "id": "text-many-2",
+   "field": {
+    "key": "f",
+    "type": "text",
+    "many": true
+   },
+   "value": "a",
+   "ok": false
+  },
+  {
+   "id": "text-many-3",
+   "field": {
+    "key": "f",
+    "type": "text",
+    "many": true
+   },
+   "value": [
+    "a",
+    null
+   ],
+   "ok": false
+  },
+  {
+   "id": "text-many-4",
+   "field": {
+    "key": "f",
+    "type": "text",
+    "many": true
+   },
+   "value": [
+    "a",
+    5
+   ],
+   "ok": false
+  },
+  {
+   "id": "text-many-5",
+   "field": {
+    "key": "f",
+    "type": "text",
+    "many": true
+   },
+   "value": [
+    {
+     "$repeat": "a",
+     "count": 2001
+    }
+   ],
+   "ok": false
+  },
+  {
+   "id": "number-many-6",
+   "field": {
+    "key": "f",
+    "type": "number",
+    "many": true
+   },
+   "value": [
+    1,
+    2.5
+   ],
+   "ok": true,
+   "out": [
+    1,
+    2.5
+   ]
+  },
+  {
+   "id": "email-many-7",
+   "field": {
+    "key": "f",
+    "type": "email",
+    "many": true
+   },
+   "value": [
+    "A@B.CO",
+    "c@d.io"
+   ],
+   "ok": true,
+   "out": [
+    "a@b.co",
+    "c@d.io"
+   ]
+  },
+  {
+   "id": "date-many-8",
+   "field": {
+    "key": "f",
+    "type": "date",
+    "many": true
+   },
+   "value": [
+    "2024-01-01",
+    "2024-13-01"
+   ],
+   "ok": false
+  },
+  {
+   "id": "select-many-9",
+   "field": {
+    "key": "f",
+    "type": "select",
+    "many": true,
+    "options": [
+     "Open",
+     "Closed"
+    ]
+   },
+   "value": [
+    "Open",
+    "Closed",
+    "Open"
+   ],
+   "ok": true,
+   "out": [
+    "Open",
+    "Closed",
+    "Open"
+   ]
+  },
+  {
+   "id": "text-many-10",
+   "field": {
+    "key": "f",
+    "type": "text",
+    "many": true
+   },
+   "value": [
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a"
+   ],
+   "ok": true,
+   "out": [
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a"
+   ]
+  },
+  {
+   "id": "text-many-11",
+   "field": {
+    "key": "f",
+    "type": "text",
+    "many": true
+   },
+   "value": [
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a",
+    "a"
+   ],
+   "ok": false
+  }
+ ],
+ "records": [
+  {
+   "id": "record-0",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "Ship it"
+   },
+   "ok": true,
+   "out": {
+    "title": "Ship it"
+   }
+  },
+  {
+   "id": "record-1",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "Ship it",
+    "qty": 3,
+    "status": "Open",
+    "tags": [
+     "a",
+     "b"
+    ],
+    "due": "2024-03-01T05:30:00+05:30",
+    "owner": "Ann@Example.com",
+    "done": false
+   },
+   "ok": true,
+   "out": {
+    "title": "Ship it",
+    "qty": 3,
+    "status": "Open",
+    "tags": [
+     "a",
+     "b"
+    ],
+    "due": "2024-03-01T00:00:00Z",
+    "owner": "ann@example.com",
+    "done": false
+   }
+  },
+  {
+   "id": "record-2",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "Ship it",
+    "qty": null,
+    "status": null
+   },
+   "ok": true,
+   "out": {
+    "title": "Ship it"
+   }
+  },
+  {
+   "id": "record-3",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "Ship it",
+    "qty": "",
+    "status": ""
+   },
+   "ok": false,
+   "error_field": "qty"
+  },
+  {
+   "id": "record-4",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "Ship it",
+    "tags": []
+   },
+   "ok": true,
+   "out": {
+    "title": "Ship it",
+    "tags": []
+   }
+  },
+  {
+   "id": "record-5",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "Ship it",
+    "tags": [
+     "a",
+     null
+    ]
+   },
+   "ok": false,
+   "error_field": "tags"
+  },
+  {
+   "id": "record-6",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "  "
+   },
+   "ok": false,
+   "error_field": "title"
+  },
+  {
+   "id": "record-7",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": ""
+   },
+   "ok": false,
+   "error_field": "title"
+  },
+  {
+   "id": "record-8",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": null
+   },
+   "ok": false,
+   "error_field": "title"
+  },
+  {
+   "id": "record-9",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {},
+   "ok": false,
+   "error_field": "title"
+  },
+  {
+   "id": "record-10",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "Ship it",
+    "nope": 1
+   },
+   "ok": false,
+   "error_field": "nope"
+  },
+  {
+   "id": "record-11",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "Ship it",
+    "Bad Key": 1
+   },
+   "ok": false,
+   "error_field": "?"
+  },
+  {
+   "id": "record-12",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "Ship it",
+    "qty": "x",
+    "status": "Other"
+   },
+   "ok": false,
+   "error_field": "qty"
+  },
+  {
+   "id": "record-13",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": 5,
+    "qty": "x"
+   },
+   "ok": false,
+   "error_field": "title"
+  },
+  {
+   "id": "record-14",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "Ship it",
+    "done": null
+   },
+   "ok": true,
+   "out": {
+    "title": "Ship it"
+   }
+  },
+  {
+   "id": "record-15",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "Ship it",
+    "status": "  "
+   },
+   "ok": false,
+   "error_field": "status"
+  },
+  {
+   "id": "record-16",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "\u0085"
+   },
+   "ok": false,
+   "error_field": "title"
+  },
+  {
+   "id": "record-17",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "\u001f"
+   },
+   "ok": false,
+   "error_field": "title"
+  },
+  {
+   "id": "record-18",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "\ufeff"
+   },
+   "ok": true,
+   "out": {
+    "title": "\ufeff"
+   }
+  },
+  {
+   "id": "record-19",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": {
+    "title": "\u2028 "
+   },
+   "ok": false,
+   "error_field": "title"
+  },
+  {
+   "id": "record-20",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": [],
+   "ok": false,
+   "record_error": true
+  },
+  {
+   "id": "record-21",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": "x",
+   "ok": false,
+   "record_error": true
+  },
+  {
+   "id": "record-22",
+   "fields": [
+    {
+     "key": "title",
+     "type": "text",
+     "required": true
+    },
+    {
+     "key": "qty",
+     "type": "number"
+    },
+    {
+     "key": "status",
+     "type": "select",
+     "options": [
+      "Open",
+      "Closed"
+     ]
+    },
+    {
+     "key": "tags",
+     "type": "text",
+     "many": true
+    },
+    {
+     "key": "due",
+     "type": "datetime"
+    },
+    {
+     "key": "owner",
+     "type": "email"
+    },
+    {
+     "key": "done",
+     "type": "checkbox"
+    }
+   ],
+   "data": null,
+   "ok": false,
+   "record_error": true
+  }
+ ]
+}

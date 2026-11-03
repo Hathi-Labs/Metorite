@@ -178,6 +178,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "export_tasks": [{}, {"project_id": UUID, "overdue": True, "shown_fields": "status"}],
     # S5 — the rest of the reads
     "project_access": [{"project_id": UUID}],
+    # WS-ALN ALN-2a — the member's own open decisions
+    "my_decisions": [{}],
     "project_views": [{"project_id": UUID}],
     "calendar": [
         {"start": "2026-09-22", "end": "2026-09-29", "project_id": UUID},
@@ -705,6 +707,9 @@ async def test_every_route_mapped_to_a_built_tool_is_reached_by_it(monkeypatch) 
             reached.add((row.method, row.path))
     built = set(skill_projects.__all__) & m.tools_by_class("A")
     expected = {(r.method, r.path) for r in m.MANIFEST if r.tool in built}
+    # RX-1: a held card reads this row, not a read tool. The fence that reaches
+    # it is ``tests/unit/test_held_card_promises.py``.
+    expected.discard(("GET", "/projects/nodes/{project_id}/audience"))
     unreached = sorted(expected - reached)
     assert not unreached, (
         "manifest rows whose built tool never calls them — repoint, exclude, "

@@ -99,7 +99,16 @@ function useHasChats(on: boolean): boolean | null {
  * The one bubble. `field` draws it under the desktop field, tail up.
  * `tab` draws it above the phone's Ask tab, tail down.
  */
-export function ChatNudge({ placement, hidden = false }: { placement: "field" | "tab"; hidden?: boolean }) {
+export function ChatNudge({
+  placement,
+  hidden = false,
+  onShow,
+}: {
+  placement: "field" | "tab";
+  hidden?: boolean;
+  /** Told whether the bubble shows. The Ask bar holds its field while it does. */
+  onShow?: (shows: boolean) => void;
+}) {
   // Read once, as every shell flag is.
   const [chatFirst] = useState(() => chatFirstOn());
   const shell = useShellPrefs();
@@ -128,6 +137,10 @@ export function ChatNudge({ placement, hidden = false }: { placement: "field" | 
       assistantOpen: assistant.open,
       hasChats,
     });
+
+  useEffect(() => {
+    onShow?.(shows);
+  }, [onShow, shows]);
 
   // The phone's page moves its last row up while the bubble shows.
   useEffect(() => {

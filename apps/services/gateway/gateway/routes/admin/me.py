@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from acb_auth import UserContext, get_current_user
 from acb_auth.permissions import CAPABILITIES
@@ -663,3 +664,95 @@ async def put_my_shell(
         _log.warning("auth.shell.write_failed", error=str(exc)[:160])
         raise HTTPException(status_code=503, detail="unavailable") from exc
     return _answer(stored_shell(stored) if stored is not None else dict(EMPTY_SHELL), user)
+
+
+# ── /auth/me/zone — the member's time zone (RX-7) ──────────────────────────
+#
+# `calendar_events_reminders.md` §5.6 (RX-7). The gateway reads a member's day
+# from `user_settings.timezone`: the morning summary, "tomorrow at 5" in chat,
+# and the window of My Day. The shell saves the browser's zone once (RX-5,
+# `lib/shell/saveZone.ts`), and `/tasks/settings` needs `feature:tasks`. A
+# member without it could not save a zone, so the summary used UTC for them.
+#
+# This route needs only a signed-in member, as `/auth/me/shell` does. It reads
+# and writes the member's OWN row in the session's tenant. The write is the
+# one write of the settings row (`write_member_settings`), so no second writer
+# exists. The member and the tenant come from the session only (R5). The body
+# names neither, and the model refuses a key it does not know.
+#
+# Fence: `tests/unit/test_auth_me_zone.py`.
+
+#: The longest zone name the route takes. The longest IANA name is under 40.
+MAX_ZONE = 64
+
+_READ_ZONE_SQL = (
+    "SELECT timezone FROM user_settings "
+    "WHERE organization_id = {org} AND user_id = :uid"
+)
+
+
+def valid_zone(value: Any) -> str | None:
+    """``value`` when it is an IANA zone name, else None."""
+    if not isinstance(value, str) or not value or len(value) > MAX_ZONE:
+        return None
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        # OSError: "America" is a directory of the zone database, not a zone.
+        return None
+    return value
+
+
+class ZoneIn(BaseModel):
+    """What `PUT /auth/me/zone` accepts: one IANA zone name."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    timezone: str = Field(max_length=MAX_ZONE)
+
+    @field_validator("timezone")
+    @classmethod
+    def _zone(cls, v: str) -> str:
+        if valid_zone(v) is None:
+            raise ValueError("timezone is an IANA zone name, such as Asia/Kolkata")
+        return v
+
+
+@me_router.get("/me/zone", summary="The caller's saved time zone (RX-7)")
+async def get_my_zone(user: UserContext = Depends(get_current_user)) -> dict[str, str]:
+    """The saved zone. A member with no row reads ``UTC``, the column default,
+    as `GET /tasks/settings` does. A failed read answers 503, never a zone."""
+    from gateway.routes.tasks.settings import _BOUND_ORG
+    from sqlalchemy import text
+
+    uid = _member(user)
+    if not uid:
+        raise HTTPException(status_code=403, detail="Sign in to read your time zone")
+    try:
+        async with _tenant_session() as db:
+            row = (await db.execute(
+                text(_READ_ZONE_SQL.format(org=_BOUND_ORG)), {"uid": uid},
+            )).first()
+    except Exception as exc:
+        _log.warning("auth.zone.read_failed", error=str(exc)[:160])
+        raise HTTPException(status_code=503, detail="unavailable") from exc
+    return {"timezone": valid_zone(row[0] if row is not None else None) or "UTC"}
+
+
+@me_router.put("/me/zone", summary="Save the caller's time zone (RX-7)")
+async def put_my_zone(
+    body: ZoneIn, user: UserContext = Depends(get_current_user),
+) -> dict[str, str]:
+    """Save the zone in the member's own settings row. It needs a signed-in
+    member and no app feature."""
+    from gateway.routes.tasks.settings import write_member_settings
+
+    uid = _member(user)
+    if not uid:
+        raise HTTPException(status_code=403, detail="Sign in to save your time zone")
+    try:
+        await write_member_settings(uid, {"timezone": body.timezone})
+    except Exception as exc:
+        _log.warning("auth.zone.write_failed", error=str(exc)[:160])
+        raise HTTPException(status_code=503, detail="unavailable") from exc
+    return {"timezone": body.timezone}

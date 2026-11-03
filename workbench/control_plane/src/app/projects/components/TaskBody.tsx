@@ -91,7 +91,7 @@ import {
 } from "@/app/tasks/components/PriorityControls";
 import { importanceFor } from "@/app/tasks/lib/priority";
 import { matrixOf } from "../lib/matrix";
-import { dueInstantForDay } from "../lib/quickAdd";
+import { dueDayOf, dueInstantForDay } from "../lib/quickAdd";
 import { AssigneePicker } from "./AssigneePicker";
 import { AssigneeChips } from "./AssigneeChips";
 import { CustomFieldValues } from "./CustomFieldValues";
@@ -1067,7 +1067,7 @@ export function TaskBody({
                   type="date"
                   inputSize="sm"
                   aria-label="Due date"
-                  value={task.due_at ? task.due_at.slice(0, 10) : ""}
+                  value={task.due_at ? dueDayOf(task.due_at) : ""}
                   disabled={busy}
                   onChange={(e) =>
                     void patch({

@@ -16,7 +16,7 @@ import { useToast } from "@/components/ui/Toast";
 
 import { removeRow, setRowError } from "./needsActs";
 import { type ActResult, runReminderAct, runReminderMove } from "./reminderOpen";
-import { type BandRow, type SnoozeChoice, localIso, snoozedWords, undoMove } from "./reminderBand";
+import { type BandRow, type SnoozeChoice, snoozedWords, undoMove } from "./reminderBand";
 import { FIRED_REMINDER_KINDS, reminderIdOf } from "./reminderKinds";
 import type { NeedsItem } from "./needs";
 
@@ -86,10 +86,10 @@ async function undoDone(row: ActRow, deps: ActDeps): Promise<void> {
 export async function snoozeReminder(row: ActRow, choice: SnoozeChoice, deps: ActDeps): Promise<boolean> {
   setRowError(row.key, null);
   const nowMs = deps.now().getTime();
-  const out = await deps.move(row.id, "snooze", localIso(choice.at));
+  const out = await deps.move(row.id, "snooze", choice.iso);
   if (fail(row, out)) return false;
   removeRow(row.key, true);
-  deps.say(snoozedWords(choice.at, deps.now()), () => void undoSnooze(row, nowMs, deps));
+  deps.say(snoozedWords(choice, deps.now()), () => void undoSnooze(row, nowMs, deps));
   deps.refresh();
   return true;
 }

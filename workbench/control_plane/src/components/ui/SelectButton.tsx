@@ -304,6 +304,11 @@ export interface SelectButtonProps {
    */
   panelMaxHeight?: number;
   /**
+   * Which edge of the trigger the list hangs from (`AnchoredPanel`). `end`
+   * keeps a wide list inside the window for a trigger near the right edge.
+   */
+  align?: "start" | "end";
+  /**
    * WS-53 CRM-C4p. The id of the trigger, so a `<label htmlFor>` names it.
    * Absent: no id, as before.
    */
@@ -329,6 +334,7 @@ export function SelectButton({
   defaultValue = "",
   className = "",
   widthClass = "w-[9rem]",
+  align,
   disabled = false,
   autoOpen = false,
   onClose,
@@ -454,6 +460,7 @@ export function SelectButton({
         // The inline max-height `AnchoredPanel` sets beats the class, so
         // `max-h-64` only stays as the fallback when no number is given.
         maxHeight={panelMaxHeight}
+        align={align}
         className="max-h-64 w-max p-1"
         panelProps={structured ? undefined : { id: listId, role: "listbox", "aria-label": label }}
       >

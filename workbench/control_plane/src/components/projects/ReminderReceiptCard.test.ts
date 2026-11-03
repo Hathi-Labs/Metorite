@@ -79,6 +79,27 @@ describe("the reminder receipt card", () => {
     expect(labels).toEqual(expect.arrayContaining(["Undo", "Change time", "See in Calendar"]));
   });
 
+  // RX-7. Mutation: drop `mine &&` from the Undo, the act row or the picker in
+  // the card, and this fails. Drop `mine={mine}` in `ReminderReceiptHost`, and
+  // the wiring test below fails.
+  it("offers no act to a member who did not run the turn (a shared chat)", () => {
+    const html = renderToStaticMarkup(
+      createElement(ReminderReceiptCard, {
+        id: "t1",
+        label: "Reminder set",
+        receipt: readReminderReceipt("set_reminder", receiptText({ task: true }))!,
+        openTask: () => {},
+        mine: false,
+      }),
+    );
+    expect(html).toContain("Get a haircut");
+    expect(html).not.toContain(">Undo<");
+    expect(html).not.toContain("Change time");
+    expect(html).not.toContain("See in Calendar");
+    // The linked task is the project's, and it stays.
+    expect(html).toContain("Linked task");
+  });
+
   it("offers no Undo when the receipt names none", () => {
     const html = draw(receiptText({ undo: "" }));
     expect(html).not.toContain(">Undo<");
@@ -140,6 +161,11 @@ describe("the wiring", () => {
     expect(cards.indexOf("if (isReminderReceipt(e)) {")).toBeLessThan(
       cards.indexOf("items.push(<ActionResultCard key={e.id} event={e} />);"),
     );
+  });
+
+  it("the host passes the run member's answer down to the card, and the bubble gives it", () => {
+    expect(cards).toContain("mine={mine}");
+    expect(read("components/MessageBubble.tsx")).toContain("mine={ranByViewer(message, viewerEmail)}");
   });
 
   it("a repeat of a reminder says so on the card", () => {

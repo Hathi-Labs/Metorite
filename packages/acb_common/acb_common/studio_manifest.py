@@ -106,15 +106,22 @@ MAX_DEPTH = 20  # the same bound as `_GENUI_MAX_DEPTH` in `acb_skills/write_arti
 
 #: A key that v1 refuses, and the slice that lifts the refusal.
 # `rules` is an object key since C6 (a list beside `fields`). `state_machine` and `states`
-# stay refused, so a rule has one spelling.
+# stay refused, so a rule has one spelling. A formula is a rule of kind `formula` (C7a),
+# so the key `formula` has no use and C7a lifts its refusal.
+# `formula` and `rollup` stay refused as field types, so a formula has one spelling:
+# the rules list.
 RESERVED_KEYS: dict[str, str] = {
     "rules": "C6",
     "state_machine": "C6",
     "states": "C6",
-    "formula": "C7",
     "code": "L1",
 }
-RESERVED_FIELD_TYPES: dict[str, str] = {"formula": "C7", "rollup": "C7"}
+RESERVED_FIELD_TYPES: dict[str, str] = {"formula": "C7a", "rollup": "C7b"}
+#: The refusal of a field of type `formula`: the formula is a rule, so one spelling holds.
+_FORMULA_TYPE_MESSAGE = (
+    "Field type `formula` is not a field type. Fill a field with a rule of kind `formula` "
+    "in the `rules` of its object."
+)
 RESERVED_BLOCKS: dict[str, str] = {"code": "L1", "custom": "L1", "customUi": "L1"}
 
 #: Subtrees that hold member data, not structure. The reserved-key scan skips them.
@@ -252,6 +259,40 @@ class ViewDef(_Strict):
     text: str | None = None
 
 
+#: The caps of the page shape (STU-D11a). `pageModel.ts` holds the same numbers, and
+#: `pageModel.test.ts` checks them against the `maxItems` of the schema file.
+MAX_PAGES = 8
+MAX_TABS_PER_PAGE = 8
+MAX_CELLS_PER_PAGE = 12
+MAX_COLS = 4
+
+
+class CellDef(_Strict):
+    #: A view of `views`. The check that it exists is `_check_pages`.
+    view: str = Field(pattern=rf"^{_DASHED}$")
+    #: Columns the cell spans. `_check_pages` refuses a span wider than `cols`.
+    span: int | None = Field(default=None, ge=1, le=MAX_COLS)
+
+
+class SideDef(_Strict):
+    view: str = Field(pattern=rf"^{_DASHED}$")
+
+
+class TabDef(_Strict):
+    id: str = Field(pattern=rf"^{_DASHED}$")
+    title: str = Field(min_length=1, pattern=r"\S")
+    cells: list[CellDef] = Field(max_length=MAX_CELLS_PER_PAGE)
+
+
+class PageDef(_Strict):
+    id: str = Field(pattern=rf"^{_DASHED}$")
+    title: str | None = None
+    cols: int = Field(default=2, ge=1, le=MAX_COLS)
+    tabs: list[TabDef] = Field(default_factory=list, max_length=MAX_TABS_PER_PAGE)
+    cells: list[CellDef] = Field(default_factory=list, max_length=MAX_CELLS_PER_PAGE)
+    side: SideDef | None = None
+
+
 class Trigger(_Strict):
     record: str | None = None
     when: dict[str, Any] | None = None
@@ -316,6 +357,8 @@ class Manifest(_Strict):
     objects: list[ObjectDef] = Field(default_factory=list)
     actions: list[ActionDef] = Field(default_factory=list)
     views: list[ViewDef] = Field(default_factory=list)
+    #: How the views sit on a page (STU-D11a). A view stays one block.
+    pages: list[PageDef] = Field(default_factory=list, max_length=MAX_PAGES)
     workflows: list[WorkflowDef] = Field(default_factory=list)
     skill: Skill | None = None
     # The old `shell` block stays as it is. Its job shape (`verb`, `view`) differs from the
@@ -518,7 +561,9 @@ def _structure_errors(exc: ValidationError, skip: set[str]) -> list[ManifestErro
                 msg = f"Block is unknown. Use {', '.join(BLOCKS[:-1])} or {BLOCKS[-1]}.{_got(val)}"
                 limit = 25 + len(BLOCKS)
         elif last == "type" and typ == "literal_error":
-            if isinstance(val, str) and val in RESERVED_FIELD_TYPES:
+            if val == "formula":
+                msg = _FORMULA_TYPE_MESSAGE
+            elif isinstance(val, str) and val in RESERVED_FIELD_TYPES:
                 msg = _reserved(val, RESERVED_FIELD_TYPES[val], "Field type ")
             else:
                 msg = (
@@ -526,6 +571,8 @@ def _structure_errors(exc: ValidationError, skip: set[str]) -> list[ManifestErro
                     f"Use {', '.join(FIELD_TYPES[:-1])} or {FIELD_TYPES[-1]}.{_got(val)}"
                 )
                 limit = 25 + len(FIELD_TYPES)
+        elif typ == "too_long" and "max_length" in (e.get("ctx") or {}):
+            msg = f"This list holds at most {e['ctx']['max_length']} items. Remove the extra ones."
         elif typ == "missing":
             msg = f"`{_short(last)}` is required here."
         else:
@@ -628,6 +675,31 @@ def _check_view(
     for i, name in enumerate(v.actions):
         if name not in action_ids:
             _undeclared(f"{p}.actions[{i}]", "Action", name, "`actions`", out)
+
+
+def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> None:
+    """A page lays out declared views. A page has tabs or cells, never both."""
+    _dupes([p.id for p in m.pages], "$.pages", "page id", out)
+
+    def cell_errors(cells: list[CellDef], base: str, cols: int) -> None:
+        for ci, c in enumerate(cells):
+            if c.view not in view_ids:
+                _undeclared(f"{base}[{ci}].view", "View", c.view, "`views`", out)
+            if c.span is not None and c.span > cols:
+                out.append(_err(f"{base}[{ci}].span", f"A cell spans at most {cols} columns."))
+
+    for pi, pg in enumerate(m.pages):
+        p = f"$.pages[{pi}]"
+        if pg.tabs and pg.cells:
+            out.append(_err(p, "A page has tabs or cells, not both. Remove one."))
+        elif not pg.tabs and not pg.cells:
+            out.append(_err(p, "A page needs tabs or cells. Add one."))
+        _dupes([t.id for t in pg.tabs], f"{p}.tabs", "tab id", out)
+        for ti, t in enumerate(pg.tabs):
+            cell_errors(t.cells, f"{p}.tabs[{ti}].cells", pg.cols)
+        cell_errors(pg.cells, f"{p}.cells", pg.cols)
+        if pg.side and pg.side.view not in view_ids:
+            _undeclared(f"{p}.side.view", "View", pg.side.view, "`views`", out)
 
 
 def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[ManifestError]) -> None:
@@ -765,6 +837,7 @@ def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[Man
         _check_set_keys(ai, a, objects, out)
     for vi, v in enumerate(m.views):
         _check_view(vi, v, objects, action_ids, out)
+    _check_pages(m, {v.id for v in m.views}, out)
     _check_links(m, objects, catalog, out)
     return out
 

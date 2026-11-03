@@ -54,6 +54,7 @@ import {
   actionDisabled, boundView, bindsSource, gridData, parseAction, parseSource, pressAction, sourceKey,
   type BoundView, type Row, type StudioDataDoor,
 } from "@/lib/studio/dataDoor";
+import StudioBoard from "@/components/studio/StudioBoard";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { TypedActionButton } from "@/lib/studio/TypedActionButton";
 import { useCachedResource } from "@/lib/useCachedResource";
@@ -187,6 +188,10 @@ function BoundSource({
   const rows = data as Row[];
   const { source: _drop, ...rest } = props;
   void _drop;
+  // A board is not a template of the registry: it needs the door to move a card.
+  if (s(node.type) === "template" && props.name === "board") {
+    return <StudioBoard data={rest.data} rows={rows} door={door} />;
+  }
   const bound: GenUINode = s(node.type) === "template"
     ? {
       ...node,
