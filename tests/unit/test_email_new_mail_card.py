@@ -31,14 +31,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from acb_skills import ask_tools
+from acb_skills import reply_card as rcard
 from fastapi import BackgroundTasks, HTTPException
 from gateway.routes.email.automation import drafting
 from gateway.routes.email.automation import held_card as hc
 from gateway.routes.email.automation import new_mail_card as nm
 from pydantic import ValidationError
 
-from acb_skills import ask_tools
-from acb_skills import reply_card as rcard
 from tests.unit import _held_card_fakes as F
 
 REPO = Path(__file__).resolve().parents[2]
@@ -46,7 +46,7 @@ TEXT = "Hi Kim,\n\nThe rates are attached."
 #: A bidi override and Unicode tag characters, built with chr().
 BIDI = "Hi " + chr(0x202E) + "evil"
 TAGS = "Hi" + "".join(chr(0xE0000 + ord(c)) for c in "acct")
-#: A Cyrillic "а" inside a Latin word (H-393).
+#: A Cyrillic letter a (U+0430) inside a Latin word (H-393).
 LOOKALIKE_WORD = "Please p" + chr(0x0430) + "y the invoice."
 
 

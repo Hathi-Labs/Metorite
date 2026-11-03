@@ -6462,7 +6462,7 @@ async def _new_mail_card(
         }) or {}
     except GatewayError as exc:
         if exc.status in (404, 409, 422):
-            return f"Not sent. {str(getattr(exc, 'detail', '') or exc)}"
+            return f"Not sent. {getattr(exc, 'detail', '') or exc!s}"
         raise
     card_id = str(prep.get("card_id") or "")
     if not card_id:
@@ -6488,7 +6488,7 @@ async def _new_mail_card(
         }) or {}
     except GatewayError as exc:
         if exc.status in (404, 409, 422):
-            return f"Nothing was sent. {str(getattr(exc, 'detail', '') or exc)}"
+            return f"Nothing was sent. {getattr(exc, 'detail', '') or exc!s}"
         raise
     return _new_mail_result(res, sender, usual)
 

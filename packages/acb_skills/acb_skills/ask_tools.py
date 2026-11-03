@@ -1403,7 +1403,7 @@ def edit_card_channel_open() -> bool:
     channel keeps it too, and that card fails closed. A fault reads False."""
     try:
         return confirmation_channel_open() and not _whatsapp_run()
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
