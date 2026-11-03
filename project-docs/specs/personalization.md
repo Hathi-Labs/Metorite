@@ -1828,8 +1828,11 @@ fewer gets no summary, and so does a chat that holds only the day's brief or
 only tapped rows.
 
 **The cheap filter of the seed (PZ-33b round 4, review P2).** `IDLE_SQL`
-reads `s.updated_at >= :since` first. In the measured plan a BitmapAnd of
-`chat_session_org_idx` and `chat_session_user_idx` serves it. The LATERAL on
+reads `s.updated_at >= :since` first. The measured plan was a BitmapAnd of
+`chat_session_org_idx` and `chat_session_user_idx`. Only the phase-3 set
+`generated/03_constraints.sql` makes the first index. Without it the planner
+reads the second index or scans the table, which is cheap at today's size.
+The LATERAL on
 the newest row stays the exact rule. On 8,000 chats with 300 in the window,
 the round 3 form took 9.8 seconds, and this form took 28 milliseconds (a
 private database, 2026-11-02).
@@ -2037,7 +2040,11 @@ member then sends remains:
 - The ⌘K Ask puts the words that the member typed there in the box. A send
   of them counts as typed. A `/chat?q=` link puts words in the box too, but
   with no mark, because anybody can write a link. A reply of Mira can hold
-  one.
+  one. When the shell chat is off, the ⌘K fallback is a `/chat?q=` link, so
+  it carries no mark either.
+- A pill that the member taps while a run goes on becomes a steer with no
+  mark. So the follow-up run gives the tool-pack chooser no words, and the
+  run loads the pack one step later, through the loader.
 - An upload adds a note with the file name to the box, and the note goes
   with the typed words.
 - A browser that runs an old bundle sends no mark, so its rows count for
