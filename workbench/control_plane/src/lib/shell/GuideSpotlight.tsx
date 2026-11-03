@@ -390,6 +390,130 @@ export function watchDetached(o: {
   };
 }
 
+// ------------------------------------------------------------------- dim ---
+//
+// WS-OB GD-2 (owner request, 2026-11-03): the member could not find the step
+// card among the other cards on screen. While a step is up, ONE dim layer
+// covers the window and leaves two clear holes: the ringed part, and the part
+// that carries the step (the card in the side chat, or the phone strip).
+// The fill is the one scrim token of `DESIGN_SYSTEM.md` section 4a, the one
+// `ui/Modal` uses. The layer takes no pointer, so a press and a Tab reach the
+// page as before (spec section 3 G3, section 5.3). It has no transition, so it
+// leaves in the same frame as the ring (G10).
+
+/** A clear hole in the dim layer, with its corner radius. */
+export type DimHole = { left: number; top: number; width: number; height: number; r: number };
+export type DimCarrier = { rect: Rect; radius: number };
+
+/** The corner radius of the ring (`rounded-lg`) and of the strip's hole. */
+const ANCHOR_RADIUS = 8;
+/** The step card is `rounded-2xl` (16 px), plus the hole's pad. */
+const CARD_RADIUS = 20;
+const CONTAIN_SLACK = 0.5;
+
+function holeOf(rect: Rect, radius: number, viewport: Viewport): DimHole | null {
+  const b = clampRing(ringBox(rect), viewport);
+  return b.width > 0 && b.height > 0 ? { ...b, r: radius } : null;
+}
+
+/**
+ * The holes of the dim layer. The anchor's hole has the ring's box (padded,
+ * clamped to the window). The carrier's hole has the same pad. A carrier inside
+ * the anchor's hole (stop 3 rings the assistant, and the card is inside it)
+ * adds none. A missing anchor leaves the carrier's hole alone. Pure.
+ */
+export function dimHoles(anchor: Rect | null, carrier: DimCarrier | null, viewport: Viewport): DimHole[] {
+  const a = anchor ? holeOf(anchor, ANCHOR_RADIUS, viewport) : null;
+  const c = carrier ? holeOf(carrier.rect, carrier.radius, viewport) : null;
+  const inside =
+    !!a &&
+    !!c &&
+    c.left >= a.left - CONTAIN_SLACK &&
+    c.top >= a.top - CONTAIN_SLACK &&
+    c.left + c.width <= a.left + a.width + CONTAIN_SLACK &&
+    c.top + c.height <= a.top + a.height + CONTAIN_SLACK;
+  return [a, inside ? null : c].filter((h): h is DimHole => h !== null);
+}
+
+/** The step's carrier that is on screen: the card, or the strip. Null when none is in view. */
+export function findCarrier(root: Document = document): DimCarrier | null {
+  const pick = (sel: string, radius: number): DimCarrier | null => {
+    const el = pickVisible(root.querySelectorAll<HTMLElement>(sel), (e) => {
+      if (!isShown(e)) return false;
+      // A carrier under the Menu drawer or a dialog is not in view: it gets no hole.
+      const r = e.getBoundingClientRect();
+      const top = root.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return !!top && e.contains(top);
+    });
+    return el ? { rect: el.getBoundingClientRect(), radius } : null;
+  };
+  return pick("[data-guide-card]", CARD_RADIUS) ?? pick("[data-guide-strip]", ANCHOR_RADIUS);
+}
+
+const sameHoles = (a: DimHole[], b: DimHole[]) =>
+  a.length === b.length && a.every((h, i) => h.left === b[i].left && h.top === b[i].top && h.width === b[i].width && h.height === b[i].height && h.r === b[i].r);
+
+const MASK_ID = "guide-dim-mask";
+
+export type GuideDimProps = {
+  /** The anchor id of the step, or null for a step with none. */
+  anchor: string | null;
+  /** The anchor did not appear: only the carrier's hole stays. */
+  missing?: boolean;
+};
+
+/**
+ * The dim layer. `GuideHost` mounts it BEFORE the spotlight, so the ring and
+ * the popover come after it in the body and paint over it. It draws nothing
+ * until the anchor is found (or missing), so the page never flashes dark.
+ */
+export function GuideDim({ anchor, missing = false }: GuideDimProps) {
+  const [holes, setHoles] = useState<DimHole[] | null>(null);
+  const measure = useCallback(() => {
+    const vp = { width: window.innerWidth, height: window.innerHeight };
+    const el = anchor ? findAnchor(anchor) : null;
+    if (anchor && !el && !missing) return setHoles((h) => (h === null ? h : null));
+    const next = dimHoles(el ? el.getBoundingClientRect() : null, findCarrier(), vp);
+    setHoles((h) => (h && sameHoles(h, next) ? h : next));
+  }, [anchor, missing]);
+
+  useLayoutEffect(() => {
+    measure();
+    // Scroll is captured: the element that scrolls is rarely an ancestor of the portal.
+    window.addEventListener("scroll", measure, true);
+    window.addEventListener("resize", measure);
+    window.addEventListener("transitionend", measure, true);
+    // The card appears after the assistant opens, with no event of its own.
+    const stop = observeDom(measure);
+    return () => {
+      window.removeEventListener("scroll", measure, true);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("transitionend", measure, true);
+      stop();
+    };
+  }, [measure]);
+
+  if (!holes) return null;
+  return createPortal(
+    <svg
+      aria-hidden="true"
+      data-guide-dim=""
+      className={`pointer-events-none fixed inset-0 ${PANEL_LAYERS.top} h-full w-full`}
+    >
+      <defs>
+        <mask id={MASK_ID} maskUnits="userSpaceOnUse" x="0" y="0" width="100%" height="100%">
+          <rect x="0" y="0" width="100%" height="100%" fill="white" />
+          {holes.map((h, i) => (
+            <rect key={i} data-guide-hole="" x={h.left} y={h.top} width={h.width} height={h.height} rx={h.r} fill="black" />
+          ))}
+        </mask>
+      </defs>
+      <rect x="0" y="0" width="100%" height="100%" mask={`url(#${MASK_ID})`} className="fill-background/80" />
+    </svg>,
+    document.body,
+  );
+}
+
 const domScheduler: Scheduler = {
   set: (fn, ms) => setTimeout(fn, ms),
   clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),

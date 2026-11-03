@@ -63,6 +63,12 @@ async function stub(page: Page): Promise<void> {
 }
 
 const ring = (page: Page) => page.locator("[data-guide-ring]");
+const dim = (page: Page) => page.locator("[data-guide-dim]");
+const holes = (page: Page) =>
+  page.locator("[data-guide-dim] [data-guide-hole]").evaluateAll((els) =>
+    els.map((e) => ({ x: +e.getAttribute("x")!, y: +e.getAttribute("y")!, w: +e.getAttribute("width")!, h: +e.getAttribute("height")! })),
+  );
+const near = (a: number, b: number) => Math.abs(a - b) <= 2;
 const popover = (page: Page) => page.locator("[data-guide-popover]");
 const stored = (page: Page) => page.evaluate(() => sessionStorage.getItem("metorite.guide.v1"));
 
@@ -160,6 +166,68 @@ test.describe("desktop", () => {
     await expect(page.locator("[data-assistant] textarea")).toBeEnabled();
   });
 
+  test("a dim layer covers the page, leaves the ring and the step card clear, and takes no pointer", async ({ page }) => {
+    await stub(page);
+    await page.goto("/?guide=home.tour");
+    await expect(popover(page)).toContainText("1 of 5");
+    // Stop 1: the dim layer is there, under the ring, with the ring's box as a hole.
+    await expect(dim(page)).toHaveCount(1);
+    await expect(dim(page)).toHaveCSS("pointer-events", "none");
+    const rb = (await ring(page).boundingBox())!;
+    await expect.poll(async () => (await holes(page)).some((h) => near(h.x, rb.x) && near(h.y, rb.y) && near(h.w, rb.width) && near(h.h, rb.height))).toBe(true);
+    // The popover is later in the body than the dim layer, so it paints over it.
+    const order = await page.evaluate(() => {
+      const kids = [...document.body.children];
+      const d = kids.findIndex((e) => e.hasAttribute("data-guide-dim"));
+      const p = kids.findIndex((e) => e.hasAttribute("data-guide-popover"));
+      const r = kids.findIndex((e) => e.hasAttribute("data-guide-ring"));
+      return d >= 0 && d < r && d < p;
+    });
+    expect(order).toBe(true);
+    // A PLAIN click on a link in the ringed app list still navigates.
+    const link = page.locator('[data-guide="home.app-list"] a[href^="/"]:not([href="/"])').first();
+    const target = new URL((await link.getAttribute("href"))!, "http://x").pathname;
+    await link.click();
+    await expect.poll(() => new URL(page.url()).pathname).toBe(target);
+  });
+
+  test("at stop 4 the card has a hole, the rest is dimmed, and Escape removes the layer in one frame", async ({ page }) => {
+    await stub(page);
+    await page.goto("/?guide=home.tour");
+    await expect(popover(page)).toContainText("1 of 5");
+    for (let i = 0; i < 3; i++) {
+      // The popover carries stops 1 and 2. The step card carries the chat stops.
+      await page.locator("[data-guide-popover],[data-guide-card]").getByRole("button", { name: "Next" }).first().click();
+      await expect(page.locator("[data-guide-popover],[data-guide-card]").first()).toContainText(`${i + 2} of 5`);
+    }
+    const card = page.locator("[data-guide-card]");
+    await expect(card).toContainText("4 of 5");
+    await expect(card).toHaveCSS("box-shadow", /.+/);
+    await expect(dim(page)).toHaveCount(1);
+    const cb = (await card.boundingBox())!;
+    await expect.poll(async () => (await holes(page)).some((h) => near(h.x, cb.x - 4) && near(h.y, cb.y - 4) && near(h.w, cb.width + 8) && near(h.h, cb.height + 8))).toBe(true);
+    // A point outside every hole is dimmed: it sits in the mask's solid part.
+    const hs = await holes(page);
+    const vp = page.viewportSize()!;
+    const outside = [[8, 8], [vp.width / 2, vp.height - 8], [vp.width - 8, 8], [8, vp.height - 8]].find(
+      ([x, y]) => !hs.some((h) => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h),
+    );
+    expect(outside, "a point outside both holes").toBeDefined();
+    // The dim layer's fill is the scrim token: it is not empty, and not black.
+    const fill = await dim(page).locator("rect[mask]").evaluate((e) => getComputedStyle(e).fill);
+    expect(fill).not.toBe("none");
+    expect(fill).not.toBe("rgb(0, 0, 0)");
+    // Escape: the layer is gone in the same frame.
+    const gone = await page.evaluate(
+      () =>
+        new Promise<boolean>((resolve) => {
+          document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+          requestAnimationFrame(() => resolve(document.querySelector("[data-guide-dim]") === null));
+        }),
+    );
+    expect(gone).toBe(true);
+  });
+
   test("no guide starts with no ?guide= and no stored mark", async ({ page }) => {
     await stub(page);
     await page.goto("/");
@@ -233,6 +301,29 @@ test.describe("phone", () => {
     await carrier(4).getByRole("button", { name: "End tour" }).click();
     await expect(ring(page)).toHaveCount(0);
     expect(await stored(page)).toBeNull();
+  });
+
+  test("the strip has a hole in the dim layer at 390 px", async ({ page }) => {
+    await stub(page);
+    await page.goto("/?guide=home.tour");
+    await expect(popover(page)).toContainText("1 of 5");
+    await popover(page).getByRole("button", { name: "Next" }).click();
+    const strip = page.locator("[data-guide-strip]");
+    await expect(strip).toContainText("2 of 5");
+    await expect(dim(page)).toHaveCount(1);
+    const vp = page.viewportSize()!;
+    // The hole is the strip's box with the ring's pad, held 4 px inside the window.
+    // The strip rises under a move, so each poll reads its box again.
+    await expect
+      .poll(async () => {
+        const sb = (await strip.boundingBox())!;
+        const left = Math.max(4, sb.x - 4);
+        const top = Math.max(4, sb.y - 4);
+        const right = Math.min(vp.width - 4, sb.x + sb.width + 4);
+        const bottom = Math.min(vp.height - 4, sb.y + sb.height + 4);
+        return (await holes(page)).some((h) => near(h.x, left) && near(h.y, top) && near(h.x + h.w, right) && near(h.y + h.h, bottom));
+      })
+      .toBe(true);
   });
 
   test("a tap on the drawer scrim removes the ring, and the step is missing, not detached", async ({ page }) => {

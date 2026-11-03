@@ -20,6 +20,7 @@ import {
   bindAnchorClick,
   bindEscape,
   clampRing,
+  dimHoles,
   placePopover,
   prefersReducedMotion,
   ringBox,
@@ -445,5 +446,60 @@ describe("rule 10: a ringed anchor that leaves the page", () => {
     expect(CODE).toMatch(/watchDetached\(\{[\s\S]*?isGone: \(\) => !el\.isConnected \|\| !isShown\(el\)/);
     expect(CODE).toMatch(/setAttempt\(\(n\) => n \+ 1\)/);
     expect(CODE).toMatch(/\[anchor, waitMs, attempt\]/);
+  });
+});
+
+describe("rule 11: the dim layer (owner request 2026-11-03)", () => {
+  const vp = { width: 1440, height: 900 };
+  const rect = (left: number, top: number, width: number, height: number) => ({
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+  });
+  const anchor = rect(200, 100, 300, 400);
+  const card = { rect: rect(1100, 700, 320, 140), radius: 20 };
+
+  it("cuts one hole for the anchor, with the ring's box, and one for the carrier", () => {
+    const holes = dimHoles(anchor, card, vp);
+    expect(holes).toHaveLength(2);
+    expect(holes[0]).toMatchObject({ left: 196, top: 96, width: 308, height: 408 });
+    expect(holes[1]).toMatchObject({ left: 1096, top: 696, width: 328, height: 148, r: 20 });
+  });
+
+  it("clamps both holes to the window", () => {
+    const [a, c] = dimHoles(rect(-50, -20, 2000, 3000), { rect: rect(1400, 880, 200, 100), radius: 8 }, vp);
+    expect(a).toMatchObject({ left: 4, top: 4, width: 1432, height: 892 });
+    expect(c).toBeUndefined();
+  });
+
+  it("cuts one hole when the carrier sits inside the anchor (stop 3 rings the assistant)", () => {
+    const panel = rect(1040, 60, 380, 780);
+    const holes = dimHoles(panel, { rect: rect(1056, 640, 348, 120), radius: 20 }, vp);
+    expect(holes).toHaveLength(1);
+    expect(holes[0]).toMatchObject({ left: 1036, top: 56 });
+  });
+
+  it("keeps only the carrier's hole when the anchor is missing, and none when both are", () => {
+    expect(dimHoles(null, card, vp)).toHaveLength(1);
+    expect(dimHoles(null, card, vp)[0]).toMatchObject({ left: 1096, r: 20 });
+    expect(dimHoles(anchor, null, vp)).toHaveLength(1);
+    expect(dimHoles(null, null, vp)).toEqual([]);
+  });
+
+  it("fills with the one scrim token, takes no pointer, and has no transition", () => {
+    // DESIGN_SYSTEM.md section 4a: the fill is `bg-background/80` on a box, `fill-background/80` on a mask rect.
+    expect(CODE).toMatch(/className="fill-background\/80"/);
+    expect(CODE).not.toMatch(/bg-black|fill-black|bg-\[|#[0-9a-f]{3,6}/i);
+    expect(CODE).toMatch(/data-guide-dim=""[\s\S]*?className=\{`pointer-events-none fixed inset-0 \$\{PANEL_LAYERS\.top\}/);
+    expect(CODE).toMatch(/<mask[\s\S]*<rect[^>]*fill="white"[\s\S]*data-guide-hole/);
+  });
+
+  it("mounts in the host before the spotlight, so the ring and popover paint over it", () => {
+    const host = readFileSync(join(__dirname, "GuideHost.tsx"), "utf-8");
+    expect(host.indexOf("{dim}")).toBeGreaterThan(0);
+    expect(host.indexOf("{dim}")).toBeLessThan(host.indexOf("{spot}"));
   });
 });

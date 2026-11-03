@@ -646,7 +646,7 @@ function PeekStrip({
   if (tourView) {
     const words = tourView.missing ? `${tourView.say} ${ANCHOR_MISSING_NOTE}` : tourView.say;
     return (
-      <div ref={rowRef} data-assistant-strip="" data-guide-strip="" className="flex h-14 w-full items-center gap-2 px-3">
+      <div ref={rowRef} data-assistant-strip="" data-guide-strip="" className="flex h-14 w-full items-center gap-2 px-3 ring-2 ring-inset ring-primary">
         <Icon name="Sparkles" size={18} className="shrink-0 text-primary" />
         <span data-assistant-strip-text="" className="min-w-0 flex-1 line-clamp-2 text-xs text-foreground" title={words}>
           {words}

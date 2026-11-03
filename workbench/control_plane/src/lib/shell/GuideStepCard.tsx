@@ -85,7 +85,8 @@ export function GuideStepCardBody(p: {
   );
 }
 
-const CARD = "mb-2 rounded-2xl border border-border bg-card p-3 glass:border-transparent glass:glass-chrome";
+// The accent ring marks the card as the ring marks the anchor: one colour for "what you look at" and "what tells you".
+const CARD = "mb-2 rounded-2xl ring-2 ring-primary border border-border bg-card p-3 glass:border-transparent glass:glass-chrome";
 
 export default function GuideStepCard() {
   const g = useGuide();

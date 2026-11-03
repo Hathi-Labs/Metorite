@@ -45,7 +45,7 @@ import {
   withoutGuideParam,
 } from "./guide";
 import { assistantState, openAssistant, setAssistantMode, useAssistant } from "./assistant";
-import GuideSpotlight, { bindEscape } from "./GuideSpotlight";
+import GuideSpotlight, { GuideDim, bindEscape } from "./GuideSpotlight";
 import { markTourSeen } from "./shellPrefs";
 
 /** The one phone stop whose strip is under the Menu drawer, so its popover stays. */
@@ -210,6 +210,13 @@ function GuideHostInner({ phone = false }: { phone?: boolean }) {
         onMissing={guideAnchorMissing}
       />
     ) : null;
+  // The dim layer (owner request 2026-11-03): one scrim over the window, with
+  // a hole for the ringed part and one for the step's card or strip. It comes
+  // BEFORE the spotlight, so the ring and the popover paint over it.
+  const dim =
+    view && (g.phase === "pointing" || g.phase === "missing") ? (
+      <GuideDim anchor={view.anchor} missing={missing} />
+    ) : null;
   return (
     <>
       {/* The ONE live region of the guide: it announces each step's line, on
@@ -223,6 +230,7 @@ function GuideHostInner({ phone = false }: { phone?: boolean }) {
         </div>,
         document.body,
       )}
+      {dim}
       {spot}
     </>
   );
