@@ -462,6 +462,10 @@ async def test_send_email_draws_the_card_and_posts_the_exact_answer(monkeypatch,
     out = await agents.send_email(F.BOX, body=TEXT, to=[F.KNOWN], cc=[F.COLLEAGUE],
                                   subject="Rates")
     assert [p for p, _b in gw.posts] == ["/email/new-card", "/email/new-card/act"]
+    # The card records the mailbox, the people, the subject and the text of the call.
+    assert gw.posts[0][1] == {"account_id": F.BOX, "to": [F.KNOWN], "cc": [F.COLLEAGUE],
+                              "bcc": [], "subject": "Rates", "body": TEXT, "artifacts": [],
+                              "metorite_files": []}
     assert gw.posts[1][1] == {"card_id": "f" * 32, "card_thread_id": "th-1", "answer": answer}
     [card] = cards
     assert card["reply"]["kind"] == "new" and card["reply"]["body"] == TEXT

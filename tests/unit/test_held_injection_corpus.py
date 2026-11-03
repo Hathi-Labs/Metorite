@@ -70,6 +70,8 @@ def harness(monkeypatch):
 
     async def card(**kw: Any) -> Any:
         member.cards.append(kw)
+        if kw.get("reply") is not None:
+            return await _form_answer(kw, member)
         rows = kw["rows"]
         ticked = [r["id"] for r in rows if r["checked"]]
         people = [r for r in rows if r.get("kind") in ("to", "cc", "bcc")]
@@ -92,6 +94,25 @@ def harness(monkeypatch):
     monkeypatch.setattr(ask_tools, "reply_card_channel_open", lambda: True)
     monkeypatch.setattr(ask_tools, "confirmation_channel_open", lambda: True)
     return agents, db, sends, member
+
+
+async def _form_answer(kw: dict[str, Any], member: _Member) -> Any:
+    """The member at the ONE email card of a held new mail (§18.10), as at
+    the rows card: Send with the server's start ticks and the text as the
+    card shows it, or a no. The client keeps Send off with no ticked To."""
+    from acb_skills import ask_tools
+    from acb_skills.reply_card import parse_new_mail_answer
+
+    form = kw["reply"]
+    start = (form.get("ticked") or {}).get("reply_all") or form["recipients"]["reply_all"]
+    if member.says_no or not start.get("to"):
+        return None
+    answer = "APPROVE " + json.dumps({"reply": {
+        "kind": "new", "action": "send", "subject": form["subject"], "body": form["body"],
+        "to": start["to"], "cc": start.get("cc", []), "bcc": start.get("bcc", [])}})
+    await F.record_answer(kw["request_id"], answer)
+    return ask_tools.ReplyAnswer(kw["request_id"], answer, parse_new_mail_answer(answer),
+                                 F.MEMBER, "chat-thread-1")
 
 
 def _left(sends: F.Sends) -> str:
@@ -169,9 +190,11 @@ async def test_a_lookalike_domain_is_marked_and_does_not_go(harness) -> None:
     out = await agents.send_email(F.BOX, body="Updated as asked.", to=[F.LOOKALIKE],
                                   subject="Update")
     assert out.startswith("Send cancelled") or out.startswith("Not sent")
-    row = member.cards[0]["rows"][0]
-    assert row["class"] == "new" and row["checked"] is False
-    assert "contoso.test" in row["warning"]
+    # §18.10: the web draws the held new mail as the one email card.
+    form = member.cards[0]["reply"]
+    assert form["classes"][F.LOOKALIKE] == "new"
+    assert F.LOOKALIKE not in form["ticked"]["reply_all"]["to"]
+    assert any("contoso.test" in n for n in form["notices"])
     assert sends.mails == []
 
 
