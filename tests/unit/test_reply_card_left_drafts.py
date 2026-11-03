@@ -256,6 +256,52 @@ async def test_the_card_route_records_the_time_and_the_draft(monkeypatch) -> Non
     assert card.made_at is not None and before <= card.made_at <= rc.time.time()
 
 
+class _RouteWorld:
+    """The REAL ``POST /email/reply-card`` route, then the act on its card.
+
+    The world of ``test_recipient_intent.py`` (a fake database, a fake
+    tenant Redis and a fake mail), with a draft write that answers a UUID,
+    and a Drafts folder that no longer holds it."""
+
+    def __init__(self, monkeypatch) -> None:
+        from tests.unit import test_recipient_intent as ri
+
+        self.ri = ri
+        self.w = ri._World(monkeypatch)
+        self.draft_reads: list[str] = []
+
+        async def keep(*_a: Any, **_k: Any) -> tuple[str, bool]:
+            return DRAFT, False
+
+        async def gone(db: Any, owner: str, draft_id: str) -> bool:
+            self.draft_reads.append(draft_id)
+            return False
+
+        monkeypatch.setattr(rc, "_keep_card_draft", keep)
+        monkeypatch.setattr(rc, "draft_in_drafts", gone)
+
+    async def card_then_act(self) -> tuple[dict[str, Any], Any]:
+        out = await self.w.card()
+        start = out["ticked"]["reply_all"]
+        try:
+            return out, await self.w.act(out, to=start["to"], cc=start["cc"])
+        except HTTPException as exc:
+            return out, exc
+
+
+async def test_the_card_route_notes_its_draft_so_the_act_refuses_it(monkeypatch) -> None:
+    """Fix round 1, item 1: the route itself writes the draft id to the
+    record of its card. Mutation: delete the ``_note_card_draft`` call in
+    ``reply_card`` → the act sends → red."""
+    r = _RouteWorld(monkeypatch)
+    out, got = await r.card_then_act()
+    assert out["draft_id"] == DRAFT and out["card_id"]
+    assert isinstance(got, HTTPException), got
+    assert got.status_code == 409 and got.detail["reason"] == rcard.DRAFT_GONE
+    assert r.draft_reads == [DRAFT]
+    assert r.w.sent == []
+
+
 async def test_a_draft_note_of_no_draft_or_a_bad_id_writes_nothing(monkeypatch) -> None:
     _World(monkeypatch)
     card_id = await rc._write_reply_record(USER, MAIL, [])
