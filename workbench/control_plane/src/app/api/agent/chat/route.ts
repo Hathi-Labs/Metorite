@@ -288,8 +288,11 @@ async function translateAndPersistStream(
   for (let attempt = 0; ; attempt++) {
   try {
     while (true) {
+      // Before the read: a read after a supersede can wait for run 2's next
+      // event, and holds this response and the gateway subscriber open.
+      if (superseded) break;
       const { done, value } = await reader.read();
-      if (done || superseded) break;
+      if (done) break;
       buf += decoder.decode(value, { stream: true });
       const lines = buf.split("\n");
       buf = lines.pop() ?? "";

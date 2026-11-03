@@ -80,4 +80,12 @@ describe("the chat route uses the binding", () => {
     expect(src).toContain("bindToRun(runId)");
     expect(src).toContain('streamRes.headers.get("x-run-id")');
   });
+
+  it("checks the supersede flag before it reads again", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("../app/api/agent/chat/route.ts", import.meta.url)),
+      "utf-8",
+    );
+    expect(src).toMatch(/if \(superseded\) break;\s+const \{ done, value \} = await reader\.read\(\);/);
+  });
 });
