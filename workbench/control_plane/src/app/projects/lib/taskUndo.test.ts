@@ -387,4 +387,11 @@ describe("the doors wire the helper (source)", () => {
     expect(page).toMatch(/moveUndoPlan\(/);
     expect(page).toMatch(/description: way\.reason/);
   });
+
+  it("the My tasks board write records Undo, as the project board does (finding 4)", () => {
+    const src = read("components/MyTasksSpace.tsx");
+    const drop = src.slice(src.indexOf("async function drop("), src.indexOf("async function exportCsv("));
+    expect(drop).toMatch(/const fresh = await projectsApi\.patchTask\(task\.id, plan\.patch\)/);
+    expect(drop).toMatch(/taskUndo\.edited\(task, plan\.patch, fresh,/);
+  });
 });
