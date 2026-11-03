@@ -1,10 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
 /**
- * A stack of approval cards (owner, 2026-10-24): two cards wait at once. The
- * tabs name them and move between them (owner, 2026-11-01), a swipe on a touch screen
- * moves to the next one, and an email card shows the subject as a row and
- * the mail in a frame of its own. Built on the held-send stubs.
+ * Approval cards that wait together (owner, 2026-11-03, D173): two cards wait
+ * at once and show as ONE card with tabs. The tabs name them and move between
+ * them, with no stacked edges and no swipe. An email card shows the subject
+ * as a row and the mail in a frame of its own. Built on the held-send stubs.
  */
 
 const RID = "6c2e1d3f9a7b4c5d8e0f1a2b3c4d5e6f";
@@ -147,17 +147,19 @@ async function ask(page: Page, size = { width: 1440, height: 900 }) {
 }
 
 
-test.describe("a stack of approval cards", () => {
+test.describe("approval cards as one card with tabs", () => {
   test.describe.configure({ timeout: 120_000 });
 
   test("the tabs name the cards, and a tab or an arrow key moves between them", async ({ page }) => {
     await ask(page);
-    const tabs = page.getByRole("tablist", { name: /2 approvals waiting/ });
-    await expect(page.locator("[data-card-stack-banner]")).toContainText("2 waiting");
+    const tabs = page.getByRole("tablist", { name: /2 approvals to approve/ });
+    await expect(page.locator("[data-card-tabs-count]")).toContainText("2 to approve");
     await expect(tabs.getByRole("tab")).toHaveCount(2);
-    await expect(page.locator("[data-card-stack-edge]")).toHaveCount(1);
+    // ONE card: no stacked edges behind it, and the row sits inside its frame.
+    await expect(page.locator("[data-card-stack-edge]")).toHaveCount(0);
+    await expect(page.locator("[data-confirmation-card] [data-card-tabs]")).toHaveCount(1);
     await expect(page.locator("[data-confirmation-card]")).toContainText("Send this draft?");
-    // Stacked, the card draws no pager of its own: the tabs are the switcher.
+    // With tabs, the card draws no pager of its own: the tabs are the switcher.
     await expect(page.locator("[data-confirmation-pager]")).toHaveCount(0);
     await tabs.getByRole("tab", { name: /Send this new email/ }).click();
     await expect(page.locator("[data-confirmation-card]")).toContainText("Send this new email?");

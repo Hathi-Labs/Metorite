@@ -2,7 +2,7 @@
 
 > **Product:** Metorite · **Feature:** planning in the Projects chat · **Updated:** 2026-11-02 · **Owner:** vjvarada
 
-> **Status:** 🚧 **BUILDING.** PJP-0 (this spec) merged on 2026-11-02 (`4bbe7c5b4`). PJP-1 (pills, swatches and six hues) merged on 2026-11-02 and reaches production at the 21:30 UTC release. PJP-2 and PJP-4 are in review.
+> **Status:** 🚧 **BUILDING.** D173 (2026-11-03) changed the stack of cards that wait together to ONE card with tabs. The fence is `cardTabs.test.ts`. PJP-0 (this spec) merged on 2026-11-02 (`4bbe7c5b4`). PJP-1 (pills, swatches and six hues) merged on 2026-11-02 and reaches production at the 21:30 UTC release. PJP-2 and PJP-4 are in review.
 
 > **Verified against code on 2026-11-02 at `c8b31dcbf`.** Each path in §8 was read on that commit. The production facts in §2 come from the gateway journal and the database of 2026-11-02.
 
@@ -60,7 +60,7 @@
 The owner made a project and its stages in the main chat (thread `434ca331…`, org Hathi Labs). The gateway journal and the database show four faults.
 
 1. **The hand-off.** Five turns ran. Four of them loaded the `projects` pack and still called `projects_assistant`. The line `executor.packs_loaded` reads `replaced=['crm-assistant','email-assistant']`, so the Projects specialist stayed on offer. The model took it, as OA-8e run 1 found that it does.
-2. **One approval at a time.** Inside the sub-agent, `create_status` ran 3 times and `update_status` ran 8 times. Each call came in its own model round. Each card held the run until the click. The gaps were 83 s to 3.5 min. The stack (`cardStack.ts`) never had two cards. No two cards waited at the same time.
+2. **One approval at a time.** Inside the sub-agent, `create_status` ran 3 times and `update_status` ran 8 times. Each call came in its own model round. Each card held the run until the click. The gaps were 83 s to 3.5 min. The approval queue never had two cards. No two cards waited at the same time.
 3. **`[in_progress]` on the card.** `create_status` writes `detail=f"{name} [{cat}]"` (`writes.py:3720`). `save_view` does the same with the view kind (`inbox.py:587`).
 4. **Colours as text.** The tool accepts any string. The model saved seven hex codes (`#EAB308`, `#6366F1`, `#F97316`, `#94A3B8`, `#CBD5E1`, `#16A34A`, `#EC4899`) in `pm_task_statuses.color`. The card drew each code as words (`cardFields.ts:80`, kind `words`). The board knows six hue names (`statusAccent.ts:79`). `resolveHue` finds no alias for a hex code, so each lane falls back to its category colour. The member's choice never shows.
 
@@ -104,7 +104,7 @@ The journal's `permission.decision` lines count each tool call. In `projects-pla
 | Changes | What the member sees |
 |---|---|
 | 1 | One card |
-| 2 | Two cards that wait together, as a stack |
+| 2 | Two cards that wait together, as ONE card with tabs (D173) |
 | 3 or more, related | ONE card with a tick box per change, from a batch tool |
 
 "Related" means one request of the member: set up stages, move these tasks, plan this project. Two unrelated requests in one message are two sets.
@@ -131,7 +131,7 @@ A delete stays a single guarded act (class C). No batch tool deletes.
 
 **A row shows its values.** A row may carry two new optional keys, `hue` and `category`. The client draws them with the same `CardFieldValue` kinds as a card field: a swatch and a category chip. `clean_card_rows` accepts them like `kind`, `class` and `warning`.
 
-**The rule text.** The pack rules (`tool_packs.py`, rules block) and `apps/agents/agent-projects/instructions.md` state the table above, in one place each. Two writes in one step must reach the member as a stack. PJP-3 checks that the executor runs two `request_confirmation` calls of one step at the same time. If it does not, PJP-3 fixes that first.
+**The rule text.** The pack rules (`tool_packs.py`, rules block) and `apps/agents/agent-projects/instructions.md` state the table above, in one place each. Two writes in one step must reach the member as one card with two tabs (D173). PJP-3 checks that the executor runs two `request_confirmation` calls of one step at the same time. If it does not, PJP-3 fixes that first.
 
 ### 3.2 One colour vocabulary (D168.2, PJP-1)
 
@@ -317,7 +317,7 @@ The buffer and the finish are ordinary tasks with the tags `Buffer` and `Milesto
 | PJP-1 | 1478 | §3.2: the hue map for statuses, tags and types, on the server, the routes and the client. The `color` card kind, tested on status, tag and type cards. No brackets on a card (`writes.py:3720`, `inbox.py:587`) | The fences of §10 for PJP-1 pass. A card for `update_status` with `#EAB308` shows an amber swatch and stores `amber`. The seven lanes of §2.1 draw in amber, blue, amber, gray, gray, green and violet on the board. The visual review gate passes (four captures) | LOW | AGENT-SAFE | — |
 | PJP-2 | 1479 | §3.3: the pack split, its fence, the `when` lines and load words | `plan_loader` with the production allow list and the core held puts `projects-assistant` in `via_loader`. The fence of §10 passes. The measure or the journal check of §3.3 passes | MEDIUM | AGENT-SAFE. The `TOOL_PACKS` line is OWNER-GATE | — |
 | PJP-2b | 1479 | §3.3: remove the dead `CHAT_LIVE` rail paths | No `AgentChat` or `useAgentSessions` call with `PROJECTS_AGENT` stays outside the shell. `seams.test.ts:139` counts one fewer rail wrapper. The Projects page looks the same with the shell flags on. The visual review gate passes | LOW | AGENT-SAFE | — |
-| PJP-3 | 1480 | §3.1: `change_statuses`, the row keys `hue` and `category`, and the rule text | One call with 8 rows draws ONE card with 8 tick boxes, each with its swatch and chip. Ticking 6 writes 6. Two writes in one step show as a stack of 2 | MEDIUM | AGENT-SAFE | PJP-1 |
+| PJP-3 | 1480 | §3.1: `change_statuses`, the row keys `hue` and `category`, and the rule text | One call with 8 rows draws ONE card with 8 tick boxes, each with its swatch and chip. Ticking 6 writes 6. Two writes in one step show as one card with 2 tabs (D173) | MEDIUM | AGENT-SAFE | PJP-1 |
 | PJP-4 | 1481 | §3.1: step 1 extracts `_plan_task_edit` from `update_task` (`writes.py:1430`). Step 2 adds `update_tasks` | `update_task` and each row call `_plan_task_edit`, and the existing `update_task` tests pass unchanged. One call with 12 rows draws ONE card. Each row shows before and after. Each ticked row writes through the same route as `update_task`. A failed row does not stop the next one, and the receipt names it | MEDIUM | AGENT-SAFE | — |
 | PJP-5 | 1482 | §3.6: `stage_sets.py` and `suggest_stages` | Each set passes the limits of §3.6 in a test. "Set up stages for a hardware project" in a live turn gives one `change_statuses` card | LOW | AGENT-SAFE | PJP-2, PJP-3 |
 | PJP-6 | 1483 | §3.4: `planning.py` passes and `analyze_plan` | The module tests of §10 pass for a chain, a diamond, a cycle, a task with no estimate and a graph with no links | LOW | AGENT-SAFE | PJP-2 |

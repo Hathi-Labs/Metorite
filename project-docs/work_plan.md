@@ -5189,7 +5189,7 @@ Owner directive, 2026-11-02, in chat. Board: **WS-PJP**, owner `specs/project_pl
 
 The owner then answered four questions in chat.
 
-1. **Three or more related changes come on ONE card**, with a tick box for each change. One change is one card. Two changes are two cards that wait together, as a stack.
+1. **Three or more related changes come on ONE card**, with a tick box for each change. One change is one card. Two changes are two cards that wait together, as a stack. **Amended by D173 (2026-11-03): the two cards show as ONE card with tabs, not as a stack.**
 2. **A status colour is one of the six hues** of `statusAccent.ts`. Any other colour, such as a hex code, maps to the nearest hue. A card shows a swatch, not the code.
 3. **The critical-chain buffer and the finish line are tasks**: a "Project buffer" task and a "Finish" milestone. No schema change. Project fields and a buffer chart may follow later, by a new decision.
 4. **An eval for this work costs at most USD 0.50** unless the owner agrees to more.
@@ -5277,6 +5277,22 @@ Owner directive, 2026-11-03, in chat. Board: **WS-PT**, owner `specs/one_project
 8. **D78 stays.** A due date alone never raises priority. The card explains the level in one line, for example "Low: due soon, but not marked important".
 
 Fence: named per slice in `one_projects_app.md` §9c. Advisory until each slice builds.
+
+### D173 — Approval cards that wait together show as ONE card with tabs (2026-11-03)
+
+Owner directive, 2026-11-03, in chat. Task: Metorite 1533 (`mt-5f606b3e`). It amends D168.1. It changes how two cards that wait together look. It changes no rule of consent.
+
+```text
+"I do not like the way in which the tabs show up ... right now the tabs are easily overlooked. Instead of having, say, a stacked cards animation, we just have one card. When there are multiple cards that need to be approved, it shows up as one single card with tabs."
+```
+
+1. **Cards that wait together show as ONE card with tabs, not as a stack.** Two cards or more draw one card frame. A tab row sits inside the top edge of the frame, above the card header. A count leads the row ("3 to approve"). One card draws no tab row.
+2. **No stacked card edges, no swipe, no swap animation and no nudge.** The queue draws none of them.
+3. **A tab not yet opened has a dot.** The tab that is open has a 2 px underline in `--primary`.
+4. **After the member answers a card, the next tab opens by itself.** It is the tab to the right, else the tab to the left. A restored card (Undo of a Reject) comes back first, and its tab opens.
+5. **Each card is still one consent.** There is no "Approve all". D168.1 stands in every other respect.
+
+Fence: `workbench/control_plane/src/lib/cardTabs.test.ts` (rules, ARIA, no `<CardStack`, no stack CSS), `src/lib/confirmationQueue.test.ts` (the tab row, the count, the next tab) and `e2e/approval-stack.spec.ts`.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
