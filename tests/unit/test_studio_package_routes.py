@@ -51,6 +51,10 @@ are in the build report, and the R8 half holds the ones that need a database.
   ``test_a_org_outside_the_switch_is_404_on_each_route`` goes red.
 * M9. Take the owner from the body.
   ``test_a_body_cannot_name_the_owner_or_the_org`` goes red.
+* M11. Drop the ``_BOUND_ORG`` bind from the subquery of ``_LIST_FIELDS_SQL``,
+  from ``_LIST_OBJECTS_SQL`` or from ``_SUMMARY_SQL``.
+  ``test_each_store_statement_of_a5_binds_the_org_in_each_select`` goes red.
+  The R8 half stays green, because RLS hides the missing bind.
 """
 
 from __future__ import annotations
