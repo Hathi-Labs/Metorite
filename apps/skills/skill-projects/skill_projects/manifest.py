@@ -618,6 +618,10 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # 2026-10-19 — several links under ONE card with a checkbox for each
     # link. Each ticked row is link_tasks' own POST.
     "link_tasks_batch": frozenset({"link_tasks"}),
+    # WS-PJP PJP-4 — several edits under ONE card with a checkbox for each
+    # task. Each ticked row is update_task's own planned PATCH
+    # (`_plan_task_edit`), on update_task's route.
+    "update_tasks": frozenset({"update_task"}),
     # S6 — navigation reads the row it opens, then dispatches to the page.
     "open_in_app": frozenset({"task_detail", "project_summary"}),
     # WS-66 RM-3 (D114): the reminder tools read the member's saved zone

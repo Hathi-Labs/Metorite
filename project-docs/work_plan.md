@@ -252,7 +252,7 @@ These are the rows of the board before D118. Each row keeps its ID, so a spec th
 | WS-59 | Reach: Metorite speaks first | 🟢 open | `specs/proactive_reach.md` | now in WS-CHAT |
 | WS-60 | Artifacts: one library | 🟢 open | `specs/artifact_management.md` | now in WS-CHAT |
 | WS-61 | Knowledge | 🟢 open | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | now in WS-KB |
-| WS-62 | Chat first | 🟢 open | `specs/chat_first_surface.md` | now in WS-CHAT |
+| WS-62 | Chat first | 🟢 open | `specs/chat_first_surface.md` | now in WS-CHAT. CF-4b (D-CF-8): the starter pills become action prompts from the feed, built 2026-11-03 |
 | WS-63 | Personalization | 🟢 open | `specs/personalization.md` | now in WS-CHAT · §15 (D142, 2026-10-30) adds PZ-33 to PZ-36 · PZ-33a and PZ-35 built (dark) 2026-11-01, PZ-33b (the summary job) built (dark) 2026-11-02, and its round 4 adds the ONE typed mark (D-PZ-37, migration 337). PZ-34 and PZ-36 are not built |
 | WS-64 | One Projects app | 🟢 open | `specs/one_projects_app.md` | now in WS-PT |
 | WS-65 | Shared mailbox | 🟢 open | `specs/shared_mailbox.md` | now in WS-EM |

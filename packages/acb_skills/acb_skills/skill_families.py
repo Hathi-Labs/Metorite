@@ -655,6 +655,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "revert_activity",
             "unarchive_project",
             "unarchive_task",
+            "update_tasks",
             "watch",
         ),
         "owner": "projects-assistant",

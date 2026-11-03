@@ -138,6 +138,7 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "fit_for_task": ("who is the best fit for this task?",),
     "link_tasks": ("make this task block the other task",),
     "link_tasks_batch": ("link these tasks in order as dependencies",),
+    "update_tasks": ("update these tasks, a different due date for each",),
     "needs_attention": ("which tasks need attention?",),
     "propose_plan": ("propose a project plan for launching the site",),
     "rebalance": ("rebalance the workload",),
