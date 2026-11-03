@@ -342,7 +342,8 @@ def test_r8_the_door_lists_the_object_after_the_publish(world) -> None:
         return before, await door(pid)
 
     before, after = _run(world, go)
-    assert (before[0], before[1]["code"]) == (404, "object_missing")
+    assert before == (404, {"code": "object_missing", "message": invoke.NO_OBJECT})
+    assert "publish the package" in invoke.NO_OBJECT
     assert after[0] == 200, after
 
 

@@ -1030,6 +1030,12 @@ class TestTheTables:
             assert message.endswith(".") and message.count(". ") == 0, code
             assert len(message.split()) <= 25, code
 
+    def test_a_missing_object_names_publish_as_the_next_step(self):
+        """After A5, a member makes an object row only by a publish of the
+        package. No route defines an object by hand."""
+        assert invoke.NO_OBJECT.endswith("so publish the package."), invoke.NO_OBJECT
+        assert "define" not in invoke.NO_OBJECT
+
     def test_the_test_manifest_is_valid(self):
         assert validate_manifest(MANIFEST) == []
 
