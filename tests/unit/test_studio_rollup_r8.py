@@ -42,7 +42,8 @@ shows no Seq Scan. A source in another package is refused.
 * M5. ``studio_rules.touched_keys``: take ``ROLLUP`` out of the early return.
   ``test_r8_a_rollup_queues_no_key_check`` and ``test_a_rollup_touches_no_key`` go red.
 * M6. ``studio_rules.check_rollup_currency``: return at once.
-  ``test_r8_a_currency_mismatch_is_refused_and_the_batch_writes_nothing`` goes red.
+  ``test_r8_a_currency_mismatch_is_refused_and_the_batch_writes_nothing`` and
+  ``test_r8_a_child_that_starts_to_count_in_another_currency_is_refused`` go red.
 * M7. ``studio_rules.check_rollups``: skip the key test of the target.
   ``test_r8_a_target_cannot_be_a_key_of_another_rule`` goes red.
 * M8. ``objects_store._stale_parents``: give each child write its own entry in
@@ -56,6 +57,9 @@ shows no Seq Scan. A source in another package is refused.
   ``test_r8_a_child_write_that_makes_a_unique_key_clash_through_a_formula_is_refused`` go red.
 * M12. ``objects_store._derived_moves``: answer True.
   ``test_r8_a_derived_write_reads_no_key_whose_fields_it_leaves_alone`` goes red.
+* M13. ``objects_store._check_counted``: check each written child of the source,
+  and not only the ids that the aggregate counted.
+  ``test_r8_a_child_that_the_rollup_does_not_count_may_hold_another_currency`` goes red.
 """
 
 from __future__ import annotations
@@ -672,6 +676,45 @@ def test_r8_a_currency_mismatch_is_refused_and_the_batch_writes_nothing(world) -
     assert isinstance(err.cause, RollupError) and err.cause.code == "currency_mismatch"
     assert err.index == 1 and rows == 0 and spent == _inr(0)
     assert "USD" not in str(err)
+
+
+SPENT_APPROVED = _roll("spent_ok", "spent", "sum", "amount", currency="INR", where=_APPROVED_ONLY)
+_USD = {"minor": 500, "currency": "USD"}
+
+
+def test_r8_a_child_that_the_rollup_does_not_count_may_hold_another_currency(world) -> None:
+    """The currency binds only a child that the roll-up counts. A child that the
+    `where` leaves out, a child with no parent and a child whose parent is no
+    record each pass in USD."""
+    async def go() -> tuple[int, Any]:
+        acc, ent = await _objects(world.a, world.pkg_a, [SPENT_APPROVED])
+        p = await _acct(world.a, acc)
+        await _give(world.a, ent, p, amount=_USD, kind="pending")
+        await _put(world.a, ent, Write("create", ent.id, data={"amount": _USD, "kind": "approved"}))
+        await _give(world.a, ent, str(uuid.uuid4()), amount=_USD, kind="approved")
+        await _give(world.a, ent, p, amount=_inr(300), kind="approved")
+        return _rows(world, ent), _data(world, p.id)["spent"]
+
+    assert _go(world, go) == (4, _inr(300))
+
+
+def test_r8_a_child_that_starts_to_count_in_another_currency_is_refused(world) -> None:
+    """An update that makes a USD child meet the `where` is refused at that write,
+    and so is a new USD child that the roll-up counts."""
+    async def go() -> tuple[BatchError, BatchError, int, Any]:
+        acc, ent = await _objects(world.a, world.pkg_a, [SPENT_APPROVED])
+        p = await _acct(world.a, acc)
+        e = await _give(world.a, ent, p, amount=_USD, kind="pending")
+        moved = await _refused(world.a, ent, _entry(ent, p, amount=_inr(5), kind="approved"),
+                               Write("update", ent.id, e.id, {"kind": "approved"}))
+        counted = await _refused(world.a, ent, _entry(ent, p, amount=_USD, kind="approved"))
+        return moved, counted, _rows(world, ent), _data(world, p.id)["spent"]
+
+    moved, counted, rows, spent = _go(world, go)
+    for err in (moved, counted):
+        assert isinstance(err.cause, RollupError) and err.cause.code == "currency_mismatch"
+    assert moved.index == 1 and counted.index == 0
+    assert rows == 1 and spent == _inr(0)
 
 
 def test_r8_a_refused_recompute_rolls_back_its_savepoint_and_keeps_the_callers_work(world) -> None:

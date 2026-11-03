@@ -449,6 +449,8 @@ _SQL_NAMES = frozenset({
     "guard", "count_hot", "_STILL_HOT_SQL",
     # C7b: the constant regex of a UUID id, for a relation that is not hot.
     "_UUID_FORM",
+    # C7b: the constant column of the written children that a money roll-up counts.
+    "_ROLLUP_MINE",
 })
 
 

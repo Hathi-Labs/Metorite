@@ -141,8 +141,9 @@ rules of the parent run on the derived write too, the key rules included. At
 most :data:`~acb_common.studio_rules.MAX_ROLLUP_PARENTS` parents and
 :data:`~acb_common.studio_rules.MAX_ROLLUP_STATEMENTS` aggregates run for each
 batch, under the one deadline of the batch. A parent id that names no record is
-skipped. A child in another currency than the rule is refused. A roll-up that
-does not fit now, or that the store cannot read, refuses the batch.
+skipped. A child that a money roll-up counts, in another currency than the rule,
+is refused. A roll-up that does not fit now, or that the store cannot read,
+refuses the batch.
 
 **On a floor of 0 or less, a write that does not lower a group never reads
 the group.** The store adds up the net change of the batch on each key of
@@ -1910,13 +1911,15 @@ async def _check_keys(db: Any, batch: _Batch,
 # and step 2 locks them with the others, in ascending id. Step 4b runs after all
 # the writes:
 #
-#   1. The currency of each written child is checked, and `rollup_parents` names
-#      the parents that the net of the batch made stale (a skip rule: only a change of
-#      the relation, the read field or a `where` field counts).
+#   1. `rollup_parents` names the parents that the net of the batch made stale (a
+#      skip rule: only a change of the relation, the read field or a `where` field
+#      counts).
 #   2. The parent records are locked in ascending `(object_id, record_id)`
 #      (`FOR NO KEY UPDATE`). A parent that no record holds is dangling and skipped.
 #   3. One aggregate for each (parent, roll-up), then one derived write for each
-#      parent. Both run under the one deadline of the batch.
+#      parent. Both run under the one deadline of the batch. The aggregate of a money
+#      roll-up also names the written children that it counts, and the currency of
+#      each one is checked. A child that the roll-up does not count passes.
 #
 # The derived write is a store write: it re-runs the formulas of the parent,
 # validates, rebuilds the hot rows, and sets `updated_at` and `updated_by`. It
@@ -1930,10 +1933,13 @@ async def _check_keys(db: Any, batch: _Batch,
 _ROLLUP_NUMBER_AGG: Mapping[str, str] = {
     "sum": "sum(s.v_num)", "min": "min(s.v_num)", "max": "max(s.v_num)"}
 _ROLLUP_DATE_AGG: Mapping[str, str] = {"min": "min(s.v_ts)", "max": "max(s.v_ts)"}
+#: The ids of the children of `:mine` that the aggregate counts. A money roll-up
+#: reads it, so the store checks the currency of each written child that counts.
+_ROLLUP_MINE = "array_agg(g.id::text) FILTER (WHERE g.id = ANY(CAST(:mine AS uuid[])))"
 
 
 def build_rollup(rule: Rule, fields: Sequence[FieldSpec], *, object_id: str, package_id: str,
-                 parent_id: str) -> tuple[str, dict[str, Any]]:
+                 parent_id: str, mine: Sequence[str] = ()) -> tuple[str, dict[str, Any]]:
     """The aggregate of the roll-up *rule* for the parent *parent_id*: its SQL
     and its binds. *fields* and *object_id* are those of the SOURCE. Pure.
 
@@ -1942,7 +1948,9 @@ def build_rollup(rule: Rule, fields: Sequence[FieldSpec], *, object_id: str, pac
     the conditions of a query, and so it reads hot rows too. Each child reads its
     hot row of the read field by the primary key. A child with no value adds
     nothing. The answer is a count, or the aggregate: NULL when no child holds a
-    value, and the store gives 0 for a sum then.
+    value, and the store gives 0 for a sum then. A money roll-up also answers
+    which ids of *mine* (the children that the batch wrote) it counts, or NULL.
+    So the one statement that counts a child also decides its currency check.
     """
     via = next(f for f in fields if f.key == rule.via)
     where = parse_query(fields, where_filter(rule)).conditions
@@ -1953,6 +1961,9 @@ def build_rollup(rule: Rule, fields: Sequence[FieldSpec], *, object_id: str, pac
         return f"SELECT count(*) FROM ({ids}) g", params
     read = next(f for f in fields if f.key == rule.field)
     what = (_ROLLUP_DATE_AGG if read.type == "date" else _ROLLUP_NUMBER_AGG)[str(rule.agg)]
+    if rule.currency is not None:
+        params["mine"] = list(mine)
+        what = f"{what}, {_ROLLUP_MINE}"
     return (f"SELECT {what} FROM ({ids}) g "
             "LEFT JOIN LATERAL (SELECT s.v_num, s.v_ts FROM studio_record_hot s "
             f"WHERE s.{_OF_ORG} AND s.{_OF_OBJECT} AND s.field_key = CAST(:sk AS text) "
@@ -1979,14 +1990,12 @@ def _stale_parents(batch: _Batch) -> dict[tuple[str, str], list[Rule]]:
     The caps hold before any statement of the recompute."""
     work: dict[tuple[str, str], list[Rule]] = {}
     firsts: dict[tuple[str, str], int] = {}
-    for oid, owner, rule in batch.rollups:
+    for oid, _owner, rule in batch.rollups:
         source_id = batch.names[str(rule.source)]
         for mark in sorted(batch.marks.values(), key=lambda m: m.index):
             if mark.object_id != source_id:
                 continue
             batch.index = mark.index
-            if mark.after is not None:
-                check_rollup_currency(rule, owner, mark.after)
             for rid in rollup_parents(rule, mark.before, mark.after):
                 rules = work.setdefault((oid, rid), [])
                 if rule not in rules:
@@ -2000,6 +2009,25 @@ def _stale_parents(batch: _Batch) -> dict[tuple[str, str], list[Rule]]:
             f"A batch runs at most {MAX_ROLLUP_STATEMENTS} aggregates of roll-ups.")
     batch.firsts = firsts
     return work
+
+
+def _written(batch: _Batch, source_id: str) -> list[str]:
+    """The ids of the records of the object *source_id* that the batch wrote
+    and did not delete."""
+    return sorted(rid for (oid, rid), mark in batch.marks.items()
+                  if oid == source_id and mark.after is not None)
+
+
+def _check_counted(batch: _Batch, rule: Rule, owner: str, source_id: str,
+                   counted: Sequence[str] | None) -> None:
+    """The currency of each written child that the aggregate of *rule* counted
+    (C7b). The aggregate decides which children count, so a child that the
+    ``where`` leaves out, or that names no parent record, passes in any
+    currency. An update that makes a child count is checked at that write."""
+    marks = [batch.marks[(source_id, rid)] for rid in counted or ()]
+    for mark in sorted(marks, key=lambda m: m.index):
+        batch.index = mark.index
+        check_rollup_currency(rule, owner, mark.after or {})
 
 
 async def _lock_parents(db: Any, batch: _Batch,
@@ -2074,8 +2102,12 @@ async def _recompute_parents(db: Any, batch: _Batch) -> None:
                 source_id = batch.names[str(rule.source)]
                 sql, params = build_rollup(
                     rule, batch.objects[source_id].fields, object_id=source_id,
-                    package_id=batch.pid, parent_id=rid)
-                raw = (await timed.execute(text(sql), params)).scalar_one()
+                    package_id=batch.pid, parent_id=rid, mine=_written(batch, source_id))
+                row = (await timed.execute(text(sql), params)).one()
+                raw = row[0]
+                if rule.currency is not None:
+                    _check_counted(batch, rule, held.name, source_id, row[1])
+                    batch.index = batch.firsts[key]
                 field = next(f for r, f in held.plan.rollups if r.name == rule.name)
                 value = rollup_result(rule, held.name, field, raw)
                 if value is None:
