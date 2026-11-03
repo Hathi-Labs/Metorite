@@ -10,6 +10,37 @@
  * Pure, so the node-env vitest holds it. Fence: `src/lib/cardTabs.test.ts`.
  */
 
+import type { PendingConfirmation } from "./confirmationQueue";
+
+/** What a card is, for its tab. */
+export type CardKind = "send" | "reply" | "task" | "reminder" | "other";
+
+/** The icon of each kind: Lucide names, drawn by `<Icon name>`. */
+export const KIND_ICON: Record<CardKind, string> = {
+  send: "Mail",
+  reply: "Reply",
+  task: "CheckSquare",
+  reminder: "Bell",
+  other: "ShieldCheck",
+};
+
+/**
+ * The kind of a card, in ONE place. The card value carries no kind field
+ * (`cardFromEvent` keeps title, detail, context, rows and reply), so the
+ * kind comes from the reply form, else from the server's stable title
+ * phrases ("Send this new email?", "Create this task?", "Set this
+ * reminder?", "Watch this task?"). A title it does not know is "other".
+ */
+export function cardKind(card: Pick<PendingConfirmation, "title" | "reply">): CardKind {
+  if (card.reply !== undefined) return "reply";
+  const t = card.title.trim();
+  if (/^reply\b/i.test(t)) return "reply";
+  if (/\breminder\b/i.test(t)) return "reminder";
+  if (/^send\b/i.test(t) && /\b(email|mail|draft|reply|forward|message)\b/i.test(t)) return "send";
+  if (/\btasks?\?$/i.test(t) && /^(create|watch|update|archive|delete|complete)\b/i.test(t)) return "task";
+  return "other";
+}
+
 /** The count label that leads the tab row. */
 export function tabsCount(total: number): string {
   return `${total} to approve`;

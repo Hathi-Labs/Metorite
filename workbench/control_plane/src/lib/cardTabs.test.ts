@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { restoredFirst, tabKeyTarget, tabsCount, tabsLabel } from "./cardTabs";
+import { cardKind, KIND_ICON, restoredFirst, tabKeyTarget, tabsCount, tabsLabel } from "./cardTabs";
 
 const read = (rel: string) => readFileSync(join(__dirname, "..", rel), "utf-8");
 
@@ -28,6 +28,21 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
     expect(restoredFirst(["a", "b"], ["a", "b", "c"])).toBeNull();
     expect(restoredFirst(["a", "b"], ["b"])).toBeNull();
     expect(restoredFirst([], ["a"])).toBeNull();
+  });
+
+  it("each kind of card has its own icon, from ONE helper", () => {
+    const kind = (title: string, reply?: object | null) => cardKind({ title, ...(reply !== undefined ? { reply: reply as never } : {}) });
+    expect(kind("Send this new email?")).toBe("send");
+    expect(kind("Send this draft?")).toBe("send");
+    expect(kind("Send this draft at 10:00?")).toBe("send");
+    expect(kind("Reply to 1 recipient?")).toBe("reply");
+    expect(kind("Anything", null)).toBe("reply");
+    expect(kind("Create this task?")).toBe("task");
+    expect(kind("Watch this task?")).toBe("task");
+    expect(kind("Set this reminder?")).toBe("reminder");
+    expect(kind("Create this CRM lead?")).toBe("other");
+    expect(kind("Send from which mailbox?")).toBe("other");
+    expect(KIND_ICON).toEqual({ send: "Mail", reply: "Reply", task: "CheckSquare", reminder: "Bell", other: "ShieldCheck" });
   });
 
   it("the queue draws ONE card with tabs, and no stack", () => {

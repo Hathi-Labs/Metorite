@@ -31,7 +31,7 @@ import {
   type PendingConfirmation,
   type RowsApproval,
 } from "@/lib/confirmationQueue";
-import { restoredFirst } from "@/lib/cardTabs";
+import { cardKind, KIND_ICON, restoredFirst } from "@/lib/cardTabs";
 import { unfenced } from "@/lib/fencedText";
 import type { ReplyApproval } from "@/lib/replyCard";
 
@@ -154,6 +154,6 @@ export function cardTab(card: PendingConfirmation): CardTab {
   return {
     key: card.key,
     label: card.fenced ? unfenced(summary) : summary,
-    icon: card.reply !== undefined ? "Reply" : "ShieldCheck",
+    icon: KIND_ICON[cardKind(card)],
   };
 }
