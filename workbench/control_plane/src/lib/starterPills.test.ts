@@ -196,3 +196,36 @@ describe("long real titles keep a short name in the label (CF-4b repair)", () =>
     expect(p.label.split(/\s+/).length).toBeLessThanOrEqual(8);
   });
 });
+
+describe("one for each app first, then the feed's order (D-CF-8, owner at the preview)", () => {
+  const mail = (t: string, over: Partial<StarterCard> = {}) => card("needs_reply", t, { app: "email", ...over });
+  const labels = (cards: StarterCard[]) =>
+    starterPills({ chatFirst: true, cards, fallback: FIXED }).map((p) => p.app);
+
+  it("three mails, a task and a CRM card give a mail, a task and a CRM pill, with the first mail chosen", () => {
+    const cards = [mail("A one"), mail("B two"), mail("C three"), card("overdue", "Late"), card("deal_quiet", "Acme", { app: "crm" })];
+    const pills = starterPills({ chatFirst: true, cards, fallback: FIXED });
+    expect(pills.map((p) => p.app)).toEqual(["email", "tasks", "crm"]);
+    expect(pills[0].message).toContain('"A one"');
+  });
+
+  it("three mails only give three mail pills", () => {
+    expect(labels([mail("A one"), mail("B two"), mail("C three"), mail("D four")])).toEqual(["email", "email", "email"]);
+  });
+
+  it("mail, mail, task gives two mails and the task, in the feed's order", () => {
+    const pills = starterPills({ chatFirst: true, cards: [mail("A one"), mail("B two"), card("overdue", "Late")], fallback: FIXED });
+    expect(pills.map((p) => p.app)).toEqual(["email", "email", "tasks"]);
+    expect(pills[1].message).toContain('"B two"');
+  });
+
+  it("mail, mail, mail, task takes the task over the third mail, and keeps the feed's order", () => {
+    const pills = starterPills({ chatFirst: true, cards: [mail("A one"), mail("B two"), mail("C three"), card("overdue", "Late")], fallback: FIXED });
+    expect(pills.map((p) => p.app)).toEqual(["email", "email", "tasks"]);
+  });
+
+  it("an fyi card of a new app never takes a slot", () => {
+    const cards = [mail("A one"), mail("B two"), card("deal_quiet", "Acme", { app: "crm", group: "fyi" }), mail("C three")];
+    expect(labels(cards)).toEqual(["email", "email", "email"]);
+  });
+});

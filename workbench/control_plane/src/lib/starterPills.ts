@@ -303,23 +303,40 @@ export function pillOfCard(card: StarterCard): StarterPill | null {
  *
  *   - The flag off: the fixed list, whatever the feed holds.
  *   - No cards yet, or none at all: the fixed list.
- *   - Else the first `STARTER_PILL_COUNT` cards of the action groups, in the
- *     feed's order, each as a pill (`pillOfCard`), with a repeated label
- *     dropped. Fewer cards give fewer pills. None left gives the fixed list.
+ *   - Else `STARTER_PILL_COUNT` cards of the action groups, each as a pill
+ *     (`pillOfCard`), a repeated label dropped. "One for each app first": the
+ *     first card of each app, in the feed's order, then the rest in the
+ *     feed's order. The pills show in the feed's order. Fewer cards give
+ *     fewer pills. None left gives the fixed list.
  */
 export function starterPills({ chatFirst, cards, fallback }: StarterPillsInput): StarterPill[] {
   const fixed = (): StarterPill[] => fallback.map((s) => ({ label: s, message: s, app: null }));
   if (!chatFirst || !cards || cards.length === 0) return fixed();
-  const out: StarterPill[] = [];
+  // The qualifying cards in the feed's order, a repeated label dropped.
   const seen = new Set<string>();
+  const pool: StarterPill[] = [];
   for (const card of cards) {
-    if (out.length >= STARTER_PILL_COUNT) break;
     const pill = pillOfCard(card);
     if (!pill) continue;
     const key = pill.label.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push(pill);
+    pool.push(pill);
   }
+  // One for each app first (the first card of each app), then the rest by feed order.
+  const chosen = new Set<StarterPill>();
+  const apps = new Set<string | null>();
+  for (const pill of pool) {
+    if (chosen.size >= STARTER_PILL_COUNT) break;
+    if (apps.has(pill.app)) continue;
+    apps.add(pill.app);
+    chosen.add(pill);
+  }
+  for (const pill of pool) {
+    if (chosen.size >= STARTER_PILL_COUNT) break;
+    chosen.add(pill);
+  }
+  // Shown in the feed's order, so the most urgent card stays first.
+  const out = pool.filter((pill) => chosen.has(pill));
   return out.length > 0 ? out : fixed();
 }

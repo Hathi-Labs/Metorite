@@ -355,9 +355,12 @@ starter pill.
 
 **CF-4b replaces the headline rule** (D-CF-8). A pill is now an action
 prompt. Only a card of the groups `now`, `needs_you` and `ready` fills a
-slot. A fixed template for the card's kind words the pill. A pill is a
-short request in the member's voice, with the icon of the card's app. The
-tap sends a longer message that names the item.
+slot. One card for each app is taken first, then the rest by feed
+order, and the pills show in feed order.
+
+A fixed template for the card's kind words the pill. A pill is a short
+request in the member's voice, with the icon of the card's app. The tap
+sends a longer message that names the item.
 
 The fresh chat of a phone shows the pills under the day's brief too, when
 the member sent nothing. The brief row has the id `brief-<date>`
@@ -436,7 +439,7 @@ demand, and the member's last choice always wins over the default.
 | **D-CF-5** | Does a `recordCard` act write without a card? | **Amended.** A write that leaves the company or cannot be undone asks once, on one card: send, delete, money, membership. A reversible write on the member's own work acts at once and offers Undo: mark done, snooze, move to Monday | People habituate to a confirm on a low-stakes act within days, and then it protects nothing, while it costs a tap every time. Undo keeps the flow and keeps the safety. This amends the owner's rule of 2026-10-20 for the reversible case, and `projects_ai_chat.md` §29 reads it with this spec |
 | **D-CF-6** | Where does the brief come from? | **My Day's MD-7 composition,** read, never recomposed | The same words on WhatsApp, on My Day and in the chat read as one assistant with one memory |
 | **D-CF-7** | Does the nudge live on the server? | **Yes,** in `shell_prefs` | A nudge that returns on every device becomes a banner, and a banner is invisible within a week |
-| **D-CF-8** | What do the starter pills say, where, and for which cards? (owner, 2026-11-03) | **A fixed template per card kind, filled from the card.** No model writes a pill (the D109 rule stands). **Every fresh chat** of the one assistant shows them: the side panel, `/chat` and the phone. On a phone they also show under the day's brief, when the brief is the only message and the member sent nothing. A chat with a member message shows none. **The top three cards that need action,** from the groups `now`, `needs_you` and `ready`, in the feed's order. A card in `fyi`, `later` or `handled` never fills a slot. Each pill shows its app's icon | The owner saw a work mode that shows three prompts above the message box, each with its source icon and worded as a situation plus an action. A headline is a statement, so a member must still decide what to ask. A request is ready to tap. A template keeps the words fixed and free of a model call |
+| **D-CF-8** | What do the starter pills say, where, and for which cards? (owner, 2026-11-03) | **A fixed template per card kind, filled from the card.** No model writes a pill (the D109 rule stands). **Every fresh chat** of the one assistant shows them: the side panel, `/chat` and the phone. On a phone they also show under the day's brief, when the brief is the only message and the member sent nothing. A chat with a member message shows none. **Three cards that need action,** from the groups `now`, `needs_you` and `ready`. One for each app first, then fill by feed order (owner, 2026-11-03, at the preview). The pills show in the feed's order. A card in `fyi`, `later` or `handled` never fills a slot. Each pill shows its app's icon | The owner saw a work mode that shows three prompts above the message box, each with its source icon and worded as a situation plus an action. A headline is a statement, so a member must still decide what to ask. A request is ready to tap. A template keeps the words fixed and free of a model call |
 
 **One refinement for later, accepted with D-CF-3.** A member may close the
 sheet at once on three launches in a row. Then the phone stops opening on
@@ -620,8 +623,10 @@ and `e2e/chat-starter-pills.spec.ts`.
 
 **Done when.**
 
-1. Only a card of `now`, `needs_you` or `ready` fills a pill, in the feed's
-   order. Fewer such cards give fewer pills. None gives the fixed list.
+1. Only a card of `now`, `needs_you` or `ready` fills a pill. The first
+   card of each app comes first, then the rest by feed order. The pills
+   show in feed order. Fewer such cards give fewer pills. None gives the
+   fixed list.
 2. Each label is a request with no ellipsis and no whole raw title. The sent
    message names the item. The label keeps a short name. It drops "Re:",
    "Fwd:" and "FW:". It takes the part before " — ", " - ", " | " or "(".
@@ -634,7 +639,7 @@ and `e2e/chat-starter-pills.spec.ts`.
    mark. PZ-33b then treats it as it treats the old pills.
 
 **Fences.** `starterPills.test.ts` (every kind, the groups, the counts, the
-names, three long real titles), `briefTurn.test.ts`, the source block in `assistant.test.ts`, and the e2e spec.
+names, long titles, the app pick), `briefTurn.test.ts`, the source block in `assistant.test.ts`, and the e2e spec.
 
 ### CF-5 · The brief as the first turn — AGENT-SAFE · BUILT 2026-10-22 (#1216), dark on staging, live where the flag is on
 
