@@ -199,12 +199,6 @@ def test_the_manifest_rules_equal_the_store_rules() -> None:
     assert rule.stored() == _VISIT_MACHINE
 
 
-def test_rollup_field_type_is_reserved_for_c7b():
-    d = copy.deepcopy(EXAMPLE)
-    d["objects"][0]["fields"][2]["type"] = "rollup"
-    one(d, "$.objects[0].fields[2].type", contains="C7b")
-
-
 def test_formula_field_type_names_the_rules_list():
     """A formula has one spelling: a rule of kind `formula` (C7a)."""
     d = copy.deepcopy(EXAMPLE)
@@ -950,6 +944,49 @@ def test_an_object_label_holds_at_most_the_store_cap():
     schema = Manifest.model_json_schema()
     label = schema["$defs"]["ObjectDef"]["properties"]["label"]
     assert {"maxLength": cap, "type": "string"} in label["anyOf"]
+
+
+# -- roll-ups (C7b) ------------------------------------------------------------------
+
+
+def test_rollup_field_type_names_the_rules_list() -> None:
+    """A roll-up has one spelling: a rule of kind `rollup` (C7b)."""
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"][2]["type"] = "rollup"
+    e = one(d, "$.objects[0].fields[2].type", contains="`rules`")
+    assert "kind `rollup`" in e.message
+
+
+def _rollup_doc() -> dict:
+    return {
+        "studio": 1, "id": "demo", "name": "Demo", "purpose": "Test.", "connections": [],
+        "actions": [], "workflows": [], "views": [],
+        "objects": [
+            {"name": "account", "fields": [{"key": "balance", "type": "number"}],
+             "rules": [{"name": "bal", "kind": "rollup", "target": "balance", "source": "entry",
+                        "via": "account", "agg": "sum", "field": "days"}]},
+            {"name": "entry", "fields": [
+                {"key": "account", "type": "relation", "to": "account", "hot": True},
+                {"key": "days", "type": "number", "hot": True}]},
+        ],
+    }
+
+
+def test_a_rollup_validates_against_the_other_objects_of_the_package() -> None:
+    assert validate_manifest(_rollup_doc()) == []
+
+
+def test_a_rollup_that_does_not_fit_its_source_gets_a_path() -> None:
+    d = _rollup_doc()
+    d["objects"][1]["fields"][1]["hot"] = False
+    e = one(d, "$.objects[0].rules", contains="hot")
+    assert "`days`" in e.message
+
+
+def test_a_rollup_of_a_source_that_the_package_lacks_is_refused() -> None:
+    d = _rollup_doc()
+    d["objects"].pop(1)
+    one(d, "$.objects[0].rules", contains="another object of this package")
 
 
 # --- STU-D11a: pages (how views sit on a page) ---------------------------------

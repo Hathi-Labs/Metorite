@@ -386,7 +386,9 @@ describe("the notice follows what became of the resend", () => {
     expect(hook).toContain('if (res.ok && res.status !== 202) settleSend("sent");');
     // A send that the gateway steered says so, never "as a new message".
     expect(hook).toContain('settleSend(outcome.steered ? "steered" : "refused");');
-    expect(hook).toContain("onRunCapped: opts?.cardAnswer ? undefined : onRunCappedRef.current,");
+    expect(hook).toContain("onRunCapped: opts?.cardAnswer || !onRunCappedRef.current");
+    // The words go back with the typed mark of their send (WS-63 D-PZ-37).
+    expect(hook).toContain("(words: string) => onRunCappedRef.current?.(words, opts?.typed === true)");
   });
 });
 
