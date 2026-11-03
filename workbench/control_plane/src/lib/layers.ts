@@ -36,10 +36,12 @@ export const LAYER_CLASS = {
 /**
  * A full-screen task card. On a desktop it fills the page column, so the shell
  * bar, the Ask bar and the docked assistant stay in view. The `pb` keeps the
- * Ask bar's own row clear. On a phone it ends above the bottom nav, so the
- * Ask tab stays in reach.
+ * Ask bar's own row clear. On a phone the box runs under the bottom nav and
+ * `.task-card-phone` (globals.css) pads its foot by the nav clearance, and by
+ * the peek strip while that shows. So the Ask tab and the strip stay in reach
+ * and no band of page shows between the card and the nav.
  */
 export const TASK_CARD_FRAME = {
   desktop: `absolute inset-0 ${LAYER_CLASS.taskCard} sm:pb-20`,
-  phone: `fixed inset-x-0 top-0 ${LAYER_CLASS.taskCard} bottom-[calc(3.5rem+env(safe-area-inset-bottom,0px))]`,
+  phone: `fixed inset-x-0 top-0 bottom-0 ${LAYER_CLASS.taskCard} task-card-phone`,
 } as const;

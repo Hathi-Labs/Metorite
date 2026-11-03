@@ -33,7 +33,8 @@ describe("the layer scale", () => {
   it("keeps the desktop card in the page column and the phone card above the nav", () => {
     expect(TASK_CARD_FRAME.desktop).toMatch(/\babsolute\b/);
     expect(TASK_CARD_FRAME.desktop).not.toMatch(/\bfixed\b/);
-    expect(TASK_CARD_FRAME.phone).toContain("bottom-[calc(3.5rem");
+    expect(TASK_CARD_FRAME.phone).toContain("task-card-phone");
+    expect(TASK_CARD_FRAME.phone).not.toContain("bottom-[calc(");
   });
 });
 
@@ -70,5 +71,16 @@ describe("a page's own layers cannot rise over the task card (TC-1 fix)", () => 
     expect(read("app/calendar/CalendarView.tsx")).toMatch(
       /className="relative isolate flex h-full min-h-0 flex-col/,
     );
+  });
+});
+
+describe("the phone card follows the nav and the peek strip (TC-1 fix)", () => {
+  const css = read("app/globals.css");
+  it("pads the card's foot by the nav clearance, and more while the peek strip shows", () => {
+    expect(css).toMatch(/\.task-card-phone\s*\{\s*padding-bottom:\s*var\(--task-card-nav-clear\)/);
+    expect(css).toMatch(
+      /:root\[data-assistant-peek\] \.task-card-phone\s*\{\s*padding-bottom:\s*calc\(var\(--task-card-nav-clear\) \+ var\(--task-card-peek-h\)\)/,
+    );
+    expect(css).toMatch(/--task-card-nav-clear:\s*calc\(3\.5rem \+ env\(safe-area-inset-bottom/);
   });
 });
