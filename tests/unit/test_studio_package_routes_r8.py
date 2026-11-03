@@ -60,6 +60,11 @@ l. Roll-ups across objects (C7b): the rules phase runs in two passes, so a
    is refused in either order. A publish that adds a roll-up stores it, and
    a roll-up on an object with records is refused with no version row. A
    field that a dropped roll-up read can turn cold in the same publish.
+m. A rule and a hot swap at a cap: rules pass 1 runs before the cold flips,
+   so a rule that moves or goes with a swap passes at the object cap and at
+   the org cap, and so does a roll-up that goes with a swap of its read
+   field. A rule that goes with a new hot field passes too. A refusal of
+   pass 2 rolls back an earlier cold flip and its hot rows.
 
 **The mutations (R7).** Each was run on 2026-11-03. The red tests are in the
 build report. M2: drop the sync. M3: sync before the publish. M4: ignore a
@@ -1593,3 +1598,154 @@ def test_r8_a_dropped_roll_up_lets_its_read_field_turn_cold(world) -> None:
     assert got["sync"]["hot_changed"] == [["line", "amount", False]]
     assert _hot_map(world, pid, "line")["amount"] is False
     assert _rule_names(world, pid) == {"line": [], "order": []}
+
+
+# ── m. A rule and a hot swap at a cap ──────────────────────────────────────
+
+
+def _unique(key: str) -> dict[str, Any]:
+    return {"name": f"one_{key}", "kind": "unique", "fields": [key]}
+
+
+def _ruled(obj: dict[str, Any], *rules: dict[str, Any]) -> dict[str, Any]:
+    return {**obj, "rules": list(rules)} if rules else obj
+
+
+def test_r8_a_rule_that_moves_with_a_hot_swap_at_the_object_cap_passes(world) -> None:
+    """Eight hot fields, and ``unique`` reads ``h8``. The manifest moves the
+    rule to ``c1``, turns ``c1`` hot and ``h8`` cold, so the object ends with 8.
+    Pass 1 of the rules drops the old rule before the swap."""
+    mid = _mid("moverule")
+    full = _hot_obj("inv", objects_store.MAX_HOT_PER_OBJECT, cold=1)
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        pid = await _live(world.a, ANA, _manifest(mid, [_ruled(full, _unique("h8"))]))
+        assert (await _save(world.a, ANA, pid, _manifest(
+            mid, [_ruled(_heat(full, h8=False, c1=True), _unique("c1"))])))[0] == 200
+        return pid, await _publish(world.a, ANA, pid)
+
+    pid, (status, got) = _run(world, go)
+    assert status == 200, got
+    hot = _hot_map(world, pid, "inv")
+    assert (hot["h8"], hot["c1"], sum(hot.values())) == (False, True, 8)
+    assert [r["name"] for r in _objects(world, pid)[0][3]] == ["one_c1"]
+    assert _versions(world, pid) == [1, 2]
+
+
+def test_r8_a_rule_that_moves_with_a_hot_swap_at_the_org_cap_passes(world) -> None:
+    """The org form: Ben fills the org up to four hot fields short of the cap,
+    and Ana's object takes the last four. Her rule moves from ``h4`` to ``c1``
+    with the swap."""
+    mid = _mid("orgmoverule")
+    mine = _hot_obj("inv", 4, cold=1)
+    room = objects_store.MAX_HOT_PER_ORG - _org_hot(world) - 4
+    assert room >= 0, "the org holds too many hot fields for this test"
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        await _fill_hot(world, BEN, room)
+        pid = await _live(world.a, ANA, _manifest(mid, [_ruled(mine, _unique("h4"))]))
+        assert (await _save(world.a, ANA, pid, _manifest(
+            mid, [_ruled(_heat(mine, h4=False, c1=True), _unique("c1"))])))[0] == 200
+        return pid, await _publish(world.a, ANA, pid)
+
+    pid, (status, got) = _run(world, go)
+    assert _org_hot(world) == objects_store.MAX_HOT_PER_ORG
+    assert status == 200, got
+    hot = _hot_map(world, pid, "inv")
+    assert (hot["h4"], hot["c1"]) == (False, True)
+
+
+def test_r8_a_rule_that_goes_with_a_hot_swap_at_the_object_cap_passes(world) -> None:
+    mid = _mid("droprule")
+    full = _hot_obj("inv", objects_store.MAX_HOT_PER_OBJECT, cold=1)
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        pid = await _live(world.a, ANA, _manifest(mid, [_ruled(full, _unique("h8"))]))
+        assert (await _save(world.a, ANA, pid, _manifest(
+            mid, [_heat(full, h8=False, c1=True)])))[0] == 200
+        return pid, await _publish(world.a, ANA, pid)
+
+    pid, (status, got) = _run(world, go)
+    assert status == 200, got
+    hot = _hot_map(world, pid, "inv")
+    assert (hot["h8"], hot["c1"], sum(hot.values())) == (False, True, 8)
+    assert _objects(world, pid)[0][3] == []
+
+
+def test_r8_a_rule_that_goes_with_a_new_hot_field_at_the_object_cap_passes(world) -> None:
+    """The rule on ``h8`` goes, ``h8`` turns cold, and a NEW hot field ``b``
+    comes. The new field waits until the cold flip frees its room."""
+    mid = _mid("droprulenew")
+    full = _hot_obj("inv", objects_store.MAX_HOT_PER_OBJECT)
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        pid = await _live(world.a, ANA, _manifest(mid, [_ruled(full, _unique("h8"))]))
+        more = _heat(full, h8=False)
+        more["fields"].append({"key": "b", "type": "text", "hot": True})
+        assert (await _save(world.a, ANA, pid, _manifest(mid, [more])))[0] == 200
+        return pid, await _publish(world.a, ANA, pid)
+
+    pid, (status, got) = _run(world, go)
+    assert status == 200, got
+    assert got["sync"]["fields_added"] == [["inv", "b"]]
+    hot = _hot_map(world, pid, "inv")
+    assert (hot["h8"], hot["b"], sum(hot.values())) == (False, True, 8)
+
+
+def _line8(amount_hot: bool = True, c1_hot: bool = False) -> dict[str, Any]:
+    """A ``line`` with 8 hot fields: the relation, ``amount`` and ``h3`` to
+    ``h8``. ``c1`` is cold."""
+    fields: list[dict[str, Any]] = [
+        {"key": "order_ref", "type": "relation", "to": "order", "hot": True},
+        {"key": "amount", "type": "number", "hot": amount_hot}]
+    fields += [{"key": f"h{i}", "type": "text", "hot": True} for i in range(3, 9)]
+    fields.append({"key": "c1", "type": "text", "hot": c1_hot})
+    return {"name": "line", "fields": fields}
+
+
+def test_r8_a_roll_up_that_goes_with_a_swap_of_its_read_field_at_the_cap_passes(world) -> None:
+    """``order`` drops its roll-up of ``line.amount``, and ``line`` swaps
+    ``amount`` for ``c1`` at its cap of 8 hot fields."""
+    mid = _mid("droproll")
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        pid = await _live(world.a, ANA, _shop(mid, [_order([_ORDER_TOTAL]), _line8()]))
+        return pid, await _republish(
+            world, mid, pid, [_order(), _line8(amount_hot=False, c1_hot=True)])
+
+    pid, (status, got) = _run(world, go)
+    assert status == 200, got
+    hot = _hot_map(world, pid, "line")
+    assert (hot["amount"], hot["c1"], sum(hot.values())) == (False, True, 8)
+    assert _rule_names(world, pid) == {"line": [], "order": []}
+
+
+def _hot_rows(world: Any, pid: str, name: str, key: str) -> int:
+    oid = next(o[1] for o in _objects(world, pid) if o[0] == name)
+    with world.p.admin_engine.connect() as c:
+        return int(c.execute(text(
+            "SELECT count(*) FROM studio_record_hot WHERE object_id = CAST(:o AS uuid) "
+            "AND field_key = :k"), {"o": oid, "k": key}).scalar_one())
+
+
+def test_r8_a_cold_flip_rolls_back_when_the_second_rules_pass_refuses(world) -> None:
+    """``status`` turns cold, and a new formula on an object with records is
+    refused in the second rules pass. The SAVEPOINT brings back the flag and
+    the hot rows."""
+    mid = _mid("coldback")
+
+    async def go() -> str:
+        pid = await _live(world.a, ANA, _manifest(mid))
+        await _record(world.a, pid, site="x", status="planned")
+        return pid
+
+    pid = _run(world, go)
+    before = _hot_rows(world, pid, "visit", "status")
+    bad = _ruled(_heat(_visit(), status=False), _TOTAL)
+    assert _run(world, lambda: _save(world.a, ANA, pid, _manifest(mid, [bad])))[0] == 200
+    status, got = _run(world, lambda: _publish(world.a, ANA, pid))
+    assert status == 409, got
+    assert [(p["kind"], p["rule"]) for p in got["problems"]] == [("rules_refused", "line_total")]
+    assert before == 1 and _hot_rows(world, pid, "visit", "status") == 1
+    assert _hot_map(world, pid, "visit")["status"] is True
+    assert _versions(world, pid) == [1]
