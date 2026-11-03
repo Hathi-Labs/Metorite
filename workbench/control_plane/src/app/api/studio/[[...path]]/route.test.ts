@@ -198,7 +198,7 @@ POST
     expect(Object.keys(seen[0].init.headers as Record<string, string>)).toContain(
       "X-Studio-Direct");
     seen.length = 0;
-    for (const headers of [
+    const others: Record<string, string>[] = [
       { origin: "https://evil.example" },
       { origin: "https://evil.example", "sec-fetch-site": "cross-site" },
       { origin: "https://ops.metorite.com", "sec-fetch-site": "same-site" },
@@ -206,7 +206,8 @@ POST
       { "sec-fetch-site": "cross-site" },
       { "sec-fetch-site": "none" },
       {},
-    ]) {
+    ];
+    for (const headers of others) {
       await post(headers);
     }
     expect(seen).toHaveLength(7);
