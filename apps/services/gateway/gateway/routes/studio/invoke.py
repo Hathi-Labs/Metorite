@@ -121,7 +121,9 @@ DIRECT_EXECUTORS: frozenset[tuple[str, str | None]] = frozenset(
 #: The most writes in flight for one org, and in the process (B2c-1). The door
 #: counts them BEFORE it opens a session, so a call past the cap holds no
 #: connection. The gateway runs one uvicorn worker, so a count in the process
-#: is the count of the box.
+#: is the count of the box. ⚠️ The total binds only the second and later
+#: writers of an org. The first writer of an org always gets a slot, so two
+#: busy orgs cannot shut out every other org (fix round 1).
 WRITERS_PER_ORG = 3
 WRITERS_TOTAL = 6
 
@@ -423,9 +425,14 @@ def _writer_slot(org: str, wanted: bool) -> Iterator[bool]:
     the call holds a slot. The count runs with no ``await``, so no other call
     interleaves. The door takes the slot BEFORE it opens a session, so a call
     past the cap holds no connection. The slot goes back in ``finally``, and an
-    org with no writer has no entry."""
-    if not wanted or _IN_FLIGHT.get(org, 0) >= WRITERS_PER_ORG \
-            or sum(_IN_FLIGHT.values()) >= WRITERS_TOTAL:
+    org with no writer has no entry.
+
+    The first writer of an org always gets a slot. A second or later writer
+    needs fewer than :data:`WRITERS_PER_ORG` of its org, and fewer than
+    :data:`WRITERS_TOTAL` in all."""
+    mine = _IN_FLIGHT.get(org, 0)
+    if not wanted or mine >= WRITERS_PER_ORG \
+            or (mine > 0 and sum(_IN_FLIGHT.values()) >= WRITERS_TOTAL):
         yield False
         return
     _IN_FLIGHT[org] = _IN_FLIGHT.get(org, 0) + 1

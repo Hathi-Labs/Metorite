@@ -1442,14 +1442,66 @@ class TestTheWriterCap:
             raise RuntimeError("fault")
         assert invoke._IN_FLIGHT == {}
 
-    def test_six_writers_in_all_and_a_read_takes_no_slot(self):
+    def test_two_full_orgs_leave_a_third_org_its_first_writer_and_a_read_takes_no_slot(self):
+        """Fix round 1: the total cap binds only the second and later writers
+        of an org, so two busy orgs cannot shut out every other org."""
         invoke._IN_FLIGHT.clear()
         with contextlib.ExitStack() as stack:
             held = [stack.enter_context(invoke._writer_slot(f"o{i // 3}", True))
                     for i in range(6)]
-            assert held == [True] * 6
-            with invoke._writer_slot("o9", True) as seventh:
-                assert seventh is False
+            assert held == [True] * 6 and invoke._IN_FLIGHT == {"o0": 3, "o1": 3}
+            with invoke._writer_slot("o9", True) as first:
+                assert first is True and invoke._IN_FLIGHT["o9"] == 1
+                with invoke._writer_slot("o9", True) as second:
+                    assert second is False
+            with invoke._writer_slot("o0", True) as fourth:
+                assert fourth is False
             with invoke._writer_slot("o0", False) as read:
                 assert read is False
+            assert invoke._IN_FLIGHT == {"o0": 3, "o1": 3}
         assert invoke._IN_FLIGHT == {}
+
+    def test_many_first_writers_pass_the_total_and_then_no_second_writer_does(self):
+        invoke._IN_FLIGHT.clear()
+        with contextlib.ExitStack() as stack:
+            firsts = [stack.enter_context(invoke._writer_slot(f"o{i}", True))
+                      for i in range(invoke.WRITERS_TOTAL + 2)]
+            assert firsts == [True] * (invoke.WRITERS_TOTAL + 2)
+            with invoke._writer_slot("o0", True) as second:
+                assert second is False
+        assert invoke._IN_FLIGHT == {}
+
+    def test_a_second_writer_counts_against_the_total(self):
+        invoke._IN_FLIGHT.clear()
+        with contextlib.ExitStack() as stack:
+            held = [stack.enter_context(invoke._writer_slot(org, True))
+                    for org in ("o0", "o1", "o2", "o0", "o1", "o2")]
+            assert held == [True] * 6
+            with invoke._writer_slot("o0", True) as third:
+                assert third is False  # 6 in flight, and o0 has one already
+        assert invoke._IN_FLIGHT == {}
+
+    def test_two_full_orgs_leave_the_first_write_of_a_third_org_a_slot(self, dw):
+        """Through the handler: the first write of the org runs, and a second
+        write of the same org at that time gets 503 at once."""
+        pid, _, _ = _setup(dw)
+        dw.org = ORG
+        busy = {"org-x": invoke.WRITERS_PER_ORG, "org-y": invoke.WRITERS_PER_ORG}
+        invoke._IN_FLIGHT.update(busy)
+
+        async def run() -> tuple[Any, Any, dict[str, int]]:
+            dw.write_gate = asyncio.Event()
+            first = asyncio.ensure_future(_handler_call(dw, pid, "add", BODIES["add"]))
+            for _ in range(50):
+                await asyncio.sleep(0)
+            during = dict(invoke._IN_FLIGHT)
+            second = await asyncio.wait_for(_handler_call(dw, pid, "add", BODIES["add"]), 5)
+            dw.write_gate.set()
+            return await first, second, during
+
+        first, second, during = asyncio.run(run())
+        assert during == {**busy, ORG: 1}
+        assert first[0] == 200
+        assert (second[0], second[1]["code"], second[2]) == (
+            503, "store_busy", {"Retry-After": "1"})
+        assert busy == invoke._IN_FLIGHT
