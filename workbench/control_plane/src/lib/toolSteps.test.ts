@@ -57,7 +57,7 @@ import { applyStreamEvent, applySubAgentEvent, type StreamFold } from "@/lib/cha
 import type { ChatMessage } from "@/hooks/useAgentChat";
 import type { ToolEvent } from "@/components/MarkdownMessage";
 import MessageBubble from "@/components/MessageBubble";
-import { ToolStepRow } from "@/components/ThinkingContainer";
+import { ToolStepRow, TrailStartsOpen } from "@/components/ThinkingContainer";
 
 // A Projects card in the turn opens a task through the router.
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
@@ -280,13 +280,18 @@ function rows(html: string): Array<[string, string]> {
 }
 
 describe("the rail renders the agent's steps from a recorded stream", () => {
+  // The trail as a member sees it once they open it (it starts closed).
   const html = renderToStaticMarkup(
-    createElement(MessageBubble, {
-      message: replay(RECORDED),
-      sessionId: "s-1",
-      sessionAgentName: "projects-assistant",
-      entityPills: true,
-    }),
+    createElement(
+      TrailStartsOpen.Provider,
+      { value: true },
+      createElement(MessageBubble, {
+        message: replay(RECORDED),
+        sessionId: "s-1",
+        sessionAgentName: "projects-assistant",
+        entityPills: true,
+      }),
+    ),
   );
 
   it("draws one row per step, in order, with its words", () => {

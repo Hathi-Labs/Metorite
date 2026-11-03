@@ -562,8 +562,8 @@ def test_r8_each_record_function_runs_the_rules(world) -> None:
             out["no record"] = await store.update_record(
                 db, ANA, obj.id, str(uuid.uuid4()), {"qty": 1}, package_id=pid)
             out["no delete"] = await store.delete_record(
-                db, obj.id, str(uuid.uuid4()), package_id=pid)
-            out["deleted"] = await store.delete_record(db, obj.id, rec.id, package_id=pid)
+                db, ANA, obj.id, str(uuid.uuid4()), package_id=pid)
+            out["deleted"] = await store.delete_record(db, ANA, obj.id, rec.id, package_id=pid)
         return out
 
     out = _go(world, go)
@@ -806,7 +806,7 @@ def test_r8_each_caller_of_the_org_lock_gets_the_bound(world, monkeypatch, name:
             "create_record": lambda db: store.create_record(db, ANA, obj.id, {}, package_id=pid),
             "update_record": lambda db: store.update_record(
                 db, ANA, obj.id, rec.id, {"note": "x"}, package_id=pid),
-            "delete_record": lambda db: store.delete_record(db, obj.id, rec.id, package_id=pid),
+            "delete_record": lambda db: store.delete_record(db, ANA, obj.id, rec.id, package_id=pid),
         }
         async with _held(world.a, most=3.0), tenant_session(world.a) as db:
             await db.execute(text("SELECT set_config('lock_timeout', '42s', true)"))
@@ -982,11 +982,11 @@ def test_r8_a_delete_that_breaks_the_balance_is_refused(world) -> None:
         refused: type = object
         try:
             async with tenant_session(world.a) as db:
-                await store.delete_record(db, obj.id, plus.id, package_id=obj.package_id)
+                await store.delete_record(db, ANA, obj.id, plus.id, package_id=obj.package_id)
         except ConstraintViolation as exc:
             refused = type(exc)
         async with tenant_session(world.a) as db:
-            ok = await store.delete_record(db, obj.id, minus.id, package_id=obj.package_id)
+            ok = await store.delete_record(db, ANA, obj.id, minus.id, package_id=obj.package_id)
         return obj, refused, ok
 
     obj, refused, ok = _go(world, go)
@@ -1313,7 +1313,7 @@ def test_r8_old_duplicates_can_be_repaired_one_at_a_time(world) -> None:
                              _move(obj, "dup", "c", 1))
         async with tenant_session(world.a) as db:
             await store.set_constraints(db, obj.id, [_ONE_SKU], package_id=obj.package_id)
-            assert await store.delete_record(db, obj.id, a.id, package_id=obj.package_id) is True
+            assert await store.delete_record(db, ANA, obj.id, a.id, package_id=obj.package_id) is True
             moved = await store.update_record(db, ANA, obj.id, b.id, {"sku": "new"},
                                               package_id=obj.package_id)
             assert moved is not None

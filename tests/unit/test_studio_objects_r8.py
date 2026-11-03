@@ -106,7 +106,17 @@ _MIGRATION = next(
     p for p in (_ROOT / "infra" / "postgres").glob("*.sql")
     if "CREATE TABLE IF NOT EXISTS studio_objects (" in p.read_text(encoding="utf-8"))
 _POLICIES = _ROOT / "infra" / "postgres" / "generated" / "04_policies.sql"
+
 _STORE = _ROOT / "apps" / "services" / "gateway" / "gateway" / "studio" / "objects_store.py"
+
+
+def _latest_hot_type_sql() -> str:
+    """The text of the latest migration that defines the hot-type CHECK."""
+    defining = [
+        p for p in (_ROOT / "infra" / "postgres").glob("*.sql")
+        if "CONSTRAINT studio_object_fields_hot_type CHECK" in p.read_text(encoding="utf-8")]
+    return max(defining, key=lambda p: int(p.name.split("_", 1)[0])).read_text(encoding="utf-8")
+
 
 TAG = uuid.uuid4().hex[:8]
 ANA = f"ana.{TAG}@stuc1.test"
@@ -273,7 +283,9 @@ def test_the_migration_holds_the_rls_the_keys_and_the_caps() -> None:
     assert "'studio_objects:' || CAST(" in store._ORG_LOCK_SQL
     type_check = sql.split("CONSTRAINT studio_object_fields_type CHECK", 1)[1].split(";")[0]
     assert re.findall(r"'(\w+)'", type_check.split("),", 1)[0]) == list(sf.FIELD_TYPES)
-    hot_check = sql.split("CONSTRAINT studio_object_fields_hot_type CHECK", 1)[1]
+    # The CHECK is widened by a later file (C7b), so the pin reads the LATEST file
+    # that defines it, found by CONTENT and ordered by number (R1).
+    hot_check = _latest_hot_type_sql().split("CONSTRAINT studio_object_fields_hot_type CHECK", 1)[1]
     assert re.findall(r"'(\w+)'", hot_check.split("AND (spec", 1)[0]) == list(sf.HOT_TYPES)
     # The two blocks of 321, so the key exists on a fresh ladder.
     assert "ADD CONSTRAINT apps_org_id_key UNIQUE (organization_id, id)" in sql
@@ -507,7 +519,7 @@ def test_r8_org_b_reads_and_writes_nothing_of_org_a(world) -> None:
             out["create"] = await store.create_record(db, ANA, made.id, _RECORD, package_id=pkg)
             out["update"] = await store.update_record(db, ANA, made.id, rec.id, {"hours": 9},
                                                       package_id=pkg)
-            out["delete"] = await store.delete_record(db, made.id, rec.id, package_id=pkg)
+            out["delete"] = await store.delete_record(db, ANA, made.id, rec.id, package_id=pkg)
             out["add_field"] = await store.add_field(db, made.id, {"key": "x", "type": "text"})
             out["hot"] = await store.set_field_hot(db, made.id, "notes", True)
             out["drop"] = await store.drop_object(db, made.id)
@@ -649,7 +661,7 @@ def test_r8_a_record_call_names_its_package_and_its_object(world) -> None:
                 out[name] = (
                     await store.get_record(db, oid, rec.id, package_id=pid),
                     await store.update_record(db, ANA, oid, rec.id, {"n0": 2}, package_id=pid),
-                    await store.delete_record(db, oid, rec.id, package_id=pid),
+                    await store.delete_record(db, ANA, oid, rec.id, package_id=pid),
                     await store.create_record(db, ANA, oid, {"n0": 3}, package_id=pid)
                     if oid == mine.id else None,
                 )
@@ -681,7 +693,7 @@ def test_r8_a_hot_field_fills_its_row_on_each_write(world) -> None:
                                       package_id=made.package_id)
         out["updated"] = _hot_rows(world, rec.id)
         async with tenant_session(world.a) as db:
-            assert await store.delete_record(db, made.id, rec.id, package_id=made.package_id)
+            assert await store.delete_record(db, ANA, made.id, rec.id, package_id=made.package_id)
         out["deleted"] = _hot_rows(world, rec.id)
         return out
 
@@ -1113,7 +1125,7 @@ def test_r8_an_older_stored_spec_still_reads_and_writes(world) -> None:
             out["rec"] = rec
             assert rec is not None
             out["got"] = await store.get_record(db, made.id, rec.id, package_id=made.package_id)
-            out["deleted"] = await store.delete_record(db, made.id, rec.id,
+            out["deleted"] = await store.delete_record(db, ANA, made.id, rec.id,
                                                        package_id=made.package_id)
         return out
 

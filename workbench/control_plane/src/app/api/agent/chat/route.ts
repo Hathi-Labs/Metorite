@@ -53,6 +53,7 @@ import { takeHandoff } from "@/lib/chatStream";
 import { codeForGatewayRefusal, codeForStatus } from "@/lib/runErrors";
 import { githubSetupNote, splitSetupVars, UNREACHABLE_NOTE } from "@/lib/setupTokens";
 import { cleanSurface, surfaceField } from "@/lib/shell/surface";
+import { typedField } from "@/lib/typedMark";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -110,6 +111,11 @@ interface ChatRequest {
    *  it steered has ended, with no words. The gateway answers a steer that
    *  run never read, or 202 when nothing is owed (`lib/chatSteer.ts`). */
   steerFollowUp?: boolean;
+  /** WS-63 D-PZ-37: the ONE typed mark. The member typed this message in
+   *  the message box. Only the composer sends it, and only `true` counts. A
+   *  pill, a choice, a card action, a feed starter and the Fix prompt send
+   *  none (`lib/typedMark.ts`). The gateway pops it. */
+  typed?: boolean;
 }
 
 const LITELLM_BASE_URL =
@@ -670,7 +676,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
-  const { agentName, message, messages, threadId, mode, model, context, surface, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId, userMessageTs, steerFollowUp, cardAnswer } = body;
+  const { agentName, message, messages, threadId, mode, model, context, surface, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId, userMessageTs, steerFollowUp, cardAnswer, typed } = body;
   // A steer follow-up has no words of its own: the gateway's ENGAGE seam
   // makes the stored steers its message. It runs on the gateway path only.
   const followUp = steerFollowUp === true && mode === "copilot" && !!threadId;
@@ -841,6 +847,9 @@ export async function POST(req: NextRequest): Promise<Response> {
               : {}),
             ...(supersedes ? { supersedes } : {}),
             ...(cardAnswer && typeof cardAnswer === "object" ? { card_answer: cardAnswer } : {}),
+            // WS-63 D-PZ-37: the typed mark, as the chat sent it. Only `true`
+            // passes, and the gateway pops it before the executor.
+            ...typedField(typed),
           },
           thread_id: threadId ?? undefined,
           model: model ?? undefined,
