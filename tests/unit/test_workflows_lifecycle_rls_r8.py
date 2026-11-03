@@ -36,8 +36,9 @@ Mutations this suite catches (R7):
 * a session with no explicit org: the ambient cases go red;
 * the refusal in ``run_published_workflow`` removed: the agent cases go red,
   and the failure shows the changed task row;
-* the refusal in ``resume_run`` removed: the approval cases go red, and the
-  failure shows the changed task row;
+* the refusal in ``resume_run`` removed: the approval cases and the wait
+  scan case of section 9.2 go red, and the failure shows the changed task
+  row;
 * ``_execute_run`` falls back to ``current_tenant()``: the ambient case of
   section 5 goes red;
 * the org read from the trigger payload: the payload case goes red;
@@ -177,11 +178,27 @@ def _wait_then_module(module_id: str) -> dict:
     return compile_graph({"nodes": nodes, "edges": edges})
 
 
+def _wait_then_task(write: dict) -> dict:
+    """trigger -> wait (an hour) -> task -> output. The wait pauses the run."""
+    nodes = [
+        _node("start", "trigger", {"kind": "manual"}),
+        _node("hold", "wait", {"seconds": 3600}),
+        _node("step", "pm_task", write),
+        _node("done", "output", {"value": "end"}),
+    ]
+    edges = [
+        {"id": f"{a}->{b}", "source": a, "target": b}
+        for a, b in (("start", "hold"), ("hold", "step"), ("step", "done"))
+    ]
+    return compile_graph({"nodes": nodes, "edges": edges})
+
+
 #: The section-9 workflows that hold a schedule trigger.
 _TICKERS = ("Tick in A", "Tick in B", "Tick A reaches B", "Gone in A", "Gone in B",
             "Task tick in A", "Sweep tick in A")
 #: Every section-9 workflow. Its run rows are reset before each case.
-_UNATTENDED_NAMES = (*_TICKERS, "Wait in A", "Wait in B", "Health in A", "Health in B")
+_UNATTENDED_NAMES = (*_TICKERS, "Wait in A", "Wait in B", "Health in A", "Health in B",
+                     "Wait then task in A")
 
 
 def _exec_sql_file(conn, sql: str) -> None:
@@ -403,6 +420,10 @@ def promoted():
                 "fields": {"title": "Renamed by the schedule", "status": "Done"},
             }), True),
             "Sweep tick in A": ("A", _one_step("pm_lifecycle", {}), True),
+            "Wait then task in A": ("A", _wait_then_task({
+                "task_id": tick_target,
+                "fields": {"title": "Renamed after the wait", "status": "Done"},
+            }), True),
         }
         for name, (tag, serialized, has_version) in part_b.items():
             wf[name] = _seed_workflow(
@@ -1214,6 +1235,28 @@ def test_a_scan_resume_carries_the_mark_whatever_the_kind(promoted, monkeypatch,
     row = _run_row(promoted, run_a)
     assert (row.status, row.error, row.org) == ("succeeded", None, promoted.org_a)
     assert [r.trigger_kind for r in _runs_of(promoted, "Wait in A")] == [kind]
+
+
+def test_the_wait_scan_never_resumes_a_run_into_a_task_node(promoted, monkeypatch):
+    """Org A is listed, and a run of A paused at a long wait before a
+    ``pm_task`` node. The scan hands it to ``resume_run``, which closes the
+    run. No task moves. The rows come first."""
+    _list_orgs(monkeypatch, promoted.org_a)
+    _reset_unattended(promoted)
+    target = promoted.tick_target
+    before = _task_row(promoted, target), _activities(promoted, target)
+    run_id = _park_wait(promoted, "Wait then task in A", promoted.org_a)
+    calls = _spy(monkeypatch)
+
+    resumed = _on_app_role(promoted, None, scheduler.scan_due_waits)
+
+    assert (_task_row(promoted, target), _activities(promoted, target)) == before
+    assert resumed == 0
+    assert calls.executed == []
+    row = _run_row(promoted, run_id)
+    assert (row.status, row.org) == ("cancelled", promoted.org_a)
+    assert "Projects tasks" in row.error and target not in row.error
+    assert _pause_statuses(promoted, run_id) == ["rejected"]
 
 
 # 9.3 The sweeps
