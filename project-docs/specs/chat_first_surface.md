@@ -15,8 +15,9 @@ releases shipped the four slices, and both flags went ON in production that
 day, with the owner's permission in chat. The client flag is
 `NEXT_PUBLIC_CHAT_FIRST` in `workbench/control_plane/.env.local`, which
 `acb-staging-flag` refuses. The server flag is `CHAT_FIRST_TOOLS`, which adds
-the tool to the orchestrator. Staging has neither flag yet. CF-4, CF-5, CF-6
-and CF-7 are not built.
+the tool to the orchestrator. Staging has neither flag yet. CF-4 and CF-5 are
+built. CF-4b (action pills, D-CF-8) was built on 2026-11-03. CF-6 and CF-7
+are not built.
 
 §5 proposes **D-CF-1** to **D-CF-7**, each with a default. HANDOFF **H-369**
 carries them to the owner. Every ticket in §6 is AGENT-SAFE to build dark,
@@ -353,6 +354,15 @@ not moved in 9 days".
 A tap sends the headline as a question. With no feed, the pills fall back to
 the fixed list. No model writes a starter pill.
 
+**CF-4b replaces the headline rule** (D-CF-8). A pill is now an action
+prompt. Only a card of the groups `now`, `needs_you` and `ready` fills a
+slot. A fixed template for the card's kind words the pill. A pill is a
+short request in the member's voice, with the icon of the card's app. The
+tap sends a longer message that names the item.
+
+The fresh chat of a phone
+shows the pills under the day's brief too, when the member sent nothing.
+
 **The brief as the first turn.** A fresh chat (`startsFresh`) on a phone,
 with the flag on, opens with the day's brief as the first assistant message.
 The brief is the MD-7 composition that My Day already holds for today, and
@@ -424,6 +434,7 @@ demand, and the member's last choice always wins over the default.
 | **D-CF-5** | Does a `recordCard` act write without a card? | **Amended.** A write that leaves the company or cannot be undone asks once, on one card: send, delete, money, membership. A reversible write on the member's own work acts at once and offers Undo: mark done, snooze, move to Monday | People habituate to a confirm on a low-stakes act within days, and then it protects nothing, while it costs a tap every time. Undo keeps the flow and keeps the safety. This amends the owner's rule of 2026-10-20 for the reversible case, and `projects_ai_chat.md` §29 reads it with this spec |
 | **D-CF-6** | Where does the brief come from? | **My Day's MD-7 composition,** read, never recomposed | The same words on WhatsApp, on My Day and in the chat read as one assistant with one memory |
 | **D-CF-7** | Does the nudge live on the server? | **Yes,** in `shell_prefs` | A nudge that returns on every device becomes a banner, and a banner is invisible within a week |
+| **D-CF-8** | What do the starter pills say, where, and for which cards? (owner, 2026-11-03) | **A fixed template per card kind, filled from the card.** No model writes a pill (the D109 rule stands). **Every fresh chat** of the one assistant shows them: the side panel, `/chat` and the phone. On a phone they also show under the day's brief, when the brief is the only message and the member sent nothing. A chat with a member message shows none. **The top three cards that need action,** from the groups `now`, `needs_you` and `ready`, in the feed's order. A card in `fyi`, `later` or `handled` never fills a slot. Each pill shows its app's icon | The owner saw a work mode that shows three prompts above the message box, each with its source icon and worded as a situation plus an action. A headline is a statement, so a member must still decide what to ask. A request is ready to tap. A template keeps the words fixed and free of a model call |
 
 **One refinement for later, accepted with D-CF-3.** A member may close the
 sheet at once on three launches in a row. Then the phone stops opening on
@@ -589,6 +600,34 @@ the My Day feed read it reuses (`src/lib/shell/feed.ts`).
 **Fences.** The route's test (new or extended). `feed.test.ts` for the
 pick. An e2e stub of the feed with three cards, and the pills read them.
 
+### CF-4b · Action prompts from the feed — AGENT-SAFE · BUILT 2026-11-03, live where the flag is on
+
+**Built when.** The empty chat of the one assistant, and the chat that holds
+only the day's brief, show up to three action pills. Each pill is a request,
+a verb or "What" first, about eight words, with no ellipsis. It is built from
+a fixed template of the card's kind, with no model call (D-CF-8). Each pill
+draws the icon My Day draws for the card's app. A tap sends a longer message
+that names the item, through the call the old starter pills use.
+
+**Files.** `src/lib/starterPills.ts` (the pure rule, a template for each
+kind), `src/components/SuggestionPills.tsx` (an item with an icon),
+`src/components/AgentChat.tsx` (the starter block only), `starterPills.test.ts`,
+`src/lib/shell/assistant.test.ts` and `e2e/chat-starter-pills.spec.ts`.
+
+**Done when.**
+
+1. Only a card of `now`, `needs_you` or `ready` fills a pill, in the feed's
+   order. Fewer such cards give fewer pills. None gives the fixed list.
+2. Each label is a request with no ellipsis and no whole raw title. The sent
+   message names the item.
+3. A phone chat that holds only the brief shows the pills under it. A chat
+   with a member message shows none.
+4. No model call is made. A tap sends the message as a tap with no typed
+   mark. PZ-33b then treats it as it treats the old pills.
+
+**Fences.** `starterPills.test.ts` (every kind, the groups, the counts, the
+names), the source block in `assistant.test.ts`, and the e2e spec.
+
 ### CF-5 · The brief as the first turn — AGENT-SAFE · BUILT 2026-10-22 (#1216), dark on staging, live where the flag is on
 
 The build added `POST /chat/sessions/{id}/brief`, which writes one assistant row from the Reach brief parts and stamps the member's day. The dock asks it once through `wantsBrief`, on a phone with the flag on, and the chat mounts after the answer. The `reportCard` template draws the brief's lines as pills, and a tap sends the line as the member's turn.
@@ -703,8 +742,8 @@ phone e2e. Not built.
 
 ### Order
 
-CF-1, then CF-2 and CF-3 in parallel, then CF-4 and CF-5, then CF-6, then
-CF-7 and CF-9. CF-8 follows CF-1, because it builds on the sheet's one row. CF-1 to
+CF-1, then CF-2 and CF-3 in parallel, then CF-4 and CF-5, then CF-4b, then
+CF-6, then CF-7 and CF-9. CF-8 follows CF-1, because it builds on the sheet's one row. CF-1 to
 CF-3 give a phone member the whole loop: open on the chat, work in it, see
 a page, come back. CF-4 to CF-6 make the chat worth opening.
 
