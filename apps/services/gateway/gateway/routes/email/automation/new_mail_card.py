@@ -32,7 +32,17 @@ from acb_skills.reply_card import (
     MAX_REPLY_RECIPIENTS,
 )
 from fastapi import BackgroundTasks, Depends, HTTPException
-from gateway.routes.email.core import _assert_account_owner, _log, _tenant_session, router
+from gateway.routes.email.automation.held_card import (
+    _clean_subject,
+    _org_of,
+    _owner,
+    _people,
+    take_record,
+    write_record,
+)
+from gateway.routes.email.automation.identity import resolve_self
+from gateway.routes.email.automation.reply_card import ticked_subset
+from gateway.routes.email.core import _log, _tenant_session, router
 from gateway.routes.email.transport.send import ArtifactAttachment
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -140,13 +150,7 @@ async def new_mail_card(
     line break or a hidden character, and a mailbox of another member are
     each refused, and no card shows."""
     from acb_skills.reply_card import clean_reply_body
-    from gateway.routes.email.automation.held_card import (
-        _clean_subject,
-        _owner,
-        _people,
-        write_record,
-    )
-    from gateway.routes.email.automation.identity import resolve_self
+    from gateway.routes.email.core import _assert_account_owner
     from gateway.routes.email.transport.metorite_files import resolve_metorite_files
 
     owner = _owner(user)
@@ -216,13 +220,7 @@ async def new_mail_card_act(
        and the recorded files."""
     from acb_skills.reply_card import parse_new_mail_answer, take_reply_answer
     from gateway.routes.email.automation.drafting import DraftUpsertRequest, upsert_draft
-    from gateway.routes.email.automation.held_card import (
-        _clean_subject,
-        _org_of,
-        _owner,
-        take_record,
-    )
-    from gateway.routes.email.automation.reply_card import ticked_subset
+    from gateway.routes.email.core import _assert_account_owner
     from gateway.routes.email.transport.send import (
         MetoriteFileRef,
         SendEmailRequest,
