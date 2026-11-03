@@ -9,6 +9,11 @@
  * or added, the editable body, and Send, Save to Drafts and Discard. The
  * logic is `lib/replyCard.ts`. This file holds the member's edits only.
  *
+ * A card that wrote a draft says so, and its Save reads "Save draft". It
+ * watches that draft (`watchCardDraft`, owner report 2026-11-03). When the
+ * member sends or deletes it in the Email app, the card shows one line, its
+ * Send and Save stop, and Discard reads "Close".
+ *
  * The client derives no recipient. The card shows ONE list with a tick box
  * for each person (owner, 2026-10-24). A hidden second list once sent a
  * reply to one person while the member ticked more. So the Reply and Reply
@@ -29,7 +34,7 @@
  * card counts the lines.
  */
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
@@ -41,6 +46,7 @@ import {
   bodyCanGo,
   classOfAddress,
   discardReplyDraft,
+  DRAFT_LEFT_LINE,
   leftOutText,
   lineCount,
   markFor,
@@ -52,11 +58,13 @@ import {
   replyAnswer,
   replyHint,
   replySummary,
+  saveLabel,
   sendsCount,
   startTicks,
   replyAllTicks,
   tickedFor,
   toggleTick,
+  watchCardDraft,
   withBcc,
   type ReplyAction,
   type ReplyApproval,
@@ -155,6 +163,16 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight + 2}px`;
   }, [body]);
+  // Owner report, 2026-11-03: the member can send or delete the card's draft
+  // in the Email app while the card waits. The card reads that state, shows
+  // one line, and stops its Send and Save. The gateway refuses both too
+  // (409 `draft_gone`), so the server stays the guard.
+  const [gone, setGone] = useState(false);
+  const draftId = form?.draftId ?? "";
+  useEffect(
+    () => (disabled ? undefined : watchCardDraft(draftId, () => setGone(true))),
+    [draftId, disabled],
+  );
   if (!form) {
     return (
       <div className="space-y-2">
@@ -173,11 +191,11 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
   const picked = tickedFor(form, replyAll, ticks);
   const ticked = new Set(replyAll ? ticks.reply_all : ticks.reply);
   const onTick = (a: string) => setTicks((t) => toggleTick(t, replyAll, a));
-  // A reply needs one ticked To at least.
-  const ok = bodyCanGo(body) && picked.to.length > 0;
+  // A reply needs one ticked To at least, and a draft that is still in Drafts.
+  const ok = bodyCanGo(body) && picked.to.length > 0 && !gone;
   const lines = lineCount(body);
   const answer = (action: ReplyAction) => {
-    if (!armed) return;
+    if (!armed || gone) return;
     const a = replyAnswer(form, { action, replyAll, body, ticks });
     if (a) onAnswer(a);
   };
@@ -295,7 +313,7 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
                   void submitBcc();
                 }
               }}
-              disabled={disabled || bccBusy}
+              disabled={disabled || bccBusy || gone}
               className="min-w-0 flex-1"
             />
             <Button
@@ -303,7 +321,7 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
               size="sm"
               icon="Plus"
               onClick={() => void submitBcc()}
-              disabled={disabled || !armed || bccBusy || !bccDraft.trim()}
+              disabled={disabled || !armed || bccBusy || gone || !bccDraft.trim()}
               data-reply-bcc-submit=""
             >
               {bccBusy ? "Adding…" : "Add Bcc"}
@@ -340,6 +358,15 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
         {lines === 1 ? "1 line" : `${lines} lines`}. The whole text shows above.
       </p>
 
+      {gone && (
+        <p
+          className="break-words rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:px-3 glass:py-2"
+          role="status"
+          data-reply-gone=""
+        >
+          {DRAFT_LEFT_LINE}
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
@@ -360,13 +387,19 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
           aria-disabled={!armed || undefined}
           data-reply-save=""
         >
-          Save to Drafts
+          {saveLabel(form)}
         </Button>
         <Button
           variant="ghost"
           size="sm"
           onClick={() => {
             if (!armed) return;
+            // A card whose draft left Drafts only closes: no draft is left
+            // to trash, and the tool reads the state (2026-11-03).
+            if (gone) {
+              onDiscard();
+              return;
+            }
             // The member's own Discard also trashes the card's draft.
             void discardReplyDraft(form);
             onDiscard();
@@ -375,10 +408,10 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
           aria-disabled={!armed || undefined}
           data-reply-discard=""
         >
-          Discard
+          {gone ? "Close" : "Discard"}
         </Button>
       </div>
-      <p className="text-[10px] text-muted-foreground">{replyHint(form)}</p>
+      {!gone && <p className="text-[10px] text-muted-foreground">{replyHint(form)}</p>}
     </div>
   );
 }

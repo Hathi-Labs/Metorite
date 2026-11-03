@@ -21,6 +21,7 @@
  * environment. Fence: `src/lib/replyCard.test.ts`.
  */
 
+import { DRAFT_LEFT_EVENT } from "@/lib/draftLeftEvent";
 import { classOf, type PersonClass } from "@/lib/sendCard";
 
 /** The prefix of an Approve with a payload (`REPLY_ANSWER_PREFIX`). */
@@ -461,8 +462,129 @@ export function replySummary(form: ReplyForm, replyAll: boolean, ticks?: ReplyTi
   return to.length > 0 ? `Reply to ${to.join(", ")}` : "No one in To is ticked, so the reply cannot go";
 }
 
-/** What the buttons do, in one line under them. */
+/**
+ * What the buttons do, in one line under them. A card that wrote a draft
+ * (`draftId`) says that the reply is already in Drafts (owner report,
+ * 2026-11-03): the old words told the member that only Save puts it there.
+ */
 export function replyHint(form: ReplyForm): string {
+  if (form.draftId) {
+    const where = form.mailbox ? `the Drafts of ${form.mailbox}` : "your Drafts";
+    return `This reply is in ${where}. Send sends it now. Save keeps your edits in Drafts. Discard deletes it from Drafts.`;
+  }
   const box = form.mailbox ? ` from ${form.mailbox}` : "";
   return `Send replies now${box}. Save to Drafts keeps it in your mailbox and sends nothing. Discard drops it.`;
+}
+
+/** The label of the Save button: "Save draft" when the reply is already in Drafts. */
+export function saveLabel(form: ReplyForm): string {
+  return form.draftId ? "Save draft" : "Save to Drafts";
+}
+
+// ── A reply that left Drafts (owner report, 2026-11-03, task 1526) ─────────
+//
+// The card writes its reply to Drafts at once. The member can send or delete
+// that draft in the Email app while the card waits. The card then reads that
+// state, shows one line, and stops its Send and Save. The gateway refuses
+// both too (`reply_card_act`, a 409 `draft_gone`), so the card is a courtesy
+// and the server is the guard.
+
+/** The line of a card whose draft left Drafts. */
+export const DRAFT_LEFT_LINE =
+  "This reply left Drafts. It was sent or deleted in the Email app, so this card cannot send or save it.";
+
+/** How often a card that shows reads the state of its draft. */
+export const DRAFT_POLL_MS = 60_000;
+
+/** The state of a card's draft. `unknown` keeps the card as it is. */
+export type DraftState = "in" | "gone" | "unknown";
+
+/**
+ * Is the card's draft still in Drafts? One read of the local row, through
+ * the email BFF (`GET /email/reply-card/draft-state`). Only a clear `false`
+ * of the server is `gone`. A fault, a 404 and an odd answer are `unknown`.
+ */
+export async function readDraftState(draftId: string, get: typeof fetch = fetch): Promise<DraftState> {
+  if (!draftId) return "unknown";
+  try {
+    const res = await get(`/api/email/reply-card/draft-state?draft_id=${encodeURIComponent(draftId)}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return "unknown";
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (data.in_drafts === false) return "gone";
+    if (data.in_drafts === true) return "in";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/** The window and the document that the watch listens on. A test passes fakes. */
+export interface DraftWatchHost {
+  win: Pick<EventTarget, "addEventListener" | "removeEventListener">;
+  doc: Pick<EventTarget, "addEventListener" | "removeEventListener"> & { visibilityState: string };
+}
+
+/**
+ * Watch the card's draft while the card shows. It reads the state when the
+ * window gets the focus, when the page shows again, every `DRAFT_POLL_MS`
+ * while the page shows, and at once on `DRAFT_LEFT_EVENT` of the Email app.
+ * A hidden page reads nothing. On `gone` it calls `onGone` once and stops.
+ * A read that comes while one runs makes one more read after it, so a send
+ * during a read is not lost. Returns the stop function. A card with no
+ * draft, or a render with no window, watches nothing.
+ */
+export function watchCardDraft(
+  draftId: string,
+  onGone: () => void,
+  opts: { read?: (id: string) => Promise<DraftState>; host?: DraftWatchHost; everyMs?: number } = {},
+): () => void {
+  const found: DraftWatchHost | null =
+    opts.host ?? (typeof window !== "undefined" && typeof document !== "undefined" ? { win: window, doc: document } : null);
+  if (!draftId || !found) return () => {};
+  const host: DraftWatchHost = found;
+  const read = opts.read ?? ((id: string) => readDraftState(id));
+  let live = true;
+  let busy = false;
+  let again = false;
+  const check = async () => {
+    if (!live || host.doc.visibilityState === "hidden") return;
+    if (busy) {
+      again = true;
+      return;
+    }
+    busy = true;
+    try {
+      do {
+        again = false;
+        const state = await read(draftId);
+        if (!live) return;
+        if (state === "gone") {
+          stop();
+          onGone();
+          return;
+        }
+      } while (again && live);
+    } finally {
+      busy = false;
+    }
+  };
+  const onEvent = () => void check();
+  const onShow = () => {
+    if (host.doc.visibilityState !== "hidden") void check();
+  };
+  host.win.addEventListener("focus", onEvent);
+  host.win.addEventListener(DRAFT_LEFT_EVENT, onEvent);
+  host.doc.addEventListener("visibilitychange", onShow);
+  const timer = setInterval(onEvent, opts.everyMs ?? DRAFT_POLL_MS);
+  function stop() {
+    if (!live) return;
+    live = false;
+    clearInterval(timer);
+    host.win.removeEventListener("focus", onEvent);
+    host.win.removeEventListener(DRAFT_LEFT_EVENT, onEvent);
+    host.doc.removeEventListener("visibilitychange", onShow);
+  }
+  return stop;
 }
