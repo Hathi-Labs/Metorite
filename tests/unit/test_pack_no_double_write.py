@@ -38,6 +38,7 @@ pytest.importorskip("agent_framework", reason="MAF not installed")
 from acb_skills import skill_families as sf
 from acb_skills import tool_annotations as ta
 from acb_skills import tool_packs as tp
+from acb_skills.write_artifact import artifact_context
 from orchestrator import _tool_injection as ti
 from orchestrator import executor as ex
 
@@ -334,6 +335,56 @@ async def test_a_stop_before_the_sub_run_starts_still_counts_as_not_finished(
         made = await _tool(agents, "create_personal_task").func(title="Confirm 250 boards")
     assert "timed out" in str(out) and loads == []
     assert applied.record.handed_failed == {PA} and made == _failed()
+
+
+async def _handed_then(applied: Any, names: list[str], tool: str, agents: list[Any]) -> Any:
+    """A hand-off to the specialist that finished with the calls *names*, as
+    the streaming seam reports them in its ``finally``, then the pack tool *tool*."""
+    with L._in_run(applied):
+        assert tp.delegation_refusal(PA, starts=True) is None, "non-vacuity: the hand-off starts"
+        ex._pack_handoff_ended(
+            PA, artifact_context(), finished=True,
+            calls=[{"id": f"c{i}", "name": n, "args": {}} for i, n in enumerate(names)])
+        return await _tool(agents, tool).func(title="Reminder work")
+
+
+async def test_a_write_the_hand_off_did_not_do_runs_after_it(store, agents, monkeypatch) -> None:
+    """Task 1533, production 2026-11-03: the hand-off made a task and watched
+    it. The parent's write of a different tool must run, as the reminder did
+    not. Mutation: restore the unconditional ``HANDED_WRITE_REFUSED`` in
+    ``PackRun.write_refusal`` -> the write is refused -> red."""
+    approve(monkeypatch)
+    monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open", lambda: True)
+    fake_gateway(monkeypatch, _gateway)
+    applied = await _held_projects(agents)
+    made = await _handed_then(applied, ["create_task", "watch_task"], "create_personal_task", agents)
+    assert applied.record.handed_ran == {PA: {"create_task", "watch_task"}}
+    assert not str(made).startswith("Not run"), made
+
+
+async def test_a_write_the_hand_off_did_still_refuses(store, agents, monkeypatch) -> None:
+    """The hand-off called the same tool, so a second call is a double write.
+    Mutation: let any finished hand-off with calls pass -> red."""
+    approve(monkeypatch)
+    monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open", lambda: True)
+    calls = fake_gateway(monkeypatch, _gateway)
+    applied = await _held_projects(agents)
+    made = await _handed_then(applied, ["create_personal_task"], "create_personal_task", agents)
+    assert made == tp.HANDED_WRITE_REFUSED.format(tool="create_personal_task")
+    assert _posts(calls) == []
+
+
+def test_an_open_or_unreported_hand_off_refuses_every_write() -> None:
+    """A hand-off still open, or one that reported no calls, may do any work.
+    Mutation: treat both as 'did not call it' -> red."""
+    run = _record(("projects",))
+    run.handoff_starts(PA)
+    assert run.write_refusal(PA, "set_reminder") == tp.HANDED_WRITE_REFUSED.format(tool="set_reminder")
+    tp.handoff_ended(PA, {tp.PACKS_KEY: run}, finished=True, tools=["create_task"])
+    assert run.write_refusal(PA, "set_reminder") is None
+    run.handoff_starts(PA)
+    tp.handoff_ended(PA, {tp.PACKS_KEY: run}, finished=True, tools=[])
+    assert run.write_refusal(PA, "set_reminder") == tp.HANDED_WRITE_REFUSED.format(tool="set_reminder")
 
 
 # ── 3a. A pack tool that writes only a file of the chat ─────────────────────

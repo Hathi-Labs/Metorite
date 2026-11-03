@@ -1600,7 +1600,9 @@ def _pack_delegation_refusal(agent_name: str) -> str | None:
     return refused
 
 
-def _pack_handoff_ended(agent_name: str, parent_ctx: Any, *, finished: bool) -> None:
+def _pack_handoff_ended(
+    agent_name: str, parent_ctx: Any, *, finished: bool, calls: Any = None,
+) -> None:
     """Tell the calling run's pack record whether a hand-off finished (WS-67
     OA-8i review, P2). *parent_ctx* is the calling run's context, read before
     the sub-run derived its own. The rule is ``tool_packs.handoff_ended``.
@@ -1608,7 +1610,10 @@ def _pack_handoff_ended(agent_name: str, parent_ctx: Any, *, finished: bool) -> 
     try:
         from acb_skills.tool_packs import handoff_ended
 
-        handoff_ended(agent_name, parent_ctx, finished=finished)
+        handoff_ended(
+            agent_name, parent_ctx, finished=finished,
+            tools=[str(c.get("name") or "") for c in (calls or []) if isinstance(c, dict)],
+        )
     except Exception:
         return
 
@@ -3068,7 +3073,7 @@ async def _run_sub_agent_streaming(
     finally:
         # WS-67 OA-8i review, P2: first, before any await, the calling run's
         # pack record learns whether this hand-off finished.
-        _pack_handoff_ended(agent_name, _parent_ctx_sub, finished=_sub_done)
+        _pack_handoff_ended(agent_name, _parent_ctx_sub, finished=_sub_done, calls=_sub_calls)
         _drop_agent_push(run_id, "the sub-task did not finish")
         try:
             from acb_common import publish_activity

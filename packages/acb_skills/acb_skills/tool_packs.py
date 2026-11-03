@@ -1148,6 +1148,16 @@ class PackRun:
     #: timed out or stopped before it finished. Only :meth:`handoff_ended`
     #: writes it.
     handed_failed: set[str] = field(default_factory=set, compare=False, repr=False)
+    #: Task 1533. For each owner, the tool names that its finished hand-offs
+    #: of this run called, from the calls the sub-run reported. Only
+    #: :meth:`handoff_ended` writes it.
+    handed_ran: dict[str, set[str]] = field(default_factory=dict, compare=False, repr=False)
+    #: Task 1533. The owners with a hand-off that is still open or whose calls
+    #: are not known (no calls reported, or it did not finish). A write tool of
+    #: such an owner refuses as before. Only :meth:`handoff_starts` and
+    #: :meth:`handoff_ended` write it.
+    handed_open: dict[str, int] = field(default_factory=dict, compare=False, repr=False)
+    handed_unknown: set[str] = field(default_factory=set, compare=False, repr=False)
     #: RX-1. The last member turn of each pack of this run that a load may
     #: move out: a sticky pack that the member did not name in this turn.
     used: Mapping[str, int] = field(default_factory=dict, compare=False, repr=False)
@@ -1281,6 +1291,7 @@ class PackRun:
         name = str(agent_name or "")
         if name in _pack_owners():
             self.handed.add(name)
+            self.handed_open[name] = self.handed_open.get(name, 0) + 1
 
     def write_refusal(self, owner: str, tool: str) -> str | None:
         """OA-8i. The answer to the write tool *tool* of a pack of *owner*
@@ -1295,6 +1306,12 @@ class PackRun:
         call after it must run: OA-7i acceptance 8, and no email tool is
         marked read-only.
 
+        Task 1533 (production 2026-11-03: a hand-off made a task and watched
+        it, then ``set_reminder`` was refused): a hand-off that FINISHED and
+        reported its calls refuses only a tool that it called itself. An open
+        hand-off, a failed one and one with no reported calls refuse as before.
+        Fence: ``tests/unit/test_pack_no_double_write.py``.
+
         With no hand-off, None records the write, so a later hand-off to the
         owner refuses (:meth:`wrote_refusal`). The check and the record run
         with no await between them, so of two calls in one model step, one
@@ -1305,11 +1322,18 @@ class PackRun:
                 return None
             if name in self.handed_failed:
                 return HANDED_FAILED_WRITE_REFUSED.format(tool=tool)
+            # Task 1533: the hand-off ended and reported its calls, and none
+            # of them is this tool. It did not do this work, so it runs.
+            if (self.handed_open.get(name, 0) == 0 and name not in self.handed_unknown
+                    and str(tool) not in self.handed_ran.get(name, ())):
+                return None
             return HANDED_WRITE_REFUSED.format(tool=tool)
         self.wrote.setdefault(name, str(tool))
         return None
 
-    def handoff_ended(self, agent_name: str, *, finished: bool) -> None:
+    def handoff_ended(
+        self, agent_name: str, *, finished: bool, tools: Iterable[str] | None = None,
+    ) -> None:
         """OA-8i review, P2. Record that a hand-off of this run to
         *agent_name* ended, and whether it finished. A hand-off that failed,
         timed out or stopped may have written part of the work, so a pack
@@ -1319,6 +1343,14 @@ class PackRun:
         name = str(agent_name or "")
         if not finished and name in self.handed:
             self.handed_failed.add(name)
+        if name not in self.handed:
+            return
+        self.handed_open[name] = max(0, self.handed_open.get(name, 0) - 1)
+        names = {str(t) for t in (tools or ()) if t}
+        if finished and names:
+            self.handed_ran.setdefault(name, set()).update(names)
+        else:  # no calls reported, or no finish: the hand-off may have done any work
+            self.handed_unknown.add(name)
 
     def add(self, slug: str, held: bool) -> None:
         """Record that ``load_skill_tools`` added pack *slug* in this run.
@@ -1999,17 +2031,23 @@ def pack_write_refusal(
 
 def handoff_ended(
     agent_name: Any, ctx: Mapping[str, Any] | None, *, finished: bool,
+    tools: Iterable[str] | None = None,
 ) -> None:
     """OA-8i review, P2. Record on the record of *ctx* that a hand-off to
     *agent_name* ended, and whether it finished (:meth:`PackRun.handoff_ended`).
 
     *ctx* is the run context of the CALLING run, which the streaming seam
     read before it derived the context of the sub-run. A run with no record
-    records nothing. Never raises."""
+    records nothing. Never raises.
+
+    Task 1533. *tools* names the tools that the sub-run called. The write
+    tool of a pack then refuses only if its name is among them
+    (:meth:`PackRun.write_refusal`). Fence:
+    ``tests/unit/test_pack_no_double_write.py``."""
     try:
         run = (ctx or {}).get(PACKS_KEY)
         if isinstance(run, PackRun):
-            run.handoff_ended(str(agent_name or ""), finished=finished)
+            run.handoff_ended(str(agent_name or ""), finished=finished, tools=tools)
     except Exception as exc:
         _log.warning("tool_packs.handoff_end_failed", error=type(exc).__name__)
 
