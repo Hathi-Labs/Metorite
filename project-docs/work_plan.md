@@ -158,7 +158,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-CM | **Console and Money**: seats, credits, invoices | 🟡 gated · M2 | `specs/customer_console.md` | Metorite: epic 478 (Billing & Accounts) · gates H-14 and the rate card (D123) · next H-170, CP-10 |
 | WS-TO | **Trust and Operations**: enforced controls, restore, compliance | 🟢 active · M1 | `specs/box_hardening.md` | Metorite: epic 521 (Platform & CI/CD) · SBX-0 decided (D130, `specs/agent_sandbox.md`) · next WS-1e, WS-3, BH-3 with SBX-1, the WS-37 spec (D119.4) |
 | WS-PL | **Platform and CI**: delivery, staging, branch protection | 🟢 active · M1 | `specs/development_and_delivery_framework.md` · the local loop LD-7 to LD-10: `specs/engineering_practice.md` §1.3 (D145) | Metorite: project Platform & CI/CD, and epic 1100 in Developer Workflow · next LD-8c (the backup verify fails each night), LD-8a, LD-8b, LD-9, LD-10, then WS-38a, WS-38e, WS-5a |
-| WS-PT | **Projects and Tasks** | 🟢 active · M1 | `specs/project_management_app.md` · `specs/one_projects_app.md` | Metorite: project Projects/Tasks App · no P0 or P1 · next H-257, H-387 |
+| WS-PT | **Projects and Tasks** | 🟢 active · M1 | `specs/project_management_app.md` · `specs/one_projects_app.md` | Metorite: project Projects/Tasks App · D170 (the inbox holds captures), D172 (the task card) · `one_projects_app.md` §9b and §9c: the phone (epic 1500), the inbox, Undo, select many, the archive · next MOB-1 and INB-1 (in build), then UNDO-1, SEL-1, MOB-2 · H-257, H-387 |
 | WS-CAL | **Calendar**: events, reminders, external sync | 🟢 active · M1 | `specs/calendar_focus_os.md` · `specs/calendar_events_reminders.md` | Metorite: project Calendar App · CE-0 decided (D138, 2026-10-29) · RE-9b BUILT 2026-10-31 (migration 318). Not dark: it sends wherever `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` are on (production: both on) · CE-4 BUILT, dark (2026-10-31, migration 331, `CALENDAR_EVENTS` off) · next CE-1, CE-3, CE-5, then CE-10 with CE-11 |
 | WS-PP | **People and Profile** | 🟢 active · M1 | `specs/people_center_app.md` | Metorite: project My Profile · next E-58 |
 | WS-EM | **Email** | 🟢 active · M0 | `specs/email_app_master_plan.md` · `specs/shared_mailbox.md` | Metorite: project My Email · Gmail in test mode (D122.4) · next E-05, E-09, E-11 |
@@ -5224,6 +5224,59 @@ In one chat the owner read mail, sent mail, and said "Remind me to call Rajendra
 14. **A known residual, not new.** A task write still emits its event. A published workflow on a `pm.task.*` event runs outside the hold (`routes/workflows/engine/handlers.py`, and `egress.STORE_WRITES`). §16.3 of `maf_coding_engine.md` records it. A workflow is configuration that a person published, and the model does not reach it.
 
 **Fences.** `tests/unit/test_held_card_writes.py`, `tests/unit/test_held_card_promises.py`, `tests/unit/test_card_body.py`, `tests/unit/test_project_audience_r8.py`, `tests/unit/test_pack_room.py`, `tests/unit/test_no_egress_tool_audit.py`, `tests/unit/test_held_send_guidance.py`, `tests/unit/test_delegation_no_egress.py`.
+
+### D170 — My task inbox holds only what the member captured (2026-11-03)
+
+Owner directive, 2026-11-03, in chat. Board: **WS-PT**, owner `specs/one_projects_app.md` §9b. It amends `my_tasks_cutover.md` §4.8 item 2.
+
+```text
+"I see that a lot of the tasks that are there in my task inbox are also there in the Metorite project plan already. Shouldn't, technically, my task inbox be explicitly the task that I chat with the capture system? Why are other tasks also coming in from elsewhere?"
+```
+
+The agent showed the cause. The inbox added every company task assigned to the member that the member had not planned, under "From Projects". The owner then chose from three options.
+
+1. **The inbox holds captures only.** A capture is a task that the member made through chat, quick capture, email, a meeting or a reminder. A capture filed to a company project stays in the inbox until the member plans it.
+2. **Assigned work goes to My tasks.** A company task that another person or an agent assigns to the member shows in My tasks with a "New" mark and a count. Nothing shows twice, and nothing is lost.
+3. **The chat tools show the same inbox as the app.** `my_work(view="inbox")` and `my_tasks_list("inbox")` return exactly the inbox rows.
+4. **No auto-archive.** Done tasks stay until the member archives them. The member selects many tasks and archives them at once, with Undo, and finds them in one Archive view.
+
+Fence: named in `one_projects_app.md` §9b for INB-1 and SEL-1. Advisory until each slice builds.
+
+### D171 — Everything that waits on the member shows in My Day (2026-11-03)
+
+Owner directive, 2026-11-03, in chat. The owner gave the design to the agent: "I leave it up to you to figure out how to decide what is best to be done." Board: **WS-51** (chat run continuity), owner `specs/chat_run_continuity.md` §8.
+
+```text
+"When any of the approval cards or decision cards are there, which I have not specifically answered in the chat itself and possibly close the chat, navigate away, and start a new chat, the approval cards show up somewhere in my day approvals, so that I can actually do those approvals."
+```
+
+1. **My Day is the one place for what waits on the member.** A chat card that the member did not answer, a question from an agent and a proposal of the proactive agent all show in the "Needs you" group of My Day. This follows D103, D131, D161.3 and the owner's direction of 2026-11-01 ("only one surface").
+2. **A waiting chat card outlives the chat.** The durable asks of WS-51 S2 (`chat_pending_ask`, flag `CHAT_DURABLE_ASKS`) keep the card for 7 days. The My Day card shows the question or the approval title, and one tap opens the chat at that card.
+3. **The Approvals app stays the admin queue.** It lists the Action Broker items: publish reviews, workflow approvals and broadcasts. My Day links to it, and it adds no second list of chat cards.
+4. **No approval in one click from My Day.** The member approves on the card that shows the exact payload (D124.2). My Day opens that card.
+
+Fence: named in `chat_run_continuity.md` §8 for WAIT-1 and WAIT-2. Advisory until each slice builds.
+
+### D172 — The task card reads first, and the one AI pill works on the open task (2026-11-03)
+
+Owner directive, 2026-11-03, in chat. Board: **WS-PT**, owner `specs/one_projects_app.md` §9c. The owner approved the redesign mockup and its recommendations, then changed two parts.
+
+```text
+"It kind of still feels a little cognitively overloading."
+"Would it also be nice to expand it into a full-screen task card when needed, but default to the sidebar? Both on the calendar and the projects tasks app."
+"Instead of having the AI chat box also appear on the card (which is unnecessary because we already have access to the AI pill), always have the AI pill be available. ... Even when we open the task card in the full-screen central view, ... the task card can be above the AI pill so that we can chat with that particular task in context."
+```
+
+1. **One task card everywhere.** Projects, Tasks and Calendar draw the same card. It opens as a side panel. An expand control opens it full screen, and Escape or collapse returns to the side panel. On a phone the card opens full screen.
+2. **The card reads first.** The title and the status pill come first. Then five facts read as text, and each opens its editor on a click: Assignee, Due, Priority, Estimate and Tags. A folded field that has a value shows too. "More details" folds the rest.
+3. **My plan folds to one line.** It holds the member's private triage: the list, the context, the energy and the next step. The next step hides when it equals the title.
+4. **No chat box on the card.** The one AI pill of the shell stays visible on every surface. No card covers it, and a full-screen card sits above it. An open task joins the pill as a reference chip, which the member can remove.
+5. **One chat per task.** A message with the task chip goes to that task's own chat, and that chat lists in the one chat list (D99).
+6. **Suggestions in the pill.** "Re-clarify" and "Fill details" become suggestion chips of the pill while a task is attached. Their two dialogs stay in the ⋯ menu for one release.
+7. **Comments** start at the top of Discussion.
+8. **D78 stays.** A due date alone never raises priority. The card explains the level in one line, for example "Low: due soon, but not marked important".
+
+Fence: named per slice in `one_projects_app.md` §9c. Advisory until each slice builds.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
