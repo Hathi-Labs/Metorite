@@ -644,8 +644,13 @@ describe("the source keeps the flag's two sides apart", () => {
   it("an ask the chat refuses waits in the composer, never vanishes (review, 2026-10-14)", () => {
     // The field clears on Enter. A live run that cannot take a steer refuses
     // the words, so they go back into the composer with the notice.
-    expect(read("components/AgentChat.tsx")).toContain(
-      "if (!submitText(autoSend.text)) setInput((prev) => mergeCappedText(prev, autoSend.text));",
+    // The typed words of the field keep the typed mark (WS-63 D-PZ-37).
+    const chat = read("components/AgentChat.tsx");
+    expect(chat).toContain(
+      "if (!submitText(autoSend.text, askTyped ? { typed: true } : undefined)) {",
+    );
+    expect(chat).toMatch(
+      /boxMarkRef\.current = filled\(boxMarkRef\.current, askTyped\);\s*setInput\(\(prev\) => mergeCappedText\(prev, autoSend\.text\)\);/,
     );
   });
 

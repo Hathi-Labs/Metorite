@@ -1224,6 +1224,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 onSessionRefused={chat.onSessionRefused}
                 notice={chat.notice}
                 pendingInput={chat.recoveredInput ?? st.draft?.text}
+                pendingInputTyped={!chat.recoveredInput && st.draft?.typed === true}
                 onPendingInputConsumed={() => {
                   chat.consumeRecoveredInput();
                   consumeDraft();

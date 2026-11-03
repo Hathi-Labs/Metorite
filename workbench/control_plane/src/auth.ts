@@ -447,6 +447,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     // The route is in `proxy.ts`'s PUBLIC_PAGES: it is reached by somebody who
     // is, by definition, not signed in yet.
     verifyRequest: "/signin/code",
+    // Task 1529. Without this, every error of kind "error" (`Verification`,
+    // `AccessDenied`, `Configuration`) renders `@auth/core`'s built-in page,
+    // and its "Sign in" button links to `/api/auth/error?error=Verification/signin`:
+    // a bare "Error" card with no way back. `/signin` shows our copy
+    // (`errorCopy.ts`) and sends a wrong code back to `/signin/code`.
+    // Fence: `signin.test.ts`.
+    error: "/signin",
   },
 });
 
