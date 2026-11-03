@@ -2,7 +2,7 @@
 
 > **Product:** Metorite · **Feature:** planning in the Projects chat · **Updated:** 2026-11-02 · **Owner:** vjvarada
 
-> **Status:** 🚧 **BUILDING.** D173 (2026-11-03) changed the stack of cards that wait together to ONE card with tabs. The fence is `cardTabs.test.ts`. PJP-0 (this spec) merged on 2026-11-02 (`4bbe7c5b4`). PJP-1 (pills, swatches and six hues) merged on 2026-11-02 and reaches production at the 21:30 UTC release. PJP-2 and PJP-4 are in review.
+> **Status:** 🚧 **BUILDING.** D173 (2026-11-03) changed the stack of cards that wait together to ONE card with tabs. The fence is `cardTabs.test.ts`. PJP-0 (this spec) merged on 2026-11-02 (`4bbe7c5b4`). PJP-1 (pills, swatches and six hues) merged on 2026-11-02 (`19d998d99`). PJP-4 (`update_tasks`, many task edits on one card) merged on 2026-11-03. Each reaches production at the next 21:30 UTC release. PJP-2 is in review.
 
 > **Verified against code on 2026-11-02 at `c8b31dcbf`.** Each path in §8 was read on that commit. The production facts in §2 come from the gateway journal and the database of 2026-11-02.
 

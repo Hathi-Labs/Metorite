@@ -18,6 +18,7 @@ import os
 import re
 import unicodedata
 import uuid
+from collections.abc import Awaitable
 from datetime import date, timedelta
 from email.utils import parseaddr
 from pathlib import Path
@@ -326,7 +327,11 @@ class GatewayError(GatewayRefusal):
     It is the shared ``GatewayRefusal`` too, with the route's SAFE detail and
     the fields that a 422 names. So a tool that lets it escape answers the
     model with the route's words, not with "Error: Function failed."
-    (:func:`_agent_tools`)."""
+    (:func:`_agent_tools`).
+
+    ``reason`` is the machine reason of a route that answers a dict
+    ``detail`` with a ``reason`` key, or "". ``compose_reply`` reads it
+    (2026-11-03, ``acb_skills.reply_card.DRAFT_GONE``)."""
 
     def __init__(
         self,
@@ -336,8 +341,10 @@ class GatewayError(GatewayRefusal):
         detail: str = "",
         fields: tuple[str, ...] = (),
         route: str = "",
+        reason: str = "",
     ) -> None:
         super().__init__(message, status=status, detail=detail, fields=fields, route=route)
+        self.reason = reason
 
 
 #: The email words of the shared refusal text (``acb_common.tool_refusals``).
@@ -362,10 +369,14 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
     if resp.status_code < 400:
         return
     detail = ""
+    reason = ""
     try:
         body = resp.json()
         if isinstance(body, dict):
             detail = str(body.get("detail") or body.get("error") or "")
+            raw = body.get("detail")
+            if isinstance(raw, dict):
+                reason = str(raw.get("reason") or "")[:64]
     except Exception:  # non-JSON body
         detail = (resp.text or "")[:200]
     safe, fields = safe_detail(
@@ -378,6 +389,7 @@ def _raise_if_error(resp: httpx.Response, method: str, path: str) -> None:
         detail=safe,
         fields=fields,
         route=route_template(path),
+        reason=reason,
     )
 
 
@@ -2347,6 +2359,124 @@ async def draft_reply(
 #: also trashes the draft that the card wrote, unless the member edited it.
 _REPLY_DISCARDED = "Reply discarded and cancelled. Nothing was sent."
 
+#: The answer of a reply card that closed with no answer, when the card's
+#: draft is no longer in Drafts (owner report, 2026-11-03). The tool cannot
+#: tell the member's Discard, a send or a delete in the Email app, and a
+#: rule that replaced the draft apart (fix round 1, item 3). So it claims no
+#: send and no "not sent".
+_REPLY_CLOSED_DRAFT_GONE = (
+    "The reply card closed, and this chat sent and saved nothing. The card's "
+    "draft is no longer in Drafts. The member discarded it on the card, or it "
+    "was sent, deleted or replaced outside this card. Do not say that the "
+    "reply was sent, or that it was not sent. Ask the member what they want "
+    "to do with this reply.")
+
+#: The answers of an act that the gateway refused because the reply already
+#: left (``acb_skills.reply_card.DRAFT_GONE`` and ``ALREADY_REPLIED``). Only
+#: ``ALREADY_REPLIED`` means that a reply went. A draft that left Drafts can
+#: also be one that a rule replaced (``_resolve_existing_thread_draft``).
+_REPLY_LEFT_DRAFTS = (
+    "Nothing was sent or saved from the card. The card's draft is no longer in "
+    "Drafts. It was sent, deleted or replaced outside this card, so the card "
+    "cannot send it. Ask the member what they want to do with this reply. Do "
+    "not say that the reply was sent.")
+_REPLY_ALREADY_SENT = (
+    "Nothing was sent or saved from the card. This mailbox already sent a "
+    "reply in this conversation after the card showed. Tell the member this, "
+    "and do not send the reply again.")
+#: The answer of an act whose draft id never reached the card's record
+#: (``acb_skills.reply_card.DRAFT_UNCONFIRMED``, item 10). It claims no send.
+_REPLY_DRAFT_UNCONFIRMED = (
+    "Nothing was sent or saved from the card. The server could not confirm "
+    "the card's draft in Drafts, so the card cannot send it. Ask the member "
+    "whether to show a new card. Do not say that the reply was sent.")
+
+
+def _reply_left_line(exc: GatewayError) -> str | None:
+    """The fact for the model when the act refused a reply that already
+    left (2026-11-03), or None for any other refusal."""
+    from acb_skills.reply_card import ALREADY_REPLIED, DRAFT_GONE, DRAFT_UNCONFIRMED
+
+    if exc.status != 409:
+        return None
+    lines = {DRAFT_GONE: _REPLY_LEFT_DRAFTS, ALREADY_REPLIED: _REPLY_ALREADY_SENT,
+             DRAFT_UNCONFIRMED: _REPLY_DRAFT_UNCONFIRMED}
+    return lines.get(getattr(exc, "reason", ""))
+
+
+async def _act_or_left(act: Awaitable[Any]) -> Any:
+    """The answer of ``POST /email/reply-card/act``, or the fact for the
+    model when the act refused a reply that already left (2026-11-03). The
+    chat then never claims that the card sent it. Each other refusal
+    escapes, as before."""
+    try:
+        return await act
+    except GatewayError as exc:
+        left = _reply_left_line(exc)
+        if left is None:
+            raise
+        return left
+
+
+#: The answer of a reply card that closed when the state of its draft could
+#: not be read (item 11). The draft can have gone in the Email app, so the
+#: tool claims no send and no "not sent".
+_REPLY_CLOSED_STATE_UNKNOWN = (
+    "The reply card closed, and this chat sent and saved nothing. The state of "
+    "the card's draft could not be read. Do not say that the reply was sent, "
+    "or that it was not sent. Ask the member what they want to do with this "
+    "reply.")
+#: The answer of a reply card whose draft write had an unknown outcome
+#: (``draft_unsaved``, item 11). A draft of it can still be in Drafts.
+_REPLY_CLOSED_UNSAVED = (
+    "The reply card closed, and this chat sent and saved nothing. The reply "
+    "could not be saved to Drafts, so the card could not send it. A draft of "
+    "it can still be in Drafts. Ask the member whether to draft it again.")
+
+
+async def _card_draft_state(draft_id: str) -> str:
+    """``in``, ``gone`` or ``unknown``: the state of the card's draft, from
+    the gateway. A fault and an odd answer are ``unknown`` (item 11)."""
+    try:
+        state = await _get("/email/reply-card/draft-state", {"draft_id": draft_id})
+    except Exception:  # any fault: the state is not known
+        return "unknown"
+    if isinstance(state, dict) and state.get("in_drafts") is False:
+        return "gone"
+    if isinstance(state, dict) and state.get("in_drafts") is True:
+        return "in"
+    return "unknown"
+
+
+async def _card_draft_gone(draft_id: str) -> bool:
+    """True when the gateway says that the card's draft left Drafts. A card
+    with no draft, and any fault, read False, so the old answer stays."""
+    return bool(draft_id) and await _card_draft_state(draft_id) == "gone"
+
+
+async def _closed_card_line(form: dict[str, Any], kept: str) -> str:
+    """The answer of a reply card that closed with no Send and no Save.
+
+    Discard and a timeout look the same here, so the tool trashes nothing.
+    The member's Discard click posts its own trash of the card's draft
+    (``ReplyCardForm``), and a timeout keeps the draft. 2026-11-03: a card
+    whose draft left Drafts closes this way too. The member can have sent
+    that draft from the Email app, so the tool then says neither
+    "discarded" nor "nothing was sent". A state that cannot be read, and a
+    draft write with an unknown outcome, claim neither too (item 11)."""
+    unapproved = _unapproved_line()
+    if unapproved:
+        return unapproved
+    if form.get("draft_unsaved") is True:
+        return _REPLY_CLOSED_UNSAVED + kept
+    draft_id = str(form.get("draft_id") or "")
+    if not draft_id:
+        return _REPLY_DISCARDED + kept
+    lines = {"in": _REPLY_DISCARDED, "gone": _REPLY_CLOSED_DRAFT_GONE,
+             "unknown": _REPLY_CLOSED_STATE_UNKNOWN}
+    return lines[await _card_draft_state(draft_id)] + kept
+
+
 #: Added to the answer when the member's own draft of the email stays in
 #: Drafts, beside the draft that the chat wrote. The chat never writes over it.
 _KEPT_DRAFT = (" Your earlier draft of this email stays in Drafts as it was, and "
@@ -2369,6 +2499,32 @@ _CARD_REVISED = (
     "Bcc, call compose_reply again with the person in bcc, or add it to the "
     "draft with edit_draft and offer send_draft. "
     "Never send the member to the Email app for it.")
+
+#: The answer of a card that the member wrote over, when the card's draft is
+#: no longer in Drafts (task 1526, fix round 1, item 6). The tool hands the
+#: model no draft id of a draft that is gone, and claims no send.
+_CARD_REVISED_DRAFT_GONE = (
+    "The member wrote in the chat while the card was open, so the card is "
+    "closed. Nothing was sent from the card. The card's draft is no longer in "
+    "Drafts. It was sent, deleted or replaced outside this card, so it has no "
+    "draft_id to use. Do not say that the reply was sent. Read the member's "
+    "words below, and ask what they want before you show a new card.")
+
+
+async def _revised_line(form: dict[str, Any], kept: str, prep: dict[str, Any]) -> str:
+    """The answer of a reply card that the member wrote over (``REVISED``).
+
+    It names the id of the card's draft, so a Cc that the member asks for
+    goes on it with edit_draft (owner, 2026-10-22). It first reads the state
+    of that draft, and a draft that left Drafts gives no id (fix round 1,
+    item 6). A fault of the read keeps the answer of before."""
+    did = form["draft_id"]
+    if await _card_draft_gone(did):
+        return _CARD_REVISED_DRAFT_GONE + kept + _recent_reply_text(prep)
+    ref = f" The draft_id of this reply in Drafts is {did}." if did else ""
+    line = _draft_line(did, form["subject"])
+    return (_CARD_REVISED + ref + kept + _recent_reply_text(prep)
+            + (f"\n{line}" if line else ""))
 
 
 #: The answer of ``compose_reply`` with ``cc`` in a held chat while
@@ -2467,6 +2623,8 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
         "body": body,
         # The draft that this card wrote. The member's Discard trashes it.
         "draft_id": str(prep.get("draft_id") or ""),
+        # Item 11: the draft write had an unknown outcome, so the card cannot send.
+        **({"draft_unsaved": True} if prep.get("draft_unsaved") is True else {}),
         "note": " ".join([*notices[4:], *([] if body.strip() else [
             "The assistant did not write a draft for this mail. Write the reply below."])]),
     }
@@ -2680,18 +2838,10 @@ async def compose_reply(
         **({"request_id": card_id} if card_id else {}),
     )
     if answer is ask_tools.REVISED:
-        # The id of the card's draft, so a Cc the member asks for goes on it
-        # with edit_draft (owner, 2026-10-22).
-        did = form["draft_id"]
-        ref = f" The draft_id of this reply in Drafts is {did}." if did else ""
-        line = _draft_line(did, form["subject"])
-        return (_CARD_REVISED + ref + kept + _recent_reply_text(prep)
-                + (f"\n{line}" if line else ""))
+        return await _revised_line(form, kept, prep)
     if not isinstance(answer, ask_tools.ReplyAnswer):
-        # Discard and a timeout look the same here, so the tool trashes
-        # nothing. The member's Discard click posts its own trash of the
-        # card's draft (``ReplyCardForm``), and a timeout keeps the draft.
-        return _unapproved_line() or (_REPLY_DISCARDED + kept)
+        # Discard, a timeout, and a card whose draft left Drafts (2026-11-03).
+        return await _closed_card_line(form, kept)
     member = _current_user_email().strip().lower()
     if answer.responder and member and answer.responder.strip().lower() != member:
         return ("Nothing was sent. Another member answered this card, "
@@ -2702,12 +2852,16 @@ async def compose_reply(
     refusal, _warn = _lookalike_check({"text": getattr(choice, "body", "")})
     if refusal:
         return refusal.replace("Not sent.", "Nothing was sent or saved.", 1)
-    res = await _post("/email/reply-card/act", {
+    # 2026-11-03: a reply that already left (sent from the Email app, or a
+    # reply in the thread after the card) comes back as a fact, not a dict.
+    res = await _act_or_left(_post("/email/reply-card/act", {
         "message_id": email_id,
         "card_request_id": answer.request_id,
         "card_thread_id": answer.thread_id,
         "answer": answer.answer,
-    })
+    }))
+    if isinstance(res, str):
+        return res
     to, copied = _addr_text(res.get("to")), _addr_text(res.get("cc"))
     copy = f", with a copy to {copied}" if copied else ""
     if res.get("bcc"):
