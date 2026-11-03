@@ -129,8 +129,9 @@ card. GD-5b adds the later entries when their slices land.
 The tour card floats above the dimmed page, beside the ringed part. It says one
 or two sentences about the stop. It shows "2 of 5", with Back, Next and End
 tour. The side chat stays open for questions, and the message field stays open.
-The card is not in the chat. The owner gave the reason on 2026-11-03: in the
-chat, the card mixed in with the chat's own buttons.
+The card is not in the chat. On a computer, the card never covers the
+assistant panel. The owner gave the reason on 2026-11-03: in the chat, the
+card mixed in with the chat's own buttons.
 
 | Stop | Points at | The chat says (draft) |
 |---|---|---|
@@ -253,9 +254,9 @@ One state machine in `src/lib/shell/guide.ts`, and one shell component,
   rest of the page. It draws the tour card above the dim, in glass tokens
   (D149). It scrolls the anchor into view.
 - **Move on.** Next, a click on the ringed part, or the route of the next step.
-- **A missing anchor.** The step shows its text, and the chat says "I can't
-  point at it on this screen". The runner logs `guide_anchor_missing`. It never
-  fails in silence.
+- **A missing anchor.** The tour card shows the step text and says "I can't
+  point at it on this screen". The dim has no hole. The runner logs
+  `guide_anchor_missing`. It never fails in silence.
 - **End.** Escape, End tour, or the last step. The page stays where it is.
 - **State.** The current guide and step live in `sessionStorage` for the tab,
   so a reload resumes. `tour_seen_at` joins the shell prefs, with no new table.
@@ -386,7 +387,7 @@ The design task 178 closes with this spec.
 | **GD-2** | `GuideSpotlight`: the ring, the popover, and its access rules (§5.3) | A vitest test per rule. Four captures. An e2e test rings an anchor | AGENT-SAFE · MEDIUM |
 | **GD-3** | The guide format, its loader, F2, and the tour guide `home.tour`. Its five steps are the five stops of §4.1 | F2 passes, and fails on a bad path, anchor or tool | AGENT-SAFE · LOW |
 | **GD-4** | The runner (§5.3), with the phone strip | vitest per state. An e2e test runs a guide, reloads, and resumes | AGENT-SAFE · MEDIUM |
-| **GD-5a** | 🔨 **BUILT, dark (2026-11-02).** The first-run tour (§4.1) before OB-4 and HLP-1: "Show me around" in the founder's welcome step, "Take the tour" in the account menu, `tour_seen_at` in the shell prefs, and `GUIDE_ORGS` on `GET /auth/me/shell`. **Built:** `acb_common/guide_flags.py` is the one reader of `GUIDE_ORGS`, for the gateway and the orchestrator, and the org comes from the session. `shellPrefs.ts` passes `guide` to `guide.ts`, the ONE check: off refuses each start, resume and offer, and a start waits until the read answers. "Take the tour" is a row of `accountMenu` and of the phone drawer. Each row goes to `/?guide=home.tour`, because stop 4 rings My Day, which lives on `/` only. `tour_seen_at` is a key-only stamp with the server's time, and a layout save keeps it. It keeps the first start, in SQL. The last stop shows up to six chips of the held live apps. A chip ends the tour and opens its app (GD-10 adds the chapter). On the last stop the card carries the line, so no popover covers the chips | An e2e test: a founder and a member each run it. It never starts alone. With the flag off, no entry shows. Verify: `uv run pytest tests/unit/test_guide_flags.py tests/unit/test_auth_me_shell.py tests/unit/test_auth_me_shell_r8.py -q` and `npx playwright test e2e/guide-first-run.spec.ts e2e/guide-tour.spec.ts` | AGENT-SAFE · MEDIUM |
+| **GD-5a** | 🔨 **BUILT, dark (2026-11-02).** The first-run tour (§4.1) before OB-4 and HLP-1: "Show me around" in the founder's welcome step, "Take the tour" in the account menu, `tour_seen_at` in the shell prefs, and `GUIDE_ORGS` on `GET /auth/me/shell`. **Built:** `acb_common/guide_flags.py` is the one reader of `GUIDE_ORGS`, for the gateway and the orchestrator, and the org comes from the session. `shellPrefs.ts` passes `guide` to `guide.ts`, the ONE check: off refuses each start, resume and offer, and a start waits until the read answers. "Take the tour" is a row of `accountMenu` and of the phone drawer. Each row goes to `/?guide=home.tour`, because stop 4 rings My Day, which lives on `/` only. `tour_seen_at` is a key-only stamp with the server's time, and a layout save keeps it. It keeps the first start, in SQL. The last stop shows up to six chips of the held live apps. A chip ends the tour and opens its app (GD-10 adds the chapter). On the last stop the tour card carries the chips, above the dim and outside the chat | An e2e test: a founder and a member each run it. It never starts alone. With the flag off, no entry shows. Verify: `uv run pytest tests/unit/test_guide_flags.py tests/unit/test_auth_me_shell.py tests/unit/test_auth_me_shell_r8.py -q` and `npx playwright test e2e/guide-first-run.spec.ts e2e/guide-tour.spec.ts` | AGENT-SAFE · MEDIUM |
 | **GD-5b** | The later entries: the OB-4 dialog button, the HLP-1 Help row, the Get started card at stop 4 (OB-1b), and "give me a tour" through `show_guide` (GD-7) | Each entry lands when its slice lands. The GD-5a e2e test runs from each entry | AGENT-SAFE · LOW |
 | **GD-6** | Ask during the tour: a question pauses it, and a chip continues it | An e2e test asks at stop 3 and continues to stop 4 | AGENT-SAFE · MEDIUM |
 | **GD-7** | `find_guide` and `show_guide` (§5.4), the persona line, the eval cases | A tool test per refusal. The eval cases pass. An eval over USD 0.50 waits for the owner | AGENT-SAFE · MEDIUM |

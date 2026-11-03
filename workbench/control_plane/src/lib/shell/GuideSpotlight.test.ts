@@ -407,6 +407,38 @@ describe("rule 9: card placement", () => {
     expect(c.top + 120).toBeLessThanOrEqual(900 - 8);
   });
 
+  it("desktop: an anchor inside the panel puts the card LEFT of the panel, lined up with the anchor", () => {
+    const desk = { width: 1440, height: 900 };
+    const panel = at(1040, 0, 400, 900);
+    const field = at(1056, 800, 368, 80);
+    const c = placeCard(field, size, desk, false, panel);
+    expect(c.side).toBe("left");
+    expect(c.left + c.width).toBeLessThanOrEqual(1040);
+    expect(c.top + 120).toBe(880);
+    // An anchor in the upper half lines up by its top edge.
+    const head = at(1056, 20, 368, 60);
+    expect(placeCard(head, size, desk, false, panel).top).toBe(20);
+    // No intersection with the panel, and inside the window.
+    for (const a of [field, head]) {
+      const p = placeCard(a, size, desk, false, panel);
+      expect(p.left + p.width <= 1040 || p.left >= 1440).toBe(true);
+      expect(p.left).toBeGreaterThanOrEqual(16);
+      expect(p.top).toBeGreaterThanOrEqual(16);
+      expect(p.top + 120).toBeLessThanOrEqual(900 - 16);
+    }
+  });
+
+  it("desktop: an anchor outside the panel keeps the placePopover place, and the phone ignores the panel", () => {
+    const desk = { width: 1440, height: 900 };
+    const panel = at(1040, 0, 400, 900);
+    const a = at(300, 100, 300, 400);
+    expect(placeCard(a, size, desk, false, panel)).toEqual(placePopover(a, size, desk));
+    expect(placeCard(a, size, desk, false, null)).toEqual(placePopover(a, size, desk));
+    const ph = { width: 390, height: 800 };
+    const sheet = at(0, 0, 390, 800);
+    expect(placeCard(sheet, size, ph, true, sheet)).toEqual(placeCard(sheet, size, ph, true));
+  });
+
   it("desktop with no anchor: centred at the foot of the window", () => {
     const desk = { width: 1440, height: 900 };
     const c = placeCard(null, size, desk, false);

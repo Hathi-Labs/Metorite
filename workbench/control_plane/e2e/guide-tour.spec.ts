@@ -248,7 +248,7 @@ test.describe("desktop", () => {
     await expect(myDay).toBeVisible();
     const c = await settledCard(page);
     const m = (await myDay.boundingBox())!;
-    // Beside My Day: the card does not cover the ringed part. The ring is held inside the window.
+    // The card stays inside the window. The ring is held inside it too.
     const vp = page.viewportSize()!;
     const visibleMyDay = {
       x: Math.max(0, m.x),
@@ -256,7 +256,10 @@ test.describe("desktop", () => {
       width: Math.min(vp.width, m.x + m.width) - Math.max(0, m.x),
       height: Math.min(vp.height, m.y + m.height) - Math.max(0, m.y),
     };
-    expect(overlaps(c, visibleMyDay), "card over My Day").toBe(false);
+    // My Day fills the width beside the panel, so the card may sit over it. It never sits over the panel.
+    const panelBox = (await page.locator('[data-assistant="dock"]').boundingBox())!;
+    expect(overlaps(c, panelBox), "card over the panel").toBe(false);
+    expect(visibleMyDay.width).toBeGreaterThan(0);
     expect(c.x).toBeGreaterThanOrEqual(0);
     expect(c.x + c.width).toBeLessThanOrEqual(vp.width);
     expect(c.y).toBeGreaterThanOrEqual(0);
@@ -290,6 +293,21 @@ test.describe("desktop", () => {
         }),
     );
     expect(gone).toBe(true);
+  });
+
+  test("at stops 3 and 5 the card box does not intersect the assistant panel box", async ({ page }) => {
+    await stub(page);
+    await page.goto("/?guide=home.tour");
+    await expect(card(page)).toContainText("1 of 5");
+    const panel = page.locator('[data-assistant="dock"]');
+    for (let i = 1; i <= 4; i++) {
+      await nextStop(page, i);
+      if (i !== 2 && i !== 4) continue;
+      await expect(panel).toBeVisible();
+      const c = await settledCard(page);
+      const p = (await panel.boundingBox())!;
+      expect(overlaps(c, p), `stop ${i + 1} card over the panel`).toBe(false);
+    }
   });
 
   test("the last stop shows the chips on the card, and a chip opens its app", async ({ page }) => {

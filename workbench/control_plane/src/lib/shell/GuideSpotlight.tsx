@@ -367,10 +367,41 @@ export type CardPlace = {
  * - Phone: full width less the gutter, docked to the edge from {@link dockEdge}.
  * - Desktop: beside the anchor by {@link placePopover}.
  * - No anchor on a desktop: centred at the foot of the window.
+ * - On a desktop, the card never covers the open assistant panel (`panel`).
+ *   If the first place meets the panel, the card moves to the left of it and
+ *   lines up with the anchor: its bottom edge on the bottom edge of an anchor
+ *   in the lower half, else its top edge on the anchor's top edge.
  *
  * The card always sits inside the window. Pure.
  */
 export function placeCard(
+  rect: Rect | null,
+  size: { width: number; height: number },
+  viewport: Viewport,
+  phone: boolean,
+  panel: Rect | null = null,
+): CardPlace {
+  const first = placeCardFirst(rect, size, viewport, phone);
+  if (phone || !panel || panel.width <= 0 || panel.height <= 0) return first;
+  const meets =
+    first.left < panel.right &&
+    panel.left < first.left + first.width &&
+    first.top < panel.bottom &&
+    panel.top < first.top + size.height;
+  if (!meets) return first;
+  const width = first.width;
+  const lowHalf = rect ? rect.top + rect.height / 2 > viewport.height / 2 : true;
+  const rawTop = !rect ? viewport.height - PHONE_GUTTER - size.height : lowHalf ? rect.bottom - size.height : rect.top;
+  const maxTop = Math.max(PHONE_GUTTER, viewport.height - PHONE_GUTTER - size.height);
+  return {
+    left: Math.max(PHONE_GUTTER, panel.left - GAP - width),
+    top: Math.min(Math.max(PHONE_GUTTER, rawTop), maxTop),
+    width,
+    side: "left",
+  };
+}
+
+function placeCardFirst(
   rect: Rect | null,
   size: { width: number; height: number },
   viewport: Viewport,
@@ -471,7 +502,10 @@ export function TourCard(p: TourCardProps & { rect: Rect | null; missing?: boole
   });
 
   if (!vp) return null;
-  const at = placeCard(p.rect ? visibleRect(p.rect, vp) : null, { width: CARD_WIDTH, height }, vp, !!p.phone);
+  // The open side panel, by the attribute the dock sets. No second registry.
+  const panelEl = p.phone ? null : document.querySelector<HTMLElement>('[data-assistant="dock"]');
+  const panel = panelEl && isShown(panelEl) ? panelEl.getBoundingClientRect() : null;
+  const at = placeCard(p.rect ? visibleRect(p.rect, vp) : null, { width: CARD_WIDTH, height }, vp, !!p.phone, panel);
   return (
     <div
       ref={ref}
