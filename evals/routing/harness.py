@@ -563,6 +563,19 @@ class RoutingHarness:
             return held
 
         mp.setattr(in_app_path, "member_features", _member_features)
+        # WS-OB GD-7: the guide tools, with GUIDE_ORGS open for the run's org and
+        # the member no admin. Production ships them dark (settings.guide_orgs).
+        from orchestrator import guide_tools
+
+        from evals.routing.dataset import ORG as _ORG
+
+        mp.setattr(settings, "guide_orgs", "*", raising=False)
+        mp.setattr(guide_tools, "run_org", lambda: _ORG)
+
+        async def _no_admin() -> bool:
+            return False
+
+        mp.setattr(guide_tools, "member_is_admin", _no_admin)
         ti._build_registry_block.cache_clear()
         ti._build_injected_tools_addendum.cache_clear()
         self._registry = registry()

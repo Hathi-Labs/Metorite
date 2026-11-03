@@ -131,7 +131,10 @@ def drift() -> list[str]:
         # WS-62 CF-3: the dock joins the page line behind chatFirstOn(). The
         # eval sends the base persona, as a build with the flag off does.
         "the dock's join": "${personaText}\\n\\n${context}",
-        "the dock's page line": "chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA",
+        "the dock's page line": "const basePersona = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;",
+        # WS-OB GD-7: the guide line joins behind the guide flag. The eval sends
+        # the base persona, as a build with the flag off does.
+        "the dock's guide line": "const personaText = guideOn ? `${basePersona} ${GUIDE_PERSONA_LINE}` : basePersona;",
     }
     dock = _read(ASSISTANT_TS.parent / "AssistantDock.tsx")
     out: list[str] = []
