@@ -2773,10 +2773,16 @@ export const projectsApi = {
       `tasks/${taskId}/subtree`,
     ),
 
-  setAssignees: (taskId: string, assignees: string[]) =>
+  /**
+   * `opts.ifMatch` is the row's `updated_at` as last read, under the PATCH's
+   * rule (`tasks._check_version`): a field change since answers 412. Absent
+   * means the old request exactly. UNDO-1 sends it on an undo.
+   */
+  setAssignees: (taskId: string, assignees: string[], opts?: { ifMatch?: string | null }) =>
     call<{ task_id: string; assignees: string[] }>(`tasks/${taskId}/assignees`, {
       method: "PUT",
       body: JSON.stringify({ assignees }),
+      ...(opts?.ifMatch ? { headers: { "If-Match": opts.ifMatch } } : {}),
     }),
 
   /**

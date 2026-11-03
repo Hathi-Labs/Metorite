@@ -345,7 +345,7 @@ describe("recordAssigneesEdit", () => {
     const r = rig({ read: vi.fn(async () => ({ assignees: ["c@x.io"] })) });
     recordAssigneesEdit(r.io, r.hooks, { id: "t1", before: ["a@x.io"], next: ["c@x.io"], label: "x" });
     await stepBack(r.stack)!.entry.undo();
-    expect(r.io.setAssignees).toHaveBeenCalledWith("t1", ["a@x.io"]);
+    expect(r.io.setAssignees).toHaveBeenCalledWith("t1", ["a@x.io"], null);
   });
 
   it("refuses with the stale message when somebody changed the list since", async () => {
@@ -354,6 +354,33 @@ describe("recordAssigneesEdit", () => {
     await stepBack(r.stack)!.entry.undo();
     expect(r.io.setAssignees).not.toHaveBeenCalled();
     expect(r.notify).toHaveBeenCalledWith(STALE_MESSAGE);
+  });
+
+  it("compares the list the way the server keeps it: trimmed, lower case (finding 7)", async () => {
+    // The member typed "Ana@X.io ". The server stored "ana@x.io".
+    const r = rig({ read: vi.fn(async () => ({ assignees: ["ana@x.io"], updated_at: "r1" })) });
+    recordAssigneesEdit(r.io, r.hooks, { id: "t1", before: ["a@x.io"], next: ["Ana@X.io "], label: "x" });
+    await stepBack(r.stack)!.entry.undo();
+    expect(r.notify).not.toHaveBeenCalled();
+    expect(r.io.setAssignees).toHaveBeenCalledWith("t1", ["a@x.io"], "r1");
+  });
+
+  it("the PUT carries the read's version, and its 412 shows the stale message (finding 7)", async () => {
+    const stale = Object.assign(new Error("precondition"), { status: 412 });
+    const r = rig({
+      read: vi.fn(async () => ({ assignees: ["c@x.io"], updated_at: "r1" })),
+      setAssignees: vi.fn(async () => {
+        throw stale;
+      }),
+    });
+    recordAssigneesEdit(r.io, r.hooks, { id: "t1", before: ["a@x.io"], next: ["c@x.io"], label: "x" });
+    const back = stepBack(r.stack)!;
+    await expect(back.entry.undo()).resolves.toBeUndefined();
+    expect(r.io.setAssignees).toHaveBeenCalledWith("t1", ["a@x.io"], "r1");
+    expect(r.notify).toHaveBeenCalledWith(STALE_MESSAGE);
+    // The step is dead: redo does not write on top of the change.
+    await back.entry.redo();
+    expect(r.io.setAssignees).toHaveBeenCalledTimes(1);
   });
 });
 

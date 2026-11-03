@@ -22,7 +22,7 @@ import {
 
 export const taskEditIo: EditIo = {
   patch: (id, payload, ifMatch) => projectsApi.patchTask(id, payload, { ifMatch }),
-  setAssignees: (id, list) => projectsApi.setAssignees(id, list),
+  setAssignees: (id, list, ifMatch) => projectsApi.setAssignees(id, list, { ifMatch }),
   read: (id) => projectsApi.task(id),
   versions: taskVersions,
 };

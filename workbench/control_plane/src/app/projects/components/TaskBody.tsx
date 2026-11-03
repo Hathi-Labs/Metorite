@@ -818,8 +818,10 @@ export function TaskBody({
     setError(null);
     try {
       const prior = assignees;
-      await projectsApi.setAssignees(task.id, next);
-      taskUndo.assigneesEdited(task.id, prior, next, {
+      // UNDO-1 (fix round 1, finding 7) — the set the SERVER kept, in its
+      // lower case, so the undo's read guard compares like with like.
+      const saved = await projectsApi.setAssignees(task.id, next);
+      taskUndo.assigneesEdited(task.id, prior, saved.assignees ?? next, {
         label: `changed assignees of ${task.title}`,
         after: reload,
       });

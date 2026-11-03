@@ -76,7 +76,7 @@ export interface EditIo {
     payload: Record<string, unknown>,
     ifMatch: string | null,
   ) => Promise<{ updated_at?: string | null } | unknown>;
-  setAssignees: (id: string, assignees: string[]) => Promise<unknown>;
+  setAssignees: (id: string, assignees: string[], ifMatch: string | null) => Promise<unknown>;
   read: (id: string) => Promise<{ assignees?: string[] | null; updated_at?: string | null }>;
   /** Where each write notes the version it got, and each undo reads it. */
   versions: VersionLedger;
@@ -214,15 +214,29 @@ export interface AssigneesEdit {
   label: string;
 }
 
+/**
+ * An assignee set as the server keeps it: each non-blank entry, trimmed, in
+ * lower case (`tasks._clean_assignees`). The client's list keeps what the
+ * member typed, so a raw compare called "Ana@x.io" a change (finding 7).
+ */
+const assigneeSet = (list: readonly string[]) =>
+  [...new Set(list.map((a) => (a ?? "").trim().toLowerCase()).filter(Boolean))].sort();
+
 const sameList = (a: readonly string[], b: readonly string[]) => {
-  const x = [...a].sort();
-  const y = [...b].sort();
+  const x = assigneeSet(a);
+  const y = assigneeSet(b);
   return x.length === y.length && x.every((v, i) => v === y[i]);
 };
 
 /**
- * Assignees go through a PUT that takes no If-Match, so the guard is a read:
- * put the prior list back only while the list is still the one this edit set.
+ * Assignees go through their own PUT, so the guard is a read: put the prior
+ * list back only while the list is still the one this edit set. The PUT then
+ * sends the read's version as If-Match (`tasks._check_version`), so a field
+ * change between the read and the write answers 412 (finding 7).
+ *
+ * ⚠️ An assignee write moves `updated_at` and not `fields_at`, so the server
+ * passes a token across ANOTHER assignee change. The read guard is what sees
+ * that one, and only up to the read.
  */
 export function recordAssigneesEdit(
   io: EditIo,
@@ -235,7 +249,15 @@ export function recordAssigneesEdit(
       hooks.notify(STALE_MESSAGE);
       return false;
     }
-    await io.setAssignees(edit.id, [...to]);
+    try {
+      await io.setAssignees(edit.id, [...to], now.updated_at ?? null);
+    } catch (err) {
+      if (isStale(err)) {
+        hooks.notify(STALE_MESSAGE);
+        return false;
+      }
+      throw err;
+    }
     return true;
   };
   return register(hooks, {
