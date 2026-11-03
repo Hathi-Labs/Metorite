@@ -1422,7 +1422,8 @@ class TestTheWriterCap:
                 await asyncio.sleep(0)
             assert invoke._IN_FLIGHT == {ORG: 3}
             opened = dw.log.count("open")
-            fourth = await _handler_call(dw, pid, "add", BODIES["add"])
+            # A door with no cap would wait on the gate for ever, so the wait is bounded.
+            fourth = await asyncio.wait_for(_handler_call(dw, pid, "add", BODIES["add"]), 5)
             assert dw.log.count("open") == opened + 1  # only its first check
             dw.write_gate.set()
             return [fourth, *await asyncio.gather(*tasks)]
