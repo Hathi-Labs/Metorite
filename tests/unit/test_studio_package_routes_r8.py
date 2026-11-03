@@ -1325,7 +1325,10 @@ def test_r8_a_refusal_of_the_write_phase_names_the_field(world) -> None:
         assert status == 409, got
         assert [(p["kind"], p["object"], p["field"]) for p in got["problems"]] == [
             ("store_refused", "inv", key)]
-        assert f"at most {objects_store.MAX_HOT_PER_ORG} hot fields" in got["problems"][0]["message"]
+        message = got["problems"][0]["message"]
+        assert f"at most {objects_store.MAX_HOT_PER_ORG} hot fields" in message
+        # One sentence that names a next step.
+        assert message.endswith("so turn a hot field cold first.") and ". " not in message
     assert _versions(world, pid) == [1]
 
 

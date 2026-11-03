@@ -942,6 +942,23 @@ def test_each_store_statement_of_a5_binds_the_org_in_each_select(module, name):
     assert ":org" not in sql, name
 
 
+def test_each_hot_cap_refusal_is_one_sentence_with_a_next_step():
+    """A sync problem is one sentence, and a cap refusal tells the member what
+    to do: turn a hot field cold first."""
+    hot = [{"key": f"h{i}", "type": "text", "hot": True}
+           for i in range(objects_store.MAX_HOT_PER_OBJECT + 1)]
+    refusals = []
+    for call in (lambda: objects_store._check_hot_room(objects_store.MAX_HOT_PER_OBJECT, 0),
+                 lambda: objects_store._check_hot_room(0, objects_store.MAX_HOT_PER_ORG),
+                 lambda: objects_store._check_fields(hot)):
+        with pytest.raises(objects_store.BudgetExceeded) as exc:
+            call()
+        refusals.append(str(exc.value))
+    for message in refusals:
+        assert message.endswith(", so turn a hot field cold first."), message
+        assert message.count(". ") == 0 and message.count(".") == 1, message
+
+
 def test_sync_objects_has_one_route_caller():
     tree = _tree()
     assert len(_calls(tree, "sync_objects")) == 1

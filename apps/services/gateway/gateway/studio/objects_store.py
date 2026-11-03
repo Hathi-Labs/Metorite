@@ -297,6 +297,8 @@ _LOCK_WAIT_BACK_SQL = "SELECT set_config('lock_timeout', :ms, true)"
 #: Postgres picked it as the victim of a deadlock.
 _BUSY_SQLSTATES = ("55P03", "40P01")
 _BUSY_MESSAGE = "This app is busy. Try again in a moment."
+#: The next step of a refusal at the hot budget. One sentence with the cap.
+_TURN_COLD = ", so turn a hot field cold first."
 
 #: A backfill reads and writes the records in pages of this size.
 BACKFILL_PAGE = 2_000
@@ -748,7 +750,7 @@ def _check_fields(fields: Sequence[Mapping[str, Any]]) -> list[FieldSpec]:
     if len(set(keys)) != len(keys):
         raise ObjectStoreError("Each field key of an object must be unique.")
     if sum(s.hot for s in specs) > MAX_HOT_PER_OBJECT:
-        raise BudgetExceeded(f"An object holds at most {MAX_HOT_PER_OBJECT} hot fields.")
+        raise BudgetExceeded(f"An object holds at most {MAX_HOT_PER_OBJECT} hot fields{_TURN_COLD}")
     return specs
 
 
@@ -782,7 +784,8 @@ async def define_object(db: Any, actor: str, *, package_id: str, name: str,
                              "so ask an admin to remove a package.")
     hot = sum(s.hot for s in specs)
     if hot and await _org_hot(db) + hot > MAX_HOT_PER_ORG:
-        raise BudgetExceeded(f"An organization holds at most {MAX_HOT_PER_ORG} hot fields.")
+        raise BudgetExceeded(
+            f"An organization holds at most {MAX_HOT_PER_ORG} hot fields{_TURN_COLD}")
     rows = [{"key": s.key, "type": s.type, "spec": s.stored_spec(), "hot": s.hot,
              "position": i} for i, s in enumerate(specs)]
     row = (await db.execute(text(_DEFINE_SQL), {
@@ -851,9 +854,10 @@ async def add_field(db: Any, object_id: str, spec: Mapping[str, Any]) -> FieldSp
 
 def _check_hot_room(object_hot: int, org_hot: int) -> None:
     if object_hot >= MAX_HOT_PER_OBJECT:
-        raise BudgetExceeded(f"An object holds at most {MAX_HOT_PER_OBJECT} hot fields.")
+        raise BudgetExceeded(f"An object holds at most {MAX_HOT_PER_OBJECT} hot fields{_TURN_COLD}")
     if org_hot >= MAX_HOT_PER_ORG:
-        raise BudgetExceeded(f"An organization holds at most {MAX_HOT_PER_ORG} hot fields.")
+        raise BudgetExceeded(
+            f"An organization holds at most {MAX_HOT_PER_ORG} hot fields{_TURN_COLD}")
 
 
 async def _backfill(db: Any, oid: str, field: FieldSpec) -> int:
