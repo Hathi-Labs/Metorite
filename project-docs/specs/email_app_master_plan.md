@@ -20919,21 +20919,22 @@ Save made an orphan draft.
 and no flag. Metorite task 1533, slice 2 of 4.
 
 **Origin.** The owner asked on 2026-11-03 to edit a draft in the chat, and to ask the chat
-to improve it. The owner approved panel 2 of the design. Every email that the assistant
-writes uses ONE card. The member can edit the subject and the text. The buttons are Send,
-Save draft and Discard. This slice is the card of a NEW mail. Slice 3 redrafts the card in
-place through the chat.
+to improve it. The owner approved panel 2 of the design.
+
+Every email that the assistant writes uses ONE card. The member can edit the subject and
+the text. The buttons are Send, Save draft and Discard. This slice is the card of a NEW
+mail. Slice 3 redrafts the card in place through the chat.
 
 **The protocol.** The new-mail card is the reply card of §18.4 with `kind: "new"`. No
 second card mechanism exists.
 
 1. The tool posts the mail to the gateway first. `POST /email/new-card` checks the
-   mailbox, each address, the subject and the text. It records the lists, the files and
-   the text under a card id that it mints, for the member, in tenant Redis. A held chat
+   mailbox, each address, the subject and the text. It records the people, the files and
+   the text in tenant Redis. The key is a card id that it mints for the member. A held chat
    posts `POST /email/held-card` with kind `new`, as before. That route also gives the
    form now.
-2. The card shows the server's people with a tick box each, an editable subject, the
-   editable text and the files as fixed rows. One line under the text says "Want it
+2. The card shows each person of the server with a tick box. It shows the subject and
+   the text to edit, and the files as fixed rows. One line under the text says "Want it
    changed? Tell me in the chat below." Two example chips put their words in the chat box.
    A chip sends nothing.
 3. Send and Save draft answer `APPROVE {"reply": {...}}` with exactly the keys `kind`,
