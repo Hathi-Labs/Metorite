@@ -86,12 +86,12 @@ dock sends: `persona + "\n\n" + surfaceContext`, as `system_context`.
 
 | File | What it holds |
 |---|---|
-| `dataset.py` | 30 member questions. Each one has an id, the words, the app, the facts of the page and the expected specialist, or the page it opens |
+| `dataset.py` | 36 member questions. Each one has an id, the words, the app, the facts of the page and the expected specialist, or the page it opens |
 | `shell.py` | The persona, the pane labels and `ALSO_SERVES`, read from the shell. The port of `surfaceContext` |
 | `harness.py` | The harness that drives the real orchestrator run and records where it delegated |
 | `run.py` | The runner: the catalog checks, the scripted delegation and the live sweep |
 
-## The 30 questions
+## The 36 questions
 
 | Expected | Cases | Asked from |
 |---|---|---|
@@ -103,6 +103,7 @@ dock sends: `persona + "\n\n" + surfaceContext`, as `system_context`.
 | `apis-config` | I1 | Integrations |
 | `app-builder` | B1 | Chat |
 | The orchestrator itself | N1 to N3 | Chat, My Day and People |
+| The orchestrator, from a guide (`find_guide`, `show_guide`; WS-OB GD-7) | G1 to G6 | CRM and My Day |
 | Ask the member first | A1 to A3 | My Day, Chat and Artifacts |
 
 Six cases are cross-app: the member is in one app and asks about another.

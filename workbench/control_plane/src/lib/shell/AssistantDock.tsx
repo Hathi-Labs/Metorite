@@ -101,7 +101,7 @@ import {
 
 import { requestBrief } from "./briefTurn";
 import GuideStepCard from "./GuideStepCard";
-import { ANCHOR_MISSING_NOTE, endGuide, guideView, isActive as guideActive, nextLabel, nextStep, offerGuide, startGuide, useGuide } from "./guide";
+import { ANCHOR_MISSING_NOTE, endGuide, guideView, isActive as guideActive, nextLabel, nextStep, offerGuide, startGuide, useGuide, useGuideAllowed } from "./guide";
 import { chatFirstOn } from "./chatFlag";
 import {
   REMINDER_HOLD_MS,
@@ -122,6 +122,7 @@ import {
   ASSISTANT_NAME,
   ASSISTANT_PERSONA,
   CHAT_FIRST_PERSONA_LINE,
+  GUIDE_PERSONA_LINE,
   BRIEF_HOLD_MS,
   DOCK_MAX,
   DOCK_MIN,
@@ -802,7 +803,10 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   // WS-67 OA-7d: the app slug of the pane, sent as `surface` (a hint for the tool packs).
   const surface = surfaceOfPane(here);
   // WS-62 CF-3: the page line joins only with the chat-first flag on.
-  const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;
+  // WS-OB GD-7: the guide line joins only when `guide` of the shell prefs is on.
+  const guideOn = useGuideAllowed();
+  const basePersona = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;
+  const personaText = guideOn ? `${basePersona} ${GUIDE_PERSONA_LINE}` : basePersona;
   const persona = agent === ASSISTANT_AGENT ? `${personaText}\n\n${context}` : context;
 
   // A new chat's files start empty.
