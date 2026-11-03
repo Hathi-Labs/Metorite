@@ -674,16 +674,21 @@ async def show_in_app(path: str, why: str) -> dict:
     queue = resolve_run_queue()
     if queue is None:
         return {"error": "no page to open from here"}
-    if getattr(queue, "_show_in_app_done", False):
+    mark = getattr(queue, "_show_in_app_done", False)
+    if mark == _iap.MOVE_PENDING:
+        return {"error": _iap.MOVE_PENDING_ERROR}
+    if mark:
         return {"error": "already opened a page this turn"}
     # WS-OB GD-7 review: take the mark before the first await. MAF can run two
     # tool calls at once (asyncio.gather), so show_guide or a second
-    # show_in_app must see it. A refusal gives the mark back.
-    queue._show_in_app_done = True  # type: ignore[attr-defined]
+    # show_in_app must see it. It is pending until the check ends. A refusal
+    # gives it back.
+    queue._show_in_app_done = _iap.MOVE_PENDING  # type: ignore[attr-defined]
     reason = _iap.refusal(path, await _iap.member_features())
     if reason is not None:
         queue._show_in_app_done = False  # type: ignore[attr-defined]
         return {"error": reason}
+    queue._show_in_app_done = True  # type: ignore[attr-defined]
     # The same channel artifact_created uses. The client's live loop acts on
     # it, and the replay loop does not (useAgentChat.ts).
     await queue.put({

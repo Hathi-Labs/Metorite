@@ -17,13 +17,15 @@ A member may run a guide when ALL of these hold:
 
 ``find_guide`` scores each ask of a guide on its own (:func:`ask_score`). An
 ask matches when the question holds each of its subject words, and at least
-``COVER`` of all its words. A generic verb (``GENERIC``) may be missing, and a
-match on generic verbs only finds nothing.
+``COVER`` of all its words. A generic verb (``GENERIC``) may be missing, a
+generic verb matches another of its group, and a match on generic verbs only
+finds nothing. An ask of one word matches only a question of that one word.
 
 ``show_guide`` shares ``queue._show_in_app_done`` with ``show_in_app``: the
 page moves once a turn, whichever tool runs first. Each tool takes the mark
-before its first await, because MAF can run two tool calls at once. A refused
-call gives the mark back, so it does not spend the move.
+before its first await, because MAF can run two tool calls at once. The mark
+reads ``in_app_path.MOVE_PENDING`` while its holder runs, and True when the
+page moved. A refused call gives the mark back, so it does not spend the move.
 Fence: ``tests/unit/test_guide_tools.py``.
 """
 from __future__ import annotations
@@ -52,13 +54,24 @@ COVER = 0.6
 _STOPWORDS = frozenset(
     ["a", "an", "the", "i", "me", "my", "we", "you", "your", "to", "do", "does", "did", "how", "can", "could", "should", "would", "in", "on", "at", "of", "for", "with", "and", "or", "is", "are", "it", "this", "that", "please", "show", "tell", "where", "what", "all", "by"]
 )
-#: The verbs that many asks share. An ask's other words are its subject words.
-#: A question must hold each subject word of an ask. A generic verb may be
-#: missing, so "create a deal" finds "create a new deal". A match on generic
-#: verbs only finds nothing, so "add a task" does not find "add a lead".
-GENERIC = frozenset(
-    ["add", "create", "new", "make", "find", "see", "show", "open", "get", "use", "set", "move", "give", "go", "do"]
+#: The verbs that many asks share, in groups of one meaning. :func:`tokens`
+#: writes each one as the first verb of its group, so a verb matches another
+#: of its group: "make a deal" finds "add a deal". A verb of another group does
+#: not match, so "open a deal" does not find "add a deal".
+_VERB_GROUPS = (
+    ("add", "create", "make", "new"),
+    ("see", "show", "open", "find", "get", "go"),
+    ("move", "set"),
+    ("give",),
+    ("use",),
+    ("do",),
 )
+_GROUP_OF = {verb: group[0] for group in _VERB_GROUPS for verb in group}
+#: The generic verbs. An ask's other words are its subject words. A question
+#: must hold each subject word of an ask. A generic verb may be missing, so
+#: "create a deal" finds "create a new deal". A match on generic verbs only
+#: finds nothing, so "add a task" does not find "add a lead".
+GENERIC = frozenset(_GROUP_OF)
 _WORD = re.compile(r"[a-z0-9]+")
 
 
@@ -100,8 +113,14 @@ def _stem(word: str) -> str:
 
 
 def tokens(text: str) -> frozenset[str]:
-    """Lower case words, with no stopword, a plural folded to its singular."""
-    return frozenset(_stem(w) for w in _WORD.findall(text.lower()) if w not in _STOPWORDS)
+    """Lower case words, with no stopword and no one-letter word.
+
+    A plural folds to its singular ("deals" is "deal"), and a generic verb to
+    the first verb of its group ("make" is "add"). A one-letter word goes, so
+    the "s" of "deal's" is no word.
+    """
+    out = (_stem(w) for w in _WORD.findall(text.lower()) if len(w) > 1 and w not in _STOPWORDS)
+    return frozenset(_GROUP_OF.get(w, w) for w in out)
 
 
 def ask_score(question: frozenset[str], ask: str) -> tuple[float, int]:
@@ -109,12 +128,18 @@ def ask_score(question: frozenset[str], ask: str) -> tuple[float, int]:
 
     *cover* is the share of the ask's words that the question holds, and
     *matched* is their count. ``(0.0, 0)`` when the ask does not match: the
-    question lacks a subject word of the ask, the ask has no subject word, or
-    *cover* is under ``COVER``.
+    question lacks a subject word of the ask, the ask has no subject word,
+    *cover* is under ``COVER``, or the ask is one word and the question is more.
+
+    An ask can keep one word only, such as "contact" of "where is a contact".
+    That word alone says nothing of the act, so "delete a contact" must not
+    find it. A one-word ask matches only a question of that one word.
     """
     words = tokens(ask)
     subject = words - GENERIC
     if not subject or not subject <= question:
+        return (0.0, 0)
+    if len(words) == 1 and len(question) > 1:
         return (0.0, 0)
     matched = len(words & question)
     cover = matched / len(words)
@@ -223,16 +248,21 @@ async def show(guide_id: str) -> dict[str, Any]:
         return {"error": "no page to start a guide from here"}
     # The one page move of the turn, shared with show_in_app. The mark lives on
     # the queue because MAF copies the context per tool call (see show_in_app).
-    if getattr(queue, "_show_in_app_done", False):
+    mark = getattr(queue, "_show_in_app_done", False)
+    if mark == _iap.MOVE_PENDING:
+        return {"error": _iap.MOVE_PENDING_ERROR}
+    if mark:
         return {"error": "already moved the page this turn"}
     # Take the mark before the first await. MAF can run two tool calls at once
-    # (asyncio.gather), and the other call must see the mark. A refusal gives
-    # the mark back, so a refused call does not spend the move.
-    queue._show_in_app_done = True  # type: ignore[attr-defined]
+    # (asyncio.gather), and the other call must see the mark. It is pending
+    # until the check ends. A refusal gives it back, so a refused call does
+    # not spend the move.
+    queue._show_in_app_done = _iap.MOVE_PENDING  # type: ignore[attr-defined]
     features = await _iap.member_features()
     if not may_run(guide, features, await member_is_admin()):
         queue._show_in_app_done = False  # type: ignore[attr-defined]
         return {"error": "the member may not run that guide"}
+    queue._show_in_app_done = True  # type: ignore[attr-defined]
     await queue.put({"type": "CUSTOM", "name": "guide", "value": {"guide_id": guide.id}})
     return {
         "started": guide.id,
