@@ -80,6 +80,7 @@ def test_the_op_table_of_each_type() -> None:
         "date": {"eq", "lt", "lte", "gt", "gte", "is_empty"},
         "datetime": {"eq", "lt", "lte", "gt", "gte", "is_empty"},
         "checkbox": {"eq", "ne", "is_empty"},
+        "relation": {"eq", "ne", "in", "is_empty"},
     }
     # The op table holds the hot types, so each op can use the side table.
     assert set(sq.OPS_BY_TYPE) == set(sf.HOT_TYPES)
@@ -446,6 +447,10 @@ _SQL_NAMES = frozenset({
     "rid", "frag", "row", "where", "dirn", "what", "source", "lookup", "head", "tail",
     "found", "total", "ids", "page", "counted", "count_head", "with_sql", "gate", "cap",
     "guard", "count_hot", "_STILL_HOT_SQL",
+    # C7b: the constant regex of a UUID id, for a relation that is not hot.
+    "_UUID_FORM",
+    # C7b: the constant column of the written children that a money roll-up counts.
+    "_ROLLUP_MINE",
 })
 
 
@@ -494,3 +499,57 @@ def test_the_grammar_holds_no_sql_and_no_gateway_import() -> None:
     imported = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)}
     imported |= {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     assert not any(str(m).startswith(("gateway", "sqlalchemy")) for m in imported), imported
+
+
+# ── A hot relation (C7b) ────────────────────────────────────────────────────
+
+_REL = sf.parse_field_spec({"key": "account", "type": "relation", "to": "account", "hot": True})
+_PARENT = "0b9f5c1e-6f3a-4a52-9d57-8d3d3b0c8a11"
+
+
+def _rel(filter: Any = None, sort: Any = None) -> Query:
+    return sq.parse_query([_REL, *FIELDS], filter, sort)
+
+
+def test_a_relation_takes_eq_ne_in_and_is_empty_and_no_sort() -> None:
+    for op in ("eq", "ne"):
+        cond = _rel([{"field": "account", "op": op, "value": _PARENT}]).conditions[0]
+        assert cond.op == op and cond.value == _PARENT
+    assert _rel([{"field": "account", "op": "in", "value": [_PARENT, "x1"]}]).conditions[0].value == (
+        _PARENT, "x1")
+    assert _rel([{"field": "account", "op": "is_empty"}]).conditions[0].value is True
+    for op in ("lt", "lte", "gt", "gte", "contains"):
+        with pytest.raises(QueryError) as refused:
+            _rel([{"field": "account", "op": op, "value": _PARENT}])
+        assert refused.value.code == "query_op_not_allowed"
+    with pytest.raises(QueryError) as sorted_by:
+        _rel(None, {"field": "account"})
+    assert sorted_by.value.code == "query_op_not_allowed"
+    assert "relation" not in sq.SORT_TYPES
+
+
+def test_a_relation_value_is_an_id_in_the_plain_or_the_record_form() -> None:
+    plain = _rel([{"field": "account", "op": "eq", "value": _PARENT}]).conditions[0].value
+    record = _rel([{"field": "account", "op": "eq", "value": {"id": _PARENT}}]).conditions[0].value
+    assert plain == record == _PARENT
+
+
+def test_a_relation_id_in_capitals_reads_as_the_record_id() -> None:
+    upper = _rel([{"field": "account", "op": "eq", "value": _PARENT.upper()}]).conditions[0].value
+    assert upper == _PARENT
+    assert sf.relation_key("not-a-uuid") == "not-a-uuid"
+
+
+@pytest.mark.parametrize("bad", [7, "", "a b", {"id": 3}, {"x": "y"}, ["a"], "x" * 65])
+def test_a_bad_relation_value_is_refused(bad: Any) -> None:
+    with pytest.raises(QueryError) as refused:
+        _rel([{"field": "account", "op": "eq", "value": bad}])
+    assert refused.value.code == "query_value_invalid"
+
+
+def test_a_relation_filter_builds_a_hot_text_match_and_binds_the_id() -> None:
+    query = _rel([{"field": "account", "op": "eq", "value": _PARENT}])
+    sql, params = store.build_count(
+        query.conditions, object_id=_PARENT, package_id=_PARENT, cap=2)
+    assert "v_text" in sql and _PARENT not in sql
+    assert _PARENT in params.values()
