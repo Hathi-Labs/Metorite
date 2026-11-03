@@ -54,6 +54,7 @@ const GLASS_ONLY_TOKENS = [
   "--glass-edge",
   "--glass-highlight",
   "--glass-shadow",
+  "--glass-float-shadow",
   "--glass-thick-bg",
   "--glass-radius-sm",
   "--glass-radius-md",

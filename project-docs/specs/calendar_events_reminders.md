@@ -680,6 +680,12 @@ after two spec audits. The one bell is the shell bell: `ShellBell.tsx` reads
    `reminders`, and the client reads them by `NeedsApp`. The bell rows still
    show, because they filter on `item.app`. A Calendar count waits for a later
    ticket.
+   **Changed 2026-11-03 (owner).** The Calendar row of the sidebar counts the
+   reminders that need the member: `reminder_due`, `reminder_check` and
+   `reminder_unconfirmed`. The client maps the source `reminders` to the app
+   `calendar` through `NEEDS_SOURCE_APP`, and that map closes the key gap. A
+   `scheduled` reminder is not a needs row, so it has no count until it
+   fires. Fence: `src/lib/shell/needs.test.ts`.
 6. **The code moves.** `_reminder_signal`, `reminder_href` and
    `REMINDER_KINDS` move from `feed.py` into `needs.py`, because `feed.py`
    imports `needs.py`. `feed.py` does not re-export them. The PR updates the

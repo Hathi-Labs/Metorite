@@ -227,11 +227,13 @@ export function ScheduleSheet({
                                 d <= 1 ? "text-destructive" : "text-warning"
                               }`}
                             >
-                              {d <= 0
-                                ? "due today"
-                                : d === 1
-                                  ? "due tomorrow"
-                                  : `due in ${d}d`}
+                              {d < 0
+                                ? "overdue"
+                                : d === 0
+                                  ? "due today"
+                                  : d === 1
+                                    ? "due tomorrow"
+                                    : `due in ${d}d`}
                             </span>
                           )}
                         </span>
