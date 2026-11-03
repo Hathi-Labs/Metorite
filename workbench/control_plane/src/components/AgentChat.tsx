@@ -30,6 +30,7 @@ import InterviewOffer from "@/components/profile/InterviewOffer";
 import { starterPills } from "@/lib/starterPills";
 import { chatFirstOn } from "@/lib/shell/chatFlag";
 import { type FeedAnswer, feedAppIcon, feedKey, fetchFeed } from "@/lib/shell/feed";
+import { holdsOnlyBrief } from "@/lib/shell/briefTurn";
 import { useCachedResource } from "@/lib/useCachedResource";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
 import ConfirmationReceipts from "@/components/ConfirmationReceipts";
@@ -676,8 +677,9 @@ export default function AgentChat({
   // and the focus read, so the chat only looks.
   const [chatFirst] = useState(() => chatFirstOn());
   // CF-4b: a fresh chat is empty, or holds only the day's brief (a phone's
-  // first turn, CF-5) with no word from the member.
-  const briefOnly = messages.length === 1 && messages[0].role === "assistant";
+  // first turn, CF-5) with no word from the member. The brief row has its own
+  // id (`holdsOnlyBrief`), so a chat that a reminder opens is not a fresh chat.
+  const briefOnly = holdsOnlyBrief(messages);
   const starterFeedWanted =
     chatFirst && isOrchestrator && !loadingHistory && (messages.length === 0 || briefOnly);
   const starterFeed = useCachedResource<FeedAnswer>(starterFeedWanted ? feedKey() : null, () => fetchFeed(), {

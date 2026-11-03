@@ -13,6 +13,7 @@ import {
   KIND_TEMPLATES,
   STARTER_PILL_COUNT,
   pillOfCard,
+  shortName,
   starterPills,
   type StarterCard,
 } from "./starterPills";
@@ -44,9 +45,9 @@ describe("starterPills", () => {
     expect(STARTER_PILL_COUNT).toBe(3);
     const pills = starterPills({ chatFirst: true, cards: FEED, fallback: FIXED });
     expect(pills.map((p) => p.label)).toEqual([
-      'Draft a reply to "Q3 budget"',
-      'Revive the "Acme" deal',
-      "Plan my task due today",
+      "Draft a reply to “Q3 budget”",
+      "Revive the “Acme” deal",
+      "Finish “Send the signed contract” today",
     ]);
     expect(pills.map((p) => p.app)).toEqual(["email", "crm", "tasks"]);
   });
@@ -81,12 +82,15 @@ describe("starterPills", () => {
 
   it("drops a repeated label and takes the next card", () => {
     const cards = [
-      card("overdue", "A long task name that stays out of the label"),
-      card("overdue", "Another long task name that stays out too"),
+      card("overdue", "Same name"),
+      card("overdue", "same name"),
       card("due_today", "Third item"),
     ];
     const pills = starterPills({ chatFirst: true, cards, fallback: FIXED });
-    expect(pills.map((p) => p.label)).toEqual(["Get my overdue task moving", 'Finish "Third item" today']);
+    expect(pills.map((p) => p.label)).toEqual([
+      "Get “Same name” moving again",
+      "Finish “Third item” today",
+    ]);
   });
 
   it("skips a card with no title when its kind needs a name, and keeps a nameless kind", () => {
@@ -122,10 +126,11 @@ describe.each(Object.keys(KIND_TEMPLATES))("the template of kind %s", (kind) => 
 
 describe("the labels and the messages", () => {
   it("puts a short name in the label and a long name only in the message", () => {
-    expect(pillOfCard(card("needs_reply", "Q3 budget", { app: "email" }))!.label).toBe('Draft a reply to "Q3 budget"');
+    expect(pillOfCard(card("needs_reply", "Q3 budget", { app: "email" }))!.label).toBe("Draft a reply to “Q3 budget”");
     const long = "Re: the very long subject of a mail about the annual offsite plan";
     const p = pillOfCard(card("needs_reply", long, { app: "email" }))!;
-    expect(p.label).toBe("Draft a reply to the mail waiting");
+    expect(p.label).toBe("Draft a reply to “the very long subject”");
+    // The message keeps the full name, with straight quotes.
     expect(p.message).toBe(`Draft a reply to the email "${long}" that waits for my answer.`);
   });
 
@@ -155,5 +160,39 @@ describe("the labels and the messages", () => {
       expect(WORDS(p.label)).toBeLessThanOrEqual(8);
       expect(p.app).toBe(app);
     }
+  });
+});
+
+describe("long real titles keep a short name in the label (CF-4b repair)", () => {
+  const CASES: Array<[string, string, string]> = [
+    ["Call with Dr Sagar K G (Jain University) — 3D printer…", "needs_reply", "Draft a reply to “Call with Dr Sagar”"],
+    ["FRACKTAL WORKS - PO 5100014449", "needs_reply", "Draft a reply to “FRACKTAL WORKS”"],
+    ["Re: Fwd: Quote for 40 units of the V5 printer", "needs_reply", "Draft a reply to “Quote for 40 units”"],
+  ];
+
+  it.each(CASES)("%s", (title, kind, label) => {
+    const p = pillOfCard(card(kind, title, { app: "email" }))!;
+    expect(p.label).toBe(label);
+    expect(p.label).not.toMatch(/…|\.\.\./);
+    expect(p.message).toContain(`"${title.replace(/"/g, "'")}"`);
+  });
+
+  it("gives three different pills for three mails, with no duplicate drop", () => {
+    const cards = CASES.map(([t]) => card("needs_reply", t, { app: "email" }));
+    const labels = starterPills({ chatFirst: true, cards, fallback: FIXED }).map((p) => p.label);
+    expect(labels).toEqual(CASES.map((c) => c[2]));
+  });
+
+  it("strips Re:, Fwd: and FW: prefixes, and cuts at a word with no ellipsis", () => {
+    expect(shortName("RE: FW: Fwd: Budget review")).toBe("Budget review");
+    expect(shortName("one two three four five six")).toBe("one two three four");
+    expect(shortName("Averyveryverylongsingleworditemnamehere")).toBeNull();
+    expect(shortName("Re: ")).toBeNull();
+    expect(shortName("Solo | rest of it")).toBe("Solo rest of it");
+  });
+
+  it("keeps a named label within eight words, else the plain label", () => {
+    const p = pillOfCard(card("absent_on_due", "Prepare the quarterly revenue review"))!;
+    expect(p.label.split(/\s+/).length).toBeLessThanOrEqual(8);
   });
 });

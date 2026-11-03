@@ -23,10 +23,12 @@ export const STARTER_PILL_COUNT = 3;
 /** The groups whose cards ask the member to act. Any other group never fills a slot. */
 export const ACTION_GROUPS: readonly string[] = ["now", "needs_you", "ready"];
 
-/** A name longer than this stays out of the label. The message still holds it. */
-const LABEL_NAME_CHARS = 24;
-/** A name of more words than this stays out of the label. */
-const LABEL_NAME_WORDS = 3;
+/** The name in a label keeps at most this many characters, cut at a word. */
+const LABEL_NAME_CHARS = 28;
+/** The name in a label keeps at most this many words. */
+const LABEL_NAME_WORDS = 4;
+/** A label is a short request: at most this many words. */
+const LABEL_WORDS = 8;
 /** The sent message holds at most this much of a name, cut at a word. */
 const MESSAGE_NAME_CHARS = 160;
 
@@ -243,11 +245,41 @@ function cutAtWord(text: string, max: number): string {
   return (space >= Math.floor(max / 2) ? cut.slice(0, space) : cut).replace(/[\s,;:.!?]+$/, "");
 }
 
-/** The name a label may hold: short, and a few words. Else null. */
-function labelName(name: string): string | null {
-  if (name.length > LABEL_NAME_CHARS) return null;
-  if (name.split(" ").length > LABEL_NAME_WORDS) return null;
-  return /[.!?…]$/.test(name) ? null : name;
+/**
+ * The short name a label holds, or null when nothing usable is left. A "Re:",
+ * "Fwd:" or "FW:" prefix goes. The part before the first " — ", " - ", " | "
+ * or "(" stands for the name when it has two words or more. The rest is cut at
+ * a word, to `words` words and `LABEL_NAME_CHARS` characters, with no ellipsis.
+ */
+export function shortName(name: string, words = LABEL_NAME_WORDS): string | null {
+  let text = name.replace(/[“”"]/g, "");
+  let before: string;
+  do {
+    before = text;
+    text = text.replace(/^\s*(?:re|fwd?)\s*:\s*/i, "");
+  } while (text !== before);
+  const head = text.split(/\s[—–|-]\s|\(/)[0].trim();
+  if (head.split(/\s+/).filter(Boolean).length >= 2) text = head;
+  else text = text.replace(/\s[—–|-]\s/g, " ").replace(/[()]/g, "");
+  const kept: string[] = [];
+  for (const word of text.split(/\s+/).filter(Boolean)) {
+    if (kept.length >= words || [...kept, word].join(" ").length > LABEL_NAME_CHARS) break;
+    kept.push(word);
+  }
+  const out = kept.join(" ").replace(/[\s,;:.!?…-]+$/, "");
+  return out || null;
+}
+
+/** The label of a template: with the short name when it fits the word limit, else plain. */
+function labelOf(tpl: Template, name: string): string {
+  if (!tpl.named) return tpl.plain;
+  for (let words = LABEL_NAME_WORDS; words >= 1; words -= 1) {
+    const short = shortName(name, words);
+    if (!short) break;
+    const label = tpl.named(`“${short}”`);
+    if (label.split(/\s+/).length <= LABEL_WORDS) return label;
+  }
+  return tpl.plain;
 }
 
 /** The pill of one card, or null when no template fits it. */
@@ -261,8 +293,7 @@ export function pillOfCard(card: StarterCard): StarterPill | null {
   if (!tpl) return null;
   const name = fold(typeof card.title === "string" ? card.title : "");
   if (!tpl.nameless && !name) return null;
-  const short = tpl.nameless ? null : labelName(name);
-  const label = short && tpl.named ? tpl.named(`"${short}"`) : tpl.plain;
+  const label = tpl.nameless ? tpl.plain : labelOf(tpl, name);
   const message = tpl.message(tpl.nameless ? "" : `"${cutAtWord(name, MESSAGE_NAME_CHARS)}"`);
   return { label, message, app: typeof card.app === "string" ? card.app : null };
 }

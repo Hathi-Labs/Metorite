@@ -1022,7 +1022,7 @@ describe("the starter pills come from the feed (WS-62 CF-4, chat_first_surface.m
     // The one assistant's empty chat, and nothing else: no messages, no
     // history on its way, and not another agent's chat.
     expect(src).toContain(
-      'const briefOnly = messages.length === 1 && messages[0].role === "assistant";',
+      'const briefOnly = holdsOnlyBrief(messages);',
     );
     expect(src).toMatch(
       /const starterFeedWanted =\s*chatFirst && isOrchestrator && !loadingHistory && \(messages\.length === 0 \|\| briefOnly\);/,
@@ -1041,6 +1041,8 @@ describe("the starter pills come from the feed (WS-62 CF-4, chat_first_surface.m
       /\{briefOnly && starterFeedWanted && !isLoading && \(\s*<SuggestionPills\s+suggestions=\{starters\}\s+onPick=\{handleChoice\}/,
     );
     expect(src).toContain("!(briefOnly && starterFeedWanted)");
+    // Only the brief's own row counts (id `brief-<date>`), never a reminder's first row.
+    expect(src).toContain('import { holdsOnlyBrief } from "@/lib/shell/briefTurn";');
     // The icon is the one My Day draws for the card's app. No second icon map.
     expect(src).toContain("icon: p.app ? feedAppIcon(p.app) : undefined");
     // The rule reads the groups, so a fyi, later or handled card never shows.
