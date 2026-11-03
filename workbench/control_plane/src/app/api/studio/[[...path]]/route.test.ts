@@ -1,10 +1,13 @@
 // `/api/studio/[…path]` (STU-F2b): a copy of the workflows proxy for the
 // gateway prefix `/studio`, with PATCH added. It adds no header, no identity
-// and no path rule.
+// and no path rule. STU-B2c-1 adds the direct proof for a POST to the action
+// route only, and forwards Retry-After.
 //
 // Mutations: drop `refuseUnsafePath` and the 400 test fails. Drop the PATCH
 // export and the PATCH test fails. Add an `x-user-email` header and the
-// source check fails.
+// source check fails. Sign every POST and the "signs only the action route"
+// test fails. Drop the Retry-After copy and the 503 test fails.
+import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
@@ -13,7 +16,10 @@ const state: { identity: unknown } = { identity: { email: "a@example.com" } };
 const seen: { url: string; init: RequestInit }[] = [];
 let reply: () => Response = () => new Response("{}", { status: 200 });
 
-vi.mock("@/lib/gateway", () => ({
+// The real `studioDirectHeaders` runs, so the test proves what the proxy signs.
+vi.mock("@/auth", () => ({ auth: async () => null, isAuthEnabled: false }));
+vi.mock("@/lib/gateway", async (importActual) => ({
+  ...(await importActual<typeof import("@/lib/gateway")>()),
   GATEWAY_URL: "http://gw.test",
   requireIdentity: async () =>
     state.identity ?? NextResponse.json({ error: "Sign in to continue" }, { status: 401 }),
@@ -32,7 +38,11 @@ import { DELETE, GET, PATCH, POST, PUT } from "./route";
 const ctx = (path?: string[]) => ({ params: Promise.resolve({ path }) });
 const req = (url: string, init?: ConstructorParameters<typeof NextRequest>[1]) => new NextRequest(url, init);
 
+const KEY = "k".repeat(40);
+const APP = "6f1f7a3e-2b0f-4f43-a3a5-0d3f8f6f9c11";
+
 beforeEach(() => {
+  process.env.STUDIO_DIRECT_KEY = KEY;
   seen.length = 0;
   state.identity = { email: "a@example.com" };
   reply = () => new Response("{}", { status: 200 });
@@ -97,6 +107,97 @@ describe("/api/studio proxy", () => {
     }
   });
 
+  it("signs the direct proof for a POST to the action route, and for no other call", async () => {
+    const action = ["apps", APP, "actions", "add"];
+    const sign = vi.spyOn(Date, "now").mockReturnValue(1_790_000_000_000);
+    try {
+      await POST(req("http://x/api/studio/a", { method: "POST", body: "{}" }), ctx(action));
+      const proof = (seen[0].init.headers as Record<string, string>)["X-Studio-Direct"];
+      const mac = createHmac("sha256", KEY)
+        .update(`v1
+1790000000
+a@example.com
+POST
+/studio/apps/${APP}/actions/add`)
+        .digest("hex");
+      expect(proof).toBe(`v1.1790000000.${mac}`);
+      seen.length = 0;
+      // Another method on the action route, and other POST paths: no proof.
+      await GET(req("http://x/api/studio/a"), ctx(action));
+      await PATCH(req("http://x/api/studio/a", { method: "PATCH", body: "{}" }), ctx(action));
+      await DELETE(req("http://x/api/studio/a", { method: "DELETE" }), ctx(action));
+      await POST(req("http://x/api/studio/a", { method: "POST", body: "{}" }), ctx(["skills"]));
+      await POST(req("http://x/api/studio/a", { method: "POST", body: "{}" }),
+        ctx(["apps", APP, "actions"]));
+      await POST(req("http://x/api/studio/a", { method: "POST", body: "{}" }),
+        ctx(["apps", "not-an-id", "actions", "add"]));
+      await POST(req("http://x/api/studio/a", { method: "POST", body: "{}" }),
+        ctx(["apps", APP, "actions", "Add"]));
+      await POST(req("http://x/api/studio/a", { method: "POST", body: "{}" }),
+        ctx(["apps", APP, "actions", "add", "more"]));
+      expect(seen).toHaveLength(8);
+      for (const call of seen) {
+        expect(Object.keys(call.init.headers as Record<string, string>)).not.toContain(
+          "X-Studio-Direct");
+      }
+    } finally {
+      sign.mockRestore();
+    }
+  });
+
+  it("signs nothing when the key is unset, short or equal to the gateway token", async () => {
+    const action = ["apps", APP, "actions", "add"];
+    for (const key of [undefined, "short", "t".repeat(40)]) {
+      if (key === undefined) delete process.env.STUDIO_DIRECT_KEY;
+      else process.env.STUDIO_DIRECT_KEY = key;
+      process.env.LITELLM_MASTER_KEY = "t".repeat(40);
+      await POST(req("http://x/api/studio/a", { method: "POST", body: "{}" }), ctx(action));
+    }
+    delete process.env.LITELLM_MASTER_KEY;
+    expect(seen).toHaveLength(3);
+    for (const call of seen) {
+      expect(Object.keys(call.init.headers as Record<string, string>)).not.toContain(
+        "X-Studio-Direct");
+    }
+  });
+
+  it("forwards no browser header on the action route, with the proof and nothing else added", async () => {
+    await POST(
+      req("http://x/api/studio/a", {
+        method: "POST",
+        body: "{}",
+        headers: { "x-studio-direct": "v1.1.forged", "x-user-email": "evil@example.com",
+                   authorization: "Bearer evil", cookie: "s=1" },
+      }),
+      ctx(["apps", APP, "actions", "add"]),
+    );
+    const headers = seen[0].init.headers as Record<string, string>;
+    expect(Object.keys(headers).sort()).toEqual(
+      ["Authorization", "Content-Type", "X-Studio-Direct"]);
+    expect(headers["X-Studio-Direct"]).not.toContain("forged");
+    expect(headers.Authorization).toBe("Bearer internal");
+  });
+
+  it("forwards Retry-After on a 503", async () => {
+    reply = () =>
+      new Response(JSON.stringify({ detail: { code: "store_busy" } }), {
+        status: 503,
+        headers: { "Retry-After": "1" },
+      });
+    const res = await POST(
+      req("http://x/api/studio/a", { method: "POST", body: "{}" }),
+      ctx(["apps", APP, "actions", "add"]),
+    );
+    expect(res.status).toBe(503);
+    expect(res.headers.get("Retry-After")).toBe("1");
+    expect(await res.json()).toEqual({ detail: { code: "store_busy" } });
+  });
+
+  it("sends no Retry-After when the gateway sends none", async () => {
+    const res = await GET(req("http://x/api/studio/skills"), ctx(["skills"]));
+    expect(res.headers.get("Retry-After")).toBeNull();
+  });
+
   it("sends a PUT and a DELETE (DELETE with no body)", async () => {
     await PUT(req("http://x/api/studio/a", { method: "PUT", body: "{}" }), ctx(["a"]));
     await DELETE(req("http://x/api/studio/a", { method: "DELETE" }), ctx(["a"]));
@@ -144,11 +245,14 @@ describe("/api/studio proxy", () => {
     expect(res.status).toBe(502);
   });
 
-  it("adds no identity, no tenant and no header beyond gatewayHeaders (source check)", () => {
+  it("adds no identity, no tenant and no header beyond gatewayHeaders and the proof (source check)", () => {
     const src = readFileSync(new URL("./route.ts", import.meta.url), "utf8");
     expect(src.toLowerCase()).not.toContain("x-user-email");
+    expect(src.toLowerCase()).not.toContain("x-studio-direct");
     expect(src).not.toContain("organization_id");
+    expect(src).not.toContain("STUDIO_DIRECT_KEY");
     expect(src).toContain("refuseUnsafePath(path)");
     expect(src.match(/gatewayHeaders\(/g)).toHaveLength(1);
+    expect(src.match(/studioDirectHeaders\(/g)).toHaveLength(1);
   });
 });
