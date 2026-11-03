@@ -770,16 +770,30 @@ def _describe_fields() -> dict[str, Any]:
 
 
 def _describe_computed() -> dict[str, Any]:
-    """The formula field (C7a): a rule of kind ``formula`` fills a target field.
+    """The computed fields: a rule of kind ``formula`` (C7a) or ``rollup`` (C7b)
+    fills a target field.
 
-    A target is computed. The store writes it on each write, from the other
-    fields of the same record. A Form shows it read-only and sends no key for
-    it. A write that holds a key for it is refused, also with the same value.
+    A target is computed. The store writes a formula target on each write, from
+    the other fields of the same record. It writes a roll-up target on a parent
+    when a child record changes. A Form shows each one read-only and sends no
+    key for it. A write that holds a key for one is refused, also with the same
+    value. ``rollup`` names the rule kind of C7b, so a Form marks its targets too.
     """
     x = studio_expr
     return {
         "rule": studio_rules.FORMULA,
         "read_only": True,
+        "rollup": {
+            "rule": studio_rules.ROLLUP,
+            "read_only": True,
+            "aggs": list(studio_rules.ROLLUP_AGGS),
+            "field_types": {k: list(v) for k, v in studio_rules.ROLLUP_FIELD_TYPES.items()},
+            "limits": {
+                "max_where": studio_rules.MAX_ROLLUP_WHERE,
+                "max_parents_per_batch": studio_rules.MAX_ROLLUP_PARENTS,
+                "max_aggregates_per_batch": studio_rules.MAX_ROLLUP_STATEMENTS,
+            },
+        },
         "target_types": list(studio_rules.FORMULA_TARGET_TYPES),
         "functions": list(x.FUNCTIONS),
         "roundings": list(x.ROUNDINGS),

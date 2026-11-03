@@ -263,7 +263,10 @@ _CASES: dict[str, list[tuple[str, Any, set[str]]]] = {
     ],
 }
 _KEY_OF = {f["type"]: f["key"] for f in _TYPED}
-assert set(_CASES) == set(studio_query.OPS_BY_TYPE)
+# `relation` (C7b) is the one type outside this table. `visit` holds 8 hot fields, which is
+# the cap of an object, so a hot relation cannot join it. `test_studio_rollup_r8.py` runs each
+# op of a relation on a hot field and on a cold twin.
+assert set(_CASES) | {"relation"} == set(studio_query.OPS_BY_TYPE)
 
 #: The big object: 50,000 records. `n` is missing on each tenth record.
 _BIG_FIELDS: list[dict[str, Any]] = [

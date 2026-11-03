@@ -375,6 +375,11 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "download",
         "An inline picture of a mail for the reading pane. The chat reads the text of the mail.",
     ),
+    "GET /api/email/reply-card/draft-state": (
+        "stream",
+        "A chat reply card polls whether its own draft is still in Drafts, to refresh its view "
+        "(task 1526). No member click sends it. compose_reply reads the same state.",
+    ),
     "GET /api/email/oauth/providers": (
         "oauth",
         "The providers that the Connect step offers before it hands the browser to Google or Microsoft.",
