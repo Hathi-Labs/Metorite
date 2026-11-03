@@ -794,6 +794,8 @@ def test_a_studio_manifest_without_a_name_still_fails():
     assert [(e.path, e.message) for e in errs] == [("$.name", "`name` is required here.")]
     doc2 = json.loads((SHELL_DIR / "crm.json").read_text(encoding="utf-8"))
     doc2["kind"] = "studio"
+    # Only a shipped system file may hold anchors, so this probe drops them.
+    doc2["contributes"].pop("anchors", None)
     assert {e.path for e in validate_manifest(doc2)} == {"$.name", "$.purpose"}
 
 

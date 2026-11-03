@@ -174,6 +174,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
     # not cover it.
     "ASSISTANT_CHAT_SUMMARY_ORGS",
+    # WS-ALN ALN-2a: DECISIONS_ORGS opens "one person decides" for an org. A
+    # tenant that set it could open the bell row for every org on the box.
+    "DECISIONS_ORGS",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).
