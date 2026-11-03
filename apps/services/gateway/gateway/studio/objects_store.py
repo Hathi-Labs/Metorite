@@ -125,6 +125,20 @@ rounding or currency, on an object that holds records is
 refused (:func:`_check_formulas_first`), because there is no backfill. A removed
 formula leaves its stored values as plain values.
 
+**The sync of a manifest (A5).** :func:`sync_objects` brings the rows of one
+package to the ``objects`` of a published manifest, and the publish route is
+its one caller. It adds an object (:func:`define_object`, whose one caller it
+is), adds a field, flips ``hot``, and brings each rules list to the manifest
+through :func:`set_constraints`. The phases run in this order: new objects,
+new fields, fields that turn hot, rules, fields that turn cold. It builds the
+whole plan from reads, then writes in a SAVEPOINT. An object that goes, a
+field that goes or changes, a new required field on an object with records,
+and each refusal of a store call (a rule included) raise
+:class:`ObjectsOutOfSync` with a list of :class:`SyncProblem`. ⚠️ The lock
+order: the caller holds the ``apps`` row ``FOR UPDATE``, and the sync takes
+the org lock after it. :func:`list_objects` reads the objects of one package
+in two statements.
+
 **On a floor of 0 or less, a write that does not lower a group never reads
 the group.** The store adds up the net change of the batch on each key of
 ``group_sum_min``, in exact ``Decimal``, from the values that it read under
