@@ -800,6 +800,8 @@ def test_a_studio_manifest_without_a_name_still_fails():
     assert [(e.path, e.message) for e in errs] == [("$.name", "`name` is required here.")]
     doc2 = json.loads((SHELL_DIR / "crm.json").read_text(encoding="utf-8"))
     doc2["kind"] = "studio"
+    # Only a shipped system file may hold anchors, so this probe drops them.
+    doc2["contributes"].pop("anchors", None)
     assert {e.path for e in validate_manifest(doc2)} == {"$.name", "$.purpose"}
 
 
@@ -904,3 +906,207 @@ def test_an_object_label_holds_at_most_the_store_cap():
     schema = Manifest.model_json_schema()
     label = schema["$defs"]["ObjectDef"]["properties"]["label"]
     assert {"maxLength": cap, "type": "string"} in label["anyOf"]
+
+
+# --- STU-D11a: pages (how views sit on a page) ---------------------------------
+
+
+def _page(**patch) -> dict:
+    p = {"id": "main", "cells": [{"view": "board"}, {"view": "week", "span": 2}]}
+    p.update(patch)
+    return p
+
+
+def _with_pages(*pages: dict) -> dict:
+    return doc(pages=list(pages))
+
+
+def _at(d: dict, path: str) -> list[ManifestError]:
+    return [e for e in validate_manifest(d) if e.path == path]
+
+
+def test_pages_are_optional_and_the_example_stays_valid():
+    assert "pages" not in EXAMPLE
+    assert validate_manifest(EXAMPLE) == []
+    assert Manifest.model_validate(EXAMPLE).pages == []
+
+
+def test_valid_page_with_cells_and_a_side_view():
+    d = _with_pages(_page(title="Visits", cols=3, side={"view": "check_in"}))
+    assert validate_manifest(d) == []
+
+
+def test_valid_page_with_tabs():
+    tabs = [
+        {"id": "plan", "title": "Plan", "cells": [{"view": "board", "span": 2}]},
+        {"id": "week", "title": "Week", "cells": [{"view": "week"}]},
+    ]
+    assert validate_manifest(_with_pages({"id": "main", "tabs": tabs})) == []
+
+
+def test_page_cols_default_to_two():
+    page = Manifest.model_validate(_with_pages(_page())).pages[0]
+    assert page.cols == 2
+    assert page.cells[0].span is None
+
+
+def test_page_with_tabs_and_cells_is_refused():
+    tabs = [{"id": "plan", "title": "Plan", "cells": [{"view": "board"}]}]
+    one(_with_pages(_page(tabs=tabs)), "$.pages[0]", contains="tabs or cells")
+
+
+def test_page_with_neither_tabs_nor_cells_is_refused():
+    one(_with_pages({"id": "main"}), "$.pages[0]", contains="needs tabs or cells")
+    one(_with_pages({"id": "main", "cells": [], "tabs": []}), "$.pages[0]", contains="needs")
+
+
+def test_cell_with_an_unknown_view_is_refused():
+    d = _with_pages(_page(cells=[{"view": "board"}, {"view": "ghost"}]))
+    one(d, "$.pages[0].cells[1].view", contains="ghost")
+
+
+def test_tab_cell_with_an_unknown_view_is_refused():
+    tabs = [{"id": "plan", "title": "Plan", "cells": [{"view": "ghost"}]}]
+    d = _with_pages({"id": "main", "tabs": tabs})
+    one(d, "$.pages[0].tabs[0].cells[0].view", contains="ghost")
+
+
+def test_side_view_must_be_declared():
+    one(_with_pages(_page(side={"view": "ghost"})), "$.pages[0].side.view", contains="ghost")
+
+
+def test_span_over_cols_is_refused():
+    d = _with_pages(_page(cols=2, cells=[{"view": "board", "span": 3}]))
+    one(d, "$.pages[0].cells[0].span", contains="at most 2")
+
+
+def test_span_equal_to_cols_is_valid():
+    assert validate_manifest(_with_pages(_page(cols=2, cells=[{"view": "board", "span": 2}]))) == []
+
+
+@pytest.mark.parametrize("span", [0, 5, -1, "2", 1.5, True])
+def test_span_outside_one_to_four_or_not_a_whole_number_is_refused(span):
+    d = _with_pages(_page(cols=4, cells=[{"view": "board", "span": span}]))
+    assert _at(d, "$.pages[0].cells[0].span"), validate_manifest(d)
+
+
+@pytest.mark.parametrize("cols", [0, 5, "2", 2.5])
+def test_cols_outside_one_to_four_is_refused(cols):
+    assert _at(_with_pages(_page(cols=cols)), "$.pages[0].cols")
+
+
+def test_duplicate_page_ids_are_refused():
+    one(_with_pages(_page(), _page()), "$.pages[1]", contains="used twice")
+
+
+def test_duplicate_tab_ids_are_refused():
+    tab = {"id": "plan", "title": "Plan", "cells": [{"view": "board"}]}
+    d = _with_pages({"id": "main", "tabs": [tab, dict(tab)]})
+    one(d, "$.pages[0].tabs[1]", contains="used twice")
+
+
+def test_the_same_tab_id_on_two_pages_is_valid():
+    tab = {"id": "plan", "title": "Plan", "cells": [{"view": "board"}]}
+    d = _with_pages({"id": "one", "tabs": [tab]}, {"id": "two", "tabs": [tab]})
+    assert validate_manifest(d) == []
+
+
+def test_page_cap_is_eight():
+    ok = [_page(id=f"p{i}") for i in range(8)]
+    assert validate_manifest(doc(pages=ok)) == []
+    one(doc(pages=[*ok, _page(id="p8")]), "$.pages", contains="at most 8")
+
+
+def test_tab_cap_is_eight_for_each_page():
+    tabs = [{"id": f"t{i}", "title": "T", "cells": [{"view": "board"}]} for i in range(9)]
+    assert validate_manifest(_with_pages({"id": "main", "tabs": tabs[:8]})) == []
+    one(_with_pages({"id": "main", "tabs": tabs}), "$.pages[0].tabs", contains="at most 8")
+
+
+def test_cell_cap_is_twelve_for_a_page():
+    cells = [{"view": "board"}] * 13
+    assert validate_manifest(_with_pages(_page(cells=cells[:12]))) == []
+    one(_with_pages(_page(cells=cells)), "$.pages[0].cells", contains="at most 12")
+
+
+def test_cell_cap_is_twelve_for_a_tab():
+    cells = [{"view": "board"}] * 13
+    ok = {"id": "main", "tabs": [{"id": "t", "title": "T", "cells": cells[:12]}]}
+    assert validate_manifest(_with_pages(ok)) == []
+    bad = {"id": "main", "tabs": [{"id": "t", "title": "T", "cells": cells}]}
+    one(_with_pages(bad), "$.pages[0].tabs[0].cells", contains="at most 12")
+
+
+def test_only_one_side_view_is_allowed():
+    d = _with_pages(_page(side=[{"view": "check_in"}, {"view": "board"}]))
+    assert _at(d, "$.pages[0].side")
+
+
+def test_page_id_must_be_a_dashed_id():
+    for bad in ("Main", "1x", "a b", "", "x" * 49):
+        assert _at(_with_pages(_page(id=bad)), "$.pages[0].id"), bad
+
+
+def test_page_refuses_a_colour_key():
+    one(_with_pages(_page(color="red")), "$.pages[0].color", contains="style")
+    cell = {"view": "board", "colour": "blue"}
+    one(_with_pages(_page(cells=[cell])), "$.pages[0].cells[0].colour", contains="style")
+
+
+def test_page_refuses_a_colour_literal():
+    one(_with_pages(_page(title="#ff0000")), "$.pages[0].title", contains="colour")
+
+
+def test_page_refuses_a_pixel_size():
+    one(_with_pages(_page(title="Visits 320px")), "$.pages[0].title", contains="pixel")
+    tabs = [{"id": "t", "title": "Wide 400px", "cells": [{"view": "board"}]}]
+    one(_with_pages({"id": "main", "tabs": tabs}), "$.pages[0].tabs[0].title", contains="pixel")
+
+
+@pytest.mark.parametrize("key", ["class", "className", "style", "width", "layout"])
+def test_page_refuses_a_class_name_style_or_an_unknown_key(key):
+    errs = [e for e in validate_manifest(_with_pages(_page(**{key: "x"}))) if e.path.endswith(key)]
+    assert errs, key
+
+
+def test_cell_and_tab_and_side_refuse_an_unknown_key():
+    d = _with_pages(_page(cells=[{"view": "board", "className": "w-1"}]))
+    one(d, "$.pages[0].cells[0].className", contains="not a v1 manifest key")
+    tabs = [{"id": "t", "title": "T", "cells": [{"view": "board"}], "icon": "x"}]
+    one(_with_pages({"id": "main", "tabs": tabs}), "$.pages[0].tabs[0].icon", contains="not a v1")
+    d = _with_pages(_page(side={"view": "check_in", "width": 380}))
+    one(d, "$.pages[0].side.width", contains="not a v1")
+
+
+def test_page_needs_its_id_and_a_tab_needs_id_title_and_cells():
+    one(_with_pages({"cells": [{"view": "board"}]}), "$.pages[0].id", contains="required")
+    d = _with_pages({"id": "main", "tabs": [{"id": "t"}]})
+    one(d, "$.pages[0].tabs[0].title", contains="required")
+    d = _with_pages({"id": "main", "tabs": [{"id": "t", "title": "T"}]})
+    one(d, "$.pages[0].tabs[0].cells", contains="required")
+
+
+def test_every_page_error_is_one_short_sentence():
+    tabs = [{"id": "t", "title": "T", "cells": [{"view": "board"}]}]
+    bad = _page(tabs=tabs, side={"view": "ghost"}, cols=1)
+    bad["cells"] = [{"view": "ghost", "span": 3}] * 12
+    errs = validate_manifest(_with_pages(bad, _page(id="main"), _page(id="main")))
+    assert len(errs) >= 4
+    for e in errs:
+        assert e.path.startswith("$.pages"), e
+        assert words(e.message) <= 25, e.message
+
+
+def test_schema_carries_the_page_caps():
+    schema = Manifest.model_json_schema()
+    assert schema["properties"]["pages"]["maxItems"] == 8
+    assert schema["$defs"]["PageDef"]["properties"]["tabs"]["maxItems"] == 8
+    assert schema["$defs"]["PageDef"]["properties"]["cells"]["maxItems"] == 12
+    assert schema["$defs"]["TabDef"]["properties"]["cells"]["maxItems"] == 12
+
+
+@pytest.mark.parametrize("title", ["", "   "])
+def test_a_tab_title_is_not_empty_or_blank(title):
+    tab = {"id": "plan", "title": title, "cells": [{"view": "board"}]}
+    d = _with_pages({"id": "main", "tabs": [tab]})
+    assert _at(d, "$.pages[0].tabs[0].title"), validate_manifest(d)

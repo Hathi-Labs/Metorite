@@ -7,7 +7,8 @@ The parent starts this file as a SCRIPT, never with ``-m``::
 ``-m acb_skills...`` runs the package ``__init__``, which imports the whole
 tool set of the agents and costs about 1.2 s more on each read. ``-I`` ignores
 ``PYTHONPATH`` and the user site, and it puts no script dir on ``sys.path``.
-This file imports nothing from ``acb_skills``.
+This file imports nothing from ``acb_skills``. It loads the one confinement
+module of the platform, ``child_confine.py`` in the same dir, by its path.
 
 **Why a child.** One Python regex holds the GIL for its whole pass, so a
 thread cannot bound Trafilatura. One public page with a long
@@ -23,7 +24,8 @@ stdout and exits 0:
 * ``{"text": "...", "title": "...", "date": "..."}``. ``text`` is the main
   text as Markdown. An empty ``text`` means that Trafilatura found none.
 * ``{"fault": "<code>"}``: ``package`` when Trafilatura does not import,
-  ``memory`` at the memory cap and ``failed`` for each other fault. The parent
+  ``memory`` at the memory cap, ``unavailable`` when the confinement cannot
+  apply and ``failed`` for each other fault. The parent
   owns each word that a person reads, so the child sends a code only.
 
 **The limits.** The parent kills the child at its timeout. On Linux the child
@@ -36,15 +38,41 @@ parent. Windows is the dev box only, and it has no ``resource`` module.
 process that parses a hostile page. ``extract`` gets text and no URL, so it
 fetches nothing.
 
+**The confinement** (WEB-2b). The child runs as the gateway's user, so a bug in
+a parser could read ``.env`` or open a socket. The order of :func:`main` is the
+control:
+
+1. ``close_inherited_fds``: shut each descriptor from 3 up. ``close_fds`` is
+   not in force when the parent runs on uvloop, so an inheritable descriptor of
+   the parent reaches the child.
+2. ``_limit_self``: the memory cap, the CPU cap and a low priority.
+3. ``confine``, while the child has ONE thread: Landlock lets it READ only the
+   Python and library dirs and write nowhere. With ABI 4 or later it refuses
+   each TCP bind and connect. The seccomp filter refuses each new socket and
+   each signal to another process.
+4. ``_preload``: one small page runs through ``extract``, so each import
+   happens inside the confinement.
+5. ``close_limits``: no fork, no new thread and no file growth.
+6. Only then does the child read the page from stdin.
+
+Landlock ABI 1 (the file system) is the floor here, in :data:`LANDLOCK_ABI`.
+The network needs no Landlock rule: seccomp refuses ``socket`` itself, and step
+1 leaves no socket to connect. A kernel with no Landlock, or a machine that is
+not x86-64, gives ``{"fault": "unavailable"}`` and no parse. The parent then
+reads with its regex strip.
+
 Fence: ``tests/unit/test_web_readers.py``.
 """
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import json
 import os
 import re
 import sys
+from pathlib import Path
+from typing import Any
 
 #: The address space of the child on Linux. Pages of 192 KiB of many tags, of
 #: deep nesting and of plain words peaked at 171 MB, and at 66 MB resident
@@ -54,9 +82,45 @@ MEMORY_BYTES = 512 * 1024 * 1024
 #: wall time. The parent's kill at ``READER_TIMEOUT_S`` comes first.
 CPU_SECONDS = 10
 
+#: The Landlock ABI that the child asks of the kernel. 1 is the file system.
+#: The kernel's own ABI decides the rest: from 4 on, TCP is refused too.
+LANDLOCK_ABI = 1
+
+#: One small page for :func:`_preload`.
+_WARM_HTML = (
+    "<html><head><title>Warm-up page</title>"
+    '<meta name="author" content="Reader"><meta name="date" content="2026-01-02">'
+    "</head><body><nav><a href='/'>Home</a><a href='/news'>News</a></nav><article>"
+    "<h1>Warm-up page</h1>"
+    + "<p>The reader runs one page like this before it reads the real page, so each "
+      "module that a normal read needs is loaded inside the confinement.</p>" * 6
+    + "</article><footer>Footer text of the warm-up page.</footer></body></html>"
+)
+
 #: Trafilatura's extensive search takes a year from prose ("founded in 2009")
 #: or from a footer ("(c) 2019") and writes it as ``2009-01-01``. So it is off.
 _DATE_PARAMS = {"extensive_search": False, "original_date": True}
+
+
+def _load_confine() -> Any:
+    """Load ``child_confine.py`` from this dir, by path.
+
+    ``-I`` puts no dir on ``sys.path``, and ``import acb_skills`` would run the
+    package ``__init__``. The module writes no bytecode into the package dir."""
+    path = Path(__file__).resolve().with_name("child_confine.py")
+    keep, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+    try:
+        spec = importlib.util.spec_from_file_location("child_confine", path)
+        if spec is None or spec.loader is None:
+            raise ImportError("child_confine.py does not load")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = keep
+    return module
+
+
+_cc = _load_confine()
 
 
 def _limit_self() -> None:
@@ -157,10 +221,30 @@ def _answer(html: str) -> dict[str, str]:
         return {"fault": "failed"}
 
 
+def _preload() -> None:
+    """Run one small page through ``extract``, inside the confinement.
+
+    Each import of Trafilatura and of lxml happens here, so the read of the
+    real page opens no file. An import that fails raises ``ImportError``."""
+    _extract_markdown(_WARM_HTML)
+
+
 def main() -> int:
     try:
+        _cc.close_inherited_fds()
         _limit_self()
+        # One thread here, so the confinement binds each thread.
+        _cc.confine(LANDLOCK_ABI)
+        _preload()
+        _cc.close_limits()
+        # The untrusted page arrives only now, after the confinement.
         item = _answer(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
+    except _cc.Refused:  # no confinement means no parse
+        item = {"fault": "unavailable"}
+    except ImportError:
+        item = {"fault": "package"}
+    except MemoryError:
+        item = {"fault": "memory"}
     except Exception:  # a limit or a read that fails is a fault of the child
         item = {"fault": "failed"}
     # json.dumps writes ASCII, so the code page of the console cannot change it.

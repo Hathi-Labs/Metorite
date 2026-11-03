@@ -318,7 +318,7 @@ _REMOTE_JINA = "jina"
 #: The file of the reader child. It starts as a script (see that file).
 _READER_WORKER = Path(__file__).resolve().with_name("web_reader_worker.py")
 #: The fault codes that a child can send.
-_CHILD_FAULTS = frozenset({"package", "memory", "failed"})
+_CHILD_FAULTS = frozenset({"package", "memory", "unavailable", "failed"})
 #: The first bytes of an HTML page that the search for a ``<meta>`` charset
 #: reads. Each match stops at the next ``<``, so the search is linear.
 _META_SNIFF_BYTES = 4096
@@ -986,9 +986,10 @@ def _parse_answer(raw: bytes) -> _Local | None:
 async def _child_read(html: str) -> _Local | None:
     """Trafilatura's reading of ``html`` in a new child process, or None.
 
-    One child serves one read. The child is killed and reaped at
-    :data:`READER_TIMEOUT_S`, on a cancel of the caller and at an answer past
-    the cap, so no parse outlives its read. A loop that cannot spawn a child
+    One child serves one read. Its process group is killed at the end of
+    each read, and the child is reaped. A timeout, a cancel of the caller and
+    an answer past the cap end the read the same way. So no parse and no
+    forked process outlives its read. A loop that cannot spawn a child
     (the Windows selector loop of a dev server) gives the strip."""
     answer: Any = _ReaderAnswer()
     try:
@@ -1009,8 +1010,14 @@ async def _child_read(html: str) -> _Local | None:
     except TimeoutError:
         timed_out = True
     finally:
-        if proc.returncode is None:
-            _kill_group(proc)
+        # Always, also when the leader has exited 0 (WEB-2b). A grandchild that
+        # it forked stays in the group and must not outlive the read, while
+        # the slot goes back. The group id is the pid of the leader, and a
+        # live member keeps that id from any other process. After the reap the
+        # pgid can go only to a NEW session leader. In practice that is a
+        # concurrent reader or OCR child, and its read then falls to the strip.
+        # It has no security effect.
+        _kill_group(proc)
         # Always: a child that exited can still hold an unread pipe open.
         await _reap(proc, answer)
     if timed_out:
