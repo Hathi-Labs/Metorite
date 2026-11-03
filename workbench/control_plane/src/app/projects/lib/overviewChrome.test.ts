@@ -58,6 +58,16 @@ describe("view commands in My tasks", () => {
     expect(ids).not.toContain("view.timeline");
   });
 
+  it("offers List view in My tasks with no project selected", () => {
+    const ids = availableCommands({ ...CTX, hasProject: false, modes: ["overview", "list"] }).map((c) => c.id);
+    expect(ids).toContain("view.list");
+  });
+
+  it("offers no view command with no project and no My tasks tabs", () => {
+    const ids = availableCommands({ ...CTX, hasProject: false }).map((c) => c.id);
+    expect(ids).not.toContain("view.list");
+  });
+
   it("offers every canvas when the context names no list", () => {
     const ids = availableCommands(CTX).map((c) => c.id);
     expect(ids).toContain("view.timeline");

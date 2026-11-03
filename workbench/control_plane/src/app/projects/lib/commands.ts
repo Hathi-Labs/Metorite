@@ -214,7 +214,10 @@ function viewCommands(): Command[] {
     keywords: ["view", "canvas", "layout", entry.id],
     icon: entry.icon,
     sequence: ["v", entry.key],
-    when: (ctx: CommandContext) => ctx.hasProject && (!ctx.modes || ctx.modes.includes(entry.id)),
+    // MOB-1 verify: My tasks names its tabs in `modes` and needs no project,
+    // so its view commands show with no project selected.
+    when: (ctx: CommandContext) =>
+      (ctx.hasProject || Boolean(ctx.modes)) && (!ctx.modes || ctx.modes.includes(entry.id)),
     run: (actions: CommandActions) => actions.setMode(entry.id),
   }));
 }
