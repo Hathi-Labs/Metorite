@@ -3501,7 +3501,11 @@ def _change_value(value: Any) -> str:
         return "yes" if value else "no"
     text_ = value if isinstance(value, str) else repr(value)
     one = " ".join(str(text_).split())
-    return one if len(one) <= _CHANGE_VALUE_CHARS else one[: _CHANGE_VALUE_CHARS - 1] + "…"
+    if len(one) <= _CHANGE_VALUE_CHARS:
+        return one
+    # A cut of one string, never of rows (test_read_tool_paging.py reads
+    # `str(...)` as text).
+    return str(one)[: _CHANGE_VALUE_CHARS - 1] + "…"
 
 
 def _change_lines(row: dict[str, Any]) -> list[str]:
