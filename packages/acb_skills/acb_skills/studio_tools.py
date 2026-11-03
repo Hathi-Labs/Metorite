@@ -1246,7 +1246,7 @@ async def studio_skill_save(
                 body["actions"] = list(actions)
             if ask:
                 held = await _held_save(
-                    f"Save a new skill {_name(name, True)}?", None, {"name": name, "body": body}, None)
+                    f"Save a new skill {_title_name(name)}?", None, {"name": name, "body": body}, None)
                 if held is not None:
                     return held
             reply = await _post(
@@ -1281,7 +1281,7 @@ async def _save_version(
     merged = _merged_body(stored, description, instructions, actions)
     if ask:
         held = await _held_save(
-            f"Save a new version of {_name(_skill_of(current).get('name', ''), True)}?",
+            f"Save a new version of {_title_name(_skill_of(current).get('name', ''))}?",
             current, {"name": _skill_of(current).get("name", ""), "body": merged}, sid)
         if held is not None:
             return held
@@ -1331,11 +1331,24 @@ def _bare(text: str) -> str:
 
 
 def _shown(value: Any) -> str:
-    """*value* whole, as one value of a card inside « ». It holds one line and
-    no control character, so it cannot forge a line of the card, and no
-    guillemet of its own, so it cannot close the fence."""
-    text = "".join(ch if ch >= " " else " " for ch in str("" if value is None else value))
+    """*value* whole, as one value of a card inside « ». It holds one line, no
+    control character and no character that the member cannot see
+    (``untrusted.is_invisible``), so it cannot forge a line of the card or
+    hide a text on it. It holds no guillemet of its own, so it cannot close
+    the fence."""
+    from acb_skills.untrusted import is_invisible
+
+    raw = str("" if value is None else value)
+    text = "".join(" " if ch < " " else ch for ch in raw if not is_invisible(ch))
     return "«" + _bare(one_line(text)) + "»"
+
+
+def _title_name(value: Any) -> str:
+    """A skill name for the title of a card: :func:`_name` inside « », with no
+    character that the member cannot see (``untrusted.is_invisible``)."""
+    from acb_skills.untrusted import is_invisible
+
+    return _name("".join(ch for ch in str(value or "") if not is_invisible(ch)), True)
 
 
 def _action_lines(ids: list[str], classes: dict[str, str]) -> list[str]:
@@ -1492,7 +1505,7 @@ async def _publish_after_card(sid: str, first: _Reply) -> dict[str, Any]:
     except _Refused as exc:
         return _refusal(str(exc))  # no card when the card cannot show the change
     verb = "Resume" if skill.get("state") == "paused" else "Publish"
-    title = f"{verb} {_name(skill.get('name', ''), True)}?"
+    title = f"{verb} {_title_name(skill.get('name', ''))}?"
     detail = f"Version {version.get('version')}. The skill goes live for Mira."
     decision = await _decide(title, detail, context)
     if decision != "approved":
@@ -1541,7 +1554,7 @@ async def studio_skill_state(skill_id: str, state: str) -> dict[str, Any]:
             problem = _move_problem(current.get("state"), "paused")
             if problem:
                 return _route_says(409, problem)  # no card for a move that the route refuses
-            name = _name(current.get("name", ""), True)
+            name = _title_name(current.get("name", ""))
             rows = [("skill", f"Skill: {_shown(current.get('name', ''))}")]
             context = await _card(_PAUSE_NOTE, rows)
             decision = await _decide(f"Pause {name}?", "The skill stops for Mira.", context)
