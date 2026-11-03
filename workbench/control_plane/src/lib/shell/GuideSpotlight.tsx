@@ -3,22 +3,32 @@
 /**
  * The guide spotlight (WS-OB GD-2, D167, `assistant_guide.md` §3 G3, G10, §5.3).
  *
- * It rings ONE anchor on the page and shows one line next to it. It is not a
- * modal. Focus stays where it was, nothing goes inert, and the ring takes no
+ * It rings ONE anchor on the page and draws ONE tour card beside it. It is not
+ * a modal. Focus stays where it was, nothing goes inert, and the ring takes no
  * pointer, so the member can press the ringed element (G3).
  *
- * ## Why the ring and the popover go through a portal
+ * ## The tour card (owner request, 2026-11-03)
+ *
+ * The card holds the line, "3 of 5", Back, Next or Done, End tour, and on the
+ * last stop the app chips. It floats in the guide's top layer, above the dim.
+ * It never sits in the side chat: there it mixed in with the chat's own
+ * buttons. On a desktop it sits beside the ring. On a phone it docks to the
+ * window edge farther from the ring ({@link placeCard}).
+ *
+ * ## Why the ring and the card go through a portal
  *
  * A glass ancestor has `backdrop-filter`, and that makes it the containing
  * block of every `position: fixed` child. Inside it, a fixed ring would measure
- * from the glass box and not from the window. The portal puts both on `body`.
+ * from the glass box and not from the window. `GuideHost` puts the dim, the
+ * ring and the card in ONE portal on `body`, in that order, so the card paints
+ * over the dim.
  *
- * ## Why the popover is not an `AnchoredPanel`
+ * ## Why the card is not an `AnchoredPanel`
  *
  * `AnchoredPanel` hangs a panel below or above its anchor from one edge, and it
- * never clamps to the window sides. At 390 px wide a popover that hangs from
+ * never clamps to the window sides. At 390 px wide a card that hangs from
  * the left edge of a right-hand anchor runs off the window. So this file
- * places the popover with {@link placePopover} and reuses the panel SURFACE
+ * places the card with {@link placePopover} and reuses the panel SURFACE
  * (`PANEL_SURFACES.panel`), so the glass look stays one look.
  *
  * ## Tests
@@ -35,13 +45,11 @@ import { PANEL_LAYERS, PANEL_SURFACES } from "@/components/ui/AnchoredPanel";
 import Button from "@/components/ui/Button";
 import { revealWithin, type ScrollBox, type Span } from "@/lib/scrollWithin";
 
-import { nextLabel } from "./guide";
+import { ANCHOR_MISSING_NOTE, nextLabel, type TourChip } from "./guide";
 import { WATCHED_ATTRIBUTES, isShown } from "./guideAnchor";
 
-export type GuideSpotlightProps = {
-  /** An anchor id, e.g. "home.ask". Looks up the element whose guide attribute holds it. */
-  anchor: string;
-  /** The step line, shown in the popover and announced. */
+export type TourCardProps = {
+  /** The step line. */
   say: string;
   /** Shows "2 of 5" when given. `index` is 1-based. */
   step?: { index: number; total: number };
@@ -51,32 +59,32 @@ export type GuideSpotlightProps = {
   onBack?: () => void;
   /** The End button and Escape. */
   onEnd: () => void;
+  /** The last stop: the primary button says "Done", and pressing it ends the tour. */
+  last?: boolean;
+  /** The app chips of the tour's last stop (GD-5a). None on any other stop. */
+  chips?: readonly TourChip[];
+  onChip?: (chip: TourChip) => void;
+  /** A phone: the card docks to the window edge farther from the ring. */
+  phone?: boolean;
+};
+
+export type GuideSpotlightProps = TourCardProps & {
+  /** An anchor id, e.g. "home.ask". Looks up the element whose guide attribute holds it. */
+  anchor: string;
   /** The member pressed the ringed element. */
   onAnchorClick?: () => void;
   /** The anchor did not appear in time. Called once. */
   onMissing?: (anchor: string) => void;
   /** How long to wait for the anchor, in ms. Default 3000. */
   waitMs?: number;
-  /**
-   * Draw the popover (default true). Off draws the ring alone. On a phone the
-   * step line is in the strip or the chat's step card (WS-OB GD-4, spec §4.3),
-   * so a second copy would only cover it.
-   */
-  popover?: boolean | ((inDialog: boolean) => boolean);
-  /** The last stop: the primary button says "Done", and pressing it ends the tour. */
-  last?: boolean;
 };
-
-/** Whether an anchor sits inside an open dialog (a `Modal`, the CRM record sheet). */
-export const DIALOG = '[role="dialog"]';
-export function anchorInDialog(el: Pick<HTMLElement, "closest"> | null): boolean {
-  return !!el?.closest(DIALOG);
-}
 
 
 export const DEFAULT_WAIT_MS = 3000;
-export const POPOVER_WIDTH = 320;
-const POPOVER_FALLBACK_HEIGHT = 120;
+export const CARD_WIDTH = 320;
+const CARD_FALLBACK_HEIGHT = 120;
+/** The phone card keeps this gutter at each window side and at the edge it docks to. */
+export const PHONE_GUTTER = 16;
 const RING_PAD = 4;
 /** The ring line is 2 px outside its box, so a ring held this far from the window edge shows whole. */
 export const RING_INSET = 4;
@@ -84,6 +92,8 @@ const GAP = 12;
 const MARGIN = 8;
 /** An anchor this tall (a share of the window) gets the popover beside it, not below it. */
 const TALL_SHARE = 0.4;
+/** An anchor this tall (a share of the window) leaves the phone card no free edge. */
+export const FILLS_SHARE = 0.6;
 
 type Rect = { left: number; top: number; right: number; bottom: number; width: number; height: number };
 
@@ -174,9 +184,10 @@ export function watchAnchor(o: {
 // is never built at run time either: Tailwind would not generate it. Rule 8
 // of `GuideSpotlight.test.ts` holds both.
 //
-// Layer: both sit on the design system's `top` panel layer (`PANEL_LAYERS`),
-// above the phone Menu drawer (z-70) and a Modal (z-50). The popover comes
-// after the ring in the tree, so it paints over it. No z value is written here.
+// Layer: the dim, the ring and the card sit on the design system's `top` panel
+// layer (`PANEL_LAYERS`), above the phone Menu drawer (z-70) and a Modal
+// (z-50). They come in that order in ONE portal, so the card paints over the
+// ring and the ring over the dim. No z value is written here.
 
 export function prefersReducedMotion(win: { matchMedia?: (q: string) => { matches: boolean } } | undefined): boolean {
   return win?.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
@@ -231,11 +242,11 @@ export function bindEscape(
 }
 
 /**
- * The guide's own parts. The step card lives inside the assistant panel, which
- * is itself an anchor, so a press on Next there must not count as a press on
- * the ringed part. The strip is outside, and its mark is here for the same reason.
+ * The guide's own part. The tour card floats over the page, and an anchor can
+ * lie under it (the card sits beside the ring, but the window can be small), so
+ * a press on the card must not count as a press on the ringed part.
  */
-export const OWN_PART = "[data-guide-card],[data-guide-strip],[data-guide-popover]";
+export const OWN_PART = "[data-guide-card]";
 
 /** Tell the tour the member pressed the anchor. The page keeps its own click. */
 export function bindAnchorClick(
@@ -326,6 +337,63 @@ export function placePopover(
   return { left, top, width, side: below ? "below" : "above" };
 }
 
+/** Which window edge the phone card docks to. */
+export type DockEdge = "top" | "bottom";
+
+/**
+ * The window edge FARTHER from the anchor: the top edge when the anchor's
+ * centre is in the lower half, else the bottom edge. No anchor docks to the top,
+ * clear of the message field. An anchor that fills most of the window (the phone
+ * sheet) leaves no room on either side, so the card docks to the top and keeps
+ * the message field at the foot clear. Pure.
+ */
+export function dockEdge(rect: Rect | null, viewport: Viewport): DockEdge {
+  if (!rect) return "top";
+  if (rect.height >= viewport.height * FILLS_SHARE) return "top";
+  return rect.top + rect.height / 2 > viewport.height / 2 ? "top" : "bottom";
+}
+
+export type CardPlace = {
+  left: number;
+  top: number;
+  width: number;
+  side: "below" | "above" | "right" | "left" | "top" | "bottom";
+};
+
+/**
+ * Where the tour card sits. `rect` is the part of the anchor in the window, or
+ * null when the anchor is missing.
+ *
+ * - Phone: full width less the gutter, docked to the edge from {@link dockEdge}.
+ * - Desktop: beside the anchor by {@link placePopover}.
+ * - No anchor on a desktop: centred at the foot of the window.
+ *
+ * The card always sits inside the window. Pure.
+ */
+export function placeCard(
+  rect: Rect | null,
+  size: { width: number; height: number },
+  viewport: Viewport,
+  phone: boolean,
+): CardPlace {
+  if (phone) {
+    const width = Math.max(0, viewport.width - PHONE_GUTTER * 2);
+    const edge = dockEdge(rect, viewport);
+    const lowest = Math.max(PHONE_GUTTER, viewport.height - PHONE_GUTTER - size.height);
+    return { left: PHONE_GUTTER, top: edge === "top" ? PHONE_GUTTER : lowest, width, side: edge };
+  }
+  if (!rect) {
+    const width = Math.min(size.width, Math.max(0, viewport.width - MARGIN * 2));
+    return {
+      left: Math.max(MARGIN, (viewport.width - width) / 2),
+      top: Math.max(MARGIN, viewport.height - MARGIN - size.height),
+      width,
+      side: "bottom",
+    };
+  }
+  return placePopover(rect, size, viewport);
+}
+
 // ------------------------------------------------------------------ views ---
 
 /** "2 of 5". */
@@ -334,16 +402,25 @@ export function stepLabel(step: { index: number; total: number }): string {
 }
 
 /**
- * The popover's content. Exported so a test reads its markup. It holds NO live
- * region: `GuideHost` owns the one that announces each step at every width, so
- * a desktop does not announce the line twice.
+ * The tour card's content. Exported so a test reads its markup. It holds NO
+ * live region: `GuideHost` owns the one that announces each step, so a screen
+ * reader hears the line once.
  */
-export function GuidePopoverBody(
-  p: Pick<GuideSpotlightProps, "say" | "step" | "onNext" | "onBack" | "onEnd" | "last">,
-) {
+export function GuideCardBody(p: TourCardProps & { missing?: boolean }) {
+  const chips = p.chips ?? [];
   return (
     <>
       <p className="text-sm text-foreground">{p.say}</p>
+      {p.missing ? <p className="mt-1 text-xs text-muted-foreground">{ANCHOR_MISSING_NOTE}</p> : null}
+      {chips.length > 0 ? (
+        <div data-guide-chips="" role="group" aria-label="Open an app" className="mt-2 flex flex-wrap gap-1.5">
+          {chips.map((c) => (
+            <Button key={c.href} variant="secondary" size="sm" icon={c.icon} onClick={() => p.onChip?.(c)}>
+              {c.label}
+            </Button>
+          ))}
+        </div>
+      ) : null}
       <div className="mt-3 flex items-center gap-2">
         <span className="mr-auto text-xs text-muted-foreground">{p.step ? stepLabel(p.step) : ""}</span>
         {p.onBack ? (
@@ -361,6 +438,52 @@ export function GuidePopoverBody(
         ) : null}
       </div>
     </>
+  );
+}
+
+/**
+ * The tour card. It floats in the top layer, with the accent edge that the
+ * ring has, on the glass panel surface. The edge is an outline and not a
+ * `ring-2` box shadow: the glass surface sets its own shadow and hid the ring. It measures its own height, so a
+ * phone card docked to the bottom edge sits on it. `rect` is the anchor's box,
+ * or null when the anchor is missing.
+ */
+export function TourCard(p: TourCardProps & { rect: Rect | null; missing?: boolean }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [vp, setVp] = useState<Viewport | null>(null);
+  const [height, setHeight] = useState(CARD_FALLBACK_HEIGHT);
+
+  useLayoutEffect(() => {
+    const read = () =>
+      setVp((v) => {
+        const next = { width: window.innerWidth, height: window.innerHeight };
+        return v && v.width === next.width && v.height === next.height ? v : next;
+      });
+    read();
+    window.addEventListener("resize", read);
+    return () => window.removeEventListener("resize", read);
+  }, []);
+
+  // After each draw: the height can change with the line, the chips and the width.
+  useLayoutEffect(() => {
+    const h = ref.current?.getBoundingClientRect().height ?? 0;
+    if (h > 0 && Math.abs(h - height) > 0.5) setHeight(h);
+  });
+
+  if (!vp) return null;
+  const at = placeCard(p.rect ? visibleRect(p.rect, vp) : null, { width: CARD_WIDTH, height }, vp, !!p.phone);
+  return (
+    <div
+      ref={ref}
+      role="group"
+      aria-label="Guide"
+      data-guide-card=""
+      data-guide-side={at.side}
+      style={{ left: at.left, top: at.top, width: at.width }}
+      className={`fixed ${PANEL_LAYERS.top} p-3 outline outline-2 outline-primary ${PANEL_SURFACES.panel}`}
+    >
+      <GuideCardBody {...p} />
+    </div>
   );
 }
 
@@ -392,10 +515,11 @@ export function watchDetached(o: {
 
 // ------------------------------------------------------------------- dim ---
 //
-// WS-OB GD-2 (owner request, 2026-11-03): the member could not find the step
-// card among the other cards on screen. While a step is up, ONE dim layer
-// covers the window and leaves two clear holes: the ringed part, and the part
-// that carries the step (the card in the side chat, or the phone strip).
+// WS-OB GD-2 (owner request, 2026-11-03): the member could not find the tour
+// among the other cards on screen. While a step is up, ONE dim layer covers the
+// window and leaves ONE clear hole: the ringed part. The tour card sits ABOVE
+// the dim, so it needs no hole. A missing anchor leaves no hole, and the dim
+// covers the window under the card.
 // The fill is the one scrim token of `DESIGN_SYSTEM.md` section 4a, the one
 // `ui/Modal` uses. The layer takes no pointer, so a press and a Tab reach the
 // page as before (spec section 3 G3, section 5.3). It has no transition, so it
@@ -403,51 +527,18 @@ export function watchDetached(o: {
 
 /** A clear hole in the dim layer, with its corner radius. */
 export type DimHole = { left: number; top: number; width: number; height: number; r: number };
-export type DimCarrier = { rect: Rect; radius: number };
 
-/** The corner radius of the ring (`rounded-lg`) and of the strip's hole. */
+/** The corner radius of the ring (`rounded-lg`). */
 const ANCHOR_RADIUS = 8;
-/** The step card is `rounded-2xl` (16 px), plus the hole's pad. */
-const CARD_RADIUS = 20;
-const CONTAIN_SLACK = 0.5;
-
-function holeOf(rect: Rect, radius: number, viewport: Viewport): DimHole | null {
-  const b = clampRing(ringBox(rect), viewport);
-  return b.width > 0 && b.height > 0 ? { ...b, r: radius } : null;
-}
 
 /**
- * The holes of the dim layer. The anchor's hole has the ring's box (padded,
- * clamped to the window). The carrier's hole has the same pad. A carrier inside
- * the anchor's hole (stop 3 rings the assistant, and the card is inside it)
- * adds none. A missing anchor leaves the carrier's hole alone. Pure.
+ * The holes of the dim layer: the anchor's, which has the ring's box (padded,
+ * clamped to the window), or none when the anchor is missing. Pure.
  */
-export function dimHoles(anchor: Rect | null, carrier: DimCarrier | null, viewport: Viewport): DimHole[] {
-  const a = anchor ? holeOf(anchor, ANCHOR_RADIUS, viewport) : null;
-  const c = carrier ? holeOf(carrier.rect, carrier.radius, viewport) : null;
-  const inside =
-    !!a &&
-    !!c &&
-    c.left >= a.left - CONTAIN_SLACK &&
-    c.top >= a.top - CONTAIN_SLACK &&
-    c.left + c.width <= a.left + a.width + CONTAIN_SLACK &&
-    c.top + c.height <= a.top + a.height + CONTAIN_SLACK;
-  return [a, inside ? null : c].filter((h): h is DimHole => h !== null);
-}
-
-/** The step's carrier that is on screen: the card, or the strip. Null when none is in view. */
-export function findCarrier(root: Document = document): DimCarrier | null {
-  const pick = (sel: string, radius: number): DimCarrier | null => {
-    const el = pickVisible(root.querySelectorAll<HTMLElement>(sel), (e) => {
-      if (!isShown(e)) return false;
-      // A carrier under the Menu drawer or a dialog is not in view: it gets no hole.
-      const r = e.getBoundingClientRect();
-      const top = root.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-      return !!top && e.contains(top);
-    });
-    return el ? { rect: el.getBoundingClientRect(), radius } : null;
-  };
-  return pick("[data-guide-card]", CARD_RADIUS) ?? pick("[data-guide-strip]", ANCHOR_RADIUS);
+export function dimHoles(anchor: Rect | null, viewport: Viewport): DimHole[] {
+  if (!anchor) return [];
+  const b = clampRing(ringBox(anchor), viewport);
+  return b.width > 0 && b.height > 0 ? [{ ...b, r: ANCHOR_RADIUS }] : [];
 }
 
 const sameHoles = (a: DimHole[], b: DimHole[]) =>
@@ -458,14 +549,15 @@ const MASK_ID = "guide-dim-mask";
 export type GuideDimProps = {
   /** The anchor id of the step, or null for a step with none. */
   anchor: string | null;
-  /** The anchor did not appear: only the carrier's hole stays. */
+  /** The anchor did not appear: the dim covers the whole window. */
   missing?: boolean;
 };
 
 /**
- * The dim layer. `GuideHost` mounts it BEFORE the spotlight, so the ring and
- * the popover come after it in the body and paint over it. It draws nothing
- * until the anchor is found (or missing), so the page never flashes dark.
+ * The dim layer. It draws nothing until the anchor is found (or missing), so
+ * the page never flashes dark. It returns the layer and not a portal:
+ * `GuideHost` puts it FIRST in the one guide portal, so the ring and the card
+ * come after it in the body and paint over it.
  */
 export function GuideDim({ anchor, missing = false }: GuideDimProps) {
   const [holes, setHoles] = useState<DimHole[] | null>(null);
@@ -473,7 +565,7 @@ export function GuideDim({ anchor, missing = false }: GuideDimProps) {
     const vp = { width: window.innerWidth, height: window.innerHeight };
     const el = anchor ? findAnchor(anchor) : null;
     if (anchor && !el && !missing) return setHoles((h) => (h === null ? h : null));
-    const next = dimHoles(el ? el.getBoundingClientRect() : null, findCarrier(), vp);
+    const next = dimHoles(el ? el.getBoundingClientRect() : null, vp);
     setHoles((h) => (h && sameHoles(h, next) ? h : next));
   }, [anchor, missing]);
 
@@ -483,7 +575,7 @@ export function GuideDim({ anchor, missing = false }: GuideDimProps) {
     window.addEventListener("scroll", measure, true);
     window.addEventListener("resize", measure);
     window.addEventListener("transitionend", measure, true);
-    // The card appears after the assistant opens, with no event of its own.
+    // The anchor appears after the assistant opens, with no event of its own.
     const stop = observeDom(measure);
     return () => {
       window.removeEventListener("scroll", measure, true);
@@ -494,7 +586,7 @@ export function GuideDim({ anchor, missing = false }: GuideDimProps) {
   }, [measure]);
 
   if (!holes) return null;
-  return createPortal(
+  return (
     <svg
       aria-hidden="true"
       data-guide-dim=""
@@ -509,8 +601,7 @@ export function GuideDim({ anchor, missing = false }: GuideDimProps) {
         </mask>
       </defs>
       <rect x="0" y="0" width="100%" height="100%" mask={`url(#${MASK_ID})`} className="fill-background/80" />
-    </svg>,
-    document.body,
+    </svg>
   );
 }
 
@@ -535,20 +626,23 @@ function observeDom(onChange: () => void): () => void {
   };
 }
 
+/**
+ * The ring and the tour card of a step with an anchor. It returns them without
+ * a portal: `GuideHost` holds the one portal, with the dim before them.
+ */
 export function GuideSpotlight(props: GuideSpotlightProps) {
-  const { anchor, say, step, onNext, onBack, onEnd, last, waitMs = DEFAULT_WAIT_MS, popover = true } = props;
+  const { anchor, waitMs = DEFAULT_WAIT_MS } = props;
   // Latest callbacks, so a parent re-render never restarts the wait.
   const latest = useRef(props);
   latest.current = props;
-  const popRef = useRef<HTMLDivElement | null>(null);
   const [el, setEl] = useState<HTMLElement | null>(null);
   // Grows when the ringed anchor leaves the page, so the wait for it starts again.
   const [attempt, setAttempt] = useState(0);
-  const [box, setBox] = useState<{ rect: Rect; pop: ReturnType<typeof placePopover> } | null>(null);
+  const [rect, setRect] = useState<Rect | null>(null);
 
   useEffect(() => {
     setEl(null);
-    setBox(null);
+    setRect(null);
     const isReduced = prefersReducedMotion(window);
     return watchAnchor({
       anchor,
@@ -573,7 +667,7 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
       observe: observeDom,
       onGone: () => {
         setEl(null);
-        setBox(null);
+        setRect(null);
         setAttempt((n) => n + 1);
       },
     });
@@ -581,14 +675,7 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
 
   const place = useCallback(() => {
     if (!el) return;
-    const r = el.getBoundingClientRect();
-    const pr = popRef.current?.getBoundingClientRect();
-    const size = {
-      width: POPOVER_WIDTH,
-      height: pr && pr.height > 0 ? pr.height : POPOVER_FALLBACK_HEIGHT,
-    };
-    const vp = { width: window.innerWidth, height: window.innerHeight };
-    setBox({ rect: r, pop: placePopover(visibleRect(r, vp), size, vp) });
+    setRect(el.getBoundingClientRect());
   }, [el]);
 
   useLayoutEffect(() => {
@@ -604,7 +691,7 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
       window.removeEventListener("resize", place);
       window.removeEventListener("transitionend", place, true);
     };
-  }, [el, place, say]);
+  }, [el, place, props.say]);
 
   useEffect(() => bindEscape(document, () => latest.current.onEnd()), []);
 
@@ -613,11 +700,10 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
     return bindAnchorClick(el, () => latest.current.onAnchorClick?.());
   }, [el]);
 
-  if (!el || !box) return null;
-  const ring = clampRing(ringBox(box.rect), { width: window.innerWidth, height: window.innerHeight });
-  const drawPopover = typeof popover === "function" ? popover(anchorInDialog(el)) : popover;
+  if (!el || !rect) return null;
+  const ring = clampRing(ringBox(rect), { width: window.innerWidth, height: window.innerHeight });
 
-  return createPortal(
+  return (
     <>
       <div
         aria-hidden="true"
@@ -625,20 +711,19 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
         style={{ left: ring.left, top: ring.top, width: ring.width, height: ring.height }}
         className={`pointer-events-none fixed ${PANEL_LAYERS.top} rounded-lg ring-2 ring-primary`}
       />
-      {drawPopover ? (
-      <div
-        ref={popRef}
-        role="group"
-        aria-label="Guide"
-        data-guide-popover=""
-        style={{ left: box.pop.left, top: box.pop.top, width: box.pop.width }}
-        className={`fixed ${PANEL_LAYERS.top} p-3 ${PANEL_SURFACES.panel}`}
-      >
-        <GuidePopoverBody say={say} step={step} onNext={onNext} onBack={onBack} onEnd={onEnd} last={last} />
-      </div>
-      ) : null}
-    </>,
-    document.body,
+      <TourCard
+        rect={rect}
+        say={props.say}
+        step={props.step}
+        onNext={props.onNext}
+        onBack={props.onBack}
+        onEnd={props.onEnd}
+        last={props.last}
+        chips={props.chips}
+        onChip={props.onChip}
+        phone={props.phone}
+      />
+    </>
   );
 }
 

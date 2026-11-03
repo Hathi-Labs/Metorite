@@ -12,9 +12,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { guideAct } from "./assistant";
-import { assistantFor, showsPopover } from "./GuideHost";
-import { GuideStepCardBody } from "./GuideStepCard";
-import { GuidePopoverBody, OWN_PART, anchorInDialog, bindAnchorClick, bindEscape, pickVisible } from "./GuideSpotlight";
+import { assistantFor } from "./GuideHost";
+import { GuideCardBody, OWN_PART, bindAnchorClick, bindEscape, pickVisible } from "./GuideSpotlight";
 import {
   ANCHOR_MISSING_NOTE,
   GUIDE_STORAGE_KEY,
@@ -383,10 +382,11 @@ describe("where the assistant goes for a step (phone strip, spec 4.3)", () => {
 });
 
 describe("the views", () => {
-  it("the step card shows the line, 2 of 5, Back, End tour and Next", () => {
+  it("the tour card shows the line, 2 of 5, Back, End tour and Next", () => {
     const html = renderToStaticMarkup(
-      createElement(GuideStepCardBody, {
-        view: { say: "Type here.", index: 2, total: 5, missing: false },
+      createElement(GuideCardBody, {
+        say: "Type here.",
+        step: { index: 2, total: 5 },
         onBack: () => {},
         onNext: () => {},
         onEnd: () => {},
@@ -397,8 +397,10 @@ describe("the views", () => {
   });
   it("a missing anchor adds the note, and the first step has no Back", () => {
     const html = renderToStaticMarkup(
-      createElement(GuideStepCardBody, {
-        view: { say: "Type here.", index: 1, total: 5, missing: true },
+      createElement(GuideCardBody, {
+        say: "Type here.",
+        step: { index: 1, total: 5 },
+        missing: true,
         onNext: () => {},
         onEnd: () => {},
       }),
@@ -414,7 +416,7 @@ describe("the views", () => {
 });
 
 describe("a press on the ringed part moves on, but not a press on the guide's own parts", () => {
-  it("ignores a press inside the step card, the strip or the popover", () => {
+  it("ignores a press inside the tour card", () => {
     let handler: ((e?: Event) => void) | null = null;
     const el = {
       addEventListener: (_t: string, h: (e?: Event) => void) => void (handler = h),
@@ -583,8 +585,10 @@ describe("GD-5a: the app chips of the tour's last stop", () => {
       { href: "/projects", label: "Projects", icon: "FolderKanban" },
     ];
     const html = renderToStaticMarkup(
-      createElement(GuideStepCardBody, {
-        view: { say: "Try it.", index: 5, total: 5, missing: false },
+      createElement(GuideCardBody, {
+        say: "Try it.",
+        step: { index: 5, total: 5 },
+        last: true,
         onNext: () => {},
         onEnd: () => {},
         chips,
@@ -592,10 +596,11 @@ describe("GD-5a: the app chips of the tour's last stop", () => {
       }),
     );
     expect(html).toContain("data-guide-chips");
-    for (const t of ["My Tasks", "Projects", "5 of 5", "End tour"]) expect(html).toContain(t);
+    for (const t of ["My Tasks", "Projects", "5 of 5", "End tour", "Done"]) expect(html).toContain(t);
     const none = renderToStaticMarkup(
-      createElement(GuideStepCardBody, {
-        view: { say: "Try it.", index: 4, total: 5, missing: false },
+      createElement(GuideCardBody, {
+        say: "Try it.",
+        step: { index: 4, total: 5 },
         onNext: () => {},
         onEnd: () => {},
       }),
@@ -604,36 +609,15 @@ describe("GD-5a: the app chips of the tour's last stop", () => {
   });
 
   it("a chip ends the tour as done and opens its app, and marks the chapter seam", () => {
-    const card = readFileSync(join(__dirname, "GuideStepCard.tsx"), "utf-8");
-    expect(card).toContain("// GD-10: start the app's chapter");
+    const host = readFileSync(join(__dirname, "GuideHost.tsx"), "utf-8").replace(/\r\n/g, "\n");
+    expect(host).toContain("// GD-10: start the app's chapter");
     // Ended as done, the sheet out of the way on a phone (the chat link's
     // one rule), and then the app.
-    expect(card).toMatch(/endGuide\("done"\);[\s\S]*?onChatLink\(\{ phone: isMobile, chatFirst: chatFirstOn\(\) \}\)[\s\S]*?router\.push\(c\.href\);/);
-    expect(card).toContain("view.guide.id === TOUR_GUIDE_ID && view.isLast");
-    // The phone strip stays one line: it draws no chip.
+    expect(host).toMatch(/endGuide\("done"\);[\s\S]*?onChatLink\(\{ phone, chatFirst: chatFirstOn\(\) \}\)[\s\S]*?router\.push\(c\.href\);/);
+    expect(host).toContain("view.guide.id === TOUR_GUIDE_ID && view.isLast");
+    // The chat and the dock draw no chip.
     const dock = readFileSync(join(__dirname, "AssistantDock.tsx"), "utf-8");
     expect(dock).not.toContain("tourChips");
-  });
-});
-
-describe("GD-5a: the last stop's card is not covered", () => {
-  it("the tour's last stop rings the message field with no popover, on any screen", () => {
-    for (const assistantOpen of [false, true]) {
-      expect(showsPopover({ phone: false, anchor: "chat.message-field", tourLast: true, assistantOpen })).toBe(false);
-      expect(showsPopover({ phone: true, anchor: "chat.message-field", tourLast: true, assistantOpen })).toBe(false);
-    }
-  });
-  it("the line shows once: the popover shows only when neither the card nor the strip is on screen", () => {
-    // Desktop: the side panel is closed, so no card. The popover carries the line.
-    expect(showsPopover({ phone: false, anchor: "home.ask", tourLast: true, assistantOpen: false })).toBe(true);
-    expect(showsPopover({ phone: false, anchor: "home.app-list", tourLast: false, assistantOpen: false })).toBe(true);
-    // Desktop: the side panel is open, so the card carries the line and no popover shows.
-    expect(showsPopover({ phone: false, anchor: "chat.panel", tourLast: false, assistantOpen: true })).toBe(false);
-    expect(showsPopover({ phone: false, anchor: "home.my-day", tourLast: false, assistantOpen: true })).toBe(false);
-    // Phone: the strip or the sheet's card carries it, except under the Menu drawer.
-    expect(showsPopover({ phone: true, anchor: "home.app-list", tourLast: false, assistantOpen: true })).toBe(true);
-    expect(showsPopover({ phone: true, anchor: "home.ask", tourLast: false, assistantOpen: true })).toBe(false);
-    expect(showsPopover({ phone: true, anchor: "home.ask", tourLast: false, assistantOpen: false })).toBe(false);
   });
 });
 
@@ -686,46 +670,22 @@ describe("GD-4 repair 2", () => {
     expect(a.runner.get().step).toBeGreaterThan(0);
   });
 
-  it("the popover shows for an anchor inside an open dialog, whatever the dock does", () => {
-    for (const phone of [false, true]) {
-      for (const assistantOpen of [false, true]) {
-        for (const tourLast of [false, true]) {
-          expect(showsPopover({ phone, anchor: "crm.record", tourLast, assistantOpen, inDialog: true })).toBe(true);
-        }
-      }
-    }
-    // Without a dialog the old rules hold.
-    expect(showsPopover({ phone: false, anchor: "crm.record", tourLast: false, assistantOpen: true })).toBe(false);
-    expect(showsPopover({ phone: true, anchor: "crm.record", tourLast: false, assistantOpen: false })).toBe(false);
+  it("the card sits on the top layer, above a dialog, whatever the dock does", () => {
+    const src = readFileSync(join(__dirname, "GuideSpotlight.tsx"), "utf-8");
+    expect(src).toMatch(/data-guide-card=""[\s\S]*?\$\{PANEL_LAYERS\.top\}/);
+    const host = readFileSync(join(__dirname, "GuideHost.tsx"), "utf-8");
+    expect(host).not.toMatch(/showsPopover|anchorInDialog/);
   });
 
-  it("anchorInDialog reads the closest dialog", () => {
-    expect(anchorInDialog({ closest: (s: string) => (s === '[role="dialog"]' ? {} : null) } as never)).toBe(true);
-    expect(anchorInDialog({ closest: () => null } as never)).toBe(false);
-    expect(anchorInDialog(null)).toBe(false);
-  });
-
-  it("the last stop says Done in the card and the popover, and the others say Next", () => {
+  it("the last stop says Done in the card, and the others say Next", () => {
     expect(nextLabel(true)).toBe("Done");
     expect(nextLabel(false)).toBe("Next");
     expect(nextLabel(undefined)).toBe("Next");
-    const card = (isLast: boolean) =>
-      renderToStaticMarkup(
-        createElement(GuideStepCardBody, {
-          view: { say: "x", index: 5, total: 5, missing: false, isLast },
-          onNext: () => {},
-          onEnd: () => {},
-        }),
-      );
-    expect(card(true)).toContain("Done");
+    const card = (last: boolean) =>
+      renderToStaticMarkup(createElement(GuideCardBody, { say: "x", onNext: () => {}, onEnd: () => {}, last }));
+    expect(card(true)).toContain(">Done<");
     expect(card(true)).not.toContain(">Next<");
     expect(card(false)).toContain(">Next<");
-    const pop = (last: boolean) =>
-      renderToStaticMarkup(createElement(GuidePopoverBody, { say: "x", onNext: () => {}, onEnd: () => {}, last }));
-    expect(pop(true)).toContain(">Done<");
-    expect(pop(false)).toContain(">Next<");
-    const dock = readFileSync(join(__dirname, "AssistantDock.tsx"), "utf-8");
-    expect(dock).toContain("nextLabel(tourView.isLast)");
   });
 
   it("the host removes ?guide= through the router, and puts the live region on body", () => {

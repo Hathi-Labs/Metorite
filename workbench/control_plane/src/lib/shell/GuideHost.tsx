@@ -10,11 +10,15 @@
  * - It pushes the route of an `open` step, once, and tells the store when the
  *   page arrived.
  * - It rings the anchor of a `point` step with `GuideSpotlight`.
+ * - It draws ONE tour card (`TourCard`) in the guide's top layer, above the
+ *   dim. The card never sits in the side chat (owner, 2026-11-03: there it
+ *   mixed in with the chat's own buttons). On the tour's last stop it holds
+ *   the app chips (GD-5a).
  * - It opens the assistant where the step needs it: the panel for a `chat.*`
- *   anchor, and on a phone the peek strip (`assistant_guide.md` §4.3), which
- *   shows the step line with Next and End.
+ *   anchor, and on a phone the peek strip or the sheet (`assistant_guide.md`
+ *   §4.3). The chat draws nothing for the tour.
  * - It holds the ONE live region that announces each step's line, at every
- *   width. The popover, the step card and the strip hold none.
+ *   width. The card holds none.
  * - Escape ends the tour in the same frame (G10). The page stays where it is.
  * - A start of the tour (`home.tour`) from any entry stamps `tour_seen_at`
  *   in the shell prefs (GD-5a). A resume after a reload does not.
@@ -28,8 +32,12 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 
+import { useAccess } from "@/components/AccessProvider";
+import { visibleSections } from "@/lib/nav";
+
 import {
   GUIDE_MENU_EVENT,
+  backStep,
   endGuide,
   guideAnchorMissing,
   guideFromSearch,
@@ -41,48 +49,22 @@ import {
   resumeGuide,
   startGuide,
   TOUR_GUIDE_ID,
+  tourChips,
   useGuide,
   withoutGuideParam,
+  type TourChip,
 } from "./guide";
-import { assistantState, openAssistant, setAssistantMode, useAssistant } from "./assistant";
-import GuideSpotlight, { GuideDim, bindEscape } from "./GuideSpotlight";
+import { assistantState, closeAssistant, onChatLink, openAssistant, setAssistantMode } from "./assistant";
+import { chatFirstOn } from "./chatFlag";
+import GuideSpotlight, { GuideDim, TourCard, bindEscape } from "./GuideSpotlight";
+import { starrableHeld } from "./presets";
 import { markTourSeen } from "./shellPrefs";
 
-/** The one phone stop whose strip is under the Menu drawer, so its popover stays. */
+/** The phone stop that opens the Menu drawer for its app list. */
 const DRAWER_ANCHOR = "home.app-list";
 
 /** Whether the anchor sits inside the assistant. */
 export const isChatAnchor = (anchor: string | null): boolean => !!anchor && anchor.startsWith("chat.");
-
-/**
- * Whether the spotlight draws its popover. The line shows ONCE. The popover
- * shows only when neither the step card nor the phone strip is on screen:
- *
- * - The step card sits in the assistant, so with the assistant open (the side
- *   panel on a desktop) the card carries the line.
- * - On a phone the strip or the sheet's card carries it. The one exception is
- *   the Menu drawer stop, whose strip is under the drawer.
- * - On the tour's last stop the card carries the app chips (GD-5a), and a
- *   popover above the message field would cover them.
- * - An anchor inside an open dialog (`[role="dialog"]`) is the exception to
- *   all of these. The dialog's backdrop covers the dock, the strip and the
- *   card, so the popover alone can carry the line. It sits on the `top`
- *   panel layer, above a dialog.
- */
-export function showsPopover(a: {
-  phone: boolean;
-  anchor: string;
-  tourLast: boolean;
-  /** The assistant is open, in any form. */
-  assistantOpen: boolean;
-  /** The anchor sits inside an open dialog. */
-  inDialog?: boolean;
-}): boolean {
-  if (a.inDialog) return true;
-  if (a.tourLast && isChatAnchor(a.anchor)) return false;
-  if (a.phone) return a.anchor === DRAWER_ANCHOR;
-  return !a.assistantOpen;
-}
 
 /**
  * Where the assistant must be for a step (`assistant_guide.md` §4.3).
@@ -110,7 +92,7 @@ function GuideHostInner({ phone = false }: { phone?: boolean }) {
   const g = useGuide();
   const pathname = usePathname();
   const router = useRouter();
-  const assistant = useAssistant();
+  const { access, loading } = useAccess();
   // The address, reactive: a client move to `/?guide=home.tour` (the account
   // menu's "Take the tour" from another page) starts the guide too.
   const searchKey = useSearchParams()?.toString() ?? "";
@@ -187,32 +169,51 @@ function GuideHostInner({ phone = false }: { phone?: boolean }) {
     window.dispatchEvent(new CustomEvent(GUIDE_MENU_EVENT, { detail: wantMenu ? "open" : "close" }));
   }, [wantMenu]);
 
+  // The live apps the member holds, by the sidebar's own filter, with the
+  // preview flag off: a guide never points at a preview pane (§1). Only the
+  // tour's last stop shows them.
+  const chips: TourChip[] =
+    view && view.guide.id === TOUR_GUIDE_ID && view.isLast
+      ? tourChips(starrableHeld(visibleSections(loading ? null : access.features, access.is_admin, false)))
+      : [];
+  const onChip = (c: TourChip) => {
+    // GD-10: start the app's chapter. Until then the chip ends the tour and opens the app.
+    endGuide("done");
+    // On a phone the sheet gets out of the way, as for a tapped chat link.
+    const act = onChatLink({ phone, chatFirst: chatFirstOn() });
+    if (act === "peek") setAssistantMode("peek");
+    else if (act === "close") closeAssistant();
+    router.push(c.href);
+  };
+  const card = view
+    ? {
+        say: view.say,
+        step: { index: view.index, total: view.total },
+        onBack: g.step > 0 ? backStep : undefined,
+        onNext: nextStep,
+        onEnd: () => endGuide("end"),
+        last: view.isLast,
+        chips,
+        onChip,
+        phone,
+      }
+    : null;
   const spot =
-    view && g.phase === "pointing" && view.anchor ? (
+    view && card && g.phase === "pointing" && view.anchor ? (
       <GuideSpotlight
         key={`${view.guide.id}:${g.step}`}
         anchor={view.anchor}
-        say={view.say}
-        step={{ index: view.index, total: view.total }}
-        onNext={nextStep}
-        onEnd={() => endGuide("end")}
-        last={view.isLast}
-        popover={(inDialog) =>
-          showsPopover({
-            phone,
-            anchor: view.anchor!,
-            tourLast: view.guide.id === TOUR_GUIDE_ID && view.isLast,
-            assistantOpen: assistant.open,
-            inDialog,
-          })
-        }
+        {...card}
         onAnchorClick={nextStep}
         onMissing={guideAnchorMissing}
       />
     ) : null;
+  // The anchor is missing: no ring, and the dim has no hole. The card still
+  // shows, with the reason.
+  const missingCard = view && card && g.phase === "missing" ? <TourCard key="missing" rect={null} missing {...card} /> : null;
   // The dim layer (owner request 2026-11-03): one scrim over the window, with
-  // a hole for the ringed part and one for the step's card or strip. It comes
-  // BEFORE the spotlight, so the ring and the popover paint over it.
+  // ONE hole, the ringed part. It comes first in the one portal, so the ring
+  // and the card paint over it.
   const dim =
     view && (g.phase === "pointing" || g.phase === "missing") ? (
       <GuideDim anchor={view.anchor} missing={missing} />
@@ -230,8 +231,17 @@ function GuideHostInner({ phone = false }: { phone?: boolean }) {
         </div>,
         document.body,
       )}
-      {dim}
-      {spot}
+      {/* ONE portal for the dim, the ring and the card, in that order. React
+          inserts a late child at its place among its siblings, so the card
+          stays above the dim whichever of them mounts first. */}
+      {createPortal(
+        <>
+          {dim}
+          {spot}
+          {missingCard}
+        </>,
+        document.body,
+      )}
     </>
   );
 }

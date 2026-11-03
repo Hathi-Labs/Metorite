@@ -96,7 +96,6 @@ async function stub(
 }
 
 const ring = (page: Page) => page.locator("[data-guide-ring]");
-const popover = (page: Page) => page.locator("[data-guide-popover]");
 const card = (page: Page) => page.locator("[data-guide-card]");
 const stored = (page: Page) => page.evaluate(() => sessionStorage.getItem("metorite.guide.v1"));
 const welcome = (page: Page) => page.getByRole("dialog", { name: "Your organization is ready" });
@@ -121,21 +120,21 @@ async function expectCleanButtons(page: Page): Promise<void> {
 }
 
 /**
- * Next through the stops, from `from` to 5 of 5. The line shows ONCE. Stops 1
- * and 2 ring a part of the page, and the popover carries the line. From stop 3
- * the side panel is open, so the step card carries it, and the last stop's
- * card also carries the chips. No popover covers either.
+ * Next through the stops, from `from` to 5 of 5. ONE tour card carries every
+ * stop, in the guide's top layer, outside the chat. The last stop's card also
+ * carries the chips.
  */
 async function nextTo5(page: Page, from: number): Promise<void> {
-  const line = (i: number) => (i <= 2 ? popover(page) : card(page));
   for (let i = from; i < 5; i++) {
-    await expect(line(i)).toContainText(`${i} of 5`);
-    await expect(i <= 2 ? card(page) : popover(page)).toHaveCount(0);
-    await line(i).getByRole("button", { name: "Next" }).click();
+    await expect(card(page)).toHaveCount(1);
+    await expect(card(page)).toContainText(`${i} of 5`);
+    // A plain click, as a member makes it.
+    await card(page).getByRole("button", { name: "Next" }).click();
   }
   await expect(card(page)).toContainText("5 of 5");
   await expect(ring(page)).toBeVisible();
-  await expect(popover(page)).toHaveCount(0);
+  // The chat draws nothing for the tour.
+  await expect(page.locator("[data-assistant] [data-guide-card]")).toHaveCount(0);
 }
 
 test.use({ viewport: { width: 1280, height: 860 } });
@@ -153,10 +152,10 @@ test("a founder: Show me around closes the welcome, runs to 5 of 5, and a chip o
   await expect(page.getByRole("dialog", { name: "Your organization is ready" })).toHaveCount(0, { timeout: 1_000 });
   await expect(page).toHaveURL(/localhost:\d+\/$/);
   await expect(ring(page)).toBeVisible();
-  await expect(popover(page)).toContainText("Your apps live here");
+  await expect(card(page)).toContainText("Your apps live here");
 
   await nextTo5(page, 1);
-  // The last stop: the step card in the side chat offers the member's apps.
+  // The last stop: the tour card offers the member's apps.
   const chips = card(page).locator("[data-guide-chips]");
   await expect(chips).toBeVisible();
   // Every chip is in the window and on top: nothing covers it.
@@ -197,11 +196,11 @@ test("a member on another page: Take the tour goes to / and stop 4 rings My Day"
   await expect(accountMenu(page)).toHaveCount(0);
   // The row navigates to the guide link and does not start the tour in place.
   await expect(page).toHaveURL(/localhost:\d+\/$/);
-  await expect(popover(page)).toContainText("1 of 5");
+  await expect(card(page)).toContainText("1 of 5");
 
   // Stop 4 rings My Day, which lives on `/`. The tour used to miss it from here.
-  await popover(page).getByRole("button", { name: "Next" }).click();
-  await popover(page).getByRole("button", { name: "Next" }).click();
+  await card(page).getByRole("button", { name: "Next" }).click();
+  await card(page).getByRole("button", { name: "Next" }).click();
   await expect(card(page)).toContainText("3 of 5");
   await card(page).getByRole("button", { name: "Next" }).click();
   await expect(card(page)).toContainText("4 of 5");
@@ -277,8 +276,8 @@ for (const guide of [false, "missing"] as const) {
     await expect(page.locator('[data-guide="home.app-list"]')).toBeVisible();
     await page.waitForTimeout(800);
     await expect(ring(page)).toHaveCount(0);
-    // The parameter still leaves the address.
-    expect(new URL(page.url()).search).toBe("");
+    // The parameter still leaves the address, a moment after the host loads.
+    await expect.poll(() => new URL(page.url()).search).toBe("");
     expect(await stored(page)).toBeNull();
     expect(tourPuts(store)).toHaveLength(0);
   });
@@ -287,18 +286,18 @@ for (const guide of [false, "missing"] as const) {
 test("End, then Take the tour again on / with no reload starts it, and Back then Reload does not", async ({ page }) => {
   await stub(page);
   await page.goto("/?guide=home.tour");
-  await expect(popover(page)).toContainText("1 of 5");
+  await expect(card(page)).toContainText("1 of 5");
   // The router drops the parameter, so its own copy of the address changes too.
   await expect.poll(() => new URL(page.url()).search).toBe("");
-  await popover(page).getByRole("button", { name: "End tour" }).click();
+  await card(page).getByRole("button", { name: "End tour" }).click();
   await expect(ring(page)).toHaveCount(0);
 
   // Same page, no reload: the account menu's row goes to /?guide=home.tour again.
   await accountTrigger(page).click();
   await accountMenu(page).getByRole("button", { name: "Take the tour" }).click();
-  await expect(popover(page)).toContainText("1 of 5");
+  await expect(card(page)).toContainText("1 of 5");
   await expect.poll(() => new URL(page.url()).search).toBe("");
-  await popover(page).getByRole("button", { name: "End tour" }).click();
+  await card(page).getByRole("button", { name: "End tour" }).click();
   await expect(ring(page)).toHaveCount(0);
 
   // Back and Reload do not bring the ended tour back.
@@ -320,17 +319,17 @@ test("the welcome picker holds ?guide=home.tour until it closes, then stop 1 rin
   await expect(picker).toBeVisible();
   await page.waitForTimeout(1200);
   await expect(ring(page)).toHaveCount(0);
-  await expect(popover(page)).toHaveCount(0);
+  await expect(card(page)).toHaveCount(0);
   await picker.getByRole("button", { name: "Skip for now" }).click();
   await expect(picker).toHaveCount(0);
   await expect(ring(page)).toBeVisible();
-  await expect(popover(page)).toContainText("1 of 5");
+  await expect(card(page)).toContainText("1 of 5");
 });
 
 test("the last stop says Done and Done ends the tour", async ({ page }) => {
   await stub(page);
   await page.goto("/?guide=home.tour");
-  await expect(popover(page)).toContainText("1 of 5");
+  await expect(card(page)).toContainText("1 of 5");
   await nextTo5(page, 1);
   await expect(card(page).getByRole("button", { name: "Next" })).toHaveCount(0);
   await card(page).getByRole("button", { name: "Done" }).click();
@@ -338,23 +337,22 @@ test("the last stop says Done and Done ends the tour", async ({ page }) => {
   expect(await stored(page)).toBeNull();
 });
 
-test("an anchor inside a dialog gets the popover, and the live region survives a Modal", async ({ page }) => {
+test("an anchor inside a dialog still gets the card above it, and the live region survives a Modal", async ({ page }) => {
   await stub(page);
   await page.goto("/?guide=home.tour");
   await nextTo5(page, 1);
   await expect(card(page)).toBeVisible();
-  // Stop 5 hides the popover for the card. Put the ringed field in a dialog.
+  // Put the ringed field in a dialog: the card sits above it.
   await page.evaluate(() => {
     document.querySelector('[data-guide="chat.message-field"]')?.closest("div")?.setAttribute("role", "dialog");
     window.dispatchEvent(new Event("resize"));
   });
-  // (stop 5 draws the card alone: the dialog rule applies at every stop)
-  await expect(popover(page)).toHaveCount(1);
-  // The popover sits above a dialog (z-90), and its element is on top at its centre.
+  await expect(card(page)).toHaveCount(1);
+  // The card sits above a dialog (z-90), and its element is on top at its centre.
   const onTop = await page.evaluate(() => {
-    const el = document.querySelector("[data-guide-popover]") as HTMLElement;
+    const el = document.querySelector("[data-guide-card]") as HTMLElement;
     const r = el.getBoundingClientRect();
-    return document.elementFromPoint(r.x + r.width / 2, r.y + 8)?.closest("[data-guide-popover]") !== null;
+    return document.elementFromPoint(r.x + r.width / 2, r.y + 8)?.closest("[data-guide-card]") !== null;
   });
   expect(onTop).toBe(true);
 
@@ -381,18 +379,21 @@ test.describe("phone", () => {
     await expectCleanButtons(page);
     await welcome(page).getByRole("button", { name: "Show me around" }).click();
     await expect(page.getByRole("dialog", { name: "Your organization is ready" })).toHaveCount(0, { timeout: 1_000 });
-    // Stop 1 is under the Menu drawer, stops 2 and 4 use the strip, stop 3 the card.
-    const carrier = (i: number) =>
-      i === 0 ? popover(page) : i === 1 || i === 3 ? page.locator("[data-guide-strip]") : card(page);
+    // ONE card carries every stop on a phone too.
     for (let i = 0; i < 4; i++) {
-      await expect(carrier(i)).toContainText(`${i + 1} of 5`);
-      await carrier(i).getByRole("button", { name: "Next" }).click();
+      await expect(card(page)).toContainText(`${i + 1} of 5`);
+      await card(page).getByRole("button", { name: "Next" }).click();
     }
     await expect(card(page)).toContainText("5 of 5");
     const chips = card(page).locator("[data-guide-chips]");
     await expect(chips).toBeVisible();
-    // The strip stays one line: it never draws a chip.
-    await expect(page.locator("[data-guide-strip] [data-guide-chips]")).toHaveCount(0);
+    // The card sits inside the window with its chips.
+    const vp = page.viewportSize()!;
+    const cb = (await card(page).boundingBox())!;
+    expect(cb.x).toBeGreaterThanOrEqual(0);
+    expect(cb.x + cb.width).toBeLessThanOrEqual(vp.width);
+    expect(cb.y).toBeGreaterThanOrEqual(0);
+    expect(cb.y + cb.height).toBeLessThanOrEqual(vp.height);
     await chips.getByRole("button", { name: "Projects" }).click();
     // A cold dev server compiles /projects on this first visit.
     await expect(page).toHaveURL(/\/projects$/, { timeout: 30_000 });

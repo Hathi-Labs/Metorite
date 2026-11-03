@@ -100,8 +100,8 @@ import {
 } from "@/lib/sessions";
 
 import { requestBrief } from "./briefTurn";
-import GuideStepCard from "./GuideStepCard";
-import { ANCHOR_MISSING_NOTE, endGuide, guideView, isActive as guideActive, nextLabel, nextStep, offerGuide, startGuide, useGuide } from "./guide";
+import GuideOffer from "./GuideOffer";
+import { offerGuide, startGuide } from "./guide";
 import { chatFirstOn } from "./chatFlag";
 import {
   REMINDER_HOLD_MS,
@@ -638,29 +638,6 @@ function PeekStrip({
       rowRef.current?.querySelector<HTMLElement>("[data-assistant-unpeek]")?.focus({ preventScroll: true });
     }
   }, []);
-
-  // WS-OB GD-4 (`assistant_guide.md` §4.3): while a tour runs, the strip shows
-  // its step line, with Next and End. A phone has no room for more.
-  const tour = useGuide();
-  const tourView = guideActive(tour) ? guideView() : null;
-  if (tourView) {
-    const words = tourView.missing ? `${tourView.say} ${ANCHOR_MISSING_NOTE}` : tourView.say;
-    return (
-      <div ref={rowRef} data-assistant-strip="" data-guide-strip="" className="flex h-14 w-full items-center gap-2 px-3 ring-2 ring-inset ring-primary">
-        <Icon name="Sparkles" size={18} className="shrink-0 text-primary" />
-        <span data-assistant-strip-text="" className="min-w-0 flex-1 line-clamp-2 text-xs text-foreground" title={words}>
-          {words}
-        </span>
-        <span className="shrink-0 text-xs text-muted-foreground">{tourView.index} of {tourView.total}</span>
-        <Button variant="ghost" size="sm" onClick={() => endGuide("end")}>
-          End tour
-        </Button>
-        <Button variant="primary" size="sm" onClick={nextStep}>
-          {nextLabel(tourView.isLast)}
-        </Button>
-      </div>
-    );
-  }
 
   return (
     <div
@@ -1248,7 +1225,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 // the way (`chat_first_surface.md` §4.8).
                 phoneChrome={phoneChrome}
                 moreActs={moreActs}
-                aboveComposer={<GuideStepCard />}
+                aboveComposer={<GuideOffer />}
                 persona={persona}
                 surface={surface}
                 memories={memories}

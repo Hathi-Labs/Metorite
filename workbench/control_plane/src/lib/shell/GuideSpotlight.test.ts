@@ -7,7 +7,7 @@
  * The rules that need a live browser (focus, Tab) are fenced on the source and
  * walked by the GD-4 e2e.
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { createElement } from "react";
@@ -15,12 +15,14 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import {
-  GuidePopoverBody,
+  GuideCardBody,
   anchorSelector,
   bindAnchorClick,
   bindEscape,
   clampRing,
   dimHoles,
+  dockEdge,
+  placeCard,
   placePopover,
   prefersReducedMotion,
   ringBox,
@@ -121,7 +123,8 @@ describe("rule 2: ring, in a portal, that takes no pointer", () => {
   });
 
   it("renders through a body portal with pointer-events none, and re-places on scroll and resize", () => {
-    expect(CODE).toMatch(/createPortal\([\s\S]*document\.body/);
+    const host = readFileSync(join(__dirname, "GuideHost.tsx"), "utf-8");
+    expect(host).toMatch(/createPortal\(\s*<>[\s\S]*?\{dim\}[\s\S]*?document\.body/);
     expect(CODE).toMatch(/pointer-events-none fixed/);
     expect(CODE).toMatch(/addEventListener\("scroll", place, true\)/);
     expect(CODE).toMatch(/addEventListener\("resize", place\)/);
@@ -161,7 +164,7 @@ describe("rule 2b: the ring stays inside the window", () => {
     expect(c.height).toBe(0);
   });
 
-  it("cuts the anchor to the window for the popover", () => {
+  it("cuts the anchor to the window for the card", () => {
     const v = visibleRect({ left: 300, top: 40, right: 1100, bottom: 1595, width: 800, height: 1555 }, vp);
     expect([v.top, v.bottom, v.height]).toEqual([40, 900, 860]);
   });
@@ -203,9 +206,9 @@ describe("rule 4: focus stays on the page", () => {
     expect(CODE).not.toMatch(/\.focus\(|autoFocus|tabIndex|inert|aria-modal|FocusTrap|focusTrap/);
   });
 
-  it("puts only natural tab stops in the popover", () => {
+  it("puts only natural tab stops in the card", () => {
     const html = renderToStaticMarkup(
-      createElement(GuidePopoverBody, { say: "x", onNext: () => {}, onBack: () => {}, onEnd: () => {} }),
+      createElement(GuideCardBody, { say: "x", onNext: () => {}, onBack: () => {}, onEnd: () => {} }),
     );
     expect(html).not.toMatch(/tabindex|autofocus/i);
     expect(html.match(/<button/g)).toHaveLength(3);
@@ -214,34 +217,28 @@ describe("rule 4: focus stays on the page", () => {
 
 describe("rule 5: announce", () => {
   it("holds NO live region: GuideHost owns the one that announces each step at every width", () => {
-    const html = renderToStaticMarkup(createElement(GuidePopoverBody, { say: "Ask here", onEnd: () => {} }));
+    const html = renderToStaticMarkup(createElement(GuideCardBody, { say: "Ask here", onEnd: () => {} }));
     expect(html).toContain("Ask here");
     expect(html).not.toMatch(/aria-live|role="status"|aria-hidden/);
     expect(CODE).not.toMatch(/aria-live|role="status"/);
-    // The popover keeps a name.
+    // The card keeps a name.
     expect(CODE).toMatch(/role="group"\s+aria-label="Guide"/);
     // The host holds exactly one live region, in the tree for every width.
     const host = readFileSync(join(__dirname, "GuideHost.tsx"), "utf-8").replace(/\r\n/g, "\n");
     expect(host.match(/aria-live="polite"/g)).toHaveLength(1);
     expect(host).toContain("data-guide-live");
-    // The step card and the strip add none.
-    for (const f of ["GuideStepCard.tsx", "AssistantDock.tsx"]) {
-      const src = readFileSync(join(__dirname, f), "utf-8");
-      const guide = f === "GuideStepCard.tsx" ? src : src.slice(src.indexOf("data-guide-strip"), src.indexOf("data-guide-strip") + 900);
-      expect(guide).not.toMatch(/aria-live="polite"/);
-    }
+    // The chat draws nothing for the tour, so the offer chip adds none.
+    expect(readFileSync(join(__dirname, "GuideOffer.tsx"), "utf-8")).not.toMatch(/aria-live="polite"/);
   });
 
-  it("labels the end button End tour, as the card and the strip do", () => {
-    const html = renderToStaticMarkup(createElement(GuidePopoverBody, { say: "x", onEnd: () => {} }));
+  it("labels the end button End tour", () => {
+    const html = renderToStaticMarkup(createElement(GuideCardBody, { say: "x", onEnd: () => {} }));
     expect(html).toContain("End tour");
-    expect(readFileSync(join(__dirname, "AssistantDock.tsx"), "utf-8")).toContain("End tour");
-    expect(readFileSync(join(__dirname, "GuideStepCard.tsx"), "utf-8")).toContain("End tour");
   });
 
   it("shows 2 of 5 in the muted token, and Next and Back only when given", () => {
     const html = renderToStaticMarkup(
-      createElement(GuidePopoverBody, { say: "x", step: { index: 2, total: 5 }, onEnd: () => {} }),
+      createElement(GuideCardBody, { say: "x", step: { index: 2, total: 5 }, onEnd: () => {} }),
     );
     expect(html).toContain("2 of 5");
     expect(html).toContain("text-muted-foreground");
@@ -323,7 +320,7 @@ describe("rule 8: reduced motion", () => {
   });
 });
 
-describe("rule 9: popover placement", () => {
+describe("rule 9: card placement", () => {
   const vp = { width: 1280, height: 800 };
   const size = { width: 320, height: 120 };
   const at = (left: number, top: number, w = 80, h = 40) => ({
@@ -398,6 +395,59 @@ describe("rule 9: popover placement", () => {
     expect(p.top).toBeGreaterThanOrEqual(8);
     expect(p.top + 120).toBeLessThanOrEqual(200 - 8);
   });
+
+  it("desktop: the card sits LEFT of the assistant panel (stop 3) and does not overlap it", () => {
+    const desk = { width: 1440, height: 900 };
+    const panel = at(1040, 60, 380, 780);
+    const c = placeCard(panel, size, desk, false);
+    expect(c.side).toBe("left");
+    expect(c.left + c.width).toBeLessThanOrEqual(1040);
+    expect(c.left).toBeGreaterThanOrEqual(8);
+    expect(c.top).toBeGreaterThanOrEqual(8);
+    expect(c.top + 120).toBeLessThanOrEqual(900 - 8);
+  });
+
+  it("desktop with no anchor: centred at the foot of the window", () => {
+    const desk = { width: 1440, height: 900 };
+    const c = placeCard(null, size, desk, false);
+    expect(c).toMatchObject({ side: "bottom", left: 560, top: 900 - 8 - 120, width: 320 });
+  });
+
+  it("phone: the dock edge is the one FARTHER from the anchor", () => {
+    const ph = { width: 390, height: 800 };
+    // Centre in the lower half: the top edge. Centre in the upper half: the bottom edge.
+    expect(dockEdge(at(16, 700, 358, 60), ph)).toBe("top");
+    expect(dockEdge(at(16, 100, 358, 60), ph)).toBe("bottom");
+    expect(dockEdge(at(16, 380, 358, 40), ph)).toBe("bottom");
+    expect(dockEdge(at(16, 381, 358, 40), ph)).toBe("top");
+    // No anchor: the top, clear of the message field.
+    expect(dockEdge(null, ph)).toBe("top");
+    // An anchor that fills the window (the phone sheet) leaves no free edge: the top keeps the message field clear.
+    expect(dockEdge(at(0, 0, 390, 800), ph)).toBe("top");
+    expect(dockEdge(at(0, 0, 390, 479), ph)).toBe("bottom");
+    expect(dockEdge(at(0, 0, 390, 480), ph)).toBe("top");
+  });
+
+  it("phone: full width less the 16 px gutter, docked inside the window, clear of the anchor", () => {
+    const ph = { width: 390, height: 800 };
+    const field = at(16, 724, 358, 60);
+    const top = placeCard(field, size, ph, true);
+    expect(top).toMatchObject({ side: "top", left: 16, top: 16, width: 358 });
+    expect(top.top + 120).toBeLessThanOrEqual(field.top);
+    const bar = at(16, 8, 358, 48);
+    const bottom = placeCard(bar, size, ph, true);
+    expect(bottom).toMatchObject({ side: "bottom", left: 16, top: 800 - 16 - 120, width: 358 });
+    expect(bottom.top).toBeGreaterThanOrEqual(bar.bottom);
+    for (const c of [top, bottom]) {
+      expect(c.left + c.width).toBeLessThanOrEqual(390 - 16);
+      expect(c.top + 120).toBeLessThanOrEqual(800);
+    }
+  });
+
+  it("phone: a card taller than the window keeps its top inside the window", () => {
+    const c = placeCard(at(16, 8, 358, 48), { width: 320, height: 2000 }, { width: 390, height: 800 }, true);
+    expect(c.top).toBeGreaterThanOrEqual(16);
+  });
 });
 
 describe("rule 10: a ringed anchor that leaves the page", () => {
@@ -460,33 +510,24 @@ describe("rule 11: the dim layer (owner request 2026-11-03)", () => {
     bottom: top + height,
   });
   const anchor = rect(200, 100, 300, 400);
-  const card = { rect: rect(1100, 700, 320, 140), radius: 20 };
 
-  it("cuts one hole for the anchor, with the ring's box, and one for the carrier", () => {
-    const holes = dimHoles(anchor, card, vp);
-    expect(holes).toHaveLength(2);
-    expect(holes[0]).toMatchObject({ left: 196, top: 96, width: 308, height: 408 });
-    expect(holes[1]).toMatchObject({ left: 1096, top: 696, width: 328, height: 148, r: 20 });
-  });
-
-  it("clamps both holes to the window", () => {
-    const [a, c] = dimHoles(rect(-50, -20, 2000, 3000), { rect: rect(1400, 880, 200, 100), radius: 8 }, vp);
-    expect(a).toMatchObject({ left: 4, top: 4, width: 1432, height: 892 });
-    expect(c).toBeUndefined();
-  });
-
-  it("cuts one hole when the carrier sits inside the anchor (stop 3 rings the assistant)", () => {
-    const panel = rect(1040, 60, 380, 780);
-    const holes = dimHoles(panel, { rect: rect(1056, 640, 348, 120), radius: 20 }, vp);
+  it("has ONE hole, the anchor, with the ring's box", () => {
+    const holes = dimHoles(anchor, vp);
     expect(holes).toHaveLength(1);
-    expect(holes[0]).toMatchObject({ left: 1036, top: 56 });
+    expect(holes[0]).toMatchObject({ left: 196, top: 96, width: 308, height: 408, r: 8 });
   });
 
-  it("keeps only the carrier's hole when the anchor is missing, and none when both are", () => {
-    expect(dimHoles(null, card, vp)).toHaveLength(1);
-    expect(dimHoles(null, card, vp)[0]).toMatchObject({ left: 1096, r: 20 });
-    expect(dimHoles(anchor, null, vp)).toHaveLength(1);
-    expect(dimHoles(null, null, vp)).toEqual([]);
+  it("clamps the hole to the window", () => {
+    const [a] = dimHoles(rect(-50, -20, 2000, 3000), vp);
+    expect(a).toMatchObject({ left: 4, top: 4, width: 1432, height: 892 });
+  });
+
+  it("has no hole when the anchor is missing, so the dim covers the window under the card", () => {
+    expect(dimHoles(null, vp)).toEqual([]);
+  });
+
+  it("has no carrier logic: the card sits above the dim and needs no hole", () => {
+    expect(CODE).not.toMatch(/findCarrier|DimCarrier|data-guide-strip/);
   });
 
   it("fills with the one scrim token, takes no pointer, and has no transition", () => {
@@ -497,9 +538,27 @@ describe("rule 11: the dim layer (owner request 2026-11-03)", () => {
     expect(CODE).toMatch(/<mask[\s\S]*<rect[^>]*fill="white"[\s\S]*data-guide-hole/);
   });
 
-  it("mounts in the host before the spotlight, so the ring and popover paint over it", () => {
-    const host = readFileSync(join(__dirname, "GuideHost.tsx"), "utf-8");
-    expect(host.indexOf("{dim}")).toBeGreaterThan(0);
-    expect(host.indexOf("{dim}")).toBeLessThan(host.indexOf("{spot}"));
+  it("puts the dim, the ring and the card in ONE portal, the dim first, so the card paints over it", () => {
+    const host = readFileSync(join(__dirname, "GuideHost.tsx"), "utf-8").replace(/\r\n/g, "\n");
+    // One portal holds the three. The dim comes before the spotlight (ring + card) and the missing card.
+    const at = host.indexOf("{dim}\n");
+    expect(at).toBeGreaterThan(0);
+    expect(at).toBeLessThan(host.indexOf("{spot}\n"));
+    expect(host.indexOf("{spot}\n")).toBeLessThan(host.indexOf("{missingCard}"));
+    expect(host.match(/createPortal\(/g)).toHaveLength(2);
+    // The dim and the spotlight draw no portal of their own.
+    expect(CODE).not.toMatch(/createPortal\(/);
+  });
+
+  it("draws the card on the top layer with the accent edge and the panel surface", () => {
+    expect(CODE).toMatch(/data-guide-card=""[\s\S]*?\$\{PANEL_LAYERS\.top\} p-3 outline outline-2 outline-primary \$\{PANEL_SURFACES\.panel\}/);
+  });
+
+  it("the chat and the dock draw nothing for the tour", () => {
+    for (const f of ["AssistantDock.tsx", "GuideOffer.tsx"]) {
+      const src = readFileSync(join(__dirname, f), "utf-8");
+      expect(src).not.toMatch(/GuideStepCard|data-guide-strip|data-guide-card|guideView|tourView|nextLabel|tourChips/);
+    }
+    expect(existsSync(join(__dirname, "GuideStepCard.tsx"))).toBe(false);
   });
 });

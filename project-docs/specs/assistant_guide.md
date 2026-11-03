@@ -126,9 +126,11 @@ step of the dialog that exists today. Every member finds "Take the tour" in the
 account menu. Stop 4 rings My Day alone until OB-1b builds the Get started
 card. GD-5b adds the later entries when their slices land.
 
-The tour runs in the side chat. Each stop rings one part of the page, and the
-chat says one or two sentences about it. The chat shows "2 of 5", with Back,
-Next and End tour. The message field stays open the whole time.
+The tour card floats above the dimmed page, beside the ringed part. It says one
+or two sentences about the stop. It shows "2 of 5", with Back, Next and End
+tour. The side chat stays open for questions, and the message field stays open.
+The card is not in the chat. The owner gave the reason on 2026-11-03: in the
+chat, the card mixed in with the chat's own buttons.
 
 | Stop | Points at | The chat says (draft) |
 |---|---|---|
@@ -166,8 +168,8 @@ gap (GD-14).
 4. The member decides. Save makes a real record. Cancel leaves nothing.
 
 On a phone, the member's tap on Show me drops the sheet to the peek strip, as
-a tapped link does now (`onChatLink`). The strip shows the step line, Next and
-End.
+a tapped link does now (`onChatLink`). The card docks to the window edge away
+from the ringed part.
 
 ### 4.4 Do it for me
 
@@ -247,9 +249,9 @@ One state machine in `src/lib/shell/guide.ts`, and one shell component,
   or an AG-UI `custom` event named `guide` from the assistant.
 - **Open.** The runner pushes the route. It checks the path with
   `isInAppPath` first, as `show_in_app` does.
-- **Point.** It waits up to 3 seconds for the anchor. Then it rings it with a
-  popover of the design system, in glass tokens (D149). It scrolls the anchor
-  into view.
+- **Point.** It waits up to 3 seconds for the anchor. Then it rings it and dims the
+  rest of the page. It draws the tour card above the dim, in glass tokens
+  (D149). It scrolls the anchor into view.
 - **Move on.** Next, a click on the ringed part, or the route of the next step.
 - **A missing anchor.** The step shows its text, and the chat says "I can't
   point at it on this screen". The runner logs `guide_anchor_missing`. It never
@@ -258,11 +260,11 @@ One state machine in `src/lib/shell/guide.ts`, and one shell component,
 - **State.** The current guide and step live in `sessionStorage` for the tab,
   so a reload resumes. `tour_seen_at` joins the shell prefs, with no new table.
 - **Access.** One polite live region in `GuideHost` announces each step, at
-  every width. The popover, the step card and the strip hold none. Focus stays
-  on the page, so the member can press the ringed button. The ring follows its
-  anchor with no transition, so it never trails a scroll. The step line shows
-  once: the popover shows only when neither the step card nor the phone strip
-  is on screen. The ring stays inside the window. It works in light mode, at compact density, under a changed accent
+  every width. The card holds none. Focus stays
+  on the page, so the member can press the ringed button. The card's buttons
+  are natural tab stops. The ring follows its anchor with no transition, so it
+  never trails a scroll. The dim has one hole, the anchor, and takes no
+  pointer. The ring stays inside the window. It works in light mode, at compact density, under a changed accent
   and at 390 px.
 
 ### 5.4 The assistant's tools
