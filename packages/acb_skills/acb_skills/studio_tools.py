@@ -1075,6 +1075,39 @@ def _actions_problem(ids: list[str], classes: dict[str, str]) -> str | None:
     return None
 
 
+#: The limits of the name and the description of a skill row in the store
+#: (``skills_store.MAX_NAME_CHARS`` and ``MAX_DESCRIPTION_CHARS``). A package
+#: cannot import the gateway, so a test reads them against the store.
+_STORE_NAME_CHARS = 120
+_STORE_DESCRIPTION_CHARS = 1_024
+
+
+def _store_text_problem(value: Any, field: str, limit: int, required: bool) -> str | None:
+    """The 422 text of ``_text`` of the store for a text column, or None: the
+    checks of ``create_skill``, in its order and its words (review round 3)."""
+    if not isinstance(value, str):
+        return f"{field} must be a string"
+    if "\x00" in value:
+        return f"{field} must not hold a NUL character"
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return f"{field} must not hold a lone surrogate"
+    if required and not value.strip():
+        return f"{field} must not be empty"
+    if len(value) > limit:
+        return f"{field} holds at most {limit} characters"
+    return None
+
+
+def _create_problem(name: str, body: dict[str, Any]) -> str | None:
+    """The 422 text of the store for the row of a new skill, or None. The
+    description of the row is the description of the body."""
+    return (_store_text_problem(name, "name", _STORE_NAME_CHARS, True)
+            or _store_text_problem(body.get("description"), "description",
+                                   _STORE_DESCRIPTION_CHARS, False))
+
+
 def _body_problem(body: dict[str, Any]) -> str | None:
     """The 422 text of ``check_body`` of the store for the fields that a body
     must hold, or None. The route checks more, such as the size and the
@@ -1396,6 +1429,8 @@ async def _held_save(
     try:
         classes = _skill_classes(await _read_catalog())
         problem = _actions_problem(_actions_in(body), classes)
+        if not problem and first is None:
+            problem = _create_problem(change["name"], body)
         if problem:
             return _route_says(422, problem)
         refused = await _smuggle_refusal([("name", change["name"]),

@@ -145,6 +145,12 @@ class Gateway:
                 raise HTTPException(422, "The name gives no slug. Send a slug of letters and digits.")
             if new.body is not None:
                 self._check(new.body)
+            try:  # the text checks of ``create_skill`` in the store
+                store._text(new.name, "name", limit=store.MAX_NAME_CHARS, required=True)
+                store._text(new.description, "description", limit=store.MAX_DESCRIPTION_CHARS,
+                            required=False)
+            except store.SkillStoreError as exc:
+                raise HTTPException(422, str(exc)) from None
             if any(s["slug"] == slug for s in self.skills.values()):
                 raise HTTPException(409, "You already have a skill with this name. Choose another name.")
             sid = self.seed(new.name, None)
@@ -579,6 +585,38 @@ async def test_the_size_that_a_held_refusal_names_fits_on_a_second_try(
     assert len(card.shown) == 1 and not is_cut(card.shown[0]["context"])
 
 
+@pytest.mark.parametrize("desc_n, text_n, n_actions", [
+    (1_000, 6_000, 0), (3_000, 3_000, 0), (2_500, 9_000, 35), (200, 3_900, 3),
+    (3_900, 200, 0), (1_800, 1_800, 20), (100, 4_100, 35),
+])
+async def test_the_named_size_fits_for_each_case_of_the_reviewer(
+        held, card, monkeypatch, desc_n, text_n, n_actions) -> None:
+    """The seven size cases of review round 3, on a version save. The store
+    refuses a create with a description over 1,024 characters (round 3,
+    item 6), and a version body has no such cap."""
+    rows = [{"id": f"tasks.act{i:02d}", "title": "t", "class": "C", "source": "manifest",
+             "connection": None, "input_schema": None} for i in range(max(n_actions, 1))]
+    monkeypatch.setattr(st, "_read_catalog", lambda: _async(rows))
+    monkeypatch.setitem(globals(), "CATALOG_IDS", frozenset(r["id"] for r in rows))
+    acts = [r["id"] for r in rows][:n_actions]
+    desc, text = ("Describe the work. " * 300)[:desc_n], ('Step "x"\n' * 1000)[:text_n]
+    sid = held.seed()
+    first = await st.studio_skill_save(skill_id=sid, description=desc, instructions=text,
+                                       actions=acts, based_on=await _based_on(sid))
+    if first["ok"]:
+        assert not is_cut(card.shown[-1]["context"])
+        return
+    found = re.search(r"Shorten (.+?) to about (\d+) characters", _msg(first))
+    assert found, _msg(first)
+    which, room = found.group(1), int(found.group(2))
+    again = await st.studio_skill_save(
+        skill_id=sid, actions=acts, based_on=await _based_on(sid),
+        description=desc[:room] if "description" in which else desc,
+        instructions=text[:room] if "instructions" in which else text)
+    assert again["ok"], again
+    assert not is_cut(card.shown[-1]["context"])
+
+
 async def test_a_clear_chat_shows_a_cut_card_with_the_mark(gw, card) -> None:
     sid = gw.seed(body={**BODY, "instructions": LONG + TAIL})
     out = await st.studio_skill_state(sid, "published")
@@ -925,6 +963,45 @@ async def test_a_held_create_with_a_name_that_gives_no_slug_shows_no_card(held, 
 async def test_a_clear_create_with_a_name_that_gives_no_slug_gets_the_route_answer(gw, card) -> None:
     out = await st.studio_skill_save(name=NO_SLUG_NAME, description="d", instructions="i")
     assert out["status"] == 422 and _msg(out) == st._NO_SLUG and len(gw.sent("POST")) == 1
+
+
+@pytest.mark.parametrize("field, value, text", [
+    ("name", "N" * 121, "name holds at most 120 characters"),
+    ("description", "d" * 1_025, "description holds at most 1024 characters"),
+], ids=["name", "description"])
+async def test_a_held_create_that_the_store_refuses_shows_no_card(held, card, field, value, text) -> None:
+    """Review round 3, item 6: the card showed, then the store said 422.
+    Mutation: drop the store check before the card -> red."""
+    args = {"name": "Helper", "description": "d", "instructions": "i", field: value}
+    out = await st.studio_skill_save(**args)
+    assert out["ok"] is False and out["status"] == 422 and _msg(out) == text
+    assert card.shown == [] and held.sent("POST") == []
+
+
+async def test_a_clear_create_that_the_store_refuses_gets_the_route_answer(gw, card) -> None:
+    out = await st.studio_skill_save(name="N" * 121, description="d", instructions="i")
+    assert out["status"] == 422 and _msg(out) == "name holds at most 120 characters"
+    assert len(gw.sent("POST")) == 1
+
+
+@pytest.mark.parametrize("value", ["ok", "", "  ", "x" * 120, "x" * 121, "x" * 1_025, "a\x00b",
+                                   "\ud800", 5, None])
+@pytest.mark.parametrize("field, limit, required", [
+    ("name", 120, True), ("description", 1_024, False)])
+def test_the_store_check_of_the_tool_gives_the_text_of_the_store(
+        value, field, limit, required) -> None:
+    """Mutation: change a text or the order of ``_store_text_problem`` -> red."""
+    try:
+        store._text(value, field, limit=limit, required=required)
+        want = None
+    except store.SkillStoreError as exc:
+        want = str(exc)
+    assert st._store_text_problem(value, field, limit, required) == want
+
+
+def test_the_store_limits_of_the_tool_are_the_limits_of_the_store() -> None:
+    assert (st._STORE_NAME_CHARS, st._STORE_DESCRIPTION_CHARS) == (
+        store.MAX_NAME_CHARS, store.MAX_DESCRIPTION_CHARS)
 
 
 @pytest.mark.parametrize("ids, text", [
