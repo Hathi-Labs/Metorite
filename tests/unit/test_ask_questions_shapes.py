@@ -42,6 +42,8 @@ def test_json_string_of_a_list() -> None:
 
 
 def test_list_already_parsed() -> None:
+    """A direct Python caller. MAF reads ``questions: str``, so a model call
+    through MAF never reaches this shape."""
     assert _ok(_run([Q]))
 
 

@@ -473,6 +473,9 @@ async def ask_questions(questions: str) -> str:
     # Task 1533: a model sends three shapes. A JSON string of an object with a
     # 'questions' key (the documented one), a JSON string of the list itself,
     # and a list or object that is already parsed. All three are accepted.
+    # MAF reads the parameter as `questions: str`, so a model call through MAF
+    # always gives a string, and the parsed shape never comes from that path.
+    # The parsed branch serves a direct Python caller, and it costs nothing.
     # Fence: tests/unit/test_ask_questions_shapes.py.
     data: Any = questions
     if isinstance(questions, (str, bytes)):
