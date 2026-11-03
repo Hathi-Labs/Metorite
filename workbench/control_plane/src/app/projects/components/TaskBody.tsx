@@ -762,11 +762,15 @@ export function TaskBody({
       const asked = await subtaskComplete.changeStatus(task, statusId, statuses, reload, open);
       if (asked) return;
       const prior = task;
+      // UNDO-1 (fix round 1, finding 5) — ONE toast: the Undo toast takes
+      // the key of the status toast, so it replaces it in place.
+      const toastKey = `projects:task-status:${task.id}`;
+      const movedTo = (row: TaskRow) =>
+        `Moved to ${statuses.find((s) => s.id === row.status_id)?.name ?? "a new lane"}`;
       const fresh = await toast.promise(projectsApi.patchTask(task.id, { status_id: statusId }), {
-        key: `projects:task-status:${task.id}`,
+        key: toastKey,
         loading: "Changing status…",
-        success: (fresh) =>
-          `Moved to ${statuses.find((s) => s.id === fresh.status_id)?.name ?? "a new lane"}`,
+        success: movedTo,
         error: "Couldn't change the status",
         errorAction: {
           label: "Retry",
@@ -776,8 +780,9 @@ export function TaskBody({
       // UNDO-1 — reopening (or any move) can be taken back.
       taskUndo.edited(prior, { status_id: statusId }, fresh, {
         label: `moved ${prior.title}`,
-        receipt: `Moved to ${statuses.find((s) => s.id === fresh.status_id)?.name ?? "a new lane"}`,
+        receipt: movedTo(fresh),
         after: reload,
+        toastKey,
       });
       await reload();
     } catch (err) {

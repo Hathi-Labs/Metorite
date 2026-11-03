@@ -297,8 +297,11 @@ export function TableView({
           return;
         }
       }
+      // UNDO-1 (fix round 1, finding 5) — ONE toast: the Undo toast takes
+      // the key of the save toast, so it replaces it in place.
+      const toastKey = `projects:task-edit:${task.id}`;
       const fresh = await toast.promise(projectsApi.patchTask(task.id, patch), {
-        key: `projects:task-edit:${task.id}`,
+        key: toastKey,
         loading: "Saving…",
         success: (row) => `Saved “${row.title}”`,
         error: "Couldn't save that edit",
@@ -309,6 +312,7 @@ export function TableView({
         label: `edited ${task.title}`,
         receipt: `Saved “${fresh.title}”`,
         after: () => onReload?.(),
+        toastKey,
       });
       flash(task.id);
     } catch (err) {

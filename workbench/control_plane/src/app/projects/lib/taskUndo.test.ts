@@ -394,4 +394,14 @@ describe("the doors wire the helper (source)", () => {
     expect(drop).toMatch(/const fresh = await projectsApi\.patchTask\(task\.id, plan\.patch\)/);
     expect(drop).toMatch(/taskUndo\.edited\(task, plan\.patch, fresh,/);
   });
+
+  it.each([
+    ["the table cell", "components/TableView.tsx", "async function saveCell(", "async function saveAssignees("],
+    ["the panel status", "components/TaskBody.tsx", "async function changeStatus(", "async function patch("],
+  ])("%s raises ONE toast: Undo takes the save toast's key (finding 5)", (_door, file, from, to) => {
+    const src = read(file);
+    const body = src.slice(src.indexOf(from), src.indexOf(to));
+    expect(body).toMatch(/toast\.promise\([\s\S]*key: toastKey,/);
+    expect(body).toMatch(/taskUndo\.edited\([\s\S]*toastKey,\s*\}\);/);
+  });
 });

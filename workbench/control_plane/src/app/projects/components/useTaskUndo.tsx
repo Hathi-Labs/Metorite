@@ -34,9 +34,12 @@ export function useTaskUndo() {
     notify: (message: string) => toast.show({ variant: "error", title: message }),
     after,
   });
-  const offer = (taskId: string, title: string, undo: () => Promise<void>) =>
+  // ⚠️ A door that already raised a toast for this write passes its key, so
+  // the Undo toast REPLACES that one in place (fix round 1, finding 5). Two
+  // success toasts for one act said the same thing twice.
+  const offer = (taskId: string, title: string, undo: () => Promise<void>, key?: string) =>
     toast.show({
-      key: `projects:undo:${taskId}`,
+      key: key ?? `projects:undo:${taskId}`,
       variant: "success",
       title,
       action: {
@@ -49,12 +52,21 @@ export function useTaskUndo() {
     });
 
   return {
-    /** A PATCH of `patch` landed on `before`; `fresh` is what it returned. */
+    /**
+     * A PATCH of `patch` landed on `before`; `fresh` is what it returned.
+     * `toastKey` is the key of the toast the door already raised for this
+     * write, if any. The Undo toast takes its place.
+     */
     edited(
       before: TaskRow,
       patch: Record<string, unknown>,
       fresh: { updated_at?: string | null } | null,
-      opts: { label: string; receipt: string; after: () => Promise<void> | void },
+      opts: {
+        label: string;
+        receipt: string;
+        after: () => Promise<void> | void;
+        toastKey?: string;
+      },
     ) {
       const undo = recordTaskEdit(taskEditIo, hooksFor(opts.after), {
         before,
@@ -62,7 +74,7 @@ export function useTaskUndo() {
         version: fresh?.updated_at ?? null,
         label: opts.label,
       });
-      offer(before.id, opts.receipt, undo);
+      offer(before.id, opts.receipt, undo, opts.toastKey);
     },
     assigneesEdited(
       id: string,
