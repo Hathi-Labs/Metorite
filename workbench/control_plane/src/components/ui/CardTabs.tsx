@@ -20,7 +20,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { prefersReducedMotion } from "@/lib/panelMotion";
-import { nextCompact, tabKeyTarget, tabsCount, tabsLabel } from "@/lib/cardTabs";
+import { nextLevel, START_FIT, tabKeyTarget, tabsCount, tabsLabel } from "@/lib/cardTabs";
 
 /** One card's tab. */
 export interface CardTab {
@@ -56,6 +56,7 @@ export interface CardTabsProps {
 export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps) {
   const total = tabs.length;
   const listRef = useRef<HTMLDivElement>(null);
+  const countRef = useRef<HTMLSpanElement>(null);
   // A row wider than its room fades at the edge where more tabs wait, so a
   // cut tab reads as "scroll", not as a broken one (the narrow Ask panel).
   const [fade, setFade] = useState<{ left: boolean; right: boolean }>({ left: false, right: false });
@@ -65,14 +66,17 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
   // A change of the tabs' words or dots changes the full width, so the
   // state resets and the full row is measured again before the browser paints.
   const signature = tabs.map((t) => `${t.label}||${t.unseen ? 1 : 0}`).join("||");
-  const [fit, setFit] = useState({ compact: false, full: 0, sig: signature });
-  if (fit.sig !== signature) setFit({ compact: false, full: 0, sig: signature });
-  const compact = fit.compact && fit.sig === signature;
+  const [state, setState] = useState({ ...START_FIT, sig: signature });
+  if (state.sig !== signature) setState({ ...START_FIT, sig: signature });
+  const level = state.sig === signature ? state.level : 0;
+  const compact = level >= 1;
+  const tight = level >= 2;
   const measure = () => {
     const list = listRef.current;
     if (!list) return;
-    const c = nextCompact(fit, list.scrollWidth, list.clientWidth);
-    if (c.compact !== fit.compact || c.full !== fit.full) setFit({ ...c, sig: fit.sig });
+    const count = countRef.current?.offsetWidth ?? 0;
+    const c = nextLevel(state, count + list.scrollWidth, count + list.clientWidth);
+    if (c !== state && (c.level !== state.level || c.needs !== state.needs)) setState({ ...c, sig: state.sig });
     const left = list.scrollLeft > 2;
     const right = list.scrollLeft + list.clientWidth < list.scrollWidth - 2;
     setFade((f) => (f.left === left && f.right === right ? f : { left, right }));
@@ -89,8 +93,8 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
     const to = left < list.scrollLeft ? left - 8 : right > list.scrollLeft + list.clientWidth ? right - list.clientWidth + 8 : null;
     if (to !== null) list.scrollTo({ left: to, behavior: prefersReducedMotion() ? "auto" : "smooth" });
   }, [index, total]);
-  // Every render: measure again. `nextCompact` holds a margin, so the state
-  // settles, and `setFit` runs only when a value changed.
+  // Every render: measure again. `nextLevel` holds a margin, so the state
+  // settles, and `setState` runs only when a value changed.
   useLayoutEffect(() => {
     measure();
   });
@@ -123,10 +127,19 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
       className="-mx-2.5 -mt-1.5 mb-2 flex min-w-0 items-stretch border-b border-border px-2.5 glass:-mx-4 glass:-mt-4 glass:mb-3 glass:px-4"
     >
       <span
+        ref={countRef}
         data-card-tabs-count=""
         className="flex shrink-0 items-center pr-3 text-xs font-medium tabular-nums text-muted-foreground glass:text-footnote"
       >
-        {tabsCount(total)}
+        {tight ? (
+          // Level 2: the count is its number in a small pill. The words stay
+          // for a screen reader.
+          <span role="img" aria-label={tabsCount(total)} title={tabsCount(total)} className="rounded-full bg-secondary px-1.5 text-xs text-foreground">
+            {total}
+          </span>
+        ) : (
+          tabsCount(total)
+        )}
       </span>
       <div
         ref={listRef}
@@ -155,7 +168,7 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
               data-card-tab={i}
               data-unseen={t.unseen && !active ? "" : undefined}
               onClick={() => onGo(i)}
-              className={`-mb-px flex max-w-[12rem] shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-2 text-sm tech-transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring glass:text-subhead ${
+              className={`-mb-px flex max-w-[12rem] ${tight && active ? "min-w-20 shrink" : "shrink-0"} items-center gap-1.5 border-b-2 px-2.5 py-2 text-sm tech-transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring glass:text-subhead ${
                 active
                   ? "border-primary font-medium text-foreground"
                   : "border-transparent text-muted-foreground hover:text-foreground"

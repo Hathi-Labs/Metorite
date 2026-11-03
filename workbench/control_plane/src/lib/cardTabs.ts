@@ -42,21 +42,37 @@ export function cardKind(card: Pick<PendingConfirmation, "title" | "reply">): Ca
   return "other";
 }
 
+/** How tight the tab row is. 0: every tab in full. 1: a tab that is not open
+ *  shows its icon and dot only. 2: also the open tab's label may shrink, and
+ *  the count shortens to its number. */
+export type TabLevel = 0 | 1 | 2;
+
+export interface TabFit {
+  level: TabLevel;
+  /** The width the row needed at each level it has overflowed at. */
+  needs: readonly number[];
+}
+
+export const START_FIT: TabFit = { level: 0, needs: [] };
+
 /**
- * The compact rule of the tab row, given the widths. A row that overflows
- * goes compact: each tab that is not open shows its icon and dot only. It
- * remembers the full width it overflowed at, and grows back only when the
- * room is that wide plus a margin, so a row on the edge does not flicker.
+ * The tightness of the tab row, given the width it NEEDS at the current level
+ * and the room it has (the count plus the tabs). A row that overflows goes one
+ * level tighter. It remembers the width it needed, and goes one level looser
+ * only when the room is that wide plus a margin, so a row on the edge does not
+ * flicker. The fade is the last resort: it shows when level 2 still overflows.
  */
-export function nextCompact(
-  state: { compact: boolean; full: number },
-  scrollWidth: number,
-  clientWidth: number,
-  margin = 8,
-): { compact: boolean; full: number } {
-  if (!state.compact) return { compact: scrollWidth > clientWidth, full: scrollWidth };
-  if (clientWidth >= state.full + margin) return { compact: false, full: state.full };
-  return state;
+export function nextLevel(fit: TabFit, need: number, room: number, margin = 8): TabFit {
+  const needs = fit.needs.slice();
+  if (need > room) {
+    needs[fit.level] = need;
+    return fit.level < 2 ? { level: (fit.level + 1) as TabLevel, needs } : { level: fit.level, needs };
+  }
+  const looser = fit.level - 1;
+  if (looser >= 0 && needs[looser] !== undefined && room >= needs[looser] + margin) {
+    return { level: looser as TabLevel, needs };
+  }
+  return fit.needs.length === needs.length && fit.needs.every((n, i) => n === needs[i]) ? fit : { level: fit.level, needs };
 }
 
 /** The count label that leads the tab row. */

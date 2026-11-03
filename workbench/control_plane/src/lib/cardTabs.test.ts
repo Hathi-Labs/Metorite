@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { cardKind, cutLabel, nextCompact, KIND_ICON, personName, tabLabel, TAB_LABEL_MAX, restoredFirst, tabKeyTarget, tabsCount, tabsLabel } from "./cardTabs";
+import { cardKind, cutLabel, nextLevel, START_FIT, type TabFit, KIND_ICON, personName, tabLabel, TAB_LABEL_MAX, restoredFirst, tabKeyTarget, tabsCount, tabsLabel } from "./cardTabs";
 
 const read = (rel: string) => readFileSync(join(__dirname, "..", rel), "utf-8");
 
@@ -71,13 +71,26 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
     expect(tabLabel({ title: "Reply to 1 recipient?", reply: { messageId: "m", replyAll: false, recipients: { reply: { to: ["pat.jones@x.test"], cc: [] }, reply_all: { to: [], cc: [] } } } as never })).toBe("Reply to Pat");
   });
 
-  it("the row goes compact when it overflows, and grows back with a margin", () => {
-    expect(nextCompact({ compact: false, full: 0 }, 500, 600)).toEqual({ compact: false, full: 500 });
-    expect(nextCompact({ compact: false, full: 0 }, 700, 600)).toEqual({ compact: true, full: 700 });
-    // Compact: it holds until the room is the full width plus the margin.
-    expect(nextCompact({ compact: true, full: 700 }, 300, 650).compact).toBe(true);
-    expect(nextCompact({ compact: true, full: 700 }, 300, 707).compact).toBe(true);
-    expect(nextCompact({ compact: true, full: 700 }, 300, 708).compact).toBe(false);
+  it("the row tightens by level as its room shrinks, and loosens with a margin", () => {
+    // What the row needs at each level: the count plus the tabs.
+    const NEED = [700, 420, 250] as const;
+    const settle = (room: number, from: TabFit = START_FIT) => {
+      let fit = from;
+      for (let i = 0; i < 6; i++) fit = nextLevel(fit, NEED[fit.level], room);
+      return fit;
+    };
+    expect(settle(1060).level).toBe(0);
+    expect(settle(600).level).toBe(1);
+    expect(settle(300).level).toBe(2);
+    expect(settle(260).level).toBe(2);
+    // Below level 2's need the fade is the last resort: the level stays 2.
+    expect(settle(200).level).toBe(2);
+    // Hysteresis: from level 2 the row loosens only with the margin.
+    const tight = settle(300);
+    expect(settle(427, tight).level).toBe(2);
+    expect(settle(428, tight).level).toBe(1);
+    expect(settle(707, settle(600)).level).toBe(1);
+    expect(settle(708, settle(600)).level).toBe(0);
   });
 
   it("the row observes its width and lets go on unmount", () => {
@@ -85,6 +98,7 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
     expect(tabs).toContain("new ResizeObserver");
     expect(tabs).toContain("ro.disconnect()");
     expect(tabs).toContain("aria-label={slim");
+    expect(tabs).toContain("aria-label={tabsCount(total)}");
   });
 
   it("the row has a fade at an edge with more tabs, and a narrow tab width", () => {
