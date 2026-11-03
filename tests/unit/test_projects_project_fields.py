@@ -757,6 +757,8 @@ async def test_untriaged_reads_the_inbox_and_names_who_assigned(monkeypatch) -> 
     out = await skill_projects.my_work(untriaged=True)
     inbox = [c for c in calls if c["path"] == "/projects/my/inbox"]
     assert inbox and inbox[0]["params"]["untriaged"] is True
+    # Deferred New work counts in the New chip, so the list asks for it.
+    assert inbox[0]["params"]["include_deferred"] is True
     assert "New in My tasks" in out and "assigned_by «raj@x.io»" in out
     # D170 (INB-1): the untriaged read is not the inbox, so it asks no INBOX filter.
     assert "disposition" not in inbox[0]["params"]

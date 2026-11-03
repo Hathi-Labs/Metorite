@@ -4,8 +4,8 @@
  * Changed 2026-11-03 by D170 (INB-1): the inbox holds only what I captured.
  * A capture is an INBOX row. It can sit in my own tree or, after a "#project"
  * capture, on a company board with its INBOX overlay kept. Work a colleague
- * assigned to me and I have not opened is NOT here. My tasks shows it as New
- * (`lib/newWork.ts`).
+ * assigned to me and I have not planned is NOT here. My tasks shows it as New
+ * (`is_new` from `mine.new_work`).
  *
  * This module is the one rule for "what the Inbox holds", "which kind a row
  * is", and "in what order". The sidebar badge, the header count, the list and

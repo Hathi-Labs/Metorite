@@ -458,8 +458,10 @@ def test_the_list_pages_to_exhaustion(gw: Recorder):
 
 def test_the_inbox_view_is_the_captures_only(gw: Recorder):
     """D170 (INB-1). The inbox view asks `disposition=INBOX` and never `untriaged`.
-    `my_work(view="inbox")` asks the same filter, so the two chat tools and the
-    app's inbox list agree (`test_projects_project_fields.py`)."""
+    `my_work(view="inbox")` asks the same filter. They differ on deferred
+    captures: `my_tasks_list` asks `include_deferred=true` and prints the
+    tickler date, `my_work` leaves tickled rows out, as the app inbox does
+    (`test_projects_project_fields.py`)."""
     run(core.my_tasks_list(view="inbox"))
     p = gw.kwargs[0]["params"]
     assert p["disposition"] == "INBOX"

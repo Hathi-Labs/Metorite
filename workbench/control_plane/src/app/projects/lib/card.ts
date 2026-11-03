@@ -138,7 +138,7 @@ export function cardChips(
       icon: "Sparkles",
       label: "New",
       tone: "accent",
-      title: "New: assigned to you, and you have not opened or planned it yet",
+      title: "New: assigned to you, and you have not planned it yet",
     });
   }
   const priority = importanceChip(task, nowMs);

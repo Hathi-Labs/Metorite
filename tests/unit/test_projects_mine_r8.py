@@ -675,6 +675,33 @@ class TestTheInboxBadge:
         assert _named(armed, {r["id"] for r in got["rows"]}) == {
             "a_open", "a_secret", "both2"}
 
+    async def test_deferred_new_work_is_listed_with_include_deferred(self, armed):
+        """A New task with a start date ahead counts in `new`. The chat list
+        asks `include_deferred`, so it shows the same rows as the count."""
+        both2 = armed.t["both2"]
+        later = (datetime.now(UTC) + timedelta(days=7)).date()
+
+        def start(value):
+            with armed.admin.begin() as c:
+                c.execute(text("SELECT set_config('app.tenant_id', :t, true)"),
+                          {"t": armed.org})
+                c.execute(text("UPDATE pm_tasks SET start_date = :d"
+                               " WHERE id = CAST(:i AS uuid)"), {"d": value, "i": both2})
+
+        start(later)
+        try:
+            summary = await _ok(armed, A, "/projects/my/summary")
+            plain = await _ok(armed, A, "/projects/my/inbox",
+                              {"untriaged": "true", "page_size": 100})
+            full = await _ok(armed, A, "/projects/my/inbox",
+                             {"untriaged": "true", "include_deferred": "true",
+                              "page_size": 100})
+            assert both2 not in {r["id"] for r in plain["rows"]}
+            assert both2 in {r["id"] for r in full["rows"]}
+            assert summary["by_disposition"]["new"] == len(full["rows"]) == 3
+        finally:
+            start(None)
+
     async def test_the_rows_of_my_tasks_say_which_are_new(self, armed):
         """`attach_my_overlay` puts `is_new` on each row, by the same rule the
         count uses (`mine.new_work`), so the chip and the marker agree."""

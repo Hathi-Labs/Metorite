@@ -58,8 +58,8 @@ DUE_SOON_DAYS = 7
 DISPOSITION_KEYS: tuple[str, ...] = (
     "inbox", "today", "next", "waiting", "someday", "done", "new",
 )
-# "new" (D170, INB-1, 2026-11-03): work assigned to me that I have not opened or
-# planned. It is a marker and a count on My tasks, not a chip filter.
+# "new" (D170, INB-1, 2026-11-03): work assigned to me that I have not planned. It is
+# a marker, a count and a chip filter on My tasks.
 
 
 def check_scope(scope: str | None) -> bool:
