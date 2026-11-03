@@ -1581,18 +1581,20 @@ def _crm_questions_on(org: Any) -> bool:
         return False
 
 
-def _pack_delegation_refusal(agent_name: str) -> str | None:
+def _pack_delegation_refusal(agent_name: str, run_id: str = "") -> str | None:
     """The pack refusal of a hand-off to *agent_name* from this frame, or None.
 
     The rule is ``tool_packs.delegation_refusal``: the chat run holds a pack
     that replaces the agent. It reads the run binding of the CALLING run,
     never a tool argument. Never raises. Its one caller starts the hand-off
     when the answer is None, so it asks with ``starts=True`` (WS-67 OA-8i):
-    a pack write of the owner later in this run then refuses."""
+    a pack write of the owner later in this run then refuses. Task 1533:
+    *run_id* is the sub-run, so a start that ``call_agent`` recorded for the
+    same run is not counted twice."""
     try:
         from acb_skills.tool_packs import delegation_refusal
 
-        refused = delegation_refusal(agent_name, starts=True)
+        refused = delegation_refusal(agent_name, starts=True, run_id=run_id)
     except Exception:
         return None
     if refused:
@@ -1602,16 +1604,18 @@ def _pack_delegation_refusal(agent_name: str) -> str | None:
 
 def _pack_handoff_ended(
     agent_name: str, parent_ctx: Any, *, finished: bool, calls: Any = None,
+    run_id: str = "",
 ) -> None:
     """Tell the calling run's pack record whether a hand-off finished (WS-67
     OA-8i review, P2). *parent_ctx* is the calling run's context, read before
     the sub-run derived its own. The rule is ``tool_packs.handoff_ended``.
-    Never raises."""
+    Task 1533: *run_id* closes that sub-run, and *calls* are the calls that
+    it reported. Never raises."""
     try:
         from acb_skills.tool_packs import handoff_ended
 
         handoff_ended(
-            agent_name, parent_ctx, finished=finished,
+            agent_name, parent_ctx, finished=finished, run_id=run_id,
             tools=[str(c.get("name") or "") for c in (calls or []) if isinstance(c, dict)],
         )
     except Exception:
@@ -2572,7 +2576,7 @@ async def _run_sub_agent_streaming(
     # chat run holds. The specialist tools, delegate_to_agent, call_agent and
     # call_agents_parallel all come here. It reads the parent's binding on the
     # parent's frame, before any work and before any mark of the chat.
-    _pack_refused = _pack_delegation_refusal(agent_name)
+    _pack_refused = _pack_delegation_refusal(agent_name, run_id)
     if _pack_refused is not None:
         return _pack_refused
     # WS-67 OA-9a: the worker runs only for a bound job (the second of three
@@ -3073,7 +3077,8 @@ async def _run_sub_agent_streaming(
     finally:
         # WS-67 OA-8i review, P2: first, before any await, the calling run's
         # pack record learns whether this hand-off finished.
-        _pack_handoff_ended(agent_name, _parent_ctx_sub, finished=_sub_done, calls=_sub_calls)
+        _pack_handoff_ended(agent_name, _parent_ctx_sub, finished=_sub_done, calls=_sub_calls,
+                            run_id=run_id)
         _drop_agent_push(run_id, "the sub-task did not finish")
         try:
             from acb_common import publish_activity
