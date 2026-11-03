@@ -72,6 +72,7 @@ from typing import Any
 import httpx
 from acb_common import studio_expr, studio_fields, studio_rules
 from acb_common.card_body import (
+    CUT_MARK,
     LONG_TEXT_KEYS,
     CardBody,
     CardWontFit,
@@ -921,6 +922,9 @@ _NO_SLUG = "The name gives no slug. Send a slug of letters and digits."
 #: fewer actions (review round 2, item 6).
 _WONT_FIT = ("The name and the actions of this skill do not fit on one card, so nothing was "
              "changed. Remove some actions, then call the tool once more.")
+_CARD_COPY = ("The {what} that you sent looks like the one-line view of a card, not the text "
+              "of a read. Nothing was saved. Read the skill with studio_skill_list, and edit "
+              "the text of that read.")
 _SMUGGLED = ("This change holds hidden characters in the {what}. They can carry a text that "
              "no person sees. This chat read email from outside senders, so it shows no card "
              "for such a text. Nothing was changed. Remove them in Studio.")
@@ -1247,15 +1251,30 @@ def _merged_body(
     return body
 
 
-def _based_on_problem(current: _Reply, based_on: str, sent: list[str]) -> str | None:
+def _looks_like_a_card(sent: str, stored: str) -> bool:
+    """True when *sent* looks like the one-line view of a card of *stored*,
+    not an edit of a read (review round 3, item 5). Three cheap signs: the cut
+    mark of a card, the "…" that ends a cut value where the stored text has
+    none, or one line where the stored text has more, with the same first 40
+    characters on one line."""
+    if CUT_MARK in sent:
+        return True
+    if sent.rstrip().rstrip("»").endswith("…") and not stored.rstrip().endswith("…"):
+        return True
+    return (len(sent.splitlines()) <= 1 < len(stored.splitlines())
+            and one_line(sent)[:40] == one_line(stored)[:40])
+
+
+def _based_on_problem(current: _Reply, based_on: str, sent: dict[str, str]) -> str | None:
     """The refusal of a save that changes the texts *sent*, or None.
 
     The save replaces each text that it sends. A model that sends a text it
     did not read whole loses the rest: a cut read, or the one-line view of a
     card. So a sent text that a read of the stored body shows in part refuses
-    first, also when the hash matches (review round 3). Then the save must
-    send ``based_on``, equal to the content hash of the stored body now. A
-    skill with no version has no body to lose."""
+    first, also when the hash matches (review round 3). So does a text that
+    looks like a card (:func:`_looks_like_a_card`). Then the save must send
+    ``based_on``, equal to the content hash of the stored body now. A skill
+    with no version has no body to lose."""
     version = _version_of(current)
     if version is None:
         return None
@@ -1263,6 +1282,11 @@ def _based_on_problem(current: _Reply, based_on: str, sent: list[str]) -> str | 
     shown_in_part = sorted(field for field in sent if field in partial)
     if shown_in_part:
         return _NOT_WHOLE.format(what=" and ".join(shown_in_part))
+    body = _body_of(version)
+    copies = sorted(field for field, value in sent.items()
+                    if _looks_like_a_card(value, str(body.get(field) or "")))
+    if copies:
+        return _CARD_COPY.format(what=" and ".join(copies))
     stored = str(version.get("content_hash") or "")
     if stored and str(based_on or "").strip() == stored:
         return None
@@ -1335,8 +1359,8 @@ async def _save_version(
     current = await _get(f"/studio/skills/{sid}")
     if not current.ok:
         return _fail(current)
-    sent = [f for f, v in (("description", description), ("instructions", instructions))
-            if v.strip()]
+    sent = {f: v for f, v in (("description", description), ("instructions", instructions))
+            if v.strip()}
     if sent:
         problem = _based_on_problem(current, based_on, sent)
         if problem:

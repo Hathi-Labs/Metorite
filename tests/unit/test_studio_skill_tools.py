@@ -1151,6 +1151,39 @@ async def test_no_card_gives_the_card_view_and_a_save_of_it_writes_nothing(gw, c
     assert gw.sent("POST") == [] and gw.versions[sid][-1]["body"]["instructions"] == text
 
 
+
+@pytest.mark.parametrize("text", [MARKDOWN, SHORT_MD], ids=["cut", "not-cut"])
+async def test_a_card_view_is_refused_also_with_a_valid_based_on(gw, card, text) -> None:
+    """Review round 3, item 5: after no_card, a based_on from an earlier read
+    let the one-line card view through, and each line break was lost.
+    Mutation: drop the check of a card copy -> red."""
+    sid = gw.seed(body={**BODY, "instructions": text})
+    based = await _based_on(sid)
+    card.answer, card.open = False, False
+    out = await st.studio_skill_state(sid, "published")
+    edited = _card_value(out["context"], "Instructions").replace("five", "three")
+    saved = await st.studio_skill_save(skill_id=sid, instructions=edited, based_on=based)
+    assert saved["ok"] is False and "one-line view" in _msg(saved)
+    assert gw.sent("POST") == [] and gw.versions[sid][-1]["body"]["instructions"] == text
+
+
+@pytest.mark.parametrize("sent", [f"Do it.\n{CUT_MARK}", "Write five bullets and stop…"],
+                         ids=["mark", "ellipsis"])
+async def test_a_text_with_a_sign_of_a_cut_card_is_refused(gw, card, sent) -> None:
+    sid = gw.seed()
+    out = await st.studio_skill_save(skill_id=sid, instructions=sent,
+                                     based_on=await _based_on(sid))
+    assert out["ok"] is False and "one-line view" in _msg(out) and gw.sent("POST") == []
+
+
+async def test_a_one_line_text_with_a_new_start_still_saves(gw, card) -> None:
+    """The check stays narrow: a one-line text that starts in a new way is a
+    rewrite, not a card copy."""
+    sid = gw.seed(body={**BODY, "instructions": SHORT_MD})
+    out = await st.studio_skill_save(skill_id=sid, based_on=await _based_on(sid),
+                                     instructions="Summarise the meeting in three bullets.")
+    assert out["ok"], out
+
 async def test_a_short_text_keeps_its_line_breaks_through_read_edit_and_save(gw, card) -> None:
     sid = gw.seed(body={**BODY, "instructions": SHORT_MD})
     read = await st.studio_skill_list(sid)
