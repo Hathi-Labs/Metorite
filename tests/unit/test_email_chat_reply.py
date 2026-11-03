@@ -129,6 +129,11 @@ class _CardDrafts:
 
 @pytest.fixture(autouse=True)
 def card_drafts(monkeypatch) -> _CardDrafts:
+    from acb_common.tenant_redis import TenantRedis
+    from gateway.routes.email.automation import held_card as hc
+
+    from tests.unit._held_card_fakes import FakeRedis
+
     fake = _CardDrafts()
     monkeypatch.setattr(rc, "_keep_card_draft", fake.keep)
 
@@ -136,6 +141,11 @@ def card_drafts(monkeypatch) -> _CardDrafts:
         return []
 
     monkeypatch.setattr(rc, "_chat_record", no_record)
+    # The record of each card (task 1526, fix round 1): a fault of it now
+    # writes no draft, and a fault at the act answers 503. So no test here
+    # reaches a real Redis.
+    store = FakeRedis()
+    monkeypatch.setattr(hc, "_tenant_redis", lambda: TenantRedis(store))
     return fake
 
 

@@ -356,11 +356,17 @@ Rules that make it work:
   mean.
 - `uv run pytest …` is the runner. Frontend: `npx tsc --noEmit && npx vitest run`
   in `workbench/control_plane`.
-- **Run the whole pr-check suite on this PC before you push:**
-  `bash scripts/ci_local.sh`. It runs in the preset `metorite-ci` WSL2
-  distro. It tests the COMMIT, so commit first. Setup and isolation:
-  `engineering_practice.md` §7a.
-  ⚠️ **When WSL or Docker hangs** (`HCS_E_CONNECTION_TIMEOUT`, Docker
+- **The home server is the CI and agent machine** (task 1534). It is a
+  Windows PC with Ubuntu 24.04 in WSL, on the tailnet as `metorite-home`.
+  From this PC, `ssh metorite-home` reaches user `dev`, and
+  `ssh metorite-home-admin` reaches `acb`, who has sudo.
+  `scripts/home_server/` sets it up.
+- **Run the whole pr-check suite before you push:** `bash scripts/ci_local.sh`.
+  **The home server runs it**, as user `ci`. This PC's `metorite-ci` WSL2
+  distro takes the run only when the home server is busy or does not answer.
+  `--home` or `--pc` picks one lane. It tests the COMMIT, so commit first.
+  Setup and isolation: `engineering_practice.md` §7a.
+  ⚠️ **When WSL or Docker hangs on this PC** (`HCS_E_CONNECTION_TIMEOUT`, Docker
   answers 500), run `bash scripts/ci_pc/doctor.sh`. `--fix` repairs it in a
   known order, and it restarts SHARED things. Use it only when the report says
   they are broken. Do not fall back to GitHub-only CI in silence. Say the
