@@ -362,6 +362,13 @@ def test_the_deploy_line_copies_the_key_and_never_makes_one() -> None:
     ("OTHER=2\n", "STUDIO_DIRECT_KEY=stale\nOTHER=1\n", ["OTHER=1"]),
     ("OTHER=2\n", "OTHER=1\n", ["OTHER=1"]),
     ("STUDIO_DIRECT_KEY=\n", "STUDIO_DIRECT_KEY=stale\n", []),
+    # Fix round 1: systemd and dotenv take the LAST line of a key, so the copy
+    # takes the last line too. With the first line, a copy of the first value
+    # read as "already in sync".
+    ("STUDIO_DIRECT_KEY=first\nSTUDIO_DIRECT_KEY=abc\n", "STUDIO_DIRECT_KEY=first\nOTHER=1\n",
+     ["OTHER=1", "STUDIO_DIRECT_KEY=abc"]),
+    ("STUDIO_DIRECT_KEY=first\nOTHER=2\nSTUDIO_DIRECT_KEY=abc\n", "OTHER=1\n",
+     ["OTHER=1", "STUDIO_DIRECT_KEY=abc"]),
 ])
 def test_the_deploy_line_syncs_the_key_from_env_to_env_local(tmp_path, env, local, expect) -> None:
     (tmp_path / "env").write_text(env, encoding="utf-8")

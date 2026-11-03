@@ -773,9 +773,11 @@ fi
 # copies the key when .env has one. It NEVER generates a key: setting it on a
 # box is the env-write act. With no key in .env it removes any stale copy from
 # .env.local, so the workbench signs nothing and no write is direct.
+# ⚠️ It reads the LAST line of the key in .env, because systemd and dotenv use
+# the last line. The first line would copy a value that no service uses.
 # Fence: tests/unit/test_studio_direct_proof.py (test_the_deploy_line_syncs_the_key_from_env_to_env_local).
 echo "==> Reconciling the workbench's STUDIO_DIRECT_KEY (.env.local <- .env, STU-B2c-1)"
-DIRECT_KEY="$(grep -E '^STUDIO_DIRECT_KEY=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)"
+DIRECT_KEY="$(grep -E '^STUDIO_DIRECT_KEY=' "$ENV_FILE" 2>/dev/null | tail -n 1 | cut -d= -f2-)"
 if [ ! -f "$WB_ENV" ]; then
   echo "    ! $WB_ENV missing — skipping (the token step above names the cause)"
 elif [ -z "$DIRECT_KEY" ]; then
