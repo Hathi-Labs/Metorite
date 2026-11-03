@@ -18,8 +18,8 @@ This file proves:
 - the switch: each of the six routes answers 404 for an org outside
   ``STUDIO_ORGS``, and reads no byte and opens no session;
 - the org and the member come from the session, never from the body;
-- the order of the checks: the switch, the id, the owner, then the body, and
-  the catalog before the store session;
+- the order of the checks: the switch, the id, the body cap, the owner, then
+  the parse, and the catalog before the store session;
 - the answers: 201, 409 ``package_exists`` and ``package_limit``, 413, 422,
   503 ``catalog_unavailable`` and ``store_busy``;
 - a publish runs ``sync_objects`` after ``publish_version`` on the manifest
@@ -521,22 +521,35 @@ def test_a_bad_draft_keeps_the_old_one(world):
     assert world.packages[pid]["manifest"] == _manifest()
 
 
-def test_a_non_owner_is_404_before_the_body_is_read(world):
+def test_a_non_owner_is_404_before_the_body_is_parsed(world):
     pid = _create(_client(world))
     stranger = _client(world, email=BEN)
-    # An invalid body would be 422 if the body came first.
+    # An invalid body would be 422 if the parse came before the owner read.
     r = stranger.put(f"/studio/packages/{pid}/draft", content=_BAD, headers=_JSON)
     assert r.status_code == 404
     assert _client(world).put(f"/studio/packages/{pid}/draft", content=_BAD,
                               headers=_JSON).status_code == 422
 
 
-def test_a_draft_body_past_the_cap_is_413(world):
-    c = _client(world)
-    pid = _create(c)
-    r = c.put(f"/studio/packages/{pid}/draft", content=b"x" * (packages.MAX_BODY_BYTES + 1),
-              headers=_JSON)
-    assert r.status_code == 413
+def _body_route(c: TestClient, route: str, pid: str, body: bytes) -> Any:
+    if route == "draft":
+        return c.put(f"/studio/packages/{pid}/draft", content=body, headers=_JSON)
+    return c.post(f"/studio/packages/{pid}/versions", content=body, headers=_JSON)
+
+
+@pytest.mark.parametrize("route", ["draft", "versions"])
+@pytest.mark.parametrize("email", [ANA, BEN])
+def test_a_body_past_the_cap_on_a_package_is_413_and_opens_no_session(world, route, email):
+    """The cap comes before the owner read, so a big body costs no read of the
+    database. A 413 says nothing about the package, so a stranger gets it too."""
+    pid = _create(_client(world))
+    opened = world.sessions
+    r = _body_route(_client(world, email=email), route, pid,
+                    b"x" * (packages.MAX_BODY_BYTES + 1))
+    assert r.status_code == 413, r.text
+    assert r.json()["detail"]["code"] == "body_too_large"
+    assert world.sessions == opened
+    assert world.versions == [] and world.sync_calls == []
 
 
 # ── Publish ────────────────────────────────────────────────────────────────

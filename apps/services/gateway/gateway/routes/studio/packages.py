@@ -27,12 +27,13 @@ org, a member or a package from the body. A key such as ``owner_email`` or
 member, a package of another org and an App Workshop app all answer 404
 ``Not found``. An answer names no owner.
 
-**The order of the checks.** The switch, then the id, then (for a body route
-on a package) one read of the package as the member, then the body. So a
-member who does not own the package reads no byte of the body, and a bad body
-cannot tell a stranger that the package exists. The body read stops past
-:data:`MAX_BODY_BYTES` (413), and no session is open during it. The store
-checks the owner again under its own row lock.
+**The order of the checks.** The switch, then the id. A body route on a
+package then reads the raw body, then reads the package as the member, then
+parses the body. The body read stops past :data:`MAX_BODY_BYTES` (413), and no
+session is open during it, so a big body costs no read of the database. A 413
+says nothing about the package, so a stranger can get it too. The parse comes
+after the owner read, so a bad body cannot tell a stranger that the package
+exists. The store checks the owner again under its own row lock.
 
 **The rule: the manifest is the only source, and publish projects it into
 rows.**
@@ -177,14 +178,24 @@ async def _read_body(request: Request) -> bytes | None:
     return b"".join(chunks)
 
 
-async def _json_body(request: Request, *, empty_ok: bool = False) -> dict[str, Any]:
-    """The JSON object of the body. No session is open during the read. A body
-    past the cap is 413. Text that is not a JSON object is 422. An empty body
-    is ``{}`` when *empty_ok*."""
+async def _raw_body(request: Request) -> bytes:
+    """The bytes of the body. No session is open during the read. A body past
+    the cap is 413, before any read of the database."""
     raw = await _read_body(request)
     if raw is None:
         raise HTTPException(status_code=413, detail={
             "code": BODY_TOO_LARGE, "message": BODY_OVER_CAP})
+    return raw
+
+
+async def _json_body(request: Request, *, empty_ok: bool = False) -> dict[str, Any]:
+    """The JSON object of the body, read by :func:`_raw_body`."""
+    return _parse_json(await _raw_body(request), empty_ok=empty_ok)
+
+
+def _parse_json(raw: bytes, *, empty_ok: bool = False) -> dict[str, Any]:
+    """The JSON object of *raw*. Text that is not a JSON object is 422. An
+    empty body is ``{}`` when *empty_ok*."""
     if not raw.strip() and empty_ok:
         return {}
     try:
@@ -200,7 +211,7 @@ async def _json_body(request: Request, *, empty_ok: bool = False) -> dict[str, A
 
 async def _require_owned(member: str, pid: str) -> None:
     """404 unless *member* owns the package *pid* in the bound org. It opens
-    and closes its own session, so the body read after it holds none."""
+    and closes its own session, so the catalog read after it holds none."""
     async with _tenant_session() as db:
         if await store.get_package(db, member, pid) is None:
             raise _not_found()
@@ -352,8 +363,9 @@ async def save_draft(
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _package_id(package_id)
+    raw = await _raw_body(request)
     await _require_owned(user.email, pid)
-    manifest = await _json_body(request)
+    manifest = _parse_json(raw)
     async with _tenant_session() as db:
         with _store_errors():
             package = await store.update_manifest(db, user.email, pid, manifest)
@@ -373,8 +385,9 @@ async def publish(
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _package_id(package_id)
+    raw = await _raw_body(request)
     await _require_owned(user.email, pid)
-    body = await _json_body(request, empty_ok=True)
+    body = _parse_json(raw, empty_ok=True)
     notes = body.get("notes", "")
     if not isinstance(notes, str):
         raise _unprocessable("The release notes are text.", [

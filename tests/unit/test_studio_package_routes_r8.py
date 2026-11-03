@@ -399,7 +399,7 @@ def test_r8_an_app_workshop_app_gets_404_on_each_route(world) -> None:
     assert _objects(world, world.code_app) == []
 
 
-def test_r8_a_non_owner_reads_no_byte_and_a_bad_body_does_not_tell_it_the_package_exists(
+def test_r8_a_non_owner_parses_no_byte_and_a_bad_body_does_not_tell_it_the_package_exists(
         world) -> None:
     pid = _run(world, lambda: _new(world.a, ANA, _manifest(_mid())))
 
