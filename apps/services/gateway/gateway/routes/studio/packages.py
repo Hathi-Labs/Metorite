@@ -12,7 +12,7 @@ router of ``actions.py``, as ``skills.py`` and ``invoke.py`` do, so
 ``GET /packages/{id}``                one package, with its manifest and objects
 ``PUT /packages/{id}/draft``          replace the draft manifest
 ``POST /packages/{id}/versions``      publish the draft, and project its objects
-``GET /packages/{id}/versions``       the versions of a package, no manifest
+``GET /packages/{id}/versions``       a page of 100 versions, no manifest
 ====================================  =========================================
 
 **The switch.** The first line of each handler reads ``STUDIO_ORGS``. An org
