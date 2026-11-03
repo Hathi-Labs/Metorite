@@ -659,10 +659,14 @@ export function newMailSummary(form: ReplyForm, ticks: ReplyTicks): string {
   return to.length > 0 ? `Email to ${to.join(", ")}` : "No one in To is ticked, so the email cannot go";
 }
 
-/** What the buttons of a new-mail card do, in one line under them. */
+/**
+ * What the buttons of a new-mail card do, in one line under them. The send
+ * adds the mailbox signature after the card (`transport/send.py`), so the
+ * line says so, as the reply card's notice does (review of #1191, P1d).
+ */
 export function newMailHint(form: ReplyForm): string {
   const box = form.mailbox ? ` from ${form.mailbox}` : "";
-  return `Nothing goes out until you press Send${box}. Save draft keeps it in your Drafts and sends nothing. Discard drops it.`;
+  return `Nothing goes out until you press Send${box}. Your mailbox signature, if you set one, goes below the text. Save draft keeps it in your Drafts and sends nothing. Discard drops it.`;
 }
 
 export type NewMailApproval = ReplyApproval;

@@ -133,6 +133,8 @@ describe("the card draws the parts the owner approved", () => {
     expect(html).toContain("Save draft");
     expect(html).toContain("data-reply-discard");
     expect(html).toContain("rates.pdf");
+    // The send adds the mailbox signature after the card, and the card says so.
+    expect(html).toContain("Your mailbox signature, if you set one, goes below the text.");
     expect(html).toContain("data-reply-tick=\"kim@contoso.test\"");
   });
 
