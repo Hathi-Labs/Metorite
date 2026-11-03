@@ -53,6 +53,13 @@ j. The caps: a swap of hot fields at the cap of an object or of the org
    passes, also when another member fills the org, because a cold flip that
    no stored rule reads runs first. A refusal of a field step names the
    field. The org cap of objects is 409, and its problem names a next step.
+k. The versions list holds 100, newest first, and its cursor reads the rest.
+l. Roll-ups across objects (C7b): the rules phase runs in two passes, so a
+   roll-up that moves to a new reader, and a reader that drops its roll-up as
+   its source gains one, pass in either object order. A roll-up of a roll-up
+   is refused in either order. A publish that adds a roll-up stores it, and
+   a roll-up on an object with records is refused with no version row. A
+   field that a dropped roll-up read can turn cold in the same publish.
 
 **The mutations (R7).** Each was run on 2026-11-03. The red tests are in the
 build report. M2: drop the sync. M3: sync before the publish. M4: ignore a
@@ -1402,3 +1409,187 @@ def test_r8_the_store_refuses_a_page_past_the_limit_or_a_bad_cursor(world) -> No
         return out
 
     assert all(p is not None for p in _run(world, go))
+
+
+# ── l. Roll-ups across objects (C7b) ───────────────────────────────────────
+
+_ORDER_TOTAL: dict[str, Any] = {
+    "name": "order_total", "kind": "rollup", "target": "total", "source": "line",
+    "via": "order_ref", "agg": "sum", "field": "amount"}
+_CUST_SPENT: dict[str, Any] = {
+    "name": "cust_spent", "kind": "rollup", "target": "spent", "source": "order",
+    "via": "cust_ref", "agg": "sum", "field": "total"}
+
+
+def _shop(mid: str, objects: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"studio": 1, "id": mid, "name": "Shop", "purpose": "Track orders.",
+            "objects": objects, "actions": []}
+
+
+def _line(amount_hot: bool = True) -> dict[str, Any]:
+    return {"name": "line", "fields": [
+        {"key": "order_ref", "type": "relation", "to": "order", "hot": True},
+        {"key": "amount", "type": "number", "hot": amount_hot}]}
+
+
+def _order(rules: list[dict[str, Any]] | None = None, cust: bool = False) -> dict[str, Any]:
+    fields: list[dict[str, Any]] = [{"key": "code", "type": "text"},
+                                    {"key": "total", "type": "number", "hot": True}]
+    if cust:
+        fields.append({"key": "cust_ref", "type": "relation", "to": "cust", "hot": True})
+    return {"name": "order", "fields": fields, **({"rules": rules} if rules else {})}
+
+
+def _cust(rules: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    return {"name": "cust", "fields": [{"key": "spent", "type": "number"}],
+            **({"rules": rules} if rules else {})}
+
+
+def _in_order(objs: dict[str, dict[str, Any]], names: str) -> list[dict[str, Any]]:
+    return [objs[n] for n in names.split(",")]
+
+
+def _rule_names(world: Any, pid: str) -> dict[str, list[str]]:
+    return {o[0]: [r["name"] for r in o[3]] for o in _objects(world, pid)}
+
+
+async def _republish(world: Any, mid: str, pid: str,
+                     objects: list[dict[str, Any]]) -> tuple[int, Any]:
+    status, got = await _save(world.a, ANA, pid, _shop(mid, objects))
+    assert status == 200, got
+    return await _publish(world.a, ANA, pid)
+
+
+@pytest.mark.parametrize("names", ["cust,order,line", "order,line,cust"])
+def test_r8_a_roll_up_that_moves_to_a_new_reader_passes_in_either_order(world, names) -> None:
+    """v1: ``order.total`` is a roll-up of ``line.amount``. v2 drops it, and a
+    new object ``cust`` rolls up ``order.total``. The rules phase removes the
+    old roll-up in its first pass, so the order of the objects does not count."""
+    mid = _mid("move")
+    v2 = {"cust": _cust([_CUST_SPENT]), "order": _order(cust=True), "line": _line()}
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        pid = await _live(world.a, ANA, _shop(mid, [_order([_ORDER_TOTAL]), _line()]))
+        return pid, await _republish(world, mid, pid, _in_order(v2, names))
+
+    pid, (status, got) = _run(world, go)
+    assert status == 200, got
+    assert sorted(got["sync"]["rules_set"]) == ["cust", "order"]
+    assert _rule_names(world, pid) == {"cust": ["cust_spent"], "line": [], "order": []}
+    assert _versions(world, pid) == [1, 2]
+
+
+@pytest.mark.parametrize("names", ["order,cust,line", "cust,order,line"])
+def test_r8_a_reader_that_drops_its_roll_up_as_its_source_gains_one_passes(world, names) -> None:
+    """v1: ``cust.spent`` rolls up ``order.total``. v2 drops that roll-up and
+    makes ``order.total`` a roll-up of ``line.amount``. The reader loses its
+    rule in the first pass, so the source can gain its rule in either order."""
+    mid = _mid("swaprole")
+    v1 = [_order(cust=True), _cust([_CUST_SPENT]), _line()]
+    v2 = {"order": _order([_ORDER_TOTAL], cust=True), "cust": _cust(), "line": _line()}
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        pid = await _live(world.a, ANA, _shop(mid, v1))
+        return pid, await _republish(world, mid, pid, _in_order(v2, names))
+
+    pid, (status, got) = _run(world, go)
+    assert status == 200, got
+    assert _rule_names(world, pid) == {"cust": [], "line": [], "order": ["order_total"]}
+
+
+@pytest.mark.parametrize("names", ["order,cust,line", "cust,order,line"])
+def test_r8_a_roll_up_of_a_roll_up_is_refused_in_either_order(world, names) -> None:
+    """``order.total`` becomes a roll-up while ``cust.spent`` still reads it. A2
+    refuses the draft, and the sync refuses the same objects on its own, with
+    nothing written."""
+    mid = _mid("chain")
+    v1 = [_order(cust=True), _cust([_CUST_SPENT]), _line()]
+    bad = {"order": _order([_ORDER_TOTAL], cust=True), "cust": _cust([_CUST_SPENT]),
+           "line": _line()}
+
+    async def go() -> tuple[str, tuple[int, Any], Any]:
+        pid = await _live(world.a, ANA, _shop(mid, v1))
+        draft = await _save(world.a, ANA, pid, _shop(mid, _in_order(bad, names)))
+        raised = None
+        async with tenant_session(world.a) as db:
+            try:
+                await objects_store.sync_objects(
+                    db, ANA, package_id=pid, objects=_in_order(bad, names))
+            except objects_store.ObjectsOutOfSync as exc:
+                raised = exc
+        return pid, draft, raised
+
+    pid, draft, raised = _run(world, go)
+    assert draft[0] == 422, draft
+    assert raised is not None, "the sync took a roll-up of a roll-up"
+    assert [p.kind for p in raised.problems] == ["rules_refused"]
+    assert "cannot read a roll-up" in raised.problems[0].message
+    assert _rule_names(world, pid) == {"cust": ["cust_spent"], "line": [], "order": []}
+    assert _versions(world, pid) == [1]
+
+
+def test_r8_a_republish_with_roll_ups_writes_no_rules(world) -> None:
+    mid = _mid("same")
+    objs = [_cust([_CUST_SPENT]), _order(cust=True), _line()]
+    pid = _run(world, lambda: _live(world.a, ANA, _shop(mid, objs)))
+    before = _objects(world, pid)
+    status, got = _run(world, lambda: _publish(world.a, ANA, pid))
+    assert status == 200 and got["sync"]["rules_set"] == [], got
+    assert _objects(world, pid) == before
+
+
+def test_r8_a_publish_that_adds_a_roll_up_stores_it_and_it_computes(world) -> None:
+    mid = _mid("addroll")
+
+    async def go() -> tuple[str, tuple[int, Any], Any]:
+        pid = await _live(world.a, ANA, _shop(mid, [_order(), _line()]))
+        got = await _republish(world, mid, pid, [_order([_ORDER_TOTAL]), _line()])
+        order = await _record(world.a, pid, "order", code="A")
+        await _record(world.a, pid, "line", order_ref={"id": order}, amount=7)
+        async with tenant_session(world.a) as db:
+            obj = await objects_store.get_object_by_name(db, "order", package_id=pid)
+            assert obj is not None
+            rec = await objects_store.get_record(db, obj.id, order, package_id=pid)
+        return pid, got, rec
+
+    pid, (status, got), rec = _run(world, go)
+    assert status == 200, got
+    assert got["sync"]["rules_set"] == ["order"]
+    assert [r["kind"] for r in dict((o[0], o[3]) for o in _objects(world, pid))["order"]] == [
+        "rollup"]
+    assert rec is not None and float(rec.data["total"]) == 7.0
+
+
+def test_r8_a_roll_up_on_an_object_with_records_is_refused_with_no_version_row(world) -> None:
+    mid = _mid("lateroll")
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        pid = await _live(world.a, ANA, _shop(mid, [_order(), _line()]))
+        await _record(world.a, pid, "order", code="A")
+        return pid, await _republish(world, mid, pid, [_order([_ORDER_TOTAL]), _line()])
+
+    pid, (status, got) = _run(world, go)
+    assert status == 409, got
+    [problem] = got["problems"]
+    assert (problem["kind"], problem["object"], problem["rule"]) == (
+        "rules_refused", "order", "order_total")
+    assert "declare before the first record" in problem["message"]
+    assert _versions(world, pid) == [1]
+    assert _rule_names(world, pid) == {"line": [], "order": []}
+
+
+def test_r8_a_dropped_roll_up_lets_its_read_field_turn_cold(world) -> None:
+    """v2 drops the roll-up of ``order`` and turns ``line.amount`` cold. A
+    stored roll-up of another object reads the field, so its cold flip waits
+    until the rules phase removes that roll-up."""
+    mid = _mid("coldread")
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        pid = await _live(world.a, ANA, _shop(mid, [_order([_ORDER_TOTAL]), _line()]))
+        return pid, await _republish(world, mid, pid, [_order(), _line(amount_hot=False)])
+
+    pid, (status, got) = _run(world, go)
+    assert status == 200, got
+    assert got["sync"]["hot_changed"] == [["line", "amount", False]]
+    assert _hot_map(world, pid, "line")["amount"] is False
+    assert _rule_names(world, pid) == {"line": [], "order": []}

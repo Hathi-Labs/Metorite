@@ -152,7 +152,9 @@ is), adds a field, flips ``hot``, and brings each rules list to the manifest
 through :func:`set_constraints`. The phases run in this order: fields that
 turn cold and that no stored rule reads, new objects, new fields, fields that
 turn hot, rules, and the fields that turn cold and that a stored rule reads.
-So a swap of hot fields at a cap passes. It builds the whole plan from reads,
+So a swap of hot fields at a cap passes. The rules phase runs in two passes.
+The first writes only the stored rules that stay, so each removal lands
+before a roll-up checks its source, and the second writes the full lists. It builds the whole plan from reads,
 then writes in a SAVEPOINT. An object that goes, a field that goes or
 changes, a new required field on an object with records, and each refusal of
 a store call (a rule included) raise :class:`ObjectsOutOfSync` with a list of
@@ -1269,13 +1271,21 @@ async def _sync_new_fields(db: Any, items: Sequence[_Item], done: _Done) -> None
             done.added.append((it.name, str(raw["key"])))
 
 
-def _cold_keys(it: _Item, *, late: bool) -> list[str]:
+def _rollup_reads(items: Sequence[_Item]) -> set[tuple[str, str]]:
+    """Each ``(source object, field)`` that a stored roll-up of the package
+    reads. The store keeps such a field hot (:func:`_check_no_rollup_reads`)."""
+    return {(str(r.source), key) for it in items if it.row is not None
+            for r in it.row.constraints if r.kind == ROLLUP for key in r.source_keys()}
+
+
+def _cold_keys(it: _Item, reads: set[tuple[str, str]], *, late: bool) -> list[str]:
     """The fields of *it* that turn cold. A late one is read by a stored rule,
-    so it waits until the rules phase removes that rule. Each other one goes
-    first, so it frees its room in the hot budget before a field turns hot."""
+    of this object or a roll-up of another (*reads*), so it waits until the
+    rules phase removes that rule. Each other one goes first, so it frees its
+    room in the hot budget before a field turns hot."""
     rules = it.row.constraints if it.row is not None else ()
-    return [key for key, want in it.heat
-            if not want and any(key in r.hot_keys() for r in rules) is late]
+    return [key for key, want in it.heat if not want and (
+        any(key in r.hot_keys() for r in rules) or (it.name, key) in reads) is late]
 
 
 async def _flip(db: Any, it: _Item, done: _Done, key: str, hot: bool) -> None:
@@ -1292,34 +1302,72 @@ async def _sync_hot(db: Any, items: Sequence[_Item], done: _Done) -> None:
 
 
 async def _sync_cold(db: Any, items: Sequence[_Item], done: _Done, *, late: bool) -> None:
+    reads = _rollup_reads(items)
     for it in items:
-        for key in _cold_keys(it, late=late):
+        for key in _cold_keys(it, reads, late=late):
             await _flip(db, it, done, key, False)
+
+
+def _rule_form(rule: Rule) -> str:
+    return json.dumps(rule.stored(), sort_keys=True, ensure_ascii=False)
+
+
+def _staying_rules(it: _Item) -> list[Rule] | None:
+    """The first pass of the rules of *it*: each stored rule that stays. A rule
+    stays when the manifest holds the same stored form, or a formula or a
+    roll-up with the same computed key. None when no stored rule goes, so the
+    first pass writes nothing for *it*."""
+    if it.row is None or not it.set_rules:
+        return None
+    forms = {_rule_form(r) for r in it.rules}
+    keys = {(r.kind, _computed_key(r)) for r in it.rules if r.kind in (FORMULA, ROLLUP)}
+    stored = it.row.constraints
+    kept = [r for r in stored if _rule_form(r) in forms
+            or (r.kind in (FORMULA, ROLLUP) and (r.kind, _computed_key(r)) in keys)]
+    return None if len(kept) == len(stored) else kept
+
+
+async def _set_rules(db: Any, pid: str, it: _Item, done: _Done, rules: Any) -> None:
+    done.where, done.field = it.name, None
+    if await set_constraints(db, done.ids[it.name], rules, package_id=pid) is None:
+        raise ObjectStoreError("The object is gone.")
 
 
 async def _sync_rules(db: Any, pid: str, items: Sequence[_Item], done: _Done) -> None:
     """Bring the rules of each object to the manifest list, through the one
-    store path :func:`set_constraints`. A list that equals the stored one
-    writes nothing."""
+    store path :func:`set_constraints`, in two passes. A list that equals the
+    stored one writes nothing.
+
+    A roll-up checks the stored rules of its source, and a source checks the
+    stored roll-ups that read it (C7b). So one pass in the order of the
+    manifest would pass or fail a valid manifest by the order of its objects.
+    Pass 1 writes, for each object, only the stored rules that stay, so each
+    removal lands first. Pass 2 writes the full lists. A refusal in either
+    pass raises, and the SAVEPOINT of the sync undoes both.
+    """
+    first: dict[str, str] = {}
     for it in items:
-        done.where, done.field = it.name, None
-        if not it.set_rules:
-            continue
-        if await set_constraints(db, done.ids[it.name], it.raw_rules, package_id=pid) is None:
-            raise ObjectStoreError("The object is gone.")
-        done.ruled.append(it.name)
+        kept = _staying_rules(it)
+        if kept is not None:
+            await _set_rules(db, pid, it, done, [r.stored() for r in kept])
+            first[it.name] = _rules_json(kept)
+    for it in items:
+        if it.set_rules and first.get(it.name) != _rules_json(it.rules):
+            await _set_rules(db, pid, it, done, it.raw_rules)
+    done.ruled.extend(it.name for it in items if it.set_rules)
 
 
 async def _apply_sync(db: Any, who: str, pid: str, items: Sequence[_Item]) -> SyncResult:
     """Write the plan in one SAVEPOINT, so a refusal leaves no part of it.
 
     The phases run in this order: fields that turn cold and that no stored
-    rule reads, new objects, new fields, fields that turn hot, rules, and then
-    the fields that turn cold and that a stored rule reads. A cold field frees
-    its room in the hot budget before a field takes it, so a swap at a cap
-    passes. A rule needs its fields in place and hot, and a field that turns
-    cold must lose the rules that read it first. A refusal of a field step
-    names the field.
+    rule reads, new objects, new fields, fields that turn hot, rules (two
+    passes, :func:`_sync_rules`), and then the fields that turn cold and that a
+    stored rule reads. A stored rule is a rule of the object, or a roll-up of
+    another object that reads the field. A cold field frees its room in the
+    hot budget before a field takes it, so a swap at a cap passes. A rule
+    needs its fields in place and hot, and a field that turns cold must lose
+    the rules that read it first. A refusal of a field step names the field.
     """
     done = _Done(ids={it.name: it.row.id for it in items if it.row is not None})
     try:
@@ -1354,7 +1402,9 @@ async def sync_objects(db: Any, actor: str, *, package_id: str,
     The manifest is the only source. The call adds an object with
     :func:`define_object`, a field with :func:`add_field`, a change of ``hot``
     with :func:`set_field_hot`, and a rules list with :func:`set_constraints`.
-    A list of rules that equals the stored one writes nothing. ``pages`` and
+    The rules go in two passes, removals first, so the order of the objects
+    in the manifest never decides a roll-up. A list of rules that equals the
+    stored one writes nothing. ``pages`` and
     each other part of a manifest are not rows, so this call ignores them.
 
     It takes the org lock, reads the rows, and builds the whole plan before a
