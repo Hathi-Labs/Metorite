@@ -812,6 +812,18 @@ class Settings(BaseSettings):
     # tests/unit/test_chat_summary.py.
     assistant_chat_summary_orgs: str = ""
 
+    # ── The briefing at the start of a chat (WS-63 PZ-34, D142) ─────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. It opens the block of PZ-34: the newest summaries of the
+    # member's other private chats and their tasks that are due
+    # (`personalization.md` §15.4). The profile switch (`enabled_for`) must be
+    # on for the org too. The one reader is
+    # `acb_common.assistant_profile.briefing_for`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). It calls no model. Fences:
+    # tests/unit/test_executor_briefing_block.py, tests/unit/test_chat_summary.py.
+    assistant_briefing_orgs: str = ""
+
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
