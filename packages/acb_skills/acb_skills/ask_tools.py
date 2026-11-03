@@ -897,6 +897,8 @@ def clean_reply_form(form: dict | None) -> dict | None:
 
     if not isinstance(form, dict):
         raise ValueError("reply is a dict")
+    if form.get("kind") == "new":
+        return _clean_new_mail_form(form)
     recipients = form.get("recipients") if isinstance(form.get("recipients"), dict) else {}
     reply = _clean_recipients(recipients.get("reply"))
     reply_all = _clean_recipients(recipients.get("reply_all"))
@@ -948,6 +950,70 @@ def clean_reply_form(form: dict | None) -> dict | None:
         **({"marks": _reply_marks(form["marks"], reply_all)}
            if isinstance(form.get("marks"), dict) and form["marks"] else {}),
     }
+
+
+#: The most file rows of a new-mail form (``held_card.MAX_ROWS``).
+_NEW_MAIL_FILES_MAX = 100
+
+
+def _clean_new_mail_form(form: dict) -> dict:
+    """The form of a NEW mail (§18.10, owner 2026-11-03), checked.
+
+    It keeps the shape of a reply form, so the one card draws it: the one
+    list of people sits under both ``reply`` and ``reply_all``. It names no
+    email that it answers and no draft. The subject is editable, so it shows
+    whole: a subject over ``reply_card.MAX_SUBJECT``, or one with a line
+    break, raises ``ValueError`` before any card is drawn. ``files`` are the
+    fixed rows of the files that go, each line whole. The text shows whole,
+    cleaned of each hidden character, as a reply's does."""
+    from acb_skills.reply_card import (
+        MAX_REPLY_BODY,
+        MAX_SUBJECT,
+        NEW_MAIL_KIND,
+        clean_reply_body,
+    )
+
+    recipients = form.get("recipients") if isinstance(form.get("recipients"), dict) else {}
+    people = _clean_recipients(recipients.get("reply_all"))
+    if not people["to"]:
+        raise ValueError("a new-mail form needs a recipient")
+    subject = form.get("subject")
+    subject = subject if isinstance(subject, str) else ""
+    if len(subject) > MAX_SUBJECT or any(ch in subject for ch in "\r\n"):
+        raise ValueError("a new-mail subject shows whole on one line")
+    notices = form.get("notices") if isinstance(form.get("notices"), list) else []
+    if len(notices) > 4:
+        raise ValueError("a new-mail form has at most four notices")
+    files = form.get("files") if isinstance(form.get("files"), list) else []
+    if len(files) > _NEW_MAIL_FILES_MAX:
+        raise ValueError("a new-mail form names too many files")
+    body = clean_reply_body(str(form.get("body") or ""))
+    if len(body) > MAX_REPLY_BODY:
+        raise ValueError("a new mail is too long for the card")
+    out: dict = {
+        "kind": NEW_MAIL_KIND,
+        "message_id": "",
+        "mailbox": _clip_line(form.get("mailbox")),
+        "subject": subject,
+        "original": {"from": "", "subject": "", "received": "", "excerpt": ""},
+        "recipients": {"reply": people, "reply_all": people},
+        "reply_all": True,
+        "body": body,
+        "draft_id": "",
+        "note": _clip_line(form.get("note")),
+        "notices": [_whole_line(n) for n in notices if str(n or "").strip()],
+        "files": [_whole_line(f) for f in files if str(f or "").strip()],
+    }
+    if isinstance(form.get("classes"), dict) and form["classes"]:
+        out["classes"] = _reply_classes(form["classes"])
+    if isinstance(form.get("ticked"), dict):
+        # The one list: the start of the ticks is the same for both keys.
+        start = form["ticked"].get("reply_all", form["ticked"])
+        ticked = _reply_ticked({"reply": start, "reply_all": start}, people, people)
+        out["ticked"] = ticked
+    if isinstance(form.get("marks"), dict) and form["marks"]:
+        out["marks"] = _reply_marks(form["marks"], people)
+    return out
 
 
 def _reply_marks(value: dict, reply_all: dict) -> dict[str, str]:
@@ -1325,6 +1391,19 @@ def reply_card_channel_open() -> bool:
     return confirmation_channel_open() and not _whatsapp_run()
 
 
+def edit_card_channel_open() -> bool:
+    """True when this run can show a card that the member EDITS (§18.10): a
+    card channel (:func:`confirmation_channel_open`) and no WhatsApp run.
+
+    A WhatsApp run draws no card to edit, so a new mail there keeps the card
+    of before, which parks for the member's reply code (H-391). A run with no
+    channel keeps it too, and that card fails closed. A fault reads False."""
+    try:
+        return confirmation_channel_open() and not _whatsapp_run()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _whatsapp_email_path() -> bool:
     """True in a WhatsApp run with writes on, where an email card can park
     for a reply code or take the yes of one (H-391). A fault reads False."""
@@ -1424,7 +1503,9 @@ async def request_confirmation(
             card draws the form, and its Approve carries the member's choice
             and body. Neither ``rows`` nor the WhatsApp profile goes with it:
             a run with no card, a WhatsApp run included, gets ``None`` at
-            once, whatever ``non_interactive_default`` says.
+            once, whatever ``non_interactive_default`` says. A form with
+            ``kind: "new"`` is the card of a new mail (§18.10), and only a
+            new-mail answer (``reply_card.parse_new_mail_answer``) approves it.
         close_on_steer: close the card when the member writes in the chat
             while it waits, and give :data:`REVISED`. On by default for a
             reply form. A send card turns it on, so "make it shorter" changes
@@ -1548,12 +1629,14 @@ async def request_confirmation(
             # else, or of nobody named, is no approval.
             return "REJECT", None
         if _reply is not None:
-            from acb_skills.reply_card import parse_reply_answer
+            from acb_skills.reply_card import parse_new_mail_answer, parse_reply_answer
 
             # The exact text, not the stripped one: the gateway's record holds
-            # the digest of what the browser posted.
+            # the digest of what the browser posted. A new-mail card (§18.10)
+            # takes a new-mail answer only, and a reply card a reply only.
             raw = str(result.get("answer", ""))
-            choice = parse_reply_answer(raw)
+            choice = (parse_new_mail_answer(raw) if _reply.get("kind") == "new"
+                      else parse_reply_answer(raw))
             if choice is None:
                 return "REJECT", None
             _replied.append(ReplyAnswer(rid, raw, choice,
