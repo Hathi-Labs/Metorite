@@ -80,7 +80,9 @@ warning.
 `shell.py` reads the persona, the pane labels and `ALSO_SERVES` from the
 TypeScript of the shell. It ports `surfaceContext` to Python, and the catalog
 check fails when a line of that function changes. So the eval sends what the
-dock sends: `persona + "\n\n" + surfaceContext`, as `system_context`.
+dock sends: `persona + "\n\n" + surfaceContext`, as `system_context`. The
+harness turns on the guide tools (WS-OB GD-7), so the persona also carries
+`GUIDE_PERSONA_LINE`, as the dock sends it with the guide on.
 
 ## The files
 

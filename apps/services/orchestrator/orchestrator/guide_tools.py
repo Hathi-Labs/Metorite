@@ -15,9 +15,16 @@ A member may run a guide when ALL of these hold:
 * every ``open`` step passes ``in_app_path.refusal``, so a guide never walks
   to a pane that the member lacks or that is dark (a preview pane).
 
+``find_guide`` scores each ask of a guide on its own (:func:`ask_score`). An
+ask matches when the question holds each of its subject words, and at least
+``COVER`` of all its words. A generic verb (``GENERIC``) may be missing, and a
+match on generic verbs only finds nothing.
+
 ``show_guide`` shares ``queue._show_in_app_done`` with ``show_in_app``: the
-page moves once a turn, whichever tool runs first. A refused call does not
-spend the move. Fence: ``tests/unit/test_guide_tools.py``.
+page moves once a turn, whichever tool runs first. Each tool takes the mark
+before its first await, because MAF can run two tool calls at once. A refused
+call gives the mark back, so it does not spend the move.
+Fence: ``tests/unit/test_guide_tools.py``.
 """
 from __future__ import annotations
 
@@ -35,12 +42,22 @@ _log = get_logger("orchestrator.guide_tools")
 
 #: ``find_guide`` returns at most this many guides.
 TOP = 3
-#: The admin check of ``executor._FIRST_PARTY_ADMIN_PERMISSION``.
-ADMIN_PERMISSION = "admin:members:manage"
 NO_MATCH_HINT = "No guide matches. Offer to open the app."
+#: An ask matches when the question holds at least this share of its words.
+#: 0.6 lets one generic verb of a three-word ask be missing ("create a deal"
+#: for "create a new deal"), and refuses a two-word ask with its verb missing
+#: ("see a deal" for "add a deal").
+COVER = 0.6
 
 _STOPWORDS = frozenset(
-    ["a", "an", "the", "i", "me", "my", "we", "you", "your", "to", "do", "does", "did", "how", "can", "could", "should", "would", "in", "on", "at", "of", "for", "with", "and", "or", "is", "are", "it", "this", "that", "please", "show", "tell", "where", "what"]
+    ["a", "an", "the", "i", "me", "my", "we", "you", "your", "to", "do", "does", "did", "how", "can", "could", "should", "would", "in", "on", "at", "of", "for", "with", "and", "or", "is", "are", "it", "this", "that", "please", "show", "tell", "where", "what", "all", "by"]
+)
+#: The verbs that many asks share. An ask's other words are its subject words.
+#: A question must hold each subject word of an ask. A generic verb may be
+#: missing, so "create a deal" finds "create a new deal". A match on generic
+#: verbs only finds nothing, so "add a task" does not find "add a lead".
+GENERIC = frozenset(
+    ["add", "create", "new", "make", "find", "see", "show", "open", "get", "use", "set", "move", "give", "go", "do"]
 )
 _WORD = re.compile(r"[a-z0-9]+")
 
@@ -87,34 +104,58 @@ def tokens(text: str) -> frozenset[str]:
     return frozenset(_stem(w) for w in _WORD.findall(text.lower()) if w not in _STOPWORDS)
 
 
-def score(question: str, guide: Guide) -> int:
-    """The overlap of the question's tokens with the title and the asks."""
-    return len(tokens(question) & tokens(" ".join((guide.title, *guide.asks))))
+def ask_score(question: frozenset[str], ask: str) -> tuple[float, int]:
+    """``(cover, matched)`` of one ask against the question's tokens.
+
+    *cover* is the share of the ask's words that the question holds, and
+    *matched* is their count. ``(0.0, 0)`` when the ask does not match: the
+    question lacks a subject word of the ask, the ask has no subject word, or
+    *cover* is under ``COVER``.
+    """
+    words = tokens(ask)
+    subject = words - GENERIC
+    if not subject or not subject <= question:
+        return (0.0, 0)
+    matched = len(words & question)
+    cover = matched / len(words)
+    return (round(cover, 3), matched) if cover >= COVER else (0.0, 0)
+
+
+def score(question: str, guide: Guide) -> tuple[float, int]:
+    """The best :func:`ask_score` of the guide's title and asks."""
+    q = tokens(question)
+    return max(ask_score(q, ask) for ask in (guide.title, *guide.asks))
 
 
 def rank(question: str, guides: tuple[Guide, ...]) -> list[Guide]:
-    """The guides that share a token with the question, best first.
+    """The guides with a matching ask, best first. At most ``TOP``.
 
-    A tie keeps file order. At most ``TOP``.
+    The order is the cover of the best ask, then its matched count, then
+    file order.
     """
     scored = [(score(question, g), i, g) for i, g in enumerate(guides)]
-    scored = [t for t in scored if t[0] > 0]
-    scored.sort(key=lambda t: (-t[0], t[1]))
-    return [g for _s, _i, g in scored[:TOP]]
+    kept = [t for t in scored if t[0][1] > 0]
+    kept.sort(key=lambda t: (-t[0][0], -t[0][1], t[1]))
+    return [g for _s, _i, g in kept[:TOP]]
 
 
 async def member_is_admin() -> bool:
-    """True when the run's verified member holds ``admin:members:manage``."""
+    """True when the run's verified member holds the executor's admin right.
+
+    The right is ``executor._FIRST_PARTY_ADMIN_PERMISSION``, the one admin
+    check of the orchestrator.
+    """
     try:
         from acb_auth import resolve_access
 
-        from orchestrator.executor import _verified_run_member
+        from orchestrator.executor import _FIRST_PARTY_ADMIN_PERMISSION, _verified_run_member
 
         member = _verified_run_member()
         if not member:
             return False
         access = await resolve_access(member)
-        return bool(getattr(access, "is_active", False) and access.has(ADMIN_PERMISSION))
+        return bool(getattr(access, "is_active", False)
+                    and access.has(_FIRST_PARTY_ADMIN_PERMISSION))
     except Exception:
         return False
 
@@ -184,10 +225,14 @@ async def show(guide_id: str) -> dict[str, Any]:
     # the queue because MAF copies the context per tool call (see show_in_app).
     if getattr(queue, "_show_in_app_done", False):
         return {"error": "already moved the page this turn"}
+    # Take the mark before the first await. MAF can run two tool calls at once
+    # (asyncio.gather), and the other call must see the mark. A refusal gives
+    # the mark back, so a refused call does not spend the move.
+    queue._show_in_app_done = True  # type: ignore[attr-defined]
     features = await _iap.member_features()
     if not may_run(guide, features, await member_is_admin()):
+        queue._show_in_app_done = False  # type: ignore[attr-defined]
         return {"error": "the member may not run that guide"}
-    queue._show_in_app_done = True  # type: ignore[attr-defined]
     await queue.put({"type": "CUSTOM", "name": "guide", "value": {"guide_id": guide.id}})
     return {
         "started": guide.id,

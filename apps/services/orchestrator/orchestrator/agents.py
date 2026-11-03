@@ -676,10 +676,14 @@ async def show_in_app(path: str, why: str) -> dict:
         return {"error": "no page to open from here"}
     if getattr(queue, "_show_in_app_done", False):
         return {"error": "already opened a page this turn"}
+    # WS-OB GD-7 review: take the mark before the first await. MAF can run two
+    # tool calls at once (asyncio.gather), so show_guide or a second
+    # show_in_app must see it. A refusal gives the mark back.
+    queue._show_in_app_done = True  # type: ignore[attr-defined]
     reason = _iap.refusal(path, await _iap.member_features())
     if reason is not None:
+        queue._show_in_app_done = False  # type: ignore[attr-defined]
         return {"error": reason}
-    queue._show_in_app_done = True  # type: ignore[attr-defined]
     # The same channel artifact_created uses. The client's live loop acts on
     # it, and the replay loop does not (useAgentChat.ts).
     await queue.put({
@@ -701,8 +705,9 @@ async def find_guide(question: str) -> dict:
 
     Use it when the member asks how to do something. It returns up to three
     guides that this member may run, each with its steps as numbered text.
-    Answer in at most three short steps from the best one. Then offer Show me
-    (show_guide) or Open. Never invent a button.
+    Answer in at most three short steps from the best one. Where the chat can
+    show a page, offer Show me (show_guide) or Open. A chat with no page, such
+    as WhatsApp, gives the steps in words only. Never invent a button.
 
     Args:
         question: The member's words, such as "how do I add a deal".
