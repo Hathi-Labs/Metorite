@@ -119,6 +119,8 @@ ADDED_NOT_RECORDED = ("The added people could not be kept on this card, so the d
 #: Drafts, so the card writes no draft.
 DRAFT_NOT_RECORDED = ("This card could not be recorded, so its reply was not put in "
                       "Drafts. Ask again in a moment.")
+#: The 503 of the state read when the database fails (fix round 1, item 7).
+DRAFT_STATE_UNREAD = "The state of this draft could not be read. Try again in a moment."
 #: The 503 when the record of a card cannot be read at the act (fix round 1).
 RECORD_UNREAD = ("The record of this card could not be read, so nothing was sent or "
                  "saved. Ask for the reply again.")
@@ -843,16 +845,21 @@ async def reply_card_draft_state(
 ) -> dict[str, Any]:
     """Is the draft that a reply card wrote still in Drafts? (2026-11-03)
 
-    The card reads it when the window comes back, each minute while it shows,
-    and when the Email app sends or deletes a draft. Then the card shows that
-    its reply left Drafts, and its Send and Save stop. ``compose_reply`` reads
-    it too, when the card closes with no answer. A read of the local row only,
-    for the session's own member and tenant. It writes nothing and calls no
-    provider. A fault is a 503, so the card stays as it was."""
+    The card reads it at mount, when the window comes back, each minute while
+    it shows, and when the Email app sends or deletes a draft. Then the card
+    collapses to its title and Close. ``compose_reply`` reads it too, when
+    the card closes or the member writes over it. A read of the local row
+    only, for the session's own member and tenant. It writes nothing and
+    calls no provider. A draft id that is not a UUID is a 404. A database
+    fault is a 503 (fix round 1, item 7), so the card stays as it was."""
     if _as_uuid(draft_id) is None:
         raise HTTPException(status_code=404, detail="Draft not found")
-    async with _tenant_session() as db:
-        there = await draft_in_drafts(db, user.email or "anonymous", draft_id)
+    try:
+        async with _tenant_session() as db:
+            there = await draft_in_drafts(db, user.email or "anonymous", draft_id)
+    except Exception as exc:  # the class only
+        _log.warning("email.reply_card_draft_state_failed", error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail=DRAFT_STATE_UNREAD) from exc
     return {"draft_id": str(_as_uuid(draft_id)), "in_drafts": there}
 
 

@@ -393,6 +393,16 @@ async def test_the_state_route_reads_the_sessions_own_draft(monkeypatch) -> None
     assert err.value.status_code == 404
 
 
+async def test_a_database_fault_of_the_state_read_is_a_503(monkeypatch) -> None:
+    """Fix round 1, item 7: the docstring says 503, and so does the code. The
+    card keeps its form on a 503. Mutation: let the fault escape → a 500."""
+    w = _World(monkeypatch)
+    w.fail = True
+    with pytest.raises(HTTPException) as err:
+        await rc.reply_card_draft_state(DRAFT, USER)
+    assert err.value.status_code == 503 and err.value.detail == rc.DRAFT_STATE_UNREAD
+
+
 def test_the_state_sql_goes_through_the_mailbox_seam() -> None:
     """The owner predicate is ``mailbox_predicate``, never a hand-written
     ``user_id``, and the read names the Drafts folders only."""
