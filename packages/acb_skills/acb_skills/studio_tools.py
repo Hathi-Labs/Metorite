@@ -884,8 +884,10 @@ _ONE_LINE_VIEW = ("The context is a one-line view of the card, so never send its
 #: The 422 text of ``create_skill`` for a name with no letter or digit. The
 #: tool gives the text of the route unchanged, also before a card.
 _NO_SLUG = "The name gives no slug. Send a slug of letters and digits."
+#: A chat cannot change the name of a skill, so the text asks only for
+#: fewer actions (review round 2, item 6).
 _WONT_FIT = ("The name and the actions of this skill do not fit on one card, so nothing was "
-             "changed. Use a shorter name or fewer actions, then call the tool once more.")
+             "changed. Remove some actions, then call the tool once more.")
 _ERROR_PATH = r"^(\$[^\s:]*|body[\w.]*)(?::|\s)"
 _CLASS_ORDER = {"X": 0, "C": 1, "B": 2, "A": 3}
 

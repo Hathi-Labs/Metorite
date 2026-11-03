@@ -606,6 +606,9 @@ async def test_actions_that_do_not_fit_on_a_card_refuse_in_each_chat(gw, card, m
     out = await st.studio_skill_state(sid, "published")
     assert out["ok"] is False and "do not fit on one card" in _msg(out)
     assert card.shown == [] and gw.sent("PATCH") == []
+    # Review round 2, item 6: a chat cannot change the name, so the text asks
+    # only for what a chat can change.
+    assert "shorter name" not in _msg(out) and "Remove some actions" in _msg(out)
 
 
 async def test_a_text_with_a_newline_cannot_forge_a_line_of_the_card(gw, card) -> None:
