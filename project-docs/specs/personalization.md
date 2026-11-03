@@ -1641,7 +1641,7 @@ PZ-33b"). PZ-35 is BUILT 2026-11-01, dark. PZ-34, PZ-36, the dated facts
 and MEM-2 are not built.** The agent checked PZ-33b against the code on
 2026-11-01, at `origin/main` `bdb75484f`.
 
-**PZ-33b rounds 4 and 5 are BUILT 2026-11-03 (D-PZ-37, migration 333): the
+**PZ-33b rounds 4 and 5 are BUILT 2026-11-03 (D-PZ-37, migration 337): the
 ONE typed mark.** Its summary part is dark, and its profile part changes
 production (§5.5). The tool-pack chooser reads the sent words (§15.3).
 
@@ -2019,7 +2019,7 @@ out.
 that the member typed carries `typed: true`. Three boxes send it: the message
 box, the shell Ask field and the ⌘K draft. A link never sends it.
 
-The run route stores the mark in `chat_message.member_typed` (migration 333),
+The run route stores the mark in `chat_message.member_typed` (migration 337),
 and only `routes/agent.py::_write_prompt_row` writes it. A tapped "Follow up" pill, a
 choice in a bubble, a card action, a feed starter and the Fix prompt carry no
 mark. So they count for nothing, and so does each row from before the mark.
@@ -2349,7 +2349,7 @@ Each slice is one PR, and each lands dark. The tier follows
 | Slice | What | Done when | Gate · tier |
 |---|---|---|---|
 | **PZ-33a** · task 1131 · **BUILT 2026-10-31, dark** | The store. Migration 319 at the merge (R1, 318 went to RE-9b): nullable JSONB `chat_session.member_summary`, `ADD COLUMN IF NOT EXISTS`, no default, no backfill, and `SET lock_timeout = '5s'` as in migration 220. `gateway/assistant_summaries.py`, the only reader and writer, with the pure answer checks: the 400-character cap, at most 3 follow-ups of 120 characters, the drop of a sensitive line, an address or a long number that the member did not type, and no write for an answer that does not parse. `SOLO_ROOM_SQL` beside `SESSION_VISIBLE_SQL`, and its parity test. `chat_summary_for(org)`. The flag in `settings.py`, in `PLATFORM_ENV_NAMES`, in `ALLOWED_KEYS` with the comment that it spends credits, in `test_acb_staging_flag.py` and in the staging README. The purge test and the private fence | Items 6 and 8 to 11 of the PZ-33 list below pass. Item 7 passes for pastes, tool events, the brief row and sensitive terms. PZ-33b closed the long-number forms (see the closed note under "As built, PZ-33a") | AGENT-SAFE · **HIGH** (a migration, tenancy) |
-| **PZ-33b** · task 1131 · **BUILT 2026-11-01, dark. Round 4 BUILT 2026-11-02 (D-PZ-37, migration 333)** | The job. The seed hook `assistant_summaries.seed(org, now)`, modelled on `gateway/brief/planner.py`. The detached, idempotent kind `assistant.chat_summary`. The model call and the rule of the Router off. The import beside `import gateway.brief.run` in `gateway/main.py`. The R8 tests of the job. The idle rule: 30 minutes after the newest row, no open run, and 2 or more typed rows of the member. **First, the strict digit rule of `check_answer`** (see "Open" under "As built, PZ-33a"), with the probes of the PZ-33a reviews as tests | Items 1 to 5 of the PZ-33 list below pass, and item 7 passes for every long-number probe of the PZ-33a reviews | AGENT-SAFE · **HIGH** (money, tenancy). The flip of `ASSISTANT_CHAT_SUMMARY_ORGS` for a real org waits for PZ-35. The production flip is **OWNER-GATE** (§15.8). The job reads `app_prefs(raw, "chat")["summaries"]` of the member, and writes no new summary while it reads False (the switch of PZ-35, §15.5) |
+| **PZ-33b** · task 1131 · **BUILT 2026-11-01, dark. Round 4 BUILT 2026-11-02 (D-PZ-37, migration 337)** | The job. The seed hook `assistant_summaries.seed(org, now)`, modelled on `gateway/brief/planner.py`. The detached, idempotent kind `assistant.chat_summary`. The model call and the rule of the Router off. The import beside `import gateway.brief.run` in `gateway/main.py`. The R8 tests of the job. The idle rule: 30 minutes after the newest row, no open run, and 2 or more typed rows of the member. **First, the strict digit rule of `check_answer`** (see "Open" under "As built, PZ-33a"), with the probes of the PZ-33a reviews as tests | Items 1 to 5 of the PZ-33 list below pass, and item 7 passes for every long-number probe of the PZ-33a reviews | AGENT-SAFE · **HIGH** (money, tenancy). The flip of `ASSISTANT_CHAT_SUMMARY_ORGS` for a real org waits for PZ-35. The production flip is **OWNER-GATE** (§15.8). The job reads `app_prefs(raw, "chat")["summaries"]` of the member, and writes no new summary while it reads False (the switch of PZ-35, §15.5) |
 | **PZ-35** · task 1133 | The switch `apps.chat.summaries`, the three routes, the Settings section, the relays, Forget, removal, export and the staging blank | An R8 test: Delete turns the chat `off`, and the next tick writes nothing. Delete all, Forget everything and a removal clear the member's summaries in one org only. A chat of another member is a 404. The export holds the summaries. A vitest test covers the section and the confirm. The UI gate passes: four captures and a `Visual review:` line | AGENT-SAFE · STANDARD · **BUILT 2026-11-01, dark** (task 1133). The R8 file is `tests/unit/test_chat_summary_routes_r8.py`. The test "the next tick writes nothing" belongs to PZ-33b: PZ-35 proves that a Delete turns the chat `off` and that `write_marked` then writes nothing |
 | **PZ-34** · task 1132 | `_prime_member_briefing`, `_member_briefing_block`, the Redis store of the block, `BRIEFING_MAX` and the flag | A unit test: the block shows in a solo web run. It does not show in a shared room, a delegated run, a run with no member, a WhatsApp run or with the flag off. No block above it moves. Two turns of one chat get the same bytes. The block sheds tasks first, then the oldest chat, and stays at 1,500 characters or less. It never holds the current chat. An R8 test: the tasks come from `my_due_tasks`, and a chat or a task of another member never shows | AGENT-SAFE · **HIGH** (it puts the member's other chats into a run) |
 | **PZ-36** · task 1134 | `offer` on `create_personal_task`, the shared offer helper, the card text, the persona line and the flag | A test: an approved card makes one private task in the member's personal project. A decline, a second offer in the chat, a pasted mail, a Continue turn, WhatsApp, the flag off and the pack off each make no task. A refusal before the card draws nothing. A sensitive title asks twice. `test_profile_pz32.py` stays green with the shared helper | AGENT-SAFE · STANDARD (the one card guards the write, and the task is private) |
@@ -2521,7 +2521,7 @@ The profile part changes production on the merge, and the owner accepted that.
   the PZ-32 confirm card where a card can show, and it refuses where none
   can. WhatsApp is as it was, because the member types each WhatsApp
   message. Its sent words are its typed words.
-- **The stored row.** Migration 333 adds the nullable BOOLEAN
+- **The stored row.** Migration 337 adds the nullable BOOLEAN
   `chat_message.member_typed`, with no default (R6). R1: `origin/main` held
   331, a remote branch 329, and the ALN-2a worktree 332. A key of an
   existing JSONB column could not hold the mark. The client save writes

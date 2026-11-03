@@ -54,7 +54,7 @@ the column, and when a module that is not on its list imports this one.
   what may reach the model: the member's own typed words, and nothing else
   (the owner, 2026-11-02, D-PZ-28). A row of the member counts only with
   the ONE typed mark, ``chat_message.member_typed`` is ``True`` (D-PZ-37,
-  migration 333). So a tapped pill, a choice, a card action, a feed starter,
+  migration 337). So a tapped pill, a choice, a card action, a feed starter,
   the Fix prompt and each row from before the mark stay out. Then it counts
   only through ``acb_common.assistant_profile.typed_text``, so a pasted mail
   and a text of more than 1,500 characters stay out. A card answer stays out
@@ -208,7 +208,7 @@ def _is_member_row(row: Any, member: Any) -> bool:
     the member typed the message in the message box
     (``routes/agent.py::_write_prompt_row``). A tapped pill, a choice, a card
     action, a feed starter and the Fix prompt store False. A row that no run
-    request saved, and each row from before migration 333, reads NULL. So
+    request saved, and each row from before migration 337, reads NULL. So
     each of them counts for nothing.
 
     A card answer never counts. Its text quotes the question of the card,

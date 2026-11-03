@@ -1,11 +1,11 @@
 -- ============================================================================
--- 333_chat_message_member_typed.sql - the mark of a message that the member
+-- 337_chat_message_member_typed.sql - the mark of a message that the member
 -- typed (WS-63 PZ-33b round 4, D-PZ-37)
 -- ============================================================================
 -- Spec: project-docs/specs/personalization.md §15.3 and §15.11 (D-PZ-37)
--- · R5 · R6 · R8. R1: origin/main held 331 as its highest file at build time
--- (2026-11-02). A remote branch holds 329, and the ALN-2a worktree holds 332.
--- So this file is 333. Check the number again at merge.
+-- · R5 · R6 · R8. R1: origin/main held 332 as its highest file on
+-- 2026-11-03. Open branches hold 333 (STU-C7b), 334, 335 and 336. So this
+-- file is 337. Check the number again at merge.
 --
 -- What: one nullable BOOLEAN column, `chat_message.member_typed`. TRUE is a
 --   member row that the member typed in the message box and sent. FALSE is a

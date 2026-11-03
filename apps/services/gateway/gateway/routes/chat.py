@@ -784,7 +784,7 @@ MONOTONIC_MESSAGE_COLUMNS = ("tool_events", "progress_lines", "custom_events")
 #: reports that id as unchanged.
 #:
 #: 🔴 **``member_typed`` is the mark of a typed message** (WS-63 D-PZ-37,
-#: migration 333). Only the run route sets it, through the keyword of
+#: migration 337). Only the run route sets it, through the keyword of
 #: ``_upsert_messages``. Every other write binds NULL, so its insert stores
 #: NULL and its update keeps the stored value (the COALESCE). So a client
 #: save can neither set the mark nor clear it. ``RETURNING`` also says

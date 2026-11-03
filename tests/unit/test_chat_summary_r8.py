@@ -78,7 +78,7 @@ the prompt: a reply of Mira, a tool result, a sub-agent result, a card
 answer, a pasted mail and a row of another author.
 
 Round 4 (the owner, 2026-11-02, D-PZ-37) adds the ONE typed mark,
-``chat_message.member_typed`` (migration 333):
+``chat_message.member_typed`` (migration 337):
 
 - only a row with the mark reaches the prompt. A tapped pill, a feed
   starter and a row from before the mark never reach the payload or the
