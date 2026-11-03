@@ -180,6 +180,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "project_access": [{"project_id": UUID}],
     # WS-ALN ALN-4 — the pins of a project, and its removed pins
     "project_authorities": [{"project_id": UUID}, {"project_id": UUID, "include_removed": True}],
+    # WS-ALN ALN-2a — the member's own open decisions
+    "my_decisions": [{}],
     "project_views": [{"project_id": UUID}],
     "calendar": [
         {"start": "2026-09-22", "end": "2026-09-29", "project_id": UUID},

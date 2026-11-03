@@ -81,9 +81,11 @@ KEPT_PROJECTS = frozenset({
 KEPT_CRM = frozenset({"convert_lead", "create_lead", "log_activity", "update_deal_status"})
 
 #: The Projects writes that a held chat does not hold: every class C tool but
-#: ``promote_reminder``. A covered run still holds them.
+#: ``promote_reminder``. A covered run still holds them. ``answer_decision``
+#: (WS-ALN ALN-2a) is off too, until ALN-2b decides whether a held chat keeps it.
 OFF_PROJECTS = frozenset({
-    "add_report_recipient", "archive_project", "archive_task", "attach_to_task",
+    "add_report_recipient", "answer_decision", "archive_project", "archive_task",
+    "attach_to_task",
     "bulk_update", "convert_folder_to_project", "delete_area", "delete_attachment",
     "delete_comment", "delete_field", "delete_project", "delete_status", "delete_tag",
     "delete_task", "delete_type", "delete_view", "grant_access", "merge_tags",
@@ -407,7 +409,8 @@ async def test_a_chat_that_read_mail_builds_each_project_pack_with_the_table(sto
     assert tools >= KEPT_PROJECTS and tools >= CHAT_FILES
     assert not tools & OFF_PROJECTS
     reminders = {_name(t) for t in built["projects-reminders"].tools}
-    # The class C tools of this pack (the authority pins) are off in a held chat.
+    # The class C tools of this pack (the authority pins and the decision
+    # answer) are off in a held chat.
     assert reminders == set(SKILL_FAMILIES["projects-reminders"]["tools"]) - OFF_PROJECTS
 
 

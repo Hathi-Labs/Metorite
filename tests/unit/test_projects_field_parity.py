@@ -299,6 +299,8 @@ _BASE: dict[str, dict[str, Any]] = {
     # WS-ALN ALN-4: a pin is of one project. The page id is the witness.
     "project_authorities": {"project_id": UUID},
     "pin_authority": {"project_id": UUID},
+    # WS-ALN ALN-2a: a decision of the member. The answer key is the witness.
+    "answer_decision": {"decision_id": tw.DECISION_ID},
     # WS-64 OP-6d: the report is the one of the write fence.
     "add_report_recipient": {"report_id": UUID},
     "set_report_schedule": {"report_id": UUID},
@@ -368,6 +370,7 @@ _SAMPLE: dict[str, Any] = {
     "all_unread": True,
     "page_id": UUID,
     "include_removed": True,
+    "answer_key": "yes",
     "subject": "org",
     "recipient": "priya@x.io",
     "enabled": True,

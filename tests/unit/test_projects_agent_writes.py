@@ -446,6 +446,24 @@ def _aln4_answers(call: dict) -> Any:
     return None
 
 
+#: WS-ALN ALN-2a. One open decision that names the member, on the task LIVE.
+DECISION_ID = "d1f8fad5-d9cb-469f-a165-70867728950e"
+DECISION = {"id": DECISION_ID, "subject_kind": "task", "subject_id": LIVE,
+            "decider": "pm@fracktal.in", "question": "Ship it today?", "state": "open",
+            "expires_at": "2026-11-09T00:00:00+00:00",
+            "options": [{"key": "yes", "label": "Yes"}, {"key": "no", "label": "No"}]}
+
+
+def _aln2a_answers(call: dict) -> Any:
+    """WS-ALN ALN-2a: the member's open decisions, and the answer."""
+    path, method = call["path"], call["method"]
+    if path == "/projects/decisions" and method == "GET":
+        return {"decisions": [DECISION]}
+    if path == f"/projects/decisions/{DECISION_ID}/answer" and method == "POST":
+        return {"decision": {**DECISION, "state": "answered", "answer_key": "yes"}}
+    return None
+
+
 def _op6d_answers(call: dict) -> Any:
     """WS-64 OP-6d: the list of a report, an add, a remove and the schedule."""
     path, method = call["path"], call["method"]
@@ -540,7 +558,7 @@ def responder(call: dict) -> Any:
     # `_op6c_answers` before `_s2b_answers`: its task answers a `/my/tasks/` read that
     # `_s2b_answers` also claims. WS-66 RM-3: `_reminder_answers` claims only the
     # member's zone and `/projects/my/reminders`, so it may lead.
-    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln4_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
                          _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
@@ -766,6 +784,8 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     # WS-ALN ALN-4 — one pin per card, by pin_id
     "pin_authority": [{"project_id": UUID, "page_id": OTHER}],
     "unpin_authority": [{"project_id": UUID, "pin_id": PIN_ID}],
+    # WS-ALN ALN-2a: one answer per card
+    "answer_decision": [{"decision_id": DECISION_ID, "answer_key": "yes"}],
     "revoke_access": [
         {"project_id": UUID, "grant": GRANT_ID},
         {"project_id": UUID, "grant": "group:Design"},
@@ -862,6 +882,7 @@ _ONE_ID: dict[str, str] = {
     "revoke_access": "grant",
     "pin_authority": "page_id",
     "unpin_authority": "pin_id",
+    "answer_decision": "decision_id",
     "add_report_recipient": "recipient",
     "remove_report_recipient": "recipient",
     "set_report_schedule": "report_id",

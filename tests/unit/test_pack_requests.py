@@ -182,6 +182,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "project_authorities": ("which page is the authority page of this project?",),
     "pin_authority": ("pin this page as the authority of the project",),
     "unpin_authority": ("remove the authority page of the project",),
+    "my_decisions": ("show my decisions that wait for me",),
+    "answer_decision": ("answer the decision on the extruder task",),
     "project_views": ("show my saved views",),
     "rename_area": ("rename the area Health to Fitness",),
     "revoke_access": ("revoke Ravi's project access",),

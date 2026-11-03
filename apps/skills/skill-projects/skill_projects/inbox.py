@@ -137,6 +137,37 @@ async def project_authorities(project_id: str, include_removed: bool = False) ->
     return "\n".join(out)
 
 
+#: What the member reads while DECISIONS_ORGS is off for the organization.
+DECISIONS_OFF = "Decisions are not on for this organization yet."
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def my_decisions() -> str:
+    """The questions that wait for the member's own answer: a question, two to
+    four options, and the task each one is about. Each has a decision_id.
+    answer_decision answers one, behind a card. The member sees only the
+    decisions that name them."""
+    try:
+        rows = ((await get("/projects/decisions")) or {}).get("decisions") or []
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return DECISIONS_OFF
+        raise
+    out = [legend(), f"Decisions that wait for you ({len(rows)}):"]
+    for row in rows:
+        options = " | ".join(
+            f"{o.get('key')} = {data(o.get('label'))}" for o in row.get("options") or []
+        )
+        out.append(
+            f"- {data(row.get('question'))} · options: {options}"
+            f" · task_id {row.get('subject_id')} · decision_id {row.get('id')}"
+            f" · expires {row.get('expires_at')}"
+        )
+    if not rows:
+        out.append("(no decision waits for you)")
+    return chr(10).join(out)
+
+
 def subject_words(subject: str) -> str:
     """A grant subject in plain words, for a card, a receipt and a read."""
     if subject == "org":
@@ -829,6 +860,7 @@ __all__ = [  # noqa: RUF022 — reads first, then the writes
     "project_authorities",
     "project_views",
     "watchers",
+    "my_decisions",
     "capture_intake",
     "mark_notifications_read",
     "save_view",

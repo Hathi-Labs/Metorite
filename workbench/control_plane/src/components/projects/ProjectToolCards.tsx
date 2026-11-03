@@ -95,6 +95,7 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   // S5 — the rest of the reads
   project_access: { icon: "Users", label: "Access" },
   project_authorities: { icon: "Users", label: "Authority pages" },
+  my_decisions: { icon: "Users", label: "Decisions" },
   project_views: { icon: "LayoutList", label: "Views" },
   my_contexts: { icon: "AtSign", label: "Contexts" },
   watchers: { icon: "Eye", label: "Watchers" },
@@ -200,6 +201,7 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   revoke_access: { icon: "UserMinus", label: "Access removed" },
   pin_authority: { icon: "UserPlus", label: "Authority page pinned" },
   unpin_authority: { icon: "UserMinus", label: "Authority page removed" },
+  answer_decision: { icon: "UserPlus", label: "Decision answered" },
   add_report_recipient: { icon: "UserPlus", label: "Recipient added" },
   remove_report_recipient: { icon: "UserMinus", label: "Recipient removed" },
   set_report_schedule: { icon: "CalendarClock", label: "Schedule changed" },
@@ -315,6 +317,7 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "revoke_access",
   "pin_authority",
   "unpin_authority",
+  "answer_decision",
   "add_report_recipient",
   "remove_report_recipient",
   "set_report_schedule",

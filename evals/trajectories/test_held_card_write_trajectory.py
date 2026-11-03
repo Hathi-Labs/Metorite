@@ -38,7 +38,7 @@ MEMBER = "jane@acme.test"
 REMIND = "remind me to call Rajendra at 5"
 #: The class C tools of the reminders pack (WS-ALN). A held chat drops each one,
 #: as every class C tool but ``promote_reminder``. The reminder writes all stay.
-_REMINDERS_PACK_OFF = frozenset({"pin_authority", "unpin_authority"})
+_REMINDERS_PACK_OFF = frozenset({"answer_decision", "pin_authority", "unpin_authority"})
 
 
 def _ctx() -> dict[str, Any]:

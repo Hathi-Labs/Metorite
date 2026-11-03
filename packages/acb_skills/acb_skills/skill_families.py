@@ -655,8 +655,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "Projects reminders",
         "summary": (
             "The member's own reminders, which are not tasks: set one, list "
-            "them, change the time, snooze, resolve, reopen or promote one "
-            "to a task, and the authority pages of a project."
+            "them, change the time, snooze, resolve, reopen, or promote one "
+            "to a task, answer a decision that waits for you, or read the "
+            "authority pages of a project."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "
@@ -669,9 +670,11 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "packs are on, so until then this switch has no effect."
         ),
         "tools": (
+            "answer_decision",
             "list_reminders",
             "pin_authority",
             "project_authorities",
+            "my_decisions",
             "promote_reminder",
             "reopen_reminder",
             "reschedule_reminder",

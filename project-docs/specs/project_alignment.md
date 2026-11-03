@@ -1,7 +1,7 @@
 # Project alignment — Metorite checks work against the project's rules (WS-ALN)
 
 > **Product:** Metorite · **Feature:** the project of a task, the project's rules, and a check that asks a person · **Updated:** 2026-11-02 · **Owner:** vjvarada
-> **Status:** 🟡 **IN BUILD, DARK.** ALN-0 (this spec), ALN-1 (§5, the durable trigger) and ALN-4 (§4.1, the pin: the table `pm_project_authorities`, three routes and three chat tools, no UI) are built. `ALIGN_JOBS_ORGS` and `AUTHORITY_PINS_ORGS` ship empty and `JOB_QUEUE` ships off, so no job and no pin exists yet, and the `align.check` handler is a stub until ALN-7. ALN-2a and ALN-4b are next. The owner did not answer ALN-Q1 to ALN-Q5, and told us to start. The build runs on the working defaults of §14.
+> **Status:** 🟡 **IN BUILD, DARK.** ALN-0 (this spec), ALN-1 (§5, the durable trigger) and ALN-4 (§4.1, the pin: the table `pm_project_authorities`, migration 334, three routes and three chat tools, no UI) are built. `ALIGN_JOBS_ORGS` and `AUTHORITY_PINS_ORGS` ship empty and `JOB_QUEUE` ships off, so no job and no pin exists yet, and the `align.check` handler is a stub until ALN-7. ALN-2a (the table and the service of one person decides, migration 332, merged e827f2012) is built dark behind `DECISIONS_ORGS`. ALN-2b, ALN-4b and AUTO-7b are next. The owner did not answer ALN-Q1 to ALN-Q5, and told us to start. The build runs on the working defaults of §14.
 > **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §11 was read on that commit. Earlier task text came from a read at `308df8828`, and §2 lists each fact that changed.
 > **Board:** WS-ALN in `work_plan.md` §2.1. **Decision:** D160. D12, D75, D93, D100, D104, D105, D128, D131, D140, D145 and workflows G5 bind it.
 > **Metorite:** project "Projects/Tasks App", epic 1368, this spec task 1369. The questions are tasks 1370 to 1374. The slices ALN-1 to ALN-14 are tasks 1375 to 1388, in order.
@@ -95,7 +95,7 @@ The facts of task 1369 were re-read on `ce29836ea`. Two of them changed.
 
 ### 3.2 One person decides (ALN-2)
 
-Nothing today shows a question with named options to a named person, and records the answer on a task. ALN-2 adds that primitive. The shape is a new table `pm_decisions`, in migration 326 (recheck the number at dispatch, R1). `pm_intake` has fixed verbs, no named decider and no options. An `agent_runs` elicitation needs a run. The table reuses the bell, Reach and the My Day provider registry, and it runs no action. So it is not a third approval stack.
+Nothing today shows a question with named options to a named person, and records the answer on a task. ALN-2 adds that primitive. The shape is a new table `pm_decisions`, in migration 332 (other slices took 326 to 331, recheck at merge, R1). `pm_intake` has fixed verbs, no named decider and no options. An `agent_runs` elicitation needs a run. The table reuses the bell, Reach and the My Day provider registry, and it runs no action. So it is not a third approval stack.
 
 | Column | Meaning |
 |---|---|
@@ -108,7 +108,7 @@ Nothing today shows a question with named options to a named person, and records
 | `answered_by`, `answer_key`, `answer_reason` | Nullable until the answer. The reason is optional |
 | `source` | `align` or `auto` |
 
-A unique guard allows one answer for each decision. The table is tenant-scoped with FORCE RLS (R5). It widens `pm_notifications_kind_check` with the kind `decision`.
+A unique guard allows one answer for each decision. ALN-2a records four facts for the next slices. First, `REACH_CLASS["decision"]` reaches nobody until a signal kind `decision` exists. ALN-2b must add `decision` to `ASKING_NOTIFICATIONS`, the bell verb in `notifications.ts` and the needs provider before `DECISIONS_ORGS` goes on. Second, the answer writes a `comment` activity with the question of the asker, and it emits `pm.task.comment_added`. So a workflow triggered by a comment reads that text, and ALN-7 must know it. Third, only the decider reads a decision, including its answer. Other members read the comment on the task. Fourth, the chat reaches the decision by the tools `my_decisions` and `answer_decision`, and `answer_decision` refuses a run with no person present before it raises a card. The table is tenant-scoped with FORCE RLS (R5). It widens `pm_notifications_kind_check` with the kind `decision`.
 
 A decision has a subject (a task or a page), a named decider, two to four options, a one-line question, an expiry and an answer. The answer writes one `pm_activities` row. A second answer is refused. AUTO-7 (task 1391) parks a blocked action on the same primitive.
 
@@ -350,8 +350,8 @@ Sources: `https://linear.app/docs/triage-intelligence` · `https://docs.coderabb
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
 | **ALN-1** (1375) | The durable trigger (§5), the flag `ALIGN_JOBS_ORGS` and a stub `align.check` handler. Needs ALN-0 | R8: a task change enqueues one job in the bound org, and the stub completes it. With the worker off or the org not listed, no row appears. An edit with the same text enqueues none. Org B sees none of org A's jobs. A failed enqueue never fails the write. With the flag off, no job row appears | HIGH | AGENT-SAFE |
-| **ALN-2a** (1376) | The table, the service (ask, answer, expire), the activity row, the bell kind, the verb, `REACH_CLASS` and `KIND_ORDER` (§3.2). Flag `DECISIONS_ORGS` (default empty). Needs ALN-0 | R8: a decision reaches its named person, and an answer writes one activity. A person outside the grant gets no row. A second answer is refused. An expired decision takes no answer | HIGH | AGENT-SAFE |
-| **ALN-2b** (1376) | The My Day provider and the task-card UI. `needs.py` offers only a link act until MD-8, so the act opens the task card. Needs ALN-2a | Visual review in four contexts. D145 preview first | STD | AGENT-SAFE |
+| **ALN-2a** (1376, built, branch `ws-aln-2a-mt-94ca4c39`) | The table, the service (ask, answer, expire), the activity row, the bell kind, the verb, `REACH_CLASS` and `KIND_ORDER` (§3.2). Flag `DECISIONS_ORGS` (default empty). Needs ALN-0 | R8: a decision reaches its named person, and an answer writes one activity. A person outside the grant gets no row. A second answer is refused. An expired decision takes no answer | HIGH | AGENT-SAFE |
+| **ALN-2b** (1376) | The My Day provider and the task-card UI. `needs.py` offers only a link act until MD-8, so the act opens the task card. Before the flag goes on, it adds `decision` to `ASKING_NOTIFICATIONS`, the bell verb in `notifications.ts` and the needs provider. Needs ALN-2a | Visual review in four contexts. D145 preview first | STD | AGENT-SAFE |
 
 ### Phase 2 — The source of truth
 
