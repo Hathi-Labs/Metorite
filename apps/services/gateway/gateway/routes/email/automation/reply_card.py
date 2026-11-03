@@ -23,19 +23,37 @@ opens.
    browser posts. It trashes the one draft that the card wrote, and only
    while its text is still the text that the card wrote.
 
+4. ``GET /email/reply-card/draft-state`` tells the card whether its draft is
+   still in Drafts (owner report, 2026-11-03). It reads the local row only.
+
 So in a chat that read outside mail (H-236 holds that run), the model can
 still get the member's reply out, and it cannot choose where it goes or what
 it says. Fence: ``tests/unit/test_email_chat_reply.py``.
+
+**A reply that already left (2026-11-03, task 1526).** The member can send
+the card's draft from the Email app while the card still waits. The act then
+refuses Send and Save with a 409, so no person gets the reply twice. The
+record of the card holds the LOCAL id of its draft and the time the card was
+made. The server writes both, and no request names them. Fence:
+``tests/unit/test_reply_card_left_drafts.py``, and its R8 half
+``tests/unit/test_reply_card_left_drafts_r8.py``.
 """
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterable, Sequence
+from datetime import UTC, datetime
 from email.utils import parseaddr
-from typing import Any
+from typing import Any, NamedTuple
 
 from acb_auth import UserContext, get_current_user
-from acb_skills.reply_card import MAX_REPLY_BODY, clean_reply_body
+from acb_skills.reply_card import (
+    ALREADY_REPLIED,
+    DRAFT_GONE,
+    MAX_REPLY_BODY,
+    clean_reply_body,
+)
 from fastapi import BackgroundTasks, Depends, HTTPException
 from gateway.routes.email.automation.drafting import (
     DraftReplyRequest,
@@ -53,6 +71,7 @@ from gateway.routes.email.core import (
     provider_session,
     router,
 )
+from gateway.routes.email.mailbox_access import mailbox_predicate
 from gateway.routes.email.quoting import strip_for_reading
 from gateway.routes.email.transport.send import (
     SendEmailRequest,
@@ -109,6 +128,18 @@ HELD_DRAFT_BCC_NOTICE = ("The draft of this reply in Drafts has a Bcc that is no
                          "the card leaves it out: {addrs}.")
 #: The mark of a Bcc that the thread's draft holds (§21.15).
 DRAFT_BCC_MARK = "on the draft in Drafts"
+
+#: The 409 of an act whose draft left Drafts (2026-11-03). The member sent or
+#: deleted it in the Email app. A Gmail edit gives a draft a new id, so the
+#: words name a change outside the chat too.
+REPLY_LEFT_DRAFTS = ("This reply already left Drafts. It was sent, deleted or changed "
+                     "outside this chat. Nothing was sent or saved.")
+#: The 409 of an act after the mailbox sent a reply in the thread.
+REPLY_ALREADY_SENT = ("This mailbox already sent a reply in this conversation after the "
+                      "card showed. Nothing was sent or saved.")
+#: The 503 when the server cannot check that the reply is still to send.
+REPLY_LEFT_CHECK_FAILED = ("The reply could not be checked against Drafts and Sent, so "
+                           "nothing was sent or saved. Ask for the reply again.")
 
 #: The colleagues that the member copies on mail of this thread, or on mail
 #: to these domains: each Cc of the newest 500 Sent mails of the member's own
@@ -608,6 +639,9 @@ async def reply_card(
         draft_id, kept_draft = await _keep_card_draft(
             mail, owner, start["to"], start["cc"], _reply_subject(mail.subject), body,
             prior=prior, **({"bcc": start.get("bcc", [])} if bcc_people else {}))
+    # 2026-11-03: the record of THIS card names the draft that it wrote, so
+    # the act refuses when that draft left Drafts. The server writes the id.
+    await _note_card_draft(user, card_id, str(_as_uuid(req.message_id)), draft_id)
     marks = _person_marks(mail, classes, asked, carried_extra, usual_added,
                           [*everyone_to, *everyone_cc], held=req.untick_new)
     marks.update(_bcc_marks(bcc_people, asked_bcc, classes, held=req.held))
@@ -759,6 +793,101 @@ async def _recent_reply(mail: Any) -> dict[str, str]:
     except Exception as exc:
         _log.warning("email.reply_card_recent_failed", error=type(exc).__name__)
         return {}
+
+
+# ── A reply that already left (owner report, 2026-11-03, task 1526) ─────────
+
+#: One draft of the member, by its LOCAL id, while it is still in Drafts.
+#: The owner predicate is the one mailbox seam (``mailbox_predicate``), so a
+#: draft of another member reads as not in Drafts. RLS keeps another
+#: organization out. It reads the local row only, and calls no provider.
+#: ``send_draft_endpoint`` deletes the row of a sent draft, and a delete in
+#: the Email app moves it out of Drafts or deletes it.
+_DRAFT_STATE_SQL = (
+    "SELECT 1 FROM email_messages em JOIN email_accounts ea ON ea.id = em.account_id"
+    " WHERE em.id = CAST(:did AS uuid)"
+    " AND LOWER(COALESCE(em.folder, '')) IN ('drafts', 'draft')"
+    " AND {owner}")
+
+
+async def draft_in_drafts(db: Any, owner: str, draft_id: str) -> bool:
+    """True while the draft *draft_id* of *owner* is still in Drafts.
+
+    A draft id that is not a UUID, a draft of another member and a draft that
+    left Drafts all read False. The caller decides what a fault means."""
+    did = _as_uuid(draft_id)
+    if did is None:
+        return False
+    sql = _DRAFT_STATE_SQL.format(owner=mailbox_predicate("ea", uid="uid", level="read"))
+    row = (await db.execute(text(sql), {"did": did, "uid": owner})).fetchone()
+    return row is not None
+
+
+@router.get("/reply-card/draft-state")
+async def reply_card_draft_state(
+    draft_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Is the draft that a reply card wrote still in Drafts? (2026-11-03)
+
+    The card reads it when the window comes back, each minute while it shows,
+    and when the Email app sends or deletes a draft. Then the card shows that
+    its reply left Drafts, and its Send and Save stop. ``compose_reply`` reads
+    it too, when the card closes with no answer. A read of the local row only,
+    for the session's own member and tenant. It writes nothing and calls no
+    provider. A fault is a 503, so the card stays as it was."""
+    if _as_uuid(draft_id) is None:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    async with _tenant_session() as db:
+        there = await draft_in_drafts(db, user.email or "anonymous", draft_id)
+    return {"draft_id": str(_as_uuid(draft_id)), "in_drafts": there}
+
+
+def _sent_after(reply: dict[str, str], made_at: float | None) -> bool:
+    """True when the reply of :func:`recent_thread_reply` went after the card.
+
+    A card with no time (a record of an older card) and a time that does not
+    parse read False. The compare is strict: a mail that left just before the
+    card does not block it, and the card shows that mail as a recent reply."""
+    if made_at is None or not reply.get("sent_at"):
+        return False
+    try:
+        sent = datetime.fromisoformat(reply["sent_at"])
+    except ValueError:
+        return False
+    if sent.tzinfo is None:
+        sent = sent.replace(tzinfo=UTC)
+    return sent.timestamp() > made_at
+
+
+async def _reply_left(mail: _Mail, owner: str, card: _CardRecord) -> tuple[str, str] | None:
+    """``(reason, words)`` when the reply of this card already left, else None.
+
+    1. The card wrote a draft, and that draft is no longer in the member's
+       Drafts: the member sent it or deleted it in the Email app
+       (:data:`DRAFT_GONE`).
+    2. The mailbox sent a reply in the thread after the card was made
+       (:data:`ALREADY_REPLIED`). This also covers a card that wrote no
+       draft, and a reply that the member sent from the provider's own app,
+       once the sync has it.
+
+    A record with neither a draft id nor a time checks nothing. A fault fails
+    closed with a 503: a guard against a double send does not guess."""
+    if not card.draft_id and card.made_at is None:
+        return None
+    try:
+        async with _tenant_session() as db:
+            if card.draft_id and not await draft_in_drafts(db, owner, card.draft_id):
+                return DRAFT_GONE, REPLY_LEFT_DRAFTS
+            if card.made_at is not None:
+                reply = await recent_thread_reply(db, mail.account_id, mail.thread_id)
+                if _sent_after(reply, card.made_at):
+                    return ALREADY_REPLIED, REPLY_ALREADY_SENT
+    except Exception as exc:  # the class only
+        _log.warning("email.reply_card_answer_refused", reason="check_failed",
+                     error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail=REPLY_LEFT_CHECK_FAILED) from exc
+    return None
 
 
 def _mail_people(mail: Any) -> list[str]:
@@ -957,7 +1086,9 @@ async def _write_reply_record(
 ) -> str:
     """Record the added people of one card under a card id that this server
     mints. Returns the id, or "" on a fault, and then the card adds nobody.
-    The record also holds the Bcc of the card and the held flag (§21.15)."""
+    The record also holds the Bcc of the card and the held flag (§21.15),
+    and ``made_at``, the time the server made the card (2026-11-03). The act
+    refuses when the mailbox sent a reply in the thread after that time."""
     import uuid
 
     from acb_common.tenant_redis import organization_scope
@@ -968,7 +1099,8 @@ async def _write_reply_record(
         return ""
     card_id = uuid.uuid4().hex
     rec = {"owner": (user.email or "").strip().lower(), "message_id": message_id,
-           "added": list(added), "bcc": list(bcc), "held": bool(held)}
+           "added": list(added), "bcc": list(bcc), "held": bool(held),
+           "made_at": time.time()}
     try:
         with organization_scope(org):
             done = await hc._tenant_redis().set(
@@ -980,29 +1112,74 @@ async def _write_reply_record(
     return card_id if done else ""
 
 
-async def _take_reply_record(
-    user: UserContext, card_id: str, message_id: str,
-) -> tuple[list[str], list[str]]:
-    """The added people and the Bcc of the card *card_id*, read once
-    (``GETDEL``). None of another member, another mail, or a fault: the act
-    then takes only the people of the mail, and no Bcc."""
+async def _note_card_draft(
+    user: UserContext, card_id: str, message_id: str, draft_id: str,
+) -> None:
+    """Add the LOCAL id of the draft that the card wrote to the record of
+    THIS card (2026-11-03). The server writes it, and no request names it.
+
+    Best effort, as the record is: with no id on the record, the act still
+    refuses a reply that the thread got after the card (``made_at``)."""
     from acb_common.tenant_redis import organization_scope
     from gateway.routes.email.automation import held_card as hc
 
     org = str(getattr(user, "organization_id", None) or "")
+    if not org or not card_id or _as_uuid(draft_id) is None:
+        return
+    try:
+        with organization_scope(org):
+            store = hc._tenant_redis()
+            rec = _record_of(await store.get(_reply_record_key(card_id)), user, message_id)
+            if rec is None:
+                return
+            rec["draft_id"] = str(_as_uuid(draft_id))
+            await store.set(_reply_record_key(card_id), json.dumps(rec), xx=True,
+                            keepttl=True)
+    except Exception as exc:  # the class only
+        _log.warning("email.reply_card_draft_note_failed", error=type(exc).__name__)
+
+
+class _CardRecord(NamedTuple):
+    """What the act reads from the record of one card."""
+
+    added: list[str]
+    bcc: list[str]
+    #: The LOCAL id of the draft that the card wrote, or "" (2026-11-03).
+    draft_id: str = ""
+    #: When the server made the card, in epoch seconds, or None.
+    made_at: float | None = None
+
+
+async def _take_reply_record(
+    user: UserContext, card_id: str, message_id: str,
+) -> _CardRecord:
+    """The record of the card *card_id*, read once (``GETDEL``): the added
+    people, the Bcc, the draft that the card wrote and the time it was made.
+    None of another member, another mail, or a fault: the act then takes
+    only the people of the mail, no Bcc, and checks no draft."""
+    from acb_common.tenant_redis import organization_scope
+    from gateway.routes.email.automation import held_card as hc
+
+    none = _CardRecord([], [])
+    org = str(getattr(user, "organization_id", None) or "")
     if not org or not card_id:
-        return [], []
+        return none
     try:
         with organization_scope(org):
             raw = await hc._tenant_redis().getdel(_reply_record_key(card_id))
     except Exception as exc:
         _log.warning("email.reply_card_record_take_failed", error=type(exc).__name__)
-        return [], []
+        return none
     rec = _record_of(raw, user, message_id)
     if rec is None:
-        return [], []
-    return ([str(a) for a in rec.get("added") or [] if a],
-            [str(a) for a in rec.get("bcc") or [] if a])
+        return none
+    made = rec.get("made_at")
+    return _CardRecord(
+        [str(a) for a in rec.get("added") or [] if a],
+        [str(a) for a in rec.get("bcc") or [] if a],
+        str(_as_uuid(str(rec.get("draft_id") or "")) or ""),
+        float(made) if isinstance(made, (int, float)) and not isinstance(made, bool) else None,
+    )
 
 
 def _record_of(raw: Any, user: UserContext, message_id: str) -> dict[str, Any] | None:
@@ -1125,7 +1302,8 @@ async def reply_card_act(
     The answer must be on record for THIS card and THIS member
     (``reply_card.take_reply_answer``), and it is taken once. The To and Cc
     are derived again here, and they must equal the lists the card showed.
-    Each refusal sends and saves nothing."""
+    A reply that already left answers 409 (:func:`_reply_left`). Each
+    refusal sends and saves nothing."""
     from acb_skills.reply_card import (
         parse_reply_answer,
         reply_body_refusal,
@@ -1165,7 +1343,8 @@ async def reply_card_act(
     # pick from it. The added people come from the server's record of THIS
     # card, read once, never from a request field.
     derived_to, derived_cc = mail.recipients(True)
-    added, derived_bcc = await _take_reply_record(user, req.card_request_id, req.message_id)
+    card = await _take_reply_record(user, req.card_request_id, req.message_id)
+    added, derived_bcc = card.added, card.bcc
     derived_cc = _unique([*derived_cc, *added], {a.lower() for a in derived_to})
     # §21.15: the Bcc comes from the record of THIS card too. A Bcc that is
     # also on To or Cc is not one.
@@ -1183,6 +1362,16 @@ async def reply_card_act(
             detail=("The card names a person that is not on this mail now, so nothing "
                     "was sent or saved. Ask for the reply again."),
         )
+    # Owner report, 2026-11-03 (task 1526): the member sent the card's draft
+    # from the Email app while the card waited. A Send here then mailed each
+    # person a second time, and a Save made an orphan draft. The draft id and
+    # the time come from the server's record of THIS card, never from the
+    # request. ``detail.reason`` is the machine reason that the tool reads.
+    left = await _reply_left(mail, user.email or owner, card)
+    if left is not None:
+        reason, words = left
+        _log.warning("email.reply_card_answer_refused", reason=reason)
+        raise HTTPException(status_code=409, detail={"reason": reason, "message": words})
     subject = _reply_subject(mail.subject)
     if choice.action == "send":
         res = await send_email(

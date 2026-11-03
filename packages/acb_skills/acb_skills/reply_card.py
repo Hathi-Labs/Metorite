@@ -42,6 +42,8 @@ from acb_common import get_logger
 _log = get_logger("acb_skills.reply_card")
 
 __all__ = [
+    "ALREADY_REPLIED",
+    "DRAFT_GONE",
     "INVISIBLE_CODE_POINTS",
     "MAX_MARK_RUN",
     "MAX_REPLY_ANSWER",
@@ -80,6 +82,19 @@ REPLY_ANSWER_PREFIX = "APPROVE "
 
 #: What the member may choose on the card. Discard is ``REJECT``.
 REPLY_ACTIONS: frozenset[str] = frozenset({"send", "save"})
+
+#: The machine reasons of a 409 of ``POST /email/reply-card/act`` when the
+#: reply already left (owner report, 2026-11-03, task 1526). The gateway
+#: puts one in ``detail.reason``, and ``compose_reply`` reads it, so the
+#: model says what happened and never claims that the card sent. The act
+#: then sends nothing and saves nothing.
+#:
+#: * ``DRAFT_GONE``: the draft that the card wrote is no longer in Drafts.
+#:   The member sent it or deleted it in the Email app.
+#: * ``ALREADY_REPLIED``: the mailbox sent a reply in the thread after the
+#:   card was made.
+DRAFT_GONE = "draft_gone"
+ALREADY_REPLIED = "already_replied"
 
 #: The keys of ``answer.reply``, exactly. ``to`` and ``cc`` are the people
 #: that the member TICKED on the card (owner, 2026-10-24). The gateway
