@@ -2361,21 +2361,25 @@ _REPLY_DISCARDED = "Reply discarded and cancelled. Nothing was sent."
 
 #: The answer of a reply card that closed with no answer, when the card's
 #: draft is no longer in Drafts (owner report, 2026-11-03). The tool cannot
-#: tell the member's Discard, which trashes the draft, from a send or a
-#: delete in the Email app. So it claims neither, and it never says that
-#: the reply did not go.
+#: tell the member's Discard, a send or a delete in the Email app, and a
+#: rule that replaced the draft apart (fix round 1, item 3). So it claims no
+#: send and no "not sent".
 _REPLY_CLOSED_DRAFT_GONE = (
     "The reply card closed, and this chat sent and saved nothing. The card's "
-    "draft is no longer in Drafts: the member discarded it on the card, or "
-    "sent or deleted it in the Email app. Do not tell the member that the "
-    "reply did not go, because it can have gone from the Email app.")
+    "draft is no longer in Drafts. The member discarded it on the card, or it "
+    "was sent, deleted or replaced outside this card. Do not say that the "
+    "reply was sent, or that it was not sent. Ask the member what they want "
+    "to do with this reply.")
 
 #: The answers of an act that the gateway refused because the reply already
-#: left (``acb_skills.reply_card.DRAFT_GONE`` and ``ALREADY_REPLIED``).
+#: left (``acb_skills.reply_card.DRAFT_GONE`` and ``ALREADY_REPLIED``). Only
+#: ``ALREADY_REPLIED`` means that a reply went. A draft that left Drafts can
+#: also be one that a rule replaced (``_resolve_existing_thread_draft``).
 _REPLY_LEFT_DRAFTS = (
-    "Nothing was sent or saved from the card. Its reply already left Drafts: "
-    "the member sent, deleted or changed it outside this chat, for example in "
-    "the Email app. Tell the member this, and do not send the reply again.")
+    "Nothing was sent or saved from the card. The card's draft is no longer in "
+    "Drafts. It was sent, deleted or replaced outside this card, so the card "
+    "cannot send it. Ask the member what they want to do with this reply. Do "
+    "not say that the reply was sent.")
 _REPLY_ALREADY_SENT = (
     "Nothing was sent or saved from the card. This mailbox already sent a "
     "reply in this conversation after the card showed. Tell the member this, "

@@ -138,10 +138,11 @@ HELD_DRAFT_BCC_NOTICE = ("The draft of this reply in Drafts has a Bcc that is no
 DRAFT_BCC_MARK = "on the draft in Drafts"
 
 #: The 409 of an act whose draft left Drafts (2026-11-03). The member sent or
-#: deleted it in the Email app. A Gmail edit gives a draft a new id, so the
-#: words name a change outside the chat too.
-REPLY_LEFT_DRAFTS = ("This reply already left Drafts. It was sent, deleted or changed "
-                     "outside this chat. Nothing was sent or saved.")
+#: deleted it in the Email app, a Gmail edit gave it a new id, or a rule
+#: replaced it (``_resolve_existing_thread_draft``). So the words claim no
+#: send (fix round 1, item 3).
+REPLY_LEFT_DRAFTS = ("This reply is no longer in Drafts. It was sent, deleted or replaced "
+                     "outside this card. Nothing was sent or saved.")
 #: The 409 of an act after the mailbox sent a reply in the thread.
 REPLY_ALREADY_SENT = ("This mailbox already sent a reply in this conversation after the "
                       "card showed. Nothing was sent or saved.")

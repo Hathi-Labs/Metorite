@@ -235,8 +235,9 @@ describe("the card draws the gone state", () => {
     expect(card).toMatch(/if \(!armed \|\| gone\) return;/);
     expect(card).toMatch(/\{gone && \([\s\S]*?\{DRAFT_LEFT_LINE\}/);
     expect(card).toContain("{saveLabel(form)}");
+    // Fix round 1, item 3: a rule can replace the draft too, so no send is claimed.
     expect(DRAFT_LEFT_LINE).toBe(
-      "This reply left Drafts. It was sent or deleted in the Email app, so this card cannot send or save it.",
+      "This reply is no longer in Drafts. It was sent, deleted or replaced outside this card, so this card cannot send it.",
     );
   });
 

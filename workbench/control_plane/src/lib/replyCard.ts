@@ -489,9 +489,13 @@ export function saveLabel(form: ReplyForm): string {
 // both too (`reply_card_act`, a 409 `draft_gone`), so the card is a courtesy
 // and the server is the guard.
 
-/** The line of a card whose draft left Drafts. */
+/**
+ * The line of a card whose draft left Drafts. It claims no send (fix round
+ * 1, item 3): a rule can also replace an unedited chat draft when new mail
+ * comes in (`_resolve_existing_thread_draft`).
+ */
 export const DRAFT_LEFT_LINE =
-  "This reply left Drafts. It was sent or deleted in the Email app, so this card cannot send or save it.";
+  "This reply is no longer in Drafts. It was sent, deleted or replaced outside this card, so this card cannot send it.";
 
 /** How often a card that shows reads the state of its draft. */
 export const DRAFT_POLL_MS = 60_000;

@@ -467,7 +467,25 @@ async def test_compose_reply_gives_the_model_the_fact(monkeypatch, reason, line)
     out = await agents.compose_reply(MAIL, BOX)
     assert out == getattr(agents, line)
     assert out.startswith("Nothing was sent or saved") and "Sent to" not in out
-    assert "do not send the reply again" in out
+    if reason == "already_replied":
+        # Only this reason means that a reply went.
+        assert "already sent a reply" in out and "do not send the reply again" in out
+    else:
+        # Fix round 1, item 3: a draft that left Drafts can be one that a rule
+        # replaced. The model claims no send, and asks the member.
+        assert "sent, deleted or replaced" in out
+        assert "Ask the member what they want" in out
+        assert "Do not say that the reply was sent." in out
+        assert "already" not in out
+
+
+def test_no_left_drafts_words_claim_a_send() -> None:
+    """Fix round 1, item 3: the 409 words of the gateway and the closed-card
+    line of the tool name all three ways out, and claim no send."""
+    for words in (rc.REPLY_LEFT_DRAFTS, agents._REPLY_CLOSED_DRAFT_GONE):
+        assert "sent, deleted or replaced" in words
+        assert "already" not in words and "left Drafts" not in words
+    assert "Do not say that the reply was sent" in agents._REPLY_CLOSED_DRAFT_GONE
 
 
 async def test_compose_reply_lets_any_other_refusal_escape(monkeypatch) -> None:
