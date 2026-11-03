@@ -1342,15 +1342,89 @@ def test_the_forged_surface_variable_is_cleaned_before_the_turn(store, monkeypat
 
 def test_the_gateway_pops_the_surface_and_binds_it_with_the_typed_words() -> None:
     """The route takes ``surface`` out of the payload, so it goes nowhere
-    else, and binds it for the run in the same ``with`` as the typed words.
-    The value is never read for a tenant or a member. Mutation: leave the
-    key in the payload, or drop the binding, or bind it outside the run ->
+    else, and binds it for the run in the same ``with`` as the typed words
+    and the sent words (WS-63 D-PZ-37). The value is never read for a tenant
+    or a member. Mutation: leave the key in the payload, or drop the binding,
+    or bind it outside the run, or bind the sent words in another scope ->
     red."""
     text = GATEWAY_ROUTE.read_text(encoding="utf-8")
     assert '_surface = req.payload.pop("surface", None)' in text
-    assert "with member_typed(_typed), surface_scope(_surface):" in text
+    assert "with member_typed(_typed, sent=_sent_text), surface_scope(_surface):" in text
     assert text.count("_surface") == 2, "popped once and bound once"
     assert "payload.get(\"surface\")" not in text and "payload[\"surface\"]" not in text
+
+
+# -- WS-63 D-PZ-37: the chooser reads the SENT words, typed or tapped --------
+
+#: A "Follow up" pill that Mira's reply made. The member tapped it, so the
+#: request carries no typed mark, and the typed words of the turn are "".
+PILL = "Draft a reply to the email from Acme"
+
+
+@pytest.mark.parametrize("sent", [PILL, None], ids=["the tap", "round 4"])
+async def test_a_tapped_turn_loads_the_pack_by_its_sent_words(
+    sent: str | None, store, monkeypatch,
+) -> None:
+    """The route binds the tap as sent words and no typed words. The pack read
+    of the executor reads the sent words, so the email pack loads by its
+    words, as it did before D-PZ-37. The typed words of the same turn stay
+    "", so the tap grounds no save. With no sent words (the round 4 binding)
+    the pack does not load. Mutation: the executor reads ``typed_words()``
+    again -> the tap loads no pack -> red."""
+    from acb_common import get_settings
+    from acb_common.assistant_profile import member_typed, typed_words
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "tool_packs", "*", raising=False)
+    monkeypatch.setattr(settings, "tool_packs_orgs", "*", raising=False)
+    monkeypatch.setattr(ex, "_verified_run_member", lambda: MEMBER)
+    with member_typed("", sent=sent):
+        assert typed_words() == ""
+        task = ex._start_pack_turn("orchestrator", ORG, SESSION, member=MEMBER,
+                                   delegated=False, solo_room=True,
+                                   batch_thread=False, shows_cards=True)
+        assert task is not None
+        turn, _allowed = await task
+    choice = tp.choose(turn, allowed=ALL, base_tools=40)
+    if sent is None:
+        assert turn.words == "" and choice.slugs == ()
+    else:
+        assert turn.words == PILL
+        assert choice.slugs == ("email",) and choice.layers == {"email": "words"}
+
+
+def test_a_whatsapp_turn_gives_the_chooser_the_same_words() -> None:
+    """``bot_run`` binds the member's text with no ``sent`` keyword, because
+    the member types each WhatsApp message. Its sent words are its typed
+    words, as before D-PZ-37. A Confirm and a forwarded text bind "" for both.
+    Mutation: ``sent=None`` reads as "" -> red."""
+    from acb_common.assistant_profile import member_typed, sent_words, typed_words
+
+    with member_typed(PILL):
+        assert sent_words() == typed_words() == PILL
+    with member_typed(""):
+        assert sent_words() == typed_words() == ""
+
+
+def test_only_the_pack_read_reads_the_sent_words() -> None:
+    """The sent words choose tools and ground nothing. Only the pack read of
+    the executor reads them, and it reads no typed words. Mutation: a write
+    tool, the corrections of a chat or a hand-off reads ``sent_words()`` ->
+    a tap grounds a write -> red."""
+    readers = set()
+    for base in ("apps", "packages"):
+        for path in (REPO / base).rglob("*.py"):
+            if "tests" in path.parts:
+                continue
+            if "sent_words()" in path.read_text(encoding="utf-8", errors="replace"):
+                readers.add(path.relative_to(REPO).as_posix())
+    assert readers == {"apps/services/orchestrator/orchestrator/executor.py",
+                       "packages/acb_common/acb_common/assistant_profile.py"}, readers
+    text = (REPO / "apps/services/orchestrator/orchestrator/executor.py").read_text(
+        encoding="utf-8")
+    start = text.index("def _start_pack_turn(")
+    body = text[start:text.index("async def _apply_pack_turn(")]
+    assert "words = sent_words()" in body and "typed_words" not in body
 
 
 def test_only_the_pack_read_reads_the_surface() -> None:

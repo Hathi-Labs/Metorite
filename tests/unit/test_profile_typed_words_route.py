@@ -305,3 +305,65 @@ def test_round_4_prompt_to_save_never_marks_a_card_answer() -> None:
     assert save(typed=True).member_typed is True
     assert save(typed=False).member_typed is False
     assert save(typed=True, card_answer={"question": "Send it?"}).member_typed is False
+
+
+@pytest.fixture()
+def pack_reads(world, monkeypatch) -> list[dict[str, Any]]:  # noqa: F811
+    """Each run starts the REAL pack read of the executor
+    (``executor._start_pack_turn``) in the context that the route bound,
+    as the stream run does, and asks the profile grounding for the same
+    turn. The pack store is an in-memory tenant Redis."""
+    from acb_common import get_settings
+    from acb_common.assistant_profile import typed_words
+    from acb_skills import profile_tools as pt
+    from acb_skills import tool_packs as tp
+    from orchestrator import executor as ex
+
+    from tests.unit._egress_mark_store import install_memory_mark_store
+    from tests.unit.test_steer_follow_up import _ALICE, _ORG
+
+    install_memory_mark_store(monkeypatch)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "tool_packs", "*", raising=False)
+    monkeypatch.setattr(settings, "tool_packs_orgs", "*", raising=False)
+    monkeypatch.setattr(ex, "_verified_run_member", lambda: _ALICE)
+    monkeypatch.setattr(pt, "_card_channel", lambda: False)
+    runs: list[dict[str, Any]] = []
+
+    async def _run_detached(thread_id, gen, **_k):
+        task = ex._start_pack_turn("orchestrator", _ORG, thread_id, member=_ALICE,
+                                   delegated=False, solo_room=True,
+                                   batch_thread=False, shows_cards=True)
+        turn, allowed = await task
+        try:
+            pt._ground("a reply to the email from Acme")
+            grounded = True
+        except pt._Refused:
+            grounded = False
+        runs.append({"typed": typed_words(), "pack_words": turn.words,
+                     "packs": tp.choose(turn, allowed=allowed, base_tools=40).slugs,
+                     "grounds": grounded})
+        yield {"type": "RUN_STARTED", "threadId": thread_id}
+
+    monkeypatch.setattr(stream_relay, "run_detached", _run_detached)
+    return runs
+
+
+_MAIL_PILL = "Draft a reply to the email from Acme"
+
+
+@pytest.mark.parametrize("typed", [False, True], ids=["a tap", "typed"])
+def test_round_5_a_tap_loads_the_email_pack_and_grounds_nothing(pack_reads, typed) -> None:
+    """D-PZ-37, review of round 4 (F2): the pack chooser reads the words that
+    the member SENT, and the profile tools read the typed words only. A tapped
+    pill loads the email pack by its words, as before round 4, and its typed
+    words stay "". Mutation: bind no sent words, or read the typed words for
+    the chooser -> the tap loads no pack -> red. Mutation: bind the sent words
+    as typed words -> the tap grounds a save -> red."""
+    assert _post(_body(f"t-pack-{typed}", _MAIL_PILL, typed=typed))[0] == 200
+    (run,) = pack_reads
+    assert run["pack_words"] == _MAIL_PILL
+    assert "email" in run["packs"], run["packs"]
+    assert run["typed"] == (_MAIL_PILL if typed else "")
+    # The same words ground a save only when the member typed them.
+    assert run["grounds"] is typed

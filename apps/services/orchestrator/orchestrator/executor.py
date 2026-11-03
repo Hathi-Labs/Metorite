@@ -1308,14 +1308,18 @@ def _start_pack_turn(
     if not verified or str(member or "").strip().lower() != verified:
         return None
     try:
-        from acb_common.assistant_profile import typed_words
+        from acb_common.assistant_profile import sent_words
         from acb_skills import tool_packs
     except ImportError:
         return None
     allowed = tool_packs.packs_on(organization_id)
     if not allowed:
         return None
-    words = typed_words()
+    # WS-63 D-PZ-37: the words that the member SENT, typed or tapped. A tapped
+    # pill "Draft a reply to the email from Acme" holds no typed words, and it
+    # must still load the email pack. These words only choose tools, and they
+    # change no guard. The typed words stay the one value that grounds a write.
+    words = sent_words()
     # OA-7d: the app of the dock. The gateway cleaned it and bound it for this
     # run, and begin_turn cleans it again. It adds the core pack of that app
     # only when the flag allows it, and it changes no guard.

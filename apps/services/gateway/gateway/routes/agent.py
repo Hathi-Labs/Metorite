@@ -2914,7 +2914,7 @@ async def run_agent_stream_endpoint(
     # note changes `message`. A card answer sent as a message holds the
     # card's text, which the model wrote, so it grounds nothing.
     # D-PZ-37: a turn with no mark binds "" too. Its words open only the
-    # confirm card of a profile write (`_member_sent` below), never a save.
+    # confirm card of a profile write (`_sent_text` below), never a save.
     # PZ-31: the member's own typed steers that the run reads are typed words
     # too. `count_member_steers` in `_serve` below adds them, apart from this.
     _typed = _sent_words if _typed_mark else ""
@@ -3055,15 +3055,14 @@ async def run_agent_stream_endpoint(
     # D-PZ-37: the same mark as the turn. A steer with no mark is not typed,
     # so a pill tapped during a run grounds nothing.
     _STEER_TYPED.set(_typed_mark and _card_answer is None and not _resume)
-    # D-PZ-37: the member sent words in this turn, typed or tapped. A tap
-    # grounds no profile write, and it may only ask the confirm card of one
-    # (`profile_tools._ground`). A Continue, a card answer, a steer follow-up
-    # and a paste send none, so they never get that card (PZ-32 repair 1).
-    from acb_common.assistant_profile import typed_text as _typed_text
-
-    _member_sent = bool(
-        _typed_text(_sent_words).strip()
-        and _card_answer is None and not _resume and not _followup)
+    # D-PZ-37: the words that the member sent in this turn, typed or tapped.
+    # A tap grounds no profile write, and it may only ask the confirm card of
+    # one (`profile_tools._ground`). The tool-pack chooser reads them too
+    # (`assistant_profile.sent_words`), so a tapped pill about a mail still
+    # loads the email pack. A Continue, a card answer, a steer follow-up and
+    # a paste send none, so they never get that card (PZ-32 repair 1).
+    _sent_text = (_sent_words
+                  if _card_answer is None and not _resume and not _followup else "")
     _steered = await _apply_turn_decision(
         _decision, req, agent_name, actor_email, room,
     )
@@ -3405,8 +3404,9 @@ async def run_agent_stream_endpoint(
             # WS-63 PZ-6a fix round 2: the typed words reach the run through
             # this ONE binding. The drain task that `run_detached` starts
             # copies the context here, so the run reads them, and nothing
-            # else does. D-PZ-37: `sent` opens only the confirm card.
-            with member_typed(_typed, sent=_member_sent), surface_scope(_surface):
+            # else does. D-PZ-37: `sent` is the sent words. They open only
+            # the confirm card, and they feed the tool-pack chooser.
+            with member_typed(_typed, sent=_sent_text), surface_scope(_surface):
                 # PZ-31: the session's member is the run member. Their own
                 # typed steers that ENGAGE took count now, and a tool result
                 # that carries one later adds it (`steer.decorate_tool_result`).

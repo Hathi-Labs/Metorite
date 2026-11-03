@@ -1052,7 +1052,8 @@ class PackTurn:
 
     *org* is the bound tenant, *session* the chat and *member_part* a hash of
     the verified member, all from the run boundary (R5). *words* are the
-    member's typed words of this turn (``assistant_profile.typed_words``).
+    words that the member sent in this turn, typed or tapped
+    (``assistant_profile.sent_words``, D-PZ-37).
     *stored* is False after a Redis fault, and then nothing is written for
     this turn.
     """
@@ -1555,7 +1556,8 @@ async def begin_turn(
     """Count this member turn of the chat and read its sticky packs.
 
     *org* is the bound tenant, *session* the chat, *member* the verified
-    member and *words* the member's typed words of this turn. All come from
+    member and *words* the words that the member sent in this turn, typed or
+    tapped (``assistant_profile.sent_words``). All come from
     the run boundary, never from a request field or a tool argument (R5).
     The count is one ``HINCRBY``, so two turns never take one number. Never
     raises: a fault gives a turn with no sticky pack that writes nothing.
