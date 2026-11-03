@@ -2060,8 +2060,8 @@ CHAT_FILE_TOOLS: frozenset[str] = frozenset({"status_report", "render_report", "
 _KIND_TOOLS: dict[str, tuple[str, ...]] = {
     "task.create": ("create_task", "create_tasks", "create_personal_task", "add_subtasks",
                     "capture_intake", "promote_reminder"),
-    "task.update": ("update_task", "edit_task", "assign", "complete", "defer", "move_task",
-                    "set_my_overlay", "bulk_update", "file_tasks", "merge_tasks",
+    "task.update": ("update_task", "update_tasks", "edit_task", "assign", "complete", "defer",
+                    "move_task", "set_my_overlay", "bulk_update", "file_tasks", "merge_tasks",
                     "triage_intake", "revert_activity", "set_recurrence"),
     "task.archive": ("archive_task", "unarchive_task", "delete_task"),
     "task.link": ("link_tasks", "link_tasks_batch", "unlink_tasks", "add_task_ref",
