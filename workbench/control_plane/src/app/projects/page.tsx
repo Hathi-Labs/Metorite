@@ -224,6 +224,8 @@ import {
 } from "./lib/subtaskView";
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
 import { inversePatch } from "@/lib/undo";
+import { moveBackPlan } from "./lib/taskUndo";
+import { useTaskUndo } from "./components/useTaskUndo";
 import {
   CASCADE_DEFAULTS,
   archiveReceipt,
@@ -1457,6 +1459,8 @@ function ProjectsWorkspace() {
    * away from, and pressing Ctrl+Z there must not reach back into it.
    */
   const undoApi = useUndoScope(projectsUndoScope(app, selected?.id));
+  // UNDO-1 — one helper for every plain task edit on this page.
+  const taskUndo = useTaskUndo();
   // D-PM-38 decision 2 (S5) — the one complete prompt for the board's doors.
   const subtaskComplete = useSubtaskComplete();
   const [zoom, setZoom] = useState<TimelineZoom>("month");
@@ -3750,7 +3754,33 @@ function ProjectsWorkspace() {
         await projectsApi.unarchiveTask(taskId);
         await refreshRef.current();
         setTreeKey((k) => k + 1);
-        toast.show({ variant: "success", title: "Task restored from the archive" });
+        // UNDO-1 — unarchive files the task again. One flag serves the toast
+        // and Ctrl+Z, as in the archive path below.
+        let back = true;
+        const refile = async () => {
+          if (!back) return;
+          back = false;
+          await projectsApi.archiveTask(taskId);
+          await refreshRef.current();
+          setTreeKey((k) => k + 1);
+        };
+        undoApi.record({
+          label: `restored ${row?.title ?? "a task"} from the archive`,
+          undo: refile,
+          redo: async () => {
+            if (back) return;
+            back = true;
+            await projectsApi.unarchiveTask(taskId);
+            await refreshRef.current();
+            setTreeKey((k) => k + 1);
+          },
+        });
+        toast.show({
+          key: `projects:archive:${taskId}`,
+          variant: "success",
+          title: "Task restored from the archive",
+          action: { label: "Undo", onClick: () => void refile() },
+        });
         return;
       }
       const include = Boolean(answer?.includeSubtasks);
@@ -3836,6 +3866,10 @@ function ProjectsWorkspace() {
     includeSubtasks = false,
   ) {
     const ids = movingTasks ?? [];
+    // UNDO-1 — where each task sat before, for the way home.
+    const homes = tasks
+      .filter((t) => ids.includes(t.id))
+      .map((t) => ({ id: t.id, project_id: t.project_id, status_id: t.status_id, title: t.title }));
     setMovingTasksBusy(true);
     setMoveTasksError(null);
     try {
@@ -3886,12 +3920,58 @@ function ProjectsWorkspace() {
         res.subtasks_moved ?? 0,
         projectName(res.destination_project_id ?? destinationId),
       );
+      // UNDO-1 — offered only when the move dropped no field value: a
+      // dropped value cannot come back, so a move home would be a half undo.
+      let undoMove: (() => Promise<void>) | undefined;
+      if (res.dropped_fields.length === 0 && homes.length > 0) {
+        const nowStatus: Record<string, string> = {};
+        for (const h of homes) {
+          try { nowStatus[h.id] = (await projectsApi.task(h.id)).status_id; } catch { /* skip */ }
+        }
+        const sendHome = async () => {
+          for (const g of moveBackPlan(homes, nowStatus)) {
+            await projectsApi.moveTasks({
+              task_ids: g.taskIds,
+              destination_project_id: g.projectId,
+              status_map: g.statusMap,
+              accept_drops: true,
+              include_subtasks: includeSubtasks,
+            });
+          }
+          setTreeKey((k) => k + 1);
+          await refreshRef.current();
+        };
+        let moved_ = true;
+        undoMove = async () => {
+          if (!moved_) return;
+          moved_ = false;
+          await sendHome();
+        };
+        undoApi.record({
+          label: `moved ${homes.length === 1 ? homes[0].title : `${homes.length} tasks`}`,
+          undo: undoMove,
+          redo: async () => {
+            if (moved_) return;
+            moved_ = true;
+            await projectsApi.moveTasks({
+              task_ids: [...ids],
+              destination_project_id: destinationId,
+              status_map: statusMap,
+              accept_drops: true,
+              include_subtasks: includeSubtasks,
+            });
+            setTreeKey((k) => k + 1);
+            await refreshRef.current();
+          },
+        });
+      }
       toast.show({
         variant: "success",
         title:
           res.dropped_fields.length > 0
             ? `${moved} — dropped ${res.dropped_fields.join(", ")}`
             : moved,
+        ...(undoMove ? { action: { label: "Undo", onClick: () => void undoMove!() } } : {}),
       });
     } catch (err) {
       // Stays OPEN on a refusal, and the message renders IN the card: the
@@ -4170,7 +4250,19 @@ function ProjectsWorkspace() {
       setTasks((current) => optimisticDrop(current, task.id, patch));
     }
     try {
-      if (patch) await projectsApi.patchTask(task.id, patch);
+      if (patch) {
+        const fresh = await projectsApi.patchTask(task.id, patch);
+        // UNDO-1 — a plain status change (reopen included) or any other drop
+        // field can be taken back. The slot write below is not undone.
+        taskUndo.edited(task, patch, fresh, {
+          label: `moved ${task.title}`,
+          receipt: "Task moved",
+          after: async () => {
+            if (selected) await loadProject(selected);
+            else await refreshRef.current();
+          },
+        });
+      }
       const rootViews = await projectsApi.views(task.root_project_id);
       const board = orderBearingView(rootViews.rows);
       if (board) await projectsApi.setPositions(board.id, writes);

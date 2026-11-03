@@ -70,6 +70,7 @@ import {
   truncationNotice,
 } from "../lib/myTasks";
 import { useSubtaskComplete } from "./useSubtaskComplete";
+import { useTaskUndo } from "./useTaskUndo";
 import { myDayLink } from "../lib/reportEntry";
 import { FilterChrome } from "./CompactFilterBar";
 import { CalendarView } from "./CalendarView";
@@ -287,6 +288,8 @@ export default function MyTasksSpace({
   const again = useCallback(() => setReload((n) => n + 1), []);
   useLiveRefresh(again, "projects");
   const subtaskComplete = useSubtaskComplete();
+  // UNDO-1 — a calendar drag on My tasks offers Undo.
+  const taskUndo = useTaskUndo();
 
   // ── The summary, the Overview and the chips ────────────────────────────
   const summary = useMySummary(true);
@@ -706,6 +709,13 @@ export default function MyTasksSpace({
                 setWriteError(null);
                 void projectsApi
                   .patchTask(task.id, patch)
+                  .then((fresh) =>
+                    taskUndo.edited(task, patch, fresh, {
+                      label: `rescheduled ${task.title}`,
+                      receipt: "Task rescheduled",
+                      after: reloadAll,
+                    }),
+                  )
                   .catch((err: unknown) => setWriteError(String((err as Error).message)))
                   .finally(reloadAll);
               }}
