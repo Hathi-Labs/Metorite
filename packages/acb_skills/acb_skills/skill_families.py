@@ -672,9 +672,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "tools": (
             "answer_decision",
             "list_reminders",
+            "my_decisions",
             "pin_authority",
             "project_authorities",
-            "my_decisions",
             "promote_reminder",
             "reopen_reminder",
             "reschedule_reminder",
