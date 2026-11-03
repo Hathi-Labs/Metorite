@@ -1953,7 +1953,7 @@ class Settings(BaseSettings):
     agent_edge_gateway_url: str = "http://127.0.0.1:8080"
 
     # STU-B2c-1, the direct proof of a Studio write (`ai_studio.md` §20.4).
-    # The workbench BFF signs `X-Studio-Direct` under this key, and the action
+    # The workbench BFF signs the direct-proof header under this key, and the action
     # door checks it. `acb_auth.direct_proof` is the one reader. The key is in
     # the gateway `.env` and in the workbench `.env.local` (`scripts/vps_apply.sh`
     # copies it). A key under 32 bytes, or equal to GATEWAY_INTERNAL_TOKEN or to

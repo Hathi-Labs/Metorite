@@ -599,8 +599,8 @@ def _is_direct(request: Request, user: UserContext) -> bool:
     if user.agent is not None or user.is_agent or "@" not in email \
             or email.strip().lower().startswith("system:"):
         return False
-    return _direct_proof.is_direct_proof(
-        _direct_proof.header_value(request.headers), email, request.method, request.url.path)
+    return bool(_direct_proof.is_direct_proof(
+        _direct_proof.header_value(request.headers), email, request.method, request.url.path))
 
 
 def _query_refusal(exc: studio_query.QueryError) -> HTTPException:
@@ -616,6 +616,7 @@ def _query_refusal(exc: studio_query.QueryError) -> HTTPException:
 def _audit_detail(out: _Outcome) -> dict[str, Any]:
     """The audit row of *out*: the action, its class and the outcome. It holds
     no record data and no value of the body, and each text is capped."""
+    reason: str | None
     if out.catalog_down:
         outcome, reason = "failed", CATALOG_UNAVAILABLE
     elif out.refusal is not None:
