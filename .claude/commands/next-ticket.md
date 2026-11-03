@@ -73,7 +73,8 @@ callers, count rows). Never use haiku to build, verify or review.
   of `diff-reviewer`, the UI checklist, even when step 6 skips the full
   review. Skip the board-row note,
   the spec header (R4) and new fence tests (R7). Run `bash scripts/ci_local.sh`
-  (or `bash scripts/prepush.sh` when the PC is busy) before each push.
+  before each push. The home server runs it, and this PC takes it when the
+  home server is busy.
 - **Harden** (when the feature works): one PR, labelled `harden`. Run
   `STE_LINT_BLOCK=1` for the session, `bash scripts/prepush.sh --harden`,
   `diff-reviewer` on the WHOLE feature diff, and the visual review. Write the
