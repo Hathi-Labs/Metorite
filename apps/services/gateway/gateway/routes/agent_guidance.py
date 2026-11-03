@@ -10,8 +10,9 @@ task gets the blocks that apply, **nearest first**: the task's project, each
 parent up to the space, then the org. The server does not merge the text. The
 nearest block wins on a conflict, and the instructions of the MCP edge say so.
 
-Three routes, all dark behind ``AGENT_GUIDANCE_ORGS`` (404 while the org is
-not listed):
+Four routes, all dark behind ``AGENT_GUIDANCE_ORGS`` (404 while the org is
+not listed). The router checks the flag first, then ``feature:projects``
+(``require_feature_router("projects")``, as the Projects router does):
 
 * ``POST /agent-guidance`` — save a new version. Append only: each save is a
   new row of ``pm_agent_guidance``, and the trigger ``pm_agent_guidance_guard``
@@ -22,7 +23,8 @@ not listed):
   This is the route of the MCP edge (``get_task_context`` and ``claim_task``).
 * ``GET /agent-guidance/refs`` — for ``my_work``: the id and version of the
   nearest block for each of up to 25 projects (``project_ids``, one comma
-  list). No body.
+  list). No body. A project that the caller cannot see gets null, the same
+  answer as an unknown id (the 404 rule of ``load_visible_project``).
 
 **Placement.** The routes are not under ``/projects``. Org guidance is not a
 project thing, the editor is a Settings screen (SW-31b), and a route under
@@ -32,14 +34,17 @@ which is a chat tool that SW-31a does not build. The chat tool is a follow-up.
 **Who writes.** A project or a space: :func:`authority.assert_may_write_guidance`,
 which is the write floor of a grant (a lead of the project or of an ancestor,
 or a ``projects:settings:write`` holder), and it refuses a personal tree. The
-org: ``can_manage_settings`` (``projects:settings:write``). ``require_admin_user``
-is not used: it checks ``admin:members:read``, a read floor for the admin
-package, not the act of an org admin. Roles that hold the settings write are
-the admin roles (migrations 179 and 196). An agent connection never writes.
+org: ``core.ORG_VOCABULARY_WRITE`` (``admin:settings:manage``), the house rule
+for a write that applies to every project. The owner and the admin roles hold
+it. A ``manager`` does not, although it holds ``projects:settings:write``
+(migrations 196 and 200), so a manager cannot write org guidance.
+``require_admin_user`` is not used: it checks ``admin:members:read``, a read
+floor for the admin package. An agent connection never writes.
 
 **Who reads.** Any member who can open the task. The body of a space or an
-ancestor shows even when the member cannot see that project, but its name
-shows as hidden (owner question 3 default).
+ancestor shows even when the member cannot see that project. Its source is
+then the bare stub ``{"hidden": true}``, with no name and no project id, as
+EA-15 shows a hidden parent (owner question 3 default).
 
 **Caps.** A block holds at most :data:`BLOCK_MAX` characters (422 above). An
 answer holds at most :data:`ANSWER_MAX`, and it drops the FARTHEST blocks first.
@@ -56,7 +61,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from acb_auth import UserContext, get_current_user
+from acb_auth import UserContext, get_current_user, require_feature_router
 from acb_common import get_logger, get_settings
 from acb_common.db import current_tenant
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -64,8 +69,8 @@ from gateway.db import tenant_session as _tenant_session
 from gateway.routes.projects.authority import assert_may_write_guidance
 from gateway.routes.projects.core import (
     MAX_DEPTH,
+    ORG_VOCABULARY_WRITE,
     actor,
-    can_manage_settings,
     load_visible_project,
     load_visible_task,
     resolve_visibility,
@@ -91,13 +96,17 @@ SAVE_ATTEMPTS = 5
 KIND = "guidance"
 
 ORG_WRITE_REFUSED = (
-    "Only a Projects admin can change the agent guidance of the whole organization."
+    "Only an organization admin can change the agent guidance of the whole organization."
 )
 AGENT_WRITE_REFUSED = "An agent connection cannot change guidance. A member does it in Settings."
 ARCHIVED_REFUSED = "This project is archived, so its agent guidance cannot change."
 SAVE_BUSY = "Another save of this guidance was in progress. Try again."
 
 LEVELS = ("project", "space", "company")
+
+#: The source of a block whose project the member cannot see. It names no
+#: project, so the answer cannot show which hidden project holds the rule.
+HIDDEN_SOURCE: dict[str, bool] = {"hidden": True}
 
 
 # ── The flag ────────────────────────────────────────────────────────────────
@@ -124,9 +133,13 @@ async def require_guidance(user: UserContext = Depends(get_current_user)) -> Non
         raise HTTPException(status_code=404, detail="Not Found")
 
 
-_ENABLED = [Depends(require_guidance)]
-
-router = APIRouter(prefix="/agent-guidance", tags=["agent-guidance"])
+#: The flag first, so a dark route answers 404 for every caller. Then the
+#: feature gate of the Projects router (``routes/projects/core.py``), so a
+#: member who cannot open Projects cannot read or write its guidance.
+router = APIRouter(
+    prefix="/agent-guidance", tags=["agent-guidance"],
+    dependencies=[Depends(require_guidance), require_feature_router("projects")],
+)
 
 
 # ── The wire ────────────────────────────────────────────────────────────────
@@ -205,6 +218,23 @@ async def _chains(db: Any, origins: list[str]) -> dict[str, list[Any]]:
     return out
 
 
+async def _visible_ids(db: Any, vis: Any, ids: list[str]) -> set[str]:
+    """The ids of *ids* that the caller may see, through the ONE visibility
+    seam (``Visibility.project_clause``, the rule of ``load_visible_project``).
+    An unknown id is not in the set, so "no such project" and "not yours"
+    get the same answer."""
+    if not ids:
+        return set()
+    rows = (await db.execute(
+        text(
+            "SELECT id FROM pm_projects WHERE id = ANY(CAST(:ids AS uuid[])) "
+            f"AND {vis.project_clause('id')}"
+        ),
+        {"ids": ids, **vis.params},
+    )).fetchall()
+    return {str(r.id) for r in rows}
+
+
 async def _latest(db: Any, project_ids: list[str]) -> dict[str | None, Any]:
     """``{project id or None for the org: newest row}`` of the scopes asked."""
     rows = (await db.execute(text(_LATEST_SQL), {"ids": project_ids})).fetchall()
@@ -237,31 +267,22 @@ async def blocks_for_project(db: Any, vis: Any, project_id: str) -> tuple[list[d
     ids = [str(r.id) for r in chain]
     if not ids:
         return [], 0
-    seen = {
-        str(r.id) for r in (await db.execute(
-            text(
-                "SELECT id FROM pm_projects WHERE id = ANY(CAST(:ids AS uuid[])) "
-                f"AND {vis.project_clause('id')}"
-            ),
-            {"ids": ids, **vis.params},
-        )).fetchall()
-    }
+    seen = await _visible_ids(db, vis, ids)
     latest = await _latest(db, ids)
     blocks: list[dict[str, Any]] = []
     for r in chain:
         row = latest.get(str(r.id))
         if not _has_text(row):
             continue
-        shown = str(r.id) in seen
         blocks.append({
             "id": str(row.id),
             "level": "space" if r.parent_project_id is None else "project",
-            "source": {
-                "kind": "project",
-                "project_id": str(r.id),
-                "name": r.name if shown else None,
-                "hidden": not shown,
-            },
+            # A project that the member cannot see is the bare stub: no name
+            # and no project id, as EA-15 shows a hidden parent.
+            "source": (
+                {"kind": "project", "project_id": str(r.id), "name": r.name, "hidden": False}
+                if str(r.id) in seen else dict(HIDDEN_SOURCE)
+            ),
             "version": int(row.version),
             "body": row.body,
         })
@@ -278,7 +299,17 @@ async def blocks_for_project(db: Any, vis: Any, project_id: str) -> tuple[list[d
 # ── The routes ──────────────────────────────────────────────────────────────
 
 
-@router.post("", status_code=201, dependencies=_ENABLED)
+def may_write_org_guidance(user: UserContext | None) -> bool:
+    """True when *user* may write the guidance of the whole org.
+
+    The house rule for an org-wide write, :data:`core.ORG_VOCABULARY_WRITE`
+    (``admin:settings:manage``): org guidance reaches every project, also the
+    projects that the writer cannot see. ``projects:settings:write`` is not
+    enough, because a ``manager`` holds it."""
+    return user is not None and user.has_permission(ORG_VOCABULARY_WRITE)
+
+
+@router.post("", status_code=201)
 async def save_guidance(
     payload: GuidanceIn, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -296,7 +327,7 @@ async def save_guidance(
         try:
             async with _tenant_session() as db:
                 if project_id is None:
-                    if not can_manage_settings(user):
+                    if not may_write_org_guidance(user):
                         raise HTTPException(status_code=403, detail=ORG_WRITE_REFUSED)
                 else:
                     vis = await resolve_visibility(db, user)
@@ -333,7 +364,7 @@ async def save_guidance(
     raise HTTPException(status_code=409, detail=SAVE_BUSY)
 
 
-@router.get("/history", dependencies=_ENABLED)
+@router.get("/history")
 async def guidance_history(
     project_id: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=HISTORY_MAX),
@@ -357,7 +388,7 @@ async def guidance_history(
     return {"rows": [_version_out(r) for r in rows]}
 
 
-@router.get("/tasks/{task_id}", dependencies=_ENABLED)
+@router.get("/tasks/{task_id}")
 async def task_guidance(
     task_id: str, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -372,7 +403,7 @@ async def task_guidance(
     return {"blocks": blocks, "dropped": dropped}
 
 
-@router.get("/refs", dependencies=_ENABLED)
+@router.get("/refs")
 async def guidance_refs(
     project_ids: str = Query(default="", max_length=REFS_MAX * 37),
     user: UserContext = Depends(get_current_user),
@@ -382,6 +413,13 @@ async def guidance_refs(
 
     *project_ids* is one comma list of at most :data:`REFS_MAX` ids. A signed
     query holds each key once, so the edge cannot repeat the key.
+
+    A project that the caller cannot see gets null, the answer of an unknown
+    id, so the refs cannot show which hidden projects hold guidance or how
+    many versions they have. The ids go through :func:`_visible_ids`, the seam
+    of the other routes. A task assigned to the member in a project that the
+    member cannot see gets null here too. Its ``get_task_context`` still reads
+    the blocks, through the task.
     """
     wanted = [p.strip() for p in project_ids.split(",") if p.strip()]
     if len(wanted) > REFS_MAX:
@@ -391,10 +429,12 @@ async def guidance_refs(
     if not ids:
         return {"refs": refs}
     async with _tenant_session() as db:
-        chains = await _chains(db, ids)
+        visible = await _visible_ids(db, await resolve_visibility(db, user), ids)
+        origins = [p for p in ids if p in visible]
+        chains = await _chains(db, origins) if origins else {}
         every = sorted({str(r.id) for rows in chains.values() for r in rows})
         latest = await _latest(db, every) if every else {}
-        for origin in ids:
+        for origin in origins:
             scopes: list[str | None] = [str(r.id) for r in chains.get(origin, [])]
             scopes.append(None)
             for scope in scopes:

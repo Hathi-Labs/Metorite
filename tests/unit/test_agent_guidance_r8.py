@@ -23,11 +23,14 @@ Mutations (R7), each turns the named test red. ``G`` is
 * G1. ``G`` ``blocks_for_project``: reverse the blocks. ``test_order_is_nearest_first``.
 * G2. ``G`` ``cut_to_answer``: pop the first block. ``test_the_cap_drops_the_farthest`` and ``test_a_long_answer_drops_the_farthest_block``.
 * G3. ``G`` ``save_guidance``: skip ``assert_may_write_guidance``. ``test_write_authority``.
-* G4. ``G`` ``save_guidance``: skip the ``can_manage_settings`` check. ``test_write_authority``.
+* G4. ``G`` ``may_write_org_guidance``: check ``projects:settings:write`` (the old floor). ``test_a_manager_cannot_write_org_guidance``. Skip the check: ``test_write_authority`` too.
 * G5. ``G`` ``guidance_allowed``: always True. ``test_flag_off_answers_404`` and ``test_flag_off_is_404``.
 * G6. Migration: drop the COALESCE of ``project_id``. ``test_two_org_rows_with_one_version_fail_the_index``.
 * G7. Migration: drop the trigger. ``test_a_saved_version_cannot_change``.
 * G8. ``G`` ``save_guidance``: UPDATE the latest row. ``test_history_each_save_adds_a_row`` (the trigger refuses, so the save fails).
+* G9. ``G`` ``save_guidance``: drop the ``pg_advisory_xact_lock`` statement. ``test_concurrent_saves_get_distinct_versions`` (each round).
+* G10. ``G`` ``guidance_refs``: read the chain of every id, not only the visible ones. ``test_the_refs_of_a_hidden_project_read_as_an_unknown_id``.
+* G11. ``G`` ``blocks_for_project``: keep ``project_id`` in the source of a hidden block. ``test_a_member_who_cannot_see_the_space_gets_its_body_and_a_hidden_name``.
 """
 
 from __future__ import annotations
@@ -135,7 +138,9 @@ def _principal(email: str, org: str, *, perms: tuple[str, ...], agent: bool = Fa
 
 
 SEE_ALL = ("feature:projects", "data:org:read")
-ADMIN = (*SEE_ALL, "projects:settings:write")
+#: A settings admin of the Projects app AND of the org (fix round 1: the org
+#: save needs ``admin:settings:manage``, ``core.ORG_VOCABULARY_WRITE``).
+ADMIN = (*SEE_ALL, "projects:settings:write", "admin:settings:manage")
 
 
 def _app(users: dict[str, Any]) -> Any:
@@ -222,9 +227,24 @@ def world(promoted):  # noqa: F811 — a fixture
     ns.lead_s, ns.lead_o = "lead-s@guidance.test", "lead-o@guidance.test"
     ns.member, ns.hidden = "member@guidance.test", "hidden@guidance.test"
     ns.admin, ns.b_admin = "admin@guidance.test", "admin-b@guidance.test"
+    ns.manager, ns.role_admin = "manager@guidance.test", "role-admin@guidance.test"
     with promoted.admin_engine.begin() as c:
-        for email in (ns.lead_s, ns.lead_o, ns.member, ns.hidden, ns.admin):
+        for email in (ns.lead_s, ns.lead_o, ns.member, ns.hidden, ns.admin,
+                      ns.manager, ns.role_admin):
             _user(c, a, email)
+        # The real role bundles of org A (migrations 200 and 207), so the
+        # manager and the admin of the write floor test hold what a real
+        # member of those roles holds.
+        c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": a})
+        c.execute(text("SELECT provision_org_roles(:o)"), {"o": a})
+        ns.role_perms = {
+            slug: tuple(sorted(c.execute(text(
+                "SELECT p.permission FROM org_role r "
+                "JOIN org_role_permission p ON p.role_id = r.id "
+                "WHERE r.slug = :s AND r.organization_id = :o"),
+                {"s": slug, "o": a}).scalars().all()))
+            for slug in ("admin", "manager")
+        }
         _user(c, b, ns.b_admin)
         ns.space = _project(c, a, "SECRET SPACE NAME", lead=ns.lead_s)
         ns.p1 = _project(c, a, "Project one", parent=ns.space)
@@ -259,6 +279,8 @@ def world(promoted):  # noqa: F811 — a fixture
     ns.member_u = _principal(ns.member, a, perms=SEE_ALL)
     ns.hidden_u = _principal(ns.hidden, a, perms=("feature:projects",))
     ns.b_admin_u = _principal(ns.b_admin, b, perms=ADMIN)
+    ns.manager_u = _principal(ns.manager, a, perms=ns.role_perms["manager"])
+    ns.role_admin_u = _principal(ns.role_admin, a, perms=ns.role_perms["admin"])
     return ns
 
 
@@ -338,9 +360,10 @@ async def test_a_member_who_cannot_see_the_space_gets_its_body_and_a_hidden_name
     blocks = r.json()["blocks"]
     assert [b["body"] for b in blocks] == ["P2 RULE", "SPACE RULE"]
     assert blocks[0]["source"]["name"] == "Project two" and not blocks[0]["source"]["hidden"]
-    assert blocks[1]["source"] == {
-        "kind": "project", "project_id": w.space, "name": None, "hidden": True}
-    assert "SECRET SPACE NAME" not in r.text
+    # Fix round 1 (P2 item 7): the bare stub, as EA-15 shows a hidden parent.
+    assert blocks[1]["source"] == {"hidden": True}
+    assert "project_id" not in blocks[1]["source"]
+    assert "SECRET SPACE NAME" not in r.text and w.space not in r.text
     assert no_space.status_code == 404
 
 
@@ -371,14 +394,47 @@ async def test_the_refs_name_the_nearest_block_and_no_body(world) -> None:
     async with _session(w.p) as call:
         await _save(call, w.admin_u, None, "ORG RULE")
         await _save(call, w.lead_s_u, w.p1, "P1 RULE")
-        r = await call(w.member_u, "GET", f"/agent-guidance/refs?project_ids={w.p2},{w.other}")
+        unknown = str(uuid.uuid4())
+        r = await call(w.member_u, "GET",
+                       f"/agent-guidance/refs?project_ids={w.p2},{w.other},{unknown}")
     refs = r.json()["refs"]
+    # An unknown id gets null, never the org ref.
+    assert refs[unknown] is None
     assert set(refs[w.p2]) == {"id", "version"} and refs[w.p2]["version"] == 1
     p1_row = _rows(w.p, "SELECT id FROM pm_agent_guidance WHERE project_id = :p", p=w.p1)[0]
     assert refs[w.p2]["id"] == str(p1_row.id)
     org_row = _rows(w.p, "SELECT id FROM pm_agent_guidance WHERE project_id IS NULL")[0]
     assert refs[w.other]["id"] == str(org_row.id)
     assert "RULE" not in r.text
+
+
+@_DB_GATE
+async def test_the_refs_of_a_hidden_project_read_as_an_unknown_id(world) -> None:
+    """Fix round 1 (P1 item 1). ``hidden`` sees P2 through a grant, and not P1,
+    the space or the other space. The refs of those read as null, the answer of
+    an unknown id. So the refs cannot test a hidden project for guidance or
+    count its versions, as ``/history`` cannot (404)."""
+    w = world
+    _reset(w)
+    unknown = str(uuid.uuid4())
+    async with _session(w.p) as call:
+        await _save(call, w.admin_u, None, "ORG RULE")
+        await _save(call, w.lead_s_u, w.space, "SPACE RULE")
+        await _save(call, w.lead_s_u, w.p1, "P1 RULE")
+        await _save(call, w.lead_s_u, w.p1, "P1 RULE 2")
+        ids = ",".join((w.p1, w.space, w.other, unknown, w.p2))
+        r = await call(w.hidden_u, "GET", f"/agent-guidance/refs?project_ids={ids}")
+        history = await call(w.hidden_u, "GET", f"/agent-guidance/history?project_id={w.p1}")
+    assert r.status_code == 200, r.text
+    refs = r.json()["refs"]
+    assert history.status_code == 404
+    for project in (w.p1, w.space, w.other, unknown):
+        assert refs[project] is None, project
+    # P2 is the member's own: its nearest block is P1's, as get_task_context
+    # gives the body of a hidden ancestor (owner question 3 default).
+    p1_new = _rows(w.p, "SELECT id FROM pm_agent_guidance WHERE project_id = :p "
+                        "ORDER BY version DESC LIMIT 1", p=w.p1)[0]
+    assert refs[w.p2] == {"id": str(p1_new.id), "version": 2}
 
 
 # ── R8: history ─────────────────────────────────────────────────────────────
@@ -486,19 +542,71 @@ async def test_write_authority(world) -> None:
     assert len(_rows(w.p, "SELECT 1 FROM pm_agent_guidance")) == 4
 
 
+@_DB_GATE
+async def test_a_manager_cannot_write_org_guidance(world) -> None:
+    """Fix round 1 (P1 item 2). The real ``manager`` role holds
+    ``projects:settings:write`` (migrations 196 and 200) and not
+    ``admin:settings:manage``. So a manager writes a project and not the org.
+    The real ``admin`` role writes the org (``core.ORG_VOCABULARY_WRITE``)."""
+    w = world
+    _reset(w)
+    manager, admin = w.role_perms["manager"], w.role_perms["admin"]
+    assert "projects:settings:write" in manager and "admin:settings:manage" not in manager
+    assert "admin:settings:manage" in admin
+    async with _session(w.p) as call:
+        refused = await _save(call, w.manager_u, None, "MANAGER ORG")
+        project = await _save(call, w.manager_u, w.p1, "MANAGER P1")
+        written = await _save(call, w.role_admin_u, None, "ADMIN ORG")
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["detail"] == agent_guidance.ORG_WRITE_REFUSED
+    assert project.status_code == 201, project.text
+    assert written.status_code == 201, written.text
+    org_rows = _rows(w.p, "SELECT body FROM pm_agent_guidance WHERE project_id IS NULL")
+    assert [r.body for r in org_rows] == ["ADMIN ORG"]
+
+
 # ── R8: concurrency and the index ───────────────────────────────────────────
 
 
+#: The saves of one round of the race, and the rounds.
+RACE_PARTIES, RACE_ROUNDS = 4, 3
+
+
 @_DB_GATE
-async def test_concurrent_saves_get_distinct_versions(world) -> None:
+async def test_concurrent_saves_get_distinct_versions(
+    world, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The advisory lock serializes the saves of one scope, so no save needs
+    the retry (fix round 1, P2 item 10: deterministic).
+
+    The saves of a round wait at a barrier after the write check, just before
+    the lock. The barrier lets them go in one turn of the event loop, so each
+    sends its next statement before any of them commits. The retry has one
+    attempt here. With the lock, the saves queue and each gets 201. With no
+    lock, the INSERTs all read the same newest version, the unique index keeps
+    one, and each other save gets 409, in each round."""
     w = world
     _reset(w)
+    monkeypatch.setattr(agent_guidance, "SAVE_ATTEMPTS", 1)
+    real_check = agent_guidance.assert_may_write_guidance
+    gate: list[asyncio.Barrier] = []
+
+    async def _check_then_wait(db: Any, user: Any, project: Any) -> None:
+        await real_check(db, user, project)
+        await asyncio.wait_for(gate[0].wait(), timeout=20)
+
+    monkeypatch.setattr(agent_guidance, "assert_may_write_guidance", _check_then_wait)
+    got: list[int] = []
     async with _session(w.p) as call:
-        rs = await asyncio.wait_for(asyncio.gather(
-            *(_save(call, w.lead_s_u, w.p1, f"save {n}") for n in range(6))), timeout=60)
-    assert [r.status_code for r in rs] == [201] * 6, [r.text for r in rs]
-    versions = sorted(r.json()["version"] for r in rs)
-    assert versions == [1, 2, 3, 4, 5, 6]
+        for n in range(RACE_ROUNDS):
+            gate[:] = [asyncio.Barrier(RACE_PARTIES)]
+            rs = await asyncio.wait_for(asyncio.gather(
+                *(_save(call, w.lead_s_u, w.p1, f"round {n} save {k}")
+                  for k in range(RACE_PARTIES))), timeout=60)
+            codes = [r.status_code for r in rs]
+            assert codes == [201] * RACE_PARTIES, (n, [r.text for r in rs])
+            got.extend(r.json()["version"] for r in rs)
+    assert sorted(got) == list(range(1, RACE_PARTIES * RACE_ROUNDS + 1))
 
 
 @_DB_GATE
