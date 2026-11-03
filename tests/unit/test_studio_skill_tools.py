@@ -699,6 +699,72 @@ async def test_a_fault_in_the_mark_read_counts_as_held_so_a_card_shows(gw, card,
     assert len(card.shown) == 1
 
 
+async def test_a_held_pause_of_a_draft_shows_no_card_and_gives_the_route_answer(held, card) -> None:
+    """Review round 1, P3: the card showed, then the route said 409.
+    Mutation: drop the move check before the pause card -> red."""
+    sid = held.seed()  # a draft cannot pause
+    out = await st.studio_skill_state(sid, "paused")
+    assert out["ok"] is False and out["status"] == 409
+    assert _msg(out) == skills._cannot_move("draft", "paused")
+    assert card.shown == [] and held.sent("PATCH") == []
+
+
+@pytest.mark.parametrize("field", ["description", "instructions"])
+async def test_a_held_create_with_an_empty_text_shows_no_card(held, card, field) -> None:
+    """Review round 1, P3: the card showed, then the route said 422.
+    Mutation: drop the body check before the save card -> red."""
+    args = {"name": "X skill", "description": "d", "instructions": "i", field: "  "}
+    out = await st.studio_skill_save(**args)
+    assert out["ok"] is False and out["status"] == 422
+    assert out["errors"][0] == {"path": f"body.{field}",
+                                "message": f"body.{field} must be a non-empty string"}
+    assert card.shown == [] and held.sent("POST") == []
+
+
+async def test_a_held_version_with_no_description_shows_no_card(held, card) -> None:
+    sid = held.seed(body=None)
+    held.skills[sid]["description"] = ""
+    out = await st.studio_skill_save(skill_id=sid, instructions="First text.")
+    assert out["ok"] is False and out["status"] == 422
+    assert _msg(out) == "body.description must be a non-empty string"
+    assert card.shown == [] and held.sent("POST") == []
+
+
+def test_the_moves_of_the_tool_are_the_moves_of_the_route() -> None:
+    """A package cannot import the gateway, so the tool holds a copy of the
+    table and of the text. Mutation: let a draft pause -> red."""
+    for target in st.MOVES:
+        from_route = frozenset(s for s, to in skills.TRANSITIONS.items() if target in to)
+        assert st._MOVES_FROM[target] == from_route, target
+        for state in (*skills.TRANSITIONS, "odd"):
+            if state == target or state in from_route:
+                assert st._move_problem(state, target) is None
+            else:
+                assert st._move_problem(state, target) == skills._cannot_move(state, target)
+
+
+@pytest.mark.parametrize("body", [
+    {"description": "d", "instructions": "i"},
+    {"description": "", "instructions": "i"},
+    {"description": "d", "instructions": "  "},
+    {"description": None, "instructions": "i"},
+    {"instructions": "i"},
+    {"description": "d"},
+    {"description": "d", "instructions": "i", "actions": ["tasks.list", " "]},
+    {"description": "d", "instructions": "i", "actions": "tasks.list"},
+    {"description": "d", "instructions": "i", "actions": [1]},
+    {"description": "d", "instructions": "i", "actions": []},
+])
+def test_the_body_check_of_the_tool_gives_the_text_of_the_store(body) -> None:
+    """Mutation: change a text of ``_body_problem`` -> red."""
+    try:
+        store.check_body(body)
+        want = None
+    except store.SkillStoreError as exc:
+        want = str(exc)
+    assert st._body_problem(body) == want
+
+
 async def test_in_a_held_chat_a_publish_still_shows_its_card(held, card) -> None:
     sid = held.seed()
     out = await st.studio_skill_state(sid, "published")

@@ -845,6 +845,13 @@ _PAUSE_NOTE = "It stops for Mira. Resume it to start it again."
 #: back to a draft in Studio, and not from chat.
 MOVES = ("published", "paused")
 
+#: The states that each move of :data:`MOVES` leaves from, and the words of a
+#: state in a 409: the ``TRANSITIONS`` and ``_cannot_move`` of the route. A
+#: package cannot import the gateway, so ``test_studio_skill_tools.py`` reads
+#: this copy against the real table.
+_MOVES_FROM = {"published": frozenset({"draft", "paused"}), "paused": frozenset({"published"})}
+_STATE_WORDS = {"draft": "a draft"}
+
 _MAYBE_SAVED = "The save may have worked. Call the skill list before you try again."
 _STATE_BAD = ("The state must be published or paused. Archive a skill, or send it back to a "
               "draft, in Studio.")
@@ -951,6 +958,38 @@ def _fail(reply: _Reply, by_id: bool = True, **extra: Any) -> dict[str, Any]:
 
 def _refusal(message: str, **extra: Any) -> dict[str, Any]:
     return _result(False, _sentence(message), [], **extra)
+
+
+def _route_says(status: int, text: str) -> dict[str, Any]:
+    """The result that the route gives for *status* and *text*, with no call.
+    A check before a card uses it, so that no card shows for an act that the
+    route then refuses."""
+    return _fail(_Reply(status, {"detail": text}))
+
+
+def _move_problem(state: Any, target: str) -> str | None:
+    """The 409 text of the route for a move of a skill in *state* to
+    *target*, or None when the route takes the move. A move to the same state
+    is a no-op there."""
+    shown = _tag(state, 20)
+    if shown == target or shown in _MOVES_FROM[target]:
+        return None
+    return f"The skill is {_STATE_WORDS.get(shown, shown)}. It cannot move to {target}."
+
+
+def _body_problem(body: dict[str, Any]) -> str | None:
+    """The 422 text of ``check_body`` of the store for the fields that a body
+    must hold, or None. The route checks more, such as the size and the
+    catalog, and its own answer still comes back unchanged."""
+    for field in ("description", "instructions"):
+        value = body.get(field)
+        if not isinstance(value, str) or not value.strip():
+            return f"body.{field} must be a non-empty string"
+    found = body.get("actions")
+    if found is not None and (not isinstance(found, list) or not all(
+            isinstance(a, str) and a.strip() for a in found)):
+        return "body.actions must be a list of non-empty strings"
+    return None
 
 
 def _skill_of(reply: _Reply) -> dict[str, Any]:
@@ -1170,6 +1209,9 @@ async def _held_save(
     and a skill that moved gets no write. A create has nothing stored to move:
     the route refuses a name that the member holds."""
     body = change["body"]
+    problem = _body_problem(body)
+    if problem:
+        return _route_says(422, problem)  # no card for a body that the route refuses
     number = (_skill_of(first).get("current_version") or 0) + 1 if first else 1
     try:
         classes = _class_map(await _read_catalog())
@@ -1309,11 +1351,11 @@ async def _publish_after_card(sid: str, first: _Reply) -> dict[str, Any]:
     """Show ONE card, and send the move only after ``approved`` and a second
     read that matches the first."""
     skill, version = _skill_of(first), _version_of(first)
-    if skill.get("state") not in ("draft", "paused"):
-        return _refusal(f"The skill is {_tag(skill.get('state'), 20)}. "
-                        "It cannot move to published.")
+    problem = _move_problem(skill.get("state"), "published")
+    if problem:
+        return _route_says(409, problem)  # no card for a move that the route refuses
     if not skill.get("current_version") or version is None:
-        return _refusal(_NO_VERSION)
+        return _route_says(409, _NO_VERSION)
     try:
         classes = _class_map(await _read_catalog())
         context = await _card(_LIVE_NOTE, _skill_rows(skill, version, classes))
@@ -1366,6 +1408,9 @@ async def studio_skill_state(skill_id: str, state: str) -> dict[str, Any]:
         if target == "published":
             return await _publish_after_card(sid, first)
         if await _must_ask():
+            problem = _move_problem(current.get("state"), "paused")
+            if problem:
+                return _route_says(409, problem)  # no card for a move that the route refuses
             name = _name(current.get("name", ""), True)
             context = await _card(_PAUSE_NOTE, [("skill", f"Skill: {_shown(current.get('name', ''))}")])
             decision = await _decide(f"Pause {name}?", "The skill stops for Mira.", context)
