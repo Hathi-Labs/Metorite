@@ -123,6 +123,11 @@ export interface CommandContext {
   panelMode: PanelMode;
   /** Desktop only — a phone reaches the tree through the drawer. */
   canToggleRail: boolean;
+  /**
+   * The canvases on offer. Absent = all. My tasks has no Timeline, so its
+   * context names the five it has and "Timeline view" is not offered there.
+   */
+  modes?: readonly ViewMode[];
 }
 
 /** What a command is allowed to do. The page supplies every one of these. */
@@ -209,7 +214,7 @@ function viewCommands(): Command[] {
     keywords: ["view", "canvas", "layout", entry.id],
     icon: entry.icon,
     sequence: ["v", entry.key],
-    when: (ctx: CommandContext) => ctx.hasProject,
+    when: (ctx: CommandContext) => ctx.hasProject && (!ctx.modes || ctx.modes.includes(entry.id)),
     run: (actions: CommandActions) => actions.setMode(entry.id),
   }));
 }
