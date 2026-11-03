@@ -108,12 +108,17 @@ git fetch -q origin main
 w bash -lc 'cd ~/metorite && git fetch -q origin'
 if ! git merge-base --is-ancestor "$sha" origin/main; then
   # A bundle carries REFS, not bare commits, so name the commit for a moment.
+  # The ref and the inbox file are per run: two sessions that start at once
+  # (two lanes invite it) overwrote one shared name, and a run died with
+  # "reference is not a tree" (2026-11-03).
+  tag="${sha:0:12}-$$"
+  bref="refs/ci-local/$tag"
   tmp="$(mktemp)"
-  trap 'rm -f "$tmp"; git update-ref -d refs/ci-local/head 2>/dev/null' EXIT
-  git update-ref refs/ci-local/head "$sha"
-  git bundle create -q "$tmp" refs/ci-local/head --not origin/main
-  w bash -c 'cat > ~/inbox.bundle' < "$tmp"
-  w bash -lc 'cd ~/metorite && git fetch -q ~/inbox.bundle refs/ci-local/head'
+  trap 'rm -f "$tmp"; git update-ref -d "$bref" 2>/dev/null' EXIT
+  git update-ref "$bref" "$sha"
+  git bundle create -q "$tmp" "$bref" --not origin/main
+  w bash -c "cat > ~/inbox-$tag.bundle" < "$tmp"
+  w bash -lc "cd ~/metorite && git fetch -q ~/inbox-$tag.bundle $bref; rc=\$?; rm -f ~/inbox-$tag.bundle; exit \$rc"
 fi
 
 # Check out the commit, then run ITS copy of run_suite.sh. One run at a time.
