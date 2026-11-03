@@ -1022,13 +1022,29 @@ describe("the starter pills come from the feed (WS-62 CF-4, chat_first_surface.m
     // The one assistant's empty chat, and nothing else: no messages, no
     // history on its way, and not another agent's chat.
     expect(src).toContain(
-      "const starterFeedWanted = chatFirst && isOrchestrator && !loadingHistory && messages.length === 0;",
+      'const briefOnly = messages.length === 1 && messages[0].role === "assistant";',
+    );
+    expect(src).toMatch(
+      /const starterFeedWanted =\s*chatFirst && isOrchestrator && !loadingHistory && \(messages\.length === 0 \|\| briefOnly\);/,
     );
     expect(src).toMatch(/starterPills\(\{\s*chatFirst: starterFeedWanted,\s*cards: starterFeedCards,/);
     // The empty state draws the rule's answer. The follow-up pills stay as they were.
     expect(src).toMatch(/<SuggestionPills\s+suggestions=\{starters\}\s+onPick=\{handleChoice\}\s*\/>/);
     expect(src).toMatch(/<SuggestionPills\s+suggestions=\{smartSuggestions\.length > 0/);
-    expect((src.match(/<SuggestionPills\b/g) ?? []).length).toBe(2);
+    expect((src.match(/<SuggestionPills\b/g) ?? []).length).toBe(3);
+  });
+
+  it("the pills show under a phone chat that holds only the brief, and the follow-ups give way (CF-4b)", () => {
+    const src = chat();
+    // A tap goes through the SAME call as the old starter pills: `handleChoice`, with the message.
+    expect(src).toMatch(
+      /\{briefOnly && starterFeedWanted && !isLoading && \(\s*<SuggestionPills\s+suggestions=\{starters\}\s+onPick=\{handleChoice\}/,
+    );
+    expect(src).toContain("!(briefOnly && starterFeedWanted)");
+    // The icon is the one My Day draws for the card's app. No second icon map.
+    expect(src).toContain("icon: p.app ? feedAppIcon(p.app) : undefined");
+    // The rule reads the groups, so a fyi, later or handled card never shows.
+    expect(read("lib/starterPills.ts")).toContain('ACTION_GROUPS: readonly string[] = ["now", "needs_you", "ready"]');
   });
 
   it("the feed comes through the key My Day reads, so the chat adds no second fetch and no route", () => {
