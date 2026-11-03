@@ -525,6 +525,31 @@ async def test_compose_reply_keeps_the_discard_line_while_the_draft_stays(
     assert out == agents._REPLY_DISCARDED
 
 
+async def test_a_revise_names_no_draft_id_of_a_draft_that_left(monkeypatch) -> None:
+    """Fix round 1, item 6: the member wrote over the card, and its draft
+    left Drafts. The model gets no draft id to edit or send. Mutation: hand
+    the id over with no state read → red."""
+    from acb_skills.ask_tools import REVISED
+
+    gw = _Gateway(state={"draft_id": DRAFT, "in_drafts": False})
+    _install(monkeypatch, gw, REVISED)
+    out = await agents.compose_reply(MAIL, BOX)
+    assert out.startswith(agents._CARD_REVISED_DRAFT_GONE)
+    assert DRAFT not in out and "Do not say that the reply was sent." in out
+    assert gw.gets == [("/email/reply-card/draft-state", {"draft_id": DRAFT})]
+
+
+@pytest.mark.parametrize("state", [{"in_drafts": True}, RuntimeError("gateway down")])
+async def test_a_revise_names_the_draft_id_while_the_draft_stays(monkeypatch, state) -> None:
+    from acb_skills.ask_tools import REVISED
+
+    gw = _Gateway(state=state)
+    _install(monkeypatch, gw, REVISED)
+    out = await agents.compose_reply(MAIL, BOX)
+    assert out.startswith(agents._CARD_REVISED)
+    assert f"The draft_id of this reply in Drafts is {DRAFT}." in out
+
+
 def test_the_error_reads_the_machine_reason_of_a_dict_detail(monkeypatch) -> None:
     monkeypatch.setattr(agents, "_current_user_email", lambda: MEMBER)
     resp = httpx.Response(409, json={"detail": {"reason": "draft_gone",

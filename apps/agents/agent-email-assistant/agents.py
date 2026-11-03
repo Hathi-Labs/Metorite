@@ -2467,6 +2467,32 @@ _CARD_REVISED = (
     "draft with edit_draft and offer send_draft. "
     "Never send the member to the Email app for it.")
 
+#: The answer of a card that the member wrote over, when the card's draft is
+#: no longer in Drafts (task 1526, fix round 1, item 6). The tool hands the
+#: model no draft id of a draft that is gone, and claims no send.
+_CARD_REVISED_DRAFT_GONE = (
+    "The member wrote in the chat while the card was open, so the card is "
+    "closed. Nothing was sent from the card. The card's draft is no longer in "
+    "Drafts. It was sent, deleted or replaced outside this card, so it has no "
+    "draft_id to use. Do not say that the reply was sent. Read the member's "
+    "words below, and ask what they want before you show a new card.")
+
+
+async def _revised_line(form: dict[str, Any], kept: str, prep: dict[str, Any]) -> str:
+    """The answer of a reply card that the member wrote over (``REVISED``).
+
+    It names the id of the card's draft, so a Cc that the member asks for
+    goes on it with edit_draft (owner, 2026-10-22). It first reads the state
+    of that draft, and a draft that left Drafts gives no id (fix round 1,
+    item 6). A fault of the read keeps the answer of before."""
+    did = form["draft_id"]
+    if await _card_draft_gone(did):
+        return _CARD_REVISED_DRAFT_GONE + kept + _recent_reply_text(prep)
+    ref = f" The draft_id of this reply in Drafts is {did}." if did else ""
+    line = _draft_line(did, form["subject"])
+    return (_CARD_REVISED + ref + kept + _recent_reply_text(prep)
+            + (f"\n{line}" if line else ""))
+
 
 #: The answer of ``compose_reply`` with ``cc`` in a held chat while
 #: ``EMAIL_HELD_CARD_SEND`` is off: the card has no class, so a person that
@@ -2777,13 +2803,7 @@ async def compose_reply(
         **({"request_id": card_id} if card_id else {}),
     )
     if answer is ask_tools.REVISED:
-        # The id of the card's draft, so a Cc the member asks for goes on it
-        # with edit_draft (owner, 2026-10-22).
-        did = form["draft_id"]
-        ref = f" The draft_id of this reply in Drafts is {did}." if did else ""
-        line = _draft_line(did, form["subject"])
-        return (_CARD_REVISED + ref + kept + _recent_reply_text(prep)
-                + (f"\n{line}" if line else ""))
+        return await _revised_line(form, kept, prep)
     if not isinstance(answer, ask_tools.ReplyAnswer):
         # Discard, a timeout, and a card whose draft left Drafts (2026-11-03).
         return await _closed_card_line(form["draft_id"], kept)
