@@ -768,14 +768,14 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/projects/tasks/{task_id}/agent-runs"),
     ("GET", "/projects/agent-runs"),
     ("GET", "/projects/agent-runs/{run_id}"),
-    # MCP-P1a (spec §19.4 and §19.5): the two list routes of the app door,
-    # for `list_apps` and `describe_app`. They hold no data of an app.
     # WS-MCP SW-31a (agent_coordination.md SW-31): the org's guidance for a
     # task, and the refs for `my_work`. Both answer 404 while
     # `AGENT_GUIDANCE_ORGS` does not hold the org. The save and the history
     # stay OFF the edge: only a member writes guidance.
     ("GET", "/agent-guidance/tasks/{task_id}"),
     ("GET", "/agent-guidance/refs"),
+    # MCP-P1a (spec §19.4 and §19.5): the two list routes of the app door,
+    # for `list_apps` and `describe_app`. They hold no data of an app.
     ("GET", "/agent-access/apps"),
     ("GET", "/agent-access/apps/{app}"),
     *MCP_WRITE_ROUTES,

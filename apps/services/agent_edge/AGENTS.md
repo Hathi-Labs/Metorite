@@ -55,6 +55,13 @@ This unit serves outside agents on `https://mcp.metorite.com` (WS-55). The spec 
 
 - SW-10a (spec §12.6). Each run of the edge gains `stranded`: null, or the reason, the quiet minutes and a fixed note that `tools.STRANDED_NOTES` builds. `my_work` reads the gateway's `needs_agent` reason for group 1 (`tools._waiting_reason`), so an answer older than five minutes still comes back as `run_answered`. A gateway that sends no reason gives the state, as before.
 
+- SW-31a (`agent_coordination.md` SW-31, spec §9.5) adds the org's guidance to three tools, over the two read pairs `GET /agent-guidance/tasks/{task_id}` and `GET /agent-guidance/refs`.
+  - `get_task_context` and `claim_task` return `guidance` (`tools.GUIDANCE_KEY`), the object `{blocks, dropped}` (`tools.GUIDANCE_KEYS`). The blocks come nearest first. `dropped` counts the farthest blocks that the cap of the gateway cut.
+  - Each block body and each source name leaves as `{"untrusted_text": ...}`. A hidden source leaves as `{"hidden": true}` only, whatever the gateway sends (`tools._guidance_block`).
+  - Each `my_work` row gains `guidance_ref`: the id and the version of the nearest block, or null, with no body. One refs read serves all rows.
+  - While `AGENT_GUIDANCE_ORGS` does not name the org, the gateway answers 404, and the edge leaves out each key. A claim whose guidance read fails still succeeds, with no key.
+  - The server instructions say how to read the guidance. Fences: `test_agent_guidance.py`, `test_mcp_edge_claim.py` (`TestClaimReturnsGuidance`), `test_mcp_edge_prompts.py` (`TestGuidanceRule`).
+
 ## Local contract
 
 1. **The flag.** While `agent_access_enabled` is false, every request answers 404 and does nothing else. That covers every path and every method, `OPTIONS` and `HEAD` too. The ASGI middleware `EdgeGate` in `app.py` answers first, before the router. A wrong method then cannot leak a 405 with an `Allow` header.
