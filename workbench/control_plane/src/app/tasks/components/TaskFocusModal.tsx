@@ -3,11 +3,28 @@
 import Icon from "@/components/Icon";
 import { TASK_CARD_FRAME } from "@/lib/layers";
 import { useViewMode } from "@/components/ViewModeProvider";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import { isTypingTarget } from "@/lib/keyboard";
 import { useTaskStore } from "../lib/taskStore";
 import { TaskDetail } from "./ItemDetail";
 
 const NOOP = () => {};
+
+/**
+ * Whether an Escape on `window` closes the card (TC-1). An Escape that another
+ * handler already used (`defaultPrevented`, as the Ask bar does) does not. An
+ * Escape typed in a text field outside the card does not either, so Escape in
+ * the Ask bar never closes the card behind it.
+ */
+export function shouldCloseOnEscape(
+  e: Pick<KeyboardEvent, "key" | "defaultPrevented" | "target">,
+  card: { contains(n: unknown): boolean } | null,
+): boolean {
+  if (e.key !== "Escape" || e.defaultPrevented) return false;
+  const t = e.target as HTMLElement | null;
+  if (isTypingTarget(t) && !card?.contains(t)) return false;
+  return true;
+}
 
 // TC-1 (2026-11-03): the overlay fills the page column (a desktop) or ends above
 // the bottom nav (a phone), so the assistant stays in view (D172.4,
@@ -54,12 +71,13 @@ export function TaskFocusModal({
     [controlled, onClose, closeFocus],
   );
 
+  const cardRef = useRef<HTMLDivElement>(null);
   const item = openId ? items.find((i) => i.id === openId) : undefined;
 
   useEffect(() => {
     if (!openId) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
+      if (shouldCloseOnEscape(e, cardRef.current)) close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -68,7 +86,7 @@ export function TaskFocusModal({
   if (!item) return null;
 
   return (
-    <div className={`${isMobile ? TASK_CARD_FRAME.phone : TASK_CARD_FRAME.desktop} flex items-start justify-center overflow-y-auto bg-background/70 backdrop-blur-sm sm:p-8`}>
+    <div ref={cardRef} className={`${isMobile ? TASK_CARD_FRAME.phone : TASK_CARD_FRAME.desktop} flex items-start justify-center overflow-y-auto bg-background/70 backdrop-blur-sm sm:p-8`}>
       {/* backdrop */}
       <button
         type="button"
