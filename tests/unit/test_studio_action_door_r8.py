@@ -277,8 +277,12 @@ class _Request:
     read fail."""
 
     def __init__(self, payload: Any, on_read: Callable[[], Any] | None = None,
-                 fails: bool = False) -> None:
+                 fails: bool = False, headers: dict[str, str] | None = None,
+                 path: str = "/studio/apps/x/actions/y") -> None:
         self._raw = b"" if payload is None else json.dumps(payload).encode("utf-8")
+        # The door reads the method, the path and the headers for the proof.
+        self.method, self.headers = "POST", dict(headers or {})
+        self.url = SimpleNamespace(path=path)
         self._on_read = on_read
         self._fails = fails
         self.reads = 0

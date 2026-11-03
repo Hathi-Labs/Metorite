@@ -806,6 +806,8 @@ class _Body:
     def __init__(self, world: Any, chunk: bytes = b"{}", repeat: int = 1,
                  fails: bool = False) -> None:
         self.world, self.chunk, self.repeat, self.fails = world, chunk, repeat, fails
+        self.method, self.headers = "POST", {}
+        self.url = SimpleNamespace(path="/studio/apps/x/actions/y")
         self.reads = 0
         self.sent = 0
 
