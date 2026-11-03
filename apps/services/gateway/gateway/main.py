@@ -523,6 +523,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.brief_jobs_skipped", error=str(exc))
     try:
+        # The chat summary kind and its seed hook register at import (WS-63
+        # PZ-33b, gateway/chat_summary_job.py). Dark: the seed needs
+        # ASSISTANT_CHAT_SUMMARY_ORGS and the Router on. Its own try, as above.
+        from gateway import chat_summary_job  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.chat_summary_jobs_skipped", error=str(exc))
+    try:
         # The stub of `align.check` registers at import (WS-ALN ALN-1,
         # gateway/align/check.py). Its own try, for the reason above.
         from gateway.align import check as _align_check  # noqa: F401
