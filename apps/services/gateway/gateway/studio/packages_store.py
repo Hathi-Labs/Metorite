@@ -55,7 +55,8 @@ is the backstop. Each writes its ``app_audit`` row in the same transaction.
 approval is J2. The install is WS-PKG, and ``apps.live_version`` is only the
 pointer of the author.
 
-**Not here.** No route and no UI. Install is WS-PKG.
+**Not here.** No UI. Install is WS-PKG. The routes are
+``routes/studio/packages.py`` (A5), which runs no SQL of its own.
 """
 
 from __future__ import annotations
@@ -112,6 +113,15 @@ _GET_SQL = (
 
 _LIST_SQL = (
     f"SELECT {_PACKAGE_COLUMNS} FROM apps "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m ORDER BY updated_at DESC, id"
+)
+
+#: The summary of A5: no manifest, so a list of 100 packages never loads 100
+#: manifests. ``manifest_id`` is the id inside the manifest.
+_SUMMARY_SQL = (
+    "SELECT id::text, slug, name, description, status, live_version, created_at, "
+    "updated_at, manifest->>'id' FROM apps "
     f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
     "AND owner_email = :m ORDER BY updated_at DESC, id"
 )
@@ -230,6 +240,21 @@ class Package:
     live_version: int | None
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True)
+class PackageSummary:
+    """One package with no manifest (STU-A5): what a list and a limit need."""
+
+    id: str
+    slug: str
+    name: str
+    description: str
+    status: str
+    live_version: int | None
+    created_at: datetime
+    updated_at: datetime
+    manifest_id: str
 
 
 @dataclass(frozen=True)
@@ -412,6 +437,17 @@ async def list_packages(db: Any, member: str) -> list[Package]:
     """The packages that *member* owns in the bound org, newest change first."""
     rows = (await db.execute(text(_LIST_SQL), {"m": _member(member)})).all()
     return [_package(r) for r in rows]
+
+
+async def list_summaries(db: Any, member: str) -> list[PackageSummary]:
+    """The packages that *member* owns in the bound org, newest change first,
+    with no manifest. One statement. A5 counts them for the limit and finds the
+    manifest id of a repeat create from them."""
+    rows = (await db.execute(text(_SUMMARY_SQL), {"m": _member(member)})).all()
+    return [PackageSummary(
+        id=str(r[0]), slug=str(r[1]), name=str(r[2]), description=str(r[3] or ""),
+        status=str(r[4]), live_version=None if r[5] is None else int(r[5]),
+        created_at=r[6], updated_at=r[7], manifest_id=str(r[8] or "")) for r in rows]
 
 
 def _jsonb(value: Any) -> Any:
