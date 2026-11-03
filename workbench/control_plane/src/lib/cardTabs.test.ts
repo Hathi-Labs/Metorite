@@ -86,7 +86,7 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
     const down = Array.from({ length: 83 }, (_, i) => 1060 - i * 10);
     const up = Array.from({ length: 83 }, (_, i) => 240 + i * 10);
     for (const room of [...down, ...up]) {
-      const was = level;
+      const was: TabLevel = level;
       level = settle(room, level);
       if (level !== was) seen.push([room, level]);
     }
