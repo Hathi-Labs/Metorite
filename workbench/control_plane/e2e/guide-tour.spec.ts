@@ -426,10 +426,13 @@ test.describe("keyboard focus", () => {
     expect(onNext).toBe(true);
     await page.keyboard.press("Enter");
     await expect(card(page)).toContainText("2 of 5");
-    await page.keyboard.press("Enter");
-    await expect(card(page)).toContainText("3 of 5");
+    // Stop 2 keeps the dock shut, so nothing else asks for the focus here.
     const inCard = await page.evaluate(() => !!document.activeElement?.closest("[data-guide-card]"));
     expect(inCard).toBe(true);
+    // A card that remounted would drop the focus to body, and this Enter would not reach stop 3.
+    // Stop 3 opens the chat, and the chat's message field takes the focus (§5.3), so the check ends here.
+    await page.keyboard.press("Enter");
+    await expect(card(page)).toContainText("3 of 5");
   });
 });
 

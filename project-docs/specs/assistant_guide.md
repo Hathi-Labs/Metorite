@@ -129,6 +129,7 @@ card. GD-5b adds the later entries when their slices land.
 The tour card floats above the dimmed page, beside the ringed part. It says one
 or two sentences about the stop. It shows "2 of 5", with Back, Next and End
 tour. The side chat stays open for questions, and the message field stays open.
+
 The card is not in the chat. On a computer, the card never covers the
 assistant panel. It sits beside the ringed part. If the part fills the page
 column, it sits over a corner of the part (stop 4 at 1280 px, panel open). A
@@ -267,7 +268,9 @@ One state machine in `src/lib/shell/guide.ts`, and one shell component,
 - **Access.** One polite live region in `GuideHost` announces each step, at
   every width. The card holds none. Focus stays on the page, so the member can
   press the ringed button. The card stays mounted for the whole tour, so a
-  member who presses Next with the keyboard keeps the focus on the card. Its
+  member who presses Next with the keyboard keeps the focus on the card. A
+  step that opens the chat is the exception: the chat's message field takes
+  the focus, so the member can type a question at once. The card's
   buttons are natural tab stops. The ring follows its anchor with no
   transition. One measure feeds the ring, the hole and the card. The dim has
   one hole, the anchor, and takes no pointer. The ring stays inside the
