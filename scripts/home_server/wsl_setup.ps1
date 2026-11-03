@@ -53,17 +53,18 @@
     [IO.File]::WriteAllText($Cfg, $text)
     return $true
   }
-  # wsl.conf goes in through a file on C:, so no quotes cross three shells.
+  # No Windows drives and no Windows programs in the distro, as in the PC's
+  # metorite-ci distro (scripts/ci_pc/provision.sh). CI runs branch code, and
+  # the agents have sudo: with interop on, either could act as this Windows
+  # admin. wsl.conf goes in on stdin, because /mnt/c is not there.
   function Set-WslConf([bool]$withUser) {
-    $text = "[boot]`nsystemd=true`n`n[network]`nhostname=metorite-home`n`n[interop]`nappendWindowsPath=false`n"
+    $text = "[boot]`nsystemd=true`n`n[network]`nhostname=metorite-home`n`n[automount]`nenabled=false`n`n[interop]`nenabled=false`nappendWindowsPath=false`n"
     if ($withUser) { $text += "`n[user]`ndefault=dev`n" }
     $now = (Wsl -d $Distro -u root -e sh -c 'cat /etc/wsl.conf 2>/dev/null; true') -join "`n"
     if (($now + "`n") -eq $text) { return $false }
-    $tmp = Join-Path $env:TEMP 'metorite-wsl.conf'
-    [IO.File]::WriteAllText($tmp, $text)
-    $linux = '/mnt/' + $tmp.Substring(0, 1).ToLower() + ($tmp.Substring(2) -replace '\\', '/')
-    InDistro "cp '$linux' /etc/wsl.conf"
-    Remove-Item $tmp
+    $ErrorActionPreference = 'Continue'
+    $text | & wsl.exe -d $Distro -u root -e sh -c "tr -d '\r' > /etc/wsl.conf"
+    if ($LASTEXITCODE -ne 0) { throw 'could not write /etc/wsl.conf' }
     return $true
   }
   function Restart-Distro {
@@ -118,8 +119,10 @@
   $action = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\wsl.exe" -Argument "-d $Distro -u root -e /bin/true"
   $boot = New-ScheduledTaskTrigger -AtStartup
   $every = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5)
-  # S4U: runs with nobody signed in, and stores no password.
-  $who = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Highest
+  # S4U: runs with nobody signed in, and stores no password. The name comes
+  # from the token: in an SSH session $env:USERDOMAIN names no real account.
+  $me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+  $who = New-ScheduledTaskPrincipal -UserId $me -LogonType S4U -RunLevel Highest
   $how = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew `
     -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
   Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($boot, $every) -Principal $who `

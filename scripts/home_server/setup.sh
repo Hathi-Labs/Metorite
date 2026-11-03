@@ -19,8 +19,10 @@
 #   - SSH with keys only, Tailscale, ufw, security updates, no sleep
 #   - Docker, git, gh, Node 20, uv with Python 3.12, Claude Code
 #   - the repo at ~dev/Metorite
-# The PC session does the rest over SSH: the repo dependencies, local CI,
-# staging and the always-on Claude sessions.
+#   - the CI runner: user ci (no sudo) with its own clone, the target of
+#     scripts/ci_local.sh
+# The PC session does the rest over SSH: staging and the always-on Claude
+# sessions.
 #
 # Ubuntu 24.04 LTS, the release production runs.
 #
@@ -36,6 +38,7 @@ GH_KEYS_USER="${GH_KEYS_USER:-vjvarada}"
 REPO_URL="https://github.com/Hathi-Labs/Metorite.git"
 ADMIN_USER=acb
 AGENT_USER=dev
+CI_USER=ci  # runs local CI (scripts/ci_local.sh); no sudo, as on the PC
 GIT_NAME="${GIT_NAME:-Vijay Raghav Varada}"
 GIT_EMAIL="${GIT_EMAIL:-vjvarada@gmail.com}"
 NODE_MAJOR=20        # pr-check pins node-version "20"
@@ -312,6 +315,23 @@ clone_repo() {
   fi
 }
 
+# The same CI runner as the PC's metorite-ci distro: a ci user with no sudo,
+# its own clone at ~ci/metorite, and the job image. scripts/ci_local.sh on
+# the PC reaches it as ci@metorite-home, port 2222.
+ci_runner() {
+  say "The CI runner: user $CI_USER, its clone and the job image (about 10 minutes)"
+  if ! id "$CI_USER" >/dev/null 2>&1; then
+    run sudo useradd -m -s /bin/bash "$CI_USER"
+    run sudo usermod -p '*' "$CI_USER"
+  fi
+  run sudo usermod -aG docker "$CI_USER"
+  run as_user "$CI_USER" "ssh-import-id gh:$GH_KEYS_USER"
+  path_first "$CI_USER"
+  run as_user "$CI_USER" 'command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh'
+  # bootstrap.sh presets the PC's CI distro too. It clones to ~ci/metorite.
+  sudo cat "$(home_of "$AGENT_USER")/Metorite/scripts/ci_pc/bootstrap.sh" | run sudo -u "$CI_USER" -H bash -s
+}
+
 github_login() {
   say "Sign in to GitHub as $AGENT_USER (sign-in 2 of 3)"
   if sudo -u "$AGENT_USER" -H gh auth status >/dev/null 2>&1; then
@@ -383,6 +403,7 @@ main() {
   install_node
   agent_tools
   clone_repo
+  ci_runner
   if [ "$NO_SIGNIN" = 1 ]; then
     note "SETUP_NO_SIGNIN=1: sign in later with 'gh auth login' and 'claude auth login' as $AGENT_USER."
   else
