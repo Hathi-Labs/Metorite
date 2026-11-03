@@ -531,9 +531,9 @@ export interface DraftWatchHost {
 }
 
 /**
- * Watch the card's draft while the card shows. It reads the state when the
- * window gets the focus, when the page shows again, every `DRAFT_POLL_MS`
- * while the page shows, and at once on `DRAFT_LEFT_EVENT` of the Email app.
+ * Watch the card's draft while the card shows. It reads the state once at
+ * mount, when the window gets the focus, when the page shows again, every
+ * `DRAFT_POLL_MS` while the page shows, and at once on `DRAFT_LEFT_EVENT`.
  * A hidden page reads nothing. On `gone` it calls `onGone` once and stops.
  * A read that comes while one runs makes one more read after it, so a send
  * during a read is not lost. Returns the stop function. A card with no
@@ -582,6 +582,9 @@ export function watchCardDraft(
   host.win.addEventListener(DRAFT_LEFT_EVENT, onEvent);
   host.doc.addEventListener("visibilitychange", onShow);
   const timer = setInterval(onEvent, opts.everyMs ?? DRAFT_POLL_MS);
+  // Fix round 1, item 5: one read at mount. A card that mounts again after a
+  // visit to /email can hold a draft that left while the card was away.
+  void check();
   function stop() {
     if (!live) return;
     live = false;

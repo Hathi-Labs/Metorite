@@ -84,12 +84,25 @@ describe("the watch of a card's draft", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  it("reads once at mount, so a card that mounts again learns at once (fix round 1, item 5)", async () => {
+    const h = host();
+    const reads = vi.fn(async (): Promise<DraftState> => "gone");
+    const onGone = vi.fn();
+    watchCardDraft(DRAFT, onGone, { read: reads, host: h });
+    await flush();
+    // No event, no focus and no tick: the mount read alone found it gone.
+    expect(reads).toHaveBeenCalledTimes(1);
+    expect(onGone).toHaveBeenCalledTimes(1);
+  });
+
   it("reads at once when the Email app says a draft left, and stops after gone", async () => {
     const h = host();
-    const states: DraftState[] = ["gone"];
+    const states: DraftState[] = ["in", "gone"];
     const reads = vi.fn(async () => states.shift() ?? "in");
     const onGone = vi.fn();
     watchCardDraft(DRAFT, onGone, { read: reads, host: h });
+    await flush();
+    expect(onGone).not.toHaveBeenCalled();
     h.win.dispatchEvent(new CustomEvent(DRAFT_LEFT_EVENT, { detail: { id: DRAFT } }));
     await flush();
     expect(reads).toHaveBeenCalledWith(DRAFT);
@@ -98,7 +111,7 @@ describe("the watch of a card's draft", () => {
     h.win.dispatchEvent(new CustomEvent(DRAFT_LEFT_EVENT));
     h.win.dispatchEvent(new Event("focus"));
     await vi.advanceTimersByTimeAsync(DRAFT_POLL_MS * 3);
-    expect(reads).toHaveBeenCalledTimes(1);
+    expect(reads).toHaveBeenCalledTimes(2);
     expect(onGone).toHaveBeenCalledTimes(1);
   });
 
@@ -106,18 +119,20 @@ describe("the watch of a card's draft", () => {
     const h = host();
     const reads = vi.fn(async (): Promise<DraftState> => "in");
     const stop = watchCardDraft(DRAFT, vi.fn(), { read: reads, host: h });
+    await flush();
+    expect(reads).toHaveBeenCalledTimes(1); // the mount read
     h.win.dispatchEvent(new Event("focus"));
     await flush();
-    expect(reads).toHaveBeenCalledTimes(1);
+    expect(reads).toHaveBeenCalledTimes(2);
     h.doc.dispatchEvent(new Event("visibilitychange"));
     await flush();
-    expect(reads).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(DRAFT_POLL_MS);
     expect(reads).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(DRAFT_POLL_MS);
+    expect(reads).toHaveBeenCalledTimes(4);
     stop();
     h.win.dispatchEvent(new Event("focus"));
     await vi.advanceTimersByTimeAsync(DRAFT_POLL_MS * 2);
-    expect(reads).toHaveBeenCalledTimes(3);
+    expect(reads).toHaveBeenCalledTimes(4);
   });
 
   it("a hidden page reads nothing", async () => {
