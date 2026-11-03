@@ -239,6 +239,14 @@ def _class_map(rows: list[dict[str, Any]]) -> dict[str, str]:
     return {str(r["id"]): str(r.get("class") or "") for r in rows}
 
 
+def _skill_classes(rows: list[dict[str, Any]]) -> dict[str, str]:
+    """The class of each action that a skill may hold. ``GET /studio/actions``
+    adds the member's own package rows (``source == "package"``), and the
+    skill route checks only ``catalog_rows()``, which never holds one. So the
+    skill tools drop them from the card and from :func:`_actions_problem`."""
+    return _class_map([r for r in rows if r.get("source") != "package"])
+
+
 # ── The result shape ────────────────────────────────────────────────────────
 
 
@@ -1348,7 +1356,7 @@ async def _held_save(
         return _route_says(422, problem)
     number = (_skill_of(first).get("current_version") or 0) + 1 if first else 1
     try:
-        classes = _class_map(await _read_catalog())
+        classes = _skill_classes(await _read_catalog())
         problem = _actions_problem(_actions_in(body), classes)
         if problem:
             return _route_says(422, problem)
@@ -1540,7 +1548,7 @@ async def _publish_after_card(sid: str, first: _Reply) -> dict[str, Any]:
     if not skill.get("current_version") or version is None:
         return _route_says(409, _NO_VERSION)
     try:
-        classes = _class_map(await _read_catalog())
+        classes = _skill_classes(await _read_catalog())
         problem = _actions_problem(_actions_in(_body_of(version)), classes)
         if problem:
             return _route_says(422, problem)  # no card for a publish that the route refuses

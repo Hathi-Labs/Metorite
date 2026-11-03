@@ -52,6 +52,10 @@ from gateway.studio import skills_store as store
 from tests.unit.test_studio_builder_tools import MEMBER, ROWS
 
 CATALOG_IDS = frozenset(r["id"] for r in ROWS)
+#: A row of the member's own package. ``GET /studio/actions`` lists it, and
+#: the skill route never serves it (``catalog_rows()`` holds no package row).
+PACKAGE_ROW = {"id": "object:items.list", "title": "List items", "class": "A",
+               "source": "package", "connection": None, "input_schema": None}
 BODY = {
     "description": "Summarise a meeting.",
     "instructions": "Read the notes. Write five bullets.",
@@ -200,7 +204,8 @@ class _Client:
     async def get(self, url: str, headers: Any = None):  # the catalog read of studio_list_actions
         if self.gw.error and self.gw.error_verb in (None, "GET"):
             raise self.gw.error
-        return httpx.Response(200, json={"actions": ROWS}, request=httpx.Request("GET", url))
+        return httpx.Response(200, json={"actions": [*ROWS, PACKAGE_ROW]},
+                              request=httpx.Request("GET", url))
 
 
 class Card:
@@ -856,6 +861,25 @@ async def test_a_held_save_with_a_bad_action_list_shows_no_card(held, card, ids,
     assert out["ok"] is False and out["status"] == 422 and _msg(out) == text
     assert out["errors"][0]["path"] == text.split(":")[0]
     assert card.shown == [] and held.sent("POST") == []
+
+
+async def test_a_held_save_of_a_package_action_shows_no_card(held, card) -> None:
+    """Review round 3, item 2: the tool checked the actions against the list
+    of ``GET /studio/actions``, which holds the member's package rows. The
+    skill route never serves one, so a card showed, then the route said 422.
+    Mutation: keep the package rows in the map of the skill tools -> red."""
+    out = await st.studio_skill_save(name="Item helper", description="d", instructions="i",
+                                     actions=[PACKAGE_ROW["id"]])
+    assert out["ok"] is False and out["status"] == 422
+    assert _msg(out) == "$.actions[0]: the catalog serves no action 'object:items.list'"
+    assert card.shown == [] and held.sent("POST") == []
+
+
+async def test_a_publish_of_a_package_action_shows_no_card(gw, card) -> None:
+    sid = gw.seed(body={**BODY, "actions": [PACKAGE_ROW["id"]]})
+    out = await st.studio_skill_state(sid, "published")
+    assert out["ok"] is False and out["status"] == 422 and card.shown == []
+    assert _msg(out) == "$.actions[0]: the catalog serves no action 'object:items.list'"
 
 
 async def test_a_publish_of_an_action_that_the_catalog_does_not_serve_shows_no_card(gw, card) -> None:
