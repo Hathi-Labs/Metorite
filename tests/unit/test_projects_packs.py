@@ -66,9 +66,10 @@ from tests.unit.test_tool_packs_choice import (
 REPO = Path(__file__).resolve().parents[2]
 PA = "projects-assistant"
 PROJECTS_DIR = REPO / "apps" / "agents" / "agent-projects"
-SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "projects-reminders")
-SIZES = {"projects": 23, "projects-plan": 35, "projects-structure": 34, "projects-bulk": 24,
-         "projects-reminders": 9}
+SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "projects-reminders",
+         "projects-authority")
+SIZES = {"projects": 23, "projects-plan": 35, "projects-structure": 34, "projects-bulk": 21,
+         "projects-reminders": 9, "projects-authority": 3}
 UUID = tc.UUID
 
 #: The eight tools that make ONE card for a batch, raised inside the tool body.
@@ -539,7 +540,7 @@ def test_the_core_rules_name_the_other_packs_and_no_tool_of_them() -> None:
     assert "call load_skill_tools with the pack that you need" not in rules.lower()
     for slug in SLUGS[1:]:
         assert tp.PACKS[slug].rules.count("Use them yourself.") == 1
-    assert max(len(tp.rules_for(slug)) for slug in SLUGS) < 3450  # OA-8g: was 3300; MT-1228: was 3400
+    assert max(len(tp.rules_for(slug)) for slug in SLUGS) < 3500  # OA-8g: was 3300; MT-1228: was 3400; ALN-4: was 3450
 
 
 # ── 7. A covered organization ───────────────────────────────────────────────
@@ -1026,11 +1027,9 @@ def test_a_mixed_email_turn_keeps_email_and_the_core_pack_at_the_measured_base(
     base = _real_base(orchestrator)
     choice = tp.choose(_surface_turn(words, surface), allowed=EVERY, base_tools=base)
     if words == "Archive tasks named in this email":
-        # WS-ALN ALN-4: projects-bulk is 24 tools (the authority page joined),
-        # so email (31) + bulk (24) + base 56 = 111 passes the cap of 110. The
-        # bulk pack cannot join and the core pack stays.
-        assert choice.slugs == ("email", "projects"), (words, choice)
-        assert "projects-bulk" in choice.skipped, (words, choice)
+        # MT-1228: projects-bulk is 21 tools now, so email (31) + bulk fits the
+        # cap at base 56 and the bulk pack takes the place of the core pack.
+        assert choice.slugs == ("email", "projects-bulk"), (words, choice)
         return
     assert choice.slugs[:2] == ("email", "projects") or (
         choice.slugs == ("email", "projects", "projects-bulk")), (words, choice)
@@ -1076,13 +1075,13 @@ def test_the_reminder_tools_are_in_one_pack_that_the_words_load() -> None:
              "reschedule_reminder", "resolve_reminder", "set_reminder",
              "update_reminder"}
     # WS-ALN ALN-2a: the other Projects packs are full, so the two tools of a
-    # decision sit here too. The three tools of the authority page sit in
-    # projects-bulk: this pack must fit under MAX_REQUEST_TOOLS.
+    # decision sit here too. The three tools of the authority page have their
+    # own pack: the reminders and bulk packs must fit under MAX_REQUEST_TOOLS.
+    authority = {"pin_authority", "project_authorities", "unpin_authority"}
     assert set(_family("projects-reminders")) == seven | {
         "answer_decision", "my_decisions"}
-    authority = {"pin_authority", "project_authorities", "unpin_authority"}
-    assert authority <= set(_family("projects-bulk"))
-    assert not authority & set(_family("projects-reminders"))
+    assert set(_family("projects-authority")) == authority
+    assert not authority & set(_family("projects-bulk"))
     assert not seven & set(_family("projects-bulk"))
     assert not seven & set(_family("projects"))
 

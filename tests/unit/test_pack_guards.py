@@ -1203,8 +1203,9 @@ CHILD_TOOLS: dict[str, frozenset[str]] = {
     "projects-structure": frozenset({
         "intake_queue", "my_areas", "my_contexts", "notifications", "project_access",
         "project_views", "watchers"}),
-    "projects-bulk": frozenset({"my_led_projects", "project_authorities"}),
+    "projects-bulk": frozenset({"my_led_projects"}),
     "projects-reminders": frozenset({"list_reminders", "my_decisions"}),
+    "projects-authority": frozenset({"project_authorities"}),
     # STU-G1: STUDIO_ORGS holds no org here, so the pack builds no tool.
     "studio": frozenset(),
 }

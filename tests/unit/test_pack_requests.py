@@ -211,13 +211,14 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "move_project": ("move the project under Sales",),
     "my_led_projects": ("which projects do I lead?",),
     "nudge_task": ("nudge the assignee of the quote task",),
-    "project_authorities": ("which page is the authority page of this project?",),
-    "pin_authority": ("pin this page as the authority of the project",),
-    "unpin_authority": ("remove the authority page of the project",),
     "revert_activity": ("undo that change",),
     "unarchive_project": ("unarchive the project Website Relaunch",),
     "unarchive_task": ("restore the archived task",),
     "watch": ("watch this task",),
+    # -- projects-authority (WS-ALN ALN-4) --
+    "project_authorities": ("which page is the authority page of this project?",),
+    "pin_authority": ("pin this page as the authority of the project",),
+    "unpin_authority": ("remove the authority page of the project",),
     # -- studio (STU-G1) --
     "studio_describe": ("which field types can a studio app manifest use?",),
     "studio_draft": ("draft an app manifest in AI Studio",),

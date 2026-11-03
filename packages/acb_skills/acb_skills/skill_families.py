@@ -611,7 +611,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "Many tasks at once, and the acts that are hard to undo: "
             "create, file, merge or bulk-edit tasks, archive, restore, "
             "move or delete a task or a project, comments and attachments, "
-            "a nudge, a revert, watch, the edit forms, and the authority page of a project."
+            "a nudge, a revert, watch, and the edit forms."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for bulk work "
@@ -619,8 +619,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "turn needs them. It holds the tools to create, file, merge and "
             "bulk-edit tasks, to archive, restore, move and delete a task "
             "or a project, to edit or delete a comment or an attachment, "
-            "a nudge, a revert, a watch, the edit forms, and the authority page "
-            "of a project. "
+            "a nudge, a revert, a watch, and the edit forms. "
             "Each act asks the member first. A run loads a pack only where "
             "tool packs are on, so until then this switch has no effect."
         ),
@@ -642,12 +641,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "move_project",
             "my_led_projects",
             "nudge_task",
-            "pin_authority",
-            "project_authorities",
             "revert_activity",
             "unarchive_project",
             "unarchive_task",
-            "unpin_authority",
             "watch",
         ),
         "owner": "projects-assistant",
@@ -682,6 +678,34 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "resolve_reminder",
             "set_reminder",
             "update_reminder",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # WS-ALN ALN-4: the authority page of a project. It has its own pack, because
+    # the reminders and bulk packs must fit under MAX_REQUEST_TOOLS in their
+    # measured turns.
+    "projects-authority": {
+        "label": "Projects authority page",
+        "summary": (
+            "The authority page of a project: read which pages are pinned "
+            "as the rules of the project, pin one, or remove a pin."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for the "
+            "authority page of a project, for the main assistant to load "
+            "when a turn names the authority page. The pack holds the tools "
+            "to read the pins of a project, to pin a page and to remove a "
+            "pin. Each change asks the member first. A run loads a pack "
+            "only where tool packs are on, so until then this switch has "
+            "no effect."
+        ),
+        "tools": (
+            "pin_authority",
+            "project_authorities",
+            "unpin_authority",
         ),
         "owner": "projects-assistant",
         "core": False,
