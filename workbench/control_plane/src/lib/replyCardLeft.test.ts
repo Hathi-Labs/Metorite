@@ -225,11 +225,14 @@ describe("the words of a card that wrote a draft", () => {
   const none = { ...form, draftId: "" };
 
   it("say that the reply is already in Drafts, and Save reads Save draft", () => {
+    // Fix round 1, item 8: Discard trashes only a draft that nobody changed.
     expect(replyHint(form)).toBe(
       "This reply is in the Drafts of Work · jane@acme.test. Send sends it now. " +
-        "Save keeps your edits in Drafts. Discard deletes it from Drafts.",
+        "Save keeps your edits in Drafts. Discard deletes it from Drafts if you did not change it there.",
     );
     expect(replyHint({ ...form, mailbox: "" })).toMatch(/^This reply is in your Drafts\. /);
+    // Each sentence holds 20 words at most (docs/style_ste.md).
+    for (const s of replyHint(form).split(". ")) expect(s.split(/\s+/).length).toBeLessThanOrEqual(20);
     expect(saveLabel(form)).toBe("Save draft");
   });
 

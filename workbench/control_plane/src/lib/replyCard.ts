@@ -466,11 +466,13 @@ export function replySummary(form: ReplyForm, replyAll: boolean, ticks?: ReplyTi
  * What the buttons do, in one line under them. A card that wrote a draft
  * (`draftId`) says that the reply is already in Drafts (owner report,
  * 2026-11-03): the old words told the member that only Save puts it there.
+ * Discard trashes only a draft that nobody changed (`trash_chat_draft`), so
+ * the words say so (fix round 1, item 8).
  */
 export function replyHint(form: ReplyForm): string {
   if (form.draftId) {
     const where = form.mailbox ? `the Drafts of ${form.mailbox}` : "your Drafts";
-    return `This reply is in ${where}. Send sends it now. Save keeps your edits in Drafts. Discard deletes it from Drafts.`;
+    return `This reply is in ${where}. Send sends it now. Save keeps your edits in Drafts. Discard deletes it from Drafts if you did not change it there.`;
   }
   const box = form.mailbox ? ` from ${form.mailbox}` : "";
   return `Send replies now${box}. Save to Drafts keeps it in your mailbox and sends nothing. Discard drops it.`;
