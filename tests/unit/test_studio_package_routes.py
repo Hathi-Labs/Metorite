@@ -860,6 +860,24 @@ def test_define_object_has_one_caller():
     assert callers == {"_sync_new_objects": {"_apply_sync"}, "_apply_sync": {"sync_objects"}}
 
 
+# The store statements of A5. RLS is the backstop, and it hides a missing org
+# filter from each test on a real database, so a source fence holds it.
+_A5_SQL = [(objects_store, "_LIST_OBJECTS_SQL"), (objects_store, "_LIST_FIELDS_SQL"),
+           (store, "_SUMMARY_SQL")]
+
+
+@pytest.mark.parametrize("module,name", _A5_SQL, ids=[n for _, n in _A5_SQL])
+def test_each_store_statement_of_a5_binds_the_org_in_each_select(module, name):
+    """Each SELECT of the statement, and each subquery, filters on the bound
+    org. No statement names an org as a value."""
+    sql = getattr(module, name)
+    bound = re.escape(f"organization_id = {module._BOUND_ORG}")
+    binds = re.findall(r"(?<![\w])(?:\w+\.)?" + bound, sql)
+    selects = re.findall(r"\bSELECT\b", sql)
+    assert selects and len(binds) >= len(selects), (name, sql)
+    assert ":org" not in sql, name
+
+
 def test_sync_objects_has_one_route_caller():
     tree = _tree()
     assert len(_calls(tree, "sync_objects")) == 1
