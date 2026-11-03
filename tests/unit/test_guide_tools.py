@@ -5,6 +5,10 @@ orchestrator's own (``orchestrator/agents.py``), and the logic is
 ``orchestrator/guide_tools.py``. They list only when ``GUIDE_ORGS`` opens the
 org, and they never call a model.
 
+The questions that must find a guide, and those that must find none, are one
+table (``test_the_question_table``). A second call that meets a move still in
+progress gets the words of ``in_app_path.MOVE_PENDING_ERROR``.
+
 Each refusal has a test: a pane the member lacks, a guide feature the member
 lacks (a guide with no ``open`` step), an admin guide for a member,
 a preview pane (through a fixture guide), an unknown id, a nested run, and a
@@ -226,9 +230,71 @@ def test_a_generic_verb_alone_never_matches() -> None:
 
 
 def test_a_missing_generic_verb_still_matches_and_a_missing_subject_does_not() -> None:
-    assert gt.ask_score(gt.tokens("create a deal"), "create a new deal") == (0.667, 2)
+    assert gt.ask_score(gt.tokens("deal for Acme"), "add a deal") == (0.0, 0)
+    assert gt.ask_score(gt.tokens("deals by stage"), "see all my deals by stage") == (0.667, 2)
     assert gt.ask_score(gt.tokens("see a deal"), "add a deal") == (0.0, 0)
     assert gt.ask_score(gt.tokens("add a note"), "add a note to a deal") == (0.0, 0)
+
+
+def test_a_generic_verb_matches_its_own_group_only() -> None:
+    assert gt.tokens("make a new deal") == gt.tokens("create a deal") == gt.tokens("add a deal")
+    assert gt.ask_score(gt.tokens("how to make a deal"), "add a deal") == (1.0, 2)
+    # "open" is of the group of "see", not of "add".
+    assert gt.ask_score(gt.tokens("how do I open a deal"), "add a deal") == (0.0, 0)
+
+
+def test_a_one_letter_word_is_no_token() -> None:
+    assert gt.tokens("a deal's stage") == frozenset({"deal", "stage"})
+
+
+def test_a_one_word_ask_matches_only_a_question_of_that_word() -> None:
+    assert gt.ask_score(gt.tokens("where is a contact"), "where is a contact") == (1.0, 1)
+    assert gt.ask_score(gt.tokens("delete a contact"), "where is a contact") == (0.0, 0)
+
+
+#: The questions that must find a guide (the id ranked first), and the
+#: questions that must find none (None). Review round 2 of GD-7.
+_TABLE: list[tuple[str, str | None]] = [
+    *((c.words, c.guide) for c in ds.CASES if c.finds),
+    ("how do I create a lead", "crm.add-lead"),
+    ("new deal", "crm.add-deal"),
+    ("log a call", "crm.log-note"),
+    ("move a deal to won", "crm.move-deal-stage"),
+    ("how to make a deal", "crm.add-deal"),
+    ("how do I add a deal for Acme Corp", "crm.add-deal"),
+    ("log a note on the Acme deal", "crm.log-note"),
+    ("where is a contact", "crm.find-contact"),
+    ("show me the pipeline", "crm.see-pipeline"),
+    ("give me a tour", "home.tour"),
+    ("tour", "home.tour"),
+    # No guide: an ask of one word, a verb of another act, or another app.
+    ("How do I start a project?", None),
+    ("how do I start a timer", None),
+    ("add a contact", None),
+    ("delete a contact", None),
+    ("edit a contact", None),
+    ("import contacts", None),
+    ("delete the pipeline", None),
+    ("export the pipeline", None),
+    ("rename the pipeline", None),
+    ("How do I add a task?", None),
+    ("how do I add a note to my project", None),
+    ("where is the CRM", None),
+]
+
+
+@pytest.mark.parametrize(("words", "want"), _TABLE, ids=[w for w, _ in _TABLE])
+def test_the_question_table(words: str, want: str | None) -> None:
+    ranked = [g.id for g in gt.rank(words, _runnable())]
+    if want is None:
+        assert ranked == [], ranked
+    else:
+        assert ranked[:1] == [want], ranked
+
+
+def test_no_guide_offers_an_add_contact_act() -> None:
+    # "add a contact" must find none only while no guide teaches it.
+    assert not any("contact" in g.id and "add" in g.id for g in gt.all_guides())
 
 
 @pytest.mark.parametrize("case", [c for c in ds.CASES if c.finds], ids=lambda c: c.id)
@@ -363,7 +429,9 @@ def test_show_guide_and_show_in_app_at_once_move_the_page_once(cold: _Queue) -> 
 
     out = _at_once(show_guide("crm.add-deal"), show_in_app("/email", "Here it is."))
     assert _moves(cold) == ["guide"], out
-    assert out[1] == {"error": "already opened a page this turn"}
+    # The second call met the mark while the first still ran: pending words.
+    assert out[1] == {"error": iap.MOVE_PENDING_ERROR}
+    assert cold._show_in_app_done is True
 
 
 def test_show_in_app_and_show_guide_at_once_move_the_page_once(cold: _Queue) -> None:
@@ -371,7 +439,29 @@ def test_show_in_app_and_show_guide_at_once_move_the_page_once(cold: _Queue) -> 
 
     out = _at_once(show_in_app("/email", "Here it is."), show_guide("crm.add-deal"))
     assert _moves(cold) == ["navigate"], out
-    assert out[1] == {"error": "already moved the page this turn"}
+    assert out[1] == {"error": iap.MOVE_PENDING_ERROR}
+
+
+def test_a_refused_holder_leaves_the_other_call_pending_words_not_moved_words(
+    cold: _Queue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from orchestrator.agents import show_guide, show_in_app
+
+    real = gt.all_guides()
+    monkeypatch.setattr(gt, "all_guides", lambda: (*real, _fixture_guide(admin_only=True)))
+    out = _at_once(show_guide("fix.thing"), show_in_app("/email", "Here it is."))
+    assert out == [{"error": "the member may not run that guide"},
+                   {"error": iap.MOVE_PENDING_ERROR}]
+    assert _moves(cold) == []
+    # Nothing moved, so the move is still free.
+    assert _open("/email")["opened"] == "/email"
+
+
+def test_a_done_mark_keeps_the_moved_words(run: _Queue) -> None:
+    assert _show("crm.add-deal")["started"] == "crm.add-deal"
+    assert run._show_in_app_done is True
+    assert _show("crm.add-lead") == {"error": "already moved the page this turn"}
+    assert _open("/email") == {"error": "already opened a page this turn"}
 
 
 def test_two_show_guides_at_once_move_the_page_once(cold: _Queue) -> None:
