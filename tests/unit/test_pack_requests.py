@@ -180,6 +180,8 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "my_contexts": ("list my contexts",),
     "notifications": ("what are my notifications?",),
     "project_access": ("who has project access?",),
+    "my_decisions": ("show my decisions that wait for me",),
+    "answer_decision": ("answer the decision on the extruder task",),
     "project_views": ("show my saved views",),
     "rename_area": ("rename the area Health to Fitness",),
     "revoke_access": ("revoke Ravi's project access",),

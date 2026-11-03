@@ -19,6 +19,7 @@ from skill_projects.forms import (
 )
 from skill_projects.guarded import (
     add_report_recipient,
+    answer_decision,
     archive_project,
     archive_task,
     attach_to_task,
@@ -57,6 +58,7 @@ from skill_projects.inbox import (
     mark_notifications_read,
     my_areas,
     my_contexts,
+    my_decisions,
     my_led_projects,
     notifications,
     project_access,
@@ -186,6 +188,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "project_access",
     "project_views",
     "watchers",
+    "my_decisions",
     # Class A — navigation (S6)
     "open_in_app",
     "show_view",
@@ -276,6 +279,7 @@ __all__ = [  # noqa: RUF022 — grouped by class, which is the reader's question
     "delete_type",
     "delete_view",
     "grant_access",
+    "answer_decision",
     "merge_tags",
     "merge_tasks",
     "move_project",

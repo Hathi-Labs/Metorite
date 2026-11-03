@@ -36,6 +36,9 @@ ORG = "aaaaaaaa-0000-0000-0000-0000000d0151"
 SESSION = "chat-d151"
 MEMBER = "jane@acme.test"
 REMIND = "remind me to call Rajendra at 5"
+#: The class C tools of the reminders pack (WS-ALN). A held chat drops each one,
+#: as every class C tool but ``promote_reminder``. The reminder writes all stay.
+_REMINDERS_PACK_OFF = frozenset({"answer_decision"})
 
 
 def _ctx() -> dict[str, Any]:
@@ -75,9 +78,9 @@ async def test_a_held_chat_keeps_the_reminder_and_says_so(monkeypatch) -> None:
     install_memory_mark_store(monkeypatch)
     await _mark_chat()
     build = await _held_build("projects-reminders")
-    assert build.held is True and build.dropped == ()
+    assert build.held is True and set(build.dropped) == _REMINDERS_PACK_OFF
     names = {ti._tool_name(t) for t in build.tools}
-    assert names == set(SKILL_FAMILIES["projects-reminders"]["tools"])
+    assert names == set(SKILL_FAMILIES["projects-reminders"]["tools"]) - _REMINDERS_PACK_OFF
     ctx = {"session_id": SESSION, "agent_name": "projects-assistant", "member": MEMBER}
     token = bind_tenant(ORG)
     try:

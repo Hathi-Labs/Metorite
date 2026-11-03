@@ -117,7 +117,7 @@ export function RecordTabBar<T extends ShellTab>({
       <Tabs
         chrome="inline"
         variant="underline"
-        tabs={tabs.map((t) => ({ id: t, label: TAB_LABEL[t] }))}
+        tabs={tabs.map((t) => ({ id: t, label: TAB_LABEL[t], guideAnchor: t === "timeline" }))}
         activeTab={active}
         onTabChange={(t) => onTab(t as T)}
       />

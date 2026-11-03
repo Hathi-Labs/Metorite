@@ -826,7 +826,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "create_type", "create_types", "defer",
     "create_area", "delete_area", "rename_area",
     "nudge_task", "export_tasks", "attach_to_task",
-    "grant_access", "revoke_access",
+    "grant_access", "revoke_access", "answer_decision", "my_decisions",
     "report_recipients", "add_report_recipient", "remove_report_recipient", "set_report_schedule",
     "waiting_agent_requests", "needs_attention",
     "delete_attachment", "delete_comment", "delete_field", "delete_project", "delete_status", "delete_task",

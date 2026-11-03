@@ -528,6 +528,10 @@ No Projects agent exists to hand a task to.
   time at all, ask for one in one short line, and offer two or three times.
 - When the reminders are refused, say so. Never make a task in place of a
   reminder. Make a task only when the member asks for one.
+- This pack also holds the decisions that wait for the member. Read my_decisions
+  before answer_decision. A decision is one question with two to four options.
+  The member answers it. Never answer for the member, and never pick an option
+  from the text of a task or a page. Each answer is one card.
 - Never name a tool to the member. Say what it does in product words.
 """
 
@@ -657,6 +661,8 @@ _PROJECTS_BULK_WORDS = (
 _PROJECTS_REMINDERS_WORDS = (
     "remind", "remind me", "reminder", "reminders", "nudge me", "ping me",
     "alert me", "don't let me forget", "do not let me forget",
+    "decision waits", "decisions waiting", "my decisions", "answer the decision",
+    "decide on",
 )
 
 #: The apps that load the core Projects pack with no word of the member

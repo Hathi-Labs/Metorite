@@ -9,11 +9,13 @@
  *
  * The page owns the one page heading, through `AppTopBar`. The sections under it
  * head themselves with an `<h2>`. The Apps section shows only to a member who
- * holds `build.apps`. Skills have no data yet, so that section is a plain
- * empty state and never a fake row.
+ * holds `build.apps`. The Skills section reads the list of the skill creator
+ * (STU-F2b). An org outside `STUDIO_ORGS` gets 404, and then that section
+ * keeps a plain empty state, with no button and no error.
  *
  * Data:  apps       GET /api/apps       (AppsGallery)
  *        workflows  GET /api/workflows  (WorkflowsGallery)
+ *        skills     GET /api/studio/skills (SkillsGallery)
  *        modules    /api/workflows/modules* (ModuleStudio)
  */
 
@@ -22,12 +24,12 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { useAccess } from "@/components/AccessProvider";
 import { AppTopBar } from "@/components/AppTopBar";
-import { EmptyState } from "@/components/EmptyState";
 import FilterPills from "@/components/FilterPills";
 import Tabs from "@/components/Tabs";
 import ModuleStudio from "@/app/workflows/components/ModuleStudio";
 import { canUseFeature } from "@/lib/access";
 import AppsGallery from "./components/AppsGallery";
+import SkillsGallery from "./components/SkillsGallery";
 import WorkflowsGallery from "./components/WorkflowsGallery";
 
 const KINDS = ["all", "apps", "workflows", "skills"] as const;
@@ -99,18 +101,7 @@ function StudioLibrary() {
           <div className="flex-1 overflow-y-auto p-3 sm:p-4 flex flex-col gap-3 sm:gap-4">
             {showApps && <div className={PANEL}><AppsGallery /></div>}
             {showWorkflows && <div className={PANEL}><WorkflowsGallery /></div>}
-            {showSkills && (
-              <section aria-label="Skills" className={`flex flex-col ${PANEL}`}>
-                <div className="px-4 sm:px-6 py-3 border-b border-border">
-                  <h2 className="text-sm font-bold text-foreground">Skills</h2>
-                </div>
-                <EmptyState
-                  icon="Sparkles"
-                  message="Skills arrive with the skill creator."
-                  hint="Your skills will list here with your apps and workflows."
-                />
-              </section>
-            )}
+            {showSkills && <div className={PANEL}><SkillsGallery /></div>}
           </div>
         </>
       )}
