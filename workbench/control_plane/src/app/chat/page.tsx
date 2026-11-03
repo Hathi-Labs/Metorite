@@ -619,7 +619,8 @@ function ChatPageInner() {
   const [recoveredInput, setRecoveredInput] = useState<string | undefined>();
   // NS-1: the command bar's "Ask the assistant" arrives as `?q=`. The words
   // land in the message box for the member to check and send. Nothing sends
-  // by itself (§6.4 rule 2). `q` then leaves the address, so a reload does
+  // by itself (§6.4 rule 2). WS-63 D-PZ-37: a link carries no typed mark,
+  // because anybody can write one, so `askInput` waits in the box unmarked. `q` then leaves the address, so a reload does
   // not type it again.
   //
   // ⚠️ Its own state, never `recoveredInput`. The session effect below clears
@@ -1306,7 +1307,6 @@ function ChatPageInner() {
                     : null
                 }
                 pendingInput={recoveredInput ?? askInput}
-                pendingInputTyped={!recoveredInput && !!askInput}
                 onPendingInputConsumed={() => {
                   setRecoveredInput(undefined);
                   setAskInput(undefined);
@@ -1385,10 +1385,10 @@ function ChatFullView() {
     openAssistant({
       mode: "full",
       sessionId: job === OPEN_CHAT_JOB && fields.session && !reminder ? fields.session : undefined,
+      // WS-63 D-PZ-37: `q` comes from a link, and anybody can write a link,
+      // a reply of Mira included. So its words wait in the box with no typed
+      // mark, and a send of them counts for nothing (`lib/typedMark.ts`).
       draft: params.get("q") ?? undefined,
-      // D-PZ-37: the command bar's Ask arrives as `q`. It waits in the box,
-      // and a send of it counts as typed (a known limit: a link can say q).
-      typed: true,
       fresh: job === "new-chat" || Boolean(reminder),
       reminder,
     });

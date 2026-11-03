@@ -3,7 +3,9 @@
  * the owner, 2026-11-02). Spec: `project-docs/specs/personalization.md`
  * §15.3 and §15.11.
  *
- * Only a message that the member typed in the message box carries the mark.
+ * Only a message that the member typed carries the mark: the message box,
+ * the shell Ask field and the ⌘K draft send it. A link, such as `/chat?q=`,
+ * never does, because anybody can write a link.
  * The gateway binds the member's typed words only with it, and the stored row
  * keeps it (`chat_message.member_typed`). A message with no mark counts for
  * nothing: it grounds no profile save, and the summary of a chat never reads

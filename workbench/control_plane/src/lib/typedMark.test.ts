@@ -15,6 +15,7 @@
  *   and in a steer, and the Next route passes it to the gateway;
  * - words that a program puts in the box take the mark away until the box
  *   is empty. The Fix prompt is such words;
+ * - a `/chat?q=` link never carries the mark (round 5, F3);
  * - a held send keeps its mark through an app update.
  *
  * Vitest runs in node with no effects, so the wiring of `AgentChat.tsx` is
@@ -152,6 +153,22 @@ describe("each send path of the chat", () => {
     expect(read("lib/shell/interviewMessage.ts")).not.toContain("typed");
     expect(read("lib/shell/AssistantDock.tsx"))
       .toContain("pendingInputTyped={!chat.recoveredInput && st.draft?.typed === true}");
+  });
+
+  it("a `/chat?q=` link never carries the mark", () => {
+    // Anybody can write a link, a reply of Mira included (an in-app link in
+    // her Markdown). So the words of `q` wait in the box with no mark, on
+    // the full view and on the old chat page. Mutation: put `typed: true`
+    // back on the draft of `q`, or name `askInput` typed -> red.
+    const page = read("app/chat/page.tsx");
+    expect(page).toContain('draft: params.get("q") ?? undefined,');
+    expect(page).not.toMatch(/typed:\s*true/);
+    expect(page).not.toContain("pendingInputTyped");
+    // AgentChat reads a missing flag as not typed.
+    expect(chat).toContain("boxMarkRef.current = filled(EMPTY_BOX, pendingInputTyped === true);");
+    // The command bar's fallback builds the link with the words only.
+    expect(read("lib/shell/CommandBar.tsx"))
+      .toContain("router.push(`/chat?q=${encodeURIComponent(words)}`)");
   });
 
   it("the store keeps the mark of an ask only when it was typed", () => {
