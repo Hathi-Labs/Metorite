@@ -519,7 +519,7 @@ def test_r8_org_b_reads_and_writes_nothing_of_org_a(world) -> None:
             out["create"] = await store.create_record(db, ANA, made.id, _RECORD, package_id=pkg)
             out["update"] = await store.update_record(db, ANA, made.id, rec.id, {"hours": 9},
                                                       package_id=pkg)
-            out["delete"] = await store.delete_record(db, made.id, rec.id, package_id=pkg)
+            out["delete"] = await store.delete_record(db, ANA, made.id, rec.id, package_id=pkg)
             out["add_field"] = await store.add_field(db, made.id, {"key": "x", "type": "text"})
             out["hot"] = await store.set_field_hot(db, made.id, "notes", True)
             out["drop"] = await store.drop_object(db, made.id)
@@ -661,7 +661,7 @@ def test_r8_a_record_call_names_its_package_and_its_object(world) -> None:
                 out[name] = (
                     await store.get_record(db, oid, rec.id, package_id=pid),
                     await store.update_record(db, ANA, oid, rec.id, {"n0": 2}, package_id=pid),
-                    await store.delete_record(db, oid, rec.id, package_id=pid),
+                    await store.delete_record(db, ANA, oid, rec.id, package_id=pid),
                     await store.create_record(db, ANA, oid, {"n0": 3}, package_id=pid)
                     if oid == mine.id else None,
                 )
@@ -693,7 +693,7 @@ def test_r8_a_hot_field_fills_its_row_on_each_write(world) -> None:
                                       package_id=made.package_id)
         out["updated"] = _hot_rows(world, rec.id)
         async with tenant_session(world.a) as db:
-            assert await store.delete_record(db, made.id, rec.id, package_id=made.package_id)
+            assert await store.delete_record(db, ANA, made.id, rec.id, package_id=made.package_id)
         out["deleted"] = _hot_rows(world, rec.id)
         return out
 
@@ -1125,7 +1125,7 @@ def test_r8_an_older_stored_spec_still_reads_and_writes(world) -> None:
             out["rec"] = rec
             assert rec is not None
             out["got"] = await store.get_record(db, made.id, rec.id, package_id=made.package_id)
-            out["deleted"] = await store.delete_record(db, made.id, rec.id,
+            out["deleted"] = await store.delete_record(db, ANA, made.id, rec.id,
                                                        package_id=made.package_id)
         return out
 

@@ -1920,11 +1920,16 @@ def test_the_batch_reads_one_deadline_for_the_recompute_and_the_key_checks() -> 
         assert "_clock" not in ast.unparse(funcs[name]), name
 
 
-def test_the_derived_write_is_a_store_write_that_checks_and_keeps_the_actor() -> None:
-    src = ast.unparse(_functions()["_derive_parent"])
+def test_the_derived_write_is_a_store_write_that_checks_and_names_the_member() -> None:
+    """The derived write names the member of the batch. Each record function
+    takes a member, the delete too, so a batch always has one."""
+    funcs = _functions()
+    src = ast.unparse(funcs["_derive_parent"])
     assert "run_formulas" in src and "validate_record" in src and "_hot_rows" in src
-    assert "batch.who or mark.updated_by" in src
+    assert "'actor': batch.who," in src and "updated_by" not in src
     assert "INSERT" not in src and "_CREATE_RECORD_SQL" not in src  # a derived write adds no row
+    for name in ("create_record", "update_record", "delete_record"):
+        assert "_actor" in _calls(funcs[name]), name
 
 
 def test_the_rollup_sql_binds_the_org_the_package_and_the_object() -> None:

@@ -66,6 +66,8 @@ shows no Seq Scan. A source in another package is refused.
 * M15. ``objects_store._run_steps``: give ``_check_keys`` a deadline of its own.
   ``test_r8_the_recompute_and_the_key_checks_share_one_deadline`` and
   ``test_the_batch_reads_one_deadline_for_the_recompute_and_the_key_checks`` go red.
+* M16. ``objects_store.delete_record``: pass an empty actor to ``_one_write`` again.
+  ``test_r8_a_single_delete_names_its_member_on_the_parent`` goes red.
 """
 
 from __future__ import annotations
@@ -536,19 +538,26 @@ def test_r8_a_derived_write_rebuilds_the_hot_rows_and_names_the_actor(world) -> 
     assert hot == 2 and _data(world, rid)["entries"] == 2
 
 
-def test_r8_a_delete_with_no_actor_keeps_the_last_actor_of_the_parent(world) -> None:
-    async def go() -> tuple[str, Any]:
+def test_r8_a_single_delete_names_its_member_on_the_parent(world) -> None:
+    """Bob makes the parent and the child. Ana deletes the child with
+    `delete_record`, so the derived write of the parent names Ana, as a batch
+    does. A delete with no member is refused before any statement."""
+    async def go() -> tuple[str, Any, Any]:
         acc, ent = await _objects(world.a, world.pkg_a, [BAL])
         async with tenant_session(world.a) as db:
             p = await store.create_record(db, BOB, acc.id, {"name": "x"}, package_id=acc.package_id)
             assert p is not None
         e = (await _put(world.a, ent, _entry(ent, p, days=4), actor=BOB))[0]
+        before = _row(world, p.id)
         async with tenant_session(world.a) as db:
-            assert await store.delete_record(db, ent.id, e.id, package_id=ent.package_id)
-        return p.id, _row(world, p.id)[0]
+            with pytest.raises(store.ObjectStoreError):
+                await store.delete_record(db, " ", ent.id, e.id, package_id=ent.package_id)
+            assert await store.delete_record(db, ANA, ent.id, e.id, package_id=ent.package_id)
+        return p.id, before, _row(world, p.id)
 
-    rid, who = _go(world, go)
-    assert _data(world, rid)["balance"] == 0 and who == BOB
+    rid, before, after = _go(world, go)
+    assert _data(world, rid)["balance"] == 0
+    assert before[0] == BOB and after[0] == ANA and after[2] > before[2]
 
 
 def test_r8_a_caller_cannot_write_a_rollup_target(world) -> None:

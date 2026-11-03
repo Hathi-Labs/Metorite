@@ -1062,13 +1062,17 @@ async def update_record(db: Any, actor: str, object_id: str, record_id: str,
     return done if isinstance(done, Record) else None
 
 
-async def delete_record(db: Any, object_id: str, record_id: str, *,
+async def delete_record(db: Any, actor: str, object_id: str, record_id: str, *,
                         package_id: str) -> bool:
     """Delete the record *record_id* of the object *object_id* of the package
     *package_id*, and its hot rows by cascade. Answers False when the bound org
-    holds no such record. This is a batch of one, so a rule of the object runs."""
-    # A delete writes no actor, so this path takes none.
-    return await _one_write(db, "", package_id, Write("delete", object_id, record_id)) is True
+    holds no such record. This is a batch of one, so a rule of the object runs.
+
+    The deleted record keeps no actor, but a roll-up parent of it gets a derived
+    write (C7b), and that write names *actor* in ``updated_by``, as a batch does.
+    """
+    who = _actor(actor)
+    return await _one_write(db, who, package_id, Write("delete", object_id, record_id)) is True
 
 
 # --- the query (C2a) --------------------------------------------------------
@@ -1677,8 +1681,6 @@ class _Mark:
     index: int
     before: dict[str, Any] | None
     after: dict[str, Any] | None
-    #: The actor that last wrote the record, for a derived write with no actor.
-    updated_by: str = ""
     #: True for a parent that only a roll-up changed (C7b). A formula of the parent
     #: can read a roll-up target and fill a key, so its key rules run too. A key rule
     #: that reads no field that the derived write changed is skipped
@@ -1794,7 +1796,7 @@ async def _lock_records(db: Any, batch: _Batch) -> None:
         if row is None:
             raise RecordNotFound("This package holds no such record.")
         data = dict(_json(row[2]))
-        batch.marks[(oid, rid)] = _Mark(oid, index, data, data, str(row[4]))
+        batch.marks[(oid, rid)] = _Mark(oid, index, data, data)
 
 
 def _live_mark(batch: _Batch, step: Write) -> _Mark:
@@ -1820,7 +1822,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
             "oid": oid, "data": record_json(clean), "actor": batch.who,
             "hot": _hot_rows(held.fields, clean)})).one()
         made = _record(row)
-        batch.marks[(oid, made.id)] = _Mark(oid, batch.index, None, clean, batch.who)
+        batch.marks[(oid, made.id)] = _Mark(oid, batch.index, None, clean)
         return made
     mark = _live_mark(batch, step)
     binds = {"oid": oid, "rid": step.record_id, "pid": batch.pid}
@@ -2050,15 +2052,15 @@ async def _lock_parents(db: Any, batch: _Batch,
             del work[key]
             continue
         data = dict(_json(row[2]))
-        batch.marks[key] = _Mark(oid, batch.firsts[key], data, data, str(row[4]), derived=True)
+        batch.marks[key] = _Mark(oid, batch.firsts[key], data, data, derived=True)
 
 
 async def _derive_parent(timed: _Timed, batch: _Batch, key: tuple[str, str],
                          data: dict[str, Any]) -> None:
     """Step 4b, the derived write of one parent. It is a store write: the
     formulas of the parent run again, the record is checked, and the hot rows
-    are rebuilt. It writes no history row. The actor is the actor of the batch,
-    and a batch with none (a single delete) keeps the actor of the last write."""
+    are rebuilt. It writes no history row. The actor is the member of the batch,
+    also for a single delete (:func:`delete_record` takes one)."""
     oid, rid = key
     held, mark = batch.objects[oid], batch.marks[key]
     plan = held.plan
@@ -2074,7 +2076,7 @@ async def _derive_parent(timed: _Timed, batch: _Batch, key: tuple[str, str],
             "and a roll-up of this object fills it. A roll-up cannot read a roll-up.")
     await timed.execute(text(_UPDATE_RECORD_SQL), {
         "oid": oid, "rid": rid, "pid": batch.pid, "data": record_json(clean),
-        "actor": batch.who or mark.updated_by, "hot": _hot_rows(held.fields, clean)})
+        "actor": batch.who, "hot": _hot_rows(held.fields, clean)})
     mark.after = clean
 
 
