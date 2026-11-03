@@ -313,7 +313,7 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
                   void submitBcc();
                 }
               }}
-              disabled={disabled || bccBusy || gone}
+              disabled={disabled || bccBusy}
               className="min-w-0 flex-1"
             />
             <Button
@@ -321,7 +321,7 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
               size="sm"
               icon="Plus"
               onClick={() => void submitBcc()}
-              disabled={disabled || !armed || bccBusy || gone || !bccDraft.trim()}
+              disabled={disabled || !armed || bccBusy || !bccDraft.trim()}
               data-reply-bcc-submit=""
             >
               {bccBusy ? "Adding…" : "Add Bcc"}
