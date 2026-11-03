@@ -17,32 +17,37 @@ This file proves, with no database:
   audit is in the session of the write, and the door reads the proof before
   the body.
 
-**The mutations (R7).** Each turns a test of this file or of the door suites
-red:
+**The mutations (R7).** Each one was applied alone on 2026-11-03, and the first
+red tests are named. ``test_studio_action_door.py`` is the hermetic door suite,
+and ``test_studio_action_door_r8.py`` is the R8 suite.
 
-* P1. Accept a missing proof (``verify`` answers True for None).
-  ``test_a_missing_or_malformed_proof_is_false``.
-* P2. Use ``==`` in place of ``compare_digest``.
-  ``test_the_compare_is_constant_time``.
-* P3. Drop the email from the HMAC. ``test_a_proof_for_another_member_is_false``.
-* P4. Drop the path from the HMAC. ``test_a_proof_for_another_path_is_false``.
-* P5. Skip the time window. ``test_an_old_proof_is_false`` and
-  ``test_a_future_proof_is_false``.
-* P6. Skip the ``user.agent`` check.
-  ``test_a_valid_proof_with_an_agent_scope_is_403`` of the door suite.
-* P7. Add create to ``OPEN_EXECUTORS``. ``test_the_direct_set_is_create_update_delete_only``.
-* P8. Write the audit with ``record_app_audit_bound``.
-  ``test_the_audit_is_in_the_write_session``.
-* P9. Write the audit after the session closes. The same test, and
-  ``test_the_direct_write_and_its_audit_share_one_session`` of the door suite.
-* P10. Catch ``ObjectStoreError`` before ``StoreBusy``.
+* M1. Accept a missing proof (``verify`` answers True for None).
+  ``test_a_missing_or_malformed_proof_is_false[None]`` and
+  ``test_a_missing_or_wrong_proof_is_403_and_writes_nothing[none-add]``.
+* M2. ``==`` in place of ``compare_digest``. ``test_the_compare_is_constant_time``.
+* M3. Drop the email from the HMAC. ``test_a_proof_for_another_member_is_false``
+  and ``test_the_shared_vector_signs_to_its_header``.
+* M4. Drop the path from the HMAC. ``test_a_proof_for_another_path_is_false``.
+* M5. Skip the time window. ``test_an_old_proof_is_false``,
+  ``test_a_future_proof_is_false`` and ``test_a_replay_outside_the_window_is_false``.
+* M6. Skip the ``user.agent`` check.
+  ``test_a_valid_proof_with_an_agent_scope_is_403`` (door suite).
+* M7. Add create to ``OPEN_EXECUTORS``. ``test_the_direct_set_is_create_update_delete_only``.
+* M8. Write the audit with ``record_app_audit_bound``.
+  ``test_the_audit_is_in_the_write_session`` and 28 door tests.
+* M9. Write the audit after the session closes. The same test, and
+  ``test_a_direct_write_runs_and_audits_in_the_same_session`` (door suite).
+* M10. Catch ``ObjectStoreError`` before ``StoreBusy`` (door suite).
   ``test_store_busy_is_503_before_object_store_error``.
-* P11. Drop the admission cap. ``test_the_fourth_writer_of_an_org_is_503_and_holds_no_session``.
-* P12. Raise ``HTTPException`` inside the session block. The R8 test
-  ``test_r8_a_refusal_keeps_its_audit_row``.
-* P13. Strip a computed key in place of refusing it.
-  ``test_r8_a_computed_field_is_refused_and_nothing_is_written``.
-* P14. Echo a value in a refusal. ``test_a_refusal_never_echoes_a_value``.
+* M11. Drop the admission cap. ``test_the_admission_caps_are_three_and_six``
+  and ``test_the_fourth_writer_of_an_org_is_503_and_holds_no_session`` (door suite).
+* M12. Raise ``HTTPException`` inside the session block (loses the audit row).
+  23 door tests, among them ``test_a_body_with_other_keys_is_422_and_writes_nothing``.
+* M13. Strip a computed key in place of refusing it. Only the R8 test
+  ``test_r8_a_computed_field_is_refused_and_nothing_is_written`` goes red,
+  because the fake store of the door suite refuses nothing.
+* M14. Echo a value in a refusal. 12 door tests, among them
+  ``test_a_body_with_other_keys_is_422_and_writes_nothing``.
 """
 
 from __future__ import annotations
