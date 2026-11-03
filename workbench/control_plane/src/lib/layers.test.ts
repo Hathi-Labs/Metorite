@@ -57,3 +57,18 @@ describe("the surfaces take their layer from the scale", () => {
     expect(dock).toContain("LAYER_CLASS.assistantDock");
   });
 });
+
+describe("a page's own layers cannot rise over the task card (TC-1 fix)", () => {
+  it("contains the /tasks list scrollers and the Calendar grid in their own stacking context", () => {
+    for (const f of [
+      "app/tasks/components/TaskListGrouped.tsx",
+      "app/tasks/components/EngageView.tsx",
+      "app/tasks/components/WaitingForView.tsx",
+    ]) {
+      expect(read(f), f).toMatch(/className="isolate flex-1 overflow-y-auto/);
+    }
+    expect(read("app/calendar/CalendarView.tsx")).toMatch(
+      /className="relative isolate flex h-full min-h-0 flex-col/,
+    );
+  });
+});

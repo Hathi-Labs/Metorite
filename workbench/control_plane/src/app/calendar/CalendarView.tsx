@@ -706,7 +706,7 @@ export function CalendarView() {
   );
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col bg-background">
+    <div className="relative isolate flex h-full min-h-0 flex-col bg-background">
       {/* The reader of `?date=&at=` (MD-3a). `useSearchParams` needs a
           Suspense boundary, and this one holds only the reader. */}
       <Suspense fallback={null}>
