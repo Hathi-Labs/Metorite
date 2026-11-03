@@ -1,3 +1,8 @@
+import { DEFAULT_OTP_MAX_AGE_S } from "@/lib/emailOtp";
+
+/** How long an email code lives, in the minutes the copy names. */
+const OTP_MINUTES = Math.round(DEFAULT_OTP_MAX_AGE_S / 60);
+
 /**
  * Friendly copy for the `?error=` codes Auth.js v5 sends back to the sign-in
  * page.
@@ -32,14 +37,37 @@
  * Spec: `customer_console.md` §6(g) · §6(j) · CP-2b clauses 6 and 9.
  * Fence: `signin.test.ts` — *"errorCopy speaks the two CP-2b codes"*, which
  * asserts neither new string matches /access denied|isn't authorized/i.
+ *
+ * ## Where an error lands (task 1529, 2026-11-03)
+ *
+ * `auth.ts` sets `pages.error` to `/signin`, so no Auth.js error reaches
+ * `@auth/core`'s built-in error page. That page was a dead end. Its "Sign in"
+ * button linked to `/api/auth/error?error=Verification/signin`, which rendered
+ * a bare "Error" card. {@link codeStepRedirect} then sends the errors of the
+ * code step back to `/signin/code`, where the person can type the code again.
  */
 export function signInErrorMessage(code: string | null): string | null {
   if (!code) return null;
   switch (code) {
     case "OAuthCallbackError":
       return "Sign-in was cancelled or failed. Try again.";
+    case "Verification":
+      // The email code did not verify: mistyped, expired, already used, or
+      // the code from an email sent to a different address. The gateway
+      // cannot tell these apart, so the copy names all four and the two ways
+      // out. A wrong code does not spend the right one (`consume_token`), so
+      // typing it again is a real option.
+      return `That code did not work. Check that you typed the newest code sent to this address. A code expires after ${OTP_MINUTES} minutes and works once. If it still fails, start again to get a new code.`;
+    case "EmailSignInError":
+      // The send leg threw: the hourly send limit, or the mail provider
+      // refused. Both clear with time, and the person can do nothing else.
+      return "We could not send a sign-in code. If you asked for several codes, wait a while before you ask again. Codes you already have still work.";
     case "Configuration":
-      return "Sign-in is misconfigured on the server. Contact your admin.";
+      // `@auth/core` maps EVERY error it does not expose to this one type: a
+      // gateway that did not answer, too many wrong codes in a row, a real
+      // config fault. So the copy says "our side" and "try again", and does not
+      // claim a misconfiguration that is usually not there.
+      return "Sign-in could not finish because of a problem on our side. Wait a minute and try again. If it keeps failing, contact your admin.";
     case "AccessDenied":
       return "Your account isn't authorized for this workspace. Ask your admin for an invite.";
     case "ConsoleUnavailable":
@@ -100,6 +128,20 @@ export function signInErrorMessage(code: string | null): string | null {
       // bug, not yours" copy, with the one action that might actually help.
       return "Something went wrong with that request. Please reload the page and try again.";
     default:
-      return `Authentication error: ${code}`;
+      // The type stays in the copy so a person who reports it gives us the
+      // one word that finds it in the log.
+      return `Sign-in failed (${code}). Try again. If it keeps failing, contact your admin.`;
   }
+}
+
+/**
+ * The page to send an Auth.js error to when it belongs to the CODE step, or
+ * `null` when `/signin` is the right page for it.
+ *
+ * `Verification` is the only such error. On `/signin` the person would have to
+ * ask for a new code. On `/signin/code` the address is still filled in (the
+ * `sessionStorage` hand-off) and they can type the code again.
+ */
+export function codeStepRedirect(code: string | null): string | null {
+  return code === "Verification" ? "/signin/code?error=Verification" : null;
 }
