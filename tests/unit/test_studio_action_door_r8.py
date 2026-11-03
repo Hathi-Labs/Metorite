@@ -1231,7 +1231,7 @@ async def _with_rules(w: Any, formula: bool = False) -> None:
         await objects_store.set_field_hot(db, w.obj, "site", True)
         if formula:
             # A formula is declared before the first record (C7a).
-            assert await objects_store.delete_record(db, w.obj, w.rec, package_id=w.pkg)
+            assert await objects_store.delete_record(db, ANA, w.obj, w.rec, package_id=w.pkg)
         rules = _RULES if formula else _RULES[:3]
         await objects_store.set_constraints(db, w.obj, rules, package_id=w.pkg)
 
