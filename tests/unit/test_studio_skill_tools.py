@@ -18,7 +18,9 @@ The fences (R7):
 * a text of a skill sits inside one frame, and a name inside « »;
 * a save refuses a text that a read cut (review round 1, finding 1);
 * each card comes from ``card_body``: it names every action, and a held chat
-  refuses a cut card (review round 1, finding 2, D169 item 9).
+  refuses a cut card (review round 1, finding 2, D169 item 9);
+* a save of a text sends ``based_on``, which only a whole read gives, and a
+  result after ``revised`` or ``stopped`` holds no long text (review round 2).
 
 Mutation runs (recorded in the PR): drop the card on a publish; drop the
 second read; take the member from the tool input; return a cut instructions
@@ -270,6 +272,13 @@ def _msg(out: dict[str, Any]) -> str:
     return out["errors"][0]["message"]
 
 
+async def _based_on(sid: str) -> str:
+    """The ``based_on`` of a full read of *sid*, as the model gets it."""
+    read = await st.studio_skill_list(sid)
+    assert read.get("based_on"), read
+    return read["based_on"]
+
+
 # -- 1. The bodies and the paths, against the real models and router -------------
 
 
@@ -279,7 +288,8 @@ async def test_a_create_a_version_a_publish_a_pause_and_a_resume_send_valid_requ
         instructions="Read the notes. Write five bullets.", actions=["tasks.list"])
     assert made["ok"], made
     sid = made["id"]
-    assert (await st.studio_skill_save(skill_id=sid, instructions="Write three bullets."))["ok"]
+    assert (await st.studio_skill_save(skill_id=sid, instructions="Write three bullets.",
+                                       based_on=await _based_on(sid)))["ok"]
     assert (await st.studio_skill_state(sid, "published"))["ok"]
     assert (await st.studio_skill_state(sid, "paused"))["ok"]
     assert (await st.studio_skill_state(sid, "published"))["ok"]
@@ -311,7 +321,7 @@ async def test_every_call_uses_the_internal_bearer_and_the_member_of_the_run(gw,
 async def test_a_body_names_no_org_member_or_visibility(gw, card) -> None:
     sid = gw.seed()
     await st.studio_skill_save(name="B", description="d", instructions="i")
-    await st.studio_skill_save(skill_id=sid, description="new")
+    await st.studio_skill_save(skill_id=sid, description="new", based_on=await _based_on(sid))
     await st.studio_skill_state(sid, "published")
     banned = {"organization_id", "org", "owner_email", "member", "visibility", "confirm"}
     for _m, _p, body, _h in gw.calls:
@@ -393,7 +403,7 @@ async def test_a_result_with_card_text_says_that_the_text_is_data(held, card, wh
     if what == "publish":
         out = await st.studio_skill_state(sid, "published")
     elif what == "save":
-        out = await st.studio_skill_save(skill_id=sid, description="New.")
+        out = await st.studio_skill_save(skill_id=sid, description="New.", based_on=await _based_on(sid))
     else:
         out = await st.studio_skill_state(sid, "paused")
     assert out["ok"] is False and out["decision"] == "stopped" and out["context"]
@@ -511,7 +521,7 @@ async def test_a_held_chat_refuses_a_cut_card_and_writes_nothing(held, card, act
                                          instructions=text)
     elif act == "version":
         sid = held.seed()
-        out = await st.studio_skill_save(skill_id=sid, instructions=text)
+        out = await st.studio_skill_save(skill_id=sid, instructions=text, based_on=await _based_on(sid))
     else:
         sid = held.seed(body={**BODY, "instructions": text},
                         state="draft" if act == "publish" else "paused")
@@ -616,7 +626,7 @@ async def _three_writes(gw):
     sid, other = gw.seed(state="published"), gw.seed("Other", state="published")
     return sid, [
         await st.studio_skill_save(name="A", description="d", instructions="i"),
-        await st.studio_skill_save(skill_id=sid, instructions="new"),
+        await st.studio_skill_save(skill_id=sid, instructions="new", based_on=await _based_on(sid)),
         await st.studio_skill_state(other, "paused"),
     ]
 
@@ -624,9 +634,10 @@ async def _three_writes(gw):
 async def test_in_a_held_chat_save_and_pause_each_show_one_card_then_write_once(held, card) -> None:
     """Mutation: swap ``write_must_show_card`` for ``no_egress_for_this_run`` -> red."""
     sid, other = held.seed(state="published"), held.seed("Other", state="published")
+    based = await _based_on(sid)
     cases = [
         (lambda: st.studio_skill_save(name="A", description="d", instructions="i"), "POST"),
-        (lambda: st.studio_skill_save(skill_id=sid, instructions="new"), "POST"),
+        (lambda: st.studio_skill_save(skill_id=sid, instructions="new", based_on=based), "POST"),
         (lambda: st.studio_skill_state(other, "paused"), "PATCH"),
     ]
     for call, verb in cases:
@@ -661,7 +672,7 @@ async def test_a_held_write_without_approval_sends_nothing(held, card, answer, o
     sid = held.seed(state="published")
     card.answer, card.open = answer, open_
     outs = [await st.studio_skill_save(name="A", description="d", instructions="i"),
-            await st.studio_skill_save(skill_id=sid, instructions="new"),
+            await st.studio_skill_save(skill_id=sid, instructions="new", based_on=await _based_on(sid)),
             await st.studio_skill_state(sid, "paused")]
     for out in outs:
         assert out["ok"] is False and out["decision"] == decision
@@ -674,7 +685,7 @@ async def test_a_held_write_on_a_skill_that_moved_under_the_card_sends_nothing(h
     sid = held.seed(state="published")
     card.between = lambda: held.add_version(sid, {**BODY, "instructions": "Other."})
     if what == "save":
-        out = await st.studio_skill_save(skill_id=sid, description="Changed.")
+        out = await st.studio_skill_save(skill_id=sid, description="Changed.", based_on=await _based_on(sid))
         assert held.sent("POST") == []
     else:
         out = await st.studio_skill_state(sid, "paused")
@@ -779,7 +790,7 @@ async def test_a_version_with_only_instructions_keeps_the_rest_of_the_body(gw, c
     """Mutation: an omitted field is sent empty, or the copy drops a key -> red."""
     stored = {**BODY, "cards": [{"k": 1}], "knowledge": {"a": ["b"]}, "tests": [1, 2]}
     sid = gw.seed(body=stored)
-    out = await st.studio_skill_save(skill_id=sid, instructions="Write three bullets.")
+    out = await st.studio_skill_save(skill_id=sid, instructions="Write three bullets.", based_on=await _based_on(sid))
     assert out["ok"], out
     newest = gw.versions[sid][-1]["body"]
     assert newest == {**stored, "instructions": "Write three bullets."}
@@ -788,7 +799,7 @@ async def test_a_version_with_only_instructions_keeps_the_rest_of_the_body(gw, c
 
 async def test_actions_none_keeps_the_list_and_an_empty_list_clears_it(gw, card) -> None:
     sid = gw.seed()
-    await st.studio_skill_save(skill_id=sid, description="Changed.")
+    await st.studio_skill_save(skill_id=sid, description="Changed.", based_on=await _based_on(sid))
     assert gw.versions[sid][-1]["body"]["actions"] == ["tasks.list"]
     await st.studio_skill_save(skill_id=sid, actions=[])
     assert gw.versions[sid][-1]["body"]["actions"] == []
@@ -797,13 +808,17 @@ async def test_actions_none_keeps_the_list_and_an_empty_list_clears_it(gw, card)
 
 
 async def test_a_save_after_a_cut_read_never_sends_back_the_cut_text(gw, card) -> None:
-    """Mutation: return a cut instructions body to a save -> red."""
+    """A cut read gives no ``based_on``, so a save of a text refuses. A save of
+    the actions merges, and the long text stays whole.
+    Mutation: return a cut instructions body to a save -> red."""
     long = "Step. " * 4000  # 24,000 characters, over the read limit
     sid = gw.seed(body={**BODY, "instructions": long})
     read = await st.studio_skill_list(sid)
-    assert read["truncated"] is True
-    await st.studio_skill_save(skill_id=sid, description="A new description.")
-    assert gw.versions[sid][-1]["body"]["instructions"] == long
+    assert read["truncated"] is True and "based_on" not in read
+    refused = await st.studio_skill_save(skill_id=sid, description="A new description.")
+    assert refused["ok"] is False and "in Studio" in _msg(refused)
+    assert (await st.studio_skill_save(skill_id=sid, actions=[]))["ok"]
+    assert gw.versions[sid][-1]["body"] == {**BODY, "instructions": long, "actions": []}
 
 
 def _inner(framed: str) -> str:
@@ -829,28 +844,32 @@ async def test_an_edit_of_a_cut_read_is_refused_and_writes_nothing(gw, card, mar
 
 
 async def test_the_cut_check_is_the_check_of_the_read_and_not_the_number(gw, card) -> None:
-    """Escapes move the cut of a read under 12,000 characters. The save reads
-    the same flag as the read. Mutation: test the length against 12,000 -> red."""
+    """Escapes move the cut of a read under 12,000 characters. The read gives
+    no ``based_on`` then. Mutation: test the length against 12,000 -> red."""
     quoted = '"\n' * 5_900  # 11,800 characters, and each one costs 2 in JSON
     sid = gw.seed(body={**BODY, "instructions": quoted})
     read = await st.studio_skill_list(sid)
     assert len(quoted) < st.MAX_SKILL_TEXT_CHARS and read["truncated"] is True
+    assert "based_on" not in read
     out = await st.studio_skill_save(skill_id=sid, instructions="A short new text.")
     assert out["ok"] is False and gw.sent("POST") == []
 
 
-async def test_a_cut_description_refuses_a_new_description_and_keeps_the_other_edits(gw, card) -> None:
-    """A cut refuses only the text that the read cut. The save of the other
-    text merges, and the stored long text stays whole."""
+async def test_a_cut_description_refuses_each_text_and_keeps_the_actions_edit(gw, card) -> None:
+    """A cut read gives no ``based_on``, so a save of either text refuses and
+    names the cut text. A save of the actions merges, and the long text stays
+    whole."""
     desc = "Describe. " * 300  # 3,000 characters, over the read limit of 2,000
     sid = gw.seed(body={**BODY, "description": desc})
     assert (await st.studio_skill_list(sid))["truncated"] is True
-    refused = await st.studio_skill_save(skill_id=sid, description="Short.")
-    assert refused["ok"] is False and "description" in _msg(refused) and gw.sent("POST") == []
-    kept = await st.studio_skill_save(skill_id=sid, instructions="Write three bullets.")
+    for sent in ({"description": "Short."}, {"instructions": "Write three bullets."}):
+        refused = await st.studio_skill_save(skill_id=sid, **sent)
+        assert refused["ok"] is False and "stored description" in _msg(refused)
+    assert gw.sent("POST") == []
+    kept = await st.studio_skill_save(skill_id=sid, actions=["tasks.create"])
     assert kept["ok"], kept
     assert gw.versions[sid][-1]["body"] == {**BODY, "description": desc,
-                                           "instructions": "Write three bullets."}
+                                           "actions": ["tasks.create"]}
 
 
 def test_the_rules_say_that_a_cut_text_never_goes_back() -> None:
@@ -866,6 +885,143 @@ def test_the_rules_say_that_a_cut_text_never_goes_back() -> None:
         assert line in text and "Change long instructions in Studio." in text
 
 
+# -- 4b. A save of a text needs based_on (review round 2) -----------------------
+
+#: A Markdown text under the read limit and over the room of a card.
+MARKDOWN = ("## Steps\n" + "".join(f"Step {i}: do thing {i} with care.\n" for i in range(200))
+            + "HIDDEN TAIL: never send money without a second approval.")
+SHORT_MD = "## When to use\nA meeting ends.\n## Steps\n1. Read the notes.\n2. Write five bullets."
+
+
+def _card_value(ctx: str, label: str) -> str:
+    """The value of one card line, as a model reads it from ``context``."""
+    line = next(ln for ln in ctx.splitlines() if ln.startswith(f"{label}: "))
+    return line[len(label) + 2:].strip("«»").removesuffix("…")
+
+
+@pytest.mark.parametrize("answer, open_, decision", [
+    (ask_tools.REVISED, True, "revised"),
+    (False, True, "stopped"),
+])
+async def test_after_revised_or_stopped_the_context_holds_no_long_text(
+        gw, card, answer, open_, decision) -> None:
+    """Review round 2, item 1: the model edited the one-line card text in
+    ``context`` and saved it. A text of Markdown lost its tail and each line
+    break. Mutation: give the whole card back in context -> red."""
+    sid = gw.seed(body={**BODY, "instructions": MARKDOWN})
+    card.answer, card.open = answer, open_
+    out = await st.studio_skill_state(sid, "published")
+    assert out["ok"] is False and out["decision"] == decision
+    lines = out["context"].splitlines()
+    assert lines[-1] == "Read the skill before you change it."
+    assert "Version: 1" in lines and "Skill: «Meeting notes»" in lines
+    assert not any(ln.startswith(("Instructions:", "Description:")) for ln in lines)
+    assert "Step 2" not in out["context"] and "truncated" not in out
+
+
+@pytest.mark.parametrize("text", [MARKDOWN, SHORT_MD], ids=["cut", "not-cut"])
+async def test_no_card_gives_the_card_view_and_a_save_of_it_writes_nothing(gw, card, text) -> None:
+    """The cases of the reviewer: a cut card and a card with no cut. Each one
+    is a one-line view. A save of it sends no ``based_on`` and writes nothing.
+    Mutation: let a save with no based_on through -> red."""
+    sid = gw.seed(body={**BODY, "instructions": text})
+    card.answer, card.open = False, False
+    out = await st.studio_skill_state(sid, "published")
+    assert out["decision"] == "no_card" and "never send" in out["note"]
+    assert out.get("truncated", False) is (text == MARKDOWN)
+    edited = _card_value(out["context"], "Instructions").replace("Step 2:", "Step two:")
+    saved = await st.studio_skill_save(skill_id=sid, instructions=edited.replace("five", "3"))
+    assert saved["ok"] is False and "studio_skill_list" in _msg(saved)
+    assert gw.sent("POST") == [] and gw.versions[sid][-1]["body"]["instructions"] == text
+
+
+async def test_a_short_text_keeps_its_line_breaks_through_read_edit_and_save(gw, card) -> None:
+    sid = gw.seed(body={**BODY, "instructions": SHORT_MD})
+    read = await st.studio_skill_list(sid)
+    assert read["truncated"] is False and read["based_on"]
+    edited = _inner(read["instructions"]).replace("five", "three")
+    out = await st.studio_skill_save(skill_id=sid, instructions=edited, based_on=read["based_on"])
+    assert out["ok"], out
+    assert gw.versions[sid][-1]["body"]["instructions"] == SHORT_MD.replace("five", "three")
+
+
+@pytest.mark.parametrize("based_on", ["", "not a hash", "0" * 64])
+async def test_a_text_save_with_a_missing_or_wrong_based_on_writes_nothing(gw, card, based_on) -> None:
+    sid = gw.seed()
+    out = await st.studio_skill_save(skill_id=sid, description="New.", based_on=based_on)
+    assert out["ok"] is False and "studio_skill_list" in _msg(out)
+    assert gw.sent("POST") == [] and len(gw.versions[sid]) == 1
+
+
+async def test_a_stale_based_on_after_another_save_is_refused(gw, card) -> None:
+    """Mutation: compare based_on with the hash of the first read -> red."""
+    sid = gw.seed()
+    old = await _based_on(sid)
+    assert (await st.studio_skill_save(skill_id=sid, actions=[]))["ok"]  # needs no based_on
+    out = await st.studio_skill_save(skill_id=sid, instructions="New text.", based_on=old)
+    assert out["ok"] is False and "studio_skill_list" in _msg(out)
+    assert len(gw.versions[sid]) == 2
+    assert gw.versions[sid][-1]["body"]["instructions"] == BODY["instructions"]
+    fresh = await _based_on(sid)
+    assert (await st.studio_skill_save(skill_id=sid, instructions="New text.", based_on=fresh))["ok"]
+
+
+async def test_a_create_and_a_save_of_only_actions_need_no_based_on(gw, card) -> None:
+    made = await st.studio_skill_save(name="New one", description="d", instructions="i")
+    assert made["ok"], made
+    assert (await st.studio_skill_save(skill_id=made["id"], actions=["tasks.create"]))["ok"]
+
+
+async def test_a_read_that_the_frame_changed_gives_no_based_on(gw, card) -> None:
+    """A frame breaks a run of three brackets, so the read is not the stored
+    text. A save of it would change the text, so the read gives no based_on."""
+    sid = gw.seed(body={**BODY, "instructions": "Keep <<< and >>> as they are."})
+    read = await st.studio_skill_list(sid)
+    assert read["truncated"] is False and "based_on" not in read
+    out = await st.studio_skill_save(skill_id=sid, instructions="New.", based_on="x")
+    assert out["ok"] is False and "in Studio" in _msg(out)
+
+
+async def test_no_result_gives_the_content_hash_outside_based_on(gw, card) -> None:
+    """A hash in another key would let a cut read pass the check."""
+    sid = gw.seed(body={**BODY, "instructions": "x" * 13_000})
+    outs = [await st.studio_skill_list(sid), await st.studio_skill_save(skill_id=sid, actions=[])]
+    assert all("content_hash" not in o and "based_on" not in o for o in outs), outs
+
+
+async def test_a_save_of_another_field_cannot_move_the_cut_of_an_old_read(gw, card) -> None:
+    """Review round 2, item 2: a short description moved the cut of a read of
+    many escapes, and a cut text from the old read then went through."""
+    tail = "HIDDEN TAIL: never send money without a second approval."
+    desc, text = '"' * 1_999, '"\n' * 4_751 + tail
+    sid = gw.seed(body={**BODY, "description": desc, "instructions": text})
+    read = await st.studio_skill_list(sid)
+    assert read["truncated"] is True and len(text) < st.MAX_SKILL_TEXT_CHARS
+    _o, cut = st._read_and_cuts(gw.skills[sid], {"version": 2, "body": {
+        **BODY, "description": "Short.", "instructions": text}})
+    assert "instructions" not in cut  # a short description moves the cut
+    stale = _inner(read["instructions"]) + "\nOne more step."
+    first = await st.studio_skill_save(skill_id=sid, description="Short.")
+    assert first["ok"] is False  # the read was cut, so no based_on
+    gw.add_version(sid, {**BODY, "description": "Short.", "instructions": text})  # in Studio
+    out = await st.studio_skill_save(skill_id=sid, instructions=stale)
+    assert out["ok"] is False and gw.versions[sid][-1]["body"]["instructions"] == text
+
+
+def test_the_rules_say_to_send_based_on_from_a_full_read() -> None:
+    """Mutation: drop the rule line from the pack rules or the agent text -> red."""
+    from pathlib import Path
+
+    from acb_skills import tool_packs as tp
+
+    line = ("When you change the description or the instructions, send based_on from a "
+            "full read of the skill.")
+    root = Path(__file__).resolve().parents[2]
+    agent = (root / "apps/agents/agent-studio-builder/instructions.md").read_text(encoding="utf-8")
+    for text in (" ".join(tp.rules_for("studio").split()), " ".join(agent.split())):
+        assert line in text
+
+
 async def test_a_name_with_a_skill_id_is_refused_and_an_empty_save_too(gw, card) -> None:
     sid = gw.seed()
     a = await st.studio_skill_save(skill_id=sid, name="Other", instructions="x")
@@ -877,7 +1033,7 @@ async def test_a_name_with_a_skill_id_is_refused_and_an_empty_save_too(gw, card)
 
 async def test_a_version_of_a_published_skill_goes_back_to_draft_and_says_so(gw, card) -> None:
     sid = gw.seed(state="published")
-    out = await st.studio_skill_save(skill_id=sid, instructions="New.")
+    out = await st.studio_skill_save(skill_id=sid, instructions="New.", based_on=await _based_on(sid))
     assert out["state"] == "draft" and "Publish it" in out["note"]
     assert card.shown == []  # a save asks on no card
 

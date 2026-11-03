@@ -640,8 +640,9 @@ def test_the_built_studio_pack_is_the_eleven_tools_as_coroutines() -> None:
 def test_the_studio_rules_name_only_tools_of_the_pack() -> None:
     """Mutation: name a tool of another pack in the rules -> red."""
     found = tp.PACKS["studio"]
-    # "no_card" is a value of the "decision" of studio_plan, not a tool.
-    named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules)) - {"no_card"}
+    # "no_card" is a value of the "decision" of studio_plan, and "based_on" a
+    # parameter of studio_skill_save (STU-F2d review round 2). Neither is a tool.
+    named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules)) - {"no_card", "based_on"}
     assert named and named <= set(STUDIO_TOOLS), named - set(STUDIO_TOOLS)
     assert found.owner == STUDIO and found.delegation_refusal
     assert tp.owner_packs(STUDIO) == ("studio",)

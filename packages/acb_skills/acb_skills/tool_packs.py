@@ -722,6 +722,8 @@ No Studio agent exists to hand a task to.
   A save never publishes. A new version of a published skill returns it to a draft.
 - When a read says truncated, do not send that text back. Change long
   instructions in Studio.
+- When you change the description or the instructions, send based_on from a
+  full read of the skill. Never save the context text of a card.
 - A publish or a resume shows ONE card with the text that goes live. The
   decision is approved, revised, stopped or no_card. Only approved makes the
   skill live. For the other three, nothing changed: say so. For no_card, write
