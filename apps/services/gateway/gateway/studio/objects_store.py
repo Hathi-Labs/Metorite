@@ -724,7 +724,9 @@ async def define_object(db: Any, actor: str, *, package_id: str, name: str,
     if int(in_package) >= MAX_OBJECTS_PER_PACKAGE:
         raise BudgetExceeded(f"A package holds at most {MAX_OBJECTS_PER_PACKAGE} objects.")
     if int(in_org) >= MAX_OBJECTS_PER_ORG:
-        raise BudgetExceeded(f"An organization holds at most {MAX_OBJECTS_PER_ORG} objects.")
+        # No route deletes a package yet (A5c), so the refusal names a next step.
+        raise BudgetExceeded(f"An organization holds at most {MAX_OBJECTS_PER_ORG} objects, "
+                             "so ask an admin to remove a package.")
     hot = sum(s.hot for s in specs)
     if hot and await _org_hot(db) + hot > MAX_HOT_PER_ORG:
         raise BudgetExceeded(f"An organization holds at most {MAX_HOT_PER_ORG} hot fields.")

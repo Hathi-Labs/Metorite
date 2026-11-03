@@ -52,7 +52,7 @@ i. The store: ``list_objects`` reads one package, and ``sync_objects`` writes in
 j. The caps: a swap of hot fields at the cap of an object or of the org
    passes, also when another member fills the org, because a cold flip that
    no stored rule reads runs first. A refusal of a field step names the
-   field.
+   field. The org cap of objects is 409, and its problem names a next step.
 
 **The mutations (R7).** Each was run on 2026-11-03. The red tests are in the
 build report. M2: drop the sync. M3: sync before the publish. M4: ignore a
@@ -1315,3 +1315,37 @@ def test_r8_a_refusal_of_the_write_phase_names_the_field(world) -> None:
             ("store_refused", "inv", key)]
         assert f"at most {objects_store.MAX_HOT_PER_ORG} hot fields" in got["problems"][0]["message"]
     assert _versions(world, pid) == [1]
+
+
+def _org_objects(world: Any) -> int:
+    with world.p.admin_engine.connect() as c:
+        return int(c.execute(text(
+            "SELECT count(*) FROM studio_objects WHERE organization_id = CAST(:o AS uuid)"),
+            {"o": world.a}).scalar_one())
+
+
+def test_r8_the_org_object_cap_names_a_next_step(world) -> None:
+    """One member can fill the org cap of objects, and no route deletes a
+    package yet (A5c). So the refusal of another member names a next step."""
+    cap, per = objects_store.MAX_OBJECTS_PER_ORG, objects_store.MAX_OBJECTS_PER_PACKAGE
+    room = cap - _org_objects(world)
+    assert room >= 0, "the org holds too many objects for this test"
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        left = room
+        while left > 0:
+            n = min(left, per)
+            objs = [{"name": f"o{i}", "fields": [{"key": "a", "type": "text"}]} for i in range(n)]
+            await _live(world.a, BEN, _manifest(_mid("big"), objs))
+            left -= n
+        pid = await _new(world.a, ANA, _manifest(_mid("late")))
+        return pid, await _publish(world.a, ANA, pid)
+
+    pid, (status, got) = _run(world, go)
+    assert _org_objects(world) == cap
+    assert status == 409, got
+    [problem] = got["problems"]
+    assert (problem["kind"], problem["object"]) == ("store_refused", "visit")
+    assert f"at most {cap} objects" in problem["message"]
+    assert "ask an admin to remove a package" in problem["message"]
+    assert _versions(world, pid) == [] and _objects(world, pid) == []
