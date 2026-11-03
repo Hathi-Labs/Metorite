@@ -1,5 +1,5 @@
 -- ============================================================================
--- 335_pm_agent_guidance.sql — the org's written rules for agents (WS-MCP
+-- 340_pm_agent_guidance.sql — the org's written rules for agents (WS-MCP
 -- SW-31a, Metorite task 1048, D140.6, D160).
 --
 -- What: one new table. `pm_agent_guidance` holds the guidance blocks of an
@@ -56,8 +56,11 @@
 -- `quote`, `level`, `state`, `proposed_by`) are for ALN-5. SW-31a writes
 -- NULL in each. A CHECK on `level` and `state` waits for that slice.
 --
--- The number was 335 at build time (R1). On 2026-11-03 origin/main held 330
--- to 332, and branches held 333 and 334. Check it again at merge.
+-- The number (R1): 335 at build time. On 2026-11-03 origin/main held 330
+-- to 332, and branches held 333 and 334. Renumbered to 340 at the merge of
+-- 2026-11-04 (fix round 1): main held 337 (PZ-33b) and 338 (Studio C7b), and
+-- premerge refuses a number at or below the highest on main. Open branches
+-- held 336 (CRM change history) and 339 (ALN-4). Check it again at merge.
 -- Pinned by tests/unit/test_agent_guidance_r8.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================
