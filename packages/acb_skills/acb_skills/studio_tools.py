@@ -64,6 +64,7 @@ import copy
 import json
 import os
 import re
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -880,6 +881,9 @@ _STALE = ("A save that changes the description or the instructions needs the bas
 _READ_FIRST = "Read the skill before you change it."
 _ONE_LINE_VIEW = ("The context is a one-line view of the card, so never send its text back "
                   "in a save.")
+#: The 422 text of ``create_skill`` for a name with no letter or digit. The
+#: tool gives the text of the route unchanged, also before a card.
+_NO_SLUG = "The name gives no slug. Send a slug of letters and digits."
 _WONT_FIT = ("The name and the actions of this skill do not fit on one card, so nothing was "
              "changed. Use a shorter name or fewer actions, then call the tool once more.")
 _ERROR_PATH = r"^(\$[^\s:]*|body[\w.]*)(?::|\s)"
@@ -993,6 +997,40 @@ def _move_problem(state: Any, target: str) -> str | None:
     if shown == target or shown in _MOVES_FROM[target]:
         return None
     return f"The skill is {_STATE_WORDS.get(shown, shown)}. It cannot move to {target}."
+
+
+def _slug_problem(name: str) -> str | None:
+    """The 422 text of ``create_skill`` for a name that gives no slug, or
+    None. ``slug_from_name`` folds an accent to its letter and keeps only the
+    ASCII letters and digits, so a name needs one of them. The tool sends no
+    slug of its own."""
+    folded = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode()
+    return None if re.search(r"[A-Za-z0-9]", folded) else _NO_SLUG
+
+
+def _route_short(value: str) -> str:
+    """An action id as the 422 of the route quotes it (``_short``)."""
+    return repr(value if len(value) <= 80 else value[:80] + "...")
+
+
+def _actions_problem(ids: list[str], classes: dict[str, str]) -> str | None:
+    """The 422 text of the route for an action list, or None. The order is the
+    order of the route: the count, a repeat, then an id that the catalog does
+    not serve (``_count_problem``, then ``_catalog_problem``). *classes* is
+    the catalog that the tool read for the card."""
+    from acb_skills.tool_packs import MAX_PACK_TOOLS
+
+    if len(ids) > MAX_PACK_TOOLS:
+        return f"$.actions: a skill holds at most {MAX_PACK_TOOLS} actions"
+    seen: set[str] = set()
+    for i, action in enumerate(ids):
+        if action in seen:
+            return f"$.actions[{i}]: the action {_route_short(action)} is in the list twice"
+        seen.add(action)
+    for i, action in enumerate(ids):
+        if action not in classes:
+            return f"$.actions[{i}]: the catalog serves no action {_route_short(action)}"
+    return None
 
 
 def _body_problem(body: dict[str, Any]) -> str | None:
@@ -1259,12 +1297,17 @@ async def _held_save(
     and a skill that moved gets no write. A create has nothing stored to move:
     the route refuses a name that the member holds."""
     body = change["body"]
-    problem = _body_problem(body)
+    # No card for a body that the route refuses: its checks, in its order.
+    problem = _slug_problem(change["name"]) if first is None else None
+    problem = problem or _body_problem(body)
     if problem:
-        return _route_says(422, problem)  # no card for a body that the route refuses
+        return _route_says(422, problem)
     number = (_skill_of(first).get("current_version") or 0) + 1 if first else 1
     try:
         classes = _class_map(await _read_catalog())
+        problem = _actions_problem(_actions_in(body), classes)
+        if problem:
+            return _route_says(422, problem)
         rows = _skill_rows({"name": change["name"]}, {"version": number, "body": body}, classes)
         context = await _card(_SAVE_NOTE, rows)
     except _Refused as exc:
@@ -1441,6 +1484,9 @@ async def _publish_after_card(sid: str, first: _Reply) -> dict[str, Any]:
         return _route_says(409, _NO_VERSION)
     try:
         classes = _class_map(await _read_catalog())
+        problem = _actions_problem(_actions_in(_body_of(version)), classes)
+        if problem:
+            return _route_says(422, problem)  # no card for a publish that the route refuses
         rows = _skill_rows(skill, version, classes)
         context = await _card(_LIVE_NOTE, rows)
     except _Refused as exc:

@@ -136,6 +136,8 @@ class Gateway:
         if parts == ["studio", "skills"] and method == "POST":
             new = skills._parse(skills._NewSkill, body)
             slug = new.slug or skills.slug_from_name(new.name)
+            if not slug:  # the check of ``create_skill``, before the body checks
+                raise HTTPException(422, "The name gives no slug. Send a slug of letters and digits.")
             if new.body is not None:
                 self._check(new.body)
             if any(s["slug"] == slug for s in self.skills.values()):
@@ -798,6 +800,70 @@ def test_the_body_check_of_the_tool_gives_the_text_of_the_store(body) -> None:
     except store.SkillStoreError as exc:
         want = str(exc)
     assert st._body_problem(body) == want
+
+
+#: A name with no Latin letter or digit, so ``slug_from_name`` gives "".
+NO_SLUG_NAME = "".join(chr(c) for c in (0x92E, 0x940, 0x91F, 0x93F, 0x902, 0x917, 0x20,
+                                         0x938, 0x939, 0x93E, 0x92F, 0x915))
+
+
+async def test_a_held_create_with_a_name_that_gives_no_slug_shows_no_card(held, card) -> None:
+    """Review round 2, item 4a: the card showed, then the route said 422.
+    Mutation: drop the slug check before the card -> red."""
+    assert skills.slug_from_name(NO_SLUG_NAME) == ""
+    out = await st.studio_skill_save(name=NO_SLUG_NAME, description="d", instructions="i")
+    assert out["ok"] is False and out["status"] == 422 and _msg(out) == st._NO_SLUG
+    assert card.shown == [] and held.sent("POST") == []
+
+
+async def test_a_clear_create_with_a_name_that_gives_no_slug_gets_the_route_answer(gw, card) -> None:
+    out = await st.studio_skill_save(name=NO_SLUG_NAME, description="d", instructions="i")
+    assert out["status"] == 422 and _msg(out) == st._NO_SLUG and len(gw.sent("POST")) == 1
+
+
+@pytest.mark.parametrize("ids, text", [
+    (["tasks.lsit"], "$.actions[0]: the catalog serves no action 'tasks.lsit'"),
+    (["tasks.list", "tasks.list"], "$.actions[1]: the action 'tasks.list' is in the list twice"),
+    ([f"a.{i}" for i in range(36)], "$.actions: a skill holds at most 35 actions"),
+], ids=["unknown", "twice", "too-many"])
+async def test_a_held_save_with_a_bad_action_list_shows_no_card(held, card, ids, text) -> None:
+    """Review round 2, item 4b: the card showed "(class ?)", then the route
+    said 422. Mutation: drop the action check before the card -> red."""
+    sid = held.seed()
+    out = await st.studio_skill_save(skill_id=sid, actions=ids)
+    assert out["ok"] is False and out["status"] == 422 and _msg(out) == text
+    assert out["errors"][0]["path"] == text.split(":")[0]
+    assert card.shown == [] and held.sent("POST") == []
+
+
+async def test_a_publish_of_an_action_that_the_catalog_does_not_serve_shows_no_card(gw, card) -> None:
+    sid = gw.seed(body={**BODY, "actions": ["tasks.lsit"]})
+    out = await st.studio_skill_state(sid, "published")
+    assert out["ok"] is False and out["status"] == 422
+    assert _msg(out) == "$.actions[0]: the catalog serves no action 'tasks.lsit'"
+    assert card.shown == [] and gw.sent("PATCH") == []
+
+
+@pytest.mark.parametrize("name", [NO_SLUG_NAME, "!!!", "   ", "", "Meeting notes", "Ünïcode",
+                                  "-x-", "a", "日本語 1"])
+def test_the_slug_check_of_the_tool_is_the_rule_of_the_route(name) -> None:
+    """Mutation: let a name of no Latin letter through -> red."""
+    assert (st._slug_problem(name) is None) is (skills.slug_from_name(name) != "")
+
+
+def test_the_slug_text_of_the_tool_is_the_text_of_the_route() -> None:
+    assert st._NO_SLUG in inspect.getsource(skills.create_skill)
+
+
+@pytest.mark.parametrize("ids", [
+    [], ["tasks.list"], ["tasks.list", "tasks.create"], ["tasks.list", "tasks.list"],
+    ["nope"], ["tasks.list", "x" * 100], [f"a.{i}" for i in range(36)],
+    [f"tasks.list{i}" for i in range(35)],
+])
+def test_the_action_check_of_the_tool_gives_the_text_of_the_route(ids) -> None:
+    """Mutation: change a text or the order of ``_actions_problem`` -> red."""
+    want = skills._count_problem(ids) or skills._catalog_problem(ids, CATALOG_IDS)
+    assert st._actions_problem(ids, {a: "A" for a in CATALOG_IDS}) == want
 
 
 async def test_in_a_held_chat_a_publish_still_shows_its_card(held, card) -> None:
