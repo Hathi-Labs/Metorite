@@ -409,8 +409,7 @@ async def test_a_chat_that_read_mail_builds_each_project_pack_with_the_table(sto
     assert tools >= KEPT_PROJECTS and tools >= CHAT_FILES
     assert not tools & OFF_PROJECTS
     reminders = {_name(t) for t in built["projects-reminders"].tools}
-    # The class C tools of this pack (the authority pins and the decision
-    # answer) are off in a held chat.
+    # The class C tool of this pack (the decision answer) is off in a held chat.
     assert reminders == set(SKILL_FAMILIES["projects-reminders"]["tools"]) - OFF_PROJECTS
 
 

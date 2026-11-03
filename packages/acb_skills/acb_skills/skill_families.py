@@ -611,7 +611,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "Many tasks at once, and the acts that are hard to undo: "
             "create, file, merge or bulk-edit tasks, archive, restore, "
             "move or delete a task or a project, comments and attachments, "
-            "a nudge, a revert, watch, and the edit forms."
+            "a nudge, a revert, watch, the edit forms, and the authority page of a project."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for bulk work "
@@ -619,7 +619,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "turn needs them. It holds the tools to create, file, merge and "
             "bulk-edit tasks, to archive, restore, move and delete a task "
             "or a project, to edit or delete a comment or an attachment, "
-            "a nudge, a revert, a watch, and the edit forms. "
+            "a nudge, a revert, a watch, the edit forms, and the authority page "
+            "of a project. "
             "Each act asks the member first. A run loads a pack only where "
             "tool packs are on, so until then this switch has no effect."
         ),
@@ -641,9 +642,12 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "move_project",
             "my_led_projects",
             "nudge_task",
+            "pin_authority",
+            "project_authorities",
             "revert_activity",
             "unarchive_project",
             "unarchive_task",
+            "unpin_authority",
             "watch",
         ),
         "owner": "projects-assistant",
@@ -656,8 +660,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "summary": (
             "The member's own reminders, which are not tasks: set one, list "
             "them, change the time, snooze, resolve, reopen, or promote one "
-            "to a task, answer a decision that waits for you, or read the "
-            "authority pages of a project."
+            "to a task, or answer a decision that waits for you."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "
@@ -673,14 +676,11 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "answer_decision",
             "list_reminders",
             "my_decisions",
-            "pin_authority",
-            "project_authorities",
             "promote_reminder",
             "reopen_reminder",
             "reschedule_reminder",
             "resolve_reminder",
             "set_reminder",
-            "unpin_authority",
             "update_reminder",
         ),
         "owner": "projects-assistant",

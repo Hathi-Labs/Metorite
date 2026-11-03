@@ -67,8 +67,8 @@ REPO = Path(__file__).resolve().parents[2]
 PA = "projects-assistant"
 PROJECTS_DIR = REPO / "apps" / "agents" / "agent-projects"
 SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "projects-reminders")
-SIZES = {"projects": 23, "projects-plan": 35, "projects-structure": 34, "projects-bulk": 21,
-         "projects-reminders": 12}
+SIZES = {"projects": 23, "projects-plan": 35, "projects-structure": 34, "projects-bulk": 24,
+         "projects-reminders": 9}
 UUID = tc.UUID
 
 #: The eight tools that make ONE card for a batch, raised inside the tool body.
@@ -1026,9 +1026,11 @@ def test_a_mixed_email_turn_keeps_email_and_the_core_pack_at_the_measured_base(
     base = _real_base(orchestrator)
     choice = tp.choose(_surface_turn(words, surface), allowed=EVERY, base_tools=base)
     if words == "Archive tasks named in this email":
-        # MT-1228: projects-bulk is 21 tools now, so email (31) + bulk fits the
-        # cap at base 56 and the bulk pack takes the place of the core pack.
-        assert choice.slugs == ("email", "projects-bulk"), (words, choice)
+        # WS-ALN ALN-4: projects-bulk is 24 tools (the authority page joined),
+        # so email (31) + bulk (24) + base 56 = 111 passes the cap of 110. The
+        # bulk pack cannot join and the core pack stays.
+        assert choice.slugs == ("email", "projects"), (words, choice)
+        assert "projects-bulk" in choice.skipped, (words, choice)
         return
     assert choice.slugs[:2] == ("email", "projects") or (
         choice.slugs == ("email", "projects", "projects-bulk")), (words, choice)
@@ -1073,11 +1075,14 @@ def test_the_reminder_tools_are_in_one_pack_that_the_words_load() -> None:
     seven = {"list_reminders", "promote_reminder", "reopen_reminder",
              "reschedule_reminder", "resolve_reminder", "set_reminder",
              "update_reminder"}
-    # WS-ALN ALN-4 and ALN-2a: the other Projects packs are full, so the three
-    # tools of the authority page and the two tools of a decision sit here too.
-    authority = {"pin_authority", "project_authorities", "unpin_authority"}
-    assert set(_family("projects-reminders")) == seven | authority | {
+    # WS-ALN ALN-2a: the other Projects packs are full, so the two tools of a
+    # decision sit here too. The three tools of the authority page sit in
+    # projects-bulk: this pack must fit under MAX_REQUEST_TOOLS.
+    assert set(_family("projects-reminders")) == seven | {
         "answer_decision", "my_decisions"}
+    authority = {"pin_authority", "project_authorities", "unpin_authority"}
+    assert authority <= set(_family("projects-bulk"))
+    assert not authority & set(_family("projects-reminders"))
     assert not seven & set(_family("projects-bulk"))
     assert not seven & set(_family("projects"))
 
