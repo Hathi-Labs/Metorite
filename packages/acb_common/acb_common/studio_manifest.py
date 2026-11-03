@@ -81,6 +81,13 @@ OBJECT_OP_CLASSES: dict[str, str] = {
     "delete": "C",
 }
 
+#: The head of the refusal of a view source that writes (STU-B2c-1, fix round 1).
+#: A page reads each source when it opens, on window focus and on refresh, with
+#: no click. So a source must resolve to a read: an object ``list`` or ``get``,
+#: or an action of class A in the catalog. `_check_view_source` refuses each
+#: other source. A test reads this text, so keep it stable.
+SOURCE_NOT_A_READ = "A view source must read data."
+
 #: The 13 contribution points of package_host.md section 4.
 CONTRIBUTION_POINTS: tuple[str, ...] = (
     "nav", "page", "jobs", "search", "needs", "cards", "skill", "actions",
@@ -677,6 +684,42 @@ def _check_view(
             _undeclared(f"{p}.actions[{i}]", "Action", name, "`actions`", out)
 
 
+def _check_view_source(
+    vi: int,
+    v: ViewDef,
+    uses_by_id: Mapping[str, str],
+    catalog: Mapping[str, str] | None,
+    out: list[ManifestError],
+) -> None:
+    """A view source is a read (STU-B2c-1, fix round 1).
+
+    A page reads each source with no click, so a source that writes would
+    write each time the page opens. The class of an object op comes from
+    `OBJECT_OP_CLASSES`, and the class of each other action from the catalog.
+    Only class A passes. With no catalog, the class of a door op is unknown,
+    so publish checks it. `_check_view` and `_check_uses` refuse an id or a
+    `uses` that names nothing, so this check skips them."""
+    name = v.source.action if v.source else None
+    uses = uses_by_id.get(name) if name else None
+    ref = parse_uses(uses)
+    if uses is None or ref is None:
+        return
+    if ref.source == "object":
+        cls = OBJECT_OP_CLASSES.get(str(ref.op))
+    elif catalog is None or catalog.get(uses) not in set(CLASSES) - {"X"}:
+        return
+    else:
+        cls = catalog[uses]
+    if cls != "A":
+        out.append(
+            _err(
+                f"$.views[{vi}].source.action",
+                f"{SOURCE_NOT_A_READ} Use the list or get action of an object,"
+                f" or an action of class A.{_got(uses)}",
+            )
+        )
+
+
 def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> None:
     """A page lays out declared views. A page has tabs or cells, never both."""
     _dupes([p.id for p in m.pages], "$.pages", "page id", out)
@@ -835,8 +878,13 @@ def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[Man
         if bad:
             out.append(bad)
         _check_set_keys(ai, a, objects, out)
+    # The door runs the first action of an id, so the first one wins here too.
+    uses_by_id: dict[str, str] = {}
+    for a in m.actions:
+        uses_by_id.setdefault(a.id, a.uses)
     for vi, v in enumerate(m.views):
         _check_view(vi, v, objects, action_ids, out)
+        _check_view_source(vi, v, uses_by_id, catalog, out)
     _check_pages(m, {v.id for v in m.views}, out)
     _check_links(m, objects, catalog, out)
     return out
