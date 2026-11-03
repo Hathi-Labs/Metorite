@@ -51,6 +51,11 @@ shows no Seq Scan. A source in another package is refused.
   ``test_r8_a_field_that_a_rollup_reads_cannot_turn_cold`` goes red.
 * M10. ``studio_rules.refuse_computed_keys``: ignore the roll-up targets.
   ``test_r8_a_caller_cannot_write_a_rollup_target`` goes red.
+* M11. ``objects_store._check_records``: skip each derived mark again.
+  ``test_r8_a_child_write_that_breaks_a_group_floor_through_a_formula_is_refused`` and
+  ``test_r8_a_child_write_that_makes_a_unique_key_clash_through_a_formula_is_refused`` go red.
+* M12. ``objects_store._derived_moves``: answer True.
+  ``test_r8_a_derived_write_reads_no_key_whose_fields_it_leaves_alone`` goes red.
 """
 
 from __future__ import annotations
@@ -1056,6 +1061,103 @@ def test_r8_a_target_cannot_be_a_key_of_another_rule(world) -> None:
 
     for message in _go(world, go):
         assert "is a key of rule" in message and "fills no key" in message
+
+
+# -- the key rules of a derived parent ------------------------------------------------
+#
+# A formula of the parent can read a roll-up target, and its own target can be a key.
+# The derived write then moves a key, so the key rules of the parent must run on it.
+
+_SPARE_FIELDS: list[dict[str, Any]] = [
+    {"key": "name", "type": "text", "hot": True},
+    {"key": "team", "type": "text", "hot": True},
+    {"key": "used", "type": "number"},
+    {"key": "spare", "type": "number", "hot": True},
+]
+USED = _roll("used_of", "used", "sum", "days")
+SPARE = {"name": "spare_of", "kind": "formula", "target": "spare", "rounding": "half_up",
+         "expr": {"fn": "sub", "args": [{"num": "10"}, {"ref": "used"}]}}
+TEAM_FLOOR = {"name": "team_floor", "kind": "group_sum_min", "field": "spare",
+              "group_by": ["team"], "min": 1}
+ONE_SPARE = {"name": "one_spare", "kind": "unique", "fields": ["spare"]}
+
+
+def test_r8_a_child_write_that_breaks_a_group_floor_through_a_formula_is_refused(world) -> None:
+    """`spare` is 10 minus the sum of the days, and the floor of each team is 1.
+    A child of 25 days would leave `spare` at -15, so the batch is refused, and
+    the parent stays editable."""
+    async def go() -> tuple[BatchError, int, Any, Any, Any]:
+        acc, ent = await _objects(world.a, world.pkg_a, [USED, SPARE, TEAM_FLOOR],
+                                  account_fields=_SPARE_FIELDS)
+        p = await _acct(world.a, acc, team="t")
+        err = await _refused(world.a, ent, _entry(ent, p, days=25))
+        rows, kept = _rows(world, ent), _data(world, p.id)["spare"]
+        await _give(world.a, ent, p, days=5)
+        after = _data(world, p.id)["spare"]
+        await _put(world.a, acc, Write("update", acc.id, p.id, {"name": "renamed"}))
+        return err, rows, kept, after, _data(world, p.id)["name"]
+
+    err, rows, kept, after, name = _go(world, go)
+    assert isinstance(err.cause, ConstraintViolation) and err.cause.rule == "team_floor"
+    assert err.index == 0 and rows == 0 and kept == 10
+    assert after == 5 and name == "renamed"
+
+
+def test_r8_a_child_write_that_makes_a_unique_key_clash_through_a_formula_is_refused(world) -> None:
+    """Two parents may not reach the same `spare`, also through derived writes."""
+    async def go() -> tuple[BatchError, Any, Any, int]:
+        acc, ent = await _objects(world.a, world.pkg_a, [USED, SPARE, ONE_SPARE],
+                                  account_fields=_SPARE_FIELDS)
+        p1 = await _acct(world.a, acc, name="one")
+        await _give(world.a, ent, p1, days=3)
+        p2 = await _acct(world.a, acc, name="two")
+        err = await _refused(world.a, ent, _entry(ent, p2, days=3))
+        return err, _data(world, p1.id)["spare"], _data(world, p2.id)["spare"], _rows(world, ent)
+
+    err, one, two, rows = _go(world, go)
+    assert isinstance(err.cause, ConstraintViolation) and err.cause.rule == "one_spare"
+    assert (one, two, rows) == (7, 10, 1)
+
+
+def test_r8_a_derived_write_reads_no_key_whose_fields_it_leaves_alone(world) -> None:
+    """A declaration does not check old data (C1b), so two parents can share a
+    `unique` name. A child write changes only computed fields of its parent, so
+    it never reads the name, and the old clash does not block it."""
+    async def go() -> tuple[Any, int]:
+        acc, ent = await _objects(world.a, world.pkg_a, [USED], account_fields=_SPARE_FIELDS)
+        p = await _acct(world.a, acc, name="same")
+        await _acct(world.a, acc, name="same")
+        async with tenant_session(world.a) as db:
+            done = await store.set_constraints(
+                db, acc.id, [USED, {"name": "one_name", "kind": "unique", "fields": ["name"]}],
+                package_id=acc.package_id)
+        assert done is not None
+        await _give(world.a, ent, p, days=4)
+        return _data(world, p.id)["used"], _rows(world, ent)
+
+    assert _go(world, go) == (4, 1)
+
+
+def test_r8_a_formula_cannot_fill_a_state_machine_field(world) -> None:
+    """A state machine reads a select field, and a formula fills no select. So a
+    derived write never moves a state: the declaration is refused."""
+    fields = [*_SPARE_FIELDS, {"key": "stage", "type": "select", "options": ["low", "ok"]}]
+    stage = {"name": "stage_of", "kind": "formula", "target": "stage",
+             "expr": {"fn": "if", "args": [
+                 {"fn": "lt", "args": [{"ref": "used"}, {"num": "5"}]},
+                 {"text": "ok"}, {"text": "low"}]}}
+    machine = {"name": "flow", "kind": "state_machine", "field": "stage", "initial": "ok",
+               "moves": [{"from": "ok", "to": "low"}]}
+
+    async def go() -> str:
+        acc, _ent = await _objects(world.a, world.pkg_a, [], account_fields=fields)
+        async with tenant_session(world.a) as db:
+            with pytest.raises(ConstraintError) as refused:
+                await store.set_constraints(db, acc.id, [USED, stage, machine],
+                                            package_id=acc.package_id)
+        return str(refused.value)
+
+    assert "stage_of" in _go(world, go)
 
 
 def test_r8_a_rollup_of_a_rollup_is_refused_in_both_orders(world) -> None:

@@ -136,7 +136,8 @@ finds the parent objects from the package rules after the org lock, and
 records follow the child records, ``FOR NO KEY UPDATE`` in ascending id.
 :func:`_recompute_parents` runs one aggregate (:func:`build_rollup`) for each
 parent and each roll-up, and :func:`_derive_parent` writes the parent: the
-formulas run again, the record is validated, and the hot rows are rebuilt. At
+formulas run again, the record is validated, and the hot rows are rebuilt. The
+rules of the parent run on the derived write too, the key rules included. At
 most :data:`~acb_common.studio_rules.MAX_ROLLUP_PARENTS` parents and
 :data:`~acb_common.studio_rules.MAX_ROLLUP_STATEMENTS` aggregates run for each
 batch, under the one deadline of the batch. A parent id that names no record is
@@ -242,6 +243,7 @@ from acb_common.studio_rules import (
     refuse_computed_keys,
     rollup_parents,
     rollup_result,
+    rule_reads,
     run_formulas,
     stored_rules,
     touched_keys,
@@ -1676,8 +1678,10 @@ class _Mark:
     after: dict[str, Any] | None
     #: The actor that last wrote the record, for a derived write with no actor.
     updated_by: str = ""
-    #: True for a parent that only a roll-up changed (C7b). It is no caller write,
-    #: so its keys need no check: no roll-up target is a key of a rule.
+    #: True for a parent that only a roll-up changed (C7b). A formula of the parent
+    #: can read a roll-up target and fill a key, so its key rules run too. A key rule
+    #: that reads no field that the derived write changed is skipped
+    #: (:func:`_derived_moves`).
     derived: bool = False
 
 
@@ -1834,6 +1838,15 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     return _record(row)
 
 
+def _derived_moves(rule: Rule, mark: _Mark) -> bool:
+    """True when the derived write of a roll-up parent changed a field that
+    *rule* reads (C7b). A derived write changes only computed fields, so a key
+    rule that reads none of them cannot break, and the store reads no key for
+    it. An old clash on such a key then does not block a child write."""
+    before, after = mark.before or {}, mark.after or {}
+    return any(before.get(k) != after.get(k) for k in rule_reads(rule))
+
+
 def _check_records(batch: _Batch) -> dict[tuple[str, Rule, tuple[Any, ...]], int]:
     """Step 5, and the keys of step 6, each with its first write. On a floor
     of 0 or less, a key that the batch does not lower stays out: the values of
@@ -1851,7 +1864,9 @@ def _check_records(batch: _Batch) -> dict[tuple[str, Rule, tuple[Any, ...]], int
                 check_range(rule, held.name, mark.after)
             if rule.kind == STATE_MACHINE:
                 check_move(rule, held.name, mark.before, mark.after)
-            for key in [] if mark.derived else touched_keys(rule, mark.before, mark.after):
+            if mark.derived and not _derived_moves(rule, mark):
+                continue
+            for key in touched_keys(rule, mark.before, mark.after):
                 at = (mark.object_id, rule, key)
                 keys.setdefault(at, mark.index)
                 if floor_holds_at_zero(rule):
@@ -1905,8 +1920,11 @@ async def _check_keys(db: Any, batch: _Batch,
 #
 # The derived write is a store write: it re-runs the formulas of the parent,
 # validates, rebuilds the hot rows, and sets `updated_at` and `updated_by`. It
-# writes no history row. The checks of the parent (`range`, a state machine) run
-# in `_check_records`, with the marks of the batch.
+# writes no history row. The checks of the parent run in `_check_records`, with the
+# marks of the batch: `range`, a state machine, and each `unique` and
+# `group_sum_min` that reads a field which the derived write changed. A formula
+# can read a roll-up target and fill a key, so a child write can break a key rule
+# of its parent, and then the whole batch is refused.
 
 #: The aggregate of a sum, a min and a max over the hot rows of the read field.
 _ROLLUP_NUMBER_AGG: Mapping[str, str] = {
