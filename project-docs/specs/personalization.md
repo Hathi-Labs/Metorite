@@ -1828,14 +1828,14 @@ fewer gets no summary, and so does a chat that holds only the day's brief or
 only tapped rows.
 
 **The cheap filter of the seed (PZ-33b round 4, review P2).** `IDLE_SQL`
-reads `s.updated_at >= :since` first. The measured plan was a BitmapAnd of
-`chat_session_org_idx` and `chat_session_user_idx`. Only the phase-3 set
-`generated/03_constraints.sql` makes the first index. Without it the planner
-reads the second index or scans the table, which is cheap at today's size.
-The LATERAL on
-the newest row stays the exact rule. On 8,000 chats with 300 in the window,
-the round 3 form took 9.8 seconds, and this form took 28 milliseconds (a
-private database, 2026-11-02).
+reads `s.updated_at >= :since` first. The LATERAL on the newest row stays the
+exact rule. On 8,000 chats with 300 in the window, the round 3 form took 9.8
+seconds, and this form took 28 milliseconds (a private database, 2026-11-02).
+
+The measured plan was a BitmapAnd of `chat_session_org_idx` and
+`chat_session_user_idx`. Only the phase-3 set `generated/03_constraints.sql`
+makes the first index. Without it the planner reads the second index or
+scans the table, which is cheap at today's size.
 
 Each insert through the one seam `routes/chat.py::_upsert_messages` moves
 `updated_at` (`_TOUCH_SESSION_SQL`). That seam holds the one
