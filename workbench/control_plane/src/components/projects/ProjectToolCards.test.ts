@@ -431,5 +431,13 @@ describe("the one-card batches of writes.py (2026-10-18)", () => {
     ].join(NL);
     expect(batchNotes(linked)).toEqual([]);
     expect(classifyActionResult(linked, "done", "link_tasks_batch")).toBe("done");
+    // WS-PJP PJP-4: the line of update_tasks is for the model too.
+    const changed = [
+      "Changed 1 of 1 task:",
+      "- #11 «Fix the login» · unassigned · in «Website»",
+      `  full_id: ${ID2}`,
+      "The 1 task listed above changed. Do not change them again. To retry a row that was not changed, fix it and call update_tasks with that row only.",
+    ].join(NL);
+    expect(batchNotes(changed)).toEqual([]);
   });
 });

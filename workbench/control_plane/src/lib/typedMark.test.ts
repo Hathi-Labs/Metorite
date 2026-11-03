@@ -124,8 +124,9 @@ describe("each send path of the chat", () => {
   it("a pill, a choice, a feed starter and a card action go through handleChoice, with no mark", () => {
     const choice = chat.match(/const handleChoice = useCallback\(\s*\(choice: string\) => \{([^}]*)\}/);
     expect(choice?.[1].trim()).toBe("submitText(choice);");
-    // The feed starters and the "Follow up" pills.
-    expect(chat.match(/onPick=\{handleChoice\}/g)).toHaveLength(2);
+    // The feed starters, the starter pills under the day's brief (WS-62
+    // CF-4b) and the "Follow up" pills.
+    expect(chat.match(/onPick=\{handleChoice\}/g)).toHaveLength(3);
     // The choices and the card actions in a bubble (`MessageBubble.renderGenUi`).
     expect(chat).toMatch(/onChoice=\{handleChoice\}/);
     const bubble = read("components/MessageBubble.tsx");

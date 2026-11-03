@@ -53,6 +53,7 @@ from acb_common.studio_fields import (
     FieldError,
     FieldSpec,
     check_value,
+    relation_key,
     storable_text,
 )
 
@@ -95,11 +96,14 @@ OPS_BY_TYPE: Mapping[str, frozenset[str]] = {
     "date": _TIME_OPS,
     "datetime": _TIME_OPS,
     "checkbox": frozenset({"eq", "ne", "is_empty"}),
+    # A relation holds an id (C7b). It joins a child to its parent, and it has no order.
+    "relation": frozenset({"eq", "ne", "in", "is_empty"}),
 }
 
 #: The types that a sort takes. A sort needs a hot field, and ``v_bool`` has
-#: no index, so a checkbox field takes no sort.
-SORT_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"checkbox"}
+#: no index, so a checkbox field takes no sort. An id has no useful order, so a
+#: relation field takes none either.
+SORT_TYPES: frozenset[str] = frozenset(OPS_BY_TYPE) - {"checkbox", "relation"}
 
 # --- the errors -------------------------------------------------------------
 
@@ -332,6 +336,10 @@ def _pattern(field: FieldSpec, value: Any) -> str:
 def _scalar(field: FieldSpec, value: Any) -> Any:
     if field.type in ("number", "money"):
         return _number(field, value)
+    if field.type == "relation":
+        # The bare id is the plain form, and {"id": ...} is the form of a record.
+        checked = _checked(field, {"id": value} if isinstance(value, str) else value)
+        return relation_key(checked["id"])
     return _checked(field, value)
 
 

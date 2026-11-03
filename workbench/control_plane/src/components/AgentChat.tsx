@@ -25,11 +25,12 @@ import type { FileEntry } from "@/components/ArtifactSidebar";
 import FileUploadButton from "@/components/FileUploadButton";
 import { uploadNote } from "@/lib/chatUpload";
 import { AgentAvatar, useAgentAvatars } from "@/components/AgentAvatar";
-import SuggestionPills from "@/components/SuggestionPills";
+import SuggestionPills, { type SuggestionItem } from "@/components/SuggestionPills";
 import InterviewOffer from "@/components/profile/InterviewOffer";
 import { starterPills } from "@/lib/starterPills";
 import { chatFirstOn } from "@/lib/shell/chatFlag";
-import { type FeedAnswer, feedKey, fetchFeed } from "@/lib/shell/feed";
+import { type FeedAnswer, feedAppIcon, feedKey, fetchFeed } from "@/lib/shell/feed";
+import { holdsOnlyBrief } from "@/lib/shell/briefTurn";
 import { useCachedResource } from "@/lib/useCachedResource";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
 import ConfirmationReceipts from "@/components/ConfirmationReceipts";
@@ -689,18 +690,23 @@ export default function AgentChat({
   // starter pill: `starterPills` is the one pure rule. My Day owns the poll
   // and the focus read, so the chat only looks.
   const [chatFirst] = useState(() => chatFirstOn());
-  const starterFeedWanted = chatFirst && isOrchestrator && !loadingHistory && messages.length === 0;
+  // CF-4b: a fresh chat is empty, or holds only the day's brief (a phone's
+  // first turn, CF-5) with no word from the member. The brief row has its own
+  // id (`holdsOnlyBrief`), so a chat that a reminder opens is not a fresh chat.
+  const briefOnly = holdsOnlyBrief(messages);
+  const starterFeedWanted =
+    chatFirst && isOrchestrator && !loadingHistory && (messages.length === 0 || briefOnly);
   const starterFeed = useCachedResource<FeedAnswer>(starterFeedWanted ? feedKey() : null, () => fetchFeed(), {
     revalidateOnFocus: false,
   });
   const starterFeedCards = starterFeed.data?.cards;
-  const starters = useMemo(
+  const starters = useMemo<SuggestionItem[]>(
     () =>
       starterPills({
         chatFirst: starterFeedWanted,
         cards: starterFeedCards,
         fallback: AGENT_SUGGESTIONS[currentAgentName] ?? DEFAULT_SUGGESTIONS,
-      }),
+      }).map((p) => ({ label: p.label, message: p.message, icon: p.app ? feedAppIcon(p.app) : undefined })),
     [starterFeedWanted, starterFeedCards, currentAgentName],
   );
 
@@ -2515,7 +2521,15 @@ export default function AgentChat({
 
           {/* No follow-up pills under a cut answer or during an update: the
               notice below is the next step, and it sits right under the answer. */}
-          {!isLoading && !outage && !interruptedId && messages.length > 0 && (() => {
+          {/* CF-4b: under the day's brief the starter pills show, not the follow-ups. */}
+          {briefOnly && starterFeedWanted && !isLoading && (
+            <SuggestionPills
+              suggestions={starters}
+              onPick={handleChoice}
+              align="start"
+            />
+          )}
+          {!isLoading && !outage && !interruptedId && messages.length > 0 && !(briefOnly && starterFeedWanted) && (() => {
             const last = lastNonSteer(messages);
             if (last?.role === "assistant" && last.content.trim() && !last.streaming) {
               return (

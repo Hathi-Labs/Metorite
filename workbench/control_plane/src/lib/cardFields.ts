@@ -76,6 +76,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   // `link_tasks_batch` (2026-10-19): a link the batch leaves out, and why.
   "cannot link N": { label: "Cannot link", plural: "Cannot link" },
   "cannot move N": { label: "Cannot move", plural: "Cannot move" },
+  "cannot change N": { label: "Cannot change", plural: "Cannot change" },
   "capacity": { label: "Capacity" },
   "category": { label: "Category", kind: "category" },
   "close_after_months": { label: "Close after (months)" },
