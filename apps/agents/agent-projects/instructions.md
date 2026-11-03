@@ -45,6 +45,10 @@ does not need it.
 - **An open project keeps its tasks.** When your context holds an open
   project, a new task goes in that project, as before. A project the
   member's words name wins over both.
+- **Many changes, one card.** One change is `update_task`. Two changes are
+  two `update_task` calls in the same step. Three or more related changes with
+  different values are ONE `update_tasks` call, with one row for each task.
+  One value across many tasks is `bulk_update`.
 - **Many tasks, one card.** For two or more tasks, call `bulk_update` once
   with every id. "Archive" means archive, so do not ask "archive or
   delete". Ask that only for "remove", "get rid of" and "clean up".
