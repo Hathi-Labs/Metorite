@@ -16,6 +16,7 @@ import {
   moveBackPlan,
   recordAssigneesEdit,
   recordTaskEdit,
+  taskInverse,
   type EditHooks,
   type EditIo,
 } from "./taskUndo";
@@ -192,6 +193,37 @@ describe("the version chain (fix round 1, finding 1)", () => {
     expect(v.get("t")).toBe("2026-11-04T10:00:01+00:00");
     v.note("t", null);
     expect(v.get("t")).toBe("2026-11-04T10:00:01+00:00");
+  });
+});
+
+describe("custom fields merge on the server (fix round 1, finding 2)", () => {
+  it("a custom field filled from empty clears again on undo", async () => {
+    const srv = fakeServer({ t1: { custom_fields: { size: "M" } } });
+    const r = rig(srv.io);
+    await forward(srv, r, "t1", { custom_fields: { owner: "Ana" } });
+    await forward(srv, r, "t1", { custom_fields: { size: "L" } });
+    expect(srv.row("t1").custom_fields).toEqual({ size: "L", owner: "Ana" });
+
+    let step = stepBack(r.stack)!;
+    await step.entry.undo();
+    expect(srv.row("t1").custom_fields).toEqual({ size: "M", owner: "Ana" });
+    step = stepBack(step.stack)!;
+    await step.entry.undo();
+    expect(srv.row("t1").custom_fields).toEqual({ size: "M" });
+    step = stepForward(step.stack)!;
+    await step.entry.redo();
+    expect(srv.row("t1").custom_fields).toEqual({ size: "M", owner: "Ana" });
+  });
+
+  it("the custom field inverse names only the keys the edit sent", () => {
+    const row = { id: "t1", title: "T", custom_fields: { a: 1, b: false } };
+    expect(taskInverse(row, { custom_fields: { b: true, c: "x" } })).toEqual({
+      custom_fields: { b: false, c: null },
+    });
+    expect(taskInverse({ id: "t2" }, { custom_fields: { a: 2 }, title: "N" })).toEqual({
+      custom_fields: { a: null },
+      title: null,
+    });
   });
 });
 

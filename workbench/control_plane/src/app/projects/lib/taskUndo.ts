@@ -6,7 +6,7 @@
  * builds NO second undo system. It makes a command for `lib/undo.ts`'s stack,
  * the one `UndoProvider` drives with Ctrl+Z and the toast's Undo button.
  *
- * The inverse is `inversePatch(before, patch)`: the same keys, the values the
+ * The inverse is `taskInverse(before, patch)`: the same keys, the values the
  * row held BEFORE (an absent value becomes null). Each inverse is a PATCH that
  * carries If-Match. A 412 means somebody changed the task since. Then Undo
  * says so once and writes nothing, and the step is marked dead so redo cannot
@@ -143,10 +143,35 @@ export interface TaskEdit {
   label: string;
 }
 
+/**
+ * The PATCH that puts `before` back after `patch`.
+ *
+ * ⚠️ `custom_fields` MERGES on the server (`custom_fields.apply_values`), so
+ * the whole prior object is not its inverse: a key that the edit filled and
+ * the prior object never held would stay. The inverse names each key that
+ * the edit sent, with its prior value, or null to clear it (fix round 1,
+ * finding 2). Every other key is `inversePatch`.
+ */
+export function taskInverse(
+  before: object,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = inversePatch(before, patch);
+  const sent = patch.custom_fields;
+  if (sent && typeof sent === "object" && !Array.isArray(sent)) {
+    const held = ((before as { custom_fields?: Record<string, unknown> | null })
+      .custom_fields ?? {}) as Record<string, unknown>;
+    out.custom_fields = Object.fromEntries(
+      Object.keys(sent).map((key) => [key, held[key] ?? null]),
+    );
+  }
+  return out;
+}
+
 /** Record a PATCH that has already landed. Returns the undo for the toast. */
 export function recordTaskEdit(io: EditIo, hooks: EditHooks, edit: TaskEdit): () => Promise<void> {
   const id = (edit.before as { id: string }).id;
-  const inverse = inversePatch(edit.before, edit.patch);
+  const inverse = taskInverse(edit.before, edit.patch);
   io.versions.note(id, edit.version);
   const write = async (payload: Record<string, unknown>): Promise<boolean> => {
     try {
