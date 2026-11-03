@@ -46,6 +46,7 @@ import Button from "@/components/ui/Button";
 import { revealWithin, type ScrollBox, type Span } from "@/lib/scrollWithin";
 
 import { ANCHOR_MISSING_NOTE, nextLabel, type TourChip } from "./guide";
+import { useAssistant } from "./assistant";
 import { WATCHED_ATTRIBUTES, isShown } from "./guideAnchor";
 
 export type TourCardProps = {
@@ -68,13 +69,19 @@ export type TourCardProps = {
   phone?: boolean;
 };
 
-export type GuideSpotlightProps = TourCardProps & {
+export type GuideSpotlightProps = Pick<TourCardProps, "say" | "onEnd"> & {
   /** An anchor id, e.g. "home.ask". Looks up the element whose guide attribute holds it. */
   anchor: string;
   /** The member pressed the ringed element. */
   onAnchorClick?: () => void;
   /** The anchor did not appear in time. Called once. */
   onMissing?: (anchor: string) => void;
+  /**
+   * The anchor's box, in window coordinates, or null when none is on screen.
+   * The one measure: the ring, the dim's hole and the tour card all read it,
+   * so they never disagree (review round, 2026-11-04).
+   */
+  onRect?: (rect: Rect | null) => void;
   /** How long to wait for the anchor, in ms. Default 3000. */
   waitMs?: number;
 };
@@ -85,6 +92,8 @@ export const CARD_WIDTH = 320;
 const CARD_FALLBACK_HEIGHT = 120;
 /** The phone card keeps this gutter at each window side and at the edge it docks to. */
 export const PHONE_GUTTER = 16;
+/** A card narrower than this is no card: the phone dock rule takes over. */
+export const CARD_MIN_WIDTH = 240;
 const RING_PAD = 4;
 /** The ring line is 2 px outside its box, so a ring held this far from the window edge shows whole. */
 export const RING_INSET = 4;
@@ -95,7 +104,7 @@ const TALL_SHARE = 0.4;
 /** An anchor this tall (a share of the window) leaves the phone card no free edge. */
 export const FILLS_SHARE = 0.6;
 
-type Rect = { left: number; top: number; right: number; bottom: number; width: number; height: number };
+export type Rect = { left: number; top: number; right: number; bottom: number; width: number; height: number };
 
 // ---------------------------------------------------------------- lookup ---
 
@@ -358,19 +367,34 @@ export type CardPlace = {
   top: number;
   width: number;
   side: "below" | "above" | "right" | "left" | "top" | "bottom";
+  /**
+   * The card is docked to a window edge. The view adds the safe-area inset to
+   * that edge (`viewport-fit=cover`), so a notch never covers the card.
+   */
+  docked?: "top" | "bottom";
 };
+
+/** The phone dock: full width less the gutter, on the edge farther from the anchor. */
+export function dockPlace(rect: Rect | null, size: { width: number; height: number }, viewport: Viewport): CardPlace {
+  const width = Math.max(0, viewport.width - PHONE_GUTTER * 2);
+  const edge = dockEdge(rect, viewport);
+  const lowest = Math.max(PHONE_GUTTER, viewport.height - PHONE_GUTTER - size.height);
+  return { left: PHONE_GUTTER, top: edge === "top" ? PHONE_GUTTER : lowest, width, side: edge, docked: edge };
+}
 
 /**
  * Where the tour card sits. `rect` is the part of the anchor in the window, or
- * null when the anchor is missing.
+ * null when the step has no anchor on screen (a step with none, or a missing one).
  *
- * - Phone: full width less the gutter, docked to the edge from {@link dockEdge}.
+ * - Phone: {@link dockPlace}.
  * - Desktop: beside the anchor by {@link placePopover}.
  * - No anchor on a desktop: centred at the foot of the window.
  * - On a desktop, the card never covers the open assistant panel (`panel`).
  *   If the first place meets the panel, the card moves to the left of it and
  *   lines up with the anchor: its bottom edge on the bottom edge of an anchor
- *   in the lower half, else its top edge on the anchor's top edge.
+ *   in the lower half, else its top edge on the anchor's top edge. The card
+ *   shrinks to the free width. Under {@link CARD_MIN_WIDTH} it takes the phone
+ *   dock instead.
  *
  * The card always sits inside the window. Pure.
  */
@@ -381,15 +405,18 @@ export function placeCard(
   phone: boolean,
   panel: Rect | null = null,
 ): CardPlace {
-  const first = placeCardFirst(rect, size, viewport, phone);
-  if (phone || !panel || panel.width <= 0 || panel.height <= 0) return first;
+  if (phone) return dockPlace(rect, size, viewport);
+  const first = placeCardFirst(rect, size, viewport);
+  if (!panel || panel.width <= 0 || panel.height <= 0) return first;
   const meets =
     first.left < panel.right &&
     panel.left < first.left + first.width &&
     first.top < panel.bottom &&
     panel.top < first.top + size.height;
   if (!meets) return first;
-  const width = first.width;
+  const free = panel.left - GAP - PHONE_GUTTER;
+  if (free < CARD_MIN_WIDTH) return dockPlace(rect, size, viewport);
+  const width = Math.min(first.width, free);
   const lowHalf = rect ? rect.top + rect.height / 2 > viewport.height / 2 : true;
   const rawTop = !rect ? viewport.height - PHONE_GUTTER - size.height : lowHalf ? rect.bottom - size.height : rect.top;
   const maxTop = Math.max(PHONE_GUTTER, viewport.height - PHONE_GUTTER - size.height);
@@ -401,18 +428,7 @@ export function placeCard(
   };
 }
 
-function placeCardFirst(
-  rect: Rect | null,
-  size: { width: number; height: number },
-  viewport: Viewport,
-  phone: boolean,
-): CardPlace {
-  if (phone) {
-    const width = Math.max(0, viewport.width - PHONE_GUTTER * 2);
-    const edge = dockEdge(rect, viewport);
-    const lowest = Math.max(PHONE_GUTTER, viewport.height - PHONE_GUTTER - size.height);
-    return { left: PHONE_GUTTER, top: edge === "top" ? PHONE_GUTTER : lowest, width, side: edge };
-  }
+function placeCardFirst(rect: Rect | null, size: { width: number; height: number }, viewport: Viewport): CardPlace {
   if (!rect) {
     const width = Math.min(size.width, Math.max(0, viewport.width - MARGIN * 2));
     return {
@@ -473,55 +489,6 @@ export function GuideCardBody(p: TourCardProps & { missing?: boolean }) {
 }
 
 /**
- * The tour card. It floats in the top layer, with the accent edge that the
- * ring has, on the glass panel surface. The edge is an outline and not a
- * `ring-2` box shadow: the glass surface sets its own shadow and hid the ring. It measures its own height, so a
- * phone card docked to the bottom edge sits on it. `rect` is the anchor's box,
- * or null when the anchor is missing.
- */
-export function TourCard(p: TourCardProps & { rect: Rect | null; missing?: boolean }) {
-  const ref = useRef<HTMLDivElement | null>(null);
-  const [vp, setVp] = useState<Viewport | null>(null);
-  const [height, setHeight] = useState(CARD_FALLBACK_HEIGHT);
-
-  useLayoutEffect(() => {
-    const read = () =>
-      setVp((v) => {
-        const next = { width: window.innerWidth, height: window.innerHeight };
-        return v && v.width === next.width && v.height === next.height ? v : next;
-      });
-    read();
-    window.addEventListener("resize", read);
-    return () => window.removeEventListener("resize", read);
-  }, []);
-
-  // After each draw: the height can change with the line, the chips and the width.
-  useLayoutEffect(() => {
-    const h = ref.current?.getBoundingClientRect().height ?? 0;
-    if (h > 0 && Math.abs(h - height) > 0.5) setHeight(h);
-  });
-
-  if (!vp) return null;
-  // The open side panel, by the attribute the dock sets. No second registry.
-  const panelEl = p.phone ? null : document.querySelector<HTMLElement>('[data-assistant="dock"]');
-  const panel = panelEl && isShown(panelEl) ? panelEl.getBoundingClientRect() : null;
-  const at = placeCard(p.rect ? visibleRect(p.rect, vp) : null, { width: CARD_WIDTH, height }, vp, !!p.phone, panel);
-  return (
-    <div
-      ref={ref}
-      role="group"
-      aria-label="Guide"
-      data-guide-card=""
-      data-guide-side={at.side}
-      style={{ left: at.left, top: at.top, width: at.width }}
-      className={`fixed ${PANEL_LAYERS.top} p-3 outline outline-2 outline-primary ${PANEL_SURFACES.panel}`}
-    >
-      <GuideCardBody {...p} />
-    </div>
-  );
-}
-
-/**
  * Watch an anchor that is on screen. When it leaves the tree or hides (a tap
  * on the drawer scrim removes the Menu drawer), `onGone` runs once and the
  * watch stops. Pure, so a test drives it. Returns the cancel function.
@@ -545,6 +512,107 @@ export function watchDetached(o: {
     done = true;
     stop?.();
   };
+}
+
+function sameRect(a: Rect | null, b: Rect | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.left === b.left && a.top === b.top && a.width === b.width && a.height === b.height;
+}
+
+/** The open side panel's box on a desktop, kept current. Null when none is open or on a phone. */
+function usePanelRect(phone: boolean): Rect | null {
+  // The assistant store is the seam: an open, a close or a form change re-measures.
+  const st = useAssistant();
+  const [panel, setPanel] = useState<Rect | null>(null);
+  useLayoutEffect(() => {
+    if (phone) return setPanel((v) => (v === null ? v : null));
+    const measure = () => {
+      const el = document.querySelector<HTMLElement>('[data-assistant="dock"]');
+      const r = el && isShown(el) ? el.getBoundingClientRect() : null;
+      setPanel((v) => (sameRect(v, r) ? v : r));
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    // The dock opens and resizes under a transition: the end of it measures again.
+    window.addEventListener("transitionend", measure, true);
+    const stop = observeDom(measure);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("transitionend", measure, true);
+      stop();
+    };
+  }, [phone, st.open, st.mode]);
+  return panel;
+}
+
+/**
+ * The tour card. It floats in the top layer, with the accent edge that the
+ * ring has, on the glass panel surface. The edge is an outline and not a
+ * `ring-2` box shadow: the glass surface sets its own shadow and hid the ring.
+ *
+ * `GuideHost` mounts ONE of it for the whole tour, with no per-step key, so a
+ * member who tabs to Next and presses Enter keeps the focus (the guide never
+ * calls `.focus()`, spec section 5.3). It measures its own height, so a card
+ * docked to the bottom edge sits on it.
+ *
+ * - `rect` is the anchor's box, or null when the step has no anchor on screen.
+ * - `pending`: the step has an anchor that is not measured yet. The card keeps
+ *   its last place, or draws nothing on the first step, so it never jumps.
+ * - `missing`: the anchor did not appear. The card adds the reason.
+ */
+export function TourCard(p: TourCardProps & { rect: Rect | null; missing?: boolean; pending?: boolean }) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const last = useRef<CardPlace | null>(null);
+  const [vp, setVp] = useState<Viewport | null>(null);
+  const [height, setHeight] = useState(CARD_FALLBACK_HEIGHT);
+  const panel = usePanelRect(!!p.phone);
+
+  useLayoutEffect(() => {
+    const read = () =>
+      setVp((v) => {
+        const next = { width: window.innerWidth, height: window.innerHeight };
+        return v && v.width === next.width && v.height === next.height ? v : next;
+      });
+    read();
+    window.addEventListener("resize", read);
+    return () => window.removeEventListener("resize", read);
+  }, []);
+
+  // After each draw: the height can change with the line, the chips and the width.
+  useLayoutEffect(() => {
+    const h = ref.current?.getBoundingClientRect().height ?? 0;
+    if (h > 0 && Math.abs(h - height) > 0.5) setHeight(h);
+  });
+
+  if (!vp) return null;
+  let at: CardPlace;
+  if (p.pending && last.current) at = last.current;
+  else if (p.pending) return null;
+  else {
+    at = placeCard(p.rect ? visibleRect(p.rect, vp) : null, { width: CARD_WIDTH, height }, vp, !!p.phone, panel);
+    last.current = at;
+  }
+  // A docked card keeps clear of the notch and the home bar.
+  const edge =
+    at.docked === "bottom"
+      ? { bottom: `calc(${PHONE_GUTTER}px + env(safe-area-inset-bottom, 0px))` }
+      : at.docked === "top"
+        ? { top: `calc(${PHONE_GUTTER}px + env(safe-area-inset-top, 0px))` }
+        : { top: at.top };
+  return (
+    <div
+      ref={ref}
+      role="group"
+      aria-label="Guide"
+      data-guide-card=""
+      data-guide-side={at.side}
+      style={{ left: at.left, width: at.width, ...edge }}
+      className={`fixed ${PANEL_LAYERS.top} p-3 outline outline-2 outline-primary ${PANEL_SURFACES.panel}`}
+    >
+      <GuideCardBody {...p} />
+    </div>
+  );
 }
 
 // ------------------------------------------------------------------- dim ---
@@ -575,51 +643,37 @@ export function dimHoles(anchor: Rect | null, viewport: Viewport): DimHole[] {
   return b.width > 0 && b.height > 0 ? [{ ...b, r: ANCHOR_RADIUS }] : [];
 }
 
-const sameHoles = (a: DimHole[], b: DimHole[]) =>
-  a.length === b.length && a.every((h, i) => h.left === b[i].left && h.top === b[i].top && h.width === b[i].width && h.height === b[i].height && h.r === b[i].r);
-
 const MASK_ID = "guide-dim-mask";
 
 export type GuideDimProps = {
-  /** The anchor id of the step, or null for a step with none. */
-  anchor: string | null;
-  /** The anchor did not appear: the dim covers the whole window. */
-  missing?: boolean;
+  /**
+   * The anchor's box from the spotlight's ONE measure, or null. The dim never
+   * looks the anchor up itself, so its hole and the ring never disagree.
+   */
+  rect: Rect | null;
 };
 
 /**
- * The dim layer. It draws nothing until the anchor is found (or missing), so
- * the page never flashes dark. It returns the layer and not a portal:
- * `GuideHost` puts it FIRST in the one guide portal, so the ring and the card
- * come after it in the body and paint over it.
+ * The dim layer. `GuideHost` mounts it only for a step that has an anchor
+ * (found, or missing), and never for a step with no part to point at: there
+ * the member must use the page. With no rect it covers the whole window. It
+ * returns the layer and not a portal: `GuideHost` puts it FIRST in the one
+ * guide portal, so the ring and the card come after it and paint over it.
  */
-export function GuideDim({ anchor, missing = false }: GuideDimProps) {
-  const [holes, setHoles] = useState<DimHole[] | null>(null);
-  const measure = useCallback(() => {
-    const vp = { width: window.innerWidth, height: window.innerHeight };
-    const el = anchor ? findAnchor(anchor) : null;
-    if (anchor && !el && !missing) return setHoles((h) => (h === null ? h : null));
-    const next = dimHoles(el ? el.getBoundingClientRect() : null, vp);
-    setHoles((h) => (h && sameHoles(h, next) ? h : next));
-  }, [anchor, missing]);
-
+export function GuideDim({ rect }: GuideDimProps) {
+  // The window size, read again on a resize. The hole follows `rect`.
+  const [vp, setVp] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
   useLayoutEffect(() => {
-    measure();
-    // Scroll is captured: the element that scrolls is rarely an ancestor of the portal.
-    window.addEventListener("scroll", measure, true);
-    window.addEventListener("resize", measure);
-    window.addEventListener("transitionend", measure, true);
-    // The anchor appears after the assistant opens, with no event of its own.
-    const stop = observeDom(measure);
-    return () => {
-      window.removeEventListener("scroll", measure, true);
-      window.removeEventListener("resize", measure);
-      window.removeEventListener("transitionend", measure, true);
-      stop();
-    };
-  }, [measure]);
-
-  if (!holes) return null;
+    const read = () =>
+      setVp((v) => {
+        const n = { width: window.innerWidth, height: window.innerHeight };
+        return v.width === n.width && v.height === n.height ? v : n;
+      });
+    read();
+    window.addEventListener("resize", read);
+    return () => window.removeEventListener("resize", read);
+  }, []);
+  const holes = dimHoles(rect, vp);
   return (
     <svg
       aria-hidden="true"
@@ -661,8 +715,10 @@ function observeDom(onChange: () => void): () => void {
 }
 
 /**
- * The ring and the tour card of a step with an anchor. It returns them without
- * a portal: `GuideHost` holds the one portal, with the dim before them.
+ * The ring of a step with an anchor. It finds the anchor, measures it, and
+ * reports the box up (`onRect`). It returns the ring without a portal:
+ * `GuideHost` holds the one portal, with the dim before it and the one tour
+ * card after it.
  */
 export function GuideSpotlight(props: GuideSpotlightProps) {
   const { anchor, waitMs = DEFAULT_WAIT_MS } = props;
@@ -709,7 +765,8 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
 
   const place = useCallback(() => {
     if (!el) return;
-    setRect(el.getBoundingClientRect());
+    const r = el.getBoundingClientRect();
+    setRect((v) => (v && sameRect(v, r) ? v : r));
   }, [el]);
 
   useLayoutEffect(() => {
@@ -720,12 +777,22 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
     window.addEventListener("resize", place);
     // A panel that slides in ends its move after the ring first measured it.
     window.addEventListener("transitionend", place, true);
+    // An anchor can move with no scroll, resize or transition (a list that
+    // grows above it): the DOM watch and its short poll measure again.
+    const stop = observeDom(place);
     return () => {
       window.removeEventListener("scroll", place, true);
       window.removeEventListener("resize", place);
       window.removeEventListener("transitionend", place, true);
+      stop();
     };
   }, [el, place, props.say]);
+
+  // The ONE measure goes up to the host, which feeds the dim and the card.
+  useEffect(() => {
+    latest.current.onRect?.(rect);
+  }, [rect]);
+  useEffect(() => () => latest.current.onRect?.(null), []);
 
   useEffect(() => bindEscape(document, () => latest.current.onEnd()), []);
 
@@ -744,18 +811,6 @@ export function GuideSpotlight(props: GuideSpotlightProps) {
         data-guide-ring=""
         style={{ left: ring.left, top: ring.top, width: ring.width, height: ring.height }}
         className={`pointer-events-none fixed ${PANEL_LAYERS.top} rounded-lg ring-2 ring-primary`}
-      />
-      <TourCard
-        rect={rect}
-        say={props.say}
-        step={props.step}
-        onNext={props.onNext}
-        onBack={props.onBack}
-        onEnd={props.onEnd}
-        last={props.last}
-        chips={props.chips}
-        onChip={props.onChip}
-        phone={props.phone}
       />
     </>
   );

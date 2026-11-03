@@ -29,7 +29,7 @@
  */
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useRef } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useAccess } from "@/components/AccessProvider";
@@ -56,7 +56,7 @@ import {
 } from "./guide";
 import { assistantState, closeAssistant, onChatLink, openAssistant, setAssistantMode } from "./assistant";
 import { chatFirstOn } from "./chatFlag";
-import GuideSpotlight, { GuideDim, TourCard, bindEscape } from "./GuideSpotlight";
+import GuideSpotlight, { GuideDim, TourCard, bindEscape, type Rect } from "./GuideSpotlight";
 import { starrableHeld } from "./presets";
 import { markTourSeen } from "./shellPrefs";
 
@@ -198,25 +198,39 @@ function GuideHostInner({ phone = false }: { phone?: boolean }) {
         phone,
       }
     : null;
+  // The ONE measure of the anchor: the spotlight reports it, and the dim, the
+  // ring and the card all read it (review round, 2026-11-04).
+  const [rect, setRect] = useState<Rect | null>(null);
+  const onRect = useCallback((r: Rect | null) => setRect(r), []);
   const spot =
-    view && card && g.phase === "pointing" && view.anchor ? (
+    view && g.phase === "pointing" && view.anchor ? (
       <GuideSpotlight
         key={`${view.guide.id}:${g.step}`}
         anchor={view.anchor}
-        {...card}
+        say={view.say}
+        onEnd={() => endGuide("end")}
         onAnchorClick={nextStep}
         onMissing={guideAnchorMissing}
+        onRect={onRect}
       />
     ) : null;
-  // The anchor is missing: no ring, and the dim has no hole. The card still
-  // shows, with the reason.
-  const missingCard = view && card && g.phase === "missing" ? <TourCard key="missing" rect={null} missing {...card} /> : null;
-  // The dim layer (owner request 2026-11-03): one scrim over the window, with
-  // ONE hole, the ringed part. It comes first in the one portal, so the ring
-  // and the card paint over it.
+  // The dim (owner request 2026-11-03): one scrim, with ONE hole, the ringed
+  // part. A step with no part to point at gets NO dim, because the member must
+  // use the page (a form, a button). A missing anchor dims the whole window
+  // under the card. A step that waits for its anchor draws none yet.
   const dim =
-    view && (g.phase === "pointing" || g.phase === "missing") ? (
-      <GuideDim anchor={view.anchor} missing={missing} />
+    view && view.anchor && (missing || (g.phase === "pointing" && rect)) ? <GuideDim rect={missing ? null : rect} /> : null;
+  // ONE card for the whole tour, on EVERY active step: pointing (with or
+  // without an anchor), opening and missing. It has no per-step key, so the
+  // focus of a member who pressed Next with the keyboard stays on the card.
+  const tourCard =
+    view && card ? (
+      <TourCard
+        {...card}
+        rect={missing || !view.anchor ? null : rect}
+        missing={missing}
+        pending={!!view.anchor && !missing && !rect}
+      />
     ) : null;
   return (
     <>
@@ -238,7 +252,7 @@ function GuideHostInner({ phone = false }: { phone?: boolean }) {
         <>
           {dim}
           {spot}
-          {missingCard}
+          {tourCard}
         </>,
         document.body,
       )}

@@ -130,8 +130,11 @@ The tour card floats above the dimmed page, beside the ringed part. It says one
 or two sentences about the stop. It shows "2 of 5", with Back, Next and End
 tour. The side chat stays open for questions, and the message field stays open.
 The card is not in the chat. On a computer, the card never covers the
-assistant panel. The owner gave the reason on 2026-11-03: in the chat, the
-card mixed in with the chat's own buttons.
+assistant panel. It sits beside the ringed part. If the part fills the page
+column, it sits over a corner of the part (stop 4 at 1280 px, panel open). A
+step with no part to point at shows the card with no dim. The owner gave the
+reason on 2026-11-03: in the chat, the card mixed in with the chat's own
+buttons.
 
 | Stop | Points at | The chat says (draft) |
 |---|---|---|
@@ -250,9 +253,10 @@ One state machine in `src/lib/shell/guide.ts`, and one shell component,
   or an AG-UI `custom` event named `guide` from the assistant.
 - **Open.** The runner pushes the route. It checks the path with
   `isInAppPath` first, as `show_in_app` does.
-- **Point.** It waits up to 3 seconds for the anchor. Then it rings it and dims the
-  rest of the page. It draws the tour card above the dim, in glass tokens
-  (D149). It scrolls the anchor into view.
+- **Point.** It waits up to 3 seconds for the anchor. Then it rings it and
+  dims the rest of the page. One tour card shows on every step, above the dim,
+  in glass tokens (D149). A step with no anchor has the card and no dim. It
+  scrolls the anchor into view.
 - **Move on.** Next, a click on the ringed part, or the route of the next step.
 - **A missing anchor.** The tour card shows the step text and says "I can't
   point at it on this screen". The dim has no hole. The runner logs
@@ -261,12 +265,15 @@ One state machine in `src/lib/shell/guide.ts`, and one shell component,
 - **State.** The current guide and step live in `sessionStorage` for the tab,
   so a reload resumes. `tour_seen_at` joins the shell prefs, with no new table.
 - **Access.** One polite live region in `GuideHost` announces each step, at
-  every width. The card holds none. Focus stays
-  on the page, so the member can press the ringed button. The card's buttons
-  are natural tab stops. The ring follows its anchor with no transition, so it
-  never trails a scroll. The dim has one hole, the anchor, and takes no
-  pointer. The ring stays inside the window. It works in light mode, at compact density, under a changed accent
-  and at 390 px.
+  every width. The card holds none. Focus stays on the page, so the member can
+  press the ringed button. The card stays mounted for the whole tour, so a
+  member who presses Next with the keyboard keeps the focus on the card. Its
+  buttons are natural tab stops. The ring follows its anchor with no
+  transition. One measure feeds the ring, the hole and the card. The dim has
+  one hole, the anchor, and takes no pointer. The ring stays inside the
+  window. On a phone, the card keeps clear of the notch and the home bar. It
+  works in light mode, at compact density, under a changed accent and at
+  390 px.
 
 ### 5.4 The assistant's tools
 

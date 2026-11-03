@@ -21,7 +21,9 @@ import {
   bindEscape,
   clampRing,
   dimHoles,
+  CARD_MIN_WIDTH,
   dockEdge,
+  dockPlace,
   placeCard,
   placePopover,
   prefersReducedMotion,
@@ -439,6 +441,48 @@ describe("rule 9: card placement", () => {
     expect(placeCard(sheet, size, ph, true, sheet)).toEqual(placeCard(sheet, size, ph, true));
   });
 
+  it("desktop: a card beside a narrow free width shrinks to it, never overlapping the panel", () => {
+    // 1024 px window, panel at DOCK_MAX 720: the panel starts at 304. Free = 304 - 12 - 16 = 276.
+    const desk = { width: 1024, height: 800 };
+    const panel = at(304, 0, 720, 800);
+    const field = at(320, 700, 688, 80);
+    const c = placeCard(field, size, desk, false, panel);
+    expect(c.side).toBe("left");
+    expect(c.width).toBe(276);
+    expect(c.left).toBeGreaterThanOrEqual(16);
+    expect(c.left + c.width).toBeLessThanOrEqual(304 - 12);
+  });
+
+  it("desktop: under the minimum free width the card takes the phone dock, away from the anchor", () => {
+    const desk = { width: 1024, height: 800 };
+    const panel = at(200, 0, 824, 800);
+    expect(304 - 200).toBeLessThan(CARD_MIN_WIDTH + 28);
+    const low = at(216, 700, 792, 80);
+    const c = placeCard(low, size, desk, false, panel);
+    expect(c).toEqual(dockPlace(low, size, desk));
+    expect(c).toMatchObject({ docked: "top", left: 16, width: 1024 - 32, top: 16 });
+    const high = at(216, 20, 792, 60);
+    expect(placeCard(high, size, desk, false, panel)).toMatchObject({ docked: "bottom", top: 800 - 16 - 120 });
+  });
+
+  it("a step with no anchor sits at the foot, and moves left of an open panel", () => {
+    const desk = { width: 1440, height: 900 };
+    expect(placeCard(null, size, desk, false, null).side).toBe("bottom");
+    const panel = at(800, 0, 640, 900);
+    const c = placeCard(null, size, desk, false, panel);
+    expect(c.side).toBe("left");
+    expect(c.left + c.width).toBeLessThanOrEqual(800);
+    expect(c.top + 120).toBe(900 - 16);
+  });
+
+  it("a docked phone card says which edge, so the view adds the safe-area inset", () => {
+    const ph = { width: 390, height: 800 };
+    expect(placeCard(at(16, 700, 358, 60), size, ph, true).docked).toBe("top");
+    expect(placeCard(at(16, 10, 358, 60), size, ph, true).docked).toBe("bottom");
+    expect(CODE).toContain("env(safe-area-inset-top");
+    expect(CODE).toContain("env(safe-area-inset-bottom");
+  });
+
   it("desktop with no anchor: centred at the foot of the window", () => {
     const desk = { width: 1440, height: 900 };
     const c = placeCard(null, size, desk, false);
@@ -558,6 +602,26 @@ describe("rule 11: the dim layer (owner request 2026-11-03)", () => {
     expect(dimHoles(null, vp)).toEqual([]);
   });
 
+  it("the host mounts ONE un-keyed card for every active step, and a dim only for a step with an anchor", () => {
+    const host = readFileSync(join(__dirname, "GuideHost.tsx"), "utf-8").replace(/\r\n/g, "\n");
+    const code = host.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    // One card element, with no key (a key would unmount it on each step and drop the focus).
+    expect(code.match(/<TourCard/g)).toHaveLength(1);
+    expect(code).not.toMatch(/<TourCard[^>]*key=/);
+    // It shows for every active step: it does not depend on the phase or on an anchor.
+    expect(code).toMatch(/const tourCard =\s*view && card \?/);
+    // The dim needs an anchor, and a missing one covers the window with no hole.
+    expect(code).toMatch(/view && view\.anchor && \(missing \|\| \(g\.phase === "pointing" && rect\)\)/);
+    // The spotlight's one measure feeds the dim, the ring and the card.
+    expect(code).toContain("onRect={onRect}");
+    expect(CODE).toMatch(/onRect\?\.\(rect\)/);
+    expect(CODE).not.toMatch(/findAnchor\(anchor\)\s*:\s*null/);
+  });
+
+  it("the card re-places itself when the dock opens: it reads the assistant store and the DOM", () => {
+    expect(CODE).toMatch(/function usePanelRect[\s\S]*?useAssistant\(\)[\s\S]*?observeDom\(measure\)/);
+  });
+
   it("has no carrier logic: the card sits above the dim and needs no hole", () => {
     expect(CODE).not.toMatch(/findCarrier|DimCarrier|data-guide-strip/);
   });
@@ -576,7 +640,7 @@ describe("rule 11: the dim layer (owner request 2026-11-03)", () => {
     const at = host.indexOf("{dim}\n");
     expect(at).toBeGreaterThan(0);
     expect(at).toBeLessThan(host.indexOf("{spot}\n"));
-    expect(host.indexOf("{spot}\n")).toBeLessThan(host.indexOf("{missingCard}"));
+    expect(host.indexOf("{spot}\n")).toBeLessThan(host.indexOf("{tourCard}"));
     expect(host.match(/createPortal\(/g)).toHaveLength(2);
     // The dim and the spotlight draw no portal of their own.
     expect(CODE).not.toMatch(/createPortal\(/);

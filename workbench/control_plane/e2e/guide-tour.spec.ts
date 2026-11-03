@@ -27,7 +27,7 @@ const MEMBER = {
   email: "priya@example.com",
   is_active: true,
   is_admin: false,
-  features: ["tasks", "projects", "email", "chat", "people", "approvals"],
+  features: ["tasks", "projects", "email", "chat", "people", "approvals", "crm"],
   permissions: [],
   capabilities: [],
   roles: ["member"],
@@ -353,6 +353,113 @@ test.describe("desktop", () => {
     await expect.poll(() => new URL(page.url()).search).toBe("");
     await expect(ring(page)).toHaveCount(0);
     expect(await stored(page)).toBeNull();
+  });
+});
+
+/**
+ * `crm.add-lead` on /crm: step 1 opens the page (no anchor), step 2 rings New,
+ * step 3 says "fill in the form" with no anchor. Every step shows ONE card. A
+ * step with no anchor draws NO dim, so the member can use the page, and End
+ * stays reachable on every step (a phone has no Escape).
+ */
+async function walkAddLead(page: Page): Promise<void> {
+  await page.goto("/?guide=crm.add-lead");
+  const total = 3;
+  for (let i = 1; i <= total; i++) {
+    await expect(card(page)).toHaveCount(1);
+    await expect(card(page)).toContainText(`${i} of ${total}`);
+    await expect(card(page).getByRole("button", { name: "End tour" })).toBeVisible();
+    const c = await settledCard(page);
+    const vp = page.viewportSize()!;
+    expect(c.x).toBeGreaterThanOrEqual(0);
+    expect(c.x + c.width).toBeLessThanOrEqual(vp.width);
+    expect(c.y).toBeGreaterThanOrEqual(0);
+    expect(c.y + c.height).toBeLessThanOrEqual(vp.height);
+    // The step that points (2) has a dim, and a ring when New is on the page. The stub
+    // serves no CRM data, so New can be missing: the card then says so, and the dim covers the page.
+    if (i === 2) {
+      await expect(dim(page)).toHaveCount(1);
+      const found = (await ring(page).count()) > 0;
+      if (!found) await expect(card(page)).toContainText("I can't point at it on this screen.");
+    } else {
+      await expect(ring(page)).toHaveCount(0);
+      await expect(dim(page)).toHaveCount(0);
+    }
+    if (i < total) await card(page).getByRole("button", { name: "Next" }).click();
+  }
+  // End is reachable on the last step, and it removes the card.
+  await card(page).getByRole("button", { name: "End tour" }).click();
+  await expect(card(page)).toHaveCount(0);
+  await expect(dim(page)).toHaveCount(0);
+}
+
+test.describe("a guide with steps that have no anchor", () => {
+  test.describe("desktop 1280", () => {
+    test.use({ viewport: { width: 1280, height: 860 } });
+    test("crm.add-lead shows the card on every step, a dim only where it points, and End works", async ({ page }) => {
+      await stub(page);
+      await walkAddLead(page);
+    });
+  });
+  test.describe("phone 390", () => {
+    test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+    test("crm.add-lead shows the card on every step, a dim only where it points, and End works", async ({ page }) => {
+      await stub(page);
+      await walkAddLead(page);
+    });
+  });
+});
+
+test.describe("keyboard focus", () => {
+  test.use({ viewport: { width: 1280, height: 860 } });
+  test("Tab to Next and Enter twice: the focus stays inside the tour card", async ({ page }) => {
+    await stub(page);
+    await page.goto("/?guide=home.tour");
+    await expect(card(page)).toContainText("1 of 5");
+    let onNext = false;
+    for (let i = 0; i < 80 && !onNext; i++) {
+      await page.keyboard.press("Tab");
+      onNext = await page.evaluate(
+        () => document.activeElement?.textContent?.trim() === "Next" && !!document.activeElement.closest("[data-guide-card]"),
+      );
+    }
+    expect(onNext).toBe(true);
+    await page.keyboard.press("Enter");
+    await expect(card(page)).toContainText("2 of 5");
+    await page.keyboard.press("Enter");
+    await expect(card(page)).toContainText("3 of 5");
+    const inCard = await page.evaluate(() => !!document.activeElement?.closest("[data-guide-card]"));
+    expect(inCard).toBe(true);
+  });
+});
+
+test.describe("a wide panel in a 1024 px window", () => {
+  test.use({ viewport: { width: 1024, height: 800 } });
+  test("the card stays off the panel at stop 5 (shrunk, or docked when too narrow)", async ({ page }) => {
+    await stub(page);
+    // The panel is 720 px wide: its left edge is at 304 px.
+    await page.addInitScript(() => {
+      const get = Storage.prototype.getItem;
+      Storage.prototype.getItem = function (k: string) {
+        return /::assistant$/.test(k) ? JSON.stringify({ width: 720 }) : get.call(this, k);
+      };
+    });
+    await page.goto("/?guide=home.tour");
+    await expect(card(page)).toContainText("1 of 5");
+    for (let i = 1; i <= 4; i++) await nextStop(page, i);
+    await expect(card(page)).toContainText("5 of 5");
+    const panel = page.locator('[data-assistant="dock"]');
+    await expect(panel).toBeVisible();
+    const p = (await panel.boundingBox())!;
+    expect(p.x).toBeLessThan(400);
+    const c = await settledCard(page);
+    const vp = page.viewportSize()!;
+    expect(c.x).toBeGreaterThanOrEqual(0);
+    expect(c.x + c.width).toBeLessThanOrEqual(vp.width);
+    expect(c.y).toBeGreaterThanOrEqual(0);
+    expect(c.y + c.height).toBeLessThanOrEqual(vp.height);
+    // Left of the panel when it fits (shrunk to 240 px or more). Else docked full width.
+    if (c.width < vp.width - 40) expect(c.x + c.width).toBeLessThanOrEqual(p.x + 1);
   });
 });
 

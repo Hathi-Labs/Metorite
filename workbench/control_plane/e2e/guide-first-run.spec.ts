@@ -208,11 +208,17 @@ test("a member on another page: Take the tour goes to / and stop 4 rings My Day"
   const target = page.locator('[data-guide="home.my-day"]');
   await expect(target).toBeVisible();
   await expect(ring(page)).toBeVisible();
+  // The ring is on My Day (its box, held inside the window). The panel opens under a
+  // transition, so the two boxes agree once it settles.
+  await expect
+    .poll(async () => {
+      const rr = (await ring(page).boundingBox())!;
+      const tt = (await target.boundingBox())!;
+      return Math.abs(rr.x - Math.max(4, tt.x - 4));
+    })
+    .toBeLessThan(3);
   const r = (await ring(page).boundingBox())!;
-  const t = (await target.boundingBox())!;
   const vp = page.viewportSize()!;
-  // The ring is on My Day (its box, held inside the window), and it shows whole.
-  expect(Math.abs(r.x - Math.max(4, t.x - 4))).toBeLessThan(3);
   expect(r.x).toBeGreaterThanOrEqual(0);
   expect(r.y).toBeGreaterThanOrEqual(0);
   expect(r.x + r.width).toBeLessThanOrEqual(vp.width);
