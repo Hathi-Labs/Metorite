@@ -160,7 +160,8 @@ Twelve rules on top of the three above. Each one exists because somebody broke i
    writes: `/chat` and the Projects rail both call it. Fence:
    `autoOpenArtifact.test.ts`.
    **Only the composer sends the typed mark** (WS-63 D-PZ-37). The chat
-   composer and the shell's Ask field send `typed: true`. A pill, a choice,
+   composer, the shell's Ask field and the ⌘K draft send `typed: true`. A
+   link such as `/chat?q=` never does. A pill, a choice,
    a card action, a feed starter, the Fix prompt, a retry and an edit send
    none. Words that a program puts in the box take the mark away until the
    box is empty. `src/lib/typedMark.ts` holds the rules. Fence:

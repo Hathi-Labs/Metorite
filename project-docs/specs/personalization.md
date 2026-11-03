@@ -594,10 +594,11 @@ routes as the member, with the internal bearer and `X-User-Email`.
   message BEFORE any server rewrite, so the Continue note and the supersede
   note never reach it. Since D-PZ-37 (2026-11-02) the chat route binds the
   message only when the request carries the ONE typed mark, `typed: true`.
-  Only the composer of the chat sends it. A tapped pill, a choice, a card
-  action, a feed starter and the Fix prompt bind "". A save of a value that
-  only such a turn holds asks the PZ-32 confirm card where a card can show
-  (`assistant_profile.member_sent`), and refuses where none can. Fence:
+  Only the message box, the shell Ask field and the ⌘K draft send it, and a
+  link never does. A tapped pill, a choice, a card action, a feed starter
+  and the Fix prompt bind "". A save of a value that only such a turn holds
+  never saves at once. It asks the PZ-32 confirm card where a card can show
+  (`assistant_profile.member_sent`), and it refuses where none can. Fence:
   `tests/unit/test_profile_typed_words_route.py`. A replayed steer never reaches it either, and the
   next rule says when a steer counts. `bot_run` binds the WhatsApp text. A
   Continue turn and a steer follow-up bind "" as the text of the request.
@@ -1636,11 +1637,13 @@ D-PZ-20, and a check of `origin/main` at merge confirms them (R1).
 
 **Status: ACCEPTED, 2026-10-30 (D142). PZ-33a is BUILT 2026-10-31, dark.
 PZ-33b is BUILT 2026-11-01, dark (§15.9, "As built, PZ-33a" and "As built,
-PZ-33b"). PZ-33b round 4 is BUILT 2026-11-02 (D-PZ-37, migration 333): the
-ONE typed mark. Its summary part is dark, and its profile part changes
-production (§5.5). PZ-35 is BUILT 2026-11-01, dark. PZ-34, PZ-36, the dated
-facts and MEM-2 are not built.** The agent checked PZ-33b against the code on
+PZ-33b"). PZ-35 is BUILT 2026-11-01, dark. PZ-34, PZ-36, the dated facts
+and MEM-2 are not built.** The agent checked PZ-33b against the code on
 2026-11-01, at `origin/main` `bdb75484f`.
+
+**PZ-33b rounds 4 and 5 are BUILT 2026-11-03 (D-PZ-37, migration 333): the
+ONE typed mark.** Its summary part is dark, and its profile part changes
+production (§5.5). The tool-pack chooser reads the sent words (§15.3).
 
 The Metorite epic is task 1129, "Recent chats and open loops". Task 1130 is
 this section. The spec audit of 2026-10-31 split PZ-33 into PZ-33a and
@@ -1825,15 +1828,18 @@ fewer gets no summary, and so does a chat that holds only the day's brief or
 only tapped rows.
 
 **The cheap filter of the seed (PZ-33b round 4, review P2).** `IDLE_SQL`
-reads `s.updated_at >= :since` first, and the index `chat_session_user_idx`
-serves it. The LATERAL on the newest row stays the exact rule. Each insert
-through the one seam `routes/chat.py::_upsert_messages` moves `updated_at`
-(`_TOUCH_SESSION_SQL`). That seam holds the one `INSERT INTO chat_message`
-of the product. `:since` is the window less one day (`IDLE_SLACK`), because
-the time of a row is the browser clock. A chat with a row more than one day
-ahead of its insert gets no summary, which is the safe way to fail. On
-8,000 chats with 300 in the window, the round 3 form took 9.8 seconds, and
-this form took 28 milliseconds (a private database, 2026-11-02).
+reads `s.updated_at >= :since` first. In the measured plan a BitmapAnd of
+`chat_session_org_idx` and `chat_session_user_idx` serves it. The LATERAL on
+the newest row stays the exact rule. On 8,000 chats with 300 in the window,
+the round 3 form took 9.8 seconds, and this form took 28 milliseconds (a
+private database, 2026-11-02).
+
+Each insert through the one seam `routes/chat.py::_upsert_messages` moves
+`updated_at` (`_TOUCH_SESSION_SQL`). That seam holds the one
+`INSERT INTO chat_message` of the product. `:since` is the window less one
+day (`IDLE_SLACK`), because the time of a row is the browser clock. A chat
+with a row more than one day ahead of its insert gets no summary, which is
+the safe way to fail.
 
 **Known effect: a row that never seals.** A run that crashed before the fold
 leaves an agent row with `run_final_at` NULL for ever. So does an agent row
@@ -2007,20 +2013,31 @@ events and the Redis mail mark. That rule had no job left, so round 3 took it
 out.
 
 **The ONE typed mark (D-PZ-37, the owner, 2026-11-02).** Only a message
-that the member typed in the message box carries `typed: true`. The run
-route stores it in `chat_message.member_typed` (migration 333), and only
-`routes/agent.py::_write_prompt_row` writes it. A tapped "Follow up" pill, a
+that the member typed carries `typed: true`. Three boxes send it: the message
+box, the shell Ask field and the ⌘K draft. A link never sends it.
+
+The run route stores the mark in `chat_message.member_typed` (migration 333),
+and only `routes/agent.py::_write_prompt_row` writes it. A tapped "Follow up" pill, a
 choice in a bubble, a card action, a feed starter and the Fix prompt carry no
 mark. So they count for nothing, and so does each row from before the mark.
 The client save of the thread binds no mark, so it can neither set nor clear
 one.
 
-**Known limit.** Pills, choices, card actions, feed starters and the Fix
-prompt are closed. Only text that waits in the message box and that the
+**The tool-pack chooser reads the sent words (round 5).** The chooser
+(`executor._start_pack_turn`) reads `assistant_profile.sent_words()`. Those
+are the words that the member sent, typed or tapped. So a tapped pill about
+a mail still loads the email pack, as before D-PZ-37. The chooser only
+picks tools, and it changes no guard. The typed words stay the one value
+that grounds a write, so the same tap grounds no save.
+
+**Known limit.** Pills, choices, card actions, feed starters, the Fix prompt
+and links are closed. Only text that waits in the message box and that the
 member then sends remains:
 
-- The command bar's Ask puts the words in the box, and a `/chat?q=` link
-  does the same. A send of them counts as typed. Anyone can make such a link.
+- The ⌘K Ask puts the words that the member typed there in the box. A send
+  of them counts as typed. A `/chat?q=` link puts words in the box too, but
+  with no mark, because anybody can write a link. A reply of Mira can hold
+  one.
 - An upload adds a note with the file name to the box, and the note goes
   with the typed words.
 - A browser that runs an old bundle sends no mark, so its rows count for
@@ -2480,42 +2497,51 @@ two exceptions are the probes with a real letter between the digit groups
 2026-11-02. The summary part stays dark behind `ASSISTANT_CHAT_SUMMARY_ORGS`.
 The profile part changes production on the merge, and the owner accepted that.
 
-- **The client.** Only the composer's send sets `typed: true`, and the shell's
-  Ask field, which is one box with the composer. The command bar's Ask and a
-  `/chat?q=` link wait in the box and count as typed (the Known limit). Each
-  other path sends no mark: a "Follow up" pill, a choice, a card action, a
-  feed starter, the Fix prompt, a retry, an edit, Continue, a card answer and
-  the integration help line. Words that a program puts in the box take the
-  mark away until the box is empty. A held send and a steer keep the mark.
-  The rules are `lib/typedMark.ts`, and the Next route passes the field on.
+- **The client.** Only three sends set `typed: true`: the message box, the
+  shell Ask field (one box with the composer) and the ⌘K draft. The ⌘K draft
+  waits in the box (the Known limit). A link never carries the mark: round 5
+  took it off the `/chat?q=` path. Each other path sends no mark. That is a
+  "Follow up" pill, a choice, a card action, a feed starter or the Fix
+  prompt. It is also a retry, an edit, Continue, a card answer or the
+  integration help line. Words that a program puts in the box take the mark
+  away until the box is empty. A held send and a steer keep the mark. The
+  rules are `lib/typedMark.ts`, and the Next route passes the field on.
 - **The gateway.** The run route pops `typed`, and only JSON `true` counts.
   With no mark it binds `member_typed("")`. A card answer and a Continue
   never carry it. A steer counts only with the mark. The route also binds
-  `sent`: the member sent words in this turn, typed or tapped. A profile
-  save of a value that only a tap holds asks the PZ-32 confirm card where a
-  card can show, and refuses where none can. It never saves at once.
-  WhatsApp is as it was, because the member types each WhatsApp message.
+  `sent`: the words that the member sent in this turn, typed or tapped. A
+  profile save of a value that only a tap holds never saves at once. It asks
+  the PZ-32 confirm card where a card can show, and it refuses where none
+  can. WhatsApp is as it was, because the member types each WhatsApp
+  message. Its sent words are its typed words.
 - **The stored row.** Migration 333 adds the nullable BOOLEAN
   `chat_message.member_typed`, with no default (R6). R1: `origin/main` held
   331, a remote branch 329, and the ALN-2a worktree 332. A key of an
-  existing JSONB column could not hold the mark: the client save writes
-  `custom_events` and `agent_state` of each row, and `authority` is the
+  existing JSONB column could not hold the mark. The client save writes
+  `custom_events` and `agent_state` of each row. `authority` is the
   clearance that the redaction rule reads.
-- **The job.** `_is_member_row` needs `member_typed is True`. The prompt, the
-  grounding words, the count of typed rows and the new-turn rule all read it,
-  and so do `SEED_ROWS_SQL` and the count of `IDLE_SQL`.
+- **The job.** `_is_member_row` needs `member_typed is True`. The prompt,
+  the grounding words, the count of typed rows and the new-turn rule read it.
+  So do `SEED_ROWS_SQL` and the count of `IDLE_SQL`.
 - **Review P2.** The cheap filter on `updated_at` (§15.3).
 - **Review P3.** The last session reads the flag, the switch and "Let the
   assistant remember" again. When one is off, the job ends `done` with no
   write.
-- **Other readers of the typed words.** `chat_constraints` and the OA-1 head
-  of a hand-off read `typed_words()` too, so a tap gives them no words.
-- Fences: `test_chat_summary_r8.py` (the tokens of a tapped pill, a feed
-  starter and an old row, the mark that a client save cannot change, each
-  insert that moves `updated_at`, the filter against the exact rule, and the
-  late switch), `test_chat_summary.py` (the mark rule and the one writer),
-  `test_profile_typed_words_route.py`, `test_steer_follow_up.py` and
-  `workbench/control_plane/src/lib/typedMark.test.ts`.
+- **Other readers.** `chat_constraints` and the OA-1 head of a hand-off
+  read `typed_words()` too, so a tap gives them no words. The tool-pack
+  chooser (`executor._start_pack_turn`) reads `sent_words()` instead (round
+  5). Those are the sent words, typed or tapped, so a tap still loads its
+  pack. The chooser changes no guard, and no write reads `sent_words()`.
+- Fences:
+  - `test_chat_summary_r8.py`: the tokens of a tapped pill, a feed starter
+    and an old row, and the mark that a client save cannot change.
+  - `test_chat_summary_r8.py` also holds each insert that moves `updated_at`,
+    the filter against the exact rule, and the late switch.
+  - `test_chat_summary.py`: the mark rule and the one writer.
+  - `test_profile_typed_words_route.py` and `test_steer_follow_up.py`.
+  - `test_tool_packs_choice.py`: the chooser reads the sent words.
+  - `workbench/control_plane/src/lib/typedMark.test.ts`: the send paths, and
+    a link with no mark.
 
 **The PZ-33 list.** Each item names its slice and its test file. The R8
 file sets `pytestmark = _DB_GATE`, as `tests/unit/test_job_queue.py:119`
@@ -2628,7 +2654,7 @@ decision are in this table:
 | **D-PZ-33** | What do Delete and Off do? | **Owner decision, 2026-11-02, in chat (it overrules the first default):** Delete removes the summary now, and a new one may come later. Delete writes no `off`. The chat keeps a waterline, so a new summary comes only after a new message. Off stops new summaries and the chats of the briefing. The kept ones stay in the list until the member deletes them |
 | **D-PZ-34** | Where does long-term recall live? | MEM-2, one full-text search over past chats and their summaries. Mem0 and Graphiti stay retired (D132) |
 | **D-PZ-35** | Who may turn the summary job on in production? | The owner only (§6 D4), because the job spends each org's credits with no request of the member. Each other flip of §15 is gate `enforcement-flip` |
-| **D-PZ-37** | Which rows are the member's own words? | **Owner decision, 2026-11-02.** ONE positive "typed" mark. Only a message that the member typed in the message box carries it. A tapped pill, a choice option, a card action, a feed starter and the Fix prompt carry no mark. A message with no mark counts for nothing, and so does each row stored before the mark. The same mark grounds the profile tools, so a save from a tapped pill goes to the PZ-32 confirm card and never saves at once. This changes production, and the owner accepted that |
+| **D-PZ-37** | Which rows are the member's own words? | **Owner decision, 2026-11-02.** ONE positive "typed" mark. Only a message that the member typed in the message box carries it. A tapped pill, a choice option, a card action, a feed starter and the Fix prompt carry no mark. A message with no mark counts for nothing, and so does each row stored before the mark. The same mark grounds the profile tools, so a save from a tapped pill goes to the PZ-32 confirm card and never saves at once. This changes production, and the owner accepted that. As built: the message box, the shell Ask field and the ⌘K draft carry the mark. A link, such as `/chat?q=`, never does. The tool-pack chooser reads the sent words, and it changes no guard |
 | **D-PZ-36** | Does "Let the assistant remember what I tell it" off stop summaries? | Yes, an agent default that the owner may overrule. Off stops every write (§7 item 3), and a summary is a new note about the member. The seed and the job skip the member. The kept summaries stay until the member deletes them |
 
 ### 15.12 Open questions for the owner

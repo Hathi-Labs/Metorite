@@ -1042,8 +1042,9 @@ OPEN_RUN_SQL = """EXISTS (
 #: window in the WHERE. Round 2 ran the window first in a MATERIALIZED step,
 #: because the mail rule read the JSON of each agent row. That rule is gone.
 #:
-#: ⚠️ `s.updated_at >= :since` (PZ-33b round 4) is a cheap filter that the
-#: index `chat_session_user_idx (user_id, updated_at DESC)` serves. It keeps a
+#: ⚠️ `s.updated_at >= :since` (PZ-33b round 4) is a cheap filter. In the
+#: measured plan a BitmapAnd of `chat_session_org_idx` and
+#: `chat_session_user_idx (user_id, updated_at DESC)` serves it. It keeps a
 #: superset of the chats that the LATERAL keeps, and the LATERAL stays the
 #: exact rule. Each new row moves `updated_at` (`routes/chat.py::
 #: _TOUCH_SESSION_SQL`), and `:since` is the window less `IDLE_SLACK`. Without

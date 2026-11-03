@@ -46,6 +46,7 @@ not write a second copy of that seam. A bare test file name is under
 5a-1. tool_packs.py -- what a tool pack adds to its family.
    - `owner_tools(slug, module)` is the ONE rule for the tools of a pack. `packs_on(org)` is the ONE reader of `TOOL_PACKS` and `TOOL_PACKS_ORGS`, and it fails closed.
    - `packs_on`'s one caller is `orchestrator.executor._start_pack_turn` (OA-7c). `test_one_caller_reads_the_flag` names it. Any value of the flags on a box is OWNER-ONLY (`work_plan.md` §6 D4).
+   - The words of the choice are `assistant_profile.sent_words()`, typed or tapped (D-PZ-37). They choose tools only. Fence: `test_tool_packs_choice.py`.
    - `begin_turn` counts the member turn and reads the sticky packs from tenant Redis at `cc:<org>:tool-packs:<session>:<member hash>`. A Redis fault gives no sticky pack and writes nothing.
    - `choose` takes the sticky packs, a reference and the words of the turn. It applies a decay of 8 member turns and a cap of 3 packs, 110 tools, and 35 tools a pack. An email word needs an email context: a bare "draft" or "unread" loads no pack.
    - `note_used` makes a pack sticky after one of its tools ran. It writes one hash field, so two calls at once lose no update.
