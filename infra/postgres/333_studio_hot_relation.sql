@@ -1,5 +1,5 @@
 -- ============================================================================
--- 332_studio_hot_relation.sql — a relation field of a Studio object may be hot
+-- 333_studio_hot_relation.sql — a relation field of a Studio object may be hot
 -- (WS-STU C7b).
 --
 -- What: one wider CHECK on `studio_object_fields` (migration 323).
