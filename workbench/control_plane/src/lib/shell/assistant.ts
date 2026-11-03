@@ -333,6 +333,12 @@ export interface AssistantAsk {
    * stays live beside the open panel).
    */
   join?: boolean;
+  /**
+   * WS-63 D-PZ-37: the member typed these words, in the Ask field or the
+   * command bar. Only then does the send carry the typed mark
+   * (`lib/typedMark.ts`). A start pill and "Get to know me" leave it unset.
+   */
+  typed?: boolean;
 }
 
 export interface AssistantState {
@@ -433,6 +439,9 @@ export interface OpenOptions {
   fresh?: boolean;
   /** A reminder id to open in the fresh chat that this open asks for (RM-4). */
   reminder?: string;
+  /** WS-63 D-PZ-37: the member typed `text` or `draft` in a box of the
+   *  shell. Leave it unset for words that a click sends. */
+  typed?: boolean;
 }
 
 /**
@@ -477,8 +486,12 @@ export function openAssistant(opts: OpenOptions = {}): void {
     open: true,
     mode: modeOnOpen({ phone, open: base.open, current: base.mode, opts }),
     sessionId: opts.sessionId !== undefined ? opts.sessionId : base.sessionId,
-    ask: text ? { seq: ++_askSeq, text, join: base.open } : base.ask,
-    draft: draft ? { seq: ++_askSeq, text: draft } : base.draft,
+    ask: text
+      ? { seq: ++_askSeq, text, join: base.open, ...(opts.typed === true ? { typed: true } : {}) }
+      : base.ask,
+    draft: draft
+      ? { seq: ++_askSeq, text: draft, ...(opts.typed === true ? { typed: true } : {}) }
+      : base.draft,
     freshSeq: opts.fresh ? base.freshSeq + 1 : base.freshSeq,
     reminder: reminder || base.reminder,
     focusSeq: base.focusSeq + 1,

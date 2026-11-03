@@ -52,7 +52,6 @@ import { isInterruptedReply } from "@/lib/chatInterrupted";
 import {
   RUN_CAP_NOTICE_ID,
   settleFailedTurn,
-  type RunCappedHandler,
   type SessionRefusedHandler,
 } from "@/lib/chatTurnFailure";
 import { ChatRunError } from "@/lib/runErrors";
@@ -69,6 +68,7 @@ import {
 } from "@/lib/chatRecovery";
 import { chatModelField } from "@/lib/tierRouting";
 import { surfaceField } from "@/lib/shell/surface";
+import { typedField } from "@/lib/typedMark";
 import {
   cancelFollowUp, followUpDue, owedAfterSteer, scheduleFollowUpRetry, sendSteer,
   settleFollowUpAnswer, type SteerOutcome,
@@ -230,8 +230,10 @@ interface UseAgentChatOptions {
    * The run cap refused the send (WS-51 D-3, 429 `too_many_runs`). The turn
    * has left the thread, and the surface puts these words back in its
    * composer. Nothing is held, and nothing sends again by itself.
+   * `typed` is the typed mark of that send (WS-63 D-PZ-37), so the box
+   * keeps the mark only for words that the member typed.
    */
-  onRunCapped?: RunCappedHandler;
+  onRunCapped?: (pendingText: string, typed: boolean) => void;
 }
 
 interface UseAgentChatReturn {
@@ -246,8 +248,10 @@ interface UseAgentChatReturn {
   /** Send words into the live run (owner, 2026-10-12, `lib/chatSteer.ts`).
    *  It never stops the run and never opens a second stream. A refusal
    *  resolves with the notice, and the caller puts the words back. */
-  /** `opts.cardAnswer`: a card answer's resend steers with its display. */
-  steerMessage: (content: string, opts?: { cardAnswer?: CardAnswer | null }) => Promise<SteerOutcome>;
+  /** `opts.cardAnswer`: a card answer's resend steers with its display.
+   *  `opts.typed`: the member typed the words in the message box, so the
+   *  steer carries the typed mark (WS-63 D-PZ-37, `lib/typedMark.ts`). */
+  steerMessage: (content: string, opts?: { cardAnswer?: CardAnswer | null; typed?: boolean }) => Promise<SteerOutcome>;
   clearMessages: () => void;
   /** Resolves when the server has answered the cancel, so an edit can wait
    *  for the old run to stop before it starts the new one. It resolves with
@@ -433,12 +437,12 @@ export function useAgentChat({
           ...(modeRef.current === "copilot" ? { awaitingServer: true } : {}),
         };
         setSessionState(threadId, (prev) => ({ ...prev, messages: [...prev.messages, heldMsg] }));
-        holdForUpdate(threadId, text, { resume: opts?.resume });
+        holdForUpdate(threadId, text, { resume: opts?.resume, typed: opts?.typed });
         settleSend("held");
         return;
       }
       if (plan === "requeue") {
-        holdForUpdate(threadId, text, { front: true, resume: opts?.resume });
+        holdForUpdate(threadId, text, { front: true, resume: opts?.resume, typed: opts?.typed });
         settleSend("held");
         return;
       }
@@ -618,6 +622,10 @@ export function useAgentChat({
             // The answered card of a card answer, for the turn the gateway
             // saves at run start. It never reaches the model.
             ...cardAnswerField(userMsg),
+            // WS-63 D-PZ-37: the ONE typed mark. Only the composer's send
+            // sets it. A pill, a choice, a card action, a feed starter and
+            // the Fix prompt send none (`lib/typedMark.ts`).
+            ...typedField(opts?.typed),
           }),
         });
         gotResponse = true;
@@ -878,7 +886,7 @@ export function useAgentChat({
           }));
           if (followUp) { heldAgain = true; return; }
           holdForUpdate(threadId, userMsg.content, {
-            userMsgId: userMsg.id, front: !!held, resume: opts?.resume,
+            userMsgId: userMsg.id, front: !!held, resume: opts?.resume, typed: opts?.typed,
           });
           heldAgain = true;
           settleSend("held");
@@ -939,7 +947,10 @@ export function useAgentChat({
           onSessionRefused: onSessionRefusedRef.current,
           // A card answer's words are the envelope the model reads: they
           // never go back to the composer. Its card stays open instead.
-          onRunCapped: opts?.cardAnswer ? undefined : onRunCappedRef.current,
+          // The words go back with their typed mark (D-PZ-37).
+          onRunCapped: opts?.cardAnswer || !onRunCappedRef.current
+            ? undefined
+            : (words: string) => onRunCappedRef.current?.(words, opts?.typed === true),
         });
         capped = outcome === "capped";
         settleSend("refused");
@@ -989,7 +1000,7 @@ export function useAgentChat({
   // going. If the run had ended, the server starts a new one, and this
   // follows its stream as a normal turn, in place of the steer's bubble.
   const steerMessage = useCallback(async (
-    content: string, opts?: { cardAnswer?: CardAnswer | null },
+    content: string, opts?: { cardAnswer?: CardAnswer | null; typed?: boolean },
   ): Promise<SteerOutcome> => {
     // One id for the reply row, whether the steer folds in or starts a run.
     const replyId = nanoid();
@@ -1016,12 +1027,16 @@ export function useAgentChat({
         userMessageId,
         userMessageTs,
         ...(card ? { cardAnswer: card } : {}),
+        // WS-63 D-PZ-37: a steer carries the typed mark the same way a send
+        // does. Only the composer sets it (`lib/typedMark.ts`).
+        ...typedField(opts?.typed),
       }),
     });
     if (out.kind === "started") {
       void sendMessage(content, {
         heldId: out.bubbleId,
         adopt: { response: out.response, controller: out.controller, assistantId: replyId },
+        ...typedField(opts?.typed),
       });
     }
     return out;
