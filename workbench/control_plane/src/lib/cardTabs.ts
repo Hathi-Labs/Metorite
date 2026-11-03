@@ -47,32 +47,22 @@ export function cardKind(card: Pick<PendingConfirmation, "title" | "reply">): Ca
  *  the count shortens to its number. */
 export type TabLevel = 0 | 1 | 2;
 
-export interface TabFit {
-  level: TabLevel;
-  /** The width the row needed at each level it has overflowed at. */
-  needs: readonly number[];
-}
-
-export const START_FIT: TabFit = { level: 0, needs: [] };
-
 /**
- * The tightness of the tab row, given the width it NEEDS at the current level
- * and the room it has (the count plus the tabs). A row that overflows goes one
- * level tighter. It remembers the width it needed, and goes one level looser
- * only when the room is that wide plus a margin, so a row on the edge does not
- * flicker. The fade is the last resort: it shows when level 2 still overflows.
+ * The tightness of the tab row. `needs[l]` is the width the row needs at level
+ * `l`, measured on a hidden copy of the row at that level, and `room` is the
+ * width of the row's container. Neither depends on the chosen level, so the
+ * choice cannot feed back into them. The row goes tighter at once when the
+ * level it has does not fit. It goes looser only when the looser level fits
+ * with `margin` px to spare, so a container on an edge does not flicker. At
+ * level 2 the row may still overflow, and then the fade is the last resort.
+ * For one `(needs, room)` the result is stable: the same input gives the same
+ * level again.
  */
-export function nextLevel(fit: TabFit, need: number, room: number, margin = 8): TabFit {
-  const needs = fit.needs.slice();
-  if (need > room) {
-    needs[fit.level] = need;
-    return fit.level < 2 ? { level: (fit.level + 1) as TabLevel, needs } : { level: fit.level, needs };
-  }
-  const looser = fit.level - 1;
-  if (looser >= 0 && needs[looser] !== undefined && room >= needs[looser] + margin) {
-    return { level: looser as TabLevel, needs };
-  }
-  return fit.needs.length === needs.length && fit.needs.every((n, i) => n === needs[i]) ? fit : { level: fit.level, needs };
+export function pickLevel(needs: readonly number[], room: number, prev: TabLevel, margin = 8): TabLevel {
+  let level: number = prev;
+  while (level < 2 && (needs[level] ?? 0) > room) level++;
+  while (level > 0 && (needs[level - 1] ?? Infinity) + margin <= room) level--;
+  return level as TabLevel;
 }
 
 /** The count label that leads the tab row. */

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { cardKind, cutLabel, nextLevel, START_FIT, type TabFit, KIND_ICON, personName, tabLabel, TAB_LABEL_MAX, restoredFirst, tabKeyTarget, tabsCount, tabsLabel } from "./cardTabs";
+import { cardKind, cutLabel, pickLevel, type TabLevel, KIND_ICON, personName, tabLabel, TAB_LABEL_MAX, restoredFirst, tabKeyTarget, tabsCount, tabsLabel } from "./cardTabs";
 
 const read = (rel: string) => readFileSync(join(__dirname, "..", rel), "utf-8");
 
@@ -71,26 +71,44 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
     expect(tabLabel({ title: "Reply to 1 recipient?", reply: { messageId: "m", replyAll: false, recipients: { reply: { to: ["pat.jones@x.test"], cc: [] }, reply_all: { to: [], cc: [] } } } as never })).toBe("Reply to Pat");
   });
 
-  it("the row tightens by level as its room shrinks, and loosens with a margin", () => {
-    // What the row needs at each level: the count plus the tabs.
-    const NEED = [700, 420, 250] as const;
-    const settle = (room: number, from: TabFit = START_FIT) => {
-      let fit = from;
-      for (let i = 0; i < 6; i++) fit = nextLevel(fit, NEED[fit.level], room);
-      return fit;
-    };
-    expect(settle(1060).level).toBe(0);
-    expect(settle(600).level).toBe(1);
-    expect(settle(300).level).toBe(2);
-    expect(settle(260).level).toBe(2);
-    // Below level 2's need the fade is the last resort: the level stays 2.
-    expect(settle(200).level).toBe(2);
-    // Hysteresis: from level 2 the row loosens only with the margin.
-    const tight = settle(300);
-    expect(settle(427, tight).level).toBe(2);
-    expect(settle(428, tight).level).toBe(1);
-    expect(settle(707, settle(600)).level).toBe(1);
-    expect(settle(708, settle(600)).level).toBe(0);
+  it("the level follows the container width, with no oscillation (the P0 of round 3)", () => {
+    // What each level needs, measured on the hidden copies: the count plus tabs.
+    const NEEDS = [700, 420, 250];
+    const settle = (room: number, from: TabLevel) => pickLevel(NEEDS, room, from);
+    expect(settle(1060, 0)).toBe(0);
+    expect(settle(600, 0)).toBe(1);
+    expect(settle(300, 0)).toBe(2);
+    expect(settle(260, 0)).toBe(2);
+    expect(settle(240, 2)).toBe(2); // the fade is the last resort
+    // A sweep 1060 -> 240 -> 1060: the level changes only at the thresholds.
+    let level: TabLevel = 0;
+    const seen: Array<[number, TabLevel]> = [];
+    const down = Array.from({ length: 83 }, (_, i) => 1060 - i * 10);
+    const up = Array.from({ length: 83 }, (_, i) => 240 + i * 10);
+    for (const room of [...down, ...up]) {
+      const was = level;
+      level = settle(room, level);
+      if (level !== was) seen.push([room, level]);
+    }
+    // Down: level 1 below 700, level 2 below 420. Up: level 1 from 428, 0 from 708.
+    expect(seen).toEqual([[690, 1], [410, 2], [430, 1], [710, 0]]);
+    // Held at one width, the level never changes again, from any start.
+    for (let room = 240; room <= 1100; room += 7) {
+      for (const from of [0, 1, 2] as const) {
+        const once = settle(room, from);
+        expect(settle(room, once)).toBe(once);
+        expect(settle(room, settle(room, once))).toBe(once);
+      }
+    }
+  });
+
+  it("the level is chosen from the probe and the container, never from the row as drawn", () => {
+    const tabs = read("components/ui/CardTabs.tsx");
+    expect(tabs).toContain("data-card-tabs-probe");
+    expect(tabs).toContain("pickLevel(needs, room, level)");
+    expect(tabs).toContain("ro.observe(outer)");
+    // The level is set from `pickLevel` alone, and from nothing the row drew.
+    expect(tabs.match(/setLevel\(/g)).toHaveLength(1);
   });
 
   it("the row observes its width and lets go on unmount", () => {

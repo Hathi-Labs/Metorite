@@ -20,7 +20,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { prefersReducedMotion } from "@/lib/panelMotion";
-import { nextLevel, START_FIT, tabKeyTarget, tabsCount, tabsLabel } from "@/lib/cardTabs";
+import { pickLevel, tabKeyTarget, tabsCount, tabsLabel, type TabLevel } from "@/lib/cardTabs";
 
 /** One card's tab. */
 export interface CardTab {
@@ -53,33 +53,72 @@ export interface CardTabsProps {
   noun?: string;
 }
 
+const COUNT_CLASS = "flex shrink-0 items-center pr-3 text-xs font-medium tabular-nums text-muted-foreground glass:text-footnote";
+const PILL_CLASS = "rounded-full bg-secondary px-1.5 text-xs text-foreground";
+
+/** The classes of one tab at a level. The real row and the probe share them. */
+function tabClass(active: boolean, level: number): string {
+  return `-mb-px flex max-w-[12rem] ${level >= 2 && active ? "min-w-20 shrink" : "shrink-0"} items-center gap-1.5 border-b-2 px-2.5 py-2 text-sm tech-transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring glass:text-subhead ${
+    active ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"
+  }`;
+}
+
+/** What a tab holds at a level: its icon, its label unless it is slim, and
+ *  its dot. A tab that is not open is slim at level 1 and above. */
+function TabFace({ tab, active, level }: { tab: CardTab; active: boolean; level: number }) {
+  const slim = level >= 1 && !active;
+  return (
+    <>
+      <Icon name={tab.icon} size={13} className="shrink-0" />
+      {!slim && <span className="min-w-0 truncate">{tab.label}</span>}
+      {tab.unseen && !active && (
+        <>
+          <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-primary" />
+          {!slim && <span className="sr-only">not yet seen</span>}
+        </>
+      )}
+    </>
+  );
+}
+
+const LEVELS = [0, 1, 2] as const;
+
 export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps) {
   const total = tabs.length;
+  const outerRef = useRef<HTMLDivElement>(null);
+  const probeRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  const countRef = useRef<HTMLSpanElement>(null);
   // A row wider than its room fades at the edge where more tabs wait, so a
   // cut tab reads as "scroll", not as a broken one (the narrow Ask panel).
   const [fade, setFade] = useState<{ left: boolean; right: boolean }>({ left: false, right: false });
-  // Compact (owner, 2026-11-03: tabs "easily overlooked"): when the full row
-  // would overflow, each tab that is not open shows its icon and dot only.
-  // The fade is the last resort, for a row that overflows even as icons.
-  // A change of the tabs' words or dots changes the full width, so the
-  // state resets and the full row is measured again before the browser paints.
-  const signature = tabs.map((t) => `${t.label}||${t.unseen ? 1 : 0}`).join("||");
-  const [state, setState] = useState({ ...START_FIT, sig: signature });
-  if (state.sig !== signature) setState({ ...START_FIT, sig: signature });
-  const level = state.sig === signature ? state.level : 0;
-  const compact = level >= 1;
-  const tight = level >= 2;
+  // The tightness (owner, 2026-11-03: tabs "easily overlooked"). It is chosen
+  // from two numbers that DO NOT depend on the level: the width each level
+  // needs, measured on a hidden copy of the row at that level, and the room,
+  // the width of the row's container. Setting the level changes neither, so
+  // no feedback can exist. Level 0 shows every tab in full. Level 1 shows a
+  // tab that is not open as its icon and dot. Level 2 also shrinks the open
+  // tab and shows the count as its number. The fade is the last resort.
+  const [needs, setNeeds] = useState<readonly number[]>([]);
+  const [room, setRoom] = useState(0);
+  const [level, setLevel] = useState<TabLevel>(0);
+  const next = needs.length === 3 && room > 0 ? pickLevel(needs, room, level) : level;
+  if (next !== level) setLevel(next);
   const measure = () => {
+    const outer = outerRef.current;
+    const probe = probeRef.current;
     const list = listRef.current;
-    if (!list) return;
-    const count = countRef.current?.offsetWidth ?? 0;
-    const c = nextLevel(state, count + list.scrollWidth, count + list.clientWidth);
-    if (c !== state && (c.level !== state.level || c.needs !== state.needs)) setState({ ...c, sig: state.sig });
-    const left = list.scrollLeft > 2;
-    const right = list.scrollLeft + list.clientWidth < list.scrollWidth - 2;
-    setFade((f) => (f.left === left && f.right === right ? f : { left, right }));
+    if (outer && probe) {
+      const cs = getComputedStyle(outer);
+      const r = Math.floor(outer.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight));
+      setRoom((x) => (x === r ? x : r));
+      const n = LEVELS.map((l) => Math.ceil(probe.querySelector<HTMLElement>(`[data-probe="${l}"]`)?.offsetWidth ?? 0));
+      setNeeds((x) => (x.length === n.length && x.every((v, i) => v === n[i]) ? x : n));
+    }
+    if (list) {
+      const left = list.scrollLeft > 2;
+      const right = list.scrollLeft + list.clientWidth < list.scrollWidth - 2;
+      setFade((f) => (f.left === left && f.right === right ? f : { left, right }));
+    }
   };
   // The shown tab stays in view. Only the row moves: `scrollIntoView` would
   // scroll the page under the member too. The card mounts again for each
@@ -93,18 +132,18 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
     const to = left < list.scrollLeft ? left - 8 : right > list.scrollLeft + list.clientWidth ? right - list.clientWidth + 8 : null;
     if (to !== null) list.scrollTo({ left: to, behavior: prefersReducedMotion() ? "auto" : "smooth" });
   }, [index, total]);
-  // Every render: measure again. `nextLevel` holds a margin, so the state
-  // settles, and `setState` runs only when a value changed.
+  // Every render: read the probe and the room again. Each `set` runs only when
+  // a value changed, and neither value depends on the level, so it settles.
   useLayoutEffect(() => {
     measure();
   });
-  // The row's own width changes with the window and the panel: observe it,
-  // and let go on unmount.
+  // The container's width changes with the window and the panel: observe the
+  // container, never the tabs, and let go on unmount.
   useLayoutEffect(() => {
-    const list = listRef.current;
-    if (!list || typeof ResizeObserver === "undefined") return;
+    const outer = outerRef.current;
+    if (!outer || typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(() => measure());
-    ro.observe(list);
+    ro.observe(outer);
     return () => ro.disconnect();
   });
   if (total < 2) return null;
@@ -119,27 +158,27 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
     requestAnimationFrame(() => document.getElementById(cardTabId(uid, to))?.focus());
   };
 
+  const count = (l: number) =>
+    l >= 2 ? (
+      // Level 2: the count is its number in a small pill. The words stay
+      // for a screen reader.
+      <span role="img" aria-label={tabsCount(total)} title={tabsCount(total)} className={PILL_CLASS}>
+        {total}
+      </span>
+    ) : (
+      tabsCount(total)
+    );
+
   return (
     <div
+      ref={outerRef}
       data-card-tabs={total}
       // The card's own padding is 2.5 (classic) or 4 (glass): the row takes
       // it back, so the hairline runs edge to edge inside the frame.
-      className="-mx-2.5 -mt-1.5 mb-2 flex min-w-0 items-stretch border-b border-border px-2.5 glass:-mx-4 glass:-mt-4 glass:mb-3 glass:px-4"
+      className="relative -mx-2.5 -mt-1.5 mb-2 flex min-w-0 items-stretch border-b border-border px-2.5 glass:-mx-4 glass:-mt-4 glass:mb-3 glass:px-4"
     >
-      <span
-        ref={countRef}
-        data-card-tabs-count=""
-        className="flex shrink-0 items-center pr-3 text-xs font-medium tabular-nums text-muted-foreground glass:text-footnote"
-      >
-        {tight ? (
-          // Level 2: the count is its number in a small pill. The words stay
-          // for a screen reader.
-          <span role="img" aria-label={tabsCount(total)} title={tabsCount(total)} className="rounded-full bg-secondary px-1.5 text-xs text-foreground">
-            {total}
-          </span>
-        ) : (
-          tabsCount(total)
-        )}
+      <span data-card-tabs-count="" className={COUNT_CLASS}>
+        {count(level)}
       </span>
       <div
         ref={listRef}
@@ -152,8 +191,7 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
       >
         {tabs.map((t, i) => {
           const active = i === index;
-          // A tab that is not open shows its icon and dot only when compact.
-          const slim = compact && !active;
+          const slim = level >= 1 && !active;
           return (
             <button
               key={t.key}
@@ -168,23 +206,32 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
               data-card-tab={i}
               data-unseen={t.unseen && !active ? "" : undefined}
               onClick={() => onGo(i)}
-              className={`-mb-px flex max-w-[12rem] ${tight && active ? "min-w-20 shrink" : "shrink-0"} items-center gap-1.5 border-b-2 px-2.5 py-2 text-sm tech-transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring glass:text-subhead ${
-                active
-                  ? "border-primary font-medium text-foreground"
-                  : "border-transparent text-muted-foreground hover:text-foreground"
-              }`}
+              className={tabClass(active, level)}
             >
-              <Icon name={t.icon} size={13} className="shrink-0" />
-              {!slim && <span className="min-w-0 truncate">{t.label}</span>}
-              {t.unseen && !active && (
-                <>
-                  <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-primary" />
-                  {!slim && <span className="sr-only">not yet seen</span>}
-                </>
-              )}
+              <TabFace tab={t} active={active} level={level} />
             </button>
           );
         })}
+      </div>
+      {/* The probe: a hidden copy of the row at each level, only to read the
+          width each needs. It is out of the flow, out of the accessibility
+          tree and out of the tab order, and the level never changes it. */}
+      <div
+        ref={probeRef}
+        aria-hidden
+        data-card-tabs-probe=""
+        className="pointer-events-none invisible absolute left-0 top-0 h-0 w-full overflow-hidden"
+      >
+        {LEVELS.map((l) => (
+          <div key={l} data-probe={l} className="flex w-max items-stretch gap-1">
+            <span className={COUNT_CLASS}>{count(l)}</span>
+            {tabs.map((t, i) => (
+              <span key={t.key} className={`${tabClass(i === index, l)} ${l >= 2 && i === index ? "w-20" : ""}`}>
+                <TabFace tab={t} active={i === index} level={l} />
+              </span>
+            ))}
+          </div>
+        ))}
       </div>
     </div>
   );
