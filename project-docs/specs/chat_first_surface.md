@@ -15,8 +15,9 @@ releases shipped the four slices, and both flags went ON in production that
 day, with the owner's permission in chat. The client flag is
 `NEXT_PUBLIC_CHAT_FIRST` in `workbench/control_plane/.env.local`, which
 `acb-staging-flag` refuses. The server flag is `CHAT_FIRST_TOOLS`, which adds
-the tool to the orchestrator. Staging has neither flag yet. CF-4 and CF-5 are
-built. CF-4b (action pills, D-CF-8) was built on 2026-11-03. CF-6 and CF-7
+the tool to the orchestrator.
+
+Staging has neither flag yet. CF-4 and CF-5 are built. CF-4b (action pills, D-CF-8) was built on 2026-11-03. CF-6 and CF-7
 are not built.
 
 §5 proposes **D-CF-1** to **D-CF-7**, each with a default. HANDOFF **H-369**
