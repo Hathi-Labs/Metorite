@@ -800,8 +800,12 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # WS-CRM CRM-M1: the Change history rows that only the member reads, the
     # changes of a private saved view or of an own business rule. They hold
     # the text of a private view or an own rule, which only the member
-    # reads, so they go with the member. An Undo row
-    # goes by the `ON DELETE CASCADE` key of `undoes_id`. The clause names
+    # reads, so they go with the member. This purge deletes the own rules
+    # (`crm_member_rules` above). It does not delete the saved views
+    # (`crm_views`). An Undo row has the same readers as the row it undoes
+    # (`change_log.log_change`), so the `ON DELETE CASCADE` key of
+    # `undoes_id` takes only rows that this clause counts too, and no org
+    # row goes with them. The clause names
     # the bound org beside RLS, as `reminders` does. The org's rows that the
     # member made stay with the address, as `app_audit` does, because a row
     # never changes (migration 336). They are not counted as kept: the table

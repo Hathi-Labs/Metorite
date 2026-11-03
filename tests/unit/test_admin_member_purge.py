@@ -897,7 +897,8 @@ def test_the_member_s_private_change_history_goes() -> None:
     """WS-CRM CRM-M1: the Change history rows private to the member go.
 
     A row private to the member holds the text of a private view or an own
-    rule, which the purge deletes, so the row goes too. The clause keys on
+    rule, which only the member reads, so the row goes too. The purge
+    deletes the own rules, and not the saved views. The clause keys on
     ``private_to``, not on the actor, because an admin may change a
     member's rule and that row is still the member's. The org's rows stay
     with the address, as ``app_audit`` does, and are not on the keep side.

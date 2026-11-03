@@ -356,6 +356,19 @@ def test_each_undo_function_locks_its_thing_before_the_check() -> None:
         if "_current(" in source:
             assert "lock=True" in _code(funcs["_current"]), name
     assert not late, f"Undo functions that check before a lock: {late}"
+    # Fix round 2 (P3-4): EACH read of a row by `load_row` in an Undo locks,
+    # in every branch, not only the first read of the function. Mutation:
+    # drop `lock=True` from the stage read of the DELETE branch of
+    # `pipelines._undo_stage` → red by name.
+    unlocked = sorted(
+        f"{name}: {ast.unparse(call)}"
+        for name, (_source, funcs) in found.items()
+        for call in ast.walk(funcs[name.split("::", 1)[1]])
+        if isinstance(call, ast.Call) and getattr(call.func, "id", "") == "load_row"
+        and not any(k.arg == "lock" and getattr(k.value, "value", None) is True
+                    for k in call.keywords)
+    )
+    assert not unlocked, f"Undo reads with no lock: {unlocked}"
 
 
 def _migration() -> str:
@@ -1224,3 +1237,237 @@ async def test_the_undo_of_a_pipeline_rename_refuses_a_newer_rename(
     assert back.status_code == 200, back.text
     assert _one(ns, "SELECT name FROM crm_pipelines WHERE id = CAST(:i AS uuid)",
                 i=pipeline) == "Sales B"
+
+
+# ── Fix round 2: an Undo row has the readers of the row it undoes ───────────
+
+PURGE_OWNER = "owner@crm-m1.test"
+
+
+def _member_rows(p: Any, org: str) -> None:
+    """``ADMIN`` and an owner in the directory of *org*, so the purge of
+    ``ADMIN`` keeps an owner (invariant 1)."""
+    with p.admin_engine.begin() as c:
+        for email, role in ((ADMIN, "employee"), (PURGE_OWNER, "executive")):
+            c.execute(text(
+                "INSERT INTO app_user (email, display_name, role, status, organization_id) "
+                "SELECT :e, :e, :r, 'active', CAST(:o AS uuid) WHERE NOT EXISTS "
+                "(SELECT 1 FROM app_user WHERE lower(email) = :e)"),
+                {"e": email, "r": role, "o": org})
+        role_id = c.execute(text(
+            "INSERT INTO org_role (organization_id, slug, display_name, is_system, rank) "
+            "VALUES (CAST(:o AS uuid), 'owner', 'Owner', true, 0) "
+            "ON CONFLICT DO NOTHING RETURNING id"), {"o": org}).scalar()
+        if role_id is None:
+            role_id = c.execute(text(
+                "SELECT id FROM org_role WHERE organization_id = CAST(:o AS uuid) "
+                "AND slug = 'owner'"), {"o": org}).scalar()
+        c.execute(text(
+            "INSERT INTO user_role (user_id, role_id, organization_id) "
+            "SELECT id, :r, CAST(:o AS uuid) FROM app_user WHERE email = :e "
+            "ON CONFLICT DO NOTHING"),
+            {"r": role_id, "e": PURGE_OWNER, "o": org})
+
+
+def _drop_member_rows(p: Any) -> None:
+    with p.admin_engine.begin() as c:
+        c.execute(text(
+            "DELETE FROM user_role WHERE user_id IN "
+            "(SELECT id FROM app_user WHERE email = ANY(:e))"), {"e": [ADMIN, PURGE_OWNER]})
+        c.execute(text("DELETE FROM app_user WHERE email = ANY(:e)"),
+                  {"e": [ADMIN, PURGE_OWNER]})
+
+
+async def _purge_admin(p: Any, org: str, monkeypatch: Any) -> dict[str, int]:
+    """The real member purge of ``ADMIN`` in *org*, as the app role. Returns
+    ``deleted`` of the purge (``PurgeResult.deleted``)."""
+    from gateway.db import tenant_session
+    from gateway.routes.admin import members
+    from gateway.routes.admin._common import get_member
+    from gateway.routes.crm import questions
+
+    async def _no_keys(_org: str, _email: str) -> int:
+        return 0
+
+    monkeypatch.setattr(members, "record_admin_change", lambda *a, **k: None)
+    monkeypatch.setattr(questions, "forget_member_keys", _no_keys)
+    async with (
+        tenant_engine_scope(p.app_url.render_as_string(hide_password=False)),
+        tenant_session(org) as session,
+    ):
+        member = await get_member(session, org, ADMIN)
+        deleted, _kept, _plans = await members.purge_member_rows(
+            session, org, member, actor_email=PURGE_OWNER)
+    return deleted
+
+
+def _log_state(p: Any, org: str) -> dict[str, Any]:
+    return {str(r.id): r for r in _rows(p, org)}
+
+
+def _assert_the_purge_is_whole(
+    before: dict[str, Any], after: dict[str, Any], counted: int,
+) -> None:
+    """The count equals the rows that went, no org row went, and no
+    ``undone_by`` points at a row that is gone."""
+    gone = set(before) - set(after)
+    assert counted == len(gone), (counted, len(gone))
+    assert all(before[i].private_to is not None for i in gone), "an org row went"
+    dangling = [i for i, r in after.items()
+                if r.undone_by is not None and str(r.undone_by) not in after]
+    assert not dangling, f"undone_by points at a row that is gone: {dangling}"
+
+
+@_DB_GATE
+async def test_the_undo_of_a_private_rename_stays_private_and_the_purge_takes_both(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """P2-1 (fix round 2). An admin saves a private view, renames it,
+    shares it, and undoes the rename. The view is shared now, but the Undo
+    row is private, as the rename row is. The purge of the admin counts 4
+    and deletes 4, and the self cascade takes no org row. Mutation: give
+    the Undo row the readers of the view now, so it is an org row. The purge
+    then counts 3 and deletes 4 → red."""
+    _settings(ns, ns.org_a, "native")
+    _member_rows(ns, ns.org_a)
+    try:
+        admin = _admin(ns.org_a)
+        view = (await _call(ns, admin, "POST", "/crm/views",
+                            {"entity": "deals", "name": "Hot"})).json()["id"]
+        assert (await _call(ns, admin, "PATCH", f"/crm/views/{view}",
+                            {"name": "Hot deals"})).status_code == 200
+        assert (await _call(ns, admin, "PATCH", f"/crm/views/{view}",
+                            {"shared": True})).status_code == 200
+        rename = next(r for r in _rows(ns, ns.org_a) if r.summary.startswith("Renamed"))
+        undo = await _call(ns, admin, "POST", f"/crm/change-history/{rename.id}/undo")
+        assert undo.status_code == 200, undo.text
+        before = _log_state(ns, ns.org_a)
+        undo_row = before[undo.json()["change"]["id"]]
+        assert undo_row.private_to == rename.private_to == ADMIN
+        deleted = await _purge_admin(ns, ns.org_a, monkeypatch)
+        after = _log_state(ns, ns.org_a)
+        assert deleted["crm_private_changes"] == 4 and after == {}
+        _assert_the_purge_is_whole(before, after, deleted["crm_private_changes"])
+    finally:
+        _drop_member_rows(ns)
+
+
+@_DB_GATE
+async def test_the_undo_of_a_shared_rename_stays_shared_and_the_purge_keeps_both(
+    ns, app_engine, monkeypatch,  # noqa: F811
+) -> None:
+    """P3-1 (fix round 2), the reverse case. An admin saves a shared view,
+    renames it, makes it private, and undoes the rename. The Undo row is an
+    org row, as the rename row is. The purge of the admin deletes only the
+    private row, and the kept rename row points at a kept Undo row.
+    Mutation: give the Undo row the readers of the view now, so it is
+    private. The purge then deletes it, and the rename's undone_by dangles
+    → red."""
+    _settings(ns, ns.org_a, "native")
+    _member_rows(ns, ns.org_a)
+    try:
+        admin = _admin(ns.org_a)
+        view = (await _call(ns, admin, "POST", "/crm/views",
+                            {"entity": "deals", "name": "Team", "shared": True})).json()["id"]
+        assert (await _call(ns, admin, "PATCH", f"/crm/views/{view}",
+                            {"name": "Team deals"})).status_code == 200
+        assert (await _call(ns, admin, "PATCH", f"/crm/views/{view}",
+                            {"shared": False})).status_code == 200
+        rename = next(r for r in _rows(ns, ns.org_a) if r.summary.startswith("Renamed"))
+        assert rename.private_to is None
+        undo = await _call(ns, admin, "POST", f"/crm/change-history/{rename.id}/undo")
+        assert undo.status_code == 200, undo.text
+        before = _log_state(ns, ns.org_a)
+        assert before[undo.json()["change"]["id"]].private_to is None
+        deleted = await _purge_admin(ns, ns.org_a, monkeypatch)
+        after = _log_state(ns, ns.org_a)
+        assert deleted["crm_private_changes"] == 1 and len(after) == 3
+        _assert_the_purge_is_whole(before, after, deleted["crm_private_changes"])
+    finally:
+        _drop_member_rows(ns)
+
+
+@_DB_GATE
+async def test_log_change_gives_an_undo_row_the_readers_of_the_undone_row(
+    ns, app_engine,  # noqa: F811
+) -> None:
+    """P2-1 (fix round 2), on the one writer. The caller passes the opposite
+    readers each time, and ``log_change`` ignores them: a private row gets
+    a private Undo, and an org row gets an org Undo. Mutation: write the
+    ``private_to`` of the caller → red both ways."""
+    from acb_common.db import bind_tenant, release_tenant, tenant_session
+    from gateway.routes.crm import change_log as cl
+
+    _settings(ns, ns.org_a, "native")
+    admin = _admin(ns.org_a)
+
+    def change(private_to: str | None) -> Any:
+        return cl.Change(area="view", action=cl.CHANGE, summary="s", ladder=cl.OWN,
+                         entity_id="e1", before={"n": 1}, after={"n": 2},
+                         private_to=private_to)
+
+    token = bind_tenant(ns.org_a)
+    try:
+        async with (
+            tenant_engine_scope(ns.app_url.render_as_string(hide_password=False)),
+            tenant_session(ns.org_a) as db,
+        ):
+            private_row = await cl.log_change(db, admin, change(ADMIN))
+            org_row = await cl.log_change(db, admin, change(None))
+            private_undo = await cl.log_change(db, admin, change(None), undoes=private_row)
+            org_undo = await cl.log_change(db, admin, change(ADMIN), undoes=org_row)
+    finally:
+        release_tenant(token)
+    rows = _log_state(ns, ns.org_a)
+    assert rows[private_row].private_to == rows[private_undo].private_to == ADMIN
+    assert rows[org_row].private_to is None and rows[org_undo].private_to is None
+
+
+# ── Fix round 2: the old name of an Undo is taken again ─────────────────────
+
+
+@_DB_GATE
+async def test_the_undo_of_a_stage_rename_to_a_taken_name_is_a_409(ns, app_engine) -> None:  # noqa: F811
+    """P2-2 (fix round 2). Rename a stage, make a new stage with the old
+    name, then undo the rename: 409 ``name_taken`` and not a 500. Nothing
+    changes. Mutation: drop ``_name_free`` → the unique index raises → red."""
+    _settings(ns, ns.org_a, "native")
+    admin = _admin(ns.org_a)
+    stage = (await _call(ns, admin, "POST", "/crm/statuses/deal",
+                         {"name": "Demo", "type": "open"})).json()["id"]
+    assert (await _call(ns, admin, "PATCH", f"/crm/statuses/deal/{stage}",
+                        {"name": "Demo 2"})).status_code == 200
+    assert (await _call(ns, admin, "POST", "/crm/statuses/deal",
+                        {"name": "Demo", "type": "open"})).status_code == 201
+    rename = next(r for r in _rows(ns, ns.org_a) if r.action == "change")
+    refused = await _call(ns, admin, "POST", f"/crm/change-history/{rename.id}/undo")
+    assert _undo_code(refused) == (409, "name_taken"), refused.text
+    assert '"Demo"' in refused.json()["detail"]["message"]
+    assert _one(ns, "SELECT name FROM crm_deal_statuses WHERE id = CAST(:i AS uuid)",
+                i=stage) == "Demo 2"
+    assert len(_rows(ns, ns.org_a)) == 3
+    assert all(r.undone_by is None for r in _rows(ns, ns.org_a))
+
+
+@_DB_GATE
+async def test_the_undo_of_a_reason_relabel_to_a_taken_label_is_a_409(
+    ns, app_engine,  # noqa: F811
+) -> None:
+    """P2-2 (fix round 2), the lost reason. Mutation: drop ``_name_free``
+    from ``_undo_lost_reason`` → the unique index raises → red."""
+    _settings(ns, ns.org_a, "native")
+    admin = _admin(ns.org_a)
+    reason = (await _call(ns, admin, "POST", "/crm/lost-reasons",
+                          {"label": "Budget"})).json()["id"]
+    assert (await _call(ns, admin, "PATCH", f"/crm/lost-reasons/{reason}",
+                        {"label": "Budget 2"})).status_code == 200
+    assert (await _call(ns, admin, "POST", "/crm/lost-reasons",
+                        {"label": "Budget"})).status_code == 201
+    relabel = next(r for r in _rows(ns, ns.org_a) if r.action == "change")
+    refused = await _call(ns, admin, "POST", f"/crm/change-history/{relabel.id}/undo")
+    assert _undo_code(refused) == (409, "name_taken"), refused.text
+    assert '"Budget"' in refused.json()["detail"]["message"]
+    assert _one(ns, "SELECT label FROM crm_lost_reasons WHERE id = CAST(:i AS uuid)",
+                i=reason) == "Budget 2"
+    assert len(_rows(ns, ns.org_a)) == 3
+    assert all(r.undone_by is None for r in _rows(ns, ns.org_a))

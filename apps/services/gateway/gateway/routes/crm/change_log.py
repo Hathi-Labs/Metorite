@@ -26,7 +26,8 @@ the org, and each statement names the org too. An admin
 (``admin:access:manage``) reads each row that is not private to another
 member. A member who is not an admin reads only the rows of their own
 changes. ``private_to`` makes a row private: a change of a private saved
-view, or of the business rule of one member.
+view, or of the business rule of one member. An Undo row has the same
+readers as the row it undoes (:func:`log_change`).
 
 **Undo.** ``POST /crm/change-history/{id}/undo`` writes the stored "before"
 through the SAME code path as the change. Each feature module registers the
@@ -36,7 +37,8 @@ and the helper logs a new row that names the row it undoes. Then
 :func:`log_change` sets ``undone_by`` on the old row, once. The refusals are
 409s with a plain reason: a change that cannot be undone, a change that is
 undone already, a CRM mode that changed since, a thing that changed again
-since, a thing that is gone, and a stage that now holds records. Who may
+since, a thing that is gone, a stage that now holds records, and an old
+name that another stage or lost reason holds now (``name_taken``). Who may
 undo: the permission of the route of the change. An admin area needs an
 admin, and a view or a rule keeps its own owner check.
 
@@ -239,6 +241,13 @@ _INSERT_SQL = (
     ":private_to, CAST(:undoes_id AS uuid)) RETURNING id"
 )
 
+#: The readers of the row that an Undo undoes. The Undo route holds that row
+#: FOR UPDATE already, in the same transaction.
+_UNDONE_READERS_SQL = (
+    "SELECT private_to FROM crm_change_log "
+    "WHERE organization_id = CAST(:organization_id AS uuid) AND id = CAST(:id AS uuid)"
+)
+
 #: The old row gets the id of its Undo, once. No row back: undone already.
 _MARK_UNDONE_SQL = (
     "UPDATE crm_change_log SET undone_by = CAST(:undone_by AS uuid) "
@@ -258,6 +267,14 @@ async def log_change(
     actor is the session's member. ``undoes`` names the row that this
     change undoes: the new row then cannot be undone, and the old row gets
     ``undone_by``. A second Undo of one row is a 409.
+
+    **An Undo row has the same readers as the row it undoes** (fix round
+    2). With ``undoes``, the new row takes the ``private_to`` of the undone
+    row, and the value of the caller is ignored. So a row and its Undo live
+    and die together: the member purge (``crm_private_changes``) deletes
+    both or neither, and its count matches the rows that go. A view can
+    change between shared and private between the two rows, so the state of
+    the thing now is not the rule.
     """
     if change.area not in AREAS:
         raise ValueError(f"unknown change area {change.area!r}")
@@ -269,6 +286,14 @@ async def log_change(
     who = _email(actor(user)) or "anonymous"
     org = _bound_org()
     before, after = plain(change.before), plain(change.after)
+    private_to = _email(change.private_to)
+    if undoes is not None:
+        undone = (await db.execute(text(_UNDONE_READERS_SQL), {
+            "organization_id": org, "id": undoes,
+        })).first()
+        if undone is None:
+            raise _refuse(404, "no_change", "There is no such change.")
+        private_to = _email(undone.private_to)
     row = (await db.execute(text(_INSERT_SQL), {
         "organization_id": org,
         "actor_email": who,
@@ -284,7 +309,7 @@ async def log_change(
         "after": json.dumps(after) if after is not None else None,
         "mode": await current_mode(db),
         "reversible": bool(change.reversible and undoes is None),
-        "private_to": _email(change.private_to),
+        "private_to": private_to,
         "undoes_id": undoes,
     })).first()
     new_id = str(row.id)
@@ -321,6 +346,18 @@ def changed_since() -> HTTPException:
 def in_use(message: str) -> HTTPException:
     """A thing that the Undo would remove now holds records."""
     return _refuse(409, "in_use", message)
+
+
+def name_taken(noun: str, name: Any) -> HTTPException:
+    """The old name of an Undo is the name of another row now (fix round 2).
+
+    The names of the stages, the lead statuses and the lost reasons are
+    unique in an org (migration 241). Without this, the Undo of a rename to
+    a name that is taken again is a driver error and a 500."""
+    return _refuse(409, "name_taken", (
+        f"Another {noun} is named {quoted(name)} now, so the old name cannot "
+        f"come back. Rename that {noun} first, and then undo this change."
+    ))
 
 
 def same_values(current: dict[str, Any], expected: dict[str, Any] | None) -> bool:
@@ -604,6 +641,7 @@ __all__ = [
     "in_use",
     "list_changes",
     "log_change",
+    "name_taken",
     "plain",
     "quoted",
     "same_values",

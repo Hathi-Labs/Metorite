@@ -419,7 +419,8 @@ async def _undo_stage(db: Any, user: Any, logged: Logged) -> None:
         return
     before = logged.before or {}
     status_id = str(before.get("status_id") or "")
-    if await load_row(db, "crm_deal_statuses", status_id) is None:
+    # Locked, as each other read of this Undo (fix round 2).
+    if await load_row(db, "crm_deal_statuses", status_id, lock=True) is None:
         raise change_log.gone("deal_stage")
     if (await db.execute(text(_PLACE_SQL), {"p": pipeline_id, "s": status_id})).first():
         raise change_log.changed_since()

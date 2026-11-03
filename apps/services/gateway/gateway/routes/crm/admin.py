@@ -35,6 +35,8 @@ no value writes none. Each Undo first locks the row (``FOR UPDATE``) and
 checks that it still holds the values of the change, so a row that changed
 again since is a 409 ``changed_since``. The Undo of a create deletes the row through the
 helper of the DELETE route, and it refuses while records name the row. The
+Undo of a PATCH whose old name another row holds now is a 409
+``name_taken`` (:func:`_name_free`). The
 Undo of a PATCH writes the old values through :func:`patch_status_in` or
 :func:`patch_lost_reason_in`, the helpers of the PATCH routes. The DELETE
 routes log in PR 2.
@@ -43,6 +45,8 @@ routes log in PR 2.
 from __future__ import annotations
 
 import re
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_permission
@@ -72,6 +76,7 @@ from gateway.routes.crm.core import (
 )
 from pydantic import BaseModel
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 #: The floor of the six writes below (CR-10). One object, so the wiring test in
 #: ``tests/unit/test_crm_access.py`` can find it on each route.
@@ -876,10 +881,32 @@ async def _undo_status(db: Any, user: Any, logged: Logged) -> None:
             before=_snapshot(row, STATUS_LOG_KEYS),
         ), undoes=logged.id)
         return None
-    await patch_status_in(
-        db, user, kind, str(row.id), dict(logged.before or {}), undoes=logged.id,
-    )
+    async with _name_free(table, _STATUS_NOUNS[kind], (logged.before or {}).get("name")):
+        await patch_status_in(
+            db, user, kind, str(row.id), dict(logged.before or {}), undoes=logged.id,
+        )
     return None
+
+
+#: The unique index of the name of each table (migration 241).
+_NAME_INDEX: dict[str, str] = {
+    "crm_deal_statuses": "uq_crm_deal_statuses_org_name",
+    "crm_lead_statuses": "uq_crm_lead_statuses_org_name",
+    "crm_lost_reasons": "uq_crm_lost_reasons_org_label",
+}
+
+
+@asynccontextmanager
+async def _name_free(table: str, noun: str, name: Any) -> AsyncIterator[None]:
+    """The Undo of a rename, with the old name taken again, is a 409
+    ``name_taken`` and not a 500 (fix round 2). The PATCH route keeps its
+    own behaviour. The transaction rolls back with the refusal."""
+    try:
+        yield
+    except IntegrityError as exc:
+        if _NAME_INDEX[table] not in str(exc):
+            raise
+        raise change_log.name_taken(noun, name) from None
 
 
 @change_log.undoes("lost_reason")
@@ -904,7 +931,10 @@ async def _undo_lost_reason(db: Any, user: Any, logged: Logged) -> None:
             before=_snapshot(row, REASON_LOG_KEYS),
         ), undoes=logged.id)
         return None
-    await patch_lost_reason_in(
-        db, user, str(row.id), dict(logged.before or {}), undoes=logged.id,
-    )
+    async with _name_free(
+        "crm_lost_reasons", "lost reason", (logged.before or {}).get("label"),
+    ):
+        await patch_lost_reason_in(
+            db, user, str(row.id), dict(logged.before or {}), undoes=logged.id,
+        )
     return None
