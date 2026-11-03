@@ -96,7 +96,7 @@ AGENT_WRITE_REFUSED = "An agent connection cannot change guidance. A member does
 ARCHIVED_REFUSED = "This project is archived, so its agent guidance cannot change."
 SAVE_BUSY = "Another save of this guidance was in progress. Try again."
 
-LEVELS = ("project", "space", "org")
+LEVELS = ("project", "space", "company")
 
 
 # ── The flag ────────────────────────────────────────────────────────────────
@@ -267,8 +267,8 @@ async def blocks_for_project(db: Any, vis: Any, project_id: str) -> tuple[list[d
     org = latest.get(None)
     if _has_text(org):
         blocks.append({
-            "id": str(org.id), "level": "org",
-            "source": {"kind": "org", "project_id": None, "name": None, "hidden": False},
+            "id": str(org.id), "level": "company",
+            "source": {"kind": "company", "project_id": None, "name": None, "hidden": False},
             "version": int(org.version), "body": org.body,
         })
     return cut_to_answer(blocks)
