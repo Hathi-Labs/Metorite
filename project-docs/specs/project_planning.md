@@ -2,7 +2,7 @@
 
 > **Product:** Metorite · **Feature:** planning in the Projects chat · **Updated:** 2026-11-02 · **Owner:** vjvarada
 
-> **Status:** 🚧 **BUILDING.** PJP-0 (this spec) merged on 2026-11-02 (`4bbe7c5b4`). PJP-1 (pills, swatches and six hues) merged on 2026-11-02 (`19d998d99`). PJP-4 (`update_tasks`, many task edits on one card) merged on 2026-11-03. Each reaches production at the next 21:30 UTC release. PJP-2 is in review.
+> **Status:** 🚧 **BUILDING.** PJP-0 (this spec) merged on 2026-11-02 (`4bbe7c5b4`). PJP-1 (pills, swatches and six hues) merged on 2026-11-02 (`19d998d99`). PJP-4 (`update_tasks`, many task edits on one card) merged on 2026-11-03. Each reaches production at the next 21:30 UTC release. PJP-2 (no hand-off to `projects-assistant`) merged on 2026-11-04. It acts once the owner adds `projects-reports` to production's `TOOL_PACKS`.
 
 > **Verified against code on 2026-11-02 at `c8b31dcbf`.** Each path in §8 was read on that commit. The production facts in §2 come from the gateway journal and the database of 2026-11-02.
 
@@ -164,7 +164,12 @@ A delete stays a single guarded act (class C). No batch tool deletes.
 | `projects-reminders` | 7 | gains `capture_intake`, `intake_queue`, `triage_intake`, `create_area`, `delete_area`, `rename_area`, `my_areas`, `my_contexts`, `notifications`, `mark_notifications_read` | 17 | — |
 | `projects-bulk` | 21 | none | 21 | PJP-4 adds 1 |
 
-**A side effect, intended.** At base 56, the core and `projects-plan` now fit together (79 + 24 = 103). So a pack word that loads `projects-plan` no longer drops the core pack (`replaces_core`). The owner is also reached while `email` is held (87 − 1 + 24 = 110). The tests that pin the old premise change in PJP-2:
+**The reach rule (fix round 1, 2026-11-03).** Two Projects packs fill the room of a request. The core and `projects-plan` make 103 tools, and no third pack fits. So the old rule, which needed EVERY other pack to fit, almost never reached the owner. Two rules replace it. They bind only an owner of `SPECIALIST_STAYS_UNTIL_REACHED`.
+
+1. **Reach.** The Projects owner is reached when each of its packs is allowed and ONE of them fits. Each pack stays on offer. A load that does not fit either frees a spare sticky pack (RX-1) or fails on the cap, and that failure opens the hand-off (`via_failed`, `LOAD_NO_PATH`).
+2. **Step aside.** While two or more Projects packs keep the owner unreached, packs step aside. A sticky pack that the turn did not ask for goes first, the least recently used one first. Then the core pack goes, then the last new pack. The steps stay only when the result reaches the owner within the caps. Else the turn keeps its packs, as before.
+
+These tests changed because their premise changed:
 
 - `test_projects_packs.py`: `SLUGS` and `SIZES` (:69 to :71), the 120-tool union (:119) and the "35 tools" answer (:716).
 - `test_projects_packs.py`: "not reached with email held" (:811), the access request (:939) and the compound words (:887 to :915).
@@ -177,7 +182,7 @@ The rule text changes in `tool_packs.py`. The core rules (about :421 to :431) an
 
 **The flag line.** `projects-reports` is a new slug. Production's `TOOL_PACKS` is an explicit list. `plan_loader` needs EVERY pack of the owner in the allow list.
 
-So the slug must join `TOOL_PACKS` on production BEFORE the release that ships PJP-2. That line is owner-only (`work_plan.md` §6 D4). The old code drops an unknown slug, so the order is safe. Until the line exists, the hand-off stays as it is today. Nothing gets worse.
+So the slug must join `TOOL_PACKS` on production BEFORE the release that ships PJP-2. That line is owner-only (`work_plan.md` §6 D4). The old code drops an unknown slug, so the order is safe. Until the line exists, the hand-off stays as it is today, and a report request goes through it.
 
 **The rail.** With the three shell flags on, production already withdraws the Projects page's "AI chat" entry and its docked rail (§2.2). The page publishes its place to the shell assistant (`projectsAssistantFacts`, through `useAssistantFacts` in `lib/shell/assistant.ts`). So PJP-2b removes the dead `CHAT_LIVE` paths. These are `page.tsx` :4621 to :4628, :5791, :3022, :5220 and :5545 to :5613, `AssistantRail.tsx` and its use in `lib/chatDock.ts`.
 
