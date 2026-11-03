@@ -346,14 +346,12 @@ One template joins the catalog of `generative_ui_2.md` §3, drawn by
 ### 4.6 The first words: the member's own data
 
 **The starter pills.** The empty chat shows three pills. With the flag on,
-they come from the member's My Day feed, through `/api/chat/suggestions` with
-a `starter: true` flag. The route reads the top three feed cards the member
-holds. It writes one pill per card, from the card's own headline. For
-example: "3 tasks are due today", "Reply to Priya Nair", "The Acme deal has
-not moved in 9 days".
+they come from the member's My Day feed. The chat reads the feed through the
+feed's own cache key, so no route and no `starter` flag exist.
 
-A tap sends the headline as a question. With no feed, the pills fall back to
-the fixed list. No model writes a starter pill.
+`starterPills` in `src/lib/starterPills.ts` is the one rule, and it is pure.
+With no feed, the pills fall back to the fixed list. No model writes a
+starter pill.
 
 **CF-4b replaces the headline rule** (D-CF-8). A pill is now an action
 prompt. Only a card of the groups `now`, `needs_you` and `ready` fills a
@@ -361,8 +359,11 @@ slot. A fixed template for the card's kind words the pill. A pill is a
 short request in the member's voice, with the icon of the card's app. The
 tap sends a longer message that names the item.
 
-The fresh chat of a phone
-shows the pills under the day's brief too, when the member sent nothing.
+The fresh chat of a phone shows the pills under the day's brief too, when
+the member sent nothing. The brief row has the id `brief-<date>`
+(`isBriefRow`). A chat that a reminder opens is not a fresh chat. Any chat
+that starts with another assistant row is not a fresh chat. Such a chat
+shows no starter pill and keeps its follow-ups.
 
 **The brief as the first turn.** A fresh chat (`startsFresh`) on a phone,
 with the flag on, opens with the day's brief as the first assistant message.
@@ -611,23 +612,29 @@ draws the icon My Day draws for the card's app. A tap sends a longer message
 that names the item, through the call the old starter pills use.
 
 **Files.** `src/lib/starterPills.ts` (the pure rule, a template for each
-kind), `src/components/SuggestionPills.tsx` (an item with an icon),
-`src/components/AgentChat.tsx` (the starter block only), `starterPills.test.ts`,
-`src/lib/shell/assistant.test.ts` and `e2e/chat-starter-pills.spec.ts`.
+kind), `src/components/SuggestionPills.tsx` (an item with an icon), and
+`src/components/AgentChat.tsx` (the starter block only). Also
+`src/lib/shell/briefTurn.ts` (`isBriefRow`, `holdsOnlyBrief`) and the tests:
+`starterPills.test.ts`, `briefTurn.test.ts`, `src/lib/shell/assistant.test.ts`
+and `e2e/chat-starter-pills.spec.ts`.
 
 **Done when.**
 
 1. Only a card of `now`, `needs_you` or `ready` fills a pill, in the feed's
    order. Fewer such cards give fewer pills. None gives the fixed list.
 2. Each label is a request with no ellipsis and no whole raw title. The sent
-   message names the item.
-3. A phone chat that holds only the brief shows the pills under it. A chat
-   with a member message shows none.
+   message names the item. The label keeps a short name. It drops "Re:",
+   "Fwd:" and "FW:". It takes the part before " — ", " - ", " | " or "(".
+   It cuts at a word to four words and 28 characters. Typographic quotes
+   mark the name. The sent message has the full name in straight quotes.
+3. A phone chat that holds only the brief row shows the pills under it. A
+   reminder-first chat shows none. Any other lone assistant row shows none.
+   A chat with a member message shows none. The first two keep follow-ups.
 4. No model call is made. A tap sends the message as a tap with no typed
    mark. PZ-33b then treats it as it treats the old pills.
 
 **Fences.** `starterPills.test.ts` (every kind, the groups, the counts, the
-names), the source block in `assistant.test.ts`, and the e2e spec.
+names, three long real titles), `briefTurn.test.ts`, the source block in `assistant.test.ts`, and the e2e spec.
 
 ### CF-5 · The brief as the first turn — AGENT-SAFE · BUILT 2026-10-22 (#1216), dark on staging, live where the flag is on
 
