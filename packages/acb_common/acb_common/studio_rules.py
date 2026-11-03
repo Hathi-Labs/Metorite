@@ -1475,7 +1475,8 @@ def rollup_parents(rule: Rule, before: Mapping[str, Any] | None,
 
 def check_rollup_currency(rule: Rule, object_name: str, data: Mapping[str, Any]) -> None:
     """Refuse a child record whose money is not in the currency of the rule.
-    The hot row holds the minor amount only, so the sum would mix currencies."""
+    The hot row holds the minor amount only, so the sum would mix currencies.
+    The store calls it only for a child that the aggregate of the roll-up counts."""
     if rule.currency is None or rule.field is None:
         return
     value = data.get(rule.field)
