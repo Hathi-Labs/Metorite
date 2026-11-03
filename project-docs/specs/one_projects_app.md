@@ -1489,6 +1489,39 @@ The audit captured every Projects surface at 390 px and 360 px, in dark and ligh
 
 Each fence is advisory until its slice builds.
 
+## 9c. The task card (D172, 2026-11-03)
+
+**Status:** 📋 SPEC. The design record is `project-docs/research/task_card_redesign_2026-11.md`. Its mockup put an Ask line on the card. D172.4 replaced that with the AI pill.
+
+### 9c.1 What is wrong today
+
+- **The chat goes away.** The card covers it. The Calendar card is a `fixed inset-0 z-[80]` window (`TaskFocusModal.tsx:64`). The Projects full card is `fixed z-50` (`projects/page.tsx:5809`). The phone card is `z-[60]`, over the bottom bar and its Ask tab (`:5575`).
+- **Two status truths.** "Next action" (the member's list) sits beside the board status "Backlog".
+- **Priority in four places.** "Urgent (auto)", "Low Priority", `Eliminate?` and "Not yet judged" all show at once.
+- **Duplicates.** The title shows twice, and the project shows twice.
+- **Too many live controls.** Ten controls sit in the header. Nine Details rows are all live controls.
+- **Two cards for one task.** Calendar draws `TaskDetail`, and Projects draws its own panel.
+
+### 9c.2 The slices
+
+Each slice except TC-1 ships behind `NEXT_PUBLIC_TASK_CARD_V2`. None needs a migration.
+
+| Slice | What | Done when | Tier |
+|---|---|---|---|
+| TC-1 | The pill stays. No card covers the AI pill, and Calendar publishes its open task to the assistant's facts | At each width, with a card open (side or full), the pill shows and opens the assistant. The facts name the open task in Projects, Tasks and Calendar | MEDIUM |
+| TC-2 | The task chip in the pill (D172.4 to D172.6): a removable reference, one chat per task, and the Re-clarify and Fill details chips | A message with the chip goes to the task's chat and carries the task as context. Removing the chip sends to the normal chat. A change still asks on its card | MEDIUM, with the full review |
+| TC-3 | One card everywhere: Calendar and `/tasks` use the Projects card. The side panel by default, and expand to full screen | The same component draws the card on the three surfaces. Expand and Escape work on each | MEDIUM |
+| TC-4 | Read first: the header, the title and status pill, the five facts, edit on click, "More details" | Each fact reads as text and opens its editor on one click. The header holds at most five controls | LOW |
+| TC-5 | The My plan line | My plan folds to one line by default and opens in place. Only the member sees it | MEDIUM |
+
+### 9c.3 Fences
+
+- TC-1: a test that the card layers sit below the pill's layer at each width.
+- TC-2: a test that the chip adds the task to the assistant's facts and routes to the task's chat.
+- TC-3: a source scan that no surface draws a second task card.
+
+Each fence is advisory until its slice builds.
+
 ## 10. Verification
 
 For OP-1, in `workbench/control_plane`: `npx tsc --noEmit`,

@@ -158,7 +158,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-CM | **Console and Money**: seats, credits, invoices | 🟡 gated · M2 | `specs/customer_console.md` | Metorite: epic 478 (Billing & Accounts) · gates H-14 and the rate card (D123) · next H-170, CP-10 |
 | WS-TO | **Trust and Operations**: enforced controls, restore, compliance | 🟢 active · M1 | `specs/box_hardening.md` | Metorite: epic 521 (Platform & CI/CD) · SBX-0 decided (D130, `specs/agent_sandbox.md`) · next WS-1e, WS-3, BH-3 with SBX-1, the WS-37 spec (D119.4) |
 | WS-PL | **Platform and CI**: delivery, staging, branch protection | 🟢 active · M1 | `specs/development_and_delivery_framework.md` · the local loop LD-7 to LD-10: `specs/engineering_practice.md` §1.3 (D145) | Metorite: project Platform & CI/CD, and epic 1100 in Developer Workflow · next LD-8c (the backup verify fails each night), LD-8a, LD-8b, LD-9, LD-10, then WS-38a, WS-38e, WS-5a |
-| WS-PT | **Projects and Tasks** | 🟢 active · M1 | `specs/project_management_app.md` · `specs/one_projects_app.md` | Metorite: project Projects/Tasks App · D170 (the inbox holds captures) · `one_projects_app.md` §9b: the phone (epic 1500), the inbox, Undo, select many, the archive · next MOB-1 and INB-1 (in build), then UNDO-1, SEL-1, MOB-2 · H-257, H-387 |
+| WS-PT | **Projects and Tasks** | 🟢 active · M1 | `specs/project_management_app.md` · `specs/one_projects_app.md` | Metorite: project Projects/Tasks App · D170 (the inbox holds captures), D172 (the task card) · `one_projects_app.md` §9b and §9c: the phone (epic 1500), the inbox, Undo, select many, the archive · next MOB-1 and INB-1 (in build), then UNDO-1, SEL-1, MOB-2 · H-257, H-387 |
 | WS-CAL | **Calendar**: events, reminders, external sync | 🟢 active · M1 | `specs/calendar_focus_os.md` · `specs/calendar_events_reminders.md` | Metorite: project Calendar App · CE-0 decided (D138, 2026-10-29) · RE-9b BUILT 2026-10-31 (migration 318). Not dark: it sends wherever `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` are on (production: both on) · CE-4 BUILT, dark (2026-10-31, migration 331, `CALENDAR_EVENTS` off) · next CE-1, CE-3, CE-5, then CE-10 with CE-11 |
 | WS-PP | **People and Profile** | 🟢 active · M1 | `specs/people_center_app.md` | Metorite: project My Profile · next E-58 |
 | WS-EM | **Email** | 🟢 active · M0 | `specs/email_app_master_plan.md` · `specs/shared_mailbox.md` | Metorite: project My Email · Gmail in test mode (D122.4) · next E-05, E-09, E-11 |
@@ -5256,6 +5256,27 @@ Owner directive, 2026-11-03, in chat. The owner gave the design to the agent: "I
 4. **No approval in one click from My Day.** The member approves on the card that shows the exact payload (D124.2). My Day opens that card.
 
 Fence: named in `chat_run_continuity.md` §8 for WAIT-1 and WAIT-2. Advisory until each slice builds.
+
+### D172 — The task card reads first, and the one AI pill works on the open task (2026-11-03)
+
+Owner directive, 2026-11-03, in chat. Board: **WS-PT**, owner `specs/one_projects_app.md` §9c. The owner approved the redesign mockup and its recommendations, then changed two parts.
+
+```text
+"It kind of still feels a little cognitively overloading."
+"Would it also be nice to expand it into a full-screen task card when needed, but default to the sidebar? Both on the calendar and the projects tasks app."
+"Instead of having the AI chat box also appear on the card (which is unnecessary because we already have access to the AI pill), always have the AI pill be available. ... Even when we open the task card in the full-screen central view, ... the task card can be above the AI pill so that we can chat with that particular task in context."
+```
+
+1. **One task card everywhere.** Projects, Tasks and Calendar draw the same card. It opens as a side panel. An expand control opens it full screen, and Escape or collapse returns to the side panel. On a phone the card opens full screen.
+2. **The card reads first.** The title and the status pill come first. Then five facts read as text, and each opens its editor on a click: Assignee, Due, Priority, Estimate and Tags. A folded field that has a value shows too. "More details" folds the rest.
+3. **My plan folds to one line.** It holds the member's private triage: the list, the context, the energy and the next step. The next step hides when it equals the title.
+4. **No chat box on the card.** The one AI pill of the shell stays visible on every surface. No card covers it, and a full-screen card sits above it. An open task joins the pill as a reference chip, which the member can remove.
+5. **One chat per task.** A message with the task chip goes to that task's own chat, and that chat lists in the one chat list (D99).
+6. **Suggestions in the pill.** "Re-clarify" and "Fill details" become suggestion chips of the pill while a task is attached. Their two dialogs stay in the ⋯ menu for one release.
+7. **Comments** start at the top of Discussion.
+8. **D78 stays.** A due date alone never raises priority. The card explains the level in one line, for example "Low: due soon, but not marked important".
+
+Fence: named per slice in `one_projects_app.md` §9c. Advisory until each slice builds.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
