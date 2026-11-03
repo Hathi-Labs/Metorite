@@ -548,6 +548,29 @@ async def test_the_hidden_line_of_the_probe_shows_on_the_card(held, card) -> Non
     assert TAIL in card.shown[0]["context"]
 
 
+@pytest.mark.parametrize("desc_chars", [1_520, 3_000], ids=["one-cut", "two-cuts"])
+async def test_the_size_that_a_held_refusal_names_fits_on_a_second_try(
+        held, card, desc_chars) -> None:
+    """Review round 2, item 3: the refusal named the room of both long texts,
+    so a second try at that size still did not fit.
+    Mutation: name the room of both texts -> red."""
+    desc = ("Describe the work. " * 200)[:desc_chars]
+    sid = held.seed()
+    out = await st.studio_skill_save(skill_id=sid, description=desc,
+                                     instructions="Write one bullet. " * 170,
+                                     based_on=await _based_on(sid))
+    msg = _msg(out)
+    assert out["ok"] is False and card.shown == []
+    shorten = msg.split("Shorten ", 1)[1]
+    room = int(re.search(r"about (\d+) characters", shorten).group(1))
+    both = shorten.startswith("description and instructions")
+    assert both is (desc_chars == 3_000)
+    again = await st.studio_skill_save(skill_id=sid, description="d" * room if both else desc,
+                                       instructions="w" * room, based_on=await _based_on(sid))
+    assert again["ok"], again
+    assert len(card.shown) == 1 and not is_cut(card.shown[0]["context"])
+
+
 async def test_a_clear_chat_shows_a_cut_card_with_the_mark(gw, card) -> None:
     sid = gw.seed(body={**BODY, "instructions": LONG + TAIL})
     out = await st.studio_skill_state(sid, "published")

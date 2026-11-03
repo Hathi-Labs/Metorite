@@ -1351,11 +1351,30 @@ async def _card(note: str, rows: list[tuple[str, str]]) -> CardBody:
         made = card_body(note, rows)
     except CardWontFit:
         raise _Refused(_WONT_FIT) from None
-    # The refusal names the parameter that the model sends.
-    made = CardBody(made, (("instructions" if k == "body" else k) for k in made.cut), made.room)
-    if is_cut(made) and await _chat_is_held():
+    if not is_cut(made):
+        return made
+    made = _named_cut(made, rows)
+    if await _chat_is_held():
         raise _Refused(cut_refusal(made))
     return made
+
+
+#: The text of a long row around its value, as :func:`_skill_rows` writes it.
+_LONG_LABELS = {"description": "Description: «»", "body": "Instructions: «»"}
+
+
+def _named_cut(made: CardBody, rows: list[tuple[str, str]]) -> CardBody:
+    """*made*, with each cut named for the parameter that the model sends, and
+    a room that fits (review round 2, item 3).
+
+    ``card_body`` gives one room for each long text together, so a text at
+    that size beside a whole description does not fit. Here the room is what
+    the long rows that are not cut leave, shared by the cut ones, less the
+    text around each value."""
+    whole = sum(len(line) for key, line in rows if key in LONG_TEXT_KEYS and key not in made.cut)
+    labels = sum(len(_LONG_LABELS.get(key, "")) for key in made.cut)
+    room = max(0, (made.room - whole - labels) // len(made.cut))
+    return CardBody(made, (("instructions" if k == "body" else k) for k in made.cut), room)
 
 
 def _snapshot(reply: _Reply) -> tuple[Any, Any, Any]:
