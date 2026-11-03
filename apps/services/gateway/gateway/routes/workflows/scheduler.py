@@ -38,7 +38,9 @@ from typing import Any
 from gateway.routes.workflows import unattended
 from gateway.routes.workflows.core import _log, _tenant_session, parse_jsonb
 from gateway.routes.workflows.service import (
+    _MEMBER_BLIND_REASON,
     RunRejected,
+    _member_blind_write_nodes,
     _organization_ids,
     load_version_serialized,
     record_skipped_run,
@@ -147,6 +149,10 @@ async def _scan_org(org: str, now: datetime) -> int:
     So the read, the arm, the claim and the version load each open their own
     ``_tenant_session(org)``. The run takes the org of the workflow ROW, and a
     row of another org is skipped.
+
+    A workflow that holds a node of ``service._member_blind_write_nodes`` does
+    not start. A schedule has no member to check, so the claimed tick leaves a
+    ``cancelled`` row with ``_MEMBER_BLIND_REASON``.
     """
     fired = 0
     async with _tenant_session(org) as db:
@@ -234,6 +240,23 @@ async def _scan_org(org: str, now: datetime) -> int:
                 reason=(
                     f"published version {row.latest_version} is missing — "
                     "republish the workflow"
+                ),
+                organization_id=row_org,
+            )
+            continue
+        if _member_blind_write_nodes(serialized):
+            # A task node writes `pm_tasks` with no member check, and a
+            # schedule has no member to check. So the scan refuses the
+            # workflow, as `run_published_workflow` does (H-328 part (b)).
+            await record_skipped_run(
+                workflow_id=str(row.workflow_id),
+                workflow_name=row.name,
+                version=int(row.latest_version),
+                trigger_kind="schedule",
+                trigger_payload={"scheduled_at": due.isoformat()},
+                reason=(
+                    "tick skipped — this workflow can change Projects tasks, so "
+                    f"a schedule cannot start it yet. {_MEMBER_BLIND_REASON}"
                 ),
                 organization_id=row_org,
             )

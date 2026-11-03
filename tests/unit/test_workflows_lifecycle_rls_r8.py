@@ -43,7 +43,11 @@ Mutations this suite catches (R7):
 * the org read from the trigger payload: the payload case goes red;
 * ``resume_run`` passes the caller's org: the row org case goes red;
 * part (b), section 9: the allowlist check dropped in a scan or a sweep, or
-  the org bind dropped in ``_scan_org``, turns its case red.
+  the org bind dropped in ``_scan_org``, turns its case red;
+* the refusal of a Projects node in ``_scan_org`` removed: the section 9.5
+  cases go red, and the failure shows the changed task row;
+* a resume of an elapsed wait left unmarked: the scan resume cases of
+  section 9.2 go red.
 
 ⚠️ **R8.** The subject is a policy. A Python fake agrees with whatever SQL it
 is handed. The gate is ``TENANT_LADDER_DATABASE_URL``, never ``DATABASE_URL``.
@@ -174,7 +178,8 @@ def _wait_then_module(module_id: str) -> dict:
 
 
 #: The section-9 workflows that hold a schedule trigger.
-_TICKERS = ("Tick in A", "Tick in B", "Tick A reaches B", "Gone in A", "Gone in B")
+_TICKERS = ("Tick in A", "Tick in B", "Tick A reaches B", "Gone in A", "Gone in B",
+            "Task tick in A", "Sweep tick in A")
 #: Every section-9 workflow. Its run rows are reset before each case.
 _UNATTENDED_NAMES = (*_TICKERS, "Wait in A", "Wait in B", "Health in A", "Health in B")
 
@@ -324,6 +329,15 @@ def promoted():
         before_gate = _seed_task(conn, work_c["project"], str(conn.execute(text(
             "SELECT status_id FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
             {"t": work_c["task"]}).scalar_one()), org_c, "Before the gate in C")
+        # Section 9.5: the targets of the scheduled Projects nodes. The swept
+        # one stays fresh until its case makes it stale, so no other sweep
+        # counts it.
+        tick_target = _seed_task(conn, work_a["project"], str(conn.execute(text(
+            "SELECT status_id FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
+            {"t": work_a["task"]}).scalar_one()), org_a, "Scheduled target in A")
+        tick_stale = _seed_task(conn, work_a["project"], str(conn.execute(text(
+            "SELECT status_id FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
+            {"t": work_a["stale"]}).scalar_one()), org_a, "Swept by the tick in A")
 
         steps: dict[str, tuple[str, str, dict]] = {
             "Module in A": ("A", "module", {"module_id": work_a["module"]}),
@@ -384,6 +398,11 @@ def promoted():
             "Wait in B": ("B", _wait_then_module(work_b["module"]), True),
             "Health in A": ("A", _one_step("module", {"module_id": work_a["module"]}), True),
             "Health in B": ("B", _one_step("module", {"module_id": work_b["module"]}), True),
+            "Task tick in A": ("A", _one_step("pm_task", {
+                "task_id": tick_target,
+                "fields": {"title": "Renamed by the schedule", "status": "Done"},
+            }), True),
+            "Sweep tick in A": ("A", _one_step("pm_lifecycle", {}), True),
         }
         for name, (tag, serialized, has_version) in part_b.items():
             wf[name] = _seed_workflow(
@@ -403,6 +422,7 @@ def promoted():
     ns.work_a, ns.work_b, ns.work_c = work_a, work_b, work_c
     ns.second_task = second_task
     ns.before_gate = before_gate
+    ns.tick_target, ns.tick_stale = tick_target, tick_stale
     ns.wf = wf
     yield ns
 
@@ -524,11 +544,13 @@ def _run_published(
 def _start_at_the_seam(
     promoted, name: str, org: str, *, ambient: str | None = None, trigger_kind: str = "api",
 ) -> str:
-    """Start one workflow at ``start_run``, under the agent door's refusal.
+    """Start one workflow at ``start_run``, under the refusals of the doors.
 
-    Nothing live starts a Projects node with an org. This call proves what the
-    node does once a run reaches it, and it builds a run that paused before
-    the refusal existed."""
+    Each live door that starts a run with an org refuses a Projects node. The
+    agent door and the schedule scan of a listed org refuse at the start, and
+    ``resume_run`` closes the run. This call goes below them. It proves what
+    the node does once a run reaches it, and it builds a run that paused
+    before the refusal existed."""
     serialized = _serialized_of(promoted, name)
 
     async def body():
@@ -1026,9 +1048,10 @@ def _fired_at(promoted, name: str):
             "WHERE workflow_id = CAST(:w AS uuid)"), {"w": promoted.wf[name]}).scalar_one()
 
 
-def _park_wait(promoted, name: str, org: str) -> str:
-    """A scheduled run that stopped at a long wait, whose deadline has passed."""
-    run_id = _start_at_the_seam(promoted, name, org, trigger_kind="schedule")
+def _park_wait(promoted, name: str, org: str, *, trigger_kind: str = "schedule") -> str:
+    """A run that stopped at a long wait, whose deadline has passed. By
+    default a schedule started it."""
+    run_id = _start_at_the_seam(promoted, name, org, trigger_kind=trigger_kind)
     assert _run_row(promoted, run_id).status == "paused"
     with promoted.admin_engine.begin() as c:
         c.execute(text(
@@ -1175,6 +1198,24 @@ def test_a_listed_org_resumes_its_matured_wait_in_its_own_org(promoted, monkeypa
     assert calls.executed == [True]  # AUTO-7a: the resumed run is marked too
 
 
+@pytest.mark.parametrize("kind", ["manual", "api"])
+def test_a_scan_resume_carries_the_mark_whatever_the_kind(promoted, monkeypatch, kind):
+    """A manual or agent run paused at a long wait. It can get its org from
+    the backfill. The wait scan resumes it, and no person is present, so the
+    resumed run carries the AUTO-7a mark. The kind of the row stays."""
+    _list_orgs(monkeypatch, promoted.org_a)
+    _reset_unattended(promoted)
+    run_a = _park_wait(promoted, "Wait in A", promoted.org_a, trigger_kind=kind)
+    calls = _spy(monkeypatch)
+
+    assert _on_app_role(promoted, None, scheduler.scan_due_waits) == 1
+
+    assert calls.executed == [True]
+    row = _run_row(promoted, run_a)
+    assert (row.status, row.error, row.org) == ("succeeded", None, promoted.org_a)
+    assert [r.trigger_kind for r in _runs_of(promoted, "Wait in A")] == [kind]
+
+
 # 9.3 The sweeps
 
 
@@ -1287,6 +1328,53 @@ def test_the_approver_reads_the_refusal_through_the_broker(promoted, monkeypatch
     assert res["ok"] is False and "Projects tasks" in res["error"], res
     assert (_task_row(promoted, target), _activities(promoted, target)) == before
     assert _run_row(promoted, run_id).status == "cancelled"
+
+
+# 9.5 A schedule never starts a Projects node
+
+
+def _set_tick_stale(promoted, stale: bool) -> None:
+    """Make the swept target of ``Sweep tick in A`` stale, or fresh again.
+    A fresh target is one that no other sweep of org A counts."""
+    age = "now() - make_interval(days => 90)" if stale else "now()"
+    with promoted.admin_engine.begin() as c:
+        c.execute(text(
+            f"UPDATE pm_tasks SET archived_at = NULL, updated_at = {age} "
+            "WHERE id = CAST(:t AS uuid)"), {"t": promoted.tick_stale})
+
+
+@pytest.mark.parametrize("name", ["Task tick in A", "Sweep tick in A"])
+def test_a_schedule_never_starts_a_workflow_with_a_task_node(promoted, monkeypatch, name):
+    """Org A is listed, and its due schedule holds a ``pm_task`` node with a
+    fixed task id, or a ``pm_lifecycle`` node. A schedule has no member to
+    check, so the scan starts no run. The claimed tick leaves one
+    ``cancelled`` row with the reason, and no task moves.
+
+    The rows come first. A mutation that removes the refusal in
+    ``_scan_org`` then fails on the changed task, which is the defect."""
+    _list_orgs(monkeypatch, promoted.org_a)
+    calls = _spy(monkeypatch)
+    _reset_unattended(promoted, name)
+    targets = (promoted.tick_target, promoted.tick_stale)
+    armed_at = _fired_at(promoted, name)
+    _set_tick_stale(promoted, True)
+    try:
+        before = {t: (_task_row(promoted, t), _activities(promoted, t)) for t in targets}
+        fired = _on_app_role(promoted, None, scheduler._scan_once)
+        after = {t: (_task_row(promoted, t), _activities(promoted, t)) for t in targets}
+    finally:
+        _set_tick_stale(promoted, False)
+
+    assert after == before
+    assert fired == 0
+    assert (calls.starts, calls.executed, calls.tools) == ([], [], [])
+    (row,) = _runs_of(promoted, name)
+    assert (row.status, row.org) == ("cancelled", promoted.org_a)
+    assert (row.trigger_kind, row.started_by) == ("schedule", "scheduler")
+    assert service._MEMBER_BLIND_REASON in row.error and "Projects tasks" in row.error
+    assert all(t not in row.error for t in targets)
+    assert [str(k["organization_id"]).lower() for k in calls.skips] == [promoted.org_a]
+    assert _fired_at(promoted, name) > armed_at  # the tick is claimed, and spent
 
 
 # ── 8. CI must run this suite ────────────────────────────────────────────────

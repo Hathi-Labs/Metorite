@@ -42,6 +42,7 @@ model nor a tool argument can clear the mark.
 * M13. ``carry_run_context``: make it a no-op.
 * M14. ``gateway/brief/run.py``: call ``no_person_scope`` there.
 * M15. ``skill_projects``: add a tool that posts to ``/actions/pending``.
+* M16. ``_execute_run``: mark from the kind only, and drop ``elapsed_waits``.
 
 Run::
 
@@ -652,7 +653,8 @@ def _outcome() -> SimpleNamespace:
 
 
 def _run_kind(monkeypatch, kind: str, *, payload: dict | None = None,
-              inside_marked: bool = False) -> dict[str, bool]:
+              inside_marked: bool = False,
+              elapsed_waits: set[str] | None = None) -> dict[str, bool]:
     """The real ``_execute_run``, with a fake engine that reads the mark."""
     seen: dict[str, bool] = {}
 
@@ -674,6 +676,7 @@ def _run_kind(monkeypatch, kind: str, *, payload: dict | None = None,
         await service._execute_run(
             run_id="r-1", workflow_id="wf", workflow_name="wf", serialized={},
             trigger_payload=payload or {}, variables={}, started_by="x", trigger_kind=kind,
+            elapsed_waits=elapsed_waits,
         )
 
     async def main() -> None:
@@ -696,6 +699,15 @@ def test_an_unattended_trigger_marks_the_run_and_the_mark_ends_with_it(monkeypat
 @pytest.mark.parametrize("kind", ["manual", "api"])
 def test_a_manual_run_stays_unmarked(monkeypatch, kind) -> None:
     assert _run_kind(monkeypatch, kind) == {"inside": False, "after": False}
+
+
+@pytest.mark.parametrize("kind", ["manual", "api"])
+def test_an_elapsed_wait_marks_the_run_whatever_the_kind(monkeypatch, kind) -> None:
+    """The wait scan resumes an elapsed wait, and no person is present (H-328
+    part (b)). An approval resume clears no wait, so it stays unmarked."""
+    assert _run_kind(monkeypatch, kind, elapsed_waits={"hold"}) == {
+        "inside": True, "after": False}
+    assert _run_kind(monkeypatch, kind, elapsed_waits=set())["inside"] is False
 
 
 def test_the_payload_cannot_choose_the_mark(monkeypatch) -> None:

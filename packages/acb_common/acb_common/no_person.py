@@ -17,8 +17,9 @@ cycle.
 
 **Only server code sets the mark.** :func:`no_person_scope` is the one setter.
 Two modules call it: ``gateway.jobs.worker`` around each handler, and
-``gateway.routes.workflows.service`` for a run of an unattended trigger. No
-tool, no tool argument and no request field reaches it.
+``gateway.routes.workflows.service`` for a run of an unattended trigger and
+for the resume of an elapsed wait. No tool, no tool argument and no request
+field reaches it.
 
 **Nothing clears the mark.** This module has no function that sets False. The
 scope gives no token to its caller, and it undoes only its own set. A nested

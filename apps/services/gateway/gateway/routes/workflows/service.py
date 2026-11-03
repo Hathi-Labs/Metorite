@@ -57,8 +57,9 @@ from typing import Any
 # A run they start carries that org, so `start_run`, `_finish_run` and
 # `_hold_at_gate` write it through `_run_session(org)`. An approval resumes
 # through `resume_run(org)`, with the approver's org. A long wait refuses at
-# the start, because the wait scan is unbound. A run with no org (manual,
-# schedule, webhook, event, the wait scan) keeps the unbound path above.
+# the start, because the wait scan resumes a run only for a listed org (part
+# (b) below). A run with no org (manual, webhook, event) keeps the unbound path
+# above.
 # Fence: `tests/unit/test_workflows_tool_rls_r8.py`.
 #
 # ⚠️ A THIRD EXCEPTION (H-328 part (a), 2026-11-02): the node services. A run
@@ -73,8 +74,9 @@ from typing import Any
 # owner resolver for the other two.
 #
 # ⚠️ A task write has no member check (`_member_blind_write_nodes`). So
-# `run_published_workflow` and `resume_run` refuse a `pm_task` or `pm_lifecycle`
-# node, and each stays refused until a run checks a verified member.
+# `run_published_workflow`, the schedule scan (`scheduler._scan_org`) and
+# `resume_run` refuse a `pm_task` or `pm_lifecycle` node, and each stays
+# refused until a run checks a verified member.
 # Fence: `tests/unit/test_workflows_lifecycle_rls_r8.py`.
 #
 # A FOURTH EXCEPTION (H-328 part (b)): the sweeps. `record_skipped_run`,
@@ -534,10 +536,11 @@ async def _run_session(organization_id: str | None) -> Any:
 
     A run that carries an organization uses
     ``_tenant_session(organization_id)``, for its run rows and for the module
-    read and the task write of its nodes. Only the F13 agent entry points
-    start such a run, with the org of the agent run. The org is never
-    inherited from the ambient context, which is what H4 forbids. The one
-    exception is the read at the approval door (:func:`resume_run`).
+    read and the task write of its nodes. The F13 agent entry points start
+    such a run with the org of the agent run. The scans start or resume one
+    with the org of the row, for a listed org only (H-328 part (b)). The org
+    is never inherited from the ambient context, which is what H4 forbids.
+    The one exception is the read at the approval door (:func:`resume_run`).
 
     A run with no organization keeps the unbound ``_get_db()`` (the H4 note at
     the top of this module). Under FORCE RLS that read finds no row on a fresh
@@ -562,9 +565,10 @@ def _long_wait_nodes(serialized: dict[str, Any]) -> list[str]:
 
     A wait of up to ``WAIT_INLINE_MAX_SECONDS`` runs inline and never pauses.
     A longer wait, or a duration that only the trigger data decides, can
-    pause. Only the schedule scanner resumes such a pause, and its scan is
-    not tenant-bound yet (H4 slice 6c). So the F13 entry point refuses these
-    workflows rather than start a run that stays paused for good.
+    pause. Only the wait scan resumes such a pause, and it acts only for an org
+    on ``WORKFLOW_UNATTENDED_ORGS`` (H-328 part (b)). That list ships empty.
+    So the F13 entry point refuses these workflows rather than start a run
+    that can stay paused for good. Part (c) owns this refusal.
     """
     out: list[str] = []
     for block in serialized.get("blocks") or []:
@@ -603,10 +607,10 @@ def _member_blind_write_nodes(serialized: dict[str, Any]) -> list[str]:
     A fixed task id has the same gap, because the agent still picks the
     workflow. The sweep has it too, and it archives and closes tasks.
 
-    :func:`run_published_workflow` and :func:`resume_run` refuse these nodes,
-    whether the task id is a template or fixed. The refusal stays until a run
-    checks a verified member. Parts (b) and (c) of H-328 must decide which
-    member that is (``workflows_app.md``).
+    :func:`run_published_workflow`, the schedule scan (``scheduler._scan_org``)
+    and :func:`resume_run` refuse these nodes, whether the task id is a
+    template or fixed. The refusal stays until a run checks a verified member.
+    Part (c) of H-328 must decide which member that is (``workflows_app.md``).
     """
     return [
         str(block.get("id"))
@@ -661,8 +665,12 @@ async def start_run(
 ) -> str:
     """Create the run row + hub entry and launch the supervised task.
 
-    *organization_id* binds the run's writes (:func:`_run_session`). Only the
-    F13 agent entry point passes it, from the agent run's binding.
+    *organization_id* binds the run's writes (:func:`_run_session`). Two
+    callers pass it. The agent door (:func:`run_published_workflow`) passes the
+    org of the agent run's binding. The schedule scan (``scheduler._scan_org``)
+    passes the org of the workflow row, for a listed org only. Each caller
+    refuses a node of :func:`_member_blind_write_nodes` first.
+    ``tests/unit/test_workflows_start_run_org_fence.py`` names each caller.
     """
     global _ACTIVE_TOTAL
     if _ACTIVE_TOTAL >= MAX_CONCURRENT_RUNS:
@@ -843,7 +851,10 @@ async def _execute_run(
     member_scope = contextlib.ExitStack()
     # AUTO-7a (`proactive_agent.md` §4.2): nobody watches these kinds. The kind
     # is a literal of the starting code or the stored run row, never a payload.
-    if trigger_kind in UNATTENDED_TRIGGERS:
+    # An elapsed wait has no person present either, whatever the kind: the wait
+    # scan resumes it, and nobody decides anything (H-328 part (b)). The wait
+    # comes from the `reason` of the stored pause row (`resume_run`).
+    if trigger_kind in UNATTENDED_TRIGGERS or elapsed_waits:
         member_scope.enter_context(no_person_scope())
     billing_member = await _workflow_billing_member(workflow_id)
     if billing_member:
@@ -1262,7 +1273,9 @@ async def resume_run(
     another org is not visible, so it reads as ``no run`` and nothing resumes.
     The wait scan passes the org of the run ROW, for a listed org only
     (H-328 part (b)). A run with no org is not found by that scan, so the agent
-    entry point still refuses a long wait until part (c).
+    entry point still refuses a long wait until part (c). A resume of an
+    elapsed wait runs with the AUTO-7a mark, whatever the kind of the run,
+    because the scan resumes it and no person is present.
 
     ⚠️ **The approval door is the one exception to "never the ambient tenant"
     and to "part (a) wakes nothing".** The handler takes the approver's
