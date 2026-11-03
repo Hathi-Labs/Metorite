@@ -112,6 +112,7 @@ Authentication, roles and org access control.
 - Branch 0 admits a door pair, and `deps._door_gate` checks the door flag, AD-18, the app scope and the caps. A door write of class B or C that is not a proposal gets 403 `approval_required` until MCP-P1b. Each door call writes one audit row (`_audit_door`). Fence: `tests/unit/test_mcp_edge_app_door.py` (`test_a_write_with_no_approval_fails_closed`).
 - `agent_signing.py` is the ONE canonical string and the ONE HMAC of the signed request from the agent edge to the gateway. Branch 0 of `deps.get_current_user` never falls through to the bearer branches, and it reads no host input.
 - 🔴 Before a change to branch 0, `agent_signing.py`, the `Visibility` narrowing in `core.py` or their fences merges, it needs an adversarial review AND an independent verification. `test_branch_zero_digest_is_pinned` fails until the reviewed commit updates the digest.
+- `direct_proof.py` is the ONE signer and verifier of `X-Studio-Direct`, the proof that a Studio write is a member's own act (STU-B2c-1). Only it and the settings read `studio_direct_key`, and no skill or orchestrator code may. Fence: `test_studio_direct_proof.py`.
 - Branch 0 fences: `tests/unit/test_mcp_edge_signing.py`, `tests/unit/test_mcp_edge_authority.py` (R8), `tests/unit/test_tenant_request_binding.py`, `tests/unit/_branch_zero_tripwire.py`, `tests/unit/test_mcp_edge_writes.py` (R8).
 
 ## Conventions
