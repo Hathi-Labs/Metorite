@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -54,7 +54,12 @@ from acb_common.studio_fields import (
     parse_field_spec,
     validate_field_spec,
 )
-from acb_common.studio_rules import ConstraintError, check_rules_fit, parse_rules
+from acb_common.studio_rules import (
+    ConstraintError,
+    RollupSource,
+    check_rules_fit,
+    parse_rules,
+)
 
 STUDIO_VERSION = 1
 
@@ -108,8 +113,8 @@ MAX_DEPTH = 20  # the same bound as `_GENUI_MAX_DEPTH` in `acb_skills/write_arti
 # `rules` is an object key since C6 (a list beside `fields`). `state_machine` and `states`
 # stay refused, so a rule has one spelling. A formula is a rule of kind `formula` (C7a),
 # so the key `formula` has no use and C7a lifts its refusal.
-# `formula` and `rollup` stay refused as field types, so a formula has one spelling:
-# the rules list.
+# `formula` and `rollup` stay refused as field types, so a formula and a roll-up have
+# one spelling each: a rule of that kind in the rules list (C7a, C7b).
 RESERVED_KEYS: dict[str, str] = {
     "rules": "C6",
     "state_machine": "C6",
@@ -117,6 +122,11 @@ RESERVED_KEYS: dict[str, str] = {
     "code": "L1",
 }
 RESERVED_FIELD_TYPES: dict[str, str] = {"formula": "C7a", "rollup": "C7b"}
+#: The refusal of a field of type `rollup`: the roll-up is a rule, so one spelling holds.
+_ROLLUP_TYPE_MESSAGE = (
+    "Field type `rollup` is not a field type. Fill a field with a rule of kind `rollup` "
+    "in the `rules` of its object."
+)
 #: The refusal of a field of type `formula`: the formula is a rule, so one spelling holds.
 _FORMULA_TYPE_MESSAGE = (
     "Field type `formula` is not a field type. Fill a field with a rule of kind `formula` "
@@ -563,6 +573,8 @@ def _structure_errors(exc: ValidationError, skip: set[str]) -> list[ManifestErro
         elif last == "type" and typ == "literal_error":
             if val == "formula":
                 msg = _FORMULA_TYPE_MESSAGE
+            elif val == "rollup":
+                msg = _ROLLUP_TYPE_MESSAGE
             elif isinstance(val, str) and val in RESERVED_FIELD_TYPES:
                 msg = _reserved(val, RESERVED_FIELD_TYPES[val], "Field type ")
             else:
@@ -722,18 +734,37 @@ def _check_objects(m: Manifest, objects: dict[str, set[str]], out: list[Manifest
             for problem in validate_field_spec(f.model_dump(), objects=objects):
                 tail = "" if problem.got is None else _got(problem.got)
                 out.append(_err(f"{base}[{fi}].{problem.path}", problem.message + tail))
-        _check_rules(o, f"$.objects[{oi}].rules", out)
+        _check_rules(o, f"$.objects[{oi}].rules", out, m.objects)
 
 
-def _check_rules(o: ObjectDef, path: str, out: list[ManifestError]) -> None:
+def _rollup_sources(others: Sequence[ObjectDef], own: str) -> dict[str, RollupSource]:
+    """The other objects of the package, as the sources of a roll-up (C7b). An
+    object whose fields or rules do not parse is left out, and its own refusal
+    is in the list already."""
+    out: dict[str, RollupSource] = {}
+    for other in others:
+        if other.name == own:
+            continue
+        try:
+            fields = tuple(parse_field_spec(f.model_dump()) for f in other.fields)
+            rules = parse_rules(other.rules) if other.rules else ()
+        except (ConstraintError, FieldError):
+            continue
+        out[other.name] = RollupSource(other.name, fields, rules)
+    return out
+
+
+def _check_rules(o: ObjectDef, path: str, out: list[ManifestError],
+                 others: Sequence[ObjectDef] = ()) -> None:
     """The rules of an object run through the one parser of the object store.
-    The fit check needs fields that passed their own check."""
+    The fit check needs fields that passed their own check. A roll-up reads the
+    other objects of the package."""
     if not o.rules:
         return
     try:
         rules = parse_rules(o.rules)
         specs: list[FieldSpec] = [parse_field_spec(f.model_dump()) for f in o.fields]
-        check_rules_fit(rules, specs)
+        check_rules_fit(rules, specs, object_name=o.name, sources=_rollup_sources(others, o.name))
     except ConstraintError as exc:
         out.append(_err(path, exc.message))
     except FieldError:
