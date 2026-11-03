@@ -819,6 +819,7 @@ function CrmPageInner({ ctx }: { ctx: MirrorContext }) {
         variant="secondary"
         size="sm"
         icon="Plus"
+        data-guide="crm.new"
         disabled={!mayCreate}
         title={mayCreate ? undefined : NEW_DISABLED_REASON}
         onClick={() => setCreating(isEntity(view.tab) ? view.tab : "deals")}

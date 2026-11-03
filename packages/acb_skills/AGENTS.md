@@ -30,9 +30,15 @@ not write a second copy of that seam. A bare test file name is under
    - On, Trafilatura reads an HTML type. Only `web_reader_worker._extract_markdown` imports it, as `from trafilatura import extract`, with no `url=`. It gets text, never bytes, of at most `MAX_LOCAL_HTML_BYTES`.
    - Trafilatura work runs in a child process, because a regex holds the GIL, so a thread cannot bound it. `web_tools.py` never imports it. WEB-3 and each later parser must run the same way.
    - The child starts as `python -I <path>`, never with `-m`, with the `child_env` allowlist. On Linux it caps its memory and its CPU time. The parent kills and reaps it at `READER_TIMEOUT_S`.
+   - WEB-2b: the child confines itself with `child_confine.py` (item 4a) before it reads a byte of the page. The order of `main()` is the control: close fds from 3 up, limits, `confine`, one warm-up page, `close_limits`, then stdin. A confinement that cannot apply gives `{"fault": "unavailable"}` and the strip. `_child_read` kills the process group at the end of EVERY read, also when the leader exited 0. Fence: `test_web_reader_confine.py`.
    - A read takes a slot before the child starts: `MAX_READER_CHILDREN` in the process and `MAX_READER_CHILDREN_PER_ORG` for each org. With no slot it does not wait. No slot and each fault give the regex strip, and each fault writes one log line.
    - `Date:` appears only when a tag or a JSON-LD date field of the page states that date. A `<meta>` tag can name the charset. A binary body gets one line and no text. Each other type gets the strip and one line about WEB-3.
    - Jina gets a URL only when `WEB_READER_REMOTE=jina` and the local text is shorter than `MIN_LOCAL_CHARS`. Fences: `test_web_readers.py`, `test_no_agpl_dependency.py`.
+4a. child_confine.py -- the ONE confinement of a child process that parses hostile input (WS-WEB WEB-2b). Landlock, the seccomp filter, `close_inherited_fds` and `close_limits`. It is stdlib only.
+   - A worker loads it BY PATH with `importlib`, never with `import acb_skills`, because the package `__init__` loads the whole tool set. It writes no bytecode on that load. Do not write a second copy of Landlock or of the filter. WEB-3 and each later parser use this module.
+   - `confine(min_abi)` fails closed on Linux with `Refused("unavailable")`. The OCR child asks ABI 4, and the web child asks ABI 1 (the file system), because seccomp already refuses `socket`.
+   - `SECCOMP_DENIED` holds `truncate` and the `chmod`, `chown`, `utime` and `xattr` calls, so a file of the gateway user is safe at every ABI. Both workers call `close_inherited_fds()` first.
+   - Fences: `test_attachment_ocr.py` (`TestTheConfinement`) and `test_web_reader_confine.py`.
 5. write_artifact.py -- the `write_artifact` tool, which surfaces created files in the UI.
    - The chat shows a card for each file, so the tool texts tell the model to paste no link. Fence: `test_artifact_link_prompts.py`.
    - It owns the run's artifact context, the ContextVar seam that every workspace tool reads through `artifact_context()`. Never add a module-level dict for run state.
