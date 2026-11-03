@@ -55,19 +55,20 @@ export function signInErrorMessage(code: string | null): string | null {
       // The email code did not verify: mistyped, expired, already used, or
       // the code from an email sent to a different address. The gateway
       // cannot tell these apart, so the copy names all four and the two ways
-      // out. A wrong code does not spend the right one (`consume_token`), so
-      // typing it again is a real option.
-      return `That code did not work. Check that you typed the newest code sent to this address. A code expires after ${OTP_MINUTES} minutes and works once. If it still fails, start again to get a new code.`;
-    case "EmailSignInError":
-      // The send leg threw: the hourly send limit, or the mail provider
-      // refused. Both clear with time, and the person can do nothing else.
-      return "We could not send a sign-in code. If you asked for several codes, wait a while before you ask again. Codes you already have still work.";
+      // out. A wrong code does not spend the right one until the FIFTH miss in
+      // ten minutes (`consume_token`), which invalidates every live code for
+      // the address. The copy names that limit, so a person does not ask for a
+      // new code into the lockout.
+      return `That code did not work. Check that you typed the newest code sent to this address. A code expires after ${OTP_MINUTES} minutes and works once. If it still fails, start again to get a new code. After five wrong tries, wait ${OTP_MINUTES} minutes first.`;
     case "Configuration":
-      // `@auth/core` maps EVERY error it does not expose to this one type: a
-      // gateway that did not answer, too many wrong codes in a row, a real
-      // config fault. So the copy says "our side" and "try again", and does not
-      // claim a misconfiguration that is usually not there.
-      return "Sign-in could not finish because of a problem on our side. Wait a minute and try again. If it keeps failing, contact your admin.";
+      // `@auth/core` maps EVERY error it does not expose to this one type
+      // (`clientErrors` in `@auth/core/errors.js`). The gateway's two limits
+      // arrive here: three code sends an hour (`SEND_MAX_PER_WINDOW`) and five
+      // wrong codes in ten minutes (`VERIFY_MAX_ATTEMPTS`). So does a gateway
+      // that did not answer. `EmailSignInError` is never thrown in the pinned
+      // `@auth/core`, so a refused send is this type too. The copy names the
+      // limits, and does not claim a misconfiguration that is usually not there.
+      return "Sign-in could not finish. This happens after too many codes or wrong tries in a short time, or when our service has a problem. Wait 10 minutes and try again, or up to an hour if you asked for three codes. If it keeps failing, contact your admin.";
     case "AccessDenied":
       return "Your account isn't authorized for this workspace. Ask your admin for an invite.";
     case "ConsoleUnavailable":

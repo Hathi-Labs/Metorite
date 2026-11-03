@@ -117,30 +117,37 @@ describe("error copy speaks Auth.js v5", () => {
     // never arrive, which is how a consent-screen cancel reached the raw
     // fallback before.
     expect(signInErrorMessage("OAuthCallbackError")).toMatch(/cancelled/);
-    expect(signInErrorMessage("Configuration")).toMatch(/our side/);
+    expect(signInErrorMessage("Configuration")).toMatch(/our service/);
     expect(signInErrorMessage("AccessDenied")).toMatch(/invite/);
     // The fallback keeps the type, so a reported message finds its log line.
     expect(signInErrorMessage("SomethingNew")).toMatch(/\(SomethingNew\)/);
     expect(signInErrorMessage(null)).toBeNull();
   });
 
-  it("explains a wrong email code and a failed send (task 1529)", () => {
+  it("explains a wrong email code and the two OTP limits (task 1529)", () => {
     // `Verification` is the wrong-code error. It used to reach Auth.js's
     // built-in page, a dead end, so it had no copy of its own at all.
     const wrongCode = signInErrorMessage("Verification");
     expect(wrongCode).toMatch(/code did not work/);
     expect(wrongCode).toMatch(/10 minutes/);
     expect(wrongCode).toMatch(/new code/);
-    expect(signInErrorMessage("EmailSignInError")).toMatch(/could not send/);
+    expect(wrongCode).toMatch(/five wrong tries/);
+    // The send limit and the wrong-code lockout reach the page as
+    // `Configuration` (`@auth/core` hides every other error type), so that
+    // copy must name both waits. "Wait a minute" sent people into a lockout.
+    const limited = signInErrorMessage("Configuration");
+    expect(limited).toMatch(/too many codes or wrong tries/);
+    expect(limited).toMatch(/10 minutes/);
+    expect(limited).toMatch(/an hour/);
     // No copy blames access for a typo (D33.1).
-    for (const c of ["Verification", "EmailSignInError", "Configuration"]) {
+    for (const c of ["Verification", "Configuration"]) {
       expect(signInErrorMessage(c)).not.toMatch(/access denied|isn't authorized/i);
     }
   });
 
   it("sends a wrong code back to the code page, and nothing else (task 1529)", () => {
     expect(codeStepRedirect("Verification")).toBe("/signin/code?error=Verification");
-    for (const c of [null, "", "AccessDenied", "Configuration", "EmailSignInError"]) {
+    for (const c of [null, "", "AccessDenied", "Configuration"]) {
       expect(codeStepRedirect(c)).toBeNull();
     }
     // The page is a server component, so it cannot render in this node test.
