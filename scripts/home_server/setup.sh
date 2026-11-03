@@ -3,8 +3,8 @@
 # that the owner's PC drives over SSH (task 1534). It replaces the dev VPS
 # srv1747539.
 #
-# Run it as the user you made in the Ubuntu installer. Do not run it as root,
-# and do not pipe it into bash. The easy way is from the PC, after the box
+# Run it as the user you made in the Ubuntu installer. Do not pipe it into
+# bash. The easy way is from the PC, after the box
 # joined Tailscale, because there you can click the links and paste the codes:
 #
 #   ssh -t acb@metorite-home "curl -fsSLo setup.sh https://raw.githubusercontent.com/Hathi-Labs/Metorite/mt-38b0acb6-home-server/scripts/home_server/setup.sh && bash setup.sh"
@@ -23,6 +23,12 @@
 # staging and the always-on Claude sessions.
 #
 # Ubuntu 24.04 LTS, the release production runs.
+#
+# Inside WSL on a Windows box, Windows runs Tailscale, the firewall and the
+# power plan (remote_access.ps1), so those steps are skipped. Windows' own
+# sshd holds port 22, so Linux sshd takes port 2222. The distro needs
+# systemd. SETUP_NO_SIGNIN=1 skips the GitHub and Claude sign-ins, so the
+# script runs with no terminal, as root, from `wsl.exe -u root`.
 set -Eeuo pipefail
 
 BOX_NAME="${BOX_NAME:-metorite-home}"
@@ -35,6 +41,10 @@ GIT_EMAIL="${GIT_EMAIL:-vjvarada@gmail.com}"
 NODE_MAJOR=20        # pr-check pins node-version "20"
 PYTHON_VERSION=3.12  # pyproject.toml: >=3.12,<3.14
 LOG=/var/log/metorite-home-setup.log
+NO_SIGNIN="${SETUP_NO_SIGNIN:-0}"
+
+on_wsl() { grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; }
+if on_wsl; then SSH_PORT=2222; else SSH_PORT=22; fi
 
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 note() { printf '   %s\n' "$*"; }
@@ -58,18 +68,25 @@ as_user() { sudo -u "$1" -H bash -lc "$2"; }
 claude_signed_in() { as_user "$AGENT_USER" 'claude auth status 2>/dev/null' | grep -q '"loggedIn": true'; }
 
 preflight() {
-  [ "$(id -u)" -ne 0 ] || die "run it as your normal user, not as root. It asks for sudo itself."
-  [ -t 0 ] || die "run it as: bash setup.sh. Piping it into bash breaks the sign-in prompts."
+  if [ "$NO_SIGNIN" != 1 ]; then
+    [ -t 0 ] || die "run it as: bash setup.sh. Piping it into bash breaks the sign-in prompts."
+  fi
   # shellcheck disable=SC1091
   . /etc/os-release
   [ "${ID:-}" = ubuntu ] || die "this script is for Ubuntu 24.04 LTS. This computer runs ${PRETTY_NAME:-an unknown system}."
   if [ "${VERSION_ID:-}" != "24.04" ]; then
+    [ "$NO_SIGNIN" != 1 ] || die "this is Ubuntu ${VERSION_ID:-?}. Production runs 24.04."
     read -r -p "   This is Ubuntu ${VERSION_ID:-?}. Production runs 24.04. Continue? [y/N] " a
     case "$a" in y|Y) ;; *) exit 1 ;; esac
   fi
-  note "sudo asks for your password once."
-  sudo -v
-  ( while kill -0 "$$" 2>/dev/null; do sudo -n true; sleep 50; done ) 2>/dev/null &
+  if on_wsl && [ ! -d /run/systemd/system ]; then
+    die "WSL runs this distro without systemd. Put [boot] systemd=true in /etc/wsl.conf, run 'wsl --terminate <distro>' in Windows, and run this again."
+  fi
+  if [ "$(id -u)" -ne 0 ]; then
+    note "sudo asks for your password once."
+    sudo -v
+    ( while kill -0 "$$" 2>/dev/null; do sudo -n true; sleep 50; done ) 2>/dev/null &
+  fi
   sudo touch "$LOG"
   sudo chown "$(id -un)" "$LOG"
   echo "---- $(date -u +%FT%TZ) setup.sh start" >>"$LOG"
@@ -145,14 +162,26 @@ import_keys() {
   sudo ssh-keygen -lf "$(home_of "$ADMIN_USER")/.ssh/authorized_keys" | sed 's/^/     /'
 }
 
-harden_ssh() {
-  say "SSH: keys only, no root login"
+# On WSL this runs before openssh-server installs, so sshd never tries port 22.
+sshd_conf() {
+  run sudo install -d /etc/ssh/sshd_config.d
   # sshd reads the first value it finds, and 10- sorts before the installer's 50-.
-  printf '%s\n' '# Written by scripts/home_server/setup.sh.' 'PasswordAuthentication no' \
-    'KbdInteractiveAuthentication no' 'PermitRootLogin no' \
+  printf '%s\n' '# Written by scripts/home_server/setup.sh.' "Port $SSH_PORT" \
+    'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin no' \
     | run sudo tee /etc/ssh/sshd_config.d/10-metorite-home.conf
+}
+
+harden_ssh() {
+  say "SSH: keys only, no root login, port $SSH_PORT"
+  sshd_conf
   run sudo install -d -m 0755 /run/sshd
   run sudo sshd -t
+  if on_wsl; then
+    # The socket unit can still ask for port 22. The plain service reads Port.
+    # shellcheck disable=SC2024  # the log belongs to this user, so no sudo is needed to write it
+    sudo systemctl disable --now ssh.socket >>"$LOG" 2>&1 || true
+    run sudo systemctl enable ssh.service
+  fi
   run sudo systemctl restart ssh
 }
 
@@ -315,6 +344,7 @@ summary() {
   ts_name=$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' | sed 's/\.$//') || true
   ts_ip=$(tailscale ip -4 2>/dev/null | head -n 1) || true
   say "Finished"
+  if on_wsl; then ts_name="through Windows, ssh port $SSH_PORT"; fi
   {
     echo "box:       $BOX_NAME"
     echo "tailnet:   ${ts_name:-NOT JOINED} ${ts_ip:-}"
@@ -333,21 +363,32 @@ summary() {
 
 main() {
   preflight
-  set_hostname
+  if on_wsl; then
+    note "WSL: Windows runs Tailscale, the firewall and the power plan."
+    sshd_conf
+  else
+    set_hostname
+  fi
   base_packages
   make_users
   import_keys
   harden_ssh
-  join_tailscale
-  firewall
+  if ! on_wsl; then
+    join_tailscale
+    firewall
+  fi
   power_and_limits
   install_docker
   install_gh
   install_node
   agent_tools
   clone_repo
-  github_login
-  claude_login
+  if [ "$NO_SIGNIN" = 1 ]; then
+    note "SETUP_NO_SIGNIN=1: sign in later with 'gh auth login' and 'claude auth login' as $AGENT_USER."
+  else
+    github_login
+    claude_login
+  fi
   summary
 }
 
