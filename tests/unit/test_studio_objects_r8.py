@@ -291,11 +291,11 @@ def test_the_migration_holds_the_rls_the_keys_and_the_caps() -> None:
 def test_the_store_holds_no_route_and_no_transaction() -> None:
     """The caller owns the transaction, so C1b can join several calls.
 
-    The three exceptions are the SAVEPOINT of a query (C2a, `_time_limit`),
-    of a batch (C1b, `_apply_batch`) and of the wait for the org lock
-    (`_lock_org`). Each opens it with `begin_nested()`, and it ends nothing of
+    The four exceptions are the SAVEPOINT of a query (C2a, `_time_limit`),
+    of a batch (C1b, `_apply_batch`), of the write phase of a manifest sync
+    (A5, `_apply_sync`) and of the wait for the org lock (`_lock_org`). Each opens it with `begin_nested()`, and it ends nothing of
     the caller's transaction. The scan reads each node of the module, so a
-    method of a class or a lambda counts too. Exactly three `begin_nested`
+    method of a class or a lambda counts too. Exactly four `begin_nested`
     exist, one in each of these functions."""
     src = _STORE.read_text(encoding="utf-8")
     assert "APIRouter" not in src and "gateway.routes" not in src
@@ -304,11 +304,11 @@ def test_the_store_holds_no_route_and_no_transaction() -> None:
     everywhere = [n for n in ast.walk(tree)
                   if isinstance(n, ast.Attribute) and n.attr == "begin_nested"]
     owners = [f for f in ast.walk(tree) if isinstance(f, ast.AsyncFunctionDef)
-              and f.name in ("_time_limit", "_apply_batch", "_lock_org")]
-    assert len(owners) == 3, "one each of `_time_limit`, `_apply_batch` and `_lock_org`"
+              and f.name in ("_time_limit", "_apply_batch", "_apply_sync", "_lock_org")]
+    assert len(owners) == 4, "one each of `_time_limit`, `_apply_batch`, `_apply_sync`, `_lock_org`"
     inside = [n for f in owners for n in ast.walk(f)
               if isinstance(n, ast.Attribute) and n.attr == "begin_nested"]
-    assert len(everywhere) == 3 and len(inside) == 3, [n.lineno for n in everywhere]
+    assert len(everywhere) == 4 and len(inside) == 4, [n.lineno for n in everywhere]
     for node in ast.walk(tree):
         if isinstance(node, ast.Attribute) and node.attr in ("commit", "rollback", "begin"):
             found.append(node.attr)
