@@ -919,14 +919,15 @@ async def test_actions_none_keeps_the_list_and_an_empty_list_clears_it(gw, card)
 
 
 async def test_a_save_after_a_cut_read_never_sends_back_the_cut_text(gw, card) -> None:
-    """A cut read gives no ``based_on``, so a save of a text refuses. A save of
-    the actions merges, and the long text stays whole.
+    """A save of the text that a read cut refuses, also with a based_on that
+    matches. A save of the actions merges, and the long text stays whole.
     Mutation: return a cut instructions body to a save -> red."""
     long = "Step. " * 4000  # 24,000 characters, over the read limit
     sid = gw.seed(body={**BODY, "instructions": long})
     read = await st.studio_skill_list(sid)
-    assert read["truncated"] is True and "based_on" not in read
-    refused = await st.studio_skill_save(skill_id=sid, description="A new description.")
+    assert read["truncated"] is True and read["based_on"]
+    refused = await st.studio_skill_save(skill_id=sid, instructions=_inner(read["instructions"]),
+                                         based_on=read["based_on"])
     assert refused["ok"] is False and "in Studio" in _msg(refused)
     assert (await st.studio_skill_save(skill_id=sid, actions=[]))["ok"]
     assert gw.versions[sid][-1]["body"] == {**BODY, "instructions": long, "actions": []}
@@ -955,32 +956,33 @@ async def test_an_edit_of_a_cut_read_is_refused_and_writes_nothing(gw, card, mar
 
 
 async def test_the_cut_check_is_the_check_of_the_read_and_not_the_number(gw, card) -> None:
-    """Escapes move the cut of a read under 12,000 characters. The read gives
-    no ``based_on`` then. Mutation: test the length against 12,000 -> red."""
+    """Escapes move the cut of a read under 12,000 characters. A save of that
+    text refuses then. Mutation: test the length against 12,000 -> red."""
     quoted = '"\n' * 5_900  # 11,800 characters, and each one costs 2 in JSON
     sid = gw.seed(body={**BODY, "instructions": quoted})
     read = await st.studio_skill_list(sid)
     assert len(quoted) < st.MAX_SKILL_TEXT_CHARS and read["truncated"] is True
-    assert "based_on" not in read
-    out = await st.studio_skill_save(skill_id=sid, instructions="A short new text.")
+    out = await st.studio_skill_save(skill_id=sid, instructions="A short new text.",
+                                     based_on=read["based_on"])
     assert out["ok"] is False and gw.sent("POST") == []
 
 
-async def test_a_cut_description_refuses_each_text_and_keeps_the_actions_edit(gw, card) -> None:
-    """A cut read gives no ``based_on``, so a save of either text refuses and
-    names the cut text. A save of the actions merges, and the long text stays
-    whole."""
+async def test_a_cut_description_refuses_a_new_description_and_keeps_the_rest(gw, card) -> None:
+    """A save of the description that a read cut refuses and names it. A save
+    of the instructions merges, and the long description stays whole."""
     desc = "Describe. " * 300  # 3,000 characters, over the read limit of 2,000
     sid = gw.seed(body={**BODY, "description": desc})
-    assert (await st.studio_skill_list(sid))["truncated"] is True
-    for sent in ({"description": "Short."}, {"instructions": "Write three bullets."}):
-        refused = await st.studio_skill_save(skill_id=sid, **sent)
-        assert refused["ok"] is False and "stored description" in _msg(refused)
+    read = await st.studio_skill_list(sid)
+    assert read["truncated"] is True
+    refused = await st.studio_skill_save(skill_id=sid, description="Short.",
+                                         based_on=read["based_on"])
+    assert refused["ok"] is False and "stored description" in _msg(refused)
     assert gw.sent("POST") == []
-    kept = await st.studio_skill_save(skill_id=sid, actions=["tasks.create"])
+    kept = await st.studio_skill_save(skill_id=sid, instructions="Write three bullets.",
+                                      based_on=read["based_on"])
     assert kept["ok"], kept
     assert gw.versions[sid][-1]["body"] == {**BODY, "description": desc,
-                                           "actions": ["tasks.create"]}
+                                           "instructions": "Write three bullets."}
 
 
 def test_the_rules_say_that_a_cut_text_never_goes_back() -> None:
@@ -1083,21 +1085,24 @@ async def test_a_create_and_a_save_of_only_actions_need_no_based_on(gw, card) ->
     assert (await st.studio_skill_save(skill_id=made["id"], actions=["tasks.create"]))["ok"]
 
 
-async def test_a_read_that_the_frame_changed_gives_no_based_on(gw, card) -> None:
+async def test_a_text_that_the_frame_changed_cannot_change_from_chat(gw, card) -> None:
     """A frame breaks a run of three brackets, so the read is not the stored
-    text. A save of it would change the text, so the read gives no based_on."""
+    text. A save of that text would change it, so it refuses, also with a
+    based_on that matches."""
     sid = gw.seed(body={**BODY, "instructions": "Keep <<< and >>> as they are."})
     read = await st.studio_skill_list(sid)
-    assert read["truncated"] is False and "based_on" not in read
-    out = await st.studio_skill_save(skill_id=sid, instructions="New.", based_on="x")
+    assert read["truncated"] is False and read["based_on"]
+    out = await st.studio_skill_save(skill_id=sid, instructions="New.", based_on=read["based_on"])
     assert out["ok"] is False and "in Studio" in _msg(out)
 
 
-async def test_no_result_gives_the_content_hash_outside_based_on(gw, card) -> None:
-    """A hash in another key would let a cut read pass the check."""
+async def test_only_a_read_gives_the_hash_and_only_as_based_on(gw, card) -> None:
+    """A save result gives no hash, so a save of a text after it reads first."""
     sid = gw.seed(body={**BODY, "instructions": "x" * 13_000})
-    outs = [await st.studio_skill_list(sid), await st.studio_skill_save(skill_id=sid, actions=[])]
-    assert all("content_hash" not in o and "based_on" not in o for o in outs), outs
+    read = await st.studio_skill_list(sid)
+    saved = await st.studio_skill_save(skill_id=sid, actions=[])
+    assert "content_hash" not in read and read["based_on"]
+    assert "content_hash" not in saved and "based_on" not in saved
 
 
 async def test_a_save_of_another_field_cannot_move_the_cut_of_an_old_read(gw, card) -> None:
@@ -1113,24 +1118,106 @@ async def test_a_save_of_another_field_cannot_move_the_cut_of_an_old_read(gw, ca
     assert "instructions" not in cut  # a short description moves the cut
     stale = _inner(read["instructions"]) + "\nOne more step."
     first = await st.studio_skill_save(skill_id=sid, description="Short.")
-    assert first["ok"] is False  # the read was cut, so no based_on
+    assert first["ok"] is False  # no based_on
     gw.add_version(sid, {**BODY, "description": "Short.", "instructions": text})  # in Studio
     out = await st.studio_skill_save(skill_id=sid, instructions=stale)
     assert out["ok"] is False and gw.versions[sid][-1]["body"]["instructions"] == text
 
 
-def test_the_rules_say_to_send_based_on_from_a_full_read() -> None:
+def test_the_rules_say_to_send_based_on_from_a_read() -> None:
     """Mutation: drop the rule line from the pack rules or the agent text -> red."""
     from pathlib import Path
 
     from acb_skills import tool_packs as tp
 
     line = ("When you change the description or the instructions, send based_on from a "
-            "full read of the skill.")
+            "read of the skill.")
     root = Path(__file__).resolve().parents[2]
     agent = (root / "apps/agents/agent-studio-builder/instructions.md").read_text(encoding="utf-8")
     for text in (" ".join(tp.rules_for("studio").split()), " ".join(agent.split())):
         assert line in text
+
+
+# -- 4c. The cut of a read hangs on the body alone (review round 3) ------------
+
+#: The row of a seeded skill in the fake gateway, as a draft.
+_DRAFT_ROW = {"id": "00000000-0000-0000-0000-000000000001", "name": "Meeting notes",
+              "state": "draft", "current_version": 1, "updated_at": "2026-11-03T00:00:00Z"}
+
+
+def _escapes(k: int) -> dict[str, Any]:
+    return {**BODY, "instructions": '"\n' * k + "TAIL: ask before any refund."}
+
+
+def _whole(row: dict[str, Any], k: int, number: int = 1) -> bool:
+    return not st._read_and_cuts(row, {"version": number, "body": _escapes(k),
+                                       "content_hash": "0" * 64})[1]
+
+
+def _boundary() -> int:
+    """The most escapes whose read of a draft is whole: one more cuts it."""
+    lo, hi = 1_000, 12_000
+    assert _whole(_DRAFT_ROW, lo) and not _whole(_DRAFT_ROW, hi)
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        lo, hi = (mid, hi) if _whole(_DRAFT_ROW, mid) else (lo, mid)
+    return lo
+
+
+def test_the_cut_of_a_read_depends_on_the_body_alone() -> None:
+    """Review round 3, item 1: the cut hung on the state, the version and the
+    based_on key, and the hash covers none of them. Mutation: measure the cut
+    with the real row -> red."""
+    wide = {"id": "0" * 36, "name": '"' * 120, "state": "published",
+            "current_version": 10**9, "updated_at": '"' * 40}
+    k = _boundary()
+    for n in range(k - 40, k + 41, 4):
+        draft = st._read_and_cuts(_DRAFT_ROW, {"version": 1, "body": _escapes(n),
+                                               "content_hash": "0" * 64})
+        other = st._read_and_cuts(wide, {"version": 10**9, "body": _escapes(n),
+                                         "content_hash": "0" * 64})
+        assert draft[1] == other[1] and draft[0]["truncated"] == other[0]["truncated"], n
+        assert st._size(draft[0]) <= st.MAX_MANIFEST_CHARS
+        assert st._size(other[0]) <= st.MAX_MANIFEST_CHARS
+
+
+async def test_a_publish_does_not_turn_a_whole_read_into_a_cut_one(gw, card) -> None:
+    """The probe of review round 3: a whole read at draft, the same body cut
+    after a publish, and the old based_on saved the cut text."""
+    body = _escapes(_boundary())
+    sid = gw.seed(body=body)
+    first = await st.studio_skill_list(sid)
+    assert first["truncated"] is False
+    assert (await st.studio_skill_state(sid, "published"))["ok"]
+    second = await st.studio_skill_list(sid)
+    assert second["truncated"] is False and second["based_on"] == first["based_on"]
+    edited = _inner(second["instructions"]) + "\nOne more rule."
+    out = await st.studio_skill_save(skill_id=sid, instructions=edited,
+                                     based_on=first["based_on"])
+    assert out["ok"], out
+    assert gw.versions[sid][-1]["body"]["instructions"] == body["instructions"] + "\nOne more rule."
+
+
+@pytest.mark.parametrize("instructions", ["Step one. " * 1_300, "Example:\n>>> print(1)\n1"],
+                         ids=["long", "repl"])
+async def test_a_partial_text_still_lets_a_save_of_the_other_text(gw, card, instructions) -> None:
+    """Review round 3, item 4: a save of the description was refused when the
+    read cut the instructions or the frame changed them. Each read of a
+    version now gives based_on, and only a sent text that the read shows in
+    part refuses, also with a based_on that matches.
+    Mutation: refuse each text when any text is partial -> red."""
+    sid = gw.seed(body={**BODY, "instructions": instructions})
+    read = await st.studio_skill_list(sid)
+    assert read["based_on"]
+    out = await st.studio_skill_save(skill_id=sid, description="A new short description.",
+                                     based_on=read["based_on"])
+    assert out["ok"], out
+    assert gw.versions[sid][-1]["body"] == {**BODY, "instructions": instructions,
+                                           "description": "A new short description."}
+    refused = await st.studio_skill_save(skill_id=sid, instructions="New.",
+                                         based_on=await _based_on(sid))
+    assert refused["ok"] is False and "stored instructions" in _msg(refused)
+    assert "in Studio" in _msg(refused) and len(gw.versions[sid]) == 2
 
 
 async def test_a_name_with_a_skill_id_is_refused_and_an_empty_save_too(gw, card) -> None:
