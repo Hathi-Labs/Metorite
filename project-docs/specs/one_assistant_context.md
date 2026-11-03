@@ -1108,7 +1108,7 @@ Three layers choose the packs, in the order that D117 item 3 sets. Layer (a) dec
 1. **Sticky packs.** These are the packs that this chat used before, in their first-load order. They live in tenant Redis at `cc:<org>:tool-packs:<session>`. They use the idiom (`acb_skills/email_chat_context.py:22-27`) and the 1.0 s timeout (`:57`) of the email working set. A pack becomes sticky only after one of its tools ran.
 2. **The surface.** This is the app that the member is in. Today it reaches the server only as text in `system_context` (`cp/lib/shell/assistant.ts:738-756`, `cp/app/api/agent/chat/route.ts:823`). OA-7d adds a structured `surface` field. The field is a hint. It can add the core pack of the app, and nothing else.
 3. **References.** These are an in-app link or a record id in the words of the member, for example `/email?email=<id>`. Each pack registers a pattern for them.
-4. **Words.** This is a short word list for each pack. The loader matches it against the typed words of the member in this turn.
+4. **Words.** This is a short word list for each pack. The loader matches it against the words that the member sent in this turn. Since D-PZ-37 (`personalization.md` §15.3) those are `assistant_profile.sent_words()`: typed or tapped. They choose tools only, and they ground no write.
 
 **Layer (b): the meta tool `load_skill_tools(family)`.** `skills_scope_out.md` §7.5 designed this tool and did not build it (`:265-309`). Its description lists the index line of each pack that is not loaded. A call adds the tools of the pack to the live run, and returns the rules block of the pack as its text. A load is monotonic: no tool leaves during a run.
 

@@ -279,11 +279,14 @@ worker.register("email.send_later", send, mode="detached", idempotent=True)
 - **The first consumer.** `brief/planner.py` seeds `brief.plan` for each org
   that `BRIEF_ENABLED` and `BRIEF_ORGS` admit. `brief/run.py` adds the hook
   at import, and `main.py` imports it before the worker starts.
-- **The next consumer (planned, not built).** WS-63 PZ-33b adds
-  `assistant_summaries.seed`. It enqueues the detached kind
-  `assistant.chat_summary` for each org that `ASSISTANT_CHAT_SUMMARY_ORGS`
-  admits, and only with the Router on. `personalization.md` §15.3 holds the
-  design.
+- **The second consumer (WS-63 PZ-33b, built dark).**
+  `assistant_summaries.seed` enqueues the detached kind
+  `assistant.chat_summary` for each idle private chat. It runs only for an
+  org that `ASSISTANT_CHAT_SUMMARY_ORGS` admits, and only with the Router
+  on. Its dedupe key is `summary:<session_id>:<through>`, so one chat and
+  one newest row give one live job. `chat_summary_job.py` adds the hook at
+  import, and `main.py` imports it. `personalization.md` §15.3 and §15.9
+  hold the design.
 - **Fence.** `test_r8_run_org_runs_each_seed_hook_once_for_each_org_and_bucket`
   in `test_job_queue.py`.
 

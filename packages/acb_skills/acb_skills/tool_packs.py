@@ -11,7 +11,9 @@ that names them. This module holds the rest of a pack:
 * ``references`` -- patterns of an in-app link or a record id in the
   member's words, for example ``/email?email=<id>`` (§4.2.2, layer (a)).
 * ``words`` -- lower-case words and phrases that layer (a) matches against
-  the member's typed words in this turn, each as a whole word, in any case.
+  the words that the member sent in this turn, typed or tapped
+  (``assistant_profile.sent_words``, D-PZ-37), each as a whole word, in any
+  case.
 * ``tier_floor`` -- the lowest tier of a turn that holds the pack, or None
   (§4.2.4). The email packs set none in OA-7.
 * ``keeps_reasoning`` -- True keeps thinking on in a turn that holds the
@@ -545,6 +547,10 @@ No Projects agent exists to hand a task to.
 - Two or more tasks to move are ONE call: file_tasks, with one row for each
   task. The tool plans every move before the card. Read the receipt, and never
   move a task again that it lists as moved.
+- Three or more related changes with different values are ONE call: update_tasks,
+  with one row for each task. One or two changes use the single-task edit of the
+  core pack, two calls in the same step. One value across many tasks is
+  bulk_update.
 - bulk_update makes one change across up to 50 named tasks. Its action is
   archive or unarchive, never delete. merge_tasks merges tasks of one project.
 - Archive means archive: when the member says "archive", do not ask whether
@@ -630,7 +636,7 @@ _PROJECTS_BULK_WORDS = (
     "merge tasks", "bulk update", "bulk edit", "file tasks", "move tasks",
     "archive project", "archive the project", "delete project",
     "delete the project", "add tasks", "create tasks", "make tasks",
-    "task for each", "tasks for each",
+    "task for each", "tasks for each", "update tasks", "update these tasks",
     "archive this task", "archive the task", "archive that task",
     "unarchive", "archived task", "archived tasks", "restore the task",
     "restore the archived", "restore archived", "unarchive the project",
@@ -1064,7 +1070,8 @@ class PackTurn:
 
     *org* is the bound tenant, *session* the chat and *member_part* a hash of
     the verified member, all from the run boundary (R5). *words* are the
-    member's typed words of this turn (``assistant_profile.typed_words``).
+    words that the member sent in this turn, typed or tapped
+    (``assistant_profile.sent_words``, D-PZ-37).
     *stored* is False after a Redis fault, and then nothing is written for
     this turn.
     """
@@ -1546,8 +1553,8 @@ def choose(
     1. The decay: a sticky pack leaves when no tool of it ran in the last
        :data:`DECAY_TURNS` member turns.
     2. The sticky packs that *allowed* names, in their first-load order.
-    3. Each other allowed pack whose reference or words the member typed, in
-       the order of :data:`PACKS`.
+    3. Each other allowed pack whose reference or words the member sent,
+       typed or tapped (D-PZ-37), in the order of :data:`PACKS`.
     4. The cap: at most :data:`MAX_PACKS` packs, and at most
        :data:`MAX_REQUEST_TOOLS` tools with the *base_tools* of the run. Past
        it, the least recently used sticky pack leaves first, so a new need of
@@ -1696,7 +1703,8 @@ async def begin_turn(
     """Count this member turn of the chat and read its sticky packs.
 
     *org* is the bound tenant, *session* the chat, *member* the verified
-    member and *words* the member's typed words of this turn. All come from
+    member and *words* the words that the member sent in this turn, typed or
+    tapped (``assistant_profile.sent_words``). All come from
     the run boundary, never from a request field or a tool argument (R5).
     The count is one ``HINCRBY``, so two turns never take one number. Never
     raises: a fault gives a turn with no sticky pack that writes nothing.

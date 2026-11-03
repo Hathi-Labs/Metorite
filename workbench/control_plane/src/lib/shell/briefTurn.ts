@@ -40,3 +40,24 @@ export async function requestBrief(
     return null;
   }
 }
+
+/**
+ * Whether a message id is the id of a day's brief row. The gateway writes the
+ * row with the id `brief-<YYYY-MM-DD>` (`brief_message_id` in
+ * `gateway/routes/chat_brief.py`). The starter pills use this to tell a chat
+ * that holds only the brief from a chat that opens with another assistant row,
+ * such as a reminder (WS-62 CF-4b).
+ */
+export function isBriefRow(id: unknown): boolean {
+  return typeof id === "string" && /^brief-\d{4}-\d{2}-\d{2}$/.test(id);
+}
+
+/**
+ * Whether a chat holds only the day's brief and no word from the member: one
+ * message, an assistant row, with a brief id. A chat that a reminder opens, or
+ * any other chat that starts with an assistant row, is not this chat (WS-62
+ * CF-4b). A chat with a member message is not this chat either.
+ */
+export function holdsOnlyBrief(messages: ReadonlyArray<{ id?: unknown; role?: unknown }>): boolean {
+  return messages.length === 1 && messages[0].role === "assistant" && isBriefRow(messages[0].id);
+}

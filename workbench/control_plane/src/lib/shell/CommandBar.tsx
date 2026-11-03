@@ -331,7 +331,10 @@ export function useBarResults({
           onDone();
           // D99: the one assistant opens where the member is, so the page
           // and its context stay. Off, the words go to Chat as before.
-          if (shellChatOn()) openAssistant({ draft: words });
+          // D-PZ-37: the member typed the words here, and sends them from
+          // the composer. A prefilled Ask counts as typed (a known limit).
+          // The `/chat?q=` fallback is a link, so it carries no mark.
+          if (shellChatOn()) openAssistant({ draft: words, typed: true });
           else router.push(`/chat?q=${encodeURIComponent(words)}`);
         },
       });

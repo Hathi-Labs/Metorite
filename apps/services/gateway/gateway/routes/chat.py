@@ -782,12 +782,20 @@ MONOTONIC_MESSAGE_COLUMNS = ("tool_events", "progress_lines", "custom_events")
 #: A conflict that fails the ``WHERE`` leaves the row alone and raises
 #: nothing. ``RETURNING id`` then gives no row, and ``_upsert_messages``
 #: reports that id as unchanged.
+#:
+#: 🔴 **``member_typed`` is the mark of a typed message** (WS-63 D-PZ-37,
+#: migration 337). Only the run route sets it, through the keyword of
+#: ``_upsert_messages``. Every other write binds NULL, so its insert stores
+#: NULL and its update keeps the stored value (the COALESCE). So a client
+#: save can neither set the mark nor clear it. ``RETURNING`` also says
+#: whether the row is new (``xmax = 0``), so the seam can move the chat's
+#: ``updated_at`` (``_TOUCH_SESSION_SQL``).
 _MESSAGE_UPSERT_SQL = """
     INSERT INTO chat_message
         (id, session_id, role, content, timestamp_ms,
          tool_events, progress_lines, reasoning, agent_state, custom_events,
          author_email, author_kind, authority,
-         run_member_email, run_final_at)
+         run_member_email, run_final_at, member_typed)
     SELECT
         CAST(:id AS text), CAST(:sid AS text), CAST(:role AS text),
         CAST(:content AS text), CAST(:ts AS bigint),
@@ -797,7 +805,8 @@ _MESSAGE_UPSERT_SQL = """
         CAST(:author_email AS text), CAST(:author_kind AS text),
         CAST(:authority AS jsonb),
         CAST(:run_member_email AS text),
-        CASE WHEN CAST(:author_from_run AS boolean) THEN now() END
+        CASE WHEN CAST(:author_from_run AS boolean) THEN now() END,
+        CAST(:member_typed AS boolean)
     WHERE CAST(:may_insert AS boolean)
        OR EXISTS (SELECT 1 FROM chat_message
                   WHERE session_id = CAST(:sid AS text)
@@ -817,6 +826,7 @@ _MESSAGE_UPSERT_SQL = """
         run_member_email = COALESCE(
             chat_message.run_member_email, EXCLUDED.run_member_email),
         run_final_at   = COALESCE(EXCLUDED.run_final_at, chat_message.run_final_at),
+        member_typed   = COALESCE(EXCLUDED.member_typed, chat_message.member_typed),
         tool_events    = CASE
             WHEN jsonb_array_length(COALESCE(EXCLUDED.tool_events, '[]'::jsonb)) > 0
             THEN EXCLUDED.tool_events ELSE chat_message.tool_events END,
@@ -852,7 +862,21 @@ _MESSAGE_UPSERT_SQL = """
             END
         ELSE false
         END
-    RETURNING id
+    RETURNING id, (xmax = 0) AS inserted
+"""
+
+#: A new row moves its chat's ``updated_at`` (WS-63 PZ-33b round 4). The seed
+#: of the summary job reads only the chats that a row reached in its window,
+#: and it finds them by ``updated_at`` (``assistant_summaries.IDLE_SQL``). So
+#: each new row must move it. This seam holds the one ``INSERT INTO
+#: chat_message`` of the product: the browser save, the run route's save of
+#: the member's turn, the mint, the fold, the brief and WhatsApp all come
+#: through here. ``GREATEST`` never moves the time back. An update of a row
+#: that exists moves nothing, so a browser that saves an old chat again does
+#: not raise it in the list. Fence: ``tests/unit/test_chat_summary_r8.py``.
+_TOUCH_SESSION_SQL = """
+    UPDATE chat_session SET updated_at = GREATEST(updated_at, now())
+    WHERE id = CAST(:sid AS text)
 """
 
 
@@ -887,6 +911,7 @@ def _upsert_messages(
     authority: dict[str, Any] | None = None,
     author_from_run: bool = False,
     mint: bool = False,
+    member_typed: bool | None = None,
     organization_id: str | None,
 ) -> list[str]:
     """Write a batch of turns, stamping who produced each one.
@@ -908,6 +933,18 @@ def _upsert_messages(
     ``mint`` is for ``routes/agent.py`` ONLY (WS-27bm S14, §20). The gateway
     creates the agent row of a run before it opens the stream. A mint only
     inserts. When a row with that id exists, the mint changes nothing.
+
+    ``member_typed`` is for ``routes/agent.py`` ONLY (WS-63 D-PZ-37,
+    ``_write_prompt_row``). It is the mark of the run request: True when the
+    member typed the turn in the message box, False for every other turn.
+    It reaches a human row only. ``None``, the value of every other caller,
+    stores NULL on an insert and keeps the stored mark on an update. So the
+    client save of the thread can neither set the mark nor clear it.
+    ``test_chat_summary_r8.py`` checks the source of each caller.
+
+    A write that inserts a row moves the chat's ``updated_at`` to now
+    (``_TOUCH_SESSION_SQL``, PZ-33b round 4). The seed of the summary job
+    finds the chats of its window by that column.
 
     ⚠️ **No setup value is stored** (WS-54 fix round 2, item 5). Every text
     field of every turn passes through ``acb_common.setup_markers``, so a
@@ -941,7 +978,9 @@ def _upsert_messages(
     authority_json = json.dumps(authority) if authority else None
     # An empty member is no member: store NULL, so only the fold may update.
     run_member = (actor_email or "").strip().lower() or None
+    typed_mark = None if member_typed is None else bool(member_typed)
     declined: list[str] = []
+    inserted = False
 
     with tenant_session(organization_id) as s:
         # S15 fix round 1: the `chat_message` foreign key ignores RLS, so a
@@ -990,12 +1029,20 @@ def _upsert_messages(
                     "may_insert": may_insert,
                     # Only an agent row belongs to a run (S13).
                     "run_member_email": run_member if kind == "agent" else None,
+                    # D-PZ-37: only the run route names the mark, and only a
+                    # human row takes it. NULL keeps the stored mark.
+                    "member_typed": typed_mark if kind == "human" else None,
                 },
             )
             # RETURNING gives no row when the WHERE declined the update, or
             # when the insert guard declined a new row (S14).
-            if result.first() is None:
+            row = result.first()
+            if row is None:
                 declined.append(m.id)
+            elif getattr(row, "inserted", False) is True:
+                inserted = True
+        if inserted:
+            s.execute(text(_TOUCH_SESSION_SQL), {"sid": session_id})
     return declined
 
 
