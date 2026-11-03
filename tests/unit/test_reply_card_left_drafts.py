@@ -35,11 +35,11 @@ from typing import Any
 
 import httpx
 import pytest
+from acb_skills import reply_card as rcard
 from fastapi import HTTPException
+from gateway.routes.email.automation import reply_card as rc
 from pydantic import ValidationError
 
-from acb_skills import reply_card as rcard
-from gateway.routes.email.automation import reply_card as rc
 from tests.unit import _held_card_fakes as F
 from tests.unit._held_card_fakes import email_tool_mode  # noqa: F401 - the two modes
 
@@ -257,7 +257,7 @@ async def test_the_card_route_records_the_time_and_the_draft(monkeypatch) -> Non
 
 
 async def test_a_draft_note_of_no_draft_or_a_bad_id_writes_nothing(monkeypatch) -> None:
-    w = _World(monkeypatch)
+    _World(monkeypatch)
     card_id = await rc._write_reply_record(USER, MAIL, [])
     await rc._note_card_draft(USER, card_id, MAIL, "")
     await rc._note_card_draft(USER, card_id, MAIL, "not-a-uuid")
