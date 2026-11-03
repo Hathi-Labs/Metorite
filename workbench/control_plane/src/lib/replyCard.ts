@@ -71,6 +71,11 @@ export interface ReplyForm {
    */
   draftId?: string;
   /**
+   * Task 1526, item 11: the draft write had an unknown outcome. A draft can
+   * exist that the server cannot name, so the card cannot send, and it says so.
+   */
+  draftUnsaved?: boolean;
+  /**
    * §21, a held chat only: the server's class of each address, by its lower
    * case. A form with none is exactly as before, and draws no mark.
    */
@@ -163,6 +168,7 @@ export function replyFromEvent(value: unknown, requestId?: string): ReplyForm | 
     body: text(v.body, MAX_REPLY_BODY),
     note: text(v.note),
     draftId: text(v.draft_id, 64),
+    ...(v.draft_unsaved === true ? { draftUnsaved: true } : {}),
     ...classesOf(v.classes),
     ...(ticked ? { ticked } : {}),
     ...marksOf(v.marks, replyAll),
@@ -498,6 +504,13 @@ export function saveLabel(form: ReplyForm): string {
  */
 export const DRAFT_LEFT_LINE =
   "This reply is no longer in Drafts. It was sent, deleted or replaced outside this card, so this card cannot send it.";
+
+/**
+ * The line of a card whose draft write had an unknown outcome (item 11). The
+ * gateway sends the same words as a notice (`DRAFT_UNSAVED`).
+ */
+export const DRAFT_UNSAVED_LINE =
+  "This reply could not be saved to Drafts, so this card cannot send it. Ask me to draft it again.";
 
 /** How often a card that shows reads the state of its draft. */
 export const DRAFT_POLL_MS = 60_000;

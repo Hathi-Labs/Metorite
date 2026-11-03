@@ -120,6 +120,10 @@ ADDED_NOT_RECORDED = ("The added people could not be kept on this card, so the d
 #: Drafts, so the card writes no draft.
 DRAFT_NOT_RECORDED = ("This card could not be recorded, so its reply was not put in "
                       "Drafts. Ask again in a moment.")
+#: The notice of a card whose draft write had an unknown outcome (item 11).
+#: A draft can exist that no local row names, so the card cannot send.
+DRAFT_UNSAVED = ("This reply could not be saved to Drafts, so this card cannot send it. "
+                 "Ask me to draft it again.")
 #: The 503 of the state read when the database fails (fix round 1, item 7).
 DRAFT_STATE_UNREAD = "The state of this draft could not be read. Try again in a moment."
 #: The 503 when the record of a card cannot be read at the act (fix round 1).
@@ -659,16 +663,26 @@ async def reply_card(
     draft_id, kept_draft = "", False
     # Item 9: the draft in Drafts names exactly the people that start ticked.
     start = ticked["reply_all"]
-    wrote = bool(body.strip() and start["to"] and not record_failed)
-    if wrote:
-        draft_id, kept_draft = await _keep_card_draft(
+    outcome = DRAFT_FAILED
+    if body.strip() and start["to"] and not record_failed:
+        res = await _keep_card_draft(
             mail, owner, start["to"], start["cc"], _reply_subject(mail.subject), body,
             prior=prior, **({"bcc": start.get("bcc", [])} if bcc_people else {}))
+        draft_id, kept_draft = res
+        outcome = _outcome_of(res)
     # 2026-11-03: the record of THIS card names the draft that it wrote, so
     # the act refuses when that draft left Drafts. The server writes the id,
-    # and clears ``draft_pending``. A card that wrote no draft clears it too.
+    # and clears ``draft_pending``. Item 11: a write that failed, or no write,
+    # clears the flag too, and the card sends a fresh reply as before. Only an
+    # unknown outcome keeps it, because a draft can exist that no row names.
     await _note_card_draft(user, card_id, str(_as_uuid(req.message_id)), draft_id,
-                           attempted=wrote)
+                           attempted=outcome != DRAFT_FAILED)
+    # Item 11: an unknown outcome gives the card a notice, and the card shows
+    # its Send and Save stopped, and says why (``draft_unsaved``).
+    unsaved: dict[str, Any] = {}
+    if outcome == DRAFT_UNKNOWN:
+        notices.append(DRAFT_UNSAVED)
+        unsaved["draft_unsaved"] = True
     marks = _person_marks(mail, classes, asked, carried_extra, usual_added,
                           [*everyone_to, *everyone_cc], held=req.untick_new)
     marks.update(_bcc_marks(bcc_people, asked_bcc, classes, held=req.held))
@@ -719,6 +733,7 @@ async def reply_card(
         "draft_id": draft_id,
         # A draft of the member stays in Drafts, beside the card's draft.
         "kept_draft": kept_draft,
+        **unsaved,
     }
     if classes is not None:
         out["classes"] = classes
@@ -1209,10 +1224,14 @@ async def _take_reply_record(
     """The record of the card *card_id*, read once (``GETDEL``): the added
     people, the Bcc, the draft that the card wrote and the time it was made.
 
-    No organization, no card id, no record (it expired), and a record of
-    another member or another mail all give an empty record. The act then
-    takes only the people of the mail, no Bcc, and checks nothing. A card
-    with no record wrote no draft (``reply_card``), so no draft can leave.
+    No organization, no card id, no record, and a record of another member
+    or another mail all give an empty record. The act then takes only the
+    people of the mail, no Bcc, and checks nothing. A card whose record
+    write failed wrote no draft (``reply_card``). An EXPIRED record is not
+    that case: the card can hold a draft, and the act checks nothing, as for
+    a card from before this release. The record lives ``REPLY_RECORD_TTL_S``
+    (3700 s) and a card waits 3600 s, so only a late answer, for example to
+    a parked card, meets an expired record (item 11, §18.9.1).
 
     A Redis fault answers 503, so the act sends and saves nothing (task 1526,
     fix round 1): the record that it could not read can name a draft."""
@@ -1476,7 +1495,7 @@ async def _chat_record(mail: _Mail) -> list[str] | None:
 async def _write_draft(
     mail: _Mail, owner: str, to: list[str], cc: list[str], subject: str, body: str,
     *, chat_wrote: bool = False, prior: list[str] | None = None,
-    bcc: list[str] | None = None,
+    bcc: list[str] | None = None, progress: dict[str, bool] | None = None,
 ) -> tuple[str, bool]:
     """Write the reply draft of the conversation. Returns its LOCAL id, and
     True when a draft of the member stays beside it.
@@ -1487,7 +1506,11 @@ async def _write_draft(
 
     ``chat_wrote`` records the body as the text that Metorite wrote
     (``email_ai_drafts``). A send of the reply, or the member's Discard, then
-    trashes the draft only while it still holds that text."""
+    trashes the draft only while it still holds that text.
+
+    ``progress["provider"]`` becomes True when the provider write returned
+    (task 1526, item 11). A fault after that point leaves a provider draft
+    that the rolled-back local row does not name."""
     async with _tenant_session() as db:
         async with provider_session(db, owner, account_id=mail.account_id) as sess:
             wrote = await _upsert_reply_draft(
@@ -1502,23 +1525,77 @@ async def _write_draft(
                 # none keeps the Bcc of the draft, as before.
                 **({"bcc": bcc, "exact_bcc": True} if bcc is not None else {}),
             )
+            if progress is not None:
+                progress["provider"] = True
         if chat_wrote and mail.thread_id:
             await _store_ai_draft(db, mail.account_id, mail.thread_id, body,
                                   commit=False)
     return wrote.local_id, wrote.kept_draft
 
 
+#: What the draft write of a card gave (task 1526, item 11).
+#:
+#: * ``written``: a local row names the draft.
+#: * ``failed``: the write raised before the provider write returned, and it
+#:   was not a timeout. No draft exists, so the card sends a fresh reply.
+#: * ``unknown``: a draft can exist that no local row names. That is a
+#:   timeout (the request can have gone out), a fault after the provider
+#:   write returned, or a provider success with no local row. The card then
+#:   cannot send, because the draft could go out from Drafts too.
+DRAFT_WRITTEN, DRAFT_FAILED, DRAFT_UNKNOWN = "written", "failed", "unknown"
+
+
+class CardDraft(tuple):
+    """``(local id, kept draft)``, as before, and ``outcome``."""
+
+    outcome: str
+
+    def __new__(cls, local_id: str, kept: bool, outcome: str) -> CardDraft:
+        obj = super().__new__(cls, (local_id, kept))
+        obj.outcome = outcome
+        return obj
+
+
+def _outcome_of(res: Any) -> str:
+    """The ``outcome`` of a :class:`CardDraft`. A plain ``(id, kept)`` pair
+    reads as written when its id is a UUID, else as failed."""
+    outcome = str(getattr(res, "outcome", "") or "")
+    if outcome:
+        return outcome
+    return DRAFT_WRITTEN if _as_uuid(str(res[0] or "")) else DRAFT_FAILED
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """True for a timeout, where the request can have reached the provider.
+    The code cannot see more than this, so a timeout reads as unknown."""
+    import httpx
+
+    return isinstance(exc, (TimeoutError, httpx.TimeoutException))
+
+
 async def _keep_card_draft(
     mail: _Mail, owner: str, to: list[str], cc: list[str], subject: str, body: str,
     *, prior: list[str] | None = None, bcc: list[str] | None = None,
-) -> tuple[str, bool]:
-    """The draft of a card that shows: best effort, so the card always shows."""
+) -> CardDraft:
+    """The draft of a card that shows: best effort, so the card always shows.
+    Its ``outcome`` tells a failed write from an unknown one (item 11)."""
+    progress: dict[str, bool] = {}
     try:
-        return await _write_draft(mail, owner, to, cc, subject, body,
-                                  chat_wrote=True, prior=prior, bcc=bcc)
+        local_id, kept = await _write_draft(mail, owner, to, cc, subject, body,
+                                            chat_wrote=True, prior=prior, bcc=bcc,
+                                            progress=progress)
     except Exception as exc:  # the card still shows
-        _log.warning("email.reply_card_draft_failed", error=type(exc).__name__)
-        return "", False
+        unknown = bool(progress.get("provider")) or _is_timeout(exc)
+        outcome = DRAFT_UNKNOWN if unknown else DRAFT_FAILED
+        _log.warning("email.reply_card_draft_failed", error=type(exc).__name__,
+                     outcome=outcome)
+        return CardDraft("", False, outcome)
+    if _as_uuid(local_id) is None:
+        # The provider holds the draft, and no local row names it.
+        _log.warning("email.reply_card_draft_failed", error="no_local_row",
+                     outcome=DRAFT_UNKNOWN)
+        return CardDraft("", kept, DRAFT_UNKNOWN)
+    return CardDraft(local_id, kept, DRAFT_WRITTEN)
 
 
 async def _save_draft(

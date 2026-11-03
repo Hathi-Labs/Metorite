@@ -47,6 +47,7 @@ import {
   classOfAddress,
   discardReplyDraft,
   DRAFT_LEFT_LINE,
+  DRAFT_UNSAVED_LINE,
   leftOutText,
   lineCount,
   markFor,
@@ -145,6 +146,10 @@ function AddressRow({
  * its title line, its subject, the one line and Close. No ticks, no text
  * box, no Send and no Save. Close ends the card with no trash, because the
  * draft is not there.
+ *
+ * Item 11: a card whose draft write had an unknown outcome collapses the same
+ * way, with its own `line`. Text that the member typed stays visible, read
+ * only, under "Your text", so the member can copy it (`typed`).
  */
 export function ReplyCardGone({
   title,
@@ -152,12 +157,16 @@ export function ReplyCardGone({
   onClose,
   armed,
   disabled = false,
+  line = DRAFT_LEFT_LINE,
+  typed = "",
 }: {
   title: string;
   subject: string;
   onClose: () => void;
   armed: boolean;
   disabled?: boolean;
+  line?: string;
+  typed?: string;
 }) {
   return (
     <div className="space-y-2.5" data-reply-card="" data-reply-card-gone="">
@@ -172,8 +181,16 @@ export function ReplyCardGone({
         role="status"
         data-reply-gone=""
       >
-        {DRAFT_LEFT_LINE}
+        {line}
       </p>
+      {typed.trim() && (
+        <div className="space-y-0.5" data-reply-typed="">
+          <p className="text-[11px] text-muted-foreground">Your text</p>
+          <p className="whitespace-pre-wrap break-words rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:px-3 glass:py-2">
+            {typed}
+          </p>
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2">
         <Button
           variant="secondary"
@@ -237,14 +254,17 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
       </div>
     );
   }
-  if (gone) {
-    // The draft left Drafts: the card collapses to its title, its subject,
-    // the one line and Close (fix round 1, item 4). Close is the card's
-    // REJECT, with no trash of a draft that is not there.
+  if (gone || form.draftUnsaved) {
+    // The draft left Drafts, or its write had an unknown outcome (item 11):
+    // the card collapses to its title, its subject, the one line and Close
+    // (fix round 1, item 4). Close is the card's REJECT, with no trash of a
+    // draft that is not there. Text that the member typed stays visible.
     return (
       <ReplyCardGone
         title={replySummary(form, replyAll, ticks)}
         subject={form.subject}
+        line={gone ? DRAFT_LEFT_LINE : DRAFT_UNSAVED_LINE}
+        typed={body !== form.body ? body : ""}
         onClose={onDiscard}
         armed={armed}
         disabled={disabled}

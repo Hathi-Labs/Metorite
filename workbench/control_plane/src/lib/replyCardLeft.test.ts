@@ -19,6 +19,7 @@ import { announceDraftLeft, DRAFT_LEFT_EVENT } from "@/lib/draftLeftEvent";
 import {
   DRAFT_LEFT_LINE,
   DRAFT_POLL_MS,
+  DRAFT_UNSAVED_LINE,
   readDraftState,
   replyFromEvent,
   replyHint,
@@ -286,7 +287,10 @@ describe("a card whose draft left Drafts collapses (fix round 1, item 4)", () =>
 
   it("the form returns the collapse when its draft is gone, and Close posts no trash", () => {
     expect(card).toMatch(/disabled \? undefined : watchCardDraft\(draftId, \(\) => setGone\(true\)\)/);
-    expect(card).toMatch(/if \(gone\) \{[\s\S]*?return \(\s*<ReplyCardGone[\s\S]*?onClose=\{onDiscard\}/);
+    expect(card).toMatch(
+      /if \(gone \|\| form\.draftUnsaved\) \{[\s\S]*?return \(\s*<ReplyCardGone[\s\S]*?onClose=\{onDiscard\}/,
+    );
+    expect(card).toContain("typed={body !== form.body ? body : \"\"}");
     expect(card).toContain("onClick={() => armed && onClose()}");
     expect(card).toContain("{saveLabel(form)}");
   });
@@ -295,5 +299,50 @@ describe("a card whose draft left Drafts collapses (fix round 1, item 4)", () =>
     expect(DRAFT_LEFT_LINE).toBe(
       "This reply is no longer in Drafts. It was sent, deleted or replaced outside this card, so this card cannot send it.",
     );
+  });
+});
+
+describe("a card whose draft write had an unknown outcome (item 11)", () => {
+  const noop = () => {};
+  const unsaved = replyFromEvent({ ...VALUE, draft_id: "", draft_unsaved: true })!;
+
+  it("the form reads the flag only when the server set it true", () => {
+    expect(unsaved.draftUnsaved).toBe(true);
+    expect(replyFromEvent(VALUE)!.draftUnsaved).toBeUndefined();
+    expect(replyFromEvent({ ...VALUE, draft_unsaved: "yes" })!.draftUnsaved).toBeUndefined();
+  });
+
+  it("renders stopped at once: the unsaved line and Close, with no Send and no Save", () => {
+    const html = renderToStaticMarkup(
+      createElement(ReplyCardForm, { form: unsaved, onAnswer: noop, onDiscard: noop, armed: true }),
+    );
+    expect(html).toContain(DRAFT_UNSAVED_LINE);
+    expect(html).toContain("data-reply-close");
+    for (const part of ["data-reply-send", "data-reply-save", "<textarea", "data-reply-tick"]) {
+      expect(html, part).not.toContain(part);
+    }
+    expect(DRAFT_UNSAVED_LINE).toBe(
+      "This reply could not be saved to Drafts, so this card cannot send it. Ask me to draft it again.",
+    );
+  });
+});
+
+describe("the collapse keeps the text that the member typed (item 11)", () => {
+  const noop = () => {};
+  const props = { title: "Reply to kim@contoso.test", subject: "Re: Quote", onClose: noop, armed: true };
+
+  it("shows the typed text read only, under Your text, so the member can copy it", () => {
+    const html = renderToStaticMarkup(createElement(ReplyCardGone, { ...props, typed: "Hi Kim,\n\nMy own words." }));
+    expect(html).toContain("data-reply-typed");
+    expect(html).toContain(">Your text<");
+    expect(html).toContain("My own words.");
+    expect(html).not.toContain("<textarea");
+    expect(html).not.toContain("<input");
+  });
+
+  it("shows no Your text block when the member typed nothing new", () => {
+    const html = renderToStaticMarkup(createElement(ReplyCardGone, { ...props, typed: "" }));
+    expect(html).not.toContain("data-reply-typed");
+    expect(html).not.toContain("Your text");
   });
 });

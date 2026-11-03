@@ -52,6 +52,8 @@ THREAD = "th-left-1"
 USER = types.SimpleNamespace(email=MEMBER, organization_id=ORG)
 
 agents = F.load_email_agent("ea_left_drafts")
+#: The real draft write of a card, before any test fakes it (item 11).
+_REAL_KEEP = rc._keep_card_draft
 
 
 def _answer(action: str = "send") -> str:
@@ -326,6 +328,55 @@ async def test_a_failed_second_write_refuses_the_act(monkeypatch) -> None:
     assert r.draft_reads == [] and r.w.sent == []
 
 
+def _real_draft_write(monkeypatch, write: Any) -> None:
+    """The real ``_keep_card_draft`` over a fake ``_write_draft`` (item 11)."""
+    monkeypatch.setattr(rc, "_keep_card_draft", _REAL_KEEP)
+    monkeypatch.setattr(rc, "_write_draft", write)
+
+
+async def test_a_failed_draft_write_sends_as_before(monkeypatch) -> None:
+    """Item 11 (P2): a legacy IMAP mailbox with no Drafts folder fails each
+    write. No draft exists, so the flag clears, the card has no draft id,
+    and its Send sends a fresh reply, as before item 10."""
+    r = _RouteWorld(monkeypatch, in_drafts=True)
+
+    async def no_drafts_folder(*_a: Any, **_k: Any) -> tuple[str, bool]:
+        raise RuntimeError("No Drafts mailbox available for APPEND")
+
+    _real_draft_write(monkeypatch, no_drafts_folder)
+    out, got = await r.card_then_act()
+    assert out["draft_id"] == "" and "draft_unsaved" not in out
+    assert rc.DRAFT_UNSAVED not in out["notices"]
+    assert not isinstance(got, HTTPException), got
+    assert got["action"] == "send" and len(r.w.sent) == 1
+
+
+@pytest.mark.parametrize("case", ["timeout", "no_local_row", "fault_after_provider"])
+async def test_an_unknown_draft_write_refuses_and_says_so(monkeypatch, case) -> None:
+    """Item 11 (P2): a draft can exist that no local row names. The card
+    says so and stops, and the act refuses with ``draft_unconfirmed``.
+    Mutation: read a timeout as a failed write → the timeout case sends."""
+    r = _RouteWorld(monkeypatch, in_drafts=True)
+
+    async def write(*_a: Any, progress: dict[str, bool] | None = None,
+                    **_k: Any) -> tuple[str, bool]:
+        if case == "timeout":
+            raise TimeoutError("the provider did not answer in time")
+        if case == "no_local_row":
+            return "", False
+        assert progress is not None
+        progress["provider"] = True
+        raise RuntimeError("the record of the AI text failed")
+
+    _real_draft_write(monkeypatch, write)
+    out, got = await r.card_then_act()
+    assert out["draft_id"] == "" and out["draft_unsaved"] is True
+    assert rc.DRAFT_UNSAVED in out["notices"]
+    assert isinstance(got, HTTPException), got
+    assert got.status_code == 409 and got.detail["reason"] == rcard.DRAFT_UNCONFIRMED
+    assert r.w.sent == []
+
+
 async def test_the_happy_path_clears_the_flag_and_sends(monkeypatch) -> None:
     """Item 10: the draft id reaches the record, the flag clears, and the
     draft is still in Drafts. The act sends."""
@@ -475,9 +526,11 @@ def test_the_state_sql_goes_through_the_mailbox_seam() -> None:
 
 
 class _Gateway:
-    def __init__(self, act: Any = None, state: Any = None) -> None:
+    def __init__(self, act: Any = None, state: Any = None,
+                 prep: dict[str, Any] | None = None) -> None:
         self.act = act
         self.state = state
+        self.prep = prep or {}
         self.posts: list[str] = []
         self.gets: list[tuple[str, dict[str, Any]]] = []
 
@@ -490,7 +543,7 @@ class _Gateway:
                     "recipients": {"reply": {"to": ["kim@contoso.test"], "cc": []},
                                    "reply_all": {"to": ["kim@contoso.test"], "cc": []}},
                     "body": "Hi Kim,\n\nYes.", "message_id": MAIL, "notices": [],
-                    "draft_id": DRAFT}
+                    "draft_id": DRAFT, **self.prep}
         if path == "/email/reply-card/act":
             if isinstance(self.act, Exception):
                 raise self.act
@@ -585,14 +638,41 @@ async def test_compose_reply_never_says_discarded_for_a_draft_that_left(monkeypa
     assert gw.posts == ["/email/reply-card"]
 
 
-@pytest.mark.parametrize("state", [{"in_drafts": True}, RuntimeError("gateway down"), None])
-async def test_compose_reply_keeps_the_discard_line_while_the_draft_stays(
-    monkeypatch, state,
-) -> None:
-    gw = _Gateway(state=state)
+async def test_compose_reply_keeps_the_discard_line_while_the_draft_stays(monkeypatch) -> None:
+    gw = _Gateway(state={"in_drafts": True})
     _install(monkeypatch, gw, None)
     out = await agents.compose_reply(MAIL, BOX)
     assert out == agents._REPLY_DISCARDED
+
+
+@pytest.mark.parametrize("state", [RuntimeError("gateway down"), None, {"odd": 1}])
+async def test_a_closed_card_whose_state_is_unknown_claims_nothing(monkeypatch, state) -> None:
+    """Item 11 (P3): the draft can have gone in the Email app, so a failed
+    state read gives the neutral words, never "Nothing was sent"."""
+    gw = _Gateway(state=state)
+    _install(monkeypatch, gw, None)
+    out = await agents.compose_reply(MAIL, BOX)
+    assert out == agents._REPLY_CLOSED_STATE_UNKNOWN
+    assert "Nothing was sent" not in out and "Do not say that the reply was sent" in out
+
+
+async def test_a_closed_card_whose_draft_is_unsaved_claims_nothing(monkeypatch) -> None:
+    gw = _Gateway(state={"in_drafts": True}, prep={"draft_id": "", "draft_unsaved": True})
+    _install(monkeypatch, gw, None)
+    out = await agents.compose_reply(MAIL, BOX)
+    assert out == agents._REPLY_CLOSED_UNSAVED and gw.gets == []
+    assert "can still be in Drafts" in out
+
+
+def test_the_reply_form_carries_the_unsaved_flag_only_when_true() -> None:
+    from acb_skills import ask_tools
+
+    base = {"message_id": MAIL, "body": "Hi",
+            "recipients": {"reply": {"to": ["kim@contoso.test"], "cc": []},
+                           "reply_all": {"to": ["kim@contoso.test"], "cc": []}}}
+    assert ask_tools.clean_reply_form({**base, "draft_unsaved": True})["draft_unsaved"] is True
+    assert "draft_unsaved" not in ask_tools.clean_reply_form(base)
+    assert "draft_unsaved" not in ask_tools.clean_reply_form({**base, "draft_unsaved": "yes"})
 
 
 async def test_a_revise_names_no_draft_id_of_a_draft_that_left(monkeypatch) -> None:

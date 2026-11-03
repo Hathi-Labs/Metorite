@@ -20862,9 +20862,11 @@ Save made an orphan draft.
    server writes all three, and no request of the act names them. A card whose record
    write failed writes no draft.
 2. **A draft that the record never confirmed.** The act answers 409 `draft_unconfirmed`
-   while `draft_pending` is set and the record holds no draft id. Then the second write
-   failed, so the card cannot know where its draft is. The words of that refusal claim no
-   send, and the act reads no database.
+   while `draft_pending` is set and the record holds no draft id. A draft write that failed
+   clears the flag, and that card sends a fresh reply, as before. The code reads a raised
+   provider error as failed, and a timeout as unknown. An unknown outcome keeps the flag,
+   and the card collapses at once with one line that says why. The words of that refusal
+   claim no send.
 3. **The act refuses a reply that already left.** After the checks of the answer and of the
    people, and before any send or save, `_reply_left` reads two facts. A 409 with
    `detail.reason` `draft_gone` comes when the draft is no longer in the member's Drafts. A
@@ -20875,7 +20877,7 @@ Save made an orphan draft.
    and never "Sent". A draft that left Drafts is no proof of a send, because a rule can
    replace an unedited draft. So that line tells the model to ask the member. A card that
    closes, or that the member writes over, reads the draft state first. When the draft
-   left, the tool names no draft id and claims no send.
+   left, or its state is unknown, the tool claims no send and names no gone draft.
 5. **One state read.** `GET /email/reply-card/draft-state` reads one draft row of the
    member through `mailbox_predicate`, with no provider call. The email BFF proxy carries
    it. The parity table holds it as kind `stream`, a poll that refreshes a view. A
@@ -20884,7 +20886,7 @@ Save made an orphan draft.
    when the page shows again. It also reads each 60 seconds while the page shows, and at
    once on `cc-email-draft-left`. The Email app raises that event after `sendDraft` and
    `deleteEmail`. When the draft left, the card collapses to its title, its subject, one
-   line and Close.
+   line and Close. Text that the member typed stays there, read only, under "Your text".
 7. **The words.** A card with a draft says "This reply is in the Drafts of …", and its Save
    reads "Save draft". The old footer said that only Save puts the reply in Drafts. Discard
    now says that it deletes only a draft that nobody changed. A card with no draft keeps
@@ -20900,8 +20902,12 @@ Save made an orphan draft.
 - A card made before this release has a record with no time, no flag and no draft id. Its
   act checks nothing and sends as before. The record expires after about one hour, so this
   gap closes.
-- A draft write that gives no local id also leaves `draft_pending` set, because a provider
-  draft can exist with no local row. That card cannot send, and a new card works.
+- A record expires after 3700 seconds, and a card waits 3600 seconds. A late answer, for
+  example to a parked card, meets no record. Its act then checks nothing, as for a card
+  made before this release, and its draft can still be in Drafts.
+- A draft write with an unknown outcome stops that card. A new card works only after the
+  fault is gone. A lasting fault, such as a provider that times out each time, stops each
+  new card too.
 
 **Fences.** `tests/unit/test_reply_card_left_drafts.py`, its R8 half
 `tests/unit/test_reply_card_left_drafts_r8.py`, and `src/lib/replyCardLeft.test.ts`.

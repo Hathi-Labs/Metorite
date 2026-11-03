@@ -2418,19 +2418,43 @@ async def _act_or_left(act: Awaitable[Any]) -> Any:
         return left
 
 
+#: The answer of a reply card that closed when the state of its draft could
+#: not be read (item 11). The draft can have gone in the Email app, so the
+#: tool claims no send and no "not sent".
+_REPLY_CLOSED_STATE_UNKNOWN = (
+    "The reply card closed, and this chat sent and saved nothing. The state of "
+    "the card's draft could not be read. Do not say that the reply was sent, "
+    "or that it was not sent. Ask the member what they want to do with this "
+    "reply.")
+#: The answer of a reply card whose draft write had an unknown outcome
+#: (``draft_unsaved``, item 11). A draft of it can still be in Drafts.
+_REPLY_CLOSED_UNSAVED = (
+    "The reply card closed, and this chat sent and saved nothing. The reply "
+    "could not be saved to Drafts, so the card could not send it. A draft of "
+    "it can still be in Drafts. Ask the member whether to draft it again.")
+
+
+async def _card_draft_state(draft_id: str) -> str:
+    """``in``, ``gone`` or ``unknown``: the state of the card's draft, from
+    the gateway. A fault and an odd answer are ``unknown`` (item 11)."""
+    try:
+        state = await _get("/email/reply-card/draft-state", {"draft_id": draft_id})
+    except Exception:  # any fault: the state is not known
+        return "unknown"
+    if isinstance(state, dict) and state.get("in_drafts") is False:
+        return "gone"
+    if isinstance(state, dict) and state.get("in_drafts") is True:
+        return "in"
+    return "unknown"
+
+
 async def _card_draft_gone(draft_id: str) -> bool:
     """True when the gateway says that the card's draft left Drafts. A card
     with no draft, and any fault, read False, so the old answer stays."""
-    if not draft_id:
-        return False
-    try:
-        state = await _get("/email/reply-card/draft-state", {"draft_id": draft_id})
-    except Exception:  # any fault: the answer of before stays
-        return False
-    return isinstance(state, dict) and state.get("in_drafts") is False
+    return bool(draft_id) and await _card_draft_state(draft_id) == "gone"
 
 
-async def _closed_card_line(draft_id: str, kept: str) -> str:
+async def _closed_card_line(form: dict[str, Any], kept: str) -> str:
     """The answer of a reply card that closed with no Send and no Save.
 
     Discard and a timeout look the same here, so the tool trashes nothing.
@@ -2438,13 +2462,19 @@ async def _closed_card_line(draft_id: str, kept: str) -> str:
     (``ReplyCardForm``), and a timeout keeps the draft. 2026-11-03: a card
     whose draft left Drafts closes this way too. The member can have sent
     that draft from the Email app, so the tool then says neither
-    "discarded" nor "nothing was sent"."""
+    "discarded" nor "nothing was sent". A state that cannot be read, and a
+    draft write with an unknown outcome, claim neither too (item 11)."""
     unapproved = _unapproved_line()
     if unapproved:
         return unapproved
-    if await _card_draft_gone(draft_id):
-        return _REPLY_CLOSED_DRAFT_GONE + kept
-    return _REPLY_DISCARDED + kept
+    if form.get("draft_unsaved") is True:
+        return _REPLY_CLOSED_UNSAVED + kept
+    draft_id = str(form.get("draft_id") or "")
+    if not draft_id:
+        return _REPLY_DISCARDED + kept
+    lines = {"in": _REPLY_DISCARDED, "gone": _REPLY_CLOSED_DRAFT_GONE,
+             "unknown": _REPLY_CLOSED_STATE_UNKNOWN}
+    return lines[await _card_draft_state(draft_id)] + kept
 
 
 #: Added to the answer when the member's own draft of the email stays in
@@ -2593,6 +2623,8 @@ def _reply_form(prep: dict[str, Any], reply_all: bool) -> dict[str, Any]:
         "body": body,
         # The draft that this card wrote. The member's Discard trashes it.
         "draft_id": str(prep.get("draft_id") or ""),
+        # Item 11: the draft write had an unknown outcome, so the card cannot send.
+        **({"draft_unsaved": True} if prep.get("draft_unsaved") is True else {}),
         "note": " ".join([*notices[4:], *([] if body.strip() else [
             "The assistant did not write a draft for this mail. Write the reply below."])]),
     }
@@ -2809,7 +2841,7 @@ async def compose_reply(
         return await _revised_line(form, kept, prep)
     if not isinstance(answer, ask_tools.ReplyAnswer):
         # Discard, a timeout, and a card whose draft left Drafts (2026-11-03).
-        return await _closed_card_line(form["draft_id"], kept)
+        return await _closed_card_line(form, kept)
     member = _current_user_email().strip().lower()
     if answer.responder and member and answer.responder.strip().lower() != member:
         return ("Nothing was sent. Another member answered this card, "
