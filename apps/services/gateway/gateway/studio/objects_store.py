@@ -129,12 +129,14 @@ formula leaves its stored values as plain values.
 package to the ``objects`` of a published manifest, and the publish route is
 its one caller. It adds an object (:func:`define_object`, whose one caller it
 is), adds a field, flips ``hot``, and brings each rules list to the manifest
-through :func:`set_constraints`. The phases run in this order: new objects,
-new fields, fields that turn hot, rules, fields that turn cold. It builds the
-whole plan from reads, then writes in a SAVEPOINT. An object that goes, a
-field that goes or changes, a new required field on an object with records,
-and each refusal of a store call (a rule included) raise
-:class:`ObjectsOutOfSync` with a list of :class:`SyncProblem`. ⚠️ The lock
+through :func:`set_constraints`. The phases run in this order: fields that
+turn cold and that no stored rule reads, new objects, new fields, fields that
+turn hot, rules, and the fields that turn cold and that a stored rule reads.
+So a swap of hot fields at a cap passes. It builds the whole plan from reads,
+then writes in a SAVEPOINT. An object that goes, a field that goes or
+changes, a new required field on an object with records, and each refusal of
+a store call (a rule included) raise :class:`ObjectsOutOfSync` with a list of
+:class:`SyncProblem`. A refusal of a field step names the field. ⚠️ The lock
 order: the caller holds the ``apps`` row ``FOR UPDATE``, and the sync takes
 the org lock after it. :func:`list_objects` reads the objects of one package
 in two statements.
@@ -1114,11 +1116,12 @@ async def _plan_sync(db: Any, rows: Sequence[StudioObject],
 
 @dataclass
 class _Done:
-    """What the write phase did so far, and the object it works on. The object
-    names the place of a refusal."""
+    """What the write phase did so far, and the object and the field it works
+    on. The two name the place of a refusal."""
 
     ids: dict[str, str] = dc_field(default_factory=dict)
     where: str = ""
+    field: str | None = None
     created: list[str] = dc_field(default_factory=list)
     added: list[tuple[str, str]] = dc_field(default_factory=list)
     heated: list[tuple[str, str, bool]] = dc_field(default_factory=list)
@@ -1128,9 +1131,8 @@ class _Done:
 async def _sync_new_objects(db: Any, who: str, pid: str, items: Sequence[_Item],
                             done: _Done) -> None:
     for it in items:
-        done.where = it.name
+        done.where, done.field = it.name, None
         if it.row is not None:
-            done.ids[it.name] = it.row.id
             continue
         made = await define_object(
             db, who, package_id=pid, name=it.name, label=it.label, fields=it.raw_fields)
@@ -1142,19 +1144,39 @@ async def _sync_new_objects(db: Any, who: str, pid: str, items: Sequence[_Item],
 
 async def _sync_new_fields(db: Any, items: Sequence[_Item], done: _Done) -> None:
     for it in items:
-        done.where = it.name
         for raw in it.add:
+            done.where, done.field = it.name, str(raw["key"])
             if await add_field(db, done.ids[it.name], raw) is None:
                 raise ObjectStoreError("The object is gone.")
             done.added.append((it.name, str(raw["key"])))
 
 
-async def _sync_hot(db: Any, items: Sequence[_Item], done: _Done, *, hot: bool) -> None:
+def _cold_keys(it: _Item, *, late: bool) -> list[str]:
+    """The fields of *it* that turn cold. A late one is read by a stored rule,
+    so it waits until the rules phase removes that rule. Each other one goes
+    first, so it frees its room in the hot budget before a field turns hot."""
+    rules = it.row.constraints if it.row is not None else ()
+    return [key for key, want in it.heat
+            if not want and any(key in r.hot_keys() for r in rules) is late]
+
+
+async def _flip(db: Any, it: _Item, done: _Done, key: str, hot: bool) -> None:
+    done.where, done.field = it.name, key
+    if await set_field_hot(db, done.ids[it.name], key, hot):
+        done.heated.append((it.name, key, hot))
+
+
+async def _sync_hot(db: Any, items: Sequence[_Item], done: _Done) -> None:
     for it in items:
-        done.where = it.name
         for key, want in it.heat:
-            if want is hot and await set_field_hot(db, done.ids[it.name], key, hot):
-                done.heated.append((it.name, key, hot))
+            if want:
+                await _flip(db, it, done, key, True)
+
+
+async def _sync_cold(db: Any, items: Sequence[_Item], done: _Done, *, late: bool) -> None:
+    for it in items:
+        for key in _cold_keys(it, late=late):
+            await _flip(db, it, done, key, False)
 
 
 async def _sync_rules(db: Any, pid: str, items: Sequence[_Item], done: _Done) -> None:
@@ -1162,7 +1184,7 @@ async def _sync_rules(db: Any, pid: str, items: Sequence[_Item], done: _Done) ->
     store path :func:`set_constraints`. A list that equals the stored one
     writes nothing."""
     for it in items:
-        done.where = it.name
+        done.where, done.field = it.name, None
         if not it.set_rules:
             continue
         if await set_constraints(db, done.ids[it.name], it.raw_rules, package_id=pid) is None:
@@ -1173,18 +1195,23 @@ async def _sync_rules(db: Any, pid: str, items: Sequence[_Item], done: _Done) ->
 async def _apply_sync(db: Any, who: str, pid: str, items: Sequence[_Item]) -> SyncResult:
     """Write the plan in one SAVEPOINT, so a refusal leaves no part of it.
 
-    The phases run in this order: new objects, new fields, fields that turn
-    hot, rules, fields that turn cold. A rule needs its fields in place and
-    hot, and a field that turns cold must lose the rules that read it first.
+    The phases run in this order: fields that turn cold and that no stored
+    rule reads, new objects, new fields, fields that turn hot, rules, and then
+    the fields that turn cold and that a stored rule reads. A cold field frees
+    its room in the hot budget before a field takes it, so a swap at a cap
+    passes. A rule needs its fields in place and hot, and a field that turns
+    cold must lose the rules that read it first. A refusal of a field step
+    names the field.
     """
-    done = _Done()
+    done = _Done(ids={it.name: it.row.id for it in items if it.row is not None})
     try:
         async with db.begin_nested():
+            await _sync_cold(db, items, done, late=False)
             await _sync_new_objects(db, who, pid, items, done)
             await _sync_new_fields(db, items, done)
-            await _sync_hot(db, items, done, hot=True)
+            await _sync_hot(db, items, done)
             await _sync_rules(db, pid, items, done)
-            await _sync_hot(db, items, done, hot=False)
+            await _sync_cold(db, items, done, late=True)
     except StoreBusy:
         raise
     except ConstraintError as exc:
@@ -1192,9 +1219,11 @@ async def _apply_sync(db: Any, who: str, pid: str, items: Sequence[_Item]) -> Sy
             RULES_REFUSED, done.where, rule=exc.rule, message=exc.message)]) from None
     except FieldError as exc:
         raise ObjectsOutOfSync([SyncProblem(
-            FIELD_REFUSED, done.where, field=exc.field, message=exc.message)]) from None
+            FIELD_REFUSED, done.where, field=exc.field or done.field,
+            message=exc.message)]) from None
     except ObjectStoreError as exc:
-        raise ObjectsOutOfSync([SyncProblem(STORE_REFUSED, done.where, message=str(exc))]) from None
+        raise ObjectsOutOfSync([SyncProblem(
+            STORE_REFUSED, done.where, field=done.field, message=str(exc))]) from None
     return SyncResult(
         tuple(done.created), tuple(done.added), tuple(done.heated), tuple(done.ruled))
 

@@ -49,6 +49,10 @@ h. The audit: a create writes one ``action`` row, a publish its own ``publish``
    and a refusal write none.
 i. The store: ``list_objects`` reads one package, and ``sync_objects`` writes in
    a SAVEPOINT, so a refusal of a late phase undoes an early phase.
+j. The caps: a swap of hot fields at the cap of an object or of the org
+   passes, also when another member fills the org, because a cold flip that
+   no stored rule reads runs first. A refusal of a field step names the
+   field.
 
 **The mutations (R7).** Each was run on 2026-11-03. The red tests are in the
 build report. M2: drop the sync. M3: sync before the publish. M4: ignore a
@@ -1183,3 +1187,130 @@ def test_r8_pages_stay_in_the_manifest_and_make_no_row(world) -> None:
     assert status == 200, got
     assert [o[0] for o in _objects(world, pid)] == ["visit"]
     assert _app(world, pid)[5]["pages"][0]["id"] == "home"
+
+
+# ── j. The caps ────────────────────────────────────────────────────────────
+
+
+def _hot_obj(name: str, hot: int, cold: int = 0) -> dict[str, Any]:
+    """An object with *hot* hot fields ``h1``.. and *cold* cold fields ``c1``.."""
+    fields = [{"key": f"h{i}", "type": "text", "hot": True} for i in range(1, hot + 1)]
+    fields += [{"key": f"c{i}", "type": "text"} for i in range(1, cold + 1)]
+    return {"name": name, "fields": fields}
+
+
+def _heat(obj: dict[str, Any], **hot: bool) -> dict[str, Any]:
+    """A copy of *obj* with the ``hot`` flag of each named field changed."""
+    out = {**obj, "fields": [dict(f) for f in obj["fields"]]}
+    for f in out["fields"]:
+        if f["key"] in hot:
+            f["hot"] = hot[f["key"]]
+    return out
+
+
+def _hot_map(world: Any, pid: str, name: str) -> dict[str, bool]:
+    oid = next(o[1] for o in _objects(world, pid) if o[0] == name)
+    return {f[0]: f[2] for f in _fields(world, oid)}
+
+
+def _org_hot(world: Any) -> int:
+    with world.p.admin_engine.connect() as c:
+        return int(c.execute(text(
+            "SELECT count(*) FROM studio_object_fields "
+            "WHERE organization_id = CAST(:o AS uuid) AND hot"), {"o": world.a}).scalar_one())
+
+
+async def _fill_hot(world: Any, who: str, count: int) -> None:
+    """Publish packages of *who* that hold *count* hot fields in all."""
+    while count > 0:
+        n = min(count, objects_store.MAX_HOT_PER_OBJECT)
+        await _live(world.a, who, _manifest(_mid("fill"), [_hot_obj("thing", n)]))
+        count -= n
+
+
+def test_r8_a_hot_swap_at_the_object_cap_passes(world) -> None:
+    """Eight hot fields: ``h8`` turns cold and ``c1`` turns hot in one publish.
+    The cold flip runs first, so the hot budget of the object holds."""
+    mid = _mid("swap")
+    full = _hot_obj("inv", objects_store.MAX_HOT_PER_OBJECT, cold=1)
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        pid = await _live(world.a, ANA, _manifest(mid, [full]))
+        assert (await _save(world.a, ANA, pid, _manifest(
+            mid, [_heat(full, h8=False, c1=True)])))[0] == 200
+        return pid, await _publish(world.a, ANA, pid)
+
+    pid, (status, got) = _run(world, go)
+    assert status == 200, got
+    assert sorted(map(tuple, got["sync"]["hot_changed"])) == [
+        ("inv", "c1", True), ("inv", "h8", False)]
+    hot = _hot_map(world, pid, "inv")
+    assert (hot["h8"], hot["c1"], sum(hot.values())) == (False, True, 8)
+    assert _versions(world, pid) == [1, 2]
+
+
+def test_r8_a_new_hot_field_and_a_cold_flip_at_the_object_cap_pass(world) -> None:
+    mid = _mid("swapnew")
+    full = _hot_obj("inv", objects_store.MAX_HOT_PER_OBJECT)
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        pid = await _live(world.a, ANA, _manifest(mid, [full]))
+        more = _heat(full, h8=False)
+        more["fields"].append({"key": "b", "type": "text", "hot": True})
+        assert (await _save(world.a, ANA, pid, _manifest(mid, [more])))[0] == 200
+        return pid, await _publish(world.a, ANA, pid)
+
+    pid, (status, got) = _run(world, go)
+    assert status == 200, got
+    assert got["sync"]["fields_added"] == [["inv", "b"]]
+    assert got["sync"]["hot_changed"] == [["inv", "h8", False]]
+    hot = _hot_map(world, pid, "inv")
+    assert (hot["h8"], hot["b"], sum(hot.values())) == (False, True, 8)
+
+
+def test_r8_a_hot_swap_at_the_org_cap_passes_when_another_member_fills_it(world) -> None:
+    """Ben fills the org up to four hot fields short of the cap, and Ana's
+    package takes the last four. Ana then swaps one hot field for another."""
+    mid = _mid("orgswap")
+    mine = _hot_obj("inv", 4, cold=1)
+    room = objects_store.MAX_HOT_PER_ORG - _org_hot(world) - 4
+    assert room >= 0, "the org holds too many hot fields for this test"
+
+    async def go() -> tuple[str, tuple[int, Any]]:
+        await _fill_hot(world, BEN, room)
+        pid = await _live(world.a, ANA, _manifest(mid, [mine]))
+        assert (await _save(world.a, ANA, pid, _manifest(
+            mid, [_heat(mine, h4=False, c1=True)])))[0] == 200
+        return pid, await _publish(world.a, ANA, pid)
+
+    pid, (status, got) = _run(world, go)
+    assert _org_hot(world) == objects_store.MAX_HOT_PER_ORG
+    assert status == 200, got
+    hot = _hot_map(world, pid, "inv")
+    assert (hot["h4"], hot["c1"]) == (False, True)
+
+
+def test_r8_a_refusal_of_the_write_phase_names_the_field(world) -> None:
+    """At the org cap, one more hot field is refused. The problem names the
+    field: a field that turns hot, and a new hot field."""
+    mid = _mid("orgfull")
+    mine = _hot_obj("inv", 4, cold=1)
+    room = objects_store.MAX_HOT_PER_ORG - _org_hot(world) - 4
+    assert room >= 0, "the org holds too many hot fields for this test"
+
+    async def go() -> tuple[str, tuple[int, Any], tuple[int, Any]]:
+        await _fill_hot(world, BEN, room)
+        pid = await _live(world.a, ANA, _manifest(mid, [mine]))
+        await _save(world.a, ANA, pid, _manifest(mid, [_heat(mine, c1=True)]))
+        flip = await _publish(world.a, ANA, pid)
+        more = {**mine, "fields": [*mine["fields"], {"key": "b", "type": "text", "hot": True}]}
+        await _save(world.a, ANA, pid, _manifest(mid, [more]))
+        return pid, flip, await _publish(world.a, ANA, pid)
+
+    pid, flip, new = _run(world, go)
+    for (status, got), key in ((flip, "c1"), (new, "b")):
+        assert status == 409, got
+        assert [(p["kind"], p["object"], p["field"]) for p in got["problems"]] == [
+            ("store_refused", "inv", key)]
+        assert f"at most {objects_store.MAX_HOT_PER_ORG} hot fields" in got["problems"][0]["message"]
+    assert _versions(world, pid) == [1]
