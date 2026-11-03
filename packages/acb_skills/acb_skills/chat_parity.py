@@ -286,6 +286,9 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/email/drafts": "edit_draft",
     "PUT /api/email/voice-profile": "voice_profile",
     # ── CRM ──
+    # WS-CRM CRM-M1: the chat reaches this tool through the `crm-records`
+    # pack, and the CRM assistant holds it. The orchestrator's base does not
+    # (tests/unit/test_crm_change_history.py holds the reach).
     "GET /api/crm/change-history": "crm_change_history",
     "GET /api/crm/deals/{}/contacts": "crm_deal_contacts",
     "GET /api/crm/fields/{}": "crm_list_fields",

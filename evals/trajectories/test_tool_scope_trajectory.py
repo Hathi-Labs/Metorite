@@ -49,7 +49,9 @@ INJECTABLE_PLATFORM_TOOLS = {
     "crm_deal_contacts", "crm_list_owners", "crm_report", "crm_aggregate",
     "crm_stage_dwell", "crm_list_modules", "crm_list_module_records",
     "crm_get_module_record",
-    # WS-CRM CRM-M1 (2026-11-02): the read of the CRM Change history.
+    # WS-CRM CRM-M1 (2026-11-02): the read of the CRM Change history. It is
+    # in the `crm` family, so a scope may name it. Today only the CRM
+    # assistant's own scope and the `crm-records` pack hold it.
     "crm_change_history",
     # H-315 (2026-10-15): the `documents` family, a deck or a report as a PDF.
     "make_document",
@@ -86,10 +88,11 @@ SCOPED_AGENTS = {
     # 25 since CRM-Q33 (2026-10-18): the chat answers first and keeps a
     # business rule that the member says, so it holds crm_propose_rule. A run
     # of an org off CRM_ANSWER_FIRST_ORGS drops it.
-    # 26 since CRM-M1 (2026-11-02): "What changed last Tuesday?" is a chat
-    # read of the CRM Change history (crm_conversational.md §8), so the chat
-    # holds crm_change_history. It reads only.
-    "agent-orchestrator": 26,
+    # Still 25 after CRM-M1 (2026-11-03): the chat reaches the read of the
+    # CRM Change history, crm_change_history, through the `crm-records` pack.
+    # The orchestrator's tool_scope does not hold it, because the base was at
+    # the 110-tool cap (tests/unit/test_projects_packs.py).
+    "agent-orchestrator": 25,
 }
 
 

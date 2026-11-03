@@ -256,7 +256,7 @@ The table is the list of record. `test_crm_change_history.py` holds the same lis
 - **A member purge.** The purge deletes the rows that are private to the member (`crm_private_changes` in `routes/admin/members._PURGE_DELETES`). The org's rows that the member made stay with the address, as the audit log does. Fence: `tests/unit/test_admin_member_purge.py`.
 - **Through what.** Each PR 1 route writes `ui`. The confirm of a rule writes `chat` or `whatsapp`. CRM-M2 passes `chat` from its tools.
 - **The ladder.** `approved_by` is the actor in PR 1. A member's own rule is at the `own` level, and an org rule at the `team` level. The approval card is CRM-M2.
-- **The chat read.** `crm_change_history` reads `GET /crm/change-history` as the member. The orchestrator and the CRM assistant hold it.
+- **The chat read.** `crm_change_history` reads `GET /crm/change-history` as the member. The CRM assistant holds it, and the `crm-records` pack holds it for the one assistant. The orchestrator's base does not hold it. The base was at the 110-tool cap beside the email pack and the Projects core pack, and one more tool there dropped the Projects pack from a mixed turn (`tests/unit/test_projects_packs.py`). A turn that names the CRM, or that runs on the CRM page, loads the pack. Fence: `tests/unit/test_tool_packs_choice.py::test_a_crm_history_question_loads_the_pack_that_holds_the_read`.
 - **The section.** Settings → Change history is last in the rail, for an admin, in both modes. ⚠️ It shows no Undo button in PR 1. A new UI action needs a chat tool (owner rule, 2026-11-01, `tests/unit/test_chat_parity.py`), and the chat Undo is CRM-M2. So the button lands with CRM-M2.
 
 ### CRM-M2. Chat parity (#1432) — Wave 1

@@ -110,7 +110,10 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
     'crm_stage_dwell': {'params': {'days': 'integer', 'page': 'integer'}, 'required': []},
     # WS-CRM CRM-M1 (crm_conversational.md §8): the read of the Change history
     # of the CRM set-up. A new tool, so no call breaks. No member or org
-    # argument: the gateway binds them (R5).
+    # argument: the gateway binds them (R5). It is in the `crm` family, so it
+    # is injectable. The chat reaches it through the `crm-records` pack, and
+    # the orchestrator's base does not hold it, so the core floor and its
+    # total do not move.
     'crm_change_history': {'params': {'area': 'string', 'page': 'integer',
                                       'since': 'string', 'until': 'string'},
                            'required': []},

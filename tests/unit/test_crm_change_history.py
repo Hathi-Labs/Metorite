@@ -12,7 +12,7 @@ Spec: ``project-docs/specs/crm_conversational.md`` §8 CRM-M1 and §4 (D164).
 - Each area has an Undo function, except ``setup``, which no Undo reverses.
 - The migration (336) has the tenant key, FORCE RLS and the tenant policy, the
   one Undo index and the guard trigger. The generated phases carry the table.
-- The chat holds ``crm_change_history`` in its default scope.
+- The chat reaches ``crm_change_history`` through the ``crm-records`` pack.
 
 **The R8 part (``_DB_GATE``).** Through the real ``/crm`` router, against a
 real Postgres, as the NON-privileged app role:
@@ -401,9 +401,14 @@ def test_the_generated_phases_carry_the_table() -> None:
     assert "ALTER TABLE crm_change_log FORCE  ROW LEVEL SECURITY" in policies
 
 
-def test_the_chat_reads_the_history_by_default() -> None:
-    """The default chat turn (the orchestrator) holds the read, and so does
-    the CRM assistant. The read is in the crm family and reads only."""
+def test_the_chat_reads_the_history_through_the_crm_pack() -> None:
+    """The CRM assistant holds the read, and the ``crm-records`` pack holds it
+    for the one assistant. The orchestrator's base does not: the base was at
+    the 110-tool cap beside the email and Projects core packs
+    (``test_projects_packs.py``). The read is in the crm family and reads
+    only. ``test_tool_packs_choice.py::test_a_crm_history_question_loads_the_
+    pack_that_holds_the_read`` proves that a CRM history question loads the
+    pack and reaches the tool."""
     from acb_skills import crm_tools, skill_families
     from acb_skills.tool_annotations import TOOL_ANNOTATIONS
 
@@ -411,8 +416,10 @@ def test_the_chat_reads_the_history_by_default() -> None:
         (_ROOT / "apps/agents/agent-orchestrator/config.json").read_text(encoding="utf-8"))
     crm_agent = json.loads(
         (_ROOT / "apps/agents/agent-crm/config.json").read_text(encoding="utf-8"))
-    assert "crm_change_history" in orchestrator["tool_scope"]
+    assert "crm_change_history" not in orchestrator["tool_scope"]
     assert "crm_change_history" in crm_agent["own_tool_scope"]
+    assert "crm_change_history" in skill_families.SKILL_FAMILIES["crm-records"]["tools"]
+    assert skill_families.is_pack("crm-records")
     assert "crm_change_history" in crm_tools.CRM_TOOL_NAMES
     assert "crm_change_history" in skill_families.SKILL_FAMILIES["crm"]["tools"]
     risk = TOOL_ANNOTATIONS["crm_change_history"]

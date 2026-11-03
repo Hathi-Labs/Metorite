@@ -43,7 +43,6 @@
     "crm_list_modules",
     "crm_list_module_records",
     "crm_get_module_record",
-    "crm_change_history",
     "org_facts",
     "crm_answer_question",
     "crm_propose_rule"

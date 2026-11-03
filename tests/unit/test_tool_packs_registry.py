@@ -372,9 +372,11 @@ def test_no_pack_tool_is_on_the_injected_surface() -> None:
     scope (and in the skill index, with the index on)."""
     every = {n for slug in sf.pack_slugs() for n in sf.SKILL_FAMILIES[slug]["tools"]}
     # OA-8a: ``crm_search_notes`` is a tool of the injected ``crm`` family too.
-    # It is the only name that a pack shares with an injected family.
+    # WS-CRM CRM-M1: so is ``crm_change_history``, the read of the CRM Change
+    # history, which the chat reaches through ``crm-records``. They are the
+    # only names that a pack shares with an injected family.
     shared = every & sf.injected_tool_names()
-    assert shared == {"crm_search_notes"}, shared
+    assert shared == {"crm_search_notes", "crm_change_history"}, shared
     pack_tools = every - shared
     assert pack_tools, "non-vacuity: the packs hold tools of their own"
     assert not pack_tools & ti._registered_platform_surface()
@@ -481,9 +483,13 @@ async def test_the_catalog_route_prices_a_pack_from_its_owner(monkeypatch) -> No
 
 # ── 7. The CRM pack (WS-67 OA-8a, §4.3.2) ──────────────────────────────────
 
+#: Ten since WS-CRM CRM-M1: ``crm_change_history`` is in the pack, and not in
+#: the orchestrator's base, because the base was at the 110-tool cap beside
+#: the email and Projects core packs (``test_projects_packs.py``).
 CRM_TOOLS = (
-    "convert_lead", "create_lead", "crm_search_notes", "get_pipeline", "get_record",
-    "get_timeline", "log_activity", "search_crm", "update_deal_status",
+    "convert_lead", "create_lead", "crm_change_history", "crm_search_notes",
+    "get_pipeline", "get_record", "get_timeline", "log_activity", "search_crm",
+    "update_deal_status",
 )
 
 
@@ -496,21 +502,22 @@ def _crm_own_tool_scope() -> set[str]:
     return set(cfg["own_tool_scope"])
 
 
-def test_the_crm_pack_holds_nine_tools_of_the_crm_assistant() -> None:
+def test_the_crm_pack_holds_ten_tools_of_the_crm_assistant() -> None:
     """The pack is a subset of ``own_tool_scope`` (22 tools): the 4 reads, the
-    4 writes and ``crm_search_notes``. The other 13 are the shared ``crm_*``
-    reads that the orchestrator holds already. ``crm_change_history`` is one
-    of them since WS-CRM CRM-M1: the read of the CRM Change history, which
-    the orchestrator also holds. Mutation: add a tool the owner lacks, or
-    drop one of the 9 -> red."""
+    4 writes, ``crm_search_notes`` and ``crm_change_history``. The other 12
+    are the shared ``crm_*`` reads that the orchestrator holds already. Since
+    WS-CRM CRM-M1 the owner declares 22 tools, not 21, and the pack holds 10,
+    not 9: the read of the CRM Change history joined both, and the
+    orchestrator does not hold it. Mutation: add a tool the owner lacks, or
+    drop one of the 10 -> red."""
     scope = _crm_own_tool_scope()
     assert len(scope) == 22, "non-vacuity: the owner still declares 22 tools"
     family = sf.SKILL_FAMILIES["crm-records"]
     assert tuple(family["tools"]) == CRM_TOOLS and family["owner"] == CRM
     assert set(family["tools"]) <= scope
-    assert len(scope - set(family["tools"])) == 13
-    assert "crm_change_history" in scope - set(family["tools"])
-    assert "crm_change_history" in _orchestrator_scope()
+    assert len(scope - set(family["tools"])) == 12
+    assert "crm_change_history" in family["tools"]
+    assert "crm_change_history" not in _orchestrator_scope()
 
 
 def test_no_crm_pack_tool_is_in_another_pack() -> None:
@@ -520,18 +527,20 @@ def test_no_crm_pack_tool_is_in_another_pack() -> None:
         assert not crm & set(sf.SKILL_FAMILIES[slug]["tools"]), slug
 
 
-def test_one_crm_tool_is_also_an_injected_tool_and_the_orchestrator_lacks_it() -> None:
-    """``crm_search_notes`` is in the injected ``crm`` family and in the pack.
-    The orchestrator ``tool_scope`` does not hold it, so adding the pack
-    changes nothing with the flag off. Mutation: add it to the orchestrator
-    ``config.json`` -> the tool list changes with the flag off -> red."""
+def test_two_crm_tools_are_also_injected_tools_and_the_orchestrator_lacks_them() -> None:
+    """``crm_search_notes`` and, since WS-CRM CRM-M1, ``crm_change_history``
+    are in the injected ``crm`` family and in the pack. The orchestrator
+    ``tool_scope`` holds neither, so adding the pack changes nothing with the
+    flag off. Mutation: add one to the orchestrator ``config.json`` -> the
+    tool list changes with the flag off -> red."""
     shared = set(sf.SKILL_FAMILIES["crm-records"]["tools"]) & set(sf.SKILL_FAMILIES["crm"]["tools"])
-    assert shared == {"crm_search_notes"}
-    assert "crm_search_notes" not in _orchestrator_scope()
-    assert sf.family_of("crm_search_notes") == "crm"
+    assert shared == {"crm_search_notes", "crm_change_history"}
+    for name in shared:
+        assert name not in _orchestrator_scope(), name
+        assert sf.family_of(name) == "crm", name
 
 
-def test_the_built_crm_pack_is_exactly_the_nine_tools_as_coroutines() -> None:
+def test_the_built_crm_pack_is_exactly_the_ten_tools_as_coroutines() -> None:
     """The builder skips a tool that is no coroutine function and indexes by
     ``__name__``, so a tool of another shape would leave the pack empty and
     nobody would see it. Mutation: wrap a CRM tool in a ``FunctionTool`` ->
@@ -554,7 +563,8 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
                 "member", "member_email", "user", "user_email", "acting_user", "actor",
                 "email_address", "owner_email", "as_user", "impersonate"}
     tools = tp.owner_tools("crm-records", _crm_module())
-    assert len(tools) == 9
+    # 10, not 9, since WS-CRM CRM-M1: the pack holds crm_change_history too.
+    assert len(tools) == 10
     for fn in tools:
         params = set(inspect.signature(inspect.unwrap(fn)).parameters)
         assert not params & identity, (fn.__name__, sorted(params & identity))

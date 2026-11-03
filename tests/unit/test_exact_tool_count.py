@@ -134,24 +134,24 @@ async def _flow(agents: list[Any], words: str, monkeypatch, *, allowed=EVERY) ->
 async def test_the_estimate_equals_the_sent_count_on_the_staging_shape(
     staging_shape, orchestrator, store, monkeypatch,  # noqa: F811
 ) -> None:
-    """Staging: 66 tools before the fix (56 + the profile 7, search 1, decide 1,
+    """Staging: 65 tools before the fix (55 + the profile 7, search 1, decide 1,
     and the loader). The 3 facts tools are not in the run of an org off the
-    list, so the base falls to 62, and 63 with the load tool. The loader then
+    list, so the base falls to 61, and 62 with the load tool. The loader then
     reaches three owners and takes their 3 specialist tools out, so the run
-    sends 60. The count of the apply (``planned_tools``) says 60 and equals what
-    the run sends. Mutation: the estimate keeps the facts tools → 66, not 63
-    → red. Mutation: ``planned_tools`` ignores the specialists that leave → 63
-    logged against 60 sent → red."""
+    sends 59. The count of the apply (``planned_tools``) says 59 and equals what
+    the run sends. Mutation: the estimate keeps the facts tools → 65, not 62
+    → red. Mutation: ``planned_tools`` ignores the specialists that leave → 62
+    logged against 59 sent → red."""
     with _tenant():
         old = _estimate_with_facts(orchestrator) + 1
     got = await _flow(orchestrator, "", monkeypatch)
     assert got["packs"] == 0 and got["loader"] == 1
-    # 60, not 59, since WS-CRM CRM-M1 (2026-11-03): the orchestrator holds the
-    # read `crm_change_history` (crm_conversational.md §8), so each count of
-    # this test is one higher.
-    assert got["plan"] == got["sent"] == 60, got
-    assert got["base"] + 1 == 63, got
-    assert old == got["base"] + 1 + 3 == 66, (old, got)
+    # Still 59 after WS-CRM CRM-M1 (2026-11-03): the read `crm_change_history`
+    # is in the `crm-records` pack and not in the orchestrator's base, because
+    # the base was at the 110-tool cap (test_projects_packs.py).
+    assert got["plan"] == got["sent"] == 59, got
+    assert got["base"] + 1 == 62, got
+    assert old == got["base"] + 1 + 3 == 65, (old, got)
 
 
 def _estimate_with_facts(agents: list[Any]) -> int:
