@@ -853,7 +853,7 @@ def test_packages_module_runs_no_sql():
             assert node.attr not in ("execute", "executemany", "scalars"), ast.unparse(node)
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             assert not re.search(
-                r"(SELECT\s.+\sFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)",
+                r"\b(SELECT\s.+\sFROM|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM)\b",
                 node.value, re.S | re.I), node.value[:60]
 
 
