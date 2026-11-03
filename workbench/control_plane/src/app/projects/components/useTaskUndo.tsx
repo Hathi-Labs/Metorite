@@ -12,12 +12,18 @@ import { useToast } from "@/components/ui/Toast";
 import { useUndo } from "@/components/UndoProvider";
 
 import { type TaskRow, projectsApi } from "../lib/api";
-import { type EditIo, recordAssigneesEdit, recordTaskEdit } from "../lib/taskUndo";
+import {
+  type EditIo,
+  recordAssigneesEdit,
+  recordTaskEdit,
+  taskVersions,
+} from "../lib/taskUndo";
 
 export const taskEditIo: EditIo = {
   patch: (id, payload, ifMatch) => projectsApi.patchTask(id, payload, { ifMatch }),
   setAssignees: (id, list) => projectsApi.setAssignees(id, list),
   read: (id) => projectsApi.task(id),
+  versions: taskVersions,
 };
 
 export function useTaskUndo() {

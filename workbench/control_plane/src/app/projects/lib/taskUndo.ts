@@ -8,10 +8,18 @@
  *
  * The inverse is `inversePatch(before, patch)`: the same keys, the values the
  * row held BEFORE (an absent value becomes null). Each inverse is a PATCH that
- * carries If-Match, set to the version the previous write returned. A 412
- * means somebody changed the task since. Then Undo says so once and writes
- * nothing, and the step is marked dead so redo cannot replay on top of the
- * change.
+ * carries If-Match. A 412 means somebody changed the task since. Then Undo
+ * says so once and writes nothing, and the step is marked dead so redo cannot
+ * replay on top of the change.
+ *
+ * ⚠️ **The If-Match is the task's version NOW, never the version of the step's
+ * own write** (fix round 1, finding 1). Each write moves the stamp, and the
+ * server passes a token only when it equals `updated_at` or lies from
+ * `fields_at` up (`core.precondition_holds`). So a second undo on one task that
+ * sent its own old version always got a 412. `VersionLedger` keeps the newest
+ * version that THIS session wrote, per task. Each forward write, undo and redo
+ * notes its answer there. A read never does, so an edit by somebody else in
+ * between still answers 412.
  *
  * Pure: the network is `EditIo`, the stack and the toast are `EditHooks`, so
  * these rules are tests and not clicks. `useTaskUndo` binds them.
@@ -21,6 +29,47 @@ import { type UndoEntry, inversePatch } from "@/lib/undo";
 
 export const STALE_MESSAGE = "It changed since — open it";
 
+/**
+ * A server stamp as microseconds, or null. `Date.parse` alone keeps only
+ * milliseconds, and the server writes microseconds (and omits a zero part).
+ */
+function instant(stamp: string): number | null {
+  const m = /^(.*T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(.*)$/.exec(stamp);
+  if (!m) return null;
+  const ms = Date.parse(`${m[1]}${m[3]}`);
+  if (Number.isNaN(ms)) return null;
+  return ms * 1000 + Number((m[2] ?? "").padEnd(6, "0").slice(0, 6));
+}
+
+/** The newest version of each task that this session wrote. */
+export interface VersionLedger {
+  get(id: string): string | null;
+  /** Keep `version` unless the ledger holds a later one. */
+  note(id: string, version: string | null | undefined): void;
+}
+
+export function createVersionLedger(): VersionLedger {
+  const latest = new Map<string, string>();
+  return {
+    get: (id) => latest.get(id) ?? null,
+    note(id, version) {
+      if (!version) return;
+      const held = latest.get(id);
+      // Two writes in flight can answer out of order. The later stamp wins.
+      const a = held ? instant(held) : null;
+      const b = instant(version);
+      if (a !== null && b !== null && a > b) return;
+      latest.set(id, version);
+    },
+  };
+}
+
+/**
+ * The one ledger of the app. `projectsApi.patchTask` notes each answer here,
+ * so every door of Projects and My tasks chains on the same versions.
+ */
+export const taskVersions: VersionLedger = createVersionLedger();
+
 export interface EditIo {
   patch: (
     id: string,
@@ -29,6 +78,8 @@ export interface EditIo {
   ) => Promise<{ updated_at?: string | null } | unknown>;
   setAssignees: (id: string, assignees: string[]) => Promise<unknown>;
   read: (id: string) => Promise<{ assignees?: string[] | null; updated_at?: string | null }>;
+  /** Where each write notes the version it got, and each undo reads it. */
+  versions: VersionLedger;
 }
 
 export interface EditHooks {
@@ -87,7 +138,7 @@ export interface TaskEdit {
   /** The row as it was BEFORE the write. */
   before: object;
   patch: Record<string, unknown>;
-  /** `updated_at` the forward write returned, for the first undo's If-Match. */
+  /** `updated_at` the forward write returned. It goes into the ledger. */
   version: string | null;
   label: string;
 }
@@ -96,10 +147,12 @@ export interface TaskEdit {
 export function recordTaskEdit(io: EditIo, hooks: EditHooks, edit: TaskEdit): () => Promise<void> {
   const id = (edit.before as { id: string }).id;
   const inverse = inversePatch(edit.before, edit.patch);
-  let version = edit.version;
+  io.versions.note(id, edit.version);
   const write = async (payload: Record<string, unknown>): Promise<boolean> => {
     try {
-      version = versionOf(await io.patch(id, payload, version));
+      // The task's version NOW: a later step on this task moved it since.
+      const got = await io.patch(id, payload, io.versions.get(id));
+      io.versions.note(id, versionOf(got));
       return true;
     } catch (err) {
       if (isStale(err)) {

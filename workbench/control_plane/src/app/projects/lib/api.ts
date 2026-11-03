@@ -23,6 +23,7 @@ import {
   resumeBody,
 } from "./needsAttention";
 import type { Rule as RecurrenceRule } from "./recurrence";
+import { taskVersions } from "./taskUndo";
 
 /**
  * Projects · the browser's client for /api/projects/*.
@@ -2687,6 +2688,9 @@ export const projectsApi = {
    * the open subtasks too. `opts.ifMatch` is the row's `updated_at` as last
    * read, so a write that lands after somebody else's answers 412 (D79,
    * Undo). Both are optional and absent means the old request exactly.
+   *
+   * UNDO-1 — each answer's `updated_at` goes into `taskVersions`, so an undo
+   * sends the version of this session's last write as its If-Match.
    */
   patchTask: (
     taskId: string,
@@ -2700,7 +2704,10 @@ export const projectsApi = {
         body: JSON.stringify(payload),
         ...(opts?.ifMatch ? { headers: { "If-Match": opts.ifMatch } } : {}),
       },
-    ),
+    ).then((row) => {
+      taskVersions.note(taskId, row?.updated_at);
+      return row;
+    }),
 
   /**
    * File a task out of every default list, board, calendar and search.
