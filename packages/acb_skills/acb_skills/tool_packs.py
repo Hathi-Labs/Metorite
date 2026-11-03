@@ -11,7 +11,9 @@ that names them. This module holds the rest of a pack:
 * ``references`` -- patterns of an in-app link or a record id in the
   member's words, for example ``/email?email=<id>`` (§4.2.2, layer (a)).
 * ``words`` -- lower-case words and phrases that layer (a) matches against
-  the member's typed words in this turn, each as a whole word, in any case.
+  the words that the member sent in this turn, typed or tapped
+  (``assistant_profile.sent_words``, D-PZ-37), each as a whole word, in any
+  case.
 * ``tier_floor`` -- the lowest tier of a turn that holds the pack, or None
   (§4.2.4). The email packs set none in OA-7.
 * ``keeps_reasoning`` -- True keeps thinking on in a turn that holds the
@@ -1409,8 +1411,8 @@ def choose(
     1. The decay: a sticky pack leaves when no tool of it ran in the last
        :data:`DECAY_TURNS` member turns.
     2. The sticky packs that *allowed* names, in their first-load order.
-    3. Each other allowed pack whose reference or words the member typed, in
-       the order of :data:`PACKS`.
+    3. Each other allowed pack whose reference or words the member sent,
+       typed or tapped (D-PZ-37), in the order of :data:`PACKS`.
     4. The cap: at most :data:`MAX_PACKS` packs, and at most
        :data:`MAX_REQUEST_TOOLS` tools with the *base_tools* of the run. Past
        it, the least recently used sticky pack leaves first. With no sticky

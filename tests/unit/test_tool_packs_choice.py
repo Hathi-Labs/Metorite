@@ -1406,20 +1406,51 @@ def test_a_whatsapp_turn_gives_the_chooser_the_same_words() -> None:
         assert sent_words() == typed_words() == ""
 
 
+def _names_in_code(tree: ast.AST, name: str) -> bool:
+    """True when the code of *tree* imports, reads or calls *name*: an import
+    of it (an alias too), a bare name, an attribute, or the string *name*
+    alone, as ``getattr`` and ``importlib`` take it. A docstring or a
+    comment that names it is no use of it."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom | ast.Import):
+            if any(alias.name == name or alias.name.endswith(f".{name}")
+                   for alias in node.names):
+                return True
+        elif isinstance(node, ast.Name) and node.id == name:
+            return True
+        elif isinstance(node, ast.Attribute) and node.attr == name:
+            return True
+        elif isinstance(node, ast.Constant) and node.value == name:
+            return True
+    return False
+
+
 def test_only_the_pack_read_reads_the_sent_words() -> None:
     """The sent words choose tools and ground nothing. Only the pack read of
-    the executor reads them, and it reads no typed words. Mutation: a write
-    tool, the corrections of a chat or a hand-off reads ``sent_words()`` ->
-    a tap grounds a write -> red."""
-    readers = set()
+    the executor imports or calls ``sent_words``, in any form, and only
+    ``acb_common/assistant_profile.py`` names ``MEMBER_SENT``. The pack read
+    reads no typed words. Mutation: a write tool, the corrections of a chat
+    or a hand-off reads ``sent_words`` (as ``sent_words()``, under an alias,
+    as ``ap.sent_words`` or through ``getattr``), or reads ``MEMBER_SENT``
+    itself -> a tap grounds a write -> red."""
+    home = "packages/acb_common/acb_common/assistant_profile.py"
+    readers: set[str] = set()
+    holders: set[str] = set()
     for base in ("apps", "packages"):
         for path in (REPO / base).rglob("*.py"):
             if "tests" in path.parts:
                 continue
-            if "sent_words()" in path.read_text(encoding="utf-8", errors="replace"):
-                readers.add(path.relative_to(REPO).as_posix())
-    assert readers == {"apps/services/orchestrator/orchestrator/executor.py",
-                       "packages/acb_common/acb_common/assistant_profile.py"}, readers
+            rel = path.relative_to(REPO).as_posix()
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if "sent_words" not in text and "MEMBER_SENT" not in text:
+                continue
+            tree = ast.parse(text)
+            if rel != home and _names_in_code(tree, "sent_words"):
+                readers.add(rel)
+            if "MEMBER_SENT" in text:
+                holders.add(rel)
+    assert readers == {"apps/services/orchestrator/orchestrator/executor.py"}, readers
+    assert holders == {home}, holders
     text = (REPO / "apps/services/orchestrator/orchestrator/executor.py").read_text(
         encoding="utf-8")
     start = text.index("def _start_pack_turn(")
