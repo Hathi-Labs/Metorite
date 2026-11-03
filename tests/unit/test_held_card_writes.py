@@ -74,8 +74,8 @@ KEPT_PROJECTS = frozenset({
     "reopen_reminder", "report_save", "reschedule_reminder", "resolve_reminder",
     "save_view", "set_my_overlay", "set_recurrence", "set_reminder", "triage_intake",
     "unarchive_task", "unlink_tasks", "update_field", "update_project",
-    "update_reminder", "update_status", "update_tag", "update_task", "update_type",
-    "watch",
+    "update_reminder", "update_status", "update_tag", "update_task", "update_tasks",
+    "update_type", "watch",
 })
 #: The four CRM record writes. Each says ``open_world=True`` and keeps saying it.
 KEPT_CRM = frozenset({"convert_lead", "create_lead", "log_activity", "update_deal_status"})
