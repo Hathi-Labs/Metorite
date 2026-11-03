@@ -370,6 +370,22 @@ def test_the_reminder_tables_are_tenant_scoped(table: str) -> None:
     assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
 
 
+@pytest.mark.parametrize("table", ["calendar_entries", "calendar_entry_attendees"])
+def test_the_calendar_entry_tables_are_tenant_scoped(table: str) -> None:
+    """WS-CAL CE-4 (``calendar_events_reminders.md`` §3.3, D138). An entry and
+    its attendees hold the events of the members of one organization. Neither
+    may be exempt, and the committed policy phase must carry each (R5). RLS
+    covers the org, and the routes add the owner or the attendee row."""
+    gen = _generator()
+    assert table in gen.discover_tables()
+    assert table not in gen.EXEMPT
+    assert table not in gen.HOMONYM_BLOCKED
+    policies = (_REPO / "infra" / "postgres" / "generated" / "04_policies.sql").read_text(
+        encoding="utf-8",
+    )
+    assert f"ALTER TABLE {table} FORCE  ROW LEVEL SECURITY" in policies
+
+
 def test_the_job_queue_table_is_tenant_scoped() -> None:
     """WS-BRIEF BR-1a (``docs/job_queue.md``). A job holds one unit of
     background work of one organization, and its payload can name tenant

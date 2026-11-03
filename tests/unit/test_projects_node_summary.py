@@ -27,9 +27,11 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from gateway.routes.projects import due_day
 from gateway.routes.projects.core import CLOSING_CATEGORIES
 from gateway.routes.projects.tree import (
     NODE_DESCENDANTS_SQL,
@@ -299,7 +301,8 @@ def _summarise(db, tree, node):
         ids = [tree[node]] + [str(r.id) for r in descendants]
         rows = c.execute(
             text(node_counts_sql("TRUE")),
-            {"ids": ids, "closed": sorted(CLOSING_CATEGORIES)},
+            {"ids": ids, "closed": sorted(CLOSING_CATEGORIES),
+             "day_start": due_day.day_start("UTC", datetime.now(UTC))},
         ).fetchall()
     return fold_node_summary(tree[node], rows, descendants)
 

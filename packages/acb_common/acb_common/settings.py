@@ -456,6 +456,19 @@ class Settings(BaseSettings):
     # gate `enforcement-flip`. Fence: tests/unit/test_reminders_r8.py.
     calendar_reminders: bool = False
 
+    # ── Calendar events (WS-CAL CE-4, D138, 2026-10-31) ─────────────────────
+    #
+    # `calendar_events` is the switch of the event store, default OFF. With
+    # it off, each route under `/tasks/calendar/entries` answers 404 and
+    # writes nothing, and `GET /projects/my/calendar` gives the body of today
+    # with no `entries` key. `/version` carries the value as
+    # `calendar_events`. The one reader is `events_enabled()` in
+    # gateway/routes/tasks/entries.py. The browser half is
+    # `NEXT_PUBLIC_CALENDAR_EVENTS` (CE-5). Spec
+    # project-docs/specs/calendar_events_reminders.md §9. A flip on a box is
+    # gate `enforcement-flip`. Fence: tests/unit/test_calendar_entries_r8.py.
+    calendar_events: bool = False
+
     # ── The shared job queue (WS-BRIEF BR-1a, 2026-10-28) ───────────────────
     #
     # `job_queue` is the switch of the job worker in the gateway, default
@@ -603,6 +616,12 @@ class Settings(BaseSettings):
     # opens none. Reader: `gateway.push.flags.prompt_allowed`. Spec:
     # calendar_events_reminders.md section 10.4.
     push_prompt_orgs: str = ""
+    # RX-5: DUE_PUSH_ORGS lists the org ids whose members get the morning
+    # summary push of due tasks. `*` opens every org. Empty opens none. It
+    # reaches a real person, so a flip in production is the owner's. Reader:
+    # `gateway.reach.flags.due_push_allowed`. Spec:
+    # calendar_events_reminders.md section 5.11.
+    due_push_orgs: str = ""
     # STU-B1: STUDIO_ORGS lists the org ids that may read the AI Studio
     # action catalog (GET /studio/actions). `*` opens every org. Empty opens
     # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:
@@ -793,6 +812,28 @@ class Settings(BaseSettings):
     # tests/unit/test_chat_summary.py.
     assistant_chat_summary_orgs: str = ""
 
+    # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, the decision routes answer 404, no decision is asked
+    # and no bell row is written, so nothing reaches a member. The one reader
+    # is `gateway.routes.projects.decisions.decisions_allowed`. A SIGHUP
+    # reload applies a change (`gateway/flag_reload.py`). Fence:
+    # tests/unit/test_decisions.py.
+    decisions_orgs: str = ""
+    # ── The trigger of the project alignment check (WS-ALN ALN-1, D160) ─────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. A task write of a listed org enqueues one `align.check`
+    # job, and only while `job_queue` is on too. `prune` deletes no queued
+    # row, so a queue with no worker would grow without a bound
+    # (`project_alignment.md` §5 item 8). The one reader is
+    # `gateway/align/trigger.py::jobs_enabled`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). The handler of ALN-1 is a stub, so a
+    # flip spends nothing, and it is gate `enforcement-flip`. Fence:
+    # tests/unit/test_align_trigger.py.
+    align_jobs_orgs: str = ""
+
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
     # ON makes `GET /search/company` rank newer records first inside each app,
@@ -879,6 +920,20 @@ class Settings(BaseSettings):
     # D4). The dev-phase window does not open it.
     # Fence: tests/unit/test_spawn_subagents.py.
     spawn_subagents_orgs: str = ""
+
+    # ── The held card writes of a chat that read outside mail (WS-67 RX-1) ──
+    #
+    # `held_card_writes_orgs` lists the organization ids where a held chat keeps
+    # the writes that a card shows (`work_plan.md`, the decision of RX-1), or
+    # `*` for each one. Empty means off, and a held chat then works as it did
+    # before the slice. The one reader is `egress.held_card_writes_on`, and it
+    # fails closed. It is the kill switch of the decision: the name ends in
+    # `_orgs`, so a SIGHUP applies a change with no restart (`docs/flag_reload.md`).
+    #
+    # A value on a box is an `enforcement-flip`. It moves what a chat that read
+    # mail may write, so name the flag and the box in the same message.
+    # Fence: tests/unit/test_held_card_writes.py.
+    held_card_writes_orgs: str = ""
 
     # ── Web research (WS-WEB, D148, `web_research.md` §3.2 and §11) ─────────
     #

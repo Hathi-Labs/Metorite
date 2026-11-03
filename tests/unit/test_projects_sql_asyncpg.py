@@ -40,8 +40,11 @@ import pytest
 pytest.importorskip("sqlalchemy")
 pytest.importorskip("asyncpg")
 
+from datetime import UTC, datetime
+
 from gateway.routes.projects import analytics as A
 from gateway.routes.projects import attachments as pm_attachments
+from gateway.routes.projects import due_day
 from gateway.routes.projects.core import (
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -139,8 +142,9 @@ def _cases() -> list[tuple[str, str, dict]]:
     bands, band_params = A.stale_bands_sql(WHERE)
     return [
         ("stale_bands_sql", bands, band_params),
-        ("overdue_by_project_sql", A.overdue_by_project_sql(WHERE), {}),
-        ("load_sql", A.load_sql(WHERE), {}),
+        ("overdue_by_project_sql", A.overdue_by_project_sql(WHERE),
+         {"day_start": due_day.day_start("UTC", datetime.now(UTC))}),
+        ("load_sql", A.load_sql(WHERE), {"day_start": due_day.day_start("UTC", datetime.now(UTC))}),
         ("total_open_sql", A.total_open_sql(WHERE), {}),
         ("effort_sql", A.effort_sql(WHERE), {}),
         ("weekly_sql", A.weekly_sql(WHERE), _PERIOD),
@@ -194,6 +198,7 @@ async def test_the_node_summary_walk_runs_on_asyncpg(async_engine):
             {
                 "ids": ["00000000-0000-0000-0000-000000000000"],
                 "closed": sorted(CLOSING_CATEGORIES),
+                "day_start": due_day.day_start("UTC", datetime.now(UTC)),
             },
         )
 

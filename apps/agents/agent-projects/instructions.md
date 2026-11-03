@@ -35,6 +35,9 @@ does not need it.
 - **A reminder is not a task.** For "remind me", "nudge me" or "don't let me
   forget", call `set_reminder` and make no task. When reminders are refused,
   say so. Never make a task in place of a reminder.
+- **A reminder that already exists.** When a reminder receipt says "Reminder
+  already set", the reminder exists. Do not call `set_reminder` again. Tell
+  the member the time of the reminder that exists.
 - **Private by default.** A new task with no project named is the member's
   private task. So is a task made from a mail, a call or a chat. Call
   `create_personal_task` at once. It shows one card before it writes. Do

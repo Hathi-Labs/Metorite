@@ -198,7 +198,9 @@ describe("Needs you", () => {
   it("says when a row is due, and how long ago anything else came", () => {
     const now = Date.parse("2026-10-09T12:00:00Z");
     expect(rowTime({ kind: "overdue", at: "2026-10-07T12:00:00Z" }, now)).toBe("Due 2d ago");
-    expect(rowTime({ kind: "due_today", at: "2026-10-09T15:00:00Z" }, now)).toBe("Due in 3h");
+    // The group heading says "Due today", and a date has no hour (RX-5).
+    expect(rowTime({ kind: "due_today", at: "2026-10-09T15:00:00Z" }, now)).toBe("");
+    expect(rowTime({ kind: "due_today", at: "2026-10-09T09:00:00Z" }, now)).toBe("");
     expect(rowTime({ kind: "notification", at: "2026-10-09T11:55:00Z" }, now)).toBe("5m ago");
     expect(rowTime({ kind: "needs_reply", at: null }, now)).toBe("");
   });

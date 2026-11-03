@@ -53,11 +53,10 @@ export const NEEDS_SOURCE_APP = {
 
 export type NeedsSource = keyof typeof NEEDS_SOURCE_APP;
 
-/**
- * Sources that give rows to the bell and My Day but no sidebar count
- * (`calendar_events_reminders.md` RM-2b decision 5: a link only).
- */
-const NO_SIDEBAR_COUNT: ReadonlySet<NeedsSource> = new Set<NeedsSource>(["reminders"]);
+// Every source counts on its app's row. RM-2b held `reminders` out, because
+// the server keys the totals by source and the client read them by app. The
+// map above closed that gap, and the owner asked for the Calendar count on
+// 2026-11-03 (`calendar_events_reminders.md` §5.6, RM-2b decision 5).
 
 const NEEDS_SOURCES = Object.keys(NEEDS_SOURCE_APP) as NeedsSource[];
 
@@ -120,8 +119,9 @@ export const NEEDS_APP_HREF: Readonly<Record<NeedsApp, string>> = {
   approvals: "/approvals",
   projects: "/projects",
   email: "/email",
-  // WS-66 RM-2b: the link of the reminder rows. The source has no sidebar
-  // count (`NO_SIDEBAR_COUNT`), so this entry only serves the bell's link.
+  // WS-66: the reminders that need the member count on the Calendar row
+  // (fired, checked back, or unconfirmed). One still ahead today needs
+  // nothing yet, so it is not a needs row and has no count.
   calendar: "/calendar",
 };
 
@@ -142,7 +142,7 @@ export function countsByApp(
   const out: Partial<Record<NeedsApp, number>> = {};
   for (const source of NEEDS_SOURCES) {
     const app = NEEDS_SOURCE_APP[source];
-    if (NO_SIDEBAR_COUNT.has(source) || feed.sources?.[source] !== "ok") continue;
+    if (feed.sources?.[source] !== "ok") continue;
     if (app === "approvals" && !approvals) continue;
     const sent = feed.items.filter((i) => i.app === app).length;
     const still = shown.filter((i) => i.app === app).length;
@@ -160,7 +160,7 @@ export function countsByApp(
 export function floorApps(feed: NeedsFeed, approvals: boolean): Set<NeedsApp> {
   const out = new Set<NeedsApp>();
   for (const source of Array.isArray(feed.capped) ? feed.capped : []) {
-    if (!Object.hasOwn(NEEDS_SOURCE_APP, source) || NO_SIDEBAR_COUNT.has(source)) continue;
+    if (!Object.hasOwn(NEEDS_SOURCE_APP, source)) continue;
     if (feed.sources?.[source] !== "ok") continue;
     const app = NEEDS_SOURCE_APP[source];
     if (app === "approvals" && !approvals) continue;
@@ -211,14 +211,16 @@ function byHref(
  * opens Approvals and reads the proposal first.
  */
 export const KIND_ORDER: readonly NeedsKind[] = [
+  // RX-7: a reminder that fired and waits on the member comes first, so the
+  // server's cut to 30 rows cannot drop it (`needs.py` `KIND_ORDER`).
+  "reminder_due",
+  "reminder_check",
   "overdue",
   "approval",
   "due_today",
   "notification",
   "needs_reply",
-  // WS-66 RM-2b: the member's own reminders, last of the needs kinds.
-  "reminder_due",
-  "reminder_check",
+  // WS-66 RM-2b: a reminder that Metorite stopped checking is the last kind.
   "reminder_unconfirmed",
 ];
 

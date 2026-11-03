@@ -387,6 +387,105 @@ async def test_complete_on_the_router_now_forwards_its_options(router) -> None:
     assert payload["model"] == "tier-fast" and payload["thinking"] == THINKING_OFF
 
 
+# ── The stream path (follow-up of task 1128) ────────────────────────────────
+
+
+@pytest.fixture()
+def stream_seam(monkeypatch):
+    """Run ``acompletion_stream_text`` against a fake litellm stream."""
+    import acb_llm.client as llm_client
+    import acb_llm.context as ctx
+    import litellm
+
+    state: dict[str, Any] = {"texts": ["a draft"], "calls": []}
+
+    class _Stream:
+        def __init__(self, texts: list[str]) -> None:
+            self.texts = list(texts)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self.texts:
+                raise StopAsyncIteration
+            return SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(
+                content=self.texts.pop(0), reasoning_content=None))])
+
+    async def fake_acompletion(**kw: Any) -> Any:
+        state["calls"].append(kw)
+        return _Stream(state["texts"])
+
+    async def _keys() -> None:
+        return None
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(litellm, "stream_chunk_builder", lambda *a, **k: None)
+    monkeypatch.setattr(llm_client, "_ensure_keys_loaded", _keys)
+    monkeypatch.setattr(llm_client, "ensure_model_registered", lambda _m: None)
+    monkeypatch.setattr(llm_client, "_emit_usage", lambda *a, **k: None)
+    monkeypatch.setattr(ctx, "resolve_underlying_model", lambda m: m)
+    monkeypatch.setattr(ctx, "fit_messages_to_context",
+                        lambda msgs, _m, **_k: (msgs, False))
+    monkeypatch.setattr(jobs, "model_takes", lambda _m, _p: True)
+    state["ctx"] = ctx
+    return state
+
+
+async def test_the_stream_path_applies_its_job(stream_seam) -> None:
+    ctx = stream_seam["ctx"]
+    text, _ = await ctx.acompletion_stream_text(
+        model="deepseek/deepseek-v4-pro", messages=[{"role": "user", "content": "x"}],
+        max_tokens=3000, job="writing")
+    assert text == "a draft"
+    [call] = stream_seam["calls"]
+    assert call["thinking"] == THINKING_OFF and call["stream"] is True
+
+
+async def test_the_stream_path_lifts_the_cap_of_a_judgement_job(stream_seam) -> None:
+    await stream_seam["ctx"].acompletion_stream_text(
+        model="m", messages=[{"role": "user", "content": "x"}],
+        max_tokens=100, job="judgement")
+    [call] = stream_seam["calls"]
+    assert call["max_tokens"] == JUDGEMENT_MIN_TOKENS and "thinking" not in call
+
+
+async def test_the_stream_path_drops_thinking_a_model_does_not_take(
+        stream_seam, monkeypatch) -> None:
+    monkeypatch.setattr(jobs, "model_takes", lambda _m, _p: False)
+    await stream_seam["ctx"].acompletion_stream_text(
+        model="openai/gpt-4o", messages=[{"role": "user", "content": "x"}],
+        max_tokens=3000, job="writing")
+    [call] = stream_seam["calls"]
+    assert "thinking" not in call
+
+
+async def test_the_stream_path_adds_the_json_word(stream_seam) -> None:
+    await stream_seam["ctx"].acompletion_stream_text(
+        model="m", messages=[{"role": "user", "content": "x"}],
+        response_format=_JSON, max_tokens=3000, job="structured")
+    [call] = stream_seam["calls"]
+    assert call["messages"][0] == {"role": "system", "content": JSON_ASK}
+
+
+async def test_a_blank_stream_logs_the_empty_answer(stream_seam) -> None:
+    stream_seam["texts"] = ["", "  "]
+    with structlog.testing.capture_logs() as caps:
+        text, _ = await stream_seam["ctx"].acompletion_stream_text(
+            model="m", messages=[{"role": "user", "content": "x"}],
+            max_tokens=3000, job="writing")
+    assert text.strip() == ""
+    [line] = [c for c in caps if c["event"] == "acb_llm.empty_answer"]
+    assert line["job"] == "writing" and line["max_tokens"] == 3000
+
+
+async def test_a_stream_with_text_logs_no_empty_answer(stream_seam) -> None:
+    with structlog.testing.capture_logs() as caps:
+        await stream_seam["ctx"].acompletion_stream_text(
+            model="m", messages=[{"role": "user", "content": "x"}], job="writing")
+    assert not [c for c in caps if c["event"] == "acb_llm.empty_answer"]
+
+
 # ── The fence ───────────────────────────────────────────────────────────────
 
 #: The directories the fence walks. ``packages`` means its ``acb_*`` packages.
@@ -395,7 +494,8 @@ FENCE_ROOTS = ("apps/services/gateway", "apps/services/orchestrator", "packages"
 #: The model entry points. ``complete`` counts only with a ``tier=`` keyword,
 #: because a job queue has a ``complete`` method too.
 ENTRY_POINTS = frozenset({
-    "acompletion_with_fallback", "_llm_json", "complete", "completion_on_router"})
+    "acompletion_with_fallback", "_llm_json", "complete", "completion_on_router",
+    "acompletion_stream_text"})
 
 #: A cap below this needs a job: the thinking of DeepSeek V4 can fill it.
 CAP_LIMIT = 2000

@@ -1,14 +1,16 @@
 "use client";
 
 import Button from "@/components/ui/Button";
+import SelectButton from "@/components/ui/SelectButton";
 import Icon from "@/components/Icon";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   type TaskSettings,
   type EnergyWindow,
   type DayTemplate,
 } from "@/app/tasks/lib/api";
 import { DEFAULT_PLANNING_PROMPT, hourLabel } from "./shared";
+import { zoneOptions } from "../lib/zoneChoices";
 
 const DOW_LABELS = ["S", "M", "T", "W", "T", "F", "S"]; // 0=Sun … 6=Sat
 
@@ -57,6 +59,9 @@ export function CalendarSettings({
 }) {
   const wins = settings.energyWindows ?? [];
   const [showDefault, setShowDefault] = useState(false);
+  // The time zone (RX-7): the zone that "today", reminders and the morning
+  // summary read. The list is built once per saved zone.
+  const zones = useMemo(() => zoneOptions(settings.timezone), [settings.timezone]);
   const num = (v: string, fallback: number) => {
     const n = parseInt(v, 10);
     return Number.isFinite(n) ? n : fallback;
@@ -152,6 +157,23 @@ export function CalendarSettings({
           </div>
 
           <p className={sectionCls}>When you work</p>
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-muted-foreground">Time zone</span>
+            <SelectButton
+              label="Time zone"
+              value={settings.timezone || "UTC"}
+              options={zones}
+              onChange={(zone) => onChange({ timezone: zone })}
+              widthClass="w-44"
+              filterAbove={8}
+              layer="top"
+              align="end"
+            />
+          </div>
+          <p className="mb-2 text-[10px] text-muted-foreground">
+            Your day, your reminders and your morning summary follow this zone.
+            Metorite sets it from your browser the first time.
+          </p>
           <label className="mb-1 flex items-center justify-between gap-2">
             <span className="text-muted-foreground">Working hours</span>
             <span className="flex items-center gap-1">

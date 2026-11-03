@@ -445,5 +445,9 @@ async def test_a_held_crm_pack_gives_the_mail_reason_in_layer_b_and_c(
             await eg.mark_untrusted_answer()
         context = await _before_run(loader, _dummies(10))
         text = "\n".join(context.instructions)
-    assert eg.EGRESS_HOLD_NOTE_PACK_OTHER in text and eg.EGRESS_HOLD_NOTE_SANDBOX not in text
+    # D169: with `HELD_CARD_WRITES_ORGS` off (the default) the pack holds no
+    # write, and the note says so. Either way it gives the mail reason.
+    note = (eg.EGRESS_HOLD_NOTE_PACK_OTHER if eg.held_card_writes_on()
+            else eg.EGRESS_HOLD_NOTE_PACK_NO_WRITES)
+    assert note in text and eg.EGRESS_HOLD_NOTE_SANDBOX not in text
     assert "CRM TOOLS." in text

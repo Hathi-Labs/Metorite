@@ -426,6 +426,24 @@ def _op6b_answers(call: dict) -> Any:
     return None
 
 
+#: WS-ALN ALN-2a. One open decision that names the member, on the task LIVE.
+DECISION_ID = "d1f8fad5-d9cb-469f-a165-70867728950e"
+DECISION = {"id": DECISION_ID, "subject_kind": "task", "subject_id": LIVE,
+            "decider": "pm@fracktal.in", "question": "Ship it today?", "state": "open",
+            "expires_at": "2026-11-09T00:00:00+00:00",
+            "options": [{"key": "yes", "label": "Yes"}, {"key": "no", "label": "No"}]}
+
+
+def _aln2a_answers(call: dict) -> Any:
+    """WS-ALN ALN-2a: the member's open decisions, and the answer."""
+    path, method = call["path"], call["method"]
+    if path == "/projects/decisions" and method == "GET":
+        return {"decisions": [DECISION]}
+    if path == f"/projects/decisions/{DECISION_ID}/answer" and method == "POST":
+        return {"decision": {**DECISION, "state": "answered", "answer_key": "yes"}}
+    return None
+
+
 def _op6d_answers(call: dict) -> Any:
     """WS-64 OP-6d: the list of a report, an add, a remove and the schedule."""
     path, method = call["path"], call["method"]
@@ -520,7 +538,7 @@ def responder(call: dict) -> Any:
     # `_op6c_answers` before `_s2b_answers`: its task answers a `/my/tasks/` read that
     # `_s2b_answers` also claims. WS-66 RM-3: `_reminder_answers` claims only the
     # member's zone and `/projects/my/reminders`, so it may lead.
-    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
+    answered = _answered(call, _reminder_answers, _op6d_answers, _op6c_answers, _op6b_answers, _aln2a_answers, _refs_answers, _s5_answers, _s3_reads, _s3_writes,
                          _s2b_answers, _subtree_answers, _area_answers)
     if answered is not None:
         return answered
@@ -743,6 +761,8 @@ _WRITES: dict[str, list[dict[str, Any]]] = {
     "attach_to_task": [{"task_id": UUID, "file_name": "brief.pdf"}],
     # WS-64 OP-6b — one grant per card, by grant_id or by subject
     "grant_access": [{"project_id": UUID, "subject": "org"}],
+    # WS-ALN ALN-2a: one answer per card
+    "answer_decision": [{"decision_id": DECISION_ID, "answer_key": "yes"}],
     "revoke_access": [
         {"project_id": UUID, "grant": GRANT_ID},
         {"project_id": UUID, "grant": "group:Design"},
@@ -837,6 +857,7 @@ _ONE_ID: dict[str, str] = {
     "attach_to_task": "task_id",
     "grant_access": "subject",
     "revoke_access": "grant",
+    "answer_decision": "decision_id",
     "add_report_recipient": "recipient",
     "remove_report_recipient": "recipient",
     "set_report_schedule": "report_id",
@@ -880,16 +901,29 @@ def _a_chat_upload(monkeypatch) -> None:
     stub_chat_upload(monkeypatch)
 
 
+#: WS-66 RX-2: these five reminder writes act at once in a run that may send.
+#: They keep their one card in a HELD run (``no_egress=True``), so each card
+#: test below binds a held run for them. ``test_reminder_acts_at_once.py`` holds
+#: the open-run behaviour. ``promote_reminder`` is class C and always asks.
+ACT_AT_ONCE = frozenset({
+    "set_reminder", "update_reminder", "resolve_reminder", "reopen_reminder",
+    "reschedule_reminder",
+})
+
+
 @pytest.fixture(autouse=True)
-def _an_open_run() -> Any:
+def _an_open_run(request: pytest.FixtureRequest) -> Any:
     """Each tool runs inside a run, as in production. This run may send
     (``no_egress=False``). H-236 reads a frame with no run as ``no_egress``,
     and then ``assign`` refuses the ``agent:`` assignee of the cases above.
-    ``test_delegation_no_egress.py`` covers the refusal."""
+    ``test_delegation_no_egress.py`` covers the refusal. A tool of
+    ``ACT_AT_ONCE`` runs held, so it shows the card these tests count."""
     from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
 
+    callspec = getattr(request.node, "callspec", None)
+    tool = (callspec.params.get("tool") if callspec else None) or ""
     with artifact_context_scope():
-        bind_artifact_context(agent_name="projects-assistant", no_egress=False)
+        bind_artifact_context(agent_name="projects-assistant", no_egress=tool in ACT_AT_ONCE)
         yield
 
 
@@ -1032,6 +1066,7 @@ def test_every_class_b_tool_awaits_the_one_confirm_door() -> None:
     tree = ast.parse(source)
     assert source.count("def _confirm(") == 1, "a second card door"
     delegates = {"edit_task": "update_task", "edit_project": "update_project"}
+    delegates.update({t: "_ask_reminder" for t in ACT_AT_ONCE})
     # The one-card batches (2026-10-18) share `_ask_batch`, which is itself
     # a caller of `_confirm`, so it is no second door.
     shared = next(
@@ -1052,6 +1087,23 @@ def test_every_class_b_tool_awaits_the_one_confirm_door() -> None:
         assert "_confirm" in awaited or delegates.get(fn.name) in awaited, (
             f"{fn.name} never awaits _confirm"
         )
+    # WS-66 RX-2: the five reminder writes reach `_confirm` through the ONE
+    # small reader `_ask_reminder`, which acts at once only in a run that may
+    # send. Nothing else may use it, and it must keep the card for a held run.
+    ask = next(
+        fn for fn in ast.walk(tree)
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "_ask_reminder"
+    )
+    assert "_confirm" in {getattr(n.func, "id", "") for n in ast.walk(ask)
+                          if isinstance(n, ast.Call)}
+    users = {
+        fn.name for fn in ast.walk(tree)
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name != "_ask_reminder"
+        and "_ask_reminder" in {getattr(n.func, "id", "") for n in ast.walk(fn)
+                                if isinstance(n, ast.Call)}
+    }
+    assert users == ACT_AT_ONCE, f"act-at-once reminder tools changed: {users ^ ACT_AT_ONCE}"
+    assert not (users & _class_c_built()), "a class C tool must always show its card"
 
 
 # ── 4 and 5. The wire, and the manifest ─────────────────────────────────────

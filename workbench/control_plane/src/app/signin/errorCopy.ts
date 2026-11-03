@@ -1,3 +1,8 @@
+import { DEFAULT_OTP_MAX_AGE_S } from "@/lib/emailOtp";
+
+/** How long an email code lives, in the minutes the copy names. */
+const OTP_MINUTES = Math.round(DEFAULT_OTP_MAX_AGE_S / 60);
+
 /**
  * Friendly copy for the `?error=` codes Auth.js v5 sends back to the sign-in
  * page.
@@ -32,14 +37,38 @@
  * Spec: `customer_console.md` §6(g) · §6(j) · CP-2b clauses 6 and 9.
  * Fence: `signin.test.ts` — *"errorCopy speaks the two CP-2b codes"*, which
  * asserts neither new string matches /access denied|isn't authorized/i.
+ *
+ * ## Where an error lands (task 1529, 2026-11-03)
+ *
+ * `auth.ts` sets `pages.error` to `/signin`, so no Auth.js error reaches
+ * `@auth/core`'s built-in error page. That page was a dead end. Its "Sign in"
+ * button linked to `/api/auth/error?error=Verification/signin`, which rendered
+ * a bare "Error" card. {@link codeStepRedirect} then sends the errors of the
+ * code step back to `/signin/code`, where the person can type the code again.
  */
 export function signInErrorMessage(code: string | null): string | null {
   if (!code) return null;
   switch (code) {
     case "OAuthCallbackError":
       return "Sign-in was cancelled or failed. Try again.";
+    case "Verification":
+      // The email code did not verify: mistyped, expired, already used, or
+      // the code from an email sent to a different address. The gateway
+      // cannot tell these apart, so the copy names all four and the two ways
+      // out. A wrong code does not spend the right one until the FIFTH miss in
+      // ten minutes (`consume_token`), which invalidates every live code for
+      // the address. The copy names that limit, so a person does not ask for a
+      // new code into the lockout.
+      return `That code did not work. Check that you typed the newest code sent to this address. A code expires after ${OTP_MINUTES} minutes and works once. If it still fails, start again to get a new code. After five wrong tries, wait ${OTP_MINUTES} minutes first.`;
     case "Configuration":
-      return "Sign-in is misconfigured on the server. Contact your admin.";
+      // `@auth/core` maps EVERY error it does not expose to this one type
+      // (`clientErrors` in `@auth/core/errors.js`). The gateway's two limits
+      // arrive here: three code sends an hour (`SEND_MAX_PER_WINDOW`) and five
+      // wrong codes in ten minutes (`VERIFY_MAX_ATTEMPTS`). So does a gateway
+      // that did not answer. `EmailSignInError` is never thrown in the pinned
+      // `@auth/core`, so a refused send is this type too. The copy names the
+      // limits, and does not claim a misconfiguration that is usually not there.
+      return "Sign-in could not finish. This happens after too many codes or wrong tries in a short time, or when our service has a problem. Wait 10 minutes and try again, or up to an hour if you asked for three codes. If it keeps failing, contact your admin.";
     case "AccessDenied":
       return "Your account isn't authorized for this workspace. Ask your admin for an invite.";
     case "ConsoleUnavailable":
@@ -100,6 +129,20 @@ export function signInErrorMessage(code: string | null): string | null {
       // bug, not yours" copy, with the one action that might actually help.
       return "Something went wrong with that request. Please reload the page and try again.";
     default:
-      return `Authentication error: ${code}`;
+      // The type stays in the copy so a person who reports it gives us the
+      // one word that finds it in the log.
+      return `Sign-in failed (${code}). Try again. If it keeps failing, contact your admin.`;
   }
+}
+
+/**
+ * The page to send an Auth.js error to when it belongs to the CODE step, or
+ * `null` when `/signin` is the right page for it.
+ *
+ * `Verification` is the only such error. On `/signin` the person would have to
+ * ask for a new code. On `/signin/code` the address is still filled in (the
+ * `sessionStorage` hand-off) and they can type the code again.
+ */
+export function codeStepRedirect(code: string | null): string | null {
+  return code === "Verification" ? "/signin/code?error=Verification" : null;
 }

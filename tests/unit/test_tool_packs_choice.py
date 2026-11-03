@@ -1664,7 +1664,8 @@ async def _crm_write_through_the_assembly(orchestrator, monkeypatch, *, mark: bo
         tool = next(t for t in orchestrator[0].default_options["tools"]
                     if _name(t) == "create_lead")
         monkeypatch.setattr(ti._PACK_OWNER_MODULES[CRM], "_post", post)
-        assert ti._is_egress(tool.func), "non-vacuity: an egress write"
+        assert eg.is_held_card_write(tool.func), "non-vacuity: a write of the held list"
+        assert tool.func.__tool_risk__["open_world"] is True, "the list keeps it, no claim"
         assert getattr(tool.func, "__cc_gated__", False) is True
         with _bound(**_run_ctx(), **applied.context()):
             if mark:  # this process read mail in the turn, after the pack was built
@@ -1687,18 +1688,19 @@ async def test_a_crm_write_through_the_real_assembly_shows_one_card_and_one_gate
     assert decisions == ["create_lead"], decisions
 
 
-async def test_a_crm_write_after_mail_in_the_same_turn_is_held_and_shows_no_card(
+async def test_a_crm_write_after_mail_in_the_same_turn_shows_its_one_card(
     store, orchestrator, monkeypatch,
 ) -> None:
-    """The chat read mail after the pack was built (the pack builds open). The
-    call answers the held text: no card of any kind, and no post. A chat that
-    was marked BEFORE the build gets a held pack with no write tool
-    (``test_pack_guards.py``). Mutation: drop the in-turn hold from
-    ``_pack_call`` -> the write runs -> red."""
-    own, untrusted, posts, answer, _decisions = await _crm_write_through_the_assembly(
+    """RX-1 (D169). The chat read mail after the pack was built (the pack builds
+    open). The write stays, because the member's click on its own card is the
+    guard: one card, no untrusted card, one post. Mutation: take ``create_lead``
+    off ``HELD_CARD_WRITE_TOOLS`` -> the held answer and no card -> red."""
+    own, untrusted, posts, answer, decisions = await _crm_write_through_the_assembly(
         orchestrator, monkeypatch, mark=True)
-    assert own == [] and untrusted == [] and posts == []
-    assert answer == eg.EGRESS_HELD_PACK_ANSWER_OTHER.format(name="create_lead"), answer
+    assert untrusted == [] and len(own) == 1 and "CRM lead" in own[0], (own, untrusted)
+    assert [p for p, _ in posts] == ["/crm/leads"]
+    assert decisions == ["create_lead"], decisions
+    assert "off now" not in answer, answer
 
 
 # ── 10. OA-8a fix round 1: the reason of a held CRM pack, the persona set ───
@@ -1729,7 +1731,7 @@ async def test_a_held_crm_pack_in_a_mail_chat_gives_the_mail_reason_in_the_perso
     persona = orchestrator[0].default_options["instructions"]
     assert eg.EGRESS_HOLD_NOTE_SANDBOX not in persona
     assert eg.EGRESS_HOLD_NOTE_PACK_OTHER in persona and eg.EGRESS_HOLD_NOTE_PACK in persona
-    assert "create_lead" not in set(_names(orchestrator))
+    assert "create_lead" in set(_names(orchestrator)), "RX-1: the card keeps the write"
 
 
 async def test_a_held_crm_pack_alone_gives_the_mail_reason_and_no_email_talk(
@@ -1772,11 +1774,11 @@ async def test_a_covered_run_keeps_the_sandbox_reason_for_a_held_crm_pack(
     assert eg.EGRESS_HOLD_NOTE_PACK_OTHER not in persona
 
 
-async def test_the_held_answer_of_a_crm_write_names_the_tool_and_a_next_step(store) -> None:
-    """The in-turn answer of a held CRM write names the held tool, says why, and
-    gives a next step that fits a write. It talks of no email tool. The email
+async def test_the_held_answer_of_a_write_names_the_tool_and_sends_nobody_away(store) -> None:
+    """The in-turn answer of a write that stays off names the tool and says why.
+    It talks of no email tool. RX-1: it offers no new chat and no app. The email
     owner keeps the email wording. Mutation: fall back to the email text for
-    every owner -> ``send_draft`` in the CRM answer -> red."""
+    every owner -> ``send_draft`` in the answer -> red."""
     await _mark_chat_as_mail_read()
     crm = {"agent_name": CRM, eg.PACK_CALL_KEY: True, "session_id": SESSION}
     email = {"agent_name": EA, eg.PACK_CALL_KEY: True, "session_id": SESSION}
@@ -1785,7 +1787,8 @@ async def test_the_held_answer_of_a_crm_write_names_the_tool_and_a_next_step(sto
         mail = eg.egress_held_answer("send_email", email)
     assert answer == eg.EGRESS_HELD_PACK_ANSWER_OTHER.format(name="update_deal_status")
     assert answer.startswith("update_deal_status is off now.")
-    assert "new chat" in answer and "send_draft" not in answer and "mailbox" not in answer
+    assert "new chat" not in answer and "the app" not in answer
+    assert "send_draft" not in answer and "mailbox" not in answer
     assert "send_draft" in mail, "the email wording stays for an email tool"
 
 
@@ -1810,3 +1813,12 @@ def test_a_missing_persona_bullet_raises_unless_the_owner_has_none_by_design(
         slug="x-pack", rules="X RULES", words=("xword",), delegation_refusal="Not run."))
     with pytest.raises(RuntimeError, match="x-agent"):
         tp.persona_for(persona, [("x-pack", False)], _bullets())
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")

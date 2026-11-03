@@ -469,6 +469,15 @@ Twelve rules on top of the three above. Each one exists because somebody broke i
    From NS-2, `src/lib/nav.test.ts` will also fail on a live pane with no
    team or purpose. Until then, the manifest half is advisory. R9 in
    `work_plan.md` §1 binds the app's spec to declare it.
+   **A reminder looks and acts like a reminder** (RX-3, owner, 2026-11-01).
+   My Day draws it in the Reminders band (`src/lib/shell/RemindersBand.tsx`)
+   above the groups, with the Bell glyph and not the Calendar icon. The
+   groups leave the three reminder kinds out. `reminderBand.ts` holds every
+   rule of the band. `ReminderActs.tsx` draws Done and Snooze, and the band
+   and the bell both use it. The acts write the reminder row through
+   `reminderOpen.ts`, the one client of the routes, and never card state.
+   Fences: `reminderBand.test.ts`, `reminderActions.test.ts` and
+   `remindersBand.test.ts`.
 11. **The shell bar is constant. An app never renders into it. Every app
    opens with `AppTopBar`, its one title bar: rail toggle, name, subtitle,
    actions, tools.** *(Owner direction, 2026-10-10.)* The owner said: "I

@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 187
+-- Tables in this phase: 190
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -149,6 +149,20 @@ ALTER TABLE audit_event ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_event FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS audit_event_tenant_isolation ON audit_event;
 CREATE POLICY audit_event_tenant_isolation ON audit_event
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE calendar_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calendar_entries FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS calendar_entries_tenant_isolation ON calendar_entries;
+CREATE POLICY calendar_entries_tenant_isolation ON calendar_entries
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE calendar_entry_attendees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calendar_entry_attendees FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS calendar_entry_attendees_tenant_isolation ON calendar_entry_attendees;
+CREATE POLICY calendar_entry_attendees_tenant_isolation ON calendar_entry_attendees
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
@@ -1535,5 +1549,12 @@ ALTER TABLE goal_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE goal_records FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS goal_records_tenant_isolation ON goal_records;
 CREATE POLICY goal_records_tenant_isolation ON goal_records
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_decisions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_decisions FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_decisions_tenant_isolation ON pm_decisions;
+CREATE POLICY pm_decisions_tenant_isolation ON pm_decisions
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

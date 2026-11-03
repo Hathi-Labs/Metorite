@@ -1,7 +1,7 @@
 # Project alignment — Metorite checks work against the project's rules (WS-ALN)
 
 > **Product:** Metorite · **Feature:** the project of a task, the project's rules, and a check that asks a person · **Updated:** 2026-11-02 · **Owner:** vjvarada
-> **Status:** 📋 **SPEC, NOTHING BUILT.** ALN-0 (this spec) is the first slice. ALN-1 is next. The owner did not answer ALN-Q1 to ALN-Q5, and told us to start. The build runs on the working defaults of §14.
+> **Status:** 🟡 **IN BUILD, DARK.** ALN-0 (this spec) and ALN-1 (§5, the durable trigger) are built. `ALIGN_JOBS_ORGS` ships empty and `JOB_QUEUE` ships off, so no job exists yet, and the `align.check` handler is a stub until ALN-7. ALN-2a (the table and the service of one person decides, migration 332, branch `ws-aln-2a-mt-94ca4c39`) is built dark behind `DECISIONS_ORGS`. ALN-4 is next. The owner did not answer ALN-Q1 to ALN-Q5, and told us to start. The build runs on the working defaults of §14.
 > **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §11 was read on that commit. Earlier task text came from a read at `308df8828`, and §2 lists each fact that changed.
 > **Board:** WS-ALN in `work_plan.md` §2.1. **Decision:** D160. D12, D75, D93, D100, D104, D105, D128, D131, D140, D145 and workflows G5 bind it.
 > **Metorite:** project "Projects/Tasks App", epic 1368, this spec task 1369. The questions are tasks 1370 to 1374. The slices ALN-1 to ALN-14 are tasks 1375 to 1388, in order.
@@ -95,7 +95,7 @@ The facts of task 1369 were re-read on `ce29836ea`. Two of them changed.
 
 ### 3.2 One person decides (ALN-2)
 
-Nothing today shows a question with named options to a named person, and records the answer on a task. ALN-2 adds that primitive. The shape is a new table `pm_decisions`, in migration 326 (recheck the number at dispatch, R1). `pm_intake` has fixed verbs, no named decider and no options. An `agent_runs` elicitation needs a run. The table reuses the bell, Reach and the My Day provider registry, and it runs no action. So it is not a third approval stack.
+Nothing today shows a question with named options to a named person, and records the answer on a task. ALN-2 adds that primitive. The shape is a new table `pm_decisions`, in migration 332 (other slices took 326 to 331, recheck at merge, R1). `pm_intake` has fixed verbs, no named decider and no options. An `agent_runs` elicitation needs a run. The table reuses the bell, Reach and the My Day provider registry, and it runs no action. So it is not a third approval stack.
 
 | Column | Meaning |
 |---|---|
@@ -108,7 +108,7 @@ Nothing today shows a question with named options to a named person, and records
 | `answered_by`, `answer_key`, `answer_reason` | Nullable until the answer. The reason is optional |
 | `source` | `align` or `auto` |
 
-A unique guard allows one answer for each decision. The table is tenant-scoped with FORCE RLS (R5). It widens `pm_notifications_kind_check` with the kind `decision`.
+A unique guard allows one answer for each decision. ALN-2a records four facts for the next slices. First, `REACH_CLASS["decision"]` reaches nobody until a signal kind `decision` exists. ALN-2b must add `decision` to `ASKING_NOTIFICATIONS`, the bell verb in `notifications.ts` and the needs provider before `DECISIONS_ORGS` goes on. Second, the answer writes a `comment` activity with the question of the asker, and it emits `pm.task.comment_added`. So a workflow triggered by a comment reads that text, and ALN-7 must know it. Third, only the decider reads a decision, including its answer. Other members read the comment on the task. Fourth, the chat reaches the decision by the tools `my_decisions` and `answer_decision`, and `answer_decision` refuses a run with no person present before it raises a card. The table is tenant-scoped with FORCE RLS (R5). It widens `pm_notifications_kind_check` with the kind `decision`.
 
 A decision has a subject (a task or a page), a named decider, two to four options, a one-line question, an expiry and an answer. The answer writes one `pm_activities` row. A second answer is refused. AUTO-7 (task 1391) parks a blocked action on the same primitive.
 
@@ -219,13 +219,14 @@ A new table `pm_alignment_findings`.
 
 ## 5. The trigger seam (ALN-1)
 
-**The seam is the four handlers**, because no single write seam exists. The D80 fence (`tests/unit/test_pm_task_insert_sites.py`) holds the creators. ALN-1 does not hook `insert_row` or `update_row`.
+**The seam is four handlers**: `create_task`, `patch_task`, `move_task_in` and the intake capture `capture_intake`. No single write seam exists, so the list is by hand. The D80 fence (`tests/unit/test_pm_task_insert_sites.py`) holds the creators. ALN-1 does not hook `insert_row` or `update_row`.
 
-1. In `create_task`, `patch_task` and `move_task_in`, the handler enqueues one job of kind `align.check` with `jobs.queue.enqueue(db, ...)`. It uses the same tenant session that the handler holds. The enqueue runs in the same transaction as the write, inside a savepoint (`db.begin_nested()`). A crash between a commit and a later enqueue would lose the job, and this form cannot. `create_personal_task` is not in the list, because a personal task is never checked (§1.2). The payload holds the task id only and no org, because the session binds the tenant. The dedupe key is `align:<task_id>:<content_hash>`, which fits the 200-character limit.
-2. `patch_task` enqueues only when the hash of the title, the description and the acceptance text changed. An edit of a due date enqueues nothing.
+1. In `create_task`, `patch_task`, `move_task_in` and `capture_intake`, the handler enqueues one job of kind `align.check` with `jobs.queue.enqueue(db, ...)`. It uses the same tenant session that the handler holds. The enqueue runs in the same transaction as the write, inside a savepoint (`db.begin_nested()`). A crash between a commit and a later enqueue would lose the job, and this form cannot. `create_personal_task` is not in the list, because a personal task is never checked (§1.2). The payload holds the task id only and no org, because the session binds the tenant. The dedupe key is `align:<task_id>:<content_hash>`, which fits the 200-character limit.
+2. `patch_task` enqueues only when the hash of the title, the description and the acceptance text changed. An edit of a due date enqueues nothing. `pm_tasks` has no acceptance column (read at `f41bc2257`), so `trigger.content_hash` reads the title and the description.
 3. A move out of the personal root (`move_task_in`) enqueues, because that is the moment a personal note becomes project work.
 4. The page signal is not part of ALN-1. Pins arrive with ALN-4, so the `kb.page.published` job for each pinned project belongs to ALN-5 or ALN-11. With no pin, a publish enqueues nothing.
-5. Recurrence and the file import stay out in v1. A recurring copy repeats text that was checked. An import is a bulk load that an owner would not want to check. Both are stated here so a later slice can reverse the choice.
+5. Five writes stay out in v1. They are recurrence and the file import. They are also the revert of an edit (`activities.py`), an automation patch (`automation.py`) and the merge (`merge.py`, `_fold_scalars`). A recurring copy repeats text that was checked. An import is a bulk load that an owner would not want to check. A revert, a rule and a merge restore or fold text that a member wrote before. ALN-7 reads the current task, so the next edit through `patch_task` catches up. A later slice can reverse each choice.
+   The dedupe scope is `(organization_id, kind, dedupe_key)`, and only while a job is `queued` or `running`. A title that goes A, then B, then back to A enqueues again. So two live jobs can exist. ALN-7 must read the current task text and not the text at enqueue.
 6. ALN-1 does not stamp `organization_id` on the events. H-328 part (c) owns that stamp, once, in `routes/projects/core.py` (`emit`). No check depends on the bus.
 7. A failed enqueue never fails the member's write. The savepoint rolls back, and the handler swallows the error, logs it and goes on.
 8. The queue is dark: `job_queue` is OFF by default. A new per-org flag `ALIGN_JOBS_ORGS` (default empty) gates the enqueue. A handler enqueues only when `worker_enabled()` is true AND the org is in the list. The reason: `prune` deletes only `done` and `failed` rows, so queued rows would grow without a bound while the worker is off. ALN-1 adds the flag to the settings list.
@@ -337,8 +338,8 @@ Sources: `https://linear.app/docs/triage-intelligence` · `https://docs.coderabb
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
 | **ALN-1** (1375) | The durable trigger (§5), the flag `ALIGN_JOBS_ORGS` and a stub `align.check` handler. Needs ALN-0 | R8: a task change enqueues one job in the bound org, and the stub completes it. With the worker off or the org not listed, no row appears. An edit with the same text enqueues none. Org B sees none of org A's jobs. A failed enqueue never fails the write. With the flag off, no job row appears | HIGH | AGENT-SAFE |
-| **ALN-2a** (1376) | The table, the service (ask, answer, expire), the activity row, the bell kind, the verb, `REACH_CLASS` and `KIND_ORDER` (§3.2). Flag `DECISIONS_ORGS` (default empty). Needs ALN-0 | R8: a decision reaches its named person, and an answer writes one activity. A person outside the grant gets no row. A second answer is refused. An expired decision takes no answer | HIGH | AGENT-SAFE |
-| **ALN-2b** (1376) | The My Day provider and the task-card UI. `needs.py` offers only a link act until MD-8, so the act opens the task card. Needs ALN-2a | Visual review in four contexts. D145 preview first | STD | AGENT-SAFE |
+| **ALN-2a** (1376, built, branch `ws-aln-2a-mt-94ca4c39`) | The table, the service (ask, answer, expire), the activity row, the bell kind, the verb, `REACH_CLASS` and `KIND_ORDER` (§3.2). Flag `DECISIONS_ORGS` (default empty). Needs ALN-0 | R8: a decision reaches its named person, and an answer writes one activity. A person outside the grant gets no row. A second answer is refused. An expired decision takes no answer | HIGH | AGENT-SAFE |
+| **ALN-2b** (1376) | The My Day provider and the task-card UI. `needs.py` offers only a link act until MD-8, so the act opens the task card. Before the flag goes on, it adds `decision` to `ASKING_NOTIFICATIONS`, the bell verb in `notifications.ts` and the needs provider. Needs ALN-2a | Visual review in four contexts. D145 preview first | STD | AGENT-SAFE |
 
 ### Phase 2 — The source of truth
 

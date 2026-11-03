@@ -1,13 +1,13 @@
 // `/api/chat/suggestions` reads three short lines, and a blank reply is none.
 //
-// The body sends no `thinking` (task 1128), because `deepseek/deepseek-chat`
-// does not think. Off the Router, the gateway's local `/v1` path forwards named
-// fields only, so the field would reach no model. With the Router on, the
-// gateway forwards the whole body, and the Console filters the field for each
-// step of the chain. If `SUGGESTION_MODEL` ever names a thinking tier, the
-// local path must forward `thinking` first (through `params_for_model`).
+// The default model is the tier name `tier-fast`, which the Router and the
+// local path both accept. A bare model id gets a 400 from the Router. The body
+// asks for no thinking (task 1128). Off the Router, the gateway's local `/v1`
+// path forwards named fields only. With the Router on, the Console drops the
+// field for each chain step that does not take it.
 //
-// Mutation: send a `thinking` field again, and the first test fails.
+// Mutation: put `deepseek/deepseek-chat` back as the default, and the first
+// test fails.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
@@ -42,13 +42,14 @@ describe("/api/chat/suggestions", () => {
     seam.bodies.length = 0;
   });
 
-  it("reads the three lines, and sends no thinking field", async () => {
+  it("reads the three lines, and asks for the tier-fast tier with no thinking", async () => {
     seam.reply = () => answer('["Draft a note to Acme", "Which deals slip?", "Show stage 3"]');
     const res = await ask();
     expect(await res.json()).toEqual({
       suggestions: ["Draft a note to Acme", "Which deals slip?", "Show stage 3"],
     });
-    expect(seam.bodies[0]).not.toHaveProperty("thinking");
+    expect(seam.bodies[0].model).toBe("tier-fast");
+    expect(seam.bodies[0].thinking).toEqual({ type: "disabled" });
     expect(seam.bodies[0].max_tokens).toBe(150);
   });
 

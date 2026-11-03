@@ -13,6 +13,13 @@ tools say ``False``, by what each tool does:
 * (B) sends, or opens an outbound path. It stays withheld.
 * (C) writes a store that a later run reads. It stays withheld.
 
+RX-1 (D169, owner directive of 2026-11-01) moves two rows. A write that the
+member approves on a server-built card stays, so the four CRM record writes
+leave the withheld set of the CRM assistant. A class C Projects tool leaves a
+held chat, so those tools join the withheld set of the Projects assistant. A
+covered run keeps them (``_tool_injection._covered_hold``).
+``tests/unit/test_held_card_writes.py`` is the table of the rule.
+
 What breaks this fence: a no_egress run of an in-repo agent withholds a tool
 that is not in its pinned set, or keeps one that is (a new tool with no
 ``open_world`` fails here); ``draft_reply`` gains a recipient or a body
@@ -75,13 +82,23 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         "apply_settings_to_mailboxes",
     }),
     "crm-assistant": frozenset({
-        # (B) D-CRM-9: an agent write queues for the live Zoho tenant
-        "create_lead", "update_deal_status", "log_activity", "convert_lead",
+        # RX-1 (D169): the four record writes stay, each behind its own card.
         "web_search", "fetch_page", "run_workflow",
         "save_memory", "save_note",
     }),
     "projects-assistant": frozenset({
         "web_search", "fetch_page", "save_memory", "save_note",
+        # RX-1 (D169): class C is off in a held chat. Each is hard to undo,
+        # acts on many rows, tells another person or changes who gets a report.
+        "add_report_recipient", "archive_project", "archive_task", "attach_to_task",
+        "bulk_update", "convert_folder_to_project", "delete_area", "delete_attachment",
+        "delete_comment", "delete_field", "delete_project", "delete_status", "delete_tag",
+        "delete_task", "delete_type", "delete_view", "grant_access", "merge_tags",
+        "merge_tasks", "move_project", "nudge_task", "remove_report_recipient",
+        "rename_area", "report_delete", "revert_activity", "revoke_access",
+        "set_report_schedule", "set_status_set", "unarchive_project",
+        # WS-ALN ALN-2a: a decision answer is class C, so a held run gets no card.
+        "answer_decision",
     }),
     "whatsapp-assistant": frozenset({
         "web_search", "fetch_page", "code_task", "run_script", "run_workflow",
@@ -785,3 +802,12 @@ def test_a_new_marked_tool_is_held_until_it_has_a_pin(monkeypatch) -> None:
         "read_only": False, "destructive": True, "idempotent": False,
         "open_world": True, eg.CARD_BOUND_KEY: True}
     assert eg.is_egress_tool(share_mailbox) is True
+
+
+@pytest.fixture(autouse=True)
+def _held_card_writes_on(monkeypatch) -> None:
+    """RX-1: this file tests the rule with the switch on. The switch off has its
+    own test in ``test_held_card_writes.py``."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "*")

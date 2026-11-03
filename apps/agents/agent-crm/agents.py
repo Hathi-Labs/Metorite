@@ -55,6 +55,7 @@ from uuid import UUID
 
 import httpx
 from acb_common import get_logger, get_settings
+from acb_common.card_body import CARD_CLIP, CUT_MARK, card_body, cut_refusal, is_cut, one_line
 from acb_common.paging import bounds, page_line
 from acb_common.tool_refusals import (
     GatewayRefusal,
@@ -71,8 +72,9 @@ from acb_skills.crm_tools import CRM_DETAIL_MAX, CRM_TOOLS, CRM_VOICE
 
 # H-236: the four writes carry ``open_world=True``. Per D-CRM-9 an agent write
 # queues for the live Zoho tenant when ``CRM_ZOHO_SYNC`` is on, so it can carry
-# data off the platform. A run that a covered Projects run delegates to does
-# not get them (``acb_skills.egress``). The reads stay.
+# data off the platform. D169: a held run keeps them only through
+# ``egress.HELD_CARD_WRITE_TOOLS`` and the ``card_write`` mark, because each
+# shows its exact change on its card, and that card names the Zoho queue.
 try:
     from acb_skills.tool_annotations import annotate as _annotate_risk
 except ImportError:  # older platform without the annotations registry
@@ -689,11 +691,11 @@ _ZOHO_NOTE = (
 
 
 #: ``request_confirmation`` truncates ``context`` at 4000 characters
-#: (``ask_tools.py``). Mirrored here so the truncation is OURS and visible,
-#: rather than the card silently losing whatever happened to be last.
-_CARD_CONTEXT_LIMIT = 4000
+#: (``ask_tools.py``). The truncation is OURS and visible, rather than the card
+#: silently losing whatever happened to be last (``acb_common.card_body``).
+_CARD_CONTEXT_LIMIT = CARD_CLIP
 
-_TRUNCATED = "… [truncated on this card; the full text is what gets written]"
+_TRUNCATED = CUT_MARK
 
 
 def _fields_block(payload: dict[str, Any]) -> str:
@@ -710,13 +712,33 @@ def _fields_block(payload: dict[str, Any]) -> str:
     stopped matching the wire, which is the failure this function's second
     paragraph says is worse than showing no card at all. Truncation still
     happens; it just happens where a reader can see it, and it says so.
+
+    RX-1: ``acb_common.card_body`` holds the rule. Each short field shows, only
+    a free text may be cut, and a value holds one line, because a value with a
+    newline can forge a line of the card.
     """
-    body = "\n".join(f"{key}: {value}" for key, value in payload.items())
-    budget = _CARD_CONTEXT_LIMIT - len(_ZOHO_NOTE) - 1
-    if len(body) <= budget:
-        return f"{_ZOHO_NOTE}\n{body}"
-    keep = max(0, budget - len(_TRUNCATED) - 1)
-    return f"{_ZOHO_NOTE}\n{body[:keep]}\n{_TRUNCATED}"
+    return card_body(
+        _ZOHO_NOTE, [(key, f"{key}: {one_line(value)}") for key, value in payload.items()])
+
+
+async def _held_fields_block(payload: dict[str, Any]) -> str:
+    """:func:`_fields_block`, for a write's card. A chat that read outside mail
+    refuses a cut card, because a cut text is not consent there (RX-1).
+    ``egress.chat_is_held`` is the reader, and it fails closed. With no platform
+    package, no run can be checked, so a cut card refuses.
+    """
+    body = _fields_block(payload)
+    if not is_cut(body):
+        return body
+    try:
+        from acb_skills.egress import chat_is_held
+    except ImportError:
+        held = True
+    else:
+        held = await chat_is_held()
+    if held:
+        raise GatewayRefusal(cut_refusal(body))
+    return body
 
 
 def _names(rows: Any, field: str) -> list[str]:
@@ -767,7 +789,7 @@ def _quoted_names(rows: Any, field: str) -> str:
     return ", ".join(f"'{name}'" for name in _names(rows, field))
 
 
-@_annotate_risk(destructive=True, idempotent=False, open_world=True)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
 async def create_lead(
     lead_name: str,
     email: str | None = None,
@@ -812,7 +834,7 @@ async def create_lead(
     if not await request_confirmation(
         title="Create this CRM lead?",
         detail=f"{name}{_where}" + (f" · {payload['email']}" if email else ""),
-        context=_fields_block(payload),
+        context=await _held_fields_block(payload),
     ):
         return f"Cancelled — no lead was created for {name}."
     try:
@@ -827,7 +849,7 @@ async def create_lead(
     )
 
 
-@_annotate_risk(destructive=True, idempotent=False, open_world=True)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
 async def update_deal_status(
     deal_id: str, stage: str, lost_reason: str | None = None,
 ) -> str:
@@ -897,7 +919,7 @@ async def update_deal_status(
     if not await request_confirmation(
         title=f"Move this deal to {lane}?",
         detail=f"{title} → {lane}",
-        context=_fields_block({"deal": title, "stage": lane, **payload}),
+        context=await _held_fields_block({"deal": title, "stage": lane, **payload}),
     ):
         return f"Cancelled — {title} was not moved to {lane}."
     try:
@@ -907,7 +929,7 @@ async def update_deal_status(
     return f"Moved {title} to {lane}."
 
 
-@_annotate_risk(destructive=True, idempotent=False, open_world=True)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
 async def log_activity(
     entity: str,
     record_id: str,
@@ -963,7 +985,7 @@ async def log_activity(
     if not await request_confirmation(
         title=f"Log this {kind} on {target}?",
         detail=f"{target} ({label}) · {kind}: {line}",
-        context=_fields_block({label: target, **payload}),
+        context=await _held_fields_block({label: target, **payload}),
     ):
         return f"Cancelled — nothing was logged on {target}: {line}"
     try:
@@ -976,7 +998,7 @@ async def log_activity(
     )
 
 
-@_annotate_risk(destructive=True, idempotent=False, open_world=True)
+@_annotate_risk(destructive=True, idempotent=False, open_world=True, card_write=True)
 async def convert_lead(
     lead_id: str,
     deal_name: str | None = None,
@@ -1023,7 +1045,7 @@ async def convert_lead(
     if not await request_confirmation(
         title="Convert this lead into a deal?",
         detail=f"{title} → {deal.get('name') or title}",
-        context=_fields_block({"lead": title, **deal}),
+        context=await _held_fields_block({"lead": title, **deal}),
     ):
         return f"Cancelled — {title} was not converted."
     try:
