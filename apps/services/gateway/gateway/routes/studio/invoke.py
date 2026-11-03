@@ -63,7 +63,8 @@ as ``organization_id`` in a body changes nothing.
 **The audit.** Each call that reaches a package of the caller, and that the
 door serves or refuses, writes one ``app_audit`` row (kind ``action``) through
 ``record_app_audit_bound``. The row holds the action id, its ``uses``, its
-class and the outcome, and no record data. Each text in it has at most
+class and the outcome, and no record data. The row of a direct write also
+names its record by ``record_id`` (B2c-1). Each text in it has at most
 :data:`MAX_AUDIT_TEXT` characters. A 404 at either read of the package writes
 no row. A refused query gives the row its code in ``reason``, and never its
 input. A raw
@@ -222,6 +223,10 @@ class _Outcome:
     too_large: bool = False
     #: The id of the record that a direct delete removed.
     deleted: str | None = None
+    #: The record of a direct write, for its audit row: the new id of a
+    #: create that ran, or the id in the body of an update or a delete when
+    #: it is a UUID. It is an id and holds no record data.
+    record_id: str | None = None
     #: The answer of a direct write that failed or was refused (B2c-1).
     fail: _Fail | None = None
     #: True when the call wrote its own audit row, in the session of the write,
@@ -490,6 +495,15 @@ def _set_write_error(out: _Outcome, exc: Exception) -> bool:
     return True
 
 
+def _uuid_or_none(value: str) -> str | None:
+    """*value* as a canonical UUID, or None. An audit row names a record by
+    its id only, so a text that is not a UUID never reaches the row."""
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 def _write_input(op: str, raw: bytes) -> dict[str, Any] | None:
     """The body of a direct write, or None. It takes exactly the keys of
     :data:`_WRITE_KEYS`, ``data`` is an object and ``id`` is a string. The
@@ -514,6 +528,8 @@ async def _do_object_write(db: Any, member: str, package: packages_store.Package
     if body is None:
         out.fail = _refused(BAD_INPUT, BAD_WRITE_INPUT)
         return
+    if "id" in body:
+        out.record_id = _uuid_or_none(body["id"])
     try:
         obj = await objects_store.get_object_by_name(
             db, str(ref.object), package_id=package.id)
@@ -542,6 +558,7 @@ async def _do_object_write(db: Any, member: str, package: packages_store.Package
         out.deleted = str(body["id"])
     elif isinstance(done, objects_store.Record):
         out.record = done
+        out.record_id = done.id
 
 
 async def _run_object_write(db: Any, member: str, package: packages_store.Package,
@@ -647,6 +664,8 @@ def _audit_detail(out: _Outcome) -> dict[str, Any]:
                               "class": _cap(out.cls), "outcome": outcome}
     if reason is not None:
         detail["reason"] = reason
+    if out.record_id is not None:
+        detail["record_id"] = out.record_id
     return detail
 
 

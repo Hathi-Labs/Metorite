@@ -1054,6 +1054,8 @@ def test_r8_a_direct_create_update_and_delete_each_write_one_record_and_one_audi
         (w.a, ANA, "action", "add", "ran"), (w.a, ANA, "action", "change", "ran"),
         (w.a, ANA, "action", "remove", "ran")]
     assert [r[3]["class"] for r in rows] == ["B", "B", "C"]
+    # Fix round 1: each row names its record, the new id for the create.
+    assert [r[3].get("record_id") for r in rows] == [rid, rid, rid]
     assert "Plant 4" not in json.dumps(rows) and "Moved" not in json.dumps(rows)
 
 
@@ -1270,6 +1272,8 @@ def test_r8_a_range_a_unique_and_a_move_refuse_with_the_shape_and_keep_the_audit
     outcomes = [(r[3]["action"], r[3]["outcome"], r[3].get("reason")) for r in _audits(w, w.pkg)]
     assert outcomes == [("add", "refused", "rule_refused"), ("add", "refused", "rule_refused"),
                         ("change", "ran", None), ("change", "refused", "rule_refused")]
+    # A refused create made no record. Each update names its record.
+    assert [r[3].get("record_id") for r in _audits(w, w.pkg)] == [None, None, w.rec, w.rec]
 
 
 def test_r8_a_computed_field_is_refused_and_nothing_is_written(dworld) -> None:

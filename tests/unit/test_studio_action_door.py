@@ -1147,6 +1147,31 @@ class TestTheDirectWrites:
         assert dw.audits == []  # the best-effort writer never ran
         assert "Plant 9" not in json.dumps(kw["detail"])
 
+    def test_the_audit_row_names_the_record_of_each_direct_write(self, dw):
+        """Fix round 1: the new id for a create, and the id of the body for
+        an update and a delete."""
+        pid, _, _ = _setup(dw)
+        made = _signed_post(dw, pid, "add", BODIES["add"])
+        _signed_post(dw, pid, "change", BODIES["change"])
+        _signed_post(dw, pid, "remove", BODIES["remove"])
+        ids = [kw["detail"].get("record_id") for _, kw in dw.audits_in]
+        assert ids == [made.json()["record"]["id"], BODIES["change"]["id"],
+                       BODIES["remove"]["id"]]
+
+    def test_a_refused_update_names_its_record_and_an_id_that_is_no_uuid_is_not_echoed(
+            self, dw):
+        pid, _, _ = _setup(dw)
+        dw.write_raises = _batch(FieldError("notes", "Field `notes` is too long."))
+        _signed_post(dw, pid, "change", BODIES["change"])
+        _signed_post(dw, pid, "add", BODIES["add"])
+        dw.write_raises = objects_store.ObjectStoreError("record_id must be a UUID")
+        _signed_post(dw, pid, "remove", {"id": "not-a-uuid <b>"})
+        details = [kw["detail"] for _, kw in dw.audits_in]
+        assert [d["outcome"] for d in details] == ["refused"] * 3
+        assert details[0]["record_id"] == BODIES["change"]["id"]
+        assert "record_id" not in details[1]  # a refused create has no id
+        assert "record_id" not in details[2] and "<b>" not in json.dumps(details[2])
+
     def test_the_direct_write_and_its_audit_share_one_session(self, dw):
         pid, _, _ = _setup(dw)
         _signed_post(dw, pid, "add", BODIES["add"])
