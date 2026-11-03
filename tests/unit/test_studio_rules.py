@@ -1911,6 +1911,15 @@ def test_the_store_runs_the_rollup_steps_in_order_and_uses_the_one_aggregate_bui
     assert "_check_rollups_fit" in _calls(funcs["_recompute_parents"])
 
 
+def test_the_batch_reads_one_deadline_for_the_recompute_and_the_key_checks() -> None:
+    """C1b has one 5 s deadline. The roll-ups (C7b) share it, so no step after
+    the writes starts a clock of its own."""
+    funcs = _functions()
+    assert ast.unparse(funcs["_run_steps"]).count("_clock()") == 1
+    for name in ("_recompute_parents", "_check_keys", "_derive_parent", "_check_key"):
+        assert "_clock" not in ast.unparse(funcs[name]), name
+
+
 def test_the_derived_write_is_a_store_write_that_checks_and_keeps_the_actor() -> None:
     src = ast.unparse(_functions()["_derive_parent"])
     assert "run_formulas" in src and "validate_record" in src and "_hot_rows" in src

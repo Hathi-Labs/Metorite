@@ -1894,11 +1894,12 @@ async def _check_key(timed: _Timed, oid: str, pid: str, held: _Held, rule: Rule,
 
 
 async def _check_keys(db: Any, batch: _Batch,
-                      keys: Mapping[tuple[str, Rule, tuple[Any, ...]], int]) -> None:
-    """Step 6, under one deadline. A timeout refuses the batch."""
+                      keys: Mapping[tuple[str, Rule, tuple[Any, ...]], int],
+                      deadline: float) -> None:
+    """Step 6, under the one *deadline* of the batch, which the recompute of the
+    roll-ups (C7b) shares. A timeout refuses the batch."""
     if not keys:
         return
-    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     async with _time_limit(db, deadline, _RULE_TIMEOUT_MESSAGE) as timed:
         for (oid, rule, key), index in keys.items():
             batch.index = index
@@ -2077,12 +2078,12 @@ async def _derive_parent(timed: _Timed, batch: _Batch, key: tuple[str, str],
     mark.after = clean
 
 
-async def _recompute_parents(db: Any, batch: _Batch) -> None:
+async def _recompute_parents(db: Any, batch: _Batch, deadline: float) -> None:
     """Step 4b. After all the writes, recompute each parent that the net of the
-    batch made stale. The aggregates and the derived writes share the one
-    deadline of the batch (`query_timeout`), and a timeout refuses the whole
-    batch. One aggregate runs for each parent and each roll-up, so 50 children
-    of one parent cost one."""
+    batch made stale. The aggregates, the derived writes and the key checks of
+    step 6 share the one *deadline* of the batch (`query_timeout`), and a
+    timeout refuses the whole batch. One aggregate runs for each parent and
+    each roll-up, so 50 children of one parent cost one."""
     if not batch.rollups:
         return
     _check_rollups_fit(batch)
@@ -2090,7 +2091,6 @@ async def _recompute_parents(db: Any, batch: _Batch) -> None:
     await _lock_parents(db, batch, work)
     if not work:
         return
-    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     async with _time_limit(db, deadline, _RULE_TIMEOUT_MESSAGE) as timed:
         for key in sorted(work):
             oid, rid = key
@@ -2128,8 +2128,11 @@ async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
     for i, step in enumerate(batch.steps):
         batch.index = i
         answers.append(await _apply_write(db, batch, step))
-    await _recompute_parents(db, batch)
-    await _check_keys(db, batch, _check_records(batch))
+    # One deadline (C1b) for every read after the writes: the aggregates and the
+    # derived writes of the roll-ups (C7b), then the key checks.
+    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    await _recompute_parents(db, batch, deadline)
+    await _check_keys(db, batch, _check_records(batch), deadline)
     return answers
 
 

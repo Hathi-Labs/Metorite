@@ -63,6 +63,9 @@ shows no Seq Scan. A source in another package is refused.
 * M14. ``studio_rules._exact_number``: raise ``result_too_large`` again.
   ``test_r8_a_number_sum_with_too_many_digits_is_refused_as_precision_and_not_as_too_large``
   and ``test_a_number_sum_that_a_number_cannot_hold_exactly_is_refused_as_precision`` go red.
+* M15. ``objects_store._run_steps``: give ``_check_keys`` a deadline of its own.
+  ``test_r8_the_recompute_and_the_key_checks_share_one_deadline`` and
+  ``test_the_batch_reads_one_deadline_for_the_recompute_and_the_key_checks`` go red.
 """
 
 from __future__ import annotations
@@ -628,6 +631,24 @@ def test_r8_a_timeout_in_the_recompute_refuses_the_batch(world, monkeypatch) -> 
         p = await _acct(world.a, acc)
         ticks = iter([0.0, 100.0, 200.0, 300.0, 400.0, 500.0, 600.0, 700.0, 800.0])
         monkeypatch.setattr(store, "_clock", lambda: next(ticks, 900.0))
+        err = await _refused(world.a, ent, _entry(ent, p, days=1))
+        return err, _rows(world, ent)
+
+    err, rows = _go(world, go)
+    assert isinstance(err.cause, store.QueryError) and err.cause.code == "query_timeout"
+    assert rows == 0
+
+
+def test_r8_the_recompute_and_the_key_checks_share_one_deadline(world, monkeypatch) -> None:
+    """The clock moves 2 s at each read. The batch reads the deadline once, at 0 s.
+    The aggregate (2 s) and the derived write (4 s) use most of it, so the key
+    check of the parent (6 s) fails at once. A second deadline would pass it."""
+    async def go() -> tuple[BatchError, int]:
+        acc, ent = await _objects(world.a, world.pkg_a, [USED, SPARE, TEAM_FLOOR],
+                                  account_fields=_SPARE_FIELDS)
+        p = await _acct(world.a, acc, team="t")
+        ticks = iter(range(0, 1000, 2))
+        monkeypatch.setattr(store, "_clock", lambda: float(next(ticks)))
         err = await _refused(world.a, ent, _entry(ent, p, days=1))
         return err, _rows(world, ent)
 
