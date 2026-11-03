@@ -79,6 +79,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import Iterator
 from typing import Any
@@ -93,7 +94,7 @@ from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store
 from gateway.studio import packages_store as store
 
-__all__ = ["MAX_BODY_BYTES", "MAX_PACKAGES_PER_MEMBER", "MAX_PROBLEMS", "router"]
+__all__ = ["MAX_BODY_BYTES", "MAX_PACKAGES_PER_MEMBER", "MAX_PROBLEMS", "VERSIONS_PAGE", "router"]
 
 _log = get_logger("gateway.studio.packages")
 
@@ -107,6 +108,9 @@ MAX_PROBLEMS = 25
 MAX_AUDIT_NAMES = 50
 #: The header value of a 503 ``store_busy``, in seconds.
 RETRY_AFTER = "2"
+#: The most versions in one page of the versions list.
+VERSIONS_PAGE = store.MAX_VERSIONS_PAGE
+_DIGITS = re.compile(r"[0-9]{1,10}", re.ASCII)
 
 PACKAGE_EXISTS = "package_exists"
 PACKAGE_LIMIT = "package_limit"
@@ -119,6 +123,7 @@ CATALOG_DOWN = "The action catalog is not available now, so try the publish agai
 BODY_OVER_CAP = "This body is too large, so send a smaller manifest."
 NOT_JSON = "The body must be a JSON object."
 TOO_DEEP = "The body nests too deep to read. Flatten it."
+BAD_CURSOR = "The cursor before is a version number, so send a whole number from 1."
 
 
 def _not_found() -> HTTPException:
@@ -135,6 +140,17 @@ def _package_id(raw: str) -> str:
         return str(uuid.UUID(raw))
     except (ValueError, TypeError, AttributeError):
         raise _not_found() from None
+
+
+def _cursor(raw: str | None) -> int | None:
+    """The ``before`` cursor of the versions list: a version number from 1 to
+    the most that the store holds, or None. Any other value is 422, before a
+    read of the database. It says nothing about the package."""
+    if raw is None:
+        return None
+    if _DIGITS.fullmatch(raw) and 1 <= int(raw) <= store.MAX_VERSION:
+        return int(raw)
+    raise _unprocessable(BAD_CURSOR, [{"path": "before", "message": BAD_CURSOR}])
 
 
 @contextlib.contextmanager
@@ -415,13 +431,22 @@ async def publish(
 async def list_versions(
     package_id: str,
     user: UserContext = Depends(get_current_user),
+    before: str | None = None,
 ) -> dict[str, Any]:
-    """The versions of a package of the caller, newest first, with no manifest."""
+    """One page of the versions of a package of the caller, newest first, with
+    no manifest: at most :data:`VERSIONS_PAGE`. The cursor ``before`` is a
+    version number, and the page holds the versions older than it.
+    ``next_before`` is the cursor of the next page, or None on the last page."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _package_id(package_id)
+    cursor = _cursor(before)
     async with _tenant_session() as db:
         if await store.get_package(db, user.email, pid) is None:
             raise _not_found()
-        found = await store.list_versions(db, user.email, pid)
-    return {"versions": [_version_out(v) for v in found]}
+        found = await store.list_versions(db, user.email, pid, limit=VERSIONS_PAGE,
+                                          before=cursor)
+    # Version 1 is the oldest, so a full page that ends at it has no next page.
+    more = len(found) == VERSIONS_PAGE and found[-1].version > 1
+    return {"versions": [_version_out(v) for v in found],
+            "next_before": found[-1].version if more else None}

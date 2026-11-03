@@ -1349,3 +1349,56 @@ def test_r8_the_org_object_cap_names_a_next_step(world) -> None:
     assert f"at most {cap} objects" in problem["message"]
     assert "ask an admin to remove a package" in problem["message"]
     assert _versions(world, pid) == [] and _objects(world, pid) == []
+
+
+# ── k. The page of versions ────────────────────────────────────────────────
+
+
+def test_r8_the_versions_list_holds_at_most_100_newest_first_with_a_cursor(world) -> None:
+    """101 versions. The first page holds the newest 100 and the cursor of the
+    next page. The cursor reads the rest, and a stranger with a cursor gets
+    404."""
+    page = packages.VERSIONS_PAGE
+
+    async def go() -> tuple[str, list[tuple[int, Any]]]:
+        pid = await _new(world.a, ANA, _manifest(_mid("many")))
+        async with tenant_session(world.a) as db:
+            for _ in range(page + 1):
+                await packages_store.publish_version(db, ANA, pid, "", catalog={})
+        return pid, [
+            await _call("list_versions", world.a, ANA, pid),
+            await _call("list_versions", world.a, ANA, pid, before="2"),
+            await _call("list_versions", world.a, ANA, pid, before="50"),
+            await _call("list_versions", world.a, BEN, pid, before="50"),
+            await _call("list_versions", world.b, ANA, pid, before="50"),
+            await _call("list_versions", world.a, ANA, world.code_app, before="50"),
+            await _call("list_versions", world.a, ANA, pid, before="0"),
+        ]
+
+    pid, (first, last, middle, ben, org_b, code, bad) = _run(world, go)
+    assert _versions(world, pid) == list(range(1, page + 2))
+    assert [v["version"] for v in first[1]["versions"]] == list(range(page + 1, 1, -1))
+    assert first[1]["next_before"] == 2
+    assert last == (200, {"versions": [last[1]["versions"][0]], "next_before": None})
+    assert last[1]["versions"][0]["version"] == 1
+    assert [v["version"] for v in middle[1]["versions"]] == list(range(49, 0, -1))
+    assert middle[1]["next_before"] is None
+    assert ben == org_b == code == (404, NOT_FOUND)
+    assert bad[0] == 422 and bad[1]["errors"][0]["path"] == "before"
+
+
+def test_r8_the_store_refuses_a_page_past_the_limit_or_a_bad_cursor(world) -> None:
+    async def go() -> list[Any]:
+        pid = await _new(world.a, ANA, _manifest(_mid()))
+        out: list[Any] = []
+        async with tenant_session(world.a) as db:
+            for kwargs in ({"limit": packages_store.MAX_VERSIONS_PAGE + 1}, {"limit": 0},
+                           {"limit": True}, {"before": 0}, {"before": "5"}):
+                try:
+                    await packages_store.list_versions(db, ANA, pid, **kwargs)
+                    out.append(None)
+                except packages_store.PackageStoreError as exc:
+                    out.append(exc.paths)
+        return out
+
+    assert all(p is not None for p in _run(world, go))

@@ -164,12 +164,15 @@ _VERSION_INSERT_SQL = (
     f"RETURNING app_id::text, {_VERSION_FIELDS}"
 )
 
+#: One page of versions, newest first (STU-A5): at most ``:limit``, each older
+#: than the cursor ``:before``.
 _VERSION_LIST_SQL = (
     "SELECT v.app_id::text, v.version, NULL, v.bundle_sha256, v.release_notes, "
     "v.published_by, v.published_at, v.review_status "
     "FROM app_versions v JOIN apps a ON a.id = v.app_id "
     f"WHERE a.organization_id = {_BOUND_ORG} AND a.format = 'manifest' "
-    "AND a.owner_email = :m AND a.id = CAST(:id AS uuid) ORDER BY v.version DESC"
+    "AND a.owner_email = :m AND a.id = CAST(:id AS uuid) "
+    "AND v.version < CAST(:before AS bigint) ORDER BY v.version DESC LIMIT :limit"
 )
 
 _VERSION_GET_SQL = (
@@ -204,6 +207,8 @@ _AUDIT_SQL = (
 MAX_NOTES_CHARS = 2000
 #: The version column is an INT4.
 MAX_VERSION = 2**31 - 1
+#: The most versions in one page of :func:`list_versions`.
+MAX_VERSIONS_PAGE = 100
 #: The refusal of a rollback to the live version.
 ROLLBACK_LIVE = "That version is already the live version."
 
@@ -665,11 +670,19 @@ async def rollback(db: Any, member: str, package_id: str, version: int, *,
     return new
 
 
-async def list_versions(db: Any, member: str, package_id: str) -> list[PackageVersion]:
-    """The versions of a package of *member*, newest first, with no manifest.
-    A package of another member or org answers an empty list."""
+async def list_versions(db: Any, member: str, package_id: str, *,
+                        limit: int = MAX_VERSIONS_PAGE,
+                        before: int | None = None) -> list[PackageVersion]:
+    """One page of the versions of a package of *member*, newest first, with
+    no manifest: at most *limit* (1 to :data:`MAX_VERSIONS_PAGE`), and only
+    the versions older than *before* when it is given. A package of another
+    member or org answers an empty list."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_VERSIONS_PAGE:
+        raise PackageStoreError(f"limit must be an integer from 1 to {MAX_VERSIONS_PAGE}")
+    cursor = MAX_VERSION + 1 if before is None else _version_number(before)
     rows = (await db.execute(text(_VERSION_LIST_SQL), {
-        "m": _member(member), "id": _package_id(package_id)})).all()
+        "m": _member(member), "id": _package_id(package_id), "before": cursor,
+        "limit": limit})).all()
     return [_version(r) for r in rows]
 
 

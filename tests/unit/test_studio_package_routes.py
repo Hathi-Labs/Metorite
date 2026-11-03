@@ -120,7 +120,7 @@ def world(monkeypatch):  # noqa: C901 - one fake world, many small fakes
     w = SimpleNamespace(
         packages={}, versions=[], objects={}, org=None, log=[], sessions=0, audits=[],
         sync_calls=[], sync_error=None, catalog_fail=False, catalog_ids=["x"],
-        publish_catalogs=[], clock=datetime(2026, 11, 3, tzinfo=UTC))
+        publish_catalogs=[], version_reads=[], clock=datetime(2026, 11, 3, tzinfo=UTC))
 
     def tick() -> datetime:
         w.clock += timedelta(seconds=1)
@@ -189,12 +189,14 @@ def world(monkeypatch):  # noqa: C901 - one fake world, many small fakes
         row["status"], row["live_version"] = "live", number
         return _version(pid, entry)
 
-    async def list_versions(db, member, pid):
+    async def list_versions(db, member, pid, *, limit=100, before=None):
+        w.version_reads.append((limit, before))
         if db.mine(member, pid) is None:
             return []
-        rows = sorted((v for v in w.versions if v["app"] == pid),
+        rows = sorted((v for v in w.versions if v["app"] == pid
+                       and (before is None or v["version"] < before)),
                       key=lambda v: -v["version"])
-        return [_version(pid, v, manifest=False) for v in rows]
+        return [_version(pid, v, manifest=False) for v in rows[:limit]]
 
     async def sync_objects(db, actor, *, package_id, objects):
         w.log.append("sync")
@@ -734,13 +736,64 @@ def test_the_audit_rows_use_the_bound_writer():
 def test_the_versions_list_newest_first_with_no_manifest(world):
     c = _client(world)
     pid = _create(c)
-    assert c.get(f"/studio/packages/{pid}/versions").json() == {"versions": []}
+    assert c.get(f"/studio/packages/{pid}/versions").json() == {
+        "versions": [], "next_before": None}
     for n in ("a", "b"):
         c.post(f"/studio/packages/{pid}/versions", json={"notes": n})
     got = c.get(f"/studio/packages/{pid}/versions").json()["versions"]
     assert [v["version"] for v in got] == [2, 1]
     assert [v["notes"] for v in got] == ["b", "a"]
     assert all("manifest" not in v for v in got)
+
+
+def _many_versions(world: Any, pid: str, count: int) -> None:
+    for n in range(1, count + 1):
+        world.versions.append({"app": pid, "version": n, "manifest": _manifest(), "sha": "0" * 64,
+                               "notes": "", "by": ANA, "at": world.clock})
+
+
+def test_the_versions_list_holds_at_most_100_and_a_cursor_reads_the_rest(world):
+    c = _client(world)
+    pid = _create(c)
+    _many_versions(world, pid, 105)
+    first = c.get(f"/studio/packages/{pid}/versions").json()
+    assert [v["version"] for v in first["versions"]] == list(range(105, 5, -1))
+    assert first["next_before"] == 6
+    rest = c.get(f"/studio/packages/{pid}/versions", params={"before": 6}).json()
+    assert [v["version"] for v in rest["versions"]] == [5, 4, 3, 2, 1]
+    assert rest["next_before"] is None
+    assert world.version_reads == [(packages.VERSIONS_PAGE, None), (packages.VERSIONS_PAGE, 6)]
+    assert packages.VERSIONS_PAGE == 100
+
+
+def test_a_full_page_that_ends_at_version_1_has_no_next(world):
+    c = _client(world)
+    pid = _create(c)
+    _many_versions(world, pid, packages.VERSIONS_PAGE)
+    got = c.get(f"/studio/packages/{pid}/versions").json()
+    assert len(got["versions"]) == packages.VERSIONS_PAGE and got["next_before"] is None
+
+
+@pytest.mark.parametrize("bad", ["", "0", "-1", "x", "1.5", "²", str(2**31), "9" * 40])
+def test_a_bad_cursor_is_422_and_reads_nothing(world, bad):
+    c = _client(world)
+    pid = _create(c)
+    opened = world.sessions
+    r = c.get(f"/studio/packages/{pid}/versions", params={"before": bad})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["errors"][0]["path"] == "before"
+    assert world.sessions == opened
+
+
+def test_a_cursor_does_not_open_the_versions_of_a_stranger(world, monkeypatch):
+    pid = _create(_client(world))
+    _many_versions(world, pid, 3)
+    for c in (_client(world, email=BEN), _client(world, org=OTHER)):
+        r = c.get(f"/studio/packages/{pid}/versions", params={"before": 3})
+        assert (r.status_code, r.json()) == (404, NOT_FOUND)
+    monkeypatch.setattr(get_settings(), "studio_orgs", "")
+    r = _client(world).get(f"/studio/packages/{pid}/versions", params={"before": "x"})
+    assert (r.status_code, r.json()) == (404, NOT_FOUND)
 
 
 # ── The fences (R7) ────────────────────────────────────────────────────────
@@ -863,7 +916,14 @@ def test_define_object_has_one_caller():
 # The store statements of A5. RLS is the backstop, and it hides a missing org
 # filter from each test on a real database, so a source fence holds it.
 _A5_SQL = [(objects_store, "_LIST_OBJECTS_SQL"), (objects_store, "_LIST_FIELDS_SQL"),
-           (store, "_SUMMARY_SQL")]
+           (store, "_SUMMARY_SQL"), (store, "_VERSION_LIST_SQL")]
+
+
+def test_the_versions_statement_reads_one_page_newest_first():
+    sql = store._VERSION_LIST_SQL
+    assert sql.endswith("ORDER BY v.version DESC LIMIT :limit"), sql
+    assert "v.version < CAST(:before AS bigint)" in sql
+    assert store.MAX_VERSIONS_PAGE == 100
 
 
 @pytest.mark.parametrize("module,name", _A5_SQL, ids=[n for _, n in _A5_SQL])
