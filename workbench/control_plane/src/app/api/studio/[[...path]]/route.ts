@@ -15,8 +15,14 @@
  * member's own Save is the approval of a write, and the gateway door checks the
  * proof. No browser header reaches the gateway. It forwards `Retry-After`, so
  * a 503 of a busy org keeps its wait.
+ *
+ * ⚠️ It signs only a request from a page of this ORIGIN (`sameOrigin`). The
+ * session cookie is `SameSite=Lax`, so a page of another host of the same site
+ * can make the browser send this POST. Such a POST goes on unsigned, and the
+ * gateway answers 403 `approval_required`.
  */
 import { NextRequest, NextResponse } from "next/server";
+import { sameOrigin } from "@/lib/accountsServer";
 import {
   GATEWAY_URL,
   gatewayHeaders,
@@ -62,7 +68,7 @@ async function forward(
             ? {}
             : { "Content-Type": "application/json" }
         )),
-        ...studioDirectHeaders(me.email, method, path),
+        ...(sameOrigin(req) ? studioDirectHeaders(me.email, method, path) : {}),
       },
       signal: AbortSignal.timeout(60_000),
     };

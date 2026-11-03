@@ -6,7 +6,9 @@
 // Mutations: drop `refuseUnsafePath` and the 400 test fails. Drop the PATCH
 // export and the PATCH test fails. Add an `x-user-email` header and the
 // source check fails. Sign every POST and the "signs only the action route"
-// test fails. Drop the Retry-After copy and the 503 test fails.
+// test fails. Drop the Retry-After copy and the 503 test fails. Drop the
+// `sameOrigin` check and the "signs only a POST from a page of this origin"
+// test fails (run 2026-11-03, before the fix).
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -40,6 +42,8 @@ const req = (url: string, init?: ConstructorParameters<typeof NextRequest>[1]) =
 
 const KEY = "k".repeat(40);
 const APP = "6f1f7a3e-2b0f-4f43-a3a5-0d3f8f6f9c11";
+// The header that the browser sets on a fetch from a page of this origin.
+const SAME_ORIGIN = { "sec-fetch-site": "same-origin" };
 
 beforeEach(() => {
   process.env.STUDIO_DIRECT_KEY = KEY;
@@ -110,6 +114,10 @@ describe("/api/studio proxy", () => {
   it("signs the direct proof for a POST to the action route, and for no other call", async () => {
     const action = ["apps", APP, "actions", "add"];
     const sign = vi.spyOn(Date, "now").mockReturnValue(1_790_000_000_000);
+    // Each call comes from a page of this origin, so only the path and the
+    // method decide here.
+    const req = (url: string, init: ConstructorParameters<typeof NextRequest>[1] = {}) =>
+      new NextRequest(url, { ...init, headers: { ...SAME_ORIGIN, ...(init.headers ?? {}) } });
     try {
       await POST(req("http://x/api/studio/a", { method: "POST", body: "{}" }), ctx(action));
       const proof = (seen[0].init.headers as Record<string, string>)["X-Studio-Direct"];
@@ -151,7 +159,8 @@ POST
       if (key === undefined) delete process.env.STUDIO_DIRECT_KEY;
       else process.env.STUDIO_DIRECT_KEY = key;
       process.env.LITELLM_MASTER_KEY = "t".repeat(40);
-      await POST(req("http://x/api/studio/a", { method: "POST", body: "{}" }), ctx(action));
+      await POST(req("http://x/api/studio/a", { method: "POST", body: "{}", headers: SAME_ORIGIN }),
+        ctx(action));
     }
     delete process.env.LITELLM_MASTER_KEY;
     expect(seen).toHaveLength(3);
@@ -166,8 +175,8 @@ POST
       req("http://x/api/studio/a", {
         method: "POST",
         body: "{}",
-        headers: { "x-studio-direct": "v1.1.forged", "x-user-email": "evil@example.com",
-                   authorization: "Bearer evil", cookie: "s=1" },
+        headers: { ...SAME_ORIGIN, "x-studio-direct": "v1.1.forged",
+                   "x-user-email": "evil@example.com", authorization: "Bearer evil", cookie: "s=1" },
       }),
       ctx(["apps", APP, "actions", "add"]),
     );
@@ -176,6 +185,36 @@ POST
       ["Authorization", "Content-Type", "X-Studio-Direct"]);
     expect(headers["X-Studio-Direct"]).not.toContain("forged");
     expect(headers.Authorization).toBe("Bearer internal");
+  });
+
+  it("signs only a POST from a page of this origin, and forwards the others unsigned", async () => {
+    // The session cookie is SameSite=Lax, so a page of another host of the
+    // same site can make the browser send this POST. Unsigned, the gateway
+    // answers 403 approval_required, so no write runs.
+    const post = (headers: Record<string, string>) =>
+      POST(req("http://x/api/studio/a", { method: "POST", body: "{}", headers }),
+        ctx(["apps", APP, "actions", "add"]));
+    await post(SAME_ORIGIN);
+    expect(Object.keys(seen[0].init.headers as Record<string, string>)).toContain(
+      "X-Studio-Direct");
+    seen.length = 0;
+    for (const headers of [
+      { origin: "https://evil.example" },
+      { origin: "https://evil.example", "sec-fetch-site": "cross-site" },
+      { origin: "https://ops.metorite.com", "sec-fetch-site": "same-site" },
+      { "sec-fetch-site": "same-site" },
+      { "sec-fetch-site": "cross-site" },
+      { "sec-fetch-site": "none" },
+      {},
+    ]) {
+      await post(headers);
+    }
+    expect(seen).toHaveLength(7);
+    for (const call of seen) {
+      expect(call.init.method).toBe("POST");
+      expect(Object.keys(call.init.headers as Record<string, string>)).not.toContain(
+        "X-Studio-Direct");
+    }
   });
 
   it("forwards Retry-After on a 503", async () => {
