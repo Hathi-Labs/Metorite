@@ -37,6 +37,7 @@ from acb_common import get_settings
 from agent_edge import gateway_client, tools
 
 from tests.unit.test_mcp_edge_context import (  # noqa: F401 — fixtures
+    OTHER_PROJECT,
     PROJECT,
     TASK,
     _assign,
@@ -48,7 +49,6 @@ from tests.unit.test_mcp_edge_context import (  # noqa: F401 — fixtures
     _tool,
     _uuid,
     _work,
-    OTHER_PROJECT,
     edge,
 )
 

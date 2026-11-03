@@ -404,10 +404,9 @@ async def test_a_saved_version_cannot_change(world) -> None:
     _reset(w)
     async with _session(w.p) as call:
         await _save(call, w.lead_s_u, w.p1, "one")
-    with pytest.raises(DBAPIError, match="cannot change"):
-        with w.p.admin_engine.begin() as c:
-            c.execute(text("UPDATE pm_agent_guidance SET body = 'x' WHERE project_id = :p"),
-                      {"p": w.p1})
+    with pytest.raises(DBAPIError, match="cannot change"), w.p.admin_engine.begin() as c:
+        c.execute(text("UPDATE pm_agent_guidance SET body = 'x' WHERE project_id = :p"),
+                  {"p": w.p1})
 
 
 @_DB_GATE
@@ -513,9 +512,8 @@ async def test_two_org_rows_with_one_version_fail_the_index(world) -> None:
         c.execute(text(sql), {"o": w.a, "p": None})
         c.execute(text(sql), {"o": w.a, "p": w.p1})
     for project in (None, w.p1):
-        with pytest.raises(IntegrityError):
-            with w.p.admin_engine.begin() as c:
-                c.execute(text(sql), {"o": w.a, "p": project})
+        with pytest.raises(IntegrityError), w.p.admin_engine.begin() as c:
+            c.execute(text(sql), {"o": w.a, "p": project})
     # Another org may hold version 1 of its own org level.
     with w.p.admin_engine.begin() as c:
         c.execute(text(sql), {"o": w.b, "p": None})
