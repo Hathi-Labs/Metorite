@@ -48,6 +48,23 @@ and ``test_studio_action_door_r8.py`` is the R8 suite.
   because the fake store of the door suite refuses nothing.
 * M14. Echo a value in a refusal. 12 door tests, among them
   ``test_a_body_with_other_keys_is_422_and_writes_nothing``.
+
+**Fix round 1 (2026-11-03).** Each new test ran red on the code before its fix.
+
+* R1. A2 passed a view source that writes. Five cases of
+  ``test_a_view_source_that_writes_*`` in ``test_studio_manifest.py``.
+* R2. The BFF signed a POST of another origin.
+  ``signs only a POST from a page of this origin`` in ``route.test.ts``.
+* R3. Two busy orgs shut out a third. Three ``TestTheWriterCap`` tests, among
+  them ``test_two_full_orgs_leave_the_first_write_of_a_third_org_a_slot``.
+* R4. The key sync read the first line of ``.env``. Two new cases of
+  ``test_the_deploy_line_syncs_the_key_from_env_to_env_local``.
+* R5. The audit row had no record id.
+  ``test_the_audit_row_names_the_record_of_each_direct_write`` and two R8
+  tests, ``test_r8_a_direct_create_update_and_delete_each_write_one_record_and_one_audit_row``
+  and ``test_r8_a_range_a_unique_and_a_move_refuse_with_the_shape_and_keep_the_audit_row``.
+* R6. The refusal text named only get and list.
+  ``test_the_refusal_text_names_each_direct_verb``.
 """
 
 from __future__ import annotations
