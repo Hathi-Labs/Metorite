@@ -1,5 +1,5 @@
 -- ============================================================================
--- 332_crm_change_log.sql — the Change history of the CRM settings (WS-CRM
+-- 334_crm_change_log.sql — the Change history of the CRM settings (WS-CRM
 -- CRM-M1, Metorite #1431).
 --
 -- What: one new table, `crm_change_log`. Each row is one change of the CRM
@@ -50,7 +50,10 @@
 -- The number was 328 at build time (R1), then 331. On 2026-11-02 origin/main
 -- held 330 (330_reach_outbox_due_summary.sql) and 331
 -- (331_calendar_entries.sql, WS-CAL CE-4), and no open PR held 332 or above.
--- So this file took 332. Check it again at merge.
+-- So this file took 332. On 2026-11-03 origin/main held 332
+-- (332_pm_decisions.sql, WS-ALN ALN-2a), and the branch of PZ-33b held 333
+-- (333_chat_message_member_typed.sql). No open PR and no other branch held
+-- 334, so this file took 334. Check it again at merge.
 -- Pinned by tests/unit/test_crm_change_history.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================

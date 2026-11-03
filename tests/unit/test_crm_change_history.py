@@ -10,7 +10,7 @@ Spec: ``project-docs/specs/crm_conversational.md`` §8 CRM-M1 and §4 (D164).
   list fails, and so does a list entry that names no route (done when 1).
 - ``change_log.log_change`` is the one writer of ``crm_change_log``.
 - Each area has an Undo function, except ``setup``, which no Undo reverses.
-- The migration (332) has the tenant key, FORCE RLS and the tenant policy, the
+- The migration (334) has the tenant key, FORCE RLS and the tenant policy, the
   one Undo index and the guard trigger. The generated phases carry the table.
 - The chat holds ``crm_change_history`` in its default scope.
 
@@ -1124,7 +1124,7 @@ def test_a_row_never_changes_and_one_row_is_undone_once(ns, app_engine) -> None:
     assert uuid.UUID(first)
 
 
-#: Each column of the guard of migration 332 → an SQL value that differs.
+#: Each column of the guard of migration 334 → an SQL value that differs.
 _OTHER_VALUE: dict[str, str] = {
     "id": "gen_random_uuid()",
     "organization_id": "CAST(:org_b AS uuid)",
@@ -1154,7 +1154,7 @@ def test_the_guard_refuses_a_column_change_that_sets_undone_by_too(
     ``undone_by`` on a row whose ``undone_by`` is NULL. The ``undone_by``
     block of the trigger lets that pass, so only the column block can
     refuse it. It runs as the table owner, which RLS does not bind.
-    Mutation: drop one column from the guard of migration 332 → red."""
+    Mutation: drop one column from the guard of migration 334 → red."""
     from sqlalchemy.exc import DBAPIError
 
     with ns.admin_engine.begin() as c:
