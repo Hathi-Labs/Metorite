@@ -31,7 +31,7 @@ import {
   type PendingConfirmation,
   type RowsApproval,
 } from "@/lib/confirmationQueue";
-import { cardKind, KIND_ICON, restoredFirst } from "@/lib/cardTabs";
+import { cardKind, KIND_ICON, restoredFirst, tabLabel } from "@/lib/cardTabs";
 import { unfenced } from "@/lib/fencedText";
 import type { ReplyApproval } from "@/lib/replyCard";
 
@@ -148,12 +148,14 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
   return shownCard;
 }
 
-/** A card's tab: its kind and the short name its own header leads with. */
+/** A card's tab: its kind, a short label (`tabLabel`), and the card's full
+ *  summary for the tooltip. */
 export function cardTab(card: PendingConfirmation): CardTab {
   const { summary } = cardSummary(card.title, card.detail);
   return {
     key: card.key,
-    label: card.fenced ? unfenced(summary) : summary,
+    label: tabLabel(card),
+    title: card.fenced ? unfenced(summary) : summary,
     icon: KIND_ICON[cardKind(card)],
   };
 }

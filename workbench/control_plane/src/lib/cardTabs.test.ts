@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { cardKind, KIND_ICON, restoredFirst, tabKeyTarget, tabsCount, tabsLabel } from "./cardTabs";
+import { cardKind, cutLabel, KIND_ICON, personName, tabLabel, TAB_LABEL_MAX, restoredFirst, tabKeyTarget, tabsCount, tabsLabel } from "./cardTabs";
 
 const read = (rel: string) => readFileSync(join(__dirname, "..", rel), "utf-8");
 
@@ -43,6 +43,35 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
     expect(kind("Create this CRM lead?")).toBe("other");
     expect(kind("Send from which mailbox?")).toBe("other");
     expect(KIND_ICON).toEqual({ send: "Mail", reply: "Reply", task: "CheckSquare", reminder: "Bell", other: "ShieldCheck" });
+  });
+
+  it("a tab is a kind word and a short object, at most 24 characters", () => {
+    const long = "«Send Neuropeak a Snowflake 3D printer quotation»";
+    const rows = [
+      { id: "cc-0", label: "Cc: ann@x.test", checked: true, kind: "cc" as const },
+      { id: "to-0", label: "To: Sharat Satyanarayana <sharat@x.test>", checked: true, kind: "to" as const },
+    ];
+    expect(tabLabel({ title: "Send this new email?", rows })).toBe("Email to Sharat Satyana…");
+    expect(tabLabel({ title: "Send this draft?", rows: [{ id: "to-0", label: "To: kim.lee@x.test", checked: true, kind: "to" as const }] })).toBe("Email to kim.lee");
+    expect(tabLabel({ title: "Send this new email?", context: "To: Kim <kim@x.test>, ann@x.test" })).toBe("Email to Kim");
+    expect(tabLabel({ title: "Send this draft?" })).toBe("Email");
+    const reply = { messageId: "m", replyAll: false, recipients: { reply: { to: ["Pat Jones <pat@x.test>"], cc: [] }, reply_all: { to: ["z@x.test"], cc: [] } } };
+    expect(tabLabel({ title: "Reply to 1 recipient?", reply: reply as never })).toBe("Reply to Pat Jones");
+    expect(tabLabel({ title: "Create this task?", detail: `${long} · status Open` })).toBe("Task: Send Neuropeak a…");
+    expect(tabLabel({ title: "Set this reminder?", detail: "Call Rajendra · Wed 10:00" })).toBe("Reminder: Call Rajendra");
+    expect(tabLabel({ title: "Create this CRM lead?" })).toBe("Create this CRM lead");
+    for (const l of [tabLabel({ title: "Create this task?", detail: long }), tabLabel({ title: "A very long card title that goes on and on?" })]) {
+      expect(l.length).toBeLessThanOrEqual(TAB_LABEL_MAX);
+    }
+    expect(cutLabel("short", 24)).toBe("short");
+    expect(personName("Kim <kim@x.test>")).toBe("Kim");
+    expect(personName("kim@x.test")).toBe("kim");
+  });
+
+  it("the row has a fade at an edge with more tabs, and a narrow tab width", () => {
+    const tabs = read("components/ui/CardTabs.tsx");
+    expect(tabs).toContain("data-[fade=right]:[mask-image");
+    expect(tabs).toContain("max-w-[12rem]");
   });
 
   it("the queue draws ONE card with tabs, and no stack", () => {

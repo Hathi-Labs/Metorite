@@ -16,7 +16,7 @@
  * edges and no swap animation. The rules are `lib/cardTabs.ts`.
  */
 
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { prefersReducedMotion } from "@/lib/panelMotion";
@@ -26,8 +26,10 @@ import { tabKeyTarget, tabsCount, tabsLabel } from "@/lib/cardTabs";
 export interface CardTab {
   /** A stable key for the card. */
   key: string;
-  /** The tab's words: the card's short name. The tab cuts a long one. */
+  /** The tab's words: a kind word and a short object (`tabLabel`). */
   label: string;
+  /** The full text for the tooltip. Defaults to the label. */
+  title?: string;
   /** The card's kind, as an icon name. */
   icon: string;
   /** The member has not opened this card yet. */
@@ -54,6 +56,16 @@ export interface CardTabsProps {
 export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps) {
   const total = tabs.length;
   const listRef = useRef<HTMLDivElement>(null);
+  // A row wider than its room fades at the edge where more tabs wait, so a
+  // cut tab reads as "scroll", not as a broken one (the narrow Ask panel).
+  const [fade, setFade] = useState<{ left: boolean; right: boolean }>({ left: false, right: false });
+  const measure = () => {
+    const list = listRef.current;
+    if (!list) return;
+    const left = list.scrollLeft > 2;
+    const right = list.scrollLeft + list.clientWidth < list.scrollWidth - 2;
+    setFade((f) => (f.left === left && f.right === right ? f : { left, right }));
+  };
   // The shown tab stays in view. Only the row moves: `scrollIntoView` would
   // scroll the page under the member too. The card mounts again for each
   // card, so this also runs on a change of card.
@@ -65,7 +77,12 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
     const right = left + tab.offsetWidth;
     const to = left < list.scrollLeft ? left - 8 : right > list.scrollLeft + list.clientWidth ? right - list.clientWidth + 8 : null;
     if (to !== null) list.scrollTo({ left: to, behavior: prefersReducedMotion() ? "auto" : "smooth" });
-  }, [index]);
+    measure();
+  }, [index, total]);
+  useLayoutEffect(() => {
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
   if (total < 2) return null;
 
   const onKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -96,7 +113,9 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
         role="tablist"
         aria-label={tabsLabel(total, noun)}
         onKeyDown={onKey}
-        className="flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        onScroll={measure}
+        data-fade={fade.left && fade.right ? "both" : fade.left ? "left" : fade.right ? "right" : undefined}
+        className="flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden data-[fade=both]:[mask-image:linear-gradient(to_right,transparent,#000_24px,#000_calc(100%-24px),transparent)] data-[fade=left]:[mask-image:linear-gradient(to_right,transparent,#000_24px)] data-[fade=right]:[mask-image:linear-gradient(to_right,#000_calc(100%-24px),transparent)]"
       >
         {tabs.map((t, i) => {
           const active = i === index;
@@ -109,11 +128,11 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
               aria-selected={active}
               aria-controls={cardPanelId(uid)}
               tabIndex={active ? 0 : -1}
-              title={t.label}
+              title={t.title ?? t.label}
               data-card-tab={i}
               data-unseen={t.unseen && !active ? "" : undefined}
               onClick={() => onGo(i)}
-              className={`-mb-px flex max-w-[15rem] shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-2 text-sm tech-transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring glass:text-subhead ${
+              className={`-mb-px flex max-w-[12rem] shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-2 text-sm tech-transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring glass:text-subhead ${
                 active
                   ? "border-primary font-medium text-foreground"
                   : "border-transparent text-muted-foreground hover:text-foreground"
