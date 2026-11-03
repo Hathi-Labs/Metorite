@@ -57,6 +57,7 @@ from acb_skills.held_card import (
     lookalike_warning,
     recipient_label,
 )
+from acb_skills.reply_card import MAX_NEW_MAIL_ANSWER, looks_like_new_mail_answer
 from fastapi import BackgroundTasks, Depends, HTTPException
 from gateway.routes.email.automation.drafting import (
     DraftExpect,
@@ -605,10 +606,10 @@ def _tenant_redis() -> Any:
     return get_tenant_redis()
 
 
-def _record_key(card_id: str) -> Any:
+def _record_key(card_id: str, namespace: str = RECORD_NAMESPACE) -> Any:
     from acb_common.tenant_redis import key
 
-    return key(RECORD_NAMESPACE, str(card_id))
+    return key(namespace, str(card_id))
 
 
 def _org_of(user: UserContext) -> str:
@@ -619,18 +620,23 @@ def _org_of(user: UserContext) -> str:
     return org
 
 
-async def write_record(user: UserContext, record: dict[str, Any]) -> str:
+async def write_record(
+    user: UserContext, record: dict[str, Any], *, namespace: str = RECORD_NAMESPACE,
+) -> str:
     """Record one card, under a card id that this server mints. Returns it.
 
     ``SET NX`` with a TTL, in the session's own tenant. A fault records
-    nothing, and the route answers 503, so no card shows."""
+    nothing, and the route answers 503, so no card shows. *namespace* keeps
+    the cards of one route apart from the cards of another: the new-mail
+    card of §18.10 records under its own (``new_mail_card``)."""
     from acb_common.tenant_redis import organization_scope
 
     card_id = uuid.uuid4().hex
     try:
         with organization_scope(_org_of(user)):
             done = await _tenant_redis().set(
-                _record_key(card_id), json.dumps(record), nx=True, ex=RECORD_TTL_S)
+                _record_key(card_id, namespace), json.dumps(record), nx=True,
+                ex=RECORD_TTL_S)
     except HTTPException:
         raise
     except Exception as exc:  # the class only: a value never reaches a log
@@ -641,14 +647,16 @@ async def write_record(user: UserContext, record: dict[str, Any]) -> str:
     return card_id
 
 
-async def take_record(user: UserContext, card_id: str) -> dict[str, Any] | None:
+async def take_record(
+    user: UserContext, card_id: str, *, namespace: str = RECORD_NAMESPACE,
+) -> dict[str, Any] | None:
     """Read and delete one card record (``GETDEL``), so a card acts once.
     None for no record, a fault, or a record of another member."""
     from acb_common.tenant_redis import organization_scope
 
     try:
         with organization_scope(_org_of(user)):
-            raw = await _tenant_redis().getdel(_record_key(card_id))
+            raw = await _tenant_redis().getdel(_record_key(card_id, namespace))
     except HTTPException:
         raise
     except Exception as exc:
@@ -771,7 +779,9 @@ class HeldCardActRequest(BaseModel):
 
     card_id: str = Field(min_length=32, max_length=32, pattern=r"^[0-9a-f]{32}$")
     card_thread_id: str = Field(max_length=200)
-    answer: str = Field(max_length=10_000)
+    #: A rows answer, or the answer of the new-mail form (§18.10), which
+    #: carries the text and the ticked people.
+    answer: str = Field(max_length=MAX_NEW_MAIL_ANSWER)
 
 
 def _size_text(size: Any) -> str:
@@ -1347,9 +1357,46 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     if len(rows) > MAX_ROWS:
         raise HTTPException(status_code=422, detail="Too many rows for one card.")
     context = "\n".join([f"Subject: {subject or '(no subject)'}", "", "The text:", body])
-    return await _person_card(user, req, rows, context, {
+    out = await _person_card(user, req, rows, context, {
         "kind": "new", "account_id": req.account_id, "subject": subject, "body": body,
     }, title="Send this new email?", mailbox=me)
+    # §18.10: the same record, drawn as the one email card that the member
+    # edits. The rows card stays for a run that cannot draw it (WhatsApp).
+    out["form"] = new_mail_form(rows, subject, body, _box_text(me))
+    return out
+
+
+def _box_text(mailbox: Any) -> str:
+    """The sending mailbox as "label · address"."""
+    return (f"{mailbox.label} · {mailbox.address}"
+            if mailbox.label and mailbox.label != mailbox.address else mailbox.address)
+
+
+def new_mail_form(
+    rows: Sequence[dict[str, Any]], subject: str, body: str, mailbox: str,
+) -> dict[str, Any]:
+    """The new-mail form of a held card (§18.10), from its RECORDED rows.
+
+    The people and their order are the rows'. A person starts ticked only
+    when the row does, so each new address starts unticked (§21). The class
+    and the mark of each row go with it. A lookalike warning is a notice,
+    whole. The files are fixed lines: the act sends each recorded file."""
+    people = {k: [str(r["address"]) for r in rows if r["kind"] == k] for k in RECIPIENT_KINDS}
+    start = {k: [str(r["address"]) for r in rows if r["kind"] == k and r.get("checked")]
+             for k in RECIPIENT_KINDS}
+    shown = [r for r in rows if r["kind"] in RECIPIENT_KINDS]
+    warnings = [f"{r['address']}: {r['warning']}" for r in shown if r.get("warning")]
+    return {
+        "kind": "new", "mailbox": mailbox, "subject": subject, "body": body,
+        "recipients": {"reply": people, "reply_all": people},
+        "ticked": {"reply": start, "reply_all": start},
+        "classes": {str(r["address"]).lower(): str(r.get("class") or CLASS_NEW) for r in shown},
+        "marks": {str(r["address"]).lower(): str(r["hint"])[:200] for r in shown
+                  if r.get("hint")},
+        "files": [str(r["label"]) for r in rows if r["kind"] == "file"],
+        "notices": warnings[:4],
+        "note": " ".join(warnings[4:]),
+    }
 
 
 async def _always_copy_rows(
@@ -1378,6 +1425,25 @@ def _mark_ruled(rows: list[dict[str, Any]], ruled: dict[str, str]) -> None:
             r["hint"] = rule_copy_mark(match)
 
 
+def _count(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
+
+
+def card_detail(box: str, people: int, files: int, new: int) -> str:
+    """The one line under the title of a held card, with real singular and
+    plural words: "From Sales · vj@x.in · 3 people, 1 file. Only a ticked row
+    goes. 1 new address starts unticked." A part with a count of 0 is left
+    out, but the people."""
+    line = f"From {box} · {_count(people, 'person', 'people')}"
+    if files:
+        line += f", {_count(files, 'file', 'files')}"
+    line += ". Only a ticked row goes."
+    if new:
+        line += (f" {_count(new, 'new address', 'new addresses')} "
+                 f"{'starts' if new == 1 else 'start'} unticked.")
+    return line
+
+
 async def _person_card(
     user: UserContext, req: HeldCardRequest, rows: list[dict[str, Any]], context: str,
     fields: dict[str, Any], *, title: str, mailbox: Any,
@@ -1385,13 +1451,11 @@ async def _person_card(
     """Record a card of people and files, and give what it shows."""
     if len(context) > CONTEXT_MAX:
         raise HTTPException(status_code=422, detail=TEXT_TOO_LONG)
-    box = (f"{mailbox.label} · {mailbox.address}"
-           if mailbox.label and mailbox.label != mailbox.address else mailbox.address)
+    box = _box_text(mailbox)
     people = [r for r in rows if r["kind"] in RECIPIENT_KINDS]
     new = sum(1 for r in people if r["class"] == CLASS_NEW)
     files = len(rows) - len(people)
-    detail = (f"From {box} · {len(people)} recipient(s), {files} file(s). Only a ticked "
-              f"row goes. {new} new address(es) start unticked.")[:DETAIL_MAX]
+    detail = card_detail(box, len(people), files, new)[:DETAIL_MAX]
     record = {"v": 1, "owner": _owner(user).lower(), "rows": rows, **fields}
     card_id = await write_record(user, record)
     _log.info("email.held_card_built", kind=fields["kind"], rows=len(rows), new=new)
@@ -1413,22 +1477,18 @@ async def _act_forward(
             "files": len(files), **ticked}
 
 
-async def _act_new(
-    rec: dict[str, Any], ticked: dict[str, list[str]], files: list[str],
-    background: BackgroundTasks, user: UserContext,
-) -> dict[str, Any]:
-    from gateway.routes.email.transport.send import (
-        SendAttachment,
-        SendEmailRequest,
-        send_email,
-    )
-
+async def _new_attachments(
+    rec: dict[str, Any], files: list[str], user: UserContext,
+) -> tuple[list[Any], int]:
+    """The attachments of a held new mail, and their count: each ticked file
+    of the member's own mailbox, and each ticked Metorite file."""
     import base64
 
     from gateway.routes.email.transport.metorite_files import (
         check_digests,
         resolve_metorite_files,
     )
+    from gateway.routes.email.transport.send import SendAttachment
 
     attachments = [SendAttachment(**f) for f in await file_payloads(user, files)]
     # H-392: each ticked Metorite file resolves again, as the member, and it
@@ -1440,13 +1500,100 @@ async def _act_new(
         attachments += [SendAttachment(filename=f.name, mime_type=f.mime,
                                        content_b64=base64.b64encode(f.content).decode("ascii"))
                         for f in shared]
+    return attachments, len(files) + len(expect)
+
+
+async def _act_new(
+    rec: dict[str, Any], ticked: dict[str, list[str]], files: list[str],
+    background: BackgroundTasks, user: UserContext,
+) -> dict[str, Any]:
+    from gateway.routes.email.transport.send import SendEmailRequest, send_email
+
+    attachments, count = await _new_attachments(rec, files, user)
     res = await send_email(SendEmailRequest(
         account_id=rec["account_id"], to=ticked[KIND_TO], cc=ticked[KIND_CC] or None,
         bcc=ticked[KIND_BCC] or None, subject=rec.get("subject") or "",
         body_text=rec["body"], attachments=attachments or None,
     ), background, user)
     return {"ok": True, "action": "send", "id": (res or {}).get("id"),
-            "files": len(files) + len(expect), **ticked}
+            "files": count, **ticked}
+
+
+async def _save_new(
+    rec: dict[str, Any], ticked: dict[str, list[str]], files: list[str], user: UserContext,
+) -> dict[str, Any]:
+    """Save draft of a held new mail (§18.10): a NEW draft with the answered
+    text, the ticked people and the files of the record. It sends nothing."""
+    from gateway.routes.email.automation.drafting import DraftUpsertRequest
+
+    attachments, count = await _new_attachments(rec, files, user)
+    saved = await upsert_draft(DraftUpsertRequest(
+        account_id=rec["account_id"], to=ticked[KIND_TO], cc=ticked[KIND_CC],
+        bcc=ticked[KIND_BCC], subject=rec.get("subject") or "", body=rec["body"],
+        attachments=attachments, from_chat=True,
+    ), user)
+    return {"ok": True, "action": "save", "draft_id": str((saved or {}).get("id") or ""),
+            "files": count, **ticked}
+
+
+def _form_ids(rows: Sequence[dict[str, Any]], choice: Any) -> frozenset[str] | None:
+    """The RECORDED row ids that a new-mail answer names (§18.10), or None.
+
+    Each ticked person must be a recorded row of the same kind, named once.
+    A person that the record does not hold, or a person named twice, names
+    nothing: the whole answer is refused, never trimmed to fit. Each file
+    row goes, because the files of the form are fixed."""
+    ids: set[str] = set()
+    for kind, named in ((KIND_TO, choice.to), (KIND_CC, choice.cc), (KIND_BCC, choice.bcc)):
+        by_address = {str(r["address"]).strip().lower(): str(r["id"])
+                      for r in rows if r["kind"] == kind}
+        want = [str(a).strip().lower() for a in named]
+        if len(set(want)) != len(want) or any(a not in by_address for a in want):
+            return None
+        ids |= {by_address[a] for a in want}
+    ids |= {str(r["id"]) for r in rows if r["kind"] == "file"}
+    return frozenset(ids)
+
+
+async def _act_new_form(
+    card_id: str, answer: str, rec: dict[str, Any], rows: list[dict[str, Any]],
+    background: BackgroundTasks, user: UserContext,
+) -> dict[str, Any]:
+    """Do what the member chose on the new-mail form of a held card (§18.10).
+
+    The people come from the record, and each §21 rule stays: a To must be
+    ticked, a Bcc to a new address is refused, a text over ``HELD_TEXT_MAX``
+    is refused, and a look-alike word is refused. The answered subject and
+    text are checked again, and they are what leaves."""
+    from acb_skills.reply_card import parse_new_mail_answer
+
+    choice = parse_new_mail_answer(answer)
+    ids = _form_ids(rows, choice) if choice is not None else None
+    if choice is None or ids is None:
+        _log.warning("email.held_card_refused", reason="bad_people")
+        raise HTTPException(
+            status_code=409,
+            detail="The answer names a person that the card did not offer, so nothing was sent.")
+    ticked = _ticked_lists(rows, ids)
+    if not ticked[KIND_TO]:
+        _log.info("email.held_card_refused", reason="no_to")
+        raise HTTPException(status_code=422, detail=NO_TICKED_RECIPIENT)
+    _refuse_new_bcc([r for r in rows if r["id"] in ids])
+    body = _clean_text(choice.body)
+    if not body:
+        raise HTTPException(status_code=422, detail="The email has no text, so nothing was sent.")
+    subject = _clean_subject(choice.subject)
+    refuse_lookalike({"subject": subject, "text": body})
+    files = ticked_file_ids(rows, ids)
+    edited = subject != rec.get("subject") or body != rec.get("body")
+    answered = {**rec, "subject": subject, "body": body, "_ticked": sorted(ids)}
+    if choice.action == "save":
+        out = await _save_new(answered, ticked, files, user)
+    else:
+        out = await _act_new(answered, ticked, files, background, user)
+    _audit(card_id, "new", rows, ids)
+    return {**out, "subject": subject, "body": body, "edited": edited,
+            "left_out": len(rows) - len(ids)}
 
 
 @router.post("/held-card")
@@ -1601,6 +1748,10 @@ async def held_card_act(
             status_code=409,
             detail="The card of this send has expired or was used, so nothing was sent.")
     rows = [r for r in rec.get("rows") or [] if isinstance(r, dict)]
+    if rec.get("kind") == "new" and looks_like_new_mail_answer(req.answer):
+        # §18.10: the member answered the form of this card. A rows answer
+        # of the same card still acts below, as before.
+        return await _act_new_form(req.card_id, req.answer, rec, rows, background, user)
     ids = ticked_rows(req.answer, frozenset(str(r["id"]) for r in rows))
     if ids is None:
         _log.warning("email.held_card_refused", reason="bad_ids")
