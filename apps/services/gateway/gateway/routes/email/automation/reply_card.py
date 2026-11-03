@@ -114,6 +114,14 @@ BCC_ONLY_NOTICE = "You were Bcc'd, so only the sender is ticked."
 #: added person, because the act could not check one.
 ADDED_NOT_RECORDED = ("The added people could not be kept on this card, so the draft in "
                       "Drafts was left as it was. Ask again in a moment.")
+#: The notice when the record of a card that adds nobody failed (task 1526,
+#: fix round 1). With no record the act cannot check that the draft left
+#: Drafts, so the card writes no draft.
+DRAFT_NOT_RECORDED = ("This card could not be recorded, so its reply was not put in "
+                      "Drafts. Ask again in a moment.")
+#: The 503 when the record of a card cannot be read at the act (fix round 1).
+RECORD_UNREAD = ("The record of this card could not be read, so nothing was sent or "
+                 "saved. Ask for the reply again.")
 #: The classes that a Bcc of a held chat may have (§21.15, the rule of 21.10
 #: open question 5): a person that the member knows. A held chat refuses a
 #: Bcc to any other address, and no tick can allow it.
@@ -591,13 +599,17 @@ async def reply_card(
     # It is written for each card, so the member can type a Bcc on it.
     card_id = await _write_reply_record(
         user, str(_as_uuid(req.message_id)), added, bcc=bcc_people, held=req.held)
-    record_failed = False
-    if not card_id and (added or bcc_people):
+    # With no record, the card writes no draft (task 1526, fix round 1): the
+    # act could not check that the draft left Drafts, and a send from the
+    # Email app plus a Send on the card would mail each person twice.
+    record_failed = not card_id
+    if record_failed and (added or bcc_people):
         # Review P3-a: the card adds nobody, and the draft stays as it
         # was below, so a Cc that edit_draft put there is not lost.
         added, usual_added, carried, bcc_people = [], [], [], []
-        record_failed = True
         notices.append(ADDED_NOT_RECORDED)
+    elif record_failed:
+        notices.append(DRAFT_NOT_RECORDED)
     # A Bcc that the tool proposed starts ticked. A Bcc of the draft starts
     # ticked only for a person that the member knows (review P2-a).
     bcc_ticked = [a for a in bcc_people if a in asked_bcc
@@ -1085,7 +1097,8 @@ async def _write_reply_record(
     bcc: Sequence[str] = (), held: bool = False,
 ) -> str:
     """Record the added people of one card under a card id that this server
-    mints. Returns the id, or "" on a fault, and then the card adds nobody.
+    mints. Returns the id, or "" on a fault. With "" the card adds nobody
+    and writes no draft (task 1526, fix round 1).
     The record also holds the Bcc of the card and the held flag (§21.15),
     and ``made_at``, the time the server made the card (2026-11-03). The act
     refuses when the mailbox sent a reply in the thread after that time."""
@@ -1155,8 +1168,14 @@ async def _take_reply_record(
 ) -> _CardRecord:
     """The record of the card *card_id*, read once (``GETDEL``): the added
     people, the Bcc, the draft that the card wrote and the time it was made.
-    None of another member, another mail, or a fault: the act then takes
-    only the people of the mail, no Bcc, and checks no draft."""
+
+    No organization, no card id, no record (it expired), and a record of
+    another member or another mail all give an empty record. The act then
+    takes only the people of the mail, no Bcc, and checks nothing. A card
+    with no record wrote no draft (``reply_card``), so no draft can leave.
+
+    A Redis fault answers 503, so the act sends and saves nothing (task 1526,
+    fix round 1): the record that it could not read can name a draft."""
     from acb_common.tenant_redis import organization_scope
     from gateway.routes.email.automation import held_card as hc
 
@@ -1168,8 +1187,9 @@ async def _take_reply_record(
         with organization_scope(org):
             raw = await hc._tenant_redis().getdel(_reply_record_key(card_id))
     except Exception as exc:
-        _log.warning("email.reply_card_record_take_failed", error=type(exc).__name__)
-        return none
+        _log.warning("email.reply_card_answer_refused", reason="record_unread",
+                     error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail=RECORD_UNREAD) from exc
     rec = _record_of(raw, user, message_id)
     if rec is None:
         return none

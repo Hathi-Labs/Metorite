@@ -302,6 +302,50 @@ async def test_the_card_route_notes_its_draft_so_the_act_refuses_it(monkeypatch)
     assert r.w.sent == []
 
 
+async def test_a_card_with_no_record_writes_no_draft(monkeypatch) -> None:
+    """Fix round 1, item 2: a card that adds nobody, and whose record failed,
+    writes no draft. With no record the act could not check that a draft
+    left Drafts. Mutation: write the draft when nobody was added → red."""
+    r = _RouteWorld(monkeypatch)
+    wrote: list[str] = []
+
+    async def keep(*_a: Any, **_k: Any) -> tuple[str, bool]:
+        wrote.append(DRAFT)
+        return DRAFT, False
+
+    async def no_record(*_a: Any, **_k: Any) -> str:
+        return ""
+
+    monkeypatch.setattr(rc, "_keep_card_draft", keep)
+    monkeypatch.setattr(rc, "_write_reply_record", no_record)
+    out = await r.w.card()
+    assert wrote == [] and out["draft_id"] == "" and out["card_id"] == ""
+    assert rc.DRAFT_NOT_RECORDED in out["notices"]
+    assert rc.ADDED_NOT_RECORDED not in out["notices"]
+
+
+async def test_a_record_that_cannot_be_read_sends_nothing(monkeypatch) -> None:
+    """Fix round 1, item 2: a Redis fault at the take of the record answers
+    503, because the record can name a draft that left. Mutation: read the
+    fault as an empty record → the act sends → red."""
+    from gateway.routes.email.automation import held_card as hc
+
+    w = _World(monkeypatch)
+    w.in_drafts = {DRAFT}
+    card_id = await w.card()
+
+    class _Down:
+        async def getdel(self, _key: Any) -> Any:
+            raise ConnectionError("redis is down")
+
+    monkeypatch.setattr(hc, "_tenant_redis", lambda: _Down())
+    with pytest.raises(HTTPException) as err:
+        await w.act(card_id)
+    assert err.value.status_code == 503 and err.value.detail == rc.RECORD_UNREAD
+    assert "nothing was sent or saved" in rc.RECORD_UNREAD
+    assert w.sent == [] and w.saved == []
+
+
 async def test_a_draft_note_of_no_draft_or_a_bad_id_writes_nothing(monkeypatch) -> None:
     _World(monkeypatch)
     card_id = await rc._write_reply_record(USER, MAIL, [])
