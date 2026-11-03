@@ -60,6 +60,9 @@ shows no Seq Scan. A source in another package is refused.
 * M13. ``objects_store._check_counted``: check each written child of the source,
   and not only the ids that the aggregate counted.
   ``test_r8_a_child_that_the_rollup_does_not_count_may_hold_another_currency`` goes red.
+* M14. ``studio_rules._exact_number``: raise ``result_too_large`` again.
+  ``test_r8_a_number_sum_with_too_many_digits_is_refused_as_precision_and_not_as_too_large``
+  and ``test_a_number_sum_that_a_number_cannot_hold_exactly_is_refused_as_precision`` go red.
 """
 
 from __future__ import annotations
@@ -838,6 +841,24 @@ def test_r8_a_derived_write_checks_the_plain_fields_of_the_parent(world) -> None
     err, rows, left = _go(world, go)
     assert isinstance(err.cause, sf.FieldError) and "big" in str(err.cause)
     assert rows == 0 and left == 0
+
+
+def test_r8_a_number_sum_with_too_many_digits_is_refused_as_precision_and_not_as_too_large(
+        world) -> None:
+    """Each child fits a number, and the sum 1000.123456789012345 is far below
+    10^15. But a stored number holds 15 significant digits, so the sum cannot be
+    exact. The refusal names its own cause and the next step."""
+    async def go() -> tuple[BatchError, int, Any]:
+        acc, ent = await _objects(world.a, world.pkg_a, [BAL])
+        p = await _acct(world.a, acc)
+        await _give(world.a, ent, p, days=0.123456789012345)
+        err = await _refused(world.a, ent, _entry(ent, p, days=1000))
+        return err, _rows(world, ent), _data(world, p.id)["balance"]
+
+    err, rows, kept = _go(world, go)
+    assert isinstance(err.cause, RollupError) and err.cause.code == "rollup_precision"
+    assert "fewer decimal places" in str(err.cause) and "`days`" in str(err.cause)
+    assert rows == 1 and kept == 0.123456789012345
 
 
 # -- two real connections -----------------------------------------------------------

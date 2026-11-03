@@ -141,6 +141,9 @@ ROLLUP_FIELD_TYPES: Mapping[str, tuple[str, ...]] = {
     "max": ("number", "money", "date")}
 #: The code of a roll-up that reads a roll-up (also through a formula).
 ROLLUP_OF_ROLLUP = "rollup_of_rollup"
+#: The code of a number sum that a stored number cannot hold exactly: more than
+#: 15 significant digits, or an exponent in its text. It is not too large.
+ROLLUP_PRECISION = "rollup_precision"
 #: The kind of a stored rule that the checks cannot read. It is not in
 #: :data:`RULE_KINDS`, so :func:`check_kind_known` refuses each write.
 MALFORMED = "malformed"
@@ -217,8 +220,8 @@ class FormulaError(RuleViolation):
 class RollupError(RuleViolation):
     """A write that a roll-up refuses (C7b). ``object`` is the name of the object
     that holds the roll-up and ``code`` is ``currency_mismatch``,
-    ``result_too_large``, ``declaration`` or ``rollup_of_rollup``. The message
-    never echoes a value."""
+    ``result_too_large``, ``rollup_precision``, ``declaration`` or
+    ``rollup_of_rollup``. The message never echoes a value."""
 
     def __init__(self, rule: str, object_name: str, code: str, message: str) -> None:
         super().__init__(rule, message)
@@ -1512,12 +1515,30 @@ def _too_large(rule: Rule, object_name: str) -> RollupError:
         f"Rule `{rule.name}` of object `{object_name}`: the result is too large to store exactly.")
 
 
+def _exact_number(rule: Rule, object_name: str, exact: Decimal) -> Any:
+    """The JSON number of the number result *exact*, which is below 10^15. A
+    stored number holds at most 15 significant digits and no exponent, so a sum
+    that needs more raises ``rollup_precision``. No rule declares a scale for a
+    roll-up target, so the store does not round, and it never stores an
+    inexact sum. The message gives the next step."""
+    stored = studio_expr.number_json(exact)
+    if Decimal(repr(stored)) != exact or "e" in repr(stored):
+        raise RollupError(
+            rule.name, object_name, ROLLUP_PRECISION,
+            f"Rule `{rule.name}` of object `{object_name}`: the sum of field `{rule.field}` "
+            f"of `{rule.source}` needs more digits than a number field holds exactly. "
+            f"Write the values of `{rule.field}` with fewer decimal places.")
+    return stored
+
+
 def rollup_result(rule: Rule, object_name: str, field: FieldSpec, raw: Any) -> Any:
     """The stored value of a roll-up from the *raw* answer of the aggregate, or
     None when the target clears. A sum and a count of nothing give 0 and a min
     and a max of nothing give None. The answer runs through ``check_value`` of
-    the target, and a number must read back exactly, so a result that does not
-    fit raises :class:`RollupError` with ``result_too_large``."""
+    the target. A result at or above 10^15, or a money result that is not a
+    whole number of minor units, raises :class:`RollupError` with
+    ``result_too_large``. A number that cannot read back exactly raises it with
+    ``rollup_precision`` (:func:`_exact_number`)."""
     if raw is None:
         return rollup_empty(rule)
     try:
@@ -1532,9 +1553,7 @@ def rollup_result(rule: Rule, object_name: str, field: FieldSpec, raw: Any) -> A
                     raise _too_large(rule, object_name)
                 stored = {"minor": int(exact), "currency": rule.currency}
             else:
-                stored = studio_expr.number_json(exact)
-                if Decimal(repr(stored)) != exact:
-                    raise _too_large(rule, object_name)
+                stored = _exact_number(rule, object_name, exact)
         return check_value(field, stored)
     except (FieldError, ArithmeticError):
         raise _too_large(rule, object_name) from None

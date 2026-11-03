@@ -1867,13 +1867,27 @@ def test_a_date_result_is_a_day() -> None:
     assert sr.rollup_result(rule, "account", field, datetime(2026, 1, 31, tzinfo=UTC)) == "2026-01-31"
 
 
-@pytest.mark.parametrize("raw", [Decimal(10**15), Decimal("-1E+15"), Decimal("0.1234567890123456789")])
+@pytest.mark.parametrize("raw", [Decimal(10**15), Decimal("-1E+15")])
 def test_a_result_that_does_not_fit_is_refused_with_a_code_and_no_value(raw: Decimal) -> None:
     (rule,) = sr.parse_rules([_SUM])
     field = next(f for f in _parent_fields() if f.key == "balance")
     with pytest.raises(sr.RollupError) as info:
         sr.rollup_result(rule, "account", field, raw)
     assert info.value.code == "result_too_large" and str(raw) not in info.value.message
+
+
+@pytest.mark.parametrize("raw", [
+    Decimal("0.1234567890123456789"), Decimal("1000.123456789012345"), Decimal("0.00005")])
+def test_a_number_sum_that_a_number_cannot_hold_exactly_is_refused_as_precision(raw: Decimal) -> None:
+    """A sum far below 10^15 is not too large. It needs more digits than a
+    stored number holds (or an exponent), and the message names the next step."""
+    (rule,) = sr.parse_rules([_SUM])
+    field = next(f for f in _parent_fields() if f.key == "balance")
+    with pytest.raises(sr.RollupError) as info:
+        sr.rollup_result(rule, "account", field, raw)
+    assert info.value.code == sr.ROLLUP_PRECISION == "rollup_precision"
+    assert "fewer decimal places" in info.value.message and "`days`" in info.value.message
+    assert str(raw) not in info.value.message
 
 
 def test_a_fractional_money_sum_is_refused() -> None:
