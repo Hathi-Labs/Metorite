@@ -32,6 +32,7 @@
 > 🔨 **§18.5.1 (H-374) is BUILT on branch `h374-send-draft`, not merged (2026-10-22).** The owner chose "Drafts, with a card" and "Schedule a send". A held chat now sends or schedules a saved draft behind a card. A forward, a new mail, a file, an unsubscribe and a settings change stay held.
 > 🔨 **§18.10 is BUILT on branch `mt-5f606b3e-email-edit-card`, not merged (2026-11-03).** A new mail from the chat shows ONE card. The member edits the subject and the text, ticks the people, and presses Send, Save draft or Discard. No migration, and no flag.
 > 🔨 **§18.9 is BUILT on branch `chat-draft-upsert`, not merged (2026-10-22), with fix round 1.** A chat reply draft lands in Drafts, it never writes over a draft of the member, and the Email app continues it.
+> 🔨 **§18.9.1 is BUILT on branch `mt-0f55cd43-reply-card-sent`, not merged (2026-11-03, task 1526), with fix round 1.** A reply card whose draft left Drafts sends and saves nothing. The act answers 409 `draft_gone` or `already_replied`, and the card collapses to its title and Close. No migration, and no flag.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
 > 📝 **§17 is SPECIFIED, not built (2026-10-12, D-EM-63, EM-T17).** One seam chooses the AI context of a conversation. The target goes in whole, every message gets an index line, and `decide` chooses the earlier bodies. No body is cut without a label. Each wait has a bound, so drafting never hangs. 🔨 **EM-T17 PR-A is built, not merged** (2026-10-12, branch `email-stall-pra`, no flag, no migration): the stream bounds, the `model_*` and `server_timeout` reasons, the heartbeat, the body-only fetch and `email.draft_timing`.
 > 🔨 **§21.13 (H-391) is BUILT on branch `email-whatsapp-confirm`, not merged (2026-10-24).** Archive, label, move, reply, send a draft, schedule, forward and new mail work from WhatsApp. The member approves each one with a reply code. Migration 298, dark behind `WHATSAPP_ASSISTANT_WRITES`.
@@ -20737,6 +20738,7 @@ chat, and not only the Email app.
 | `schedule_send` in a held run: the pin, `expect` stored and checked when it fires | `tests/unit/test_email_chat_reply.py`, `tests/unit/test_email_send_later.py` |
 | No text offers a new conversation or a paste by hand (H-374) | `tests/unit/test_held_send_guidance.py` |
 | The real SQL of both routes, under FORCE RLS | `TestReplyCardRealSql` in the same file (R8) |
+| A reply that left Drafts sends and saves nothing (§18.9.1) | `tests/unit/test_reply_card_left_drafts.py`, `_r8.py`, `src/lib/replyCardLeft.test.ts` |
 | The card, its answer and the one renderer | `src/lib/replyCard.test.ts` |
 | The flow in the main chat | `e2e/email-chat-reply.spec.ts` |
 | A card before each write | `tests/unit/test_email_agent_write_cards.py` |
@@ -20844,6 +20846,72 @@ This replaces the save card of `draft_reply` (EM-G11c1). Nothing is sent without
 `tests/unit/test_email_reply_draft_upsert_r8.py`, `tests/unit/test_email_chat_reply.py`,
 `tests/unit/test_email_agent_write_cards.py`, `src/lib/replyCardDiscard.test.ts` and
 `src/app/email/lib/continueDraft.test.ts`.
+
+#### 18.9.1 A card whose draft left Drafts (2026-11-03, owner report)
+
+**Status:** 🔨 BUILT on branch `mt-0f55cd43-reply-card-sent`, not merged (Metorite task
+1526), with fix round 1. No migration, and no flag.
+
+**The defect.** The reply card writes its reply to Drafts at once (item 6). The member sent
+that draft from the Email app while the card still waited. Then the member pressed Send on
+the card. The act sent a new mail with the same text, so each person got the reply twice. A
+Save made an orphan draft.
+
+1. **The record of the card holds the draft.** `_write_reply_record` writes the time that
+   the card was made. A card with a text gets `draft_pending` in that same write. After the
+   draft write, `_note_card_draft` adds the LOCAL id of the draft and clears the flag. The
+   server writes all three, and no request of the act names them. A card whose record
+   write failed writes no draft.
+2. **A draft that the record never confirmed.** The act answers 409 `draft_unconfirmed`
+   while `draft_pending` is set and the record holds no draft id. A draft write that failed
+   clears the flag, and that card sends a fresh reply, as before. The code reads a raised
+   provider error as failed, and a timeout as unknown. An unknown outcome keeps the flag,
+   and the card collapses at once with one line that says why. The words of that refusal
+   claim no send.
+3. **The act refuses a reply that already left.** After the checks of the answer and of the
+   people, and before any send or save, `_reply_left` reads two facts. A 409 with
+   `detail.reason` `draft_gone` comes when the draft is no longer in the member's Drafts. A
+   409 with `already_replied` comes when the mailbox sent a reply in the thread after the
+   card (`RECENT_REPLY_SQL`). A fault of the check, or of the read of the record, is a 503.
+   Each refusal sends and saves nothing, and logs `email.reply_card_answer_refused`.
+4. **The tool says the fact.** `compose_reply` turns each reason into a line for the model,
+   and never "Sent". A draft that left Drafts is no proof of a send, because a rule can
+   replace an unedited draft. So that line tells the model to ask the member. A card that
+   closes, or that the member writes over, reads the draft state first. When the draft
+   left, or its state is unknown, the tool claims no send and names no gone draft.
+5. **One state read.** `GET /email/reply-card/draft-state` reads one draft row of the
+   member through `mailbox_predicate`, with no provider call. The email BFF proxy carries
+   it. The parity table holds it as kind `stream`, a poll that refreshes a view. A
+   database fault is a 503.
+6. **The card learns it.** `watchCardDraft` reads the state once at mount, on focus, and
+   when the page shows again. It also reads each 60 seconds while the page shows, and at
+   once on `cc-email-draft-left`. The Email app raises that event after `sendDraft` and
+   `deleteEmail`. When the draft left, the card collapses to its title, its subject, one
+   line and Close. Text that the member typed stays there, read only, under "Your text".
+7. **The words.** A card with a draft says "This reply is in the Drafts of …", and its Save
+   reads "Save draft". The old footer said that only Save puts the reply in Drafts. Discard
+   now says that it deletes only a draft that nobody changed. A card with no draft keeps
+   the words of before.
+
+**Known limits.**
+
+- A Gmail web edit gives a draft a new id, so the card reads its draft as gone. The act then
+  refuses a reply that did not leave. That refusal sends nothing, and a new card works.
+- A send from Gmail or Outlook outside Metorite shows here only after the sync. Until then,
+  the card and the act see neither the send nor the gone draft.
+- `RECENT_REPLY_SQL` counts a forward in the same thread as a reply.
+- A card made before this release has a record with no time, no flag and no draft id. Its
+  act checks nothing and sends as before. The record expires after about one hour, so this
+  gap closes.
+- A record expires after 3700 seconds, and a card waits 3600 seconds. A late answer, for
+  example to a parked card, meets no record. Its act then checks nothing, as for a card
+  made before this release, and its draft can still be in Drafts.
+- A draft write with an unknown outcome stops that card. A new card works only after the
+  fault is gone. A lasting fault, such as a provider that times out each time, stops each
+  new card too.
+
+**Fences.** `tests/unit/test_reply_card_left_drafts.py`, its R8 half
+`tests/unit/test_reply_card_left_drafts_r8.py`, and `src/lib/replyCardLeft.test.ts`.
 
 ### 18.10 One email card for a new mail (2026-11-03, owner)
 

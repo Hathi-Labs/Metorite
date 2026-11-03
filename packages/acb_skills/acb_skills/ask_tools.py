@@ -931,6 +931,9 @@ def clean_reply_form(form: dict | None) -> dict | None:
         # The local id of the draft that the card wrote. The member's Discard
         # names it, and the gateway checks it before a trash.
         "draft_id": _draft_id(form.get("draft_id")),
+        # Task 1526, item 11: the draft write had an unknown outcome, so the
+        # card shows its Send and Save stopped. A form with none is as before.
+        **({"draft_unsaved": True} if form.get("draft_unsaved") is True else {}),
         "note": _clip_line(form.get("note")),
         # A notice names addresses, so it is never cut: an over-long one fails.
         "notices": [_whole_line(n) for n in notices if str(n or "").strip()],
