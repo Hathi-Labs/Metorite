@@ -20967,9 +20967,8 @@ changed the text on the card. It then gives the text that went, so the chat does
 that the first text went.
 
 **Fences.** `tests/unit/test_email_new_mail_card.py` holds the act, the parse and the held
-path. `src/lib/replyCard.test.ts` holds the answer of the client.
-`src/components/newMailCard.test.ts` holds the card, the chips and a chip that sends
-nothing. `tests/unit/test_email_chat_reply.py` holds the keys of the client and the server
+path. `src/components/newMailCard.test.ts` holds the answer of the client, the card, the
+chips and a chip that sends nothing. `tests/unit/test_email_chat_reply.py` holds the keys of the client and the server
 in step.
 
 ## 19. Send later (2026-10-21)

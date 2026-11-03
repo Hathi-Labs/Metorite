@@ -45,6 +45,7 @@ import { useEffect, useState } from "react";
 import CardFieldValue from "@/components/CardFieldValue";
 import { splitCardEmailText } from "@/lib/cardEmailText";
 import FencedText from "@/components/FencedText";
+import NewMailCardForm from "@/components/NewMailCardForm";
 import ReplyCardForm from "@/components/ReplyCardForm";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import Badge from "@/components/ui/Badge";
@@ -55,7 +56,7 @@ import Icon from "@/components/Icon";
 import { cardKey, fieldSpec, repeatsLine } from "@/lib/cardFields";
 import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
 import { unfenced } from "@/lib/fencedText";
-import type { ReplyApproval, ReplyForm } from "@/lib/replyCard";
+import { isNewMail, type ReplyApproval, type ReplyForm } from "@/lib/replyCard";
 import { noRecipientHint, rowMark } from "@/lib/sendCard";
 
 /**
@@ -75,6 +76,8 @@ export const CONFIRM_TITLE = "Approval";
 export const CONFIRM_HINT = "The assistant waits for your decision.";
 /** The title row of a reply card (EM-CR). Its summary names the sender. */
 export const REPLY_TITLE = "Reply";
+/** The title row of the card of a new mail (§18.10). */
+export const NEW_MAIL_TITLE = "New email";
 
 export interface CardField {
   /** The key as the tool printed it (`due_at`, `task 1`). */
@@ -270,6 +273,11 @@ interface ConfirmationCardProps {
   reply?: ReplyForm | null;
   /** Send or Save to Drafts on a reply card: the whole answer. */
   onReply?: (answer: ReplyApproval) => void;
+  /**
+   * Put words in the chat box and focus it, and send nothing (§18.10). The
+   * nudge chips of a new-mail card call it. `AgentChat` passes it.
+   */
+  onSuggest?: (text: string) => void;
 }
 
 /** A line of card text: fenced names as tokens, or the text as sent. */
@@ -291,6 +299,7 @@ export default function ConfirmationCard({
   id,
   reply,
   onReply,
+  onSuggest,
   error,
 }: ConfirmationCardProps) {
   const [armed, setArmed] = useState(false);
@@ -324,11 +333,12 @@ export default function ConfirmationCard({
     if (armed && approvable) onApprove();
   };
   const isReply = reply !== undefined;
+  const newMail = isNewMail(reply);
   return (
     <RollupCard
       id={id ?? "confirm"}
-      title={isReply ? REPLY_TITLE : CONFIRM_TITLE}
-      icon={isReply ? "Reply" : "ShieldCheck"}
+      title={newMail ? NEW_MAIL_TITLE : isReply ? REPLY_TITLE : CONFIRM_TITLE}
+      icon={newMail ? "Mail" : isReply ? "Reply" : "ShieldCheck"}
       header="own"
       pending
     >
@@ -383,7 +393,18 @@ export default function ConfirmationCard({
           )}
         </div>
         )}
-      {isReply && (
+      {newMail && reply && (
+        <NewMailCardForm
+          form={reply}
+          detail={detail}
+          armed={armed}
+          disabled={disabled}
+          onAnswer={(answer) => onReply?.(answer)}
+          onDiscard={onReject}
+          onSuggest={onSuggest}
+        />
+      )}
+      {isReply && !newMail && (
         <ReplyCardForm
           form={reply}
           detail={detail}

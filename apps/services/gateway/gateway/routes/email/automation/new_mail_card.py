@@ -149,6 +149,7 @@ async def new_mail_card(
     a send can carry. An address that the card cannot show, a subject with a
     line break or a hidden character, and a mailbox of another member are
     each refused, and no card shows."""
+    from acb_skills.held_card import file_label
     from acb_skills.reply_card import clean_reply_body
     from gateway.routes.email.core import _assert_account_owner
     from gateway.routes.email.transport.metorite_files import resolve_metorite_files
@@ -172,8 +173,10 @@ async def new_mail_card(
         "metorite": [{"ref": f.ref, "digest": f.digest} for f in shared],
     }
     card_id = await write_record(user, record, namespace=RECORD_NAMESPACE)
-    files = ([str(a.get("name") or a["path"]) for a in artifacts]
-             + [f"{f.name} ({_size_text(f.size)})" for f in shared])
+    # The one label of a file row (``held_card.file_label``): the name in
+    # quotes, so a name that a sender chose never reads as a person.
+    files = ([file_label(str(a.get("name") or a["path"]), "") for a in artifacts]
+             + [file_label(f.name, _size_text(f.size)) for f in shared])
     _log.info("email.new_mail_card_built", people=sum(len(v) for v in lists.values()),
               files=len(files))
     return {"card_id": card_id, "mailbox": _mailbox_text(me), "subject": subject,

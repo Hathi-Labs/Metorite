@@ -44,6 +44,14 @@ export interface ReplyRecipients {
 }
 
 export interface ReplyForm {
+  /**
+   * `"new"` on the card of a NEW mail (§18.10, owner 2026-11-03). It answers
+   * no email, so `messageId` is empty, the subject is editable, and the files
+   * are fixed lines. A reply form has no kind.
+   */
+  kind?: "new";
+  /** The files of a new mail, each as one fixed line ("File: \"a.pdf\" (4 KB)"). */
+  files?: string[];
   /** The email the reply answers. The answer names it, so it acts on no other. */
   messageId: string;
   /**
@@ -149,10 +157,14 @@ export function replyFromEvent(value: unknown, requestId?: string): ReplyForm | 
   const ticked = tickedOf(v.ticked, { reply, reply_all: replyAll });
   if (ticked === null) return null;
   const o = v.original && typeof v.original === "object" ? (v.original as Record<string, unknown>) : {};
+  const isNew = v.kind === "new";
   const messageId = typeof v.message_id === "string" ? v.message_id.trim() : "";
-  if (!messageId) return null;
+  // A reply names the email it answers. A new mail (§18.10) answers none.
+  if (!messageId && !isNew) return null;
   const notices = Array.isArray(v.notices) ? v.notices.filter((n): n is string => typeof n === "string" && !!n.trim()) : [];
+  const files = Array.isArray(v.files) ? v.files.filter((f): f is string => typeof f === "string" && !!f.trim()) : [];
   return {
+    ...(isNew ? { kind: "new" as const, files } : {}),
     messageId,
     notices,
     mailbox: text(v.mailbox),
@@ -609,4 +621,74 @@ export function watchCardDraft(
     host.doc.removeEventListener("visibilitychange", onShow);
   }
   return stop;
+}
+
+// ── The one email card of a NEW mail (§18.10, owner 2026-11-03) ─────────────
+//
+// Every email that the assistant writes uses ONE card. For a new mail the
+// member ticks the people, edits the subject and the text, and presses Send,
+// Save draft or Discard. The gateway took the people and the files from its
+// own record of the card, so a tick can take a person off and never add one.
+// A new person is added by asking in the chat, never on the card (owner).
+
+/** The longest subject the server takes (`reply_card.MAX_SUBJECT`). */
+export const MAX_SUBJECT = 200;
+
+/** The nudge line under the text: the member can also ask the chat. */
+export const NUDGE_LEAD = "Want it changed?";
+export const NUDGE_TEXT = "Tell me in the chat below.";
+/**
+ * Two examples of what to ask. A click puts the words in the chat box and
+ * sends nothing: the member reads them, and presses Send in the chat.
+ */
+export const NUDGE_CHIPS: readonly string[] = ["make it shorter", "make it more formal"];
+
+/** True for the card of a new mail. */
+export function isNewMail(form: ReplyForm | null | undefined): boolean {
+  return form?.kind === "new";
+}
+
+/** The subject may go: one line, and it fits. An empty subject may go. */
+export function subjectCanGo(subject: string): boolean {
+  return subject.length <= MAX_SUBJECT && !/[\r\n]/.test(subject);
+}
+
+/** "Email to kim@…": each ticked To, in full. */
+export function newMailSummary(form: ReplyForm, ticks: ReplyTicks): string {
+  const to = tickedFor(form, true, ticks).to;
+  return to.length > 0 ? `Email to ${to.join(", ")}` : "No one in To is ticked, so the email cannot go";
+}
+
+/** What the buttons of a new-mail card do, in one line under them. */
+export function newMailHint(form: ReplyForm): string {
+  const box = form.mailbox ? ` from ${form.mailbox}` : "";
+  return `Nothing goes out until you press Send${box}. Save draft keeps it in your Drafts and sends nothing. Discard drops it.`;
+}
+
+export type NewMailApproval = ReplyApproval;
+
+/**
+ * The answer of Send or Save draft on a new-mail card, or null when the
+ * text, the subject or the ticks may not go. The keys are exactly
+ * `NEW_MAIL_ANSWER_KEYS` of `acb_skills/reply_card.py`, and a test reads
+ * this object to hold the two in step. `to`, `cc` and `bcc` are the people
+ * the member left ticked, from the server's lists. The text goes as typed.
+ */
+export function newMailAnswer(
+  form: ReplyForm,
+  choice: { action: ReplyAction; subject: string; body: string; ticks: ReplyTicks },
+): NewMailApproval | null {
+  if (!isNewMail(form) || !bodyCanGo(choice.body) || !subjectCanGo(choice.subject)) return null;
+  const picked = tickedFor(form, true, choice.ticks);
+  if (picked.to.length === 0) return null;
+  const mail = {
+    kind: "new",
+    action: choice.action,
+    subject: choice.subject,
+    body: choice.body,
+    to: picked.to,
+    cc: picked.cc,
+    bcc: picked.bcc ?? [],
+  };
+  return `${REPLY_ANSWER_PREFIX}${JSON.stringify({ reply: mail })}` as NewMailApproval;
 }

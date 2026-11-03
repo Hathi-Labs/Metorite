@@ -34,7 +34,7 @@ import {
   type RowsApproval,
 } from "@/lib/confirmationQueue";
 import { unfenced } from "@/lib/fencedText";
-import type { ReplyApproval } from "@/lib/replyCard";
+import { isNewMail, type ReplyApproval } from "@/lib/replyCard";
 
 /** A plain answer, an Approve that names the ticked rows of a card with
  *  rows (WS-46 P13 one-card), or the Send or Save of a reply card (EM-CR).
@@ -48,6 +48,8 @@ interface ConfirmationQueueProps {
   onAnswer: (card: PendingConfirmation, answer: ConfirmationAnswer) => void;
   /** The card to show first. Tests and the visual rig set it. */
   initialIndex?: number;
+  /** Put words in the chat box, and send nothing (a new-mail card's chips, §18.10). */
+  onSuggest?: (text: string) => void;
 }
 
 /** The index the queue shows: the one asked for, held inside the list. */
@@ -75,7 +77,7 @@ export function pickShown(cards: PendingConfirmation[], shown: Shown): number {
   return found >= 0 ? found : shownIndex(shown.index, cards.length);
 }
 
-export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0 }: ConfirmationQueueProps) {
+export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0, onSuggest }: ConfirmationQueueProps) {
   const [shown, setShown] = useState<Shown>({ key: null, index: initialIndex });
   // The member's ticks of every card with rows, by key. The queue holds
   // them, so a page away and back keeps them (PR #691 review). The logic is
@@ -118,7 +120,7 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
       }}
       onReject={() => onAnswer(card, "REJECT")}
       // EM-CR: a reply card answers with the member's choice and body.
-      {...(card.reply !== undefined ? { reply: card.reply, onReply: (a: ReplyApproval) => onAnswer(card, a) } : {})}
+      {...(card.reply !== undefined ? { reply: card.reply, onReply: (a: ReplyApproval) => onAnswer(card, a), onSuggest } : {})}
     />
   );
   // The stack's tabs, deck edges, swipe and spring (owner, 2026-10-24 and
@@ -136,6 +138,6 @@ export function cardTab(card: PendingConfirmation): CardStackTab {
   return {
     key: card.key,
     label: card.fenced ? unfenced(summary) : summary,
-    icon: card.reply !== undefined ? "Reply" : "ShieldCheck",
+    icon: isNewMail(card.reply) ? "Mail" : card.reply !== undefined ? "Reply" : "ShieldCheck",
   };
 }
