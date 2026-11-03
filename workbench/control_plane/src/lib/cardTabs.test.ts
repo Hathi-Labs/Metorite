@@ -52,9 +52,14 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
       { id: "to-0", label: "To: Sharat Satyanarayana <sharat@x.test>", checked: true, kind: "to" as const },
     ];
     expect(tabLabel({ title: "Send this new email?", rows })).toBe("Email to Sharat Satyana…");
-    expect(tabLabel({ title: "Send this draft?", rows: [{ id: "to-0", label: "To: kim.lee@x.test", checked: true, kind: "to" as const }] })).toBe("Email to Kim");
+    expect(tabLabel({ title: "Send this draft?", rows: [{ id: "to-0", label: "To: kim.lee@x.test", checked: true, kind: "to" as const }] })).toBe("Draft to Kim");
     expect(tabLabel({ title: "Send this new email?", context: "To: Kim <kim@x.test>, ann@x.test" })).toBe("Email to Kim");
-    expect(tabLabel({ title: "Send this draft?" })).toBe("Email");
+    expect(tabLabel({ title: "Send this draft?" })).toBe("Draft");
+    expect(tabLabel({ title: "Send this new email?" })).toBe("Email");
+    const one = [{ id: "to-0", label: "To: kim@x.test", checked: true, kind: "to" as const }];
+    expect(tabLabel({ title: "Send this draft at 10:00?", rows: one })).toBe("Scheduled to Kim");
+    expect(tabLabel({ title: "Forward this email?", rows: one })).toBe("Forward to Kim");
+    expect(tabLabel({ title: "Send this email?", rows: one })).toBe("Email to Kim");
     const reply = { messageId: "m", replyAll: false, recipients: { reply: { to: ["Pat Jones <pat@x.test>"], cc: [] }, reply_all: { to: ["z@x.test"], cc: [] } } };
     expect(tabLabel({ title: "Reply to 1 recipient?", reply: reply as never })).toBe("Reply to Pat Jones");
     expect(tabLabel({ title: "Create this task?", detail: `${long} · status Open` })).toBe("Task: Send Neuropeak a…");

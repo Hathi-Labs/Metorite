@@ -161,9 +161,9 @@ test.describe("approval cards as one card with tabs", () => {
     await expect(page.locator("[data-confirmation-card]")).toContainText("Send this draft?");
     // With tabs, the card draws no pager of its own: the tabs are the switcher.
     await expect(page.locator("[data-confirmation-pager]")).toHaveCount(0);
-    await tabs.getByRole("tab", { name: /Send this new email/ }).click();
+    await tabs.getByRole("tab", { name: /^Email/ }).click();
     await expect(page.locator("[data-confirmation-card]")).toContainText("Send this new email?");
-    await expect(tabs.getByRole("tab", { selected: true })).toContainText("Send this new email");
+    await expect(tabs.getByRole("tab", { selected: true })).toContainText("Email");
     await page.keyboard.press("ArrowLeft");
     await expect(page.locator("[data-confirmation-card]")).toContainText("Send this draft?");
   });

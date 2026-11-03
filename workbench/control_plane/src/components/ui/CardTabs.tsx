@@ -205,7 +205,7 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
               aria-label={slim ? `${t.title ?? t.label}${t.unseen ? " (not yet seen)" : ""}` : undefined}
               data-card-tab={i}
               data-unseen={t.unseen && !active ? "" : undefined}
-              onClick={() => onGo(i)}
+              onClick={() => { onGo(i); requestAnimationFrame(() => document.getElementById(cardTabId(uid, i))?.focus()); }}
               className={tabClass(active, level)}
             >
               <TabFace tab={t} active={active} level={level} />

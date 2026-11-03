@@ -37,9 +37,20 @@ export function cardKind(card: Pick<PendingConfirmation, "title" | "reply">): Ca
   const t = card.title.trim();
   if (/^reply\b/i.test(t)) return "reply";
   if (/\breminder\b/i.test(t)) return "reminder";
-  if (/^send\b/i.test(t) && /\b(email|mail|draft|reply|forward|message)\b/i.test(t)) return "send";
+  if (/^(send|forward)\b/i.test(t) && /\b(email|mail|draft|reply|forward|message)\b/i.test(t)) return "send";
   if (/\btasks?\b/i.test(t) && /^(create|watch|update|archive|delete|complete)\b/i.test(t)) return "task";
   return "other";
+}
+
+/** The lead words of a mail tab, from the server's title phrase: a send at a
+ *  time is "Scheduled to", a held draft "Draft to", a forward "Forward to",
+ *  and any other new mail "Email to". Each mail kind reads its own way. */
+export function mailWord(title: string): string {
+  const t = title.trim();
+  if (/\bat\b.+\?$/i.test(t)) return "Scheduled to";
+  if (/\bforward/i.test(t)) return "Forward to";
+  if (/\bdraft\b/i.test(t)) return "Draft to";
+  return "Email to";
 }
 
 /** How tight the tab row is. 0: every tab in full. 1: a tab that is not open
@@ -156,7 +167,7 @@ export function tabLabel(card: TabCard): string {
     object ? `${word} ${cutLabel(object, TAB_LABEL_MAX - word.length - 1)}` : "";
   switch (kind) {
     case "send":
-      return lead("Email to", sendTo(card)) || "Email";
+      return lead(mailWord(card.title), sendTo(card)) || mailWord(card.title).replace(/ to$/, "");
     case "reply": {
       const f = card.reply;
       const to = f ? f.recipients[f.replyAll ? "reply_all" : "reply"].to[0] : undefined;
