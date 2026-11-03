@@ -6,7 +6,7 @@
 --
 -- SET NOT NULL + FK + index. ⚠️ THIS IS THE ACCESS EXCLUSIVE PHASE — it scans each table. Apply in a window, table by table if necessary, and never behind a long-running transaction (see the generator docstring: that is the exact shape of the 14h44m outage).
 --
--- Tables in this phase: 190
+-- Tables in this phase: 191
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -2641,3 +2641,15 @@ ALTER TABLE pm_decisions ALTER COLUMN organization_id SET NOT NULL;
 ALTER TABLE pm_decisions ADD CONSTRAINT pm_decisions_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS pm_decisions_org_idx ON pm_decisions (organization_id);
+
+-- pm_agent_guidance
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_agent_guidance WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_agent_guidance still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_agent_guidance ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_agent_guidance ADD CONSTRAINT pm_agent_guidance_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_agent_guidance_org_idx ON pm_agent_guidance (organization_id);

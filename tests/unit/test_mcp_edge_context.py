@@ -24,7 +24,7 @@ Run::
 * X3. ``E`` ``_ancestor``: no cut of the description. ``test_x2_the_ancestors_come_root_first_with_their_fields``.
 * X4. ``E`` ``_walk_up``: on a 404, ``break`` with no stub, so the hidden level drops out. ``test_x4_a_hidden_parent_is_one_stub_and_the_walk_stops``.
 * X5. ``E``: ``MAX_ANCESTORS = 6``. ``test_x5_the_walk_reads_at_most_five_levels``.
-* X6. ``E`` ``_walk_up``: ``spare = MAX_ANCESTORS`` (the spare calls ignore the walk). ``test_x6_the_call_ceiling_is_twelve``.
+* X6. ``E`` ``_walk_up``: ``spare = MAX_ANCESTORS`` (the spare calls ignore the walk). ``test_x6_the_call_ceiling_is_thirteen``.
 * X7. ``E`` ``_ancestor``: show the status name for a parent in another project. ``test_x7_a_parent_in_another_project_shows_its_category_only``.
 * X8. ``E`` ``_project_of``: re-raise a 404. ``test_x8_the_project_has_its_name_and_description_or_is_null``.
 * X9. ``E`` ``_get_task_context``: swap ``incoming`` and ``outgoing``. ``test_x9_blocked_by_and_blocks_come_from_the_blocks_links``.
@@ -295,13 +295,14 @@ class TestTheContext:
                  and p.count("/") == 3]
         assert len(reads) == 1 + tools.MAX_ANCESTORS
 
-    async def test_x6_the_call_ceiling_is_twelve(self, board):
+    async def test_x6_the_call_ceiling_is_thirteen(self, board):
         """§12.4: five calls of get_task, five parents, the node and the
-        timeline. The deepest chain, every parent in another project, and
-        the runs flag on. The spare calls are gone, so no status read more."""
+        timeline. SW-31a adds the read of the guidance. The deepest chain,
+        every parent in another project, and the runs flag on. The spare calls
+        are gone, so no status read more."""
         _chain(board, 7, project=OTHER_PROJECT)
         await _context()
-        assert tools.CONTEXT_CALL_CEILING == 12
+        assert tools.CONTEXT_CALL_CEILING == 13
         assert len(board.requests) == tools.CONTEXT_CALL_CEILING
 
     async def test_x6_a_short_chain_stays_under_the_ceiling(self, board):
@@ -761,6 +762,7 @@ SENT: dict[tuple[str, str], set[str]] = {
                                        "cursor"},
     ("GET", "/projects/tasks/{task_id}/timeline"): {"kind", "page", "page_size"},
     ("GET", "/projects/tasks/{task_id}/refs"): {"refresh"},
+    ("GET", "/agent-guidance/refs"): {"project_ids"},
 }
 
 
@@ -787,8 +789,10 @@ class TestTheQueryParametersAreRealRouteParameters:
             pair = templates.get(r.path)
             if pair is None and r.path.endswith("/timeline"):
                 pair = ("GET", "/projects/tasks/{task_id}/timeline")
-            if pair is None and r.path.endswith("/refs"):
+            if pair is None and r.path.startswith("/projects/tasks/") and r.path.endswith("/refs"):
                 pair = ("GET", "/projects/tasks/{task_id}/refs")
+            if pair is None and r.path == "/agent-guidance/refs":
+                pair = ("GET", "/agent-guidance/refs")
             if pair is not None:
                 assert set(r.pairs) <= SENT[pair], (r.path, r.pairs)
 

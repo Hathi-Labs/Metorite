@@ -73,6 +73,17 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
     ),
     # MCP-P1a (spec §19.5, "The new pairs"): the two list routes of the app
     # door. They hold no data of an app.
+    # WS-MCP SW-31a (agent_coordination.md SW-31): the guidance of a task and
+    # the refs of `my_work`. They are not Projects routes (the editor is a
+    # Settings screen, and the chat tool is a follow-up).
+    ("GET", "/agent-guidance/tasks/{task_id}"): (
+        "SW-31a. `get_task_context` and `claim_task` read the org's guidance for"
+        " a task. It is not a Projects route (agent_coordination.md SW-31)."
+    ),
+    ("GET", "/agent-guidance/refs"): (
+        "SW-31a. `my_work` reads the id and version of the nearest guidance block"
+        " of each row. It is not a Projects route (agent_coordination.md SW-31)."
+    ),
     ("GET", "/agent-access/apps"): (
         "MCP-P1a. `list_apps` reads the apps that the door serves to the member."
         " It is not a Projects route (spec §19.4)."

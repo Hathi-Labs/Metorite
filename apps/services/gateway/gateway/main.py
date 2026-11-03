@@ -2132,6 +2132,17 @@ try:
 except Exception:  # pragma: no cover
     pass
 
+try:
+    # WS-MCP SW-31a — the org's written rules for agents
+    # (agent_coordination.md SW-31): the save, the history, the blocks that
+    # apply to a task, and the refs for `my_work`. Ships dark: 404 while
+    # `AGENT_GUIDANCE_ORGS` does not hold the caller's org.
+    from gateway.routes.agent_guidance import router as _agent_guidance_router
+
+    app.include_router(_agent_guidance_router)
+except Exception:  # pragma: no cover
+    pass
+
 # ---------- Health ----------
 
 class Health(BaseModel):
