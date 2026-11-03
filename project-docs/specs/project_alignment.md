@@ -1,7 +1,7 @@
 # Project alignment — Metorite checks work against the project's rules (WS-ALN)
 
 > **Product:** Metorite · **Feature:** the project of a task, the project's rules, and a check that asks a person · **Updated:** 2026-11-02 · **Owner:** vjvarada
-> **Status:** 🟡 **IN BUILD, DARK.** ALN-0 (this spec), ALN-1 (§5, the durable trigger) and ALN-4 (§4.1, the pin: the table `pm_project_authorities`, migration 334, three routes and three chat tools, no UI) are built. `ALIGN_JOBS_ORGS` and `AUTHORITY_PINS_ORGS` ship empty and `JOB_QUEUE` ships off, so no job and no pin exists yet, and the `align.check` handler is a stub until ALN-7. ALN-2a (the table and the service of one person decides, migration 332, merged e827f2012) is built dark behind `DECISIONS_ORGS`. ALN-2b, ALN-4b and AUTO-7b are next. The owner did not answer ALN-Q1 to ALN-Q5, and told us to start. The build runs on the working defaults of §14.
+> **Status:** 🟡 **IN BUILD, DARK.** ALN-0 (this spec), ALN-1 (§5, the durable trigger) and ALN-4 (§4.1, the pin: the table `pm_project_authorities`, migration 339, three routes and three chat tools, no UI) are built. `ALIGN_JOBS_ORGS` and `AUTHORITY_PINS_ORGS` ship empty and `JOB_QUEUE` ships off, so no job and no pin exists yet, and the `align.check` handler is a stub until ALN-7. ALN-2a (the table and the service of one person decides, migration 332, merged e827f2012) is built dark behind `DECISIONS_ORGS`. ALN-2b, ALN-4b and AUTO-7b are next. The owner did not answer ALN-Q1 to ALN-Q5, and told us to start. The build runs on the working defaults of §14.
 > **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §11 was read on that commit. Earlier task text came from a read at `308df8828`, and §2 lists each fact that changed.
 > **Board:** WS-ALN in `work_plan.md` §2.1. **Decision:** D160. D12, D75, D93, D100, D104, D105, D128, D131, D140, D145 and workflows G5 bind it.
 > **Metorite:** project "Projects/Tasks App", epic 1368, this spec task 1369. The questions are tasks 1370 to 1374. The slices ALN-1 to ALN-14 are tasks 1375 to 1388, in order.
@@ -137,7 +137,7 @@ If the owner wants a hand-written rule ("a task in Billing needs a due date"), t
 
 ## 4. Data shapes
 
-Every table is tenant-scoped with FORCE ROW LEVEL SECURITY (R5), and every migration is expand only (R6). Migration numbers are taken at build time (R1). Migration 324 was the highest on `ce29836ea`. When ALN-4 was built on 2026-11-02, main held up to 325, and branches held 326, 327 and 328. So ALN-4 took 329. At merge on 2026-11-03, main held 332 (ALN-2a) and a branch held 333, so the file became 334.
+Every table is tenant-scoped with FORCE ROW LEVEL SECURITY (R5), and every migration is expand only (R6). Migration numbers are taken at build time (R1). Migration 324 was the highest on `ce29836ea`. When ALN-4 was built on 2026-11-02, main held up to 325, and branches held 326, 327 and 328. So ALN-4 took 329. At merge on 2026-11-03, main held 332 (ALN-2a) and a branch held 333, so the file became 334. Main then reached 337 (PZ-33b), and branches held 336 and 338, so the file became 339.
 
 ### 4.1 The pin of a page to a project (ALN-4)
 
@@ -157,7 +157,7 @@ One active pin for each project and page. A project lead, or a member with `proj
 
 **The leak check at the pin.** A page with narrower grants than its project would leak its text through the quotes of a finding. The pin refuses that case. A lead must widen the page, or choose another page. This is the safer of the two options in task 1378. The warning option can come later.
 
-**As built (ALN-4, migration `334_pm_project_authorities.sql`, code `routes/projects/authorities.py`).**
+**As built (ALN-4, migration `339_pm_project_authorities.sql`, code `routes/projects/authorities.py`).**
 
 - **Routes.** `GET`, `POST` and `DELETE` on `/projects/nodes/{id}/authorities`. A pin and a removal call `assert_may_write_grant`, so a lead of the project or of an ancestor, or a holder of `projects:settings:write`, may act. A project in a personal tree has no pin and gets its own 403 sentence. A page of another org and a page the caller cannot read give the same 404. A second pin of the same page returns the existing pin with 200. A removal sets `state = 'removed'`, `removed_by` and `removed_at`, and keeps the row. A lead can pin a removed page again, and that makes a new row.
 - **The version.** `kb_pages` has no version column. `page_version` is the highest `kb_page_versions.version` of the page, read with the page row locked.
@@ -433,7 +433,7 @@ Each path was read on `ce29836ea`.
 - `apps/services/gateway/gateway/decide_features.py`, `crm_sync/note_labels.py`
 - `apps/services/gateway/gateway/routes/knowledge/pages.py` (`publish_page`), `routes/knowledge/proposals.py`, `routes/knowledge/backlinks.py`, `kb_index/query.py`
 - `apps/services/agent_edge/agent_edge/tools.py` (`get_task_context`, `_create_task`)
-- `infra/postgres/146_projects.sql`, `147_projects_personal.sql`, `255_pm_task_refs.sql`, `272_knowledge_pages.sql`, `334_pm_project_authorities.sql` (ALN-4)
+- `infra/postgres/146_projects.sql`, `147_projects_personal.sql`, `255_pm_task_refs.sql`, `272_knowledge_pages.sql`, `339_pm_project_authorities.sql` (ALN-4)
 - `apps/services/gateway/gateway/routes/projects/authorities.py` (ALN-4, the one writer of the pins)
 - `project-docs/specs/agent_coordination.md` (SW-31), `workflows_app.md` (G5), `knowledge_graph.md` §3.2 (KG-4), `proactive_reach.md`
 - `tests/unit/test_pm_task_insert_sites.py` (the D80 fence)

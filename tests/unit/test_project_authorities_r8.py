@@ -3,7 +3,7 @@
 Spec: ``project-docs/specs/project_alignment.md`` §4.1, §7.2 and the §10 row
 ALN-4. Code: ``gateway/routes/projects/authorities.py`` (the one writer) and
 the three helpers in ``gateway/routes/knowledge/core.py``. Migration: the
-file that creates ``pm_project_authorities`` (329 at build, 334 at merge).
+file that creates ``pm_project_authorities`` (329 at build, 339 at merge).
 
 Two halves.
 
