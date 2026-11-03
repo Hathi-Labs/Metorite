@@ -1,12 +1,18 @@
 "use client";
 
 import Icon from "@/components/Icon";
+import { TASK_CARD_FRAME } from "@/lib/layers";
+import { useViewMode } from "@/components/ViewModeProvider";
 import { useEffect, useMemo } from "react";
 import { useTaskStore } from "../lib/taskStore";
 import { TaskDetail } from "./ItemDetail";
 
 const NOOP = () => {};
 
+// TC-1 (2026-11-03): the overlay fills the page column (a desktop) or ends above
+// the bottom nav (a phone), so the assistant stays in view (D172.4,
+// `lib/layers.ts`).
+//
 // Full-page task view — a ClickUp/Linear-style focused overlay over the same
 // editable TaskDetail. Escape / backdrop / × closes it. It has two lives, and
 // `tasks/page.tsx` picks which one by whether it passes `itemId`:
@@ -36,6 +42,7 @@ export function TaskFocusModal({
   const items = useTaskStore((s) => s.items);
   const backend = useTaskStore((s) => s.backend);
   const closeFocus = useTaskStore((s) => s.closeFocus);
+  const { isMobile } = useViewMode();
 
   const controlled = itemId !== undefined;
   const openId = controlled ? itemId : focusedItemId;
@@ -61,7 +68,7 @@ export function TaskFocusModal({
   if (!item) return null;
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-background/70 backdrop-blur-sm sm:p-8">
+    <div className={`${isMobile ? TASK_CARD_FRAME.phone : TASK_CARD_FRAME.desktop} flex items-start justify-center overflow-y-auto bg-background/70 backdrop-blur-sm sm:p-8`}>
       {/* backdrop */}
       <button
         type="button"
@@ -73,7 +80,7 @@ export function TaskFocusModal({
           vh) so the browser chrome on phones doesn't hide the bottom.
           Radius is `rounded-lg` off `--radius`, not a fixed 2xl — DESIGN_SYSTEM
           §4: a 16px corner ignores Graphite's 0.125rem and Material's 1rem. */}
-      <div className="relative flex h-dvh max-h-dvh w-full max-w-3xl flex-col overflow-hidden border-border bg-card shadow-2xl sm:h-auto sm:max-h-[calc(100dvh-4rem)] sm:rounded-lg sm:border">
+      <div className="relative flex h-full max-h-full w-full max-w-3xl flex-col overflow-hidden border-border bg-card shadow-2xl sm:h-auto sm:max-h-[calc(100dvh-4rem)] sm:rounded-lg sm:border">
         <button
           type="button"
           onClick={close}
