@@ -17,6 +17,7 @@ import {
   type ProviderAvailability,
 } from "./connect";
 import type { ForwardBody } from "./forward";
+import { announceDraftLeft } from "@/lib/draftLeftEvent";
 
 /** The answer of `POST /email/forward`. */
 export interface ForwardResult {
@@ -1082,6 +1083,9 @@ export async function updateEmailLabels(
 
 export async function deleteEmail(id: string): Promise<void> {
   await gatewayFetch(`/email/messages/${id}`, { method: "DELETE" });
+  // The message can be the draft of a chat reply card. The card reads its
+  // state again at once (owner report, 2026-11-03).
+  announceDraftLeft(id);
 }
 
 // ── Attachments ────────────────────────────────────────────────────────────
@@ -1290,7 +1294,7 @@ export async function sendDraft(
   draftId: string,
   allowTextOnly?: boolean,
 ): Promise<{ sent: boolean }> {
-  return gatewayFetch("/email/drafts/send", {
+  const out = await gatewayFetch<{ sent: boolean }>("/email/drafts/send", {
     method: "POST",
     body: JSON.stringify({
       account_id: accountId,
@@ -1298,6 +1302,10 @@ export async function sendDraft(
       ...(allowTextOnly === undefined ? {} : { allow_text_only: allowTextOnly }),
     }),
   });
+  // A chat reply card that wrote this draft must stop its Send now, or the
+  // reply goes out twice (owner report, 2026-11-03).
+  announceDraftLeft(draftId);
+  return out;
 }
 
 /**
