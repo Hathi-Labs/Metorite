@@ -141,8 +141,9 @@ ROLLUP_FIELD_TYPES: Mapping[str, tuple[str, ...]] = {
     "max": ("number", "money", "date")}
 #: The code of a roll-up that reads a roll-up (also through a formula).
 ROLLUP_OF_ROLLUP = "rollup_of_rollup"
-#: The code of a number sum that a stored number cannot hold exactly: more than
-#: 15 significant digits, or an exponent in its text. It is not too large.
+#: The code of a number sum that a stored number cannot hold exactly: its JSON
+#: number does not read back as the same value, or it needs an exponent. It is
+#: not too large.
 ROLLUP_PRECISION = "rollup_precision"
 #: The kind of a stored rule that the checks cannot read. It is not in
 #: :data:`RULE_KINDS`, so :func:`check_kind_known` refuses each write.
@@ -1517,9 +1518,9 @@ def _too_large(rule: Rule, object_name: str) -> RollupError:
 
 
 def _exact_number(rule: Rule, object_name: str, exact: Decimal) -> Any:
-    """The JSON number of the number result *exact*, which is below 10^15. A
-    stored number holds at most 15 significant digits and no exponent, so a sum
-    that needs more raises ``rollup_precision``. No rule declares a scale for a
+    """The JSON number of the number result *exact*, which is below 10^15. When
+    that JSON number does not read back as the same value, or needs an exponent,
+    the sum raises ``rollup_precision``. No rule declares a scale for a
     roll-up target, so the store does not round, and it never stores an
     inexact sum. The message gives the next step."""
     stored = studio_expr.number_json(exact)
