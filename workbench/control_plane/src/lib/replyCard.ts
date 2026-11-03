@@ -21,6 +21,7 @@
  * environment. Fence: `src/lib/replyCard.test.ts`.
  */
 
+import { DRAFT_LEFT_EVENT } from "@/lib/draftLeftEvent";
 import { classOf, type PersonClass } from "@/lib/sendCard";
 
 /** The prefix of an Approve with a payload (`REPLY_ANSWER_PREFIX`). */
@@ -69,6 +70,11 @@ export interface ReplyForm {
    * 2026-10-22). The member's Discard names it, and only it can go.
    */
   draftId?: string;
+  /**
+   * Task 1526, item 11: the draft write had an unknown outcome. A draft can
+   * exist that the server cannot name, so the card cannot send, and it says so.
+   */
+  draftUnsaved?: boolean;
   /**
    * §21, a held chat only: the server's class of each address, by its lower
    * case. A form with none is exactly as before, and draws no mark.
@@ -162,6 +168,7 @@ export function replyFromEvent(value: unknown, requestId?: string): ReplyForm | 
     body: text(v.body, MAX_REPLY_BODY),
     note: text(v.note),
     draftId: text(v.draft_id, 64),
+    ...(v.draft_unsaved === true ? { draftUnsaved: true } : {}),
     ...classesOf(v.classes),
     ...(ticked ? { ticked } : {}),
     ...marksOf(v.marks, replyAll),
@@ -461,8 +468,145 @@ export function replySummary(form: ReplyForm, replyAll: boolean, ticks?: ReplyTi
   return to.length > 0 ? `Reply to ${to.join(", ")}` : "No one in To is ticked, so the reply cannot go";
 }
 
-/** What the buttons do, in one line under them. */
+/**
+ * What the buttons do, in one line under them. A card that wrote a draft
+ * (`draftId`) says that the reply is already in Drafts (owner report,
+ * 2026-11-03): the old words told the member that only Save puts it there.
+ * Discard trashes only a draft that nobody changed (`trash_chat_draft`), so
+ * the words say so (fix round 1, item 8).
+ */
 export function replyHint(form: ReplyForm): string {
+  if (form.draftId) {
+    const where = form.mailbox ? `the Drafts of ${form.mailbox}` : "your Drafts";
+    return `This reply is in ${where}. Send sends it now. Save keeps your edits in Drafts. Discard deletes it from Drafts if you did not change it there.`;
+  }
   const box = form.mailbox ? ` from ${form.mailbox}` : "";
   return `Send replies now${box}. Save to Drafts keeps it in your mailbox and sends nothing. Discard drops it.`;
+}
+
+/** The label of the Save button: "Save draft" when the reply is already in Drafts. */
+export function saveLabel(form: ReplyForm): string {
+  return form.draftId ? "Save draft" : "Save to Drafts";
+}
+
+// ── A reply that left Drafts (owner report, 2026-11-03, task 1526) ─────────
+//
+// The card writes its reply to Drafts at once. The member can send or delete
+// that draft in the Email app while the card waits. The card then reads that
+// state, shows one line, and stops its Send and Save. The gateway refuses
+// both too (`reply_card_act`, a 409 `draft_gone`), so the card is a courtesy
+// and the server is the guard.
+
+/**
+ * The line of a card whose draft left Drafts. It claims no send (fix round
+ * 1, item 3): a rule can also replace an unedited chat draft when new mail
+ * comes in (`_resolve_existing_thread_draft`).
+ */
+export const DRAFT_LEFT_LINE =
+  "This reply is no longer in Drafts. It was sent, deleted or replaced outside this card, so this card cannot send it.";
+
+/**
+ * The line of a card whose draft write had an unknown outcome (item 11). The
+ * gateway sends the same words as a notice (`DRAFT_UNSAVED`).
+ */
+export const DRAFT_UNSAVED_LINE =
+  "This reply could not be saved to Drafts, so this card cannot send it. Ask me to draft it again.";
+
+/** How often a card that shows reads the state of its draft. */
+export const DRAFT_POLL_MS = 60_000;
+
+/** The state of a card's draft. `unknown` keeps the card as it is. */
+export type DraftState = "in" | "gone" | "unknown";
+
+/**
+ * Is the card's draft still in Drafts? One read of the local row, through
+ * the email BFF (`GET /email/reply-card/draft-state`). Only a clear `false`
+ * of the server is `gone`. A fault, a 404 and an odd answer are `unknown`.
+ */
+export async function readDraftState(draftId: string, get: typeof fetch = fetch): Promise<DraftState> {
+  if (!draftId) return "unknown";
+  try {
+    const res = await get(`/api/email/reply-card/draft-state?draft_id=${encodeURIComponent(draftId)}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return "unknown";
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (data.in_drafts === false) return "gone";
+    if (data.in_drafts === true) return "in";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/** The window and the document that the watch listens on. A test passes fakes. */
+export interface DraftWatchHost {
+  win: Pick<EventTarget, "addEventListener" | "removeEventListener">;
+  doc: Pick<EventTarget, "addEventListener" | "removeEventListener"> & { visibilityState: string };
+}
+
+/**
+ * Watch the card's draft while the card shows. It reads the state once at
+ * mount, when the window gets the focus, when the page shows again, every
+ * `DRAFT_POLL_MS` while the page shows, and at once on `DRAFT_LEFT_EVENT`.
+ * A hidden page reads nothing. On `gone` it calls `onGone` once and stops.
+ * A read that comes while one runs makes one more read after it, so a send
+ * during a read is not lost. Returns the stop function. A card with no
+ * draft, or a render with no window, watches nothing.
+ */
+export function watchCardDraft(
+  draftId: string,
+  onGone: () => void,
+  opts: { read?: (id: string) => Promise<DraftState>; host?: DraftWatchHost; everyMs?: number } = {},
+): () => void {
+  const found: DraftWatchHost | null =
+    opts.host ?? (typeof window !== "undefined" && typeof document !== "undefined" ? { win: window, doc: document } : null);
+  if (!draftId || !found) return () => {};
+  const host: DraftWatchHost = found;
+  const read = opts.read ?? ((id: string) => readDraftState(id));
+  let live = true;
+  let busy = false;
+  let again = false;
+  const check = async () => {
+    if (!live || host.doc.visibilityState === "hidden") return;
+    if (busy) {
+      again = true;
+      return;
+    }
+    busy = true;
+    try {
+      do {
+        again = false;
+        const state = await read(draftId);
+        if (!live) return;
+        if (state === "gone") {
+          stop();
+          onGone();
+          return;
+        }
+      } while (again && live);
+    } finally {
+      busy = false;
+    }
+  };
+  const onEvent = () => void check();
+  const onShow = () => {
+    if (host.doc.visibilityState !== "hidden") void check();
+  };
+  host.win.addEventListener("focus", onEvent);
+  host.win.addEventListener(DRAFT_LEFT_EVENT, onEvent);
+  host.doc.addEventListener("visibilitychange", onShow);
+  const timer = setInterval(onEvent, opts.everyMs ?? DRAFT_POLL_MS);
+  // Fix round 1, item 5: one read at mount. A card that mounts again after a
+  // visit to /email can hold a draft that left while the card was away.
+  void check();
+  function stop() {
+    if (!live) return;
+    live = false;
+    clearInterval(timer);
+    host.win.removeEventListener("focus", onEvent);
+    host.win.removeEventListener(DRAFT_LEFT_EVENT, onEvent);
+    host.doc.removeEventListener("visibilitychange", onShow);
+  }
+  return stop;
 }
