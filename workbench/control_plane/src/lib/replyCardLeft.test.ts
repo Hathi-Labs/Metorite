@@ -10,8 +10,11 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import ReplyCardForm, { ReplyCardGone } from "@/components/ReplyCardForm";
 import { announceDraftLeft, DRAFT_LEFT_EVENT } from "@/lib/draftLeftEvent";
 import {
   DRAFT_LEFT_LINE,
@@ -223,26 +226,56 @@ describe("the words of a card that wrote a draft", () => {
   });
 });
 
-describe("the card draws the gone state", () => {
+describe("a card whose draft left Drafts collapses (fix round 1, item 4)", () => {
   const card = read("components/ReplyCardForm.tsx");
+  const form = replyFromEvent(VALUE)!;
+  const noop = () => {};
+  // The full card, rendered: it proves that the checks below can see each part.
+  const full = renderToStaticMarkup(
+    createElement(ReplyCardForm, { form, onAnswer: noop, onDiscard: noop, armed: true }),
+  );
+  const gone = renderToStaticMarkup(
+    createElement(ReplyCardGone, { title: "Reply to kim@contoso.test", subject: "Re: Quote", onClose: noop, armed: true }),
+  );
+  const DROPPED = [
+    "data-reply-tick",
+    "<textarea",
+    "data-reply-send",
+    "data-reply-save",
+    "data-reply-discard",
+    "data-reply-mode",
+    "data-reply-lines",
+    "data-reply-count",
+    "aria-label=\"The email\"",
+  ];
 
-  it("watches its draft while it can still be answered", () => {
-    expect(card).toMatch(/disabled \? undefined : watchCardDraft\(draftId, \(\) => setGone\(true\)\)/);
+  it("the full card holds each part that the collapse drops", () => {
+    for (const part of DROPPED) expect(full, part).toContain(part);
+    expect(full).not.toContain("data-reply-card-gone");
   });
 
-  it("stops Send and Save, and shows the one line", () => {
-    expect(card).toMatch(/const ok = bodyCanGo\(body\) && picked\.to\.length > 0 && !gone;/);
-    expect(card).toMatch(/if \(!armed \|\| gone\) return;/);
-    expect(card).toMatch(/\{gone && \([\s\S]*?\{DRAFT_LEFT_LINE\}/);
+  it("the collapsed card holds its title, its subject, the one line and one Close", () => {
+    expect(gone).toContain("Reply to kim@contoso.test");
+    expect(gone).toContain("Re: Quote");
+    expect(gone).toContain(DRAFT_LEFT_LINE);
+    expect(gone).toContain("data-reply-close");
+    expect(gone).toMatch(/>\s*Close\s*</);
+    expect(gone.match(/<button/g) ?? []).toHaveLength(1);
+    for (const part of DROPPED) expect(gone, part).not.toContain(part);
+    expect(gone).not.toContain("Reply all");
+    expect(gone).not.toContain("<input");
+  });
+
+  it("the form returns the collapse when its draft is gone, and Close posts no trash", () => {
+    expect(card).toMatch(/disabled \? undefined : watchCardDraft\(draftId, \(\) => setGone\(true\)\)/);
+    expect(card).toMatch(/if \(gone\) \{[\s\S]*?return \(\s*<ReplyCardGone[\s\S]*?onClose=\{onDiscard\}/);
+    expect(card).toContain("onClick={() => armed && onClose()}");
     expect(card).toContain("{saveLabel(form)}");
-    // Fix round 1, item 3: a rule can replace the draft too, so no send is claimed.
+  });
+
+  it("the one line claims no send (fix round 1, item 3)", () => {
     expect(DRAFT_LEFT_LINE).toBe(
       "This reply is no longer in Drafts. It was sent, deleted or replaced outside this card, so this card cannot send it.",
     );
-  });
-
-  it("a gone card only closes: it posts no trash of a draft that is not there", () => {
-    expect(card).toMatch(/if \(gone\) \{\s*onDiscard\(\);\s*return;\s*\}/);
-    expect(card).toContain('{gone ? "Close" : "Discard"}');
   });
 });

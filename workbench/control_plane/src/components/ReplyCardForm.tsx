@@ -11,8 +11,8 @@
  *
  * A card that wrote a draft says so, and its Save reads "Save draft". It
  * watches that draft (`watchCardDraft`, owner report 2026-11-03). When the
- * member sends or deletes it in the Email app, the card shows one line, its
- * Send and Save stop, and Discard reads "Close".
+ * draft leaves Drafts, the card collapses to `ReplyCardGone`: its title
+ * line, its subject, one line and Close.
  *
  * The client derives no recipient. The card shows ONE list with a tick box
  * for each person (owner, 2026-10-24). A hidden second list once sent a
@@ -139,6 +139,57 @@ function AddressRow({
   );
 }
 
+/**
+ * A reply card whose draft left Drafts (task 1526, fix round 1, item 4).
+ * The owner: "it does not disappear in the chat". So the card keeps only
+ * its title line, its subject, the one line and Close. No ticks, no text
+ * box, no Send and no Save. Close ends the card with no trash, because the
+ * draft is not there.
+ */
+export function ReplyCardGone({
+  title,
+  subject,
+  onClose,
+  armed,
+  disabled = false,
+}: {
+  title: string;
+  subject: string;
+  onClose: () => void;
+  armed: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="space-y-2.5" data-reply-card="" data-reply-card-gone="">
+      <div className="min-w-0">
+        <p className="break-words text-xs font-medium leading-relaxed text-foreground glass:text-label" data-reply-summary="">
+          {title}
+        </p>
+        {subject && <p className="mt-0.5 break-words text-[11px] text-muted-foreground">{subject}</p>}
+      </div>
+      <p
+        className="break-words rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:px-3 glass:py-2"
+        role="status"
+        data-reply-gone=""
+      >
+        {DRAFT_LEFT_LINE}
+      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => armed && onClose()}
+          disabled={disabled}
+          aria-disabled={!armed || undefined}
+          data-reply-close=""
+        >
+          Close
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard, armed, disabled = false }: ReplyCardFormProps) {
   // §21.15: the form grows by each Bcc that the server took for this card.
   const [form, setForm] = useState<ReplyForm | null>(given);
@@ -186,16 +237,30 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
       </div>
     );
   }
+  if (gone) {
+    // The draft left Drafts: the card collapses to its title, its subject,
+    // the one line and Close (fix round 1, item 4). Close is the card's
+    // REJECT, with no trash of a draft that is not there.
+    return (
+      <ReplyCardGone
+        title={replySummary(form, replyAll, ticks)}
+        subject={form.subject}
+        onClose={onDiscard}
+        armed={armed}
+        disabled={disabled}
+      />
+    );
+  }
   const shown = recipientsFor(form, replyAll);
   const widens = replyAllAddsSomeone(form);
   const picked = tickedFor(form, replyAll, ticks);
   const ticked = new Set(replyAll ? ticks.reply_all : ticks.reply);
   const onTick = (a: string) => setTicks((t) => toggleTick(t, replyAll, a));
-  // A reply needs one ticked To at least, and a draft that is still in Drafts.
-  const ok = bodyCanGo(body) && picked.to.length > 0 && !gone;
+  // A reply needs one ticked To at least.
+  const ok = bodyCanGo(body) && picked.to.length > 0;
   const lines = lineCount(body);
   const answer = (action: ReplyAction) => {
-    if (!armed || gone) return;
+    if (!armed) return;
     const a = replyAnswer(form, { action, replyAll, body, ticks });
     if (a) onAnswer(a);
   };
@@ -358,15 +423,6 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
         {lines === 1 ? "1 line" : `${lines} lines`}. The whole text shows above.
       </p>
 
-      {gone && (
-        <p
-          className="break-words rounded-md border border-border px-2.5 py-1.5 text-xs text-foreground glass:rounded-[10px] glass:border-transparent glass:bg-secondary glass:px-3 glass:py-2"
-          role="status"
-          data-reply-gone=""
-        >
-          {DRAFT_LEFT_LINE}
-        </p>
-      )}
       <div className="flex flex-wrap items-center gap-2">
         <Button
           size="sm"
@@ -394,12 +450,6 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
           size="sm"
           onClick={() => {
             if (!armed) return;
-            // A card whose draft left Drafts only closes: no draft is left
-            // to trash, and the tool reads the state (2026-11-03).
-            if (gone) {
-              onDiscard();
-              return;
-            }
             // The member's own Discard also trashes the card's draft.
             void discardReplyDraft(form);
             onDiscard();
@@ -408,10 +458,10 @@ export default function ReplyCardForm({ form: given, detail, onAnswer, onDiscard
           aria-disabled={!armed || undefined}
           data-reply-discard=""
         >
-          {gone ? "Close" : "Discard"}
+          Discard
         </Button>
       </div>
-      {!gone && <p className="text-[10px] text-muted-foreground">{replyHint(form)}</p>}
+      <p className="text-[10px] text-muted-foreground">{replyHint(form)}</p>
     </div>
   );
 }
