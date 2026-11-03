@@ -42,6 +42,23 @@ export function cardKind(card: Pick<PendingConfirmation, "title" | "reply">): Ca
   return "other";
 }
 
+/**
+ * The compact rule of the tab row, given the widths. A row that overflows
+ * goes compact: each tab that is not open shows its icon and dot only. It
+ * remembers the full width it overflowed at, and grows back only when the
+ * room is that wide plus a margin, so a row on the edge does not flicker.
+ */
+export function nextCompact(
+  state: { compact: boolean; full: number },
+  scrollWidth: number,
+  clientWidth: number,
+  margin = 8,
+): { compact: boolean; full: number } {
+  if (!state.compact) return { compact: scrollWidth > clientWidth, full: scrollWidth };
+  if (clientWidth >= state.full + margin) return { compact: false, full: state.full };
+  return state;
+}
+
 /** The count label that leads the tab row. */
 export function tabsCount(total: number): string {
   return `${total} to approve`;
@@ -95,7 +112,11 @@ export function personName(raw: string): string {
   const m = /^"?([^"<]+?)"?\s*<[^>]+>$/.exec(v);
   if (m) return m[1].trim();
   const at = v.indexOf("@");
-  return at > 0 ? v.slice(0, at) : v;
+  if (at <= 0) return v;
+  // An address with no display name: its local part, split on . _ and -,
+  // and the first word with a capital ("sharat.satya" is "Sharat").
+  const word = v.slice(0, at).split(/[._-]+/).find(Boolean) ?? v.slice(0, at);
+  return word.charAt(0).toUpperCase() + word.slice(1);
 }
 
 /** The object a card names: the first part of its detail, without «marks». */

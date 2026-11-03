@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { cardKind, cutLabel, KIND_ICON, personName, tabLabel, TAB_LABEL_MAX, restoredFirst, tabKeyTarget, tabsCount, tabsLabel } from "./cardTabs";
+import { cardKind, cutLabel, nextCompact, KIND_ICON, personName, tabLabel, TAB_LABEL_MAX, restoredFirst, tabKeyTarget, tabsCount, tabsLabel } from "./cardTabs";
 
 const read = (rel: string) => readFileSync(join(__dirname, "..", rel), "utf-8");
 
@@ -52,7 +52,7 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
       { id: "to-0", label: "To: Sharat Satyanarayana <sharat@x.test>", checked: true, kind: "to" as const },
     ];
     expect(tabLabel({ title: "Send this new email?", rows })).toBe("Email to Sharat Satyana…");
-    expect(tabLabel({ title: "Send this draft?", rows: [{ id: "to-0", label: "To: kim.lee@x.test", checked: true, kind: "to" as const }] })).toBe("Email to kim.lee");
+    expect(tabLabel({ title: "Send this draft?", rows: [{ id: "to-0", label: "To: kim.lee@x.test", checked: true, kind: "to" as const }] })).toBe("Email to Kim");
     expect(tabLabel({ title: "Send this new email?", context: "To: Kim <kim@x.test>, ann@x.test" })).toBe("Email to Kim");
     expect(tabLabel({ title: "Send this draft?" })).toBe("Email");
     const reply = { messageId: "m", replyAll: false, recipients: { reply: { to: ["Pat Jones <pat@x.test>"], cc: [] }, reply_all: { to: ["z@x.test"], cc: [] } } };
@@ -65,7 +65,26 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
     }
     expect(cutLabel("short", 24)).toBe("short");
     expect(personName("Kim <kim@x.test>")).toBe("Kim");
-    expect(personName("kim@x.test")).toBe("kim");
+    expect(personName("kim@x.test")).toBe("Kim");
+    expect(personName("sharat.satyanarayana@x.test")).toBe("Sharat");
+    expect(personName("a_b-c@x.test")).toBe("A");
+    expect(tabLabel({ title: "Reply to 1 recipient?", reply: { messageId: "m", replyAll: false, recipients: { reply: { to: ["pat.jones@x.test"], cc: [] }, reply_all: { to: [], cc: [] } } } as never })).toBe("Reply to Pat");
+  });
+
+  it("the row goes compact when it overflows, and grows back with a margin", () => {
+    expect(nextCompact({ compact: false, full: 0 }, 500, 600)).toEqual({ compact: false, full: 500 });
+    expect(nextCompact({ compact: false, full: 0 }, 700, 600)).toEqual({ compact: true, full: 700 });
+    // Compact: it holds until the room is the full width plus the margin.
+    expect(nextCompact({ compact: true, full: 700 }, 300, 650).compact).toBe(true);
+    expect(nextCompact({ compact: true, full: 700 }, 300, 707).compact).toBe(true);
+    expect(nextCompact({ compact: true, full: 700 }, 300, 708).compact).toBe(false);
+  });
+
+  it("the row observes its width and lets go on unmount", () => {
+    const tabs = read("components/ui/CardTabs.tsx");
+    expect(tabs).toContain("new ResizeObserver");
+    expect(tabs).toContain("ro.disconnect()");
+    expect(tabs).toContain("aria-label={slim");
   });
 
   it("the row has a fade at an edge with more tabs, and a narrow tab width", () => {

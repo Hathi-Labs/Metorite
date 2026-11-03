@@ -20,7 +20,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { prefersReducedMotion } from "@/lib/panelMotion";
-import { tabKeyTarget, tabsCount, tabsLabel } from "@/lib/cardTabs";
+import { nextCompact, tabKeyTarget, tabsCount, tabsLabel } from "@/lib/cardTabs";
 
 /** One card's tab. */
 export interface CardTab {
@@ -59,9 +59,20 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
   // A row wider than its room fades at the edge where more tabs wait, so a
   // cut tab reads as "scroll", not as a broken one (the narrow Ask panel).
   const [fade, setFade] = useState<{ left: boolean; right: boolean }>({ left: false, right: false });
+  // Compact (owner, 2026-11-03: tabs "easily overlooked"): when the full row
+  // would overflow, each tab that is not open shows its icon and dot only.
+  // The fade is the last resort, for a row that overflows even as icons.
+  // A change of the tabs' words or dots changes the full width, so the
+  // state resets and the full row is measured again before the browser paints.
+  const signature = tabs.map((t) => `${t.label}||${t.unseen ? 1 : 0}`).join("||");
+  const [fit, setFit] = useState({ compact: false, full: 0, sig: signature });
+  if (fit.sig !== signature) setFit({ compact: false, full: 0, sig: signature });
+  const compact = fit.compact && fit.sig === signature;
   const measure = () => {
     const list = listRef.current;
     if (!list) return;
+    const c = nextCompact(fit, list.scrollWidth, list.clientWidth);
+    if (c.compact !== fit.compact || c.full !== fit.full) setFit({ ...c, sig: fit.sig });
     const left = list.scrollLeft > 2;
     const right = list.scrollLeft + list.clientWidth < list.scrollWidth - 2;
     setFade((f) => (f.left === left && f.right === right ? f : { left, right }));
@@ -77,12 +88,21 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
     const right = left + tab.offsetWidth;
     const to = left < list.scrollLeft ? left - 8 : right > list.scrollLeft + list.clientWidth ? right - list.clientWidth + 8 : null;
     if (to !== null) list.scrollTo({ left: to, behavior: prefersReducedMotion() ? "auto" : "smooth" });
-    measure();
   }, [index, total]);
+  // Every render: measure again. `nextCompact` holds a margin, so the state
+  // settles, and `setFit` runs only when a value changed.
   useLayoutEffect(() => {
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, []);
+    measure();
+  });
+  // The row's own width changes with the window and the panel: observe it,
+  // and let go on unmount.
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => measure());
+    ro.observe(list);
+    return () => ro.disconnect();
+  });
   if (total < 2) return null;
 
   const onKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
@@ -119,6 +139,8 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
       >
         {tabs.map((t, i) => {
           const active = i === index;
+          // A tab that is not open shows its icon and dot only when compact.
+          const slim = compact && !active;
           return (
             <button
               key={t.key}
@@ -129,6 +151,7 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
               aria-controls={cardPanelId(uid)}
               tabIndex={active ? 0 : -1}
               title={t.title ?? t.label}
+              aria-label={slim ? `${t.title ?? t.label}${t.unseen ? " (not yet seen)" : ""}` : undefined}
               data-card-tab={i}
               data-unseen={t.unseen && !active ? "" : undefined}
               onClick={() => onGo(i)}
@@ -139,11 +162,11 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
               }`}
             >
               <Icon name={t.icon} size={13} className="shrink-0" />
-              <span className="min-w-0 truncate">{t.label}</span>
+              {!slim && <span className="min-w-0 truncate">{t.label}</span>}
               {t.unseen && !active && (
                 <>
                   <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-primary" />
-                  <span className="sr-only">not yet seen</span>
+                  {!slim && <span className="sr-only">not yet seen</span>}
                 </>
               )}
             </button>
