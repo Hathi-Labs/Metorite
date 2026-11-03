@@ -852,7 +852,8 @@ MOVES = ("published", "paused")
 _MOVES_FROM = {"published": frozenset({"draft", "paused"}), "paused": frozenset({"published"})}
 _STATE_WORDS = {"draft": "a draft"}
 
-_MAYBE_SAVED = "The save may have worked. Call the skill list before you try again."
+_MAYBE_DONE = "The {act} may have worked. Call the skill list before you try again."
+_MAYBE_SAVED = _MAYBE_DONE.format(act="save")
 _STATE_BAD = ("The state must be published or paused. Archive a skill, or send it back to a "
               "draft, in Studio.")
 _NO_ID = "The skill id must be a UUID. Call the skill list for the id."
@@ -881,9 +882,10 @@ class _Reply:
         return 200 <= self.status < 300
 
 
-async def _send(method: str, path: str, body: Any, write: bool) -> _Reply:
-    """One request as the member. Raise :class:`_Refused` with a sentence when
-    the member is missing or the network fails."""
+async def _send(method: str, path: str, body: Any, act: str = "") -> _Reply:
+    """One request as the member. *act* names a write (save, publish, resume
+    or pause), and a read gives none. Raise :class:`_Refused` with a sentence
+    when the member is missing or the network fails."""
     headers = _headers()
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -891,7 +893,7 @@ async def _send(method: str, path: str, body: Any, write: bool) -> _Reply:
                 method, f"{_gateway_url()}{path}", headers=headers, json=body)
     except httpx.HTTPError as exc:
         raise _Refused(
-            _MAYBE_SAVED if write
+            _MAYBE_DONE.format(act=act) if act
             else f"The skill could not be read ({type(exc).__name__}). Try again.") from None
     try:
         data = resp.json()
@@ -901,15 +903,15 @@ async def _send(method: str, path: str, body: Any, write: bool) -> _Reply:
 
 
 async def _get(path: str) -> _Reply:
-    return await _send("GET", path, None, False)
+    return await _send("GET", path, None)
 
 
 async def _post(path: str, body: dict[str, Any]) -> _Reply:
-    return await _send("POST", path, body, True)
+    return await _send("POST", path, body, "save")
 
 
-async def _patch(path: str, body: dict[str, Any]) -> _Reply:
-    return await _send("PATCH", path, body, True)
+async def _patch(path: str, body: dict[str, Any], act: str) -> _Reply:
+    return await _send("PATCH", path, body, act)
 
 
 def _skill_path(raw: Any) -> str | None:
@@ -1373,7 +1375,7 @@ async def _publish_after_card(sid: str, first: _Reply) -> dict[str, Any]:
         return _fail(second, decision=decision)
     if _snapshot(second) != _snapshot(first):
         return _refusal(_CHANGED_UNDER_CARD, decision=decision)
-    moved = await _patch(f"/studio/skills/{sid}/state", {"state": "published"})
+    moved = await _patch(f"/studio/skills/{sid}/state", {"state": "published"}, verb.lower())
     if not moved.ok:
         return _fail(moved, decision=decision)
     return {"ok": True, "errors": [], "diff": [], **_row_of(_skill_of(moved)),
@@ -1421,7 +1423,7 @@ async def studio_skill_state(skill_id: str, state: str) -> dict[str, Any]:
                 return _fail(second, decision=decision)
             if _snapshot(second) != _snapshot(first):
                 return _refusal(_CHANGED_UNDER_CARD, decision=decision)
-        moved = await _patch(f"/studio/skills/{sid}/state", {"state": "paused"})
+        moved = await _patch(f"/studio/skills/{sid}/state", {"state": "paused"}, "pause")
     except _Refused as exc:
         return _refusal(str(exc))
     if not moved.ok:

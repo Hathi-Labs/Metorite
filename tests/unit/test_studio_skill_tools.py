@@ -68,6 +68,7 @@ class Gateway:
         self.versions: dict[str, list[dict[str, Any]]] = {}
         self.open = True
         self.error: Exception | None = None
+        self.error_verb: str | None = None  # raise ``error`` only for this verb
         self.force: tuple[int, str] | None = None  # a canned refusal for a PATCH
 
     # a seed that skips the routes
@@ -103,7 +104,7 @@ class Gateway:
         path = "/" + path
         self.calls.append((method, path, body, dict(headers)))
         self.route(method, path)
-        if self.error:
+        if self.error and self.error_verb in (None, method):
             raise self.error
         if not self.open:
             return self._r(404, {"detail": "Not found"})
@@ -192,7 +193,7 @@ class _Client:
         return self.gw.request(method, url, headers or {}, json)
 
     async def get(self, url: str, headers: Any = None):  # the catalog read of studio_list_actions
-        if self.gw.error:
+        if self.gw.error and self.gw.error_verb in (None, "GET"):
             raise self.gw.error
         return httpx.Response(200, json={"actions": ROWS}, request=httpx.Request("GET", url))
 
@@ -951,6 +952,22 @@ async def test_a_network_miss_on_a_write_says_the_write_may_have_worked(gw, card
     gw.error = None
     gw.error = None
     assert sid in gw.skills
+
+
+@pytest.mark.parametrize("act, state, target", [
+    ("publish", "draft", "published"),
+    ("resume", "paused", "published"),
+    ("pause", "published", "paused"),
+])
+async def test_a_network_miss_on_a_move_names_the_act_that_was_tried(
+        gw, card, act, state, target) -> None:
+    """Review round 1: a publish or a pause said that the save may have
+    worked. Mutation: say "save" for each write -> red."""
+    sid = gw.seed(state=state)
+    gw.error, gw.error_verb = httpx.ConnectError("down"), "PATCH"
+    out = await st.studio_skill_state(sid, target)
+    assert out["ok"] is False
+    assert _msg(out) == f"The {act} may have worked. Call the skill list before you try again."
 
 
 async def test_a_detail_that_is_not_a_string_is_dumped_as_json(gw, card) -> None:
