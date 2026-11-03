@@ -2,18 +2,24 @@
  * UNDO-1 — a task edit undoes through one helper.
  *
  * Pinned: each field's inverse restores the BEFORE value (an absent value
- * becomes null), the inverse carries If-Match on the version the forward
- * write returned, a 412 shows one message and changes nothing else, and a
- * stale undo leaves the stack sane (redo is then inert).
+ * becomes null), the inverse carries If-Match on the task's version NOW, a
+ * 412 shows one message and changes nothing else, and a stale undo leaves the
+ * stack sane (redo is then inert). Fix round 1 adds the version chain, the
+ * custom field merge, the move plan and the doors' wiring.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { EMPTY_UNDO, record, stepBack, stepForward, type UndoEntry } from "@/lib/undo";
 
 import {
   STALE_MESSAGE,
+  MOVE_NO_UNDO,
+  type MovedRow,
   createVersionLedger,
-  moveBackPlan,
+  moveUndoPlan,
   recordAssigneesEdit,
   recordTaskEdit,
   taskInverse,
@@ -299,19 +305,86 @@ describe("recordAssigneesEdit", () => {
   });
 });
 
-describe("moveBackPlan", () => {
-  it("groups moved tasks by source project and maps status back", () => {
-    const plan = moveBackPlan(
-      [
-        { id: "a", project_id: "p1", status_id: "s1" },
-        { id: "b", project_id: "p1", status_id: "s2" },
-        { id: "c", project_id: "p9", status_id: "s3" },
+describe("moveUndoPlan (fix round 1, finding 3)", () => {
+  const row = (id: string, project_id: string, status_id: string, over: Partial<MovedRow> = {}): MovedRow => ({
+    id,
+    project_id,
+    root_project_id: "space",
+    status_id,
+    type_id: "bug",
+    task_number: Number(id.charCodeAt(0)),
+    completed_at: null,
+    ...over,
+  });
+  const clean = { dropped_fields: [] as string[] };
+
+  it("each task goes home to its OWN prior status, even from one shared lane", () => {
+    // A bulk move from To do and In progress into one destination lane.
+    const before = [row("a", "p1", "todo"), row("b", "p1", "doing"), row("c", "p9", "todo")];
+    const after = { a: row("a", "p2", "lane"), b: row("b", "p2", "lane"), c: row("c", "p2", "lane") };
+    const plan = moveUndoPlan(["a", "b", "c"], before, after, clean);
+    expect(plan).toEqual({
+      ok: true,
+      calls: [
+        { projectId: "p1", taskIds: ["a"], statusMap: { lane: "todo" } },
+        { projectId: "p1", taskIds: ["b"], statusMap: { lane: "doing" } },
+        { projectId: "p9", taskIds: ["c"], statusMap: { lane: "todo" } },
       ],
-      { a: "n1", b: "n2", c: "n3" },
+    });
+  });
+
+  it("tasks from one project share a call while their maps agree", () => {
+    const before = [row("a", "p1", "s1"), row("b", "p1", "s2"), row("c", "p1", "s1")];
+    const after = { a: row("a", "p2", "n1"), b: row("b", "p2", "n2"), c: row("c", "p2", "n1") };
+    expect(moveUndoPlan(["a", "b", "c"], before, after, clean)).toEqual({
+      ok: true,
+      calls: [{ projectId: "p1", taskIds: ["a", "b", "c"], statusMap: { n1: "s1", n2: "s2" } }],
+    });
+  });
+
+  it.each([
+    ["carried subtasks", { subtask_ids: ["k"] }, {}, MOVE_NO_UNDO.subtasks],
+    ["a dropped field", { dropped_fields: ["Size"] }, {}, MOVE_NO_UNDO.drops(["Size"])],
+    ["another space", {}, { root_project_id: "other" }, MOVE_NO_UNDO.space],
+    ["a new task number", {}, { task_number: 999 }, MOVE_NO_UNDO.space],
+    ["a cleared type", {}, { type_id: null }, MOVE_NO_UNDO.space],
+    ["a new done date", {}, { completed_at: "2026-11-04T00:00:00Z" }, MOVE_NO_UNDO.done],
+  ])("offers no Undo after %s, and says why", (_case, answer, landed, reason) => {
+    const plan = moveUndoPlan(
+      ["a"],
+      [row("a", "p1", "s1")],
+      { a: row("a", "p2", "s1", landed) },
+      { ...clean, ...answer },
     );
-    expect(plan).toEqual([
-      { projectId: "p1", taskIds: ["a", "b"], statusMap: { n1: "s1", n2: "s2" } },
-      { projectId: "p9", taskIds: ["c"], statusMap: { n3: "s3" } },
-    ]);
+    expect(plan).toEqual({ ok: false, reason });
+  });
+
+  it("offers no Undo when a task could not be read", () => {
+    const plan = moveUndoPlan(["a", "b"], [row("a", "p1", "s1")], { a: row("a", "p2", "s1") }, clean);
+    expect(plan).toEqual({ ok: false, reason: MOVE_NO_UNDO.unread });
+  });
+
+  it("every reason says what happened and what to do next", () => {
+    for (const line of [
+      MOVE_NO_UNDO.subtasks,
+      MOVE_NO_UNDO.drops(["Size"]),
+      MOVE_NO_UNDO.space,
+      MOVE_NO_UNDO.done,
+      MOVE_NO_UNDO.unread,
+    ]) {
+      expect(line).toMatch(/^Undo is off for this move: /);
+      expect(line).toMatch(/Use Move to project to send/);
+    }
+  });
+});
+
+describe("the doors wire the helper (source)", () => {
+  const SRC = fileURLToPath(new URL("..", import.meta.url));
+  const read = (rel: string) => readFileSync(`${SRC}/${rel}`, "utf8");
+
+  it("a move offers Undo through moveUndoPlan, and shows its reason otherwise", () => {
+    const page = read("page.tsx");
+    expect(page).toMatch(/moveUndoPlan\(/);
+    expect(page).toMatch(/description: way\.reason/);
   });
 });

@@ -239,25 +239,105 @@ export interface MoveBack {
   statusMap: Record<string, string>;
 }
 
+/** A moved task as Undo reads it, before the move or after it. */
+export interface MovedRow {
+  id: string;
+  project_id: string;
+  root_project_id: string;
+  status_id: string;
+  type_id?: string | null;
+  task_number?: number | null;
+  completed_at?: string | null;
+}
+
+/** What the server answered to the move, as far as Undo reads it. */
+export interface MoveAnswer {
+  task_ids?: readonly string[];
+  dropped_fields: readonly string[];
+  subtasks_moved?: number;
+  subtask_ids?: readonly string[];
+}
+
+/** Why a move offers no Undo. Each line says what happened and what to do. */
+export const MOVE_NO_UNDO = {
+  subtasks:
+    "Undo is off for this move: the subtasks moved too, and Undo cannot send each one back to its own project. Use Move to project to send them back.",
+  drops: (fields: readonly string[]) =>
+    `Undo is off for this move: it cleared ${fields.join(", ")}. Use Move to project to send the tasks back, then fill those fields again.`,
+  space:
+    "Undo is off for this move: the tasks went to another space, and took new numbers there. Use Move to project to send them back.",
+  done:
+    "Undo is off for this move: it changed when a task was done. Use Move to project to send the tasks back.",
+  unread:
+    "Undo is off for this move: the page could not read where each task was. Use Move to project to send them back.",
+} as const;
+
+export type MoveUndo =
+  | { ok: true; calls: MoveBack[] }
+  | { ok: false; reason: string };
+
 /**
- * The `moveTasks` calls that send moved tasks home: one per source project.
- * `nowStatus` is each task's status after the move, read from the server.
+ * The `moveTasks` calls that send moved tasks home, or why there are none
+ * (fix round 1, finding 3).
+ *
+ * Undo is offered only when going home restores each task EXACTLY. So the
+ * move took no subtasks along (a subtask may come from a project other than
+ * its parent's), dropped no field value, and kept each task in its space:
+ * the same root, the same number, the same type and the same done date.
+ *
+ * Each task keeps its OWN prior status. One `moveTasks` call holds one
+ * status map, so two tasks that share a status now but held two before go
+ * home in two calls.
  */
-export function moveBackPlan(
-  before: readonly { id: string; project_id: string; status_id: string }[],
-  nowStatus: Readonly<Record<string, string>>,
-): MoveBack[] {
-  const byProject = new Map<string, MoveBack>();
-  for (const row of before) {
-    const group = byProject.get(row.project_id) ?? {
-      projectId: row.project_id,
-      taskIds: [],
-      statusMap: {},
-    };
-    group.taskIds.push(row.id);
-    const now = nowStatus[row.id];
-    if (now) group.statusMap[now] = row.status_id;
-    byProject.set(row.project_id, group);
+export function moveUndoPlan(
+  movedIds: readonly string[],
+  before: readonly MovedRow[],
+  after: Readonly<Record<string, MovedRow | null | undefined>>,
+  answer: MoveAnswer,
+): MoveUndo {
+  if ((answer.subtask_ids?.length ?? answer.subtasks_moved ?? 0) > 0) {
+    return { ok: false, reason: MOVE_NO_UNDO.subtasks };
   }
-  return [...byProject.values()];
+  if (answer.dropped_fields.length > 0) {
+    return { ok: false, reason: MOVE_NO_UNDO.drops(answer.dropped_fields) };
+  }
+  const ids = answer.task_ids ?? movedIds;
+  const byId = new Map(before.map((row) => [row.id, row]));
+  const pairs: [MovedRow, MovedRow][] = [];
+  for (const id of ids) {
+    const was = byId.get(id);
+    const now = after[id];
+    if (!was || !now) return { ok: false, reason: MOVE_NO_UNDO.unread };
+    if (
+      now.root_project_id !== was.root_project_id ||
+      (now.task_number ?? null) !== (was.task_number ?? null) ||
+      (now.type_id ?? null) !== (was.type_id ?? null)
+    ) {
+      return { ok: false, reason: MOVE_NO_UNDO.space };
+    }
+    if ((now.completed_at ?? null) !== (was.completed_at ?? null)) {
+      return { ok: false, reason: MOVE_NO_UNDO.done };
+    }
+    if (now.project_id !== was.project_id) pairs.push([was, now]);
+  }
+  const calls: MoveBack[] = [];
+  for (const [was, now] of pairs) {
+    // The first call to the same home whose map has room for this status.
+    const call = calls.find(
+      (c) =>
+        c.projectId === was.project_id &&
+        (c.statusMap[now.status_id] ?? was.status_id) === was.status_id,
+    );
+    if (call) {
+      call.taskIds.push(was.id);
+      call.statusMap[now.status_id] = was.status_id;
+    } else {
+      calls.push({
+        projectId: was.project_id,
+        taskIds: [was.id],
+        statusMap: { [now.status_id]: was.status_id },
+      });
+    }
+  }
+  return { ok: true, calls };
 }

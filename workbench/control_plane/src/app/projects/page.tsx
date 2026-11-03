@@ -224,7 +224,7 @@ import {
 } from "./lib/subtaskView";
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
 import { inversePatch } from "@/lib/undo";
-import { moveBackPlan } from "./lib/taskUndo";
+import { type MovedRow, moveUndoPlan } from "./lib/taskUndo";
 import { useTaskUndo } from "./components/useTaskUndo";
 import {
   CASCADE_DEFAULTS,
@@ -3866,10 +3866,8 @@ function ProjectsWorkspace() {
     includeSubtasks = false,
   ) {
     const ids = movingTasks ?? [];
-    // UNDO-1 — where each task sat before, for the way home.
-    const homes = tasks
-      .filter((t) => ids.includes(t.id))
-      .map((t) => ({ id: t.id, project_id: t.project_id, status_id: t.status_id, title: t.title }));
+    // UNDO-1 — each task as it was before, for the way home and its checks.
+    const homes = tasks.filter((t) => ids.includes(t.id));
     setMovingTasksBusy(true);
     setMoveTasksError(null);
     try {
@@ -3920,22 +3918,26 @@ function ProjectsWorkspace() {
         res.subtasks_moved ?? 0,
         projectName(res.destination_project_id ?? destinationId),
       );
-      // UNDO-1 — offered only when the move dropped no field value: a
-      // dropped value cannot come back, so a move home would be a half undo.
-      let undoMove: (() => Promise<void>) | undefined;
-      if (res.dropped_fields.length === 0 && homes.length > 0) {
-        const nowStatus: Record<string, string> = {};
-        for (const h of homes) {
-          try { nowStatus[h.id] = (await projectsApi.task(h.id)).status_id; } catch { /* skip */ }
+      // UNDO-1 (fix round 1, finding 3) — offered only when the way home
+      // restores each task exactly: no subtask went along, no value dropped,
+      // and each task kept its space, number, type and done date. Otherwise
+      // the toast says why, and what to do instead.
+      const after: Record<string, MovedRow | null> = {};
+      if (res.dropped_fields.length === 0 && !(res.subtask_ids?.length ?? res.subtasks_moved)) {
+        for (const id of res.task_ids ?? ids) {
+          after[id] = await projectsApi.task(id).catch(() => null);
         }
+      }
+      const way = moveUndoPlan(ids, homes, after, res);
+      let undoMove: (() => Promise<void>) | undefined;
+      if (way.ok && way.calls.length > 0) {
         const sendHome = async () => {
-          for (const g of moveBackPlan(homes, nowStatus)) {
+          for (const call of way.calls) {
             await projectsApi.moveTasks({
-              task_ids: g.taskIds,
-              destination_project_id: g.projectId,
-              status_map: g.statusMap,
+              task_ids: call.taskIds,
+              destination_project_id: call.projectId,
+              status_map: call.statusMap,
               accept_drops: true,
-              include_subtasks: includeSubtasks,
             });
           }
           setTreeKey((k) => k + 1);
@@ -3953,12 +3955,13 @@ function ProjectsWorkspace() {
           redo: async () => {
             if (moved_) return;
             moved_ = true;
+            // No subtask went along the first time (the plan's rule), so the
+            // replay takes none either.
             await projectsApi.moveTasks({
-              task_ids: [...ids],
+              task_ids: [...(res.task_ids ?? ids)],
               destination_project_id: destinationId,
               status_map: statusMap,
               accept_drops: true,
-              include_subtasks: includeSubtasks,
             });
             setTreeKey((k) => k + 1);
             await refreshRef.current();
@@ -3971,6 +3974,7 @@ function ProjectsWorkspace() {
           res.dropped_fields.length > 0
             ? `${moved} — dropped ${res.dropped_fields.join(", ")}`
             : moved,
+        ...(way.ok ? {} : { description: way.reason }),
         ...(undoMove ? { action: { label: "Undo", onClick: () => void undoMove!() } } : {}),
       });
     } catch (err) {
