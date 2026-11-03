@@ -251,9 +251,9 @@ def _rel(path: Path) -> str:
 
 
 def test_the_direct_set_is_create_update_delete_only() -> None:
-    assert invoke.DIRECT_EXECUTORS == {
-        ("object", "create"), ("object", "update"), ("object", "delete")}
-    assert invoke.OPEN_EXECUTORS == {("object", "get"), ("object", "list")}
+    assert {("object", "create"), ("object", "update"),
+            ("object", "delete")} == invoke.DIRECT_EXECUTORS
+    assert {("object", "get"), ("object", "list")} == invoke.OPEN_EXECUTORS
     assert not invoke.DIRECT_EXECUTORS & invoke.OPEN_EXECUTORS
 
 

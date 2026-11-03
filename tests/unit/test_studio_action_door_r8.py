@@ -222,6 +222,7 @@ from fastapi import HTTPException
 from gateway.routes.studio import invoke
 from gateway.studio import objects_store, packages_store
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
@@ -1091,7 +1092,7 @@ def test_r8_a_failed_audit_leaves_the_update_and_the_delete_undone(dworld, monke
     async def go() -> None:
         for action, body in (("change", {"id": w.rec, "data": {"notes": "Lost"}}),
                              ("remove", {"id": w.rec})):
-            with pytest.raises(Exception):
+            with pytest.raises(DBAPIError):
                 await _dcall(w.a, ANA, w.pkg, action, body)
 
     _run(w, go)
@@ -1298,7 +1299,7 @@ def test_r8_a_refusal_keeps_its_audit_row(dworld) -> None:
     """The refusal is raised after the session closes, so its audit row
     commits. The row is read as the superuser."""
     w = dworld
-    status, (detail, _) = _run(
+    status, (_detail, _) = _run(
         w, lambda: _dcall(w.a, ANA, w.pkg, "add", {"data": {"status": "no such option"}}))
     assert status == 422
     rows = _audits(w, w.pkg)
@@ -1328,7 +1329,7 @@ def test_r8_busy_writers_get_503_and_the_fourth_is_refused_at_once(dworld) -> No
             await asyncio.sleep(0.01)
             if invoke._IN_FLIGHT.get(w.a) == invoke.WRITERS_PER_ORG:
                 break
-        assert invoke._IN_FLIGHT == {w.a: invoke.WRITERS_PER_ORG}
+        assert {w.a: invoke.WRITERS_PER_ORG} == invoke._IN_FLIGHT
         started = time.monotonic()
         held["fourth"] = await _dcall(w.a, ANA, w.pkg, "add", {"data": _DATA})
         held["fourth_s"] = time.monotonic() - started
@@ -1356,5 +1357,5 @@ def test_r8_busy_writers_get_503_and_the_fourth_is_refused_at_once(dworld) -> No
 
 def test_r8_a_writer_after_the_busy_ones_is_admitted_again(dworld) -> None:
     w = dworld
-    status, got = _run(w, lambda: _dcall(w.a, ANA, w.pkg, "add", {"data": _DATA}))
+    status, _got = _run(w, lambda: _dcall(w.a, ANA, w.pkg, "add", {"data": _DATA}))
     assert status == 200 and invoke._IN_FLIGHT == {}
