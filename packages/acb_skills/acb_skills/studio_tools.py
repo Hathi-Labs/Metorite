@@ -845,8 +845,6 @@ CARD_ACTION_CHARS = 100
 #: back to a draft in Studio, and not from chat.
 MOVES = ("published", "paused")
 
-_HELD = ("This chat read email from outside senders. Save the skill in a new chat, "
-         "or in Studio.")
 _MAYBE_SAVED = "The save may have worked. Call the skill list before you try again."
 _STATE_BAD = ("The state must be published or paused. Archive a skill, or send it back to a "
               "draft, in Studio.")
@@ -910,11 +908,18 @@ def _skill_path(raw: Any) -> str | None:
         return None
 
 
-def _held_run() -> bool:
-    """True when the run may not send data off the platform (D169). Fails closed."""
+async def _must_ask() -> bool:
+    """True when a write of this run must show its card (D169, RX-1 and RX-2).
+
+    A chat that read outside mail never acts at once. The one reader is
+    ``egress.write_must_show_card``. A fault of the read counts as held, so a
+    card shows."""
     from acb_skills import egress
 
-    return egress.no_egress_for_this_run()
+    try:
+        return bool(await egress.write_must_show_card())
+    except Exception:
+        return True
 
 
 def _server_errors(reply: _Reply, by_id: bool) -> list[dict[str, str]]:
@@ -1085,10 +1090,10 @@ async def studio_skill_save(
     changes only what you send: an omitted field keeps its stored value, and an
     empty actions list clears the actions. A name cannot change. Use only
     action ids from studio_list_actions. The save asks on no card, and it never
-    publishes. A new version of a published skill returns it to a draft.
+    publishes. In a chat that read outside mail, it shows one card first and
+    waits (decision: approved, revised, stopped or no_card). A new version of a
+    published skill returns it to a draft.
     """
-    if _held_run():
-        return _refusal(_HELD)
     sid = _skill_path(skill_id) if str(skill_id or "").strip() else ""
     if sid is None:
         return _refusal(_NO_ID)
@@ -1096,10 +1101,16 @@ async def studio_skill_save(
             not isinstance(actions, list) or not all(isinstance(a, str) for a in actions)):
         return _refusal("The actions must be a list of action ids.")
     try:
+        ask = await _must_ask()
         if not sid:
             body: dict[str, Any] = {"description": description, "instructions": instructions}
             if actions is not None:
                 body["actions"] = list(actions)
+            if ask:
+                held = await _held_save(
+                    f"Save a new skill {_name(name, True)}?", None, {"name": name, "body": body}, None)
+                if held is not None:
+                    return held
             reply = await _post(
                 "/studio/skills", {"name": name, "description": description, "body": body})
             return _saved(reply) if reply.ok else _fail(reply, by_id=False)
@@ -1114,10 +1125,44 @@ async def studio_skill_save(
         if not stored:
             stored = {"description": str(_skill_of(current).get("description") or "")}
         merged = _merged_body(stored, description, instructions, actions)
+        if ask:
+            held = await _held_save(
+                f"Save a new version of {_name(_skill_of(current).get('name', ''), True)}?",
+                current, {"name": _skill_of(current).get("name", ""), "body": merged}, sid)
+            if held is not None:
+                return held
         reply = await _post(f"/studio/skills/{sid}/versions", {"body": merged})
     except _Refused as exc:
         return _refusal(str(exc))
     return _saved(reply) if reply.ok else _fail(reply)
+
+
+async def _held_save(
+    title: str, first: _Reply | None, change: dict[str, Any], sid: str | None,
+) -> dict[str, Any] | None:
+    """The card of a save in a chat that read outside mail. Return None to go
+    on and write, or the refusal. A version is read again after ``approved``,
+    and a skill that moved gets no write. A create has nothing stored to move:
+    the route refuses a name that the member holds."""
+    try:
+        classes = _class_map(await _read_catalog())
+    except _Refused as exc:
+        return _refusal(str(exc))  # no card when the classes cannot be shown
+    body = change["body"]
+    number = (_skill_of(first).get("current_version") or 0) + 1 if first else 1
+    context = _card_context({"name": change["name"]}, {"version": number, "body": body}, classes,
+                            "Approve to save this. Nothing goes live. Reject to save nothing.")
+    detail = f"Version {number}. This is a save, not a publish."
+    decision = await _decide(title, detail, context)
+    if decision != "approved":
+        return _not_done("Nothing was saved.", decision, context)
+    if first is not None and sid is not None:
+        second = await _get(f"/studio/skills/{sid}")
+        if not second.ok:
+            return _fail(second, decision=decision)
+        if _snapshot(second) != _snapshot(first):
+            return _refusal(_CHANGED_UNDER_CARD, decision=decision)
+    return None
 
 
 def _bare(text: str) -> str:
@@ -1157,8 +1202,9 @@ def _action_lines(ids: list[str], classes: dict[str, str]) -> list[str]:
     return lines
 
 
-def _card_context(skill: dict[str, Any], version: dict[str, Any],
-                  classes: dict[str, str]) -> str:
+def _card_context(skill: dict[str, Any], version: dict[str, Any], classes: dict[str, str],
+                  closing: str = "Approve to make this skill live for Mira. Reject to leave it as it is.",
+                  ) -> str:
     """The text of the publish card. It shows what goes live: the name, the
     version, the description, the first part of the instructions, and each
     action with its class. Each member text sits inside « »."""
@@ -1169,7 +1215,7 @@ def _card_context(skill: dict[str, Any], version: dict[str, Any],
         f"Description: {_excerpt(body.get('description'), CARD_DESCRIPTION_CHARS)}",
         f"Instructions: {_excerpt(body.get('instructions'), CARD_INSTRUCTION_CHARS)}",
         *_action_lines(_actions_in(body), classes),
-        "Approve to make this skill live for Mira. Reject to leave it as it is.",
+        closing,
     ])
 
 
@@ -1180,11 +1226,32 @@ def _snapshot(reply: _Reply) -> tuple[Any, Any, Any]:
     return skill.get("state"), skill.get("current_version"), version.get("content_hash")
 
 
+async def _decide(title: str, detail: str, context: str) -> str:
+    """Show ONE card and wait. The answer is ``approved``, ``revised`` (the
+    member wrote in the chat), ``stopped`` or ``no_card``."""
+    from acb_skills import ask_tools
+
+    # The run's own member may answer, and no other (PZ-32). The member is the
+    # run's, never an input.
+    answer = await ask_tools.request_confirmation(
+        title, detail, context, non_interactive_default="deny", close_on_steer=True,
+        responder=_current_user_email() or None, fenced=True)
+    if answer is True:
+        return "approved"
+    if answer is ask_tools.REVISED:
+        return "revised"
+    if not ask_tools.confirmation_channel_open():
+        return "no_card"
+    return "stopped"
+
+
+def _not_done(what: str, decision: str, context: str) -> dict[str, Any]:
+    return _refusal(f"{what} The decision was {decision}.", decision=decision, context=context)
+
+
 async def _publish_after_card(sid: str, first: _Reply) -> dict[str, Any]:
     """Show ONE card, and send the move only after ``approved`` and a second
     read that matches the first."""
-    from acb_skills import ask_tools
-
     skill, version = _skill_of(first), _version_of(first)
     if skill.get("state") not in ("draft", "paused"):
         return _refusal(f"The skill is {_tag(skill.get('state'), 20)}. "
@@ -1199,23 +1266,9 @@ async def _publish_after_card(sid: str, first: _Reply) -> dict[str, Any]:
     title = f"{verb} {_name(skill.get('name', ''), True)}?"
     detail = f"Version {version.get('version')}. The skill goes live for Mira."
     context = _card_context(skill, version, classes)
-    # The run's own member may answer, and no other (PZ-32). The member is the
-    # run's, never an input.
-    answer = await ask_tools.request_confirmation(
-        title, detail, context, non_interactive_default="deny", close_on_steer=True,
-        responder=_current_user_email() or None, fenced=True)
-    if answer is True:
-        decision = "approved"
-    elif answer is ask_tools.REVISED:
-        decision = "revised"
-    elif not ask_tools.confirmation_channel_open():
-        decision = "no_card"
-    else:
-        decision = "stopped"
+    decision = await _decide(title, detail, context)
     if decision != "approved":
-        return _refusal(
-            f"The skill was not made live. The decision was {decision}.",
-            decision=decision, context=context)
+        return _not_done("The skill was not made live.", decision, context)
     # The route takes no expected version, so read again and compare.
     second = await _get(f"/studio/skills/{sid}")
     if not second.ok:
@@ -1236,8 +1289,9 @@ async def studio_skill_state(skill_id: str, state: str) -> dict[str, Any]:
     A publish or a resume shows ONE card with the text that goes live, and
     waits. The answer has a "decision": approved, revised (the member wrote in
     the chat), stopped, or no_card (the chat shows no card). After any decision
-    but approved, nothing changed. A pause asks on no card. Only these two
-    states are allowed here.
+    but approved, nothing changed. A pause asks on no card, except in a chat
+    that read outside mail, where it shows one card. Only these two states are
+    allowed here.
     """
     target = str(state or "").strip().lower()
     if target not in MOVES:
@@ -1245,8 +1299,6 @@ async def studio_skill_state(skill_id: str, state: str) -> dict[str, Any]:
     sid = _skill_path(skill_id)
     if sid is None:
         return _refusal(_NO_ID)
-    if target == "paused" and _held_run():
-        return _refusal(_HELD)
     try:
         first = await _get(f"/studio/skills/{sid}")
         if not first.ok:
@@ -1257,6 +1309,17 @@ async def studio_skill_state(skill_id: str, state: str) -> dict[str, Any]:
                     "note": f"The skill is already {target}. Nothing changed."}
         if target == "published":
             return await _publish_after_card(sid, first)
+        if await _must_ask():
+            name = _name(current.get("name", ""), True)
+            context = f"Skill: {name}\nIt stops for Mira. Resume it to start it again."
+            decision = await _decide(f"Pause {name}?", "The skill stops for Mira.", context)
+            if decision != "approved":
+                return _not_done("The skill was not paused.", decision, context)
+            second = await _get(f"/studio/skills/{sid}")
+            if not second.ok:
+                return _fail(second, decision=decision)
+            if _snapshot(second) != _snapshot(first):
+                return _refusal(_CHANGED_UNDER_CARD, decision=decision)
         moved = await _patch(f"/studio/skills/{sid}/state", {"state": "paused"})
     except _Refused as exc:
         return _refusal(str(exc))

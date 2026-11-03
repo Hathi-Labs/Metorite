@@ -34,7 +34,7 @@ from typing import Any
 import httpx
 import pytest
 from acb_common import paging
-from acb_skills import ask_tools
+from acb_skills import ask_tools, egress
 from acb_skills import studio_tools as st
 from acb_skills.untrusted import MARKER_LINE_RE
 from acb_skills.write_artifact import artifact_context_scope, bind_artifact_context
@@ -209,8 +209,29 @@ class Card:
         return self.answer
 
 
+class Mark:
+    """The answer of ``egress.write_must_show_card``: True is a chat that read
+    outside mail. ``fault`` makes the read raise."""
+
+    def __init__(self) -> None:
+        self.held = False
+        self.fault = False
+
+    async def __call__(self, ctx=None) -> bool:
+        if self.fault:
+            raise RuntimeError("the mark store is down")
+        return self.held
+
+
 @pytest.fixture
-def gw(monkeypatch):
+def mark(monkeypatch):
+    fake = Mark()
+    monkeypatch.setattr(egress, "write_must_show_card", fake)
+    return fake
+
+
+@pytest.fixture
+def gw(monkeypatch, mark):
     gateway = Gateway()
     monkeypatch.setattr(st, "_current_user_email", lambda: MEMBER)
     monkeypatch.setattr(st.httpx, "AsyncClient", lambda **kw: _Client(gateway))
@@ -228,8 +249,8 @@ def card(monkeypatch):
 
 
 @pytest.fixture
-def held(gw):
-    bind_artifact_context(no_egress=True)
+def held(gw, mark):
+    mark.held = True
     return gw
 
 
@@ -467,31 +488,99 @@ async def test_a_catalog_that_cannot_be_read_shows_no_card(gw, card, monkeypatch
 # -- 3. A held chat -------------------------------------------------------------
 
 
-async def test_in_a_held_chat_the_save_and_the_pause_send_nothing(held, card) -> None:
-    """Mutation: drop the held check in the save or in the pause -> red."""
+async def _three_writes(gw):
+    """A create, a version and a pause, each as a call. Return the three results."""
+    sid, other = gw.seed(state="published"), gw.seed("Other", state="published")
+    return sid, [
+        await st.studio_skill_save(name="A", description="d", instructions="i"),
+        await st.studio_skill_save(skill_id=sid, instructions="new"),
+        await st.studio_skill_state(other, "paused"),
+    ]
+
+
+async def test_in_a_held_chat_save_and_pause_each_show_one_card_then_write_once(held, card) -> None:
+    """Mutation: swap ``write_must_show_card`` for ``no_egress_for_this_run`` -> red."""
+    sid, other = held.seed(state="published"), held.seed("Other", state="published")
+    cases = [
+        (lambda: st.studio_skill_save(name="A", description="d", instructions="i"), "POST"),
+        (lambda: st.studio_skill_save(skill_id=sid, instructions="new"), "POST"),
+        (lambda: st.studio_skill_state(other, "paused"), "PATCH"),
+    ]
+    for call, verb in cases:
+        card.shown.clear()
+        writes_at_card: list[int] = []
+        base = len(held.sent(verb))
+        card.between = lambda verb=verb, writes_at_card=writes_at_card: writes_at_card.append(
+            len(held.sent(verb)))
+        out = await call()
+        assert out["ok"] is True, out
+        assert len(card.shown) == 1 and card.shown[0]["fenced"] is True
+        assert card.shown[0]["responder"] == MEMBER
+        assert writes_at_card == [base]  # the card came before the write
+        assert len(held.sent(verb)) == base + 1  # and one write followed it
+
+
+async def test_a_held_save_writes_after_the_card_and_not_before(held, card) -> None:
+    seen: list[int] = []
+    card.between = lambda: seen.append(len(held.sent("POST")))
+    out = await st.studio_skill_save(name="A", description="d", instructions="i")
+    assert out["ok"] and seen == [0] and len(held.sent("POST")) == 1
+    assert card.shown[0]["title"] == "Save a new skill «A»?"
+    assert "Nothing goes live" in card.shown[0]["context"]
+
+
+@pytest.mark.parametrize("answer, open_, decision", [
+    (ask_tools.REVISED, True, "revised"),
+    (False, True, "stopped"),
+    (False, False, "no_card"),
+])
+async def test_a_held_write_without_approval_sends_nothing(held, card, answer, open_, decision) -> None:
     sid = held.seed(state="published")
-    save = await st.studio_skill_save(name="A", description="d", instructions="i")
-    version = await st.studio_skill_save(skill_id=sid, instructions="new")
-    pause = await st.studio_skill_state(sid, "paused")
-    for out in (save, version, pause):
-        assert out["ok"] is False and _msg(out) == st._HELD
-    assert held.calls == []
+    card.answer, card.open = answer, open_
+    outs = [await st.studio_skill_save(name="A", description="d", instructions="i"),
+            await st.studio_skill_save(skill_id=sid, instructions="new"),
+            await st.studio_skill_state(sid, "paused")]
+    for out in outs:
+        assert out["ok"] is False and out["decision"] == decision
+    assert held.sent("POST") == [] and held.sent("PATCH") == []
+    assert held.skills[sid]["state"] == "published" and len(held.versions[sid]) == 1
+
+
+@pytest.mark.parametrize("what", ["save", "pause"])
+async def test_a_held_write_on_a_skill_that_moved_under_the_card_sends_nothing(held, card, what) -> None:
+    sid = held.seed(state="published")
+    card.between = lambda: held.add_version(sid, {**BODY, "instructions": "Other."})
+    if what == "save":
+        out = await st.studio_skill_save(skill_id=sid, description="Changed.")
+        assert held.sent("POST") == []
+    else:
+        out = await st.studio_skill_state(sid, "paused")
+        assert held.sent("PATCH") == []
+    assert out["ok"] is False and _msg(out) == st._CHANGED_UNDER_CARD
+
+
+async def test_a_clear_chat_saves_and_pauses_at_once_with_no_card(gw, card, mark) -> None:
+    assert mark.held is False
+    _sid, outs = await _three_writes(gw)
+    assert all(o["ok"] for o in outs), outs
+    assert card.shown == []
+    assert len(gw.sent("POST")) == 2 and len(gw.sent("PATCH")) == 1
+
+
+async def test_a_fault_in_the_mark_read_counts_as_held_so_a_card_shows(gw, card, mark) -> None:
+    mark.fault = True
+    sid = gw.seed(state="published")
+    out = await st.studio_skill_state(sid, "paused")
+    assert out["ok"] and len(card.shown) == 1
+    card.shown.clear()
+    await st.studio_skill_save(name="B", description="d", instructions="i")
+    assert len(card.shown) == 1
 
 
 async def test_in_a_held_chat_a_publish_still_shows_its_card(held, card) -> None:
     sid = held.seed()
     out = await st.studio_skill_state(sid, "published")
     assert out["ok"] and len(card.shown) == 1 and len(held.sent("PATCH")) == 1
-
-
-async def test_a_run_with_no_bound_context_reads_as_held(monkeypatch) -> None:
-    gateway = Gateway()
-    monkeypatch.setattr(st, "_current_user_email", lambda: MEMBER)
-    monkeypatch.setattr(st.httpx, "AsyncClient", lambda **kw: _Client(gateway))
-    with artifact_context_scope():
-        bind_artifact_context()
-        out = await st.studio_skill_save(name="A", description="d", instructions="i")
-    assert out["ok"] is False and _msg(out) == st._HELD and gateway.calls == []
 
 
 # -- 4. The save merges ---------------------------------------------------------

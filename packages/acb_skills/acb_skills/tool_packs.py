@@ -712,7 +712,7 @@ No Studio agent exists to hand a task to.
   decision is approved, revised, stopped or no_card. Only approved makes the
   skill live. For the other three, nothing changed: say so. For no_card, write
   the context text in your reply and ask the member to answer in words.
-- A pause asks on no card. Archive and delete are not in chat: they are in Studio.
+- A pause asks on no card, and so does a save, except in a chat that read outside mail. There each shows one card. Archive and delete are not in chat: they are in Studio.
 - The error text is the server text. On a 409 for a name, call studio_skill_list,
   then save a version of that skill or pick a new name. On a 422 with an
   actions path, call studio_list_actions and use only its ids. When a save may
