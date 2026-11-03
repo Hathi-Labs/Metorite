@@ -51,7 +51,10 @@ import hashlib
 import hmac
 import inspect
 import json
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -321,3 +324,50 @@ def test_the_door_holds_no_sql_of_the_four_tables() -> None:
 
 def test_the_admission_caps_are_three_and_six() -> None:
     assert (invoke.WRITERS_PER_ORG, invoke.WRITERS_TOTAL) == (3, 6)
+
+
+# ── The deploy line ────────────────────────────────────────────────────────
+
+_SYNC_START = 'echo "==> Reconciling the workbench\'s STUDIO_DIRECT_KEY'
+_SYNC_END = 'echo "==> Reconciling the workbench\'s DEPLOY_ENV'
+
+
+def _sync_block() -> str:
+    text = (ROOT / "scripts/vps_apply.sh").read_text(encoding="utf-8")
+    start, end = text.index(_SYNC_START), text.index(_SYNC_END)
+    return text[start:end]
+
+
+def test_the_deploy_line_copies_the_key_and_never_makes_one() -> None:
+    block = _sync_block()
+    assert "STUDIO_DIRECT_KEY" in block
+    for forbidden in ("openssl", "token_urlsafe", "/dev/urandom", "uuidgen"):
+        assert forbidden not in block
+    example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    assert re.search(r"^STUDIO_DIRECT_KEY=\s*$", example, re.M)
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="no bash on this box")
+@pytest.mark.parametrize("env,local,expect", [
+    ("STUDIO_DIRECT_KEY=abc\n", "OTHER=1\n", ["OTHER=1", "STUDIO_DIRECT_KEY=abc"]),
+    ("STUDIO_DIRECT_KEY=abc\n", "STUDIO_DIRECT_KEY=old\nOTHER=1\n",
+     ["OTHER=1", "STUDIO_DIRECT_KEY=abc"]),
+    ("STUDIO_DIRECT_KEY=abc\n", "STUDIO_DIRECT_KEY=abc\nOTHER=1\n",
+     ["STUDIO_DIRECT_KEY=abc", "OTHER=1"]),
+    ("OTHER=2\n", "STUDIO_DIRECT_KEY=stale\nOTHER=1\n", ["OTHER=1"]),
+    ("OTHER=2\n", "OTHER=1\n", ["OTHER=1"]),
+    ("STUDIO_DIRECT_KEY=\n", "STUDIO_DIRECT_KEY=stale\n", []),
+])
+def test_the_deploy_line_syncs_the_key_from_env_to_env_local(tmp_path, env, local, expect) -> None:
+    (tmp_path / "env").write_text(env, encoding="utf-8")
+    (tmp_path / "local").write_text(local, encoding="utf-8")
+    script = tmp_path / "block.sh"
+    script.write_text(_sync_block(), encoding="utf-8", newline="\n")
+    run = subprocess.run(
+        [shutil.which("bash") or "bash", script.name],
+        cwd=tmp_path, capture_output=True, text=True, timeout=60,
+        env={**os.environ, "ENV_FILE": "env", "WB_ENV": "local"})
+    assert run.returncode == 0, run.stderr
+    lines = (tmp_path / "local").read_text(encoding="utf-8").split()
+    assert sorted(lines) == sorted(expect)
+    assert "abc" not in run.stdout  # the key never reaches the log

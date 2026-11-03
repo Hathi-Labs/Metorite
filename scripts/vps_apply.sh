@@ -767,6 +767,37 @@ else
   fi
 fi
 
+# STU-B2c-1: the direct proof key follows the same rule. The workbench BFF signs
+# the direct proof of a Studio write under STUDIO_DIRECT_KEY, and the gateway
+# checks it, so both files must hold ONE value. .env is the source. This step
+# copies the key when .env has one. It NEVER generates a key: setting it on a
+# box is the env-write act. With no key in .env it removes any stale copy from
+# .env.local, so the workbench signs nothing and no write is direct.
+# Fence: tests/unit/test_studio_direct_proof.py (test_the_deploy_line_syncs_the_key_from_env_to_env_local).
+echo "==> Reconciling the workbench's STUDIO_DIRECT_KEY (.env.local <- .env, STU-B2c-1)"
+DIRECT_KEY="$(grep -E '^STUDIO_DIRECT_KEY=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-)"
+if [ ! -f "$WB_ENV" ]; then
+  echo "    ! $WB_ENV missing — skipping (the token step above names the cause)"
+elif [ -z "$DIRECT_KEY" ]; then
+  if grep -q '^STUDIO_DIRECT_KEY=' "$WB_ENV"; then
+    ( umask 077; grep -v '^STUDIO_DIRECT_KEY=' "$WB_ENV" > "$WB_ENV.tmp" || true )
+    cat "$WB_ENV.tmp" > "$WB_ENV"; rm -f "$WB_ENV.tmp"
+    echo "    - removed a STUDIO_DIRECT_KEY line from .env.local (.env has none, so no write is direct)"
+  else
+    echo "    STUDIO_DIRECT_KEY not set in .env: no write is direct (the slice is dark)"
+  fi
+elif [ "$(grep -E '^STUDIO_DIRECT_KEY=' "$WB_ENV" 2>/dev/null | head -1 | cut -d= -f2-)" = "$DIRECT_KEY" ] \
+     && [ "$(grep -c '^STUDIO_DIRECT_KEY=' "$WB_ENV")" = "1" ]; then
+  echo "    already in sync (sha8=$(printf %s "$DIRECT_KEY" | sha256sum | cut -c1-8))"
+else
+  # umask 077 and a write IN PLACE: .env.local holds secrets, and an `mv` would
+  # give the file the mode of the temp file.
+  ( umask 077; grep -v '^STUDIO_DIRECT_KEY=' "$WB_ENV" > "$WB_ENV.tmp" || true )
+  printf 'STUDIO_DIRECT_KEY=%s\n' "$DIRECT_KEY" >> "$WB_ENV.tmp"
+  cat "$WB_ENV.tmp" > "$WB_ENV"; rm -f "$WB_ENV.tmp"
+  echo "    updated .env.local STUDIO_DIRECT_KEY to match .env (sha8=$(printf %s "$DIRECT_KEY" | sha256sum | cut -c1-8))"
+fi
+
 echo "==> Reconciling the workbench's DEPLOY_ENV (.env.local <- .env, WS-38 S-7)"
 # The workbench reads DEPLOY_ENV from ITS OWN env file, for the staging band and
 # the "[Staging]" tab title. The root .env stays the one source: this copies the
