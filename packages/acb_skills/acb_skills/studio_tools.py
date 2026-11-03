@@ -867,6 +867,17 @@ MAX_SKILL_DESCRIPTION_CHARS = 2_000
 #: (``acb_common.card_body``), so this limit is not on the card.
 CARD_ACTION_CHARS = 100
 
+#: The characters that show nothing on a card beyond ``untrusted.is_invisible``:
+#: the variation selectors, the C1 controls and the Hangul fillers. A
+#: selector of the supplement block can carry one byte. ``defang_trusted``
+#: keeps each of them, because each one is part of real text (an emoji, a CJK
+#: form, old Hangul), so this set stays local to the card (review round 3).
+_CARD_HIDDEN = frozenset([*range(0xFE00, 0xFE10), *range(0xE0100, 0xE01F0),
+                          *range(0x80, 0xA0), 0x115F, 0x1160, 0x3164, 0xFFA0])
+#: The two blocks that can carry a hidden text of any length: the TAG block
+#: and the variation selectors of the supplement. A held chat refuses them.
+_SMUGGLE_BLOCKS = (range(0xE0000, 0xE0080), range(0xE0100, 0xE01F0))
+
 #: The fixed first line of each card. ``card_body`` puts it first.
 _SAVE_NOTE = "Approve to save this. Nothing goes live. Reject to save nothing."
 _LIVE_NOTE = "Approve to make this skill live for Mira. Reject to leave it as it is."
@@ -910,6 +921,9 @@ _NO_SLUG = "The name gives no slug. Send a slug of letters and digits."
 #: fewer actions (review round 2, item 6).
 _WONT_FIT = ("The name and the actions of this skill do not fit on one card, so nothing was "
              "changed. Remove some actions, then call the tool once more.")
+_SMUGGLED = ("This change holds hidden characters in the {what}. They can carry a text that "
+             "no person sees. This chat read email from outside senders, so it shows no card "
+             "for such a text. Nothing was changed. Remove them in Studio.")
 _ERROR_PATH = r"^(\$[^\s:]*|body[\w.]*)(?::|\s)"
 _CLASS_ORDER = {"X": 0, "C": 1, "B": 2, "A": 3}
 
@@ -1360,6 +1374,11 @@ async def _held_save(
         problem = _actions_problem(_actions_in(body), classes)
         if problem:
             return _route_says(422, problem)
+        refused = await _smuggle_refusal([("name", change["name"]),
+                                          ("description", body.get("description")),
+                                          ("instructions", body.get("instructions"))])
+        if refused is not None:
+            return refused
         rows = _skill_rows({"name": change["name"]}, {"version": number, "body": body}, classes)
         context = await _card(_SAVE_NOTE, rows)
     except _Refused as exc:
@@ -1382,25 +1401,67 @@ def _bare(text: str) -> str:
     return text.replace("«", "").replace("»", "")
 
 
-def _shown(value: Any) -> str:
-    """*value* whole, as one value of a card inside « ». It holds one line, no
-    control character and no character that the member cannot see
-    (``untrusted.is_invisible``), so it cannot forge a line of the card or
-    hide a text on it. It holds no guillemet of its own, so it cannot close
-    the fence."""
+def _shown_count(value: Any) -> tuple[str, int]:
+    """*value* whole, as one value of a card inside « », and the count of the
+    characters that it dropped. The value holds one line and no control
+    character, so it cannot forge a line of the card. It holds no character
+    that shows nothing (``untrusted.is_invisible`` and :data:`_CARD_HIDDEN`).
+    The store keeps those, so :func:`_hidden_rows` counts them on the card.
+    It holds no guillemet of its own, so it cannot close the fence."""
     from acb_skills.untrusted import is_invisible
 
-    raw = str("" if value is None else value)
-    text = "".join(" " if ch < " " else ch for ch in raw if not is_invisible(ch))
-    return "«" + _bare(one_line(text)) + "»"
+    kept: list[str] = []
+    dropped = 0
+    for ch in str("" if value is None else value):
+        if ch < " " or ch.isspace():
+            kept.append(" ")
+        elif ord(ch) in _CARD_HIDDEN or is_invisible(ch):
+            dropped += 1
+        else:
+            kept.append(ch)
+    return "«" + _bare(one_line("".join(kept))) + "»", dropped
+
+
+def _shown(value: Any) -> str:
+    """:func:`_shown_count` with no count."""
+    return _shown_count(value)[0]
+
+
+def _hidden_rows(counts: list[tuple[str, int]]) -> list[tuple[str, str]]:
+    """One short row that counts the hidden characters of each text, or none.
+    The card drops them, and the store keeps them, so the card says both
+    (review round 3). A short row is never cut."""
+    parts = [f"{n} in the {field}" for field, n in counts if n]
+    if not parts:
+        return []
+    return [("hidden", f"Hidden characters: {', '.join(parts)}. They are saved. "
+                       "Remove them in Studio.")]
+
+
+def _smuggled(texts: list[tuple[str, Any]]) -> list[str]:
+    """The fields of *texts* that hold a character of :data:`_SMUGGLE_BLOCKS`."""
+    return [field for field, value in texts
+            if any(any(ord(ch) in block for block in _SMUGGLE_BLOCKS)
+                   for ch in str(value or ""))]
+
+
+async def _smuggle_refusal(texts: list[tuple[str, Any]]) -> dict[str, Any] | None:
+    """The refusal of a held chat for a text that can carry a hidden text, or
+    None. A count on the card is not consent there, because the text came to
+    a chat that read outside mail. ``egress.chat_is_held`` is the reader."""
+    fields = _smuggled(texts)
+    if fields and await _chat_is_held():
+        return _refusal(_SMUGGLED.format(what=" and ".join(fields)))
+    return None
 
 
 def _title_name(value: Any) -> str:
     """A skill name for the title of a card: :func:`_name` inside « », with no
-    character that the member cannot see (``untrusted.is_invisible``)."""
+    character that shows nothing (:func:`_shown_count`)."""
     from acb_skills.untrusted import is_invisible
 
-    return _name("".join(ch for ch in str(value or "") if not is_invisible(ch)), True)
+    return _name("".join(ch for ch in str(value or "")
+                         if not (ord(ch) in _CARD_HIDDEN or is_invisible(ch))), True)
 
 
 def _action_lines(ids: list[str], classes: dict[str, str]) -> list[str]:
@@ -1426,14 +1487,18 @@ def _skill_rows(
     or goes live. The name, the version and each action with its class are
     short rows. The description and the instructions are long text."""
     body = _body_of(version)
+    name, in_name = _shown_count(skill.get("name", ""))
+    desc, in_desc = _shown_count(body.get("description"))
+    text, in_text = _shown_count(body.get("instructions"))
     return [
-        ("skill", f"Skill: {_shown(skill.get('name', ''))}"),
+        ("skill", f"Skill: {name}"),
         ("version", f"Version: {version.get('version')}"),
+        *_hidden_rows([("name", in_name), ("description", in_desc), ("instructions", in_text)]),
         *(("actions", line) for line in _action_lines(_actions_in(body), classes)),
-        ("description", f"Description: {_shown(body.get('description'))}"),
+        ("description", f"Description: {desc}"),
         # card_body cuts only the keys of D169 item 9, so the instructions
         # ride as ``body``. :func:`_card` gives the cut its real name.
-        ("body", f"Instructions: {_shown(body.get('instructions'))}"),
+        ("body", f"Instructions: {text}"),
     ]
 
 
@@ -1552,6 +1617,12 @@ async def _publish_after_card(sid: str, first: _Reply) -> dict[str, Any]:
         problem = _actions_problem(_actions_in(_body_of(version)), classes)
         if problem:
             return _route_says(422, problem)  # no card for a publish that the route refuses
+        stored = _body_of(version)
+        refused = await _smuggle_refusal([("name", skill.get("name")),
+                                          ("description", stored.get("description")),
+                                          ("instructions", stored.get("instructions"))])
+        if refused is not None:
+            return refused
         rows = _skill_rows(skill, version, classes)
         context = await _card(_LIVE_NOTE, rows)
     except _Refused as exc:
@@ -1607,7 +1678,8 @@ async def studio_skill_state(skill_id: str, state: str) -> dict[str, Any]:
             if problem:
                 return _route_says(409, problem)  # no card for a move that the route refuses
             name = _title_name(current.get("name", ""))
-            rows = [("skill", f"Skill: {_shown(current.get('name', ''))}")]
+            shown, hidden = _shown_count(current.get("name", ""))
+            rows = [("skill", f"Skill: {shown}"), *_hidden_rows([("name", hidden)])]
             context = await _card(_PAUSE_NOTE, rows)
             decision = await _decide(f"Pause {name}?", "The skill stops for Mira.", context)
             if decision != "approved":
