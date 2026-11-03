@@ -4,7 +4,7 @@
 #
 # Open PowerShell with "Run as administrator" on the home computer, and run:
 #
-#   irm https://raw.githubusercontent.com/Hathi-Labs/Metorite/mt-38b0acb6-home-server/scripts/home_server/remote_access.ps1 | iex
+#   irm https://raw.githubusercontent.com/Hathi-Labs/Metorite/main/scripts/home_server/remote_access.ps1 | iex
 #
 # It installs OpenSSH Server and Tailscale, trusts the SSH keys that
 # github.com/vjvarada.keys publishes, and stops the computer from sleeping on

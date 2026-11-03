@@ -7,7 +7,7 @@
 # bash. The easy way is from the PC, after the box
 # joined Tailscale, because there you can click the links and paste the codes:
 #
-#   ssh -t acb@metorite-home "curl -fsSLo setup.sh https://raw.githubusercontent.com/Hathi-Labs/Metorite/mt-38b0acb6-home-server/scripts/home_server/setup.sh && bash setup.sh"
+#   ssh -t acb@metorite-home "curl -fsSLo setup.sh https://raw.githubusercontent.com/Hathi-Labs/Metorite/main/scripts/home_server/setup.sh && bash setup.sh"
 #
 # It also runs at the box's own keyboard. It stops for three sign-ins:
 # Tailscale (skipped when the box already joined), GitHub and Claude. Safe to

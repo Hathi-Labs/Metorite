@@ -2,7 +2,7 @@
 # it (task 1534). Run it as the Windows admin, after remote_access.ps1, from
 # the PC:
 #
-#   ssh metorite-home-win "irm https://raw.githubusercontent.com/Hathi-Labs/Metorite/mt-38b0acb6-home-server/scripts/home_server/wsl_setup.ps1 | iex"
+#   ssh metorite-home-win "irm https://raw.githubusercontent.com/Hathi-Labs/Metorite/main/scripts/home_server/wsl_setup.ps1 | iex"
 #
 # Set $env:METORITE_REF to a full commit id to fetch setup.sh from that
 # commit. The raw branch URL can serve a copy up to 5 minutes old.
@@ -22,7 +22,7 @@
   $env:WSL_UTF8 = '1'
   $Distro = 'metorite'
   $Location = 'C:\wsl\metorite'
-  $Ref = if ($env:METORITE_REF) { $env:METORITE_REF } else { 'mt-38b0acb6-home-server' }
+  $Ref = if ($env:METORITE_REF) { $env:METORITE_REF } else { 'main' }
   $Raw = "https://raw.githubusercontent.com/Hathi-Labs/Metorite/$Ref/scripts/home_server"
   $Cfg = Join-Path $env:USERPROFILE '.wslconfig'
   $WslVm = '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}'  # the Hyper-V VM creator id of WSL
