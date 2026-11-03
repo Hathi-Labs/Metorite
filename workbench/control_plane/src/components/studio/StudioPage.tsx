@@ -140,7 +140,7 @@ export default function StudioPage({
       )}
       <div className="flex min-h-0 flex-1">
         <div ref={scroller} tabIndex={-1} data-page-scroller
-          className="@container min-w-0 flex-1 overflow-y-auto px-4 py-3 outline-none sm:px-6 sm:py-4">
+          className="@container min-w-0 flex-1 overflow-y-auto px-4 py-3 outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring sm:px-6 sm:py-4">
           {toolbar && <div className="mb-3 flex flex-wrap items-center gap-2 sm:mb-4">{toolbar}</div>}
           {cells.length === 0 ? (
             <p className="text-sm text-muted-foreground">This page has no views.</p>
