@@ -73,12 +73,12 @@ The facts of task 1369 were re-read on `ce29836ea`. Two of them changed.
 | A project suggestion | `routes/tasks/ai.py` (`_suggest_project`, line 151) | A keyword match on the member's own personal tree only |
 | Task context for agents | `apps/services/agent_edge/agent_edge/tools.py` (`get_task_context`, line 2865) | It returns the task, parents, project with description, blockers, subtasks, runs, refs and 20 comments. It returns no rule and no guidance |
 | Documents | `infra/postgres/272_knowledge_pages.sql` | `kb_pages` has `state` (`draft`, `published`, `archived`). `kb_links` allows `target_kind = 'project'`, and its only writer (`routes/knowledge/backlinks.py`) writes `page` targets |
-| The store of rules | `project-docs/specs/agent_coordination.md` line 445 (SW-31, task 1048) | **Not built.** No `pm_agent_guidance` exists in any `.sql` file |
+| The store of rules | `project-docs/specs/agent_coordination.md` line 445 (SW-31, task 1048) | **Table built** by SW-31a (migration 335, `pm_agent_guidance`, in the shape of §4.2, dark). The editor (SW-31b) is not built |
 | The lead | `infra/postgres/146_projects.sql` line 64 (`pm_projects.lead`) | One email, nullable. `routes/projects/authority.py` counts the lead of any ancestor project. No product manager role exists |
 
 **⚠️ Two changes since the task text.**
 
-1. **SW-31 is a planned spec, not code.** ALN-5 cannot extend a table that does not exist. §4.2 fixes this: the first slice to need the table builds it in one shape.
+1. **SW-31a built the table.** `pm_agent_guidance` has the columns of §4.2 from migration 335, and its unique index is NULL-safe. ALN-5 adds the proposer, the `state` logic and the `rules` key. It adds no table.
 2. **`kb_links` has no version column and no state.** KG-4 (not built) adds a `relation` and a `removed_at`, and still no version. So the pin of §4.1 is its own small table.
 
 ---

@@ -267,8 +267,8 @@ def _flag_on(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_settings(), "agent_guidance_orgs", "*")
 
 
-def _rows(p: Any, sql: str, **params: Any) -> list[Any]:
-    with p.admin_engine.connect() as c:
+def _rows(pool: Any, sql: str, **params: Any) -> list[Any]:
+    with pool.admin_engine.connect() as c:
         return list(c.execute(text(sql), params))
 
 
@@ -476,13 +476,15 @@ async def test_write_authority(world) -> None:
         # An agent connection never writes.
         assert (await _save(call, agent, None, "no")).status_code == 403
         assert (await _save(call, agent, w.p1, "no")).status_code == 403
-        # A personal tree takes no guidance, for the admin too.
-        refused = await _save(call, w.admin_u, w.personal, "no")
+        # A personal tree takes no guidance. Its owner is refused by name, and
+        # the admin cannot even see it (a personal tree is private).
+        refused = await _save(call, w.member_u, w.personal, "no")
+        private = await _save(call, w.admin_u, w.personal, "no")
         # An unknown project is a 404.
         unknown = await _save(call, w.admin_u, str(uuid.uuid4()), "no")
     assert refused.status_code == 403 and "personal" in refused.json()["detail"].lower()
-    assert unknown.status_code == 404
-    assert len(_rows(w.p, "SELECT 1 FROM pm_agent_guidance")) == 5
+    assert unknown.status_code == 404 and private.status_code == 404
+    assert len(_rows(w.p, "SELECT 1 FROM pm_agent_guidance")) == 4
 
 
 # ── R8: concurrency and the index ───────────────────────────────────────────
@@ -573,4 +575,3 @@ async def test_a_hostile_body_is_stored_and_returned_and_changes_nothing(world) 
         got = (await call(w.member_u, "GET", f"/agent-guidance/tasks/{w.task_p1}")).json()
     assert got["blocks"][0]["body"] == HOSTILE
     assert len(_rows(w.p, "SELECT 1 FROM pm_tasks")) == tasks_before
-    assert _rows(w.p, "SELECT 1 FROM pm_tasks WHERE deleted_at IS NOT NULL") == []

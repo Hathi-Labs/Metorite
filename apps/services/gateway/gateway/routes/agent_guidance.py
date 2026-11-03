@@ -58,6 +58,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger, get_settings
+from acb_common.db import current_tenant
 from fastapi import APIRouter, Depends, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.projects.authority import assert_may_write_guidance
@@ -303,6 +304,13 @@ async def save_guidance(
                     if project.archived_at is not None or project.status == "archived":
                         raise HTTPException(status_code=409, detail=ARCHIVED_REFUSED)
                     await assert_may_write_guidance(db, user, project)
+                # One save of a scope at a time: the lock lasts to the end of
+                # this transaction. The unique index and the retry below stay
+                # as the backstop (a lock does not cross a failover).
+                await db.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
+                    {"scope": f"agent_guidance:{current_tenant()}:{project_id or 'org'}"},
+                )
                 row = (await db.execute(
                     text(
                         "INSERT INTO pm_agent_guidance "

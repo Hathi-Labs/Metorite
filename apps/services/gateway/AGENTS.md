@@ -64,6 +64,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - The answer holds the manifest and the state of the organization, never data of an app. The module opens no session.
    - Each args schema comes from `route.dependant` of the live route (AD-9), never from a hand list. `agent_oauth.door_available` decides each op.
    - Fences: `test_mcp_edge_app_door.py`, `test_mcp_edge_app_door_r8.py`, `test_app_door_coverage.py`.
+0p. routes/agent_guidance.py -- **The org's written rules for agents** (SW-31a, `agent_coordination.md` SW-31). `POST /agent-guidance` saves a new version, and each save adds a row of `pm_agent_guidance`. `GET /agent-guidance/history` reads the versions. `GET /agent-guidance/tasks/{task_id}` and `GET /agent-guidance/refs` serve the MCP edge. The blocks come nearest first: the project, its parents, the space, then the company. Dark behind `AGENT_GUIDANCE_ORGS`, and 404 while the org is off.
 0p. assistant_summaries.py -- **The ONE reader and writer of `chat_session.member_summary`** (WS-63 PZ-33a, `personalization.md` §15.3). No other module names the column.
    - Each function takes a session that the caller opened with `tenant_session(org)`, or the sync `acb_graph` session for `clear_on_share`. No function takes an org. Only `clear_for_member` takes a member, from the session or the member record. ⚠️ Each caller checks the member: a statement finds the chat by its id, and RLS binds only the tenant.
    - ⚠️ A write sets that column only. It never changes `updated_at`, `last_preview` or `message_count`.
