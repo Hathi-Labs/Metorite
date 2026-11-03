@@ -552,9 +552,11 @@ class TestTheOverview:
         assert summary["by_disposition"]["waiting"] == dispositions["WAITING"] == 1
         assert summary["by_disposition"]["done"] == dispositions["DONE"] == 1
         assert dispositions["INBOX"] == 1
-        # "My task inbox" counts the INBOX row AND the untriaged board rows a
-        # colleague assigned to me: a_open, a_secret and both2 (P2 of the review).
-        assert summary["by_disposition"]["inbox"] == 4
+        # D170 (INB-1): "My task inbox" counts the INBOX row only. The untriaged
+        # board rows a colleague assigned to me (a_open, a_secret and both2) are
+        # "New" in My tasks. They still count in `next`.
+        assert summary["by_disposition"]["inbox"] == 1
+        assert summary["by_disposition"]["new"] == 3
         assert summary["by_disposition"]["next"] == 4
         assert summary["by_disposition"]["someday"] == 0
         assert summary["by_disposition"]["today"] == 1
@@ -634,7 +636,8 @@ class TestTheMemberTestsAreFenced:
         assert sum_a["tasks"] == len(rows_a)
         assert sum(sum_a["by_category"].values()) == len(rows_a)
         assert sum_a["by_disposition"] == {
-            "inbox": 4, "today": 1, "next": 4, "waiting": 1, "someday": 0, "done": 1,
+            "inbox": 1, "today": 1, "next": 4, "waiting": 1, "someday": 0, "done": 1,
+            "new": 3,
         }
         by_id = {r["id"]: r for r in rows_a}
         assert by_id[armed.t["both"]]["disposition"] == "NEXT"
@@ -642,31 +645,43 @@ class TestTheMemberTestsAreFenced:
         rows_b, sum_b = await _fold(armed, B)
         assert len({r["id"] for r in rows_b}) == len(rows_b) == len(MINE_B)
         assert sum_b["tasks"] == len(rows_b)
-        assert sum_b["by_disposition"] == {
-            "inbox": 5, "today": 0, "next": 4, "waiting": 1, "someday": 2, "done": 0,
-        }
+        by_b = dict(sum_b["by_disposition"])
+        # D170: the old inbox count (5) split into captures and New work.
+        assert by_b.pop("inbox") + by_b.pop("new") == 5
+        assert by_b == {"today": 0, "next": 4, "waiting": 1, "someday": 2, "done": 0}
         by_id_b = {r["id"]: r for r in rows_b}
         assert by_id_b[armed.t["both"]]["disposition"] == "SOMEDAY"
         assert by_id_b[armed.t["both2"]]["disposition"] == "SOMEDAY"
 
 
 class TestTheInboxBadge:
-    async def test_the_inbox_count_is_what_the_badge_counts(self, armed):
-        """A colleague assigned `a_open`, `a_secret` and `both2` to A, and A
-        never triaged them. The badge (`inboxCount`) counts the INBOX rows plus
-        those rows, and `/my/inbox` lists them, so the numbers agree."""
+    async def test_the_inbox_count_is_what_the_list_shows(self, armed):
+        """D170 (INB-1). The badge counts the INBOX rows, and the list the app
+        draws asks `/my/inbox?disposition=INBOX`, so the numbers agree. The
+        untriaged rows are "New": they are counted in `new` and listed by
+        `untriaged=true`, and they are not in the inbox list."""
         for email in (A, B):
             summary = await _ok(armed, email, "/projects/my/summary")
             untriaged = await _ok(armed, email, "/projects/my/inbox",
                                   {"untriaged": "true", "page_size": 100})
             stated = await _ok(armed, email, "/projects/my/inbox",
                                {"disposition": "INBOX", "page_size": 100})
-            assert summary["by_disposition"]["inbox"] == (
-                len(untriaged["rows"]) + len(stated["rows"])), email
+            assert summary["by_disposition"]["inbox"] == len(stated["rows"]), email
+            assert summary["by_disposition"]["new"] == len(untriaged["rows"]), email
+            in_inbox = {r["id"] for r in stated["rows"]}
+            assert not in_inbox & {r["id"] for r in untriaged["rows"]}, email
         got = await _ok(armed, A, "/projects/my/inbox",
                         {"untriaged": "true", "page_size": 100})
         assert _named(armed, {r["id"] for r in got["rows"]}) == {
             "a_open", "a_secret", "both2"}
+
+    async def test_the_rows_of_my_tasks_say_which_are_new(self, armed):
+        """`attach_my_overlay` puts `is_new` on each row, by the same rule the
+        count uses (`mine.new_work`), so the chip and the marker agree."""
+        rows_a, summary = await _fold(armed, A)
+        new_ids = {r["id"] for r in rows_a if r.get("is_new")}
+        assert len(new_ids) == summary["by_disposition"]["new"] == 3
+        assert _named(armed, new_ids) == {"a_open", "a_secret", "both2"}
 
 
 class TestSubjectMe:

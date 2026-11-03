@@ -8,7 +8,7 @@
  * `subject=me`. This file holds its pure rules, so the page and the component
  * stay thin:
  *
- * 1. **The chips.** All, Today, Next, Waiting, Someday and Done. Each chip is
+ * 1. **The chips.** All, New, Today, Next, Waiting, Someday and Done. Each chip is
  *    a filter on the row's overlay, with the rules of the server's
  *    `mine.fold_dispositions`. The counts on the chips come from
  *    `by_disposition`, never from a page of rows.
@@ -52,6 +52,9 @@ export type MyTasksMode = (typeof MY_TASKS_MODES)[number]["id"];
 
 export const MY_TASKS_CHIPS = [
   { id: "all", label: "All" },
+  // D170 (INB-1, 2026-11-03): work assigned to me that I have not opened or
+  // planned. The inbox holds captures only, so this is where it shows.
+  { id: "new", label: "New" },
   { id: "today", label: "Today" },
   { id: "next", label: "Next" },
   { id: "waiting", label: "Waiting" },
@@ -91,7 +94,14 @@ export function chipForApp(id: string | null | undefined): MyTasksChip | null {
 /** The overlay facts a chip reads off a row (`with_overlay=1`). */
 export type ChipRow = Pick<
   TaskRow,
-  "disposition" | "is_mine" | "completed_at" | "archived_at" | "defer_until" | "start_date" | "due_at"
+  | "disposition"
+  | "is_mine"
+  | "is_new"
+  | "completed_at"
+  | "archived_at"
+  | "defer_until"
+  | "start_date"
+  | "due_at"
 >;
 
 /**
@@ -101,6 +111,7 @@ export type ChipRow = Pick<
  * - Waiting, Someday and Done: the effective disposition.
  * - Today: `isInToday`, the one Today rule (`tasks/lib/today.ts`), which the
  *   server's `in_today` mirrors.
+ * - New: the server's `is_new` (`mine.new_work`), no stated disposition of mine.
  * - All: every row but TRASH. TRASH is in no chip.
  *
  * `disposition` arrives EFFECTIVE (`effective_disposition`, D77), so a closed
@@ -111,6 +122,8 @@ export function inChip(row: ChipRow, chip: MyTasksChip, today: string, timeZone?
   switch (chip) {
     case "all":
       return effective !== "TRASH";
+    case "new":
+      return Boolean(row.is_new);
     case "next":
       return effective === "NEXT" && Boolean(row.is_mine);
     case "waiting":

@@ -456,6 +456,16 @@ def test_the_list_pages_to_exhaustion(gw: Recorder):
     assert out.startswith("150 item(s) in all")
 
 
+def test_the_inbox_view_is_the_captures_only(gw: Recorder):
+    """D170 (INB-1). The inbox view asks `disposition=INBOX` and never `untriaged`.
+    `my_work(view="inbox")` asks the same filter, so the two chat tools and the
+    app's inbox list agree (`test_projects_project_fields.py`)."""
+    run(core.my_tasks_list(view="inbox"))
+    p = gw.kwargs[0]["params"]
+    assert p["disposition"] == "INBOX"
+    assert "untriaged" not in p
+
+
 def test_the_list_asks_for_the_view_the_way_the_browser_does(gw: Recorder):
     run(core.my_tasks_list(view="done"))
     p = gw.kwargs[0]["params"]
