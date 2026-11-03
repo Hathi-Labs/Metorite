@@ -227,7 +227,7 @@ def drivable(case: Case) -> bool:
 def representative(cases: Iterable[Case]) -> list[Case]:
     """The first drivable case of each expected answer, in set order."""
     out: list[Case] = []
-    keys: set[tuple[str | None, bool, bool]] = set()
+    keys: set[tuple[str | None, bool, bool, bool, bool]] = set()
     for c in cases:
         key = (c.expected, c.asks, c.opens is not None, c.finds, c.shows)
         if key not in keys and drivable(c):
@@ -331,6 +331,9 @@ def _offer_problems(case: Case, orch: ReplyModel) -> list[str]:
                        ("the member's words", case.words)):
         if not orch.saw(text):
             out.append(f"the orchestrator's model did not see {what}")
+    # WS-OB GD-7: the guide tools come with the guide line, as from the dock.
+    if case.finds and not orch.saw(shell.guide_line()[:80]):
+        out.append("the orchestrator's model did not see the guide line")
     return out
 
 
@@ -399,7 +402,7 @@ async def _run_cases(harness: RoutingHarness, chosen: list[Case],
         harness.models = models
         loaded, sent = len(harness.loaded), len(harness.sent)
         record = await harness.drive(
-            case.words, shell.system_context(case.app, case.facts),
+            case.words, shell.system_context(case.app, case.facts, guide=harness.guide),
             member=ds.MEMBER, org=ds.ORG,
             # The member typed the words, as the chat route binds them (WS-67).
             typed=case.words,
@@ -470,9 +473,21 @@ def first_routed(record: RunRecord, stand_ins: list[tuple[str, str]]) -> str | N
     return stand_ins[0][0] if stand_ins else None
 
 
-def score_live(case: Case, got: str | None, asked: bool) -> bool:
+def score_live(case: Case, got: str | None, asked: bool,
+               tools: Iterable[str] = ()) -> bool:
+    """True when the live run did what *case* expects.
+
+    *tools* names the orchestrator's own tool calls. WS-OB GD-7: a ``finds``
+    case passes only when the run called ``find_guide``, and a ``shows`` case
+    only when it called ``show_guide`` too. No specialist is not enough.
+    """
     if case.asks:
         return got is None and asked
+    called = set(tools)
+    if case.finds and "find_guide" not in called:
+        return False
+    if case.shows and "show_guide" not in called:
+        return False
     return got == case.expected
 
 
@@ -483,19 +498,20 @@ async def _live_cases(harness: RoutingHarness, cases: list[Case], tier: str,
         for n in range(repeat):
             mark = len(harness.delegated)
             record = await harness.drive(
-                case.words, shell.system_context(case.app, case.facts),
+                case.words, shell.system_context(case.app, case.facts, guide=harness.guide),
                 member=ds.MEMBER, org=ds.ORG, tier=tier, timeout=300.0,
                 typed=case.words,
             )
             stand_ins = harness.delegated[mark:]
             got = first_routed(record, stand_ins)
             asked = bool(record.asked) or any(n == "ask_questions" for n, _ in record.tool_calls)
+            tool_calls = [name for name, _ in record.tool_calls]
             rows.append({
                 "id": case.id, "run": n + 1, "app": case.app, "words": case.words,
                 "expected": case.expected, "asks": case.asks, "got": got,
                 "routed": record.routed, "asked": asked,
-                "passed": score_live(case, got, asked),
-                "tool_calls": [name for name, _ in record.tool_calls],
+                "passed": score_live(case, got, asked, tool_calls),
+                "tool_calls": tool_calls,
                 "answer": record.answer[:1500], "error": record.error,
             })
     return rows

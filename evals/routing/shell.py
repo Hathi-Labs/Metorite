@@ -101,6 +101,20 @@ def persona() -> str:
 
 
 @lru_cache(maxsize=1)
+def guide_line() -> str:
+    """``GUIDE_PERSONA_LINE``: the line the dock joins when the guide is on.
+
+    WS-OB GD-7 (``assistant_guide.md`` §5.4). The dock joins it to the persona
+    with one space (``AssistantDock.tsx``, :func:`drift` checks that line).
+    """
+    line = re.search(r'export const GUIDE_PERSONA_LINE\s*=\s*"((?:[^"\\]|\\.)*)";',
+                     _read(ASSISTANT_TS))
+    if line is None:
+        raise ValueError("assistant.ts: GUIDE_PERSONA_LINE moved")
+    return line.group(1)
+
+
+@lru_cache(maxsize=1)
 def also_serves() -> dict[str, tuple[str, ...]]:
     """``ALSO_SERVES``: the other panes whose questions an agent answers.
 
@@ -132,8 +146,9 @@ def drift() -> list[str]:
         # eval sends the base persona, as a build with the flag off does.
         "the dock's join": "${personaText}\\n\\n${context}",
         "the dock's page line": "const basePersona = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;",
-        # WS-OB GD-7: the guide line joins behind the guide flag. The eval sends
-        # the base persona, as a build with the flag off does.
+        # WS-OB GD-7: the guide line joins behind the guide flag. The harness
+        # opens the guide tools, so the eval joins the line too, as a build
+        # with the flag on does (system_context(guide=True)).
         "the dock's guide line": "const personaText = guideOn ? `${basePersona} ${GUIDE_PERSONA_LINE}` : basePersona;",
     }
     dock = _read(ASSISTANT_TS.parent / "AssistantDock.tsx")
@@ -162,6 +177,14 @@ def surface_context(app: str | None, facts: tuple[str, ...] = ()) -> str:
     return "\n".join(lines)
 
 
-def system_context(app: str | None, facts: tuple[str, ...] = ()) -> str:
-    """What the dock sends as ``system_context`` to ``orchestrator``."""
-    return f"{persona()}\n\n{surface_context(app, facts)}"
+def system_context(app: str | None, facts: tuple[str, ...] = (), *,
+                   guide: bool = True) -> str:
+    """What the dock sends as ``system_context`` to ``orchestrator``.
+
+    *guide* is the dock's ``guideOn``: True joins :func:`guide_line` to the
+    persona. It is True by default, because :class:`RoutingHarness` opens
+    the guide tools by default (WS-OB GD-7). A run with the tools on and
+    the line off is a mix that production never sends.
+    """
+    text = f"{persona()} {guide_line()}" if guide else persona()
+    return f"{text}\n\n{surface_context(app, facts)}"

@@ -5,9 +5,15 @@ orchestrator's own (``orchestrator/agents.py``), and the logic is
 ``orchestrator/guide_tools.py``. They list only when ``GUIDE_ORGS`` opens the
 org, and they never call a model.
 
-Each refusal has a test: a pane the member lacks, an admin guide for a member,
+Each refusal has a test: a pane the member lacks, a guide feature the member
+lacks (a guide with no ``open`` step), an admin guide for a member,
 a preview pane (through a fixture guide), an unknown id, a nested run, and a
-second page move in one turn, in both orders with ``show_in_app``.
+second page move in one turn, in both orders with ``show_in_app``. Two calls
+that run at once (``asyncio.gather``) move the page once.
+
+The ranking has a test on the real catalog: a match on a generic verb only
+finds nothing, and each guide case of the routing eval ranks its guide first
+by score, not by file order.
 
 The member's features and admin right come from the database in production.
 These tests replace them with a fixed set, as ``test_show_in_app.py`` does.
@@ -25,6 +31,8 @@ import pytest
 from acb_common.app_manifests.guide_manifest import Guide, GuideStep
 from orchestrator import guide_tools as gt
 from orchestrator import in_app_path as iap
+
+from evals.routing import dataset as ds
 
 ORG = "org-guide-test"
 #: The member holds the CRM and the tour. Not Projects.
@@ -143,6 +151,27 @@ def test_find_hides_a_guide_of_a_pane_the_member_lacks(
     assert all(g["app"] != "crm" for g in out["guides"])
 
 
+def _say_only_crm_guide() -> Guide:
+    """A CRM guide with no ``open`` step, so only its ``feature`` can refuse it."""
+    return _fixture_guide(feature="crm", steps=(GuideStep("say", "Press New deal."),))
+
+
+def _chat_only_member(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _chat_only() -> frozenset[str]:
+        return frozenset({"chat"})
+
+    monkeypatch.setattr(iap, "member_features", _chat_only)
+
+
+def test_find_hides_a_guide_whose_feature_the_member_lacks(
+    run: _Queue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gt, "all_guides", lambda: (_say_only_crm_guide(),))
+    assert _find("do the thing")["guides"][0]["id"] == "fix.thing"
+    _chat_only_member(monkeypatch)
+    assert _find("do the thing") == {"guides": [], "hint": gt.NO_MATCH_HINT}
+
+
 def test_find_hides_an_admin_guide_from_a_member(
     run: _Queue, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -169,6 +198,57 @@ def test_find_hides_a_guide_that_opens_a_preview_pane(
     assert _find("do the thing")["guides"] == []
 
 
+# ── the ranking, on the real catalog ────────────────────────────────────────
+
+def _runnable() -> tuple[Guide, ...]:
+    """Every guide that a member who holds each live pane may run."""
+    held = frozenset(p.feature for p in iap.PANES if p.feature)
+    return tuple(g for g in gt.all_guides() if gt.may_run(g, held, False))
+
+
+def test_add_a_task_finds_no_guide(run: _Queue) -> None:
+    # "add" is a generic verb: "add a lead", "add a deal" and "add a note to a
+    # deal" each lack the subject word "task".
+    assert gt.rank("How do I add a task?", _runnable()) == []
+    assert _find("How do I add a task?") == {"guides": [], "hint": gt.NO_MATCH_HINT}
+
+
+def test_a_note_on_a_project_does_not_find_the_crm_note() -> None:
+    ids = [g.id for g in gt.rank("how do I add a note to my project", _runnable())]
+    assert "crm.log-note" not in ids, ids
+
+
+def test_a_generic_verb_alone_never_matches() -> None:
+    q = gt.tokens("add create new make find see open get use set move give go")
+    assert all(gt.ask_score(q, ask) == (0.0, 0)
+               for g in gt.all_guides() for ask in (g.title, *g.asks))
+    assert gt.ask_score(gt.tokens("open it"), "open it") == (0.0, 0)
+
+
+def test_a_missing_generic_verb_still_matches_and_a_missing_subject_does_not() -> None:
+    assert gt.ask_score(gt.tokens("create a deal"), "create a new deal") == (0.667, 2)
+    assert gt.ask_score(gt.tokens("see a deal"), "add a deal") == (0.0, 0)
+    assert gt.ask_score(gt.tokens("add a note"), "add a note to a deal") == (0.0, 0)
+
+
+@pytest.mark.parametrize("case", [c for c in ds.CASES if c.finds], ids=lambda c: c.id)
+def test_each_guide_case_ranks_its_guide_first_by_score(case: ds.Case) -> None:
+    guides = _runnable()
+    ranked = gt.rank(case.words, guides)
+    if case.guide is None:
+        assert ranked == [], [g.id for g in ranked]
+        return
+    assert ranked and ranked[0].id == case.guide, [g.id for g in ranked]
+    if len(ranked) > 1:
+        assert gt.score(case.words, ranked[0]) > gt.score(case.words, ranked[1])
+    # File order does not decide it: the reversed catalog ranks the same guide first.
+    assert gt.rank(case.words, guides[::-1])[0].id == case.guide
+
+
+def test_give_me_a_tour_finds_the_tour(run: _Queue) -> None:
+    assert _find("Give me a tour.")["guides"][0]["id"] == "home.tour"
+
+
 # ── show_guide ──────────────────────────────────────────────────────────────
 
 def test_show_emits_one_guide_event(run: _Queue) -> None:
@@ -190,6 +270,15 @@ def test_show_refuses_a_pane_the_member_lacks(
 
     monkeypatch.setattr(iap, "member_features", _chat_only)
     assert _show("crm.add-deal") == {"error": "the member may not run that guide"}
+    assert run.events == []
+
+
+def test_show_refuses_a_guide_whose_feature_the_member_lacks(
+    run: _Queue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gt, "all_guides", lambda: (_say_only_crm_guide(),))
+    _chat_only_member(monkeypatch)
+    assert _show("fix.thing") == {"error": "the member may not run that guide"}
     assert run.events == []
 
 
@@ -243,6 +332,99 @@ def test_a_second_show_in_one_turn_is_refused(run: _Queue) -> None:
 def test_a_refused_show_does_not_spend_the_move(run: _Queue) -> None:
     assert "error" in _show("crm.nope")
     assert _open("/email")["opened"] == "/email"
+
+
+# ── one page move when tool calls run at once ───────────────────────────────
+
+@pytest.fixture
+def cold(run: _Queue, monkeypatch: pytest.MonkeyPatch) -> _Queue:
+    """The member's features take one await, as a cold access cache does."""
+    async def _features() -> frozenset[str]:
+        await asyncio.sleep(0)
+        return HELD
+
+    monkeypatch.setattr(iap, "member_features", _features)
+    return run
+
+
+def _at_once(*calls: Any) -> list[dict[str, Any]]:
+    async def main() -> list[dict[str, Any]]:
+        return list(await asyncio.gather(*calls))
+
+    return asyncio.run(main())
+
+
+def _moves(queue: _Queue) -> list[str]:
+    return [e["name"] for e in queue.events if e.get("name") in ("guide", "navigate")]
+
+
+def test_show_guide_and_show_in_app_at_once_move_the_page_once(cold: _Queue) -> None:
+    from orchestrator.agents import show_guide, show_in_app
+
+    out = _at_once(show_guide("crm.add-deal"), show_in_app("/email", "Here it is."))
+    assert _moves(cold) == ["guide"], out
+    assert out[1] == {"error": "already opened a page this turn"}
+
+
+def test_show_in_app_and_show_guide_at_once_move_the_page_once(cold: _Queue) -> None:
+    from orchestrator.agents import show_guide, show_in_app
+
+    out = _at_once(show_in_app("/email", "Here it is."), show_guide("crm.add-deal"))
+    assert _moves(cold) == ["navigate"], out
+    assert out[1] == {"error": "already moved the page this turn"}
+
+
+def test_two_show_guides_at_once_move_the_page_once(cold: _Queue) -> None:
+    from orchestrator.agents import show_guide
+
+    out = _at_once(show_guide("crm.add-deal"), show_guide("crm.add-lead"))
+    assert _moves(cold) == ["guide"], out
+    assert len(_guide_events(cold)) == 1
+
+
+def test_a_show_refused_after_the_mark_gives_it_back(
+    cold: _Queue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = gt.all_guides()
+    monkeypatch.setattr(gt, "all_guides", lambda: (*real, _fixture_guide(admin_only=True)))
+    assert _show("fix.thing") == {"error": "the member may not run that guide"}
+    assert _show("crm.add-deal")["started"] == "crm.add-deal"
+    assert _moves(cold) == ["guide"]
+
+
+def test_a_show_in_app_refused_after_the_mark_gives_it_back(cold: _Queue) -> None:
+    # The member does not hold Projects.
+    assert "error" in _open("/projects")
+    assert _show("crm.add-deal")["started"] == "crm.add-deal"
+    assert _moves(cold) == ["guide"]
+
+
+# ── the admin right ─────────────────────────────────────────────────────────
+
+def test_the_admin_check_is_the_executors(monkeypatch: pytest.MonkeyPatch) -> None:
+    pytest.importorskip("agent_framework", reason="MAF not installed")
+    import acb_auth
+    from orchestrator import executor
+
+    class _Access:
+        is_active = True
+
+        def __init__(self, held: str) -> None:
+            self.held = held
+
+        def has(self, permission: str) -> bool:
+            return permission == self.held
+
+    holds: dict[str, str] = {"p": executor._FIRST_PARTY_ADMIN_PERMISSION}
+
+    async def _resolve(_member: str) -> _Access:
+        return _Access(holds["p"])
+
+    monkeypatch.setattr(executor, "_verified_run_member", lambda: "admin@example.com")
+    monkeypatch.setattr(acb_auth, "resolve_access", _resolve)
+    assert asyncio.run(gt.member_is_admin()) is True
+    holds["p"] = "admin:members:read"
+    assert asyncio.run(gt.member_is_admin()) is False
 
 
 def test_show_fails_closed_with_the_flag_off(run: _Queue, monkeypatch: pytest.MonkeyPatch) -> None:
