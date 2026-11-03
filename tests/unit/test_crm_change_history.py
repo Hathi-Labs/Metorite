@@ -1471,3 +1471,80 @@ async def test_the_undo_of_a_reason_relabel_to_a_taken_label_is_a_409(
                 i=reason) == "Budget 2"
     assert len(_rows(ns, ns.org_a)) == 3
     assert all(r.undone_by is None for r in _rows(ns, ns.org_a))
+
+
+@_DB_GATE
+async def test_the_undo_of_a_lead_status_rename_to_a_taken_name_is_a_409(
+    ns, app_engine,  # noqa: F811
+) -> None:
+    """P2-2, the third name index (``uq_crm_lead_statuses_org_name``).
+    Mutation: drop that line from ``_NAME_INDEX`` → a KeyError → red."""
+    _settings(ns, ns.org_a, "native")
+    admin = _admin(ns.org_a)
+    status = (await _call(ns, admin, "POST", "/crm/statuses/lead",
+                          {"name": "Fresh"})).json()["id"]
+    assert (await _call(ns, admin, "PATCH", f"/crm/statuses/lead/{status}",
+                        {"name": "Fresh 2"})).status_code == 200
+    assert (await _call(ns, admin, "POST", "/crm/statuses/lead",
+                        {"name": "Fresh"})).status_code == 201
+    rename = next(r for r in _rows(ns, ns.org_a) if r.action == "change")
+    refused = await _call(ns, admin, "POST", f"/crm/change-history/{rename.id}/undo")
+    assert _undo_code(refused) == (409, "name_taken"), refused.text
+    assert '"Fresh"' in refused.json()["detail"]["message"]
+    assert _one(ns, "SELECT name FROM crm_lead_statuses WHERE id = CAST(:i AS uuid)",
+                i=status) == "Fresh 2"
+    assert all(r.undone_by is None for r in _rows(ns, ns.org_a))
+
+
+class _DriverError(Exception):
+    """The shape of an asyncpg error: the SQLSTATE and the constraint name."""
+
+    def __init__(self, sqlstate: str, constraint_name: str | None) -> None:
+        super().__init__("driver error")
+        self.sqlstate = sqlstate
+        self.constraint_name = constraint_name
+
+
+def _integrity(sqlstate: str, constraint_name: str | None) -> Any:
+    """An IntegrityError as the asyncpg dialect raises it. The statement text
+    names a name index on purpose, so a match on the text is caught."""
+    from sqlalchemy.exc import IntegrityError
+
+    adapted = Exception("adapted")
+    adapted.__cause__ = _DriverError(sqlstate, constraint_name)
+    return IntegrityError(
+        "UPDATE crm_deal_statuses SET name = 'uq_crm_deal_statuses_org_name'",
+        {}, adapted,
+    )
+
+
+@pytest.mark.parametrize(("sqlstate", "constraint"), [
+    ("23505", "uq_crm_deal_statuses_other"),   # another unique index
+    ("23503", "uq_crm_deal_statuses_org_name"),  # not a unique violation
+    ("23505", None),                            # no constraint name at all
+])
+async def test_name_free_lets_any_other_integrity_error_through(
+    sqlstate: str, constraint: str | None,
+) -> None:
+    """R7 for the re-raise branch of ``_name_free``. Only a unique violation of
+    the table's own name index is ``name_taken``. Any other IntegrityError
+    stays an error. Mutations: map every IntegrityError to ``name_taken``, or
+    match the index name in the message text → red."""
+    from gateway.routes.crm import admin as crm_admin
+    from sqlalchemy.exc import IntegrityError
+
+    with pytest.raises(IntegrityError):
+        async with crm_admin._name_free("crm_deal_statuses", "deal stage", "Open"):
+            raise _integrity(sqlstate, constraint)
+
+
+async def test_name_free_turns_its_own_index_into_name_taken() -> None:
+    """The positive case of the same seam, with no database."""
+    from fastapi import HTTPException
+    from gateway.routes.crm import admin as crm_admin
+
+    with pytest.raises(HTTPException) as refused:
+        async with crm_admin._name_free("crm_deal_statuses", "deal stage", "Open"):
+            raise _integrity("23505", "uq_crm_deal_statuses_org_name")
+    assert refused.value.status_code == 409
+    assert refused.value.detail["code"] == "name_taken"

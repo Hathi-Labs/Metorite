@@ -904,9 +904,30 @@ async def _name_free(table: str, noun: str, name: Any) -> AsyncIterator[None]:
     try:
         yield
     except IntegrityError as exc:
-        if _NAME_INDEX[table] not in str(exc):
+        if not _violates(exc, _NAME_INDEX[table]):
             raise
         raise change_log.name_taken(noun, name) from None
+
+
+def _violates(exc: BaseException, index: str) -> bool:
+    """True when ``exc`` is a unique violation (23505) of ``index``.
+
+    It reads the driver's own fields along the exception chain, never the
+    message text: that text also holds the SQL and the bound values."""
+    codes: set[str] = set()
+    names: set[str] = set()
+    seen: BaseException | None = exc
+    while seen is not None:
+        code = getattr(seen, "sqlstate", None) or getattr(seen, "pgcode", None)
+        if isinstance(code, str):
+            codes.add(code)
+        name = getattr(seen, "constraint_name", None) or getattr(
+            getattr(seen, "diag", None), "constraint_name", None,
+        )
+        if isinstance(name, str):
+            names.add(name)
+        seen = getattr(seen, "orig", None) or seen.__cause__
+    return "23505" in codes and index in names
 
 
 @change_log.undoes("lost_reason")
