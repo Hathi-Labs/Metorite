@@ -41,10 +41,20 @@ const VALUE = {
   draft_id: DRAFT,
 };
 
-/** A window and a document that the test drives. */
-function host(visible = true): DraftWatchHost & { doc: EventTarget & { visibilityState: string } } {
+/**
+ * A window and a document that the test drives: real `EventTarget` values,
+ * so a test calls `dispatchEvent` on them. `satisfies` checks that the pair
+ * is a `DraftWatchHost`, which the watch takes.
+ */
+interface FakeHost {
+  win: EventTarget;
+  doc: EventTarget & { visibilityState: string };
+}
+
+function host(visible = true): FakeHost {
+  const win = new EventTarget();
   const doc = Object.assign(new EventTarget(), { visibilityState: visible ? "visible" : "hidden" });
-  return { win: new EventTarget(), doc };
+  return { win, doc } satisfies DraftWatchHost;
 }
 
 /** Let the pending promises of a check run. */
