@@ -52,7 +52,11 @@ in a session that read an untrusted answer (``egress.session_is_marked``).
 in the member's TYPED words of this turn (``assistant_profile.typed_words``).
 The route binds them before any server rewrite of the message, and binds
 nothing for a Continue, a card answer, a Confirm or a forwarded text. A
-paste grounds nothing. Each address and link must be a whole token of
+paste grounds nothing. The chat route binds them only for a message with
+the ONE typed mark of D-PZ-37: the member typed it in the message box. A
+tapped pill, a choice, a card action, a feed starter and the Fix prompt
+bind nothing, so a save from one asks the confirm card where a card can
+show, and refuses where none can. Each address and link must be a whole token of
 them, each number must be one of their numbers, and 80% of the content
 words at least must be in them (``assistant_profile.grounded``). Else the
 write refuses with ``not_your_words``.
@@ -152,6 +156,7 @@ from acb_common.assistant_profile import (
     grounded,
     interview_stopped,
     is_sensitive,
+    member_sent,
     member_typed,
     needs_confirm,
     open_areas,
@@ -476,12 +481,16 @@ def _ground(*values: Any, card: bool = True) -> list[str]:
 
     The answer is ``[]`` when the words hold each value. A value that they
     do not hold refuses with ``not_your_words``. The one exception: *card*
-    is True, the member typed words in this message, and the run can show
+    is True, the member sent words in this message, and the run can show
     a card (:func:`_card_channel`). There the answer is ``[ASK_NOT_TYPED]``:
     the caller's ONE card shows the exact value and names that reason, and
-    only the member's approve writes it (PZ-32). A turn with no typed words
-    (a Continue, a card answer, a paste) never gets that card. The caller
-    asked :func:`_write_gate` first, so a marked session never gets here."""
+    only the member's approve writes it (PZ-32). The member sent words when
+    they typed them, or tapped a pill, a choice, a card action or a feed
+    starter (``assistant_profile.member_sent``, D-PZ-37). A tap grounds
+    nothing, so a save from it asks the card and never saves at once. A
+    turn with no words of the member (a Continue, a card answer, a paste)
+    never gets that card. The caller asked :func:`_write_gate` first, so a
+    marked session never gets here."""
     if _confirming():
         # The member typed "Confirm" for a stored act (PZ-6b). The values
         # are the stored ones, and the card gate binds them to the card.
@@ -489,7 +498,7 @@ def _ground(*values: Any, card: bool = True) -> list[str]:
     words = _member_words()
     if all(not value or grounded(value, words) for value in values):
         return []
-    if card and words.strip() and _card_channel():
+    if card and (words.strip() or member_sent()) and _card_channel():
         return [ASK_NOT_TYPED]
     raise _Refused(NOT_YOUR_WORDS_TEXT if words.strip() else NO_TYPED_TEXT,
                    "not_your_words")

@@ -3783,7 +3783,8 @@ bearer.
 the callback returns, with copy added to
 `workbench/control_plane/src/app/signin/errorCopy.ts` — the one refusal-copy
 seam, keyed on the `?error=` value and already carrying a `default` arm, so an
-unmapped code degrades to `Authentication error: <code>` rather than crashing:
+unmapped code degrades to `Sign-in failed (<code>). Try again…` rather than crashing
+(task 1529 changed that text, and set `pages.error` to `/signin`):
 
 | Code | When | Copy (D33.1: never blame the person) |
 |---|---|---|

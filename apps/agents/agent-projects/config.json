@@ -107,6 +107,7 @@
     "move_task",
     "file_tasks",
     "link_tasks_batch",
+    "update_tasks",
     "report_save",
     "unarchive_task",
     "unlink_tasks",

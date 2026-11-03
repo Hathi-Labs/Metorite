@@ -1595,6 +1595,88 @@ async def update_task(
     and no answer, the tool asks first. The card shows each change as before
     → after, and the timeline records every change."""
     tid, task = await _task(task_id)
+    plan = await _plan_task_edit(
+        task,
+        title=title,
+        description=description,
+        status=status,
+        due=due,
+        start=start,
+        estimate_mins=estimate_mins,
+        tags=tags,
+        clear=clear,
+        priority=priority,
+        important=important,
+        leveraged=leveraged,
+        importance=importance,
+        type=type,
+        fields=fields,
+        include_subtasks=include_subtasks,
+    )
+    if isinstance(plan, str):
+        return plan
+    if plan.question:
+        return plan.question
+    if not await _confirm(
+        title="Update this task?",
+        detail=plan.detail,
+        context=_fields_block(plan.card, before=plan.before),
+    ):
+        return CANCELLED
+    updated = await patch(f"/projects/tasks/{tid}", plan.payload, params=plan.params)
+    updated["assignees"] = task.get("assignees") or []
+    lane = plan.lane
+    return "\n".join(
+        [
+            "Updated:",
+            *_task_line(updated, str(lane.get("name")) if lane else ""),
+            *level_note(priority, updated),
+            *_subtask_receipt(updated, "subtasks_completed", "complete"),
+        ]
+    )
+
+
+class _EditPlan:
+    """What one task edit will send and show: the output of `_plan_task_edit`."""
+
+    def __init__(self) -> None:
+        #: The PATCH body.
+        self.payload: dict[str, Any] = {}
+        #: The values before the edit, for the card.
+        self.before: dict[str, Any] = {}
+        #: The card: each change by name.
+        self.card: dict[str, Any] = {}
+        #: The card's detail line.
+        self.detail = ""
+        #: The status lane of the edit, when it sets one.
+        self.lane: dict[str, Any] | None = None
+        #: The query parameters of the PATCH.
+        self.params: dict[str, Any] = {}
+        #: The include_subtasks ask, when the edit needs an answer first.
+        self.question = ""
+
+
+async def _plan_task_edit(
+    task: dict[str, Any],
+    *,
+    title: str = "",
+    description: str = "",
+    status: str = "",
+    due: str = "",
+    start: str = "",
+    estimate_mins: int = 0,
+    tags: str = "",
+    clear: str = "",
+    priority: str = "",
+    important: str = "",
+    leveraged: str = "",
+    importance: Any = None,
+    type: str = "",
+    fields: str = "",
+    include_subtasks: str = "",
+) -> _EditPlan | str:
+    """Check one edit of *task* and plan it, with no write and no card: the
+    plan, or the refusal text. `update_task` and `update_tasks` both call it."""
     flags = priority_fields(
         priority=priority,
         important=important,
@@ -1641,8 +1723,10 @@ async def update_task(
         lane=lane,
         include_subtasks=include_subtasks,
     )
+    plan = _EditPlan()
     if extra.question:
-        return extra.question
+        plan.question = extra.question
+        return plan
     payload.update(extra.payload)
     taken = {**(stated if isinstance(stated, dict) else flags), **extra.payload}
     cleared = _edit_clears(clear, taken, task, before)
@@ -1658,20 +1742,9 @@ async def update_task(
     if payload.get("description"):
         # A description edit tells each address that it adds (`tasks.patch_task`).
         card.update(_told(payload["description"], old=task.get("description") or ""))
-    if not await _confirm(
-        title="Update this task?", detail=detail, context=_fields_block(card, before=before)
-    ):
-        return CANCELLED
-    updated = await patch(f"/projects/tasks/{tid}", payload, params=extra.params)
-    updated["assignees"] = task.get("assignees") or []
-    return "\n".join(
-        [
-            "Updated:",
-            *_task_line(updated, str(lane.get("name")) if lane else ""),
-            *level_note(priority, updated),
-            *_subtask_receipt(updated, "subtasks_completed", "complete"),
-        ]
-    )
+    plan.card, plan.detail = card, detail
+    plan.payload, plan.before, plan.lane, plan.params = payload, before, lane, extra.params
+    return plan
 
 
 def _edit_clears(
@@ -3182,6 +3255,259 @@ async def link_tasks_batch(links: str) -> str:
     out = await _apply_batch(chosen)
     head = f"Made {out.made} link{'s' if out.made != 1 else ''}:"
     return _batch_receipt(LINK_WORDS, head, out, chosen, left, list(stuck))
+
+
+# ── update_tasks: several edits, a different change for each task ───────────
+
+#: The keys of one `update_tasks` row: `update_task`'s own arguments.
+UPDATE_ROW_KEYS = (
+    "task_id",
+    "title",
+    "description",
+    "status",
+    "due",
+    "start",
+    "estimate_mins",
+    "tags",
+    "clear",
+    "priority",
+    "important",
+    "leveraged",
+    "type",
+    "fields",
+    "include_subtasks",
+)
+
+UPDATE_FORMAT = (
+    'changes is a JSON list with one object per task, for example [{"task_id": '
+    '"<full_id>", "due": "2026-03-01"}, {"task_id": "<full_id>", "status": "Done"}]. '
+    "A row takes the arguments of update_task."
+)
+
+UPDATE_WORDS = _BatchWords(
+    tool="update_tasks",
+    noun="task",
+    done="Changed",
+    do="change",
+    undone="not changed",
+    maybe="changed",
+    again="changed. Do not change them again",
+)
+
+
+def _update_arg(key: str, value: Any) -> Any:
+    """One row value as `update_task` takes it. A list joins with commas
+    and an object is JSON, so a model may send either shape."""
+    if value is None:
+        return 0 if key == "estimate_mins" else ""
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(v) for v in value)
+    if isinstance(value, dict):
+        return json.dumps(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return value if key == "estimate_mins" else str(value)
+
+
+#: The order of a row's hint after the status and its subtasks line.
+_UPDATE_HINT_ORDER = (
+    "due_at", "start_date", "estimate_mins", "type", "priority", "important", "leveraged", "tags",
+)
+#: A date at the start of a value: ``2026-03-03`` or ``2026-03-03T…``.
+_ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}(?:$|T)")
+
+
+def _hint_value(key: str, value: Any) -> str:
+    """A value of a row hint, in the words of the single-task card: "none"
+    for an empty value, a list as a comma list, and an estimate in hours and
+    minutes."""
+    if value is None or value == "":
+        return "none"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value) or "none"
+    if key in ("due_at", "start_date") and isinstance(value, str) and _ISO_DAY.match(value):
+        day = date.fromisoformat(value.split("T", 1)[0])
+        return f"{day.day} {day:%b} {day.year}"
+    if key == "estimate_mins" and isinstance(value, int) and not isinstance(value, bool):
+        hours, mins = divmod(value, 60)
+        return " ".join(p for p in (f"{hours}h" if hours else "", f"{mins}m" if mins else "") if p) or "0m"
+    return str(value)
+
+
+#: The words of the single-task card for a hint key.
+_UPDATE_HINT_LABEL = {"due_at": "due", "start_date": "start", "estimate_mins": "estimate"}
+
+
+class _UpdateRow(_BatchRow):
+    """One row of an `update_tasks` call: one `update_task`, planned by
+    `_plan_task_edit` and sent on the route of `update_task`."""
+
+    def __init__(self, index: int, task_id: str, args: dict[str, Any]) -> None:
+        super().__init__(index)
+        self.task_id = task_id
+        self.args = args
+        self.task: dict[str, Any] = {}
+        self.plan: _EditPlan | None = None
+
+    @property
+    def ready(self) -> bool:
+        return not self.why and self.plan is not None
+
+    @property
+    def ref(self) -> str:
+        return _ref(self.task) if self.task else _hidden(self.task_id)
+
+    @property
+    def hint(self) -> str:
+        """What the row changes, as before → after. The facts with the most
+        effect come first, and the text of a title or description comes last.
+        The hint is never cut: a row too long for the card is refused."""
+        if self.plan is None:
+            return ""
+        card, before = self.plan.card, self.plan.before
+        first = ("status", "subtasks", *_UPDATE_HINT_ORDER)
+        last = ("title", "description")
+        keys = [k for k in first if k in card]
+        keys += [k for k in card if k not in first and k not in last]
+        keys += [k for k in last if k in card]
+        parts = []
+        for key in keys:
+            value = card[key]
+            name = _UPDATE_HINT_LABEL.get(key, key)
+            if key in before and before[key] != value:
+                old = _hint_value(key, before[key])
+                parts.append(f"{name}: {old} → {_hint_value(key, value)}")
+            else:
+                parts.append(f"{name} → {_hint_value(key, value)}")
+        return _unfence(", ".join(parts))
+
+    async def send(self) -> Any:
+        assert self.plan is not None
+        tid = uuid_of(self.task_id, "task_id")
+        updated = await patch(
+            f"/projects/tasks/{tid}", self.plan.payload, params=self.plan.params
+        )
+        updated["assignees"] = self.task.get("assignees") or []
+        return updated
+
+    def done(self, result: Any) -> list[str]:
+        assert self.plan is not None
+        lane = self.plan.lane
+        return [
+            *_task_line(result, str(lane.get("name")) if lane else ""),
+            *level_note(str(self.args.get("priority") or ""), result),
+            *_subtask_receipt(result, "subtasks_completed", "complete"),
+        ]
+
+
+def _update_rows(changes: str) -> list[_UpdateRow] | str:
+    """The rows of ``changes``, or the refusal that names the bad row."""
+    parsed = _json_rows(changes, UPDATE_ROW_KEYS, UPDATE_FORMAT, "update_tasks")
+    if isinstance(parsed, str):
+        return parsed
+    rows: list[_UpdateRow] = []
+    seen: dict[str, int] = {}
+    for i, item in enumerate(parsed, start=1):
+        try:
+            task_id = uuid_of(item.get("task_id"), f"Row {i}: task_id")
+        except GatewayRefusal as exc:
+            return f"{exc} Nothing was changed."
+        if task_id in seen:
+            return (
+                f"Rows {seen[task_id]} and {i} name the same task. Put every change of one "
+                "task in one row. Nothing was changed."
+            )
+        seen[task_id] = i
+        args = {k: _update_arg(k, v) for k, v in item.items() if k != "task_id"}
+        rows.append(_UpdateRow(i, task_id, args))
+    return rows
+
+
+async def _update_plan(row: _UpdateRow) -> None:
+    """Read the task and plan the row through `_plan_task_edit`. Reads only."""
+    est = row.args.get("estimate_mins")
+    # update_task's int argument refuses "1h" and 1.5. int() would drop the
+    # first and round the second, so the row says so instead.
+    bad_estimate = est not in (None, "", 0, "0") and (
+        _int_or_none(est) is None or (isinstance(est, float) and not est.is_integer())
+    )
+    try:
+        row.task = (await _task(row.task_id))[1]
+        if bad_estimate:
+            row.why = "the estimate must be a whole number of minutes"
+            return
+        planned = await _plan_task_edit(row.task, **row.args)
+    except GatewayRefusal as exc:
+        if not _named_refusal(exc):
+            raise
+        row.why = _refusal_words(exc)
+        return
+    if isinstance(planned, str):
+        row.why = _row_reason(planned)
+    elif planned.question:
+        # No prompt in the middle of a batch: the row names its own answer.
+        row.why = (
+            "the task has open subtasks. Ask the member whether to finish them too, "
+            "then change this task on its own"
+        )
+    else:
+        from acb_skills.ask_tools import _ROW_HINT_MAX
+
+        row.plan = planned
+        if len(row.hint) > _ROW_HINT_MAX:
+            row.plan = None
+            row.why = (
+                "the change is too long to show in full on one card row. "
+                "Change this task on its own"
+            )
+
+
+@_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
+async def update_tasks(changes: str) -> str:
+    """Change many tasks with ONE approval, a different change for each task.
+    Use it for 3 or more related changes. For 1 or 2 changes, call
+    update_task once for each. For ONE value across many tasks, use
+    bulk_update. changes is a JSON list with one object per task:
+    {"task_id": "<full_id>", "due": "2026-03-01", "status": "Done"}. A row
+    takes the same arguments as update_task: title, description, status, due,
+    start, estimate_mins, tags, clear, priority, important, leveraged, type,
+    fields and include_subtasks. To change owners, use assign. Rows apply in
+    card order, so put a parent with include_subtasks before its child. The
+    tool checks every row first. A row that
+    update_task would refuse is named on the card and left out. A row that
+    needs an include_subtasks answer is left out too, with no question. The
+    member sees ONE card with a checkbox for each row, shown as before →
+    after, unticks a wrong one, and approves once. The receipt names each
+    task changed and each one that was not, with why. Never change a task
+    again that the receipt lists."""
+    rows = _update_rows(changes)
+    if isinstance(rows, str):
+        return rows
+    await _each_at_once(rows, _update_plan)
+    ready = [r for r in rows if r.ready]
+    stuck = [r for r in rows if not r.ready]
+    if not ready:
+        return "\n".join(
+            ["No change of these can be made. Nothing was changed."]
+            + [f"not changed: row {r.index} {r.ref}: {r.why}" for r in stuck]
+        )
+    body = {
+        f"cannot change {k}": f"{r.ref}: {_row_reason(r.why)}" for k, r in enumerate(stuck, start=1)
+    }
+    # No count on the card: a count goes stale when the member unticks a row.
+    more = " and the tasks below" if len(ready) > 1 else ""
+    asked = await _ask_batch(
+        "Update these tasks?",
+        f"{ready[0].ref}{more} · untick a task to leave it out",
+        body,
+        list(ready),
+    )
+    if isinstance(asked, str):
+        return asked
+    chosen, left = asked
+    out = await _apply_batch(chosen)
+    head = f"Changed {out.made} task{'s' if out.made != 1 else ''}:"
+    return _batch_receipt(UPDATE_WORDS, head, out, chosen, left, list(stuck))
 
 
 @_annotate(read_only=False, destructive=False, idempotent=True, open_world=False, card_write=True)
