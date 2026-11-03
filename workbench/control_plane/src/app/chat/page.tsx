@@ -620,8 +620,8 @@ function ChatPageInner() {
   // NS-1: the command bar's "Ask the assistant" arrives as `?q=`. The words
   // land in the message box for the member to check and send. Nothing sends
   // by itself (§6.4 rule 2). WS-63 D-PZ-37: a link carries no typed mark,
-  // because anybody can write one, so `askInput` waits in the box unmarked. `q` then leaves the address, so a reload does
-  // not type it again.
+  // because anybody can write one, so `askInput` waits in the box unmarked.
+  // `q` then leaves the address, so a reload does not type it again.
   //
   // ⚠️ Its own state, never `recoveredInput`. The session effect below clears
   // `recoveredInput` on mount, in the same flush, and the question vanished

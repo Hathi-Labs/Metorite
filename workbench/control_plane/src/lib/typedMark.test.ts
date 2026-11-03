@@ -44,6 +44,15 @@ import { EMPTY_BOX, composerTyped, edited, filled, typedField } from "@/lib/type
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const read = (rel: string) => readFileSync(join(SRC, rel), "utf8");
 
+/** The code of `source` with its comments taken out: each block comment,
+ *  and each line comment. A `//` behind a colon or a quote stays, so a URL
+ *  in a string is still code. */
+function codeOf(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:"'`\\])\/\/.*$/gm, "$1");
+}
+
 /** Each call of `fn(` in `source`, with its whole argument text. */
 function callsOf(source: string, fn: string): string[] {
   const out: string[] = [];
@@ -158,12 +167,17 @@ describe("each send path of the chat", () => {
   it("a `/chat?q=` link never carries the mark", () => {
     // Anybody can write a link, a reply of Mira included (an in-app link in
     // her Markdown). So the words of `q` wait in the box with no mark, on
-    // the full view and on the old chat page. Mutation: put `typed: true`
-    // back on the draft of `q`, or name `askInput` typed -> red.
-    const page = read("app/chat/page.tsx");
+    // the full view and on the old chat page. The page has no reason to name
+    // a mark at all, so its code (comments taken out) holds no "typed" in
+    // any form: no `typed:` field, no shorthand `typed`, no computed value
+    // and no `pendingInputTyped` prop. Mutations, each red: `typed: true`,
+    // `typed: params.has("q")`, `pendingInputTyped={!recoveredInput &&
+    // !!askInput}` and `pendingInputTyped={Boolean(askInput)}`.
+    const page = codeOf(read("app/chat/page.tsx"));
     expect(page).toContain('draft: params.get("q") ?? undefined,');
-    expect(page).not.toMatch(/typed:\s*true/);
-    expect(page).not.toContain("pendingInputTyped");
+    expect(page).not.toMatch(/typed/i);
+    // Non-vacuity: the comments of the page name the mark, and they go.
+    expect(read("app/chat/page.tsx")).toMatch(/typed mark/);
     // AgentChat reads a missing flag as not typed.
     expect(chat).toContain("boxMarkRef.current = filled(EMPTY_BOX, pendingInputTyped === true);");
     // The command bar's fallback builds the link with the words only.
