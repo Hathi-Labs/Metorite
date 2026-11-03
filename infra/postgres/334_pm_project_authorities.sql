@@ -1,5 +1,5 @@
 -- ============================================================================
--- 329_pm_project_authorities.sql — a lead pins a published Knowledge page to a
+-- 334_pm_project_authorities.sql — a lead pins a published Knowledge page to a
 -- project as its authority (WS-ALN ALN-4, Metorite task 10172c41).
 --
 -- What: one new table. `pm_project_authorities` holds one pin of one
@@ -43,9 +43,9 @@
 -- A removal keeps the row (`state = 'removed'`, `removed_by`, `removed_at`).
 -- One active pin for each project and page: the partial unique index.
 -- Retention: no pruning. A later slice owns it. This file deletes nothing.
--- The number was 329 at build time (R1). On 2026-11-02 origin/main held up to
--- 325, and branches held 326 (calendar), 327 (two files) and 328
--- (artifact source). Check it again at merge.
+-- The number was 329 at build time (R1). At merge on 2026-11-03, main held up
+-- to 332 (ALN-2a) and a branch held 333, so the file became 334. Check it
+-- again at merge.
 -- Pinned by tests/unit/test_project_authorities_r8.py, which finds this file
 -- by CONTENT, never by number (R1).
 -- ============================================================================

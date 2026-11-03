@@ -137,7 +137,7 @@ If the owner wants a hand-written rule ("a task in Billing needs a due date"), t
 
 ## 4. Data shapes
 
-Every table is tenant-scoped with FORCE ROW LEVEL SECURITY (R5), and every migration is expand only (R6). Migration numbers are taken at build time (R1). Migration 324 was the highest on `ce29836ea`. When ALN-4 was built on 2026-11-02, main held up to 325, and branches held 326, 327 and 328. So ALN-4 took 329.
+Every table is tenant-scoped with FORCE ROW LEVEL SECURITY (R5), and every migration is expand only (R6). Migration numbers are taken at build time (R1). Migration 324 was the highest on `ce29836ea`. When ALN-4 was built on 2026-11-02, main held up to 325, and branches held 326, 327 and 328. So ALN-4 took 329. At merge on 2026-11-03, main held 332 (ALN-2a) and a branch held 333, so the file became 334.
 
 ### 4.1 The pin of a page to a project (ALN-4)
 
@@ -157,7 +157,7 @@ One active pin for each project and page. A project lead, or a member with `proj
 
 **The leak check at the pin.** A page with narrower grants than its project would leak its text through the quotes of a finding. The pin refuses that case. A lead must widen the page, or choose another page. This is the safer of the two options in task 1378. The warning option can come later.
 
-**As built (ALN-4, migration `329_pm_project_authorities.sql`, code `routes/projects/authorities.py`).**
+**As built (ALN-4, migration `334_pm_project_authorities.sql`, code `routes/projects/authorities.py`).**
 
 - **Routes.** `GET`, `POST` and `DELETE` on `/projects/nodes/{id}/authorities`. A pin and a removal call `assert_may_write_grant`, so a lead of the project or of an ancestor, or a holder of `projects:settings:write`, may act. A project in a personal tree has no pin and gets its own 403 sentence. A page of another org and a page the caller cannot read give the same 404. A second pin of the same page returns the existing pin with 200. A removal sets `state = 'removed'`, `removed_by` and `removed_at`, and keeps the row. A lead can pin a removed page again, and that makes a new row.
 - **The version.** `kb_pages` has no version column. `page_version` is the highest `kb_page_versions.version` of the page, read with the page row locked.
@@ -433,7 +433,7 @@ Each path was read on `ce29836ea`.
 - `apps/services/gateway/gateway/decide_features.py`, `crm_sync/note_labels.py`
 - `apps/services/gateway/gateway/routes/knowledge/pages.py` (`publish_page`), `routes/knowledge/proposals.py`, `routes/knowledge/backlinks.py`, `kb_index/query.py`
 - `apps/services/agent_edge/agent_edge/tools.py` (`get_task_context`, `_create_task`)
-- `infra/postgres/146_projects.sql`, `147_projects_personal.sql`, `255_pm_task_refs.sql`, `272_knowledge_pages.sql`, `329_pm_project_authorities.sql` (ALN-4)
+- `infra/postgres/146_projects.sql`, `147_projects_personal.sql`, `255_pm_task_refs.sql`, `272_knowledge_pages.sql`, `334_pm_project_authorities.sql` (ALN-4)
 - `apps/services/gateway/gateway/routes/projects/authorities.py` (ALN-4, the one writer of the pins)
 - `project-docs/specs/agent_coordination.md` (SW-31), `workflows_app.md` (G5), `knowledge_graph.md` §3.2 (KG-4), `proactive_reach.md`
 - `tests/unit/test_pm_task_insert_sites.py` (the D80 fence)
