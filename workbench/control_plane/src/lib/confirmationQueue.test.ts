@@ -16,7 +16,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import ConfirmationCard, { cardSummary, isHiddenField, parseCardBody } from "@/components/ConfirmationCard";
-import ConfirmationQueue, { pickShown } from "@/components/ConfirmationQueue";
+import ConfirmationQueue, { pickShown, reconcileShown, type Shown } from "@/components/ConfirmationQueue";
 import {
   EMPTY_CONFIRMATIONS,
   ROWS_ANSWER_PREFIX,
@@ -623,6 +623,43 @@ describe("approval cards that wait together are ONE card with tabs (owner, 2026-
     expect(html).toContain(`aria-controls="${id}"`);
     // The tab not yet opened wears a dot, and the shown one does not.
     expect(html.match(/data-unseen/g)).toHaveLength(1);
+  });
+
+  // The queue has no DOM renderer in this repo, so the test drives the same
+  // two functions the component calls on each change: the reducer for the
+  // cards, and `reconcileShown` + `pickShown` for the tab that is open.
+  it("Undo of a Reject brings the card back first, and its tab opens", () => {
+    let state = run([requested(1), requested(2), requested(3)]);
+    let prev: readonly string[] = [];
+    let shown: Shown = { key: null, index: 0 };
+    const render = () => {
+      // Twice, as StrictMode does: the second pass must not lose the pin.
+      for (let pass = 0; pass < 2; pass++) {
+        const r = reconcileShown(prev, state.cards, shown);
+        prev = r.keys;
+        shown = r.shown;
+        const at = pickShown(state.cards, shown);
+        shown = { key: state.cards[at].key, index: at };
+      }
+      return state.cards[pickShown(state.cards, shown)].key;
+    };
+    expect(render()).toBe("rid-1");
+    shown = { key: "rid-2", index: 1 }; // the member opens B
+    expect(render()).toBe("rid-2");
+    const a = state.cards[0];
+    state = run([{ type: "answering", key: "rid-1" }], state);
+    expect(state.cards.map((c) => c.key)).toEqual(["rid-2", "rid-3"]);
+    expect(render()).toBe("rid-2"); // B stays open while A is applying
+    state = run([{ type: "restore", card: a }], state); // the Reject failed, or Undo
+    expect(state.cards.map((c) => c.key)).toEqual(["rid-1", "rid-2", "rid-3"]);
+    expect(render()).toBe("rid-1");
+    expect(shown).toEqual({ key: "rid-1", index: 0 });
+  });
+
+  it("the queue holds the keys in state, and not in a ref written during render", () => {
+    const src = read("components/ConfirmationQueue.tsx");
+    expect(src).not.toMatch(/useRef|\.current =/);
+    expect(src).toContain("reconcileShown(prevKeys, cards, shown)");
   });
 
   it("after an answer the next tab to the right opens, else the one to the left", () => {

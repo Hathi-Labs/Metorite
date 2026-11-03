@@ -20,7 +20,7 @@
  * `lib/cardTabs.ts`, and the row is `components/ui/CardTabs.tsx`.
  */
 
-import { useEffect, useId, useReducer, useRef, useState } from "react";
+import { useId, useReducer, useState } from "react";
 
 import ConfirmationCard, { cardSummary } from "@/components/ConfirmationCard";
 import CardTabs, { cardPanelId, cardTabId, type CardTab } from "@/components/ui/CardTabs";
@@ -74,6 +74,24 @@ export function pickShown(cards: PendingConfirmation[], shown: Shown): number {
   return found >= 0 ? found : shownIndex(shown.index, cards.length);
 }
 
+/**
+ * What the queue holds after its cards changed: the keys it saw, and the
+ * card it shows. A card that came back first opens (`restoredFirst`), and any
+ * other change keeps the member's card. Pure and idempotent, so a render that
+ * React runs twice reaches the same state. The component calls it, and
+ * `confirmationQueue.test.ts` runs it over a real Undo.
+ */
+export function reconcileShown(
+  prevKeys: readonly string[],
+  cards: PendingConfirmation[],
+  shown: Shown,
+): { keys: readonly string[]; shown: Shown } {
+  const keys = cards.map((c) => c.key);
+  if (keys.length === prevKeys.length && keys.every((k, i) => k === prevKeys[i])) return { keys: prevKeys, shown };
+  const opened = restoredFirst(prevKeys, keys);
+  return { keys, shown: opened !== null ? { key: opened, index: 0 } : shown };
+}
+
 export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0 }: ConfirmationQueueProps) {
   const [shown, setShown] = useState<Shown>({ key: null, index: initialIndex });
   // The member's ticks of every card with rows, by key. The queue holds
@@ -83,23 +101,20 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
   const uid = useId();
   // The cards the member has opened, by key: a tab not in it wears a dot.
   const [seen, setSeen] = useState<ReadonlySet<string>>(() => new Set());
-  const prevKeys = useRef<string[]>([]);
+  // The keys of the last render, in state and not in a ref: a render that
+  // React runs twice (StrictMode) must see the same change both times.
+  const [prevKeys, setPrevKeys] = useState<readonly string[]>([]);
   // The queue pins the shown card in `shown`, so opening a tab marks it seen.
   const shownKey = shown.key;
-  useEffect(() => {
-    if (shownKey !== null) setSeen((s) => (s.has(shownKey) ? s : new Set(s).add(shownKey)));
-  }, [shownKey]);
-  if (cards.length === 0) {
-    prevKeys.current = [];
-    return null;
-  }
+  if (shownKey !== null && !seen.has(shownKey)) setSeen(new Set(seen).add(shownKey));
   // A card that comes back first (Undo of a Reject) opens, so the member
   // sees what they tried to answer. Any other change keeps the member's card.
-  const keys = cards.map((c) => c.key);
-  const opened = restoredFirst(prevKeys.current, keys);
-  const pinned: Shown = opened !== null ? { key: opened, index: 0 } : shown;
-  prevKeys.current = keys;
-  const at = pickShown(cards, pinned);
+  // (React's adjust-state-during-render pattern, as for `shown` below.)
+  const next = reconcileShown(prevKeys, cards, shown);
+  if (next.keys !== prevKeys) setPrevKeys(next.keys);
+  if (next.shown !== shown) setShown(next.shown);
+  if (cards.length === 0) return null;
+  const at = pickShown(cards, shown);
   const card = cards[at];
   if (shown.key !== card.key || shown.index !== at) {
     // Pin the card on screen (React's adjust-state-during-render pattern).
