@@ -1012,6 +1012,14 @@ class TestTheTables:
         for _, verb in invoke.OPEN_EXECUTORS:
             assert str(verb) in invoke.REFUSALS["source_not_open"]
 
+    def test_the_refusal_text_names_each_direct_verb(self):
+        """B2c-1 fix round 1: the door runs the direct writes too, so a text
+        that names only get and list is false."""
+        text = invoke.REFUSALS["source_not_open"]
+        for _, verb in invoke.DIRECT_EXECUTORS:
+            assert str(verb) in text
+        assert "only the get and list" not in text
+
     def test_one_check_runs_twice(self):
         """One check before the body read and the same check after it. A
         second read of a package in this module is a second copy of the rule."""

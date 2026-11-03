@@ -1,4 +1,4 @@
-"""The action door of AI Studio (STU-B2a and STU-B2b-1, ``ai_studio.md`` §3.2).
+"""The action door of AI Studio (STU-B2a, B2b-1 and B2c-1, ``ai_studio.md`` §3.2).
 
 ``POST /studio/apps/{app_id}/actions/{action}`` runs one action that a Studio
 package declares. The route registers on the router of ``actions.py``, as
@@ -24,9 +24,11 @@ package declares. The route registers on the router of ``actions.py``, as
    are the only sources of a class. Class X gets 403 ``class_x``, and an id
    that the catalog does not serve gets 403 ``not_in_catalog``. A catalog
    that fails gets 503 ``catalog_unavailable``.
-6. The approval. Class B and class C get 403 ``approval_required``. No card
-   exists yet (B2c), so nothing runs.
-7. The body. Only a call that an open executor runs reads the body, so a
+6. The approval. Class B and class C get 403 ``approval_required``. The one
+   exception is a DIRECT call of a member (B2c-1): it runs the create, the
+   update and the delete of an object (:data:`DIRECT_EXECUTORS`). No card
+   exists yet (B2c-2), so no other write runs.
+7. The body. Only a call that an open or a direct executor runs reads the body, so a
    non-owner and a refused action read no byte. No session is open during the
    read, because a wait on a slow client must not hold a pool connection. The
    read stops past :data:`MAX_BODY_BYTES`, and the answer is 413
@@ -40,8 +42,9 @@ package declares. The route registers on the router of ``actions.py``, as
    declaration that is gone gets the same 403. An action that now names
    another source gets 403 ``source_not_open``.
 9. The executor, in that session. The door opens two: ``object:<name>.get``
-   (B2a) and ``object:<name>.list`` (B2b-1). Each one parses the body here,
-   and only here. An object name that the package does not hold gets 404
+   (B2a) and ``object:<name>.list`` (B2b-1). For a direct call it also runs
+   the create, the update and the delete of an object (B2c-1). Each one
+   parses the body here, and only here. An object name that the package does not hold gets 404
    ``object_missing``, and a record id that names nothing gets 404 ``Not
    found``. Each other class A action gets 403 ``source_not_open`` (B2b-2 and
    B2b-3 name the next executors).
@@ -159,7 +162,9 @@ REFUSALS: dict[str, str] = {
         "The catalog does not serve this action now, so change the action in the manifest."),
     APPROVAL_REQUIRED: (
         "This action writes data and needs an approval, which this door cannot ask for yet."),
-    SOURCE_NOT_OPEN: "This door runs only the get and list actions of an object for now.",
+    SOURCE_NOT_OPEN: (
+        "This door runs only the actions of an object: get and list, and create, update "
+        "and delete from the member's own screen."),
 }
 
 #: The 503 of a catalog that fails, and the 404 of an object that the package
