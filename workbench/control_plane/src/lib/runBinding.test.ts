@@ -7,8 +7,8 @@ import { bindToRun } from "@/lib/runBinding";
 type Ev = { type: string; runId?: string; delta?: string };
 
 /** What a reader saves: the text of the events its binding accepts. */
-function savedBy(events: Ev[]): string {
-  const bind = bindToRun();
+function savedBy(events: Ev[], seed?: string): string {
+  const bind = bindToRun(seed);
   let text = "";
   for (const ev of events) {
     if (!bind.accept(ev)) break;
@@ -48,6 +48,27 @@ describe("bindToRun", () => {
   });
 });
 
+describe("bindToRun with the gateway's run id", () => {
+  // Run 2 cancelled run 1 before run 1 yielded RUN_STARTED. Request 1 reads
+  // from "0", so the first RUN_STARTED it meets is run 2's.
+  const onlyRun2: Ev[] = [
+    { type: "RUN_STARTED", runId: "run-2" },
+    { type: "TEXT_MESSAGE_CONTENT", delta: "run two reply" },
+  ];
+
+  it("a seeded reader refuses a first RUN_STARTED of another run", () => {
+    expect(savedBy(onlyRun2, "run-1")).toBe("");
+  });
+
+  it("without a seed the old first-seen rule applies", () => {
+    expect(savedBy(onlyRun2)).toBe("run two reply");
+  });
+
+  it("a seeded reader keeps its own run", () => {
+    expect(savedBy(onlyRun2, "run-2")).toBe("run two reply");
+  });
+});
+
 describe("the chat route uses the binding", () => {
   it("stops its reader on another run's RUN_STARTED", () => {
     const src = readFileSync(
@@ -55,7 +76,8 @@ describe("the chat route uses the binding", () => {
       "utf-8",
     );
     expect(src).toContain('from "@/lib/runBinding"');
-    expect(src).toContain("bindToRun()");
     expect(src).toContain("binding.accept(");
+    expect(src).toContain("bindToRun(runId)");
+    expect(src).toContain('streamRes.headers.get("x-run-id")');
   });
 });

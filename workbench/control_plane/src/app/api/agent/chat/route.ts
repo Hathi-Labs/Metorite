@@ -196,6 +196,8 @@ async function translateAndPersistStream(
   /** Re-open the run's stream after `since` (a Redis stream id), or null.
    *  Used when the stream ends with no terminal event (incident 2026-10-09). */
   reattach?: (since: string) => Promise<ReadableStream<Uint8Array> | null>,
+  /** The run id the gateway named in `X-Run-Id`, or null (older gateway). */
+  runId?: string | null,
 ): Promise<string> {
   // Stable per-STREAM persistence id: when the frontend didn't supply one,
   // mint it once here — per-call minting would write a new row on every 3s
@@ -259,7 +261,7 @@ async function translateAndPersistStream(
   /** True once the run said it ended (finished or failed). */
   let sawTerminal = false;
   /** The run this reader follows: the runId of the first RUN_STARTED. */
-  const binding = bindToRun();
+  const binding = bindToRun(runId);
   /** True once the stream shows another run, so this reader stops. */
   let superseded = false;
   /** The last Redis stream id seen, so a reattach replays only what is new. */
@@ -915,6 +917,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           // no author (WS-27bm S10 fix round 1).
           checkpointAgent(resolvedAgentName, message),
           threadId ? reattachFor(threadId, runHeaders) : undefined,
+          streamRes.headers.get("x-run-id"),
         );
       },
     });

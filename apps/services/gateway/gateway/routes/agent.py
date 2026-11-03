@@ -3495,6 +3495,10 @@ async def run_agent_stream_endpoint(
             "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
+            # The run this response follows. The Next translator binds its
+            # reader to it, so a cancelled send never adopts the newer run's
+            # RUN_STARTED (task 1533, B3). Fence: test_run_started_producers.py.
+            "X-Run-Id": run_id,
         },
     )
 

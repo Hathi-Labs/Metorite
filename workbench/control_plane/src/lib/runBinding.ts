@@ -15,8 +15,12 @@ export interface RunBinding {
   readonly superseded: boolean;
 }
 
-export function bindToRun(): RunBinding {
-  let own = "";
+export function bindToRun(seed?: string | null): RunBinding {
+  // A seed is the run id the gateway named in its `X-Run-Id` header. With it,
+  // ANY other runId is another run, even the first one this reader sees: a
+  // cancelled send reads the stream from "0" and meets the newer run first.
+  // With no seed (an older gateway during a deploy), the first one wins.
+  let own = seed ?? "";
   let superseded = false;
   return {
     accept(ev) {
