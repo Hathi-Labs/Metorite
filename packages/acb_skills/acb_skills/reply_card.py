@@ -44,6 +44,7 @@ _log = get_logger("acb_skills.reply_card")
 __all__ = [
     "ALREADY_REPLIED",
     "DRAFT_GONE",
+    "DRAFT_UNCONFIRMED",
     "INVISIBLE_CODE_POINTS",
     "MAX_MARK_RUN",
     "MAX_REPLY_ANSWER",
@@ -93,8 +94,11 @@ REPLY_ACTIONS: frozenset[str] = frozenset({"send", "save"})
 #:   The member sent it or deleted it in the Email app.
 #: * ``ALREADY_REPLIED``: the mailbox sent a reply in the thread after the
 #:   card was made.
+#: * ``DRAFT_UNCONFIRMED``: the card meant to write a draft, and no draft id
+#:   reached its record (item 10). It claims no send.
 DRAFT_GONE = "draft_gone"
 ALREADY_REPLIED = "already_replied"
+DRAFT_UNCONFIRMED = "draft_unconfirmed"
 
 #: The keys of ``answer.reply``, exactly. ``to`` and ``cc`` are the people
 #: that the member TICKED on the card (owner, 2026-10-24). The gateway

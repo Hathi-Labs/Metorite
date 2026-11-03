@@ -2384,21 +2384,24 @@ _REPLY_ALREADY_SENT = (
     "Nothing was sent or saved from the card. This mailbox already sent a "
     "reply in this conversation after the card showed. Tell the member this, "
     "and do not send the reply again.")
+#: The answer of an act whose draft id never reached the card's record
+#: (``acb_skills.reply_card.DRAFT_UNCONFIRMED``, item 10). It claims no send.
+_REPLY_DRAFT_UNCONFIRMED = (
+    "Nothing was sent or saved from the card. The server could not confirm "
+    "the card's draft in Drafts, so the card cannot send it. Ask the member "
+    "whether to show a new card. Do not say that the reply was sent.")
 
 
 def _reply_left_line(exc: GatewayError) -> str | None:
     """The fact for the model when the act refused a reply that already
     left (2026-11-03), or None for any other refusal."""
-    from acb_skills.reply_card import ALREADY_REPLIED, DRAFT_GONE
+    from acb_skills.reply_card import ALREADY_REPLIED, DRAFT_GONE, DRAFT_UNCONFIRMED
 
     if exc.status != 409:
         return None
-    reason = getattr(exc, "reason", "")
-    if reason == DRAFT_GONE:
-        return _REPLY_LEFT_DRAFTS
-    if reason == ALREADY_REPLIED:
-        return _REPLY_ALREADY_SENT
-    return None
+    lines = {DRAFT_GONE: _REPLY_LEFT_DRAFTS, ALREADY_REPLIED: _REPLY_ALREADY_SENT,
+             DRAFT_UNCONFIRMED: _REPLY_DRAFT_UNCONFIRMED}
+    return lines.get(getattr(exc, "reason", ""))
 
 
 async def _act_or_left(act: Awaitable[Any]) -> Any:

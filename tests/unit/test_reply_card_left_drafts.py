@@ -261,9 +261,9 @@ class _RouteWorld:
 
     The world of ``test_recipient_intent.py`` (a fake database, a fake
     tenant Redis and a fake mail), with a draft write that answers a UUID,
-    and a Drafts folder that no longer holds it."""
+    and a Drafts folder that no longer holds it (or still holds it)."""
 
-    def __init__(self, monkeypatch) -> None:
+    def __init__(self, monkeypatch, *, in_drafts: bool = False) -> None:
         from tests.unit import test_recipient_intent as ri
 
         self.ri = ri
@@ -275,7 +275,7 @@ class _RouteWorld:
 
         async def gone(db: Any, owner: str, draft_id: str) -> bool:
             self.draft_reads.append(draft_id)
-            return False
+            return in_drafts
 
         monkeypatch.setattr(rc, "_keep_card_draft", keep)
         monkeypatch.setattr(rc, "draft_in_drafts", gone)
@@ -300,6 +300,66 @@ async def test_the_card_route_notes_its_draft_so_the_act_refuses_it(monkeypatch)
     assert got.status_code == 409 and got.detail["reason"] == rcard.DRAFT_GONE
     assert r.draft_reads == [DRAFT]
     assert r.w.sent == []
+
+
+async def test_a_failed_second_write_refuses_the_act(monkeypatch) -> None:
+    """Item 10: the record says ``draft_pending``, and the write of the draft
+    id fails. The act refuses with ``draft_unconfirmed`` and reads no draft.
+    Mutation: drop the pending check of ``_reply_left`` → the act sends → red."""
+    r = _RouteWorld(monkeypatch)
+    store = r.w.redis
+    first_set = store.set
+
+    async def set_once(k: str, v: str, nx: bool = False, ex: int | None = None,
+                       xx: bool = False, keepttl: bool = False) -> bool:
+        if xx:  # the second write: the draft id and the cleared flag
+            raise ConnectionError("redis blinked")
+        return await first_set(k, v, nx=nx, ex=ex, xx=xx, keepttl=keepttl)
+
+    monkeypatch.setattr(store, "set", set_once)
+    out, got = await r.card_then_act()
+    assert out["draft_id"] == DRAFT and out["card_id"]
+    assert isinstance(got, HTTPException), got
+    assert got.status_code == 409 and rcard.DRAFT_UNCONFIRMED == "draft_unconfirmed"
+    assert got.detail == {"reason": "draft_unconfirmed", "message": rc.REPLY_DRAFT_UNCONFIRMED}
+    assert "nothing was sent or saved" in rc.REPLY_DRAFT_UNCONFIRMED
+    assert r.draft_reads == [] and r.w.sent == []
+
+
+async def test_the_happy_path_clears_the_flag_and_sends(monkeypatch) -> None:
+    """Item 10: the draft id reaches the record, the flag clears, and the
+    draft is still in Drafts. The act sends."""
+    r = _RouteWorld(monkeypatch, in_drafts=True)
+    out, got = await r.card_then_act()
+    assert out["draft_id"] == DRAFT
+    assert not isinstance(got, HTTPException), got
+    assert got["action"] == "send" and len(r.w.sent) == 1
+    assert r.draft_reads == [DRAFT]
+
+
+async def test_a_record_from_before_this_release_acts_as_before(monkeypatch) -> None:
+    """Item 10: a record with no flag, no time and no draft id (a card made
+    before this release) checks nothing, and the act sends as before."""
+    from acb_common.tenant_redis import organization_scope
+    from gateway.routes.email.automation import held_card as hc
+
+    w = _World(monkeypatch)
+    card_id = "a" * 32
+    old = {"owner": MEMBER, "message_id": MAIL, "added": [], "bcc": [], "held": False}
+    with organization_scope(ORG):
+        assert await hc._tenant_redis().set(rc._reply_record_key(card_id), json.dumps(old),
+                                            nx=True, ex=60)
+    out = await w.act(card_id)
+    assert out["action"] == "send" and len(w.sent) == 1
+    assert w.draft_reads == []
+
+
+async def test_compose_reply_says_an_unconfirmed_draft_claims_no_send(monkeypatch) -> None:
+    gw = _Gateway(act=_refusal("draft_unconfirmed"))
+    _install(monkeypatch, gw, _member_send())
+    out = await agents.compose_reply(MAIL, BOX)
+    assert out == agents._REPLY_DRAFT_UNCONFIRMED
+    assert out.startswith("Nothing was sent or saved") and "Do not say that the reply was sent." in out
 
 
 async def test_a_card_with_no_record_writes_no_draft(monkeypatch) -> None:

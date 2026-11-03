@@ -20856,31 +20856,36 @@ that draft from the Email app while the card still waited. Then the member press
 the card. The act sent a new mail with the same text, so each person got the reply twice. A
 Save made an orphan draft.
 
-1. **The record of the card holds two more facts.** `_write_reply_record` writes the time
-   that the card was made. After the draft write, `_note_card_draft` adds the LOCAL id of
-   the draft. The server writes both, and the act request names neither. A card whose
-   record write failed writes no draft.
-2. **The act refuses a reply that already left.** After the checks of the answer and of the
+1. **The record of the card holds the draft.** `_write_reply_record` writes the time that
+   the card was made. A card with a text gets `draft_pending` in that same write. After the
+   draft write, `_note_card_draft` adds the LOCAL id of the draft and clears the flag. The
+   server writes all three, and no request of the act names them. A card whose record
+   write failed writes no draft.
+2. **A draft that the record never confirmed.** The act answers 409 `draft_unconfirmed`
+   while `draft_pending` is set and the record holds no draft id. Then the second write
+   failed, so the card cannot know where its draft is. The words of that refusal claim no
+   send, and the act reads no database.
+3. **The act refuses a reply that already left.** After the checks of the answer and of the
    people, and before any send or save, `_reply_left` reads two facts. A 409 with
    `detail.reason` `draft_gone` comes when the draft is no longer in the member's Drafts. A
    409 with `already_replied` comes when the mailbox sent a reply in the thread after the
    card (`RECENT_REPLY_SQL`). A fault of the check, or of the read of the record, is a 503.
    Each refusal sends and saves nothing, and logs `email.reply_card_answer_refused`.
-3. **The tool says the fact.** `compose_reply` turns each reason into a line for the model,
+4. **The tool says the fact.** `compose_reply` turns each reason into a line for the model,
    and never "Sent". A draft that left Drafts is no proof of a send, because a rule can
    replace an unedited draft. So that line tells the model to ask the member. A card that
    closes, or that the member writes over, reads the draft state first. When the draft
    left, the tool names no draft id and claims no send.
-4. **One state read.** `GET /email/reply-card/draft-state` reads one draft row of the
+5. **One state read.** `GET /email/reply-card/draft-state` reads one draft row of the
    member through `mailbox_predicate`, with no provider call. The email BFF proxy carries
    it. The parity table holds it as kind `stream`, a poll that refreshes a view. A
    database fault is a 503.
-5. **The card learns it.** `watchCardDraft` reads the state once at mount, on focus, and
+6. **The card learns it.** `watchCardDraft` reads the state once at mount, on focus, and
    when the page shows again. It also reads each 60 seconds while the page shows, and at
    once on `cc-email-draft-left`. The Email app raises that event after `sendDraft` and
    `deleteEmail`. When the draft left, the card collapses to its title, its subject, one
    line and Close.
-6. **The words.** A card with a draft says "This reply is in the Drafts of …", and its Save
+7. **The words.** A card with a draft says "This reply is in the Drafts of …", and its Save
    reads "Save draft". The old footer said that only Save puts the reply in Drafts. Discard
    now says that it deletes only a draft that nobody changed. A card with no draft keeps
    the words of before.
@@ -20892,8 +20897,11 @@ Save made an orphan draft.
 - A send from Gmail or Outlook outside Metorite shows here only after the sync. Until then,
   the card and the act see neither the send nor the gone draft.
 - `RECENT_REPLY_SQL` counts a forward in the same thread as a reply.
-- A card made before this release has a record with no time and no draft id. Its act checks
-  nothing and sends as before. The record expires after about one hour, so this gap closes.
+- A card made before this release has a record with no time, no flag and no draft id. Its
+  act checks nothing and sends as before. The record expires after about one hour, so this
+  gap closes.
+- A draft write that gives no local id also leaves `draft_pending` set, because a provider
+  draft can exist with no local row. That card cannot send, and a new card works.
 
 **Fences.** `tests/unit/test_reply_card_left_drafts.py`, its R8 half
 `tests/unit/test_reply_card_left_drafts_r8.py`, and `src/lib/replyCardLeft.test.ts`.

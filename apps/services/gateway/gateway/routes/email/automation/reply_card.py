@@ -51,6 +51,7 @@ from acb_auth import UserContext, get_current_user
 from acb_skills.reply_card import (
     ALREADY_REPLIED,
     DRAFT_GONE,
+    DRAFT_UNCONFIRMED,
     MAX_REPLY_BODY,
     clean_reply_body,
 )
@@ -145,6 +146,10 @@ DRAFT_BCC_MARK = "on the draft in Drafts"
 #: send (fix round 1, item 3).
 REPLY_LEFT_DRAFTS = ("This reply is no longer in Drafts. It was sent, deleted or replaced "
                      "outside this card. Nothing was sent or saved.")
+#: The 409 of an act whose draft id never reached the record (item 10). It
+#: claims no send: the draft can be in Drafts, or it can be missing.
+REPLY_DRAFT_UNCONFIRMED = ("The draft of this card could not be confirmed in Drafts, so "
+                           "nothing was sent or saved. Ask for the reply again.")
 #: The 409 of an act after the mailbox sent a reply in the thread.
 REPLY_ALREADY_SENT = ("This mailbox already sent a reply in this conversation after the "
                       "card showed. Nothing was sent or saved.")
@@ -600,8 +605,12 @@ async def reply_card(
     bcc_people = _held_bcc(bcc_people, asked_bcc, classes, req.held, notices)
     # The record of the card: the added people, the Bcc and the held flag.
     # It is written for each card, so the member can type a Bcc on it.
+    # Item 10 (task 1526): a card with a text will write a draft, so its record
+    # says ``draft_pending`` in this same write. The act refuses a card whose
+    # draft id never reached the record.
     card_id = await _write_reply_record(
-        user, str(_as_uuid(req.message_id)), added, bcc=bcc_people, held=req.held)
+        user, str(_as_uuid(req.message_id)), added, bcc=bcc_people, held=req.held,
+        draft_pending=bool(body.strip()))
     # With no record, the card writes no draft (task 1526, fix round 1): the
     # act could not check that the draft left Drafts, and a send from the
     # Email app plus a Send on the card would mail each person twice.
@@ -650,13 +659,16 @@ async def reply_card(
     draft_id, kept_draft = "", False
     # Item 9: the draft in Drafts names exactly the people that start ticked.
     start = ticked["reply_all"]
-    if body.strip() and start["to"] and not record_failed:
+    wrote = bool(body.strip() and start["to"] and not record_failed)
+    if wrote:
         draft_id, kept_draft = await _keep_card_draft(
             mail, owner, start["to"], start["cc"], _reply_subject(mail.subject), body,
             prior=prior, **({"bcc": start.get("bcc", [])} if bcc_people else {}))
     # 2026-11-03: the record of THIS card names the draft that it wrote, so
-    # the act refuses when that draft left Drafts. The server writes the id.
-    await _note_card_draft(user, card_id, str(_as_uuid(req.message_id)), draft_id)
+    # the act refuses when that draft left Drafts. The server writes the id,
+    # and clears ``draft_pending``. A card that wrote no draft clears it too.
+    await _note_card_draft(user, card_id, str(_as_uuid(req.message_id)), draft_id,
+                           attempted=wrote)
     marks = _person_marks(mail, classes, asked, carried_extra, usual_added,
                           [*everyone_to, *everyone_cc], held=req.untick_new)
     marks.update(_bcc_marks(bcc_people, asked_bcc, classes, held=req.held))
@@ -891,8 +903,15 @@ async def _reply_left(mail: _Mail, owner: str, card: _CardRecord) -> tuple[str, 
        draft, and a reply that the member sent from the provider's own app,
        once the sync has it.
 
-    A record with neither a draft id nor a time checks nothing. A fault fails
-    closed with a 503: a guard against a double send does not guess."""
+    0. The card meant to write a draft, and no draft id reached its record
+       (:data:`DRAFT_UNCONFIRMED`, item 10). The card cannot know where its
+       draft is, so it fails closed with no database read.
+
+    A record with neither a draft id nor a time (a card from before this
+    release) checks nothing. A fault fails closed with a 503: a guard
+    against a double send does not guess."""
+    if card.draft_pending and not card.draft_id:
+        return DRAFT_UNCONFIRMED, REPLY_DRAFT_UNCONFIRMED
     if not card.draft_id and card.made_at is None:
         return None
     try:
@@ -1102,14 +1121,16 @@ def _reply_record_key(card_id: str) -> Any:
 
 async def _write_reply_record(
     user: UserContext, message_id: str, added: list[str], *,
-    bcc: Sequence[str] = (), held: bool = False,
+    bcc: Sequence[str] = (), held: bool = False, draft_pending: bool = False,
 ) -> str:
     """Record the added people of one card under a card id that this server
     mints. Returns the id, or "" on a fault. With "" the card adds nobody
     and writes no draft (task 1526, fix round 1).
     The record also holds the Bcc of the card and the held flag (§21.15),
     and ``made_at``, the time the server made the card (2026-11-03). The act
-    refuses when the mailbox sent a reply in the thread after that time."""
+    refuses when the mailbox sent a reply in the thread after that time.
+    ``draft_pending`` (item 10) says that the card will write a draft. Only
+    :func:`_note_card_draft` clears it, and the act refuses while it is set."""
     import uuid
 
     from acb_common.tenant_redis import organization_scope
@@ -1121,7 +1142,7 @@ async def _write_reply_record(
     card_id = uuid.uuid4().hex
     rec = {"owner": (user.email or "").strip().lower(), "message_id": message_id,
            "added": list(added), "bcc": list(bcc), "held": bool(held),
-           "made_at": time.time()}
+           "made_at": time.time(), "draft_pending": bool(draft_pending)}
     try:
         with organization_scope(org):
             done = await hc._tenant_redis().set(
@@ -1134,18 +1155,23 @@ async def _write_reply_record(
 
 
 async def _note_card_draft(
-    user: UserContext, card_id: str, message_id: str, draft_id: str,
+    user: UserContext, card_id: str, message_id: str, draft_id: str, *,
+    attempted: bool = True,
 ) -> None:
     """Add the LOCAL id of the draft that the card wrote to the record of
-    THIS card (2026-11-03). The server writes it, and no request names it.
+    THIS card (2026-11-03), and clear ``draft_pending`` (item 10). The
+    server writes it, and no request names it.
 
-    Best effort, as the record is: with no id on the record, the act still
-    refuses a reply that the thread got after the card (``made_at``)."""
+    A card that wrote no draft (``attempted`` False) clears the flag only. A
+    draft write that gave no id leaves the flag, because a provider draft can
+    exist with no local row. A fault of this write leaves the flag too. The
+    act then refuses the card (``draft_unconfirmed``), so it fails closed."""
     from acb_common.tenant_redis import organization_scope
     from gateway.routes.email.automation import held_card as hc
 
+    did = _as_uuid(draft_id)
     org = str(getattr(user, "organization_id", None) or "")
-    if not org or not card_id or _as_uuid(draft_id) is None:
+    if not org or not card_id or (attempted and did is None):
         return
     try:
         with organization_scope(org):
@@ -1153,7 +1179,11 @@ async def _note_card_draft(
             rec = _record_of(await store.get(_reply_record_key(card_id)), user, message_id)
             if rec is None:
                 return
-            rec["draft_id"] = str(_as_uuid(draft_id))
+            if did is not None:
+                rec["draft_id"] = did
+            elif not rec.get("draft_pending"):
+                return  # nothing to clear: no extra write
+            rec["draft_pending"] = False
             await store.set(_reply_record_key(card_id), json.dumps(rec), xx=True,
                             keepttl=True)
     except Exception as exc:  # the class only
@@ -1169,6 +1199,8 @@ class _CardRecord(NamedTuple):
     draft_id: str = ""
     #: When the server made the card, in epoch seconds, or None.
     made_at: float | None = None
+    #: The card meant to write a draft, and no id reached the record (item 10).
+    draft_pending: bool = False
 
 
 async def _take_reply_record(
@@ -1207,6 +1239,7 @@ async def _take_reply_record(
         [str(a) for a in rec.get("bcc") or [] if a],
         str(_as_uuid(str(rec.get("draft_id") or "")) or ""),
         float(made) if isinstance(made, (int, float)) and not isinstance(made, bool) else None,
+        rec.get("draft_pending") is True,
     )
 
 
