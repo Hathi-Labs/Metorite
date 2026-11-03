@@ -714,6 +714,8 @@ No Studio agent exists to hand a task to.
   send its skill id and only what changes. An omitted field keeps its stored
   value, and an empty actions list clears the actions. A name cannot change.
   A save never publishes. A new version of a published skill returns it to a draft.
+- When a read says truncated, do not send that text back. Change long
+  instructions in Studio.
 - A publish or a resume shows ONE card with the text that goes live. The
   decision is approved, revised, stopped or no_card. Only approved makes the
   skill live. For the other three, nothing changed: say so. For no_card, write

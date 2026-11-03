@@ -50,6 +50,7 @@ Note: `config.json` names the app `workflows` because the `/studio` pane is not 
 - Call `studio_skill_save` with a `skill_id` to add a version. Send only what changes. An omitted field keeps its stored value. An empty `actions` list clears the actions.
 - A name cannot change. Use only action ids that `studio_list_actions` gave.
 - A save never publishes. A new version of a published skill returns it to a draft.
+- When a read says truncated, do not send that text back. Change long instructions in Studio.
 - Call `studio_skill_state` with `published` to publish or resume. It shows one card and returns a `decision`. On `approved`, the skill is live.
 - On `revised`, `stopped` or `no_card`, nothing changed. Say so. On `no_card`, show the `context` text and ask the member to answer in words.
 - On a `status` of 409 for a name, call `studio_skill_list`, then save a version of that skill or pick a new name.

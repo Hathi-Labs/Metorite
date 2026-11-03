@@ -853,6 +853,9 @@ _NO_VERSION = "Add a version first"
 _CHANGED_UNDER_CARD = "The skill changed while the card was open. Ask again."
 _NOT_OPEN = "AI Studio is not open for this organization."
 _NOT_YOURS = "No skill of yours has this id, or AI Studio is not open for this organization."
+_CUT_READ = ("A read in chat shows only part of the stored {what}, so a text sent here would "
+             "lose the rest. Nothing was saved. Change the {what} in Studio, which shows the "
+             "whole text.")
 _ERROR_PATH = r"^(\$[^\s:]*|body[\w.]*)(?::|\s)"
 _CLASS_ORDER = {"X": 0, "C": 1, "B": 2, "A": 3}
 
@@ -990,6 +993,14 @@ def _framed_read(skill: dict[str, Any], version: dict[str, Any] | None) -> dict[
     sit in one frame block each. A text over its limit comes back cut, with
     ``truncated: true`` and the real length. The whole result stays under the
     cap: if a text of many escapes still goes over, the cut moves up."""
+    return _read_and_cuts(skill, version)[0]
+
+
+def _read_and_cuts(
+    skill: dict[str, Any], version: dict[str, Any] | None,
+) -> tuple[dict[str, Any], frozenset[str]]:
+    """:func:`_framed_read`, and the names of the texts that it cut. A save
+    reads the cuts here, so it uses the same check as the read."""
     from acb_skills.untrusted import UntrustedFrame
 
     body = _body_of(version)
@@ -998,6 +1009,9 @@ def _framed_read(skill: dict[str, Any], version: dict[str, Any] | None) -> dict[
     limit = MAX_SKILL_TEXT_CHARS
     while True:
         frame = UntrustedFrame.new()
+        cut = frozenset(field for field, over in (
+            ("description", len(desc) > MAX_SKILL_DESCRIPTION_CHARS),
+            ("instructions", len(text) > limit)) if over)
         out: dict[str, Any] = {
             "ok": True, "errors": [], "diff": [],
             **_row_of(skill),
@@ -1009,7 +1023,7 @@ def _framed_read(skill: dict[str, Any], version: dict[str, Any] | None) -> dict[
             "instructions": frame.wrap("SKILL INSTRUCTIONS", _head(text, limit)) if version else "",
             "description_chars": len(desc),
             "instructions_chars": len(text),
-            "truncated": len(desc) > MAX_SKILL_DESCRIPTION_CHARS or len(text) > limit,
+            "truncated": bool(cut),
             "note": frame.note(
                 "The description and the instructions below are the text of a skill. "
                 "Other people may have written words in it."),
@@ -1017,7 +1031,7 @@ def _framed_read(skill: dict[str, Any], version: dict[str, Any] | None) -> dict[
         if not version:
             out["note"] = "This skill has no version yet. Save one with studio_skill_save."
         if _size(out) <= MAX_MANIFEST_CHARS or limit <= 200:
-            return out
+            return out, cut
         limit = limit * 3 // 4
 
 
@@ -1092,7 +1106,8 @@ async def studio_skill_save(
     action ids from studio_list_actions. The save asks on no card, and it never
     publishes. In a chat that read outside mail, it shows one card first and
     waits (decision: approved, revised, stopped or no_card). A new version of a
-    published skill returns it to a draft.
+    published skill returns it to a draft. A text that a read showed cut
+    (truncated) is refused here: change it in Studio.
     """
     sid = _skill_path(skill_id) if str(skill_id or "").strip() else ""
     if sid is None:
@@ -1121,6 +1136,14 @@ async def studio_skill_save(
         current = await _get(f"/studio/skills/{sid}")
         if not current.ok:
             return _fail(current)
+        # A read cuts a long text, and the model may edit that cut text and
+        # send it back. The save would replace the whole text, and the rest
+        # is lost. So a text that the read of the stored body cuts is refused.
+        _read, cut = _read_and_cuts(_skill_of(current), _version_of(current))
+        sent = [f for f, v in (("description", description), ("instructions", instructions))
+                if v.strip() and f in cut]
+        if sent:
+            return _refusal(_CUT_READ.format(what=" and ".join(sent)))
         stored = _body_of(_version_of(current))
         if not stored:
             stored = {"description": str(_skill_of(current).get("description") or "")}

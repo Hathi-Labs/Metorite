@@ -617,6 +617,66 @@ async def test_a_save_after_a_cut_read_never_sends_back_the_cut_text(gw, card) -
     assert gw.versions[sid][-1]["body"]["instructions"] == long
 
 
+def _inner(framed: str) -> str:
+    """The text of one frame block, with no marker line."""
+    return "\n".join(framed.splitlines()[1:-1])
+
+
+@pytest.mark.parametrize("held_chat", [False, True])
+async def test_an_edit_of_a_cut_read_is_refused_and_writes_nothing(gw, card, mark, held_chat) -> None:
+    """Review round 1, P1: the model edits the cut text of a read and sends it
+    back as the instructions. The save would write it, and the tail is lost.
+    Mutation: drop the cut check of a save with an id -> red."""
+    mark.held = held_chat
+    long = "".join(f"Step {i}: do thing number {i} with care.\n" for i in range(600))
+    sid = gw.seed(body={**BODY, "instructions": long})
+    read = await st.studio_skill_list(sid)
+    assert read["truncated"] is True
+    edited = _inner(read["instructions"]).replace("Step 3:", "Step three:")
+    out = await st.studio_skill_save(skill_id=sid, instructions=edited)
+    assert out["ok"] is False and "instructions" in _msg(out) and "in Studio" in _msg(out)
+    assert gw.sent("POST") == [] and len(gw.versions[sid]) == 1 and card.shown == []
+    assert gw.versions[sid][-1]["body"]["instructions"] == long
+
+
+async def test_the_cut_check_is_the_check_of_the_read_and_not_the_number(gw, card) -> None:
+    """Escapes move the cut of a read under 12,000 characters. The save reads
+    the same flag as the read. Mutation: test the length against 12,000 -> red."""
+    quoted = '"\n' * 5_900  # 11,800 characters, and each one costs 2 in JSON
+    sid = gw.seed(body={**BODY, "instructions": quoted})
+    read = await st.studio_skill_list(sid)
+    assert len(quoted) < st.MAX_SKILL_TEXT_CHARS and read["truncated"] is True
+    out = await st.studio_skill_save(skill_id=sid, instructions="A short new text.")
+    assert out["ok"] is False and gw.sent("POST") == []
+
+
+async def test_a_cut_description_refuses_a_new_description_and_keeps_the_other_edits(gw, card) -> None:
+    """A cut refuses only the text that the read cut. The save of the other
+    text merges, and the stored long text stays whole."""
+    desc = "Describe. " * 300  # 3,000 characters, over the read limit of 2,000
+    sid = gw.seed(body={**BODY, "description": desc})
+    assert (await st.studio_skill_list(sid))["truncated"] is True
+    refused = await st.studio_skill_save(skill_id=sid, description="Short.")
+    assert refused["ok"] is False and "description" in _msg(refused) and gw.sent("POST") == []
+    kept = await st.studio_skill_save(skill_id=sid, instructions="Write three bullets.")
+    assert kept["ok"], kept
+    assert gw.versions[sid][-1]["body"] == {**BODY, "description": desc,
+                                           "instructions": "Write three bullets."}
+
+
+def test_the_rules_say_that_a_cut_text_never_goes_back() -> None:
+    """Mutation: drop the rule line from the pack rules or the agent text -> red."""
+    from pathlib import Path
+
+    from acb_skills import tool_packs as tp
+
+    line = "When a read says truncated, do not send that text back."
+    root = Path(__file__).resolve().parents[2]
+    agent = (root / "apps/agents/agent-studio-builder/instructions.md").read_text(encoding="utf-8")
+    for text in (" ".join(tp.rules_for("studio").split()), " ".join(agent.split())):
+        assert line in text and "Change long instructions in Studio." in text
+
+
 async def test_a_name_with_a_skill_id_is_refused_and_an_empty_save_too(gw, card) -> None:
     sid = gw.seed()
     a = await st.studio_skill_save(skill_id=sid, name="Other", instructions="x")
