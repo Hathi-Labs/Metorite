@@ -223,7 +223,7 @@ import {
   visibleTasks,
 } from "./lib/subtaskView";
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
-import { inversePatch } from "@/lib/undo";
+import { type UndoEntry, inversePatch } from "@/lib/undo";
 import { type MovedRow, moveUndoPlan } from "./lib/taskUndo";
 import { useTaskUndo } from "./components/useTaskUndo";
 import {
@@ -3755,18 +3755,18 @@ function ProjectsWorkspace() {
         await refreshRef.current();
         setTreeKey((k) => k + 1);
         // UNDO-1 — unarchive files the task again. One flag serves the toast
-        // and Ctrl+Z, as in the archive path below.
+        // and Ctrl+Z, as in the archive path below. The toast's Undo runs
+        // through the provider's gate (fix round 1, finding 6).
         let back = true;
-        const refile = async () => {
-          if (!back) return;
-          back = false;
-          await projectsApi.archiveTask(taskId);
-          await refreshRef.current();
-          setTreeKey((k) => k + 1);
-        };
-        undoApi.record({
+        const refiled: UndoEntry = {
           label: `restored ${row?.title ?? "a task"} from the archive`,
-          undo: refile,
+          undo: async () => {
+            if (!back) return;
+            back = false;
+            await projectsApi.archiveTask(taskId);
+            await refreshRef.current();
+            setTreeKey((k) => k + 1);
+          },
           redo: async () => {
             if (back) return;
             back = true;
@@ -3774,12 +3774,19 @@ function ProjectsWorkspace() {
             await refreshRef.current();
             setTreeKey((k) => k + 1);
           },
-        });
+        };
+        undoApi.record(refiled);
         toast.show({
           key: `projects:archive:${taskId}`,
           variant: "success",
           title: "Task restored from the archive",
-          action: { label: "Undo", onClick: () => void refile() },
+          action: {
+            label: "Undo",
+            onClick: () =>
+              void undoApi
+                .undoEntry(refiled)
+                .catch((err: Error) => setError(String(err.message))),
+          },
         });
         return;
       }
@@ -3924,12 +3931,14 @@ function ProjectsWorkspace() {
       // the toast says why, and what to do instead.
       const after: Record<string, MovedRow | null> = {};
       if (res.dropped_fields.length === 0 && !(res.subtask_ids?.length ?? res.subtasks_moved)) {
-        for (const id of res.task_ids ?? ids) {
-          after[id] = await projectsApi.task(id).catch(() => null);
-        }
+        const movedIds = res.task_ids ?? ids;
+        const rows = await Promise.all(
+          movedIds.map((id) => projectsApi.task(id).catch(() => null)),
+        );
+        movedIds.forEach((id, i) => (after[id] = rows[i]));
       }
       const way = moveUndoPlan(ids, homes, after, res);
-      let undoMove: (() => Promise<void>) | undefined;
+      let movedBack: UndoEntry | undefined;
       if (way.ok && way.calls.length > 0) {
         const sendHome = async () => {
           for (const call of way.calls) {
@@ -3944,14 +3953,13 @@ function ProjectsWorkspace() {
           await refreshRef.current();
         };
         let moved_ = true;
-        undoMove = async () => {
-          if (!moved_) return;
-          moved_ = false;
-          await sendHome();
-        };
-        undoApi.record({
+        movedBack = {
           label: `moved ${homes.length === 1 ? homes[0].title : `${homes.length} tasks`}`,
-          undo: undoMove,
+          undo: async () => {
+            if (!moved_) return;
+            moved_ = false;
+            await sendHome();
+          },
           redo: async () => {
             if (moved_) return;
             moved_ = true;
@@ -3966,8 +3974,12 @@ function ProjectsWorkspace() {
             setTreeKey((k) => k + 1);
             await refreshRef.current();
           },
-        });
+        };
+        undoApi.record(movedBack);
       }
+      // The toast's Undo runs through the provider's gate, as Ctrl+Z does
+      // (fix round 1, finding 6).
+      const entry = movedBack;
       toast.show({
         variant: "success",
         title:
@@ -3975,7 +3987,17 @@ function ProjectsWorkspace() {
             ? `${moved} — dropped ${res.dropped_fields.join(", ")}`
             : moved,
         ...(way.ok ? {} : { description: way.reason }),
-        ...(undoMove ? { action: { label: "Undo", onClick: () => void undoMove!() } } : {}),
+        ...(entry
+          ? {
+              action: {
+                label: "Undo",
+                onClick: () =>
+                  void undoApi
+                    .undoEntry(entry)
+                    .catch((err: Error) => setError(String(err.message))),
+              },
+            }
+          : {}),
       });
     } catch (err) {
       // Stays OPEN on a refusal, and the message renders IN the card: the

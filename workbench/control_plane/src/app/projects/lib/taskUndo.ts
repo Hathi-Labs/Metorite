@@ -106,32 +106,45 @@ interface Step {
 }
 
 /**
- * Wrap two writes as an entry and return the undo for the toast button.
- * One `applied` flag serves the toast and Ctrl+Z, so pressing both reverts once.
+ * Wrap two writes as an entry, record it, and return it for the toast.
+ *
+ * The toast's Undo runs the entry through the provider's one-at-a-time gate
+ * (`undoApi.undoEntry`), the same gate as Ctrl+Z (fix round 1, finding 6).
+ * The entry also guards itself: `applied` changes only after the write
+ * answers, so a call that comes while a write is in flight gets that same
+ * write and sends no second one.
  */
-function register(hooks: EditHooks, step: Step): () => Promise<void> {
+function register(hooks: EditHooks, step: Step): UndoEntry {
   let applied = true;
   let dead = false;
-  const undo = async () => {
-    if (!applied || dead) return;
-    if (!(await step.revert())) {
-      dead = true;
-      return;
-    }
-    applied = false;
-    await hooks.after();
+  let inFlight: Promise<void> | null = null;
+  const once = (run: () => Promise<void>) => {
+    if (!inFlight) inFlight = run().finally(() => (inFlight = null));
+    return inFlight;
   };
-  const redo = async () => {
-    if (applied || dead) return;
-    if (!(await step.reapply())) {
-      dead = true;
-      return;
-    }
-    applied = true;
-    await hooks.after();
-  };
-  hooks.record({ label: step.label, undo, redo });
-  return undo;
+  const undo = () =>
+    once(async () => {
+      if (!applied || dead) return;
+      if (!(await step.revert())) {
+        dead = true;
+        return;
+      }
+      applied = false;
+      await hooks.after();
+    });
+  const redo = () =>
+    once(async () => {
+      if (applied || dead) return;
+      if (!(await step.reapply())) {
+        dead = true;
+        return;
+      }
+      applied = true;
+      await hooks.after();
+    });
+  const entry: UndoEntry = { label: step.label, undo, redo };
+  hooks.record(entry);
+  return entry;
 }
 
 export interface TaskEdit {
@@ -168,8 +181,8 @@ export function taskInverse(
   return out;
 }
 
-/** Record a PATCH that has already landed. Returns the undo for the toast. */
-export function recordTaskEdit(io: EditIo, hooks: EditHooks, edit: TaskEdit): () => Promise<void> {
+/** Record a PATCH that has already landed. Returns its entry, for the toast. */
+export function recordTaskEdit(io: EditIo, hooks: EditHooks, edit: TaskEdit): UndoEntry {
   const id = (edit.before as { id: string }).id;
   const inverse = taskInverse(edit.before, edit.patch);
   io.versions.note(id, edit.version);
@@ -215,7 +228,7 @@ export function recordAssigneesEdit(
   io: EditIo,
   hooks: EditHooks,
   edit: AssigneesEdit,
-): () => Promise<void> {
+): UndoEntry {
   const swap = async (from: readonly string[], to: readonly string[]) => {
     const now = await io.read(edit.id);
     if (!sameList(now.assignees ?? [], from)) {

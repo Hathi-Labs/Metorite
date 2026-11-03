@@ -12,7 +12,14 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { EMPTY_UNDO, record, stepBack, stepForward, type UndoEntry } from "@/lib/undo";
+import {
+  EMPTY_UNDO,
+  createUndoRunner,
+  record,
+  stepBack,
+  stepForward,
+  type UndoEntry,
+} from "@/lib/undo";
 
 import {
   STALE_MESSAGE,
@@ -279,12 +286,57 @@ describe("recordTaskEdit", () => {
     expect(r.notify).not.toHaveBeenCalled();
   });
 
-  it("returns an undo that runs once for the toast and Ctrl+Z together", async () => {
+  it("returns the entry it recorded, so the toast and Ctrl+Z share one", async () => {
     const r = rig();
-    const undo = recordTaskEdit(r.io, r.hooks, { before, patch: { title: "New" }, version: "v1", label: "x" });
-    await undo();
+    const entry = recordTaskEdit(r.io, r.hooks, { before, patch: { title: "New" }, version: "v1", label: "x" });
+    expect(r.stack.past.at(-1)).toBe(entry);
+    await entry.undo();
     await stepBack(r.stack)!.entry.undo();
     expect(r.io.patch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the toast's Undo and Ctrl+Z in one round trip (fix round 1, finding 6)", () => {
+  /** A PATCH that answers only when the test lets it. */
+  const slowPatch = () => {
+    const pending: (() => void)[] = [];
+    const patch = vi.fn(
+      (_id: string, _payload: Row, _ifMatch: string | null) =>
+        new Promise<{ updated_at: string }>((done) => {
+          pending.push(() => done({ updated_at: "v9" }));
+        }),
+    );
+    return { patch, answer: () => pending.splice(0).forEach((go) => go()) };
+  };
+
+  it("through the provider's gate they write ONCE, and the stack moves once", async () => {
+    const slow = slowPatch();
+    const r = rig({ patch: slow.patch });
+    let stack = EMPTY_UNDO;
+    const hooks: EditHooks = { ...r.hooks, record: (e) => (stack = record(stack, e)) };
+    const runner = createUndoRunner({
+      read: () => stack,
+      write: (next) => (stack = next),
+      busy: () => {},
+    });
+    const entry = recordTaskEdit(r.io, hooks, { before, patch: { title: "New" }, version: "v1", label: "x" });
+    const toastClick = runner.undoEntry(entry);
+    const ctrlZ = runner.undo();
+    slow.answer();
+    await Promise.all([toastClick, ctrlZ]);
+    expect(slow.patch).toHaveBeenCalledTimes(1);
+    expect(stack).toEqual({ past: [], future: [entry] });
+  });
+
+  it("the entry also guards itself: two calls in flight send one write", async () => {
+    const slow = slowPatch();
+    const r = rig({ patch: slow.patch });
+    const entry = recordTaskEdit(r.io, r.hooks, { before, patch: { title: "New" }, version: "v1", label: "x" });
+    const first = entry.undo();
+    const second = entry.undo();
+    slow.answer();
+    await Promise.all([first, second]);
+    expect(slow.patch).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -403,5 +455,15 @@ describe("the doors wire the helper (source)", () => {
     const body = src.slice(src.indexOf(from), src.indexOf(to));
     expect(body).toMatch(/toast\.promise\([\s\S]*key: toastKey,/);
     expect(body).toMatch(/taskUndo\.edited\([\s\S]*toastKey,\s*\}\);/);
+  });
+
+  it("each Undo toast of this slice runs through the provider's gate (finding 6)", () => {
+    const hook = read("components/useTaskUndo.tsx");
+    expect(hook).toMatch(/undoApi\s*\.undoEntry\(entry\)/);
+    const page = read("page.tsx");
+    // The unarchive toast and the move toast.
+    expect(page).toMatch(/undoApi\s*\.undoEntry\(refiled\)/);
+    expect(page).toMatch(/undoApi\s*\.undoEntry\(entry\)/);
+    expect(page).not.toMatch(/onClick: \(\) => void (refile|undoMove!?)\(\)/);
   });
 });

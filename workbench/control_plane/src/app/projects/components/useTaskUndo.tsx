@@ -10,6 +10,7 @@
 
 import { useToast } from "@/components/ui/Toast";
 import { useUndo } from "@/components/UndoProvider";
+import type { UndoEntry } from "@/lib/undo";
 
 import { type TaskRow, projectsApi } from "../lib/api";
 import {
@@ -37,7 +38,11 @@ export function useTaskUndo() {
   // ⚠️ A door that already raised a toast for this write passes its key, so
   // the Undo toast REPLACES that one in place (fix round 1, finding 5). Two
   // success toasts for one act said the same thing twice.
-  const offer = (taskId: string, title: string, undo: () => Promise<void>, key?: string) =>
+  //
+  // The Undo button runs its entry through `undoApi.undoEntry`, the SAME
+  // one-at-a-time gate as Ctrl+Z (fix round 1, finding 6). Called directly,
+  // a click and Ctrl+Z in one round trip sent two writes.
+  const offer = (taskId: string, title: string, entry: UndoEntry, key?: string) =>
     toast.show({
       key: key ?? `projects:undo:${taskId}`,
       variant: "success",
@@ -45,9 +50,9 @@ export function useTaskUndo() {
       action: {
         label: "Undo",
         onClick: () =>
-          void undo().catch((e: Error) =>
-            toast.show({ variant: "error", title: String(e.message) }),
-          ),
+          void undoApi
+            .undoEntry(entry)
+            .catch((e: Error) => toast.show({ variant: "error", title: String(e.message) })),
       },
     });
 
@@ -68,13 +73,13 @@ export function useTaskUndo() {
         toastKey?: string;
       },
     ) {
-      const undo = recordTaskEdit(taskEditIo, hooksFor(opts.after), {
+      const entry = recordTaskEdit(taskEditIo, hooksFor(opts.after), {
         before,
         patch,
         version: fresh?.updated_at ?? null,
         label: opts.label,
       });
-      offer(before.id, opts.receipt, undo, opts.toastKey);
+      offer(before.id, opts.receipt, entry, opts.toastKey);
     },
     assigneesEdited(
       id: string,
@@ -82,13 +87,13 @@ export function useTaskUndo() {
       next: readonly string[],
       opts: { label: string; after: () => Promise<void> | void },
     ) {
-      const undo = recordAssigneesEdit(taskEditIo, hooksFor(opts.after), {
+      const entry = recordAssigneesEdit(taskEditIo, hooksFor(opts.after), {
         id,
         before,
         next,
         label: opts.label,
       });
-      offer(id, "Assignees changed", undo);
+      offer(id, "Assignees changed", entry);
     },
   };
 }
