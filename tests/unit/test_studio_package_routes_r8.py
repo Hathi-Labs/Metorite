@@ -38,8 +38,10 @@ e. The rules (the drift of C6 and C7a): a publish that adds a state machine
    of the sync let a rule and the ``hot`` flag of its field change together.
 f. Two publishes of one package give N and N+1, and the rows are made once.
    Two publishes in one org, in opposite order, never deadlock (20 rounds).
-   A publish racing a draft save finishes, and the rows equal the objects of
-   the version.
+   The org lock waits 1 s at most, so a racer may get 503 ``store_busy`` with
+   ``Retry-After``. No racer raises (40P01) or is 500, a 503 leaves no
+   version row, and each round has a success. A publish racing a draft save
+   finishes, and the rows equal the objects of the version.
 g. A catalog that fails is 503 and writes nothing. The switch off is 404 on
    each route and writes nothing. A body past the cap is 413.
 h. The audit: a create writes one ``action`` row, a publish its own ``publish``
@@ -143,23 +145,31 @@ class _Request:
         yield self._raw
 
 
-async def _call(route: str, org: str, email: str, pid: str | None = None, payload: Any = None,
-                raw: bytes | None = None) -> tuple[int, Any]:
-    """Call the real handler *route* with *org* bound. Answers (200, answer) or
-    the status and detail of a refusal."""
+async def _call_full(route: str, org: str, email: str, pid: str | None = None,
+                     payload: Any = None, raw: bytes | None = None,
+                     **query: Any) -> tuple[int, Any, dict[str, str]]:
+    """Call the real handler *route* with *org* bound. Answers (200, answer,
+    {}) or the status, the detail and the headers of a refusal."""
     handler = getattr(packages, route)
-    kwargs: dict[str, Any] = {"user": _user(org, email)}
+    kwargs: dict[str, Any] = {"user": _user(org, email), **query}
     if pid is not None:
         kwargs["package_id"] = pid
     if route in ("create_package", "save_draft", "publish"):
         kwargs["request"] = _Request(payload, raw)
     token = bind_tenant(org)
     try:
-        return 200, await handler(**kwargs)
+        return 200, await handler(**kwargs), {}
     except HTTPException as exc:
-        return exc.status_code, exc.detail
+        return exc.status_code, exc.detail, dict(exc.headers or {})
     finally:
         release_tenant(token)
+
+
+async def _call(route: str, org: str, email: str, pid: str | None = None, payload: Any = None,
+                raw: bytes | None = None, **query: Any) -> tuple[int, Any]:
+    """:func:`_call_full` with no headers."""
+    status, detail, _ = await _call_full(route, org, email, pid, payload, raw, **query)
+    return status, detail
 
 
 def _run(world: Any, fn: Callable[[], Awaitable[Any]]) -> Any:
@@ -817,29 +827,64 @@ def test_r8_two_publishes_of_one_package_give_n_and_n_plus_1_with_rows_made_once
     assert sorted(len(g["sync"]["objects_created"]) for _, g in got) == [0, 1]
 
 
+def _ok_or_busy(results: list[Any]) -> None:
+    """Each answer of a race is 200, or 503 ``store_busy`` with ``Retry-After``:
+    the org lock waits at most 1 s, and under load a racer can pass that
+    bound. A retry fixes a 503. A deadlock (40P01) or any other error escapes
+    the handler, and the app would answer 500, so it fails here."""
+    for got in results:
+        if isinstance(got, BaseException):
+            state = getattr(getattr(got, "orig", None), "sqlstate", None)
+            raise AssertionError(f"a racer raised {type(got).__name__} (sqlstate {state})")
+        status, detail, headers = got
+        assert status in (200, 503), got
+        if status == 503:
+            assert detail["code"] == "store_busy", got
+            assert headers.get("Retry-After") == packages.RETRY_AFTER, got
+
+
+def _dense(world: Any, pid: str, got: tuple[int, Any, dict[str, str]]) -> None:
+    """One publish of a new package: a success is version 1, and a 503 leaves
+    no version row and no object row, so the numbers keep no gap."""
+    status, detail, _ = got
+    if status == 200:
+        assert detail["version"]["version"] == 1, got
+        assert _versions(world, pid) == [1]
+    else:
+        assert _versions(world, pid) == [] and _objects(world, pid) == []
+
+
 def test_r8_two_publishes_in_one_org_never_deadlock_in_either_order(world) -> None:
     """Two real connections, 20 rounds, two packages of one org with new
     objects each. The starting order flips each round. A lock taken in the
-    other order (the org lock before the ``apps`` row) deadlocks here."""
+    other order (the org lock before the ``apps`` row) deadlocks here. The
+    racer that takes the org lock first never waits, so each round has a
+    success."""
     def manifest() -> dict[str, Any]:
         # Cold fields: 20 rounds of hot fields would pass the hot budget of the org.
         plain = [{"key": "name", "type": "text"}, {"key": "note", "type": "text"}]
         return _manifest(_mid("race"), [_visit(plain, name="first"), _visit(plain, name="second")])
 
-    async def go() -> list[list[tuple[int, Any]]]:
+    async def go() -> list[list[tuple[str, Any]]]:
         rounds = []
         for i in range(20):
             a = await _new(world.a, ANA, manifest())
             b = await _new(world.a, BEN, manifest())
-            calls = [_publish(world.a, ANA, a), _publish(world.a, BEN, b)]
+            pairs = [(a, ANA), (b, BEN)]
             if i % 2:
-                calls.reverse()
-            rounds.append(list(await asyncio.gather(*calls)))
+                pairs.reverse()
+            got = await asyncio.gather(
+                *(_call_full("publish", world.a, who, pid, payload={}) for pid, who in pairs),
+                return_exceptions=True)
+            rounds.append([(pid, g) for (pid, _), g in zip(pairs, got, strict=True)])
         return rounds
 
     for got in _run(world, go):
-        assert [s for s, _ in got] == [200, 200], got
-        assert all(len(g["objects"]) == 2 for _, g in got)
+        _ok_or_busy([g for _, g in got])
+        assert any(g[0] == 200 for _, g in got), got
+        assert all(len(g[1]["objects"]) == 2 for _, g in got if g[0] == 200)
+        for pid, g in got:
+            _dense(world, pid, g)
 
 
 def test_r8_a_publish_racing_a_draft_save_finishes_and_the_rows_equal_the_version(world) -> None:
@@ -864,16 +909,26 @@ def test_r8_a_publish_racing_a_draft_save_finishes_and_the_rows_equal_the_versio
 
 
 def test_r8_a_publish_and_a_draft_save_of_many_packages_never_deadlock(world) -> None:
-    async def go() -> list[tuple[int, Any]]:
+    """Six publishes and six draft saves at once. A save takes no org lock, so
+    it is always 200. A publish is 200, or 503 when the org lock does not come
+    in 1 s."""
+    async def go() -> tuple[list[str], list[Any]]:
         mids = [_mid("many") for _ in range(6)]
         pids = [await _new(world.a, ANA, _manifest(m)) for m in mids]
-        calls: list[Awaitable[tuple[int, Any]]] = []
+        calls: list[Awaitable[tuple[int, Any, dict[str, str]]]] = []
         for pid, m in zip(pids, mids, strict=True):
-            calls.append(_publish(world.a, ANA, pid))
-            calls.append(_save(world.a, ANA, pid, _manifest(m, [_visit(), _visit(name="two")])))
-        return list(await asyncio.gather(*calls))
+            calls.append(_call_full("publish", world.a, ANA, pid, payload={}))
+            calls.append(_call_full("save_draft", world.a, ANA, pid,
+                                    payload=_manifest(m, [_visit(), _visit(name="two")])))
+        return pids, list(await asyncio.gather(*calls, return_exceptions=True))
 
-    assert {s for s, _ in _run(world, go)} == {200}
+    pids, got = _run(world, go)
+    _ok_or_busy(got)
+    publishes, saves = got[0::2], got[1::2]
+    assert [g[0] for g in saves] == [200] * len(pids), saves
+    assert any(g[0] == 200 for g in publishes), publishes
+    for pid, g in zip(pids, publishes, strict=True):
+        _dense(world, pid, g)
 
 
 # ── g. Waits, the switch and the cap ───────────────────────────────────────
