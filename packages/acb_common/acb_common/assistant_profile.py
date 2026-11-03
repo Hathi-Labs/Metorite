@@ -796,9 +796,32 @@ WRITE_TOOL_NAMES: frozenset[str] = frozenset({
 #: ``member_message`` stays as it was, for the answer check.
 #: PZ-31: the member's own typed steers of the run are typed words too. They
 #: live in a separate holder (:func:`count_member_steers`).
+#: D-PZ-37 (the owner, 2026-11-02): the chat route binds the words only when
+#: the request carries the ONE mark of a message that the member typed in the
+#: message box. A tapped pill, a choice, a card action, a feed starter and the
+#: Fix prompt carry no mark, so they bind "".
 #: Fence: ``tests/unit/test_profile_write_tools.py``.
 MEMBER_TYPED: contextvars.ContextVar[str] = contextvars.ContextVar(
     "assistant_profile_member_typed", default="")
+
+#: D-PZ-37: the words that the member sent in this turn, typed or tapped,
+#: after :func:`typed_text`. Two readers use them, and neither grounds a write:
+#:
+#: * :func:`member_sent` says that the turn holds words of the member. So a
+#:   profile write of a tap asks the confirm card and never saves at once
+#:   (``profile_tools._ground``). A Continue, a card answer, a steer
+#:   follow-up and a paste send no words, so they get no card (PZ-32 repair
+#:   round 1).
+#: * :func:`sent_words` gives the words to the tool-pack chooser
+#:   (``executor._start_pack_turn``), as :func:`typed_words` did before
+#:   D-PZ-37. So a tapped pill about a mail still loads the email pack. The
+#:   chooser only picks tools, and it changes no guard.
+#:
+#: Only :func:`member_typed` binds it, with its ``sent`` keyword. The default
+#: is "". Fences: ``tests/unit/test_profile_typed_words_route.py`` and
+#: ``tests/unit/test_tool_packs_choice.py``.
+MEMBER_SENT: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "assistant_profile_member_sent", default="")
 
 
 class _Steers:
@@ -856,14 +879,21 @@ def typed_text(text: Any) -> str:
 
 
 @contextlib.contextmanager
-def member_typed(text: Any) -> Iterator[None]:
+def member_typed(text: Any, *, sent: Any = None) -> Iterator[None]:
     """Bind the member's typed text of one turn. Closing restores the value
     it found, and never raises.
 
     It also binds a new steer holder that counts no steer (PZ-31). So a
     binder inside a run, such as the WhatsApp Confirm scope, never reads the
-    steers of the run around it."""
-    token = MEMBER_TYPED.set(typed_text(text))
+    steers of the run around it.
+
+    *sent* is :data:`MEMBER_SENT` (D-PZ-37): the words that the member sent
+    in this turn, typed or tapped. ``None`` reads as *text*, so a binder whose
+    member types each message, such as WhatsApp, passes nothing. Both values
+    go through :func:`typed_text`."""
+    typed = typed_text(text)
+    token = MEMBER_TYPED.set(typed)
+    sent_token = MEMBER_SENT.set(typed if sent is None else typed_text(sent))
     steers = _STEERS.set(_Steers())
     try:
         yield
@@ -873,9 +903,20 @@ def member_typed(text: Any) -> Iterator[None]:
         except (ValueError, RuntimeError):
             _STEERS.set(None)
         try:
+            MEMBER_SENT.reset(sent_token)
+        except (ValueError, RuntimeError):
+            MEMBER_SENT.set("")
+        try:
             MEMBER_TYPED.reset(token)
         except (ValueError, RuntimeError):
             MEMBER_TYPED.set("")
+
+
+def member_sent() -> bool:
+    """True when the member sent words in this turn, typed or tapped
+    (:data:`MEMBER_SENT`, D-PZ-37). It grounds nothing. It only lets a
+    profile write ask the confirm card. Never raises."""
+    return bool(MEMBER_SENT.get().strip())
 
 
 def _member_key(value: Any) -> str:
@@ -947,6 +988,24 @@ def typed_words() -> str:
     steers that the run read (PZ-31). :func:`typed_text` checks the steers
     as one text, so one pasted mail among them grounds no steer."""
     own = MEMBER_TYPED.get()
+    holder = _STEERS.get()
+    if holder is None or not holder.words:
+        return own
+    steered = typed_text(_PART_BREAK.join(list(holder.words)))
+    if not steered:
+        return own
+    return f"{own}{_PART_BREAK}{steered}" if own else steered
+
+
+def sent_words() -> str:
+    """The words that the member sent in this turn, typed or tapped, or "".
+
+    That is the sent text of the request (:data:`MEMBER_SENT`), then the
+    member's own typed steers that the run read, as :func:`typed_words` reads
+    them. Only the tool-pack chooser reads it (D-PZ-37). ⚠️ Never ground a
+    write in it: a tapped pill holds words that the member did not type.
+    :func:`typed_words` is the one value that grounds a write."""
+    own = MEMBER_SENT.get()
     holder = _STEERS.get()
     if holder is None or not holder.words:
         return own

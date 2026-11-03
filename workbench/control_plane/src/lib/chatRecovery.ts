@@ -245,6 +245,11 @@ export interface SendOptions {
    *  own and no user bubble. The server answers the steers the run never
    *  read, or 202 when nothing is owed. */
   steerFollowUp?: boolean;
+  /** WS-63 D-PZ-37: the member typed these words in the message box. Only
+   *  the composer's send sets it, and the request then carries the ONE
+   *  typed mark (`lib/typedMark.ts`). A pill, a choice, a card action, a
+   *  feed starter and the Fix prompt never set it. */
+  typed?: boolean;
   /** A steer that the server answered with a stream: it started a new run
    *  (`lib/chatSteer.ts`). The send follows THIS response, under THIS
    *  controller, and fetches nothing. Use with `heldId`, the steer's bubble. */
@@ -295,12 +300,16 @@ export function registerSender(threadId: string, send: Sender): void {
  * Hold `text` until the gateway is back, and start the wait.
  *
  * `userMsgId` marks the member's bubble as held. `front` puts a send that
- * failed AGAIN back at the head, so held sends keep their order.
+ * failed AGAIN back at the head, so held sends keep their order. `typed`
+ * keeps the typed mark of the send, so it goes out with it (D-PZ-37).
  */
 export function holdForUpdate(
   threadId: string,
   text: string,
-  opts: { userMsgId?: string | null; front?: boolean; resume?: boolean; edit?: HeldEdit } = {},
+  opts: {
+    userMsgId?: string | null; front?: boolean; resume?: boolean; edit?: HeldEdit;
+    typed?: boolean;
+  } = {},
 ): void {
   const t = text.trim();
   if (opts.edit) {
@@ -319,6 +328,10 @@ export function holdForUpdate(
       pendingSends: pending,
       // A held Continue stays a Continue: it goes out with `resume`.
       pendingResume: opts.resume ? queueOnce(prev.pendingResume, t) : prev.pendingResume,
+      // A held typed send keeps its mark (D-PZ-37).
+      pendingTyped: opts.typed === true
+        ? queueOnce(prev.pendingTyped ?? [], t)
+        : prev.pendingTyped,
       messages: opts.userMsgId
         ? prev.messages.map((m) => (m.id === opts.userMsgId ? { ...m, pendingDelivery: true } : m))
         : prev.messages,
@@ -352,16 +365,19 @@ export async function flushHeld(threadId: string): Promise<void> {
     }
     const heldId = heldBubbleId(st.messages, next);
     const resume = st.pendingResume.includes(next);
+    const typed = (st.pendingTyped ?? []).includes(next);
     // A held edit goes out as an edit: same target, same answer.
     const edit = heldEdits.get(threadId)?.get(next);
     heldEdits.get(threadId)?.delete(next);
     setSessionState(threadId, (prev) => ({
       ...prev, outage: false, pendingSends: rest,
       pendingResume: prev.pendingResume.filter((x) => x !== next),
+      pendingTyped: (prev.pendingTyped ?? []).filter((x) => x !== next),
     }));
     const opts: SendOptions = {
       ...(heldId ? { heldId } : {}),
       ...(resume ? { resume: true } : {}),
+      ...(typed ? { typed: true } : {}),
       ...(edit ? { supersedes: edit.supersedes, onEditOutcome: edit.onEditOutcome, fromHold: true } : {}),
     };
     await send(next, Object.keys(opts).length ? opts : undefined);
