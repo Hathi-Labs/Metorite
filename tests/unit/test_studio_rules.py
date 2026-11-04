@@ -486,8 +486,9 @@ def test_the_writes_run_before_the_checks() -> None:
 
 
 def test_store_never_commits_or_rolls_back() -> None:
-    """The caller owns the transaction. A query, a batch and the wait for the
-    org lock each hold one SAVEPOINT, and only these three functions open one."""
+    """The caller owns the transaction. A query, a batch, the write phase of a
+    manifest sync (A5) and the wait for the org lock each hold one SAVEPOINT,
+    and only these four functions open one."""
     tree = ast.parse(_STORE.read_text(encoding="utf-8"))
     ended = [n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)
              and n.attr in ("commit", "rollback", "begin", "close")]
@@ -495,7 +496,7 @@ def test_store_never_commits_or_rolls_back() -> None:
     funcs = _functions()
     sites = sorted(name for name, f in funcs.items() if any(
         isinstance(n, ast.Attribute) and n.attr == "begin_nested" for n in ast.walk(f)))
-    assert sites == ["_apply_batch", "_lock_org", "_time_limit"], sites
+    assert sites == ["_apply_batch", "_apply_sync", "_lock_org", "_time_limit"], sites
 
 
 def test_the_wait_for_the_org_lock_is_1_second_and_says_one_sentence() -> None:

@@ -685,6 +685,34 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "scope_governed": True,
         "dynamic": False,
     },
+    # WS-ALN ALN-4: the authority page of a project. It has its own pack, because
+    # the reminders and bulk packs must fit under MAX_REQUEST_TOOLS in their
+    # measured turns.
+    "projects-authority": {
+        "label": "Projects authority page",
+        "summary": (
+            "The authority page of a project: read which pages are pinned "
+            "as the rules of the project, pin one, or remove a pin."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for the "
+            "authority page of a project, for the main assistant to load "
+            "when a turn names the authority page. The pack holds the tools "
+            "to read the pins of a project, to pin a page and to remove a "
+            "pin. Each change asks the member first. A run loads a pack "
+            "only where tool packs are on, so until then this switch has "
+            "no effect."
+        ),
+        "tools": (
+            "pin_authority",
+            "project_authorities",
+            "unpin_authority",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
     # STU-G1 (ai_studio.md section 6.2): the AI Studio builder tools, for the
     # one assistant to hold in a Studio turn. The owner is `studio-builder`,
     # which is NOT a second assistant. Eight stateless tools (G1b added the describe tool, G2 the interview and the plan card): no draft store
@@ -694,13 +722,14 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "AI Studio builder",
         "summary": (
             "Build an AI Studio app: draft a manifest from a brief, patch it, "
-            "check it, outline it, list the actions it may use, read the live schema, ask the interview and show the plan card."
+            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, and save, publish, pause and list your skills."
         ),
         "description": (
             "A tool pack: the builder tools of AI Studio, for the main "
             "assistant to load in a Studio turn. It holds the tools to draft "
             "an app manifest, patch it, validate it, outline it and list the "
-            "actions an app may use. The tools keep no draft: the chat holds "
+            "actions an app may use. It also holds the skill tools: save, "
+            "publish, pause and list the skills of a member. The tools keep no draft: the chat holds "
             "the manifest. A run loads a pack only where tool packs are on, "
             "so until then this switch has no effect."
         ),
@@ -713,6 +742,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_patch",
             "studio_plan",
             "studio_validate",
+            "studio_skill_list",
+            "studio_skill_save",
+            "studio_skill_state",
         ),
         "owner": "studio-builder",
         "core": False,

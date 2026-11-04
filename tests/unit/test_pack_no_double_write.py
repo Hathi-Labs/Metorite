@@ -53,7 +53,7 @@ PA = "projects-assistant"
 EA = "email-assistant"
 CRM = "crm-assistant"
 PROJ = frozenset(("projects", "projects-plan", "projects-structure", "projects-bulk",
-                  "projects-reminders"))
+                  "projects-reminders", "projects-authority"))
 UUID = "0b0b0b0b-0000-4000-8000-0000000000b1"
 #: The turn of OA-8e run 4 on the Tasks page. The surface loads the core
 #: pack, and the plan and structure packs cannot join it, so the specialist

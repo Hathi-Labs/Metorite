@@ -349,6 +349,40 @@ async def assert_may_write_grant(db: Any, user: Any, project: Any) -> None:
         raise HTTPException(status_code=403, detail=refused)
 
 
+#: The 403 of a guidance write by a member who is not a lead (WS-MCP SW-31a).
+GUIDANCE_WRITE_REFUSED = (
+    "Only the project lead or a Projects admin can change the agent guidance of this project."
+)
+
+#: The 403 of a guidance write on a personal tree. A personal space is not
+#: shared, so no org rule for agents belongs there (SW-31a, as D-OP-2).
+PERSONAL_GUIDANCE_REFUSED = (
+    "A personal space has no shared guidance for agents. Write the guidance on a team project."
+)
+
+
+async def guidance_write_refusal(db: Any, user: Any, project: Any) -> str:
+    """The 403 words of a guidance write on *project*, or ``""`` when it may go.
+
+    SW-31a. The write floor of guidance is the write floor of a grant
+    (:func:`may_write_grant`): a lead of the project or of an ancestor, and a
+    ``projects:settings:write`` holder. No second rule exists. A personal tree
+    is refused first and for everyone, as :func:`grant_write_refusal` does.
+    """
+    if await in_personal_tree(db, project):
+        return PERSONAL_GUIDANCE_REFUSED
+    if not await may_write_grant(db, user, project):
+        return GUIDANCE_WRITE_REFUSED
+    return ""
+
+
+async def assert_may_write_guidance(db: Any, user: Any, project: Any) -> None:
+    """403 with the words of :func:`guidance_write_refusal`, or return."""
+    refused = await guidance_write_refusal(db, user, project)
+    if refused:
+        raise HTTPException(status_code=403, detail=refused)
+
+
 async def attach_can_write_grants(db: Any, user: Any, row: dict[str, Any]) -> dict[str, Any]:
     """Set ``can_write_grants`` on one project row, through :func:`may_write_grant`.
 

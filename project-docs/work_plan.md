@@ -170,7 +170,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · Stage 1 in M1, Stage 2 in M2 (D146) | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141, D146 · Stage 1 merged except A1 and E1 (this PR), F2b and F2c · Stage 2 in build: A3, A4, B2a, C1, G1b and G2 merged, C2a in the gates · next C1b, C6, C7, B1c and B2b, then D2, D3, D11, G3 and F2b · epic 491 holds the plan · finish line of Stage 2: K3 |
 | WS-PKG | **Package host**: every app is a package, and Metorite reshapes itself around the organization and the person | 🟢 active · started 2026-11-01 (D147) · M1 | `specs/package_host.md` | Metorite: project "Package Host", epic 1234 · D89, D127, D136, D141, D146, D147 · Studio H1, H2, J2, J3 and M1 run on this registry · next PKG-1 (one manifest source for the ⌘K jobs, no behaviour change), then PKG-2, PKG-3 and PKG-4 |
 | WS-WEB | **Web research**: search, read any page or file, crawl, browse and research jobs for Mira, on open-source parts | 🟢 active · started 2026-11-01 (D148) · M1 | `specs/web_research.md` | Metorite: project "Agent Tooling", epic 1235 · D85, D117, D139, D148 · WS-43 CA-4 (task 1032) calls this service · gates WEB-Q1 (SearXNG) for WEB-5 · 2026-11-01: WEB-1 built (the fetch guard). WEB-10 built (the goal record, `goal_records`, no caller yet). WEB-2 built dark behind `WEB_RESEARCH_ORGS` (the local HTML reader). Next WEB-3, then WEB-4 |
-| WS-ALN | **Project alignment**: Metorite knows the project of each task, checks work against the project's accepted rules, and asks a person and the lead when work deviates | 🟢 active · started 2026-11-02 (D160) · M2 | `specs/project_alignment.md` | Metorite: project "Projects/Tasks App", epic 1368 · reports to WS-PT · D75, D100, D104, D140, D160 and workflows G5 · ALN-Q1 to ALN-Q5 run on working defaults, which are not owner decisions (`project_alignment.md` §14) · ALN-0 is this spec · ALN-1 (the durable trigger) is built dark: `ALIGN_JOBS_ORGS` is empty and the handler is a stub · ALN-2a built (migration 332, backend and chat tools, dark behind `DECISIONS_ORGS`) · next ALN-2b and ALN-4, then ALN-5, ALN-6, ALN-7 · ALN-5 needs the rule store of SW-31 (task 1048) |
+| WS-ALN | **Project alignment**: Metorite knows the project of each task, checks work against the project's accepted rules, and asks a person and the lead when work deviates | 🟢 active · started 2026-11-02 (D160) · M2 | `specs/project_alignment.md` | Metorite: project "Projects/Tasks App", epic 1368 · reports to WS-PT · D75, D100, D104, D140, D160 and workflows G5 · ALN-Q1 to ALN-Q5 run on working defaults, which are not owner decisions (`project_alignment.md` §14) · ALN-0 is this spec · ALN-1 (the durable trigger) is built dark: `ALIGN_JOBS_ORGS` is empty and the handler is a stub · ALN-2a built (migration 332, backend and chat tools, dark behind `DECISIONS_ORGS`) · ALN-4 (the pin: migration 339, routes and chat tools, no UI) is built dark behind `AUTHORITY_PINS_ORGS` · next ALN-2b, ALN-4b and AUTO-7b, then ALN-5, ALN-6, ALN-7 · ALN-5 needs the rule store of SW-31 (task 1048) |
 | WS-AUTO | **Proactive agent**: Mira acts for each person without being asked, within limits that the person sees | 🟢 active · started 2026-11-02 (D161) · M2 | `specs/proactive_agent.md` | Metorite: project "Automations", epic 807 · D103, D124, D131, D161 and workflows G5 · AUTO-2 first slice, AUTO-3 (D131) and AUTO-7a are merged · AUTO-7b is built, dark behind `AUTO_PARK_ORGS`, in review (task 1411) · AUTO-Q1 runs on a working default, which is not an owner decision (`proactive_agent.md` §12) · H-328 parts (a) and (b) are merged, and part (c) is open · next AUTO-8 and AUTO-6, then AUTO-1, AUTO-4, AUTO-5, AUTO-9, AUTO-10 |
 | WS-PJP | **Plan with Metorite**: the AI plans projects with the member. It finds the critical path, the critical chain and its buffer, the constraint and the risks, proposes the stages that fit the work, and shows three or more changes on one card | 🟢 active · started 2026-11-02 (D168) · M2 | `specs/project_planning.md` | Metorite: project "Projects/Tasks App", epic 1476 · reports to WS-PT · D99, D145, D168 · PJP-0 is this spec · next PJP-1 (pills and swatches), PJP-2 (no hand-off to projects-assistant) and PJP-4 in parallel · PJP-2 needs the owner's `TOOL_PACKS` line before its release |
 | WS-CO | **Chat organization**: topics, picking up a chat, one search, and the full-screen chat | 🟢 active · started 2026-11-02 (D162, D163) · M1 | `specs/chat_organization.md` · `specs/artifact_management.md` §6.0 | next CO-0 (AGENT-SAFE). CO-1 waits for the PZ-33b question on numbers, and its flip is owner-only |
@@ -5189,7 +5189,7 @@ Owner directive, 2026-11-02, in chat. Board: **WS-PJP**, owner `specs/project_pl
 
 The owner then answered four questions in chat.
 
-1. **Three or more related changes come on ONE card**, with a tick box for each change. One change is one card. Two changes are two cards that wait together, as a stack.
+1. **Three or more related changes come on ONE card**, with a tick box for each change. One change is one card. Two changes are two cards that wait together, as a stack. **Amended by D173 (2026-11-03): the two cards show as ONE card with tabs, not as a stack.**
 2. **A status colour is one of the six hues** of `statusAccent.ts`. Any other colour, such as a hex code, maps to the nearest hue. A card shows a swatch, not the code.
 3. **The critical-chain buffer and the finish line are tasks**: a "Project buffer" task and a "Finish" milestone. No schema change. Project fields and a buffer chart may follow later, by a new decision.
 4. **An eval for this work costs at most USD 0.50** unless the owner agrees to more.
@@ -5277,6 +5277,22 @@ Owner directive, 2026-11-03, in chat. Board: **WS-PT**, owner `specs/one_project
 8. **D78 stays.** A due date alone never raises priority. The card explains the level in one line, for example "Low: due soon, but not marked important".
 
 Fence: named per slice in `one_projects_app.md` §9c. Advisory until each slice builds.
+
+### D173 — Approval cards that wait together show as ONE card with tabs (2026-11-03)
+
+Owner directive, 2026-11-03, in chat. Task: Metorite 1533 (`mt-5f606b3e`). It amends D168.1. It changes how two cards that wait together look. It changes no rule of consent.
+
+```text
+"I do not like the way in which the tabs show up ... right now the tabs are easily overlooked. Instead of having, say, a stacked cards animation, we just have one card. When there are multiple cards that need to be approved, it shows up as one single card with tabs."
+```
+
+1. **Cards that wait together show as ONE card with tabs, not as a stack.** Two cards or more draw one card frame. A tab row sits inside the top edge of the frame, above the card header. A count leads the row ("3 to approve"). One card draws no tab row.
+2. **No stacked card edges, no swipe, no swap animation and no nudge.** The queue draws none of them.
+3. **A tab not yet opened has a dot.** The tab that is open has a 2 px underline in `--primary`.
+4. **After the member answers a card, the next tab opens by itself.** It is the tab to the right, else the tab to the left. A restored card (Undo of a Reject) comes back first, and its tab opens.
+5. **Each card is still one consent.** There is no "Approve all". D168.1 stands in every other respect.
+
+Fence: `workbench/control_plane/src/lib/cardTabs.test.ts` (rules, ARIA, no `<CardStack`, no stack CSS), `src/lib/confirmationQueue.test.ts` (the tab row, the count, the next tab) and `e2e/approval-stack.spec.ts`.
 
 ## 4. Single-owner registry (who owns duplicated work)
 

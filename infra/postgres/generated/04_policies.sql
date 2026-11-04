@@ -6,7 +6,7 @@
 --
 -- ENABLE + FORCE ROW LEVEL SECURITY + the policy. Instant — no scan. ⚠️ AND IT IS A CLIFF: the moment this applies, any connection that has not bound app.tenant_id reads ZERO ROWS. That is the fail-closed property working (§0.1). MT-1c must be deployed AND VERIFIED first, or the product goes dark.
 --
--- Tables in this phase: 190
+-- Tables in this phase: 191
 --
 -- ⚠️ NOT a numbered migration. `apply_migrations.sh` does not replay this
 -- directory. Promoting it is a deliberate act taken against a database in a
@@ -1552,9 +1552,23 @@ CREATE POLICY goal_records_tenant_isolation ON goal_records
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE pm_project_authorities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_project_authorities FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_project_authorities_tenant_isolation ON pm_project_authorities;
+CREATE POLICY pm_project_authorities_tenant_isolation ON pm_project_authorities
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE pm_decisions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pm_decisions FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS pm_decisions_tenant_isolation ON pm_decisions;
 CREATE POLICY pm_decisions_tenant_isolation ON pm_decisions
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_agent_guidance ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_agent_guidance FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_agent_guidance_tenant_isolation ON pm_agent_guidance;
+CREATE POLICY pm_agent_guidance_tenant_isolation ON pm_agent_guidance
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);

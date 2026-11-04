@@ -186,10 +186,18 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # decision of the workflow's owner. It moves who settles a run, so only
     # the operator writes it.
     "AUTO_PARK_ORGS",
+    # WS-MCP SW-31a: AGENT_GUIDANCE_ORGS opens the org's written rules for
+    # agents. The text reaches every agent session of the org, so a tenant
+    # must not open it for another org.
+    "AGENT_GUIDANCE_ORGS",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).
     "ALIGN_JOBS_ORGS",
+    # WS-ALN ALN-4: AUTHORITY_PINS_ORGS opens the pin of a Knowledge page to a
+    # project for an org. A pin changes what a finding quotes, so only the
+    # owner writes it.
+    "AUTHORITY_PINS_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",
@@ -230,6 +238,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "FAILED", "FORENSICS", "OURS_FAILED", "ROUTES", "SCRATCH", "STAMP",
     "SVC_USER", "UNITS", "UNITS_CHANGED", "VENV_OWNER", "VERIFY_RESTORE",
     "UX_OUT",
+    # STU-B2c-1: vps_apply.sh holds the key of the Studio direct proof here.
+    # Do not name that key in this file: only the proof module and the
+    # settings may name it (test_studio_direct_proof.py).
+    "DIRECT_KEY",
     # WS-49 BH-6: the scripts of the root copy (root_lib_files.txt) are in
     # the scan now. These are their own variables and the BH-6 deploy steps.
     "ACK", "DROPIN", "EXPIRES", "EXPIRY_WHY", "HEALTH_TRIES", "NAME",

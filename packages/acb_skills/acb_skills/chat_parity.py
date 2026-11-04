@@ -179,6 +179,7 @@ TOOL_SOURCES: tuple[str, ...] = (
     "apps/skills/skill-my-tasks/skill_my_tasks/core.py",
     "packages/acb_skills/acb_skills/crm_tools.py",
     "packages/acb_skills/acb_skills/profile_tools.py",
+    "packages/acb_skills/acb_skills/studio_tools.py",
 )
 
 #: An action -> the tool that sends its request to the gateway. A tuple
@@ -350,6 +351,13 @@ COVERED: dict[str, str | tuple[str, str]] = {
         "POST /auth/me/assistant-profile/interview",
     ),
     "PUT /api/auth/me/assistant-profile": ("profile_set", "PUT /auth/me/assistant-profile"),
+    # ── AI Studio (STU-F2d) ──
+    "GET /api/studio/actions": "studio_list_actions",
+    "GET /api/studio/skills": "studio_skill_list",
+    "GET /api/studio/skills/{}": "studio_skill_list",
+    "PATCH /api/studio/skills/{}/state": "studio_skill_state",
+    "POST /api/studio/skills": "studio_skill_save",
+    "POST /api/studio/skills/{}/versions": "studio_skill_save",
 }
 
 #: An action -> (kind, reason). The kind is a key of :data:`EXEMPT_KINDS`.
@@ -1007,16 +1015,6 @@ DEBT: dict[str, str] = {
     "POST /api/integrations/mcp": "P-8",
     "POST /api/integrations/mcp/{}/test": "P-8",
     "POST /api/integrations/plugins": "P-8",
-    # ── AI Studio ──
-    # STU-F2b ships the skill creator UI ahead of its chat tools. F2d
-    # (Metorite task 1498) gives the `studio` pack studio_skill_save,
-    # studio_skill_state and studio_skill_list, and then these rows leave.
-    "GET /api/studio/actions": "P-9",
-    "GET /api/studio/skills": "P-9",
-    "GET /api/studio/skills/{}": "P-9",
-    "PATCH /api/studio/skills/{}/state": "P-9",
-    "POST /api/studio/skills": "P-9",
-    "POST /api/studio/skills/{}/versions": "P-9",
 }
 
 #: The most debt that each app may carry. A count may go down, never up.
@@ -1040,7 +1038,7 @@ DEBT_CEILING: dict[str, int] = {
     "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
     "admin": 36,
     "integrations": 19,
-    "studio": 6,  # STU-F2b: the skill creator, until F2d gives it chat tools.
+    "studio": 0,
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new
