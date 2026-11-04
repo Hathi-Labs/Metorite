@@ -70,6 +70,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import unicodedata
 import uuid
 from dataclasses import dataclass
@@ -1858,11 +1859,24 @@ PACKAGES_PATH = "/studio/packages"
 
 #: The tenant-Redis namespace of the approval record of a plan card. The key
 #: holds a hash of the member of the run and a hash of the manifest id, so a
-#: member holds at most one approval of an app. The value is the hash of the
-#: approved manifest (``studio_manifest.manifest_hash``).
+#: member holds at most one approval of an app. The value is JSON: ``hash``,
+#: the hash of the approved manifest (``studio_manifest.manifest_hash``), and
+#: ``at``, the time of the approval.
 PLAN_NAMESPACE = "studio_plan"
-#: The life of the approval record, in seconds (2 hours).
+#: The life of the approval record, and of a withdraw stamp, in seconds (2 hours).
 PLAN_TTL_SECONDS = 2 * 60 * 60
+#: The last part of the key of the withdraw stamp of a member (review round 2).
+#: An app part is 24 hex digits, so this part never names an app.
+WITHDRAWN_PART = "withdrawn"
+#: The most entries of :data:`_UNWITHDRAWN`.
+_UNWITHDRAWN_MAX = 4096
+#: Each withdraw in this process whose stamp write failed, by org and member
+#: hash, with its time (review round 2). An approval from before it does not
+#: publish from this process, so a failed stamp write fails closed and does
+#: not rest on the note to the model. A record from before the failure ends
+#: with its TTL. ⚠️ It is process memory: a second gateway process does not
+#: read it. Each entry ends after :data:`PLAN_TTL_SECONDS`.
+_UNWITHDRAWN: dict[tuple[str, str], float] = {}
 
 #: Copies of route and store limits. A package cannot import the gateway, so
 #: ``test_studio_package_tools.py`` reads each copy against the real value.
@@ -2017,33 +2031,78 @@ def _app_part(manifest: Any) -> str:
     return hashlib.blake2b(mid.encode("utf-8", "surrogatepass"), digest_size=12).hexdigest()
 
 
+def _clock() -> float:
+    """The time of an approval and of a withdraw. A seam, so a test sets it."""
+    return time.time()
+
+
 async def _record_plan(manifest: Any) -> bool:
     """Write the approval record of the plan of *manifest*, for the member of
     the run, in the org of the run, for :data:`PLAN_TTL_SECONDS`.
 
-    The key names the member and the app (the manifest id). The value is the
-    hash of the manifest. So the newest approval of an app replaces an older
-    one, and a publish needs the hash of its stored draft. True when it is
-    written. A fault writes nothing and is False."""
+    The key names the member and the app (the manifest id). The value holds
+    the hash of the manifest and the time of the approval. So the newest
+    approval of an app replaces an older one, and a publish needs the hash of
+    its stored draft. True when it is written. A fault writes nothing and is
+    False."""
     org, member, app = _run_org(), _member_part(), _app_part(manifest)
     if not (org and member and app):
         return False
+    value = json.dumps({"hash": manifest_hash(manifest), "at": _clock()})
     try:
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
-            await _plan_redis().setex(
-                key(PLAN_NAMESPACE, member, app), PLAN_TTL_SECONDS, manifest_hash(manifest))
+            await _plan_redis().setex(key(PLAN_NAMESPACE, member, app), PLAN_TTL_SECONDS, value)
     except Exception as exc:
         _log_fault("studio.plan.record_failed", exc)
         return False
     return True
 
 
+def _approval(raw: Any) -> tuple[str, float] | None:
+    """The hash and the time of a stored approval, or None for a value that
+    this code did not write."""
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    try:
+        found = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+    if not isinstance(found, dict):
+        return None
+    digest, at = found.get("hash"), found.get("at")
+    if not isinstance(digest, str) or isinstance(at, bool) or not isinstance(at, int | float):
+        return None
+    return digest, float(at)
+
+
+def _stamp(raw: Any) -> float | None:
+    """The time of a withdraw stamp, or None."""
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    try:
+        return float(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+
+
+def _failed_withdraw(org: str, member: str) -> float | None:
+    """The time of a withdraw of this process whose stamp write failed, or None."""
+    at = _UNWITHDRAWN.get((org, member))
+    if at is None or _clock() - at > PLAN_TTL_SECONDS:
+        _UNWITHDRAWN.pop((org, member), None)
+        return None
+    return at
+
+
 async def _approved_hash(manifest: Any) -> str:
     """The hash that the member of the run approved for the app of
-    *manifest*, or "". A fault, or a run with no org or member, raises
-    :class:`_Refused`: the gate fails closed."""
+    *manifest*, or "". One read takes the record and the withdraw stamp of
+    the member together. A record from before the stamp, or from before a
+    withdraw of this process whose stamp write failed, gives "". A fault, or
+    a run with no org or member, raises :class:`_Refused`: the gate fails
+    closed."""
     org, member, app = _run_org(), _member_part(), _app_part(manifest)
     if not (org and member):
         raise _Refused(_PLAN_UNREAD)
@@ -2053,39 +2112,32 @@ async def _approved_hash(manifest: Any) -> str:
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
-            got = await _plan_redis().get(key(PLAN_NAMESPACE, member, app))
+            raw, stamp = await _plan_redis().mget(
+                [key(PLAN_NAMESPACE, member, app), key(PLAN_NAMESPACE, member, WITHDRAWN_PART)])
     except Exception as exc:
         _log_fault("studio.plan.read_failed", exc)
         raise _Refused(_PLAN_UNREAD) from None
-    if isinstance(got, bytes):
-        got = got.decode("utf-8", "replace")
-    return got if isinstance(got, str) else ""
+    found = _approval(raw)
+    if found is None:
+        return ""
+    digest, at = found
+    for later in (_stamp(stamp), _failed_withdraw(org, member)):
+        if later is not None and later >= at:
+            return ""
+    return digest
 
 
 async def _plan_on_record(stored: Any) -> bool:
     """True when the member of the run approved the plan of the stored draft
-    *stored*, by its hash, in the last :data:`PLAN_TTL_SECONDS`."""
+    *stored*, by its hash, in the last :data:`PLAN_TTL_SECONDS`, and withdrew
+    no approval after it."""
     approved = await _approved_hash(stored)
     return bool(approved) and approved == manifest_hash(stored)
 
 
-async def _drop_plan(stored: Any) -> None:
-    """Delete the approval record after a publish of *stored*, so one approval
-    buys one publish. A record of a newer plan of the app stays. A fault only
-    logs: the record ends with its TTL."""
-    try:
-        if await _approved_hash(stored) != manifest_hash(stored):
-            return
-        await _withdraw_plan(stored)
-    except _Refused:
-        return
-
-
-async def _withdraw_plan(manifest: Any) -> bool:
-    """Delete any approval of the app of *manifest* by the member of the run.
-    A plan card that the member stopped or revised calls it, so an older
-    approval of the app cannot publish. True when the delete ran. A fault
-    only logs, and the record ends with its TTL."""
+async def _delete_record(manifest: Any) -> bool:
+    """Delete the approval record of the app of *manifest*. True when the
+    delete ran. A fault only logs, and the record ends with its TTL."""
     org, member, app = _run_org(), _member_part(), _app_part(manifest)
     if not (org and member and app):
         return False
@@ -2095,8 +2147,55 @@ async def _withdraw_plan(manifest: Any) -> bool:
         with organization_scope(org):
             await _plan_redis().delete(key(PLAN_NAMESPACE, member, app))
     except Exception as exc:
-        _log_fault("studio.plan.withdraw_failed", exc)
+        _log_fault("studio.plan.delete_failed", exc)
         return False
+    return True
+
+
+async def _drop_plan(stored: Any) -> None:
+    """Delete the approval record after a publish of *stored*, so one approval
+    buys one publish. A record of a newer plan of the app stays, and so do the
+    approvals of other apps. A fault only logs: the record ends with its TTL.
+
+    ⚠️ The read and the delete are two calls. The tenant Redis wrapper has no
+    EVAL and no WATCH, so no call compares and deletes at once. A newer
+    approval of the same app that lands between the two calls is lost. That
+    fails closed: its publish asks for a new plan card (review round 2)."""
+    try:
+        if await _approved_hash(stored) != manifest_hash(stored):
+            return
+    except _Refused:
+        return
+    await _delete_record(stored)
+
+
+async def _withdraw_plan(manifest: Any) -> bool:
+    """Withdraw each approval of the member of the run that is older than now.
+
+    A plan card that the member stopped or revised calls it. A stop on a plan
+    with a new manifest id must also withdraw the approval of the old id
+    (review round 2), so the stamp is for the member, not for an app: each
+    record from before it gives no plan. Then the record of the app of
+    *manifest* goes too. When the stamp write fails, this process remembers
+    the withdraw (:data:`_UNWITHDRAWN`), so a publish from it refuses. True
+    when the stamp is written."""
+    org, member = _run_org(), _member_part()
+    if not (org and member):
+        return False
+    now = _clock()
+    try:
+        from acb_common.tenant_redis import key, organization_scope
+
+        with organization_scope(org):
+            await _plan_redis().setex(
+                key(PLAN_NAMESPACE, member, WITHDRAWN_PART), PLAN_TTL_SECONDS, repr(now))
+    except Exception as exc:
+        _log_fault("studio.plan.withdraw_failed", exc)
+        if len(_UNWITHDRAWN) >= _UNWITHDRAWN_MAX:  # bounded: the oldest entry goes first
+            del _UNWITHDRAWN[min(_UNWITHDRAWN, key=_UNWITHDRAWN.__getitem__)]
+        _UNWITHDRAWN[(org, member)] = now
+        return False
+    await _delete_record(manifest)
     return True
 
 

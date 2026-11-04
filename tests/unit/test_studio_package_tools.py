@@ -325,9 +325,17 @@ class Redis:
         self._check("get")
         return self.data.get(k.value)
 
+    async def mget(self, keys: Any) -> list[Any]:
+        self._check("get")
+        return [self.data.get(k.value) for k in keys]
+
     async def delete(self, *keys: Any) -> int:
         self._check("delete")
         return sum(self.data.pop(k.value, None) is not None for k in keys)
+
+    def records(self) -> dict[str, Any]:
+        """The approval records, without the stamp of a withdraw."""
+        return {k: v for k, v in self.data.items() if not k.endswith(":withdrawn")}
 
 
 @pytest.fixture
@@ -351,6 +359,7 @@ def redis(monkeypatch):
     fake = Redis()
     monkeypatch.setattr(st, "_plan_redis", lambda: fake)
     monkeypatch.setattr(st, "_run_org", lambda: ORG)
+    monkeypatch.setattr(st, "_UNWITHDRAWN", {})
     return fake
 
 
@@ -439,7 +448,7 @@ async def test_only_approved_writes_the_record(gw, card, redis, answer, open_, d
         assert len(redis.data) == 1 and list(redis.ttl.values()) == [7200]
         assert "note" not in out
     else:
-        assert redis.data == {}
+        assert redis.records() == {}
 
 
 @pytest.mark.parametrize("answer", [ask_tools.REVISED, False])
@@ -452,7 +461,7 @@ async def test_a_stopped_or_revised_plan_withdraws_the_earlier_approval_of_the_a
     card.answer = answer
     out = await st.studio_plan({**m, "name": "Install visits 2"})
     assert out["decision"] in ("revised", "stopped") and out["note"] == st._PLAN_WITHDRAWN
-    assert redis.data == {}
+    assert redis.records() == {}
     published = await st.studio_publish(pid)
     assert published["ok"] is False and _msg(published) == st._NO_PLAN
 
@@ -471,17 +480,21 @@ async def test_a_new_approval_of_an_app_replaces_the_older_one(gw, redis) -> Non
     m, pid = await _built()
     newer = {**m, "name": "Install visits 2"}
     await _plan(newer)
-    assert list(redis.data.values()) == [st.manifest_hash(newer)]
+    assert [json.loads(v)["hash"] for v in redis.records().values()] == [st.manifest_hash(newer)]
     out = await st.studio_publish(pid)
     assert out["ok"] is False and _msg(out) == st._NO_PLAN
 
 
-async def test_a_withdraw_that_faults_says_so(gw, card, redis) -> None:
-    _m, _pid = await _built()
+async def test_a_record_delete_that_faults_still_withdraws(gw, card, redis) -> None:
+    """The stamp is the withdraw. A failed delete of the record after it
+    changes nothing."""
+    _m, pid = await _built()
     redis.fault = {"delete"}
     card.answer = False
     out = await st.studio_plan(_visit(name="Other"))
-    assert out["decision"] == "stopped" and out["note"] == st._PLAN_NOT_WITHDRAWN
+    assert out["decision"] == "stopped" and out["note"] == st._PLAN_WITHDRAWN
+    redis.fault = set()
+    assert _msg(await st.studio_publish(pid)) == st._NO_PLAN
 
 
 async def test_a_publish_keeps_the_record_of_a_newer_plan(gw, redis) -> None:
@@ -489,13 +502,15 @@ async def test_a_publish_keeps_the_record_of_a_newer_plan(gw, redis) -> None:
     m, pid = await _built()
     newer = {**m, "name": "Install visits 2"}
 
+    later = json.dumps({"hash": st.manifest_hash(newer), "at": st._clock() + 1})
+
     def plan_while_publishing() -> None:
-        redis.data[next(iter(redis.data))] = st.manifest_hash(newer)
+        redis.data[next(iter(redis.records()))] = later
 
     gw.between = plan_while_publishing  # the member approves a newer plan meanwhile
     out = await st.studio_publish(pid)
     assert out["ok"], out
-    assert list(redis.data.values()) == [st.manifest_hash(newer)]
+    assert list(redis.records().values()) == [later]
 
 
 async def test_a_held_save_card_writes_no_plan_record(held, card, redis) -> None:
@@ -509,6 +524,62 @@ async def test_a_held_save_card_writes_no_plan_record(held, card, redis) -> None
     assert out["ok"] and card.shown[-1]["title"].startswith("Save the draft of")
     assert redis.data == {}
     assert _msg(await st.studio_publish(saved["package_id"])) == st._NO_PLAN
+
+
+# -- 5c. A stop withdraws each older approval of the member (review round 2) ----
+
+
+def _crm(mid: str) -> dict[str, Any]:
+    return _visit(mid, name=mid)
+
+
+@pytest.mark.parametrize("answer", [ask_tools.REVISED, False])
+async def test_a_stop_on_a_plan_of_another_app_withdraws_the_older_approval(
+        gw, card, redis, answer) -> None:
+    """The case of the review: an approval of crm-lite, then a revised plan
+    with the id crm-lite-2, and Stop. The old approval no longer publishes
+    crm-lite. Mutation M29: skip the stamp -> red."""
+    _m, pid = await _built(_crm("crm-lite"))
+    card.answer = answer
+    out = await st.studio_plan(_crm("crm-lite-2"))
+    assert out["decision"] in ("revised", "stopped") and out["note"] == st._PLAN_WITHDRAWN
+    published = await st.studio_publish(pid)
+    assert published["ok"] is False and _msg(published) == st._NO_PLAN
+
+
+async def test_a_plan_approved_after_the_stamp_still_publishes(gw, card, redis, monkeypatch) -> None:
+    """A stamp withdraws the approvals before it, never one after it."""
+    ticks = iter(range(100, 200))
+    monkeypatch.setattr(st, "_clock", lambda: float(next(ticks)))
+    m, pid = await _built(_crm("crm-lite"))
+    card.answer = False
+    assert (await st.studio_plan(_crm("crm-lite-2")))["decision"] == "stopped"
+    card.answer = True
+    await _plan(m)  # the member approves crm-lite again, after the stop
+    assert (await st.studio_publish(pid))["ok"]
+
+
+async def test_a_stamp_that_cannot_be_written_refuses_the_publish(gw, card, redis) -> None:
+    """If the stamp write fails, the publish refuses in this process, and not
+    only the note asks the model to wait. Mutation M30: forget the failed
+    write -> red."""
+    _m, pid = await _built(_crm("crm-lite"))
+    redis.fault = {"set"}
+    card.answer = False
+    out = await st.studio_plan(_crm("crm-lite-2"))
+    assert out["note"] == st._PLAN_NOT_WITHDRAWN
+    redis.fault = set()  # Redis answers again, and the old record is still there
+    published = await st.studio_publish(pid)
+    assert published["ok"] is False and _msg(published) == st._NO_PLAN
+
+
+async def test_a_publish_keeps_the_approvals_of_other_apps(gw, redis) -> None:
+    """A publish deletes the record of its own app only. Mutation M31: the
+    drop after a 201 writes the stamp -> red."""
+    _a, pid_a = await _built(_crm("crm-lite"))
+    _b, pid_b = await _built(_crm("visits-two"))
+    assert (await st.studio_publish(pid_a))["ok"]
+    assert (await st.studio_publish(pid_b))["ok"]
 
 
 async def test_a_plan_that_could_not_keep_its_record_says_so(gw, redis) -> None:
@@ -535,7 +606,8 @@ async def test_the_record_binds_the_canonical_hash_of_the_stored_draft(gw, redis
     member = hashlib.blake2b(MEMBER.encode("utf-8"), digest_size=12).hexdigest()
     app = hashlib.blake2b(b"visits", digest_size=12).hexdigest()
     digest = st.manifest_hash(stored)
-    assert redis.data == {f"cc:{ORG}:{st.PLAN_NAMESPACE}:{member}:{app}": digest}
+    record = f"cc:{ORG}:{st.PLAN_NAMESPACE}:{member}:{app}"
+    assert list(redis.data) == [record] and json.loads(redis.data[record])["hash"] == digest
     assert saved["based_on"] == digest
     assert (await st.studio_publish(pid))["ok"]
 

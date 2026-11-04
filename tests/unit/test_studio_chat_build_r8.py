@@ -123,6 +123,9 @@ class _Redis:
     async def get(self, k: Any) -> Any:
         return self.data.get(k.value)
 
+    async def mget(self, keys: Any) -> list[Any]:
+        return [self.data.get(k.value) for k in keys]
+
     async def delete(self, *keys: Any) -> int:
         return sum(self.data.pop(k.value, None) is not None for k in keys)
 
@@ -154,6 +157,7 @@ def world(promoted, monkeypatch):  # noqa: F811
     monkeypatch.setattr(st, "_current_user_email", lambda: ANA)
     redis = _Redis()
     monkeypatch.setattr(st, "_plan_redis", lambda: redis)
+    monkeypatch.setattr(st, "_UNWITHDRAWN", {})
     cards: list[dict[str, Any]] = []
 
     async def card(title, detail="", context="", **kw):
@@ -483,6 +487,37 @@ def test_r8_a_manifest_with_a_negative_zero_and_wide_numbers_publishes(world) ->
     assert json.dumps(args["neg"]) == "0.0" and args == WIDE_ARGS  # non-vacuity: jsonb dropped the sign
     assert st.manifest_hash(stored) == st.manifest_hash(m) == saved["based_on"]
     assert _versions(world, saved["package_id"]) == [1]
+
+
+# ── h. A stop withdraws each older approval of the member (review round 2) ──
+
+
+def test_r8_a_stop_on_a_plan_of_another_app_id_withdraws_the_older_approval(
+        world, monkeypatch) -> None:
+    """crm-lite is approved and saved. A revised plan with the id crm-lite-2
+    is stopped. The old approval no longer publishes crm-lite, and no version
+    row is made. Mutation M29 -> red."""
+    first = _visit_log(_mid())
+    other = copy.deepcopy(first)
+    other["id"] = first["id"] + "-2"
+    answers = iter([True, False])
+
+    async def card(title, detail="", context="", **kw):
+        world.cards.append({"title": title})
+        return next(answers)
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", card)
+
+    async def go() -> tuple[str, dict[str, Any], dict[str, Any]]:
+        assert (await st.studio_plan(first))["decision"] == "approved"
+        saved = await st.studio_save(first)
+        stop = await st.studio_plan(other)
+        return saved["package_id"], stop, await st.studio_publish(saved["package_id"])
+
+    pid, stop, published = _run(world, go)
+    assert stop["decision"] == "stopped" and stop["note"] == st._PLAN_WITHDRAWN
+    assert published["ok"] is False and published["errors"][0]["message"] == st._NO_PLAN
+    assert _versions(world, pid) == []
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
