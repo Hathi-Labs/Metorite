@@ -22,7 +22,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { clearAll, invalidate, read as cacheRead } from "@/lib/dataCache";
 import { sourceKey } from "./dataDoor";
 import {
-  APPROVAL_SENTENCE, DoorReadError, createRealDoor, flattenRecords, isReadSource, mapAnswer, verbMap,
+  APPROVAL_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
+  listPackages, mapAnswer, verbMap,
 } from "./realDoor";
 import { readRefusal } from "./formModel";
 
@@ -213,5 +214,31 @@ describe("a write", () => {
   });
   it("scopes its cache keys by the package id and ':live'", () => {
     expect(createRealDoor({ packageId: PKG, actions: ACTIONS }).scope).toBe(`${PKG}:live`);
+  });
+});
+
+describe("the package routes", () => {
+  it("an org outside STUDIO_ORGS gets 404, and the page reads it as off, not as an error", async () => {
+    const { impl } = fakeFetch(404, { detail: "Not found" });
+    await expect(listPackages(impl)).rejects.toThrow(STUDIO_OFF);
+    await expect(getPackage(PKG, impl)).rejects.toThrow(STUDIO_OFF);
+  });
+  it("lists the packages and reads one with its declared actions and objects", async () => {
+    const list = fakeFetch(200, { packages: [{ id: PKG, name: "Visits", status: "published", live_version: 2 }] });
+    await expect(listPackages(list.impl)).resolves.toEqual([{ id: PKG, name: "Visits", status: "published", live_version: 2 }]);
+    expect(list.calls[0].url).toBe("/api/studio/packages");
+    const one = fakeFetch(200, {
+      package: { id: PKG, name: "Visits", manifest: { actions: ACTIONS } },
+      objects: [{ id: "o", name: "visit", label: "Visit", fields: [], rules: [] }],
+    });
+    const got = await getPackage(PKG, one.impl);
+    expect(got.actions).toEqual(ACTIONS);
+    expect(got.objects.map((o) => o.name)).toEqual(["visit"]);
+    expect(one.calls[0].url).toBe(`/api/studio/packages/${PKG}`);
+  });
+  it("a package id that is no uuid makes no call", async () => {
+    const { impl, spy } = fakeFetch();
+    await expect(getPackage("../x", impl)).rejects.toThrow(STUDIO_OFF);
+    expect(spy).not.toHaveBeenCalled();
   });
 });
