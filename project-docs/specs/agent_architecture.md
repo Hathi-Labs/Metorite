@@ -1,7 +1,7 @@
 # Agent Architecture — how agents are declared, stored, and run
 
 **Status:** Active · **Date:** 2026-08-03 · verified against code on 2026-08-03 · **Owner:** vjvarada
-**Updated:** 2026-11-04. §12.2 WS-8c adds the admin's read-only key for each MCP server (MCP-C2, item 32, owner request). 2026-10-12: §12.2 WS-8c adds the admin's "always confirm" switch for each MCP server (H-300, item 31). It also adds on-demand MCP tools (items 22 to 30), merged in #922. Earlier the same day, it added the MCP confirmation card (H-299, items 13 to 17) and its hardening (items 18 to 21). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
+**Updated:** 2026-11-04. §12.2 WS-8c adds the admin's read-only key for each MCP server (MCP-C2, item 32, owner request). Item 32 is built on branch `mcp-c2-read-only-key`, and it waits for the verifier and the merge. 2026-10-12: §12.2 WS-8c adds the admin's "always confirm" switch for each MCP server (H-300, item 31). It also adds on-demand MCP tools (items 22 to 30), merged in #922. Earlier the same day, it added the MCP confirmation card (H-299, items 13 to 17) and its hardening (items 18 to 21). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
 **Supersedes:** the distributed-repo framing in the 2026-07-26 first draft of this file.
 
 > **Read §12.1 before writing any code against this spec.** Roughly 60% of what §12 calls
@@ -1159,6 +1159,9 @@ Item 32 is the switch. Metorite task 1584.
 32. **The admin's read-only key.** AGENT-SAFE to build. The tick on a live org is the admin's
     act, and no slice makes it. `provider_meta.read_only_key` on the `mcp:<name>` registry
     row. The admin states that the key of the server can only read.
+    ✅ **BUILT 2026-11-04** on branch `mcp-c2-read-only-key`. It waits for the verifier and
+    the merge. No org has the switch on until an admin ticks it. Fences: rows A35 to A38
+    below.
     - **The rule.** With the switch on, no tool of that server waits for the card, whatever its
       hints say. The gate passes the flag to `decide()` as the fact `mcp_read_only_key`. Then
       `decide()` answers the new code `MCP_READ_ONLY_KEY` (`"mcp_read_only_key"`). The gate
@@ -1184,7 +1187,9 @@ Item 32 is the switch. Metorite task 1584.
     - **Not for an OAuth row.** A row with `provider_meta.auth` set to `oauth` (D98) acts as
       the admin who connected it, with that admin's own scopes. A key attestation is wrong in
       kind there. `PATCH` refuses the switch on such a row with 422, and the parser reads it
-      as false there.
+      as false there. A re-register (`POST`) of such a row with the switch on gets 422 too.
+      A stored key that a change does not name does not block a change of
+      `always_confirm` on such a row.
     - **What it does not open.** A run that holds untrusted input still gets no server
       (H-236, EM-G11d, OA-7b). A `no_egress` run gets no server. The grant
       `integrations:use:mcp-<name>` still applies. A run with no member runs the tools, as it
