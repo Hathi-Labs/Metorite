@@ -346,6 +346,96 @@ async def test_a_held_card_id_is_no_new_mail_card(world) -> None:
     assert world["sends"].mails == []
 
 
+# ── R7 fences of fix round 1 ─────────────────────────────────────────────────
+
+PAGE_REF = "knowledge:0a0b0c0d-0000-4000-8000-0000000000aa"
+
+
+def _metorite(monkeypatch, digest: str = "d" * 64) -> list[str]:
+    """Stand in for ``resolve_metorite_files``: one page of 2 KB, as the
+    member sees it. It records each set of refs that it resolved."""
+    import types
+
+    from gateway.routes.email.transport import metorite_files as mf
+
+    calls: list[str] = []
+
+    async def resolve(user: Any, refs: list[str], **_k: Any) -> list[Any]:
+        calls.extend(refs)
+        return [types.SimpleNamespace(ref=r, source="knowledge", name="Price list.md",
+                                      size=2048, mime="text/markdown", content=b"# Prices",
+                                      digest=digest) for r in refs]
+
+    monkeypatch.setattr(mf, "resolve_metorite_files", resolve)
+    return calls
+
+
+async def test_the_act_sends_the_recorded_metorite_file_with_its_digest(
+    world, monkeypatch,
+) -> None:
+    """The card resolves each Metorite file as the member and records its
+    digest, and the send carries it, so a file that changed sends nothing
+    (H-392). Mutation: drop ``metorite_files=`` from the send → red."""
+    calls = _metorite(monkeypatch)
+    card = await _card(metorite_files=[PAGE_REF])
+    assert card["files"] == ['File: "Price list.md" (2 KB)'] and calls == [PAGE_REF]
+    await _act(card["card_id"], _answer())
+    [sent] = world["sends"].mails
+    assert [(m.ref, m.digest) for m in sent.metorite_files] == [(PAGE_REF, "d" * 64)]
+
+
+async def test_save_draft_attaches_the_recorded_metorite_file(world, monkeypatch) -> None:
+    """Save draft resolves the file again and keeps it only with the same
+    digest. Mutation: drop the Metorite attachments from the save → red."""
+    _metorite(monkeypatch)
+    card = await _card(metorite_files=[PAGE_REF])
+    await _act(card["card_id"], _answer(action="save"))
+    [saved] = world["saves"]
+    assert [a.filename for a in saved.attachments] == ["Price list.md"]
+    assert world["sends"].mails == []
+
+
+@pytest.mark.parametrize("fails_on", [1, 2])
+async def test_a_redis_fault_in_the_act_sends_nothing(world, monkeypatch, fails_on) -> None:
+    """A fault of the read of the answer (1) or of the card record (2)
+    refuses the act. Mutation: treat a fault as a match → red."""
+    card = await _card()
+    answer = _answer()
+    await F.record_answer(card["card_id"], answer)
+    fake = world["redis"]
+    real = fake.getdel
+    seen = {"n": 0}
+
+    async def getdel(k: str) -> Any:
+        seen["n"] += 1
+        if seen["n"] == fails_on:
+            raise ConnectionError("redis is down")
+        return await real(k)
+
+    monkeypatch.setattr(fake, "getdel", getdel)
+    with pytest.raises(HTTPException) as e:
+        await _act(card["card_id"], answer, record=False)
+    assert e.value.status_code == 409
+    assert world["sends"].mails == [] and world["saves"] == []
+
+
+async def test_the_act_checks_the_mailbox_again(world, monkeypatch) -> None:
+    """The member lost the mailbox after the card: the act sends nothing.
+    Mutation: drop the owner check from the act → red."""
+    from gateway.routes.email import core
+
+    card = await _card()
+
+    async def gone(*_a: Any, **_k: Any) -> None:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    monkeypatch.setattr(core, "_assert_account_owner", gone)
+    with pytest.raises(HTTPException) as e:
+        await _act(card["card_id"], _answer())
+    assert e.value.status_code == 404
+    assert world["sends"].mails == [] and world["saves"] == []
+
+
 async def test_a_mixed_case_session_email_reaches_the_mailbox_check_as_it_is(
     world, monkeypatch,
 ) -> None:
