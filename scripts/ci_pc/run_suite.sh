@@ -124,6 +124,9 @@ for app in control_plane operator_console; do
 done
 (cd workbench/control_plane && npx playwright install chromium >/dev/null 2>&1)
 
+# ⚠️ -w "$PWD" on every job container. The image's WORKDIR is ~/metorite, so
+# without it a run in its own worktree (CIV-6) tested the shared clone, which
+# holds some OTHER run's commit. The first two-run test (2026-11-04) did that.
 # ── Containers, and their cleanup ─────────────────────────────────────────
 CONTAINERS=()
 cleanup() { [ ${#CONTAINERS[@]} -gt 0 ] && docker rm -f "${CONTAINERS[@]}" >/dev/null 2>&1; true; }
@@ -150,7 +153,7 @@ job() {
   local net=(); [ -n "$pod" ] && net=(--network "container:$pod")
   (
     s=$(date +%s)
-    docker run --rm --name "ci-job-$label-$TAG" "${net[@]}" --memory 4g --memory-swap 4g \
+    docker run --rm --name "ci-job-$label-$TAG" -w "$PWD" "${net[@]}" --memory 4g --memory-swap 4g \
       -v "$HOME:$HOME" -v /var/run/docker.sock:/var/run/docker.sock --group-add "$DOCKER_GID" \
       "$IMAGE" bash "$RUN/$label.sh" > "$RUN/$label.log" 2>&1
     echo "$? $(( $(date +%s) - s ))" > "$RUN/$label.rc"
@@ -214,7 +217,7 @@ if [ "$E2E" = yes ]; then
     'for p in 1 2 3; do echo "== part $p of 3"; npx playwright test --project=ci --shard=$p/3 || rc=1; done' \
     'exit $rc' > "$RUN/e2e.sh"
   s=$(date +%s)
-  docker run --rm --name "ci-job-e2e-$TAG" --memory 10g --memory-swap 10g -v "$HOME:$HOME" "$IMAGE" \
+  docker run --rm --name "ci-job-e2e-$TAG" -w "$PWD" --memory 10g --memory-swap 10g -v "$HOME:$HOME" "$IMAGE" \
     bash "$RUN/e2e.sh" > "$RUN/e2e.log" 2>&1
   echo "$? $(( $(date +%s) - s ))" > "$RUN/e2e.rc"
 fi

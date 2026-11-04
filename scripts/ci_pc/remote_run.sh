@@ -58,7 +58,9 @@ ci_remote_run() {
     git -C "$CI_BASE" worktree add -q --detach "$wt" "$sha"
   ) 5>"$HOME/.ci-git.lock" || { echo "ci: cannot make a worktree for ${sha:0:9}" >&2; return 1; }
   exec 6>"$wt.live"; flock -n 6
-  trap 'cd "$HOME"; git -C "$CI_BASE" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"; rm -f "$wt.live"' EXIT
+  # Double quotes: $wt is a LOCAL, gone when the EXIT trap runs. Single quotes
+  # removed nothing and left every worktree behind (first two-run test).
+  trap "cd \"\$HOME\"; git -C \"$CI_BASE\" worktree remove --force \"$wt\" >/dev/null 2>&1 || rm -rf \"$wt\"; rm -f \"$wt.live\"" EXIT
   cd "$wt" || return 1
 
   local want min sel_args=() nfiles=0
