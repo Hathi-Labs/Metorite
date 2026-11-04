@@ -156,6 +156,10 @@ job() {
   # WHOLE Docker daemon and fails when it sees another run's. It is about 30
   # seconds, so the lock costs little. The lock file is on the host.
   local lk=(); [ "$label" = backup-restore ] && lk=(flock "$HOME/.ci-backup-restore.lock")
+  # The same for the Next app's tests: some assert a wall-clock bound
+  # (bodyLook.test.ts: "under 100 ms"), and two vitest runs at once broke it
+  # (110 ms, 2026-11-04). The other jobs are not timed.
+  [ "$label" = frontend ] && lk=(flock "$HOME/.ci-frontend.lock")
   (
     s=$(date +%s)
     "${lk[@]}" docker run --rm --name "ci-job-$label-$TAG" -w "$PWD" "${net[@]}" --memory 4g --memory-swap 4g \
