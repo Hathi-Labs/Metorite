@@ -135,8 +135,13 @@ fi
 # (reported by a peer session, 2026-10-20).
 args=""
 [ ${#pass[@]} -gt 0 ] && args="$(printf ' %q' "${pass[@]}")"
+# A few tuning variables reach the lane (a test of the slots, a re-measure).
+tune=""
+for v in CI_LANE_LOCK CI_SHARD_GB CI_FIXED_GB CI_OTHER_GB; do
+  [ -n "${!v:-}" ] && tune+="export $v=$(printf %q "${!v}")"$'\n'
+done
 rc=0
-w bash -lc "$(cat scripts/ci_pc/slots.sh scripts/ci_pc/remote_run.sh)
+w bash -lc "$tune$(cat scripts/ci_pc/slots.sh scripts/ci_pc/remote_run.sh)
 ci_remote_run $sha$args" || rc=$?
 if [ "$lane" = home ]; then
   echo "The logs are on the home server. Read one with: ssh -p $CI_HOME_PORT $CI_HOME cat <a path above>"
