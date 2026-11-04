@@ -102,7 +102,10 @@ const FRAME_LABELS: ReadonlySet<string> = new Set(["target", "version"]);
  */
 function fieldLabel(rawKey: string): string {
   const key = withoutBidi(rawKey);
-  const label = fieldSpec(key).label;
+  // A second guard (re-review P1): `fieldSpec` reads own keys only, and a
+  // label that is not text still falls back to the key, so a row never throws.
+  const spec: { label?: unknown } = fieldSpec(key);
+  const label = typeof spec.label === "string" && spec.label.trim() ? spec.label : key;
   return FRAME_LABELS.has(label.trim().toLowerCase()) ? `Field "${key}"` : label;
 }
 
@@ -164,7 +167,8 @@ const STATE_WORDS: Record<AppRequestState, string> = {
 
 /** The state as a member reads it. */
 export function stateWords(state: AppRequestState): string {
-  return STATE_WORDS[state] ?? state;
+  // An own key only: the state comes over the wire (re-review P1).
+  return Object.hasOwn(STATE_WORDS, state) ? STATE_WORDS[state] : String(state);
 }
 
 const EXPIRY = new Intl.DateTimeFormat(undefined, {

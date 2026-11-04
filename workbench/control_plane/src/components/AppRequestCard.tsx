@@ -167,7 +167,7 @@ export function AppRequestCardView({
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
-              <Badge tone={STATE_TONE[request.state] ?? "neutral"} size="xs">
+              <Badge tone={Object.hasOwn(STATE_TONE, request.state) ? STATE_TONE[request.state] : "neutral"} size="xs">
                 {request.state === "awaiting" ? stateWords("expired") : stateWords(request.state)}
               </Badge>
             </div>

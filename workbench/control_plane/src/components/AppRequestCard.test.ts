@@ -207,6 +207,27 @@ describe("the server's frame and the agent's values", () => {
     expect(out).not.toMatch(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/);
   });
 
+  // Re-review P1. An agent's body may hold a key that names a member of
+  // `Object.prototype`. JSON.parse makes each one an own key, `__proto__`
+  // too. Before the fix the label lookup threw, the error page replaced
+  // Integrations, and the member could not decline the request.
+  it("draws a row for each key that names a member of Object.prototype", () => {
+    const keys = ["constructor", "toString", "valueOf", "hasOwnProperty", "__proto__"];
+    const body = JSON.parse(
+      '{"name":"x","constructor":"c1","toString":"t1","valueOf":"v1","hasOwnProperty":"h1","__proto__":"p1"}',
+    ) as Record<string, unknown>;
+    expect(Object.keys(body)).toEqual(["name", ...keys]);
+    const rows = payloadRows({ method: "POST", path: "/a", body });
+    for (const key of keys) {
+      const row = rows.find((r) => r.key === `body:${key}`);
+      expect(row, key).toBeTruthy();
+      expect(typeof row?.label).toBe("string");
+    }
+    const out = html({ request: request({ call: { method: "POST", path: "/a", body } }) });
+    for (const value of ["c1", "t1", "v1", "h1", "p1"]) expect(out).toContain(value);
+    expect(out).toContain("data-app-request-decline");
+  });
+
   it("reads the host of a stamp as the gateway does", () => {
     expect(clientHost("mcp:claude.ai:claude-code")).toBe("claude.ai");
     expect(clientHost("mcp:claude.ai")).toBe("claude.ai");
