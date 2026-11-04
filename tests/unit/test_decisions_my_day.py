@@ -107,6 +107,19 @@ async def test_one_signal_for_each_task_with_a_link_act(provider) -> None:
     assert signal.expires_at == "2026-11-05T08:00:00+00:00"
 
 
+async def test_the_asker_is_named_by_the_directory_name_and_falls_back_to_the_local_part(
+    provider,
+) -> None:
+    provider.rows = [_decision(asked_by_name="Rohan Mehta")]
+    [signal] = (await needs.REGISTRY["decisions"].run(_user())).signals()
+    assert signal.facts["who"] == "Rohan Mehta"
+    [card] = feed.build_cards([signal], NOW, TZ, TODAY)
+    assert "Rohan Mehta asks you to decide" in card["why"]
+    provider.rows = [_decision(asked_by_name=None)]
+    [signal] = (await needs.REGISTRY["decisions"].run(_user())).signals()
+    assert signal.facts["who"] == "ravi"
+
+
 async def test_with_the_flag_off_the_source_reads_absent(provider) -> None:
     provider.on = False
     with pytest.raises(needs.SourceAbsent):

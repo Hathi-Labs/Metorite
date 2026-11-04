@@ -1148,7 +1148,8 @@ async def _decisions(user: UserContext) -> Found:
                 signal_id=f"tasks:{task_id}", app="projects", kind="decision",
                 entity=entity, title=entity["label"],
                 facts={"question": str(first.get("question") or ""),
-                       "who": _who(first.get("asked_by")),
+                       # The directory name, as the task panel shows it.
+                       "who": first.get("asked_by_name") or _who(first.get("asked_by")),
                        # Not `waiting_since`: that is a state fact, and the
                        # card's fingerprint must not move for a decision.
                        "asked_at": _iso(first.get("created_at")),

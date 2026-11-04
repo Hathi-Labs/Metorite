@@ -336,13 +336,18 @@ async def answer_decision(
     )
     # ALN-2b: the answer closes the card at once. The bell row of this ask is
     # read in the same transaction, so My Day keeps no card for a question
-    # that is answered. The row has no decision id, so the excerpt (the
-    # question, which ``ask_decision`` gave ``notify`` whole) picks this ask.
+    # that is answered. The row has no decision id, and a column for one needs
+    # a migration (``activity_id`` is a foreign key to a comment). So the
+    # excerpt (the question, which ``ask_decision`` gave ``notify`` whole)
+    # picks the ask, and ONE row closes for ONE answer: two asks with the same
+    # question close one after the other, never together.
     await db.execute(
         text(
             "UPDATE pm_notifications SET read_at = now() "
-            "WHERE recipient = :me AND kind = 'decision' AND read_at IS NULL"
-            " AND task_id = CAST(:tid AS uuid) AND excerpt IS NOT DISTINCT FROM :ex"
+            "WHERE id = (SELECT n.id FROM pm_notifications n"
+            " WHERE n.recipient = :me AND n.kind = 'decision' AND n.read_at IS NULL"
+            " AND n.task_id = CAST(:tid AS uuid) AND n.excerpt IS NOT DISTINCT FROM :ex"
+            " ORDER BY n.created_at, n.id LIMIT 1)"
         ),
         {"me": me, "tid": task_id, "ex": won.question},
     )
@@ -449,6 +454,13 @@ async def list_decisions(
         # §7.2: of the tasks listed for the decider, drop one they cannot open.
         wire = [_wire(r) for r in rows]
         if task_id is None:
+            # The asker by the directory name that the panel shows, from the
+            # one resolver (``people.core.names_of``). A system actor has none.
+            from gateway.routes.people.core import names_of
+
+            names = await names_of(db, [i["asked_by"] for i in wire if "@" in i["asked_by"]])
+            for item in wire:
+                item["asked_by_name"] = names.get(item["asked_by"].strip().lower())
             keep: list[dict[str, Any]] = []
             for item in wire:
                 if await deliverable(db, [actor(user).strip().lower()], item["subject_id"]):

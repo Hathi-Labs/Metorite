@@ -830,6 +830,48 @@ class TestDecisionsOnARealDatabase:
             assert [r["task_id"] for r in unread["rows"]] == [w.hidden_for_d]
         assert other["heard"] is True and made["heard"] is True
 
+    async def test_two_asks_with_one_question_close_their_bell_rows_one_at_a_time(self, w):
+        from acb_common.db import bind_tenant
+        from gateway.routes.shell import needs
+
+        async with _session(w.p) as (call, _):
+            first = await _ask(w.p, w.p.org_a, w.task, w.d, question="Ship it?")
+            second = await _ask(w.p, w.p.org_a, w.task, w.d, question="Ship it?")
+            path = "/projects/notifications?unread_only=true"
+            assert (await call(w.u_d, "GET", path)).json()["unread"]["total"] == 2
+            done = await call(w.u_d, "POST", f"/projects/decisions/{first['id']}/answer",
+                              {"answer_key": "yes"})
+            assert done.status_code == 200
+            # ONE row closed. The other ask still has its bell row and its card.
+            assert (await call(w.u_d, "GET", path)).json()["unread"]["total"] == 1
+            bind_tenant(w.p.org_a)
+            found = await needs.REGISTRY["decisions"].run(w.u_d)
+            assert found.total == 1 and found.signals()[0].facts["open"] == 1
+            done = await call(w.u_d, "POST", f"/projects/decisions/{second['id']}/answer",
+                              {"answer_key": "no"})
+            assert done.status_code == 200
+            assert (await call(w.u_d, "GET", path)).json()["unread"]["total"] == 0
+
+    async def test_the_card_names_the_asker_by_the_directory_name_of_the_panel(self, w):
+        from acb_common.db import bind_tenant
+        from gateway.routes.shell import needs
+
+        with w.p.admin_engine.begin() as c:
+            c.execute(text("UPDATE app_user SET display_name = 'Ravi Mehta' WHERE email = :e"),
+                      {"e": w.asker})
+        try:
+            async with _session(w.p) as (call, _):
+                await _ask(w.p, w.p.org_a, w.task, w.d, asked_by=w.asker)
+                listed = (await call(w.u_d, "GET", "/projects/decisions")).json()["decisions"]
+                assert listed[0]["asked_by_name"] == "Ravi Mehta"
+                bind_tenant(w.p.org_a)
+                [signal] = (await needs.REGISTRY["decisions"].run(w.u_d)).signals()
+                assert signal.facts["who"] == "Ravi Mehta"
+        finally:
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("UPDATE app_user SET display_name = email WHERE email = :e"),
+                          {"e": w.asker})
+
     async def test_an_expired_decision_leaves_my_day_and_reads_as_expired_on_the_task(self, w):
         from acb_common.db import bind_tenant
         from gateway.routes.shell import needs
