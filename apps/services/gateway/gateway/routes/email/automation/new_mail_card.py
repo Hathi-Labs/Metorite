@@ -230,7 +230,10 @@ async def new_mail_card_act(
         send_email,
     )
 
-    owner = _owner(user).lower()
+    # The session's email as it is: `mailbox_predicate` compares `user_id`
+    # with case (fix round 1). Only the digest of the answer folds the case.
+    member = _owner(user)
+    owner = member.lower()
     org = _org_of(user)
     if not await take_reply_answer(org, req.card_id, owner, req.answer, req.card_thread_id,
                                    wait_s=ANSWER_WAIT_S):
@@ -255,7 +258,7 @@ async def new_mail_card_act(
     account_id = str(rec["account_id"])
     async with _tenant_session() as db:
         # The mailbox is still the member's to send from.
-        await _assert_account_owner(db, account_id, owner, level="send")
+        await _assert_account_owner(db, account_id, member, level="send")
     artifacts = [ArtifactAttachment(**a) for a in rec.get("artifacts") or []]
     metorite = [dict(m) for m in rec.get("metorite") or []]
     edited = subject != rec.get("subject") or body != rec.get("body")

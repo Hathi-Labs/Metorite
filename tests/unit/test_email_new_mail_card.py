@@ -309,6 +309,33 @@ async def test_a_held_card_id_is_no_new_mail_card(world) -> None:
     assert world["sends"].mails == []
 
 
+async def test_a_mixed_case_session_email_reaches_the_mailbox_check_as_it_is(
+    world, monkeypatch,
+) -> None:
+    """Fix round 1: ``mailbox_predicate`` compares ``user_id`` with case, so
+    the card and the act ask the owner check with the session's own email.
+    Only the digest folds the case. Mutation: lower the email for the
+    mailbox check → red."""
+    from gateway.routes.email import core
+
+    who = "Jane@Acme.test"
+    asked: list[str] = []
+
+    async def owner(_db: Any, account_id: str, member: str, **_k: Any) -> None:
+        asked.append(member)
+
+    monkeypatch.setattr(core, "_assert_account_owner", owner)
+    req = nm.NewMailCardRequest(account_id=F.BOX, to=[F.KNOWN], subject="Rates", body=TEXT)
+    card = await nm.new_mail_card(req, F.user(who))
+    answer = _answer(cc=())
+    await F.record_answer(card["card_id"], answer, who=who)
+    act = nm.NewMailActRequest(card_id=card["card_id"], card_thread_id="chat-thread-1",
+                               answer=answer)
+    await nm.new_mail_card_act(act, BackgroundTasks(), F.user(who))
+    assert asked == [who, who]
+    assert len(world["sends"].mails) == 1
+
+
 async def test_the_card_shows_no_hidden_character(world) -> None:
     card = await _card(body="Hi" + chr(0x200B) + " Kim")
     assert card["body"] == "Hi Kim"
