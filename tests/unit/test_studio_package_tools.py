@@ -246,7 +246,7 @@ class Gateway:
                 {"name": n} for n in self.tables.get(pid, [])]})
         if parts[3] == "draft" and method == "PUT":
             manifest = packages._parse_json(raw)
-            expected = packages._based_on(args.get("based_on"))  # the real parse of the route
+            expected = packages._based_on(args.get("based_on"), "?based_on")  # the real parse
             with packages._store_errors():
                 store.check_manifest(manifest)
                 store._expect(p["manifest"], expected)  # the real compare of the store

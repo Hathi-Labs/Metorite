@@ -1034,7 +1034,9 @@ def test_a_based_on_that_is_not_a_hash_is_422_on_both_routes(world, bad):
     put = c.put(f"/studio/packages/{pid}/draft", params={"based_on": bad}, json=_two_fields())
     pub = c.post(f"/studio/packages/{pid}/versions", json={"based_on": bad})
     assert put.status_code == 422 and pub.status_code == 422, (put.text, pub.text)
-    assert put.json()["detail"]["errors"] == [{"path": "$.based_on", "message": packages.BAD_HASH}]
+    # The draft save takes it as a query parameter, and the publish in its body.
+    assert put.json()["detail"]["errors"] == [{"path": "?based_on", "message": packages.BAD_HASH}]
+    assert pub.json()["detail"]["errors"] == [{"path": "$.based_on", "message": packages.BAD_HASH}]
     assert world.versions == [] and world.packages[pid]["manifest"] == _manifest()
 
 

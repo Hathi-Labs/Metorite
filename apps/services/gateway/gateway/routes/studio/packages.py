@@ -156,15 +156,16 @@ def _package_id(raw: str) -> str:
         raise _not_found() from None
 
 
-def _based_on(raw: object) -> str | None:
+def _based_on(raw: object, path: str = "$.based_on") -> str | None:
     """The expected hash of the stored draft, or None when the caller sends
-    none. Any other value than 64 hex digits is 422. It says nothing about
-    the package."""
+    none. Any other value than 64 hex digits is 422, and the error names
+    *path*: ``$.based_on`` in a body, ``?based_on`` in a query. It says
+    nothing about the package."""
     if raw is None:
         return None
     if isinstance(raw, str) and _HASH.fullmatch(raw.strip().lower()):
         return raw.strip().lower()
-    raise _unprocessable(BAD_HASH, [{"path": "$.based_on", "message": BAD_HASH}])
+    raise _unprocessable(BAD_HASH, [{"path": path, "message": BAD_HASH}])
 
 
 def _cursor(raw: str | None) -> int | None:
@@ -412,7 +413,7 @@ async def save_draft(
     raw = await _raw_body(request)
     await _require_owned(user.email, pid)
     manifest = _parse_json(raw)
-    expected = _based_on(based_on)
+    expected = _based_on(based_on, "?based_on")
     async with _tenant_session() as db:
         with _store_errors():
             package = await store.update_manifest(db, user.email, pid, manifest,
