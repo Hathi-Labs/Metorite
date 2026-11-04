@@ -311,6 +311,7 @@ def test_the_spend_is_one_statement_with_each_guard() -> None:
     assert sql.count("UPDATE pm_agent_runs") == 1 and "RETURNING" in sql
     for guard in (
         "r.status = 'in_progress'",
+        "->>'binding' = :binding",
         "r.member_email = :member",
         "r.connection_id IS NOT DISTINCT FROM CAST(:conn AS uuid)",
         "->>'digest' = :digest",
@@ -906,9 +907,11 @@ class TestAppRequestsOnARealDatabase:
         own = store.studio_binding(w.a_email, "studio", PKG1)
         other = store.studio_binding(w.a_email, "studio", PKG2)
         async with _session(w.p):
+            # Fix round 1 (review P3-1): the spend and the classes hold the
+            # whole binding, so another package reads `not_found`.
             spent, why = await _spend(w, rid, store.call_digest(call, other),
                                       binding=other, app="studio")
-            assert spent is None and why == "mismatch"
+            assert spent is None and why == "not_found"
             spent, why = await _spend(w, rid, store.call_digest(call, own),
                                       binding=store.mcp_binding(w.conn_a), app="studio")
             assert spent is None and why == "not_found"

@@ -208,6 +208,9 @@ class Spent:
 #: ``completed`` is the spend, and each guard sits in the WHERE:
 #:
 #: * the org, the app, the member and the connection of the request;
+#: * the whole binding of the request (fix round 1, review P3-1). The
+#:   connection part alone let a Studio request of one package spend under
+#:   the binding of another package;
 #: * ``status = 'in_progress'``: the member approved it, and nobody spent it;
 #: * the newest prompt of the run answers THIS elicitation with ``approve``;
 #: * the digest of the call is the digest of the request;
@@ -229,6 +232,7 @@ SPEND_SQL = (
     "   AND r.connection_id IS NOT DISTINCT FROM CAST(:conn AS uuid)"
     "   AND r.status = 'in_progress'"
     "   AND e.content_metadata->'request'->>'kind' = 'app_write'"
+    "   AND e.content_metadata->'request'->>'binding' = :binding"
     "   AND e.content_metadata->'request'->>'digest' = :digest"
     "   AND CAST(e.content_metadata->'request'->>'expires_at' AS timestamptz)"
     "       > clock_timestamp()"
@@ -284,7 +288,7 @@ async def spend(
         return None
     row = (await db.execute(text(SPEND_SQL), {
         "rid": rid, "org": org_id, "app": app, "member": member.strip().lower(),
-        "conn": binding_connection(binding), "digest": digest,
+        "conn": binding_connection(binding), "binding": binding, "digest": digest,
     })).fetchone()
     if row is None:
         return None
@@ -319,7 +323,8 @@ async def spend(
     )
 
 
-#: The request of THIS member, app and connection only, with its decision.
+#: The request of THIS member, app, connection and binding only, with its
+#: decision.
 _CLASSIFY_SQL = (
     "SELECT r.status, e.content_metadata->'request' AS request,"
     "       (CAST(e.content_metadata->'request'->>'expires_at' AS timestamptz)"
@@ -335,6 +340,7 @@ _CLASSIFY_SQL = (
     "   AND r.member_email = :member"
     "   AND r.connection_id IS NOT DISTINCT FROM CAST(:conn AS uuid)"
     "   AND e.content_metadata->'request'->>'kind' = 'app_write'"
+    "   AND e.content_metadata->'request'->>'binding' = :binding"
 )
 
 
@@ -351,7 +357,8 @@ async def classify_refusal(
     """Why :func:`spend` found no row: one of :data:`REFUSALS`.
 
     Call it only after :func:`spend` returned ``None``. A request of another
-    member, another app or another connection reads ``not_found``, so the
+    member, another app, another connection or another binding (a Studio
+    request of another package) reads ``not_found``, so the
     answer says nothing about it. The order of the checks is fixed: a
     decline, then a spend, then the expiry, then a request with no
     decision, then a digest that differs.
@@ -362,7 +369,7 @@ async def classify_refusal(
         return "not_found"
     row = (await db.execute(text(_CLASSIFY_SQL), {
         "rid": rid, "org": org_id, "app": app, "member": member.strip().lower(),
-        "conn": binding_connection(binding),
+        "conn": binding_connection(binding), "binding": binding,
     })).fetchone()
     if row is None:
         return "not_found"
