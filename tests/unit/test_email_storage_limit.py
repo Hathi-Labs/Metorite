@@ -85,6 +85,20 @@ The fences of EM-T6f (2026-11-04), the resume of an import at the limit:
   ``STORAGE_RESUME_GAP_SECS`` of a process, and a write that finds no row
   gives the turn back.
 
+The fences of EM-T6f review round 1 (2026-11-04):
+
+* ``email-storage-t6f-meter-bound`` (P1): a run of the import makes at most
+  ``storage.IMPORT_FULL_METERS`` full meters, and a cycle at most one more.
+  Each other batch adds the growth of its rows, and that sum equals the
+  full meter on a real database (R8).
+* ``email-storage-t6f-cap`` (P2): an import that goes on from a point reads
+  at most ``RESUME_CYCLE_MAILS`` in a cycle. It pauses, the sweep of the
+  cycle writes the new mail, and the next cycle goes on (R8). The first
+  import of a new mailbox reads to the end as before.
+* ``email-storage-t6f-margin`` (P3a): a resume needs the meter under the
+  limit by ``storage.resume_margin_bytes()``. One byte under the limit
+  stays stopped (R8).
+
 The R8 tests run as the non-privileged role ``acb_app_h3rls`` (NOSUPERUSER,
 NOBYPASSRLS) on the phase-4-promoted two-org catalog of
 ``test_h3_rls_promotion_rehearsal``.
