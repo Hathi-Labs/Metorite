@@ -464,7 +464,14 @@ H2_WHATSAPP_EXEMPT_SITES: dict[str, int] = {
 #: run's org (-2). `_resolve_workflow_organization` stays counted until no
 #: caller remains. `test_workflows_lifecycle_rls_r8.py` fences the path
 #: under FORCE RLS.
-H2_BASELINE_ELSEWHERE = 67
+#: 67 → 62: H-328 part (b) (2026-11-03). In routes/workflows, the two scans
+#: in `scheduler.py` (-2), `record_skipped_run` (-1) and
+#: `evaluate_automation_health` (-1) moved to `_tenant_session(org)` or
+#: `_run_session(org)`, and `reconcile_orphaned_runs` no longer opens a
+#: session of its own (-1). The one new unbound read is
+#: `service._organization_ids`, a tenant-discovery site that is not counted
+#: here (+1 in H2_TENANT_DISCOVERY_SITES). Measured drop: 5.
+H2_BASELINE_ELSEWHERE = 62
 
 #: routes/apps (H2 slice, 2026-08-10): the sites that STAY on the unbound
 #: seam, as file → exact remaining count. Counts rather than whole files
@@ -723,6 +730,13 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "It reads only through the SECURITY DEFINER "
         "`whatsapp_member_links_for_phone`, granted to `acb_app` alone, and "
         "it writes nothing",
+    ("apps/services/gateway/gateway/routes/workflows/service.py",
+     "_organization_ids"):
+        "H-328 part (b): which organizations the workflow scans and sweeps "
+        "look at. It lists the RLS-EXEMPT `organization` table, so it does "
+        "not go blind. Each scan checks the `WORKFLOW_UNATTENDED_ORGS` list "
+        "for an id before it reads anything, and every read after it binds "
+        "one organization with `_tenant_session`",
     ("apps/services/gateway/gateway/crm_sync/scheduler.py",
      "_organization_ids"):
         "WS-53 CRM-Z5: which organizations the CRM mirror loop looks at. It "

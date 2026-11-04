@@ -164,6 +164,14 @@ jobs:
       - name: ste-lint hook (blocking)
         run: node .claude/hooks/ste-lint.test.mjs
 
+      # worktree-notice.mjs runs at the start of every session. On 2026-11-03
+      # the primary checkout was 258 commits behind main, so sessions loaded
+      # rules from before D135 and D145 and nothing said so. The hook now names
+      # that gap. A crash there costs a session, so the test also proves that
+      # it exits 0 outside a repo. R7 — the rule names its fence.
+      - name: worktree-notice stale-rules hook (blocking)
+        run: node .claude/hooks/worktree-notice.test.mjs
+
       # ── The process fences (two-speed CI, 2026-10-19) ─────────────────────
       #
       # These tests read files as text and guard consistency: naming, docs,
@@ -514,6 +522,7 @@ jobs:
               tests/unit/test_studio_action_door_r8.py \
               tests/unit/test_studio_catalog_r8.py \
               tests/unit/test_studio_packages_versions_r8.py \
+              tests/unit/test_studio_package_routes_r8.py \
               tests/unit/test_package_host_store_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
               tests/unit/test_crm_change_history.py \
