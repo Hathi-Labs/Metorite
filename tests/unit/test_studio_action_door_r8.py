@@ -222,6 +222,7 @@ from fastapi import HTTPException
 from gateway.routes.studio import invoke
 from gateway.studio import objects_store, packages_store
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 
 from tests.unit._tenant_ladder import tenant_engine_scope
 from tests.unit.test_h3_rls_promotion_rehearsal import (  # noqa: F401
@@ -277,8 +278,12 @@ class _Request:
     read fail."""
 
     def __init__(self, payload: Any, on_read: Callable[[], Any] | None = None,
-                 fails: bool = False) -> None:
+                 fails: bool = False, headers: dict[str, str] | None = None,
+                 path: str = "/studio/apps/x/actions/y") -> None:
         self._raw = b"" if payload is None else json.dumps(payload).encode("utf-8")
+        # The door reads the method, the path and the headers for the proof.
+        self.method, self.headers = "POST", dict(headers or {})
+        self.url = SimpleNamespace(path=path)
         self._on_read = on_read
         self._fails = fails
         self.reads = 0
@@ -941,3 +946,420 @@ def test_r8_the_switch_off_is_404_and_writes_no_row(world, monkeypatch) -> None:
 
     assert _run(world, go) == [(404, NOT_FOUND)] * 3
     assert _audits(world, world.pkg) == []
+
+
+# ── v. The direct writes (STU-B2c-1) ───────────────────────────────────────
+#
+# Acceptance (B2c-1). A member's own Save, edit or move is the approval, and
+# the BFF proves it with a signed header.
+#
+# v. The owner with a valid proof creates, updates and deletes a record. Each
+#    call writes one row and one ``app_audit`` row in the bound org.
+# w. The audit row and the write are one transaction. A failed audit insert
+#    leaves no record.
+# x. The bearer and the member email with no proof, or with a proof for
+#    another email, path or time, get 403 ``approval_required``. No row is
+#    written, and one refused audit row lands.
+# y. Another member and org B get 404. A record of another package is 404.
+# z. A constraint, a state machine move and a formula each refuse with the 422
+#    shape, write nothing, and keep the audit row.
+# aa. 3 writers wait on the org lock and get 503 ``store_busy`` with
+#    ``Retry-After``. A fourth in-flight writer gets 503 at once and holds no
+#    connection. A read of org B still gets one.
+
+import time  # noqa: E402
+
+from acb_auth import AgentScope, direct_proof  # noqa: E402
+from gateway.routes.apps import _common as apps_common  # noqa: E402
+
+DIRECT_KEY = "r8-direct-key-" + "k" * 30
+_RULES: list[dict[str, Any]] = [
+    {"name": "qty_ok", "kind": "range", "field": "qty", "min": 0, "max": 100},
+    {"name": "one_site", "kind": "unique", "fields": ["site"]},
+    {"name": "flow", "kind": "state_machine", "field": "status", "initial": "planned",
+     "moves": [{"from": "planned", "to": "done"}]},
+    {"name": "line_total", "kind": "formula", "target": "total", "rounding": "half_up",
+     "scale": 2, "expr": {"fn": "mul", "args": [{"ref": "qty"}, {"ref": "price"}]}},
+]
+
+
+@pytest.fixture
+def dworld(world, monkeypatch):
+    monkeypatch.setattr(get_settings(), "studio_direct_key", DIRECT_KEY)
+    invoke._IN_FLIGHT.clear()
+    yield world
+    invoke._IN_FLIGHT.clear()
+
+
+def _headers(pid: str, action: str, email: str = ANA, *, method: str = "POST",
+             path: str | None = None, now: float | None = None) -> dict[str, str]:
+    where = path or f"/studio/apps/{pid}/actions/{action}"
+    return {direct_proof.HEADER: direct_proof.sign(DIRECT_KEY, email, method, where, now=now)}
+
+
+async def _dcall(org: str, email: str, pid: str, action: str, payload: Any, *,
+                 headers: dict[str, str] | None = None, user: UserContext | None = None,
+                 signed: bool = True) -> tuple[int, Any]:
+    """The real handler, with a request that carries a proof for *email*."""
+    if headers is None:
+        headers = _headers(pid, action, email) if signed else {}
+    request = _Request(payload, headers=headers, path=f"/studio/apps/{pid}/actions/{action}")
+    token = bind_tenant(org)
+    try:
+        found = await invoke.invoke_action(pid, action, request=request,
+                                           user=user or _user(org, email))
+        return 200, found
+    except HTTPException as exc:
+        return exc.status_code, (exc.detail, dict(exc.headers or {}))
+    finally:
+        release_tenant(token)
+
+
+def _body(world: Any, status: int, got: Any) -> Any:
+    assert status == 200, got
+    return got
+
+
+def _ran(world: Any, pid: str, action: str) -> list[dict[str, Any]]:
+    return [r[3] for r in _audits(world, pid) if r[3]["action"] == action]
+
+
+def _data_of(world: Any, rid: str) -> dict[str, Any]:
+    row = _record_row(world, rid)
+    assert row is not None
+    return row[0] if isinstance(row[0], dict) else json.loads(row[0])
+
+
+def test_r8_a_direct_create_update_and_delete_each_write_one_record_and_one_audit_row(
+        dworld) -> None:
+    w = dworld
+    before = _record_count(w, w.obj)
+
+    async def go() -> tuple[Any, Any, Any]:
+        made = _body(w, *await _dcall(w.a, ANA, w.pkg, "add", {"data": _DATA}))
+        rid = made["record"]["id"]
+        changed = _body(w, *await _dcall(w.a, ANA, w.pkg, "change",
+                                         {"id": rid, "data": {"notes": "Moved"}}))
+        gone = _body(w, *await _dcall(w.a, ANA, w.pkg, "remove", {"id": rid}))
+        return made, changed, gone
+
+    made, changed, gone = _run(w, go)
+    rid = made["record"]["id"]
+    assert made["record"]["data"] == _DATA and made["record"]["created_by"] == ANA
+    assert changed["record"]["data"]["notes"] == "Moved" and changed["record"]["updated_by"] == ANA
+    assert gone == {"deleted": True, "id": rid}
+    assert _record_row(w, rid) is None and _record_count(w, w.obj) == before
+    rows = _audits(w, w.pkg)
+    assert [(r[0], r[1], r[2], r[3]["action"], r[3]["outcome"]) for r in rows] == [
+        (w.a, ANA, "action", "add", "ran"), (w.a, ANA, "action", "change", "ran"),
+        (w.a, ANA, "action", "remove", "ran")]
+    assert [r[3]["class"] for r in rows] == ["B", "B", "C"]
+    # Fix round 1: each row names its record, the new id for the create.
+    assert [r[3].get("record_id") for r in rows] == [rid, rid, rid]
+    assert "Plant 4" not in json.dumps(rows) and "Moved" not in json.dumps(rows)
+
+
+def test_r8_each_direct_write_commits_its_record_with_its_audit_row(dworld) -> None:
+    w = dworld
+    status, got = _run(w, lambda: _dcall(w.a, ANA, w.pkg, "add", {"data": _DATA}))
+    assert status == 200
+    assert _record_row(w, got["record"]["id"]) is not None
+    assert len(_ran(w, w.pkg, "add")) == 1
+
+
+def test_r8_a_failed_audit_insert_leaves_no_record(dworld, monkeypatch) -> None:
+    """The audit statement fails for real, so the transaction aborts and the
+    write goes with it."""
+    w = dworld
+    count = _record_count(w, w.obj)
+    monkeypatch.setattr(apps_common, "_APP_AUDIT_SQL",
+                        "INSERT INTO app_audit (no_such_column) VALUES (1)")
+
+    async def go() -> None:
+        with pytest.raises(Exception) as err:
+            await _dcall(w.a, ANA, w.pkg, "add", {"data": {**_DATA, "site": "Audit fails"}})
+        assert not isinstance(err.value, HTTPException)
+
+    _run(w, go)
+    assert _record_count(w, w.obj) == count
+    assert _audits(w, w.pkg) == []
+
+
+def test_r8_a_failed_audit_leaves_the_update_and_the_delete_undone(dworld, monkeypatch) -> None:
+    w = dworld
+    before = _record_row(w, w.rec)
+    monkeypatch.setattr(apps_common, "_APP_AUDIT_SQL",
+                        "INSERT INTO app_audit (no_such_column) VALUES (1)")
+
+    async def go() -> None:
+        for action, body in (("change", {"id": w.rec, "data": {"notes": "Lost"}}),
+                             ("remove", {"id": w.rec})):
+            with pytest.raises(DBAPIError):
+                await _dcall(w.a, ANA, w.pkg, action, body)
+
+    _run(w, go)
+    assert _record_row(w, w.rec) == before
+
+
+@pytest.mark.parametrize("action", ["add", "change", "remove"])
+def test_r8_no_proof_is_403_with_one_refused_audit_row_and_no_write(dworld, action) -> None:
+    w = dworld
+    before, count = _record_row(w, w.rec), _record_count(w, w.obj)
+    body = {"add": {"data": _DATA}, "change": {"id": w.rec, "data": {"notes": "No"}},
+            "remove": {"id": w.rec}}[action]
+    status, (detail, _) = _run(w, lambda: _dcall(w.a, ANA, w.pkg, action, body, signed=False))
+    assert (status, detail["code"]) == (403, "approval_required")
+    assert _record_row(w, w.rec) == before and _record_count(w, w.obj) == count
+    rows = _audits(w, w.pkg)
+    assert [(r[3]["action"], r[3]["outcome"], r[3]["reason"]) for r in rows] == [
+        (action, "refused", "approval_required")]
+
+
+@pytest.mark.parametrize("case", ["email", "path", "old", "method", "garbage"])
+def test_r8_a_wrong_proof_is_403_and_writes_nothing(dworld, case) -> None:
+    w = dworld
+    count = _record_count(w, w.obj)
+    headers = {
+        "email": _headers(w.pkg, "add", BEN),
+        "path": _headers(w.pkg, "add", path=f"/studio/apps/{w.pkg}/actions/change"),
+        "old": _headers(w.pkg, "add", now=time.time() - 3600),
+        "method": _headers(w.pkg, "add", method="GET"),
+        "garbage": {direct_proof.HEADER: "v1.1.zz"},
+    }[case]
+    status, (detail, _) = _run(
+        w, lambda: _dcall(w.a, ANA, w.pkg, "add", {"data": _DATA}, headers=headers))
+    assert (status, detail["code"]) == (403, "approval_required")
+    assert _record_count(w, w.obj) == count
+
+
+def test_r8_an_unset_key_makes_a_valid_looking_proof_403(dworld, monkeypatch) -> None:
+    w = dworld
+    headers = _headers(w.pkg, "add")
+    monkeypatch.setattr(get_settings(), "studio_direct_key", "")
+    status, (detail, _) = _run(
+        w, lambda: _dcall(w.a, ANA, w.pkg, "add", {"data": _DATA}, headers=headers))
+    assert (status, detail["code"]) == (403, "approval_required")
+
+
+def test_r8_a_valid_proof_with_an_agent_scope_is_403(dworld) -> None:
+    w = dworld
+    user = UserContext(email=ANA, role=UserRole.EMPLOYEE, organization_id=w.a,
+                       access=build_access(["feature:workflows"]),
+                       agent=AgentScope(connection_id="c1"))
+    count = _record_count(w, w.obj)
+    status, (detail, _) = _run(
+        w, lambda: _dcall(w.a, ANA, w.pkg, "add", {"data": _DATA}, user=user))
+    assert (status, detail["code"]) == (403, "approval_required")
+    assert _record_count(w, w.obj) == count
+
+
+def test_r8_another_member_and_org_b_get_404_and_write_nothing(dworld) -> None:
+    w = dworld
+    count = _record_count(w, w.obj)
+
+    async def go() -> list[tuple[int, Any]]:
+        return [await _dcall(w.a, BEN, w.pkg, "add", {"data": _DATA}),
+                await _dcall(w.b, ANA, w.pkg, "add", {"data": _DATA}),
+                await _dcall(w.a, BEN, w.pkg, "remove", {"id": w.rec}),
+                await _dcall(w.b, ANA, w.pkg, "change", {"id": w.rec, "data": {"notes": "x"}})]
+
+    for status, (detail, _) in _run(w, go):
+        assert (status, detail) == (404, NOT_FOUND)
+    assert _record_count(w, w.obj) == count
+    assert _audits(w, w.pkg) == []
+
+
+def test_r8_a_record_of_another_package_is_404_and_stays(dworld) -> None:
+    w = dworld
+    before = _record_row(w, w.rec2)
+
+    async def go() -> list[tuple[int, Any]]:
+        return [await _dcall(w.a, ANA, w.pkg, "change", {"id": w.rec2, "data": {"notes": "x"}}),
+                await _dcall(w.a, ANA, w.pkg, "remove", {"id": w.rec2}),
+                await _dcall(w.a, ANA, w.pkg, "remove", {"id": str(uuid.uuid4())})]
+
+    for status, (detail, _) in _run(w, go):
+        assert (status, detail) == (404, NOT_FOUND)
+    assert _record_row(w, w.rec2) == before
+    assert [r["outcome"] for r in _ran(w, w.pkg, "change") + _ran(w, w.pkg, "remove")] == [
+        "not_found"] * 3
+
+
+def test_r8_the_switch_off_is_404_and_writes_no_row_for_a_direct_write(
+        dworld, monkeypatch) -> None:
+    w = dworld
+    monkeypatch.setattr(get_settings(), "studio_orgs", w.b)
+    status, (detail, _) = _run(w, lambda: _dcall(w.a, ANA, w.pkg, "add", {"data": _DATA}))
+    assert (status, detail) == (404, NOT_FOUND)
+    assert _audits(w, w.pkg) == []
+
+
+@pytest.mark.parametrize("action,body", [
+    ("add", {"data": _DATA, "id": str(uuid.uuid4())}),
+    ("add", {"data": _DATA, "organization_id": "x"}),
+    ("change", {"id": str(uuid.uuid4())}),
+    ("remove", {"id": str(uuid.uuid4()), "data": {}}),
+    ("add", {"data": "not an object"}),
+    ("change", {"id": "not-a-uuid", "data": {"notes": "x"}}),
+    ("remove", {"id": "not-a-uuid"}),
+])
+def test_r8_a_wrong_body_is_422_and_writes_nothing(dworld, action, body) -> None:
+    w = dworld
+    count = _record_count(w, w.obj)
+    status, (detail, _) = _run(w, lambda: _dcall(w.a, ANA, w.pkg, action, body))
+    assert status == 422
+    assert set(detail) == {"code", "message", "rule", "fieldErrors"}
+    assert _record_count(w, w.obj) == count
+    assert [r["outcome"] for r in _ran(w, w.pkg, action)] == ["refused"]
+
+
+def test_r8_a_body_past_the_cap_is_413_and_writes_nothing(dworld) -> None:
+    w = dworld
+    count = _record_count(w, w.obj)
+    big = {"data": {"notes": "x" * invoke.MAX_BODY_BYTES}}
+    status, (detail, _) = _run(w, lambda: _dcall(w.a, ANA, w.pkg, "add", big))
+    assert (status, detail["code"]) == (413, "body_too_large")
+    assert _record_count(w, w.obj) == count
+
+
+async def _with_rules(w: Any, formula: bool = False) -> None:
+    async with tenant_session(w.a) as db:
+        for spec in ({"key": "qty", "type": "number", "hot": True},
+                     {"key": "price", "type": "number"},
+                     {"key": "total", "type": "number", "hot": True}):
+            await objects_store.add_field(db, w.obj, spec)
+        await objects_store.set_field_hot(db, w.obj, "site", True)
+        if formula:
+            # A formula is declared before the first record (C7a).
+            assert await objects_store.delete_record(db, ANA, w.obj, w.rec, package_id=w.pkg)
+        rules = _RULES if formula else _RULES[:3]
+        await objects_store.set_constraints(db, w.obj, rules, package_id=w.pkg)
+
+
+def test_r8_a_field_error_gives_field_errors_with_the_key(dworld) -> None:
+    w = dworld
+    status, (detail, _) = _run(
+        w, lambda: _dcall(w.a, ANA, w.pkg, "add", {"data": {"status": "no such option"}}))
+    assert status == 422 and detail["code"] == "field_invalid"
+    assert detail["fieldErrors"][0]["field"] == "status"
+    assert detail["fieldErrors"][0]["message"] == detail["message"]
+    assert "no such option" not in json.dumps(detail)
+
+
+def test_r8_a_range_a_unique_and_a_move_refuse_with_the_shape_and_keep_the_audit_row(
+        dworld) -> None:
+    w = dworld
+
+    async def go() -> list[Any]:
+        await _with_rules(w)
+        rng = await _dcall(w.a, ANA, w.pkg, "add", {"data": {"site": "S1", "qty": 500}})
+        dup = await _dcall(w.a, ANA, w.pkg, "add", {"data": {"site": _DATA["site"]}})
+        moved = await _dcall(w.a, ANA, w.pkg, "change",
+                             {"id": w.rec, "data": {"status": "done"}})
+        back = await _dcall(w.a, ANA, w.pkg, "change",
+                            {"id": w.rec, "data": {"status": "planned"}})
+        return [rng, dup, moved, back]
+
+    count = _record_count(w, w.obj)
+    rng, dup, moved, back = _run(w, go)
+    assert rng[0] == 422 and rng[1][0]["code"] == "rule_refused" and rng[1][0]["rule"] == "qty_ok"
+    assert dup[0] == 422 and dup[1][0]["code"] == "rule_refused" and dup[1][0]["rule"] == "one_site"
+    assert moved[0] == 200 and moved[1]["record"]["data"]["status"] == "done"
+    assert back[0] == 422 and back[1][0]["rule"] == "flow"
+    assert back[1][0]["code"] == "rule_refused"
+    assert _record_count(w, w.obj) == count
+    assert _data_of(w, w.rec)["status"] == "done"
+    outcomes = [(r[3]["action"], r[3]["outcome"], r[3].get("reason")) for r in _audits(w, w.pkg)]
+    assert outcomes == [("add", "refused", "rule_refused"), ("add", "refused", "rule_refused"),
+                        ("change", "ran", None), ("change", "refused", "rule_refused")]
+    # A refused create made no record. Each update names its record.
+    assert [r[3].get("record_id") for r in _audits(w, w.pkg)] == [None, None, w.rec, w.rec]
+
+
+def test_r8_a_computed_field_is_refused_and_nothing_is_written(dworld) -> None:
+    w = dworld
+
+    async def go() -> list[Any]:
+        await _with_rules(w, formula=True)
+        refused = await _dcall(w.a, ANA, w.pkg, "add",
+                               {"data": {"site": "F1", "qty": 2, "price": 3, "total": 99}})
+        same = await _dcall(w.a, ANA, w.pkg, "add",
+                            {"data": {"site": "F2", "qty": 2, "price": 3, "total": 6}})
+        ok = await _dcall(w.a, ANA, w.pkg, "add", {"data": {"site": "F3", "qty": 2, "price": 3}})
+        return [refused, same, ok]
+
+    refused, same, ok = _run(w, go)
+    for status, (detail, _) in (refused, same):
+        assert status == 422 and detail["code"] == "computed_field"
+        assert detail["rule"] == "line_total"
+        assert detail["fieldErrors"][0]["field"] == "total"
+        assert "99" not in json.dumps(detail)
+    assert ok[0] == 200 and str(ok[1]["record"]["data"]["total"]) in ("6", "6.00", "6.0")
+    assert _record_count(w, w.obj) == 1  # only the valid create (the setup removed w.rec)
+    assert [r[3]["reason"] for r in _audits(w, w.pkg)[:2]] == ["computed_field"] * 2
+
+
+def test_r8_a_refusal_keeps_its_audit_row(dworld) -> None:
+    """The refusal is raised after the session closes, so its audit row
+    commits. The row is read as the superuser."""
+    w = dworld
+    status, (_detail, _) = _run(
+        w, lambda: _dcall(w.a, ANA, w.pkg, "add", {"data": {"status": "no such option"}}))
+    assert status == 422
+    rows = _audits(w, w.pkg)
+    assert len(rows) == 1 and rows[0][3]["reason"] == "field_invalid"
+
+
+def _hold_the_org_lock(w: Any):
+    """Hold the advisory lock of org A on a superuser connection."""
+    conn = w.p.admin_engine.connect()
+    conn.execute(text(
+        "SELECT pg_advisory_xact_lock(hashtextextended('studio_objects:' || :org, 0))"),
+        {"org": w.a})
+    return conn
+
+
+def test_r8_busy_writers_get_503_and_the_fourth_is_refused_at_once(dworld) -> None:
+    w = dworld
+    count = _record_count(w, w.obj)
+    lock = _hold_the_org_lock(w)
+    held: dict[str, Any] = {}
+
+    async def go() -> list[Any]:
+        waiters = [asyncio.ensure_future(
+            _dcall(w.a, ANA, w.pkg, "add", {"data": {**_DATA, "site": f"W{i}"}}))
+            for i in range(invoke.WRITERS_PER_ORG)]
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if invoke._IN_FLIGHT.get(w.a) == invoke.WRITERS_PER_ORG:
+                break
+        assert {w.a: invoke.WRITERS_PER_ORG} == invoke._IN_FLIGHT
+        started = time.monotonic()
+        held["fourth"] = await _dcall(w.a, ANA, w.pkg, "add", {"data": _DATA})
+        held["fourth_s"] = time.monotonic() - started
+        held["in_tx"] = _connections_in_a_transaction(w)
+        held["read_b"] = await _call(w.b, ANA, w.pkg_b, "find")
+        return list(await asyncio.gather(*waiters))
+
+    try:
+        waiters = _run(w, go)
+    finally:
+        lock.rollback()
+        lock.close()
+    status, (detail, headers) = held["fourth"]
+    assert (status, detail["code"], headers) == (503, "store_busy", {"Retry-After": "1"})
+    assert held["fourth_s"] < invoke.objects_store.ORG_LOCK_WAIT_MS / 1000 / 2
+    assert held["in_tx"] == invoke.WRITERS_PER_ORG  # the fourth held none
+    assert held["read_b"][0] == 200  # a read of org B still got a connection
+    for status, (detail, headers) in waiters:
+        assert (status, detail["code"], headers) == (503, "store_busy", {"Retry-After": "1"})
+    assert _record_count(w, w.obj) == count
+    rows = _ran(w, w.pkg, "add")
+    assert [(r["outcome"], r["reason"]) for r in rows] == [("failed", "store_busy")] * 3
+    assert invoke._IN_FLIGHT == {}
+
+
+def test_r8_a_writer_after_the_busy_ones_is_admitted_again(dworld) -> None:
+    w = dworld
+    status, _got = _run(w, lambda: _dcall(w.a, ANA, w.pkg, "add", {"data": _DATA}))
+    assert status == 200 and invoke._IN_FLIGHT == {}

@@ -216,6 +216,10 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "unarchive_project": ("unarchive the project Website Relaunch",),
     "unarchive_task": ("restore the archived task",),
     "watch": ("watch this task",),
+    # -- projects-authority (WS-ALN ALN-4) --
+    "project_authorities": ("which page is the authority page of this project?",),
+    "pin_authority": ("pin this page as the authority of the project",),
+    "unpin_authority": ("remove the authority page of the project",),
     # -- studio (STU-G1) --
     "studio_describe": ("which field types can a studio app manifest use?",),
     "studio_draft": ("draft an app manifest in AI Studio",),

@@ -842,6 +842,16 @@ class Settings(BaseSettings):
     # tests/unit/test_align_trigger.py.
     align_jobs_orgs: str = ""
 
+    # ── The authority page of a project (WS-ALN ALN-4) ───────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, the three authority routes answer 404 and the three
+    # chat tools make no card. The one reader is
+    # `gateway.routes.projects.authorities.authority_pins_allowed`. A SIGHUP
+    # reload applies a change. A flip needs a D145 preview of the chat cards
+    # (ALN-4b). Fence: tests/unit/test_project_authorities_r8.py.
+    authority_pins_orgs: str = ""
+
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
     # ON makes `GET /search/company` rank newer records first inside each app,
@@ -1959,6 +1969,16 @@ class Settings(BaseSettings):
     agent_edge_signing_key: str = ""
     agent_edge_signing_key_previous: str = ""
     agent_edge_gateway_url: str = "http://127.0.0.1:8080"
+
+    # STU-B2c-1, the direct proof of a Studio write (`ai_studio.md` §20.4).
+    # The workbench BFF signs the direct-proof header under this key, and the action
+    # door checks it. `acb_auth.direct_proof` is the one reader. The key is in
+    # the gateway `.env` and in the workbench `.env.local` (`scripts/vps_apply.sh`
+    # copies it). A key under 32 bytes, or equal to GATEWAY_INTERNAL_TOKEN or to
+    # LITELLM_MASTER_KEY, counts as unset. With no usable key, no write is
+    # direct. No skill and no orchestrator code reads it.
+    # 🔴 Setting the key on a box is gate `env-write`.
+    studio_direct_key: str = ""
 
     # ── My Day's read cache (WS-58 MD-5a, 2026-10-14) ───────────────────────
     #
