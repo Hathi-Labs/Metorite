@@ -186,6 +186,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-ALN ALN-2a: DECISIONS_ORGS opens "one person decides" for an org. A
     # tenant that set it could open the bell row for every org on the box.
     "DECISIONS_ORGS",
+    # WS-AUTO AUTO-7b: AUTO_PARK_ORGS parks the gate of an unattended run on a
+    # decision of the workflow's owner. It moves who settles a run, so only
+    # the operator writes it.
+    "AUTO_PARK_ORGS",
     # WS-MCP SW-31a: AGENT_GUIDANCE_ORGS opens the org's written rules for
     # agents. The text reaches every agent session of the org, so a tenant
     # must not open it for another org.

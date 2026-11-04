@@ -841,6 +841,19 @@ class Settings(BaseSettings):
     # reload applies a change (`gateway/flag_reload.py`). Fence:
     # tests/unit/test_decisions.py.
     decisions_orgs: str = ""
+    # ── Park and ask (WS-AUTO AUTO-7b, proactive_agent.md §4.2) ─────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, the approval gate of a workflow run with no person
+    # present asks the workflow's owner through ONE decision, instead of a
+    # broker proposal. `decisions_orgs` must list the org too. Off, the gate
+    # files the broker proposal of AUTO-7a, byte for byte. The one reader is
+    # `gateway.routes.workflows.park.park_allowed`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). Fence: tests/unit/test_auto_park.py.
+    # ⚠️ The wait scan settles a parked gate only for an org on
+    # `workflow_unattended_orgs`. If the org leaves that list, a yes resumes
+    # nothing and no expiry ends the run, until the org is on it again.
+    auto_park_orgs: str = ""
     # ── Guidance for agents (WS-MCP SW-31a, agent_coordination.md SW-31) ────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
