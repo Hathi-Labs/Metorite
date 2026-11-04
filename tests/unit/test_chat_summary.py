@@ -16,6 +16,10 @@ What this proves:
   profile switch off, on for ``*``, and it reads the settings at each call;
 - the flag name: a platform name of the env guard, a reload name, and a name
   that the staging tool may write, with the comment that it spends credits.
+- PZ-34: ``briefing_for(org)`` follows the same rules. It is off by default,
+  it needs ``enabled_for``, it reads ``*`` and the settings at each call, and
+  it fails closed. Its name ``ASSISTANT_BRIEFING_ORGS`` is a platform name, a
+  reload name and a name that the staging tool may write.
 
 Review round 1 (2026-10-31) adds:
 
@@ -961,3 +965,105 @@ def test_the_staging_tool_may_write_the_flag_and_names_its_credit_spend() -> Non
     readme = [ln for ln in STAGING_README.read_text(encoding="utf-8").splitlines()
               if ln.startswith(f"| `{FLAG}`")]
     assert len(readme) == 1 and "credits" in readme[0], readme
+
+
+# ── briefing_for(org), the flag of PZ-34 ────────────────────────────────────
+
+BRIEFING_FLAG = "ASSISTANT_BRIEFING_ORGS"
+
+
+@pytest.fixture
+def briefing_flags():
+    """Set the briefing list and the profile switch on a copy, and install it
+    as a reload does."""
+    original = get_settings()
+
+    def _set(orgs: str, *, profile: bool = True, profile_orgs: str = "") -> None:
+        install_settings(original.model_copy(update={
+            "assistant_briefing_orgs": orgs,
+            "assistant_profile_enabled": profile,
+            "assistant_profile_orgs": profile_orgs,
+        }))
+
+    yield _set
+    install_settings(original)
+
+
+def test_pz34_the_briefing_is_off_for_an_org_off_the_list(briefing_flags) -> None:
+    briefing_flags("")
+    assert ap.briefing_for(ORG) is False
+    briefing_flags(OTHER_ORG)
+    assert ap.briefing_for(ORG) is False
+    assert ap.briefing_for(OTHER_ORG) is True
+
+
+def test_pz34_star_and_a_list_turn_the_briefing_on(briefing_flags) -> None:
+    briefing_flags("*")
+    assert ap.briefing_for(ORG) is True
+    briefing_flags(f" {ORG.upper()} , {OTHER_ORG}")
+    assert ap.briefing_for(ORG) is True
+    assert ap.briefing_for("") is False
+    assert ap.briefing_for(None) is False
+
+
+def test_pz34_the_profile_switch_off_turns_the_briefing_off(briefing_flags) -> None:
+    """``enabled_for`` is needed too."""
+    briefing_flags("*", profile=False)
+    assert ap.briefing_for(ORG) is False
+    briefing_flags("*", profile=True, profile_orgs=OTHER_ORG)
+    assert ap.briefing_for(ORG) is False
+    assert ap.briefing_for(OTHER_ORG) is True
+
+
+def test_pz34_the_briefing_flag_reads_the_settings_at_each_call(briefing_flags) -> None:
+    """A SIGHUP reload installs new settings. The next call reads them, with
+    no restart."""
+    briefing_flags("")
+    assert ap.briefing_for(ORG) is False
+    briefing_flags(ORG)
+    assert ap.briefing_for(ORG) is True
+    briefing_flags("")
+    assert ap.briefing_for(ORG) is False
+
+
+def test_pz34_the_briefing_flag_fails_closed(briefing_flags, monkeypatch) -> None:
+    """A fault in the settings read gives False, never an open block."""
+    briefing_flags("*")
+
+    def _broken():
+        raise RuntimeError("settings are broken")
+
+    import acb_common
+
+    monkeypatch.setattr(acb_common, "get_settings", _broken)
+    assert ap.briefing_for(ORG) is False
+
+
+def test_pz34_the_summary_list_does_not_open_the_briefing(flags) -> None:
+    """Two flags, two readers: the list of PZ-33 opens no briefing."""
+    flags("*")
+    assert ap.chat_summary_for(ORG) is True
+    assert ap.briefing_for(ORG) is False
+
+
+def test_pz34_the_briefing_flag_is_a_reloadable_platform_name_with_an_empty_default() -> None:
+    from acb_common.settings import Settings
+    from gateway.flag_reload import RELOADABLE
+
+    assert Settings.model_fields["assistant_briefing_orgs"].default == ""
+    assert BRIEFING_FLAG in RELOADABLE
+    assert env_guard.is_platform_env(BRIEFING_FLAG)
+    assert BRIEFING_FLAG in env_guard.PLATFORM_ENV_NAMES
+
+
+def test_pz34_the_staging_tool_may_write_the_briefing_flag() -> None:
+    """§15.8: the name matches neither wall of the tool, it is in the
+    allowlist, and the README lists it."""
+    for wall in ("DENY_RE", "HELD_RE"):
+        assert not _bash_regex(wall).search(BRIEFING_FLAG), f"{wall} refuses {BRIEFING_FLAG}"
+    body = STAGING_TOOL.read_text(encoding="utf-8")
+    block = re.search(r"^readonly ALLOWED_KEYS=\(\n(.*?)^\)$", body, re.M | re.S)
+    assert block and BRIEFING_FLAG in block.group(1).split()
+    readme = [ln for ln in STAGING_README.read_text(encoding="utf-8").splitlines()
+              if ln.startswith(f"| `{BRIEFING_FLAG}`")]
+    assert len(readme) == 1, readme
