@@ -357,6 +357,13 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/auth/me/assistant-profile": ("profile_set", "PUT /auth/me/assistant-profile"),
     # ── AI Studio (STU-F2d) ──
     "GET /api/studio/actions": "studio_list_actions",
+    # STU-D2b: the READ side of a package page. The door POST is a list from chat. A create,
+    # an update and a delete from chat wait for B2c-2 (no chat call carries a direct proof,
+    # so the door answers 403 approval_required). The fence reads only the route, so it
+    # cannot see that gap. chat_parity.md section 4 names it.
+    "GET /api/studio/packages": "studio_package_get",
+    "GET /api/studio/packages/{}": "studio_package_get",
+    "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
     "GET /api/studio/skills/{}": "studio_skill_list",
     "PATCH /api/studio/skills/{}/state": "studio_skill_state",

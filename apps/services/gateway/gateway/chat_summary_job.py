@@ -407,7 +407,8 @@ async def summarise(org: str, payload: dict[str, Any], claim: queue.Claim) -> No
 def register_jobs(*, replace: bool = False) -> None:
     """Register the kind and add the seed hook. Safe to call twice: the hook
     is added once."""
-    worker.register(KIND, summarise, mode="detached", idempotent=True, replace=replace)
+    worker.register(KIND, summarise, mode="detached", idempotent=True, replace=replace,
+                    effect="own_rows")
     if seed not in worker.seed_hooks:
         worker.seed_hooks.append(seed)
 

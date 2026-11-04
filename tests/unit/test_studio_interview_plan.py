@@ -361,7 +361,8 @@ def test_the_family_holds_both_new_tools_in_the_order_of_the_module() -> None:
     tools = tuple(sf.SKILL_FAMILIES["studio"]["tools"])
     assert "studio_interview" in tools and "studio_plan" in tools
     assert tools == tuple(fn.__name__ for fn in (
-        *st.STUDIO_TOOLS, *st.STUDIO_SKILL_TOOLS, *st.STUDIO_PACKAGE_TOOLS))
+        *st.STUDIO_TOOLS, *st.STUDIO_SKILL_TOOLS, *st.STUDIO_PACKAGE_TOOLS,
+        *st.STUDIO_RECORD_TOOLS))
     assert all(inspect.iscoroutinefunction(fn) for fn in st.STUDIO_TOOLS)
 
 

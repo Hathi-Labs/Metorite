@@ -25,7 +25,12 @@ from pathlib import Path
 from typing import Any
 
 from acb_common import get_settings
-from acb_skills.studio_tools import STUDIO_PACKAGE_TOOLS, STUDIO_SKILL_TOOLS, STUDIO_TOOLS
+from acb_skills.studio_tools import (
+    STUDIO_PACKAGE_TOOLS,
+    STUDIO_RECORD_TOOLS,
+    STUDIO_SKILL_TOOLS,
+    STUDIO_TOOLS,
+)
 
 _INSTRUCTIONS_FILE = Path(__file__).parent / "instructions.md"
 INSTRUCTIONS = (
@@ -34,7 +39,7 @@ INSTRUCTIONS = (
     else "You hold the AI Studio builder tools. You are not a second assistant."
 )
 
-_TOOLS = [*STUDIO_TOOLS, *STUDIO_SKILL_TOOLS, *STUDIO_PACKAGE_TOOLS]
+_TOOLS = [*STUDIO_TOOLS, *STUDIO_SKILL_TOOLS, *STUDIO_PACKAGE_TOOLS, *STUDIO_RECORD_TOOLS]
 
 
 def _register_agent_tools() -> dict[str, Any]:
@@ -86,7 +91,8 @@ def build_agents() -> list[Any]:
             description=(
                 "Owns the studio tool pack: draft, patch, validate and outline an "
                 "AI Studio app manifest, list the actions an app may use, save and "
-                "publish the app, and save, publish, pause and list the skills of a member."
+                "publish the app, save, publish, pause and list the skills of a member, "
+                "and read the records of a package."
             ),
             tools=_agent_tools(),
         )

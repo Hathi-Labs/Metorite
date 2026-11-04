@@ -239,6 +239,9 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     # -- studio packages (STU-G1c) --
     "studio_save": ("save my studio app",),
     "studio_publish": ("publish my studio app",),
+    # -- studio records (STU-D2b) --
+    "studio_package_get": ("list my studio packages",),
+    "studio_record_list": ("show the records of my studio package",),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),
