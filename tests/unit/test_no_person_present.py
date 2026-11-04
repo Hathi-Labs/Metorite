@@ -962,9 +962,12 @@ def test_no_tool_or_request_field_names_the_mark() -> None:
 #: A formatted value of an f-string reads as ``{}`` here, so a route with an
 #: id in it is written ``/agent-runs/{}/resume``.
 #: WS-ALN ALN-2a adds the answer of a decision. Only the named decider answers.
+#: WS-55 MCP-G15 adds the outside decision. It closes the member's question,
+#: so only an outside agent with the member's word may call it. Its chat tool
+#: stays PLANNED, and a tool that names the route fails this scan.
 _APPROVAL_ROUTES = ("/actions/pending", "/respond-input", "/archive-approval",
                     "/agent-runs/{}/activities", "/agent-runs/{}/resume",
-                    "/decisions/{}/answer")
+                    "/decisions/{}/answer", "/agent-runs/{}/outside-decision")
 _TOOL_ROOTS = ("apps/agents", "apps/skills", "packages/acb_skills", "skills")
 #: The route table of the Projects tools. It names each route, and it holds a
 #: decision for each. ``test_the_run_tools_stay_planned`` fences the two rows.
@@ -1039,6 +1042,9 @@ def test_the_route_scan_reads_an_f_string() -> None:
     assert _routes_in(acts) == ["/agent-runs/{}/activities"]
     answer = 'url = f"/projects/decisions/{decision_id}/answer"'
     assert _routes_in(answer) == ["/decisions/{}/answer"]
+    # WS-55 MCP-G15: the outside decision closes the member's question.
+    outside = 'url = f"/projects/agent-runs/{run_id}/outside-decision"'
+    assert _routes_in(outside) == ["/agent-runs/{}/outside-decision"]
     # A plain string of each route still matches.
     assert _routes_in('u = "/api/actions/pending"') == ["/actions/pending"]
     assert _routes_in('u = "/agent/respond-input"') == ["/respond-input"]

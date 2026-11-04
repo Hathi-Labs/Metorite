@@ -271,6 +271,8 @@ session that changes the repo or a box follows these steps:
 
 A session that only reads or answers needs no task. After an `ask_on_task`,
 read the run with `get_agent_run` before you say the owner has not answered.
+When the owner answers in chat and not on the task, call
+`record_outside_decision` at once, so the task stops waiting.
 `next-ticket.md` "The task board" binds each step to the cycle. Fence:
 `tests/unit/test_task_routine.py`. Extended by the owner on 2026-11-03.
 
