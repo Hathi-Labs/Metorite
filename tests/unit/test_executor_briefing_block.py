@@ -513,6 +513,26 @@ def test_4_the_store_is_per_chat_and_per_member(run) -> None:
     assert len(run["builds"]) == 2
 
 
+def test_12_a_stored_block_outlives_an_access_change(run) -> None:
+    """D-PZ-38 item 3 (the owner, 2026-11-04): a stored block can keep a task
+    title for up to 24 hours after an admin removes the member's access to
+    its project, or removes ``feature:projects``. A new chat reads fresh
+    data. The R8 file holds the same case with a real removal of the
+    feature."""
+    first = _turn(run, run_id="run-1")
+    assert "- Send the deck to Priya (due Sat 31 Oct)" in first[first.index(GOLDEN)]
+    # An admin removes the access: the read of the tasks now gives none.
+    run["tasks"] = []
+    second = _turn(run, run_id="run-2")
+    assert second == first, "the same chat keeps the stored bytes"
+    assert len(run["builds"]) == 1 and len(run["task_reads"]) == 1, "turn 2 reads nothing"
+    fresh = _turn(run, run_id="run-3", thread_id="chat-pz34-new")
+    (block,) = _briefings(fresh)
+    assert ap.BRIEFING_TASKS_HEADER not in block
+    assert "Send the deck to Priya (due" not in block
+    assert len(run["builds"]) == 2
+
+
 def test_12_the_key_is_tenant_scoped_with_a_member_hash(run) -> None:
     _turn(run)
     ((key, ttl, value),) = run["redis"].sets

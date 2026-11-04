@@ -502,3 +502,37 @@ async def test_12_a_stored_block_outlives_a_delete_in_the_same_chat(env) -> None
                 "UPDATE chat_session SET member_summary = CAST(:sm AS jsonb) "
                 "WHERE id = :s"),
                 {"s": env.ids["c"], "sm": _summary("Booked the van for Tuesday.")})
+
+
+async def test_12_a_stored_block_outlives_an_access_change(env) -> None:
+    """D-PZ-38 item 3 (the owner, 2026-11-04), with a real removal: the role
+    of the member loses ``feature:projects``. The stored block of this chat
+    keeps the task titles and its bytes. A new chat reads fresh data, so it
+    shows no task part."""
+    from acb_auth.access import invalidate
+    from acb_common import assistant_profile as ap
+
+    first = await _turn(env, session=CURRENT, run_id="run-1")
+    assert _task_titles(first) == ["Chase the supplier", "Ship the extruder"]
+    role = {"s": f"pz34-{TAG}", "o": env.org_a}
+    try:
+        with env.admin_engine.begin() as c:
+            gone = c.execute(text(
+                "DELETE FROM org_role_permission WHERE permission = 'feature:projects' "
+                "AND role_id IN (SELECT id FROM org_role WHERE slug = :s "
+                "AND organization_id = CAST(:o AS uuid))"), role).rowcount
+        assert gone == 1
+        invalidate()
+        second = await _turn(env, session=CURRENT, run_id="run-2")
+        assert second == first, "the stored block of this chat keeps its bytes"
+        assert len(env.redis.sets) == 1, "turn 2 built nothing"
+        fresh = await _turn(env, session=env.ids["a"], run_id="run-3")
+        assert ap.BRIEFING_TASKS_HEADER not in fresh
+        assert _task_titles(fresh) == []
+    finally:
+        with env.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO org_role_permission (role_id, permission, organization_id) "
+                "SELECT id, 'feature:projects', organization_id FROM org_role "
+                "WHERE slug = :s AND organization_id = CAST(:o AS uuid)"), role)
+        invalidate()

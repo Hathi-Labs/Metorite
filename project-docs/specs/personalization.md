@@ -2211,7 +2211,8 @@ is empty on each box, so no run gets the block yet.
   under the run's org gives `cc:<org>:chat-briefing:<session>:<hash>`. The
   value is `{"v": 1, "text": ...}` for 24 hours. A build with nothing stores
   `""`, so turn 2 builds nothing and the bytes stay the same. A stored value
-  wins over each change of the data in that chat (D-PZ-38).
+  wins over each change of the data in that chat, a change of access too
+  (D-PZ-38).
 - **The budget.** The Redis read, the build and the store have 1 second
   (`_BRIEFING_TIMEOUT_S`). Past it, the turn goes on with no block, and the
   prime cancels the work. A Redis fault or any other fault gives no block and a
@@ -2720,8 +2721,8 @@ decision are in this table:
   a message that the member typed in the message box carries it, and the
   same mark grounds the profile tools.
 - **The owner decided D-PZ-38 on 2026-11-04** ("go ahead with your
-  recommendation"). It holds the two defaults of PZ-34: learning off, and
-  the life of a stored briefing block.
+  recommendation"). It holds the defaults of PZ-34: learning off, the life
+  of a stored briefing block, and a stored block after a change of access.
 - **These are the agent's design defaults** under that blanket answer:
   D-PZ-25 to D-PZ-27, D-PZ-29, D-PZ-30, D-PZ-35 and D-PZ-36. The owner did
   not see them one by one, and may overrule any of them. The owner decided
@@ -2743,7 +2744,7 @@ decision are in this table:
 | **D-PZ-35** | Who may turn the summary job on in production? | The owner only (§6 D4), because the job spends each org's credits with no request of the member. Each other flip of §15 is gate `enforcement-flip` |
 | **D-PZ-37** | Which rows are the member's own words? | **Owner decision, 2026-11-02.** ONE positive "typed" mark. Only a message that the member typed in the message box carries it. A tapped pill, a choice option, a card action, a feed starter and the Fix prompt carry no mark. A message with no mark counts for nothing, and so does each row stored before the mark. The same mark grounds the profile tools, so a save from a tapped pill goes to the PZ-32 confirm card and never saves at once. This changes production, and the owner accepted that. As built: the message box, the shell Ask field and the ⌘K draft carry the mark. A link, such as `/chat?q=`, never does. The tool-pack chooser reads the sent words, and it changes no guard |
 | **D-PZ-36** | Does "Let the assistant remember what I tell it" off stop summaries? | Yes, an agent default that the owner may overrule. Off stops every write (§7 item 3), and a summary is a new note about the member. The seed and the job skip the member. The kept summaries stay until the member deletes them |
-| **D-PZ-38** | What does the briefing of PZ-34 show when "Let the assistant remember" is off, and after a Forget, a Delete or the switch? | **Decided: owner, 2026-11-04.** (1) Learning off (D-PZ-36) stops new summaries only. It does not hide kept summaries from the briefing. The member hides one with Delete or with the summary switch. (2) A stored briefing block lives for 24 hours in each chat. A Forget, a Delete or the switch does not clear a block that is already stored, so that one chat can keep the deleted summary for up to 24 hours. A new chat reads the store again. Fence: `test_executor_briefing_block_r8.py::test_12_a_stored_block_outlives_a_delete_in_the_same_chat` |
+| **D-PZ-38** | What does the briefing of PZ-34 show when "Let the assistant remember" is off, and after a Forget, a Delete, the switch or a change of access? | **Decided: owner, 2026-11-04.** (1) Learning off (D-PZ-36) stops new summaries only. It does not hide kept summaries from the briefing. The member hides one with Delete or with the summary switch. (2) A stored briefing block lives for 24 hours in each chat. A Forget, a Delete or the switch does not clear a block that is already stored, so that one chat can keep the deleted summary for up to 24 hours. A new chat reads the store again. (3) **Decided: owner, 2026-11-04.** A stored block can keep a task title for up to 24 hours after an admin removes the member's access to its project, or removes `feature:projects`. The chat history also keeps what it showed before an access change. A new chat reads fresh data. Fences: `test_executor_briefing_block_r8.py::test_12_a_stored_block_outlives_a_delete_in_the_same_chat` and `test_12_a_stored_block_outlives_an_access_change`, in the unit file and in the R8 file |
 
 ### 15.12 Open questions for the owner
 
