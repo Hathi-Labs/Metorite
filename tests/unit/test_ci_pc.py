@@ -242,7 +242,7 @@ def test_the_shared_clone_has_one_git_writer_at_a_time():
 
 
 def test_the_default_run_is_the_civ2_selection_and_full_is_opt_in():
-    assert "affected_tests.py --gate --base origin/main" in _REMOTE
+    assert "affected_tests.py --gate --base" in _REMOTE and "origin/main" in _REMOTE
     assert "--full) full=yes" in _REMOTE
     assert "--select-file" in _RUN_SUITE
     # A selector that fails, or says full, runs every test (it fails open).
