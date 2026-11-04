@@ -47,8 +47,9 @@ class AgentScope:
     Branch 0 of ``deps.get_current_user`` attaches it LAST, after the member's
     access resolved, and only for a signed request of a live connection. The
     Projects visibility seam reads it: the pins, the left-out list, the
-    personal opt-out and the seal narrow both arms of its clauses. ``None`` on ``UserContext.agent``
-    means a human request, and every clause is then byte-identical to before.
+    personal opt-out and the seal narrow both arms of its clauses. ``None``
+    on ``UserContext.agent`` means a human request, and every clause is then
+    byte-identical to before.
 
     Every field comes from the ``agent_connection`` row, never from a header,
     with one exception: ``session_key`` (SW-7) comes from the SIGNED
