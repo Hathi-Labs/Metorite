@@ -1006,7 +1006,7 @@ export function ClarifyPanel({
                 size="xs"
                 icon="ListChecks"
                 className="whitespace-nowrap"
-                title={`${fallbackReasonText(proposal.fallbackReason)} These are rule-based picks. Check them before you accept.`}
+                title="Rule-based picks. Check them before you accept."
               >
                 Rule-based suggestion
               </Badge>
@@ -1028,6 +1028,11 @@ export function ClarifyPanel({
             </span>
             </span>
           </div>
+          {proposal.clarifiedBy === "heuristic" && (
+            <p className="mb-1.5 text-[11px] text-muted-foreground">
+              {fallbackReasonText(proposal.fallbackReason)} Check the picks before you accept.
+            </p>
+          )}
           <div className="flex items-center gap-2 text-sm font-medium text-foreground">
             <Meta.icon className="h-4 w-4 text-primary" />
             {Meta.label}

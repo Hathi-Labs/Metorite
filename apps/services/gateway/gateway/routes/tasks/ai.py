@@ -681,7 +681,7 @@ async def _ask_clarify_model(
         resp, _used = await acompletion_with_fallback(
             model=model,
             fallback_model="tier-balanced",
-            messages=[{"role": "system", "content": system},
+            messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("title", "description", json=True)},
                       {"role": "user", "content": user}],
             temperature=0.0,
             max_tokens=CLARIFY_MAX_TOKENS,
@@ -867,9 +867,7 @@ async def _llm_propose(
            if memory_context else "")
     )
     data, reason = await _ask_clarify_model(
-        model,
-        system + "\n\n" + voice_prompt("title", "description", json=True),
-        user)
+        model, system, user)
     if data is None:
         return _fail(reason or "error")
 
