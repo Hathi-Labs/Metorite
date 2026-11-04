@@ -51,8 +51,10 @@ import uuid
 from datetime import timedelta
 from typing import Any
 
-from acb_common import get_settings
+from acb_common import get_logger, get_settings
 from sqlalchemy import text
+
+_log = get_logger("gateway.workflows.park")
 
 #: The two options of a parked gate. The keys are the only answer vocabulary.
 YES, NO = "yes", "no"
@@ -267,13 +269,15 @@ PARKED_SQL = (
 )
 
 #: One decision of a parked gate. It must be an ``auto`` decision asked for
-#: THIS run. The expiry is read with the DB clock.
+#: THIS run and THIS pause, so an answer to gate 1 never opens gate 2. The
+#: expiry is read with the DB clock.
 _DECISION_SQL = (
     "SELECT id, decider, answered_by, answer_key, answered_at, subject_id, "
     "       (expires_at <= now()) AS is_expired "
     "  FROM pm_decisions "
     " WHERE id = CAST(:id AS uuid) AND source = 'auto' "
-    "   AND payload ->> 'run_id' = :run_id"
+    "   AND payload ->> 'run_id' = :run_id "
+    "   AND payload ->> 'pause_id' = :pause_id"
 )
 
 
@@ -290,10 +294,16 @@ def decision_id_of(snapshot: Any) -> str | None:
         return None
 
 
-async def read_decision(db: Any, decision_id: str, run_id: str) -> Any | None:
-    """The decision row, in the org that *db* binds, or None."""
+async def read_decision(
+    db: Any, decision_id: str, run_id: str, pause_id: str,
+) -> Any | None:
+    """The decision row of one parked gate, in the org that *db* binds, or
+    None. *run_id* and *pause_id* come from the pause row that the scan read."""
     return (
-        await db.execute(text(_DECISION_SQL), {"id": decision_id, "run_id": str(run_id)})
+        await db.execute(
+            text(_DECISION_SQL),
+            {"id": decision_id, "run_id": str(run_id), "pause_id": str(pause_id)},
+        )
     ).fetchone()
 
 
@@ -332,6 +342,11 @@ async def end_parked(
     nothing. The run UPDATE holds the matching guard, and a loss there raises
     :class:`ParkLost`, so the caller rolls the pause back too. Only the
     winner of an expiry writes the tell, one comment on the subject task.
+
+    ⚠️ **The tell never blocks the end.** The owner can delete the subject
+    task before an answer, and then only the expiry can end the run. So the
+    tell runs only while the task row exists, inside a SAVEPOINT. A failed
+    tell rolls back the savepoint alone, and the end of the run commits.
     """
     if outcome not in (DECLINE, EXPIRE):
         raise ValueError(f"end_parked takes {DECLINE} or {EXPIRE}, not {outcome}")
@@ -359,15 +374,47 @@ async def end_parked(
     if ran is None:
         raise ParkLost(run_id)
     if outcome == EXPIRE and subject_task_id:
-        from gateway.routes.projects.core import record_activity
-
-        await record_activity(
-            db,
-            activity_type="comment",
-            created_by=asker(workflow_id),
-            task_id=subject_task_id,
-            body=EXPIRED_TEXT,
-            meta={"decision_id": decision_id},
-            automation=True,
-        )
+        await _tell_expired(db, workflow_id, subject_task_id, decision_id)
     return True
+
+
+async def _tell_expired(
+    db: Any, workflow_id: str, subject_task_id: str, decision_id: str,
+) -> None:
+    """One comment on the subject task, in its own SAVEPOINT. It writes
+    nothing when the task is gone, and it never raises."""
+    from gateway.routes.projects.core import record_activity
+
+    try:
+        async with db.begin_nested():
+            alive = (
+                await db.execute(
+                    text("SELECT 1 FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
+                    {"t": subject_task_id},
+                )
+            ).fetchone()
+            if alive is None:
+                return
+            await record_activity(
+                db,
+                activity_type="comment",
+                created_by=asker(workflow_id),
+                task_id=subject_task_id,
+                body=EXPIRED_TEXT,
+                meta={"decision_id": decision_id},
+                automation=True,
+            )
+    except Exception as exc:  # the end of the run commits without the tell
+        _log.warning("workflows.parked_tell_failed", error=type(exc).__name__)
+
+
+async def bump_owner_my_day(organization_id: str, owner: str) -> None:
+    """Move the owner's My Day version after a park commits.
+
+    ``announce=False`` sends no ``pm.*`` event, so the event sink moves no
+    version. This calls ``shell.cache.bump_member_safe``, the helper for a
+    write of another app after its commit. It waits a bounded time, does
+    nothing while ``MY_DAY_CACHE`` is off, and never raises."""
+    from gateway.routes.shell import cache as feed_cache
+
+    await feed_cache.bump_member_safe(organization_id, owner)

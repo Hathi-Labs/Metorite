@@ -685,8 +685,10 @@ async def create_personal_task(
     Only the parked gate of a workflow run passes it
     (`routes/workflows/park.py`). Its task holds a question for the owner, and
     an event could start a workflow that parks and makes the next task, with
-    no end. Every other caller keeps the default. Fence:
-    `tests/unit/test_auto_park.py`.
+    no end. Every other caller keeps the default, and a source scan holds
+    that. With no event, the `shell.cache.on_event` sink moves no My Day
+    version, so the park calls `shell.cache.bump_member_safe` for the owner
+    after its commit. Fence: `tests/unit/test_auto_park.py`.
     """
     # WS-64. A capture is a NEW placement, so it is refused under an archived
     # Area (one `archived_at` read by id, since callers hold ids and no row).

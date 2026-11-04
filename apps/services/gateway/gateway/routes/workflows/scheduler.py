@@ -375,6 +375,7 @@ async def scan_due_waits(now: float | None = None) -> int:
                     str(row.run_id),
                     resumed_by="scheduler:wait",
                     organization_id=str(row.organization_id),
+                    pause_id=str(row.id),
                 )
             except Exception as exc:  # one bad run must not stall the rest
                 _log.warning(
@@ -425,7 +426,7 @@ async def scan_decided_pauses(org: str) -> int:
         run_id = str(row.run_id)
         try:
             async with _tenant_session(org) as db:
-                decision = await park.read_decision(db, decision_id, run_id)
+                decision = await park.read_decision(db, decision_id, run_id, str(row.id))
             outcome = park.outcome_of(decision)
             if outcome == park.WAIT:
                 continue
@@ -434,6 +435,7 @@ async def scan_decided_pauses(org: str) -> int:
                     run_id,
                     resumed_by=str(decision.answered_by).strip().lower(),
                     organization_id=str(row.organization_id),
+                    pause_id=str(row.id),
                 )
                 if result.get("ok"):
                     settled += 1

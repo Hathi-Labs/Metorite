@@ -1330,7 +1330,8 @@ async def _park_with_decision(
     member or a payload field. The org is the run's stored org, bound for the
     ask with ``bind_tenant`` as a job binds its own record. ``DecisionRefused``,
     a missing owner or any failure rolls the transaction back, and returns
-    False. Fence: ``tests/unit/test_auto_park.py``.
+    False. After the commit it bumps the owner's My Day version, because the
+    subject task sends no event. Fence: ``tests/unit/test_auto_park.py``.
     """
     from acb_common.no_person import no_person_present
     from gateway.routes.workflows import park
@@ -1367,11 +1368,18 @@ async def _park_with_decision(
         )
         return False
     _log.info("workflows.parked", run_id=run_id, decision_id=parked["decision_id"])
+    # After the commit: the subject task sent no event, so move the owner's
+    # My Day version here. It waits a bounded time and never raises.
+    await park.bump_owner_my_day(organization_id, owner)
     return True
 
 
 async def resume_run(
-    run_id: str, *, resumed_by: str = "approver", organization_id: str | None = None,
+    run_id: str,
+    *,
+    resumed_by: str = "approver",
+    organization_id: str | None = None,
+    pause_id: str | None = None,
 ) -> dict[str, Any]:
     """Resume a paused run: replay completed nodes from stored outputs and
     let the gate node through.
@@ -1388,6 +1396,12 @@ async def resume_run(
     Each one returns the row it won. A caller that wins neither starts
     nothing, so two scans, or a scan and the broker door, start one
     ``_execute_run``. Before AUTO-7b these UPDATEs had no guard.
+
+    ⚠️ **The scans name the pause they read** (AUTO-7b). *pause_id* is the id
+    of the pause row that the wait scan or the decided scan read. With it,
+    only THAT pause can resume, while it is still pending. So a late yes to
+    gate 1 finds its pause settled and never opens gate 2. Without it, the
+    broker door resumes the newest pending pause, as before.
 
     *organization_id* binds the read and the claim (:func:`_run_session`).
     The broker handler passes the approver's org. Under FORCE RLS a run of
@@ -1431,16 +1445,28 @@ async def resume_run(
                 "ok": False,
                 "error": f"run {run_id} is not paused" if run is not None else f"no run {run_id}",
             }
-        pause = (
-            await db.execute(
-                text(
-                    "SELECT * FROM workflow_run_pauses "
-                    "WHERE run_id = :id AND status = 'pending' "
-                    "ORDER BY created_at DESC LIMIT 1"
-                ),
-                {"id": run_id},
-            )
-        ).fetchone()
+        if pause_id is not None:
+            pause = (
+                await db.execute(
+                    text(
+                        "SELECT * FROM workflow_run_pauses "
+                        "WHERE id = CAST(:pid AS uuid) AND run_id = :id "
+                        "AND status = 'pending'"
+                    ),
+                    {"id": run_id, "pid": str(pause_id)},
+                )
+            ).fetchone()
+        else:
+            pause = (
+                await db.execute(
+                    text(
+                        "SELECT * FROM workflow_run_pauses "
+                        "WHERE run_id = :id AND status = 'pending' "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    ),
+                    {"id": run_id},
+                )
+            ).fetchone()
         if pause is None:
             return {"ok": False, "error": f"run {run_id} has no pending pause"}
         snapshot = parse_jsonb(pause.snapshot, {}) or {}

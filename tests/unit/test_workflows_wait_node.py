@@ -289,8 +289,10 @@ def _install_wait_rows(monkeypatch, rows: list[SimpleNamespace]) -> list[str]:
 
     async def fake_resume(
         run_id: str, *, resumed_by: str = "", organization_id: str | None = None,
+        pause_id: str | None = None,
     ) -> dict:
         assert organization_id == "org-1"  # the org of the run row
+        assert pause_id == f"p-{run_id}"  # AUTO-7b: the pause that the scan read
         resumed.append(run_id)
         return {"ok": True, "run_id": run_id}
 

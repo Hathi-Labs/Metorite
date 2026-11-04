@@ -838,6 +838,9 @@ class Settings(BaseSettings):
     # files the broker proposal of AUTO-7a, byte for byte. The one reader is
     # `gateway.routes.workflows.park.park_allowed`. A SIGHUP reload applies a
     # change (`gateway/flag_reload.py`). Fence: tests/unit/test_auto_park.py.
+    # ⚠️ The wait scan settles a parked gate only for an org on
+    # `workflow_unattended_orgs`. If the org leaves that list, a yes resumes
+    # nothing and no expiry ends the run, until the org is on it again.
     auto_park_orgs: str = ""
     # ── Guidance for agents (WS-MCP SW-31a, agent_coordination.md SW-31) ────
     #

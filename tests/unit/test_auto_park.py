@@ -49,6 +49,14 @@ that is NOT a superuser, NOT the owner and has NO BYPASSRLS.
 * M8. ``park.end_parked``: drop both status guards (F7 red).
 * M9. ``resume_run``: resume with ``trigger_kind="manual"`` (F8 red).
 * M10. ``park.park_with_decision``: ``announce=True`` (the loop guard red).
+* M13. ``park.end_parked``: write the tell with no SAVEPOINT and no row check
+  (the deleted-task case red).
+* M14. ``resume_run``: ignore ``pause_id`` and take the newest pending pause
+  (the gate-2 case red).
+* M15. ``_DECISION_SQL``: drop ``source = 'auto'``, the ``run_id`` bind or the
+  ``pause_id`` bind (the bind case red).
+* M16. The capture route passes ``announce=False`` (the announce scan red).
+* M17. ``_park_with_decision``: drop the My Day bump (the bump case red).
 
 Run (a PRIVATE database, because the fixture drops ``<db>_autopark``)::
 
@@ -192,6 +200,7 @@ _BROKER_PARAMS = {
     ),
 }
 _BROKER_PROPOSAL = {
+    "authority": broker.AuthorityTier.SUGGEST,
     "actor": "workflow:Nudge",
     "action": "workflow.resume_run",
     "target": "workflow_run:r-1",
@@ -230,7 +239,10 @@ def _gate(
     async def _session(_org: str | None):
         yield db
 
-    seen = SimpleNamespace(db=db, proposals=[], parked=[], owner_reads=[])
+    seen = SimpleNamespace(db=db, proposals=[], parked=[], owner_reads=[], bumps=[])
+
+    async def _bump(org_: Any, email: Any) -> None:
+        seen.bumps.append((org_, email))
 
     async def _submit(proposal: Any) -> dict:
         seen.proposals.append(proposal)
@@ -252,6 +264,9 @@ def _gate(
     monkeypatch.setattr(broker, "submit", _submit)
     monkeypatch.setattr(park, "park_with_decision", _park)
     monkeypatch.setattr(service, "_workflow_owner", _owner)
+    from gateway.routes.shell import cache as feed_cache
+
+    monkeypatch.setattr(feed_cache, "bump_member_safe", _bump)
     _flags(monkeypatch, park_orgs=park_orgs, decision_orgs=decision_orgs)
 
     async def main() -> None:
@@ -268,13 +283,14 @@ def _gate(
 
 
 def _proposal_shape(p: Any) -> dict:
-    return {"actor": p.actor, "action": p.action, "target": p.target,
-            "payload": dict(p.payload), "destructive": p.destructive}
+    return {"authority": p.authority, "actor": p.actor, "action": p.action,
+            "target": p.target, "payload": dict(p.payload), "destructive": p.destructive}
 
 
 def _assert_broker_door(seen: SimpleNamespace) -> None:
     assert [_proposal_shape(p) for p in seen.proposals] == [_BROKER_PROPOSAL]
     assert seen.db.calls == [(_BROKER_SQL, _BROKER_PARAMS)]
+    assert seen.bumps == [], "the broker door bumped a My Day version"
 
 
 def test_f1_a_marked_gate_parks_once_and_files_no_proposal(monkeypatch) -> None:
@@ -282,6 +298,8 @@ def test_f1_a_marked_gate_parks_once_and_files_no_proposal(monkeypatch) -> None:
     assert seen.proposals == [], "a parked gate filed a broker proposal too"
     assert seen.db.calls == [], "a parked gate wrote the broker pause row too"
     assert len(seen.parked) == 1
+    # The subject task sent no event, so the park bumps the owner's My Day.
+    assert seen.bumps == [(ORG, "owner@a.test")]
     call = seen.parked[0]
     assert (call["organization_id"], call["owner"], call["run_id"], call["node_id"],
             call["node_label"], call["workflow_name"]) == (
@@ -452,7 +470,8 @@ def test_f3_an_approved_word_in_the_snapshot_or_the_payload_resumes_nothing(monk
 def test_f3_a_yes_of_the_decider_resumes_as_the_decider_in_the_rows_org(monkeypatch) -> None:
     seen = _decided_scan(monkeypatch, _decision(
         answered_by="owner@a.test", answer_key="yes", answered_at="now"), {})
-    assert seen.resumes == [("r-1", {"resumed_by": "owner@a.test", "organization_id": ORG})]
+    assert seen.resumes == [("r-1", {"resumed_by": "owner@a.test", "organization_id": ORG,
+                                     "pause_id": "p-1"})]
 
 
 def test_f3_a_marked_turn_resumes_nothing(monkeypatch) -> None:
@@ -712,6 +731,36 @@ def test_the_subject_task_sends_no_created_event(monkeypatch) -> None:
     assert emitted == []
     asyncio.run(main())
     assert emitted == ["pm.task.created"]
+
+
+def _announce_offenders(root: Path) -> set[str]:
+    """Each module that passes ``announce`` to ``create_personal_task`` with a
+    value other than a literal True, or passes a ``**`` expansion."""
+    found: set[str] = set()
+    for base in ("apps", "packages"):
+        for path in (root / base).rglob("*.py"):
+            if "node_modules" in path.parts or ".venv" in path.parts:
+                continue
+            body = path.read_text(encoding="utf-8", errors="replace")
+            if "create_personal_task" not in body:
+                continue
+            for node in ast.walk(ast.parse(body)):
+                if not (isinstance(node, ast.Call) and _name(node.func) == "create_personal_task"):
+                    continue
+                for kw in node.keywords:
+                    quiet = kw.arg is None or (kw.arg == "announce" and not (
+                        isinstance(kw.value, ast.Constant) and kw.value.value is True))
+                    if quiet:
+                        found.add(path.relative_to(root).as_posix())
+    return found
+
+
+def test_only_the_parked_gate_sends_no_created_event() -> None:
+    """``announce=False`` takes a task out of every automation, so only the
+    parked gate may pass it. A ``**`` expansion counts as a pass too."""
+    assert _announce_offenders(_ROOT) == {
+        "apps/services/gateway/gateway/routes/workflows/park.py",
+    }
 
 
 # ══ R8 ══════════════════════════════════════════════════════════════════════
@@ -1373,6 +1422,64 @@ class TestParkAndAskOnARealDatabase:
     def test_f2_with_a_flag_off_the_gate_files_the_proposal(self, w, monkeypatch, off):
         monkeypatch.setattr(get_settings(), off, "")
         self._assert_broker_door(w, _start(w, "Gate in A"))
+
+    def test_f7_a_deleted_subject_task_still_lets_the_expiry_end_the_run(self, w):
+        """The owner deletes the task, so the answer route has nothing to
+        answer. The expiry must still end the run, with no tell."""
+        run_id, made = _park(w)
+        with w.admin_engine.begin() as c:
+            c.execute(text("DELETE FROM pm_tasks WHERE id = CAST(:t AS uuid)"),
+                      {"t": str(made.subject_id)})
+        _expire(w, str(made.id))
+        assert _scan(w) == 1
+        assert tuple(_run(w, run_id)) == ("cancelled", park.EXPIRED)
+        assert [p.status for p in _pauses(w, run_id)] == ["rejected"]
+        assert _comments(w, str(made.subject_id)) == []
+        assert _scan(w) == 0
+
+    def test_f6_a_late_yes_to_gate_one_never_opens_gate_two(self, w):
+        """A scan that read gate 1 resumes after another scan already moved
+        the run to gate 2. It names the pause it read, so it starts nothing."""
+        run_id, first = _park(w, "Two gates in A")
+        gate_one = _pauses(w, run_id)[0]
+        _answer(w, w.org_a, OWNER_A, str(first.id), "yes")
+        assert _scan(w) == 1
+        assert [p.status for p in _pauses(w, run_id)] == ["resolved", "pending"]
+        late = _on_app_role(w, lambda: service.resume_run(
+            run_id, resumed_by=OWNER_A, organization_id=w.org_a, pause_id=str(gate_one.id)))
+        assert late == {"ok": False, "error": f"run {run_id} has no pending pause"}
+        assert _run(w, run_id).status == "paused"
+        assert [p.status for p in _pauses(w, run_id)] == ["resolved", "pending"]
+        assert _resumes(w, run_id) == 1
+
+    def test_f3_the_decision_read_binds_the_source_the_run_and_the_pause(self, w):
+        run_id, made = _park(w)
+        pause = _pauses(w, run_id)[0]
+        # An `align` decision that names the same run and pause is not ours.
+        other = str(uuid.uuid4())
+        with w.admin_engine.begin() as c:
+            c.execute(text(
+                "INSERT INTO pm_decisions (organization_id, id, subject_kind, subject_id, "
+                "decider, options, question, asked_by, source, payload) VALUES "
+                "(CAST(:o AS uuid), CAST(:id AS uuid), 'task', CAST(:t AS uuid), :d, "
+                "CAST(:opts AS jsonb), 'Align?', 'system:align', 'align', CAST(:pl AS jsonb))"),
+                {"o": w.org_a, "id": other, "t": str(made.subject_id), "d": OWNER_A,
+                 "opts": json.dumps(list(park.OPTIONS)),
+                 "pl": json.dumps({"run_id": run_id, "pause_id": str(pause.id)})})
+
+        async def read(decision_id: str, run: str, pause_id: str) -> Any:
+            from gateway.db import tenant_session
+
+            async with tenant_session(w.org_a) as db:
+                return await park.read_decision(db, decision_id, run, pause_id)
+
+        def got(decision_id: str, run: str, pause_id: str) -> Any:
+            return _on_app_role(w, lambda: read(decision_id, run, pause_id))
+
+        assert got(str(made.id), run_id, str(pause.id)) is not None
+        assert got(str(made.id), str(uuid.uuid4()), str(pause.id)) is None
+        assert got(str(made.id), run_id, str(uuid.uuid4())) is None
+        assert got(other, run_id, str(pause.id)) is None
 
     def test_a_park_in_org_b_stays_in_org_b(self, w):
         run_id, made = _park(w, "Gate in B")
