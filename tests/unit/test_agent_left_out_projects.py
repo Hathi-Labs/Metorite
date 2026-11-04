@@ -76,7 +76,12 @@ _flag_on = oauth._flag_on
 
 _DB_GATE = auth._DB_GATE
 MEMBER = auth.MEMBER
-OTHER = auth.OTHER
+
+#: The member and the colleague of the seeded trees. A member holds one
+#: personal root (``uq_pm_projects_personal_root``), and MEMBER already holds
+#: one in the authority world, so the trees use their own two addresses.
+TREE_MEMBER = "leftout-member@mcpauth.test"
+TREE_OTHER = "leftout-other@mcpauth.test"
 
 
 def _scope(**over: Any) -> AgentScope:
@@ -86,8 +91,8 @@ def _scope(**over: Any) -> AgentScope:
 
 
 def _vis(scope: AgentScope | None, *, org: str = auth.GOLDEN_ORG,
-         unrestricted: bool = True) -> core.Visibility:
-    return core.Visibility(unrestricted=unrestricted, email=MEMBER, groups=(),
+         unrestricted: bool = True, email: str = MEMBER) -> core.Visibility:
+    return core.Visibility(unrestricted=unrestricted, email=email, groups=(),
                            organization_id=org, agent=scope)
 
 
@@ -206,11 +211,12 @@ def _new_org(world, slug: str) -> str:
 def trees(world):
     """Three organizations of their own in the authority catalog.
 
-    ``clean`` holds a 4-level tree, a sealed tree and two personal trees::
+    ``clean`` holds a 4-level tree, a sealed tree and two personal trees.
+    TREE_MEMBER holds a grant on R1, S and P::
 
-        R1 (granted to MEMBER)        R2         S (sealed)    P (MEMBER's)
+        R1                            R2         S (sealed)    P (TREE_MEMBER's)
         ├── A                         └── C      └── S1        └── P1
-        │   ├── A1                                             PO (OTHER's)
+        │   ├── A1                                             PO (TREE_OTHER's)
         │   │   └── A1x
         │   └── A2
         └── B
@@ -228,7 +234,7 @@ def trees(world):
     o = auth._Seeder(world.admin, other)
     k = auth._Seeder(world.admin, broken)
     p: dict[str, str] = {}
-    p["R1"] = a.project("R1", grant_to=MEMBER)
+    p["R1"] = a.project("R1", grant_to=TREE_MEMBER)
     p["A"] = a.project("A", parent=p["R1"])
     p["A1"] = a.project("A1", parent=p["A"])
     p["A1x"] = a.project("A1x", parent=p["A1"])
@@ -237,11 +243,11 @@ def trees(world):
     p["B1"] = a.project("B1", parent=p["B"])
     p["R2"] = a.project("R2")
     p["C"] = a.project("C", parent=p["R2"])
-    p["S"] = a.project("S", grant_to=MEMBER)
+    p["S"] = a.project("S", grant_to=TREE_MEMBER)
     p["S1"] = a.project("S1", parent=p["S"])
-    p["P"] = a.project("P", personal_owner=MEMBER, grant_to=MEMBER)
-    p["P1"] = a.project("P1", parent=p["P"], personal_owner=MEMBER)
-    p["PO"] = a.project("PO", personal_owner=OTHER)
+    p["P"] = a.project("P", personal_owner=TREE_MEMBER, grant_to=TREE_MEMBER)
+    p["P1"] = a.project("P1", parent=p["P"], personal_owner=TREE_MEMBER)
+    p["PO"] = a.project("PO", personal_owner=TREE_OTHER)
     a.one("UPDATE pm_projects SET sealed_at = now()"
           " WHERE id IN (CAST(:s AS uuid), CAST(:s1 AS uuid)) RETURNING id",
           s=p["S"], s1=p["S1"])
@@ -271,7 +277,7 @@ def _reach(world, trees, org: str, *, unrestricted: bool = True,
     organization filters are the only guard (R5).
     """
     scope = None if over.pop("human", False) else _scope(**_ids_of(trees, over))
-    vis = _vis(scope, org=org, unrestricted=unrestricted)
+    vis = _vis(scope, org=org, unrestricted=unrestricted, email=TREE_MEMBER)
     with world.admin.connect() as c:
         rows = c.execute(
             text(f"SELECT CAST(id AS TEXT) FROM pm_projects WHERE {vis.project_clause()}"),
@@ -450,8 +456,8 @@ class TestRuleEightALeftOutListWithNoPin:
             BASELINE - SUBTREE_A - {"R2", "C"})
 
     def test_the_members_live_access_still_bounds_it(self, world, trees):
-        """§7.1: the list never adds a project. MEMBER holds a grant on R1,
-        S and P only."""
+        """§7.1: the list never adds a project. TREE_MEMBER holds a grant on
+        R1, S and P only."""
         human = _reach(world, trees, trees.clean, unrestricted=False, human=True)
         assert human == {"R1", "A", "A1", "A1x", "A2", "B", "B1", "P", "P1"}
         assert _reach(world, trees, trees.clean, unrestricted=False,
