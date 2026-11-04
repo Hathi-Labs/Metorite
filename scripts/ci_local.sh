@@ -137,7 +137,7 @@ args=""
 [ ${#pass[@]} -gt 0 ] && args="$(printf ' %q' "${pass[@]}")"
 # A few tuning variables reach the lane (a test of the slots, a re-measure).
 tune=""
-for v in CI_LANE_LOCK CI_SHARD_GB CI_FIXED_GB CI_OTHER_GB; do
+for v in CI_LANE_LOCK CI_SELECT_BASE CI_SHARD_GB CI_FIXED_GB CI_OTHER_GB; do
   [ -n "${!v:-}" ] && tune+="export $v=$(printf %q "${!v}")"$'\n'
 done
 rc=0

@@ -64,7 +64,7 @@ ci_remote_run() {
   local want min sel_args=() nfiles=0
   if [ "$full" = no ]; then
     local gate
-    gate="$(python3 scripts/affected_tests.py --gate --base origin/main 2>/dev/null)" || gate=""
+    gate="$(python3 scripts/affected_tests.py --gate --base "${CI_SELECT_BASE:-origin/main}" 2>/dev/null)" || gate=""
     nfiles="$(printf '%s' "$gate" | python3 -c '
 import json, sys
 try:
