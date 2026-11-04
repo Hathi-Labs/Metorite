@@ -2398,7 +2398,7 @@ feature off.
 - Each slice adds its name to `ALLOWED_KEYS` (`acb-staging-flag:178`), to
   `tests/unit/test_acb_staging_flag.py` and to
   `deploy/hostinger/staging/README.md`.
-- The env guard prefix `ASSISTANT_PROFILE_` (`packages/acb_common/acb_common/env_guard.py:312-317`) does
+- The env guard prefix `ASSISTANT_PROFILE_` (`packages/acb_common/acb_common/env_guard.py:316-321`) does
   not cover the new names. Each slice adds its name to `PLATFORM_ENV_NAMES`
   (`packages/acb_common/acb_common/env_guard.py:108`). A test asserts `is_platform_env(name)`, as
   `test_brief_run.py:68` does.
