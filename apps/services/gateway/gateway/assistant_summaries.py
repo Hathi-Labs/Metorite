@@ -82,6 +82,11 @@ only. :func:`read_job_chat` is the read of the handler. Both SQL texts name
 the column, so they live here. The handler, the prompt and the model call
 live in ``gateway/chat_summary_job.py``.
 
+**The read of the briefing (PZ-34).** :func:`recent` gives the newest
+summaries of the member's other chats to the executor, which shows them at
+the start of a chat (``personalization.md`` §15.4). It reads the flag, the
+switch and the rules of this module, and copies none of them.
+
 The module imports no litellm and no streamed completion. The job makes the
 one model call through ``acb_llm.context.acompletion_with_fallback`` with the
 Router on (§15.3). Fences: ``tests/unit/test_chat_summary.py``,
@@ -851,13 +856,10 @@ def _member_key(member: Any) -> str:
     return who
 
 
-async def list_for_member(db: Any, member: str, limit: int = LIST_MAX) -> list[Listed]:
-    """The summaries of the solo chats of *member*, newest first, at most
-    *limit* (50 at most). A chat that reads ``off`` and a chat with no text
-    and no follow-up stay out. The member comes from the session."""
-    cap = max(1, min(int(limit), LIST_MAX + 1))
-    rows = (await db.execute(text(LIST_FOR_MEMBER_SQL),
-                             {"member": _member_key(member), "lim": cap})).fetchall()
+def _listed(rows: Iterable[Any]) -> list[Listed]:
+    """The rows ``(id, title, updated_at, member_summary)`` of a member read
+    as :class:`Listed`. A chat that reads ``off`` and a chat with no text and
+    no follow-up stay out. Settings and the briefing read through it."""
     out: list[Listed] = []
     for row in rows:
         one = stored(row[3])
@@ -866,6 +868,16 @@ async def list_for_member(db: Any, member: str, limit: int = LIST_MAX) -> list[L
         out.append(Listed(session_id=str(row[0]), title=str(row[1] or ""),
                           updated_at=row[2], text=one.text, follow_ups=one.follow_ups))
     return out
+
+
+async def list_for_member(db: Any, member: str, limit: int = LIST_MAX) -> list[Listed]:
+    """The summaries of the solo chats of *member*, newest first, at most
+    *limit* (50 at most). A chat that reads ``off`` and a chat with no text
+    and no follow-up stay out. The member comes from the session."""
+    cap = max(1, min(int(limit), LIST_MAX + 1))
+    rows = (await db.execute(text(LIST_FOR_MEMBER_SQL),
+                             {"member": _member_key(member), "lim": cap})).fetchall()
+    return _listed(rows)
 
 
 async def clear_one_for_member(db: Any, session_id: str, member: str) -> bool:
@@ -1329,3 +1341,61 @@ async def seed(org: str, now: datetime) -> None:
                                       max_attempts=ATTEMPTS, now=now)
             new += int(out.created)
     _log.info("assistant.chat_summary_seeded", chats=len(picked), new=new)
+
+
+# ── The briefing of PZ-34: the member's recent chats ─────────────────────────
+#
+# Spec: personalization.md §15.4 ("Only the member's own data"). The executor
+# (`orchestrator/executor.py::_prime_member_briefing`) is the one caller. It
+# shows the newest summaries of the member's OTHER chats at the start of a
+# chat. It lives after `ELIGIBLE_SQL`, because its SQL reads that rule.
+
+#: The most chats that the briefing reads.
+RECENT_MAX = 3
+
+#: The org that RLS binds for the caller's session, as text, or NULL.
+BOUND_ORG_SQL = f"SELECT CAST({_BOUND_ORG} AS text)"
+
+#: The member's own chats that the briefing may show, newest first: the solo
+#: chats of the member in the bound org (`_MINE`), each with a summary that
+#: holds a text or a follow-up (`_HAS_SUMMARY`), and each one that a summary
+#: may cover (`ELIGIBLE_SQL`: Mira on the web, not archived, not `off`, no
+#: other agent). The current chat stays out (`:exclude`). Named columns only
+#: (fence b), and no message text: the block passes the stored summary on.
+RECENT_SQL = (
+    "SELECT s.id, s.title, s.updated_at, s.member_summary FROM chat_session AS s"
+    + _MINE + _HAS_SUMMARY
+    + f"   AND {ELIGIBLE_SQL}\n"
+    + "   AND s.id <> :exclude\n"
+    + " ORDER BY s.updated_at DESC, s.id DESC LIMIT :lim"
+)
+
+
+async def recent(db: Any, member: str, *, exclude: str,
+                 limit: int = RECENT_MAX) -> list[Listed]:
+    """The newest summaries of the member's other chats, for the briefing.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    The member comes from the run's verified member, never from a payload,
+    and *exclude* is the id of the current chat, which never shows. It reads
+    nothing and answers ``[]`` when the flag of PZ-33 is off for the bound org
+    (``chat_summary_for``), and when the member's switch "Keep chat
+    summaries" is off (:func:`member_switch_on`). Each other rule is one of
+    this module: :data:`RECENT_SQL` reads ``_MINE``, ``_HAS_SUMMARY`` and
+    :data:`ELIGIBLE_SQL`. At most :data:`RECENT_MAX` chats.
+
+    "Let the assistant remember" off does not hide a kept summary here
+    (D-PZ-38). The member hides one with Delete or with the switch.
+    """
+    who = _member_key(member)
+    cap = max(0, min(int(limit), RECENT_MAX))
+    if cap == 0:
+        return []
+    org = str((await db.execute(text(BOUND_ORG_SQL))).scalar() or "")
+    if not org or not chat_summary_for(org):
+        return []
+    if not await member_switch_on(db, org, who):
+        return []
+    rows = (await db.execute(text(RECENT_SQL), {
+        "member": who, "exclude": str(exclude or ""), "lim": cap})).fetchall()
+    return _listed(rows)
