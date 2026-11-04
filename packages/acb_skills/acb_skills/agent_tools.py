@@ -85,7 +85,7 @@ def _delegation_refusal(agent_name: str) -> str | None:
     return None
 
 
-def _pack_refusal(agent_name: str, *, starts: bool = False) -> str | None:
+def _pack_refusal(agent_name: str, *, starts: bool = False, run_id: str = "") -> str | None:
     """The pack refusal of a hand-off to *agent_name*, or None (WS-67 OA-7c).
 
     ``tool_packs.delegation_refusal``: the chat run holds a pack that replaces
@@ -99,10 +99,12 @@ def _pack_refusal(agent_name: str, *, starts: bool = False) -> str | None:
 
     OA-8i: a caller that starts the hand-off on a None answer passes
     *starts*, so the run records the hand-off at once. A later write tool of
-    a pack of that owner in this run then refuses."""
+    a pack of that owner in this run then refuses. Task 1533: *run_id* is
+    the id of the sub-run, the one that the streaming seam gets, so the two
+    asks record one hand-off and its end closes it."""
     from acb_skills.tool_packs import delegation_refusal
 
-    return delegation_refusal(agent_name, starts=starts)
+    return delegation_refusal(agent_name, starts=starts, run_id=run_id)
 
 
 def _parent_run_model() -> str | None:
@@ -145,7 +147,8 @@ async def call_agent(agent_name: str, message: str) -> str:
     """
     run_id = str(_uuid.uuid4())
 
-    refusal = (_delegation_refusal(agent_name) or _pack_refusal(agent_name, starts=True)
+    refusal = (_delegation_refusal(agent_name)
+               or _pack_refusal(agent_name, starts=True, run_id=run_id)
                or _worker_refusal(agent_name))
     if refusal:
         return refusal
@@ -371,7 +374,8 @@ async def _run_branch(
     copies the context, so branches do not see each other.
     """
     run_id = str(_uuid.uuid4())
-    refusal = (_delegation_refusal(agent_name) or _pack_refusal(agent_name, starts=True)
+    refusal = (_delegation_refusal(agent_name)
+               or _pack_refusal(agent_name, starts=True, run_id=run_id)
                or _worker_refusal(agent_name))
     if refusal:
         return agent_name, refusal
