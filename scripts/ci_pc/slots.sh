@@ -31,6 +31,7 @@
 # to the suite. Round up: a reservation too small starves the VM.
 : "${CI_SHARD_GB:=2}"       # pytest process + 2 Postgres on tmpfs, per shard
 : "${CI_FIXED_GB:=6}"       # lint, frontend, operator-console, migrations, backup, caddy
+: "${CI_E2E_GB:=10}"         # the browser suite container (--e2e), capped at 10g
 : "${CI_OTHER_GB:=6}"       # kept free for sessions, Docker and the dev stack
 : "${CI_SLOT_DIR:=$HOME/.ci-slots}"
 : "${CI_MEMINFO:=/proc/meminfo}"
@@ -55,16 +56,16 @@ _ci_live_gb() {
   echo "$sum"
 }
 
-# ci_slot_grant <want> <min>  ->  prints the shard count this run may start
+# ci_slot_grant <want> <min> [extra_gb]  ->  prints the shard count this run may start
 # with right now, or nothing when even <min> does not fit. Pure: it reserves
 # nothing, so a lane probe can call it.
 ci_slot_grant() {
-  local want="$1" min="$2" total avail live budget s
+  local want="$1" min="$2" extra="${3:-0}" total avail live budget s
   total=$(_ci_meminfo_gb MemTotal); avail=$(_ci_meminfo_gb MemAvailable)
   live=$(_ci_live_gb)
   budget=$(( total - CI_OTHER_GB ))
   for (( s = want; s >= min; s-- )); do
-    local need=$(( CI_FIXED_GB + s * CI_SHARD_GB ))
+    local need=$(( CI_FIXED_GB + extra + s * CI_SHARD_GB ))
     if [ $(( live + need )) -le "$budget" ] && [ "$avail" -ge "$need" ]; then
       echo "$s"; return 0
     fi
@@ -72,10 +73,10 @@ ci_slot_grant() {
   return 1
 }
 
-# ci_slot_acquire <want> <min>  ->  sets CI_SHARDS_GRANTED, and holds the
+# ci_slot_acquire <want> <min> [extra_gb]  ->  sets CI_SHARDS_GRANTED, and holds the
 # reservation on fd 7 until this shell exits. Waits up to CI_SLOT_WAIT_S.
 ci_slot_acquire() {
-  local want="$1" min="$2" waited=0 s id
+  local want="$1" min="$2" extra="${3:-0}" waited=0 s id
   mkdir -p "$CI_SLOT_DIR"
   id="$(date +%Y%m%d-%H%M%S)-$$"
   exec 8>"$CI_SLOT_DIR/admit"
@@ -83,18 +84,20 @@ ci_slot_acquire() {
     # The admit lock makes "count, then reserve" one step. Two runs that
     # look at the same free memory would both start.
     flock -w 60 8 || { echo "ci slots: the admit lock is stuck" >&2; return 1; }
-    if s=$(ci_slot_grant "$want" "$min"); then
-      echo "$(( CI_FIXED_GB + s * CI_SHARD_GB ))" > "$CI_SLOT_DIR/$id.res"
+    if s=$(ci_slot_grant "$want" "$min" "$extra"); then
+      echo "$(( CI_FIXED_GB + extra + s * CI_SHARD_GB ))" > "$CI_SLOT_DIR/$id.res"
       exec 7>>"$CI_SLOT_DIR/$id.res"
       flock -n 7 || { echo "ci slots: cannot lock my reservation" >&2; return 1; }
-      flock -u 8
       CI_SHARDS_GRANTED="$s"; CI_SLOT_ID="$id"; export CI_SHARDS_GRANTED CI_SLOT_ID
-      # Drop the files of dead runs, but never one that is alive.
+      # Drop the files of dead runs, but never one that is alive. Still under
+      # the admit lock: a sweep outside it could delete a file that another
+      # run has written and not yet locked (verifier finding, 2026-11-04).
       local f
       for f in "$CI_SLOT_DIR"/*.res; do
         [ "$f" = "$CI_SLOT_DIR/$id.res" ] && continue
         flock -n "$f" rm -f "$f" 2>/dev/null || true
       done
+      flock -u 8
       return 0
     fi
     flock -u 8

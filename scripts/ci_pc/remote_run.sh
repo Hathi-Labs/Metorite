@@ -43,7 +43,7 @@ ci_remote_run() {
       *) fwd+=("$1"); shift ;;
     esac
   done
-  local wt="$CI_WT_DIR/${sha:0:12}-$$"
+  local wt="$CI_WT_DIR/${sha:0:12}-$$-$(date +%s)"
   mkdir -p "$CI_WT_DIR"
 
   # The legacy lane lock, SHARED: an older ci_local.sh holds it exclusive and
@@ -64,7 +64,7 @@ ci_remote_run() {
   local want min sel_args=() nfiles=0
   if [ "$full" = no ]; then
     local gate
-    gate="$(python3 scripts/affected_tests.py --gate --base "${CI_SELECT_BASE:-origin/main}" 2>/dev/null)" || gate=""
+    gate="$(python3 scripts/affected_tests.py --gate --base "${CI_SELECT_BASE:-origin/main}")" || gate=""
     nfiles="$(printf '%s' "$gate" | python3 -c '
 import json, sys
 try:
@@ -86,7 +86,10 @@ print(len(d["files"]))' 2>/dev/null)" || nfiles=-1
   if [ ${#sel_args[@]} -eq 0 ]; then want=6; min=2; fi
   if [ -n "$shards" ]; then want="$shards"; min="$shards"; fi
 
-  ci_slot_acquire "$want" "$min" || return 3
+  # The browser suite is a 10 GB container: reserve it, or two --e2e runs overfill.
+  local extra=0 a
+  for a in "${fwd[@]}"; do [ "$a" = --e2e ] && extra="$CI_E2E_GB"; done
+  ci_slot_acquire "$want" "$min" "$extra" || return 3
   echo "ci: slot $CI_SLOT_ID, $CI_SHARDS_GRANTED shard(s), worktree $wt"
   CI_SLOT_GRANTED=1 CI_DEPS_DIR="${CI_DEPS_DIR:-$HOME/ci-deps}" \
     bash scripts/ci_pc/run_suite.sh --shards "$CI_SHARDS_GRANTED" "${sel_args[@]}" "${fwd[@]}"

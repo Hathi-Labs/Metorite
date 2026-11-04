@@ -217,7 +217,7 @@ def test_each_run_gets_its_own_worktree():
     # Two runs in one working tree overwrite each other's checkout, `.next`
     # and `junit/`. The run's worktree is named by its pid.
     assert 'git -C "$CI_BASE" worktree add -q --detach "$wt" "$sha"' in _REMOTE
-    assert 'wt="$CI_WT_DIR/${sha:0:12}-$$"' in _REMOTE
+    assert 'wt="$CI_WT_DIR/${sha:0:12}-$$-$(date +%s)"' in _REMOTE
     # No run checks out into the shared clone any more.
     assert "checkout -q -f" not in _CI_LOCAL
     assert "git clean -fdxq" not in _CI_LOCAL

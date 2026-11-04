@@ -120,3 +120,21 @@ def test_two_runs_that_start_at_once_cannot_both_take_the_last_room(tmp_path):
     procs = [subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, text=True) for _ in range(2)]
     outs = [p.communicate(timeout=30)[0] for p in procs]
     assert sum("GOT" in o for o in outs) == 1, outs
+
+
+def test_the_browser_suite_reserves_its_own_memory(tmp_path):
+    # --e2e starts a 10 GB container. 6 fixed + 1 shard (2) + 10 = 18 fits a
+    # budget of 18; with 1 GB less free it must not be granted.
+    assert _grant(_env(tmp_path, avail_gb=18), 1, 1, ) == "1"
+    out = _bash("ci_slot_grant 1 1 10", _env(tmp_path, avail_gb=17))
+    assert out.stdout.strip() == ""
+    out = _bash("ci_slot_grant 1 1 10", _env(tmp_path, avail_gb=18))
+    assert out.stdout.strip() == "1"
+
+
+def test_the_sweep_runs_before_the_admit_lock_is_released():
+    # A sweep outside the lock could delete a reservation another run has
+    # written and not yet locked: that run is then counted as 0 GB.
+    text = _SLOTS.read_text(encoding="utf-8")
+    body = text.split("ci_slot_acquire() {")[1]
+    assert body.index("rm -f") < body.index("flock -u 8\n      return 0")
