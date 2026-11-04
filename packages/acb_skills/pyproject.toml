@@ -44,6 +44,15 @@ dependencies = [
     # babel and tld. We take tld under MPL-1.1. No package of this closure
     # is AGPL. Fence: tests/unit/test_no_agpl_dependency.py.
     "trafilatura==2.3.1",
+    # fetch_page (WS-WEB WEB-3, web_research.md section 3.2) reads a PDF,
+    # DOCX, PPTX, XLSX, CSV or EPUB file with MarkItDown (MIT), and a PDF that
+    # MarkItDown fails on with pdfplumber (MIT). Only the child of
+    # `web_reader_worker.py` imports them, never the gateway process. The extras
+    # are pdf, docx, pptx and xlsx. We leave out the Azure, audio, YouTube,
+    # Outlook and xls extras. No package of this closure is AGPL. Fence:
+    # tests/unit/test_no_agpl_dependency.py.
+    "markitdown[pdf,docx,pptx,xlsx]==0.1.9",
+    "pdfplumber==0.11.10",
 ]
 
 [build-system]
