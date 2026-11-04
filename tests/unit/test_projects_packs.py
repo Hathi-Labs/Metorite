@@ -66,9 +66,10 @@ from tests.unit.test_tool_packs_choice import (
 REPO = Path(__file__).resolve().parents[2]
 PA = "projects-assistant"
 PROJECTS_DIR = REPO / "apps" / "agents" / "agent-projects"
-SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "projects-reminders")
+SLUGS = ("projects", "projects-plan", "projects-structure", "projects-bulk", "projects-reminders",
+         "projects-authority")
 SIZES = {"projects": 23, "projects-plan": 35, "projects-structure": 34, "projects-bulk": 22,
-         "projects-reminders": 9}
+         "projects-reminders": 9, "projects-authority": 3}
 UUID = tc.UUID
 
 #: The nine tools that make ONE card for a batch, raised inside the tool body.
@@ -121,7 +122,7 @@ def test_the_four_families_equal_the_owners_tools() -> None:
     tool is in two packs. Mutation: drop a tool from a family, add a name the
     owner lacks, or copy one tool into two families -> red."""
     union = [name for slug in SLUGS for name in _family(slug)]
-    assert len(union) == 123 == len(set(union)), "no tool is in two packs"
+    assert len(union) == 126 == len(set(union)), "no tool is in two packs"
     assert set(union) == set(skill_projects.__all__) == _own_tool_scope()
     for slug in SLUGS:
         assert sf.SKILL_FAMILIES[slug]["owner"] == PA and sf.is_pack(slug)
@@ -539,7 +540,7 @@ def test_the_core_rules_name_the_other_packs_and_no_tool_of_them() -> None:
     assert "call load_skill_tools with the pack that you need" not in rules.lower()
     for slug in SLUGS[1:]:
         assert tp.PACKS[slug].rules.count("Use them yourself.") == 1
-    assert max(len(tp.rules_for(slug)) for slug in SLUGS) < 3450  # OA-8g: was 3300; MT-1228: was 3400
+    assert max(len(tp.rules_for(slug)) for slug in SLUGS) < 3500  # OA-8g: was 3300; MT-1228: was 3400; ALN-4: was 3450
 
 
 # ── 7. A covered organization ───────────────────────────────────────────────
@@ -679,7 +680,7 @@ async def test_no_projects_tool_takes_an_organization_or_a_member_argument(store
             declared = set(tool.input_model.model_fields)
             assert not declared & identity, (_name(tool), sorted(declared & identity))
             seen += 1
-    assert seen == 123
+    assert seen == 126
 
 
 async def test_a_pack_call_outside_its_run_refuses(store) -> None:
@@ -1074,8 +1075,13 @@ def test_the_reminder_tools_are_in_one_pack_that_the_words_load() -> None:
              "reschedule_reminder", "resolve_reminder", "set_reminder",
              "update_reminder"}
     # WS-ALN ALN-2a: the other Projects packs are full, so the two tools of a
-    # decision sit here too.
-    assert set(_family("projects-reminders")) == seven | {"answer_decision", "my_decisions"}
+    # decision sit here too. The three tools of the authority page have their
+    # own pack: the reminders and bulk packs must fit under MAX_REQUEST_TOOLS.
+    authority = {"pin_authority", "project_authorities", "unpin_authority"}
+    assert set(_family("projects-reminders")) == seven | {
+        "answer_decision", "my_decisions"}
+    assert set(_family("projects-authority")) == authority
+    assert not authority & set(_family("projects-bulk"))
     assert not seven & set(_family("projects-bulk"))
     assert not seven & set(_family("projects"))
 

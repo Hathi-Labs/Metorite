@@ -42,6 +42,7 @@ model nor a tool argument can clear the mark.
 * M13. ``carry_run_context``: make it a no-op.
 * M14. ``gateway/brief/run.py``: call ``no_person_scope`` there.
 * M15. ``skill_projects``: add a tool that posts to ``/actions/pending``.
+* M16. ``_execute_run``: mark from the kind only, and drop ``elapsed_waits``.
 
 Run::
 
@@ -514,7 +515,9 @@ class _RunDb:
         text = str(sql)
         if text.startswith("UPDATE"):
             self.writes.append(text)
-            return SimpleNamespace(fetchone=lambda: None)
+            # AUTO-7b: each UPDATE of a resume is a compare-and-set with
+            # RETURNING. One row back means that this resume won.
+            return SimpleNamespace(fetchone=lambda: SimpleNamespace(id="won"))
         row = self.run if "FROM workflow_runs" in text else self.pause
         return SimpleNamespace(fetchone=lambda: row)
 
@@ -652,7 +655,8 @@ def _outcome() -> SimpleNamespace:
 
 
 def _run_kind(monkeypatch, kind: str, *, payload: dict | None = None,
-              inside_marked: bool = False) -> dict[str, bool]:
+              inside_marked: bool = False,
+              elapsed_waits: set[str] | None = None) -> dict[str, bool]:
     """The real ``_execute_run``, with a fake engine that reads the mark."""
     seen: dict[str, bool] = {}
 
@@ -674,6 +678,7 @@ def _run_kind(monkeypatch, kind: str, *, payload: dict | None = None,
         await service._execute_run(
             run_id="r-1", workflow_id="wf", workflow_name="wf", serialized={},
             trigger_payload=payload or {}, variables={}, started_by="x", trigger_kind=kind,
+            elapsed_waits=elapsed_waits,
         )
 
     async def main() -> None:
@@ -696,6 +701,15 @@ def test_an_unattended_trigger_marks_the_run_and_the_mark_ends_with_it(monkeypat
 @pytest.mark.parametrize("kind", ["manual", "api"])
 def test_a_manual_run_stays_unmarked(monkeypatch, kind) -> None:
     assert _run_kind(monkeypatch, kind) == {"inside": False, "after": False}
+
+
+@pytest.mark.parametrize("kind", ["manual", "api"])
+def test_an_elapsed_wait_marks_the_run_whatever_the_kind(monkeypatch, kind) -> None:
+    """The wait scan resumes an elapsed wait, and no person is present (H-328
+    part (b)). An approval resume clears no wait, so it stays unmarked."""
+    assert _run_kind(monkeypatch, kind, elapsed_waits={"hold"}) == {
+        "inside": True, "after": False}
+    assert _run_kind(monkeypatch, kind, elapsed_waits=set())["inside"] is False
 
 
 def test_the_payload_cannot_choose_the_mark(monkeypatch) -> None:
@@ -948,9 +962,12 @@ def test_no_tool_or_request_field_names_the_mark() -> None:
 #: A formatted value of an f-string reads as ``{}`` here, so a route with an
 #: id in it is written ``/agent-runs/{}/resume``.
 #: WS-ALN ALN-2a adds the answer of a decision. Only the named decider answers.
+#: WS-55 MCP-G15 adds the outside decision. It closes the member's question,
+#: so only an outside agent with the member's word may call it. Its chat tool
+#: stays PLANNED, and a tool that names the route fails this scan.
 _APPROVAL_ROUTES = ("/actions/pending", "/respond-input", "/archive-approval",
                     "/agent-runs/{}/activities", "/agent-runs/{}/resume",
-                    "/decisions/{}/answer")
+                    "/decisions/{}/answer", "/agent-runs/{}/outside-decision")
 _TOOL_ROOTS = ("apps/agents", "apps/skills", "packages/acb_skills", "skills")
 #: The route table of the Projects tools. It names each route, and it holds a
 #: decision for each. ``test_the_run_tools_stay_planned`` fences the two rows.
@@ -1025,6 +1042,9 @@ def test_the_route_scan_reads_an_f_string() -> None:
     assert _routes_in(acts) == ["/agent-runs/{}/activities"]
     answer = 'url = f"/projects/decisions/{decision_id}/answer"'
     assert _routes_in(answer) == ["/decisions/{}/answer"]
+    # WS-55 MCP-G15: the outside decision closes the member's question.
+    outside = 'url = f"/projects/agent-runs/{run_id}/outside-decision"'
+    assert _routes_in(outside) == ["/agent-runs/{}/outside-decision"]
     # A plain string of each route still matches.
     assert _routes_in('u = "/api/actions/pending"') == ["/actions/pending"]
     assert _routes_in('u = "/agent/respond-input"') == ["/respond-input"]

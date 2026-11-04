@@ -178,6 +178,8 @@ _INVOCATIONS: dict[str, list[dict[str, Any]]] = {
     "export_tasks": [{}, {"project_id": UUID, "overdue": True, "shown_fields": "status"}],
     # S5 — the rest of the reads
     "project_access": [{"project_id": UUID}],
+    # WS-ALN ALN-4 — the pins of a project, and its removed pins
+    "project_authorities": [{"project_id": UUID}, {"project_id": UUID, "include_removed": True}],
     # WS-ALN ALN-2a — the member's own open decisions
     "my_decisions": [{}],
     "project_views": [{"project_id": UUID}],

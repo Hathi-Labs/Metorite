@@ -172,6 +172,11 @@ async def execute(proposal: ActionProposal) -> dict[str, Any]:
     * a ``rejected`` proposal is never executed;
     * an action with no registered handler is REFUSED (never silently applied);
     both are audited. On success the handler's result is returned.
+
+    A handler that answers a dict with ``"ok": False`` has REFUSED the work, as
+    ``workflow.resume_run`` does for a run that it will not resume (H-328). That
+    is a failure, never a success: ``approve`` then marks the row ``failed`` and
+    the approver reads the handler's error. Any other result is a success.
     """
     if proposal.disposition == Disposition.REJECTED:
         record(AuditEvent(
@@ -202,6 +207,12 @@ async def execute(proposal: ActionProposal) -> dict[str, Any]:
         payload={"authority": proposal.authority.value},
     ))
     result = await handler(proposal)
+    if isinstance(result, dict) and result.get("ok") is False:
+        return {
+            "ok": False,
+            "error": str(result.get("error") or "the handler refused the action"),
+            "result": result,
+        }
     return {"ok": True, "result": result}
 
 

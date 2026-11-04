@@ -5,8 +5,15 @@ Spec: ``project-docs/specs/proactive_agent.md`` §4.2. Decision: D131 rule 4.
 An unattended run reads text that a stranger wrote: a web page, a mail, a tool
 result. That text can tell the run to approve its own write. So the server
 marks each run that no person watches. A marked run cannot approve, reject,
-resume or answer anything. Until AUTO-7b parks the act and asks a person, a
-marked run fails closed.
+resume or answer anything, so it fails closed.
+
+**Park and ask (AUTO-7b).** A marked workflow run parks at its approval gate.
+With ``AUTO_PARK_ORGS`` on, the gate asks the workflow's owner through ONE
+decision (``gateway.routes.workflows.park``). Else it files a broker proposal.
+Only a person settles either one. The answer route of a decision refuses a
+marked run before any read, and the scan that resumes the run reads the
+answer from the decision row only. A job of the worker still fails closed,
+because no job handler reaches an approval today.
 
 **Why this module.** The readers are ``action_broker.broker``,
 ``acb_skills.ask_tools``, ``orchestrator.executor`` and two gateway route
@@ -17,8 +24,9 @@ cycle.
 
 **Only server code sets the mark.** :func:`no_person_scope` is the one setter.
 Two modules call it: ``gateway.jobs.worker`` around each handler, and
-``gateway.routes.workflows.service`` for a run of an unattended trigger. No
-tool, no tool argument and no request field reaches it.
+``gateway.routes.workflows.service`` for a run of an unattended trigger and
+for the resume of an elapsed wait. No tool, no tool argument and no request
+field reaches it.
 
 **Nothing clears the mark.** This module has no function that sets False. The
 scope gives no token to its caller, and it undoes only its own set. A nested

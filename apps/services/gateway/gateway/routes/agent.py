@@ -3270,6 +3270,12 @@ async def run_agent_stream_endpoint(
             # S15 (§21): the fold binds the run's tenant.
             organization_id=_room_org,
             holds_mail=_holds_mail,
+            # A run that a new run cancelled folds late. By then the new run
+            # has reset the thread's stream, so the replay holds the NEW run's
+            # events. Without this guard the old run wrote them again under
+            # its own message id: one reply, two rows (task 1533, bug B3).
+            # Fence: tests/unit/test_chat_fold_other_run.py.
+            expect_run_id=run_id,
         )
         if _superseded_ids:
             # A cancelled run on another worker can fold its row after the
@@ -3489,6 +3495,10 @@ async def run_agent_stream_endpoint(
             "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
+            # The run this response follows. The Next translator binds its
+            # reader to it, so a cancelled send never adopts the newer run's
+            # RUN_STARTED (task 1533, B3). Fence: test_run_started_producers.py.
+            "X-Run-Id": run_id,
         },
     )
 

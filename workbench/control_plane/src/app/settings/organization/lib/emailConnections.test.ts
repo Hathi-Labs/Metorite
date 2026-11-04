@@ -125,6 +125,13 @@ describe("countTiles (EM-T3d)", () => {
     expect(tiles.map((t) => t.value)).toEqual([2, 3, 1, 1, 1, 1, 1]);
     for (const t of tiles) expect(t.label).toBe(COUNT_LABELS[t.key]);
   });
+
+  it("names a resumed import as an import, not a first sync (EM-T6f review P3b)", () => {
+    // `first_sync_pending` also counts a mailbox whose import of older mail
+    // resumed at the storage limit, and that mailbox synced long ago.
+    expect(COUNT_LABELS.firstSyncPending).toBe("Importing mail");
+    expect(Object.values(COUNT_LABELS).join(" ")).not.toMatch(/first sync/i);
+  });
 });
 
 describe("the copy (EM-T3d)", () => {

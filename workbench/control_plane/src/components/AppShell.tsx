@@ -91,6 +91,7 @@ import { navDetail, type PhoneNav } from "@/app/crm/lib/phoneNav";
 import { myWorkEnabled } from "@/app/projects/lib/myWorkFlag";
 import { projectsPhoneTabs } from "@/app/projects/lib/phoneTabs";
 import { RecordingDock } from "@/app/notes/components/RecordingDock";
+import { LAYER_CLASS } from "@/lib/layers";
 // ---------------------------------------------------------------------------
 // Mobile drawer context — lets child pages inject content into the hamburger
 // drawer without AppShell needing to know about sessions or filters.
@@ -397,7 +398,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         {chatOn ? null : <AgentPill />}
 
         {/* Bottom navigation bar — fixed at viewport bottom, never scrolls. pb-safe lifts it above the iOS home indicator */}
-        <div className="fixed bottom-0 inset-x-0 z-50 border-t border-border bg-card/90 backdrop-blur pb-safe glass:border-t-0 glass:glass-chrome glass:rounded-t-2xl">
+        <div className={`fixed bottom-0 inset-x-0 ${LAYER_CLASS.bottomNav} border-t border-border bg-card/90 backdrop-blur pb-safe glass:border-t-0 glass:glass-chrome glass:rounded-t-2xl`}>
           {/* CF-2: one nudge above the Ask tab, for a member who never wrote
               to the assistant. Behind the chat-first flag. */}
           {chatOn ? <ChatNudge placement="tab" /> : null}

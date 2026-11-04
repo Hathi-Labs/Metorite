@@ -14,3 +14,7 @@ deploy/hostinger/known_hosts text eol=lf
 # WS-49 BH-6: the root copy lists. root_env.sh reads the names file as root.
 deploy/hostinger/root_lib_files.txt text eol=lf
 deploy/hostinger/root_env_names.txt text eol=lf
+
+# WEB-3 file fixtures are bytes. A CRLF checkout would move the offsets of the PDF.
+tests/unit/fixtures/web/files/* binary
+tests/unit/fixtures/web/files/make_files.py -binary text eol=lf

@@ -5,6 +5,7 @@
  *
  * Each case names the rule it holds, so a red case says what broke.
  */
+import { projectsAssistantFacts } from "@/app/projects/lib/assistantFacts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -383,6 +384,21 @@ describe("the context of each turn", () => {
     expect(text).toContain("in the Projects app (/projects)");
     expect(text).toMatch(/quoted as DATA/);
     expect(text).toContain("- They have the project «Launch» selected.");
+  });
+
+  it("states once that the page is a hint, for every app (task 1558)", () => {
+    const text = surfaceContext(projects, { label: "Launch", facts: ["They have the space «Launch» selected (project_id: p1). \"This project\" or \"here\" means it."] });
+    expect(text).toContain("This page is a hint, not a scope.");
+    expect(text).toContain("match the request against everything the member can see");
+    expect(text).toContain("project_id: p1");
+    expect(text.split("is a hint, not a scope").length - 1).toBe(1);
+    const email = SECTIONS.flatMap((s) => s.items).find((p) => p.href === "/email")!;
+    expect(surfaceContext(email, null)).toContain("This page is a hint, not a scope.");
+    expect(ASSISTANT_PERSONA).toMatch(/search everything the member can see at once/);
+    const facts = projectsAssistantFacts({ node: { id: "sp1", name: "Content Creation", level: "space" } } as never);
+    const withSpace = surfaceContext(projects, facts);
+    expect(withSpace).toContain("project_id: sp1");
+    expect(withSpace).toContain("This page is a hint, not a scope.");
   });
 
   it("says so when the page belongs to no app", () => {

@@ -76,7 +76,7 @@ import { useAccess } from "@/components/AccessProvider";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterChrome } from "./components/CompactFilterBar";
-import { compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
+import { chromeKind, compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
 import {
   isMyTasksApp,
   isMyWorkId,
@@ -86,7 +86,7 @@ import {
   myWorkNavCounts,
   projectsUndoScope,
 } from "./lib/myWork";
-import { asChip, myTasksHref, phoneMyTasksTap, withoutMyTasks } from "./lib/myTasks";
+import { MY_TASKS_MODES, asChip, myTasksHref, myTasksModeFor, phoneMyTasksTap, withoutMyTasks } from "./lib/myTasks";
 import MyTasksSpace, {
   DEFAULT_MY_TASKS_VIEW,
   MyTasksActionRow,
@@ -119,6 +119,7 @@ import { NotificationBell } from "./components/NotificationBell";
 import { shellDockOn } from "@/lib/shell/dockFlag";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { useAssistantFacts } from "@/lib/shell/assistant";
+import { TASK_CARD_FRAME } from "@/lib/layers";
 import { projectsAssistantFacts } from "./lib/assistantFacts";
 import { assistantLevel, describeFilters } from "./lib/assistantPersona";
 import { type CreatingDraft, ProjectTree } from "./components/ProjectTree";
@@ -223,7 +224,9 @@ import {
   visibleTasks,
 } from "./lib/subtaskView";
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
-import { inversePatch } from "@/lib/undo";
+import { type UndoEntry, inversePatch } from "@/lib/undo";
+import { type MovedRow, moveUndoPlan } from "./lib/taskUndo";
+import { useTaskUndo } from "./components/useTaskUndo";
 import {
   CASCADE_DEFAULTS,
   archiveReceipt,
@@ -1457,6 +1460,8 @@ function ProjectsWorkspace() {
    * away from, and pressing Ctrl+Z there must not reach back into it.
    */
   const undoApi = useUndoScope(projectsUndoScope(app, selected?.id));
+  // UNDO-1 — one helper for every plain task edit on this page.
+  const taskUndo = useTaskUndo();
   // D-PM-38 decision 2 (S5) — the one complete prompt for the board's doors.
   const subtaskComplete = useSubtaskComplete();
   const [zoom, setZoom] = useState<TimelineZoom>("month");
@@ -3370,6 +3375,13 @@ function ProjectsWorkspace() {
     () => ({
       navigate: (href) => router.push(href),
       setMode: (next) => {
+        // MOB-1: with My tasks open the mode command switches ITS tab. It
+        // wrote the hidden project's mode before, so "List view" did nothing.
+        if (isMyTasksApp(app)) {
+          const tab = myTasksModeFor(next);
+          if (tab) setMyTasks((v) => ({ ...v, mode: tab, attention: false }));
+          return;
+        }
         setAttentionFor(null);
         setChosenMode(next);
       },
@@ -3397,7 +3409,8 @@ function ProjectsWorkspace() {
   );
 
   const commandCtx: CommandContext = {
-    mode,
+    mode: isMyTasksApp(app) ? myTasks.mode : mode,
+    modes: isMyTasksApp(app) ? MY_TASKS_MODES.map((entry) => entry.id) : undefined,
     hasProject: Boolean(selected),
     isRoot: Boolean(selected && !selected.parent_project_id),
     filtered: isFiltered(filters),
@@ -3750,7 +3763,40 @@ function ProjectsWorkspace() {
         await projectsApi.unarchiveTask(taskId);
         await refreshRef.current();
         setTreeKey((k) => k + 1);
-        toast.show({ variant: "success", title: "Task restored from the archive" });
+        // UNDO-1 — unarchive files the task again. One flag serves the toast
+        // and Ctrl+Z, as in the archive path below. The toast's Undo runs
+        // through the provider's gate (fix round 1, finding 6).
+        let back = true;
+        const refiled: UndoEntry = {
+          label: `restored ${row?.title ?? "a task"} from the archive`,
+          undo: async () => {
+            if (!back) return;
+            back = false;
+            await projectsApi.archiveTask(taskId);
+            await refreshRef.current();
+            setTreeKey((k) => k + 1);
+          },
+          redo: async () => {
+            if (back) return;
+            back = true;
+            await projectsApi.unarchiveTask(taskId);
+            await refreshRef.current();
+            setTreeKey((k) => k + 1);
+          },
+        };
+        undoApi.record(refiled);
+        toast.show({
+          key: `projects:archive:${taskId}`,
+          variant: "success",
+          title: "Task restored from the archive",
+          action: {
+            label: "Undo",
+            onClick: () =>
+              void undoApi
+                .undoEntry(refiled)
+                .catch((err: Error) => setError(String(err.message))),
+          },
+        });
         return;
       }
       const include = Boolean(answer?.includeSubtasks);
@@ -3768,7 +3814,7 @@ function ProjectsWorkspace() {
         await refreshRef.current();
         setTreeKey((k) => k + 1);
       };
-      undoApi.record({
+      const archivedEntry: UndoEntry = {
         label: `archived ${row?.title ?? "a task"}`,
         undo: restore,
         redo: async () => {
@@ -3781,12 +3827,19 @@ function ProjectsWorkspace() {
           await refreshRef.current();
           setTreeKey((k) => k + 1);
         },
-      });
+      };
+      undoApi.record(archivedEntry);
       toast.show({
         key: `projects:archive:${taskId}`,
         variant: "success",
         title: archiveReceipt(res.subtasks_archived ?? 0),
-        action: { label: "Undo", onClick: () => void restore() },
+        action: {
+          label: "Undo",
+          onClick: () =>
+            void undoApi
+              .undoEntry(archivedEntry)
+              .catch((err: Error) => setError(String(err.message))),
+        },
       });
     } catch (err) {
       setError(String((err as Error).message));
@@ -3836,6 +3889,8 @@ function ProjectsWorkspace() {
     includeSubtasks = false,
   ) {
     const ids = movingTasks ?? [];
+    // UNDO-1 — each task as it was before, for the way home and its checks.
+    const homes = tasks.filter((t) => ids.includes(t.id));
     setMovingTasksBusy(true);
     setMoveTasksError(null);
     try {
@@ -3886,12 +3941,79 @@ function ProjectsWorkspace() {
         res.subtasks_moved ?? 0,
         projectName(res.destination_project_id ?? destinationId),
       );
+      // UNDO-1 (fix round 1, finding 3) — offered only when the way home
+      // restores each task exactly: no subtask went along, no value dropped,
+      // and each task kept its space, number, type and done date. Otherwise
+      // the toast says why, and what to do instead.
+      const after: Record<string, MovedRow | null> = {};
+      if (res.dropped_fields.length === 0 && !(res.subtask_ids?.length ?? res.subtasks_moved)) {
+        const movedIds = res.task_ids ?? ids;
+        const rows = await Promise.all(
+          movedIds.map((id) => projectsApi.task(id).catch(() => null)),
+        );
+        movedIds.forEach((id, i) => (after[id] = rows[i]));
+      }
+      const way = moveUndoPlan(ids, homes, after, res);
+      let movedBack: UndoEntry | undefined;
+      if (way.ok && way.calls.length > 0) {
+        const sendHome = async () => {
+          for (const call of way.calls) {
+            await projectsApi.moveTasks({
+              task_ids: call.taskIds,
+              destination_project_id: call.projectId,
+              status_map: call.statusMap,
+              accept_drops: true,
+            });
+          }
+          setTreeKey((k) => k + 1);
+          await refreshRef.current();
+        };
+        let moved_ = true;
+        movedBack = {
+          label: `moved ${homes.length === 1 ? homes[0].title : `${homes.length} tasks`}`,
+          undo: async () => {
+            if (!moved_) return;
+            moved_ = false;
+            await sendHome();
+          },
+          redo: async () => {
+            if (moved_) return;
+            moved_ = true;
+            // No subtask went along the first time (the plan's rule), so the
+            // replay takes none either.
+            await projectsApi.moveTasks({
+              task_ids: [...(res.task_ids ?? ids)],
+              destination_project_id: destinationId,
+              status_map: statusMap,
+              accept_drops: true,
+            });
+            setTreeKey((k) => k + 1);
+            await refreshRef.current();
+          },
+        };
+        undoApi.record(movedBack);
+      }
+      // The toast's Undo runs through the provider's gate, as Ctrl+Z does
+      // (fix round 1, finding 6).
+      const entry = movedBack;
       toast.show({
         variant: "success",
         title:
           res.dropped_fields.length > 0
             ? `${moved} — dropped ${res.dropped_fields.join(", ")}`
             : moved,
+        ...(way.ok ? {} : { description: way.reason }),
+        ...(entry
+          ? {
+              action: {
+                label: "Undo",
+                onClick: () =>
+                  void undoApi
+                    .undoEntry(entry)
+                    .catch((err: Error) => setError(String(err.message))),
+              },
+            }
+          : {}),
       });
     } catch (err) {
       // Stays OPEN on a refusal, and the message renders IN the card: the
@@ -4170,7 +4292,21 @@ function ProjectsWorkspace() {
       setTasks((current) => optimisticDrop(current, task.id, patch));
     }
     try {
-      if (patch) await projectsApi.patchTask(task.id, patch);
+      if (patch) {
+        const fresh = await projectsApi.patchTask(task.id, patch);
+        // UNDO-1 — a plain status change (reopen included) or any other drop
+        // field can be taken back. The slot write below is not undone.
+        taskUndo.edited(task, patch, fresh, {
+          label: `moved ${task.title}`,
+          receipt: status
+            ? `Moved to ${statuses.find((s) => s.id === status)?.name ?? "a new lane"}`
+            : "Task moved",
+          after: async () => {
+            if (selected) await loadProject(selected);
+            else await refreshRef.current();
+          },
+        });
+      }
       const rootViews = await projectsApi.views(task.root_project_id);
       const board = orderBearingView(rootViews.rows);
       if (board) await projectsApi.setPositions(board.id, writes);
@@ -4713,9 +4849,11 @@ function ProjectsWorkspace() {
         </div>
       ) : null}
 
-      {selected && !overview ? (
+      {selected && chromeKind({ overview, phone: isMobile, compact: compactChrome }) !== "none" ? (
         <FilterChrome
           compact={compactChrome}
+          // MOB-1: a phone's Overview keeps the View button, the way back.
+          viewOnly={overview}
           phone={isMobile}
           modes={MODE_OPTIONS}
           onMode={(next) => setChosenMode(next)}
@@ -5570,9 +5708,11 @@ function ProjectsWorkspace() {
         {taskPanel ? (
           // The panel's own `max-w-sm` (384px) is a docked-column width; on a phone the
           // surface IS the screen, so the cap is lifted here rather than in the
-          // panel, which knows nothing about the shell. `z-[60]` clears the
-          // bottom nav (z-50); the panel closes from its own ✕.
-          <div className="fixed inset-0 z-[60] flex bg-background pt-safe pb-safe [&>aside]:max-w-none">
+          // panel, which knows nothing about the shell. TC-1 (2026-11-03): the card
+          // ends ABOVE the bottom nav, so the Ask tab stays in reach, and it sits
+          // below the nav and the assistant sheet (`lib/layers.ts`). The panel
+          // closes from its own ✕.
+          <div className={`${TASK_CARD_FRAME.phone} flex bg-background pt-safe [&>aside]:max-w-none`}>
             {taskPanel}
           </div>
         ) : null}
@@ -5803,12 +5943,14 @@ function ProjectsWorkspace() {
       </div>
       </SidePanelFitContext.Provider>
 
-      {/* WS-27ab — the `full` stop. A scrim plus the same panel, at the same
+      {/* TC-1 (2026-11-03): the card fills the page column, not the window, so the
+          shell bar, the Ask bar and the docked assistant stay in view (D172.4).
+          WS-27ab — the `full` stop. A scrim plus the same panel, at the same
           `max-w-3xl` reading width `/tasks`' maximise-out-of-the-pane uses.
           Clicking the scrim closes it; the panel keeps its own ✕ and Escape. */}
       {taskPanel && isOverlayMode(panelMode) ? (
         <div
-          className="fixed inset-0 z-50 flex items-stretch justify-center bg-background/70 p-4 sm:p-8"
+          className={`${TASK_CARD_FRAME.desktop} flex items-stretch justify-center bg-background/70 p-4 sm:p-8`}
           role="presentation"
           onClick={() => setOpenTask(null)}
         >

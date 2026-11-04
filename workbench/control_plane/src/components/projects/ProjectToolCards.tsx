@@ -94,6 +94,7 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   status_report: { icon: "Flag", label: "Status report" },
   // S5 — the rest of the reads
   project_access: { icon: "Users", label: "Access" },
+  project_authorities: { icon: "Users", label: "Authority pages" },
   my_decisions: { icon: "Users", label: "Decisions" },
   project_views: { icon: "LayoutList", label: "Views" },
   my_contexts: { icon: "AtSign", label: "Contexts" },
@@ -199,6 +200,8 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   attach_to_task: { icon: "Paperclip", label: "File attached" },
   grant_access: { icon: "UserPlus", label: "Access given" },
   revoke_access: { icon: "UserMinus", label: "Access removed" },
+  pin_authority: { icon: "UserPlus", label: "Authority page pinned" },
+  unpin_authority: { icon: "UserMinus", label: "Authority page removed" },
   answer_decision: { icon: "UserPlus", label: "Decision answered" },
   add_report_recipient: { icon: "UserPlus", label: "Recipient added" },
   remove_report_recipient: { icon: "UserMinus", label: "Recipient removed" },
@@ -313,6 +316,8 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "attach_to_task",
   "grant_access",
   "revoke_access",
+  "pin_authority",
+  "unpin_authority",
   "answer_decision",
   "add_report_recipient",
   "remove_report_recipient",
@@ -503,7 +508,7 @@ function TaskRowView({ row }: { row: ProjectTaskRow }) {
 function listLabel(e: ToolEvent): string {
   const args = (e.args ?? {}) as Record<string, unknown>;
   if (e.name === "find_tasks") return `Search${args.query ? ` · ${String(args.query)}` : ""}`;
-  if (e.name === "my_work") return String(args.view ?? "") === "inbox" ? "My task inbox" : "Assigned to me";
+  if (e.name === "my_work") return String(args.view ?? "") === "inbox" ? "My task inbox" : args.untriaged ? "New in My tasks" : "Assigned to me";
   if (e.name === "calendar") return "Calendar";
   if (e.name === "intake_queue") return "Intake";
   if (e.name === "notifications") return "Notifications";

@@ -40,7 +40,7 @@
  * `src/lib/chatCardConformance.test.ts` (the header and the icon).
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import CardFieldValue from "@/components/CardFieldValue";
 import { splitCardEmailText } from "@/lib/cardEmailText";
@@ -52,7 +52,7 @@ import Button from "@/components/ui/Button";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Icon from "@/components/Icon";
-import { cardKey, fieldSpec, repeatsLine } from "@/lib/cardFields";
+import { cardKey, fieldSpec, parseFieldValue, repeatsLine, valueIsLong } from "@/lib/cardFields";
 import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
 import { unfenced } from "@/lib/fencedText";
 import type { ReplyApproval, ReplyForm } from "@/lib/replyCard";
@@ -270,6 +270,11 @@ interface ConfirmationCardProps {
   reply?: ReplyForm | null;
   /** Send or Save to Drafts on a reply card: the whole answer. */
   onReply?: (answer: ReplyApproval) => void;
+  /** The tab row of the queue (owner, 2026-11-03, D173), drawn inside the
+   *  card frame above its header, when two cards or more wait. */
+  tabs?: ReactNode;
+  /** The tab panel: the card is the panel the tabs control. */
+  tabPanel?: { id: string; labelledBy: string };
 }
 
 /** A line of card text: fenced names as tokens, or the text as sent. */
@@ -292,6 +297,8 @@ export default function ConfirmationCard({
   reply,
   onReply,
   error,
+  tabs,
+  tabPanel,
 }: ConfirmationCardProps) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
@@ -334,11 +341,13 @@ export default function ConfirmationCard({
     >
     <section
       aria-label={fenced ? unfenced(summary) : summary}
+      {...(tabPanel ? { id: tabPanel.id, role: "tabpanel", "aria-labelledby": tabPanel.labelledBy } : {})}
       data-confirmation-card=""
       // Glass only (GL-4): it wants an answer, so it is the raised card with a
       // hairline in the tint, and an orange tile.
       className={`${CARD_FRAME_CLASS} glass:glass-card-tile glass:[--tile:var(--system-orange)] glass:rounded-[16px] glass:border-primary/35 glass:glass-raised glass:p-4`}
     >
+      {tabs}
       <div className="flex min-w-0 items-center gap-2">
         <div className="min-w-0 flex-1">
           <RollupHeader />
@@ -453,12 +462,24 @@ export default function ConfirmationCard({
             </p>
           ))}
           {body.fields.length > 0 && (
-            <dl className="space-y-1">
+            <dl className="@container space-y-1">
               {body.fields.map((f, i) => {
                 const spec = fieldSpec(f.key);
+                // A long value stacks at any width. A short one stacks only in
+                // a narrow card (container query, below 24rem).
+                const long = [f.value, ...(f.values ?? [])].some(
+                  (v) => typeof v === "string" && valueIsLong(parseFieldValue(v, spec.many)),
+                );
                 return (
-                  <div key={`${f.key}-${i}`} className="flex gap-3 text-xs" data-card-field={cardKey(f.key)}>
-                    <dt className="w-24 shrink-0 pt-px text-muted-foreground">{f.label}</dt>
+                  <div
+                    key={`${f.key}-${i}`}
+                    className={`flex flex-col gap-0.5 text-xs ${long ? "" : "@sm:flex-row @sm:gap-3"}`}
+                    data-card-field={cardKey(f.key)}
+                    data-stacked={long ? "" : undefined}
+                  >
+                    <dt className={`text-[11px] text-muted-foreground ${long ? "" : "@sm:w-24 @sm:shrink-0 @sm:pt-px @sm:text-xs"}`}>
+                      {f.label}
+                    </dt>
                     <dd className="min-w-0 flex-1 whitespace-pre-wrap break-words text-foreground">
                       {f.values ? (
                         <ul className="space-y-1">
