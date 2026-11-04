@@ -995,16 +995,17 @@ export function ClarifyPanel({
               Improves once the title is clear
             </span>
           )}
-          <div className="mb-1.5 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+          <div className="mb-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+            <div className="flex items-center gap-1.5 whitespace-nowrap text-xs font-semibold text-primary">
               <AppIcon name="Sparkles" className="h-3.5 w-3.5" />
               Assistant recommends
             </div>
-            <span className="flex items-center gap-1.5">
+            <span className="flex flex-wrap items-center gap-1.5">
             {proposal.clarifiedBy === "heuristic" && (
               <Badge
                 size="xs"
                 icon="ListChecks"
+                className="whitespace-nowrap"
                 title={`${fallbackReasonText(proposal.fallbackReason)} These are rule-based picks. Check them before you accept.`}
               >
                 Rule-based suggestion
@@ -1012,7 +1013,7 @@ export function ClarifyPanel({
             )}
             <span
               className={[
-                "rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide",
+                "whitespace-nowrap rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide",
                 proposal.confidence === "high"
                   ? "bg-primary/15 text-primary"
                   : "bg-secondary text-muted-foreground",
