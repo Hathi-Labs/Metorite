@@ -1708,6 +1708,15 @@ export default function AgentChat({
     inputRef.current?.focus();
   }, []);
 
+  // §18.10 (owner, 2026-11-03): a chip of a new-mail card puts its words in
+  // the box and focuses it. It sends nothing. A program put the words there,
+  // so they carry no typed mark (D-PZ-37). Words the member typed stay.
+  const suggestToComposer = useCallback((text: string) => {
+    boxMarkRef.current = filled(boxMarkRef.current, false);
+    setInput((prev) => mergeCappedText(prev, text));
+    inputRef.current?.focus();
+  }, []);
+
   /**
    * Send words. While a run is live they STEER it (owner, 2026-10-12,
    * `lib/chatSteer.ts`): the run goes on, its partial reply stays, and no
@@ -2124,7 +2133,12 @@ export default function AgentChat({
       <RollupCard id={HITL_TARGET} title="Waiting for you" pending>
       <div data-chat-ask={HITL_TARGET} className="space-y-2 outline-none">
         {hasConfirmations && (
-          <ConfirmationQueue cards={confirmations.cards} errors={confirmations.errors} onAnswer={answerConfirmation} />
+          <ConfirmationQueue
+            cards={confirmations.cards}
+            errors={confirmations.errors}
+            onAnswer={answerConfirmation}
+            onSuggest={suggestToComposer}
+          />
         )}
 
         {elicitation && (

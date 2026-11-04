@@ -44,6 +44,25 @@ export interface ReplyRecipients {
 }
 
 export interface ReplyForm {
+  /**
+   * `"new"` on the card of a NEW mail (§18.10, owner 2026-11-03). It answers
+   * no email, so `messageId` is empty, the subject is editable, and the files
+   * are fixed lines. A reply form has no kind.
+   */
+  kind?: "new";
+  /** The files of a new mail, each as one fixed line ("File: \"a.pdf\" (4 KB)"). */
+  files?: string[];
+  /**
+   * The file rows of a held new mail (fix round 1, §21.1 item 3): each with
+   * its tick and its hint. The member can untick one, and the answer names
+   * the ids that stay ticked. A form with none has fixed `files` lines.
+   */
+  fileRows?: NewMailFileRow[];
+  /**
+   * The longest text that the act of a new-mail card takes (fix round 1,
+   * P3): 3,000 for a held card (`HELD_TEXT_MAX`), else `MAX_REPLY_BODY`.
+   */
+  maxBody?: number;
   /** The email the reply answers. The answer names it, so it acts on no other. */
   messageId: string;
   /**
@@ -149,10 +168,19 @@ export function replyFromEvent(value: unknown, requestId?: string): ReplyForm | 
   const ticked = tickedOf(v.ticked, { reply, reply_all: replyAll });
   if (ticked === null) return null;
   const o = v.original && typeof v.original === "object" ? (v.original as Record<string, unknown>) : {};
+  const isNew = v.kind === "new";
   const messageId = typeof v.message_id === "string" ? v.message_id.trim() : "";
-  if (!messageId) return null;
+  // A reply names the email it answers. A new mail (§18.10) answers none.
+  if (!messageId && !isNew) return null;
   const notices = Array.isArray(v.notices) ? v.notices.filter((n): n is string => typeof n === "string" && !!n.trim()) : [];
+  const files = Array.isArray(v.files) ? v.files.filter((f): f is string => typeof f === "string" && !!f.trim()) : [];
+  const fileRows = isNew ? fileRowsOf(v.file_rows) : undefined;
+  // A file row the card cannot read is a form the card cannot read.
+  if (fileRows === null) return null;
   return {
+    ...(isNew ? { kind: "new" as const, files } : {}),
+    ...(fileRows && fileRows.length > 0 ? { fileRows } : {}),
+    ...(isNew ? { maxBody: maxBodyOf(v.max_body) } : {}),
     messageId,
     notices,
     mailbox: text(v.mailbox),
@@ -166,7 +194,8 @@ export function replyFromEvent(value: unknown, requestId?: string): ReplyForm | 
     recipients: { reply, reply_all: replyAll },
     replyAll: v.reply_all === true,
     body: text(v.body, MAX_REPLY_BODY),
-    note: text(v.note),
+    // A new mail's note holds whole warning lines: it is never cut (fix round 1, P3).
+    note: isNew ? text(v.note, MAX_NEW_MAIL_NOTE) : text(v.note),
     draftId: text(v.draft_id, 64),
     ...(v.draft_unsaved === true ? { draftUnsaved: true } : {}),
     ...classesOf(v.classes),
@@ -609,4 +638,164 @@ export function watchCardDraft(
     host.doc.removeEventListener("visibilitychange", onShow);
   }
   return stop;
+}
+
+// ── The one email card of a NEW mail (§18.10, owner 2026-11-03) ─────────────
+//
+// Every email that the assistant writes uses ONE card. For a new mail the
+// member ticks the people, edits the subject and the text, and presses Send,
+// Save draft or Discard. The gateway took the people and the files from its
+// own record of the card, so a tick can take a person off and never add one.
+// A new person is added by asking in the chat, never on the card (owner).
+
+/** The longest subject the server takes (`reply_card.MAX_SUBJECT`). */
+export const MAX_SUBJECT = 200;
+
+/** The nudge line under the text: the member can also ask the chat. */
+export const NUDGE_LEAD = "Want it changed?";
+export const NUDGE_TEXT = "Tell me in the chat below.";
+/**
+ * Two examples of what to ask. A click puts the words in the chat box and
+ * sends nothing: the member reads them, and presses Send in the chat.
+ */
+export const NUDGE_CHIPS: readonly string[] = ["make it shorter", "make it more formal"];
+
+/**
+ * The nudge line once the member changed the subject or the text (fix round
+ * 1, P1). A request in the chat closes this card, and the assistant writes a
+ * new card from ITS draft: the member's edits do not go with the request yet
+ * (slice 3 carries them). So the line says so, and the chips hide.
+ */
+export const NUDGE_EDITED = "A request in the chat starts again from the assistant's draft. Save draft keeps your version.";
+
+/** True when the member changed the subject or the text of the card. */
+export function newMailEdited(form: ReplyForm, subject: string, body: string): boolean {
+  return subject !== form.subject || body !== form.body;
+}
+
+/** True for the card of a new mail. */
+export function isNewMail(form: ReplyForm | null | undefined): boolean {
+  return form?.kind === "new";
+}
+
+/** A line break of any kind in a subject: CR, LF, U+2028 and U+2029. */
+export const SUBJECT_BREAK = /[\r\n\u2028\u2029]/;
+
+/** The subject may go: one line, and it fits. An empty subject may go. */
+export function subjectCanGo(subject: string): boolean {
+  return subject.length <= MAX_SUBJECT && !SUBJECT_BREAK.test(subject);
+}
+
+/** "Email to kim@…": each ticked To, in full. */
+export function newMailSummary(form: ReplyForm, ticks: ReplyTicks): string {
+  const to = tickedFor(form, true, ticks).to;
+  return to.length > 0 ? `Email to ${to.join(", ")}` : "No one in To is ticked, so the email cannot go";
+}
+
+/**
+ * What the buttons of a new-mail card do, in one line under them. The send
+ * adds the mailbox signature after the card (`transport/send.py`), so the
+ * line says so, as the reply card's notice does (review of #1191, P1d).
+ */
+/** The longest note of a new-mail form (`ask_tools._NEW_MAIL_NOTE_MAX`). */
+export const MAX_NEW_MAIL_NOTE = 40_000;
+
+/** The text limit of a form value: a whole number up to `MAX_REPLY_BODY`. */
+function maxBodyOf(v: unknown): number {
+  return typeof v === "number" && Number.isInteger(v) && v > 0 && v <= MAX_REPLY_BODY ? v : MAX_REPLY_BODY;
+}
+
+/** The longest text that this card's act takes. */
+export function newMailMaxBody(form: ReplyForm): number {
+  return form.maxBody ?? MAX_REPLY_BODY;
+}
+
+/** The text may go: it holds text, and it fits the act of THIS card. */
+export function newMailBodyCanGo(form: ReplyForm, body: string): boolean {
+  return bodyCanGo(body) && body.length <= newMailMaxBody(form);
+}
+
+/**
+ * The limit line under the text box, shown BEFORE Send (fix round 1, P3), or
+ * "" when the card takes the full limit. A held card takes 3,000 characters.
+ */
+export function newMailLimitLine(form: ReplyForm, body: string): string {
+  const max = newMailMaxBody(form);
+  if (max >= MAX_REPLY_BODY) return "";
+  const n = (x: number) => x.toLocaleString("en-US");
+  return `This email can hold ${n(max)} characters of text. It holds ${n(body.length)} now.`;
+}
+
+export function newMailHint(form: ReplyForm): string {
+  const box = form.mailbox ? ` from ${form.mailbox}` : "";
+  return `Nothing goes out until you press Send${box}. Your mailbox signature, if you set one, goes below the text. Save draft keeps it in your Drafts and sends nothing. Discard drops it.`;
+}
+
+export type NewMailApproval = ReplyApproval;
+
+/** One file row of a held new mail: its id, its words and its start tick. */
+export interface NewMailFileRow {
+  id: string;
+  label: string;
+  hint: string;
+  checked: boolean;
+}
+
+/** The file rows of a form value, `undefined` for none, or null when one row
+ *  is not a row the card can draw. */
+function fileRowsOf(value: unknown): NewMailFileRow[] | undefined | null {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) return null;
+  const out: NewMailFileRow[] = [];
+  const seen = new Set<string>();
+  for (const r of value) {
+    if (!r || typeof r !== "object") return null;
+    const row = r as Record<string, unknown>;
+    const id = typeof row.id === "string" ? row.id.trim() : "";
+    if (!id || id.length > 64 || seen.has(id) || typeof row.label !== "string" || !row.label.trim()) return null;
+    seen.add(id);
+    out.push({ id, label: row.label, hint: typeof row.hint === "string" ? row.hint : "", checked: row.checked !== false });
+  }
+  return out;
+}
+
+/** The ids of the file rows that start ticked. */
+export function startFileTicks(form: ReplyForm): string[] {
+  return (form.fileRows ?? []).filter((r) => r.checked).map((r) => r.id);
+}
+
+/** Tick or untick one file row. */
+export function toggleFileTick(ticks: string[], id: string): string[] {
+  return ticks.includes(id) ? ticks.filter((x) => x !== id) : [...ticks, id];
+}
+
+/**
+ * The answer of Send or Save draft on a new-mail card, or null when the
+ * text, the subject or the ticks may not go. The keys are exactly
+ * `NEW_MAIL_ANSWER_KEYS` of `acb_skills/reply_card.py`, and a test reads
+ * this object to hold the two in step. `to`, `cc` and `bcc` are the people
+ * the member left ticked, from the server's lists. The text goes as typed.
+ * A form with file rows adds `files`, the ids that stay ticked, in the
+ * card's order (`NEW_MAIL_ANSWER_OPTIONAL_KEYS`). A form with none adds no key.
+ */
+export function newMailAnswer(
+  form: ReplyForm,
+  choice: { action: ReplyAction; subject: string; body: string; ticks: ReplyTicks; fileTicks?: string[] },
+): NewMailApproval | null {
+  if (!isNewMail(form) || !newMailBodyCanGo(form, choice.body) || !subjectCanGo(choice.subject)) return null;
+  const picked = tickedFor(form, true, choice.ticks);
+  if (picked.to.length === 0) return null;
+  const on = new Set(choice.fileTicks ?? startFileTicks(form));
+  const files = (form.fileRows ?? []).filter((r) => on.has(r.id)).map((r) => r.id);
+  const mail = {
+    kind: "new",
+    action: choice.action,
+    subject: choice.subject,
+    body: choice.body,
+    to: picked.to,
+    cc: picked.cc,
+    bcc: picked.bcc ?? [],
+    ...(form.fileRows ? { files } : {}),
+  };
+  return `${REPLY_ANSWER_PREFIX}${JSON.stringify({ reply: mail })}` as NewMailApproval;
 }

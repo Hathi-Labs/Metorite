@@ -47,9 +47,14 @@ __all__ = [
     "DRAFT_UNCONFIRMED",
     "INVISIBLE_CODE_POINTS",
     "MAX_MARK_RUN",
+    "MAX_NEW_MAIL_ANSWER",
     "MAX_REPLY_ANSWER",
     "MAX_REPLY_BODY",
     "MAX_REPLY_RECIPIENTS",
+    "MAX_SUBJECT",
+    "NEW_MAIL_ANSWER_KEYS",
+    "NEW_MAIL_ANSWER_OPTIONAL_KEYS",
+    "NEW_MAIL_KIND",
     "RECORD_NAMESPACE",
     "RECORD_TTL_S",
     "REPLY_ACTIONS",
@@ -57,8 +62,10 @@ __all__ = [
     "REPLY_ANSWER_OPTIONAL_KEYS",
     "REPLY_ANSWER_PREFIX",
     "LookalikeWord",
+    "NewMailChoice",
     "ReplyChoice",
     "clean_reply_body",
+    "edit_card_on",
     "has_hidden_text",
     "has_invisible_spacing",
     "is_invisible_char",
@@ -66,8 +73,10 @@ __all__ = [
     "lookalike_refusal",
     "lookalike_warning",
     "lookalike_words",
+    "looks_like_new_mail_answer",
     "looks_like_reply_answer",
     "looks_like_send_answer",
+    "parse_new_mail_answer",
     "parse_reply_answer",
     "record_reply_answer",
     "reply_answer_digest",
@@ -126,6 +135,29 @@ _MAX_MESSAGE_ID = 200
 #: characters for each one at most), the two lists, the email id and the frame.
 MAX_REPLY_ANSWER = (len(REPLY_ANSWER_PREFIX) + 6 * MAX_REPLY_BODY
                     + 3 * MAX_REPLY_RECIPIENTS * (_MAX_ADDRESS + 4) + _MAX_MESSAGE_ID + 200)
+
+#: The kind of a new-mail card and of its answer (§18.10, owner 2026-11-03).
+NEW_MAIL_KIND = "new"
+#: The keys of ``answer.reply`` of a NEW mail, exactly (§18.10). The member
+#: edits the subject and the text on the card, and ``to``, ``cc`` and ``bcc``
+#: are the people that the member TICKED. The gateway takes the people from
+#: the record of the card, so a tick can take a person off and never add one.
+#: A new-mail answer never parses as a reply answer, and the reverse too.
+NEW_MAIL_ANSWER_KEYS: frozenset[str] = frozenset(
+    {"kind", "action", "subject", "body", "to", "cc", "bcc"})
+#: The one key that a new-mail answer MAY add: ``files``, the ids of the file
+#: rows that the member left ticked (fix round 1, §21.1 item 3). Only a card
+#: whose form offers file rows sends it, and the act sends a file only when
+#: its id is a file row of the record. A card that offers no file tick sends
+#: no ``files``, and its act refuses an answer that names one.
+NEW_MAIL_ANSWER_OPTIONAL_KEYS: frozenset[str] = frozenset({"files"})
+#: The longest id of a file row (``ask_tools._ROW_ID_MAX``).
+_MAX_FILE_ROW_ID = 64
+#: The longest subject of a mail from the chat (``drafting.SUBJECT_MAX``).
+MAX_SUBJECT = 200
+#: The longest new-mail answer that can be honest: a reply answer's room and
+#: the subject, escaped as JSON.
+MAX_NEW_MAIL_ANSWER = MAX_REPLY_ANSWER + 6 * MAX_SUBJECT
 
 #: The Redis namespace of the records (``cc:<org>:reply-card:<thread>:<id>``).
 RECORD_NAMESPACE = "reply-card"
@@ -667,6 +699,111 @@ def looks_like_reply_answer(answer: Any) -> bool:
     return parse_reply_answer(answer) is not None
 
 
+@dataclass(frozen=True)
+class NewMailChoice:
+    """What the member chose on a new-mail card (§18.10)."""
+
+    action: str
+    subject: str
+    body: str
+    to: tuple[str, ...]
+    cc: tuple[str, ...]
+    bcc: tuple[str, ...]
+    #: The ticked file rows, or None for an answer that names no ``files``.
+    files: tuple[str, ...] | None = None
+
+
+def _file_ids(value: Any) -> tuple[str, ...] | None:
+    """The file row ids of an answer: short strings, each once, or None."""
+    if not isinstance(value, list) or len(value) > MAX_REPLY_RECIPIENTS:
+        return None
+    if any(not isinstance(i, str) or not 0 < len(i) <= _MAX_FILE_ROW_ID for i in value):
+        return None
+    if len(set(value)) != len(value):
+        return None
+    return tuple(value)
+
+
+def parse_new_mail_answer(answer: Any) -> NewMailChoice | None:
+    """The member's choice on a new-mail card, or None (§18.10).
+
+    Strict, and it fails closed, as :func:`parse_reply_answer` does. The
+    answer is ``APPROVE`` and one JSON object with the one key ``reply``.
+    That object holds exactly :data:`NEW_MAIL_ANSWER_KEYS`, and it may add
+    ``files`` (:data:`NEW_MAIL_ANSWER_OPTIONAL_KEYS`). ``kind`` is
+    :data:`NEW_MAIL_KIND`. A missing key, an extra key (a ``message_id``, an
+    ``attachments``), a bad file id, an unknown action, an empty text, a text over
+    :data:`MAX_REPLY_BODY`, a subject over :data:`MAX_SUBJECT` or no To reads
+    as no answer. Nothing is trimmed to fit. The gateway checks the
+    characters of the subject and of the text again before a send."""
+    text = answer if isinstance(answer, str) else ""
+    if len(text) > MAX_NEW_MAIL_ANSWER:
+        return None
+    text = text.strip()
+    if not text.upper().startswith(REPLY_ANSWER_PREFIX):
+        return None
+    try:
+        payload = json.loads(text[len(REPLY_ANSWER_PREFIX):])
+    except (TypeError, ValueError, RecursionError):
+        return None
+    if not isinstance(payload, dict) or set(payload) != {"reply"}:
+        return None
+    mail = payload["reply"]
+    if not isinstance(mail, dict) or not (
+            NEW_MAIL_ANSWER_KEYS <= set(mail)
+            <= NEW_MAIL_ANSWER_KEYS | NEW_MAIL_ANSWER_OPTIONAL_KEYS):
+        return None
+    if mail["kind"] != NEW_MAIL_KIND or mail["action"] not in REPLY_ACTIONS:
+        return None
+    subject, body = mail["subject"], mail["body"]
+    if not isinstance(subject, str) or len(subject) > MAX_SUBJECT:
+        return None
+    if not isinstance(body, str) or not body.strip() or len(body) > MAX_REPLY_BODY:
+        return None
+    to, cc, bcc = _addresses(mail["to"]), _addresses(mail["cc"]), _addresses(mail["bcc"])
+    if to is None or cc is None or bcc is None or not to:
+        return None
+    files = _file_ids(mail["files"]) if "files" in mail else None
+    if "files" in mail and files is None:
+        return None
+    return NewMailChoice(action=mail["action"], subject=subject, body=body, to=to, cc=cc,
+                         bcc=bcc, files=files)
+
+
+def looks_like_new_mail_answer(answer: Any) -> bool:
+    """True when *answer* parses as a new-mail answer (§18.10)."""
+    return parse_new_mail_answer(answer) is not None
+
+
+def edit_card_on(org: object = None) -> bool:
+    """True when the ONE email card of a new mail is on for organization
+    *org* (§18.10). THE reader of ``EMAIL_EDIT_CARD_ORGS``.
+
+    The value is a comma list of organization ids, or ``*`` for each one.
+    Empty means off, the default: a new mail then shows the cards of before.
+    It reads the settings at each call, so a flag reload applies a change. It
+    parses the list with the shared ``assistant_profile._parse_orgs``. *org*
+    defaults to the bound tenant of the run. The gateway passes the session's
+    organization, and no request field reaches this function (R5). It fails
+    closed: a fault, or a frame with no tenant under a list of ids, reads as
+    off. Fence: ``tests/unit/test_email_new_mail_card.py``."""
+    try:
+        from acb_common import get_settings
+        from acb_common.assistant_profile import _parse_orgs
+
+        orgs = _parse_orgs(str(getattr(get_settings(), "email_edit_card_orgs", "") or ""),
+                           star=True)
+        if not orgs or "*" in orgs:
+            return bool(orgs)
+        if org is None:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        return str(org or "").strip().lower() in orgs
+    except Exception:
+        return False
+
+
 def looks_like_send_answer(answer: Any) -> bool:
     """True when *answer* has the shape of the answer of a held send card
     (``email_app_master_plan.md`` §21): ``APPROVE {"rows": [...]}`` with 1 to
@@ -694,9 +831,10 @@ def looks_like_send_answer(answer: Any) -> bool:
 
 
 def _recordable(answer: Any) -> bool:
-    """True when respond-input records *answer*: a reply answer, and, only
-    while ``EMAIL_HELD_CARD_SEND`` is on, the answer of a held send card."""
-    if looks_like_reply_answer(answer):
+    """True when respond-input records *answer*: a reply answer, a new-mail
+    answer (§18.10), and, only while ``EMAIL_HELD_CARD_SEND`` is on, the
+    answer of a held send card."""
+    if looks_like_reply_answer(answer) or looks_like_new_mail_answer(answer):
         return True
     if not looks_like_send_answer(answer):
         return False
