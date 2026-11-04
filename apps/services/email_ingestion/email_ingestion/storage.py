@@ -7,7 +7,7 @@ Spec: ``project-docs/specs/email_app_master_plan.md`` §10.4.7, the part
 This module is the ONE owner of four rules. Do not copy them:
 
 * **The limit (Q1).** Each mailbox has its own limit. The setting
-  ``email_mailbox_storage_limit_mb`` (default 500) times 1,048,576 is the
+  ``email_mailbox_storage_limit_mb`` (default 2048) times 1,048,576 is the
   limit in bytes (:func:`storage_limit_bytes`). A mailbox is at the limit when
   its meter is at or over that value (:func:`at_limit`).
 * **The meter (D-EM-14).** :func:`measure_stored_bytes` sums

@@ -156,8 +156,9 @@ def _random_b64(chars: int) -> str:
 # ── 1. The setting and the limit (hermetic) ─────────────────────────────────
 
 
-def test_the_setting_is_500_mb() -> None:
-    assert Settings.model_fields["email_mailbox_storage_limit_mb"].default == 500
+def test_the_setting_is_2048_mb() -> None:
+    # 2 GB for each mailbox: the owner's word of 2026-11-04 (D-EM-14).
+    assert Settings.model_fields["email_mailbox_storage_limit_mb"].default == 2048
     assert storage.BYTES_PER_MB == _MB
 
 
