@@ -2,10 +2,16 @@
 # Run slots for the local CI lanes (CIV-6, task 1634). Sourced, never run.
 #
 # One lane used to run ONE suite at a time (flock ~/.ci.lock), because each
-# shard was guessed at 2.5 GB. Measured on the home box (2026-11-04, cgroup
-# memory.peak of each container, polled each 2 s): one shard is 0.7 to 3.2 GB
-# with its two Postgres servers, and the other jobs add about 5 GB. So a lane
-# takes several runs, as long as their reserved memory fits.
+# shard was guessed at 2.5 GB. Measured on the home box (2026-11-04, task 1634,
+# cgroup memory.peak of each container, polled each 2 s):
+#   * a full run of 5 shards peaked at 17.7 GB in total;
+#   * a shard (pytest container + its 2 Postgres servers) peaked at 3.2 to
+#     4.4 GB, 3.8 on average. The 4 GB container cap was reached once;
+#   * the jobs around it (frontend 2.5, lint 2.0, operator console 0.5,
+#     ladder and backup 0.4) add about 5 GB.
+# So a 23 GB box takes two selected runs (1 shard, 8 GB each), or one full
+# run, and not both kinds at once. memory.peak counts page cache, so these
+# numbers lean high on purpose.
 #
 # A run RESERVES memory before it starts:
 #     need = CI_FIXED_GB + shards * CI_SHARD_GB
@@ -29,8 +35,8 @@
 
 # Measured, in GB. Re-measure with scripts/ci_pc/memsample.sh after a change
 # to the suite. Round up: a reservation too small starves the VM.
-: "${CI_SHARD_GB:=2}"       # pytest process + 2 Postgres on tmpfs, per shard
-: "${CI_FIXED_GB:=6}"       # lint, frontend, operator-console, migrations, backup, caddy
+: "${CI_SHARD_GB:=3}"       # pytest container + 2 Postgres on tmpfs, per shard
+: "${CI_FIXED_GB:=5}"       # lint, frontend, operator-console, migrations, backup, caddy
 : "${CI_E2E_GB:=10}"         # the browser suite container (--e2e), capped at 10g
 : "${CI_OTHER_GB:=6}"       # kept free for sessions, Docker and the dev stack
 : "${CI_SLOT_DIR:=$HOME/.ci-slots}"
