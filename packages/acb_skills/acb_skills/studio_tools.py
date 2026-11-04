@@ -1925,7 +1925,7 @@ def _record_rows(found: Any) -> list[dict[str, Any]]:
 
 @annotate(read_only=True, idempotent=True, open_world=False)
 async def studio_record_list(
-    package_id: str, object: str, filter: str = "", sort: str = "",  # noqa: A002
+    package_id: str, object: str, filter: str = "", sort: str = "",
     offset: int = 0, limit: int = 0,
 ) -> dict[str, Any]:
     """Read one page of the records of an object of your Studio package.
@@ -2014,10 +2014,28 @@ STUDIO_TOOLS = (
 )
 
 __all__ = [
-    "MAX_ACTION_ROWS", "MAX_MANIFEST_CHARS", "MAX_PACKAGE_ROWS", "MAX_RECORD_ROWS",
-    "MAX_SKILL_ROWS", "STUDIO_RECORD_TOOLS", "STUDIO_SKILL_TOOLS", "STUDIO_TOOLS",
-    "studio_package_get", "studio_record_list", "outline_text", "parts_count", "plan_card_text", "studio_describe",
-    "studio_draft", "studio_interview", "studio_list_actions", "studio_outline", "studio_patch",
-    "studio_plan", "studio_skill_list", "studio_skill_save", "studio_skill_state",
+    "MAX_ACTION_ROWS",
+    "MAX_MANIFEST_CHARS",
+    "MAX_PACKAGE_ROWS",
+    "MAX_RECORD_ROWS",
+    "MAX_SKILL_ROWS",
+    "STUDIO_RECORD_TOOLS",
+    "STUDIO_SKILL_TOOLS",
+    "STUDIO_TOOLS",
+    "outline_text",
+    "parts_count",
+    "plan_card_text",
+    "studio_describe",
+    "studio_draft",
+    "studio_interview",
+    "studio_list_actions",
+    "studio_outline",
+    "studio_package_get",
+    "studio_patch",
+    "studio_plan",
+    "studio_record_list",
+    "studio_skill_list",
+    "studio_skill_save",
+    "studio_skill_state",
     "studio_validate",
 ]
