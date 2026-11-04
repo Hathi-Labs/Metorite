@@ -148,11 +148,14 @@ export function valueText(key: string, value: unknown): string {
   return cut(String(value));
 }
 
-/** One line of a change: the field, its old value and its new value. */
+/**
+ * One line of a change: the field, its old value and its new value. A create
+ * has no old value, so `before` is null and the line shows only the new one.
+ */
 export interface ChangeLine {
   key: string;
   label: string;
-  before: string;
+  before: string | null;
   after: string;
 }
 
@@ -173,7 +176,7 @@ export function changeLines(row: ChangeRow): ChangeLine[] {
     .map((key) => ({
       key,
       label: FIELD_WORDS[key],
-      before: row.action === "create" ? "None" : valueText(key, before[key]),
+      before: row.action === "create" ? null : valueText(key, before[key]),
       after: row.action === "delete" ? "Removed" : valueText(key, after[key]),
     }));
 }

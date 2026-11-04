@@ -68,9 +68,13 @@ export function ChangeItem({ row }: { row: ChangeRow }) {
             <div key={line.key} className="flex flex-wrap gap-x-1.5">
               <dt className="text-muted-foreground">{line.label}:</dt>
               <dd className="min-w-0 text-foreground">
-                <span className="text-muted-foreground">{line.before}</span>
-                <span aria-hidden="true"> → </span>
-                <span className="sr-only"> changed to </span>
+                {line.before !== null && (
+                  <>
+                    <span className="text-muted-foreground">{line.before}</span>
+                    <span aria-hidden="true"> → </span>
+                    <span className="sr-only"> changed to </span>
+                  </>
+                )}
                 <span>{line.after}</span>
               </dd>
             </div>

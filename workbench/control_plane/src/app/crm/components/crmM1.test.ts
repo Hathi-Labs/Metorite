@@ -110,8 +110,12 @@ describe("the words of one change", () => {
       after: { name: "Demo", type: "open", position: 30, probability: 10 },
     };
     expect(changeLines(created)).toEqual([
-      { key: "name", label: "Name", before: "None", after: "Demo" },
+      { key: "name", label: "Name", before: null, after: "Demo" },
     ]);
+    // A create reads "Name: Demo". "None →" looked like a value (owner, 2026-11-04).
+    const drawn = html({ data: { rows: [created], total: 1 } });
+    expect(drawn).toMatch(/Name:<\/dt><dd class="[^"]*"><span>Demo<\/span><\/dd>/);
+    expect(drawn).not.toMatch(/None|→|changed to/);
     const removed: ChangeRow = {
       ...RENAME, area: "pipeline_stage", action: "delete", after: null,
       before: { status_id: "x", position: 2, stage: "Demo" },
