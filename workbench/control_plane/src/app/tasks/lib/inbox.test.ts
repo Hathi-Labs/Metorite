@@ -12,13 +12,11 @@ import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { submitCaptureBox } from "./quickAdd";
+import { viewCounts } from "./taskStore";
 import {
-  SOURCE_PILLS,
   assignedByLabel,
-  filterBySource,
   inboxCount,
   inboxKind,
-  inboxKindCounts,
   inboxRowActions,
   inboxRows,
   orderInbox,
@@ -44,9 +42,9 @@ const task = (id: string, over: Partial<MyTask> = {}): MyTask => ({
 const read = (rel: string) =>
   readFileSync(resolve(__dirname, "..", rel), "utf-8").replace(/\r\n/g, "\n");
 
-// A capture, a capture in an Area, an untriaged board row (NEXT by
-// derivation), a stated-INBOX board row, a tickled capture, an archived
-// capture, and a clarified capture.
+// A capture, a capture in an Area, an assigned untriaged board row (NEXT by
+// derivation), a capture filed to a company board with its INBOX overlay, a
+// tickled capture, an archived capture, and a clarified capture.
 const ITEMS: MyTask[] = [
   task("c1", { createdAt: "2026-09-21T09:00:00Z" }),
   task("c2", { projectId: AREA, createdAt: "2026-09-19T09:00:00Z" }),
@@ -56,23 +54,35 @@ const ITEMS: MyTask[] = [
   task("a1", { archivedAt: "2026-09-20T10:00:00Z" }),
   task("n1", { disposition: "NEXT" }),
 ];
-const FROM_PROJECTS = new Set(["b1"]);
 
-describe("the unified list (S6g)", () => {
-  it("holds the captures and the board rows, never a tickled, archived or clarified row", () => {
-    const ids = inboxRows(ITEMS, FROM_PROJECTS).map((i) => i.id).sort();
-    expect(ids).toEqual(["b1", "b2", "c1", "c2"]);
+describe("the inbox holds captures only (D170, INB-1)", () => {
+  it("holds the INBOX rows, never a tickled, archived or clarified row", () => {
+    const ids = inboxRows(ITEMS).map((i) => i.id).sort();
+    expect(ids).toEqual(["b2", "c1", "c2"]);
+  });
+
+  it("a captured task filed to a company board stays in the inbox", () => {
+    expect(inboxRows(ITEMS).map((i) => i.id)).toContain("b2");
+  });
+
+  it("an assigned, untriaged company task is not in the inbox", () => {
+    expect(inboxRows(ITEMS).map((i) => i.id)).not.toContain("b1");
+    // The module takes no `fromProjectIds`: the set cannot widen the list.
+    expect(read("lib/inbox.ts")).not.toMatch(/fromProjectIds\.has/);
   });
 
   it("the count is one rule, read by the badge and by the header", () => {
-    expect(inboxCount(ITEMS, FROM_PROJECTS)).toBe(4);
+    expect(inboxCount(ITEMS)).toBe(3);
+    expect(inboxCount(ITEMS)).toBe(inboxRows(ITEMS).length);
     // The sidebar badge reads `inboxCount`, and the header says the length
     // of `inboxRows` before any filter. Neither may count by its own rule.
     const sidebar = read("components/ListsSidebar.tsx");
-    expect(sidebar).toMatch(/scoped\.inbox = inboxCount\(items, fromProjectIds\)/);
+    expect(sidebar).toMatch(/scoped\.inbox = inboxCount\(items\)/);
     const view = read("components/InboxView.tsx");
-    expect(view).toMatch(/const allRows = useMemo\(\(\) => inboxRows\(items, fromProjectIds\)/);
+    expect(view).toMatch(/const allRows = useMemo\(\(\) => inboxRows\(items\), \[items\]\)/);
     expect(view).toMatch(/\{allRows\.length\} to process/);
+    // The view-count rule of the store agrees: INBOX, not tickled, not archived.
+    expect(viewCounts(ITEMS).inbox).toBe(inboxCount(ITEMS));
   });
 
   it("kind is `isPersonalTask`: my root and my Areas are personal, a board is a board", () => {
@@ -82,13 +92,13 @@ describe("the unified list (S6g)", () => {
     expect(inboxKind(task("x", { projectId: "board-1" }), scope)).toBe("board");
   });
 
-  it("draws board rows first, then captures, each block in the member's sort", () => {
-    const rows = inboxRows(ITEMS, FROM_PROJECTS);
-    expect(orderInbox(rows, scope, "newest").map((i) => i.id)).toEqual(["b2", "b1", "c1", "c2"]);
-    expect(orderInbox(rows, scope, "oldest").map((i) => i.id)).toEqual(["b1", "b2", "c2", "c1"]);
+  it("draws the member's sort, newest or oldest capture first", () => {
+    const rows = inboxRows(ITEMS);
+    expect(orderInbox(rows, "newest").map((i) => i.id)).toEqual(["b2", "c1", "c2"]);
+    expect(orderInbox(rows, "oldest").map((i) => i.id)).toEqual(["c2", "c1", "b2"]);
   });
 
-  it("Inbox zero only when both kinds are empty, and the controls whenever either has rows", () => {
+  it("Inbox zero only when the list is empty, and the controls whenever it has rows", () => {
     const view = read("components/InboxView.tsx");
     expect(view).toMatch(/const hasRows = allRows\.length > 0;/);
     // Continuity P3: one shared box draws both empty states, and `empty` is
@@ -96,31 +106,13 @@ describe("the unified list (S6g)", () => {
     expect(view).toMatch(/\) : !hasRows \|\| visible\.length === 0 \? \(/);
     expect(view).toMatch(/<InboxEmptyState empty=\{!hasRows\}/);
     expect(view).toMatch(/\{\(hasRows \|\| tickler\.length > 0\) && \(/);
-    // The old second group is gone: one row component draws both kinds.
     expect(view).not.toMatch(/FromProjectsGroup/);
   });
-});
 
-describe("the source filter (S6g)", () => {
-  const rows = inboxRows(ITEMS, FROM_PROJECTS);
-
-  it("counts each pill", () => {
-    expect(inboxKindCounts(rows, scope)).toEqual({ all: 4, personal: 2, board: 2 });
-  });
-
-  it("narrows to one kind", () => {
-    expect(filterBySource(rows, "personal", scope).map((i) => i.id).sort()).toEqual(["c1", "c2"]);
-    expect(filterBySource(rows, "board", scope).map((i) => i.id).sort()).toEqual(["b1", "b2"]);
-    expect(filterBySource(rows, "all", scope)).toHaveLength(4);
-  });
-
-  it("draws All, Mine, From Projects as the shared FilterPills, and the stale chip is gone", () => {
-    expect(SOURCE_PILLS.map((p) => p.label)).toEqual(["All", "Mine", "From Projects"]);
+  it("the From Projects pill and the source filter are gone", () => {
     const view = read("components/InboxView.tsx");
-    expect(view).toMatch(/items=\{sourcePills\}/);
-    expect(view).toMatch(/setSourceFilter\(id as InboxSource\)/);
-    expect(view).not.toMatch(/"Mine" : "Team"/);
-    expect(read("components/ItemList.tsx")).not.toMatch(/"Mine" : "Team"/);
+    expect(view).not.toMatch(/SOURCE_PILLS|sourcePills|From Projects|fromProjectIds/);
+    expect(read("lib/inbox.ts")).not.toMatch(/From Projects/);
   });
 });
 
@@ -221,9 +213,9 @@ describe("the keyboard (S6g)", () => {
     expect(view).not.toMatch(/case "[a-z0-9]":/);
   });
 
-  it("the walk covers both kinds: the keyboard reads `visible`, built from the union", () => {
-    expect(view).toMatch(/return orderInbox\(filtered, scope, sortOrder\);/);
-    expect(view).toMatch(/filterBySource\(allRows, sourceFilter, scope\)/);
+  it("the walk covers the captures: the keyboard reads `visible`, built from the one list", () => {
+    expect(view).toMatch(/return orderInbox\(filtered, sortOrder\);/);
+    expect(view).toMatch(/const activeInbox = allRows;/);
   });
 });
 

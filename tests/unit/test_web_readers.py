@@ -404,7 +404,7 @@ async def test_the_title_cannot_close_its_block(monkeypatch) -> None:
     assert "Real words of the page" in body
 
 
-@pytest.mark.parametrize("ctype", ["text/plain; charset=utf-8", "application/json", "text/csv"])
+@pytest.mark.parametrize("ctype", ["text/plain; charset=utf-8", "application/json"])
 async def test_a_type_that_is_not_html_gets_the_strip_and_the_web3_line(
         monkeypatch, ctype: str) -> None:
     """Owner decision 2: with Jina off, the regex strip reads, and one plain
@@ -600,8 +600,6 @@ _PDF = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<</Length 6000>>\nstream\n" + _RA
 @pytest.mark.parametrize(("body", "ctype"), [
     pytest.param(_PDF, "application/pdf", id="a-pdf"),
     pytest.param(b"%PDF-1.4 an ASCII body of a PDF " * 40, "application/pdf", id="an-ascii-pdf"),
-    pytest.param(_RANDOM, "application/octet-stream", id="octet-stream"),
-    pytest.param(_ZIPPED, "application/zip", id="zip"),
     pytest.param(_RANDOM, "image/png", id="an-image"),
     pytest.param(_RANDOM, "application/vnd.ms-excel", id="old-excel"),
     pytest.param(_RANDOM, "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1317,7 +1315,8 @@ def test_the_worker_imports_nothing_from_the_platform() -> None:
         elif isinstance(node, ast.ImportFrom):
             modules.append((node.module or "").split(".")[0])
     third_party = {m for m in modules if m not in sys.stdlib_module_names}
-    assert third_party == {"trafilatura"}, third_party
+    # WEB-3: file mode imports MarkItDown and pdfplumber, inside functions.
+    assert third_party == {"trafilatura", "markitdown", "pdfplumber"}, third_party
 
 
 def test_the_real_extract_opens_no_socket(monkeypatch) -> None:
