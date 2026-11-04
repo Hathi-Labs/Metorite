@@ -1237,7 +1237,9 @@ describe("the headless substrate is wrapped, not imported", () => {
     // moves onto `Modal`.
     const low = MY_TASKS_ALERT_LAYER.filter((f) => !/layer="alert"/.test(read(f)));
     expect(low, "These open under TaskFocusModal. Give them layer=\"alert\".").toEqual([]);
-    expect(read("app/tasks/components/TaskFocusModal.tsx")).toMatch(/fixed inset-0 z-\[80\]/);
+    // TC-1 (2026-11-03): the overlay now sits at the card layer (z-15, `lib/layers.ts`),
+    // below every dialog, so the alert layer stays safe and no longer needed.
+    expect(read("app/tasks/components/TaskFocusModal.tsx")).toContain("TASK_CARD_FRAME");
   });
 
   // ── The Toast primitive (WS-27ak item 3) ─────────────────────────────────
