@@ -1,0 +1,61 @@
+{
+  "studio": 1,
+  "id": "sample-visits",
+  "name": "Sample visits",
+  "purpose": "Show one Studio page on sample records.",
+  "team": "service",
+  "objects": [
+    {
+      "name": "visit",
+      "fields": [
+        { "key": "title", "type": "text", "required": true },
+        { "key": "status", "type": "select", "options": ["Planned", "On site", "Closed"] },
+        { "key": "owner", "type": "person" },
+        { "key": "visit_date", "type": "date" },
+        { "key": "amount", "type": "money" },
+        { "key": "tags", "type": "multiSelect", "options": ["Urgent", "Repeat", "Audit"] },
+        { "key": "done", "type": "checkbox" }
+      ]
+    }
+  ],
+  "views": [
+    { "id": "visit-table", "block": "table", "title": "Visits", "source": { "object": "visit" } },
+    {
+      "id": "visit-board",
+      "block": "board",
+      "title": "Visits by status",
+      "source": { "object": "visit" },
+      "group_by": "status",
+      "card": { "title": "title", "meta": ["owner", "visit_date", "tags"] }
+    },
+    { "id": "visit-form", "block": "form", "title": "New visit", "object": "visit", "fields": ["title", "status", "owner", "visit_date", "done"] },
+    { "id": "visit-detail", "block": "detail", "title": "Visit", "object": "visit" },
+    { "id": "visit-week", "block": "calendar", "title": "Week", "source": { "object": "visit" }, "start": "visit_date" }
+  ],
+  "pages": [
+    {
+      "id": "visits",
+      "title": "Sample data",
+      "cols": 3,
+      "side": { "view": "visit-detail" },
+      "tabs": [
+        {
+          "id": "list",
+          "title": "List",
+          "cells": [
+            { "view": "visit-table", "span": 2 },
+            { "view": "visit-form" },
+            { "view": "visit-week", "span": 3 }
+          ]
+        },
+        {
+          "id": "plan",
+          "title": "Plan",
+          "cells": [
+            { "view": "visit-board", "span": 3 }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -47,7 +47,7 @@ import { type AttentionPage, LENS_LABEL } from "../lib/needsAttention";
 import { EMPTY_FILTERS, type Filters, type GroupBy, NO_LANES, type BoardLanes, type SubtaskMode, groupTasks, toQuery } from "../lib/grouping";
 import { DEFAULT_SHOWN } from "../lib/shownFields";
 import { appendTasks, nextTaskPage } from "../lib/paging";
-import { loadedOfTotal } from "../lib/compactChrome";
+import { chromeKind, loadedOfTotal } from "../lib/compactChrome";
 import { type CalendarLayout, calendarGrid, calendarWindow, dayKey, shiftGrid } from "../lib/calendar";
 import { EXPORT_FILENAME, exportPath } from "../lib/export";
 import { useLiveRefresh } from "@/lib/liveRefresh";
@@ -563,6 +563,7 @@ export default function MyTasksSpace({
   }
 
   const chips = <MyTasksChips chip={chip} summary={summary.data} onChip={(next) => onView({ ...view, chip: next })} />;
+  const chrome = chromeKind({ overview: mode === "overview", phone, compact: compactChrome });
   const listLoaded = list.key === queryKey;
   // A chip other than All reads at most MY_TASKS_MAX_ROWS rows. Past that it
   // says so, in the place of the board's "Load more" bar (item 5).
@@ -581,11 +582,13 @@ export default function MyTasksSpace({
       {errorLine}
       {/* D-PM-38: the "close the subtasks too?" question of a board write. */}
       {subtaskComplete.dialog}
-      {mode === "overview" ? null : (
+      {chrome === "none" ? null : (
         <>
-          {chips}
+          {chrome === "full" ? chips : null}
           <FilterChrome
             compact={compactChrome}
+            // MOB-1: an Overview on a phone keeps the View button, the way back.
+            viewOnly={chrome === "view-only"}
             phone={phone}
             // On a phone the tabs live in the View sheet (OP-1).
             modes={MODE_OPTIONS}
