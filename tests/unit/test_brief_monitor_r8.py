@@ -139,9 +139,8 @@ async def test_r8_the_stats_count_the_bound_org_only(world) -> None:
 
 async def test_r8_an_org_with_no_run_meets_the_target(world) -> None:
     p = world
-    async with tenant_engine_scope(_dsn(p.app_url)):
-        async with tenant_session(p.org_a) as db:
-            s = await monitor.stats(db, NOW)
+    async with tenant_engine_scope(_dsn(p.app_url)), tenant_session(p.org_a) as db:
+        s = await monitor.stats(db, NOW)
     assert (s.counted, s.share, s.met, s.p95_s) == (0, None, True, None)
 
 

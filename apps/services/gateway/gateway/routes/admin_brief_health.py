@@ -23,7 +23,6 @@ from typing import Any
 
 from acb_auth import UserContext
 from fastapi import APIRouter, Depends, HTTPException
-
 from gateway.brief import flags, monitor
 from gateway.routes.admin._common import require_admin_user
 
