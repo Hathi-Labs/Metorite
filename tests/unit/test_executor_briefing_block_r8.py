@@ -78,7 +78,35 @@ TAG = uuid.uuid4().hex[:8]
 ME = f"brief-me-{TAG}@pz34.test"
 OTHER = f"brief-other-{TAG}@pz34.test"
 NOPROJ = f"brief-noproj-{TAG}@pz34.test"
-NOW = datetime.now(UTC)
+#: The suite's one instant, fixed (#951, ``test_no_new_clock_flakes.py``). The
+#: seeds read it, and the autouse fixture ``_one_instant`` freezes the two
+#: clocks of the build to it: the due read of ``my_due_tasks``
+#: (``personal.datetime``) and the time line (``executor._briefing_now``).
+NOW = datetime(2026, 11, 4, 9, 30, tzinfo=UTC)
+
+
+class _Meta(type):
+    def __instancecheck__(cls, obj: object) -> bool:
+        # A real datetime from the driver is still a datetime to the code.
+        return isinstance(obj, _REAL_DATETIME)
+
+
+_REAL_DATETIME = datetime
+
+
+class _Frozen(datetime, metaclass=_Meta):
+    @classmethod
+    def now(cls, tz=None):  # type: ignore[override]
+        return NOW.astimezone(tz) if tz else NOW.astimezone(UTC).replace(tzinfo=None)
+
+
+@pytest.fixture(autouse=True)
+def _one_instant(monkeypatch):
+    """The build's clocks read ``NOW``, the instant that the seeds read."""
+    from gateway.routes.projects import personal
+
+    monkeypatch.setattr(personal, "datetime", _Frozen)
+    monkeypatch.setattr(ex, "_briefing_now", lambda: NOW)
 
 #: The chat of the turn. It has a summary, and it must never show.
 CURRENT = f"pz34-current-{TAG}"
@@ -378,6 +406,8 @@ async def test_7_the_tasks_come_from_my_due_tasks(env) -> None:
 
     block = await _turn(env)
     assert _task_titles(block) == ["Chase the supplier", "Ship the extruder"]
+    # The time line reads the frozen instant, in the member's zone (UTC here).
+    assert "As of Wed 4 Nov, 09:30 (UTC)." in block
     async with tenant_engine_scope(_app_dsn(env)):
         token = bind_tenant(env.org_a)
         try:
