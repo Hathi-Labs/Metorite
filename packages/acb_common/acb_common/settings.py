@@ -829,6 +829,16 @@ class Settings(BaseSettings):
     # reload applies a change (`gateway/flag_reload.py`). Fence:
     # tests/unit/test_decisions.py.
     decisions_orgs: str = ""
+    # ── Guidance for agents (WS-MCP SW-31a, agent_coordination.md SW-31) ────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, the `/agent-guidance` routes answer 404 and the MCP
+    # answers of `get_task_context`, `claim_task` and `my_work` carry no
+    # `guidance` key. The one reader is
+    # `gateway.routes.agent_guidance.guidance_allowed`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). Fence:
+    # tests/unit/test_agent_guidance.py.
+    agent_guidance_orgs: str = ""
     # ── The trigger of the project alignment check (WS-ALN ALN-1, D160) ─────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

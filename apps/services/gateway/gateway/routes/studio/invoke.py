@@ -170,7 +170,7 @@ REFUSALS: dict[str, str] = {
 #: The 503 of a catalog that fails, and the 404 of an object that the package
 #: does not hold. Each is one sentence that a model can act on.
 CATALOG_DOWN = "The action catalog is not available now, so try the action again later."
-NO_OBJECT = "This package holds no object for this action yet, so define the object first."
+NO_OBJECT = "This package holds no object for this action yet, so publish the package."
 
 BODY_OVER_CAP = "This body is too large for this door, so send a smaller body."
 

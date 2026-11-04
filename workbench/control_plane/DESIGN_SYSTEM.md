@@ -523,6 +523,11 @@ Check `src/components/` before writing a tab bar, filter pills or a page header.
   phone swipes it. `FilterPills` and the Email quick filters use it. Use it for
   any chip row that can outgrow its pane, and do not write a second one.
 * `PageHeader` — the page's title, subtitle and whole-surface actions.
+* A page grid inside an app follows its container width with `@container`
+  queries, as the Projects reports and `genUITemplates` do. The window width
+  does not show the shell rail or a side column.
+* A side column beside a page grid starts at `lg`, with a `Modal` sheet below.
+  The 260 px rail leaves too little room at `md`. `StudioPage` is the example.
 
 ```tsx
 import PageHeader from "@/components/PageHeader";
