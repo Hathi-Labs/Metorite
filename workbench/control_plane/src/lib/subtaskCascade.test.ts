@@ -259,6 +259,8 @@ describe("Undo covers the cascade (D79)", () => {
     const hook = read("app/projects/components/useSubtaskComplete.tsx");
     expect(hook).toMatch(/let changes: CascadeChange\[\] = first\.changes;/);
     expect(hook).toMatch(/undoApi\.record\(/);
-    expect(hook).toMatch(/action: \{ label: "Undo"/);
+    expect(hook).toMatch(/action: \{\s*label: "Undo"/);
+    // UNDO-1 round 2: the toast's Undo goes through the one busy gate.
+    expect(hook).toMatch(/undoApi\s*\.undoEntry\(entry\)/);
   });
 });
