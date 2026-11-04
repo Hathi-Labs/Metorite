@@ -511,7 +511,9 @@ async def test_a_deep_sync_at_the_limit_stops_and_skips_its_reconcile(
     assert provider.fetched == 1
     assert res.get("limit") is True, res
     assert core_run.reconciles == [], "a stopped import ran the reconcile"
-    assert not any("import_phase" in s for s in log)
+    # Phase (a) reads ``import_phase`` for the resume of EM-T6f. No UPDATE
+    # writes it.
+    assert not any(s.startswith("UPDATE") and "import_phase" in s for s in log)
 
 
 async def test_under_the_limit_the_result_has_no_limit_key(core_run) -> None:

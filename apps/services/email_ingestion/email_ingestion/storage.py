@@ -4,12 +4,22 @@ from Metorite (WS-17 EM-T6c).
 Spec: ``project-docs/specs/email_app_master_plan.md`` §10.4.7, the part
 "EM-T6c". Owner decision D-EM-14 and the owner answers Q1 to Q4 (§10.2).
 
-This module is the ONE owner of four rules. Do not copy them:
+This module is the ONE owner of the rules below. Do not copy them:
 
 * **The limit (Q1).** Each mailbox has its own limit. The setting
   ``email_mailbox_storage_limit_mb`` (default 2048) times 1,048,576 is the
   limit in bytes (:func:`storage_limit_bytes`). A mailbox is at the limit when
   its meter is at or over that value (:func:`at_limit`).
+* **The resume (EM-T6f).** A first import that the limit stopped ends in the
+  phase ``limit``. :func:`import_resumes` says when that import goes on: the
+  phase is ``limit``, the meter ran, the meter is under the limit, and the
+  import has a point to go on from (``import_reached_at``).
+  :func:`resume_import` then writes ``initial_sync_done = false`` and
+  ``import_phase = 'importing'``, in one conditional UPDATE. The scheduler
+  calls it in phase (a) of a loop cycle, under the mailbox lock. The import
+  then goes on from ``import_reached_at`` down to the floor, and it stops at
+  the limit again as before. The scheduler paces the resumes
+  (``STORAGE_RESUME_GAP_SECS``).
 * **The meter (D-EM-14).** :func:`measure_stored_bytes` sums
   ``pg_column_size`` of each column of variable length in the
   ``email_messages`` rows of the mailbox, its ``email_attachments`` rows and
@@ -71,9 +81,11 @@ __all__ = [
     "delete_empty_thread_status",
     "delete_orphan_ai_drafts",
     "end_limit_phase",
+    "import_resumes",
     "measure_stored_bytes",
     "preview_older",
     "remove_older_chunk",
+    "resume_import",
     "storage_limit_bytes",
 ]
 
@@ -262,6 +274,22 @@ _END_LIMIT_PHASE = text(
           AND (import_reached_at IS NULL OR import_since >= import_reached_at)"""
 )
 
+#: The resume of an import that the limit stopped (EM-T6f). The import of
+#: the scheduler goes on while ``initial_sync_done`` is false, and it starts
+#: at ``import_reached_at`` with the count that it reached. So the UPDATE
+#: writes these two columns only, and it keeps ``import_reached_at`` and
+#: ``import_count``. The ``WHERE`` makes the write conditional. The phase must
+#: still be ``limit``, so a second write finds no row. The meter must still
+#: be the value that :func:`import_resumes` judged, so a meter that changed
+#: since the read keeps the row as it is.
+_RESUME_IMPORT = text(
+    """UPDATE email_accounts
+          SET initial_sync_done = false, import_phase = 'importing',
+              updated_at = now()
+        WHERE id = :aid AND import_phase = 'limit'
+          AND stored_bytes = :stored"""
+)
+
 
 def storage_limit_bytes() -> int:
     """The limit of one mailbox in bytes (Q1)."""
@@ -399,3 +427,46 @@ async def end_limit_phase(db: Any, account_id: str, stored_bytes: int | None) ->
     if stored_bytes is None or at_limit(stored_bytes):
         return False
     return _rowcount(await db.execute(_END_LIMIT_PHASE, {"aid": account_id})) > 0
+
+
+def import_resumes(
+    phase: str | None, stored_bytes: int | None, reached_at: datetime | None,
+) -> bool:
+    """True when the import of a mailbox that the limit stopped goes on
+    (EM-T6f). Each of the four tests must hold:
+
+    * The phase is ``limit``. A mailbox in any other phase is never touched.
+    * The meter ran. ``None`` means that it did not run, and the import
+      does not go on. Note that :func:`at_limit` reads ``None`` as under the
+      limit, so this test comes first.
+    * The meter is under the limit (:func:`at_limit` is false). At or over
+      the limit, the import stays stopped, so it does not stop and start at
+      each cycle.
+    * The import reached a point (``import_reached_at``). With no point, it
+      would start again from now and read the newest mail a second time."""
+    if phase != "limit":
+        return False
+    if stored_bytes is None:
+        return False
+    if at_limit(stored_bytes):
+        return False
+    return reached_at is not None
+
+
+async def resume_import(
+    db: Any, account_id: str, *, phase: str | None, stored_bytes: int | None,
+    reached_at: datetime | None,
+) -> bool:
+    """Write the resume of an import that the limit stopped (EM-T6f), when
+    :func:`import_resumes` says yes for the values that the caller read.
+    Returns True when it wrote the row.
+
+    The write is conditional (``_RESUME_IMPORT``). The row must still be in
+    the phase ``limit`` and still hold the meter ``stored_bytes``. So a
+    second write, or a write after a change of the meter, finds no row. The
+    caller holds the mailbox lock. Takes the caller's session, opens none and
+    never commits."""
+    if not import_resumes(phase, stored_bytes, reached_at):
+        return False
+    return _rowcount(await db.execute(
+        _RESUME_IMPORT, {"aid": account_id, "stored": stored_bytes})) > 0
