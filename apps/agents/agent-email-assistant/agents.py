@@ -6430,12 +6430,13 @@ def _new_mail_result(res: dict[str, Any], sender: str, usual: str = "") -> str:
     files = int(res.get("files") or 0)
     note = f" with {files} attachment(s)" if files else ""
     if res.get("action") == "save":
+        # No "Draft:" line (``_draft_line``): the working set reads the LAST
+        # line of a result for one, and here that line can be text that the
+        # model wrote. The id is named in words, for the model only.
         did = str(res.get("draft_id") or "")
         ref = f" (draft_id {did})" if did else ""
-        line = _draft_line(did, res.get("subject"))
         return (f"Saved in Drafts of {sender}{note}, to {_new_mail_people(res)}{ref}. "
-                f"Nothing was sent.{_new_mail_left(res)}{_new_mail_text_line(res)}"
-                + (f"\n{line}" if line else ""))
+                f"Nothing was sent.{_new_mail_left(res)}{_new_mail_text_line(res)}")
     tail = f" {usual}" if usual else ""
     return (f"Sent email to {_new_mail_people(res)} from {sender}{note} "
             f"(id={res.get('id', '')}).{_new_mail_left(res)}{tail}{_new_mail_text_line(res)}")
@@ -6553,11 +6554,10 @@ async def _held_new_mail(
     note = f" with {files} file(s)" if files else ""
     if res.get("action") == "save":
         # §18.10: Save draft on the card wrote a new draft, and sent nothing.
+        # No "Draft:" line, as in ``_new_mail_result``.
         did = str(res.get("draft_id") or "")
-        line = _draft_line(did, res.get("subject"))
         return (_held_sent_text(res, f"Saved in Drafts{note}, nothing was sent")
-                + (f" (draft_id {did})." if did else "") + _new_mail_text_line(res)
-                + (f"\n{line}" if line else ""))
+                + (f" (draft_id {did})." if did else "") + _new_mail_text_line(res))
     return (_held_sent_text(res, f"Sent{note}") + f" (id={res.get('id', '')})."
             + _new_mail_text_line(res))
 
