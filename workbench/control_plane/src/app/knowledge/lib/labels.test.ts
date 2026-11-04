@@ -9,6 +9,7 @@ import {
   MY_NOTES_CHOICE,
   PENDING_ME_ID,
   isPendingMe,
+  realSpaces,
   withPendingMe,
   REASON_LABELS,
   canWriteIn,
@@ -191,5 +192,12 @@ describe("KB-2s: My notes from the first open", () => {
   it("starts a new page in the stand-in when the space on screen is read only", () => {
     const ro = space("c", { kind: "company", name: "Company", level: "read" });
     expect(defaultSpaceChoice(withPendingMe([ro]), "c")).toBe(PENDING_ME_ID);
+  });
+});
+
+describe("KB-2s: the stand-in never reaches a read by space id", () => {
+  it("realSpaces drops the stand-in and keeps the rest", () => {
+    const company = space("c", { kind: "company", name: "Company" });
+    expect(realSpaces(withPendingMe([company]))).toEqual([company]);
   });
 });

@@ -108,6 +108,11 @@ export function isPendingMe(id: string | null | undefined): boolean {
   return id === PENDING_ME_ID;
 }
 
+/** The spaces that have a row: the stand-in left out. For any read or write by space id. */
+export function realSpaces<T extends { id: string }>(spaces: readonly T[]): T[] {
+  return spaces.filter((s) => !isPendingMe(s.id));
+}
+
 /**
  * The spaces with "My notes" last when the member has no `me` space yet. The
  * stand-in lets the rail and the switcher show it from the first open. No
