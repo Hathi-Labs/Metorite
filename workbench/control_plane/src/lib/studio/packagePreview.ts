@@ -31,10 +31,15 @@ export function fieldSpecs(object: Pick<ObjectRow, "fields">): FieldSpec[] {
   return out;
 }
 
-/** The columns of the Table: the first fields, with a field of many values last. */
+/**
+ * The columns of the Table: the first fields, with a field of many values last.
+ * A long text stays out, as in the sample Table. It wraps into a tall, narrow
+ * cell, and the Detail sheet shows it whole.
+ */
 export function tableFields(fields: readonly FieldSpec[]): FieldSpec[] {
-  const single = fields.filter((f) => !f.many);
-  const many = fields.filter((f) => f.many);
+  const shown = fields.filter((f) => f.type !== "longText");
+  const single = shown.filter((f) => !f.many);
+  const many = shown.filter((f) => f.many);
   return [...single, ...many].slice(0, MAX_TABLE_COLUMNS);
 }
 

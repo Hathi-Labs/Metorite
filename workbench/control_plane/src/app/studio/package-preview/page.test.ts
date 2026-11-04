@@ -66,6 +66,10 @@ describe("the preview model", () => {
     const many = Array.from({ length: 12 }, (_, i) => ({ key: `f${i}`, type: "text" as const }));
     expect(tableFields(many)).toHaveLength(8);
   });
+  it("keeps a long text out of the Table columns", () => {
+    const f = [{ key: "a", type: "text" as const }, { key: "n", type: "longText" as const }];
+    expect(tableFields(f).map((x) => x.key)).toEqual(["a"]);
+  });
   it("names a record by its first text field, else its id", () => {
     const f = fieldSpecs(object);
     expect(recordTitle(f, { id: "r1", title: "Press" })).toBe("Press");
