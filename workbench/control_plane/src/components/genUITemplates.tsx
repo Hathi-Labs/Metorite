@@ -130,6 +130,10 @@ const G_FRAME = "glass:glass-card-tile glass:rounded-[16px]! glass:border-transp
 const G_FRAME_ASK = "glass:glass-card-tile glass:rounded-[16px]! glass:border-primary/35! glass:glass-raised! glass:p-4!";
 /** A frame whose children bring their own padding (a table, a comparison). */
 const G_FRAME_FLUSH = "glass:glass-card-tile glass:rounded-[16px]! glass:border-transparent! glass:glass-raised!";
+/** A card drawn INSIDE another card (a table in a report). The parent is the
+ *  raised surface, so the inner one keeps a visible hairline and no second
+ *  raise. A transparent border here drew only the corners (task 1651). */
+const G_NESTED = "glass:glass-card-tile glass:rounded-[12px]! glass:border-border! glass:p-3!";
 /** An inner group: a rounded block on the card, with no border. */
 const G_BLOCK = "glass:rounded-[10px]! glass:border-transparent! glass:bg-secondary!";
 /** A field of a form: a rounded fill with no border. */
@@ -1652,7 +1656,7 @@ const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayout
  * per column (`task_dataset` sends them). Without them, each column takes
  * the kind of its card label.
  */
-export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) {
+export function DataGrid({ data, layout, nested }: { data: Data; layout?: GridLayout; nested?: boolean }) {
   const kinds = Array.isArray(data.kinds)
     ? data.kinds.map((k) => (typeof k === "string" ? k : undefined))
     : undefined;
@@ -1724,7 +1728,7 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
   };
   const lead = shown.find((c) => c.role === "lead");
   return (
-    <div ref={boxRef} data-grid-layout={mode} className={`${G_FRAME} ${T_BLUE}`} style={CARD_BOX}>
+    <div ref={boxRef} data-grid-layout={mode} className={`${nested ? G_NESTED : G_FRAME} ${T_BLUE}`} style={CARD_BOX}>
       <TemplateHead icon="table-2" title={data.title != null ? str(data.title) : null} />
       <TemplateBody>
       {filterable && (
@@ -1850,7 +1854,7 @@ function ReportCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
           click, so the file is the Reports app's numbers of that moment. */}
       <ReportFileButtons reportId={data.reportId} />
       {stats.length > 0 && <StatDashboard data={{ stats }} />}
-      {tables.map((t, i) => <DataGrid key={i} data={{ title: t.title, columns: t.columns, rows: t.rows, openBase: "" }} />)}
+      {tables.map((t, i) => <DataGrid key={i} nested={fold != null} data={{ title: t.title, columns: t.columns, rows: t.rows, openBase: "" }} />)}
       {pills.length > 0 && (
         <SuggestionPills suggestions={pills} onPick={(line) => ctx?.onAction?.(line)} label={BRIEF_PILLS_LABEL} align="start" />
       )}
@@ -2036,7 +2040,7 @@ function ReportVisualBlock({ visual, minWidth, heading = "", card = false }: {
       case "statDashboard":
         return <StatDashboard data={mapped.data} />;
       case "dataGrid":
-        return <DataGrid data={mapped.data} />;
+        return <DataGrid data={mapped.data} nested />;
       case "taskBoard":
         return <TaskBoard data={mapped.data} />;
       case "timeline":
