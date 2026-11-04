@@ -76,7 +76,7 @@ import { useAccess } from "@/components/AccessProvider";
 import { TagManager } from "./components/TagManager";
 import { BulkBar } from "./components/BulkBar";
 import { FilterChrome } from "./components/CompactFilterBar";
-import { compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
+import { chromeKind, compactChromeEnabled, loadedOfTotal } from "./lib/compactChrome";
 import {
   isMyTasksApp,
   isMyWorkId,
@@ -86,7 +86,7 @@ import {
   myWorkNavCounts,
   projectsUndoScope,
 } from "./lib/myWork";
-import { asChip, myTasksHref, phoneMyTasksTap, withoutMyTasks } from "./lib/myTasks";
+import { MY_TASKS_MODES, asChip, myTasksHref, myTasksModeFor, phoneMyTasksTap, withoutMyTasks } from "./lib/myTasks";
 import MyTasksSpace, {
   DEFAULT_MY_TASKS_VIEW,
   MyTasksActionRow,
@@ -3371,6 +3371,13 @@ function ProjectsWorkspace() {
     () => ({
       navigate: (href) => router.push(href),
       setMode: (next) => {
+        // MOB-1: with My tasks open the mode command switches ITS tab. It
+        // wrote the hidden project's mode before, so "List view" did nothing.
+        if (isMyTasksApp(app)) {
+          const tab = myTasksModeFor(next);
+          if (tab) setMyTasks((v) => ({ ...v, mode: tab, attention: false }));
+          return;
+        }
         setAttentionFor(null);
         setChosenMode(next);
       },
@@ -3398,7 +3405,8 @@ function ProjectsWorkspace() {
   );
 
   const commandCtx: CommandContext = {
-    mode,
+    mode: isMyTasksApp(app) ? myTasks.mode : mode,
+    modes: isMyTasksApp(app) ? MY_TASKS_MODES.map((entry) => entry.id) : undefined,
     hasProject: Boolean(selected),
     isRoot: Boolean(selected && !selected.parent_project_id),
     filtered: isFiltered(filters),
@@ -4714,9 +4722,11 @@ function ProjectsWorkspace() {
         </div>
       ) : null}
 
-      {selected && !overview ? (
+      {selected && chromeKind({ overview, phone: isMobile, compact: compactChrome }) !== "none" ? (
         <FilterChrome
           compact={compactChrome}
+          // MOB-1: a phone's Overview keeps the View button, the way back.
+          viewOnly={overview}
           phone={isMobile}
           modes={MODE_OPTIONS}
           onMode={(next) => setChosenMode(next)}

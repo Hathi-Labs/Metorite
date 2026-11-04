@@ -345,7 +345,7 @@ def test_the_family_holds_both_new_tools_in_the_order_of_the_module() -> None:
     """Mutation: drop ``studio_plan`` from the family -> red."""
     tools = tuple(sf.SKILL_FAMILIES["studio"]["tools"])
     assert "studio_interview" in tools and "studio_plan" in tools
-    assert tools == tuple(fn.__name__ for fn in st.STUDIO_TOOLS)
+    assert tools == tuple(fn.__name__ for fn in (*st.STUDIO_TOOLS, *st.STUDIO_SKILL_TOOLS))
     assert all(inspect.iscoroutinefunction(fn) for fn in st.STUDIO_TOOLS)
 
 
