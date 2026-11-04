@@ -674,10 +674,18 @@ def test_a_model_load_at_the_cap_works_in_a_real_run(store, monkeypatch) -> None
     """The words load no pack, so the model asks. Three sticky packs that fit
     the real base stay in the first request. Before this slice the run held no
     ``load_skill_tools`` at 3 packs. Mutation: keep ``pool = ()`` at the cap ->
-    the first request has no load tool -> red."""
+    the first request has no load tool -> red.
+
+    PJP-2 fix round 2: the seeds were ``crm-records``, ``projects-bulk`` and
+    ``projects``. Two Projects packs and ``crm-records`` (107 tools at the base
+    of 53) leave no room for a third Projects pack, so the step-aside moves
+    ``projects-bulk`` out at the start of the turn (project_planning.md §3.3,
+    rule 2), and the run never reaches the pack cap. These three packs hold
+    ONE Projects pack, so no pack steps aside (101 tools). The oldest is
+    ``email-setup``, and the load fits once it leaves (101 - 28 + 19)."""
     _flag(monkeypatch, True)
     _projects_real(monkeypatch)
-    _seed("crm-records", "projects-bulk", "projects")
+    _seed("email-setup", "crm-records", "projects-reports")
     model = ScriptedModel([
         tool_turn(tp.LOAD_TOOL, json.dumps({"pack": REMINDERS}), call_id="c-load"),
         text_turn("Done."),
@@ -686,10 +694,11 @@ def test_a_model_load_at_the_cap_works_in_a_real_run(store, monkeypatch) -> None
     assert [e.get("type") for e in events][-1] == "RUN_FINISHED", events
     first, second = _tool_names(model.bodies[0]), _tool_names(model.bodies[1])
     assert first[-1] == tp.LOAD_TOOL and "set_reminder" not in first
-    assert "search_crm" in first, "non-vacuity: the run held three packs"
-    assert "set_reminder" in second and "search_crm" not in second
-    assert "find_tasks" in second, "only the oldest sticky pack left"
-    assert "To make room, the CRM records tools left" in _tool_result(model.bodies[1], "c-load")
+    assert {"create_rule", "search_crm", "report_list"} <= set(first), (
+        "non-vacuity: the run held three packs")
+    assert "set_reminder" in second and "create_rule" not in second
+    assert {"search_crm", "report_list"} <= set(second), "only the oldest sticky pack left"
+    assert "To make room, the Email setup tools left" in _tool_result(model.bodies[1], "c-load")
 
 
 @pytest.fixture(autouse=True)
