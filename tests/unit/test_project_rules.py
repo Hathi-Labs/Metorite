@@ -43,8 +43,8 @@ Mutations (R7), each turns the named test red. ``R`` is
 * R3. ``R`` ``_rule_out``: ``hidden = False``.
   ``test_a_reader_who_cannot_open_the_page_gets_no_quote``.
 * R4. ``R`` ``create_rule``: skip ``_refuse_over_cap``. ``test_the_41st_active_rule_gets_409``.
-* R5. ``R`` ``_change``: drop the ``_lock_project`` call, and ``create_rule``
-  too. ``test_concurrent_creates_hold_the_cap``.
+* R5. ``R`` ``create_rule``: drop the ``_lock_project`` call.
+  ``test_concurrent_creates_hold_the_cap``.
 * R6. ``R`` ``require_project_rules``: never raise. ``test_flag_off_answers_404_for_each_route``.
 * R7. The migration: drop the ``OLD.kind = 'rule'`` arm of the guard.
   ``test_each_change_adds_a_row_and_the_old_row_stays``.

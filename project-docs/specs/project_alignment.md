@@ -1,7 +1,7 @@
 # Project alignment — Metorite checks work against the project's rules (WS-ALN)
 
 > **Product:** Metorite · **Feature:** the project of a task, the project's rules, and a check that asks a person · **Updated:** 2026-11-02 · **Owner:** vjvarada
-> **Status:** 🟡 **IN BUILD, DARK.** ALN-0 (this spec), ALN-1 (§5, the durable trigger) and ALN-4 (§4.1, the pin: the table `pm_project_authorities`, migration 339, three routes and three chat tools, no UI) are built. `ALIGN_JOBS_ORGS` and `AUTHORITY_PINS_ORGS` ship empty and `JOB_QUEUE` ships off, so no job and no pin exists yet, and the `align.check` handler is a stub until ALN-7. ALN-2a (the table and the service of one person decides, migration 332, merged e827f2012) is built dark behind `DECISIONS_ORGS`. ALN-2b, ALN-4b and AUTO-7b are next. The owner did not answer ALN-Q1 to ALN-Q5, and told us to start. The build runs on the working defaults of §14.
+> **Status:** 🟡 **IN BUILD, DARK.** ALN-0 (this spec), ALN-1 (§5, the durable trigger) and ALN-4 (§4.1, the pin: the table `pm_project_authorities`, migration 339, three routes and three chat tools, no UI) are built. `ALIGN_JOBS_ORGS` and `AUTHORITY_PINS_ORGS` ship empty and `JOB_QUEUE` ships off, so no job and no pin exists yet, and the `align.check` handler is a stub until ALN-7. ALN-2a (the table and the service of one person decides, migration 332, merged e827f2012) is built dark behind `DECISIONS_ORGS`. **ALN-5a (§4.2, the rules of a project) is built dark on 2026-11-04:** rule rows on `pm_agent_guidance`, migration 343, seven routes under `/project-rules`, an exact-quote check, no UI, no chat tool and no model call. `PROJECT_RULES_ORGS` ships empty. ALN-2b, ALN-4b, AUTO-7b and ALN-5b are next. The owner did not answer ALN-Q1 to ALN-Q5, and told us to start. The build runs on the working defaults of §14.
 > **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §11 was read on that commit. Earlier task text came from a read at `308df8828`, and §2 lists each fact that changed.
 > **Board:** WS-ALN in `work_plan.md` §2.1. **Decision:** D160. D12, D75, D93, D100, D104, D105, D128, D131, D140, D145 and workflows G5 bind it.
 > **Metorite:** project "Projects/Tasks App", epic 1368, this spec task 1369. The questions are tasks 1370 to 1374. The slices ALN-1 to ALN-14 are tasks 1375 to 1388, in order.
@@ -73,12 +73,12 @@ The facts of task 1369 were re-read on `ce29836ea`. Two of them changed.
 | A project suggestion | `routes/tasks/ai.py` (`_suggest_project`, line 151) | A keyword match on the member's own personal tree only |
 | Task context for agents | `apps/services/agent_edge/agent_edge/tools.py` (`get_task_context`, line 2865) | It returns the task, parents, project with description, blockers, subtasks, runs, refs and 20 comments. It returns no rule and no guidance |
 | Documents | `infra/postgres/272_knowledge_pages.sql` | `kb_pages` has `state` (`draft`, `published`, `archived`). `kb_links` allows `target_kind = 'project'`, and its only writer (`routes/knowledge/backlinks.py`) writes `page` targets |
-| The store of rules | `project-docs/specs/agent_coordination.md` line 445 (SW-31, task 1048) | **Table built** by SW-31a (migration 340, `pm_agent_guidance`, in the shape of §4.2, dark). The editor (SW-31b) is not built |
+| The store of rules | `project-docs/specs/agent_coordination.md` line 445 (SW-31, task 1048) | **Table built** by SW-31a (migration 340, `pm_agent_guidance`, in the shape of §4.2, dark). ALN-5a adds the rule CHECKs (migration 343) and the rule routes (`routes/project_rules.py`, dark). The editor (SW-31b) is not built |
 | The lead | `infra/postgres/146_projects.sql` line 64 (`pm_projects.lead`) | One email, nullable. `routes/projects/authority.py` counts the lead of any ancestor project. No product manager role exists |
 
 **⚠️ Two changes since the task text.**
 
-1. **SW-31a built the table.** `pm_agent_guidance` has the columns of §4.2 from migration 340, and its unique index is NULL-safe. ALN-5 adds the proposer, the `state` logic and the `rules` key. It adds no table.
+1. **SW-31a built the table.** `pm_agent_guidance` has the columns of §4.2 from migration 340, and its unique index is NULL-safe. ALN-5a adds the `state` logic and the quote check, and ALN-5b adds the proposer. ALN-6 adds the `rules` key. No slice adds a table.
 2. **`kb_links` has no version column and no state.** KG-4 (not built) adds a `relation` and a `removed_at`, and still no version. So the pin of §4.1 is its own small table.
 
 ---
@@ -175,7 +175,7 @@ KG-4 may mirror each pin as a `governs` relation for graph reads. The pin table 
 
 SW-31 plans `pm_agent_guidance`: one markdown block for each scope and version. A project needs many rules, each with its own history. So the store gets one shape for both.
 
-**What SW-31 must add** (task 1048 changes, or ALN-5 builds the table in this shape if SW-31 has not):
+**The columns of a rule.** SW-31a built the table in this shape (migration 340):
 
 | Column | Meaning |
 |---|---|
@@ -184,10 +184,10 @@ SW-31 plans `pm_agent_guidance`: one markdown block for each scope and version. 
 | `source_page_id`, `source_page_version` | Nullable. The page and the version that the rule came from. NULL for a rule that a lead typed |
 | `quote` | The exact words of the page. At most 400 characters. NULL for a typed rule |
 | `level` | `soft` or `hard` |
-| `state` | `proposed`, `active`, `needs_review` or `retired` |
+| `state` | `proposed`, `active` or `retired`. ALN-11 adds `needs_review` |
 | `proposed_by` | `mira` or an email |
 
-The unique index of SW-31 is (org, project, version). That index would force one rule for each project. It must become (org, project, `kind`, `rule_key`, `version`), with `rule_key` NULL for guidance. Guidance keeps its limit of 8,000 characters. A rule body is one sentence of at most 300 characters.
+The unique index of migration 340 keys on (org, project, `kind`, `rule_key`, `version`), with NULL-safe forms of `project_id` and `rule_key`. So a project holds many rules, and guidance keeps one block for each scope. Guidance keeps its limit of 8,000 characters. A rule body is one sentence of at most 300 characters.
 
 **Rules.**
 
@@ -198,6 +198,31 @@ The unique index of SW-31 is (org, project, version). That index would force one
 5. Page text is untrusted input. The proposer gets no tools.
 6. The nearest rule wins on a conflict, as SW-31 plans. A rule on a child project beats a rule on its parent.
 7. Rules return to agents in their own key (`rules`) beside `guidance`, so the 8,000-character block of guidance stays one block.
+
+**The split.** ALN-5 has two slices. ALN-5a is the store, the rule that a lead writes, the quote check, the state changes with their history, and R8. ALN-5b is the proposer (rules 2, 4 and 5 above, and the cap of 12 for each page) and the eval of "the lead accepts at least half".
+
+**As built (ALN-5a, migration `343_pm_agent_guidance_rules.sql`, code `routes/project_rules.py`).**
+
+- **No third store.** A rule is a row of `kind = 'rule'` on `pm_agent_guidance`. Migration 343 adds six CHECKs, a guard on UPDATE and a partial index. It adds no table and no column.
+- **Append only.** An accept, an edit, a retire and a change of level each add a version row of the same `rule_key`. The newest row is the rule now. The guard refuses an UPDATE of a rule row for each role, as for guidance. The header of 340 said that a rule row may change `state`. ALN-5a chose append only, so the history of a rule is its rows.
+- **Three states.** `proposed`, `active` and `retired`. A lead makes a rule `active` at the create, or `proposed` on request. Only the accept route moves `proposed` to `active`. A retired rule does not change again. ALN-11 can widen the CHECK with `needs_review`.
+- **Routes.** `GET` and `POST` on `/project-rules/projects/{id}` list and create. `GET /project-rules/rules/{key}/history` reads the versions. `POST .../accept`, `PATCH /project-rules/rules/{key}`, `POST .../retire` and `POST .../level` change a rule. The prefix is not `/projects`, as SW-31a's is not.
+- **Who writes.** Every write calls `authority.assert_may_write_guidance`: a lead of the project or of an ancestor, or a holder of `projects:settings:write`. A personal tree gets 403, an archived project 409, and an agent connection 403. The tenant and the actor come from the session. A body key for either gets 422.
+- **The quote check.** A quote, its page and its page version come together or not at all. The writer must see the page (`knowledge.core.load_page`). The page must have the state `published`, in a space that is not a `me` space. `knowledge.core.page_version_text` reads that version, under the history floor. `knowledge.core.quote_occurs` then needs an exact substring, after CRLF and CR become LF. There is no fuzzy match and no model. A quote that fails gets 422 and writes no row.
+- **A fixed version.** A rule names its page version. An edit of the page later does not change the rule or its check.
+- **Who reads.** Any member who can open the project reads its rules. A reader who cannot open the page of a rule gets the sentence, the level and the state. `quote`, `source_page_id` and `source_page_version` are null, and `quote_hidden` is true. The read uses `knowledge.core.visible_page_heads`, as ALN-4's `page_hidden` does. ALN-6 must hide the quote on the MCP `rules` key too.
+- **Caps.** A sentence holds 1 to 300 characters and a quote 1 to 400. A project holds at most 40 active rules, and the 41st gets 409. One advisory lock for each project keeps the count and the next version free of a race.
+- **No score for a person** (ALN-Q5). No column, index or statement groups by `written_by` or `proposed_by`. A static fence scans for it.
+- **The flag.** `PROJECT_RULES_ORGS` is a list of org ids or `*`, and it is empty by default. While the org is not in it, each route answers 404. Only the owner writes the value, and a SIGHUP reload applies it.
+- **Chat parity.** ALN-5a gives these routes no chat tool, so a member cannot yet write a rule from the chat. A follow-up slice adds the chat tools, in a pack of their own, as ALN-4 did. The flag stays empty until that slice lands.
+- **Residual risk.** A rule may quote a page that is not pinned to the project. The read hides the quote from each reader who cannot open the page, so no text leaks. A page that moves to a new space after the rule keeps its old quote visible to the readers of the new space.
+
+**Verify ALN-5a.** R8 needs a private database:
+
+```bash
+export TENANT_LADDER_DATABASE_URL=postgresql+psycopg://acb:acb@127.0.0.1:5434/<private db>
+uv run pytest tests/unit/test_project_rules.py tests/unit/test_project_rules_static.py tests/unit/test_agent_guidance_r8.py tests/unit/test_agent_guidance.py -q -rfEs
+```
 
 ### 4.3 The finding (ALN-7)
 
@@ -359,7 +384,8 @@ Sources: `https://linear.app/docs/triage-intelligence` · `https://docs.coderabb
 |---|---|---|---|---|
 | **ALN-4** (1378) | The pin (§4.1). Needs ALN-0 | R8: a lead pins a page. A member with no authority gets 403. Org B sees none of it. A page of another org cannot be pinned. A page with narrower grants is refused. An archived page shows the pin as `stale` | HIGH | AGENT-SAFE. ✅ **Built 2026-11-02** (table and routes, no UI). Fence: `tests/unit/test_project_authorities_r8.py` |
 | **ALN-4b** | The overview UI of the pins: list, pin, remove and a stale badge. The routes of ALN-4 are inert without it. Needs ALN-4 | Visual review in four contexts. D145 preview first | STD | AGENT-SAFE |
-| **ALN-5** (1379) | The rule store (§4.2) and the proposer. Needs ALN-4 | R8: only a lead makes a rule active. Org B reads none. A proposal with an invented quote is refused. On a real architecture document, a lead accepts at least half of the proposals, and the report names the number | HIGH | AGENT-SAFE |
+| **ALN-5a** (1379) | The rule store (§4.2): rule rows on `pm_agent_guidance`, the rule that a lead writes, the quote check, accept, edit, retire and the level, with history. Needs ALN-4 | R8: only a lead makes a rule active. Org B reads none. The server refuses a proposal with an invented quote. A quote that is not a substring of the page version gets 422. The server stores a rule with no quote. An edit or a retire adds a version row, and the history lists both. The command is in §4.2 | HIGH | AGENT-SAFE. ✅ **Built 2026-11-04** (migration 343, routes, no UI, no chat tool). Fences: `tests/unit/test_project_rules.py` (R8), `tests/unit/test_project_rules_static.py` |
+| **ALN-5b** (1379) | The proposer (§4.2 rules 2, 4 and 5): one model call with no tools, and the cap of 12 for each page. Needs ALN-5a | Each quote that the model returns passes the check of ALN-5a. An injection fixture makes no tool call. On a real architecture document, a lead accepts at least half of the proposals, and the report names the number | HIGH | AGENT-SAFE. **OWNER-GATE** for an eval run over USD 0.50 |
 | **ALN-6** (1380) | Follow the rules first. Needs ALN-5 | An agent that claims a task in a project with 3 rules gets all 3 in `get_task_context`. A project with no rules and a rule on a parent project both pass a test. New chat tools have a `skill_projects/manifest.py` row, and new edge routes are in `MCP_WRITE_ROUTES` | STD | AGENT-SAFE |
 
 ### Phase 3 — The silent check
@@ -413,7 +439,7 @@ Sources: `https://linear.app/docs/triage-intelligence` · `https://docs.coderabb
 
 **The first dispatchable slice is ALN-1,** once this spec merges. ALN-2a and ALN-4 are dispatchable at the same time. ALN-1 comes first because ALN-7 and ALN-11 read through it.
 
-**⚠️ An outside prerequisite.** ALN-5 needs the rule store of SW-31 (task 1048). If SW-31 has not built the table, ALN-5 builds it in the shape of §4.2. SW-31 then adds only its editor and its MCP return.
+**An outside prerequisite, now met.** ALN-5 needed the rule store of SW-31 (task 1048). SW-31a built the table in the shape of §4.2 (migration 340), and ALN-5a adds only the rule CHECKs (migration 343).
 
 ---
 
@@ -435,6 +461,8 @@ Each path was read on `ce29836ea`.
 - `apps/services/agent_edge/agent_edge/tools.py` (`get_task_context`, `_create_task`)
 - `infra/postgres/146_projects.sql`, `147_projects_personal.sql`, `255_pm_task_refs.sql`, `272_knowledge_pages.sql`, `339_pm_project_authorities.sql` (ALN-4)
 - `apps/services/gateway/gateway/routes/projects/authorities.py` (ALN-4, the one writer of the pins)
+- `infra/postgres/340_pm_agent_guidance.sql` (SW-31a) and `343_pm_agent_guidance_rules.sql` (ALN-5a, the rule CHECKs and the guard)
+- `apps/services/gateway/gateway/routes/project_rules.py` (ALN-5a, the one writer of a rule row) and `routes/knowledge/core.py` (`page_version_text`, `quote_occurs`)
 - `project-docs/specs/agent_coordination.md` (SW-31), `workflows_app.md` (G5), `knowledge_graph.md` §3.2 (KG-4), `proactive_reach.md`
 - `tests/unit/test_pm_task_insert_sites.py` (the D80 fence)
 
@@ -446,6 +474,7 @@ Each path was read on `ce29836ea`.
 bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"   # R8 needs a database
 uv run python scripts/affected_tests.py --run
 uv run pytest tests/unit/test_align_trigger.py tests/unit/test_align_findings.py -q
+uv run pytest tests/unit/test_project_rules.py tests/unit/test_project_rules_static.py tests/unit/test_agent_guidance_r8.py -q -rfEs   # ALN-5a
 uv run pytest tests/unit/test_tenant_coverage.py tests/unit/test_pm_task_insert_sites.py -q
 uv run ruff check apps/services/gateway apps/services/agent_edge
 bash scripts/ci_local.sh
@@ -462,7 +491,11 @@ For this spec only: `uv run pytest tests/unit/test_index_completeness.py tests/u
 | A task write enqueues a check, and an unchanged text enqueues none | New with ALN-1: `tests/unit/test_align_trigger.py` (R8) |
 | No hook sits on `insert_row` or `update_row` | `tests/unit/test_pm_task_insert_sites.py`, plus a scan in the new file |
 | A new table is tenant-scoped | `tests/unit/test_tenant_coverage.py` |
-| A rule is active only by a lead, and its quote exists in the page version | New with ALN-5: `tests/unit/test_project_rules.py` (R8) |
+| A rule is active only by a lead, and its quote exists in the page version | Built with ALN-5a: `tests/unit/test_project_rules.py` (R8) |
+| A rule row is append only, and migration 343 holds the CHECKs and the guard | Built with ALN-5a: `tests/unit/test_project_rules.py` (R8) and `tests/unit/test_project_rules_static.py` |
+| A reader who cannot open the page gets no quote | Built with ALN-5a: `tests/unit/test_project_rules.py` (R8) |
+| A guidance read is the same with rule rows present | Built with ALN-5a: `tests/unit/test_agent_guidance_r8.py` (R8) and `tests/unit/test_project_rules_static.py` |
+| No statement of the rule store groups by a person | Built with ALN-5a: `tests/unit/test_project_rules_static.py` |
 | A finding has a real task quote, and a dismissal stands | New with ALN-7: `tests/unit/test_align_findings.py` (R8) |
 | No score for any person: no table or column of this feature groups by a person | New with ALN-7: a schema scan in `test_align_findings.py`. Advisory for the views until ALN-13 |
 | A personal task is never checked | New with ALN-7: same file |
