@@ -30,8 +30,10 @@ import {
   newMailAnswer,
   newMailSummary,
   replyFromEvent,
+  startFileTicks,
   startTicks,
   subjectCanGo,
+  toggleFileTick,
   toggleTick,
 } from "@/lib/replyCard";
 
@@ -158,6 +160,46 @@ describe("the card draws the parts the owner approved", () => {
     expect(card).toContain("data-new-mail-card");
     expect(card).toContain("New email");
     expect(card).not.toContain("data-reply-mode");
+  });
+});
+
+describe("the file rows of a held new mail (fix round 1, §21.1 item 3)", () => {
+  const ROWS = [
+    { id: "file-0", label: 'File: "quote.pdf" (4 KB)', hint: 'From the mail "Quote" of your own mailbox.', checked: true },
+    { id: "file-1", label: 'File: "rates.xlsx" (2 KB)', hint: "From Knowledge, a file that you can see.", checked: true },
+  ];
+  const form = replyFromEvent({ ...VALUE, files: [], file_rows: ROWS })!;
+  const ticks = startTicks(form);
+
+  it("draws each file with its tick and its hint", () => {
+    const html = renderToStaticMarkup(
+      createElement(NewMailCardForm, { form, onAnswer: () => {}, onDiscard: () => {}, armed: true }),
+    );
+    expect(html).toContain('data-new-mail-file-tick="file-0"');
+    expect(html).toContain('data-new-mail-file-tick="file-1"');
+    expect(html).toContain("From Knowledge, a file that you can see.");
+  });
+
+  it("names only the ticked files, and none when each is unticked", () => {
+    // Mutation: name every file row whatever the ticks → red.
+    const all = JSON.parse(newMailAnswer(form, { action: "send", subject: "Rates", body: "x", ticks })!.slice(8)).reply;
+    expect(all.files).toEqual(["file-0", "file-1"]);
+    const one = toggleFileTick(startFileTicks(form), "file-0");
+    const some = JSON.parse(newMailAnswer(form, { action: "send", subject: "Rates", body: "x", ticks, fileTicks: one })!.slice(8)).reply;
+    expect(some.files).toEqual(["file-1"]);
+    const none = JSON.parse(newMailAnswer(form, { action: "send", subject: "Rates", body: "x", ticks, fileTicks: [] })!.slice(8)).reply;
+    expect(none.files).toEqual([]);
+  });
+
+  it("adds no files key to a card with fixed file lines", () => {
+    const plain = replyFromEvent(VALUE)!;
+    const reply = JSON.parse(newMailAnswer(plain, { action: "send", subject: "Rates", body: "x", ticks: startTicks(plain) })!.slice(8)).reply;
+    expect("files" in reply).toBe(false);
+  });
+
+  it("refuses a file row it cannot read", () => {
+    expect(replyFromEvent({ ...VALUE, file_rows: [{ id: "", label: "x" }] })).toBeNull();
+    expect(replyFromEvent({ ...VALUE, file_rows: [ROWS[0], ROWS[0]] })).toBeNull();
   });
 });
 

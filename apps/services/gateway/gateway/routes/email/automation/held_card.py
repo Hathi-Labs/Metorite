@@ -1392,7 +1392,9 @@ def new_mail_form(
     The people and their order are the rows'. A person starts ticked only
     when the row does, so each new address starts unticked (§21). The class
     and the mark of each row go with it. A lookalike warning is a notice,
-    whole. The files are fixed lines: the act sends each recorded file."""
+    whole. Each file is a row with its tick and its hint, as on the rows card
+    (§21.1 item 3): the member can untick it, and the act sends only the
+    ticked recorded files."""
     people = {k: [str(r["address"]) for r in rows if r["kind"] == k] for k in RECIPIENT_KINDS}
     start = {k: [str(r["address"]) for r in rows if r["kind"] == k and r.get("checked")]
              for k in RECIPIENT_KINDS}
@@ -1405,7 +1407,9 @@ def new_mail_form(
         "classes": {str(r["address"]).lower(): str(r.get("class") or CLASS_NEW) for r in shown},
         "marks": {str(r["address"]).lower(): str(r["hint"])[:200] for r in shown
                   if r.get("hint")},
-        "files": [str(r["label"]) for r in rows if r["kind"] == "file"],
+        "file_rows": [{"id": str(r["id"]), "label": str(r["label"]),
+                       "hint": str(r.get("hint") or ""), "checked": bool(r.get("checked"))}
+                      for r in rows if r["kind"] == "file"],
         "notices": warnings[:4],
         "note": " ".join(warnings[4:]),
     }
@@ -1553,8 +1557,10 @@ def _form_ids(rows: Sequence[dict[str, Any]], choice: Any) -> frozenset[str] | N
 
     Each ticked person must be a recorded row of the same kind, named once.
     A person that the record does not hold, or a person named twice, names
-    nothing: the whole answer is refused, never trimmed to fit. Each file
-    row goes, because the files of the form are fixed."""
+    nothing: the whole answer is refused, never trimmed to fit. A file goes
+    only when the answer names its recorded row (``files``, fix round 1). An
+    answer that names no ``files`` sends no file, and an id that is not a
+    file row of the record refuses the whole answer."""
     ids: set[str] = set()
     for kind, named in ((KIND_TO, choice.to), (KIND_CC, choice.cc), (KIND_BCC, choice.bcc)):
         by_address = {str(r["address"]).strip().lower(): str(r["id"])
@@ -1563,7 +1569,11 @@ def _form_ids(rows: Sequence[dict[str, Any]], choice: Any) -> frozenset[str] | N
         if len(set(want)) != len(want) or any(a not in by_address for a in want):
             return None
         ids |= {by_address[a] for a in want}
-    ids |= {str(r["id"]) for r in rows if r["kind"] == "file"}
+    file_ids = {str(r["id"]) for r in rows if r["kind"] == "file"}
+    named = list(choice.files or ())
+    if any(f not in file_ids for f in named):
+        return None
+    ids |= set(named)
     return frozenset(ids)
 
 

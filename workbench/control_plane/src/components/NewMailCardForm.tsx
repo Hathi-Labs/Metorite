@@ -30,6 +30,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import Icon from "@/components/Icon";
 import { AddressRow } from "@/components/ReplyCardForm";
 import Button from "@/components/ui/Button";
+import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
 import {
   bodyCanGo,
@@ -47,7 +48,9 @@ import {
   newMailEdited,
   recipientsFor,
   sendsCount,
+  startFileTicks,
   startTicks,
+  toggleFileTick,
   subjectCanGo,
   tickedFor,
   toggleTick,
@@ -136,6 +139,8 @@ export default function NewMailCardForm({
   const [subject, setSubject] = useState(form.subject);
   const [body, setBody] = useState(form.body);
   const [ticks, setTicks] = useState<ReplyTicks>(() => startTicks(form));
+  // The file rows of a held new mail (fix round 1): a ticked file goes.
+  const [fileTicks, setFileTicks] = useState<string[]>(() => startFileTicks(form));
   const box = useRef<HTMLTextAreaElement>(null);
   // The box is as tall as its text, so no line hides under an inner scroll.
   useLayoutEffect(() => {
@@ -153,7 +158,7 @@ export default function NewMailCardForm({
   const lines = lineCount(body);
   const answer = (action: ReplyAction) => {
     if (!armed) return;
-    const a = newMailAnswer(form, { action, subject, body, ticks });
+    const a = newMailAnswer(form, { action, subject, body, ticks, fileTicks });
     if (a) onAnswer(a);
   };
   const files = form.files ?? [];
@@ -222,7 +227,30 @@ export default function NewMailCardForm({
         {lines === 1 ? "1 line" : `${lines} lines`}. The whole text shows above.
       </p>
 
-      {files.length > 0 && (
+      {form.fileRows && form.fileRows.length > 0 && (
+        <ul className="space-y-1" aria-label="Files of the email" data-new-mail-file-rows="">
+          {form.fileRows.map((r) => (
+            <li key={r.id}>
+              <label className="flex min-w-0 cursor-pointer items-start gap-1.5 text-xs text-foreground">
+                <Checkbox
+                  size="sm"
+                  className="mt-0.5"
+                  checked={fileTicks.includes(r.id)}
+                  onChange={() => setFileTicks((t) => toggleFileTick(t, r.id))}
+                  disabled={disabled}
+                  aria-label={`Send the file ${r.label}`}
+                  data-new-mail-file-tick={r.id}
+                />
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span className="break-words">{r.label}</span>
+                  {r.hint && <span className="break-words text-[11px] text-muted-foreground">{r.hint}</span>}
+                </span>
+              </label>
+            </li>
+          ))}
+        </ul>
+      )}
+      {!form.fileRows && files.length > 0 && (
         <ul className="space-y-0.5" aria-label="Files that go with the email" data-new-mail-files="">
           {files.map((f, i) => (
             <li key={i} className="flex min-w-0 items-center gap-1.5 break-words text-xs text-foreground">

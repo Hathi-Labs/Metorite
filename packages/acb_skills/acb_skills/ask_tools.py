@@ -1035,6 +1035,30 @@ def _clean_new_mail_form(form: dict) -> dict:
         out["ticked"] = ticked
     if isinstance(form.get("marks"), dict) and form["marks"]:
         out["marks"] = _reply_marks(form["marks"], people)
+    if isinstance(form.get("file_rows"), list) and form["file_rows"]:
+        out["file_rows"] = _new_mail_file_rows(form["file_rows"])
+    return out
+
+
+def _new_mail_file_rows(rows: list) -> list[dict]:
+    """The file rows of a held new mail (fix round 1, §21.1 item 3): each
+    with its own short id, its label and its hint whole, and its tick. The
+    member can untick a file, and the answer names the ticked ids. A bad row
+    raises ``ValueError`` before any card is drawn."""
+    if len(rows) > _NEW_MAIL_FILES_MAX:
+        raise ValueError("a new-mail form names too many files")
+    out: list[dict] = []
+    seen: set[str] = set()
+    for row in rows:
+        rid = str((row or {}).get("id") or "").strip() if isinstance(row, dict) else ""
+        if not rid or len(rid) > _ROW_ID_MAX or rid in seen:
+            raise ValueError("each file row needs its own short id")
+        seen.add(rid)
+        label = _whole_line(row.get("label"))
+        if not label:
+            raise ValueError("each file row names its file")
+        out.append({"id": rid, "label": label, "hint": _whole_line(row.get("hint")),
+                    "checked": row.get("checked", True) is not False})
     return out
 
 

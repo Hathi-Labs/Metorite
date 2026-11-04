@@ -52,6 +52,12 @@ export interface ReplyForm {
   kind?: "new";
   /** The files of a new mail, each as one fixed line ("File: \"a.pdf\" (4 KB)"). */
   files?: string[];
+  /**
+   * The file rows of a held new mail (fix round 1, §21.1 item 3): each with
+   * its tick and its hint. The member can untick one, and the answer names
+   * the ids that stay ticked. A form with none has fixed `files` lines.
+   */
+  fileRows?: NewMailFileRow[];
   /** The email the reply answers. The answer names it, so it acts on no other. */
   messageId: string;
   /**
@@ -163,8 +169,12 @@ export function replyFromEvent(value: unknown, requestId?: string): ReplyForm | 
   if (!messageId && !isNew) return null;
   const notices = Array.isArray(v.notices) ? v.notices.filter((n): n is string => typeof n === "string" && !!n.trim()) : [];
   const files = Array.isArray(v.files) ? v.files.filter((f): f is string => typeof f === "string" && !!f.trim()) : [];
+  const fileRows = isNew ? fileRowsOf(v.file_rows) : undefined;
+  // A file row the card cannot read is a form the card cannot read.
+  if (fileRows === null) return null;
   return {
     ...(isNew ? { kind: "new" as const, files } : {}),
+    ...(fileRows && fileRows.length > 0 ? { fileRows } : {}),
     messageId,
     notices,
     mailbox: text(v.mailbox),
@@ -687,20 +697,60 @@ export function newMailHint(form: ReplyForm): string {
 
 export type NewMailApproval = ReplyApproval;
 
+/** One file row of a held new mail: its id, its words and its start tick. */
+export interface NewMailFileRow {
+  id: string;
+  label: string;
+  hint: string;
+  checked: boolean;
+}
+
+/** The file rows of a form value, `undefined` for none, or null when one row
+ *  is not a row the card can draw. */
+function fileRowsOf(value: unknown): NewMailFileRow[] | undefined | null {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) return null;
+  const out: NewMailFileRow[] = [];
+  const seen = new Set<string>();
+  for (const r of value) {
+    if (!r || typeof r !== "object") return null;
+    const row = r as Record<string, unknown>;
+    const id = typeof row.id === "string" ? row.id.trim() : "";
+    if (!id || id.length > 64 || seen.has(id) || typeof row.label !== "string" || !row.label.trim()) return null;
+    seen.add(id);
+    out.push({ id, label: row.label, hint: typeof row.hint === "string" ? row.hint : "", checked: row.checked !== false });
+  }
+  return out;
+}
+
+/** The ids of the file rows that start ticked. */
+export function startFileTicks(form: ReplyForm): string[] {
+  return (form.fileRows ?? []).filter((r) => r.checked).map((r) => r.id);
+}
+
+/** Tick or untick one file row. */
+export function toggleFileTick(ticks: string[], id: string): string[] {
+  return ticks.includes(id) ? ticks.filter((x) => x !== id) : [...ticks, id];
+}
+
 /**
  * The answer of Send or Save draft on a new-mail card, or null when the
  * text, the subject or the ticks may not go. The keys are exactly
  * `NEW_MAIL_ANSWER_KEYS` of `acb_skills/reply_card.py`, and a test reads
  * this object to hold the two in step. `to`, `cc` and `bcc` are the people
  * the member left ticked, from the server's lists. The text goes as typed.
+ * A form with file rows adds `files`, the ids that stay ticked, in the
+ * card's order (`NEW_MAIL_ANSWER_OPTIONAL_KEYS`). A form with none adds no key.
  */
 export function newMailAnswer(
   form: ReplyForm,
-  choice: { action: ReplyAction; subject: string; body: string; ticks: ReplyTicks },
+  choice: { action: ReplyAction; subject: string; body: string; ticks: ReplyTicks; fileTicks?: string[] },
 ): NewMailApproval | null {
   if (!isNewMail(form) || !bodyCanGo(choice.body) || !subjectCanGo(choice.subject)) return null;
   const picked = tickedFor(form, true, choice.ticks);
   if (picked.to.length === 0) return null;
+  const on = new Set(choice.fileTicks ?? startFileTicks(form));
+  const files = (form.fileRows ?? []).filter((r) => on.has(r.id)).map((r) => r.id);
   const mail = {
     kind: "new",
     action: choice.action,
@@ -709,6 +759,7 @@ export function newMailAnswer(
     to: picked.to,
     cc: picked.cc,
     bcc: picked.bcc ?? [],
+    ...(form.fileRows ? { files } : {}),
   };
   return `${REPLY_ANSWER_PREFIX}${JSON.stringify({ reply: mail })}` as NewMailApproval;
 }

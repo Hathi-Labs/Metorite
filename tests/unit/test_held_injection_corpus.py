@@ -109,7 +109,10 @@ async def _form_answer(kw: dict[str, Any], member: _Member) -> Any:
         return None
     answer = "APPROVE " + json.dumps({"reply": {
         "kind": "new", "action": "send", "subject": form["subject"], "body": form["body"],
-        "to": start["to"], "cc": start.get("cc", []), "bcc": start.get("bcc", [])}})
+        "to": start["to"], "cc": start.get("cc", []), "bcc": start.get("bcc", []),
+        # Fix round 1: the file rows that start ticked, as at the rows card.
+        **({"files": [r["id"] for r in form["file_rows"] if r["checked"]]}
+           if form.get("file_rows") else {})}})
     await F.record_answer(kw["request_id"], answer)
     return ask_tools.ReplyAnswer(kw["request_id"], answer, parse_new_mail_answer(answer),
                                  F.MEMBER, "chat-thread-1")

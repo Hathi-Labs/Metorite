@@ -244,7 +244,9 @@ async def new_mail_card_act(
         _log.warning("email.new_mail_card_refused", reason="no_card")
         raise HTTPException(status_code=409, detail=NO_CARD)
     choice = parse_new_mail_answer(req.answer)
-    if choice is None:
+    if choice is None or choice.files is not None:
+        # This card's files are fixed lines, with no tick, so its answer
+        # names no ``files`` (fix round 1). The files are the record's.
         _log.warning("email.new_mail_card_refused", reason="not_an_answer")
         raise HTTPException(status_code=422, detail=NOT_AN_ANSWER)
     to = ticked_subset(list(rec.get("to") or []), choice.to)

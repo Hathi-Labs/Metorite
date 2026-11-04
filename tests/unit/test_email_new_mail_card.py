@@ -103,7 +103,10 @@ def test_the_answer_parses_the_members_choice() -> None:
 
 
 @pytest.mark.parametrize("bad", [
-    _answer(files=["outputs/x.pdf"]),                        # an extra key adds a file
+    _answer(attachments=["outputs/x.pdf"]),                  # an extra key adds a file
+    _answer(files="file-0"),                                 # files is a list of ids
+    _answer(files=["file-0", "file-0"]),                     # a file named twice
+    _answer(files=["x" * 65]),                               # an id that is too long
     _answer(message_id="m-1"),                               # an extra key
     _answer(to=()),                                          # no To
     _answer(body="   "),                                     # no text
@@ -155,6 +158,9 @@ def test_the_client_builds_the_new_mail_answer_that_the_server_reads() -> None:
     assert block, "newMailAnswer builds its object as `const mail = {...}`"
     keys = set(re.findall(r"^\s*(\w+):", block.group(1), re.M))
     assert keys == set(rcard.NEW_MAIL_ANSWER_KEYS), keys
+    # Fix round 1: the one optional key, only for a form with file rows.
+    assert set(rcard.NEW_MAIL_ANSWER_OPTIONAL_KEYS) == {"files"}
+    assert "...(form.fileRows ? { files } : {})" in block.group(1)
     assert f"MAX_SUBJECT = {rcard.MAX_SUBJECT}" in src
 
 
@@ -373,9 +379,13 @@ async def test_held_card_gives_the_form_with_a_new_address_unticked(world) -> No
     assert form["recipients"]["reply_all"]["to"] == [F.KNOWN, F.STRANGER]
     assert form["ticked"]["reply_all"]["to"] == [F.KNOWN]
     assert form["classes"][F.STRANGER] == "new" and form["classes"][F.KNOWN] == "sent"
-    assert form["files"] == ['File: "quote.pdf" (4 KB)']
+    # Fix round 1 (§21.1 item 3): each file is a row with its tick and hint.
+    assert form["file_rows"] == [{"id": "file-0", "label": 'File: "quote.pdf" (4 KB)',
+                                  "hint": 'From the mail "Quote" of your own mailbox.',
+                                  "checked": True}]
     clean = ask_tools.clean_reply_form(form)
     assert clean["ticked"]["reply_all"]["to"] == [F.KNOWN]
+    assert clean["file_rows"] == form["file_rows"]
     assert card["detail"].endswith("Only a ticked row goes. 1 new address starts unticked.")
     assert "2 people, 1 file." in card["detail"]
 
@@ -383,11 +393,44 @@ async def test_held_card_gives_the_form_with_a_new_address_unticked(world) -> No
 async def test_held_form_answer_sends_the_answered_text_and_the_recorded_files(world) -> None:
     """Mutation: send ``rec["body"]`` in ``_act_new_form`` → red."""
     card = await _held(files=[f"attachment:{F.FILE_PDF}"])
-    out = await _held_act(card["card_id"], _answer(body="The new rates.", cc=()))
+    out = await _held_act(card["card_id"],
+                          _answer(body="The new rates.", cc=(), files=["file-0"]))
     [sent] = world["sends"].mails
     assert sent.to == [F.KNOWN] and sent.body_text == "The new rates."
     assert world["sends"].fetched == [F.FILE_PDF]
     assert out["edited"] is True and out["left_out"] == 1
+
+
+@pytest.mark.parametrize("files", [[], None])
+async def test_held_form_answer_sends_no_unticked_file(world, files) -> None:
+    """Fix round 1 (§21.1 item 3): the member unticked the file, or the
+    answer names none. The mail goes without it. Mutation: send each file
+    row whatever the answer names → red."""
+    card = await _held(files=[f"attachment:{F.FILE_PDF}"])
+    extra = {} if files is None else {"files": files}
+    out = await _held_act(card["card_id"], _answer(cc=(), **extra))
+    [sent] = world["sends"].mails
+    assert world["sends"].fetched == [] and not sent.attachments
+    assert out["files"] == 0 and out["left_out"] == 2
+
+
+async def test_held_form_answer_with_a_forged_file_sends_nothing(world) -> None:
+    """A file id that the record does not hold refuses the whole answer."""
+    card = await _held(files=[f"attachment:{F.FILE_PDF}"])
+    with pytest.raises(HTTPException) as e:
+        await _held_act(card["card_id"], _answer(cc=(), files=["file-9"]))
+    assert e.value.status_code == 409
+    assert world["sends"].mails == [] and world["sends"].fetched == []
+
+
+async def test_a_plain_card_answer_that_names_files_sends_nothing(world) -> None:
+    """The plain card's files are fixed lines with no tick, so its answer
+    names no ``files``. Mutation: ignore the key → red."""
+    card = await _card()
+    with pytest.raises(HTTPException) as e:
+        await _act(card["card_id"], _answer(files=[]))
+    assert e.value.status_code == 422
+    assert world["sends"].mails == []
 
 
 async def test_held_form_save_writes_a_new_draft_and_sends_nothing(world) -> None:
