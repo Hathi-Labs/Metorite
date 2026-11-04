@@ -720,12 +720,12 @@ The names and numbers in the design page screens (Priya, Northwind Castings, IMT
 
 ## 12. Open questions
 
-Three questions are **OPEN** for the owner. The build waits on the first one for CRM-M10, and on the third one for a real event.
+One question stays **OPEN** for the owner: OPEN-3, for a real event. OPEN-1 and OPEN-2 are decided by D174.
 
 | ID | Question | Blocks |
 |---|---|---|
-| **OPEN-1** | Does an anonymous form write get through? Three specs decline anonymous links for reads. A public form writes a record with no sign-in. | CRM-M10 |
-| **OPEN-2** | Does a person who submits a form count as "named" for a send (`project-docs/specs/ai_studio.md:438`, D131.7)? | CRM-M12 |
+| **OPEN-1** | Does an anonymous form write get through? Three specs decline anonymous links for reads. A public form writes a record with no sign-in. | ✅ **Decided, D174.1** (STU-Q16). CRM-M10 \|
+| **OPEN-2** | Does a person who submits a form count as "named" for a send (`project-docs/specs/ai_studio.md:438`, D131.7)? | ✅ **Decided, D174.2** (STU-Q17). CRM-M12 |
 | **OPEN-3** | The consent wording. A lawyer reads it. | A real event, CRM-M11 |
 
 Working defaults. These are not owner decisions. The slice audit may change them.
