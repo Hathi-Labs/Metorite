@@ -18,6 +18,8 @@
  * A change draws as the old value, muted, an arrow, and the new value.
  */
 
+import { useState } from "react";
+
 import { FencedTaskRef } from "@/components/ChatTaskRef";
 import FencedText from "@/components/FencedText";
 import Icon from "@/components/Icon";
@@ -29,6 +31,8 @@ import {
   formatMinutes,
   formatPlain,
   formatWords,
+  isLongText,
+  isLongTextChange,
   parseFieldValue,
   personOf,
 } from "@/lib/cardFields";
@@ -146,6 +150,59 @@ function Side({ items, kind, muted = false }: { items: ValueItem[]; kind: FieldK
   );
 }
 
+/**
+ * A change to a long text: the old text on a "Before" line, muted and cut to
+ * two lines with a "Show all" toggle, then the new text in full under "Now".
+ * Both captions stay, so the pair reads the same when either side is short.
+ * No lone arrow: in a narrow column it stood on a line of its own.
+ */
+function LongChange({
+  before,
+  after,
+  kind,
+  plain,
+}: {
+  before: ValueItem[];
+  after: ValueItem[];
+  kind: FieldKind;
+  plain: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const cuttable = before.some((i) => isLongText(i.text.trim()));
+  return (
+    <span className="flex min-w-0 max-w-full flex-col gap-1" title={plain} data-card-long-change="">
+      <span className="flex min-w-0 flex-col items-start gap-0.5">
+        <span className="text-[11px] text-muted-foreground">Before</span>
+        <span
+          className={`min-w-0 max-w-full whitespace-pre-wrap break-words text-muted-foreground ${open ? "" : "line-clamp-2"}`}
+        >
+          {before.map((item, i) => (
+            <ValueElement key={i} item={item} kind={kind} />
+          ))}
+        </span>
+        {cuttable && (
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+            className="rounded-sm text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {open ? "Show less" : "Show all"}
+          </button>
+        )}
+      </span>
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <span className="text-[11px] text-muted-foreground">Now</span>
+        <span className="min-w-0 max-w-full whitespace-pre-wrap break-words text-foreground">
+          {after.map((item, i) => (
+            <ValueElement key={i} item={item} kind={kind} />
+          ))}
+        </span>
+      </span>
+    </span>
+  );
+}
+
 export default function CardFieldValue({
   value,
   kind = "text",
@@ -160,6 +217,9 @@ export default function CardFieldValue({
 }) {
   if (!fenced) return <span className="min-w-0 break-words">{value}</span>;
   const parsed = parseFieldValue(value, many);
+  if (parsed.before && isLongTextChange(parsed, kind)) {
+    return <LongChange before={parsed.before} after={parsed.after} kind={kind} plain={parsed.plain} />;
+  }
   return (
     <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1" title={parsed.plain}>
       {parsed.before && (
