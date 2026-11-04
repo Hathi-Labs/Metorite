@@ -97,6 +97,20 @@ for each process.
 * M25, the approved save card writes a plan record: ``held_save_card_writes_no_plan_record``.
 * M26, a TTL of one hour: ``only_approved_writes_the_record[approved]``.
 * M27, the drop after a 201 deletes with no compare: ``keeps_the_record_of_a_newer_plan``.
+
+Fix round 2 (2026-11-05, re-review P3s). Each went red, and the tree was
+clean after each restore.
+
+* M28, hash ``-0.0`` as written: ``hash_writes_each_zero_as_zero``,
+  ``negative_zero_publishes``, and R8 test g of ``test_studio_chat_build_r8.py``.
+* M29, skip the withdraw stamp in the read: ``stop_on_a_plan_of_another_app``
+  (both), ``record_delete_that_faults_still_withdraws``, and R8 test h.
+* M30, forget a failed stamp write: ``stamp_that_cannot_be_written_refuses``.
+* M31, the drop after a 201 writes the stamp: ``keeps_the_approvals_of_other
+  _apps``, ``record_goes_only_after_a_201``.
+* M32, the old draft_changed text of the save: ``draft_changed_texts_name_a
+  _recovery``.
+* M33, the draft save names ``$.based_on``: 4 red in ``test_studio_package_routes.py``.
 """
 from __future__ import annotations
 
