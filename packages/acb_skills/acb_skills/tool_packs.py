@@ -748,6 +748,10 @@ No Studio agent exists to hand a task to.
   studio_plan, then publish. When a save or a publish may have worked, call
   the same tool once more with the same values.
 - With a package id, studio_list_actions lists only the actions of that package.
+- When the member stops or revises a plan card, an older approval of that app
+  is gone. Show a new plan card before you publish. When a save or a publish
+  says that the draft changed, read the result of the other save, and save or
+  plan again.
 - SKILLS. studio_skill_list lists the skills of the member, or reads one by its
   id. studio_skill_save makes a skill, or adds a version to one. studio_skill_state
   publishes, resumes or pauses one. Each tool acts as the member of this chat.
