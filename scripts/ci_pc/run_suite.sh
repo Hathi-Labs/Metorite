@@ -151,6 +151,12 @@ job() {
   local label="$1" pod="$2"; shift 2
   .venv/bin/python scripts/ci_pc/steps.py "$@" > "$RUN/$label.sh" || { echo "1 0" > "$RUN/$label.rc"; return; }
   local net=(); [ -n "$pod" ] && net=(--network "container:$pod")
+  # ⚠️ backup_db.sh names its verify container acb-verify-<epoch>-$$ on the
+  # SHARED Docker daemon. In a container of its own, $$ is the same small
+  # number in every run, so two runs that start in one second chose one name
+  # and removed each other's container (2026-11-04, CIV-6). With the host's
+  # pid space $$ is unique. The job already holds the Docker socket.
+  [ "$label" = backup-restore ] && net+=(--pid=host)
   (
     s=$(date +%s)
     docker run --rm --name "ci-job-$label-$TAG" -w "$PWD" "${net[@]}" --memory 4g --memory-swap 4g \
