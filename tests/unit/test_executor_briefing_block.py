@@ -763,6 +763,64 @@ async def test_10_the_org_of_member_context_stays_in_the_build(monkeypatch) -> N
     assert reads == [], "a context of another org reads no task"
 
 
+@pytest.mark.parametrize("flag", ["_identity_read_failed", "_role_read_failed"])
+async def test_10_a_failed_identity_or_role_read_stores_nothing(monkeypatch, flag: str) -> None:
+    """Repair round 1 (P2-1): a failed read of the member is not "no tasks".
+    ``resolve_identity`` gives ``(None, None)`` and sets
+    ``identity_read_failed()``, and ``resolve_access`` degrades and sets
+    ``role_read_failed()``. The turn gets no block, the store keeps nothing,
+    and the next turn builds again. Mutation: drop the check of either flag
+    → the turn stores a block with no task for 24 hours → red."""
+    from acb_auth import access, deps
+    from acb_auth.permissions import EffectiveAccess
+    from acb_auth.roles import UserContext, UserRole
+    from gateway.routes.projects import personal
+
+    turns = {"n": 0}
+
+    async def member_context(email: str) -> Any:
+        turns["n"] += 1
+        failed = turns["n"] == 1
+        getattr(access, flag).set(failed)
+        if failed and flag == "_identity_read_failed":
+            # The identity read swallowed the fault: no org, no access.
+            return UserContext(email=email, role=UserRole.EMPLOYEE)
+        granted = frozenset() if failed else frozenset({"feature:projects"})
+        return UserContext(email=email, role=UserRole.EMPLOYEE, organization_id=ORG,
+                           access=EffectiveAccess(role_granted=granted))
+
+    async def my_due_tasks(user: Any, *, limit: int) -> dict[str, Any]:
+        return {"rows": [{"title": "Ship it", "due_at": "2026-10-30T18:45:00+00:00"}],
+                "today": "2026-10-31", "timezone": ZONE}
+
+    async def chats(org: str, session: str, member: str) -> tuple[list[Any], str]:
+        return list(CHATS), ZONE
+
+    logged: list[tuple[str, dict[str, Any]]] = []
+
+    class _Log:
+        def warning(self, event: str, **fields: Any) -> None:
+            logged.append((event, fields))
+
+        def info(self, *_a: Any, **_k: Any) -> None:
+            pass
+
+    redis = FakeRedis()
+    monkeypatch.setattr(deps, "member_context", member_context)
+    monkeypatch.setattr(personal, "my_due_tasks", my_due_tasks)
+    monkeypatch.setattr(ex, "_briefing_chats", chats)
+    monkeypatch.setattr(ex, "_briefing_redis", lambda: redis)
+    monkeypatch.setattr(ex, "_briefing_now", lambda: NOW)
+    monkeypatch.setattr(ex, "_log", _Log())
+    assert await ex._briefing_within_budget(ORG, SESSION, MEMBER) == ""
+    assert redis.sets == [], "a failed read must store nothing"
+    assert logged == [("executor.briefing_failed", {"error": "_BriefingReadFailed"})]
+    # The next turn reads again, and this time the read works.
+    second = await ex._briefing_within_budget(ORG, SESSION, MEMBER)
+    assert "- Ship it (due Sat 31 Oct)" in second
+    assert [k for k, _t, _v in redis.sets] == [_key()]
+
+
 async def test_8_a_member_without_projects_gets_no_task_part(monkeypatch) -> None:
     from acb_auth import deps
     from acb_auth.permissions import EffectiveAccess

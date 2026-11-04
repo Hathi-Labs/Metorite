@@ -1393,6 +1393,11 @@ async def _briefing_chats(org: str, session: str, member: str) -> tuple[list[Any
     return chats, zone
 
 
+class _BriefingReadFailed(RuntimeError):
+    """The identity read or the role read of the member failed. The build
+    stops, so the store keeps nothing, and the next turn tries again."""
+
+
 async def _briefing_tasks(org: str, member: str, zone: str) -> list[Any]:
     """At most three of the member's tasks that are due today or overdue.
 
@@ -1403,13 +1408,22 @@ async def _briefing_tasks(org: str, member: str, zone: str) -> list[Any]:
     call binds the member's org as a side effect, so it runs in the task of
     :func:`_briefing_within_budget`, and the run's own binding never changes.
     A context of another org reads nothing.
+
+    ⚠️ A failed read is not "no tasks" (repair round 1, P2-1). The identity
+    read gives ``(None, None)`` and sets ``identity_read_failed()``, and the
+    role read degrades and sets ``role_read_failed()``. Either one raises
+    :class:`_BriefingReadFailed`, so the turn gets no block and the store
+    keeps nothing, as ``my_day_loop.departed`` treats the same flag.
     """
+    from acb_auth.access import identity_read_failed, role_read_failed
     from acb_auth.deps import member_context
     from acb_common import assistant_profile as ap
     from gateway.routes.projects.due_day import local_date
     from gateway.routes.projects.personal import my_due_tasks
 
     user = await member_context(member)
+    if identity_read_failed() or role_read_failed():
+        raise _BriefingReadFailed("the identity or the role read of the member failed")
     if str(getattr(user, "organization_id", "") or "").strip().lower() != org.lower():
         return []
     if not user.has_permission("feature:projects"):

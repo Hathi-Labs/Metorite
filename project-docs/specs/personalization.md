@@ -2200,6 +2200,11 @@ is empty on each box, so no run gets the block yet.
   `my_due_tasks(user, limit=3)` reads the tasks. ⚠️ `member_context` binds
   the member's org as a side effect. So the build runs in a task of its own
   (`_briefing_within_budget`), and the run's own binding never changes.
+- **A failed read is no answer** (repair round 1, P2-1). The identity read
+  sets `identity_read_failed()`, and the role read sets
+  `role_read_failed()`. Either one stops the build, so the turn gets no block
+  and the store keeps nothing. The next turn reads again. Fence:
+  `test_10_a_failed_identity_or_role_read_stores_nothing`.
 - **The zone.** `personal.stored_zone` and `due_day.zone_name`, the zone of
   the due read. A member with no settings row reads UTC.
 - **The store.** `tenant_redis.key("chat-briefing", session, member hash)`
