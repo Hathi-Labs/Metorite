@@ -59,10 +59,19 @@ import {
   CONFIRMATION_RESOLVED,
   EMPTY_CONFIRMATIONS,
   confirmationReducer,
+  liveCards,
   receiptLabel,
   settleAnswer,
   type PendingConfirmation,
 } from "@/lib/confirmationQueue";
+import {
+  UNCHANGED_CLOSE_MS,
+  changingCard,
+  changingLine,
+  pickCardDraft,
+  type CardDraft,
+  type KeptDraft,
+} from "@/lib/redraftCard";
 import { sendRespondInputResult } from "@/lib/respondInput";
 import { createRejectHold } from "@/lib/rejectHold";
 import { cardsToRestore, cardsToSettle, fetchPendingAsksOrNull } from "@/lib/pendingAsks";
@@ -614,6 +623,20 @@ export default function AgentChat({
   // that a program puts in the box take it away until the box is empty
   // (`lib/typedMark.ts`). A ref: only the send reads it.
   const boxMarkRef = useRef<ComposerMark>(EMPTY_BOX);
+  // §18.11 step 1: the member's version of each open new-mail card that
+  // they edited, by card key (`lib/redraftCard.ts`). Each steer takes the
+  // newest one. The queue is declared below the hook, so its cards and its
+  // dispatch reach the steer through refs.
+  const cardDraftsRef = useRef(new Map<string, KeptDraft>());
+  const draftSeqRef = useRef(0);
+  const cardsRef = useRef<readonly PendingConfirmation[]>([]);
+  const markSentRef = useRef<(key: string, version: { subject: string; body: string }) => void>(() => {});
+  const takeCardDraft = useCallback((): CardDraft | null => {
+    const draft = pickCardDraft(cardsRef.current, cardDraftsRef.current);
+    // The card keeps what went, so its next draft can say what changed.
+    if (draft) markSentRef.current(draft.request_id, { subject: draft.subject, body: draft.body });
+    return draft;
+  }, []);
   const {
     messages, isLoading, error, sendMessage, steerMessage, stopGeneration, setMessages,
     stopping, stopError,
@@ -634,6 +657,8 @@ export default function AgentChat({
     // composer, unless the member already typed something new.
     onRunCapped: restoreCappedText,
     onSessionRefused,
+    // §18.11: a steer carries the member's version of an open new-mail card.
+    cardDraft: takeCardDraft,
     // Load the FULL persisted history into memory so the context sent to the
     // model and the context-usage estimate are both accurate.  We only window
     // the RENDERING (below) for performance — not the data.
@@ -1032,6 +1057,25 @@ export default function AgentChat({
     confirmationReducer,
     EMPTY_CONFIRMATIONS,
   );
+  // §18.11: the steer reads the queue's cards, and marks what it carried.
+  useEffect(() => { cardsRef.current = confirmations.cards; }, [confirmations.cards]);
+  useEffect(() => {
+    markSentRef.current = (key, version) => dispatchConfirmation({ type: "memberVersion", key, version });
+  }, []);
+  // A new-mail card reports the member's version after each edit, or null
+  // when it shows its own start again.
+  const onCardDraft = useCallback((key: string, draft: CardDraft | null) => {
+    if (draft) cardDraftsRef.current.set(key, { draft, seq: ++draftSeqRef.current });
+    else cardDraftsRef.current.delete(key);
+  }, []);
+  // §18.11 step 7: "The draft did not change." shows for a moment, and the
+  // slot then closes, as a card that closed with no answer does.
+  const hasUnchanged = confirmations.cards.some((c) => c.redraft === "unchanged");
+  useEffect(() => {
+    if (!hasUnchanged) return;
+    const t = setTimeout(() => dispatchConfirmation({ type: "closeUnchanged" }), UNCHANGED_CLOSE_MS);
+    return () => clearTimeout(t);
+  }, [hasUnchanged]);
   // Rejects held for Undo (`lib/rejectHold.ts`). A session switch or an
   // unmount sends every held REJECT at once: the rule that keeps a run from
   // parking. The cleanup runs before `sessionIdRef` moves on.
@@ -1099,11 +1143,18 @@ export default function AgentChat({
       // carries this too, so an answered card never comes back.
       if (name === CONFIRMATION_RESOLVED && value && typeof value === "object") {
         const rid = (value as Record<string, unknown>).request_id;
-        if (rid) dispatchConfirmation({ type: "resolved", requestId: String(rid) });
+        const answer = (value as Record<string, unknown>).answer;
+        // The closing answer goes with it: a new-mail card that a chat
+        // message closed (REVISED) stays as the slot of its new draft (§18.11).
+        if (rid) {
+          dispatchConfirmation({
+            type: "resolved", requestId: String(rid),
+            ...(typeof answer === "string" ? { answer } : {}),
+          });
+        }
         // An answer from anywhere (another tab, another member of a room)
         // locks the blocking card too. A timeout or a cancel is no answer:
         // that card stays open, and a click on it goes out as a message.
-        const answer = (value as Record<string, unknown>).answer;
         if (rid && typeof answer === "string" && answer && !CARD_CLOSED_UNANSWERED.has(answer)) {
           setAskAnswers((prev) => new Map(prev).set(String(rid), answer));
         }
@@ -2138,6 +2189,7 @@ export default function AgentChat({
             errors={confirmations.errors}
             onAnswer={answerConfirmation}
             onSuggest={suggestToComposer}
+            onDraftChange={onCardDraft}
           />
         )}
 
@@ -2214,7 +2266,8 @@ export default function AgentChat({
     return fromTurns.length === 0 ? askAnswers : new Map([...fromTurns, ...askAnswers]);
   }, [askAnswers, restartAnswersKey]);
   const askSources = {
-    confirmations: confirmations.cards,
+    // A slot of a redraft (§18.11) waits on nobody.
+    confirmations: liveCards(confirmations.cards),
     elicitation: elicitationWaits ? elicitation : null,
     userInput: userInputWaits ? userInput : null,
     messages,
@@ -2305,7 +2358,10 @@ export default function AgentChat({
   // "…" control. The row above the box goes when it has nothing to say.
   const ringInComposer = !phoneChrome || contextUsage.pct >= PHONE_RING_PCT;
   const steerShown = primary === "send" && isRunActive && !!input.trim();
-  const composerRowShown = !phoneChrome || !!runView || ringInComposer || composerOverflow || steerShown;
+  // §18.11 step 7: while a new-mail card is open, the composer names the
+  // email that a message changes ("Changing: Email to Kim").
+  const changing = changingCard(confirmations.cards);
+  const composerRowShown = !phoneChrome || !!runView || ringInComposer || composerOverflow || steerShown || !!changing;
   // The phone's tap size, on Attach and on Send (CF-8).
   const tap = phoneChrome ? "h-11 w-11" : "h-8 w-8";
   // A new chat in the full view centres its composer, with the greeting
@@ -2614,7 +2670,14 @@ export default function AgentChat({
           </div>
           {/* A send during a run adds to the reply, or answers the one
               question that waits (`lib/typedAnswer.ts`). Said once, short. */}
-          {steerShown && (
+          {/* §18.11: a message while a new-mail card is open changes that
+              email, so the line names it, typed or not. A typed answer to
+              the one waiting question still says so. */}
+          {changing && !(steerShown && typedTarget) ? (
+            <span data-redraft-changing="" className="min-w-0 truncate text-[10px] text-primary">
+              {changingLine(changing)}
+            </span>
+          ) : steerShown && (
             <span data-steer-caption className="shrink-0 text-[10px] text-primary">
               {typedTarget ? ANSWER_CAPTION : STEER_CAPTION}
             </span>

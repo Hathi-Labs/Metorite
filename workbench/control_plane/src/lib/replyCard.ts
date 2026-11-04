@@ -116,6 +116,22 @@ export interface ReplyForm {
    * to the record of THIS card, so the act can take it.
    */
   requestId?: string;
+  /**
+   * §18.11, a new mail only: the card that this card replaces, as the
+   * gateway linked it. The card takes that card's slot, in its tab.
+   */
+  revises?: string;
+  /** §18.11, a new mail only: the draft number, 2 or more ("Draft 2"). */
+  draft?: number;
+}
+
+/** The link of a redraft (§18.11): a card id that the gateway minted, and a
+ *  draft number from 2 to 99. Anything else is no link. */
+function linkOf(value: Record<string, unknown>): { revises?: string; draft?: number } {
+  const { revises, draft } = value;
+  if (typeof revises !== "string" || !/^[0-9a-f]{32}$/.test(revises)) return {};
+  if (typeof draft !== "number" || !Number.isInteger(draft) || draft < 2 || draft > 99) return {};
+  return { revises, draft };
 }
 
 /** The ticked people of each choice, by lower case. */
@@ -202,6 +218,7 @@ export function replyFromEvent(value: unknown, requestId?: string): ReplyForm | 
     ...(ticked ? { ticked } : {}),
     ...marksOf(v.marks, replyAll),
     ...(requestId ? { requestId } : {}),
+    ...(isNew ? linkOf(v) : {}),
   };
 }
 
@@ -661,12 +678,13 @@ export const NUDGE_TEXT = "Tell me in the chat below.";
 export const NUDGE_CHIPS: readonly string[] = ["make it shorter", "make it more formal"];
 
 /**
- * The nudge line once the member changed the subject or the text (fix round
- * 1, P1). A request in the chat closes this card, and the assistant writes a
- * new card from ITS draft: the member's edits do not go with the request yet
- * (slice 3 carries them). So the line says so, and the chips hide.
+ * The nudge line once the member changed the subject or the text. A request
+ * in the chat closes this card, and since §18.11 it carries the member's
+ * version (`lib/redraftCard.ts`), so the assistant writes the new card from
+ * the member's edits. The line says so, and the chips stay. (Fix round 1 of
+ * §18.10 hid the chips, because the edits did not go then.)
  */
-export const NUDGE_EDITED = "A request in the chat starts again from the assistant's draft. Save draft keeps your version.";
+export const NUDGE_EDITED = "Your edits go with a request in the chat. Save draft keeps your version.";
 
 /** True when the member changed the subject or the text of the card. */
 export function newMailEdited(form: ReplyForm, subject: string, body: string): boolean {

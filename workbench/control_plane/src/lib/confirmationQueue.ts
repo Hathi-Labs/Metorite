@@ -31,7 +31,7 @@
  */
 
 import { unfenced } from "@/lib/fencedText";
-import { replyFromEvent, type ReplyForm } from "@/lib/replyCard";
+import { isNewMail, replyFromEvent, type ReplyForm } from "@/lib/replyCard";
 import { classOf, kindOf, sendCanGo, type PersonClass, type SendRowKind } from "@/lib/sendCard";
 
 /** The event a closed card arrives as. The server owns the name
@@ -73,6 +73,34 @@ export interface PendingConfirmation {
    * form the card could not read: it then offers Discard only.
    */
   reply?: ReplyForm | null;
+  /**
+   * §18.11: the slot of a new-mail card that a chat message closed as
+   * REVISED. "updating" waits for the new draft, and "unchanged" says that
+   * the run ended with none. A slot has no buttons and answers nothing.
+   */
+  redraft?: "updating" | "unchanged";
+  /**
+   * §18.11: the member's version that a chat message carried for this card
+   * (`lib/redraftCard.ts`). The card that revises it reads it for its
+   * "Changed:" line.
+   */
+  sent?: { subject: string; body: string };
+  /**
+   * §18.11: the member's last version of the card that this card revises:
+   * the version a chat message carried, else that card's own text. The
+   * client computes the "Changed:" line from it, never from the model.
+   */
+  before?: { subject: string; body: string };
+}
+
+/** The answer of a card that a chat message closed. The server owns it
+ *  (`REVISED_ANSWER` in `ask_tools.py`), and
+ *  `tests/unit/test_email_redraft_snapshot.py` holds the two in step. */
+export const REVISED_ANSWER = "REVISED";
+
+/** The cards that wait on the member: every card but a slot of a redraft. */
+export function liveCards<T extends Pick<PendingConfirmation, "redraft">>(cards: readonly T[]): T[] {
+  return cards.filter((c) => c.redraft === undefined);
 }
 
 /**
@@ -339,7 +367,14 @@ function settleReceipt(
 
 export type ConfirmationAction =
   | { type: "requested"; value: unknown }
-  | { type: "resolved"; requestId: string }
+  /** The server closed a card. `answer` is the closing answer of
+   *  `confirmation_resolved`: a new-mail card closed as REVISED stays as a
+   *  slot (§18.11). */
+  | { type: "resolved"; requestId: string; answer?: string }
+  /** §18.11: a chat message carried this version of the card. */
+  | { type: "memberVersion"; key: string; version: { subject: string; body: string } }
+  /** §18.11: the slots that read "The draft did not change." close. */
+  | { type: "closeUnchanged" }
   /** An answer is in flight. With `label`, a receipt line says so (UXD-3). */
   | {
       type: "answering";
@@ -407,9 +442,23 @@ export function confirmationReducer(
       if (state.resolved.has(card.key) || state.answering.has(card.key)) return state;
       const at = state.cards.findIndex((c) => c.key === card.key);
       if (at >= 0) {
-        // The same card again (a replay). Keep its place in the queue.
+        // The same card again (a replay). Keep its place in the queue, and
+        // what the client knows of it (§18.11).
+        const prev = state.cards[at];
         const cards = state.cards.slice();
-        cards[at] = card;
+        cards[at] = { ...card, ...(prev.before ? { before: prev.before } : {}), ...(prev.sent ? { sent: prev.sent } : {}) };
+        return { ...state, cards };
+      }
+      // §18.11 step 7: the new draft takes the slot of the card it revises,
+      // in the same tab. The server names that card (`revises`), and the
+      // client's own copy of the member's last version is its `before`.
+      const revises = card.reply?.revises;
+      const slot = revises ? state.cards.findIndex((c) => c.key === revises && c.redraft !== undefined) : -1;
+      if (slot >= 0) {
+        const old = state.cards[slot];
+        const before = old.sent ?? (old.reply ? { subject: old.reply.subject, body: old.reply.body } : undefined);
+        const cards = state.cards.slice();
+        cards[slot] = { ...card, ...(before ? { before } : {}) };
         return { ...state, cards };
       }
       return { ...state, cards: [...state.cards, card] };
@@ -417,6 +466,19 @@ export function confirmationReducer(
     case "resolved": {
       const key = action.requestId;
       if (!key) return state;
+      const shown = state.cards.find((c) => c.key === key);
+      if (action.answer === REVISED_ANSWER && shown?.requestId && isNewMail(shown.reply)) {
+        // §18.11 step 7: a chat message closed a new-mail card. Its slot
+        // stays, with no buttons, until the new draft takes it. A card of
+        // any other kind closes as before.
+        return {
+          ...state,
+          cards: state.cards.map((c) => (c.key === key ? { ...c, redraft: "updating" as const } : c)),
+          resolved: withAdded(state.resolved, key),
+          answering: withRemoved(state.answering, key),
+          errors: withoutError(state.errors, key),
+        };
+      }
       return {
         ...state,
         cards: state.cards.filter((c) => c.key !== key),
@@ -488,10 +550,24 @@ export function confirmationReducer(
     }
     case "dismiss":
       return { ...state, cards: state.cards.filter((c) => c.key !== action.key) };
+    case "memberVersion":
+      return {
+        ...state,
+        cards: state.cards.map((c) => (c.key === action.key ? { ...c, sent: action.version } : c)),
+      };
     case "runFinalized":
       // A finished run waits on nothing. A non-blocking card stays: its
-      // answer is a new chat message.
-      return { ...state, cards: state.cards.filter((c) => !c.requestId) };
+      // answer is a new chat message. A slot of a redraft that no new card
+      // took reads "The draft did not change." until `closeUnchanged`.
+      return {
+        ...state,
+        cards: state.cards.flatMap((c) => {
+          if (c.redraft === "updating") return [{ ...c, redraft: "unchanged" as const }];
+          return !c.requestId || c.redraft === "unchanged" ? [c] : [];
+        }),
+      };
+    case "closeUnchanged":
+      return { ...state, cards: state.cards.filter((c) => c.redraft !== "unchanged") };
     case "reset":
       return EMPTY_CONFIRMATIONS;
   }

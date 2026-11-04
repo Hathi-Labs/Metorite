@@ -611,6 +611,24 @@ def test_a_steer_that_names_no_card_closes_the_task_card_and_the_new_mail_card()
         ask_tools._steer_forget(th, "mail-card")
 
 
+# ── The client and the server agree ──────────────────────────────────────────
+
+
+def test_the_client_and_the_server_agree_on_the_snapshot_and_the_closing_answer() -> None:
+    """The keys of the snapshot (``redraftCard.ts``) are the fields of
+    ``redraft.CardDraft``, and the client's ``REVISED_ANSWER`` is the server's.
+    Mutation: add a key on one side only, or rename the answer → red."""
+    import re
+
+    web = REPO / "workbench" / "control_plane" / "src" / "lib"
+    ts = (web / "redraftCard.ts").read_text(encoding="utf-8")
+    found = re.search(r"CARD_DRAFT_KEYS[^=]*=\s*\[([^\]]*)\]", ts)
+    assert found, "redraftCard.ts names CARD_DRAFT_KEYS"
+    assert sorted(re.findall(r'"(\w+)"', found.group(1))) == sorted(rd.CardDraft.model_fields)
+    queue = (web / "confirmationQueue.ts").read_text(encoding="utf-8")
+    assert f'export const REVISED_ANSWER = "{ask_tools.REVISED_ANSWER}";' in queue
+
+
 # ── send_email: the tool spends the old card and passes the version on ──────
 
 

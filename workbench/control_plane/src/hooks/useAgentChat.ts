@@ -77,6 +77,7 @@ import {
   editedMarker, isSuperseded, settleEditAnswer, EDIT_RUN_BUSY, EDIT_UNSENT, type EditOutcome,
 } from "@/lib/chatEdit";
 import { cardAnswerFrom, cardAnswerMarker, CARD_ANSWER_EVENT, type CardAnswer } from "@/lib/cardAnswer";
+import type { CardDraft } from "@/lib/redraftCard";
 import { isQuietArtifact } from "@/lib/artifactCards";
 import { cancelRun, stopConfirmed, stopFailed, stopStarted } from "@/lib/chatStop";
 
@@ -234,6 +235,12 @@ interface UseAgentChatOptions {
    * keeps the mark only for words that the member typed.
    */
   onRunCapped?: (pendingText: string, typed: boolean) => void;
+  /**
+   * §18.11: the member's version of an open new-mail card that they edited,
+   * or null (`lib/redraftCard.ts`). Each steer asks it once, and carries the
+   * answer as `cardDraft`. A send that starts a run never carries it.
+   */
+  cardDraft?: () => CardDraft | null;
 }
 
 interface UseAgentChatReturn {
@@ -293,9 +300,12 @@ export function useAgentChat({
   onArtifact,
   onSessionRefused,
   onRunCapped,
+  cardDraft,
 }: UseAgentChatOptions): UseAgentChatReturn {
   const onArtifactRef = useRef(onArtifact);
   useEffect(() => { onArtifactRef.current = onArtifact; }, [onArtifact]);
+  const cardDraftRef = useRef(cardDraft);
+  useEffect(() => { cardDraftRef.current = cardDraft; }, [cardDraft]);
   const onSessionRefusedRef = useRef(onSessionRefused);
   useEffect(() => { onSessionRefusedRef.current = onSessionRefused; }, [onSessionRefused]);
   const onRunCappedRef = useRef(onRunCapped);
@@ -1005,6 +1015,8 @@ export function useAgentChat({
     // One id for the reply row, whether the steer folds in or starts a run.
     const replyId = nanoid();
     const card = opts?.cardAnswer ?? null;
+    // §18.11 step 1: the member's own version of an open new-mail card.
+    const draft = cardDraftRef.current?.() ?? null;
     const out = await sendSteer({
       threadId,
       text: content,
@@ -1027,6 +1039,7 @@ export function useAgentChat({
         userMessageId,
         userMessageTs,
         ...(card ? { cardAnswer: card } : {}),
+        ...(draft ? { cardDraft: draft } : {}),
         // WS-63 D-PZ-37: a steer carries the typed mark the same way a send
         // does. Only the composer sets it (`lib/typedMark.ts`).
         ...typedField(opts?.typed),

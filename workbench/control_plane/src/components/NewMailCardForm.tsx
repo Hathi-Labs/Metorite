@@ -20,18 +20,25 @@
  * A member who then sends from the chat closes this card, and the assistant
  * shows a new one (`close_on_steer`).
  *
+ * §18.11: the form reports the member's version after each edit
+ * (`onDraftChange`, `lib/redraftCard.ts`), so a request in the chat carries
+ * it. A card that revises another shows "Draft <n>" and a "Changed:" line,
+ * which the client computes from its own copy of the member's last version.
+ *
  * Nothing hides. The summary names each ticked To in full. Each notice shows.
  * The text box grows to hold the whole text, so no line sits under an inner
  * scroll. Fences: `src/components/newMailCard.test.ts`, `src/lib/replyCard.test.ts`.
  */
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import Icon from "@/components/Icon";
 import { AddressRow } from "@/components/ReplyCardForm";
+import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
+import { cardDraftOf, changedText, changesOf, draftLabel, type CardDraft, type CardText, type Changes } from "@/lib/redraftCard";
 import {
   leftOutText,
   lineCount,
@@ -75,6 +82,44 @@ export interface NewMailCardFormProps {
   /** False for the first moments of a new card (`ARM_MS`): clicks do nothing. */
   armed: boolean;
   disabled?: boolean;
+  /**
+   * §18.11: the member's version after each edit, or null when the card shows
+   * its own start again. `AgentChat` keeps it for the next chat message.
+   */
+  onDraftChange?: (draft: CardDraft | null) => void;
+  /** §18.11: the member's last version of the card that this card revises. */
+  before?: CardText;
+}
+
+/**
+ * The "Changed:" line of a redrafted card (§18.11): the words that went, struck
+ * through, and the words that came, marked. The client computed it from the
+ * member's last version and the new text (`changesOf`).
+ */
+export function ChangedLine({ changes }: { changes: Changes }) {
+  const label = changedText(changes);
+  return (
+    <p className="break-words text-[11px] leading-relaxed text-muted-foreground" data-redraft-changed="" aria-label={label}>
+      <span className="font-medium text-foreground">Changed:</span>{" "}
+      {changes.none && "no words. This draft has the words of your last version."}
+      {!changes.none && changes.coarse && "most of the text."}
+      {!changes.none && !changes.coarse && (
+        <>
+          {changes.runs.map((r, i) => (
+            <span key={i} data-redraft-run={r.where}>
+              {i > 0 && "; "}
+              {r.where === "subject" && "subject "}
+              {r.removed && <del className="text-muted-foreground line-through">{r.removed}</del>}
+              {r.removed && r.added && " "}
+              {r.added && <mark className="rounded-sm bg-primary/10 px-0.5 text-foreground">{r.added}</mark>}
+            </span>
+          ))}
+          {changes.more > 0 && `, and ${changes.more} more ${changes.more === 1 ? "change" : "changes"}`}
+          .
+        </>
+      )}
+    </p>
+  );
 }
 
 /**
@@ -83,9 +128,9 @@ export interface NewMailCardFormProps {
  * `onSuggest`, and that is all it does: it sends nothing, and it answers no
  * card. With no `onSuggest`, the line shows with no chips.
  *
- * `edited` (fix round 1, P1): the member changed the subject or the text. A
- * request in the chat would start again from the assistant's draft and drop
- * those edits, so the chips hide and the line says so (`NUDGE_EDITED`).
+ * `edited`: the member changed the subject or the text. Since §18.11 a
+ * request in the chat carries those edits, so the line says so
+ * (`NUDGE_EDITED`), and the chips stay.
  */
 export function NudgeLine({
   onSuggest,
@@ -111,7 +156,6 @@ export function NudgeLine({
         </span>
       )}
       {onSuggest &&
-        !edited &&
         NUDGE_CHIPS.map((chip) => (
           <Button
             key={chip}
@@ -136,6 +180,8 @@ export default function NewMailCardForm({
   onSuggest,
   armed,
   disabled = false,
+  onDraftChange,
+  before,
 }: NewMailCardFormProps) {
   const [subject, setSubject] = useState(form.subject);
   const [body, setBody] = useState(form.body);
@@ -143,6 +189,16 @@ export default function NewMailCardForm({
   // The file rows of a held new mail (fix round 1): a ticked file goes.
   const [fileTicks, setFileTicks] = useState<string[]>(() => startFileTicks(form));
   const box = useRef<HTMLTextAreaElement>(null);
+  // §18.11 step 1: the member's version after each edit, for the next chat
+  // message. A ref holds the callback, so a new callback runs no report.
+  const report = useRef(onDraftChange);
+  useEffect(() => { report.current = onDraftChange; }, [onDraftChange]);
+  useEffect(() => {
+    report.current?.(cardDraftOf(form, form.requestId ?? "", { subject, body, ticks }));
+  }, [form, subject, body, ticks]);
+  const label = draftLabel(form.draft);
+  // The new text against the member's last version: never a claim of the model.
+  const changes = before ? changesOf(before, { subject: form.subject, body: form.body }) : null;
   // The box is as tall as its text, so no line hides under an inner scroll.
   useLayoutEffect(() => {
     const el = box.current;
@@ -167,10 +223,18 @@ export default function NewMailCardForm({
   return (
     <div className="space-y-2.5" data-reply-card="" data-new-mail-card="">
       <div className="min-w-0">
-        <p className="break-words text-xs font-medium leading-relaxed text-foreground glass:text-label" data-reply-summary="">
-          {newMailSummary(form, ticks)}
-        </p>
+        <div className="flex min-w-0 items-start gap-2">
+          <p className="min-w-0 flex-1 break-words text-xs font-medium leading-relaxed text-foreground glass:text-label" data-reply-summary="">
+            {newMailSummary(form, ticks)}
+          </p>
+          {label && (
+            <span className="shrink-0" data-redraft-label="">
+              <Badge size="xs">{label}</Badge>
+            </span>
+          )}
+        </div>
         {detail && <p className="mt-0.5 break-words text-[11px] text-muted-foreground">{detail}</p>}
+        {changes && <ChangedLine changes={changes} />}
       </div>
 
       {form.notices.length > 0 && (
