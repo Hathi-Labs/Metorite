@@ -1406,6 +1406,9 @@ def new_mail_form(
     warnings = [f"{r['address']}: {r['warning']}" for r in shown if r.get("warning")]
     return {
         "kind": "new", "mailbox": mailbox, "subject": subject, "body": body,
+        # The act refuses a longer text (``_clean_text``), so the card caps
+        # its box here and says so before Send (fix round 1, P3).
+        "max_body": HELD_TEXT_MAX,
         "recipients": {"reply": people, "reply_all": people},
         "ticked": {"reply": start, "reply_all": start},
         "classes": {str(r["address"]).lower(): str(r.get("class") or CLASS_NEW) for r in shown},

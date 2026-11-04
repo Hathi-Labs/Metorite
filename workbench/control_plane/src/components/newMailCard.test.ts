@@ -27,6 +27,7 @@ import {
   NUDGE_EDITED,
   isNewMail,
   newMailEdited,
+  newMailLimitLine,
   newMailAnswer,
   newMailSummary,
   replyFromEvent,
@@ -160,6 +161,30 @@ describe("the card draws the parts the owner approved", () => {
     expect(card).toContain("data-new-mail-card");
     expect(card).toContain("New email");
     expect(card).not.toContain("data-reply-mode");
+  });
+});
+
+describe("the note and the text limit of a new-mail card (fix round 1, P3)", () => {
+  it("keeps a long note whole, so no look-alike warning loses its end", () => {
+    // Mutation: read the note with the 500-character cut → red.
+    const note = "x@contos0.test: the domain looks like contoso.test, which you know. ".repeat(20).trim();
+    expect(replyFromEvent({ ...VALUE, note })!.note).toBe(note);
+  });
+
+  it("caps the text at the act's limit, and says so before Send", () => {
+    // Mutation: cap the box at MAX_REPLY_BODY on a held card → red.
+    const form = replyFromEvent({ ...VALUE, max_body: 3000 })!;
+    const ticks = startTicks(form);
+    expect(newMailAnswer(form, { action: "send", subject: "Rates", body: "x".repeat(3000), ticks })).not.toBeNull();
+    expect(newMailAnswer(form, { action: "send", subject: "Rates", body: "x".repeat(3001), ticks })).toBeNull();
+    expect(newMailLimitLine(form, "x".repeat(120))).toBe("This email can hold 3,000 characters of text. It holds 120 now.");
+    const html = renderToStaticMarkup(
+      createElement(NewMailCardForm, { form, onAnswer: () => {}, onDiscard: () => {}, armed: true }),
+    );
+    expect(html).toMatch(/<textarea[^>]*maxLength="3000"/i);
+    expect(html).toContain("data-new-mail-limit");
+    // A card with the full limit draws no limit line.
+    expect(newMailLimitLine(replyFromEvent(VALUE)!, "x")).toBe("");
   });
 });
 

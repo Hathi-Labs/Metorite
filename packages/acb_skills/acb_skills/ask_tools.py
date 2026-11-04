@@ -976,6 +976,9 @@ def clean_reply_form(form: dict | None) -> dict | None:
 
 #: The most file rows of a new-mail form (``held_card.MAX_ROWS``).
 _NEW_MAIL_FILES_MAX = 100
+#: The longest note of a new-mail form. It holds whole warning lines, one for
+#: each look-alike domain past the four notices, so it is long.
+_NEW_MAIL_NOTE_MAX = 40_000
 
 
 def _clean_new_mail_form(form: dict) -> dict:
@@ -1009,9 +1012,20 @@ def _clean_new_mail_form(form: dict) -> dict:
     files = form.get("files") if isinstance(form.get("files"), list) else []
     if len(files) > _NEW_MAIL_FILES_MAX:
         raise ValueError("a new-mail form names too many files")
+    # Fix round 1 (P3): the longest text that the act of this card takes. A
+    # held card takes HELD_TEXT_MAX, and the card says so before Send.
+    max_body = form.get("max_body", MAX_REPLY_BODY)
+    if not isinstance(max_body, int) or isinstance(max_body, bool) or not (
+            0 < max_body <= MAX_REPLY_BODY):
+        raise ValueError("a new-mail form names a text limit the server takes")
     body = clean_reply_body(str(form.get("body") or ""))
-    if len(body) > MAX_REPLY_BODY:
+    if len(body) > max_body:
         raise ValueError("a new mail is too long for the card")
+    # The note holds the warnings that did not fit as notices (a look-alike
+    # domain). It is never cut, so no warning loses its end (fix round 1, P3).
+    note = " ".join(str(form.get("note") or "").split())
+    if len(note) > _NEW_MAIL_NOTE_MAX:
+        raise ValueError("a new-mail note is too long for the card")
     out: dict = {
         "kind": NEW_MAIL_KIND,
         "message_id": "",
@@ -1021,8 +1035,9 @@ def _clean_new_mail_form(form: dict) -> dict:
         "recipients": {"reply": people, "reply_all": people},
         "reply_all": True,
         "body": body,
+        "max_body": max_body,
         "draft_id": "",
-        "note": _clip_line(form.get("note")),
+        "note": note,
         "notices": [_whole_line(n) for n in notices if str(n or "").strip()],
         "files": [_whole_line(f) for f in files if str(f or "").strip()],
     }

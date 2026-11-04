@@ -33,10 +33,11 @@ import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
 import {
-  bodyCanGo,
   leftOutText,
   lineCount,
-  MAX_REPLY_BODY,
+  newMailBodyCanGo,
+  newMailLimitLine,
+  newMailMaxBody,
   MAX_SUBJECT,
   newMailAnswer,
   newMailHint,
@@ -154,7 +155,8 @@ export default function NewMailCardForm({
   const ticked = new Set(ticks.reply_all);
   const onTick = (a: string) => setTicks((t) => toggleTick(t, true, a));
   // A new mail needs one ticked To, a text and a subject on one line.
-  const ok = bodyCanGo(body) && subjectCanGo(subject) && picked.to.length > 0;
+  const ok = newMailBodyCanGo(form, body) && subjectCanGo(subject) && picked.to.length > 0;
+  const limit = newMailLimitLine(form, body);
   const lines = lineCount(body);
   const answer = (action: ReplyAction) => {
     if (!armed) return;
@@ -218,7 +220,7 @@ export default function NewMailCardForm({
         aria-label="Email text"
         rows={Math.max(4, lines)}
         value={body}
-        maxLength={MAX_REPLY_BODY}
+        maxLength={newMailMaxBody(form)}
         onChange={(e) => setBody(e.target.value)}
         disabled={disabled}
         className="w-full resize-none overflow-hidden text-xs"
@@ -226,6 +228,11 @@ export default function NewMailCardForm({
       <p className="text-[10px] text-muted-foreground" data-reply-lines="">
         {lines === 1 ? "1 line" : `${lines} lines`}. The whole text shows above.
       </p>
+      {limit && (
+        <p className="text-[11px] text-muted-foreground" data-new-mail-limit="">
+          {limit}
+        </p>
+      )}
 
       {form.fileRows && form.fileRows.length > 0 && (
         <ul className="space-y-1" aria-label="Files of the email" data-new-mail-file-rows="">

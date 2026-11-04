@@ -158,6 +158,29 @@ def test_the_form_of_a_new_mail_shows_whole_and_needs_a_to() -> None:
                 "recipients": {"reply": people, "reply_all": people}, **bad})
 
 
+def test_the_form_keeps_each_warning_whole_and_the_text_limit_of_its_act() -> None:
+    """Fix round 1, P3. The note holds look-alike warnings past the four
+    notices, and none is cut. A held form caps its text at ``HELD_TEXT_MAX``,
+    as its act does. Mutation: clip the note at 500, or drop ``max_body`` →
+    red."""
+    from acb_skills.held_card import HELD_TEXT_MAX
+
+    people = {"to": [F.KNOWN], "cc": []}
+    warning = "x@contos0.test: the domain looks like contoso.test, which you know"
+    note = " ".join([warning] * 20)
+    base = {"kind": "new", "body": TEXT, "recipients": {"reply": people, "reply_all": people}}
+    form = ask_tools.clean_reply_form({**base, "note": note, "max_body": HELD_TEXT_MAX})
+    assert form["note"] == note and len(note) > 500
+    assert form["max_body"] == HELD_TEXT_MAX
+    assert ask_tools.clean_reply_form(base)["max_body"] == rcard.MAX_REPLY_BODY
+    with pytest.raises(ValueError):
+        ask_tools.clean_reply_form({**base, "body": "x" * (HELD_TEXT_MAX + 1),
+                                    "max_body": HELD_TEXT_MAX})
+    for bad in (0, True, rcard.MAX_REPLY_BODY + 1, "3000"):
+        with pytest.raises(ValueError):
+            ask_tools.clean_reply_form({**base, "max_body": bad})
+
+
 def test_the_client_builds_the_new_mail_answer_that_the_server_reads() -> None:
     """``lib/replyCard.ts`` builds the answer as ``const mail = {...}``. Its
     keys must be the server's, or a Send from the card acts on nothing."""
@@ -396,6 +419,11 @@ async def test_held_card_gives_the_form_with_a_new_address_unticked(world) -> No
     assert clean["file_rows"] == form["file_rows"]
     assert card["detail"].endswith("Only a ticked row goes. 1 new address starts unticked.")
     assert "2 people, 1 file." in card["detail"]
+    # Fix round 1, P3: the held act refuses a text over HELD_TEXT_MAX, so the
+    # card caps its box there.
+    from acb_skills.held_card import HELD_TEXT_MAX
+
+    assert form["max_body"] == HELD_TEXT_MAX == clean["max_body"]
 
 
 async def test_held_form_answer_sends_the_answered_text_and_the_recorded_files(world) -> None:
