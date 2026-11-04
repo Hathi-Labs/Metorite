@@ -201,15 +201,20 @@ def test_at_the_limit_means_at_or_over_it(monkeypatch) -> None:
 # ── 2. The SQL of the meter (hermetic) ──────────────────────────────────────
 
 
-@pytest.mark.parametrize("stmt", [storage._MEASURE, storage._PREVIEW],
-                         ids=["meter", "preview"])
+@pytest.mark.parametrize("stmt", [storage._MEASURE, storage._PREVIEW,
+                                  storage._BATCH_BYTES,
+                                  storage._ADD_BATCH_GROWTH],
+                         ids=["meter", "preview", "batch", "batch_growth"])
 def test_the_sql_sums_pg_column_size_of_each_column_only(stmt) -> None:
     """R7 fence ``email-storage-meter`` (items 2 and 3). Each column is inside
     its own ``pg_column_size``. Nothing takes the size of a whole row, and
-    nothing reads a value with ``octet_length``."""
-    # The draft filter of the preview reads ``em.folder`` on purpose (G1). It
-    # is a short WHERE test, never a size, so the check leaves it out.
-    sql = _flat(stmt).replace(storage.KEPT_FOLDERS_SQL, "")
+    nothing reads a value with ``octet_length``. The two sums of one import
+    batch (EM-T6f review P1) use the same columns."""
+    # The draft filter of the preview reads ``em.folder`` on purpose (G1), and
+    # the batch filter reads ``em.provider_message_id``. Each is a short WHERE
+    # test, never a size, so the check leaves them out.
+    sql = (_flat(stmt).replace(storage.KEPT_FOLDERS_SQL, "")
+           .replace(storage.BATCH_ROWS_SQL, ""))
     for alias, cols in (("em", storage.MESSAGE_COLUMNS),
                         ("ea", storage.ATTACHMENT_COLUMNS),
                         ("ee", storage.EMBEDDING_COLUMNS)):
@@ -2700,3 +2705,229 @@ class TestTheResumeOnARealDatabase:
         finally:
             release_tenant(token)
             _wipe(p.admin_engine, [x])
+
+
+# ── 14. EM-T6f review P1: the bound of the full meters ──────────────────────
+
+
+class _MeterDb:
+    """A session for ``ImportMeter``. ``full`` and ``adds`` are the values
+    that the full meter and the growth UPDATE return, in turn. The last one
+    of each repeats. It counts each kind of statement."""
+
+    def __init__(self, *, full=(10,), adds=(10,), batch=7) -> None:
+        self.full = list(full)
+        self.adds = list(adds)
+        self.batch = batch
+        self.kinds: list[str] = []
+        self.params: list[dict | None] = []
+
+    async def execute(self, stmt, params=None, *_a, **_k):
+        sql = _flat(stmt)
+        self.params.append(params)
+        if "stored_bytes_at = now()" in sql:
+            self.kinds.append("full")
+            return _Res(value=self.full.pop(0) if len(self.full) > 1 else self.full[0])
+        if "SET stored_bytes = COALESCE(stored_bytes, 0)" in sql:
+            self.kinds.append("add")
+            return _Res(value=self.adds.pop(0) if len(self.adds) > 1 else self.adds[0])
+        if sql.startswith("WITH scope AS") and "SELECT bytes FROM total" in sql:
+            self.kinds.append("batch")
+            return _Res(value=self.batch)
+        raise AssertionError(f"an unexpected statement: {sql[:80]}")
+
+
+async def test_the_import_meter_runs_the_full_meter_after_the_first_batch_only(
+    monkeypatch,
+) -> None:
+    """R7 fence ``email-storage-t6f-meter-bound`` (EM-T6f review P1). Under
+    the limit, a run of 30 batches makes ONE full meter, after its first
+    batch. Each later batch reads its own rows before its write and adds
+    the growth after it. The full meter used to run after each batch."""
+    monkeypatch.setattr(storage, "storage_limit_bytes", lambda: 10_000)
+    db = _MeterDb(full=[100], adds=[200], batch=7)
+    meter = storage.ImportMeter("acc-1")
+    for _ in range(30):
+        await meter.before_write(db, ["p1", "p2"])
+        await meter.after_write(db, ["p1", "p2"])
+    assert db.kinds.count("full") == 1 == meter.full_meters
+    assert db.kinds[:1] == ["full"], "the first batch did not end with the full meter"
+    assert db.kinds.count("batch") == 29 and db.kinds.count("add") == 29
+    adds = [p for k, p in zip(db.kinds, db.params, strict=True) if k == "add"]
+    assert all(p["before"] == 7 and p["pids"] == ["p1", "p2"] for p in adds)
+
+
+async def test_near_the_limit_the_full_meter_decides_up_to_its_bound(
+    monkeypatch,
+) -> None:
+    """R7 fence ``email-storage-t6f-meter-bound``. When the sum reaches the
+    limit, the full meter runs and its value decides. A run makes at most
+    ``IMPORT_FULL_METERS`` full meters. After that, the sum decides, so a sum
+    that stays over the true value stops the import early, never late."""
+    monkeypatch.setattr(storage, "storage_limit_bytes", lambda: 1000)
+    # The full meter says 900 each time. The sum says 1000 each time.
+    db = _MeterDb(full=[900], adds=[1000])
+    meter = storage.ImportMeter("acc-1")
+    got = []
+    for _ in range(6):
+        await meter.before_write(db, ["p"])
+        got.append(await meter.after_write(db, ["p"]))
+    assert meter.full_meters == storage.IMPORT_FULL_METERS == 3
+    assert db.kinds.count("full") == 3
+    assert got[:3] == [900, 900, 900], "the full meter did not decide"
+    assert got[3:] == [1000, 1000, 1000], "after the bound, the sum must decide"
+
+
+async def test_a_run_with_no_pids_reads_nothing_for_its_batch() -> None:
+    db = _MeterDb()
+    assert await storage.batch_bytes(db, "acc-1", []) == 0
+    assert db.kinds == []
+
+
+def _counting_sessions(row, counts: dict, *, full, adds):
+    """``_resume_sessions``, and it counts the full meters and the growth
+    UPDATEs of one cycle."""
+    inner = _resume_sessions(row, [], meter=None)
+    fulls, growth = list(full), list(adds)
+
+    @asynccontextmanager
+    async def _ts(org=None):
+        async with inner(org) as base:
+            class _Db:
+                async def execute(self, stmt, params=None, *a, **k):
+                    sql = _flat(stmt)
+                    if "stored_bytes_at = now()" in sql:
+                        counts["full"] = counts.get("full", 0) + 1
+                        return _Res(value=fulls.pop(0) if len(fulls) > 1 else fulls[0])
+                    if "SET stored_bytes = COALESCE(stored_bytes, 0)" in sql:
+                        counts["add"] = counts.get("add", 0) + 1
+                        return _Res(value=growth.pop(0) if len(growth) > 1 else growth[0])
+                    if sql.startswith("WITH scope AS"):
+                        return _Res(value=0)
+                    return await base.execute(stmt, params, *a, **k)
+
+            yield _Db()
+    return _ts
+
+
+async def test_a_resumed_cycle_makes_at_most_four_full_meters(
+    core_run, monkeypatch,
+) -> None:
+    """R7 fence ``email-storage-t6f-meter-bound``, on the core. A resumed
+    loop cycle that imports 20 batches under the limit makes two full
+    meters: one after the first batch and one in phase (d). The bound for a
+    cycle is ``IMPORT_FULL_METERS`` plus phase (d), so four."""
+    row = _limit_row()
+    reached = row.import_reached_at
+    batches = [[_msg(f"b{b}-{i}", reached - timedelta(hours=b * 3 + i))
+                for i in range(2)] for b in range(1, 21)]
+    provider = _AskedProvider(batches)
+    counts: dict = {}
+    monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
+    monkeypatch.setattr(sched, "tenant_session", _counting_sessions(
+        row, counts, full=[400], adds=[500]))
+    res = await sched._sync_account("acc-1", organization_id=_ORG, from_loop=True)
+    assert "error" not in res, res
+    assert provider.fetched == 20
+    assert counts["full"] == 2, counts
+    assert counts["full"] <= storage.IMPORT_FULL_METERS + 1
+    assert counts["add"] == 19, counts
+
+
+@_DB_GATE
+class TestTheImportMeterOnARealDatabase:
+
+    async def test_the_sum_of_the_batches_equals_the_full_meter(
+        self, promoted, app_engine,  # noqa: F811
+    ):
+        """R7 fence ``email-storage-t6f-meter-bound``, R8 half. Three batches
+        go through the real write of the import: new mail, a larger body for
+        a stored message, and new mail with a body of 20 KB. After each one,
+        the sum of the meter equals the full meter of the mailbox, so the
+        bound costs no accuracy."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        now = _now()
+        x = _seed_account(p.admin_engine, org=p.org_b,
+                          owner=f"t6m-{uuid.uuid4().hex[:6]}@em-t6f.test")
+        _seed_msg(p.admin_engine, account_id=x, org=p.org_b,
+                  received_at=now - timedelta(days=1), body="kept")
+        tag = uuid.uuid4().hex[:6]
+        first = [_msg(f"m-{tag}-{k}", now - timedelta(hours=k + 2),
+                      body=_random_b64(1000)) for k in range(4)]
+        grown = [_msg(first[0].provider_message_id, first[0].received_at,
+                      body=_random_b64(5000)),
+                 _msg(f"m-{tag}-new", now - timedelta(hours=9),
+                      body=_random_b64(300))]
+        large = [_msg(f"m-{tag}-big", now - timedelta(hours=10),
+                      body=_random_b64(20_000))]
+        floor = now - timedelta(days=30)
+        meter = storage.ImportMeter(x)
+        sums, fulls = [], []
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                for batch in (first, grown, large):
+                    pids = [m.provider_message_id for m in batch]
+                    async with tenant_session(p.org_b) as db:
+                        await meter.before_write(db, pids)
+                        await sched._write_messages(db, x, batch, floor)
+                        sums.append(await meter.after_write(db, pids))
+                    fulls.append(await _measure(x, p.org_b))
+            assert meter.full_meters == 1, "a batch under the limit ran the full meter"
+            assert sums == fulls, (sums, fulls)
+            assert sums[1] - sums[0] >= 4000 and sums[2] - sums[1] >= 20_000
+        finally:
+            release_tenant(token)
+            _wipe(p.admin_engine, [x])
+
+    async def test_a_resumed_cycle_counts_its_full_meters(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """R7 fence ``email-storage-t6f-meter-bound``, R8 half. A resumed loop
+        cycle imports eight batches of five under the limit. It makes two
+        full meters, one after its first batch and one in phase (d). The old
+        rule made nine."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        now = _now()
+        reached = now - timedelta(days=10)
+        x = _stopped_mailbox(p.admin_engine, org=p.org_b,
+                             owner=f"t6c-{uuid.uuid4().hex[:6]}@em-t6f.test",
+                             now=now, reached=reached)
+        tag = uuid.uuid4().hex[:6]
+        older = [_msg(f"old-{tag}-{k:02d}", reached - timedelta(hours=k + 1))
+                 for k in range(40)]
+        provider = _AskedOffers(older)
+        _loop_env(monkeypatch, provider)
+        monkeypatch.setattr(sched, "IMPORT_BATCH_SIZE", 5)
+        real = storage.measure_stored_bytes
+        calls: list[str] = []
+
+        async def _counted(db, account_id):
+            calls.append(account_id)
+            return await real(db, account_id)
+
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                stored = await _full_measure(real, x, p.org_b)
+                monkeypatch.setattr(storage, "storage_limit_bytes",
+                                    lambda: stored + 10 * _MB)
+                monkeypatch.setattr(storage, "measure_stored_bytes", _counted)
+                res = await sched._sync_account(
+                    x, organization_id=p.org_b, from_loop=True)
+            assert "error" not in res, res
+            assert provider.fetched == 8
+            assert len(calls) == 2, calls
+            assert len(calls) <= storage.IMPORT_FULL_METERS + 1
+            assert _import_state(p.admin_engine, x)["import_phase"] == "done"
+        finally:
+            release_tenant(token)
+            _wipe(p.admin_engine, [x])
+
+
+async def _full_measure(fn, account_id: str, org: str) -> int | None:
+    """The full meter, through ``fn``, in its own block."""
+    async with tenant_session(org) as db:
+        return await fn(db, account_id)

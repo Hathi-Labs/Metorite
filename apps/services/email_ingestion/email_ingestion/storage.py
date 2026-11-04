@@ -27,6 +27,14 @@ This module is the ONE owner of the rules below. Do not copy them:
   ``stored_bytes_at``. ``pg_column_size`` reads the size of a stored value
   from its header, so the meter fetches no body. Do not use
   ``octet_length``, and do not take the size of a whole row.
+* **The meter of an import (EM-T6f review P1).** The full meter reads every
+  row of the mailbox, so an import does not run it after each batch.
+  :class:`ImportMeter` runs it after the first batch of a run. After each
+  later batch it adds the growth of that batch only: the same sums over the
+  rows of the batch, before and after its write (:func:`batch_bytes`,
+  :func:`add_batch_growth`). When that sum is at the limit, the full meter
+  runs again and decides. A run makes at most :data:`IMPORT_FULL_METERS`
+  full meters, and after that the sum decides.
 * **The preview.** :func:`preview_older` returns the count of messages and
   the bytes that a removal before a date would free. It writes nothing.
 * **The removal.** :func:`advance_import_since` moves the import floor
@@ -68,16 +76,21 @@ from sqlalchemy import text
 
 __all__ = [
     "ATTACHMENT_COLUMNS",
+    "BATCH_ROWS_SQL",
     "BYTES_PER_MB",
     "EMBEDDING_COLUMNS",
+    "IMPORT_FULL_METERS",
     "KEPT_FOLDERS_SQL",
     "MESSAGE_COLUMNS",
     "MESSAGE_DERIVED_COLUMNS",
     "REMOVE_CHUNK",
+    "ImportMeter",
     "OlderMail",
     "RemovedChunk",
+    "add_batch_growth",
     "advance_import_since",
     "at_limit",
+    "batch_bytes",
     "delete_empty_thread_status",
     "delete_orphan_ai_drafts",
     "end_limit_phase",
@@ -99,6 +112,17 @@ REMOVE_CHUNK = 1000
 #: unsent draft stays in Metorite. The test of the folder copies the one in
 #: ``body_backfill.py``, so a NULL folder is not a draft. It reads ``em``.
 KEPT_FOLDERS_SQL = "LOWER(COALESCE(em.folder, '')) NOT IN ('drafts', 'draft')"
+
+#: The filter of the rows of one import batch, by provider id (EM-T6f review
+#: P1). The unique key ``(account_id, provider_message_id)`` makes it an index
+#: read. It is a WHERE test, never a size. It reads ``em``.
+BATCH_ROWS_SQL = "em.provider_message_id = ANY(CAST(:pids AS text[]))"
+
+#: The full meters that one run of the import may make (EM-T6f review P1).
+#: One runs after the first batch. Up to two more run when the sum of the
+#: batches reaches the limit. Phase (d) of the cycle adds one, so a cycle
+#: makes at most four, whatever the size of the import.
+IMPORT_FULL_METERS = 3
 
 #: The columns of variable length of each table that the meter counts. A
 #: column of fixed length (a uuid, a timestamp, a boolean) is the same size in
@@ -164,6 +188,30 @@ _MEASURE = text(
        UPDATE email_accounts
           SET stored_bytes = (SELECT bytes FROM total),
               stored_bytes_at = now()
+        WHERE id = :aid
+    RETURNING stored_bytes"""
+)
+
+#: The bytes that the rows of one import batch hold now: the same sums as the
+#: meter, over the rows of the batch only (EM-T6f review P1). It writes
+#: nothing.
+_BATCH_BYTES = text(
+    _bytes_cte(f" AND {BATCH_ROWS_SQL}")
+    + "\n       SELECT bytes FROM total"
+)
+
+#: The meter after a later batch of an import (EM-T6f review P1). It adds the
+#: growth of the batch, the bytes of its rows now minus ``:before``, to the
+#: meter. It keeps ``stored_bytes_at``, the time of the last full meter. A
+#: row with no meter yet counts as 0, but the first batch of each run writes
+#: the full meter, so a later batch always finds one.
+_ADD_BATCH_GROWTH = text(
+    _bytes_cte(f" AND {BATCH_ROWS_SQL}")
+    + """
+       UPDATE email_accounts
+          SET stored_bytes = COALESCE(stored_bytes, 0)
+                             + (SELECT bytes FROM total)
+                             - CAST(:before AS bigint)
         WHERE id = :aid
     RETURNING stored_bytes"""
 )
@@ -315,6 +363,86 @@ async def measure_stored_bytes(db: Any, account_id: str) -> int | None:
     commits."""
     value = (await db.execute(_MEASURE, {"aid": account_id})).scalar()
     return None if value is None else int(value)
+
+
+async def batch_bytes(db: Any, account_id: str, pids: list[str]) -> int:
+    """The bytes that the rows of ``pids`` hold now in the mailbox: their
+    messages, attachment rows and embeddings (EM-T6f review P1). A message
+    that is not stored counts 0. It reads those rows only, by the unique key,
+    and writes nothing. Takes the caller's session, opens none and never
+    commits."""
+    if not pids:
+        return 0
+    value = (await db.execute(
+        _BATCH_BYTES, {"aid": account_id, "pids": list(pids)})).scalar()
+    return int(value or 0)
+
+
+async def add_batch_growth(
+    db: Any, account_id: str, pids: list[str], before: int,
+) -> int | None:
+    """Add the growth of one import batch to the meter, and return the new
+    meter (EM-T6f review P1). The growth is the bytes of the rows of ``pids``
+    now minus ``before``, their bytes before the write. It returns ``None``
+    when the account row is gone. Takes the caller's session, opens none and
+    never commits."""
+    value = (await db.execute(
+        _ADD_BATCH_GROWTH,
+        {"aid": account_id, "pids": list(pids), "before": int(before)})).scalar()
+    return None if value is None else int(value)
+
+
+class ImportMeter:
+    """The meter of one run of an import, in bounded work (EM-T6f review P1).
+
+    The full meter reads every row of the mailbox. One run after each batch
+    of 100 made the I/O of an import grow with the square of its size. So:
+
+    * The first batch of a run ends with the full meter. The run then starts
+      from an exact value, which also counts the bodies and the embeddings
+      that phases (e) and (f) wrote after the meter of the cycle before.
+    * Each later batch reads its own rows before its write
+      (:meth:`before_write`), and after it (:meth:`after_write`). The
+      difference is the growth of the batch, and one UPDATE adds it to
+      ``stored_bytes``. An insert adds its bytes, an update adds its change
+      and a delete takes its bytes off. So the sum follows each write of the
+      import, and other writers move only by what they store meanwhile.
+    * When the sum is at the limit, the full meter runs again, and its value
+      decides. A run makes at most :data:`IMPORT_FULL_METERS` full meters.
+      After that, the sum decides. A sum over the true value only stops the
+      import early.
+
+    The stop keeps its batch: the import stops after the batch that takes
+    the meter to the limit, as before, so it can go over the limit by at
+    most one batch. Each method takes the caller's session, opens none and
+    never commits. The caller calls both methods in the block of the batch.
+    """
+
+    def __init__(self, account_id: str) -> None:
+        self.account_id = account_id
+        #: The full meters that this run made.
+        self.full_meters = 0
+        self._before = 0
+
+    async def before_write(self, db: Any, pids: list[str]) -> None:
+        """Read the bytes of the rows of the batch before its write. The
+        first batch reads nothing, because the full meter follows it."""
+        self._before = (0 if self.full_meters == 0
+                        else await batch_bytes(db, self.account_id, pids))
+
+    async def after_write(self, db: Any, pids: list[str]) -> int | None:
+        """Write the meter after the batch, and return it. ``None`` means the
+        account row is gone."""
+        if self.full_meters == 0:
+            return await self._full(db)
+        stored = await add_batch_growth(db, self.account_id, pids, self._before)
+        if at_limit(stored) and self.full_meters < IMPORT_FULL_METERS:
+            stored = await self._full(db)
+        return stored
+
+    async def _full(self, db: Any) -> int | None:
+        self.full_meters += 1
+        return await measure_stored_bytes(db, self.account_id)
 
 
 @dataclass(frozen=True)

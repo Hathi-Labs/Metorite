@@ -1130,7 +1130,11 @@ async def _run_import(
     ``tally`` counts the rows that it wrote. WS-17 EM-T6b items 4 to 8.
 
     The storage limit stops it (WS-17 EM-T6c items 4 and 5). The block of
-    each batch runs the meter after its messages. At or over the limit, the
+    each batch writes the meter after its messages. ``storage.ImportMeter``
+    runs the full meter after the first batch and near the limit only, and
+    it adds the growth of the batch after each other batch (EM-T6f review
+    P1). So a run makes at most ``storage.IMPORT_FULL_METERS`` full meters,
+    whatever its size. At or over the limit, the
     import fetches no next batch and sets ``tally["limit"]``. A first import
     then writes ``import_phase = 'limit'`` and ``initial_sync_done = true``.
     When the meter is under the limit again, a loop cycle resumes that import
@@ -1198,11 +1202,16 @@ async def _run_import(
                 await db.execute(_IMPORT_ESTIMATE,
                                  {"id": account_id, "estimate": total})
 
+    # EM-T6f review P1: the full meter runs after the first batch and near the
+    # limit only. Each other batch adds the growth of its own rows.
+    meter = storage.ImportMeter(account_id)
     async with aclosing(provider.import_batches(
             since=floor, until=until, size=IMPORT_BATCH_SIZE,
             on_estimate=on_estimate)) as batches:
         async for batch in batches:
+            pids = [m.provider_message_id for m in batch if m.provider_message_id]
             async with tenant_session(org) as db:
+                await meter.before_write(db, pids)
                 kept, _, _ = await _write_messages(
                     db, account_id, batch, floor,
                     reclaim=getattr(provider, "REKEYS_MESSAGE_IDS", False))
@@ -1211,7 +1220,7 @@ async def _run_import(
                     await db.execute(_IMPORT_BATCH, {
                         "id": account_id, "reached": _oldest_received(kept),
                         "count": count})
-                stored = await storage.measure_stored_bytes(db, account_id)
+                stored = await meter.after_write(db, pids)
             tally["written"] += len(kept)
             if snapshot is not None:
                 snapshot.extend((m.provider_message_id, m.folder, m.received_at)
@@ -1219,7 +1228,8 @@ async def _run_import(
             if storage.at_limit(stored):
                 tally["limit"] = True
                 logger.info("sync.import_stopped_at_limit account=%s stored=%d "
-                            "written=%d", account_id, stored, tally["written"])
+                            "written=%d full_meters=%d", account_id, stored,
+                            tally["written"], meter.full_meters)
                 break
             read += len(batch)
             if isinstance(cycle_mails, int) and read >= cycle_mails:
@@ -1242,8 +1252,9 @@ async def _run_import(
         end = _IMPORT_LIMIT if tally["limit"] else _IMPORT_DONE
         async with tenant_session(org) as db:
             await db.execute(end, {"id": account_id})
-        logger.info("sync.import_done account=%s count=%d limit=%s",
-                    account_id, count, tally["limit"])
+        logger.info("sync.import_done account=%s count=%d limit=%s "
+                    "full_meters=%d", account_id, count, tally["limit"],
+                    meter.full_meters)
 
 
 def _credentials_json(provider: Any) -> str | None:
