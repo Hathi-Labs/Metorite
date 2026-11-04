@@ -118,6 +118,7 @@ not write a second copy of that seam. A bare test file name is under
    - `refuse_cards()` is the scope of a run with no card channel. Fences: `test_wac_bot_run.py`, `test_wac_writes.py`.
    - A run with no person present (`acb_common.no_person`, AUTO-7a) denies first, before each WhatsApp path, whatever `non_interactive_default` says. `cards_refused()` reads the mark too, so each reader closes. Fence: `test_no_person_present.py`.
    - `responder=` binds a card to the run's own member. Any other answer, and an answer with no responder, is a REJECT. The gateway takes the responder from the session. Fence: `test_profile_pz32.py`.
+   - A reply form with `kind: "new"` is the card of a new mail (§18.10). Only `reply_card.parse_new_mail_answer` approves it, and a reply answer never does. `edit_card_channel_open` is the one test of a run that can draw a card to edit: the flag, a channel, and no WhatsApp run. `reply_card.edit_card_on` is the one reader of `EMAIL_EDIT_CARD_ORGS` (default empty, off), and it fails closed. Fence: `test_email_new_mail_card.py`.
 5k. agent_site.py -- the ONE builder of an agent install (spec `box_hardening.md` §5 BH-7).
    - Installs go into `/var/lib/acb-gateway/agent-site` with `uv pip install --target`, never into the shared venv.
    - The gateway APPENDS agent-site to `sys.path`. Never use `site.addsitedir` on it, and never write a `.pth` file or a `sitecustomize` there. Fence: `test_agent_deps_target.py`.
