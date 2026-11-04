@@ -144,6 +144,7 @@ class Gateway:
         self.error: Exception | None = None
         self.error_verb: str | None = None
         self.between: Any = None  # runs before a write is served
+        self.queries: list[dict[str, str]] = []  # the query of each request
 
     def seed(self, manifest: dict[str, Any], owner: str = MEMBER, trust: bool = False) -> str:
         pid = str(uuid.uuid4())
@@ -161,13 +162,15 @@ class Gateway:
         raise AssertionError(f"no route serves {method} {path}")
 
     def request(self, method: str, url: str, headers: dict[str, str], body: Any) -> httpx.Response:
-        path = "/" + url.split("//", 1)[1].split("/", 1)[1]
+        path, _, query = ("/" + url.split("//", 1)[1].split("/", 1)[1]).partition("?")
+        args = dict(part.split("=", 1) for part in query.split("&") if "=" in part)
         self.calls.append((method, path, body, dict(headers)))
+        self.queries.append(args)
         self.route(method, path)
         if self.error and self.error_verb in (None, method):
             raise self.error
         try:
-            return self._serve(method, path, body, headers["X-User-Email"])
+            return self._serve(method, path, body, headers["X-User-Email"], args)
         except HTTPException as exc:
             return self._r(exc.status_code, {"detail": exc.detail})
 
@@ -184,7 +187,8 @@ class Gateway:
             updated_at="2026-11-04T00:00:00Z")  # type: ignore[arg-type]
         return packages._package_out(found)
 
-    def _serve(self, method: str, path: str, body: Any, member: str) -> httpx.Response:
+    def _serve(self, method: str, path: str, body: Any, member: str,
+               args: dict[str, str]) -> httpx.Response:
         raw = b"" if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
         parts = path.strip("/").split("/")  # studio, packages, [id, [draft|versions]]
         mine = {k: p for k, p in self.packages.items() if p["owner"] == member}
@@ -192,7 +196,7 @@ class Gateway:
             return self._r(200, {"packages": [
                 {"id": k, "manifest_id": p["manifest"].get("id"), "live_version": p["live_version"]}
                 for k, p in mine.items()]})
-        if self.between:
+        if self.between and method != "GET":
             self.between()
         if self.status and method != "GET":
             raise HTTPException(*self.status)
@@ -215,8 +219,10 @@ class Gateway:
                 {"name": n} for n in self.tables.get(pid, [])]})
         if parts[3] == "draft" and method == "PUT":
             manifest = packages._parse_json(raw)
+            expected = packages._based_on(args.get("based_on"))  # the real parse of the route
             with packages._store_errors():
                 store.check_manifest(manifest)
+                store._expect(p["manifest"], expected)  # the real compare of the store
                 if p["manifest"].get("id") != manifest["id"]:
                     raise store.PackageStoreError(store.ID_FIXED, [
                         ManifestError(path="$.id", message=store.ID_FIXED)])
@@ -228,8 +234,10 @@ class Gateway:
         if not isinstance(notes, str):
             raise HTTPException(422, {"message": "The release notes are text.", "errors": [
                 {"path": "$.notes", "message": "The release notes are text."}]})
+        expected = packages._based_on(sent.get("based_on"))
         with packages._store_errors():
             store._notes(notes)
+            store._expect(p["manifest"], expected)
             if not p["trust"]:
                 store._check_publishable(p["manifest"], CLASSES)
             if self.problems is not None:
@@ -491,6 +499,56 @@ async def test_the_record_goes_only_after_a_201(gw, redis) -> None:
     assert redis.data == {}
     again = await st.studio_publish(pid)
     assert again["ok"] is False and _msg(again) == st._NO_PLAN, "one approval buys one publish"
+
+
+# -- 5b. The store compares the checked hash (review round 1, P1) --------------
+
+
+async def test_the_publish_and_the_save_name_the_hash_that_they_checked(gw) -> None:
+    """The publish sends the hash that the plan record matched. A save by id
+    sends the hash of the draft that it read. Mutation M17: send no based_on
+    with the publish -> red."""
+    m, pid = await _built()
+    other = _visit(name="Other")
+    assert (await st.studio_save(other, pid, st.manifest_hash(m)))["ok"]
+    put = [q for (verb, _p, _b, _h), q in zip(gw.calls, gw.queries, strict=True) if verb == "PUT"]
+    assert put == [{"based_on": st.manifest_hash(m)}]
+    await _plan(other)
+    assert (await st.studio_publish(pid))["ok"]
+    body = next(b for verb, p, b, _h in gw.calls if verb == "POST" and p.endswith("/versions"))
+    assert body == {"notes": "", "based_on": st.manifest_hash(other)}
+
+
+async def test_a_draft_that_changes_between_the_read_and_the_publish_is_not_published(
+        gw, redis) -> None:
+    """A save of the same response lands after the read of the publish. The
+    store refuses, and no version is made. Mutation M17 -> red."""
+    m, pid = await _built()
+
+    def studio_edit() -> None:
+        gw.packages[pid]["manifest"] = _jsonb(_visit(name="Edited at once"))
+
+    gw.between = studio_edit
+    out = await st.studio_publish(pid)
+    assert out["ok"] is False and out["status"] == 409 and out["code"] == "draft_changed"
+    assert _msg(out) == st._PKG_RACED_PUBLISH and gw.versions[pid] == []
+    assert len(redis.data) == 1, "the record stays: nothing was published"
+
+
+async def test_a_draft_that_changes_between_the_read_and_the_save_is_kept(gw) -> None:
+    """Two saves of one read: the second gets 409, and the first stays.
+    Mutation M18: send no based_on with the draft save -> red."""
+    m = _visit()
+    pid = gw.seed(m)
+    edited = _jsonb(_visit(name="Edited in Studio"))
+
+    def studio_edit() -> None:
+        gw.packages[pid]["manifest"] = edited
+
+    gw.between = studio_edit
+    out = await st.studio_save(_visit(name="Other"), pid, st.manifest_hash(m))
+    assert out["ok"] is False and out["code"] == "draft_changed" and _msg(out) == st._PKG_RACED_SAVE
+    assert gw.packages[pid]["manifest"] == edited
 
 
 async def test_a_record_that_cannot_be_dropped_still_publishes(gw, redis) -> None:
@@ -877,6 +935,11 @@ def test_each_copy_of_the_route_matches_the_route() -> None:
     assert str(store._refuse("$", "x")) == st._NOT_VALID
     assert st._PACKAGE_EXISTS == packages.PACKAGE_EXISTS
     assert st._OUT_OF_SYNC == packages.OBJECTS_OUT_OF_SYNC
+    assert st._DRAFT_CHANGED == packages.DRAFT_CHANGED
+    # ONE hash of a draft: the tools and the store import the same function.
+    from acb_common import studio_manifest
+
+    assert st.manifest_hash is studio_manifest.manifest_hash is store.manifest_hash
     assert actions.router.prefix + "/packages" == st.PACKAGES_PATH
     # Adjacent string literals of the route, joined, as Python joins them.
     source = re.sub(r'"\s*\n\s*"', "", Path(packages.__file__).read_text(encoding="utf-8"))

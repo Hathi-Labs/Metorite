@@ -1819,6 +1819,7 @@ _NOTES_TEXT = "The release notes are text."  # the 422 of the publish route
 #: The codes of the A5 answers that a tool reads.
 _PACKAGE_EXISTS = "package_exists"
 _OUT_OF_SYNC = "objects_out_of_sync"
+_DRAFT_CHANGED = "draft_changed"  # packages.DRAFT_CHANGED
 
 _PKG_NO_ID = "The package id must be a UUID. Use the package_id that studio_save gave."
 _PKG_NOT_YOURS = ("No package of yours has this id, or AI Studio is not open for this "
@@ -1838,6 +1839,13 @@ _PKG_STALE = ("A save to a package needs the based_on of its stored draft. This 
 _PKG_BIG = ("The stored draft is over {limit} characters, so a chat cannot hold it. Nothing was "
             "saved. Change this draft in Studio.")
 _PKG_SAME = "The stored draft already equals this manifest. Nothing changed."
+#: The answers to a 409 ``draft_changed``: the store compared the hash that
+#: the tool checked, under its row lock, and the draft had changed.
+_PKG_RACED_SAVE = ("Another save changed the stored draft while this save ran, so nothing was "
+                   "saved. Save again with the based_on that the newest save gave.")
+_PKG_RACED_PUBLISH = ("The stored draft changed after its plan was checked, so nothing was "
+                      "published. Show the plan card of the stored manifest with studio_plan, "
+                      "then publish.")
 _PKG_MOVED = "The stored draft changed while the card was open. Nothing was {act}. Ask again."
 _PKG_EXISTS = ("You have a package with this manifest id. To save to it, call studio_save with "
                "its package_id and based_on.")
@@ -2279,7 +2287,12 @@ async def _save_draft(pid: str, doc: dict[str, Any], based_on: str) -> dict[str,
             return _package_fail(again, decision=decision)
         if manifest_hash(_package_of(again).get("manifest")) != digest:
             return _refusal(_PKG_MOVED.format(act="saved"), decision=decision)
-    reply = await _send("PUT", f"{PACKAGES_PATH}/{pid}/draft", doc, "save", _PKG_MAYBE_SAVED)
+    # The store compares the hash that this save read, under its row lock. A
+    # save that lands after the read gives 409, and nothing is lost.
+    reply = await _send("PUT", f"{PACKAGES_PATH}/{pid}/draft?based_on={digest}", doc, "save",
+                        _PKG_MAYBE_SAVED)
+    if reply.status == 409 and _code(reply) == _DRAFT_CHANGED:
+        return _refusal(_PKG_RACED_SAVE, status=409, code=_DRAFT_CHANGED, package_id=pid)
     if not reply.ok:
         return _package_fail(reply)
     return _saved_package(reply)
@@ -2389,10 +2402,17 @@ async def studio_publish(package_id: str, notes: str = "") -> dict[str, Any]:
             held = await _held_publish(pid, current, stored, digest, notes)
             if held is not None:
                 return held
-        reply = await _send("POST", f"{PACKAGES_PATH}/{pid}/versions", {"notes": notes},
-                            "publish", _PKG_MAYBE_PUBLISHED)
+        # The route publishes the draft that is stored when the POST arrives,
+        # and the tool calls of one response run at once. So the POST names
+        # the hash that the plan approved, and the store compares it under its
+        # row lock (review round 1, P1).
+        reply = await _send("POST", f"{PACKAGES_PATH}/{pid}/versions",
+                            {"notes": notes, "based_on": digest}, "publish",
+                            _PKG_MAYBE_PUBLISHED)
     except _Refused as exc:
         return _refusal(str(exc))
+    if reply.status == 409 and _code(reply) == _DRAFT_CHANGED:
+        return _refusal(_PKG_RACED_PUBLISH, status=409, code=_DRAFT_CHANGED, package_id=pid)
     if reply.status == 409 and _code(reply) == _OUT_OF_SYNC:
         return _problems(reply, stored)
     if not reply.ok:

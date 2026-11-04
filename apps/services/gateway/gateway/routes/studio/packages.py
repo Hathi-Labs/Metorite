@@ -68,6 +68,15 @@ closes. ⚠️ Never ``record_app_audit``: its unbound session writes no row und
 FORCE RLS (task 1317). A draft save and a 404 write no row. The rows hold the
 op, a hash, a size and names, and no manifest text.
 
+**The expected hash (STU-G1c review round 1).** A draft save takes the query
+``?based_on=<hash>``, and a publish takes ``based_on`` in its body. The value
+is ``studio_manifest.manifest_hash`` of the draft that the caller read. The
+store compares it under the row lock: a different hash is 409
+``draft_changed``, and nothing is written. So a save that lands between the
+read of a publish and its POST cannot go live in place of the draft that was
+checked, and of two saves of one read only one writes. With no ``based_on``
+a route behaves as before. A value that is not 64 hex digits is 422.
+
 **Create.** There is no idempotency key. A second create with the same
 manifest id by the same member answers 409 ``package_exists`` with the id of
 the first. Two creates at the same moment can both pass, and that is
@@ -94,7 +103,8 @@ from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store
 from gateway.studio import packages_store as store
 
-__all__ = ["MAX_BODY_BYTES", "MAX_PACKAGES_PER_MEMBER", "MAX_PROBLEMS", "VERSIONS_PAGE", "router"]
+__all__ = ["DRAFT_CHANGED", "MAX_BODY_BYTES", "MAX_PACKAGES_PER_MEMBER", "MAX_PROBLEMS",
+           "VERSIONS_PAGE", "router"]
 
 _log = get_logger("gateway.studio.packages")
 
@@ -111,6 +121,7 @@ RETRY_AFTER = "2"
 #: The most versions in one page of the versions list.
 VERSIONS_PAGE = store.MAX_VERSIONS_PAGE
 _DIGITS = re.compile(r"[0-9]{1,10}", re.ASCII)
+_HASH = re.compile(r"[0-9a-f]{64}", re.ASCII)
 
 PACKAGE_EXISTS = "package_exists"
 PACKAGE_LIMIT = "package_limit"
@@ -118,12 +129,15 @@ OBJECTS_OUT_OF_SYNC = "objects_out_of_sync"
 CATALOG_UNAVAILABLE = "catalog_unavailable"
 STORE_BUSY = "store_busy"
 BODY_TOO_LARGE = "body_too_large"
+DRAFT_CHANGED = "draft_changed"
 
 CATALOG_DOWN = "The action catalog is not available now, so try the publish again later."
 BODY_OVER_CAP = "This body is too large, so send a smaller manifest."
 NOT_JSON = "The body must be a JSON object."
 TOO_DEEP = "The body nests too deep to read. Flatten it."
 BAD_CURSOR = "The cursor before is a version number, so send a whole number from 1."
+BAD_HASH = ("based_on is the hash of the draft that you read: 64 hexadecimal digits. Send it, "
+            "or leave it out.")
 
 
 def _not_found() -> HTTPException:
@@ -140,6 +154,17 @@ def _package_id(raw: str) -> str:
         return str(uuid.UUID(raw))
     except (ValueError, TypeError, AttributeError):
         raise _not_found() from None
+
+
+def _based_on(raw: object) -> str | None:
+    """The expected hash of the stored draft, or None when the caller sends
+    none. Any other value than 64 hex digits is 422. It says nothing about
+    the package."""
+    if raw is None:
+        return None
+    if isinstance(raw, str) and _HASH.fullmatch(raw.strip().lower()):
+        return raw.strip().lower()
+    raise _unprocessable(BAD_HASH, [{"path": "$.based_on", "message": BAD_HASH}])
 
 
 def _cursor(raw: str | None) -> int | None:
@@ -173,6 +198,9 @@ def _store_errors() -> Iterator[None]:
                 {"kind": p.kind, "object": p.object, "field": p.field, "rule": p.rule,
                  "message": p.message} for p in exc.problems[:MAX_PROBLEMS]],
         }) from None
+    except store.DraftChanged as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": DRAFT_CHANGED, "message": str(exc)}) from None
     except objects_store.StoreBusy as exc:
         raise HTTPException(
             status_code=503, detail={"code": STORE_BUSY, "message": str(exc)},
@@ -373,18 +401,22 @@ async def save_draft(
     package_id: str,
     request: Request,
     user: UserContext = Depends(get_current_user),
+    based_on: str | None = None,
 ) -> dict[str, Any]:
     """Replace the draft manifest of a package of the caller. No object row
-    changes: only a publish writes rows."""
+    changes: only a publish writes rows. With ``?based_on=``, the stored draft
+    must still have that hash, or the answer is 409 ``draft_changed``."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _package_id(package_id)
     raw = await _raw_body(request)
     await _require_owned(user.email, pid)
     manifest = _parse_json(raw)
+    expected = _based_on(based_on)
     async with _tenant_session() as db:
         with _store_errors():
-            package = await store.update_manifest(db, user.email, pid, manifest)
+            package = await store.update_manifest(db, user.email, pid, manifest,
+                                                  expected_hash=expected)
         if package is None:
             raise _not_found()
     return {"package": _package_out(package)}
@@ -397,7 +429,9 @@ async def publish(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Publish the draft of a package of the caller as the next version, and
-    bring the object rows to its manifest, in one transaction."""
+    bring the object rows to its manifest, in one transaction. With
+    ``based_on`` in the body, the stored draft must still have that hash, or
+    the answer is 409 ``draft_changed`` and nothing is written."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _package_id(package_id)
@@ -408,10 +442,12 @@ async def publish(
     if not isinstance(notes, str):
         raise _unprocessable("The release notes are text.", [
             {"path": "$.notes", "message": "The release notes are text."}])
+    expected = _based_on(body.get("based_on"))
     known = await _catalog()
     async with _tenant_session() as db:
         with _store_errors():
-            version = await store.publish_version(db, user.email, pid, notes, catalog=known)
+            version = await store.publish_version(db, user.email, pid, notes, catalog=known,
+                                                  expected_hash=expected)
             if version is None or version.manifest is None:
                 raise _not_found()
             result = await objects_store.sync_objects(

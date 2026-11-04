@@ -39,6 +39,10 @@ c. A publish with no approved plan sends no publish request and makes no
 d. A manifest that drops a published field answers 409. The tool gives the
    problems in the framed form, and no version row and no object row changes.
 e. A draft that changed after its plan is refused, with no version row.
+f. Review round 1, P1: a save of a new draft and a publish in one model
+   response run at once. The planned draft goes live, or no version does.
+   Also when the member rejects the plan card of the new draft in that
+   response. The unplanned draft never goes live.
 
 **The mutations (R7).** Each ran on 2026-11-04 with this file and the hermetic
 file. The red tests are in the docstring of ``test_studio_package_tools.py``.
@@ -349,6 +353,103 @@ def test_r8_a_draft_that_changed_after_its_plan_is_refused(world) -> None:
     assert out["ok"] is False and out["errors"][0]["message"] == st._NO_PLAN, out
     assert _versions(world, saved["package_id"]) == []
     assert len(world.redis.data) == 1, "the record of the first plan stays until its TTL"
+
+
+# ── f. Tool calls of one response at once (review round 1, P1) ──────────────
+#
+# MAF runs the tool calls of one model response at once
+# (``allow_concurrent_invocation`` defaults to True). A save of a new draft
+# can land between the read of a publish and its POST. The store compares the
+# hash that the publish checked under its row lock, so the planned draft goes
+# live, or no version does. The unplanned draft never goes live.
+
+ROUNDS = 8
+
+
+def _version_fields(world: Any, pid: str, version: int) -> list[str]:
+    with world.p.admin_engine.connect() as c:
+        raw = c.execute(text(
+            "SELECT manifest FROM app_versions WHERE app_id = CAST(:p AS uuid) "
+            "AND version = :v"), {"p": pid, "v": version}).scalar_one()
+    manifest = raw if isinstance(raw, dict) else json.loads(raw)
+    return [f["key"] for f in manifest["objects"][0]["fields"]]
+
+
+def _unplanned(planned: dict[str, Any]) -> dict[str, Any]:
+    out = copy.deepcopy(planned)
+    out["objects"][0]["fields"].append(
+        {"key": "secret", "type": "text", "label": "Never on a plan card"})
+    return out
+
+
+def _settled(world: Any, pid: str, published: dict[str, Any]) -> str:
+    """Check one round: the planned draft is live, or no version is. Answer
+    how the publish ended."""
+    planned = [f["key"] for f in _FIELDS]
+    assert "secret" not in _tables(world, pid).get("visit", []), "the unplanned draft went live"
+    if published["ok"]:
+        assert _version_fields(world, pid, published["version"]) == planned, published
+        return "published"
+    assert _versions(world, pid) == [], published
+    code = published.get("code") or ""
+    assert code == "draft_changed" or published["errors"][0]["message"] == st._NO_PLAN, published
+    return code or "no_plan"
+
+
+def test_r8_a_save_and_a_publish_at_once_never_publish_the_new_draft(world) -> None:
+    """The first probe of the review. Before the fix, the new draft went live
+    in 8 of 8 rounds. Mutation: send no based_on with the publish -> red."""
+    seen: list[str] = []
+    for _ in range(ROUNDS):
+        planned = _visit_log(_mid())
+
+        async def go(planned: dict[str, Any] = planned) -> tuple[str, Any, Any]:
+            assert (await st.studio_plan(planned))["decision"] == "approved"
+            saved = await st.studio_save(planned)
+            pid = saved["package_id"]
+            again, published = await asyncio.gather(
+                st.studio_save(_unplanned(planned), pid, saved["based_on"]),
+                st.studio_publish(pid))
+            return pid, again, published
+
+        pid, again, published = _run(world, go)
+        assert again["ok"], again  # the save lands, before or after the publish
+        seen.append(_settled(world, pid, published))
+    assert set(seen) <= {"published", "draft_changed", "no_plan"}, seen
+
+
+def test_r8_a_rejected_plan_in_the_same_response_never_publishes_the_new_draft(
+        world, monkeypatch) -> None:
+    """The second probe of the review. The model sends a save of a new draft,
+    a plan card of it and a publish in one response, and the member rejects
+    the card. Before the fix, version 1 went live with the field of the new
+    draft. Mutation: send no based_on with the publish -> red."""
+    planned = _visit_log(_mid())
+    answers = iter([True])  # the first plan card: approved
+
+    async def card(title, detail="", context="", **kw):
+        world.cards.append({"title": title})
+        try:
+            return next(answers)
+        except StopIteration:
+            await asyncio.sleep(0.5)  # the member reads the card, then rejects it
+            return False
+
+    monkeypatch.setattr(ask_tools, "request_confirmation", card)
+
+    async def go() -> tuple[str, Any, Any, Any]:
+        assert (await st.studio_plan(planned))["decision"] == "approved"
+        saved = await st.studio_save(planned)
+        pid = saved["package_id"]
+        again, plan2, published = await asyncio.gather(
+            st.studio_save(_unplanned(planned), pid, saved["based_on"]),
+            st.studio_plan(_unplanned(planned)),
+            st.studio_publish(pid))
+        return pid, again, plan2, published
+
+    pid, again, plan2, published = _run(world, go)
+    assert plan2["decision"] == "stopped" and again["ok"], (plan2, again)
+    _settled(world, pid, published)
 
 
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
