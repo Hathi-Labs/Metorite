@@ -1542,7 +1542,7 @@ line — never reclaim a number by deleting the other entry.
   A hit means this is open.
 - **Added:** 2026-10-15 · branch `wa-calendar-blocks`
 
-### H-312 · Ten reads in the task routes name no tenant, and their tables have no org column · [AGENT]
+### H-312 · Ten statements in the task routes name no tenant (seven reads, three writes), and their tables have no org column · [AGENT]
 - **Metorite:** #1646. It waits on H-104 (#608). The five `user_settings` reads of the first entry closed on 2026-11-04 (#562).
 - **Check:** `git grep -n -A2 "WHERE user_id = :uid" -- apps/services/gateway/gateway/routes/tasks`.
   A statement that names no `organization_id` means this entry stays.
