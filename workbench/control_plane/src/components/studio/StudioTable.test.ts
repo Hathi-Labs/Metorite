@@ -6,8 +6,10 @@
  * none, a tick draws as a checkbox, and a Table that is not `editable` draws
  * as before.
  *
- * Mutation: draw the button for every column. "no button on a computed field"
+ * Mutation 1: draw the button for every column. "no button on a computed field"
  * turns red.
+ * Mutation 2: link a row by `openBase + id` when `openBase` is empty (`DataGrid`).
+ * "a row with a UUID id" turns red: the live preview showed a bad relative link.
  */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -67,5 +69,18 @@ describe("updateOf", () => {
     expect(updateOf({ action: "object:visit.get" })).toBeNull();
     expect(updateOf({ action: "find" })).toBeNull();
     expect(updateOf(null)).toBeNull();
+  });
+});
+
+describe("a row with a UUID id", () => {
+  const ID = "123e4567-e89b-12d3-a456-426614174000";
+  const data = { title: "Visits", fields: FIELDS, filterable: true, editable: true };
+  it("draws the title with no link, because an empty openBase means no link", () => {
+    const html = renderToStaticMarkup(createElement(StudioTable, {
+      data, rows: [{ id: ID, title: "A", qty: 1 }], door, source: SOURCE,
+    }));
+    expect(html).not.toContain(`href="${ID}"`);
+    expect(html).not.toContain("<a ");
+    expect(html).toContain('aria-label="Edit Title"');
   });
 });

@@ -1733,11 +1733,12 @@ export function DataGrid({ data, layout, edit }: { data: Data; layout?: GridLayo
     if (editor !== null) return editor;
     const busy = edit.pending(id, c.index);
     return (
-      <button type="button" data-cell-edit="" aria-label={`Edit ${c.label}`} aria-busy={busy || undefined}
-        disabled={busy} onClick={() => edit.open(id, c.index)}
-        className="block min-h-5 w-full min-w-8 cursor-text rounded text-left hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60">
+      <Button type="button" variant="text" size="none" radius="keep" layout="block" data-cell-edit=""
+        aria-label={`Edit ${c.label}`} aria-busy={busy || undefined} disabled={busy}
+        onClick={() => edit.open(id, c.index)} style={{ color: "inherit" }}
+        className="min-h-5 w-full min-w-8 cursor-text text-left">
         {isEmptyCell(arr(r.cells)[c.index]) ? <span style={{ color: "var(--muted-foreground)" }}>—</span> : plain}
-      </button>
+      </Button>
     );
   };
   const cellOf = (r: Data, c: GridColumn) => withEdit(r, c, (
@@ -1745,7 +1746,8 @@ export function DataGrid({ data, layout, edit }: { data: Data; layout?: GridLayo
       category={categoryAt >= 0 ? arr(r.cells)[categoryAt] : undefined} />
   ));
   const titleOf = (r: Data) => {
-    const href = taskHref(r.id, base);
+    // An empty `openBase` means "no link": a Studio record id is a UUID, and `base + id` would be a bad relative link.
+    const href = base ? taskHref(r.id, base) : null;
     // The title draws by its column's kind: a groups table by stage puts the
     // stage first, and it reads as its label, never the key (review round 1).
     const kind = shown.find((c) => c.index === primaryAt)?.kind ?? "text";

@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import urllib.error
 import urllib.request
@@ -53,12 +52,15 @@ MANIFEST = {
             {"key": "title", "type": "text", "label": "Title", "required": True},
             {"key": "status", "type": "select", "label": "Status",
              "options": ["Planned", "On site", "Closed"]},
-            {"key": "qty", "type": "number", "label": "Pallets"},
+            {"key": "qty", "type": "number", "label": "Pallets", "hot": True},
             {"key": "done", "type": "checkbox", "label": "Done"},
             {"key": "site", "type": "url", "label": "Site"},
             {"key": "contact", "type": "email", "label": "Contact"},
             {"key": "notes", "type": "longText", "label": "Notes"},
         ],
+        # A rule gives the preview a refusal to show: an edit of Pallets past 500.
+        "rules": [{"name": "qty_range", "kind": "range", "field": "qty", "min": 0, "max": 500,
+                   "message": "Pallets must be between 0 and 500."}],
     }],
     "actions": [
         {"id": "find", "uses": "object:visit.list"},
@@ -116,8 +118,8 @@ def main() -> int:
         return 1
     existing = next((p for p in found.get("packages", []) if p.get("manifest_id") == MANIFEST["id"]), None)
     if existing:
-        print(f"The sample package exists: {existing['id']}")
         pid = existing["id"]
+        print(f"The sample package exists: {pid}")
     else:
         status, made = call(base, token, "POST", "/studio/packages", MANIFEST)
         if status != 201:
@@ -128,6 +130,13 @@ def main() -> int:
         if status != 201:
             print(f"Publish failed ({status}): {json.dumps(pub)[:300]}", file=sys.stderr)
             return 1
+        print(f"Made and published {pid}.")
+    # Add the sample records only while the object holds none, so a second run adds nothing.
+    status, listed = call(base, token, "POST", f"/studio/apps/{pid}/actions/find", {"limit": 1})
+    if status != 200:
+        print(f"List failed ({status}): {json.dumps(listed)[:300]}", file=sys.stderr)
+        return 1
+    if not listed.get("records"):
         for record in RECORDS:
             path = f"/studio/apps/{pid}/actions/add"
             proof = sign(key, MEMBER, "POST", path)
@@ -135,9 +144,9 @@ def main() -> int:
             if status != 200:
                 print(f"A record failed ({status}): {json.dumps(out)[:300]}", file=sys.stderr)
                 return 1
-        print(f"Made and published {pid} with {len(RECORDS)} records.")
-    web = re.sub(r":\d+$", "", base)
-    print(f"Open: /studio/package-preview?pkg={pid}&object=visit on the web port of the stack ({web}).")
+        print(f"Added {len(RECORDS)} records.")
+    web = os.environ.get("DEV_UP_APP_URL", "http://localhost:<web port>")
+    print(f"Open: {web}/studio/package-preview?pkg={pid}&object=visit")
     return 0
 
 
