@@ -719,6 +719,10 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: the routes of ``preview_move_tasks`` and ``move_tasks``. The preview writes
 #: nothing, and it is a write pair only because it is a POST. ⚠️ The grant
 #: routes, the node move and the node archive stay OUT of both sets.
+#: WS-55 MCP-G15 adds the outside decision, the route of
+#: ``record_outside_decision``. An agent records a decision that its member
+#: made outside Metorite, on its OWN awaiting run. It writes an agent
+#: ``response`` and never a ``prompt``, and it refuses a typed request.
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/nodes"),
@@ -737,6 +741,8 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/agent-runs/{run_id}/finish"),
     # EA-14a: the holder gives a task up. The route of ``release_task``.
     ("POST", "/projects/agent-runs/{run_id}/release"),
+    # MCP-G15: the decision a member made outside Metorite.
+    ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
     ("POST", "/projects/tasks/{task_id}/archive-request"),
     ("POST", "/projects/tasks/{task_id}/agent-delete"),
 })
