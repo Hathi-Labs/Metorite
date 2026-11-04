@@ -29,12 +29,15 @@ Mutation table (each mutation was made by hand, and the named test failed):
 
 | # | Mutation | Test that fails |
 |---|---|---|
-| R1 | the PATCH checks the body alone, not the row after the change | ``test_the_key_on_an_always_confirm_row_is_422`` |
+| R1 | the PATCH reads the stored ``always_confirm`` as false, so it checks the body alone | ``test_the_key_on_an_always_confirm_row_is_422`` |
 | R2 | the PATCH skips the OAuth check | ``test_an_oauth_row_refuses_the_key`` |
-| R3 | the register writes the key only when the body names it | ``test_a_re_post_with_no_key_turns_it_off_and_audits_both_flags`` |
-| R4 | the PATCH statement loses its org predicate | ``test_the_store_predicate_holds_on_a_session_that_bypasses_rls`` |
+| R3 | the register event leaves out ``read_only_key`` | ``test_a_re_post_with_no_key_turns_it_off_and_audits_both_flags`` |
+| R4 | the merge statement of the PATCH loses its org predicate | ``test_the_store_predicate_holds_on_a_session_that_bypasses_rls`` |
 | R5 | the PATCH skips the role check | ``test_a_member_without_manage_gets_403`` |
-| R6 | the PATCH writes no audit event for the key | ``test_the_patch_sets_the_key_keeps_the_headers_and_audits`` |
+| R6 | the PATCH audits the key under the always-confirm action | ``test_the_patch_sets_the_key_keeps_the_headers_and_audits`` |
+
+Under R1, the parse still reads the key as false, because the row reads as
+always confirm. So a row that a bad write leaves with both on asks the card.
 
 Run::
 
