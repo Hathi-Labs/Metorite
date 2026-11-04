@@ -12088,6 +12088,7 @@ fence file is needed (`engineering_practice.md` §7a).
 - "Sync now" and the last sync show once, in Connection.
 - Until the setup is done, Connection opens first and shows three steps with a done mark on each: Connect Zoho, Review what the AI found, Choose who can open the CRM. After that, an admin lands on "Needs your input" when it holds an item, else on Pipeline.
 - `lib/settingsSections.ts` keeps each old id as an alias of its new section (`crmC1.test.ts` fences the ids).
+- **Change history** is a sixth section (CRM-M1, `crm_conversational.md` §8). It is for an admin, in both modes, last in the rail. U13 keeps it as a section of its own.
 
 #### Needs your input (D134.2)
 

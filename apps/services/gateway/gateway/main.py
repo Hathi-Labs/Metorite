@@ -519,6 +519,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         # The brief's kinds and hooks register at import (WS-BRIEF BR-2a-1,
         # gateway/brief/run.py), so the worker holds them from its first tick.
         # Its own try: an import error loses the brief, never the queue.
+        import gateway.brief.monitor  # noqa: F401  (BR-2d)
         import gateway.brief.run  # noqa: F401
     except Exception as exc:
         _log.warning("gateway.brief_jobs_skipped", error=str(exc))
@@ -1886,6 +1887,12 @@ try:
     from gateway.routes.brief_today import router as _brief_today_router
 
     app.include_router(_brief_today_router)
+
+    # WS-BRIEF BR-2d — `GET /admin/brief/health`, the delivery stats of the org
+    # (`core_brief.md` §7). Dark: the brief off for the org answers 404.
+    from gateway.routes.admin_brief_health import router as _brief_health_router
+
+    app.include_router(_brief_health_router)
 except Exception:  # pragma: no cover
     pass
 

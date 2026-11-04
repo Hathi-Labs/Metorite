@@ -96,6 +96,7 @@ from gateway.routes.projects.filters import (
 # `notifications` imports only `core` and `watchers`, so this direction adds no
 # cycle — the same note `notifications` itself carries about `watchers`, and the
 # same import `tasks`, `bulk` and `activities` already take.
+from gateway.routes.projects.mine import READY_AGENT_SQL
 from gateway.routes.projects.notifications import EXCERPT_CHARS, notify
 from gateway.routes.projects.tasks import (
     _TRACKED_TASK_FIELDS,
@@ -655,6 +656,7 @@ async def capture(
 async def create_personal_task(
     db: Any, email: str, project_id: str, root_id: str, status_id: str,
     values: dict[str, Any], overlay: dict[str, Any] | None = None,
+    *, announce: bool = True,
 ) -> Any:
     """One `pm_tasks` row in the member's own tree, assigned to them.
 
@@ -679,6 +681,15 @@ async def create_personal_task(
     inbox item until clarified. A SUBTASK (`parent_task_id` set) is a step,
     not a capture, and gets no default: `POST /projects/tasks` writes none
     either, and the two ways of adding a step must agree.
+
+    **`announce=False` sends no `pm.task.created` event** (WS-AUTO AUTO-7b).
+    Only the parked gate of a workflow run passes it
+    (`routes/workflows/park.py`). Its task holds a question for the owner, and
+    an event could start a workflow that parks and makes the next task, with
+    no end. Every other caller keeps the default, and a source scan holds
+    that. With no event, the `shell.cache.on_event` sink moves no My Day
+    version, so the park calls `shell.cache.bump_member_safe` for the owner
+    after its commit. Fence: `tests/unit/test_auto_park.py`.
     """
     # WS-64. A capture is a NEW placement, so it is refused under an archived
     # Area (one `archived_at` read by id, since callers hold ids and no row).
@@ -716,6 +727,8 @@ async def create_personal_task(
         db, activity_type="system", created_by=email, task_id=task_id,
         body="Captured",
     )
+    if not announce:
+        return task
     await emit("pm.task.created", {
         "task_id": task_id, "project_id": project_id,
         "title": str(values.get("title") or ""),
@@ -1488,8 +1501,12 @@ def _project_task(row: Any) -> tuple[dict[str, Any], str]:
 #: have seen who put the task there. A capture in my own tree is not "from
 #: Projects" either. One spelling, shared by the route and the live check
 #: (`tests/live/live_ws39_s6e.py`), so the two cannot drift.
+#:
+#: A READY agent task is never untriaged (D170 amendment, PJP-14): the one
+#: rule is `mine.READY_AGENT_SQL`, twin of `mine.is_ready_agent_task`.
 UNTRIAGED_CLAUSE = (
     "(p.task_id IS NULL OR p.disposition IS NULL) AND proj.personal_owner IS NULL"
+    " AND NOT COALESCE(" + READY_AGENT_SQL + ", false)"
 )
 
 #: "Not yet" — hidden from my inbox until the LATER of my own defer date and

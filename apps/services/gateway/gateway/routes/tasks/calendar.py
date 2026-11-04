@@ -604,11 +604,14 @@ async def _planning_prefs(db: Any, uid: str) -> dict[str, Any]:
     missing row / pre-migration DB returns the humane defaults."""
     out = {"planning_prompt": "", "max_focus_run_mins": 90, "break_mins": 10,
            "lunch_start_hour": None, "lunch_end_hour": None}
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
     try:
         row = (await db.execute(text(
             "SELECT planning_prompt, max_focus_run_mins, break_mins, "
             "lunch_start_hour, lunch_end_hour FROM user_settings "
-            "WHERE user_id = :uid"), {"uid": uid})).first()
+            f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG}"),
+            {"uid": uid})).first()
         if row:
             out["planning_prompt"] = str(row.planning_prompt or "")
             if row.max_focus_run_mins is not None:
@@ -642,9 +645,12 @@ def _theme_energy(theme: str | None) -> str:
 
 async def _day_templates(db: Any, uid: str) -> list[dict]:
     """The user's recurring windows (migration 94). Never raises."""
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
     try:
         row = (await db.execute(text(
-            "SELECT day_templates FROM user_settings WHERE user_id = :uid"),
+            "SELECT day_templates FROM user_settings "
+            f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG}"),
             {"uid": uid})).first()
         if row:
             from gateway.routes.tasks.settings import _day_templates as _norm
@@ -1229,8 +1235,11 @@ _SETTINGS_COLS = (
 
 
 async def _load_settings_row(db: Any, uid: str) -> Any:
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
     return (await db.execute(
-        text(f"SELECT {_SETTINGS_COLS} FROM user_settings WHERE user_id = :uid"),
+        text(f"SELECT {_SETTINGS_COLS} FROM user_settings "
+             f"WHERE user_id = :uid AND organization_id = {_BOUND_ORG}"),
         {"uid": uid})).first()
 
 

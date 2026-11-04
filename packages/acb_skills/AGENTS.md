@@ -118,10 +118,11 @@ not write a second copy of that seam. A bare test file name is under
    - `refuse_cards()` is the scope of a run with no card channel. Fences: `test_wac_bot_run.py`, `test_wac_writes.py`.
    - A run with no person present (`acb_common.no_person`, AUTO-7a) denies first, before each WhatsApp path, whatever `non_interactive_default` says. `cards_refused()` reads the mark too, so each reader closes. Fence: `test_no_person_present.py`.
    - `responder=` binds a card to the run's own member. Any other answer, and an answer with no responder, is a REJECT. The gateway takes the responder from the session. Fence: `test_profile_pz32.py`.
+   - A reply form with `kind: "new"` is the card of a new mail (§18.10). Only `reply_card.parse_new_mail_answer` approves it, and a reply answer never does. `edit_card_channel_open` is the one test of a run that can draw a card to edit: the flag, a channel, and no WhatsApp run. `reply_card.edit_card_on` is the one reader of `EMAIL_EDIT_CARD_ORGS` (default empty, off), and it fails closed. Fence: `test_email_new_mail_card.py`.
 5k. agent_site.py -- the ONE builder of an agent install (spec `box_hardening.md` §5 BH-7).
    - Installs go into `/var/lib/acb-gateway/agent-site` with `uv pip install --target`, never into the shared venv.
    - The gateway APPENDS agent-site to `sys.path`. Never use `site.addsitedir` on it, and never write a `.pth` file or a `sitecustomize` there. Fence: `test_agent_deps_target.py`.
-5l. crm_tools.py -- the 13 CRM read tools, the ONE copy (spec `crm_platform.md` §20.10).
+5l. crm_tools.py -- the 14 CRM read tools, the ONE copy (spec `crm_platform.md` §20.10). `crm_change_history` reads the Change history of the CRM set-up (`crm_conversational.md` §8). The chat reaches it through the `crm-records` pack, not the orchestrator's base. Fences: `test_crm_change_history.py` and `test_tool_packs_choice.py`.
    - Each tool reads a `/crm` route as the run's member, and refuses with no member. It opens no database session and takes no SQL.
    - Each path segment goes through a validator. `CLOSE_SHARE` equals `gateway.crm_sync.terms.CLOSE_SHARE`. No word of one org goes in this code.
    - Fences: `test_crm_agent.py`, `test_crm_answer_consistency.py`, `test_crm_answer_consistency_r8.py`.

@@ -648,7 +648,8 @@ async def my_work(
     across every project. view="inbox" lists the member's task inbox: only
     what they captured, as the app's inbox shows it. untriaged=true reads the
     work assigned to them that they have not planned, with who
-    assigned each one. My tasks shows it as New: "what landed on my plate". The first line is the member's own date and
+    assigned each one. My tasks shows it as New: "what landed on my plate". A ready agent
+    task (D170 amendment) is not here. It shows under Next or Someday. The first line is the member's own date and
     zone. Use this for "what is mine?" and for triage. Never for another
     person's work — use list_tasks with assignee for that."""
     which = "inbox" if untriaged else (view or "assigned").strip().lower()
@@ -671,7 +672,7 @@ async def my_work(
             # of INBOX disposition. The app's list reads the same filter.
             params["disposition"] = "INBOX"
         payload = await get("/projects/my/inbox", params)
-        title = "New in My tasks: assigned to me, not planned yet" if untriaged else "My task inbox"
+        title = "New in My tasks: assigned to me, not planned yet. A ready agent task (D170 amendment) is not here. It shows under Next or Someday." if untriaged else "My task inbox"
         # The personal project is where a private task lives (D53). Named
         # here so "add this to my own list" has an id to land on later.
         # 404 until the member captures their first private task. That is

@@ -797,6 +797,24 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # stays, and `purge_crm_member` takes the address off it.
     _PersonRows("crm_member_rules", "crm_business_rules",
                 "scope = 'member' AND lower(member_email) = :email"),
+    # WS-CRM CRM-M1: the Change history rows that only the member reads, the
+    # changes of a private saved view or of an own business rule. They hold
+    # the text of a private view or an own rule, which only the member
+    # reads, so they go with the member. This purge deletes the own rules
+    # (`crm_member_rules` above). It does not delete the saved views
+    # (`crm_views`). An Undo row has the same readers as the row it undoes
+    # (`change_log.log_change`), so the `ON DELETE CASCADE` key of
+    # `undoes_id` takes only rows that this clause counts too, and no org
+    # row goes with them. The clause names
+    # the bound org beside RLS, as `reminders` does. The org's rows that the
+    # member made stay with the address, as `app_audit` does, because a row
+    # never changes (migration 341). They are not counted as kept: the table
+    # cascades into itself, so `test_no_keep_clause_survives_a_cascade_on_
+    # the_delete_side` takes a keep clause only as the exact complement of
+    # this one, and the org's rows are keyed by `actor_email`, not by
+    # `private_to`.
+    _PersonRows("crm_private_changes", "crm_change_log",
+                f"lower(private_to) = :email AND organization_id = {_BOUND_ORG}"),
     # WS-61 KB-2f: the member's starred Knowledge pages. A star is the
     # member's own shortcut, so it goes with the member. The page stays.
     _PersonRows("knowledge_favorites", "kb_favorites", "lower(member_email) = :email"),
