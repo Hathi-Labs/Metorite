@@ -32,6 +32,25 @@ def _async_url() -> str:
     return _URL.replace("+psycopg", "+asyncpg")
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _schema():
+    """Build the tenant schema before this file runs (``apply_ladder`` is
+    idempotent). The file once relied on an earlier R8 suite in the same
+    shard having built it. A reshuffled shard ran it first, on an empty
+    database, and it failed with ``relation "pm_tasks" does not exist``
+    (PR 1656, 2026-11-04)."""
+    from sqlalchemy import create_engine
+
+    from tests.unit._tenant_ladder import apply_ladder
+
+    engine = create_engine(_URL, future=True)
+    try:
+        with engine.begin() as connection:
+            apply_ladder(connection)
+    finally:
+        engine.dispose()
+
+
 @pytest.fixture
 async def conn():
     engine = create_async_engine(_async_url(), future=True, poolclass=NullPool)

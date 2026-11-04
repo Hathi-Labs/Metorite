@@ -20,6 +20,22 @@ Everything durable goes in git — the board, the spec headers, the branch. Noth
 that matters may live only in this conversation, because the next cycle is a
 fresh context that can only see the repo.
 
+## The task board
+
+The owner watches the cycle on the Metorite task, not in this chat. Root
+`CLAUDE.md` §4 (D135) holds the rule. This table binds it to the steps.
+Sub-agents have no Metorite tools, so you post for them.
+
+| Step | Call |
+|---|---|
+| 1 Select | `my_work`. For a waiting run, `get_agent_run` first. Then `claim_task`, and post one `post_agent_activity` thought: the slice, the tier and the plan |
+| Every dispatch and report | A `post_agent_activity` thought on each open run: who runs, on what, and how long you expect to wait. A run with no line for 5 minutes shows idle |
+| 3 Branch | Push the branch at its first commit. `add_task_reference` with the branch URL |
+| 4b Preview | `post_agent_activity` as a `response`, then `ask_on_task`. Read the answer with `get_agent_run` and `after` set to the question's seq. Do not report `AWAITING-OWNER` before that read |
+| 7 Land | The task URL goes in the PR body. `add_task_reference` with the PR URL. `set_task_status` to review if the project has a review status. After the merge, `set_task_status` to done, then `finish_agent_run` with what shipped and what is left |
+| Stop early | `release_task`, after a comment that says what is done, what is left and the next step |
+| A new spec slice | `create_task` for each new slice row, in Backlog, under the epic. Write the number in the row |
+
 ## The cycle
 
 **1 — Select.**
@@ -73,7 +89,8 @@ callers, count rows). Never use haiku to build, verify or review.
   of `diff-reviewer`, the UI checklist, even when step 6 skips the full
   review. Skip the board-row note,
   the spec header (R4) and new fence tests (R7). Run `bash scripts/ci_local.sh`
-  (or `bash scripts/prepush.sh` when the PC is busy) before each push.
+  before each push. The home server runs it, and this PC takes it when the
+  home server is busy.
 - **Harden** (when the feature works): one PR, labelled `harden`. Run
   `STE_LINT_BLOCK=1` for the session, `bash scripts/prepush.sh --harden`,
   `diff-reviewer` on the WHOLE feature diff, and the visual review. Write the
@@ -215,7 +232,7 @@ TIER:     HIGH | STANDARD | LOW — <one line why>
 REVIEW:   APPROVE | n findings | skipped (LOW)
 GATE:     local-staging PASS | FAIL at <step> | ci_local.sh only (before LD-9)
 PR:       <url, or why none>
-BOARD:    <how the WS row now reads>
+BOARD:    <the task's status and run state (finished | awaiting | released), and the WS row>
 OWNER NEEDS TO: <gated actions, or "nothing">
 NEXT:     <the ticket the next cycle should take, and why>
 ```

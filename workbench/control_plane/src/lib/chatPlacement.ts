@@ -92,6 +92,8 @@ const EVIDENCE: readonly string[] = [
   "notifications",
   "watchers",
   "project_access",
+  "project_authorities",
+  "my_decisions",
   "project_views",
   "recurrence",
   "team_capacity",
@@ -183,6 +185,8 @@ const WRITE: readonly string[] = [
   "file_tasks",
   // Several links between tasks, one card with rows (2026-10-19).
   "link_tasks_batch",
+  // Several edits, a different change for each task, one card with rows.
+  "update_tasks",
   "watch",
   "complete",
   "defer",
@@ -237,6 +241,9 @@ const WRITE: readonly string[] = [
   "attach_to_task",
   "grant_access",
   "revoke_access",
+  "pin_authority",
+  "unpin_authority",
+  "answer_decision",
   "add_report_recipient",
   "remove_report_recipient",
   "set_report_schedule",

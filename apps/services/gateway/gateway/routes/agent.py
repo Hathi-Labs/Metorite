@@ -2555,11 +2555,17 @@ class PromptToSave(BaseModel):
     content: str
     timestamp_ms: int
     custom_events: list[Any] = []
+    #: WS-63 D-PZ-37: True only when the member typed the turn in the
+    #: message box (the request's mark). The row keeps it in
+    #: ``chat_message.member_typed``, and only a True row is the member's
+    #: own words for the summary job.
+    member_typed: bool = False
 
 
 def prompt_to_save(
     *, thread_id: str | None, message_id: str, text: str, timestamp: Any,
     actor: str, room: Any, supersedes: str = "", card_answer: Any = None,
+    typed: bool = False,
 ) -> PromptToSave | None:
     """The turn to save at run start, or ``None`` when the server saves nothing.
 
@@ -2578,6 +2584,10 @@ def prompt_to_save(
     writes too. Its earlier turns carry the browser clock, so a server clock
     could sort this turn above the reply before it. With no stamp, the server
     clock is used.
+
+    *typed* is the request's mark (WS-63 D-PZ-37): True only when the member
+    typed the turn in the message box. A card answer is never typed, so the
+    mark of a card answer is False.
     """
     import time
 
@@ -2608,6 +2618,7 @@ def prompt_to_save(
         marker.append(card)
     return PromptToSave(
         message_id=mid, content=words, timestamp_ms=ts, custom_events=marker,
+        member_typed=typed is True and card_answer is None,
     )
 
 
@@ -2627,7 +2638,12 @@ def _write_prompt_row(
 
     It is best effort, as the mint is. On a failure it logs
     ``agent.prompt_save_failed`` and the run goes on, because the browser save
-    still writes the turn.
+    still writes the turn. That row then has no mark, so it counts for
+    nothing (D-PZ-37).
+
+    It is the one writer of ``chat_message.member_typed`` (WS-63 D-PZ-37):
+    the mark of the request, True or False. The browser save names no mark,
+    so it cannot change this one.
     """
     from gateway.routes.chat import MessageRecord, _upsert_messages
 
@@ -2640,6 +2656,7 @@ def _write_prompt_row(
                 custom_events=list(prompt.custom_events),
             )],
             actor_email=member, agent_name=agent_name,
+            member_typed=prompt.member_typed is True,
             organization_id=organization_id,
         )
         return not declined
@@ -2871,26 +2888,36 @@ async def run_agent_stream_endpoint(
     # goes always, so a room run keeps its `room:` memory id.
     _drop_identity_claims(req.payload, user)
     _edit_keep = [_new_user_id, req.assistant_message_id or ""]
+    # WS-63 D-PZ-37 (the owner, 2026-11-02): the ONE positive mark of a
+    # message that the member typed in the message box. Only the composer of
+    # the chat sends it, and only JSON `true` counts. A tapped pill, a
+    # choice, a card action, a feed starter and the Fix prompt send none.
+    # Popped HERE, so it never reaches the executor. It can make words count
+    # only for the member's own writes in their own session, so a client
+    # that sends it gets nothing more.
+    _typed_mark = req.payload.pop("typed", None) is True and _card_answer is None
+    _sent_words = str(req.payload.get("message") or req.payload.get("user_query") or "")
     # WS-51 S4: the member's turn, as they typed it. The server saves it
     # below, before the run starts, so a tab closed at once keeps it. The
     # words are read HERE, before a Continue note, a replayed steer or the
     # supersede note changes `message`.
     _prompt = prompt_to_save(
         thread_id=req.thread_id, message_id=_new_user_id,
-        text=str(req.payload.get("message") or req.payload.get("user_query") or ""),
+        text=_sent_words,
         timestamp=req.payload.pop("user_message_ts", None),
         actor=actor_email, room=room, supersedes=_supersedes,
-        card_answer=_card_answer,
+        card_answer=_card_answer, typed=_typed_mark,
     )
     # WS-63 PZ-6a fix round 2 (P1-a): the member's TYPED words, the only
     # words that may ground a profile write (`assistant_profile.member_typed`).
     # Read HERE, before the Continue note, a replayed steer or the supersede
     # note changes `message`. A card answer sent as a message holds the
     # card's text, which the model wrote, so it grounds nothing.
+    # D-PZ-37: a turn with no mark binds "" too. Its words open only the
+    # confirm card of a profile write (`_sent_text` below), never a save.
     # PZ-31: the member's own typed steers that the run reads are typed words
     # too. `count_member_steers` in `_serve` below adds them, apart from this.
-    _typed = "" if _card_answer is not None else str(
-        req.payload.get("message") or req.payload.get("user_query") or "")
+    _typed = _sent_words if _typed_mark else ""
     _edit_shared = bool(room is not None and room.is_shared)
     if _supersedes and req.thread_id:
         from gateway.chat_supersede import (  # noqa: PLC0415
@@ -2936,6 +2963,9 @@ async def run_agent_stream_endpoint(
     _resume = bool(req.payload.pop("resume", None))
     if _resume:
         _typed = ""  # a Continue turn: the member typed nothing (PZ-6a)
+        _typed_mark = False  # and its row is not typed (D-PZ-37)
+        _prompt = None if _prompt is None else _prompt.model_copy(
+            update={"member_typed": False})
     if _resume and req.thread_id:
         _note = await _resume_note_for(req.thread_id, actor_email, _room_org)
         if _note is not None:
@@ -3022,7 +3052,17 @@ async def run_agent_stream_endpoint(
     _TAKEN_STEERS.set(_taken_steers)
     # PZ-31: a steer of this request is typed only when the member typed it.
     # A card answer holds the card's text, and a Continue turn the server's.
-    _STEER_TYPED.set(_card_answer is None and not _resume)
+    # D-PZ-37: the same mark as the turn. A steer with no mark is not typed,
+    # so a pill tapped during a run grounds nothing.
+    _STEER_TYPED.set(_typed_mark and _card_answer is None and not _resume)
+    # D-PZ-37: the words that the member sent in this turn, typed or tapped.
+    # A tap grounds no profile write, and it may only ask the confirm card of
+    # one (`profile_tools._ground`). The tool-pack chooser reads them too
+    # (`assistant_profile.sent_words`), so a tapped pill about a mail still
+    # loads the email pack. A Continue, a card answer, a steer follow-up and
+    # a paste send none, so they never get that card (PZ-32 repair 1).
+    _sent_text = (_sent_words
+                  if _card_answer is None and not _resume and not _followup else "")
     _steered = await _apply_turn_decision(
         _decision, req, agent_name, actor_email, room,
     )
@@ -3230,6 +3270,12 @@ async def run_agent_stream_endpoint(
             # S15 (§21): the fold binds the run's tenant.
             organization_id=_room_org,
             holds_mail=_holds_mail,
+            # A run that a new run cancelled folds late. By then the new run
+            # has reset the thread's stream, so the replay holds the NEW run's
+            # events. Without this guard the old run wrote them again under
+            # its own message id: one reply, two rows (task 1533, bug B3).
+            # Fence: tests/unit/test_chat_fold_other_run.py.
+            expect_run_id=run_id,
         )
         if _superseded_ids:
             # A cancelled run on another worker can fold its row after the
@@ -3364,8 +3410,9 @@ async def run_agent_stream_endpoint(
             # WS-63 PZ-6a fix round 2: the typed words reach the run through
             # this ONE binding. The drain task that `run_detached` starts
             # copies the context here, so the run reads them, and nothing
-            # else does.
-            with member_typed(_typed), surface_scope(_surface):
+            # else does. D-PZ-37: `sent` is the sent words. They open only
+            # the confirm card, and they feed the tool-pack chooser.
+            with member_typed(_typed, sent=_sent_text), surface_scope(_surface):
                 # PZ-31: the session's member is the run member. Their own
                 # typed steers that ENGAGE took count now, and a tool result
                 # that carries one later adds it (`steer.decorate_tool_result`).
@@ -3448,6 +3495,10 @@ async def run_agent_stream_endpoint(
             "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
             "Connection": "keep-alive",
+            # The run this response follows. The Next translator binds its
+            # reader to it, so a cancelled send never adopts the newer run's
+            # RUN_STARTED (task 1533, B3). Fence: test_run_started_producers.py.
+            "X-Run-Id": run_id,
         },
     )
 

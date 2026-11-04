@@ -523,7 +523,11 @@ async def _tasks_handled(user: UserContext, since: datetime) -> list[Closed]:
 #: `NOTIFICATION_KINDS` has a verb (`tests/unit/test_agent_runs_r8.py`).
 _VERB = {"assigned": "assigned you", "mention": "mentioned you on",
          "comment": "commented on", "nudge": "nudged you about",
-         "agent_question": "asked you about"}
+         "agent_question": "asked you about",
+         # WS-ALN ALN-2a. A decision is not in KIND_ORDER yet: that registry
+         # is for the kinds that a needs provider gives, and its rank rows
+         # (`feed_rank.BASE`) go with the provider of ALN-2b.
+         "decision": "asked you to decide on"}
 
 
 def _who(actor: Any) -> str:

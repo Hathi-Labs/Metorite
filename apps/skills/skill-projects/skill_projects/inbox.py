@@ -105,6 +105,69 @@ async def project_access(project_id: str) -> str:
     return "\n".join(out)
 
 
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def project_authorities(project_id: str, include_removed: bool = False) -> str:
+    """The Knowledge pages pinned to a project as its authority (the pages
+    that hold its rules), each with its pin_id and its state: active or
+    stale. A page the member cannot read shows no title. pin_authority pins a
+    page and unpin_authority removes a pin, each behind a card.
+    include_removed=true lists removed pins too."""
+    pid, node = await _node(project_id)
+    params = {"include_removed": True} if include_removed else None
+    try:
+        got = (await get(f"/projects/nodes/{pid}/authorities", params)) or {}
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return "Authority pages are not on for this organization yet."
+        raise
+    rows = got.get("rows") or []
+    out = [legend(), f"Authority pages of {data(node.get('name'))} ({len(rows)} pins):"]
+    for row in rows:
+        hidden = row.get("page_hidden") is True
+        name = "a page hidden from you" if hidden else data(row.get("title"))
+        state = str(row.get("state") or "?")
+        if state == "stale" and row.get("stale_reason"):
+            state = f"stale ({data(row.get('stale_reason'))})"
+        out.append(
+            f"- {name} · {state} · pinned by {data(row.get('pinned_by') or '?')}"
+            f" · pin_id {row.get('id')} · page_id {row.get('page_id')}"
+        )
+    if not rows:
+        out.append("(no page is pinned as its authority)")
+    return "\n".join(out)
+
+
+#: What the member reads while DECISIONS_ORGS is off for the organization.
+DECISIONS_OFF = "Decisions are not on for this organization yet."
+
+
+@_annotate(read_only=True, idempotent=True, open_world=False)
+async def my_decisions() -> str:
+    """The questions that wait for the member's own answer: a question, two to
+    four options, and the task each one is about. Each has a decision_id.
+    answer_decision answers one, behind a card. The member sees only the
+    decisions that name them."""
+    try:
+        rows = ((await get("/projects/decisions")) or {}).get("decisions") or []
+    except GatewayRefusal as exc:
+        if getattr(exc, "status", None) == 404:
+            return DECISIONS_OFF
+        raise
+    out = [legend(), f"Decisions that wait for you ({len(rows)}):"]
+    for row in rows:
+        options = " | ".join(
+            f"{o.get('key')} = {data(o.get('label'))}" for o in row.get("options") or []
+        )
+        out.append(
+            f"- {data(row.get('question'))} · options: {options}"
+            f" · task_id {row.get('subject_id')} · decision_id {row.get('id')}"
+            f" · expires {row.get('expires_at')}"
+        )
+    if not rows:
+        out.append("(no decision waits for you)")
+    return chr(10).join(out)
+
+
 def subject_words(subject: str) -> str:
     """A grant subject in plain words, for a card, a receipt and a read."""
     if subject == "org":
@@ -794,8 +857,10 @@ __all__ = [  # noqa: RUF022 — reads first, then the writes
     "my_led_projects",
     "notifications",
     "project_access",
+    "project_authorities",
     "project_views",
     "watchers",
+    "my_decisions",
     "capture_intake",
     "mark_notifications_read",
     "save_view",

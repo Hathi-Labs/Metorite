@@ -42,6 +42,7 @@ model nor a tool argument can clear the mark.
 * M13. ``carry_run_context``: make it a no-op.
 * M14. ``gateway/brief/run.py``: call ``no_person_scope`` there.
 * M15. ``skill_projects``: add a tool that posts to ``/actions/pending``.
+* M16. ``_execute_run``: mark from the kind only, and drop ``elapsed_waits``.
 
 Run::
 
@@ -652,7 +653,8 @@ def _outcome() -> SimpleNamespace:
 
 
 def _run_kind(monkeypatch, kind: str, *, payload: dict | None = None,
-              inside_marked: bool = False) -> dict[str, bool]:
+              inside_marked: bool = False,
+              elapsed_waits: set[str] | None = None) -> dict[str, bool]:
     """The real ``_execute_run``, with a fake engine that reads the mark."""
     seen: dict[str, bool] = {}
 
@@ -674,6 +676,7 @@ def _run_kind(monkeypatch, kind: str, *, payload: dict | None = None,
         await service._execute_run(
             run_id="r-1", workflow_id="wf", workflow_name="wf", serialized={},
             trigger_payload=payload or {}, variables={}, started_by="x", trigger_kind=kind,
+            elapsed_waits=elapsed_waits,
         )
 
     async def main() -> None:
@@ -696,6 +699,15 @@ def test_an_unattended_trigger_marks_the_run_and_the_mark_ends_with_it(monkeypat
 @pytest.mark.parametrize("kind", ["manual", "api"])
 def test_a_manual_run_stays_unmarked(monkeypatch, kind) -> None:
     assert _run_kind(monkeypatch, kind) == {"inside": False, "after": False}
+
+
+@pytest.mark.parametrize("kind", ["manual", "api"])
+def test_an_elapsed_wait_marks_the_run_whatever_the_kind(monkeypatch, kind) -> None:
+    """The wait scan resumes an elapsed wait, and no person is present (H-328
+    part (b)). An approval resume clears no wait, so it stays unmarked."""
+    assert _run_kind(monkeypatch, kind, elapsed_waits={"hold"}) == {
+        "inside": True, "after": False}
+    assert _run_kind(monkeypatch, kind, elapsed_waits=set())["inside"] is False
 
 
 def test_the_payload_cannot_choose_the_mark(monkeypatch) -> None:
@@ -866,6 +878,11 @@ _READERS = frozenset({
     "packages/acb_skills/acb_skills/ask_tools.py",
     "apps/services/action_broker/action_broker/broker.py",
     "apps/services/gateway/gateway/routes/projects/agent_runs.py",
+    # WS-ALN ALN-2a: the answer of a decision.
+    "apps/services/gateway/gateway/routes/projects/decisions.py",
+    # WS-ALN ALN-2a: the one tool that names a route that answers. See
+    # `_NAMED_TOOL_EXEMPTIONS`.
+    "apps/skills/skill-projects/skill_projects/guarded.py",
     "apps/services/gateway/gateway/routes/workflows/service.py",
     "apps/services/orchestrator/orchestrator/executor.py",
 })
@@ -942,8 +959,10 @@ def test_no_tool_or_request_field_names_the_mark() -> None:
 #: acts as its member, and the mark does not cross HTTP.
 #: A formatted value of an f-string reads as ``{}`` here, so a route with an
 #: id in it is written ``/agent-runs/{}/resume``.
+#: WS-ALN ALN-2a adds the answer of a decision. Only the named decider answers.
 _APPROVAL_ROUTES = ("/actions/pending", "/respond-input", "/archive-approval",
-                    "/agent-runs/{}/activities", "/agent-runs/{}/resume")
+                    "/agent-runs/{}/activities", "/agent-runs/{}/resume",
+                    "/decisions/{}/answer")
 _TOOL_ROOTS = ("apps/agents", "apps/skills", "packages/acb_skills", "skills")
 #: The route table of the Projects tools. It names each route, and it holds a
 #: decision for each. ``test_the_run_tools_stay_planned`` fences the two rows.
@@ -953,6 +972,18 @@ _ROUTE_TABLES = frozenset({
     "apps/skills/skill-projects/skill_projects/manifest.py",
     "packages/acb_skills/acb_skills/chat_parity.py",
 })
+
+
+#: A NAMED exemption of `test_no_tool_names_a_route_that_approves_or_answers`.
+#: The tool `answer_decision` (WS-ALN ALN-2a, D-OP-9) posts the answer of a
+#: decision. That is safe because a person confirms a card first, and the tool
+#: refuses a run with no person present BEFORE any read and any card. The two
+#: tests `test_answer_decision_*` in `test_decisions_tool.py` hold both facts.
+#: The exemption names one file and one route. A second route in that file, or
+#: the same route in another file, still fails the scan.
+_NAMED_TOOL_EXEMPTIONS: dict[str, frozenset[str]] = {
+    "apps/skills/skill-projects/skill_projects/guarded.py": frozenset({"/decisions/{}/answer"}),
+}
 
 
 def _strings_that_run(tree: ast.AST) -> list[str]:
@@ -984,7 +1015,10 @@ def test_no_tool_names_a_route_that_approves_or_answers() -> None:
         if rel in _ROUTE_TABLES:
             continue
         for value in _strings_that_run(ast.parse(path.read_text(encoding="utf-8-sig"))):
-            hits += [f"{rel}: {route}" for route in _APPROVAL_ROUTES if route in value]
+            hits += [
+                f"{rel}: {route}" for route in _APPROVAL_ROUTES
+                if route in value and route not in _NAMED_TOOL_EXEMPTIONS.get(rel, ())
+            ]
     assert hits == [], (
         "A tool acts as its member over HTTP, and the mark does not cross HTTP. "
         "So this route takes the call as a person's. Do not add this call."
@@ -1001,6 +1035,8 @@ def test_the_route_scan_reads_an_f_string() -> None:
     acts = 'url = f"/projects/agent-runs/{run_id}/activities"'
     assert _routes_in(resume) == ["/agent-runs/{}/resume"]
     assert _routes_in(acts) == ["/agent-runs/{}/activities"]
+    answer = 'url = f"/projects/decisions/{decision_id}/answer"'
+    assert _routes_in(answer) == ["/decisions/{}/answer"]
     # A plain string of each route still matches.
     assert _routes_in('u = "/api/actions/pending"') == ["/actions/pending"]
     assert _routes_in('u = "/agent/respond-input"') == ["/respond-input"]
@@ -1036,7 +1072,9 @@ def test_no_injected_tool_can_approve() -> None:
     names |= set(skill_projects.__all__) | set(getattr(skill_my_tasks, "__all__", []))
     assert len(names) > 50, "the walk found no tools, so it proves nothing"
     pattern = re.compile(r"approve|reject|resume|respond|settle|answer", re.I)
-    assert {n for n in names if pattern.search(n)} == {"crm_answer_question"}
+    # `answer_decision` (WS-ALN ALN-2a) refuses a marked run before it reads or
+    # raises a card. `test_decisions_tool.py` holds that.
+    assert {n for n in names if pattern.search(n)} == {"crm_answer_question", "answer_decision"}
 
 
 def test_a_new_module_keeps_the_import_graph_low() -> None:

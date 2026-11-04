@@ -64,6 +64,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "actual_start": { label: "Started", kind: "date" },
   "after": { label: "After" },
   "amount": { label: "Amount" },
+  "answer": { label: "Your answer" },
   "archive_after_months": { label: "Archive after (months)" },
   "archived": { label: "Archived", kind: "date" },
   "area": { label: "Area" },
@@ -75,6 +76,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   // `link_tasks_batch` (2026-10-19): a link the batch leaves out, and why.
   "cannot link N": { label: "Cannot link", plural: "Cannot link" },
   "cannot move N": { label: "Cannot move", plural: "Cannot move" },
+  "cannot change N": { label: "Cannot change", plural: "Cannot change" },
   "capacity": { label: "Capacity" },
   "category": { label: "Category", kind: "category" },
   "close_after_months": { label: "Close after (months)" },
@@ -167,6 +169,7 @@ export const CARD_FIELDS: Record<string, FieldSpec> = {
   "priority": { label: "Priority" },
   "project": { label: "Project", kind: "project" },
   "project_id": { label: "Project" },
+  "question": { label: "Question" },
   "reopens": { label: "Reopens" },
   "repeat day": { label: "Repeat day" },
   "repeats": { label: "Repeats" },

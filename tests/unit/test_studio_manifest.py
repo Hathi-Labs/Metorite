@@ -16,6 +16,7 @@ import pytest
 from acb_common.studio_manifest import (
     BLOCKS,
     FIELD_TYPES,
+    SOURCE_NOT_A_READ,
     Manifest,
     ManifestError,
     validate_manifest,
@@ -196,12 +197,6 @@ def test_the_manifest_rules_equal_the_store_rules() -> None:
 
     (rule,) = parse_rules([_VISIT_MACHINE])
     assert rule.stored() == _VISIT_MACHINE
-
-
-def test_rollup_field_type_is_reserved_for_c7b():
-    d = copy.deepcopy(EXAMPLE)
-    d["objects"][0]["fields"][2]["type"] = "rollup"
-    one(d, "$.objects[0].fields[2].type", contains="C7b")
 
 
 def test_formula_field_type_names_the_rules_list():
@@ -649,6 +644,49 @@ def test_source_object_is_checked_when_object_is_set():
     assert "$.views[2].source.object" in paths
 
 
+# A view source is a READ (STU-B2c-1, fix round 1). A page reads its sources
+# when it opens, on window focus and on refresh, with no click. A source that
+# writes would write a record each time, with no card and no click.
+
+
+def _sourced(uses: str) -> dict:
+    """The example, with view 0 reading through a declared action of *uses*."""
+    d = copy.deepcopy(EXAMPLE)
+    d["actions"].append({"id": "feed", "uses": uses})
+    d["views"][0]["source"] = {"object": "visit", "action": "feed"}
+    return d
+
+
+@pytest.mark.parametrize("op", ["create", "update", "delete"])
+def test_a_view_source_that_writes_an_object_is_refused(op):
+    e = one(_sourced(f"object:visit.{op}"), "$.views[0].source.action", contains="read")
+    assert f"object:visit.{op}" in e.message
+    assert e.message.startswith(SOURCE_NOT_A_READ)
+
+
+@pytest.mark.parametrize("cls", ["B", "C"])
+def test_a_view_source_that_writes_through_the_catalog_is_refused(cls):
+    uses = "integration:whatsapp.send_template"
+    one(_sourced(uses), "$.views[0].source.action", catalog={uses: cls}, contains="read")
+
+
+@pytest.mark.parametrize("op", ["list", "get"])
+def test_a_view_source_that_reads_an_object_passes(op):
+    assert validate_manifest(_sourced(f"object:visit.{op}")) == []
+    assert validate_manifest(_sourced(f"object:visit.{op}"), catalog=CATALOG) == []
+
+
+def test_a_view_source_of_class_a_in_the_catalog_passes():
+    uses = "crm.list_accounts"
+    assert validate_manifest(_sourced(uses), catalog={**CATALOG, uses: "A"}) == []
+
+
+def test_with_no_catalog_a_source_of_another_kind_is_checked_at_publish():
+    """With no catalog the class of a door op is unknown, so only structure is
+    checked, as for each other catalog rule. Publish passes the catalog."""
+    assert validate_manifest(_sourced("integration:whatsapp.send_template")) == []
+
+
 @pytest.mark.parametrize(
     "path,value",
     [
@@ -800,6 +838,8 @@ def test_a_studio_manifest_without_a_name_still_fails():
     assert [(e.path, e.message) for e in errs] == [("$.name", "`name` is required here.")]
     doc2 = json.loads((SHELL_DIR / "crm.json").read_text(encoding="utf-8"))
     doc2["kind"] = "studio"
+    # Only a shipped system file may hold anchors, so this probe drops them.
+    doc2["contributes"].pop("anchors", None)
     assert {e.path for e in validate_manifest(doc2)} == {"$.name", "$.purpose"}
 
 
@@ -904,6 +944,49 @@ def test_an_object_label_holds_at_most_the_store_cap():
     schema = Manifest.model_json_schema()
     label = schema["$defs"]["ObjectDef"]["properties"]["label"]
     assert {"maxLength": cap, "type": "string"} in label["anyOf"]
+
+
+# -- roll-ups (C7b) ------------------------------------------------------------------
+
+
+def test_rollup_field_type_names_the_rules_list() -> None:
+    """A roll-up has one spelling: a rule of kind `rollup` (C7b)."""
+    d = copy.deepcopy(EXAMPLE)
+    d["objects"][0]["fields"][2]["type"] = "rollup"
+    e = one(d, "$.objects[0].fields[2].type", contains="`rules`")
+    assert "kind `rollup`" in e.message
+
+
+def _rollup_doc() -> dict:
+    return {
+        "studio": 1, "id": "demo", "name": "Demo", "purpose": "Test.", "connections": [],
+        "actions": [], "workflows": [], "views": [],
+        "objects": [
+            {"name": "account", "fields": [{"key": "balance", "type": "number"}],
+             "rules": [{"name": "bal", "kind": "rollup", "target": "balance", "source": "entry",
+                        "via": "account", "agg": "sum", "field": "days"}]},
+            {"name": "entry", "fields": [
+                {"key": "account", "type": "relation", "to": "account", "hot": True},
+                {"key": "days", "type": "number", "hot": True}]},
+        ],
+    }
+
+
+def test_a_rollup_validates_against_the_other_objects_of_the_package() -> None:
+    assert validate_manifest(_rollup_doc()) == []
+
+
+def test_a_rollup_that_does_not_fit_its_source_gets_a_path() -> None:
+    d = _rollup_doc()
+    d["objects"][1]["fields"][1]["hot"] = False
+    e = one(d, "$.objects[0].rules", contains="hot")
+    assert "`days`" in e.message
+
+
+def test_a_rollup_of_a_source_that_the_package_lacks_is_refused() -> None:
+    d = _rollup_doc()
+    d["objects"].pop(1)
+    one(d, "$.objects[0].rules", contains="another object of this package")
 
 
 # --- STU-D11a: pages (how views sit on a page) ---------------------------------

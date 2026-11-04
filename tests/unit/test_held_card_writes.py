@@ -57,7 +57,7 @@ CRM_AGENT = REPO / "apps" / "agents" / "agent-crm" / "agents.py"
 PA = "projects-assistant"
 CRM = "crm-assistant"
 PROJECT_PACKS = ("projects", "projects-plan", "projects-structure", "projects-bulk",
-                 "projects-reminders")
+                 "projects-reminders", "projects-authority")
 
 # ── 1. The table ────────────────────────────────────────────────────────────
 
@@ -74,22 +74,26 @@ KEPT_PROJECTS = frozenset({
     "reopen_reminder", "report_save", "reschedule_reminder", "resolve_reminder",
     "save_view", "set_my_overlay", "set_recurrence", "set_reminder", "triage_intake",
     "unarchive_task", "unlink_tasks", "update_field", "update_project",
-    "update_reminder", "update_status", "update_tag", "update_task", "update_type",
-    "watch",
+    "update_reminder", "update_status", "update_tag", "update_task", "update_tasks",
+    "update_type", "watch",
 })
 #: The four CRM record writes. Each says ``open_world=True`` and keeps saying it.
 KEPT_CRM = frozenset({"convert_lead", "create_lead", "log_activity", "update_deal_status"})
 
 #: The Projects writes that a held chat does not hold: every class C tool but
-#: ``promote_reminder``. A covered run still holds them.
+#: ``promote_reminder``. A covered run still holds them. ``answer_decision``
+#: (WS-ALN ALN-2a) is off too, until ALN-2b decides whether a held chat keeps it.
 OFF_PROJECTS = frozenset({
-    "add_report_recipient", "archive_project", "archive_task", "attach_to_task",
+    "add_report_recipient", "answer_decision", "archive_project", "archive_task",
+    "attach_to_task",
     "bulk_update", "convert_folder_to_project", "delete_area", "delete_attachment",
     "delete_comment", "delete_field", "delete_project", "delete_status", "delete_tag",
     "delete_task", "delete_type", "delete_view", "grant_access", "merge_tags",
     "merge_tasks", "move_project", "nudge_task", "remove_report_recipient", "rename_area",
     "report_delete", "revert_activity", "revoke_access", "set_report_schedule",
     "set_status_set", "unarchive_project",
+    # WS-ALN ALN-4, off in a held chat as every class C tool but promote_reminder.
+    "pin_authority", "unpin_authority",
 })
 
 #: The class A Projects tools that write a file of the chat. They stay.
@@ -405,7 +409,8 @@ async def test_a_chat_that_read_mail_builds_each_project_pack_with_the_table(sto
     assert tools >= KEPT_PROJECTS and tools >= CHAT_FILES
     assert not tools & OFF_PROJECTS
     reminders = {_name(t) for t in built["projects-reminders"].tools}
-    assert reminders == set(SKILL_FAMILIES["projects-reminders"]["tools"])
+    # The class C tool of this pack (the decision answer) is off in a held chat.
+    assert reminders == set(SKILL_FAMILIES["projects-reminders"]["tools"]) - OFF_PROJECTS
 
 
 async def test_a_held_load_of_the_crm_pack_keeps_the_nine_tools(store, monkeypatch) -> None:
