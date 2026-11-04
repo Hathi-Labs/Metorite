@@ -42,7 +42,7 @@ class TestTheTable:
             # WS-66 RM-2b: the five needs bases rose by 3, to make room for the
             # three reminder kinds above `agent_asks`.
             "overdue": 63, "approval": 59, "due_today": 55, "notification": 51,
-            "needs_reply": 47, "agent_asks": 43, "promise_due": 42,
+            "needs_reply": 47, "agent_asks": 43, "decision": 43, "promise_due": 42,
             "crm_followup_due": 41, "block_overlap": 40, "absent_on_due": 39,
             "unblocked": 38, "waiting_quiet": 37, "block_soon": 36, "no_answer": 35,
             "deal_close_passed": 34, "deal_quiet": 33, "day_overbooked": 32,
@@ -209,6 +209,7 @@ class TestTheGroupTable:
         ("deal_close_passed", {}, "needs_you"),
         ("colleague_out", {}, "fyi"),
         ("agent_asks", {}, "needs_you"),
+        ("decision", {}, "needs_you"),
         ("digest_ready", {}, "fyi"),
         # WS-53 CRM-Q32-4: needs you while a question about money is open.
         ("crm_open_questions", {"money": True}, "needs_you"),

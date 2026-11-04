@@ -50,6 +50,8 @@ NO_BUILDER = {
     "deal_quiet": "crm:deal:d-1",
     "deal_close_passed": "crm:deal:d-1",
     "agent_asks": "chat:th-9",
+    # WS-ALN ALN-2b: a decision keys on its task, so it folds into the card.
+    "decision": f"tasks:{TID}",
 }
 
 

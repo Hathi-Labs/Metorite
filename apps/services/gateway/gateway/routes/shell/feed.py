@@ -1261,6 +1261,10 @@ def why(kind: str, facts: dict[str, Any], at: Any, now: datetime, tz: ZoneInfo,
                            "and nothing is on the calendar.")
     if kind in needs.REMINDER_KINDS:
         return _reminder_line(kind, facts, tz, today)
+    if kind == "decision":
+        # WS-ALN ALN-2b. The question is the asker's own words, 140 characters
+        # at most, and the bell shows it too. The closing time is a fact.
+        return "decision", _decision_line(facts, tz, today)
     return _md3_why(kind, facts, tz, today)
 
 
@@ -1429,6 +1433,18 @@ def _md3_why(kind: str, facts: dict[str, Any], tz: ZoneInfo,
     raise KeyError(kind)
 
 
+def _decision_line(facts: dict[str, Any], tz: ZoneInfo, today: date) -> str:
+    """The why line of a decision card, and its folded clause (WS-ALN ALN-2b)."""
+    end = facts.get("expires_at")
+    more = int(facts.get("open") or 1) - 1
+    who = facts.get("who") or "Somebody"
+    line = f"{who} asks you to decide: {facts['question']}" if facts.get("question")         else f"{who} asks you to decide."
+    line += f" It closes {_when(end, tz, today)} at {_clock(end, tz)}." if _instant(end) else ""
+    if more > 0:
+        line += f" {more} more {'decision waits' if more == 1 else 'decisions wait'} on this task."
+    return line
+
+
 def _reminder_line(kind: str, facts: dict[str, Any], tz: ZoneInfo,
                    today: date) -> tuple[str, str]:
     """The why line of a reminder card (§5.4 "Words", WS-66 RM-2). A code
@@ -1462,6 +1478,8 @@ def _folded_clause(kind: str, facts: dict[str, Any], tz: ZoneInfo, today: date) 
         return "You promised this by mail."
     if kind == "colleague_out":
         return _colleague_line(facts)
+    if kind == "decision":
+        return _decision_line(facts, tz, today)
     return ""
 
 
