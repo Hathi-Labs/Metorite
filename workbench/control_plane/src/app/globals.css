@@ -1447,6 +1447,20 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
 :root[data-assistant-peek] .pb-nav {
   padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px) + 3.5rem);
 }
+/* The phone's task card (TC-1, `lib/layers.ts` TASK_CARD_FRAME.phone). The box
+   runs under the nav (z-50 over z-15), like the peek strip's box above, so no
+   band of page shows. Its foot is padded by the nav clearance, and by the
+   strip's height while the strip shows. */
+:root {
+  --task-card-nav-clear: calc(3.5rem + env(safe-area-inset-bottom, 0px));
+  --task-card-peek-h: 3.5rem;
+}
+.task-card-phone {
+  padding-bottom: var(--task-card-nav-clear);
+}
+:root[data-assistant-peek] .task-card-phone {
+  padding-bottom: calc(var(--task-card-nav-clear) + var(--task-card-peek-h));
+}
 /* The thin progress line. It slides only when the member allows motion. With
    reduced motion it is a still third of the line. */
 @keyframes agent-pill-progress {

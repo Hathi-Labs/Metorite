@@ -87,7 +87,7 @@ from typing import Any
 # `WORKFLOW_UNATTENDED_ORGS` ships empty, so no unattended run starts until
 # the owner lists an org. `_organization_ids` is the one unbound read, and
 # `test_db_engine_seam.H2_TENANT_DISCOVERY_SITES` names it.
-from acb_common.db import TenantUnbound
+from acb_common.db import TenantUnbound, bind_tenant, release_tenant
 from gateway.routes.workflows import unattended
 from gateway.routes.workflows.core import (
     _get_db,
@@ -1191,6 +1191,12 @@ async def _hold_at_gate(
     resumes the run once it passes. Either way everything a resume needs
     travels in the snapshot, so even a draft test run (no published version to
     reload) resumes cleanly, and the pause outlives a gateway restart.
+
+    ⚠️ **Park and ask (AUTO-7b).** An approval gate of a run with no person
+    present asks the workflow's owner through ONE decision, when
+    ``AUTO_PARK_ORGS`` and ``DECISIONS_ORGS`` list the run's org
+    (:func:`_park_with_decision`). Then no proposal is filed. In each other
+    case the gate takes the broker door below, as AUTO-7a left it.
     """
     node_label = next(
         (
@@ -1201,6 +1207,25 @@ async def _hold_at_gate(
         node_id,
     )
     is_wait = resume_at is not None
+    if not is_wait and await _park_with_decision(
+        run_id=run_id,
+        workflow_id=workflow_id,
+        workflow_name=workflow_name,
+        node_id=node_id,
+        node_label=node_label,
+        snapshot=_pause_snapshot(
+            serialized=serialized,
+            trigger_payload=trigger_payload,
+            variables=variables,
+            workflow_id=workflow_id,
+            workflow_name=workflow_name,
+            started_by=started_by,
+            action_id=None,
+            resume_at=None,
+        ),
+        organization_id=organization_id,
+    ):
+        return
     action_id: str | None = None
     if not is_wait:
         try:
@@ -1239,16 +1264,16 @@ async def _hold_at_gate(
                     "node_id": node_id,
                     "reason": "wait" if is_wait else "approval",
                     "snapshot": json.dumps(
-                        {
-                            "serialized": serialized,
-                            "trigger_payload": trigger_payload,
-                            "variables": variables,
-                            "workflow_id": workflow_id,
-                            "workflow_name": workflow_name,
-                            "started_by": started_by,
-                            "action_id": action_id,
-                            "resume_at": resume_at,
-                        },
+                        _pause_snapshot(
+                            serialized=serialized,
+                            trigger_payload=trigger_payload,
+                            variables=variables,
+                            workflow_id=workflow_id,
+                            workflow_name=workflow_name,
+                            started_by=started_by,
+                            action_id=action_id,
+                            resume_at=resume_at,
+                        ),
                         default=str,
                     ),
                 },
@@ -1257,16 +1282,126 @@ async def _hold_at_gate(
         _log.warning("workflows.pause_persist_failed", run_id=run_id, error=str(exc)[:160])
 
 
+def _pause_snapshot(
+    *,
+    serialized: dict[str, Any],
+    trigger_payload: dict[str, Any],
+    variables: dict[str, Any],
+    workflow_id: str,
+    workflow_name: str,
+    started_by: str,
+    action_id: str | None,
+    resume_at: float | None,
+) -> dict[str, Any]:
+    """What a resume needs, in the key order that the pause row has always
+    stored. Both doors of :func:`_hold_at_gate` write it."""
+    return {
+        "serialized": serialized,
+        "trigger_payload": trigger_payload,
+        "variables": variables,
+        "workflow_id": workflow_id,
+        "workflow_name": workflow_name,
+        "started_by": started_by,
+        "action_id": action_id,
+        "resume_at": resume_at,
+    }
+
+
+async def _park_with_decision(
+    *,
+    run_id: str,
+    workflow_id: str,
+    workflow_name: str,
+    node_id: str,
+    node_label: str,
+    snapshot: dict[str, Any],
+    organization_id: str | None,
+) -> bool:
+    """AUTO-7b: park a marked run's approval gate on ONE decision of its owner.
+
+    True when the subject task, the decision and the pause row committed in
+    one ``_run_session(org)``. False when nothing was written, and then the
+    caller files the broker proposal of AUTO-7a. Four facts must hold first:
+    the run is marked (``no_person_present``), it carries an org,
+    ``park.park_allowed(org)`` is true, and the owner resolves.
+
+    The decider is ``workflows.owner_email``, read in the run's org
+    (:func:`_workflow_owner`). It is never the billing member, the ambient
+    member or a payload field. The org is the run's stored org, bound for the
+    ask with ``bind_tenant`` as a job binds its own record. ``DecisionRefused``,
+    a missing owner or any failure rolls the transaction back, and returns
+    False. After the commit it bumps the owner's My Day version, because the
+    subject task sends no event. Fence: ``tests/unit/test_auto_park.py``.
+    """
+    from acb_common.no_person import no_person_present
+    from gateway.routes.workflows import park
+
+    if not organization_id or not no_person_present():
+        return False
+    if not park.park_allowed(organization_id):
+        return False
+    try:
+        _, owner = await _workflow_owner(workflow_id, organization_id)
+        token = bind_tenant(organization_id)
+        try:
+            async with _run_session(organization_id) as db:
+                parked = await park.park_with_decision(
+                    db,
+                    organization_id=organization_id,
+                    owner=owner,
+                    workflow_id=workflow_id,
+                    workflow_name=workflow_name,
+                    run_id=run_id,
+                    node_id=node_id,
+                    node_label=node_label,
+                    snapshot=snapshot,
+                )
+        finally:
+            release_tenant(token)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # the broker door of AUTO-7a takes the gate
+        _log.warning(
+            "workflows.park_refused",
+            run_id=run_id,
+            reason=str(getattr(exc, "reason", "") or type(exc).__name__)[:80],
+        )
+        return False
+    _log.info("workflows.parked", run_id=run_id, decision_id=parked["decision_id"])
+    # After the commit: the subject task sent no event, so move the owner's
+    # My Day version here. It waits a bounded time and never raises.
+    await park.bump_owner_my_day(organization_id, owner)
+    return True
+
+
 async def resume_run(
-    run_id: str, *, resumed_by: str = "approver", organization_id: str | None = None,
+    run_id: str,
+    *,
+    resumed_by: str = "approver",
+    organization_id: str | None = None,
+    pause_id: str | None = None,
 ) -> dict[str, Any]:
     """Resume a paused run: replay completed nodes from stored outputs and
     let the gate node through.
 
-    Two callers, one path: the broker handler when a human approves, and the
-    schedule scanner when a long wait's deadline passes. The pause row's
-    ``reason`` decides which gate is cleared — an elapsed wait must not also
-    clear an approval further down the graph.
+    Three callers, one path: the broker handler when a human approves, the
+    schedule scanner when a long wait's deadline passes, and the decided scan
+    when the owner answers a parked gate with yes (AUTO-7b,
+    ``scheduler.scan_decided_pauses``). The pause row's ``reason`` decides
+    which gate is cleared — an elapsed wait must not also clear an approval
+    further down the graph.
+
+    ⚠️ **Exactly one resume** (AUTO-7b). The pause UPDATE names
+    ``status = 'pending'`` and the run UPDATE names ``status = 'paused'``.
+    Each one returns the row it won. A caller that wins neither starts
+    nothing, so two scans, or a scan and the broker door, start one
+    ``_execute_run``. Before AUTO-7b these UPDATEs had no guard.
+
+    ⚠️ **The scans name the pause they read** (AUTO-7b). *pause_id* is the id
+    of the pause row that the wait scan or the decided scan read. With it,
+    only THAT pause can resume, while it is still pending. So a late yes to
+    gate 1 finds its pause settled and never opens gate 2. Without it, the
+    broker door resumes the newest pending pause, as before.
 
     *organization_id* binds the read and the claim (:func:`_run_session`).
     The broker handler passes the approver's org. Under FORCE RLS a run of
@@ -1310,16 +1445,28 @@ async def resume_run(
                 "ok": False,
                 "error": f"run {run_id} is not paused" if run is not None else f"no run {run_id}",
             }
-        pause = (
-            await db.execute(
-                text(
-                    "SELECT * FROM workflow_run_pauses "
-                    "WHERE run_id = :id AND status = 'pending' "
-                    "ORDER BY created_at DESC LIMIT 1"
-                ),
-                {"id": run_id},
-            )
-        ).fetchone()
+        if pause_id is not None:
+            pause = (
+                await db.execute(
+                    text(
+                        "SELECT * FROM workflow_run_pauses "
+                        "WHERE id = CAST(:pid AS uuid) AND run_id = :id "
+                        "AND status = 'pending'"
+                    ),
+                    {"id": run_id, "pid": str(pause_id)},
+                )
+            ).fetchone()
+        else:
+            pause = (
+                await db.execute(
+                    text(
+                        "SELECT * FROM workflow_run_pauses "
+                        "WHERE run_id = :id AND status = 'pending' "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    ),
+                    {"id": run_id},
+                )
+            ).fetchone()
         if pause is None:
             return {"ok": False, "error": f"run {run_id} has no pending pause"}
         snapshot = parse_jsonb(pause.snapshot, {}) or {}
@@ -1331,33 +1478,44 @@ async def resume_run(
             if isinstance(res, dict) and res.get("status") == "ok"
         }
         blind = [n for n in _member_blind_write_nodes(serialized) if n not in precomputed]
-        if blind:
+        # The compare-and-set (AUTO-7b). Each UPDATE names the status that it
+        # read, and RETURNING says whether it won. Two concurrent resumers
+        # read the same pending pause. The second UPDATE waits for the first
+        # one's row lock, then finds the pause settled and matches no row. So
+        # exactly one caller starts `_execute_run`.
+        claimed = (
             await db.execute(
                 text(
-                    "UPDATE workflow_run_pauses SET status = 'rejected', "
-                    "resolved_at = now() WHERE id = :id"
+                    "UPDATE workflow_run_pauses SET status = :settled, "
+                    "resolved_at = now() WHERE id = :id AND status = 'pending' "
+                    "RETURNING id"
                 ),
-                {"id": str(pause.id)},
+                {"id": str(pause.id), "settled": "rejected" if blind else "resolved"},
             )
-            await db.execute(
+        ).fetchone()
+        if claimed is None:
+            return {"ok": False, "error": f"run {run_id} has no pending pause"}
+        if blind:
+            moved = await db.execute(
                 text(
                     "UPDATE workflow_runs SET status = 'cancelled', "
-                    "error = :error, finished_at = now() WHERE id = :id"
+                    "error = :error, finished_at = now() "
+                    "WHERE id = :id AND status = 'paused' RETURNING id"
                 ),
                 {"id": run_id, "error": _RESUME_REFUSED},
             )
         else:
-            await db.execute(
+            moved = await db.execute(
                 text(
-                    "UPDATE workflow_run_pauses SET status = 'resolved', "
-                    "resolved_at = now() WHERE id = :id"
+                    "UPDATE workflow_runs SET status = 'running' "
+                    "WHERE id = :id AND status = 'paused' RETURNING id"
                 ),
-                {"id": str(pause.id)},
-            )
-            await db.execute(
-                text("UPDATE workflow_runs SET status = 'running' WHERE id = :id"),
                 {"id": run_id},
             )
+        if moved.fetchone() is None:
+            # The run left `paused` under us. Undo the pause claim too.
+            await db.rollback()
+            return {"ok": False, "error": f"run {run_id} is not paused"}
 
     gate_node = str(pause.node_id)
     is_wait = str(getattr(pause, "reason", "approval") or "approval") == "wait"
