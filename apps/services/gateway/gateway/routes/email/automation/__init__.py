@@ -18,6 +18,7 @@ from gateway.routes.email.automation import (
     held_card,  # noqa: F401 -- imported only so that its routes register
     insights,  # noqa: F401 -- imported only so that its route registers
     learning,
+    new_mail_card,  # noqa: F401 -- imported only so that its routes register
     reply_card,  # noqa: F401 -- imported only so that its routes register
     replyzero,
     rule_copy,
@@ -41,4 +42,4 @@ del _mod, _k, _v
 
 # `insights` (WS-17 EM-T14c) is not flattened. Its names stay in its module.
 # Nor is `reply_card` (EM-CR, email_app_master_plan.md §18), nor
-# `send_later` (H-375, §19), nor `held_card` (§21).
+# `new_mail_card` (§18.10), nor `send_later` (H-375, §19), nor `held_card` (§21).

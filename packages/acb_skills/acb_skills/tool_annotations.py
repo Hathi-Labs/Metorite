@@ -151,6 +151,9 @@ TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     # `GET /crm/notes/search` as the member. The query goes to the platform's
     # own embed door, as for `search_company`.
     "crm_search_notes":      {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
+    # WS-CRM CRM-M1: the Change history of the CRM set-up. It reads
+    # `GET /crm/change-history` as the member, and nothing leaves the platform.
+    "crm_change_history":    {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
     # WS-53 CRM-Q32-5: the org-facts read (`org_facts_tools.py`). It reads
     # `GET /org/facts` as the member, and nothing leaves the platform.
     "org_facts":             {"read_only": True,  "destructive": False, "idempotent": True,  "open_world": False},
@@ -243,6 +246,8 @@ _H236_UNLISTED: frozenset[str] = frozenset({
     "crm_get_module_record",
     # WS-53 CRM-Q27: the search of notes reads only, on the same terms.
     "crm_search_notes",
+    # WS-CRM CRM-M1: the read of the Change history, on the same terms.
+    "crm_change_history",
     # WS-53 CRM-Q32-5: the org-facts read, on the same terms.
     "org_facts",
     # WS-53 CRM-Q32-8: the reply of a card that the member picked. It is no

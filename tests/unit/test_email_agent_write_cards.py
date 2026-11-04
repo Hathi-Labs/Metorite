@@ -74,6 +74,10 @@ READ_POSTS = {
     "/email/rules/test/recent": "a dry run of the rules on the newest inbox mail",
     "/email/voice-profile/sample": "a sample text in the voice, saves nothing",
     "/email/compose-assist": "the drafter writes a text and saves nothing",
+    # §18.10 (owner, 2026-11-03): the gateway checks the new mail and records
+    # the card in tenant Redis. It writes no mailbox and sends nothing. Only
+    # the act after the member's Send or Save draft writes.
+    "/email/new-card": "checks a new mail and records its card, sends and saves nothing",
 }
 #: Each POST that writes only a reply draft in the member's OWN Drafts, by
 #: path, with the reason. Owner directive, 2026-10-22: a chat draft shows in
@@ -215,6 +219,13 @@ class Gateway:
         if path == "/email/reply-card/act":
             return {"ok": True, "action": "send", "to": ["kim@contoso.test"], "cc": [],
                     "mailbox": BOX_TEXT}
+        if path == "/email/new-card":  # §18.10
+            return {"card_id": "c" * 32, "mailbox": BOX_TEXT, "subject": body.get("subject"),
+                    "body": body.get("body"), "to": body.get("to"), "cc": body.get("cc"),
+                    "bcc": body.get("bcc"), "files": []}
+        if path == "/email/new-card/act":
+            return {"ok": True, "action": "send", "id": "new-1", "to": ["kim@contoso.test"],
+                    "cc": [], "subject": "S", "body": "Hi", "edited": False}
         if path == "/email/messages/summaries":
             return {"summaries": [
                 {"id": i, "from": "Kim", "subject": f"Offer {n}"}
@@ -256,6 +267,15 @@ def reply_answer_for(kw: dict[str, Any]) -> Any:
 
     form = kw["reply"]
     rec = form["recipients"]["reply_all" if form.get("reply_all") else "reply"]
+    if form.get("kind") == "new":
+        # §18.10: the Send of a new-mail card.
+        from acb_skills.reply_card import parse_new_mail_answer
+
+        text = "APPROVE " + _json.dumps({"reply": {
+            "kind": "new", "action": "send", "subject": form.get("subject") or "",
+            "body": form.get("body") or "Hi", "to": rec["to"], "cc": rec["cc"],
+            "bcc": rec.get("bcc", [])}})
+        return ReplyAnswer("c" * 32, text, parse_new_mail_answer(text), "")
     text = "APPROVE " + _json.dumps({"reply": {
         "action": "send", "reply_all": bool(form.get("reply_all")),
         "body": form.get("body") or "Hi", "to": rec["to"], "cc": rec["cc"],

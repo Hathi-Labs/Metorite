@@ -162,7 +162,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-CAL | **Calendar**: events, reminders, external sync | 🟢 active · M1 | `specs/calendar_focus_os.md` · `specs/calendar_events_reminders.md` | Metorite: project Calendar App · CE-0 decided (D138, 2026-10-29) · RE-9b BUILT 2026-10-31 (migration 318). Not dark: it sends wherever `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` are on (production: both on) · CE-4 BUILT, dark (2026-10-31, migration 331, `CALENDAR_EVENTS` off) · next CE-1, CE-3, CE-5, then CE-10 with CE-11 |
 | WS-PP | **People and Profile** | 🟢 active · M1 | `specs/people_center_app.md` | Metorite: project My Profile · next E-58 |
 | WS-EM | **Email** | 🟢 active · M0 | `specs/email_app_master_plan.md` · `specs/shared_mailbox.md` | Metorite: project My Email · Gmail in test mode (D122.4) · next E-05, E-09, E-11 |
-| WS-CRM | **CRM**: native mode, the Zoho mirror, and the cutover from one to the other | 🟢 active · M1 | `specs/crm_platform.md` | Metorite: epic 477, cutover sub-epic CRM-Z10 · CRM-Z10f decided (D133) · next H-333, CRM-Z10a to Z10e (the switch, owner ask 2026-10-28), CRM-U13, the whole-app UX batch, H-366· CRM-M, the CRM you talk to: `specs/crm_conversational.md` (D164 to D166), epic #1429, next CRM-M1 (Change history, #1431) |
+| WS-CRM | **CRM**: native mode, the Zoho mirror, and the cutover from one to the other | 🟢 active · M1 | `specs/crm_platform.md` | Metorite: epic 477, cutover sub-epic CRM-Z10 · CRM-Z10f decided (D133) · next H-333, CRM-Z10a to Z10e (the switch, owner ask 2026-10-28), CRM-U13, the whole-app UX batch, H-366· CRM-M, the CRM you talk to: `specs/crm_conversational.md` (D164 to D166), epic #1429, CRM-M1 (Change history, #1431) PR 1 merged (2026-11-04, migration 341). Next CRM-M1 PR 2 |
 | WS-WA | **WhatsApp** | 🟡 gated · M2 | `specs/whatsapp_message_manager.md` · `specs/whatsapp_assistant_channel.md` | Metorite: epic 476 · D115 freeze, lifted for brief task 8 only (D122.3) · next BR-8a, E-20 |
 | WS-KB | **Knowledge** | 🟢 active · M2 | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | Metorite: project Knowledge · no P0 or P1 · next H-401, KC-1 |
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_graph.md` · `specs/knowledge_base.md` §20 · `specs/company_context.md` | Metorite: epic 783 (Knowledge) · D128, D132 · 2026-10-29: KG-0 written, KG-1, KG-2 and KG-3a built · next KG-4 and KG-9, then KG-3b after the KG-2 backfill |
@@ -5146,7 +5146,7 @@ Owner decision, 2026-11-02, in chat. Board: **WS-CRM**. Owning spec: `specs/crm_
 
 **Why.** D133 asks an admin to approve every change. That blocks a rep who wants to show one more field on their own board. The ladder keeps the admin check where the risk is.
 
-**Fence.** `tests/unit/test_crm_change_history.py`, planned in CRM-M1. Until it exists, this decision is **advisory**.
+**Fence.** `tests/unit/test_crm_change_history.py` holds item 5 for the routes of CRM-M1 PR 1 (merged 2026-11-04). Items 1 to 4 and 6 stay **advisory** until CRM-M2 builds the cards.
 
 ### D165 — CRM scopes: Mine, My team and Everyone, set for each org. The default stays Everyone (2026-11-02)
 
@@ -5243,6 +5243,8 @@ The agent showed the cause. The inbox added every company task assigned to the m
 
 Fence: named in `one_projects_app.md` §9b for INB-1 and SEL-1. Advisory until each slice builds.
 
+Amended 2026-11-04 (PJP-14, task 1605): the owner said "The tasks added by the MCP mostly show up in my tasks inbox. If all the aspects of the task are properly set up, these tasks should go directly into the projects. I am not going to sit and clarify them." A ready agent task is not New. It shows under Next or Someday. Ready means: a company board, `source` is `mcp`, an assignee, a description, a type, and a status outside `triage`. The task creator made my assignment. A date or an estimate is not required. A person's hand-off still shows New, so item 2 holds for people. The rule writes nothing, and an edit that breaks a condition makes the task New again.
+
 ### D171 — Everything that waits on the member shows in My Day (2026-11-03)
 
 Owner directive, 2026-11-03, in chat. The owner gave the design to the agent: "I leave it up to you to figure out how to decide what is best to be done." Board: **WS-51** (chat run continuity), owner `specs/chat_run_continuity.md` §8.
@@ -5315,6 +5317,22 @@ Owner directive, 2026-11-04, in chat. The question stood on the Metorite epic 15
 **Still owner acts.** Each act below binds Metorite to a third party. It needs the owner when it comes up. The acts are the Meta Tech Provider application, a DPDP lawyer, and a contract with an SMS provider. A live send to a real person and a live payment account stay under CLAUDE.md §3a rule 3.
 
 Fence: the Group O slices in `specs/ai_studio.md` §14 name theirs. Advisory until each slice builds.
+
+### D175 — A CRM form only writes, its one named send is the thank-you mail, and consent wording v1 waits on a lawyer (2026-11-04)
+
+Owner decision, 2026-11-04, in chat: "go ahead with your recommendations for all the questions." The agent wrote the recommendations, and the owner accepted them as one set. Board: **WS-CRM**. Task: Metorite 1569 (`mt-4d56d6f5`). Owning spec: `specs/crm_conversational.md` (CRM-M10 to CRM-M12, §12). D174.1 and D174.2 decide CRM OPEN-1 and OPEN-2. This entry applies them to CRM forms, and it answers OPEN-3.
+
+1. **A CRM form uses the door of D174.1, and the door only writes.** A submission makes or links one lead, then shows a thank-you page. No anonymous link reads a record. A form closes when its campaign ends.
+2. **The send that a CRM form declares is its one thank-you mail (D174.2).** It goes once for each submission, to the address that the person typed, from the template that the form owner approved at publish. It carries an opt-out link. A suppressed address gets nothing.
+3. **Every other send to a submitter still asks (D131.7).** Item 2 does not cover a follow-up, a sequence or a campaign mail. A marketing mail also needs the marketing consent of item 4.
+4. **Consent wording v1 is in `crm_conversational.md` CRM-M11 (OPEN-3).** Forms may be built and tested with it. A lawyer reads it before the first real outside person submits a form. Each consent record stores the wording version. A change of wording makes a new version.
+5. **A member purge deletes the member's private CRM saved views (Metorite 1443, item 11).** Shared views stay. Metorite 1570 builds it.
+
+**What stays.** The switch that lets an org send mail to an outside person stays owner-only (`CLAUDE.md` §3a rule 3). The lawyer's read is the DPDP owner act that D174 names.
+
+**Why.** The owner asked for event forms with a link, an iframe and email (2026-11-02). A person who types their address and submits expects one reply. Each other mail needs consent, as DPDP asks.
+
+**Fence.** Advisory until each slice builds its test: `tests/unit/test_crm_public_form.py` (CRM-M10, item 1), `tests/unit/test_crm_thank_you_queue.py` (CRM-M12, items 2 and 3), the consent tests of CRM-M11 (item 4), and the member purge R8 suite (Metorite 1570, item 5).
 
 ### D176 — Each PR runs the tests its diff can affect, and main runs the full suite in batches (2026-11-04)
 
