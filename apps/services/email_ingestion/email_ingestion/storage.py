@@ -12,8 +12,9 @@ This module is the ONE owner of the rules below. Do not copy them:
   its meter is at or over that value (:func:`at_limit`).
 * **The resume (EM-T6f).** A first import that the limit stopped ends in the
   phase ``limit``. :func:`import_resumes` says when that import goes on: the
-  phase is ``limit``, the meter ran, the meter is under the limit, and the
-  import has a point to go on from (``import_reached_at``).
+  phase is ``limit``, the meter ran, the meter is under the limit by at
+  least :func:`resume_margin_bytes` (20 MB, or 1% of the limit when that is
+  more), and the import has a point to go on from (``import_reached_at``).
   :func:`resume_import` then writes ``initial_sync_done = false`` and
   ``import_phase = 'importing'``, in one conditional UPDATE. The scheduler
   calls it in phase (a) of a loop cycle, under the mailbox lock. The import
@@ -84,6 +85,7 @@ __all__ = [
     "MESSAGE_COLUMNS",
     "MESSAGE_DERIVED_COLUMNS",
     "REMOVE_CHUNK",
+    "RESUME_MARGIN_MIN_BYTES",
     "ImportMeter",
     "OlderMail",
     "RemovedChunk",
@@ -99,6 +101,7 @@ __all__ = [
     "preview_older",
     "remove_older_chunk",
     "resume_import",
+    "resume_margin_bytes",
     "storage_limit_bytes",
 ]
 
@@ -117,6 +120,10 @@ KEPT_FOLDERS_SQL = "LOWER(COALESCE(em.folder, '')) NOT IN ('drafts', 'draft')"
 #: P1). The unique key ``(account_id, provider_message_id)`` makes it an index
 #: read. It is a WHERE test, never a size. It reads ``em``.
 BATCH_ROWS_SQL = "em.provider_message_id = ANY(CAST(:pids AS text[]))"
+
+#: The least room under the limit that a resume needs (EM-T6f review P3a).
+#: :func:`resume_margin_bytes` takes the larger of this and 1% of the limit.
+RESUME_MARGIN_MIN_BYTES = 20 * BYTES_PER_MB
 
 #: The full meters that one run of the import may make (EM-T6f review P1).
 #: One runs after the first batch. Up to two more run when the sum of the
@@ -353,6 +360,19 @@ def at_limit(stored_bytes: int | None) -> bool:
     return int(stored_bytes) >= storage_limit_bytes()
 
 
+def resume_margin_bytes() -> int:
+    """The room under the limit that a resume needs (EM-T6f review P3a).
+
+    It is the larger of :data:`RESUME_MARGIN_MIN_BYTES` (20 MB) and 1% of the
+    limit, so 20.48 MB at 2 GB. A mailbox that stopped a few KB over the
+    limit then does not resume when a deleted draft takes it just under, and
+    a resume has room for many batches. The margin is never more than a
+    tenth of the limit, so a small limit (a test, or a box that sets a few
+    MB) can still resume."""
+    limit = storage_limit_bytes()
+    return min(max(RESUME_MARGIN_MIN_BYTES, limit // 100), limit // 10)
+
+
 async def measure_stored_bytes(db: Any, account_id: str) -> int | None:
     """Measure the copy of one mailbox, write it, and return it.
 
@@ -567,16 +587,17 @@ def import_resumes(
     * The meter ran. ``None`` means that it did not run, and the import
       does not go on. Note that :func:`at_limit` reads ``None`` as under the
       limit, so this test comes first.
-    * The meter is under the limit (:func:`at_limit` is false). At or over
-      the limit, the import stays stopped, so it does not stop and start at
-      each cycle.
+    * The meter is under the limit by at least :func:`resume_margin_bytes`
+      (review P3a). Nearer the limit, the import stays stopped, so it does
+      not stop and start at each cycle when a small delete takes the meter
+      just under the limit.
     * The import reached a point (``import_reached_at``). With no point, it
       would start again from now and read the newest mail a second time."""
     if phase != "limit":
         return False
     if stored_bytes is None:
         return False
-    if at_limit(stored_bytes):
+    if int(stored_bytes) + resume_margin_bytes() >= storage_limit_bytes():
         return False
     return reached_at is not None
 

@@ -2209,27 +2209,49 @@ _REACHED = datetime(2026, 10, 1, tzinfo=UTC)
 
 
 @pytest.mark.parametrize(("phase", "stored", "reached", "resumes"), [
-    ("limit", 999, _REACHED, True),
+    ("limit", 10, _REACHED, True),
     ("limit", 0, _REACHED, True),
+    ("limit", 899, _REACHED, True),
+    ("limit", 900, _REACHED, False),
+    ("limit", 999, _REACHED, False),
     ("limit", 1000, _REACHED, False),
     ("limit", 5000, _REACHED, False),
     ("limit", None, _REACHED, False),
-    ("limit", 999, None, False),
-    ("done", 999, _REACHED, False),
-    ("importing", 999, _REACHED, False),
-    ("counting", 999, _REACHED, False),
-    ("resyncing", 999, _REACHED, False),
-    ("awaiting_range", 999, _REACHED, False),
-    (None, 999, _REACHED, False),
-], ids=["under", "empty", "at_limit", "over", "no_meter", "no_point", "done",
-        "importing", "counting", "resyncing", "awaiting_range", "no_phase"])
+    ("limit", 10, None, False),
+    ("done", 10, _REACHED, False),
+    ("importing", 10, _REACHED, False),
+    ("counting", 10, _REACHED, False),
+    ("resyncing", 10, _REACHED, False),
+    ("awaiting_range", 10, _REACHED, False),
+    (None, 10, _REACHED, False),
+], ids=["under", "empty", "margin_edge_under", "margin_edge", "just_under",
+        "at_limit", "over", "no_meter", "no_point", "done", "importing",
+        "counting", "resyncing", "awaiting_range", "no_phase"])
 def test_the_resume_rule(monkeypatch, phase, stored, reached, resumes) -> None:
-    """R7 fence ``email-storage-t6f-rule`` (EM-T6f). The import goes on only
-    in the phase ``limit``, with a meter, under the limit, and with a point
-    to go on from. ``at_limit(None)`` is false, so the null test is its own
-    test."""
+    """R7 fences ``email-storage-t6f-rule`` and ``email-storage-t6f-margin``
+    (EM-T6f, review P3a). The import goes on only in the phase ``limit``,
+    with a meter, under the limit by the margin, and with a point to go on
+    from. At a limit of 1,000 bytes the margin is a tenth, 100 bytes, so 899
+    resumes and 900 does not. ``at_limit(None)`` is false, so the null test
+    is its own test. Each refused case is otherwise one that resumes."""
     monkeypatch.setattr(storage, "storage_limit_bytes", lambda: 1000)
+    assert storage.resume_margin_bytes() == 100
     assert storage.import_resumes(phase, stored, reached) is resumes
+
+
+@pytest.mark.parametrize(("limit", "margin"), [
+    (2048 * _MB, 2048 * _MB // 100),
+    (500 * _MB, 20 * _MB),
+    (100 * _MB, 10 * _MB),
+    (1000, 100),
+], ids=["2_gb", "500_mb", "100_mb", "1000_bytes"])
+def test_the_margin_of_a_resume(monkeypatch, limit, margin) -> None:
+    """R7 fence ``email-storage-t6f-margin`` (review P3a). The margin is the
+    larger of 20 MB and 1% of the limit, and never more than a tenth of the
+    limit. At 2 GB it is 20.48 MB."""
+    monkeypatch.setattr(storage, "storage_limit_bytes", lambda: limit)
+    assert storage.RESUME_MARGIN_MIN_BYTES == 20 * _MB
+    assert storage.resume_margin_bytes() == margin
 
 
 class _WriteDb:
@@ -2570,15 +2592,17 @@ class TestTheResumeOnARealDatabase:
             release_tenant(token)
             _wipe(p.admin_engine, [x])
 
-    @pytest.mark.parametrize("case", ["at_limit", "over", "no_meter",
-                                      "phase_done", "no_point"])
+    @pytest.mark.parametrize("case", ["at_limit", "over", "just_under",
+                                      "no_meter", "phase_done", "no_point"])
     async def test_a_mailbox_that_must_not_resume_keeps_its_row(
         self, promoted, app_engine, monkeypatch, case,  # noqa: F811
     ):
-        """R7 fence ``email-storage-t6f-stays`` (acceptance 3). A meter at
-        the limit or over it, a meter that never ran, another phase, or no
-        point to go on from: the loop cycle writes no resume and runs no
-        import. The recurring sweep still runs."""
+        """R7 fences ``email-storage-t6f-stays`` (acceptance 3) and
+        ``email-storage-t6f-margin`` (review P3a). A meter at the limit or
+        over it, a meter one byte under it (inside the margin), a meter that
+        never ran, another phase, or no point to go on from: the loop cycle
+        writes no resume and runs no import. The recurring sweep still
+        runs."""
         _assert_non_priv(app_engine)
         p = promoted
         now = _now()
@@ -2597,8 +2621,8 @@ class TestTheResumeOnARealDatabase:
         try:
             async with tenant_engine_scope(_dsn(p)):
                 stored = None if case == "no_meter" else await _measure(x, p.org_b)
-                limit = {"at_limit": stored, "over": (stored or 0) - 1}.get(
-                    case, 100 * _MB)
+                limit = {"at_limit": stored, "over": (stored or 0) - 1,
+                         "just_under": (stored or 0) + 1}.get(case, 100 * _MB)
                 monkeypatch.setattr(storage, "storage_limit_bytes", lambda: limit)
                 before = _import_state(p.admin_engine, x)
                 assert before["stored_bytes"] == stored
