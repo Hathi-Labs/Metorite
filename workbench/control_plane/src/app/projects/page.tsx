@@ -86,7 +86,7 @@ import {
   myWorkNavCounts,
   projectsUndoScope,
 } from "./lib/myWork";
-import { MY_TASKS_MODES, asChip, myTasksHref, myTasksMode, myTasksModeFor, phoneMyTasksTap, withoutMyTasks } from "./lib/myTasks";
+import { MY_TASKS_MODES, asChip, myTasksHref, applyMyTasksUpdate, myTasksMode, myTasksModeFor, phoneMyTasksTap, readPickedMode, writePickedMode, type MyTasksRaw, withoutMyTasks } from "./lib/myTasks";
 import MyTasksSpace, {
   DEFAULT_MY_TASKS_VIEW,
   MyTasksActionRow,
@@ -1050,11 +1050,16 @@ function ProjectsWorkspace() {
   // the Board and a phone the List. Until the viewport is known it reads List,
   // so a phone never flashes a board. A pick, and the legacy `?app=my-today`
   // link, count as a choice: they differ from the tab on screen.
-  const [myTasksRaw, setMyTasksRaw] = useState<Omit<MyTasksView, "mode"> & { chosen: MyTasksView["mode"] | null }>({
+  const [myTasksRaw, setMyTasksRaw] = useState<MyTasksRaw>(() => ({
     attention: DEFAULT_MY_TASKS_VIEW.attention,
     chip: DEFAULT_MY_TASKS_VIEW.chip,
-    chosen: null,
-  });
+    // The page remounts when the viewport crosses the phone line, so a pick
+    // lives in sessionStorage too. My tasks is not drawn at first paint.
+    chosen: typeof window === "undefined" ? null : readPickedMode(window.sessionStorage),
+  }));
+  useEffect(() => {
+    if (myTasksRaw.chosen) writePickedMode(window.sessionStorage, myTasksRaw.chosen);
+  }, [myTasksRaw.chosen]);
   const myTasks = useMemo<MyTasksView>(
     () => ({
       mode: myTasksMode(myTasksRaw.chosen, isMobile || !viewMounted),
@@ -1064,20 +1069,8 @@ function ProjectsWorkspace() {
     [myTasksRaw, isMobile, viewMounted],
   );
   const setMyTasks = useCallback(
-    (update: MyTasksView | ((v: MyTasksView) => MyTasksView)) => {
-      setMyTasksRaw((raw) => {
-        const current: MyTasksView = {
-          mode: myTasksMode(raw.chosen, isMobile || !viewMounted),
-          attention: raw.attention,
-          chip: raw.chip,
-        };
-        const next = typeof update === "function" ? update(current) : update;
-        return {
-          attention: next.attention,
-          chip: next.chip,
-          chosen: next.mode !== current.mode ? next.mode : raw.chosen,
-        };
-      });
+    (update: MyTasksView | ((v: MyTasksView) => MyTasksView), pick = false) => {
+      setMyTasksRaw((raw) => applyMyTasksUpdate(raw, isMobile || !viewMounted, update, pick));
     },
     [isMobile, viewMounted],
   );
@@ -1522,7 +1515,7 @@ function ProjectsWorkspace() {
         } else {
           setSheet(null);
           setApp("my-tasks");
-          setMyTasks((v) => ({ ...v, mode: "list", attention: false }));
+          setMyTasks((v) => ({ ...v, mode: "list", attention: false }), true);
         }
       } else if (tab === "projects-capture") {
         // WS-64 OP-4 — Capture must work with no My work view open. The quick
@@ -3193,6 +3186,7 @@ function ProjectsWorkspace() {
       const legacy = appLink.trim().toLowerCase() !== "my-tasks";
       setMyTasks((v) =>
         legacy ? { ...v, chip, mode: "list", attention: false } : v.chip === chip ? v : { ...v, chip },
+        legacy,
       );
       const target = myTasksHref(searchParams.toString(), chip);
       if (legacy) router.replace(target);
@@ -3409,7 +3403,7 @@ function ProjectsWorkspace() {
         // wrote the hidden project's mode before, so "List view" did nothing.
         if (isMyTasksApp(app)) {
           const tab = myTasksModeFor(next);
-          if (tab) setMyTasks((v) => ({ ...v, mode: tab, attention: false }));
+          if (tab) setMyTasks((v) => ({ ...v, mode: tab, attention: false }), true);
           return;
         }
         setAttentionFor(null);

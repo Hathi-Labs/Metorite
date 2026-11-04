@@ -32,7 +32,10 @@ import {
   inChip,
   mineStatuses,
   myTasksHref,
+  applyMyTasksUpdate,
   myTasksMode,
+  readPickedMode,
+  writePickedMode,
   myTasksTrulyEmpty,
   myTasksQuery,
   openCount,
@@ -540,10 +543,89 @@ describe("PJP-13 — the tab My tasks opens on", () => {
     expect(myTasksMode("board", true)).toBe("board");
   });
 
-  it("the page keeps the pick as null until a tab differs from the default, and waits for the viewport", () => {
+  it("the page waits for the viewport and sends every update through applyMyTasksUpdate", () => {
     const page = code("page.tsx");
-    expect(page).toMatch(/myTasksMode\(raw\.chosen, isMobile \|\| !viewMounted\)/);
-    expect(page).toMatch(/chosen: next\.mode !== current\.mode \? next\.mode : raw\.chosen/);
+    expect(page).toMatch(/myTasksMode\(myTasksRaw\.chosen, isMobile \|\| !viewMounted\)/);
+    expect(page).toMatch(/applyMyTasksUpdate\(raw, isMobile \|\| !viewMounted, update, pick\)/);
+  });
+
+  // The page REMOUNTS when the viewport crosses the phone line (the shell
+  // returns another tree), so its state is lost. A pick survives in
+  // sessionStorage. The vitest setup has no DOM, so this plays the page's
+  // own steps against the same pure functions and a fake store.
+  function session() {
+    const data = new Map<string, string>();
+    return { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v) };
+  }
+  type Raw = ReturnType<typeof applyMyTasksUpdate>;
+  /** A page life: mount from the store, apply updates, write the pick, and shown mode. */
+  function page(store: ReturnType<typeof session>, isMobile: boolean) {
+    let raw: Raw = { attention: false, chip: "all", chosen: readPickedMode(store) };
+    const shown = () => myTasksMode(raw.chosen, isMobile);
+    const update = (u: Parameters<typeof applyMyTasksUpdate>[2], pick: boolean) => {
+      raw = applyMyTasksUpdate(raw, isMobile, u, pick);
+      if (raw.chosen) writePickedMode(store, raw.chosen);
+    };
+    return { shown, update, view: () => ({ mode: shown(), attention: raw.attention, chip: raw.chip }) };
+  }
+
+  it("a picked tab survives a resize and the remount it causes", () => {
+    for (const picked of ["table", "list", "calendar"] as const) {
+      const store = session();
+      let p = page(store, false);
+      expect(p.shown()).toBe("board");
+      p.update({ ...p.view(), mode: picked }, true);
+      expect(p.shown()).toBe(picked);
+      p = page(store, true); // 390 px: the page remounts
+      expect(p.shown()).toBe(picked);
+      p = page(store, false); // back to 1440 px
+      expect(p.shown()).toBe(picked);
+    }
+  });
+
+  it("a pick equal to the default still counts (List on a phone, then wide)", () => {
+    const store = session();
+    let p = page(store, true);
+    p.update({ ...p.view(), mode: "list" }, true);
+    p = page(store, false);
+    expect(p.shown()).toBe("list");
+  });
+
+  it("a chip change or an echo of the shown view never records a pick", () => {
+    const store = session();
+    let p = page(store, false);
+    p.update({ ...p.view(), chip: "today" }, false);
+    p.update((v) => ({ ...v }), false);
+    expect(readPickedMode(store)).toBeNull();
+    p = page(store, true);
+    expect(p.shown()).toBe("list");
+    p = page(store, false);
+    expect(p.shown()).toBe("board");
+  });
+
+  it("a broken store never throws", () => {
+    const broken = {
+      getItem: () => {
+        throw new Error("off");
+      },
+      setItem: () => {
+        throw new Error("off");
+      },
+    };
+    expect(readPickedMode(broken)).toBeNull();
+    expect(() => writePickedMode(broken, "table")).not.toThrow();
+    expect(readPickedMode(null)).toBeNull();
+    expect(readPickedMode({ getItem: () => "nonsense", setItem: () => {} })).toBeNull();
+  });
+
+  it("each explicit tab path passes pick true", () => {
+    const space = code("components/MyTasksSpace.tsx");
+    expect(space).toMatch(/onPick=\{\(mode\) => onView\(\{ \.\.\.view, mode, attention: false \}, true\)\}/);
+    expect(space).toMatch(/onMode=\{\(next\) => onView\(\{ \.\.\.view, mode: next as MyTasksMode \}, true\)\}/);
+    const page = code("page.tsx");
+    expect(page).toMatch(/mode: tab, attention: false \}\), true\)/);
+    expect(page).toMatch(/mode: "list", attention: false \}\), true\)/);
+    expect(page).toMatch(/legacy,\s*\);/);
   });
 
   it("the old ?app=my-today link still opens the List", () => {

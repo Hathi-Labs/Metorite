@@ -151,7 +151,8 @@ export function MyTasksActionRow({
   onCapture,
 }: {
   view: MyTasksView;
-  onView: (next: MyTasksView) => void;
+  /** `pick` is true for an explicit tab choice, so the page keeps it. */
+  onView: (next: MyTasksView, pick?: boolean) => void;
   attentionCount: number | null;
   onReport: (href: string) => void;
   onCapture: () => void;
@@ -162,7 +163,7 @@ export function MyTasksActionRow({
         modes={MODE_OPTIONS}
         mode={view.attention ? null : view.mode}
         layout="toolbar"
-        onPick={(mode) => onView({ ...view, mode, attention: false })}
+        onPick={(mode) => onView({ ...view, mode, attention: false }, true)}
       />
       <Button
         variant="ghost"
@@ -231,7 +232,8 @@ export function MyTasksChips({
 
 interface Props {
   view: MyTasksView;
-  onView: (next: MyTasksView) => void;
+  /** `pick` is true for an explicit tab choice, so the page keeps it. */
+  onView: (next: MyTasksView, pick?: boolean) => void;
   /** A phone, with the compact chrome. The tabs then live in the View sheet. */
   phone: boolean;
   compactChrome: boolean;
@@ -606,7 +608,7 @@ export default function MyTasksSpace({
             phone={phone}
             // On a phone the tabs live in the View sheet (OP-1).
             modes={MODE_OPTIONS}
-            onMode={(next) => onView({ ...view, mode: next as MyTasksMode })}
+            onMode={(next) => onView({ ...view, mode: next as MyTasksMode }, true)}
             resultCount={list.total}
             loadedLabel={loadedOfTotal(list.rows.length, list.total)}
             agentSummary={null}
