@@ -206,10 +206,10 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
              Plan((("find_tasks", {"query": "login crash"}),),
                   "#23 Fix the login crash is In review, with Ananya.")),
     ), surface="tasks"),
-    # projects-plan, loaded by the model (no word): the capacity question.
-    # On a Projects page the core pack (23 tools) is loaded, and the plan pack
-    # (35) does not fit beside it under the cap of 110. The loader does not
-    # offer it, so the specialist stays and the route goes to it (OA-8e finding).
+    # projects-plan on a Projects page: the capacity question. "overloaded"
+    # names the plan pack (OA-8g), so it loads at layer (a). Before PJP-2 the
+    # plan pack (35 tools) did not fit beside the core pack, and the route went
+    # to the specialist (OA-8e finding). PJP-2: it is 24 tools and fits.
     _pm("pm_capacity", "Plan pack on the Projects page: the model loads it (the base trim leaves room)", (
         Turn("Who is overloaded right now?",
              (Check("ran_tool", ("analytics_load",), "read_the_load"),
