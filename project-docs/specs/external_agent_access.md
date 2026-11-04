@@ -462,6 +462,8 @@ A **connection** is one agent client that one member has authorized in one organ
 | `scopes` | The ceiling. See §8 |
 | `pinned_projects` | Optional list of project ids. Empty means every project the member sees |
 | `include_personal` | The personal switch of D-EA-4. The column default is false. The consent page sends true unless the member unticks the box (since 2026-10-30) |
+| `left_out_projects` | The left-out list of D-EA-12 (§10.8, EA-17a). Empty means no project is left out |
+| `requested_scopes` | The scopes that the agent asked for at the connect (§10.8, EA-17a). The ceiling of Change access. NULL on an older connection |
 | `created_at`, `last_used_at`, `expires_at`, `revoked_at` | Lifecycle. A connection expires after 90 days of no use. `last_used_at` records the last token issue. EA-3 does not stamp it on a tool call (EA3-7) |
 
 ### 7.1 The authority rule
@@ -1360,6 +1362,69 @@ When one condition fails, the answer is the consent screen as before, never an e
 
 **Fences.** `tests/unit/test_agent_first_party.py`. Ten named mutations each turn it red: any client is first-party, no `state` check, no origin rule, no scope cover, no replace, a replace for every member, a replace that keeps the old tokens, `*` trusts every client, a case fold, and a check that never skips. `consent.test.ts` holds `isContinueView`. `e2e/connect-authorize.spec.ts` holds the page with no form, and the approve gate of §10.5 for every other client.
 
+### 10.8 The project tree and Change access (D-EA-12, D-EA-13, Metorite task 1585)
+
+**The owner's ask, 2026-11-04.** "The UI/UX for the MCP approval system can be made better." "Also need a mechanism where access can be modified." "When selecting a top level project, auto select lower levels, and then untick what is not needed should be possible." The owner approved the design and both recommendations below on the same day.
+
+**What was wrong.**
+
+- A pin covers the pinned project and every project beneath it (`_AGENT_PINS_SQL`). The consent page drew the subprojects of a pinned project with empty boxes, so the tree said the opposite of the rule.
+- The member could not leave one subproject out of a pinned parent.
+- The picker was a short scroll box that cut a row in half.
+- After the connect, the member could only remove the agent (EA-4b). The footer said "remove it in the agent, or ask an admin".
+
+**D-EA-12: the left-out list.** A connection gains `left_out_projects`, a list of project ids. The reach of a connection follows the nearest mark.
+
+1. With no pin, the reach starts from every project that the member sees. With pins, it starts from each pin.
+2. The reach goes down from each start, project by project. It stops at a project on the left-out list. That project and every project beneath it stay out.
+3. A pin beneath a left-out project starts its own reach. So the nearest mark wins: a pin under a left-out parent is in.
+4. A left-out id that no start reaches changes nothing. An id outside the organization of the connection changes nothing.
+5. A project that the member adds later is in when its nearest marked parent is a pin, or when no mark is above it and the connection has no pin. It is out when its nearest marked parent is on the left-out list.
+
+The member's live access still bounds the result (§7.1). The left-out list never adds a project. The personal switch of D-EA-4 is applied after it.
+
+**D-EA-13: Change access.** A member changes the grant of their own connection, with no reconnect.
+
+1. The member can change the pins, the left-out list and the personal switch in both directions.
+2. The member can turn a scope off. The member can turn a scope on only when the agent asked for it at the connect. The connection stores that request as `requested_scopes`. A connection from before EA-17a has no stored request, so its current scopes are the ceiling.
+3. `offline_access` stays as it is. The member cannot add it or remove it here.
+4. The change needs one scope at least, as the consent page does.
+5. Only the member of the connection can change it. A member with `integrations:manage` can still only revoke the connection of another member (EA-4b).
+6. The change applies at the next agent call after the gateway's 60 second access cache (§7.1). The token stays. The first-party path of §10.7 still needs the scopes of the connection to cover the request, so a narrower grant sends a first-party client back to the consent screen.
+
+**The connection fields.** One expand-only migration adds two columns to `agent_connection`.
+
+| Field | Meaning |
+|---|---|
+| `left_out_projects` | `UUID[] NOT NULL DEFAULT '{}'`. The left-out list of D-EA-12. The same cap as `pinned_projects` |
+| `requested_scopes` | `TEXT[]`, nullable. The scopes that the agent asked for at the connect, before the member cleared any box. NULL on a connection from before EA-17a |
+
+**The consent page (EA-17b).** The owner approved this design on 2026-11-04.
+
+- The page asks "Connect <verified host> to Metorite?". The verified site, the redirect and the organization show as short labels.
+- Each scope is a switch with one line of help. "Read projects and tasks" says that the other scopes need it.
+- "Which projects" offers two choices: "All my projects" and "Only the ones I pick".
+- The tree lists the team projects that the member sees, with a chevron to fold each parent. A search box shows when the member sees more than 12 projects. "Expand all" and "Clear" sit above the tree.
+- A tick on a project ticks every project beneath it. An untick of a subproject adds it to the left-out list. Its parent then shows a dash and a count such as "5 of 6". The left-out project shows the tag "left out".
+- A line under the tree says: "Ticking a project ticks everything under it. A subproject added later joins on its own, unless you left it out."
+- The tree grows with the page. The page scrolls, not a short box inside it.
+- Above Approve, one line states the grant, for example "Claude Code will read and change tasks in 7 projects and your personal projects."
+- The footer says: "Change or remove this access any time in Integrations → AI agents."
+- The approve gate of §10.5, the ticket rules and the first-party path of §10.7 do not change.
+
+**The AI agents view (EA-17c).** Each of the member's own agents shows its grant as chips: the scopes, the number of projects or "All projects", and "Personal". "Change access" opens the panel of the consent page with the current grant, a Save button and a Cancel button. A scope that the agent did not ask for shows off and disabled, with the line "<agent> did not ask for this. It must reconnect to get it." The summary line says what the agent can do after the save.
+
+**The route (EA-17c).** `PATCH /agent-access/connections/{id}` on the gateway, and the BFF route `PATCH /api/agent-access/connections/[id]`.
+
+- The BFF refuses a request that is not `same-origin` (`sameOrigin`, §10.5).
+- The gateway takes the member and the organization from the session. It refuses a connection of another member, a revoked connection and an unknown id with 404.
+- The body holds `scopes`, `pinned_projects`, `left_out_projects` and `include_personal`, with `extra="forbid"`.
+- A scope outside the ceiling of D-EA-13 rule 2 gives 422. So does a body with no scope, and a change to `offline_access`.
+- Each project id must be a project of the organization that the member sees. Otherwise the route answers 422.
+- The route writes one row in one transaction and logs `agent_access.connection_changed` with the connection id and the counts.
+
+**Fences.** EA-17a: `tests/unit/test_agent_left_out_projects.py`, on R8, with the five rules of D-EA-12 as cases. Named mutations: a reach that ignores the list, a left-out list that wins over a pin beneath it, and a list read across organizations. EA-17b: `consent.test.ts` for the tree state, and `e2e/connect-authorize.spec.ts` for the cascade, the dash, the summary and the approve gate. EA-17c: `tests/unit/test_agent_change_access.py`. Named mutations: a scope above the ceiling, a change to the connection of another member, a missing `sameOrigin` check, and a write that skips the project check.
+
 ## 11. Schema addition: task references
 
 **The table is WS-57's.** `task_references.md` §5 owns `pm_task_refs` (migration 255), its route and the task card. This spec proposed the table, and WS-57 built it on 2026-10-13. EA-6a calls its route and builds no second store (§9.2). The task source `mcp` moved to EA-6d (EA3-31), and EA-6d built it with migration 265.
@@ -2044,6 +2109,9 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | MCP-G2 | **BUILT 2026-10-25, not merged (branch `g2-agent-fields-mt-61131dc3`, task #356). It goes live at the merge under `agent_access_writes_enabled`, which is ON (EA3-36).** **More fields, and `set_assignees` (§9.2, EA3-52).** `create_task` and `update_task` take `importance`, `leveraged`, `estimate_mins` and `start_date`. `create_task` takes `assignees`. `update_task` takes `parent_task_id` for a move inside the project. The new tool `set_assignees` replaces the set. The PUT of the assignees and the task move join `MCP_WRITE_ROUTES`, and both routes take `If-Match`. **Files:** `routes/projects/tasks.py`, `acb_auth/agent_oauth.py`, `skill_projects/manifest.py` (three `FIELD_EXEMPT` entries), `agent_edge/tools.py`. No migration. Branch 0 does not change | `tests/unit/test_mcp_edge_assignees.py`, R8 through the real gateway app, each red under a named mutation (A1 to A29). **R1** a create with an assignee, `importance` and `estimate_mins` stores them, and the assignee gets one bell that names the client. **R2** a swap of one person gives one bell to the added person only. **R3** a hidden member, a suspended member and a made-up address get one text, and nothing changes. **R4** and **R5** the PUT and the move refuse a stale version. **R6** the move refuses a parent in another project. **R7** the move refuses a cycle. **R9** the edge and branch 0 refuse a connection without `projects:write` **Fix round 1:** **R13** an agent cannot assign a member with no grant. Its text is the text of a made-up address. **R14** the PUT of an agent refuses any change after its read. **R15** holds the gateway cap, and **R16** the estimate ceiling. **R17** holds a person who stays, and **R18** the text of a personal project. **R19** holds the seam `notifications.grant_holders`. **Fix round 2:** **R20** holds each way in, through a grant or the admin read right. **R21** holds a stored row in another case. | AGENT-SAFE |
 | MCP-G1 | **BUILT 2026-10-29, not merged (branch `mt-003e8384-mcp-projects`, Metorite task 355). It goes live at the merge under `agent_access_writes_enabled`, which is ON (EA3-36).** **Projects and moves over MCP (§9.2, EA3-53).** `create_project`, `update_project`, `preview_move_tasks` and `move_tasks`. **Files:** `routes/projects/tree.py`, `routes/projects/move.py`, `acb_auth/agent_oauth.py`, `skill_projects/manifest.py` (one `FIELD_EXEMPT` entry), `agent_edge/tools.py` and `agent_edge/mcp.py`. No migration. Branch 0 does not change | `tests/unit/test_mcp_edge_projects.py`: 82 database-free tests, and 10 R8 tests through the real gateway app. **R1** a new subproject has no grant, and a second member sees it only when that member sees its parent. **R2** a new space has the one `org` grant of a space that the app makes. A member with no grant sees it, and a member of another organization and a pinned connection do not. **R3** a pinned connection makes no space (the edge text, and the gateway 403). It makes a node under a pinned project only. **R4** the version rule, the status of a space, the narrowing of a lead, and a PATCH of a member that does not change. **R5** an epic moves with its two subtasks, and a second call moves nothing. **R6** a made-up preview id moves nothing, and a signed move with no `accepted_drops` gets 422. **R7** D-OP-14 holds. **R8** another organization gets "Project not found." **R9** a task or a destination outside the pins is not found. **R10** a read connection writes nothing. **Fix round 1:** **R11** a move from a `group:` project to an `org` project gets 403 `audience_widens`, and the member's own move lands. **R12** an epic moves into a child of the same grants, and the gateway lets a narrower move through. **R13** a personal task into a team project gets 403. **R14** a connection pinned to a folder makes a project in it. The mutations P1 to P5 are each red | AGENT-SAFE |
 | EA-16 | **BUILT 2026-10-30, not merged (branch `mt-8f6a0f39-aroh-first-party`, Metorite task 1109). It ships dark: `agent_first_party_client_ids` is empty by default.** **First-party clients (§10.7, D-EA-11).** The Setting and `agent_oauth.is_first_party`, `agent_oauth.first_party_redirect_allowed`, `agent_tokens.live_connections_of_client`, `replace_same_client` on `agent_tokens.create_connection`, rule 13 of `gateway/routes/agent_access.py`, and `isContinueView` on the consent page. No migration and no new route | `tests/unit/test_agent_first_party.py` passes on R8, and ten named mutations each turn it red (§10.7). The suites `test_agent_oauth_server.py` and `test_agent_connection_tokens.py` stay green. `consent.test.ts` and `e2e/connect-authorize.spec.ts` hold the page | AGENT-SAFE. The flip on a box is OWNER-GATE (`enforcement-flip`). It changes an authorization path, so it needs the full review loop: an independent verification and an adversarial review before it merges |
+| EA-17a | **The left-out list (§10.8, D-EA-12, Metorite task 1586).** One expand-only migration adds `left_out_projects` and `requested_scopes` to `agent_connection`. `approve` stores the requested scopes and takes `left_out_projects`. The store, `TokenLookup`, `AgentScope`, branch 0 and the edge carry the list. `_AGENT_PINS_SQL` and the tree route of an agent follow the nearest mark. It ships dark: no client sends the list until EA-17b | `tests/unit/test_agent_left_out_projects.py` passes on R8 with the five rules of D-EA-12 as cases, and its named mutations turn it red (§10.8). `test_agent_oauth_server.py`, `test_agent_connection_tokens.py`, `test_agent_first_party.py` and `test_mcp_edge_authority.py` stay green. The migration number is re-checked at merge (R1) | AGENT-SAFE. HIGH tier: a migration and the reach of an agent token. Full review loop |
+| EA-17b | **The consent page (§10.8, Metorite task 1587).** The design of §10.8: the switches, the two project choices, the tree that ticks down with a dash and a count, the search, the summary line and the new footer. One tree component, which EA-17c reuses. Needs EA-17a | `consent.test.ts` holds the tree state: a tick cascades, an untick adds to the left-out list, a pin under a left-out parent wins, and the counts. `e2e/connect-authorize.spec.ts` holds the cascade, the dash, the summary and the approve gate. Captures in light, dark, compact, violet and 390 px | AGENT-SAFE. The approve gate of §10.5 must not change |
+| EA-17c | **Change access (§10.8, D-EA-13, Metorite task 1588).** `PATCH /agent-access/connections/{id}`, its BFF route, and "Change access" in the AI agents view with the panel of EA-17b. Needs EA-17a and EA-17b | `tests/unit/test_agent_change_access.py` on R8, with the named mutations of §10.8. A vitest of the view. An e2e that changes a grant and reads it back | AGENT-SAFE. HIGH tier: a write to an agent grant. Full review loop |
 
 Order: EA-0, then EA-1 and EA-2, then EA-3a, then EA-3b-1 and EA-3b-2, then EA-2c, then EA-4a and EA-5, then EA-6 to EA-9, then EA-10 and EA-11. EA-4b and EA-4c come later, and neither gates a pilot (EA3-25). EA-2c touches no file of EA-3b, so it can run in parallel with EA-3b. It must merge before EA-4. EA-6 and EA-5 can run in parallel after EA-3b-2. EA-3c runs when a copy of the 2026-07-28 text is in the tree. EA-6e and EA-6g build in parallel, because EA-6e touches `mcp.py` and not `tools.py`, and EA-6g touches `tools.py` and not `mcp.py`.
 
@@ -2720,6 +2788,7 @@ The connect card of EA-4b and `docs/external_agents_connect.md` show this table.
   2. A first-party client on `agent_first_party_client_ids` signs a member in again with no click, on a live connection whose scopes cover the request. A new approval of it replaces the old connection and revokes its tokens.
   3. Every other client keeps the screen, the ticket and the approve gate. The list is empty by default.
   4. Scope change, owner, 2026-10-30: no Aroh link in the Metorite app. Only a person who has the Aroh address uses Aroh.
+- 2026-11-04 — §10.8, D-EA-12, D-EA-13 and slices EA-17a to EA-17c (Metorite task 1585). The owner asked for a better consent page, a project tree that ticks down, and a way to change access after the connect. The owner approved the design and both recommendations: a subproject added later joins on its own unless the member left it out, and a scope comes back only if the agent asked for it at the connect.
 
 ## 19. One manifest, two doors: every app over the MCP (MCP-P0, D136)
 
