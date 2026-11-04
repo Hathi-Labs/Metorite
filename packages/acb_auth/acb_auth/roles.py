@@ -46,8 +46,8 @@ class AgentScope:
 
     Branch 0 of ``deps.get_current_user`` attaches it LAST, after the member's
     access resolved, and only for a signed request of a live connection. The
-    Projects visibility seam reads it: the pins, the personal opt-out and the
-    seal narrow both arms of its clauses. ``None`` on ``UserContext.agent``
+    Projects visibility seam reads it: the pins, the left-out list, the
+    personal opt-out and the seal narrow both arms of its clauses. ``None`` on ``UserContext.agent``
     means a human request, and every clause is then byte-identical to before.
 
     Every field comes from the ``agent_connection`` row, never from a header,
@@ -61,6 +61,10 @@ class AgentScope:
     pinned_projects: tuple[str, ...] = ()
     #: D-EA-4. False hides every personal project.
     include_personal: bool = False
+    #: D-EA-12 (spec §10.8, EA-17a). Project ids that the reach stops at: the
+    #: project and every project beneath it stay out, unless a pin beneath
+    #: it starts a reach of its own. Empty leaves nothing out.
+    left_out_projects: tuple[str, ...] = ()
     client_origin: str = ""
     #: The stamp ``mcp:<host>:<slug>`` (EA-13a), the value of
     #: ``agent_oauth.actor_via_for(client_origin, client_id=...)`` for the

@@ -1383,22 +1383,58 @@ WHERE organization_id = CAST(:vis_org AS uuid)
 _AGENT_NOT_PERSONAL_SQL = """
   AND personal_owner IS NULL"""
 
-#: Added when the connection has pins: the pinned ids in ``:vis_org`` and every
-#: project beneath them. A POSITIVE ``IN``, never ``NOT IN``, because one NULL
-#: makes ``NOT IN`` match nothing. ``:vis_pins`` binds as ``uuid[]``.
-_AGENT_PINS_SQL = """
+#: Added when the connection has pins or a left-out list (WS-55 EA-17a,
+#: D-EA-12, external_agent_access §10.8). The reach follows the nearest mark.
+#:
+#: * It starts at each pin. With no pin, it starts at each root of the
+#:   organization (:data:`_AGENT_REACH_FROM_ROOTS`), so the reach is every
+#:   project less each left-out subtree.
+#: * It walks down ``parent_project_id`` and stops at a left-out project, so
+#:   that project and every project beneath it stay out.
+#: * A pin beneath a left-out project is a start of its own, so the nearest
+#:   mark wins. A project that is a pin and left out stays out.
+#: * Each step filters by ``:vis_org``. So a pin or a left-out id of another
+#:   organization changes nothing, and so does a left-out id that no start
+#:   reaches. ``UNION`` ends the walk on a cycle.
+#:
+#: The walk can only narrow. The seal and the personal switch of
+#: :data:`_AGENT_PROJECTS_SQL` still apply to each project it reaches, so a
+#: mark on a sealed project, or on a personal one with the switch off,
+#: changes nothing. A POSITIVE ``IN``, never ``NOT IN``, because one NULL
+#: makes ``NOT IN`` match nothing. The left-out test is a ``NOT (= ANY)`` on
+#: one row: a NULL there stops the walk, so it fails closed. ``:vis_pins``
+#: and ``:vis_left_out`` bind as ``uuid[]``.
+_AGENT_REACH_SQL = """
   AND id IN (
-    WITH RECURSIVE pinned AS (
+    WITH RECURSIVE reach AS (
         SELECT pp.id FROM pm_projects pp
         WHERE pp.organization_id = CAST(:vis_org AS uuid)
-          AND pp.id = ANY(CAST(:vis_pins AS uuid[]))
+          AND {start}
+          AND NOT (pp.id = ANY(CAST(:vis_left_out AS uuid[])))
         UNION
         SELECT c.id FROM pm_projects c
-        JOIN pinned q ON c.parent_project_id = q.id
+        JOIN reach q ON c.parent_project_id = q.id
         WHERE c.organization_id = CAST(:vis_org AS uuid)
+          AND NOT (c.id = ANY(CAST(:vis_left_out AS uuid[])))
     )
-    SELECT id FROM pinned
+    SELECT id FROM reach
   )"""
+
+#: The starts of :data:`_AGENT_REACH_SQL`: the pins, or with no pin, the
+#: roots of the organization.
+_AGENT_REACH_FROM_PINS = "pp.id = ANY(CAST(:vis_pins AS uuid[]))"
+_AGENT_REACH_FROM_ROOTS = "pp.parent_project_id IS NULL"
+
+
+def _agent_has_marks(agent: AgentScope) -> bool:
+    """True when the connection has pins or a left-out list (D-EA-12 rule 8).
+
+    The ONE test of when :data:`_AGENT_REACH_SQL` runs and its two binds go
+    in. ``_refuse_pinned_space`` (``tree.py``) and the pinned branch of the
+    edge test the pins alone, on purpose: a connection with only a left-out
+    list reaches wide.
+    """
+    return bool(agent.pinned_projects or agent.left_out_projects)
 
 
 def _narrow_for_agent(clause: str, column: str, agent: AgentScope | None) -> str:
@@ -1412,8 +1448,12 @@ def _narrow_for_agent(clause: str, column: str, agent: AgentScope | None) -> str
     projects = _AGENT_PROJECTS_SQL
     if not agent.include_personal:
         projects += _AGENT_NOT_PERSONAL_SQL
-    if agent.pinned_projects:
-        projects += _AGENT_PINS_SQL
+    if _agent_has_marks(agent):
+        start = (
+            _AGENT_REACH_FROM_PINS if agent.pinned_projects
+            else _AGENT_REACH_FROM_ROOTS
+        )
+        projects += _AGENT_REACH_SQL.replace("{start}", start)
     return f"({clause} AND {column} IN ({projects}\n))"
 
 
@@ -1465,8 +1505,10 @@ class Visibility:
                 "vis_groups": list(self.groups),
                 "vis_org": self.organization_id,
             }
-        if self.agent is not None and self.agent.pinned_projects:
+        if self.agent is not None and _agent_has_marks(self.agent):
             params["vis_pins"] = [str(p) for p in self.agent.pinned_projects]
+            params["vis_left_out"] = [
+                str(p) for p in self.agent.left_out_projects]
         return params
 
     def project_clause(self, column: str = "id") -> str:

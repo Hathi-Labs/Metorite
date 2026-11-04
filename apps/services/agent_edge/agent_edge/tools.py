@@ -1484,6 +1484,9 @@ _WHOAMI_PROPERTIES: dict[str, Any] = {
     "organization_id": {"type": "string"},
     "scopes": {"type": "array", "items": {"type": "string"}},
     "pinned_projects": {"type": "array", "items": {"type": "string"}},
+    #: D-EA-12 (spec §10.8, EA-17a): the projects the connection leaves out,
+    #: with every project beneath them, unless a pin beneath starts again.
+    "left_out_projects": {"type": "array", "items": {"type": "string"}},
     "include_personal": {"type": "boolean"},
     "server_time": {"type": "string"},
 }
@@ -1518,6 +1521,7 @@ async def _whoami(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         "organization_id": lookup.organization_id,
         "scopes": sorted(ctx.caller.scopes),
         "pinned_projects": [str(p) for p in lookup.pinned_projects],
+        "left_out_projects": [str(p) for p in lookup.left_out_projects],
         "include_personal": bool(lookup.include_personal),
         "server_time": _server_time(),
     }
@@ -1530,8 +1534,9 @@ WHOAMI = Tool(
         "Tell which Metorite member this connection acts for. Returns the"
         " member's email, the organization id, the scopes this connection may"
         " use, the projects it is pinned to (an empty list means every project"
-        " the member can see), whether it may read personal projects, and the"
-        " server time in UTC." + _UNTRUSTED_NOTE
+        " the member can see), the projects it leaves out with every project"
+        " under them (a pinned project under one is still in), whether it may"
+        " read personal projects, and the server time in UTC." + _UNTRUSTED_NOTE
     ),
     required_scope=None,
     input_schema={"type": "object", "properties": {}, "additionalProperties": False},
