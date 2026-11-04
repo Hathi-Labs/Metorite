@@ -47,7 +47,9 @@ def resolve_zone(*names: str | None) -> str:
     ``people.timezone``. The first valid IANA name wins. ``UTC`` is the column
     default of ``user_settings.timezone``, so it only wins when no later
     candidate names a real zone. With no valid name the result is
-    :data:`DEFAULT_ZONE`. Fence: ``tests/unit/test_chat_now_line.py``."""
+    :data:`DEFAULT_ZONE`. The last fallback is Asia/Kolkata and not UTC on
+    purpose: the owner directive of 2026-10-19 (see :data:`DEFAULT_ZONE`)
+    sets it, and task 1649 keeps it. Fence: ``tests/unit/test_chat_now_line.py``."""
     found = [v for v in (_valid(n) for n in names) if v]
     for name in found:
         if name != "UTC":
