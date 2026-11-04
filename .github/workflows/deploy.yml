@@ -128,13 +128,148 @@ jobs:
   #
   # ⚠️ WS-38, 2026-10-16: on the DAILY RELEASE and on a dispatch this job is a
   # gate again. `publish-release` needs it green. See the note on that job.
+  #
+  # ── CIV-4: a push runs the full suite in BATCHES (spec ci_velocity.md §5) ──
+  # A push run joins the group `main-full-suite`, so one full suite runs at a
+  # time. GitHub keeps one running job and one pending job in a group, and a
+  # newer pending job CANCELS the older one. So the merges that land during a
+  # run wait, and the next run tests them together at the newest commit.
+  #
+  # ⚠️ A CANCELLED `test` JOB ON A PUSH IS THE DESIGN, not a fault. It is a
+  # merge that a later run folded in. That later run's summary names it, from
+  # the step "Name the tested range". A FAILED job is a red batch: fix
+  # forward or revert at once.
+  #
+  # ⚠️ A schedule run or a dispatch NEVER joins the push group. If it did, the
+  # next merge would cancel the release's pending `test` job, `publish-release`
+  # would read `cancelled` and skip, and that day's release would be lost. The
+  # `deploy` job's note records the same trap for a workflow-level group. So
+  # each such run gets a group of its own, named by its run id. It never
+  # queues, and nothing cancels it.
+  #
+  # `cancel-in-progress: false`: a merge must not kill a RUNNING batch. With
+  # `true`, a busy day would start a batch at each merge and finish none.
+  # Fence: tests/unit/test_deploy_pipeline.py.
   test:
     name: "Unit tests (a signal on a push, a gate on a release)"
     runs-on: ubuntu-latest
     needs: lint
     if: ${{ !inputs.skip_tests }}
+    concurrency:
+      group: ${{ github.event_name == 'push' && 'main-full-suite' || format('release-{0}', github.run_id) }}
+      cancel-in-progress: false
+    # Read only. `actions: read` is for the range step's Actions API calls.
+    # A job-level block replaces the workflow's, so `contents` comes again.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v5
+
+      # ── The tested range of a push batch (CIV-4) ──────────────────────
+      # The last green push run of THIS job, from the Actions API, to this
+      # commit, with the PR of each commit between them. It reads the JOB,
+      # not the run: a run is red when only `publish-staging` failed. With no
+      # answer, it writes "unknown". It writes nothing but the summary, and it
+      # runs before the suite, so a red batch still names its PRs. A failure
+      # here never fails `test` (`continue-on-error`).
+      - name: Name the tested range
+        if: ${{ github.event_name == 'push' }}
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The job's own `name:`. The jobs API names a job by it.
+          SUITE_JOB: "Unit tests (a signal on a push, a gate on a release)"
+        run: |
+          set +e
+          set -uo pipefail
+          tmp="$(mktemp -d)"
+          api="repos/${GITHUB_REPOSITORY}"
+          cat > "$tmp/range.py" <<'PY'
+          import json, re, sys
+
+          def load(path):
+              try:
+                  with open(path, encoding="utf-8") as fh:
+                      return json.load(fh)
+              except (OSError, ValueError):
+                  return None
+
+          mode = sys.argv[1]
+          if mode == "runs":
+              # Newest first. This run is in the list too, so skip it.
+              runs = (load(sys.argv[2]) or {}).get("workflow_runs")
+              if not isinstance(runs, list):
+                  sys.exit(1)
+              for run in runs:
+                  if str(run.get("id")) != sys.argv[3]:
+                      print(run.get("id"), run.get("head_sha"))
+          elif mode == "green":
+              jobs = (load(sys.argv[2]) or {}).get("jobs") or []
+              sys.exit(0 if any(j.get("name") == sys.argv[3]
+                                and j.get("conclusion") == "success"
+                                for j in jobs) else 1)
+          elif mode == "summary":
+              path, head, base, run_url, why = sys.argv[2:7]
+              out = ["### Tested range", "",
+                     "- To: `" + head[:12] + "`, the commit of this run."]
+              doc = load(path) if base else None
+              if base and doc is None:
+                  why = "the compare API gave no answer"
+              elif doc is not None and doc.get("status") not in ("ahead", "identical"):
+                  why = base[:12] + " is not an ancestor of this commit"
+                  doc = None
+              if doc is None:
+                  out.append("- From: unknown (" + why + ").")
+              else:
+                  commits = doc.get("commits") or []
+                  total = doc.get("total_commits", len(commits))
+                  out.append("- From: `" + base[:12] + "`, the last green push run of this job: " + run_url)
+                  prs, rows = [], []
+                  for c in commits:
+                      msg = (c.get("commit") or {}).get("message") or ""
+                      subject = msg.partition("\n")[0].strip()
+                      m = (re.search(r"\(#(\d+)\)$", subject)
+                           or re.match(r"Merge pull request #(\d+)", subject))
+                      if m:
+                          prs.append("#" + m.group(1))
+                      rows.append("  - `" + str(c.get("sha", ""))[:12] + "` " + subject)
+                  out.append("- " + str(total) + " new commit(s). PRs: "
+                             + (", ".join(prs) or "none named") + ".")
+                  out += rows
+                  if total > len(commits):
+                      out.append("- The API listed " + str(len(commits)) + " of " + str(total) + " commits.")
+              print("\n".join(out))
+          PY
+          from=""
+          from_run=""
+          why="no push run of this job passed in the last 40 runs"
+          if gh api "${api}/actions/workflows/deploy.yml/runs?branch=main&event=push&per_page=40" > "$tmp/runs.json" \
+             && python3 "$tmp/range.py" runs "$tmp/runs.json" "$GITHUB_RUN_ID" > "$tmp/ids.txt"; then
+            while read -r id sha; do
+              if [ "$SECONDS" -ge 90 ]; then
+                why="the search for a green run took over 90 s"
+                break
+              fi
+              # stdin from /dev/null, so no call can eat the list of runs.
+              if gh api "${api}/actions/runs/${id}/jobs?per_page=100" > "$tmp/jobs.json" < /dev/null \
+                 && python3 "$tmp/range.py" green "$tmp/jobs.json" "$SUITE_JOB" < /dev/null; then
+                from="$sha"
+                from_run="$id"
+                break
+              fi
+            done < "$tmp/ids.txt"
+          else
+            why="the Actions API gave no list of runs"
+          fi
+          # `gh api` prints an error body on stdout. A failed call leaves no file.
+          if [ -n "$from" ]; then
+            gh api "${api}/compare/${from}...${GITHUB_SHA}" > "$tmp/compare.json" || rm -f "$tmp/compare.json"
+          fi
+          python3 "$tmp/range.py" summary "$tmp/compare.json" "$GITHUB_SHA" "$from" \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${from_run}" "$why" \
+            >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.3.0
