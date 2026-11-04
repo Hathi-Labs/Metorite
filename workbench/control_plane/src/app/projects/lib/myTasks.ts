@@ -48,6 +48,15 @@ export const MY_TASKS_MODES = [
 
 export type MyTasksMode = (typeof MY_TASKS_MODES)[number]["id"];
 
+/**
+ * The My tasks tab a project canvas id names, or null when there is none (the
+ * Timeline). A mode command of the palette lands here while My tasks is open
+ * (MOB-1, phone audit 2026-11-03).
+ */
+export function myTasksModeFor(mode: string): MyTasksMode | null {
+  return MY_TASKS_MODES.find((entry) => entry.id === mode)?.id ?? null;
+}
+
 // ── The chips ───────────────────────────────────────────────────────────────
 
 export const MY_TASKS_CHIPS = [
