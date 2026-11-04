@@ -1,7 +1,7 @@
 # Web research — Mira reads the web at large, on open-source parts (WS-WEB)
 
-> **Product:** Metorite · **Feature:** web search, page and file reading, crawling, browsing and research jobs for the one assistant · **Updated:** 2026-11-02 · **Owner:** vjvarada
-> **Status:** 🔨 **IN BUILD.** WEB-1 (the fetch guard) is built, 2026-11-01. WEB-2 (the local HTML reader) is built dark behind `WEB_RESEARCH_ORGS`, 2026-11-02, with Trafilatura in a child process. WEB-2b (the confinement of that child) is built, 2026-11-02, and it must merge before that flag flips. WEB-10, the goal record, is built on 2026-11-01 (§6.1): the table `goal_records` and its store, with no caller yet. WEB-3 is next. `web_search` and `fetch_page` existed before WEB-0 (§2).
+> **Product:** Metorite · **Feature:** web search, page and file reading, crawling, browsing and research jobs for the one assistant · **Updated:** 2026-11-04 · **Owner:** vjvarada
+> **Status:** 🔨 **IN BUILD.** WEB-1 (the fetch guard) is built, 2026-11-01. WEB-2 (the local HTML reader) is built dark behind `WEB_RESEARCH_ORGS`, 2026-11-02, with Trafilatura in a child process. WEB-2b (the confinement of that child) is built, 2026-11-02, and it must merge before that flag flips. WEB-10, the goal record, is built on 2026-11-01 (§6.1): the table `goal_records` and its store, with no caller yet. WEB-3 (the file readers) is built dark behind `WEB_RESEARCH_ORGS`, 2026-11-04. MarkItDown reads PDF, DOCX, PPTX, XLSX, CSV and EPUB in the same child. pdfplumber reads a PDF that it cannot. A long file spills through CTX-1. The type refusal of §3.1 rule 5 is built with it. WEB-4 is next. `web_search` and `fetch_page` existed before WEB-0 (§2).
 > **Verified against code on 2026-11-01 at `f59a636b5`.** Each path in §12 was read on that commit.
 > **Board:** WS-WEB in `work_plan.md` §2.1. **Decision:** D148. D85, D117, D124, D129, D130 and D139 bind it.
 > **Metorite:** project "Agent Tooling", epic 1235, this spec task 1237. The slices WEB-1 to WEB-12 are tasks 1259 to 1270, in order.
@@ -120,6 +120,19 @@ The guard picks the reader by the content type.
 - The OCR child now closes its inherited fds first too. The OCR parent passes no fd on purpose. With no `/proc/self/fd` listing, the close runs to the hard `RLIMIT_NOFILE`, and a hard limit of infinity refuses.
 - The parent kills the group after the reap. The group id can then go only to a new session leader, such as a concurrent reader or OCR child. That read falls to the strip. This has no security effect, and we accept it.
 - Fence: `tests/unit/test_web_reader_confine.py`. The TCP rule of ABI 4 is proved on CI only. A test fails on GitHub Actions when the runner has an ABI below 4.
+
+**As built, WEB-3 (2026-11-04).** `fetch_page` reads six file types, with `WEB_RESEARCH_ORGS` on. Off, the output is the WEB-1 output, byte for byte.
+
+- **One child, a second mode.** `web_reader_worker.py` takes an extension as argv: `python -I web_reader_worker.py .pdf`. The parent picks the extension from `_FILE_TYPES` by the content type. A generic type (`application/octet-stream`) uses the extension of the URL path, if the table knows it. The file comes on stdin, and the child opens no path. `main()` keeps its order. It adds one step before the confinement: `mimetypes.init()`, because openpyxl reads `/etc/mime.types` at import, and Landlock refuses that read.
+- **The reader.** MarkItDown 0.1.9 reads the file (extras pdf, docx, pptx, xlsx). Its EPUB reader needs no extra. pdfplumber 0.11.10 reads a PDF that MarkItDown cannot, or reads as empty. The child checks the first bytes of the file first (`%PDF-`, or `PK` for a zip type), because MarkItDown reads unknown bytes as plain text. The parent never imports a parser (fence: `test_web_files.py`).
+- **Caps.** The guard keeps 15 MB. The file child has `FILE_TIMEOUT_S` (25 s), 20 s of CPU and 2 GiB of address space. The reader output cap is `MAX_FILE_TEXT_CHARS` (300,000 characters). Past it, the text ends with a line that says so.
+- **The spill.** A file text longer than `max_chars` spills through the one CTX-1 store: `tool_result_spill.spill_result` keeps the framed text and returns its preview. The footer is the locator, `read_tool_result(ref=..., offset=...)`. It spills only with `TOOL_RESULT_SPILL` on, for a run that has an org, a member and a thread. Else the text is cut as a page is, with `[... truncated at N chars]`.
+- **The mark.** The file text sits in one `WEB PAGE` block. The URL, the Type and the Title (when the file states one, as EPUB does) sit inside it.
+- **Faults.** Each fault gives the WEB-2 read of the type, and one log line. A fault is no slot, a missing package, a crash, a bad answer, a timeout or an empty text. A PDF or an Office file then gets the binary line. CSV gets the strip.
+- **The type refusal (§3.1 rule 5).** With the flag on, `_allowed_type` passes HTML, text, JSON, XML, PDF, Office, EPUB and images. Each other type gets one line that names the type (`zip`, `audio`, `video`, a font, an unknown generic). The name is cleaned to `type/subtype`, because the server writes it. With the flag off, nothing is refused.
+- **The log.** Each file read writes one `web_reader.read` event: the URL with no query, the reader, the size in bytes, the characters and the spill ref.
+- **Left for later.** Image text (OCR) and the old binary Office types (`.doc`, `.xls`, `.ppt`) keep the binary line. The line still says "comes later (WEB-3)", and a later change can reword it. Docling for a hard or scanned PDF is WEB-7.
+- Fences: `tests/unit/test_web_files.py`, and `TestTheFileChild` in `tests/unit/test_web_reader_confine.py` (Linux).
 
 ### 3.3 Search providers
 
@@ -298,7 +311,8 @@ Research of 2026-11-01. The licence and the last commit of each repo were read f
 Each path was read on `f59a636b5`.
 
 - `packages/acb_skills/acb_skills/web_tools.py` (`web_search`, `fetch_page`, `_serpapi_search`)
-- `packages/acb_skills/acb_skills/web_reader_worker.py` (the Trafilatura child)
+- `packages/acb_skills/acb_skills/web_reader_worker.py` (the Trafilatura child, and from WEB-3 its file mode)
+- `packages/acb_skills/acb_skills/tool_result_spill.py` (`spill_result`, the CTX-1 spill that `fetch_page` calls for a long file)
 - `packages/acb_skills/acb_skills/egress.py` (the egress card)
 - `packages/acb_skills/AGENTS.md` (item 4 names the web tools)
 - `apps/services/orchestrator/orchestrator/_tool_injection.py` (line 48, line 2032)
@@ -338,6 +352,9 @@ bash scripts/ci_local.sh
 | A provider is offered only when ready | New with WEB-4: `tests/unit/test_web_search_providers.py` |
 | No AGPL package in our Python or Node lock files | New with WEB-2: `tests/unit/test_no_agpl_dependency.py` |
 | A browse write asks on the card | New with WEB-9: `tests/unit/test_browse_session.py` |
+| A parent never imports a parser, and the file child reads the six types, falls back to pdfplumber and spills a long file | New with WEB-3: `tests/unit/test_web_files.py` |
+| The file child is confined and meets the same refusals as the page child | New with WEB-3: `TestTheFileChild` and `test_file_mode_refuses_each_attack_too` in `tests/unit/test_web_reader_confine.py` (Linux) |
+| The guard refuses a type outside the list and names it | New with WEB-3: `tests/unit/test_web_files.py` (`test_the_guard_refuses_another_type_and_names_it`) |
 | A new table is tenant-scoped | `tests/unit/test_tenant_coverage.py` |
 | Org B reads no goal of org A, a member reads only their own goals, a stale write changes nothing, and the cap stops a job with `cap_reached` | WEB-10: `tests/unit/test_goal_record_r8.py` (R8) |
 | The objective never changes, each UPDATE raises the version by one, and no column holds a permission | WEB-10: same file |

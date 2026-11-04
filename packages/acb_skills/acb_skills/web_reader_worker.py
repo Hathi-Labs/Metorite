@@ -61,12 +61,25 @@ The network needs no Landlock rule: seccomp refuses ``socket`` itself, and step
 not x86-64, gives ``{"fault": "unavailable"}`` and no parse. The parent then
 reads with its regex strip.
 
-Fence: ``tests/unit/test_web_readers.py``.
+**File mode** (WEB-3). ``python -I <path>/web_reader_worker.py .pdf`` reads a
+file, not a page. The extension is one of :data:`FILE_TYPES`. The parent picks
+it from a fixed table, and never from the file. The bytes of the file come on
+stdin, and the child opens no path. It runs the SAME ``main`` in the SAME
+order: close the fds, limit, confine, one warm-up (a tiny CSV and a tiny PDF),
+close the limits, and only then read the stdin. MarkItDown reads the file.
+For a PDF that it cannot read, pdfplumber reads it. The child imports both
+inside the confinement, so the parent never holds them. The answer adds
+``reader`` (``markitdown`` or ``pdfplumber``) to the fields above.
+:data:`MAX_FILE_TEXT_CHARS` caps the text, and the parent reads that as the
+reader output cap.
+
+Fence: ``tests/unit/test_web_readers.py`` and ``tests/unit/test_web_files.py``.
 """
 from __future__ import annotations
 
 import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -81,6 +94,34 @@ MEMORY_BYTES = 512 * 1024 * 1024
 #: The CPU seconds of the child on Linux. One thread, so CPU time is about
 #: wall time. The parent's kill at ``READER_TIMEOUT_S`` comes first.
 CPU_SECONDS = 10
+
+#: WEB-3, file mode. A file parse holds more than a page: MarkItDown loads
+#: pandas, numpy, onnxruntime (its type guess) and pdfminer. So the address
+#: space is larger. The CPU time stays below the kill of the parent
+#: (``FILE_TIMEOUT_S`` in ``web_tools``).
+FILE_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
+FILE_CPU_SECONDS = 20
+#: The reader output cap: the most characters of text that a file gives. The
+#: parent spills the text of a file that is longer than the ask of the call.
+MAX_FILE_TEXT_CHARS = 300_000
+#: The file types of file mode: the extension, and the media type that goes to
+#: MarkItDown as a hint. The parent maps a content type to an extension.
+FILE_TYPES = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".csv": "text/csv",
+    ".epub": "application/epub+zip",
+}
+#: The first bytes of each binary file type. MarkItDown reads a body that it
+#: cannot place as plain text, so a mislabelled binary body would give noise.
+_ZIP_MAGIC = b"PK\x03\x04"
+_MAGIC = {".pdf": b"%PDF-", ".docx": _ZIP_MAGIC, ".pptx": _ZIP_MAGIC,
+          ".xlsx": _ZIP_MAGIC, ".epub": _ZIP_MAGIC}
+#: A PDF may start with junk. Readers look for the mark in this many bytes.
+_PDF_MARK_WINDOW = 1024
+_CUT_LINE = "\n\n[... the file text is cut at {n:,} characters]"
 
 #: The Landlock ABI that the child asks of the kernel. 1 is the file system.
 #: The kernel's own ABI decides the rest: from 4 on, TCP is refused too.
@@ -123,22 +164,43 @@ def _load_confine() -> Any:
 _cc = _load_confine()
 
 
-def _limit_self() -> None:
+def _limit_self(file_mode: bool = False) -> None:
     """The memory cap, the CPU cap, no core file and a low priority, on Linux.
 
     It runs before the import of Trafilatura and before one byte of the page.
     Windows has no ``resource`` module, and the child runs with no cap there.
+    File mode (WEB-3) has larger caps.
     """
     sys.dont_write_bytecode = True
+    # numpy starts a pool of threads at its import. One thread is all that the
+    # confinement allows, and the file is read by one thread.
+    for name in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ[name] = "1"
     try:
         import resource
     except ImportError:
         return
-    resource.setrlimit(resource.RLIMIT_AS, (MEMORY_BYTES, MEMORY_BYTES))
-    resource.setrlimit(resource.RLIMIT_CPU, (CPU_SECONDS, CPU_SECONDS))
+    memory = FILE_MEMORY_BYTES if file_mode else MEMORY_BYTES
+    cpu = FILE_CPU_SECONDS if file_mode else CPU_SECONDS
+    resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     with contextlib.suppress(OSError):
         os.nice(10)
+
+
+def _before_confine(file_mode: bool) -> None:
+    """What file mode must do while it can still read the whole disk.
+
+    openpyxl builds a ``mimetypes.MimeTypes()`` at import. That reads
+    ``/etc/mime.types``, which is outside the read dirs, so the import would
+    fail with a permission error. ``mimetypes.init()`` reads the files once and
+    sets the flag, and a later ``MimeTypes()`` then reads nothing. The module
+    starts no thread and opens no socket."""
+    if file_mode:
+        import mimetypes
+
+        mimetypes.init()
 
 
 def _scalar(value: str) -> str:
@@ -221,24 +283,159 @@ def _answer(html: str) -> dict[str, str]:
         return {"fault": "failed"}
 
 
-def _preload() -> None:
-    """Run one small page through ``extract``, inside the confinement.
+# ── File mode (WEB-3) ────────────────────────────────────────────────────────
+
+
+def _warm_pdf() -> bytes:
+    """A one-page PDF of our own text, for the warm-up. It holds the offsets
+    of its own xref table, so no reader needs to repair it."""
+    stream = b"BT /F1 12 Tf 20 100 Td (Warm-up file for the reader) Tj ET"
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length %d >>\nstream\n%s\nendstream" % (len(stream), stream),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out, offsets = bytearray(b"%PDF-1.4\n"), []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (number, body)
+    start = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    for offset in offsets:
+        out += b"%010d 00000 n \n" % offset
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objects) + 1, start)
+    return bytes(out)
+
+
+_WARM_CSV = b"name,count\nwarm-up,1\nreader,2\n"
+_converter_cache: list[Any] = []
+
+
+def _converter() -> Any:
+    """The one MarkItDown of this child. It loads its type guess (magika)
+    and each converter. Plugins stay off, and it reads no URL."""
+    if not _converter_cache:
+        from markitdown import MarkItDown
+
+        _converter_cache.append(MarkItDown(enable_plugins=False))
+    return _converter_cache[0]
+
+
+def _markitdown(data: bytes, ext: str) -> tuple[str, str]:
+    """``(text, title)`` of *data* by MarkItDown. It reads a stream, never a
+    path and never a URL. Raises on a file it cannot read."""
+    from markitdown import StreamInfo
+
+    result = _converter().convert_stream(
+        io.BytesIO(data), stream_info=StreamInfo(extension=ext, mimetype=FILE_TYPES[ext]))
+    return str(result.markdown or ""), str(result.title or "")
+
+
+def _pdfplumber(data: bytes) -> tuple[str, str]:
+    """``(text, title)`` of a PDF by pdfplumber, page by page. It stops at
+    :data:`MAX_FILE_TEXT_CHARS`, so a long PDF costs no more than its cap."""
+    import pdfplumber
+
+    parts: list[str] = []
+    size = 0
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        info = pdf.metadata or {}
+        title = info.get("Title")
+        for page in pdf.pages:
+            text = (page.extract_text() or "").strip()
+            page.close()
+            if text:
+                parts.append(text)
+                size += len(text)
+            if size > MAX_FILE_TEXT_CHARS:
+                break
+    return "\n\n".join(parts), title if isinstance(title, str) else ""
+
+
+def _has_magic(data: bytes, ext: str) -> bool:
+    """True when *data* starts as its type does. CSV has no mark."""
+    mark = _MAGIC.get(ext)
+    if mark is None:
+        return True
+    window = _PDF_MARK_WINDOW if ext == ".pdf" else len(mark)
+    return mark in data[:window]
+
+
+def _file_text(data: bytes, ext: str) -> dict[str, str]:
+    """The answer for one file: MarkItDown first, and pdfplumber for a PDF
+    that MarkItDown cannot read or reads as empty. An empty text is the
+    honest answer of a scan, so ``text`` is ``""``."""
+    reader, text, title = "markitdown", "", ""
+    if not _has_magic(data, ext):
+        return {"text": "", "title": "", "date": "", "reader": reader}
+    try:
+        text, title = _markitdown(data, ext)
+    except ImportError:
+        raise
+    except Exception:  # MarkItDown fails in many ways on a hostile file
+        text = ""
+    if not text.strip() and ext == ".pdf":
+        reader = "pdfplumber"
+        try:
+            text, title = _pdfplumber(data)
+        except ImportError:
+            raise
+        except Exception:
+            text, title = "", ""
+    text = text.strip()
+    if len(text) > MAX_FILE_TEXT_CHARS:
+        text = text[:MAX_FILE_TEXT_CHARS] + _CUT_LINE.format(n=MAX_FILE_TEXT_CHARS)
+    return {"text": text, "title": title, "date": "", "reader": reader}
+
+
+def _answer_file(data: bytes, ext: str) -> dict[str, str]:
+    """The one object that file mode writes. It never raises for a fault."""
+    if ext not in FILE_TYPES:
+        return {"fault": "failed"}
+    try:
+        return _file_text(data, ext)
+    except ImportError:
+        return {"fault": "package"}
+    except MemoryError:
+        return {"fault": "memory"}
+    except Exception:  # no traceback reaches the parent, only a code
+        return {"fault": "failed"}
+
+
+def _preload(file_mode: bool = False) -> None:
+    """Run one small page, or one tiny file, inside the confinement.
 
     Each import of Trafilatura and of lxml happens here, so the read of the
-    real page opens no file. An import that fails raises ``ImportError``."""
-    _extract_markdown(_WARM_HTML)
+    real page opens no file. In file mode MarkItDown, its type guess, pdfminer
+    and pdfplumber load here, and so do the threads of onnxruntime. An import
+    that fails raises ``ImportError``."""
+    if not file_mode:
+        _extract_markdown(_WARM_HTML)
+        return
+    _markitdown(_WARM_CSV, ".csv")
+    _markitdown(_warm_pdf(), ".pdf")
+    _pdfplumber(_warm_pdf())
 
 
-def main() -> int:
+def main(file_ext: str = "") -> int:
+    """Read one page from stdin, or with *file_ext* one file. The order of the
+    steps is the control, and file mode keeps it."""
     try:
         _cc.close_inherited_fds()
-        _limit_self()
+        _limit_self(bool(file_ext))
+        _before_confine(bool(file_ext))
         # One thread here, so the confinement binds each thread.
         _cc.confine(LANDLOCK_ABI)
-        _preload()
+        _preload(bool(file_ext))
         _cc.close_limits()
         # The untrusted page arrives only now, after the confinement.
-        item = _answer(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
+        raw = sys.stdin.buffer.read()
+        item = (_answer_file(raw, file_ext) if file_ext
+                else _answer(raw.decode("utf-8", errors="replace")))
     except _cc.Refused:  # no confinement means no parse
         item = {"fault": "unavailable"}
     except ImportError:
@@ -254,4 +451,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1] if len(sys.argv) > 1 else ""))

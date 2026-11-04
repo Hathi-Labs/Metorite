@@ -152,6 +152,24 @@ class TestTheOrder:
     def test_the_floor_is_the_file_system(self) -> None:
         assert _load(WORKER, "web2b_w2").LANDLOCK_ABI == 1
 
+    def test_file_mode_reads_the_file_only_after_the_confinement(self) -> None:
+        """WEB-3: file mode is the SAME ``main``. The bytes of the file come
+        from the one stdin read, and ``_answer_file`` runs after it."""
+        tree = ast.parse(WORKER.read_text(encoding="utf-8"))
+        main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+        wanted = {"_cc.confine", "_preload", "_cc.close_limits", "sys.stdin.buffer.read",
+                  "_answer_file"}
+        positioned = sorted((n.end_lineno, n.end_col_offset, ast.unparse(n.func))
+                            for n in ast.walk(main) if isinstance(n, ast.Call))
+        assert [c for _l, _c, c in positioned if c in wanted] == [
+            "_cc.confine", "_preload", "_cc.close_limits", "sys.stdin.buffer.read",
+            "_answer_file"]
+
+    def test_file_mode_has_no_second_confinement(self) -> None:
+        names = {n.name for n in ast.walk(ast.parse(WORKER.read_text(encoding="utf-8")))
+                 if isinstance(n, ast.FunctionDef)}
+        assert not names & {"seccomp_program", "_install_seccomp", "landlock_abi", "confine"}
+
 
 # ── 3. The confinement (Linux) ──────────────────────────────────────────────
 
@@ -231,6 +249,10 @@ def attacks(_html=""):
 if mode == "none":
     print(json.dumps(attacks()))
     sys.exit(0)
+if mode == "file":
+    # WEB-3: the same attacks in file mode, in place of the file reader.
+    w._answer_file = lambda _data, _ext: attacks()
+    sys.exit(w.main(".pdf"))
 if mode == "thread":
     import threading, time
     threading.Thread(target=time.sleep, args=(30,), daemon=True).start()
@@ -312,6 +334,20 @@ class TestTheConfinement:
         assert got["tcp_inherited_socket"] == "refused:EBADF", got
         if os.geteuid() != 0:  # root ignores RLIMIT_NPROC
             assert got["fork"] in ("refused:EAGAIN", "refused:EWOULDBLOCK"), got
+
+    def test_file_mode_refuses_each_attack_too(self, tmp_path, listener) -> None:
+        """WEB-3: a file parser is a bigger target than a page parser, and it
+        runs through the same ``main``. It meets the same refusals."""
+        got = _probe(tmp_path, "file", listener)
+        assert got["secret_file"] == "refused:EACCES", got
+        assert got["write_file"] == "refused:EACCES", got
+        assert got["tcp_connect"] == "refused:EPERM", got
+        assert got["unix_socket"] == "refused:EPERM", got
+        assert got["signal_parent"] == "refused:EPERM", got
+        assert got["seccomp"] == "mode2", got
+        assert got["tcp_inherited_socket"] == "refused:EBADF", got
+        assert got["truncate_env"] == "refused:EPERM" and got["chmod_env"] == "refused:EPERM", got
+        assert _secret_state(tmp_path) == (len(_SECRET_TEXT), 0o644)
 
     def test_the_child_cannot_shrink_or_chmod_the_env_file(self, tmp_path, listener) -> None:
         """Repair 1, P1 and P2. Below Landlock ABI 3 a truncate by path is
@@ -566,6 +602,75 @@ class TestTheFallback:
         monkeypatch.chdir(tmp_path)
         page = await web_tools._child_read(_fixture("menu_page.html"))
         assert page is not None and page.title == "Julia Pro: a large 3D printer"
+
+
+# ── 6a. The file child (WEB-3, Linux) ───────────────────────────────────────
+
+_FILES = Path(__file__).resolve().parent / "fixtures" / "web" / "files"
+_FILE_CASES = [
+    ("julia.pdf", ".pdf", "Build volume is 400 by 400"),
+    ("julia.docx", ".docx", "Build volume is 400 by 400"),
+    ("julia.pptx", ".pptx", "Build volume is 400 by 400"),
+    ("julia.xlsx", ".xlsx", "| Build volume | 400 by 400 by 450 millimetres |"),
+    ("julia.csv", ".csv", "| nozzle-001 | 1 |"),
+    ("julia.epub", ".epub", "Build volume is 400 by 400"),
+]
+
+
+@linux_only
+class TestTheFileChild:
+    """The real file child, confined: MarkItDown, magika, pdfminer, pdfplumber,
+    pandas and onnxruntime must import and run with read access to the Python
+    and library dirs only, and with no new thread after the limits."""
+
+    @needs_a_confinable_host
+    @pytest.mark.parametrize(("name", "ext", "phrase"), _FILE_CASES)
+    async def test_each_type_reads_in_the_real_confined_child(self, name, ext, phrase) -> None:
+        answer = web_tools._Answer(200, body=(_FILES / name).read_bytes())
+        page = await web_tools._read_file(answer, ext)
+        assert page is not None and phrase in page.text, page
+        assert page.reader == "markitdown"
+
+    @needs_a_confinable_host
+    async def test_a_pdf_that_markitdown_fails_on_reads_by_pdfplumber_when_confined(
+            self, monkeypatch) -> None:
+        """The child with MarkItDown replaced by a failure: the confined
+        pdfplumber reads the PDF."""
+        code = ("import importlib.util, sys\n"
+                "s = importlib.util.spec_from_file_location('w', sys.argv[1])\n"
+                "w = importlib.util.module_from_spec(s); s.loader.exec_module(w)\n"
+                "real, pre, done = w._markitdown, w._preload, []\n"
+                "def preload(mode):\n"
+                "    pre(mode)\n"
+                "    done.append(1)\n"
+                "def fails(data, ext):\n"
+                "    if done and ext == '.pdf':\n"
+                "        raise ValueError('no')\n"
+                "    return real(data, ext)\n"
+                "w._preload, w._markitdown = preload, fails\n"
+                "sys.exit(w.main(sys.argv[3]))\n")
+        argv = [sys.executable, "-I", "-c", code, str(WORKER), "x"]
+        monkeypatch.setattr(web_tools, "_reader_argv", lambda: argv)
+        answer = web_tools._Answer(200, body=(_FILES / "julia.pdf").read_bytes())
+        page = await web_tools._read_file(answer, ".pdf")
+        assert page is not None and page.reader == "pdfplumber", page
+        assert "Julia Pro data sheet" in page.text
+
+    @needs_a_confinable_host
+    async def test_a_hostile_file_leaves_the_parent_free(self) -> None:
+        """A workbook whose part inflates to 16 MB: the child fails or ends at its caps, and the
+        read gives no text. It never raises in the parent."""
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("xl/workbook.xml", b"<x/>" * 4_000_000)
+        answer = web_tools._Answer(200, body=buf.getvalue())
+        start = time.monotonic()
+        page = await web_tools._read_file(answer, ".xlsx")
+        assert page is None
+        assert time.monotonic() - start < web_tools.FILE_TIMEOUT_S + 10
 
 
 # ── 7. Repair round 1 ───────────────────────────────────────────────────────
