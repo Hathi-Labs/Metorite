@@ -44,7 +44,7 @@ import {
   projectsKey,
 } from "../lib/api";
 import { type AttentionPage, LENS_LABEL } from "../lib/needsAttention";
-import { EMPTY_FILTERS, type Filters, type GroupBy, NO_LANES, type BoardLanes, type SubtaskMode, groupTasks, toQuery } from "../lib/grouping";
+import { EMPTY_FILTERS, type Filters, type GroupBy, NO_LANES, type BoardLanes, type SubtaskMode, groupTasks, isFiltered, toQuery } from "../lib/grouping";
 import { DEFAULT_SHOWN } from "../lib/shownFields";
 import { appendTasks, nextTaskPage } from "../lib/paging";
 import { chromeKind, loadedOfTotal } from "../lib/compactChrome";
@@ -61,9 +61,11 @@ import {
   type OwnStatuses,
   chipCount,
   chipNeedsEveryPage,
+  MY_TASKS_EMPTY_TEXT,
   chipRows,
   mineStatuses,
   myTasksQuery,
+  myTasksTrulyEmpty,
   planMineDrop,
   quickAddHome,
   stageGroups,
@@ -250,6 +252,8 @@ interface Props {
   onReport: (href: string) => void;
   /** Bumped by the page when the panel changed a task, so the rows read again. */
   version: number;
+  /** PJP-12a — opens the project tree, the way the sidebar does. */
+  onOpenProjects: () => void;
 }
 
 const NO_ROWS: TaskRow[] = [];
@@ -270,6 +274,7 @@ export default function MyTasksSpace({
   onOpenProject,
   onReport,
   version,
+  onOpenProjects,
 }: Props) {
   const { mode, chip, attention } = view;
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
@@ -568,14 +573,23 @@ export default function MyTasksSpace({
   // A chip other than All reads at most MY_TASKS_MAX_ROWS rows. Past that it
   // says so, in the place of the board's "Load more" bar (item 5).
   const truncated = wantsAll && listMode && listLoaded ? truncationNotice(list.rows.length, list.total) : null;
-  const emptyChip =
+  // PJP-12a — chip All, read done, no row, no filter: the member has no tasks.
+  const trulyEmpty = myTasksTrulyEmpty({ chip, loaded: listLoaded, total: list.total, filtered: isFiltered(filters) });
+  const emptyChip = trulyEmpty ? (
+    <EmptyState
+      icon="ListChecks"
+      message={MY_TASKS_EMPTY_TEXT}
+      action={{ label: "Go to Projects", icon: "FolderKanban", onClick: onOpenProjects }}
+    />
+  ) : (
     chip !== "all" && listLoaded && shown.length === 0 ? (
       <EmptyState
         icon="ListChecks"
         message={`Nothing in ${MY_TASKS_CHIPS.find((c) => c.id === chip)?.label ?? chip}.`}
         action={{ label: "Show all", icon: "List", onClick: () => onView({ ...view, chip: "all" }) }}
       />
-    ) : null;
+    ) : null
+  );
 
   return (
     <div className="flex min-w-0 flex-1 flex-col overflow-hidden" data-testid="my-tasks-space" data-mode={mode}>

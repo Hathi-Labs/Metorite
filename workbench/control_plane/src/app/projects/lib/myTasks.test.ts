@@ -32,10 +32,13 @@ import {
   inChip,
   mineStatuses,
   myTasksHref,
+  myTasksMode,
+  myTasksTrulyEmpty,
   myTasksQuery,
   openCount,
   MY_TASKS_MAX_PAGES,
   MY_TASKS_MAX_ROWS,
+  MY_TASKS_EMPTY_TEXT,
   MY_TASKS_PAGE,
   STATUS_READ_FAILED,
   phoneMyTasksTap,
@@ -521,5 +524,54 @@ describe("errors of My tasks (items 6 and 7)", () => {
   it("the Overview offers Retry when the summary read failed", () => {
     expect(space).toContain("!summary.data && summary.error");
     expect(space).toContain("onClick: summary.refresh");
+  });
+});
+
+describe("PJP-13 — the tab My tasks opens on", () => {
+  it("a desktop opens the Board and a phone opens the List", () => {
+    expect(myTasksMode(null, false)).toBe("board");
+    expect(myTasksMode(null, true)).toBe("list");
+  });
+
+  it("a picked tab wins on both, so it survives a resize", () => {
+    expect(myTasksMode("calendar", false)).toBe("calendar");
+    expect(myTasksMode("calendar", true)).toBe("calendar");
+    expect(myTasksMode("list", false)).toBe("list");
+    expect(myTasksMode("board", true)).toBe("board");
+  });
+
+  it("the page keeps the pick as null until a tab differs from the default, and waits for the viewport", () => {
+    const page = code("page.tsx");
+    expect(page).toMatch(/myTasksMode\(raw\.chosen, isMobile \|\| !viewMounted\)/);
+    expect(page).toMatch(/chosen: next\.mode !== current\.mode \? next\.mode : raw\.chosen/);
+  });
+
+  it("the old ?app=my-today link still opens the List", () => {
+    expect(code("page.tsx")).toMatch(/legacy \? \{ \.\.\.v, chip, mode: "list", attention: false \}/);
+  });
+});
+
+describe("PJP-12a — an empty My tasks", () => {
+  const base = { chip: "all", loaded: true, total: 0, filtered: false } as const;
+
+  it("says so only on chip All, after the read, with no row and no filter", () => {
+    expect(myTasksTrulyEmpty(base)).toBe(true);
+    expect(myTasksTrulyEmpty({ ...base, chip: "today" })).toBe(false);
+    expect(myTasksTrulyEmpty({ ...base, loaded: false })).toBe(false);
+    expect(myTasksTrulyEmpty({ ...base, total: 3 })).toBe(false);
+    expect(myTasksTrulyEmpty({ ...base, filtered: true })).toBe(false);
+  });
+
+  it("uses the owner's words", () => {
+    expect(MY_TASKS_EMPTY_TEXT).toBe("It's empty. Go to Projects and pick up tasks.");
+  });
+
+  it("draws the shared EmptyState for every tab, and its action opens the project tree", () => {
+    const space = code("components/MyTasksSpace.tsx");
+    expect(space).toMatch(/message=\{MY_TASKS_EMPTY_TEXT\}/);
+    expect(space).toMatch(/onClick: onOpenProjects/);
+    // One branch before the tab switch, so List, Board and Table all show it.
+    expect(space.indexOf(") : emptyChip ? (")).toBeLessThan(space.indexOf(': mode === "table" ? ('));
+    expect(code("page.tsx")).toMatch(/if \(isMobile\) setSheet\("tree"\);\s*else setRailOpen\(true\);\s*\}\}\s*phone=/);
   });
 });

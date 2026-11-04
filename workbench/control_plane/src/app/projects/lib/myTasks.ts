@@ -57,6 +57,28 @@ export function myTasksModeFor(mode: string): MyTasksMode | null {
   return MY_TASKS_MODES.find((entry) => entry.id === mode)?.id ?? null;
 }
 
+/**
+ * PJP-13 — the tab My tasks opens on. A member who picked a tab keeps it. With
+ * no pick, a desktop opens the Board and a phone opens the List, the same rule
+ * the project boards use. `chosen` is null until the member picks.
+ */
+export function myTasksMode(chosen: MyTasksMode | null, isMobile: boolean): MyTasksMode {
+  return chosen ?? (isMobile ? "list" : "board");
+}
+
+/** PJP-12a — the text of an empty My tasks, chip All, nothing hidden by a filter. */
+export const MY_TASKS_EMPTY_TEXT = "It's empty. Go to Projects and pick up tasks.";
+
+/** PJP-12a — true when My tasks is truly empty: chip All, read done, no row, no filter. */
+export function myTasksTrulyEmpty(opts: {
+  chip: MyTasksChip;
+  loaded: boolean;
+  total: number;
+  filtered: boolean;
+}): boolean {
+  return opts.chip === "all" && opts.loaded && opts.total === 0 && !opts.filtered;
+}
+
 // ── The chips ───────────────────────────────────────────────────────────────
 
 export const MY_TASKS_CHIPS = [
