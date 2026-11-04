@@ -53,6 +53,8 @@ import { takeHandoff } from "@/lib/chatStream";
 import { codeForGatewayRefusal, codeForStatus } from "@/lib/runErrors";
 import { githubSetupNote, splitSetupVars, UNREACHABLE_NOTE } from "@/lib/setupTokens";
 import { cleanSurface, surfaceField } from "@/lib/shell/surface";
+import { typedField } from "@/lib/typedMark";
+import { bindToRun } from "@/lib/runBinding";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -110,6 +112,11 @@ interface ChatRequest {
    *  it steered has ended, with no words. The gateway answers a steer that
    *  run never read, or 202 when nothing is owed (`lib/chatSteer.ts`). */
   steerFollowUp?: boolean;
+  /** WS-63 D-PZ-37: the ONE typed mark. The member typed this message in
+   *  the message box. Only the composer sends it, and only `true` counts. A
+   *  pill, a choice, a card action, a feed starter and the Fix prompt send
+   *  none (`lib/typedMark.ts`). The gateway pops it. */
+  typed?: boolean;
 }
 
 const LITELLM_BASE_URL =
@@ -189,6 +196,8 @@ async function translateAndPersistStream(
   /** Re-open the run's stream after `since` (a Redis stream id), or null.
    *  Used when the stream ends with no terminal event (incident 2026-10-09). */
   reattach?: (since: string) => Promise<ReadableStream<Uint8Array> | null>,
+  /** The run id the gateway named in `X-Run-Id`, or null (older gateway). */
+  runId?: string | null,
 ): Promise<string> {
   // Stable per-STREAM persistence id: when the frontend didn't supply one,
   // mint it once here — per-call minting would write a new row on every 3s
@@ -251,6 +260,10 @@ async function translateAndPersistStream(
 
   /** True once the run said it ended (finished or failed). */
   let sawTerminal = false;
+  /** The run this reader follows: the runId of the first RUN_STARTED. */
+  const binding = bindToRun(runId);
+  /** True once the stream shows another run, so this reader stops. */
+  let superseded = false;
   /** The last Redis stream id seen, so a reattach replays only what is new. */
   let lastStreamId: string | null = null;
 
@@ -275,18 +288,28 @@ async function translateAndPersistStream(
   for (let attempt = 0; ; attempt++) {
   try {
     while (true) {
+      // Before the read: a read after a supersede can wait for run 2's next
+      // event, and holds this response and the gateway subscriber open.
+      if (superseded) break;
       const { done, value } = await reader.read();
       if (done) break;
       buf += decoder.decode(value, { stream: true });
       const lines = buf.split("\n");
       buf = lines.pop() ?? "";
       for (const line of lines) {
+        if (superseded) break;
         if (!line.startsWith("data: ")) continue;
         const raw = line.slice(6).trim();
         if (!raw) continue;
         let ev: Record<string, unknown>;
         try { ev = JSON.parse(raw); } catch { continue; }
         const t = ev.type as string;
+        // One stream, one run (task 1533, B3). A newer send on the thread
+        // cancels this run and resets the shared event stream, and this reader
+        // then sees the NEW run's events. A second RUN_STARTED with another
+        // runId marks that switch. Stop here, so the new run's reply is never
+        // saved under this run's message id. Fence: lib/runBinding.test.ts.
+        if (!binding.accept(ev)) { superseded = true; break; }
         if (t === "RUN_FINISHED" || t === "RUN_ERROR" || t === "done") sawTerminal = true;
         if (typeof ev._stream_id === "string" && !ev._stream_id.startsWith("local-")) {
           lastStreamId = ev._stream_id;
@@ -547,6 +570,7 @@ async function translateAndPersistStream(
     // Backend stream ended early
   }
   // Only a Redis id lets the reattach replay what is new and nothing twice.
+  if (superseded) { try { await reader.cancel(); } catch { /* closed */ } break; }
   if (sawTerminal || !reattach || !lastStreamId || !clientConnected || attempt >= MAX_REATTACH) break;
   const next = await reattach(lastStreamId).catch(() => null);
   if (!next) break;
@@ -670,7 +694,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
-  const { agentName, message, messages, threadId, mode, model, context, surface, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId, userMessageTs, steerFollowUp, cardAnswer } = body;
+  const { agentName, message, messages, threadId, mode, model, context, surface, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId, userMessageTs, steerFollowUp, cardAnswer, typed } = body;
   // A steer follow-up has no words of its own: the gateway's ENGAGE seam
   // makes the stored steers its message. It runs on the gateway path only.
   const followUp = steerFollowUp === true && mode === "copilot" && !!threadId;
@@ -841,6 +865,9 @@ export async function POST(req: NextRequest): Promise<Response> {
               : {}),
             ...(supersedes ? { supersedes } : {}),
             ...(cardAnswer && typeof cardAnswer === "object" ? { card_answer: cardAnswer } : {}),
+            // WS-63 D-PZ-37: the typed mark, as the chat sent it. Only `true`
+            // passes, and the gateway pops it before the executor.
+            ...typedField(typed),
           },
           thread_id: threadId ?? undefined,
           model: model ?? undefined,
@@ -893,6 +920,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           // no author (WS-27bm S10 fix round 1).
           checkpointAgent(resolvedAgentName, message),
           threadId ? reattachFor(threadId, runHeaders) : undefined,
+          streamRes.headers.get("x-run-id"),
         );
       },
     });

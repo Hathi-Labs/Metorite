@@ -61,11 +61,11 @@ STAGING_BLANK = ROOT / "infra" / "staging" / "minimise.sql"
 #: * the room routes clear it when a chat stops being solo (P2-b);
 #: * the member purge clears it on the member's shared rooms (P2-b).
 #:
-#: A later slice adds its own entry here, in review: the job of PZ-33b
-#: (`gateway/main.py` and its handler module), the briefing of PZ-34
+#: A later slice adds its own entry here, in review: the briefing of PZ-34
 #: (`orchestrator/executor.py`), the Settings routes, Forget and the removal
 #: of PZ-35 (`routes/admin/assistant_profile.py`, `routes/admin/members.py`)
-#: and the search of MEM-2 (`acb_skills/history_tools.py`).
+#: and the search of MEM-2 (`acb_skills/history_tools.py`). The job of PZ-33b
+#: has its own entry in the block below.
 IMPORTERS: dict[Path, frozenset[str]] = {
     GATEWAY / "routes" / "rooms.py": frozenset({"clear_on_share"}),
     GATEWAY / "routes" / "admin" / "members.py": frozenset({"clear_for_member"}),
@@ -74,6 +74,18 @@ IMPORTERS: dict[Path, frozenset[str]] = {
         "list_for_member", "clear_one_for_member",
         "clear_for_member"}),
 }
+
+#: (c) PZ-33b: the job module, `gateway/chat_summary_job.py`. It runs the
+#: seed hook, reads the chat for its handler, marks it, checks the answer
+#: and writes it with the mark in the WHERE. `gateway/main.py` imports the
+#: job module and not this one, so main.py needs no entry.
+JOB_MODULE = GATEWAY / "chat_summary_job.py"
+IMPORTERS[JOB_MODULE] = frozenset({
+    "IDLE", "KIND", "TYPED_ROWS_MIN", "WORDS_MAX", "JobChat", "check_answer",
+    "mark", "member_learning_on", "member_switch_on", "member_texts", "member_words",
+    "prompt_rows",
+    "read", "read_job_chat", "rows_after", "seed", "write_marked",
+})
 #: The trees that (c) reads: all code of the platform.
 PLATFORM = (ROOT / "apps", ROOT / "packages")
 
@@ -288,6 +300,14 @@ def _model_paths(path: Path) -> list[str]:
 
 def test_d_the_module_imports_no_litellm_and_no_stream() -> None:
     assert _model_paths(MODULE) == []
+
+
+def test_d_the_job_module_imports_no_litellm_and_no_stream() -> None:
+    """PZ-33b: the job makes the one model call through
+    ``acompletion_with_fallback`` and the Router, never a fourth path."""
+    assert _model_paths(JOB_MODULE) == []
+    body = JOB_MODULE.read_text(encoding="utf-8")
+    assert "acompletion_with_fallback(" in body and 'feature=FEATURE' in body
 
 
 # ── The fences can fail ─────────────────────────────────────────────────────

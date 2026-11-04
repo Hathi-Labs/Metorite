@@ -125,6 +125,44 @@ rounding or currency, on an object that holds records is
 refused (:func:`_check_formulas_first`), because there is no backfill. A removed
 formula leaves its stored values as plain values.
 
+**The roll-ups (C7b).** A rule of kind ``rollup`` fills a field of a parent record
+with the sum, count, min or max of a hot field of the child records of another
+object of the same package, found through a hot relation field of the child
+(``acb_common/studio_rules.py`` holds the grammar and the pure checks). The
+store recomputes each stale parent after all the writes of the batch, in the
+same SAVEPOINT and under the org lock, so a read is exact. :func:`_find_rollups`
+finds the parent objects from the package rules after the org lock, and
+:func:`_lock_objects` locks them with the others in ascending id. The parent
+records follow the child records, ``FOR NO KEY UPDATE`` in ascending id.
+:func:`_recompute_parents` runs one aggregate (:func:`build_rollup`) for each
+parent and each roll-up, and :func:`_derive_parent` writes the parent: the
+formulas run again, the record is validated, and the hot rows are rebuilt. The
+rules of the parent run on the derived write too, the key rules included. At
+most :data:`~acb_common.studio_rules.MAX_ROLLUP_PARENTS` parents and
+:data:`~acb_common.studio_rules.MAX_ROLLUP_STATEMENTS` aggregates run for each
+batch, under the one deadline of the batch. A parent id that names no record is
+skipped. A child that a money roll-up counts, in another currency than the rule,
+is refused. A roll-up that does not fit now, or that the store cannot read,
+refuses the batch.
+
+**The sync of a manifest (A5).** :func:`sync_objects` brings the rows of one
+package to the ``objects`` of a published manifest, and the publish route is
+its one caller. It adds an object (:func:`define_object`, whose one caller it
+is), adds a field, flips ``hot``, and brings each rules list to the manifest
+through :func:`set_constraints`. The phases run in this order: rules pass 1
+(only the stored rules that stay), fields that turn cold, new objects, new
+fields, fields that turn hot, and rules pass 2 (the full lists). So a rule
+that goes is gone before its field turns cold or a roll-up checks its
+source, and a swap of hot fields at a cap passes, also when a rule moves
+with it. It builds the whole plan from reads, then writes in a SAVEPOINT. An
+object that goes, a field that goes or changes, a new required field on an
+object with records, and each refusal of a store call (a rule included) raise
+:class:`ObjectsOutOfSync` with a list of :class:`SyncProblem`. A refusal of a
+field step names the field. ⚠️ The lock
+order: the caller holds the ``apps`` row ``FOR UPDATE``, and the sync takes
+the org lock after it. :func:`list_objects` reads the objects of one package
+in two statements.
+
 **On a floor of 0 or less, a write that does not lower a group never reads
 the group.** The store adds up the net change of the batch on each key of
 ``group_sum_min``, in exact ``Decimal``, from the values that it read under
@@ -165,6 +203,7 @@ import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from dataclasses import field as dc_field
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -181,6 +220,7 @@ from acb_common.studio_fields import (
     MAX_OBJECTS_PER_ORG,
     MAX_OBJECTS_PER_PACKAGE,
     NAME_PATTERN,
+    FieldError,
     FieldSpec,
     check_can_be_hot,
     hot_value,
@@ -190,21 +230,30 @@ from acb_common.studio_fields import (
     stored_field,
     validate_record,
 )
-from acb_common.studio_query import Condition, Query, QueryError
+from acb_common.studio_query import Condition, Query, QueryError, parse_query
 from acb_common.studio_rules import (
     FORMULA,
+    MAX_ROLLUP_PARENTS,
+    MAX_ROLLUP_STATEMENTS,
     MAX_WRITES_PER_BATCH,
     RANGE,
+    ROLLUP,
+    ROLLUP_OF_ROLLUP,
     STATE_MACHINE,
     UNIQUE,
     ConstraintError,
     FormulaPlan,
+    RollupError,
+    RollupSource,
     Rule,
     add_change,
     check_group_sum,
     check_kind_known,
     check_move,
     check_range,
+    check_rollup_currency,
+    check_rollup_inputs,
+    check_rollups,
     check_rule_is_hot,
     check_rules_fit,
     check_unique_count,
@@ -213,10 +262,15 @@ from acb_common.studio_rules import (
     parse_rules,
     plan_formulas,
     refuse_computed_keys,
+    rollup_parents,
+    rollup_result,
+    rule_reads,
     run_formulas,
     stored_rules,
     touched_keys,
+    where_filter,
     with_initial,
+    with_rollup_zero,
     without_targets,
 )
 from sqlalchemy import text
@@ -243,6 +297,8 @@ _LOCK_WAIT_BACK_SQL = "SELECT set_config('lock_timeout', :ms, true)"
 #: Postgres picked it as the victim of a deadlock.
 _BUSY_SQLSTATES = ("55P03", "40P01")
 _BUSY_MESSAGE = "This app is busy. Try again in a moment."
+#: The next step of a refusal at the hot budget. One sentence with the cap.
+_TURN_COLD = ", so turn a hot field cold first."
 
 #: A backfill reads and writes the records in pages of this size.
 BACKFILL_PAGE = 2_000
@@ -324,6 +380,22 @@ _LOCK_PACKAGE_OBJECT_SQL = (
     "AND package_id = CAST(:pid AS uuid) FOR UPDATE"
 )
 
+#: The objects of one package that hold a roll-up rule, with their rules (C7b).
+_ROLLUP_OBJECTS_SQL = (
+    "SELECT id::text, name, constraints FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) "
+    "AND constraints @> CAST(:probe AS jsonb)"
+)
+_ROLLUP_PROBE = '[{"kind": "rollup"}]'
+
+#: The names of the objects that a batch writes. A name never changes, and every
+#: registry change takes the org lock, so this read needs no row lock.
+_OBJECT_NAMES_SQL = (
+    "SELECT id::text, name FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) "
+    "AND id = ANY(CAST(:oids AS uuid[]))"
+)
+
 _SET_RULES_SQL = (
     "UPDATE studio_objects SET constraints = CAST(:rules AS jsonb), updated_at = now() "
     f"WHERE organization_id = {_BOUND_ORG} AND id = CAST(:oid AS uuid) "
@@ -335,6 +407,21 @@ _IN_PACKAGE = (
     "EXISTS (SELECT 1 FROM studio_objects o "
     f"WHERE o.organization_id = {_BOUND_ORG} AND o.id = CAST(:oid AS uuid) "
     "AND o.package_id = CAST(:pid AS uuid))"
+)
+
+#: Every object of one package, and then every field of those objects. The
+#: caller (``sync_objects``) holds the org lock, so the two reads agree.
+_LIST_OBJECTS_SQL = (
+    f"SELECT {_OBJECT_COLUMNS} FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) "
+    "ORDER BY created_at, name"
+)
+
+_LIST_FIELDS_SQL = (
+    "SELECT object_id::text, key, type, spec, hot FROM studio_object_fields "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id IN ("
+    f"SELECT id FROM studio_objects WHERE organization_id = {_BOUND_ORG} "
+    "AND package_id = CAST(:pid AS uuid)) ORDER BY object_id, position, key"
 )
 
 _FIELDS_SQL = (
@@ -522,9 +609,10 @@ class StudioObject:
 
     @property
     def computed(self) -> tuple[str, ...]:
-        """The keys of the fields that a formula computes (C7a). A caller writes
-        none of them, so a Form shows each one read-only and sends no key."""
-        return tuple(str(r.target) for r in self.constraints if r.kind == FORMULA)
+        """The keys of the fields that a formula (C7a) or a roll-up (C7b) computes.
+        A caller writes none of them, so a Form shows each one read-only and
+        sends no key."""
+        return tuple(str(r.target) for r in self.constraints if r.kind in (FORMULA, ROLLUP))
 
 
 @dataclass(frozen=True)
@@ -662,7 +750,7 @@ def _check_fields(fields: Sequence[Mapping[str, Any]]) -> list[FieldSpec]:
     if len(set(keys)) != len(keys):
         raise ObjectStoreError("Each field key of an object must be unique.")
     if sum(s.hot for s in specs) > MAX_HOT_PER_OBJECT:
-        raise BudgetExceeded(f"An object holds at most {MAX_HOT_PER_OBJECT} hot fields.")
+        raise BudgetExceeded(f"An object holds at most {MAX_HOT_PER_OBJECT} hot fields{_TURN_COLD}")
     return specs
 
 
@@ -691,10 +779,13 @@ async def define_object(db: Any, actor: str, *, package_id: str, name: str,
     if int(in_package) >= MAX_OBJECTS_PER_PACKAGE:
         raise BudgetExceeded(f"A package holds at most {MAX_OBJECTS_PER_PACKAGE} objects.")
     if int(in_org) >= MAX_OBJECTS_PER_ORG:
-        raise BudgetExceeded(f"An organization holds at most {MAX_OBJECTS_PER_ORG} objects.")
+        # No route deletes a package yet (A5c), so the refusal names a next step.
+        raise BudgetExceeded(f"An organization holds at most {MAX_OBJECTS_PER_ORG} objects, "
+                             "so ask an admin to remove a package.")
     hot = sum(s.hot for s in specs)
     if hot and await _org_hot(db) + hot > MAX_HOT_PER_ORG:
-        raise BudgetExceeded(f"An organization holds at most {MAX_HOT_PER_ORG} hot fields.")
+        raise BudgetExceeded(
+            f"An organization holds at most {MAX_HOT_PER_ORG} hot fields{_TURN_COLD}")
     rows = [{"key": s.key, "type": s.type, "spec": s.stored_spec(), "hot": s.hot,
              "position": i} for i, s in enumerate(specs)]
     row = (await db.execute(text(_DEFINE_SQL), {
@@ -763,9 +854,10 @@ async def add_field(db: Any, object_id: str, spec: Mapping[str, Any]) -> FieldSp
 
 def _check_hot_room(object_hot: int, org_hot: int) -> None:
     if object_hot >= MAX_HOT_PER_OBJECT:
-        raise BudgetExceeded(f"An object holds at most {MAX_HOT_PER_OBJECT} hot fields.")
+        raise BudgetExceeded(f"An object holds at most {MAX_HOT_PER_OBJECT} hot fields{_TURN_COLD}")
     if org_hot >= MAX_HOT_PER_ORG:
-        raise BudgetExceeded(f"An organization holds at most {MAX_HOT_PER_ORG} hot fields.")
+        raise BudgetExceeded(
+            f"An organization holds at most {MAX_HOT_PER_ORG} hot fields{_TURN_COLD}")
 
 
 async def _backfill(db: Any, oid: str, field: FieldSpec) -> int:
@@ -801,6 +893,37 @@ def _check_no_rule_reads(rules: Sequence[Rule], key: str) -> None:
                 "Remove the rule first.")
 
 
+async def _package_rollups(db: Any, pid: str, *, strict: bool = False) -> list[tuple[str, str, Rule]]:
+    """Each roll-up rule of the package *pid*, as ``(object id, object name, rule)``.
+    The org lock is held. With *strict*, a stored roll-up that this code cannot
+    read raises :class:`RollupError`, because its source is unknown and a write
+    of the package could skip it. A rule must never pass because the store
+    could not read it."""
+    out: list[tuple[str, str, Rule]] = []
+    rows = (await db.execute(text(_ROLLUP_OBJECTS_SQL), {"pid": pid, "probe": _ROLLUP_PROBE})).all()
+    for row in rows:
+        raw = _json(row[2])
+        for item, rule in zip(raw, stored_rules(raw), strict=True):
+            if rule.kind == ROLLUP:
+                out.append((str(row[0]), str(row[1]), rule))
+            elif strict and isinstance(item, Mapping) and item.get("kind") == ROLLUP:
+                raise RollupError(
+                    rule.name, str(row[1]), "declaration",
+                    f"Object `{row[1]}` holds a roll-up that the store cannot read. "
+                    "Declare the rules of the object again.")
+    return out
+
+
+async def _check_no_rollup_reads(db: Any, row: Any, key: str) -> None:
+    """A field of a source that a roll-up of the package reads stays hot: its
+    hot rows are what the roll-up sums, so a cold field would skip the sum."""
+    for _, owner, rule in await _package_rollups(db, str(row[1])):
+        if rule.source == str(row[2]) and key in rule.source_keys():
+            raise ObjectStoreError(
+                f"Field `{key}` must stay hot, because rule `{rule.name}` of object `{owner}` "
+                "reads it. Remove the rule first.")
+
+
 async def set_field_hot(db: Any, object_id: str, key: str, hot: bool) -> bool:
     """Turn the field *key* of the object *object_id* hot, or not hot.
 
@@ -827,6 +950,7 @@ async def set_field_hot(db: Any, object_id: str, key: str, hot: bool) -> bool:
         return True
     if not hot:
         _check_no_rule_reads(_object(row, fields).constraints, key)
+        await _check_no_rollup_reads(db, row, key)
         await db.execute(text(_SET_HOT_SQL), {"oid": oid, "key": key, "hot": False})
         await db.execute(text(_UNHOT_SQL), {"oid": oid, "key": key})
         return True
@@ -863,18 +987,47 @@ def _formula_key(rule: Rule) -> str:
     return json.dumps(kept, sort_keys=True, ensure_ascii=False)
 
 
+def _rollup_key(rule: Rule) -> str:
+    """What makes a stored roll-up stale: the target, the source, the relation,
+    the aggregate, the read field, the filter and the currency. The name and the
+    message do not. Key order does not matter."""
+    stored = rule.stored()
+    kept = {k: stored.get(k) for k in (
+        "target", "source", "via", "agg", "field", "where", "currency")}
+    return json.dumps(kept, sort_keys=True, ensure_ascii=False)
+
+
+def _computed_key(rule: Rule) -> str:
+    return _formula_key(rule) if rule.kind == FORMULA else _rollup_key(rule)
+
+
 async def _check_formulas_first(db: Any, oid: str, old: Sequence[Rule],
                                 new: Sequence[Rule]) -> None:
-    """A new or changed formula needs an object with no record (C7a). There is
-    no backfill, and a stored result that a formula did not compute is worse
-    than a refusal. A formula that stays as it is, and a removed one, pass: a
-    removed formula leaves its stored values as plain values."""
-    kept = {_formula_key(r) for r in old if r.kind == FORMULA}
-    fresh = [r for r in new if r.kind == FORMULA and _formula_key(r) not in kept]
+    """A new or changed formula or roll-up needs an object with no record (C7a,
+    C7b). There is no backfill, and a stored result that the rule did not
+    compute is worse than a refusal. A rule that stays as it is, and a removed
+    one, pass: a removed rule leaves its stored values as plain values."""
+    kinds = (FORMULA, ROLLUP)
+    kept = {(r.kind, _computed_key(r)) for r in old if r.kind in kinds}
+    fresh = [r for r in new if r.kind in kinds and (r.kind, _computed_key(r)) not in kept]
     if fresh and (await db.execute(text(_HAS_RECORDS_SQL), {"oid": oid})).scalar_one():
         raise ConstraintError(
             fresh[0].name, f"Rule `{fresh[0].name}`: declare before the first record. This "
-            "object holds records, so a new or changed formula would leave their results stale.")
+            "object holds records, so a new or changed formula or roll-up would leave their "
+            "results stale.")
+
+
+async def _rollup_sources(db: Any, pid: str, rules: Sequence[Rule]) -> dict[str, RollupSource]:
+    """The objects of the package that the roll-ups of *rules* name, with their
+    fields and rules. A name that the package does not hold is left out, and
+    the check then refuses the rule. The org lock is held."""
+    out: dict[str, RollupSource] = {}
+    for name in sorted({str(r.source) for r in rules if r.kind == ROLLUP}):
+        row = (await db.execute(text(_OBJECT_BY_NAME_SQL), {"pid": pid, "name": name})).first()
+        if row is not None:
+            out[name] = RollupSource(
+                name, tuple(await _fields(db, str(row[0]))), stored_rules(_json(row[7])))
+    return out
 
 
 async def set_constraints(db: Any, object_id: str, constraints: Any, *,
@@ -897,11 +1050,382 @@ async def set_constraints(db: Any, object_id: str, constraints: Any, *,
     if locked is None:
         return None
     fields = await _fields(db, oid)
-    check_rules_fit(rules, fields)
+    name = str(locked[2])
+    check_rules_fit(rules, fields, object_name=name, sources=await _rollup_sources(db, pid, rules))
+    readers = [(owner, rule) for _, owner, rule in await _package_rollups(db, pid)
+               if rule.source == name]
+    check_rollup_inputs(name, rules, readers)
     await _check_formulas_first(db, oid, stored_rules(_json(locked[7])), rules)
     row = (await db.execute(text(_SET_RULES_SQL), {
         **binds, "rules": json.dumps([r.stored() for r in rules], ensure_ascii=False)})).one()
     return _object(row, fields)
+
+
+# --- the sync of a manifest (STU-A5) ----------------------------------------
+
+#: The kinds of a sync problem.
+OBJECT_REMOVED = "object_removed"
+FIELD_REMOVED = "field_removed"
+FIELD_CHANGED = "field_changed"
+REQUIRED_OVER_RECORDS = "required_over_records"
+RULES_REFUSED = "rules_refused"
+FIELD_REFUSED = "field_refused"
+STORE_REFUSED = "store_refused"
+
+#: The parts of a field that a sync cannot change. ``hot`` is not one of them.
+_FIELD_ATTRS = ("type", "many", "options", "to", "required", "label")
+
+
+@dataclass(frozen=True)
+class SyncProblem:
+    """One reason that a manifest does not fit the stored objects. ``message``
+    is one sentence. It names the object, the field or the rule, and no value."""
+
+    kind: str
+    object: str
+    field: str | None = None
+    rule: str | None = None
+    message: str = ""
+
+
+class ObjectsOutOfSync(ObjectStoreError):
+    """The manifest does not fit the stored objects. The sync wrote nothing.
+    ``problems`` lists each reason."""
+
+    def __init__(self, problems: Sequence[SyncProblem]) -> None:
+        super().__init__("The objects of the manifest do not fit the stored objects.")
+        self.problems: list[SyncProblem] = list(problems)
+
+
+@dataclass(frozen=True)
+class SyncResult:
+    """What a sync wrote. All four are empty when the rows already matched."""
+
+    objects_created: tuple[str, ...] = ()
+    fields_added: tuple[tuple[str, str], ...] = ()
+    hot_changed: tuple[tuple[str, str, bool], ...] = ()
+    rules_set: tuple[str, ...] = ()
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.objects_created or self.fields_added or self.hot_changed or self.rules_set)
+
+
+@dataclass
+class _Item:
+    """One object of the manifest, checked, with what the sync does for it."""
+
+    name: str
+    label: str | None
+    raw_fields: list[Mapping[str, Any]]
+    fields: list[FieldSpec]
+    raw_rules: Any
+    rules: tuple[Rule, ...]
+    row: StudioObject | None = None
+    add: list[Mapping[str, Any]] = dc_field(default_factory=list)
+    heat: list[tuple[str, bool]] = dc_field(default_factory=list)
+    set_rules: bool = False
+
+
+async def list_objects(db: Any, package_id: str) -> list[StudioObject]:
+    """The objects of the package *package_id* in the bound org, with their
+    fields and rules, in the order of their creation. It checks no owner:
+    the caller reads the package as its member first. Two statements."""
+    pid = _uuid(package_id, "package_id")
+    rows = (await db.execute(text(_LIST_OBJECTS_SQL), {"pid": pid})).all()
+    if not rows:
+        return []
+    by_object: dict[str, list[FieldSpec]] = {}
+    found = (await db.execute(text(_LIST_FIELDS_SQL), {"pid": pid})).all()
+    for oid, key, kind, spec, hot in found:
+        by_object.setdefault(str(oid), []).append(
+            stored_field(str(key), str(kind), _json(spec), bool(hot)))
+    return [_object(r, by_object.get(str(r[0]), [])) for r in rows]
+
+
+def _rules_json(rules: Sequence[Rule]) -> str:
+    """The rules as the store keeps them, in one stable text, for a compare."""
+    return json.dumps([r.stored() for r in rules], sort_keys=True, ensure_ascii=False)
+
+
+def _read_entry(entry: Any, problems: list[SyncProblem]) -> _Item | None:
+    """One object of the manifest, or None with a problem. The manifest check
+    of A2 ran at publish, so this only guards the store."""
+    name = entry.get("name") if isinstance(entry, Mapping) else None
+    try:
+        clean = _check_name(name)
+        label = _check_label(entry.get("label"))
+        raw_fields = list(entry.get("fields") or [])
+        fields = _check_fields(raw_fields)
+    except FieldError as exc:
+        problems.append(SyncProblem(
+            FIELD_REFUSED, str(name), field=exc.field, message=exc.message))
+        return None
+    except ObjectStoreError as exc:
+        problems.append(SyncProblem(STORE_REFUSED, str(name), message=str(exc)))
+        return None
+    raw_rules = entry.get("rules") or []
+    try:
+        rules = parse_rules(raw_rules)
+    except ConstraintError as exc:
+        problems.append(SyncProblem(RULES_REFUSED, clean, rule=exc.rule, message=exc.message))
+        return None
+    return _Item(clean, label, raw_fields, fields, raw_rules, rules)
+
+
+async def _plan_fields(db: Any, item: _Item, row: StudioObject,
+                       problems: list[SyncProblem]) -> None:
+    """The field plan of an object that the rows hold: a new field is added,
+    a change of ``hot`` flips, and each other difference is a problem."""
+    old = {f.key: f for f in row.fields}
+    has_records: bool | None = None
+    for raw, spec in zip(item.raw_fields, item.fields, strict=True):
+        cur = old.get(spec.key)
+        if cur is None:
+            if spec.required:
+                if has_records is None:
+                    has_records = bool((await db.execute(
+                        text(_HAS_RECORDS_SQL), {"oid": row.id})).scalar_one())
+                if has_records:
+                    problems.append(SyncProblem(
+                        REQUIRED_OVER_RECORDS, item.name, field=spec.key,
+                        message=f"Field `{spec.key}` of `{item.name}` is new and required, but the "
+                        "object holds records. Add it as optional."))
+                    continue
+            item.add.append(raw)
+            continue
+        changed = [a for a in _FIELD_ATTRS if getattr(cur, a) != getattr(spec, a)]
+        if changed:
+            problems.append(SyncProblem(
+                FIELD_CHANGED, item.name, field=spec.key,
+                message=f"Field `{spec.key}` of `{item.name}` changed ({', '.join(changed)}). "
+                "A published field cannot change yet."))
+        elif cur.hot != spec.hot:
+            item.heat.append((spec.key, spec.hot))
+    wanted = {f.key for f in item.fields}
+    for key in old:
+        if key not in wanted:
+            problems.append(SyncProblem(
+                FIELD_REMOVED, item.name, field=key,
+                message=f"Field `{key}` of `{item.name}` is not in the manifest. "
+                "A published field cannot go yet."))
+
+
+async def _plan_sync(db: Any, rows: Sequence[StudioObject],
+                     objects: Sequence[Any]) -> tuple[list[_Item], list[SyncProblem]]:
+    """The whole plan, from reads only. A problem in the list means no write."""
+    problems: list[SyncProblem] = []
+    items: list[_Item] = []
+    by_name = {r.name: r for r in rows}
+    for entry in objects:
+        item = _read_entry(entry, problems)
+        if item is None:
+            continue
+        item.row = by_name.get(item.name)
+        if item.row is None:
+            item.set_rules = bool(item.rules)
+        else:
+            await _plan_fields(db, item, item.row, problems)
+            item.set_rules = _rules_json(item.rules) != _rules_json(item.row.constraints)
+        items.append(item)
+    kept = {i.name for i in items}
+    for row in rows:
+        if row.name not in kept and not any(p.object == row.name for p in problems):
+            problems.append(SyncProblem(
+                OBJECT_REMOVED, row.name,
+                message=f"Object `{row.name}` is not in the manifest. A published object "
+                "cannot go yet."))
+    return items, problems
+
+
+@dataclass
+class _Done:
+    """What the write phase did so far, and the object and the field it works
+    on. The two name the place of a refusal."""
+
+    ids: dict[str, str] = dc_field(default_factory=dict)
+    where: str = ""
+    field: str | None = None
+    created: list[str] = dc_field(default_factory=list)
+    added: list[tuple[str, str]] = dc_field(default_factory=list)
+    heated: list[tuple[str, str, bool]] = dc_field(default_factory=list)
+    ruled: list[str] = dc_field(default_factory=list)
+
+
+async def _sync_new_objects(db: Any, who: str, pid: str, items: Sequence[_Item],
+                            done: _Done) -> None:
+    for it in items:
+        done.where, done.field = it.name, None
+        if it.row is not None:
+            continue
+        made = await define_object(
+            db, who, package_id=pid, name=it.name, label=it.label, fields=it.raw_fields)
+        if made is None:
+            raise ObjectStoreError("The package is gone.")
+        done.ids[it.name] = made.id
+        done.created.append(it.name)
+
+
+async def _sync_new_fields(db: Any, items: Sequence[_Item], done: _Done) -> None:
+    for it in items:
+        for raw in it.add:
+            done.where, done.field = it.name, str(raw["key"])
+            if await add_field(db, done.ids[it.name], raw) is None:
+                raise ObjectStoreError("The object is gone.")
+            done.added.append((it.name, str(raw["key"])))
+
+
+async def _flip(db: Any, it: _Item, done: _Done, key: str, hot: bool) -> None:
+    done.where, done.field = it.name, key
+    if await set_field_hot(db, done.ids[it.name], key, hot):
+        done.heated.append((it.name, key, hot))
+
+
+async def _sync_heat(db: Any, items: Sequence[_Item], done: _Done, *, hot: bool) -> None:
+    for it in items:
+        for key, want in it.heat:
+            if want is hot:
+                await _flip(db, it, done, key, hot)
+
+
+def _rule_form(rule: Rule) -> str:
+    return json.dumps(rule.stored(), sort_keys=True, ensure_ascii=False)
+
+
+def _staying_rules(it: _Item) -> list[Rule] | None:
+    """The first pass of the rules of *it*: each stored rule that stays. A rule
+    stays when the manifest holds the same stored form, or a formula or a
+    roll-up with the same computed key. None when no stored rule goes, so the
+    first pass writes nothing for *it*."""
+    if it.row is None or not it.set_rules:
+        return None
+    forms = {_rule_form(r) for r in it.rules}
+    keys = {(r.kind, _computed_key(r)) for r in it.rules if r.kind in (FORMULA, ROLLUP)}
+    stored = it.row.constraints
+    kept = [r for r in stored if _rule_form(r) in forms
+            or (r.kind in (FORMULA, ROLLUP) and (r.kind, _computed_key(r)) in keys)]
+    return None if len(kept) == len(stored) else kept
+
+
+async def _set_rules(db: Any, pid: str, it: _Item, done: _Done, rules: Any) -> None:
+    done.where, done.field = it.name, None
+    if await set_constraints(db, done.ids[it.name], rules, package_id=pid) is None:
+        raise ObjectStoreError("The object is gone.")
+
+
+async def _sync_rules_first(db: Any, pid: str, items: Sequence[_Item],
+                            done: _Done) -> dict[str, str]:
+    """Pass 1 of the rules: for each object, only the stored rules that stay.
+    So each removal lands before a field turns cold, before a field takes the
+    room in the hot budget, and before a roll-up checks its source. The list
+    is a subset of a stored list, so it needs no new field and no new hot
+    field. Answers the list that each object holds after it."""
+    first: dict[str, str] = {}
+    for it in items:
+        kept = _staying_rules(it)
+        if kept is not None:
+            await _set_rules(db, pid, it, done, [r.stored() for r in kept])
+            first[it.name] = _rules_json(kept)
+    return first
+
+
+async def _sync_rules_full(db: Any, pid: str, items: Sequence[_Item], done: _Done,
+                           first: Mapping[str, str]) -> None:
+    """Pass 2 of the rules: the full manifest list of each object, through the
+    one store path :func:`set_constraints`. A list that equals the stored one
+    writes nothing.
+
+    A roll-up checks the stored rules of its source, and a source checks the
+    stored roll-ups that read it (C7b). Pass 1 removed each rule that goes, so
+    the order of the objects in the manifest never decides a valid manifest.
+    """
+    for it in items:
+        if it.set_rules and first.get(it.name) != _rules_json(it.rules):
+            await _set_rules(db, pid, it, done, it.raw_rules)
+    done.ruled.extend(it.name for it in items if it.set_rules)
+
+
+async def _apply_sync(db: Any, who: str, pid: str, items: Sequence[_Item]) -> SyncResult:
+    """Write the plan in one SAVEPOINT, so a refusal leaves no part of it.
+
+    The phases run in this order: rules pass 1 (the stored rules that stay),
+    fields that turn cold, new objects, new fields, fields that turn hot, and
+    rules pass 2 (the full lists). A rule that goes is gone before its field
+    turns cold. A cold field frees its room in the hot budget before a new
+    object, a new field or a field that turns hot takes it, so a swap at a
+    cap passes, also when a rule moves with it. A rule needs its fields in
+    place and hot, so pass 2 comes last. The store still refuses a cold flip
+    that a staying rule reads. A refusal of a field step names the field.
+    """
+    done = _Done(ids={it.name: it.row.id for it in items if it.row is not None})
+    try:
+        async with db.begin_nested():
+            first = await _sync_rules_first(db, pid, items, done)
+            await _sync_heat(db, items, done, hot=False)
+            await _sync_new_objects(db, who, pid, items, done)
+            await _sync_new_fields(db, items, done)
+            await _sync_heat(db, items, done, hot=True)
+            await _sync_rules_full(db, pid, items, done, first)
+    except StoreBusy:
+        raise
+    except ConstraintError as exc:
+        raise ObjectsOutOfSync([SyncProblem(
+            RULES_REFUSED, done.where, rule=exc.rule, message=exc.message)]) from None
+    except FieldError as exc:
+        raise ObjectsOutOfSync([SyncProblem(
+            FIELD_REFUSED, done.where, field=exc.field or done.field,
+            message=exc.message)]) from None
+    except ObjectStoreError as exc:
+        raise ObjectsOutOfSync([SyncProblem(
+            STORE_REFUSED, done.where, field=done.field, message=str(exc))]) from None
+    return SyncResult(
+        tuple(done.created), tuple(done.added), tuple(done.heated), tuple(done.ruled))
+
+
+async def sync_objects(db: Any, actor: str, *, package_id: str,
+                       objects: Sequence[Any]) -> SyncResult | None:
+    """Bring the stored objects of the package *package_id* to the list
+    *objects*, the ``objects`` of one manifest (STU-A5, ``ai_studio.md`` §14).
+
+    The manifest is the only source. The call adds an object with
+    :func:`define_object`, a field with :func:`add_field`, a change of ``hot``
+    with :func:`set_field_hot`, and a rules list with :func:`set_constraints`.
+    The rules go in two passes, removals first, so the order of the objects
+    in the manifest never decides a roll-up, and a rule that goes frees its
+    field before a hot swap. A list of rules that equals the stored one
+    writes nothing. ``pages`` and each other part of a manifest are not rows,
+    so this call ignores them.
+
+    It takes the org lock, reads the rows, and builds the whole plan before a
+    write. Each other difference is a problem: an object that the manifest no
+    longer holds, a field that is gone, a field that changed (its type, ``many``,
+    ``options``, ``to``, ``required`` or label), a new required field on an
+    object with records, and a refusal of a store call, rules included. A
+    problem raises :class:`ObjectsOutOfSync` with the list, and the write phase
+    runs in a SAVEPOINT, so no part of it stays. Records are never rewritten.
+
+    Answers None when the bound org holds no Studio package of the id, and the
+    :class:`SyncResult` otherwise. It raises :class:`StoreBusy` when the org
+    lock does not come in time.
+
+    ⚠️ **The lock order.** The caller holds the ``apps`` row ``FOR UPDATE``
+    (inside ``packages_store.publish_version``), and this call takes the org
+    lock after it. :func:`define_object` takes them the other way, so a caller
+    of it outside a publish can deadlock with a publish. This function is its
+    one caller (``test_define_object_has_one_caller``).
+    """
+    who = _actor(actor)
+    pid = _uuid(package_id, "package_id")
+    if isinstance(objects, str | bytes | Mapping) or not isinstance(objects, Sequence):
+        raise ObjectStoreError("objects must be a list of objects")
+    await _lock_org(db)
+    if (await db.execute(text(_PACKAGE_SQL), {"pid": pid})).first() is None:
+        return None
+    rows = await list_objects(db, pid)
+    items, problems = await _plan_sync(db, rows, objects)
+    if problems:
+        raise ObjectsOutOfSync(problems)
+    return await _apply_sync(db, who, pid, items)
 
 
 async def create_record(db: Any, actor: str, object_id: str, data: Mapping[str, Any], *,
@@ -946,13 +1470,17 @@ async def update_record(db: Any, actor: str, object_id: str, record_id: str,
     return done if isinstance(done, Record) else None
 
 
-async def delete_record(db: Any, object_id: str, record_id: str, *,
+async def delete_record(db: Any, actor: str, object_id: str, record_id: str, *,
                         package_id: str) -> bool:
     """Delete the record *record_id* of the object *object_id* of the package
     *package_id*, and its hot rows by cascade. Answers False when the bound org
-    holds no such record. This is a batch of one, so a rule of the object runs."""
-    # A delete writes no actor, so this path takes none.
-    return await _one_write(db, "", package_id, Write("delete", object_id, record_id)) is True
+    holds no such record. This is a batch of one, so a rule of the object runs.
+
+    The deleted record keeps no actor, but a roll-up parent of it gets a derived
+    write (C7b), and that write names *actor* in ``updated_by``, as a batch does.
+    """
+    who = _actor(actor)
+    return await _one_write(db, who, package_id, Write("delete", object_id, record_id)) is True
 
 
 # --- the query (C2a) --------------------------------------------------------
@@ -1010,8 +1538,13 @@ _RECORD_ROW = "r.id, r.object_id, r.data, r.created_by, r.updated_by, r.created_
 _HOT_COLUMN: Mapping[str, str] = {
     "text": "v_text", "email": "v_text", "select": "v_text", "number": "v_num",
     "money": "v_num", "date": "v_ts", "datetime": "v_ts", "checkbox": "v_bool",
+    "relation": "v_text",
 }
 assert set(_HOT_COLUMN) == set(studio_query.OPS_BY_TYPE), "each type of the op table has a column"
+
+#: The 32 hex digits of an id, with or without the four dashes. The same shape as
+#: `studio_fields._UUID_FORM_RE`, so a hot and a cold relation agree.
+_UUID_FORM = "'^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$'"
 
 #: The SQL type of each value column.
 _SQL_TYPE: Mapping[str, str] = {
@@ -1107,6 +1640,10 @@ def _q_data(kind: str, i: int) -> str:
     """The value of a field that is not hot, read from ``data`` with the
     bound key of condition *i*, in the SQL type of its hot column."""
     kref = f"CAST(:fk{i} AS text)"
+    if kind == "relation":
+        # The id, in the one form that `studio_fields.relation_key` gives a hot row.
+        rid = f"(CASE WHEN jsonb_typeof(r.data -> {kref}) = 'object' THEN r.data -> {kref} ->> 'id' END)"
+        return f"(CASE WHEN {rid} ~ {_UUID_FORM} THEN CAST({rid} AS uuid)::text ELSE {rid} END)"
     if kind in ("text", "email", "select"):
         return f"(r.data ->> {kref})"
     if kind == "number":
@@ -1552,6 +2089,11 @@ class _Mark:
     index: int
     before: dict[str, Any] | None
     after: dict[str, Any] | None
+    #: True for a parent that only a roll-up changed (C7b). A formula of the parent
+    #: can read a roll-up target and fill a key, so its key rules run too. A key rule
+    #: that reads no field that the derived write changed is skipped
+    #: (:func:`_derived_moves`).
+    derived: bool = False
 
 
 class _Batch:
@@ -1565,6 +2107,15 @@ class _Batch:
         self.objects: dict[str, _Held] = {}
         self.marks: dict[tuple[str, str], _Mark] = {}
         self.index = 0
+        #: The roll-ups that read an object of this batch (C7b): the object id of
+        #: the parent, its name and the rule.
+        self.rollups: list[tuple[str, str, Rule]] = []
+        #: The id of each object of the batch, by name.
+        self.names: dict[str, str] = {}
+        #: The fields that any roll-up of the package reads, for each source name.
+        self.readers: dict[str, set[str]] = {}
+        #: The first write that made each parent stale, for the place of an error.
+        self.firsts: dict[tuple[str, str], int] = {}
 
 
 def _clean_write(write: Any) -> Write:
@@ -1599,14 +2150,35 @@ def _clean_writes(writes: Any) -> list[Write]:
     return out
 
 
+async def _find_rollups(db: Any, batch: _Batch) -> None:
+    """Step 1b (C7b). Find the parent objects: the objects of the package whose
+    rules hold a roll-up that reads an object of this batch. The org lock is
+    held, and every change of a rule takes it too, so the answer is stable.
+    A package with no roll-up costs one statement."""
+    found = await _package_rollups(db, batch.pid, strict=True)
+    if not found:
+        return
+    rows = (await db.execute(text(_OBJECT_NAMES_SQL), {
+        "pid": batch.pid, "oids": sorted({s.object_id for s in batch.steps})})).all()
+    batch.names = {str(r[1]): str(r[0]) for r in rows}
+    for oid, owner, rule in found:
+        batch.readers.setdefault(str(rule.source), set()).update(rule.source_keys())
+        if rule.source in batch.names:
+            batch.rollups.append((oid, owner, rule))
+
+
 async def _lock_objects(db: Any, batch: _Batch) -> None:
-    """Step 2. The second statement of each object follows its row lock."""
+    """Step 2. The second statement of each object follows its row lock. The
+    parent objects of the roll-ups join the list, so all come in one order."""
     first: dict[str, int] = {}
     writes: set[str] = set()
     for i, step in enumerate(batch.steps):
         first.setdefault(step.object_id, i)
         if step.op != "delete":
             writes.add(step.object_id)
+    for parent, _, _ in batch.rollups:
+        first.setdefault(parent, 0)
+        writes.add(parent)  # a derived write computes the formulas of the parent
     for oid in sorted(first):
         batch.index = first[oid]
         row = (await db.execute(text(_SHARE_OBJECT_SQL), {"oid": oid, "pid": batch.pid})).first()
@@ -1652,6 +2224,7 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     if step.op == "create":
         data = with_initial(held.rules, step.data)
         refuse_computed_keys(held.plan, held.name, data)
+        data = with_rollup_zero(held.plan, data)
         clean = run_formulas(held.plan, held.name, validate_record(plain, data))
         row = (await db.execute(text(_CREATE_RECORD_SQL), {
             "oid": oid, "data": record_json(clean), "actor": batch.who,
@@ -1676,6 +2249,15 @@ async def _apply_write(db: Any, batch: _Batch, step: Write) -> Record | bool:
     return _record(row)
 
 
+def _derived_moves(rule: Rule, mark: _Mark) -> bool:
+    """True when the derived write of a roll-up parent changed a field that
+    *rule* reads (C7b). A derived write changes only computed fields, so a key
+    rule that reads none of them cannot break, and the store reads no key for
+    it. An old clash on such a key then does not block a child write."""
+    before, after = mark.before or {}, mark.after or {}
+    return any(before.get(k) != after.get(k) for k in rule_reads(rule))
+
+
 def _check_records(batch: _Batch) -> dict[tuple[str, Rule, tuple[Any, ...]], int]:
     """Step 5, and the keys of step 6, each with its first write. On a floor
     of 0 or less, a key that the batch does not lower stays out: the values of
@@ -1693,6 +2275,8 @@ def _check_records(batch: _Batch) -> dict[tuple[str, Rule, tuple[Any, ...]], int
                 check_range(rule, held.name, mark.after)
             if rule.kind == STATE_MACHINE:
                 check_move(rule, held.name, mark.before, mark.after)
+            if mark.derived and not _derived_moves(rule, mark):
+                continue
             for key in touched_keys(rule, mark.before, mark.after):
                 at = (mark.object_id, rule, key)
                 keys.setdefault(at, mark.index)
@@ -1720,27 +2304,245 @@ async def _check_key(timed: _Timed, oid: str, pid: str, held: _Held, rule: Rule,
 
 
 async def _check_keys(db: Any, batch: _Batch,
-                      keys: Mapping[tuple[str, Rule, tuple[Any, ...]], int]) -> None:
-    """Step 6, under one deadline. A timeout refuses the batch."""
+                      keys: Mapping[tuple[str, Rule, tuple[Any, ...]], int],
+                      deadline: float) -> None:
+    """Step 6, under the one *deadline* of the batch, which the recompute of the
+    roll-ups (C7b) shares. A timeout refuses the batch."""
     if not keys:
         return
-    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
     async with _time_limit(db, deadline, _RULE_TIMEOUT_MESSAGE) as timed:
         for (oid, rule, key), index in keys.items():
             batch.index = index
             await _check_key(timed, oid, batch.pid, batch.objects[oid], rule, key)
 
 
+# --- the roll-ups (C7b) -----------------------------------------------------
+#
+# The batch gets four more steps. Step 1b finds the parent objects (`_find_rollups`),
+# and step 2 locks them with the others, in ascending id. Step 4b runs after all
+# the writes:
+#
+#   1. `rollup_parents` names the parents that the net of the batch made stale (a
+#      skip rule: only a change of the relation, the read field or a `where` field
+#      counts).
+#   2. The parent records are locked in ascending `(object_id, record_id)`
+#      (`FOR NO KEY UPDATE`). A parent that no record holds is dangling and skipped.
+#   3. One aggregate for each (parent, roll-up), then one derived write for each
+#      parent. Both run under the one deadline of the batch. The aggregate of a money
+#      roll-up also names the written children that it counts, and the currency of
+#      each one is checked. A child that the roll-up does not count passes.
+#
+# The derived write is a store write: it re-runs the formulas of the parent,
+# validates, rebuilds the hot rows, and sets `updated_at` and `updated_by`. It
+# writes no history row. The checks of the parent run in `_check_records`, with the
+# marks of the batch: `range`, a state machine, and each `unique` and
+# `group_sum_min` that reads a field which the derived write changed. A formula
+# can read a roll-up target and fill a key, so a child write can break a key rule
+# of its parent, and then the whole batch is refused.
+
+#: The aggregate of a sum, a min and a max over the hot rows of the read field.
+_ROLLUP_NUMBER_AGG: Mapping[str, str] = {
+    "sum": "sum(s.v_num)", "min": "min(s.v_num)", "max": "max(s.v_num)"}
+_ROLLUP_DATE_AGG: Mapping[str, str] = {"min": "min(s.v_ts)", "max": "max(s.v_ts)"}
+#: The ids of the children of `:mine` that the aggregate counts. A money roll-up
+#: reads it, so the store checks the currency of each written child that counts.
+_ROLLUP_MINE = "array_agg(g.id::text) FILTER (WHERE g.id = ANY(CAST(:mine AS uuid[])))"
+
+
+def build_rollup(rule: Rule, fields: Sequence[FieldSpec], *, object_id: str, package_id: str,
+                 parent_id: str, mine: Sequence[str] = ()) -> tuple[str, dict[str, Any]]:
+    """The aggregate of the roll-up *rule* for the parent *parent_id*: its SQL
+    and its binds. *fields* and *object_id* are those of the SOURCE. Pure.
+
+    The candidates are the children of one parent, found by the hot rows of the
+    relation field, as the index serves them. The ``where`` of the rule joins
+    the conditions of a query, and so it reads hot rows too. Each child reads its
+    hot row of the read field by the primary key. A child with no value adds
+    nothing. The answer is a count, or the aggregate: NULL when no child holds a
+    value, and the store gives 0 for a sum then. A money roll-up also answers
+    which ids of *mine* (the children that the batch wrote) it counts, or NULL.
+    So the one statement that counts a child also decides its currency check.
+    """
+    via = next(f for f in fields if f.key == rule.via)
+    where = parse_query(fields, where_filter(rule)).conditions
+    conditions = (Condition(via, "eq", parent_id), *where)
+    params: dict[str, Any] = {"oid": object_id, "pid": package_id, "sk": rule.field}
+    ids = _q_filtered(conditions, params, "c.id AS id")
+    if rule.agg == "count":
+        return f"SELECT count(*) FROM ({ids}) g", params
+    read = next(f for f in fields if f.key == rule.field)
+    what = (_ROLLUP_DATE_AGG if read.type == "date" else _ROLLUP_NUMBER_AGG)[str(rule.agg)]
+    if rule.currency is not None:
+        params["mine"] = list(mine)
+        what = f"{what}, {_ROLLUP_MINE}"
+    return (f"SELECT {what} FROM ({ids}) g "
+            "LEFT JOIN LATERAL (SELECT s.v_num, s.v_ts FROM studio_record_hot s "
+            f"WHERE s.{_OF_ORG} AND s.{_OF_OBJECT} AND s.field_key = CAST(:sk AS text) "
+            "AND s.record_id = g.id OFFSET 0) s ON true"), params
+
+
+def _check_rollups_fit(batch: _Batch) -> None:
+    """Fail closed. A stored roll-up that does not fit its object or its source
+    now (a source dropped and made again, a field that turned cold by raw SQL)
+    refuses the batch, and never gives a sum from fields it cannot read."""
+    for oid, owner, rule in batch.rollups:
+        held, source = batch.objects[oid], batch.objects[batch.names[str(rule.source)]]
+        try:
+            check_rollups([rule], held.fields, owner, {
+                source.name: RollupSource(source.name, tuple(source.fields), source.rules)})
+        except ConstraintError as exc:
+            raise RollupError(
+                rule.name, owner, "declaration",
+                f"Object `{owner}`: {exc.message}") from None
+
+
+def _stale_parents(batch: _Batch) -> dict[tuple[str, str], list[Rule]]:
+    """The parents that the net of the batch made stale, each with its roll-ups.
+    The caps hold before any statement of the recompute."""
+    work: dict[tuple[str, str], list[Rule]] = {}
+    firsts: dict[tuple[str, str], int] = {}
+    for oid, _owner, rule in batch.rollups:
+        source_id = batch.names[str(rule.source)]
+        for mark in sorted(batch.marks.values(), key=lambda m: m.index):
+            if mark.object_id != source_id:
+                continue
+            batch.index = mark.index
+            for rid in rollup_parents(rule, mark.before, mark.after):
+                rules = work.setdefault((oid, rid), [])
+                if rule not in rules:
+                    rules.append(rule)
+                firsts.setdefault((oid, rid), mark.index)
+    if len(work) > MAX_ROLLUP_PARENTS:
+        raise BudgetExceeded(
+            f"A batch recomputes at most {MAX_ROLLUP_PARENTS} parent records of roll-ups.")
+    if sum(len(rules) for rules in work.values()) > MAX_ROLLUP_STATEMENTS:
+        raise BudgetExceeded(
+            f"A batch runs at most {MAX_ROLLUP_STATEMENTS} aggregates of roll-ups.")
+    batch.firsts = firsts
+    return work
+
+
+def _written(batch: _Batch, source_id: str) -> list[str]:
+    """The ids of the records of the object *source_id* that the batch wrote
+    and did not delete."""
+    return sorted(rid for (oid, rid), mark in batch.marks.items()
+                  if oid == source_id and mark.after is not None)
+
+
+def _check_counted(batch: _Batch, rule: Rule, owner: str, source_id: str,
+                   counted: Sequence[str] | None) -> None:
+    """The currency of each written child that the aggregate of *rule* counted
+    (C7b). The aggregate decides which children count, so a child that the
+    ``where`` leaves out, or that names no parent record, passes in any
+    currency. An update that makes a child count is checked at that write."""
+    marks = [batch.marks[(source_id, rid)] for rid in counted or ()]
+    for mark in sorted(marks, key=lambda m: m.index):
+        batch.index = mark.index
+        check_rollup_currency(rule, owner, mark.after or {})
+
+
+async def _lock_parents(db: Any, batch: _Batch,
+                        work: dict[tuple[str, str], list[Rule]]) -> None:
+    """Step 4b, locks. A parent in the batch is locked already. The others come
+    in ascending `(object_id, record_id)`. A parent that no record holds is
+    dangling, and it leaves the work. So does a parent that the batch deleted."""
+    for key in sorted(work):
+        mark = batch.marks.get(key)
+        if mark is not None:
+            if mark.after is None:
+                del work[key]
+            continue
+        oid, rid = key
+        batch.index = batch.firsts[key]
+        row = (await db.execute(text(_LOCK_RECORD_SQL), {
+            "oid": oid, "rid": rid, "pid": batch.pid})).first()
+        if row is None:
+            del work[key]
+            continue
+        data = dict(_json(row[2]))
+        batch.marks[key] = _Mark(oid, batch.firsts[key], data, data, derived=True)
+
+
+async def _derive_parent(timed: _Timed, batch: _Batch, key: tuple[str, str],
+                         data: dict[str, Any]) -> None:
+    """Step 4b, the derived write of one parent. It is a store write: the
+    formulas of the parent run again, the record is checked, and the hot rows
+    are rebuilt. It writes no history row. The actor is the member of the batch,
+    also for a single delete (:func:`delete_record` takes one)."""
+    oid, rid = key
+    held, mark = batch.objects[oid], batch.marks[key]
+    plan = held.plan
+    assert plan is not None  # the parent holds a roll-up, so it has a plan
+    clean = run_formulas(plan, held.name, validate_record(
+        list(plan.plain), without_targets(plan, data)))
+    old = mark.after or {}
+    moved = sorted(k for k in batch.readers.get(held.name, set()) if clean.get(k) != old.get(k))
+    if moved:
+        raise RollupError(
+            plan.rollups[0][0].name, held.name, ROLLUP_OF_ROLLUP,
+            f"Object `{held.name}`: field `{moved[0]}` is read by a roll-up of another object, "
+            "and a roll-up of this object fills it. A roll-up cannot read a roll-up.")
+    await timed.execute(text(_UPDATE_RECORD_SQL), {
+        "oid": oid, "rid": rid, "pid": batch.pid, "data": record_json(clean),
+        "actor": batch.who, "hot": _hot_rows(held.fields, clean)})
+    mark.after = clean
+
+
+async def _recompute_parents(db: Any, batch: _Batch, deadline: float) -> None:
+    """Step 4b. After all the writes, recompute each parent that the net of the
+    batch made stale. The aggregates, the derived writes and the key checks of
+    step 6 share the one *deadline* of the batch (`query_timeout`), and a
+    timeout refuses the whole batch. One aggregate runs for each parent and
+    each roll-up, so 50 children of one parent cost one."""
+    if not batch.rollups:
+        return
+    _check_rollups_fit(batch)
+    work = _stale_parents(batch)
+    await _lock_parents(db, batch, work)
+    if not work:
+        return
+    async with _time_limit(db, deadline, _RULE_TIMEOUT_MESSAGE) as timed:
+        for key in sorted(work):
+            oid, rid = key
+            batch.index = batch.firsts[key]
+            held, mark = batch.objects[oid], batch.marks[key]
+            assert held.plan is not None
+            data = dict(mark.after or {})
+            for rule in work[key]:
+                source_id = batch.names[str(rule.source)]
+                sql, params = build_rollup(
+                    rule, batch.objects[source_id].fields, object_id=source_id,
+                    package_id=batch.pid, parent_id=rid, mine=_written(batch, source_id))
+                row = (await timed.execute(text(sql), params)).one()
+                raw = row[0]
+                if rule.currency is not None:
+                    _check_counted(batch, rule, held.name, source_id, row[1])
+                    batch.index = batch.firsts[key]
+                field = next(f for r, f in held.plan.rollups if r.name == rule.name)
+                value = rollup_result(rule, held.name, field, raw)
+                if value is None:
+                    data.pop(field.key, None)
+                else:
+                    data[field.key] = value
+            await _derive_parent(timed, batch, key, data)
+
+
 async def _run_steps(db: Any, batch: _Batch) -> list[Record | bool]:
-    """The six steps, in their order. The caller holds the SAVEPOINT."""
+    """The six steps, in their order, with the roll-up steps (C7b) between them.
+    The caller holds the SAVEPOINT."""
     await _lock_org(db)
+    await _find_rollups(db, batch)
     await _lock_objects(db, batch)
     await _lock_records(db, batch)
     answers: list[Record | bool] = []
     for i, step in enumerate(batch.steps):
         batch.index = i
         answers.append(await _apply_write(db, batch, step))
-    await _check_keys(db, batch, _check_records(batch))
+    # One deadline (C1b) for every read after the writes: the aggregates and the
+    # derived writes of the roll-ups (C7b), then the key checks.
+    deadline = _clock() + studio_query.TIMEOUT_MS / 1000
+    await _recompute_parents(db, batch, deadline)
+    await _check_keys(db, batch, _check_records(batch), deadline)
     return answers
 
 
