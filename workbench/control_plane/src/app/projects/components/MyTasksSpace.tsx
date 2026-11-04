@@ -192,7 +192,7 @@ export function MyTasksActionRow({
   );
 }
 
-/** The chip row: All, Today, Next, Waiting, Someday and Done, with server counts. */
+/** The chip row: All, New, Today, Next, Waiting, Someday and Done, with server counts. */
 export function MyTasksChips({
   chip,
   summary,
