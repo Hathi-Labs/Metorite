@@ -277,3 +277,10 @@ def test_the_exit_trap_expands_the_worktree_path_when_it_is_set():
     trap = next(l for l in _REMOTE.splitlines() if l.strip().startswith("trap "))
     assert trap.strip().startswith('trap "')
     assert '\\"$wt\\"' in trap
+
+
+def test_the_backup_job_has_a_pid_space_that_two_runs_do_not_share():
+    # backup_db.sh names its verify container acb-verify-<epoch>-$$ on the
+    # shared Docker daemon. Two runs in one second got one name (2026-11-04).
+    assert '[ "$label" = backup-restore ] && net+=(--pid=host)' in _RUN_SUITE
+    assert 'acb-verify-$(date -u +%s)-$$' in (_ROOT / "scripts/backup_db.sh").read_text(encoding="utf-8")
