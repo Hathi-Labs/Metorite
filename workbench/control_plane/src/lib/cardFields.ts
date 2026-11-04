@@ -420,3 +420,33 @@ export function repeatsLine(value: string, shown: readonly (string | undefined)[
   const v = norm(value);
   return v !== "" && shown.some((s) => s !== undefined && norm(s) === v);
 }
+
+// ── Long values ──────────────────────────────────────────────────────────────
+
+/**
+ * A text of more than this many characters is "long": its row stacks (label
+ * above value) and a change to it draws as a Before / Now block. 80 is about
+ * two lines at 12 px in the 330 px Ask panel, where the value column of a
+ * side-by-side row is only about 200 px wide.
+ */
+export const LONG_VALUE_CHARS = 80;
+
+/** True when a plain text is long: over the limit, or on more than one line. */
+export function isLongText(text: string): boolean {
+  return text.length > LONG_VALUE_CHARS || text.includes("\n");
+}
+
+/** True when any side of a parsed value holds a long text. */
+export function valueIsLong(parsed: FieldValue): boolean {
+  return [...(parsed.before ?? []), ...parsed.after].some((i) => isLongText(unfenced(i.text).trim()));
+}
+
+/**
+ * True when a field draws as a Before / Now block: a change to a text field
+ * (no chip, no status, no person) with one side long. The server fences each
+ * side (`description: «old» → «new»`), so a side is a named item, and in a
+ * text field a named item still draws as text.
+ */
+export function isLongTextChange(parsed: FieldValue, kind: FieldKind): boolean {
+  return !!parsed.before && kind === "text" && valueIsLong(parsed);
+}
