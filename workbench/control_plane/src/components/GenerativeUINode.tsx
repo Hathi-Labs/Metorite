@@ -51,7 +51,7 @@ import { plainTitle } from "@/lib/fencedText";
 import { tableCells, tableColumns, text } from "@/lib/genUiText";
 import { resolveIcon } from "@/lib/icons";
 import {
-  actionDisabled, boundView, bindsSource, gridData, parseAction, parseSource, pressAction, sourceKey,
+  actionDisabled, boundView, bindsSource, canRetryRead, gridData, parseAction, parseSource, pressAction, sourceKey,
   type BoundView, type Row, type StudioDataDoor,
 } from "@/lib/studio/dataDoor";
 import StudioTable from "@/components/studio/StudioTable";
@@ -136,11 +136,13 @@ export { GenUiText };
  */
 /** The loading, error and empty states of a bound block. Words are plain. */
 export function BoundStatus({
-  view, onRetry, title,
+  view, onRetry, title, error,
 }: {
   view: BoundView;
   onRetry: () => void;
   title?: string;
+  /** The sentence of a failed read, from the door. */
+  error?: string | null;
 }): React.ReactElement | null {
   if (view === "loading") {
     return (
@@ -152,10 +154,11 @@ export function BoundStatus({
     );
   }
   if (view === "error") {
+    // The door words the fault (`realDoor.ts`), so say its sentence once, and offer a retry only where one can help.
     return (
       <div className="flex items-center gap-2 text-xs text-destructive" role="alert">
-        <span>Could not load this list.</span>
-        <Button type="button" variant="secondary" size="sm" onClick={onRetry}>Try again</Button>
+        <span>{error || "Could not load this list."}</span>
+        {canRetryRead(error) && <Button type="button" variant="secondary" size="sm" onClick={onRetry}>Try again</Button>}
       </div>
     );
   }
@@ -184,7 +187,7 @@ function BoundSource({
   const view = boundView({ data, loading, error });
   if (view !== "rows") {
     const title = s(props.title ?? (props.data as Record<string, unknown> | undefined)?.title, "");
-    return <BoundStatus view={view} onRetry={refresh} title={title} />;
+    return <BoundStatus view={view} onRetry={refresh} title={title} error={error} />;
   }
   const rows = data as Row[];
   const { source: _drop, ...rest } = props;

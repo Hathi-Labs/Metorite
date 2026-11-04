@@ -7,13 +7,24 @@
  * A block names the verb, as `object:visit.list`, so the door maps the verb
  * to the declared id.
  *
- * ⚠️ THE READ GUARD LIVES HERE, AND ONLY HERE. The BFF (`api/studio/[[...path]]`)
- * signs the direct proof for EVERY same-origin POST to `apps/<id>/actions/<id>`.
- * It cannot tell a read from a write. So a read that reached a write action
- * would run as the member's own click. `door.read` therefore accepts only
- * `object:<name>.list` and `object:<name>.get`. It refuses every other source
- * with no network call. A page reads on mount, on focus and on refresh, and
- * none of those may write. Fence: `realDoor.test.ts`.
+ * ⚠️ THE READ GUARD. The BFF (`api/studio/[[...path]]`) signs the direct proof for
+ * EVERY same-origin POST to `apps/<id>/actions/<id>`. It cannot tell a read from a
+ * write. So a read that reached a write action would run as the member's own click.
+ * Two guards hold, and each one alone is not enough.
+ *
+ * 1. The client guard: `door.read` accepts only `object:<name>.list` and
+ *    `object:<name>.get`, and refuses every other source with no network call. It
+ *    holds for the manifest that the page read at open. The door maps a verb to the
+ *    action id of that manifest. A later draft can re-point an id at a write, and the
+ *    page does not know until it reads the package again.
+ * 2. The body marker: each `.get` body is `{id, read: true}`. The door ignores the
+ *    marker for a get, and it refuses a body with that key for a create, an update and
+ *    a delete (`_write_input` takes exactly the keys of the write). So a re-pointed id
+ *    still cannot delete a record. A list body cannot name a delete either, because
+ *    the list takes only filter, sort, limit and offset.
+ *
+ * A page reads on mount, on focus and on refresh, and none of those may write.
+ * Fence: `realDoor.test.ts`.
  *
  * ⚠️ A refusal never shows the raw text of an error. The member reads one of
  * the sentences below.
@@ -120,6 +131,17 @@ function detailOf(body: unknown): Record<string, unknown> {
   return typeof d === "string" ? { message: d } : {};
 }
 
+/**
+ * The store words a rule refusal as "Rule `name` of object `obj`: <message>".
+ * The Form and the Board already say "Refused by <rule>:", so keep only the
+ * message of the rule.
+ */
+export function ownMessage(message: string | null): string | null {
+  if (message === null) return null;
+  const m = /^Rule `[^`]+` of object `[^`]+`: ([\s\S]+)$/.exec(message);
+  return m ? m[1] : message;
+}
+
 /** The sentence of a 503 that carries a wait. */
 export function busySentence(retryAfter: string | null | undefined): string {
   const n = retryAfter ? Number.parseInt(retryAfter, 10) : NaN;
@@ -136,7 +158,7 @@ export function mapAnswer(status: number, body: unknown, retryAfter?: string | n
   const d = detailOf(body);
   if (status === 422) {
     const rule = text(d.rule);
-    const message = text(d.message);
+    const message = rule ? ownMessage(text(d.message)) : text(d.message);
     const fieldErrors = fieldMap(d.fieldErrors, { field: d.field, message: d.message });
     return {
       ok: false,
@@ -200,7 +222,9 @@ export function createRealDoor(opts: RealDoorOptions): StudioDataDoor {
       if (!isReadSource(source?.action)) throw new DoorReadError(NOT_OPEN_SENTENCE, 0);
       const id = verbs[source.action];
       if (!id) throw new DoorReadError(NOT_DECLARED_SENTENCE, 403);
-      const out = await post(id, source.args ?? {});
+      // The marker is the second guard (see the file header). Only a get carries it.
+      const isGet = source.action.endsWith(".get");
+      const out = await post(id, isGet ? { ...(source.args ?? {}), read: true } : (source.args ?? {}));
       if (out.status < 200 || out.status >= 300) {
         const failed = mapAnswer(out.status, out.body, out.wait);
         throw new DoorReadError(failed.message ?? ACTION_FAILED, out.status);
@@ -228,6 +252,27 @@ export function createRealDoor(opts: RealDoorOptions): StudioDataDoor {
         return { ok: false, message: ACTION_FAILED };
       }
     },
+  };
+}
+
+/**
+ * Keep one door while the actions stay the same (STU-D2b fix round 1, P2-B). A page
+ * reads the package again on focus, and the read gives a new object each time. A new
+ * door would reset the edit store and the delete flow, so the door is keyed on the
+ * package id and the text of the actions.
+ */
+export function createDoorKeeper(
+  make: (opts: RealDoorOptions) => StudioDataDoor = createRealDoor,
+): (packageId: string, actions: readonly DeclaredAction[] | undefined) => StudioDataDoor {
+  let key = "";
+  let door: StudioDataDoor | null = null;
+  return (packageId, actions) => {
+    const next = `${packageId}\u0000${JSON.stringify(actions ?? [])}`;
+    if (door === null || next !== key) {
+      door = make({ packageId, actions });
+      key = next;
+    }
+    return door;
   };
 }
 

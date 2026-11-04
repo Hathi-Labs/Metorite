@@ -23,8 +23,9 @@ import { clearAll, invalidate, read as cacheRead } from "@/lib/dataCache";
 import { sourceKey } from "./dataDoor";
 import {
   APPROVAL_SENTENCE, DoorReadError, STUDIO_OFF, createRealDoor, flattenRecords, getPackage, isReadSource,
-  listPackages, mapAnswer, verbMap,
+  listPackages, mapAnswer, ownMessage, createDoorKeeper, verbMap,
 } from "./realDoor";
+import { canRetryRead } from "./dataDoor";
 import { readRefusal } from "./formModel";
 
 beforeEach(() => clearAll());
@@ -240,5 +241,64 @@ describe("the package routes", () => {
     const { impl, spy } = fakeFetch();
     await expect(getPackage("../x", impl)).rejects.toThrow(STUDIO_OFF);
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe("fix round 1: the body marker, the generic 500, the rule words, the kept door", () => {
+  it("a .get body carries read: true, the second guard against a re-pointed action id", async () => {
+    const { impl, calls } = fakeFetch(200, { record: { id: "x", data: {} } });
+    const door = createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: impl });
+    await door.read({ action: "object:visit.get", args: { id: "x" } });
+    expect(calls[0].body).toEqual({ id: "x", read: true });
+  });
+  it("a .get body never loses the marker, even when the page sends a read key itself", async () => {
+    const { impl, calls } = fakeFetch(200, { record: { id: "x", data: {} } });
+    const door = createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: impl });
+    await door.read({ action: "object:visit.get", args: { id: "x", read: false } });
+    expect(calls[0].body).toEqual({ id: "x", read: true });
+  });
+  it("a list body carries no marker, because the list takes only its own keys", async () => {
+    const { impl, calls } = fakeFetch();
+    const door = createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: impl });
+    await door.read({ action: "object:visit.list", args: { limit: 5 } });
+    expect(calls[0].body).toEqual({ limit: 5 });
+  });
+  it("a write body never carries the marker", async () => {
+    const { impl, calls } = fakeFetch();
+    const door = createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl: impl });
+    await door.run("object:visit.delete", { id: "a" });
+    expect(calls[0].body).toEqual({ id: "a" });
+  });
+  it("a 500 with a detail.message string maps to the generic text, never the raw one", () => {
+    const res = mapAnswer(500, { detail: { message: "Traceback: boom at db.py:44" } });
+    expect(res).toEqual({ ok: false, message: "That did not work. Try again." });
+    expect(mapAnswer(500, { detail: "raw" }).message).not.toContain("raw");
+  });
+  it("a rule refusal keeps only the message of the rule after the rule name", () => {
+    const res = mapAnswer(422, { detail: {
+      code: "rule_refused", rule: "qty_range",
+      message: "Rule `qty_range` of object `visit`: Pallets must be between 0 and 500.",
+    } });
+    expect(res.message).toBe("Pallets must be between 0 and 500.");
+    expect(readRefusal(res.data).message).toBe("Pallets must be between 0 and 500.");
+    expect(ownMessage("A plain sentence.")).toBe("A plain sentence.");
+    expect(ownMessage(null)).toBeNull();
+  });
+  it("keeps one door while the actions stay the same, and makes a new one when they change", () => {
+    let made = 0;
+    const keep = createDoorKeeper(() => { made += 1; return { scope: `d${made}`, read: async () => [], run: async () => ({ ok: true }) }; });
+    const first = keep(PKG, ACTIONS);
+    expect(keep(PKG, JSON.parse(JSON.stringify(ACTIONS)))).toBe(first);
+    expect(made).toBe(1);
+    expect(keep(PKG, [...ACTIONS].reverse())).not.toBe(first);
+    expect(keep("123e4567-e89b-12d3-a456-426614174111", ACTIONS)).not.toBe(first);
+  });
+  it("words a wait or a network fault as a retry, and a refusal as no retry", () => {
+    expect(canRetryRead(mapAnswer(503, {}).message)).toBe(true);
+    expect(canRetryRead(mapAnswer(500, {}).message)).toBe(true);
+    expect(canRetryRead(mapAnswer(404, { detail: "x" }).message)).toBe(false);
+    expect(canRetryRead(mapAnswer(403, { detail: { code: "not_declared" } }).message)).toBe(false);
+    expect(canRetryRead(mapAnswer(401, {}).message)).toBe(false);
+    expect(canRetryRead(null)).toBe(true);
   });
 });
