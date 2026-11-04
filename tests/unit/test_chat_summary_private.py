@@ -61,11 +61,10 @@ STAGING_BLANK = ROOT / "infra" / "staging" / "minimise.sql"
 #: * the room routes clear it when a chat stops being solo (P2-b);
 #: * the member purge clears it on the member's shared rooms (P2-b).
 #:
-#: A later slice adds its own entry here, in review: the briefing of PZ-34
-#: (`orchestrator/executor.py`), the Settings routes, Forget and the removal
-#: of PZ-35 (`routes/admin/assistant_profile.py`, `routes/admin/members.py`)
-#: and the search of MEM-2 (`acb_skills/history_tools.py`). The job of PZ-33b
-#: has its own entry in the block below.
+#: A later slice adds its own entry here, in review: the search of MEM-2
+#: (`acb_skills/history_tools.py`). The Settings routes, Forget and the
+#: removal of PZ-35 have their entries below. The job of PZ-33b and the
+#: briefing of PZ-34 have their own entries in the blocks below.
 IMPORTERS: dict[Path, frozenset[str]] = {
     GATEWAY / "routes" / "rooms.py": frozenset({"clear_on_share"}),
     GATEWAY / "routes" / "admin" / "members.py": frozenset({"clear_for_member"}),
@@ -86,6 +85,11 @@ IMPORTERS[JOB_MODULE] = frozenset({
     "prompt_rows",
     "read", "read_job_chat", "rows_after", "seed", "write_marked",
 })
+#: (c) PZ-34: the executor reads the member's recent chats for the briefing
+#: at the start of a chat (`_briefing_chats`). `recent` holds the flag, the
+#: switch and the rules of a chat, so the executor imports no other name.
+EXECUTOR = ROOT / "apps" / "services" / "orchestrator" / "orchestrator" / "executor.py"
+IMPORTERS[EXECUTOR] = frozenset({"recent"})
 #: The trees that (c) reads: all code of the platform.
 PLATFORM = (ROOT / "apps", ROOT / "packages")
 

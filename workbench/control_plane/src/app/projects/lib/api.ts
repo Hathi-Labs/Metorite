@@ -306,7 +306,7 @@ export interface NodeSummary {
   due_soon?: number;
   due_soon_days?: number;
   by_disposition?: Partial<
-    Record<"inbox" | "today" | "next" | "waiting" | "someday" | "done", number>
+    Record<"inbox" | "today" | "next" | "waiting" | "someday" | "done" | "new", number>
   >;
   today?: string;
   time_zone?: string;
@@ -1838,6 +1838,11 @@ export interface TaskRow {
    */
   disposition?: string | null;
   is_triaged?: boolean;
+  /**
+   * D170 (INB-1) — "New": assigned to me on a company board and I have not
+   * stated a disposition yet (`mine.new_work`). A disposition write clears it.
+   */
+  is_new?: boolean;
   is_mine?: boolean;
   context?: string | null;
   energy?: string | null;

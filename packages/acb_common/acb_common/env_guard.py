@@ -174,6 +174,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
     # not cover it.
     "ASSISTANT_CHAT_SUMMARY_ORGS",
+    # WS-63 PZ-34: the orgs whose chat opens with the briefing block. It puts
+    # the member's other chats into a run, so only the operator writes it. The
+    # `ASSISTANT_PROFILE_` prefix below does not cover it.
+    "ASSISTANT_BRIEFING_ORGS",
     # H-328 part (b): the orgs whose unattended workflow runs may start. A run
     # can send mail or WhatsApp and spend credits with no person present, so
     # only the operator writes it. The `WORKFLOW_` prefix covers it too, and

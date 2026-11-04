@@ -234,6 +234,23 @@ async def test_with_overlay_reads_the_callers_overlay_only(
     assert rows[0]["status_category"] is None
     # The stage comes from the status join of the same query (the Board tab).
     assert "s.category AS status_category" in sql
+    # D170 (INB-1): the row says whether it is New. No overlay row, so it is not.
+    assert rows[0]["is_new"] is False
+
+
+def test_new_work_is_assigned_untriaged_and_on_a_company_board() -> None:
+    """D170 (INB-1). "New" is the rule of ``personal.UNTRIAGED_CLAUSE`` on a row.
+
+    Assigned to me, no stated disposition, a company board, open. A stated
+    disposition clears it, so it needs no write of its own.
+    """
+    new = pm_mine.new_work
+    assert new(None, on_board=True, is_mine=True, effective="NEXT") is True
+    assert new("NEXT", on_board=True, is_mine=True, effective="NEXT") is False
+    assert new("INBOX", on_board=True, is_mine=True, effective="INBOX") is False
+    assert new(None, on_board=False, is_mine=True, effective="NEXT") is False
+    assert new(None, on_board=True, is_mine=False, effective="WAITING") is False
+    assert new(None, on_board=True, is_mine=True, effective="DONE") is False
 
 
 # ── GET /projects/my/summary ────────────────────────────────────────────────
@@ -333,11 +350,13 @@ def test_the_disposition_fold_follows_the_client_rules() -> None:
         _row(id="untriaged-deferred", p_defer_until=now + timedelta(days=2)),
     ]
     counts = pm_mine.fold_dispositions(rows, at=now, today=today, zone="UTC")
-    # inbox: the INBOX row, plus the untriaged board rows (next-today,
-    # next-later, someday). A personal project, a stated overlay, a deferred
-    # row and a DONE row are not in `inboxCount`.
+    # inbox: the INBOX row only (D170, INB-1). The untriaged board rows are
+    # not captures, so they count in `new` (next-today, next-later, someday and
+    # untriaged-deferred) and in the chip of their derived disposition. A
+    # personal project, a stated overlay and a DONE row are not New.
     assert counts == {
-        "inbox": 4, "today": 1, "next": 4, "waiting": 1, "someday": 1, "done": 1,
+        "inbox": 1, "today": 1, "next": 4, "waiting": 1, "someday": 1, "done": 1,
+        "new": 4,
     }
 
 
