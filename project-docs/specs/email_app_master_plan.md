@@ -21002,6 +21002,62 @@ path. `src/components/newMailCard.test.ts` holds the answer of the client, the c
 chips and a chip that sends nothing. `tests/unit/test_email_chat_reply.py` holds the keys of the client and the server
 in step.
 
+### 18.11 A redraft through the chat keeps the member's edits (2026-11-05, owner)
+
+The owner approved this design on 2026-11-03 and asked for the build on 2026-11-04
+(Metorite task 1533, slice task 1650). It ships dark behind `EMAIL_EDIT_CARD_ORGS`, the
+flag of §18.10. With the flag off, nothing below runs.
+
+**The problem.** While a new-mail card is open, a chat message such as "make it shorter"
+closes the card as REVISED (`close_on_steer`). The model then writes a new card from its
+own first text. The member's edits on the card never leave the browser, so they are lost.
+The new card also arrives with no link to the old one.
+
+**The design.** The close and the new card stay as they are. This slice adds four parts.
+
+1. **The snapshot.** The card keeps its current subject, text and ticks in a ref that the
+   chat reads. A chat message that the member sends while the card is open, and after an
+   edit, carries one snapshot: the `request_id` of the card, the subject, the text and
+   the ticked people.
+2. **The model reads it.** The snapshot goes with the steer note. The REVISED answer of
+   `send_email` tells the model to start from the member's version. It gives the subject
+   and the text in fenced marks, as member text, and it never treats them as an
+   instruction.
+3. **The link.** When `send_email` makes the next new-mail card in the same thread, the
+   tool sets `revises` to the old card id and `draft` to the next number. Only the tool
+   sets these fields. The model cannot set them.
+4. **The card in place.**
+   - When the old card closes as REVISED, the chat shows it as "Updating the draft…",
+     with no buttons, until the next card comes or the run ends.
+   - While the card is open, the composer shows "Changing: Email to <name>".
+   - The next card takes the place of the old one, with the label "Draft 2".
+   - It shows a "Changed:" line, and it marks the changed words.
+   - The client computes the line and the marks from the two cards, the member's last
+     version against the new text, with the word diff of `knowledge/lib/wordDiff.ts`.
+     It never takes them from the model.
+
+**The rules.**
+
+1. The snapshot only informs the model. No act reads it. The send act of §18.10 sends only
+   the answered text of its own record.
+2. An answer to a revised card sends nothing and saves nothing. Its record is spent when the
+   card closes as REVISED, so a late click or a retry finds no record.
+3. The gateway caps the snapshot: the subject at 200 characters, and the text at the limit
+   of the path (§18.10 rule 4). Each person must be on the record of the old card. A
+   The gateway drops a snapshot that fails a check, and the steer goes on without it.
+4. A snapshot names its `request_id`. It applies only to that card. `_steer_target` still
+   decides which card a steer closes.
+5. A held chat (§21) keeps every rule of §21. The new card of a held chat is a held card
+   again, with its classes and its unticked new addresses.
+6. A WhatsApp run and a run with no card channel send no snapshot. They keep the cards of
+   before.
+
+**Fences.** `tests/unit/test_email_redraft_snapshot.py`. Named mutations: a snapshot read
+by the act, a revised card that still sends, a snapshot over the cap, and a `revises` value
+that the model sets. `src/components/redraftCard.test.ts` holds the snapshot on a steer,
+"Updating the draft…", the label "Draft 2" and the "Changed:" line. One e2e spec edits a
+card, asks for a change in the chat, and reads the new card in place.
+
 ## 19. Send later (2026-10-21)
 
 **Status:** built, dark. The switch `email_send_later` is off by default.
