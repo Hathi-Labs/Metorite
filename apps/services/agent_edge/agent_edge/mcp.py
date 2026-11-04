@@ -221,7 +221,13 @@ _RUN_INSTRUCTIONS = (
     " whose held_by is not stale. The one exception is a my_work row with the"
     " reason held_by_you, because its run is of your own connection and its"
     " session went quiet. A waiting run of another connection or another"
-    " machine is never yours. Outside my_work, use list_tasks with unheld true. Call"
+    " machine is never yours."
+    # MCP-G15 fix round 1. The rule of the code: the gateway takes a write of
+    # the same member and the same client stamp (`may_end_run`), whichever
+    # connection sends it. So the agent keeps the rule above itself.
+    " Metorite still takes a write on any run of your member and your client,"
+    " from any machine. So do not write on such a run."
+    " Outside my_work, use list_tasks with unheld true. Call"
     " claim_task first. While you work,"
     " the thought that you send at least once a minute is the"
     " heartbeat of your hold. If you stop and will not finish, call"

@@ -202,7 +202,9 @@ def _queued_text() -> str:
         " step 2 again. When claim_task refuses for another reason, tell me"
         " why, and take the next row. A waiting run of another connection, such"
         " as one on another machine, is never yours, and my_work does not list"
-        " it." + _terminals() + " Take only a row that my_work lists.",
+        " it. Metorite still takes a write on any run of mine through your"
+        " client, from any machine. So do not write on such a run."
+        + _terminals() + " Take only a row that my_work lists.",
         _context_step(start_run=True) + " Note the version of the task.",
         *_work_steps(runs=True),
     ]

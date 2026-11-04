@@ -51,7 +51,10 @@ each list that shows an awaiting run before and after the act: the derived
 state of the run and the pill (``filters.AGENT_RUN_STATE_SQL``), the
 "Waiting on me" focus, ``status=awaiting`` (the chat's
 ``waiting_agent_requests``), the open question of the run, ``needs_agent``
-and the Needs attention route.
+and the Needs attention route. Fix round 1 adds the member's bell and the
+reason of the My Day card (``shell.needs._note_signals``).
+``test_d2b_the_act_reads_the_members_bell_row_and_no_other`` holds that the
+act reads the member's bell row only, and that My Day moves once.
 """
 from __future__ import annotations
 
@@ -566,7 +569,10 @@ async def _waiting_lists(world, task: str, run_id: str) -> dict[str, Any]:
                               f"/projects/needs-attention?project_id={world.team}")
     assert attention.status_code == 200, attention.text
     run = await _run_wire(world, run_id)
+    bell = await _bell(world, MEMBER, task)
     return {
+        "bell_unread": [row["kind"] for row in bell],
+        "my_day_reason": _my_day_reason(bell, task),
         "pill": pill.json().get("agent_state"),
         "waiting_on_me": task in {row["id"] for row in focus.json()["rows"]},
         "status_awaiting": run_id in {row["id"] for row in awaiting.json()["rows"]},
@@ -575,6 +581,28 @@ async def _waiting_lists(world, task: str, run_id: str) -> dict[str, Any]:
         "open_question": run["open_elicitation"],
         "needs_agent": run["needs_agent"],
     }
+
+
+async def _bell(world, email: str, task: str) -> list[dict[str, Any]]:
+    """The unread bell rows of *email* on *task*, through the bell's own read."""
+    r = await _person(world, email, "GET", "/projects/notifications?unread_only=true")
+    assert r.status_code == 200, r.text
+    return [row for row in r.json()["rows"] if row["task_id"] == task]
+
+
+def _my_day_reason(rows: list[dict[str, Any]], task: str) -> str | None:
+    """The reason of the My Day card of *task*, from the unread rows, through
+    the feed's own seam (``shell.needs._note_signals``). None: no card."""
+    from gateway.routes.shell.needs import _note_signals
+
+    found = [sig for sig in _note_signals(rows) if sig.signal_id == f"tasks:{task}"]
+    return str(found[0].facts["notification"]) if found else None
+
+
+def _bell_rows(world, task: str) -> list[Any]:
+    return _rows(world, "SELECT recipient, kind, read_at FROM pm_notifications"
+                        " WHERE task_id = CAST(:t AS uuid) AND kind = 'agent_question'"
+                        " ORDER BY recipient", t=task)
 
 
 # ── The acceptance ──────────────────────────────────────────────────────────
@@ -620,16 +648,52 @@ class TestTheDecision:
         open question and the waiting lists stay."""
         task, run_id, _ = await _asked(runs, "d2 outside")
         before = await _waiting_lists(runs, task, run_id)
-        assert before == {"pill": "awaiting", "waiting_on_me": True, "status_awaiting": True,
+        assert before == {"bell_unread": ["agent_question"],
+                          "my_day_reason": "agent_question",
+                          "pill": "awaiting", "waiting_on_me": True, "status_awaiting": True,
                           "needs_attention": False, "state": "awaiting",
                           "open_question": before["open_question"], "needs_agent": None}
         assert before["open_question"] is not None
 
         _structured(await _record(runs, run_id, selected=["approve"]))
         after = await _waiting_lists(runs, task, run_id)
-        assert after == {"pill": "working", "waiting_on_me": False, "status_awaiting": False,
+        assert after == {"bell_unread": [], "my_day_reason": None,
+                         "pill": "working", "waiting_on_me": False, "status_awaiting": False,
                          "needs_attention": False, "state": "working",
                          "open_question": None, "needs_agent": None}
+
+    async def test_d2b_the_act_reads_the_members_bell_row_and_no_other(self, runs, monkeypatch):
+        """Fix round 1 (P2). The bell and My Day of the member stop asking.
+        The bell row of a watcher stays theirs to read. My Day moves once,
+        after the commit. Mutation: no ``_clear_question_bell`` call — the
+        member's row stays unread, and D2 fails too."""
+        from gateway.routes.projects import personal
+
+        bumped: list[str] = []
+
+        async def bump(org: Any, email: str) -> None:
+            bumped.append(email)
+
+        monkeypatch.setattr(personal, "bump_my_day", bump)
+        task = runs.task(runs.team, runs.s.doing, "d2b bell")
+        r = await _person(runs, OTHER, "PUT", f"/projects/tasks/{task}/watch")
+        assert r.status_code == 200, r.text
+        body = _structured(await _agent(runs, "ask_on_task", task_id=task,
+                                        question="Ship on Friday?", idempotency_key=_key()))
+        run_id = body["run"]["id"]
+        assert [(b.recipient, b.read_at is None) for b in _bell_rows(runs, task)] == [
+            (MEMBER, True), (OTHER, True)]
+
+        key = _key()
+        _structured(await _record(runs, run_id, key=key))
+        rows = {b.recipient: b.read_at for b in _bell_rows(runs, task)}
+        assert rows[MEMBER] is not None
+        assert rows[OTHER] is None
+        assert bumped == [MEMBER]
+        # A replay marks nothing more and moves My Day no more.
+        _structured(await _record(runs, run_id, key=key))
+        assert {b.recipient: b.read_at for b in _bell_rows(runs, task)} == rows
+        assert bumped == [MEMBER]
 
     async def test_d3_the_members_own_answer_works_as_before(self, runs):
         """The member's real answer path does not change: a prompt with

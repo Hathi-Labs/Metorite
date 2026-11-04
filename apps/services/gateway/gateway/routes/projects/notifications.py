@@ -475,6 +475,34 @@ async def list_notifications(
     }
 
 
+async def mark_rows_read(db: Any, me: str, ids: list[str] | None) -> int:
+    """The ONE write of ``read_at``: mark the unread rows of the recipient
+    *me* read, in the caller's transaction. *ids* names the rows, and
+    ``None`` marks every unread row of *me*. The count of rows it marked.
+
+    Two callers: :func:`mark_read`, the member's own click, and the outside
+    decision of an agent (WS-55 MCP-G15, ``agent_runs.record_outside_decision``),
+    which marks the member's bell row of the question that the member
+    answered outside Metorite. It does not commit, and it does not move My
+    Day. Each caller calls ``personal.bump_my_day`` after its commit.
+    """
+    if ids is None:
+        sql = (
+            "UPDATE pm_notifications SET read_at = now() "
+            "WHERE recipient = :me AND read_at IS NULL"
+        )
+        params: dict[str, Any] = {"me": me}
+    else:
+        sql = (
+            "UPDATE pm_notifications SET read_at = now() "
+            "WHERE recipient = :me AND read_at IS NULL "
+            "AND id = ANY(CAST(:ids AS uuid[]))"
+        )
+        params = {"me": me, "ids": list(ids)}
+    result = await db.execute(text(sql), params)
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
 @router.post("/notifications/read")
 async def mark_read(
     payload: ReadIn, user: UserContext = Depends(get_current_user),
@@ -493,21 +521,7 @@ async def mark_read(
     if not payload.all and not payload.ids:
         return {"marked": 0}
     async with _tenant_session() as db:
-        if payload.all:
-            sql = (
-                "UPDATE pm_notifications SET read_at = now() "
-                "WHERE recipient = :me AND read_at IS NULL"
-            )
-            params: dict[str, Any] = {"me": me}
-        else:
-            sql = (
-                "UPDATE pm_notifications SET read_at = now() "
-                "WHERE recipient = :me AND read_at IS NULL "
-                "AND id = ANY(CAST(:ids AS uuid[]))"
-            )
-            params = {"me": me, "ids": list(payload.ids)}
-        result = await db.execute(text(sql), params)
-    marked = int(getattr(result, "rowcount", 0) or 0)
+        marked = await mark_rows_read(db, me, None if payload.all else list(payload.ids))
     if marked:
         # WS-58 MD-5a — after the commit: a read note leaves My Day, and
         # marking read emits no `pm.*` event (my_day_feed.md §8.4 item 5).

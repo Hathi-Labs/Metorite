@@ -133,7 +133,12 @@ from gateway.routes.projects.filters import (
     strand_fits_sql,
     task_closed_sql,
 )
-from gateway.routes.projects.notifications import excerpt_of, notify, task_audience
+from gateway.routes.projects.notifications import (
+    excerpt_of,
+    mark_rows_read,
+    notify,
+    task_audience,
+)
 from gateway.routes.projects.tasks import archive_task_in
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
@@ -2578,6 +2583,10 @@ async def record_outside_decision(
       member's answer (:func:`option_labels`). Else 422 ``selected_refused``.
     * The same ``idempotency_key`` again returns the first response with
       200. A key of another activity gets 409.
+    * **The bell** (fix round 1). The member's ``agent_question`` row of the
+      question becomes read in the same transaction
+      (:func:`_clear_question_bell`), so the bell and My Day stop asking.
+      After the commit, ``personal.bump_my_day`` moves My Day.
 
     Fences: ``tests/unit/test_mcp_edge_outside_decision.py`` (R8 and
     database-free).
@@ -2618,16 +2627,7 @@ async def record_outside_decision(
         if typed_question(question):
             raise _refusal(409, OUTSIDE_TYPED,
                            "Only the member answers this request, on the task in Metorite.")
-        labels: list[str] = []
-        if payload.selected is not None:
-            meta = from_jsonb(question.signal_metadata)
-            if question.signal != "select" or not meta:
-                raise _refusal(422, OUTSIDE_SELECTED,
-                               "selected names options, and this question has none.")
-            try:
-                labels = option_labels(meta, payload.selected)
-            except HTTPException as exc:
-                raise _refusal(422, OUTSIDE_SELECTED, str(exc.detail)) from None
+        labels = _outside_labels(question, payload.selected)
         record: dict[str, Any] = {
             "where": where, "question_id": str(question.id), "decision": decision,
         }
@@ -2641,11 +2641,61 @@ async def record_outside_decision(
         )
         if not written.created:
             response.status_code = 200
+        # Fix round 1 (P2). The member answered, so the bell row of the
+        # question, and the My Day card it makes, must go too.
+        cleared = (await _clear_question_bell(db, _member(user), question)
+                   if written.created else 0)
         out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
         out_activity = _activity_out(written.activity)
     if written.commented:
         await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
+    if cleared:
+        # After the commit, as `notifications.mark_read` does: a read note
+        # leaves My Day, and a read emits no `pm.*` event.
+        from gateway.routes.projects.personal import bump_my_day
+
+        await bump_my_day(user.organization_id, _member(user))
     return {"activity": out_activity, "run": out_run, "created": written.created}
+
+
+def _outside_labels(question: Any, selected: list[str] | None) -> list[str]:
+    """The labels of the option ids that the member chose, or ``[]`` with no
+    ids. A question with no options gets 422 ``selected_refused``, and so does
+    an id that :func:`option_labels` refuses."""
+    if selected is None:
+        return []
+    meta = from_jsonb(question.signal_metadata)
+    if question.signal != "select" or not meta:
+        raise _refusal(422, OUTSIDE_SELECTED, "selected names options, and this question has none.")
+    try:
+        return option_labels(meta, selected)
+    except HTTPException as exc:
+        raise _refusal(422, OUTSIDE_SELECTED, str(exc.detail)) from None
+
+
+#: The member's unread bell rows of one question: ``kind = 'agent_question'``,
+#: and ``activity_id`` is the timeline row of the question (``_comment``
+#: writes the bell with ``activity_id`` = that row).
+_QUESTION_BELL_SQL = (
+    "SELECT id FROM pm_notifications"
+    " WHERE recipient = :me AND kind = 'agent_question'"
+    " AND activity_id = CAST(:aid AS uuid) AND read_at IS NULL"
+)
+
+
+async def _clear_question_bell(db: Any, me: str, question: Any) -> int:
+    """Mark the member's bell row of *question* read, in the caller's
+    transaction, through the ONE writer of ``read_at``
+    (``notifications.mark_rows_read``). Only the member's own row: the bell
+    of an assignee or a watcher stays theirs to read. The count it marked."""
+    activity = getattr(question, "pm_activity_id", None)
+    if activity is None:
+        return 0
+    found = (await db.execute(text(_QUESTION_BELL_SQL),
+                              {"me": me, "aid": str(activity)})).fetchall()
+    if not found:
+        return 0
+    return await mark_rows_read(db, me, [str(row.id) for row in found])
 
 
 __all__ = [
