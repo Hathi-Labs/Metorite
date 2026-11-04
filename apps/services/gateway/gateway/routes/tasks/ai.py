@@ -19,6 +19,7 @@ import re
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_common import get_logger
 from acb_llm.voice import voice_prompt
 from fastapi import Depends
 from gateway.routes.tasks.core import (
@@ -31,6 +32,16 @@ from gateway.routes.tasks.core import (
 )
 from gateway.routes.tasks.item_source import item_source
 from sqlalchemy import text
+
+_log = get_logger("gateway.tasks.ai")
+
+# Clarify answer budget (CL-1). 500 cut a long JSON answer in the middle, and
+# the heuristic then answered in silence. The subtask cap shrinks to 8 so the
+# list stays short enough to finish inside the budget.
+CLARIFY_MAX_TOKENS = 900
+CLARIFY_MAX_SUBTASKS = 8
+# The parent check is a side call. It must never hold the card for long.
+PARENT_CHECK_TIMEOUT_S = 4.0
 
 # ── Shared prompt context (system information every AI decision needs) ───────
 
@@ -660,6 +671,42 @@ def _resolve_place(
     return best if best_score >= 1 else None
 
 
+async def _ask_clarify_model(
+    model: str, system: str, user: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The one clarify model call. Returns ``(data, None)`` or ``(None, reason)``
+    where the reason is ``timeout``, ``error``, ``truncated`` or ``bad_json``."""
+    try:
+        from acb_llm.context import acompletion_with_fallback
+        resp, _used = await acompletion_with_fallback(
+            model=model,
+            fallback_model="tier-balanced",
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": user}],
+            temperature=0.0,
+            max_tokens=CLARIFY_MAX_TOKENS,
+            thinking=dict(NO_THINKING),
+            response_format={"type": "json_object"},
+        )
+    except TimeoutError:
+        return None, "timeout"
+    except Exception as exc:
+        return None, ("timeout" if "timeout" in type(exc).__name__.lower()
+                      else "error")
+    finish = None
+    try:
+        choice = resp.choices[0]
+        finish = getattr(choice, "finish_reason", None)
+        raw = choice.message.content or ""
+        data = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
+        if not isinstance(data, dict):
+            raise ValueError("not an object")
+    except Exception:
+        # A cut-off answer is a budget problem. Garbage is a model problem.
+        return None, "truncated" if finish == "length" else "bad_json"
+    return data, None
+
+
 async def _llm_propose(
     item: Any, people: list[dict], projects: list[Any],
     account_statuses: dict[str, list[str]], model: str,
@@ -667,10 +714,18 @@ async def _llm_propose(
     memory_context: str = "",
     contexts: list[str] | None = None,
     places: list[dict[str, Any]] | None = None,
+    diag: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """LLM clarify core. Returns a ``core``-shaped dict (same keys propose()
-    produces: disposition, next_action, optional outcome/context/energy/
-    suggested_assignee, confidence, rationale) or None on ANY failure.
+    """LLM clarify core.
+
+    On a failure the caller may pass ``diag``. This function then writes the
+    reason into ``diag["reason"]`` and logs ``clarify.llm_failed`` (CL-1). The
+    reasons are ``truncated``, ``bad_json``, ``unknown_disposition``,
+    ``empty_next_action``, ``timeout`` and ``error``.
+
+    Returns a ``core``-shaped dict (same keys propose() produces: disposition,
+    next_action, optional outcome/context/energy/suggested_assignee,
+    confidence, rationale) or None on ANY failure.
 
     ``user_context`` is optional freeform guidance the user typed during clarify
     ("this is actually the Q3 board deck — break it into sections") — TRUSTED
@@ -680,9 +735,10 @@ async def _llm_propose(
     ``memory_context`` is an optional block of the task-manager's past
     clarification patterns (§9, Phase 4) — the user's own prior decisions, fed as
     continuity guidance so repeated kinds of task get filed consistently."""
-    try:
-        from acb_llm.context import acompletion_with_fallback
-    except Exception:
+    def _fail(reason: str) -> None:
+        if diag is not None:
+            diag["reason"] = reason
+        _log.warning("clarify.llm_failed", reason=reason, model=model)
         return None
 
     stages = sorted({s for ss in account_statuses.values() for s in ss})
@@ -729,7 +785,8 @@ async def _llm_propose(
         "(ordered, each a visible step like 'Draft the agenda', not a vague "
         "area). For a PROJECT, the `outcome` states what wild success looks "
         "like and `next_action` is the very first step. Only emit subtasks that "
-        "are genuinely distinct physical steps — never pad the list.\n\n"
+        "are genuinely distinct physical steps — never pad the list, and never "
+        f"list more than {CLARIFY_MAX_SUBTASKS}.\n\n"
         "Also judge the TITLE itself (this drives everything else):\n"
         "3. `is_vague`: true when the title is too unclear to clarify well — "
         "generic stubs like 'Follow up', 'Fix', 'Call', 'Update', 'Meeting', "
@@ -789,7 +846,7 @@ async def _llm_propose(
         '"assignee_name": str|null, "project_match": str|null, '
         '"where_match": str|null, '
         '"complexity": "single"|"subtasks"|"project", '
-        '"subtasks": [str], "is_vague": bool, "suggested_title": str|null, '
+        f'"subtasks": [str] (at most {CLARIFY_MAX_SUBTASKS}), "is_vague": bool, "suggested_title": str|null, '
         '"due_date": str|null, "important": bool, "leveraged": bool, '
         '"deep_work": bool, '
         '"confidence": "low"|"medium"|"high", "rationale": str}'
@@ -809,30 +866,21 @@ async def _llm_propose(
         + (f"\n\nPAST CLARIFICATION PATTERNS:\n{memory_context}"
            if memory_context else "")
     )
-    try:
-        resp, _used = await acompletion_with_fallback(
-            model=model,
-            fallback_model="tier-balanced",
-            messages=[{"role": "system", "content": system + "\n\n" + voice_prompt("title", "description", json=True)},
-                      {"role": "user", "content": user}],
-            temperature=0.0,
-            max_tokens=500,
-            thinking=dict(NO_THINKING),
-            response_format={"type": "json_object"},
-        )
-        raw = resp.choices[0].message.content or ""
-        start, end = raw.find("{"), raw.rfind("}")
-        data = json.loads(raw[start:end + 1])
-    except Exception:
-        return None
+    data, reason = await _ask_clarify_model(
+        model,
+        system + "\n\n" + voice_prompt("title", "description", json=True),
+        user)
+    if data is None:
+        return _fail(reason or "error")
 
     disp = str(data.get("disposition") or "").strip().upper()
     if disp not in _LLM_DISPOSITIONS:
-        return None
+        return _fail("unknown_disposition")
     next_action = str(data.get("next_action") or "").strip()
     actionable = disp not in ("SOMEDAY", "REFERENCE", "TRASH")
     if actionable and not next_action:
-        return None  # actionable dispositions must carry a physical action
+        # Actionable dispositions must carry a physical action.
+        return _fail("empty_next_action")
 
     core: dict[str, Any] = {
         "actionable": actionable,
@@ -899,7 +947,7 @@ async def _llm_propose(
         core["complexity"] = complexity
     subs = data.get("subtasks")
     if isinstance(subs, list):
-        clean = [str(s).strip() for s in subs if str(s).strip()][:12]
+        clean = [str(s).strip() for s in subs if str(s).strip()][:CLARIFY_MAX_SUBTASKS]
         if clean:
             core["subtasks"] = clean
 
@@ -926,6 +974,20 @@ async def _llm_propose(
     core["leveraged"] = bool(actionable and data.get("leveraged"))
     core["deep_work"] = bool(actionable and data.get("deep_work"))
     return core
+
+
+def stamp_clarified_by(
+    proposal: dict[str, Any], llm_core: dict[str, Any] | None,
+    diag: dict[str, Any], *, asked_llm: bool,
+) -> None:
+    """CL-1: say who answered. ``clarified_by`` is "llm" or "heuristic". A
+    fallback after the model was asked also names its ``fallback_reason``, and
+    the panel shows a "Rule-based suggestion" mark. This runs on the route and
+    not inside ``propose_with_llm``, whose None path must equal ``propose()``
+    (golden eval)."""
+    proposal["clarified_by"] = "llm" if llm_core else "heuristic"
+    if not llm_core and asked_llm:
+        proposal["fallback_reason"] = diag.get("reason") or "error"
 
 
 def propose_with_llm(
@@ -1126,15 +1188,20 @@ async def _find_parent_task(
     )
     user = f'NEW TASK: "{title}"\n\nEXISTING TASKS IN THE PROJECT:\n{numbered}'
     try:
-        resp, _used = await acompletion_with_fallback(
-            model=model, fallback_model="tier-fast",
-            messages=[{"role": "system", "content": system},
-                      {"role": "user", "content": user}],
-            temperature=0.0, max_tokens=40, thinking=dict(NO_THINKING),
-            response_format={"type": "json_object"},
-        )
+        resp, _used = await asyncio.wait_for(
+            acompletion_with_fallback(
+                model=model, fallback_model="tier-fast",
+                messages=[{"role": "system", "content": system},
+                          {"role": "user", "content": user}],
+                temperature=0.0, max_tokens=40, thinking=dict(NO_THINKING),
+                response_format={"type": "json_object"},
+            ),
+            PARENT_CHECK_TIMEOUT_S)
         raw = resp.choices[0].message.content or ""
         data = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
+    except TimeoutError:
+        _log.warning("clarify.parent_check_timeout", seconds=PARENT_CHECK_TIMEOUT_S)
+        return None
     except Exception:
         return None
     idx = data.get("parent_index")
@@ -1222,6 +1289,7 @@ async def clarify_item(
         toggles = await task_toggles(db, uid)
         note = (body.note if body else None)
         llm_core = None
+        diag: dict[str, Any] = {}
         if toggles["clarify_use_llm"]:
             models = await task_models(db, uid)
             # The task-manager's own clarification memory (§9, Phase 4): recall
@@ -1233,9 +1301,11 @@ async def clarify_item(
                 item, people, projects, account_statuses, models["clarify"],
                 user_context=note, memory_context=memory_context,
                 contexts=await _user_contexts(db, uid),
-                places=places)
+                places=places, diag=diag)
         proposal = propose_with_llm(
             item, people, projects, account_statuses, llm_core)
+        stamp_clarified_by(
+            proposal, llm_core, diag, asked_llm=toggles["clarify_use_llm"])
         # Attach the chosen owner's live load so the card can warn at assign
         # time ("Rahul is already at capacity"). Post-hoc on the route only —
         # never inside propose()/propose_with_llm, so the golden evals (which
