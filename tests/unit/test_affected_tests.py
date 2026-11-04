@@ -251,3 +251,23 @@ def test_selector_imports_only_the_standard_library() -> None:
             mods.add(n.module.split(".")[0])
     allowed = set(sys.stdlib_module_names) | {"fences"}  # fences.py is stdlib-only too
     assert mods <= allowed, mods - allowed
+
+
+def test_gate_diff_lists_both_paths_of_a_rename(tmp_path: Path) -> None:
+    # With rename detection, git lists only the new path, and the tests that
+    # import the old module are missed. `--no-renames` lists both.
+    import subprocess
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    _write(tmp_path, "apps/x/old.py", "VALUE = 1\n" * 20)
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+    git("mv", "apps/x/old.py", "apps/x/new.py")
+    git("commit", "-qm", "rename")
+    assert sel.gate_changed_files(base, root=tmp_path) == ["apps/x/new.py", "apps/x/old.py"]

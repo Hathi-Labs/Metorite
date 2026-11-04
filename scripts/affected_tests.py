@@ -37,8 +37,8 @@ from __future__ import annotations
 
 import argparse
 import ast
-import re
 import json
+import re
 import subprocess
 import sys
 import warnings
@@ -236,9 +236,12 @@ GATE_DB_MARK = "_DB_GATE"
 
 
 def gate_changed_files(base: str, root: Path = ROOT) -> list[str]:
-    """The files of ``git diff BASE...HEAD``. CI has no untracked files."""
+    """The files of ``git diff BASE...HEAD``. CI has no untracked files.
+
+    ``--no-renames``: a rename then lists the old path too, so the tests that
+    import the old module are still selected."""
     out = subprocess.run(
-        ["git", "diff", "--name-only", f"{base}...HEAD"],
+        ["git", "diff", "--name-only", "--no-renames", f"{base}...HEAD"],
         cwd=root,
         capture_output=True,
         text=True,
@@ -306,7 +309,7 @@ def gate(changed: list[str], root: Path = ROOT) -> dict:
     """The PR tier's selection. Any error inside the selector gives full."""
     try:
         return _gate(changed, root)
-    except Exception as exc:  # noqa: BLE001 - fail open on purpose
+    except Exception as exc:  # fail open on purpose
         return {"full": True, "files": [], "reasons": [f"selector error: {exc!r}"]}
 
 
@@ -335,7 +338,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             changed = [f.replace("\\", "/") for f in args.files] or gate_changed_files(args.base)
             out = gate(changed)
-        except Exception as exc:  # noqa: BLE001 - fail open on purpose
+        except Exception as exc:  # fail open on purpose
             out = {"full": True, "files": [], "reasons": [f"selector error: {exc!r}"]}
         print(json.dumps(out))
         return 0
