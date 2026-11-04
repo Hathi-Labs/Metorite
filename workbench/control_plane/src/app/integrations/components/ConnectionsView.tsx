@@ -44,8 +44,10 @@ import {
   mcpName,
   rowLabel,
   statusPills,
+  switchesSavedText,
   testMessage,
   type AppFilter,
+  type McpSwitches,
   type StatusFilter,
 } from "../lib/connections";
 import ApiKeysView from "./ApiKeysView";
@@ -167,20 +169,19 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
     }
   }
 
-  async function setAlwaysConfirm(next: boolean) {
+  async function setSwitches(next: McpSwitches) {
     const name = open ? mcpName(open) : null;
     if (!open || !name) return;
     setSavingConfirm(true);
     try {
-      await api.setMcpAlwaysConfirm(name, next);
+      // H-300 and MCP-C2: both switches go in one PATCH.
+      await api.setMcpSwitches(name, next);
       toast.show({
         key: "integrations-always-confirm",
         variant: "success",
-        // A live run keeps the flag it read at the attach, so the words
-        // speak of new chats only (H-300).
-        title: next
-          ? "New chats will ask before any tool runs."
-          : "New chats will ask only before tools that can change data.",
+        // A live run keeps the switches it read at the attach, so the words
+        // speak of new chats only.
+        title: switchesSavedText(next),
       });
       invalidateConnections();
     } catch (err) {
@@ -264,8 +265,8 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
           onNavigate={(href) => router.push(href)}
           onDisconnect={() => setConfirming(true)}
           onTest={test}
-          onAlwaysConfirm={setAlwaysConfirm}
-          savingAlwaysConfirm={savingConfirm}
+          onSwitches={setSwitches}
+          savingSwitches={savingConfirm}
           onConnect={() => {
             setConnectError(null);
             setAskingConnect(true);

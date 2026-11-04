@@ -4,7 +4,7 @@
 // status and the server's own message, because the MCP guard explains its
 // refusals (a private address, a non-https URL) and the form shows them.
 
-import { refusalText, startErrorMessage, type Connection } from "./connections";
+import { refusalText, startErrorMessage, type Connection, type McpSwitches } from "./connections";
 
 export class IntegrationsError extends Error {
   status: number;
@@ -60,12 +60,19 @@ export async function testMcp(name: string): Promise<McpTestResult> {
   return (await res.json()) as McpTestResult;
 }
 
-/** H-300: turn the "always confirm" switch of one MCP server on or off. */
-export async function setMcpAlwaysConfirm(name: string, value: boolean): Promise<void> {
+/**
+ * Set the two switches of one MCP server: "always confirm" (H-300) and the
+ * read-only key (MCP-C2). Both keys go in one PATCH, so the gateway checks
+ * the pair that the admin sees, and never a half of it.
+ */
+export async function setMcpSwitches(name: string, switches: McpSwitches): Promise<void> {
   const res = await fetch(`/api/integrations/mcp/${encodeURIComponent(name)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ always_confirm: value }),
+    body: JSON.stringify({
+      always_confirm: switches.always_confirm,
+      read_only_key: switches.read_only_key,
+    }),
   });
   if (!res.ok) return fail(res);
 }

@@ -6,8 +6,10 @@
  *
  * The panel shows every `detail` field and never a stored value (spec §3.3
  * rule 4). Setup belongs to the owning app, so "Open in <app>" and "Connect
- * again" are links. Only Disconnect, Test and the "always confirm" switch of
- * an MCP server (H-300) call the console's own routes.
+ * again" are links. Only Disconnect, Test and the two switches of an MCP
+ * server call the console's own routes: "always confirm" (H-300) and the
+ * read-only key (MCP-C2). A tick of one switch clears the other, and one
+ * PATCH carries both.
  *
  * WS-54 IN-8c (D98): an MCP server that takes an OAuth consent shows
  * "Acts as <admin> at <host>", and offers Connect or Reconnect to an admin.
@@ -25,13 +27,15 @@ import {
   detailRows,
   errorMessage,
   lastSyncLabel,
-  mcpAlwaysConfirm,
+  mcpSwitches,
   panelPlan,
   rowLabel,
   scopeLabel,
+  tickSwitch,
   type Connection,
+  type McpSwitches,
 } from "../lib/connections";
-import { AlwaysConfirmField } from "./AddMcpModal";
+import { AlwaysConfirmField, ReadOnlyKeyField } from "./AddMcpModal";
 import { ConnectionState } from "./ConnectionList";
 
 export interface SheetBodyProps {
@@ -43,10 +47,14 @@ export interface SheetBodyProps {
   onNavigate: (href: string) => void;
   onDisconnect: () => void;
   onTest: () => void;
-  /** H-300: the admin turns the "always confirm" switch of an MCP server. */
-  onAlwaysConfirm?: (next: boolean) => void;
+  /**
+   * The admin ticks a switch of an MCP server: "always confirm" (H-300) or
+   * the read-only key (MCP-C2). It gets the pair after the tick, with the
+   * other switch cleared when the tick turned one on.
+   */
+  onSwitches?: (next: McpSwitches) => void;
   /** True while that change is on its way. */
-  savingAlwaysConfirm?: boolean;
+  savingSwitches?: boolean;
   /** IN-8c: the admin asks to connect or reconnect an OAuth MCP server. */
   onConnect?: () => void;
   /** True while the consent starts, before the browser leaves. */
@@ -62,12 +70,14 @@ export function SheetBody({
   onNavigate,
   onDisconnect,
   onTest,
-  onAlwaysConfirm,
-  savingAlwaysConfirm,
+  onSwitches,
+  savingSwitches,
   onConnect,
   connecting,
 }: SheetBodyProps) {
   const plan = panelPlan(row, canManage);
+  const switches = mcpSwitches(row);
+  const switchLocked = !onSwitches || savingSwitches;
   const error = errorMessage(row.last_error);
   const fields = [
     { label: "App", value: APP_LABEL[row.owning_app] },
@@ -100,11 +110,18 @@ export function SheetBody({
           </div>
         ))}
       </dl>
-      {plan.alwaysConfirm ? (
+      {plan.alwaysConfirm && switches ? (
         <AlwaysConfirmField
-          checked={mcpAlwaysConfirm(row) === true}
-          disabled={plan.alwaysConfirm !== "edit" || !onAlwaysConfirm || savingAlwaysConfirm}
-          onChange={(next) => onAlwaysConfirm?.(next)}
+          checked={switches.always_confirm}
+          disabled={plan.alwaysConfirm !== "edit" || switchLocked}
+          onChange={(next) => onSwitches?.(tickSwitch(switches, "always_confirm", next))}
+        />
+      ) : null}
+      {plan.readOnlyKey && switches ? (
+        <ReadOnlyKeyField
+          checked={switches.read_only_key}
+          disabled={plan.readOnlyKey !== "edit" || switchLocked}
+          onChange={(next) => onSwitches?.(tickSwitch(switches, "read_only_key", next))}
         />
       ) : null}
       {plan.memberNote ? (
