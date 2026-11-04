@@ -678,5 +678,8 @@ UPDATE pm_project_authorities SET organization_id = (SELECT id FROM organization
 UPDATE pm_decisions SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
 
+UPDATE pm_agent_guidance SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
+ WHERE organization_id IS NULL;
+
 UPDATE crm_change_log SET organization_id = (SELECT id FROM organization WHERE slug = 'default')
  WHERE organization_id IS NULL;
