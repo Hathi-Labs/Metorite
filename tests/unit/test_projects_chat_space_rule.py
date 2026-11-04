@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -344,3 +345,25 @@ async def test_two_projects_with_one_name_ask_and_never_pick(monkeypatch) -> Non
     with pytest.raises(GatewayRefusal) as refused:
         await W._project_ref("HR")
     assert "matches more than one project" in str(refused.value)
+
+
+def test_the_widen_rule_is_in_the_projects_instructions() -> None:
+    """Task 1558: the open place is a hint. A request that does not name it
+    searches every project at once, and one scoped look never ends in "not found"."""
+    root = Path(__file__).resolve().parents[2]
+    text = " ".join(
+        (root / "apps/agents/agent-projects/instructions.md").read_text(encoding="utf-8").split()
+    )
+    assert "The open place is a hint, not a scope." in text
+    assert "search every project at once" in text
+    assert "list_tasks` and no `project_id`" in text
+    assert 'Never tell the member "not found" after one scoped look.' in text
+
+
+def test_the_widen_rule_is_in_the_orchestrator_persona() -> None:
+    """The one assistant made the mistake, so its own standing words carry the rule."""
+    root = Path(__file__).resolve().parents[2]
+    ts = (root / "workbench/control_plane/src/lib/shell/assistant.ts").read_text(encoding="utf-8")
+    assert "The open page is a hint, not a scope." in ts
+    assert "search everything the member can see at once" in ts
+    assert 'Never say \\"not found\\" after one scoped look.' in ts

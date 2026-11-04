@@ -1687,7 +1687,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set((s) => {
       const counted = s.clarifiedThisSession.has(id);
       const clarifiedThisSession = new Set(s.clarifiedThisSession).add(id);
-      const nextInbox = clarifyQueue(s.items, s.fromProjectIds, clarifiedThisSession)[0];
+      const nextInbox = clarifyQueue(s.items, clarifiedThisSession)[0];
       return {
         clarifiedThisSession,
         selectedItemId: nextInbox?.id ?? null,
@@ -2340,7 +2340,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       }
       const clarifiedThisSession = new Set(s.clarifiedThisSession).add(id);
       // advance to the OLDEST remaining item of the walk — GTD processes FIFO
-      const nextInbox = clarifyQueue(items, s.fromProjectIds, clarifiedThisSession)[0];
+      const nextInbox = clarifyQueue(items, clarifiedThisSession)[0];
       return {
         items,
         projects,
@@ -2436,11 +2436,12 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   /** LIVE member refresh for one workspace (delegate-picker freshness). */
   skipToNextInbox: () =>
     set((s) => {
-      // The same walk Clarify advances through: captures and untriaged
-      // "From Projects" rows together, oldest first.
-      const inbox = clarifyQueue(s.items, s.fromProjectIds, s.clarifiedThisSession);
-      if (inbox.length <= 1) return s; // nothing else to move to
+      // The same walk Clarify advances through: the captures, oldest first
+      // (D170, INB-1). A row opened from My tasks is off the walk, so skip
+      // moves to the first capture.
+      const inbox = clarifyQueue(s.items, s.clarifiedThisSession);
       const idx = inbox.findIndex((i) => i.id === s.selectedItemId);
+      if (inbox.length === 0 || (idx >= 0 && inbox.length === 1)) return s; // nothing else to move to
       const next = inbox[(idx + 1) % inbox.length];
       return { selectedItemId: next.id };
     }),

@@ -59,6 +59,7 @@ from gateway.routes.projects.core import (
     Page,
     TaskIn,
     TaskModel,
+    TaskPatchIn,
     _tenant_session,
     actor,
     apply_status_transition,
@@ -84,6 +85,7 @@ from gateway.routes.projects.core import (
     next_task_number,
     now,
     parent_lane_status,
+    parse_completed_at,
     parse_precondition,
     reader_day_start,
     record_activity,
@@ -1059,7 +1061,7 @@ async def create_task(
 
 @router.patch("/tasks/{task_id}")
 async def patch_task(
-    task_id: str, payload: TaskIn,
+    task_id: str, payload: TaskPatchIn,
     user: UserContext = Depends(get_current_user),
     if_match: str | None = Header(None, alias="If-Match"),
     include_subtasks: bool = False,
@@ -1097,6 +1099,9 @@ async def patch_task(
             )
     new_status = values.pop("status_id", None)
     custom = values.pop("custom_fields", None)
+    # UNDO-1 round 2. Never a column write of its own: only the transition
+    # below may stamp it, and only on the crossing into a closing category.
+    done_at = parse_completed_at(values.pop("completed_at", None))
 
     async with _tenant_session() as db:
         await _store_due(db, user, values)
@@ -1155,6 +1160,7 @@ async def patch_task(
         if new_status is not None and str(new_status) != str(before.status_id):
             moved = await apply_status_transition(
                 db, after, str(new_status), created_by=actor(user),
+                completed_at=done_at,
             )
             # WS-55 EA-6d. Inside the transaction, so the refusal rolls the
             # whole PATCH back, the field changes too. EA-6f: an agent may

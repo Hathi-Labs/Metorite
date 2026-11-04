@@ -55,7 +55,11 @@ SCOPE_MINE = "mine"
 DUE_SOON_DAYS = 7
 
 #: The disposition blocks of the Overview, in the order of the chips.
-DISPOSITION_KEYS: tuple[str, ...] = ("inbox", "today", "next", "waiting", "someday", "done")
+DISPOSITION_KEYS: tuple[str, ...] = (
+    "inbox", "today", "next", "waiting", "someday", "done", "new",
+)
+# "new" (D170, INB-1, 2026-11-03): work assigned to me that I have not planned. It is
+# a marker, a count and a chip filter on My tasks.
 
 
 def check_scope(scope: str | None) -> bool:
@@ -92,7 +96,10 @@ _OVERLAY_SQL = (
     "       EXISTS (SELECT 1 FROM pm_task_assignees a"
     "                WHERE a.task_id = t.id AND lower(a.assignee) = :who) AS is_mine,"
     "       EXISTS (SELECT 1 FROM pm_task_assignees a2"
-    "                WHERE a2.task_id = t.id) AS has_assignee"
+    "                WHERE a2.task_id = t.id) AS has_assignee,"
+    "       NOT EXISTS (SELECT 1 FROM pm_projects pj"
+    "                    WHERE pj.id = t.project_id"
+    "                      AND pj.personal_owner IS NOT NULL) AS on_board"
     "  FROM pm_tasks t"
     "  JOIN pm_task_statuses s ON s.id = t.status_id"
     "  LEFT JOIN pm_task_personal p"
@@ -124,7 +131,7 @@ async def attach_my_overlay(
         row.update({
             "disposition": None, "is_triaged": False, "is_mine": False,
             "context": None, "energy": None, "defer_until": None,
-            "status_category": None,
+            "status_category": None, "is_new": False,
         })
     ids = [str(r["id"]) for r in rows if r.get("id")]
     if not ids:
@@ -139,19 +146,26 @@ async def attach_my_overlay(
         if hit is None:
             continue
         defer = getattr(hit, "defer_until", None)
+        effective = effective_disposition(
+            hit.disposition,
+            status_category=hit.status_category,
+            is_mine=bool(hit.is_mine),
+            has_assignee=bool(hit.has_assignee),
+        )
         row.update({
-            "disposition": effective_disposition(
-                hit.disposition,
-                status_category=hit.status_category,
-                is_mine=bool(hit.is_mine),
-                has_assignee=bool(hit.has_assignee),
-            ),
+            "disposition": effective,
             "is_triaged": hit.disposition is not None,
             "is_mine": bool(hit.is_mine),
             "context": hit.context,
             "energy": hit.energy,
             "defer_until": defer.isoformat() if defer is not None else None,
             "status_category": hit.status_category,
+            # D170: "New" is "no disposition of mine yet" on a company board.
+            # A disposition write clears it, so it needs no write of its own.
+            "is_new": new_work(
+                hit.disposition, on_board=bool(getattr(hit, "on_board", True)),
+                is_mine=bool(hit.is_mine), effective=effective,
+            ),
         })
     return rows
 
@@ -257,18 +271,16 @@ def in_today(
     return bool((start is not None and start <= today) or (due is not None and due <= today))
 
 
-def _untriaged_board(row: Any, effective: str) -> bool:
-    """A board row I never triaged: ``personal.UNTRIAGED_CLAUSE`` on a summary row.
+def new_work(
+    stated: Any, *, on_board: bool, is_mine: bool, effective: str,
+) -> bool:
+    """"New" on My tasks: ``personal.UNTRIAGED_CLAUSE`` on one row (D170).
 
     No stated disposition of mine, a company board (not a personal project),
-    and open (``/my/inbox?untriaged=true`` drops DONE and TRASH). It is the
-    set the client holds as ``fromProjectIds``.
+    assigned to me, and open (``/my/inbox?untriaged=true`` drops DONE and
+    TRASH). Any disposition write clears it.
     """
-    return (
-        row.p_disposition is None
-        and bool(getattr(row, "on_board", True))
-        and effective not in ("DONE", "TRASH")
-    )
+    return stated is None and on_board and is_mine and effective not in ("DONE", "TRASH")
 
 
 def fold_dispositions(
@@ -277,11 +289,11 @@ def fold_dispositions(
     """The chip counts, with the rules of ``taskStore.viewCounts`` and ``inboxCount``.
 
     ``inbox`` is what the "My task inbox" badge counts (``inbox.ts``
-    ``inboxCount``): the INBOX rows that do not wait for their date, PLUS the
-    untriaged board rows (:func:`_untriaged_board`), which a colleague
-    assigned to me and which I have not triaged. Their derived disposition is
-    NEXT (or SOMEDAY), so ``next`` and ``someday`` count them too, as
-    ``viewCounts`` does: the two client counters are independent. ``next`` is
+    ``inboxCount``): the INBOX rows that do not wait for their date, only.
+    Changed 2026-11-03 by D170 (INB-1): the inbox holds only what I captured,
+    so an assigned, untriaged board row is no longer in ``inbox``. It counts
+    in ``new`` (:func:`new_work`) and in its own chip by its derived
+    disposition. ``next`` is
     NEXT and assigned to me. ``waiting``, ``someday`` and ``done`` are the
     effective disposition. ``today`` is :func:`in_today`. TRASH is in no chip.
     The disposition is ``effective_disposition``, the one rule (D77).
@@ -305,12 +317,11 @@ def fold_dispositions(
             counts["someday"] += 1
         elif effective == "DONE":
             counts["done"] += 1
-        if (
-            effective != "INBOX"
-            and _untriaged_board(row, effective)
-            and not not_yet(row.p_defer_until, row.start_date, at, today)
+        if new_work(
+            row.p_disposition, on_board=bool(getattr(row, "on_board", True)),
+            is_mine=mine, effective=effective,
         ):
-            counts["inbox"] += 1
+            counts["new"] += 1
         if in_today(
             effective=effective, is_mine=mine, completed_at=row.completed_at,
             defer_until=row.p_defer_until, start_date=row.start_date,
