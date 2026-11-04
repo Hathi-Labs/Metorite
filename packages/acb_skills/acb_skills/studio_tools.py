@@ -1,9 +1,13 @@
-"""The Studio builder tools for Mira (STU-G1 and STU-G2).
+"""The Studio builder tools for Mira (STU-G1, STU-G2, STU-F2d and STU-G1c).
 
-Spec: ``project-docs/specs/ai_studio.md`` sections 6.2 and 14 (G1 and G2).
+Spec: ``project-docs/specs/ai_studio.md`` sections 6.2 and 14 (G1, G2, F2d
+and G1c).
 
-Eight **stateless** tools. No draft store exists in G1 (A3 is Stage 2). The
-model holds the manifest in the chat turn and sends it back on each call.
+Eight **stateless** builder tools. They keep no draft. The model holds the
+manifest in the chat turn and sends it back on each call. The skill tools
+(F2d) and the package tools (G1c) each form a second tuple, because they
+write: :func:`studio_save` stores a manifest as the draft of a package, and
+:func:`studio_publish` publishes it.
 
 * :func:`studio_describe` (G1b) gives the live manifest schema, the field types
   and the block tokens, so the model reads them before it drafts. It reads
@@ -25,7 +29,8 @@ model holds the manifest in the chat turn and sends it back on each call.
   so this tool parks on the card itself, as the CRM write tools do. A stop, a
   refusal and a run with no card channel all write nothing. A run with no card
   channel gets the decision ``no_card``, and the plan text stays in ``context``. The tool makes no
-  write call, and G1 keeps no store.
+  write call. On ``approved`` only, it writes the approval record of G1c to
+  tenant Redis, which :func:`studio_publish` reads.
 
 **One result shape.** Each manifest tool returns ``{ok, errors, diff,
 manifest}``. ``errors`` holds the validator's errors verbatim, as ``path`` and
@@ -691,7 +696,8 @@ async def studio_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     actions. The answer has a "decision": approved, revised (the member wrote
     in the chat), stopped, or no_card (the chat shows no card). After "stopped", write nothing and call no more
     patch. An invalid manifest shows no card. The text of the card is in
-    "context", for a chat that cannot show cards.
+    "context", for a chat that cannot show cards. After "approved", studio_save
+    and studio_publish can publish this exact manifest.
     """
     doc, bad = _as_doc(manifest)
     if bad is not None:
