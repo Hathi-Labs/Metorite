@@ -1,8 +1,8 @@
 # Proactive agent — Mira acts for each person without being asked (WS-AUTO)
 
-> **Product:** Metorite · **Feature:** automations, standing watches and the chase, on a trust ladder · **Updated:** 2026-11-02 · **Owner:** vjvarada
-> **Status:** 📋 **SPEC, FIRST SLICE BUILT.** The first slice of AUTO-2 is merged (PR 1442, migration 313, dark): the run ledger, the incidents and the stall guard. The brief is its only caller. AUTO-3 is decided (D131). H-328 (task 856) is in progress. AUTO-7 is the next slice. AUTO-Q1 is open, and the build runs on its working default (§12).
-> **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §10 was read on that commit. The line numbers of Open Instinct come from a read on 2026-11-02, and no code of it ran.
+> **Product:** Metorite · **Feature:** automations, standing watches and the chase, on a trust ladder · **Updated:** 2026-11-04 · **Owner:** vjvarada
+> **Status:** 📋 **SPEC, THREE SLICES BUILT.** The first slice of AUTO-2 is merged (PR 1442, migration 313, dark): the run ledger, the incidents and the stall guard. The brief is its only caller. AUTO-3 is decided (D131). AUTO-7a is merged (PR 1615). H-328 parts (a) and (b) are merged, and part (c) is open. **AUTO-7b is built, dark behind `AUTO_PARK_ORGS` (task 1411), and waits for review** (§4.2, §9). AUTO-8 is the next slice. AUTO-Q1 is open, and the build runs on its working default (§12).
+> **Verified against code on 2026-11-02 at `ce29836ea`.** Each path in §10 was read on that commit. The AUTO-7b paths were read again on `0591d53b3` (2026-11-04). The line numbers of Open Instinct come from a read on 2026-11-02, and no code of it ran.
 > **Board:** WS-AUTO in `work_plan.md` §2.1. **Decision:** D161. D75, D100, D103, D124, D129, D131, D132, D140, D145 and workflows G5 bind it.
 > **Metorite:** project "Automations", epic 807, this spec task 1396. The slices are AUTO-1 (816), AUTO-4 (817), AUTO-5 to AUTO-10 (1389 to 1394). AUTO-2 is task 814, AUTO-3 is task 815 and AUTO-Q1 is task 1395.
 > **Research first:** the comments "Research notes, 2026-11-02 (Open Instinct)" on epic 807, copied into §8, and the Hermes research of 2026-10-27.
@@ -105,7 +105,7 @@ The server marks each unattended run `no person present`. The mark never comes f
 **AUTO-7 extends a mark that exists.** `ask_tools._CARDS_REFUSED` (`packages/acb_skills/acb_skills/ask_tools.py` line 57) is set at `executor.py` line 6018 from `shows_cards`. **A caveat:** the Copilot SDK JSON-RPC thread may read a fresh context. So a fence must verify the `carry_run_context` claim, and must not trust it.
 
 - **AUTO-7a.** A second ContextVar `no_person_present`, which only server code sets. It is set in the job worker's handler dispatch, and in `_execute_run` for a trigger in `UNATTENDED_TRIGGERS` (`schedule`, `webhook` and `event`). An `api` run stays unmarked, because a chat starts it and its card can reach that chat. A known gap: an `api` run that a marked run starts loses the mark after a person approves its gate. AUTO-8 must close that gap before it lets an unattended turn write. Refusals sit in `broker.approve` and `reject`, in the workflow resume, and in the elicitation answer. `request_confirmation` returns deny.
-- **AUTO-7b.** Park and ask. An action that needs a person parks and asks through a decision (ALN-2a, task 1376) or through Reach. Until ALN-2a exists, a marked run fails closed.
+- **AUTO-7b (built, dark).** Park and ask, for WORKFLOW runs only. A marked run that reaches an approval gate parks there. With `AUTO_PARK_ORGS` and `DECISIONS_ORGS` on for the run's org, the gate asks ONE person through ONE decision (ALN-2a): the workflow's owner, `workflows.owner_email`. The subject is a private task in the owner's personal project, one for each parked gate. The task sends no `pm.task.created` event, so a parked gate cannot start a workflow that parks again with no end. The task, the decision and the pause row commit in one transaction. In each other case the gate files the broker proposal of AUTO-7a, and it never files both. The wait scan settles a parked gate from the decision row only. A yes of the owner resumes the run once, any other answer ends it, and the DB clock ends an unanswered one after 7 days. The scan tells the owner once, as a comment on the task. After a resume the run keeps its mark, so a second gate parks again. `resume_run` now claims the pause and the run with a compare-and-set. The module is `routes/workflows/park.py`. Out of scope: an agent turn and a park inside a model turn (AUTO-8), and the decision card on My Day (ALN-2b).
 
 ### 4.3 A candidate check before any model call
 
@@ -239,7 +239,7 @@ The source is the research comment of 2026-11-02 on epic 807. The owner asked: c
 |---|---|---|---|---|
 | **H-328** (856) | Bind the tenant in the workflow run lifecycle (§6). Owned by the HANDOFF, in progress | The `git grep` of §6 shows only tenant-discovery reads | HIGH | AGENT-SAFE. Blocks any second org |
 | **AUTO-7a** (1391) | The mark `no person present` and its refusals (§4.2). Needs AUTO-2 | A fence (R7): an unattended turn that tries to approve gets a refusal, and no write happens. The fence verifies the `carry_run_context` claim on the SDK thread. A mutation that drops the mark turns the fence red | HIGH | AGENT-SAFE |
-| **AUTO-7b** (1391) | Park and ask (§4.2). Needs AUTO-7a and ALN-2a | An action that needs a person parks and asks. An injection fixture in a watched page asks for an approval, and nothing runs. With no answerer, the run fails closed | HIGH | AGENT-SAFE |
+| **AUTO-7b** (1391, task 1411) | Park and ask (§4.2). Needs AUTO-7a, ALN-2a and H-328 part (b). **Built, dark, in review** | A fixture run parks and writes one decision. A yes resumes it once, a no ends it, and an expiry ends it. A fence proves that the run cannot answer its own decision. The D131 five acts always ask. Non-goals: an agent turn (AUTO-8), `schedule_run` (AUTO-1), an act classifier, Reach and `tell_me` (AUTO-6), a new subject kind or a migration, the decision card (ALN-2b) and the flag flip | HIGH | AGENT-SAFE. The flip of `AUTO_PARK_ORGS` waits for ALN-2b. Owner question before merge: one task for each parked gate lands in the owner's inbox |
 | **AUTO-8** (1392) | A headless turn with a credit cap (§4.4). Needs AUTO-2, AUTO-7a | A turn stops at its cap with `cap_reached` and reports once. A run with no candidate makes no model call. R8: the run reads only what its member can read, and org B sees nothing. A kill switch stops all headless turns for an org | HIGH | AGENT-SAFE |
 | **AUTO-6** (1390) | Silent by default (§4.1). Needs AUTO-2 | A run that finds nothing writes no outbox row and no bell row. Ten runs that find the same thing give one message. Quiet hours hold. The fence goes red under a mutation | STD | AGENT-SAFE |
 | **AUTO-1** (816) | "Do this every Monday": a `schedule_run` tool makes a workflow with one Mira step. Needs AUTO-2, AUTO-3, H-328, and a chat way to save a workflow | A request creates one automation, and the confirm card shows the next three run times. It delivers on Monday. It runs as the member who made it | STD | AGENT-SAFE. D145 preview. No second org before H-328 |
@@ -280,7 +280,9 @@ The source is the research comment of 2026-11-02 on epic 807. The owner asked: c
 
 Each path was read on `ce29836ea`.
 
-- `apps/services/gateway/gateway/routes/workflows/` (`scheduler.py`, `triggers.py`, `hooks.py`, `service.py`, `publish.py`, `tools.py`)
+- `apps/services/gateway/gateway/routes/workflows/` (`scheduler.py`, `triggers.py`, `hooks.py`, `service.py`, `publish.py`, `tools.py`, and `park.py` of AUTO-7b)
+- `apps/services/gateway/gateway/routes/projects/decisions.py` (`ask_decision`, `answer_decision`) and `personal.py` (`create_personal_task`, `announce=False`)
+- The flag `AUTO_PARK_ORGS` (default empty, owner-only, reloads on SIGHUP): `packages/acb_common/acb_common/settings.py`, `env_guard.py` and `.env.example`. Its one reader is `park.park_allowed`, and `DECISIONS_ORGS` must list the org too
 - `infra/postgres/132_workflows.sql`, `infra/postgres/313_unattended_ledger.sql`, `infra/postgres/271_reach_requests.sql`, `infra/postgres/66_pending_actions.sql`
 - `apps/services/gateway/gateway/jobs/queue.py`, `jobs/worker.py`, `jobs/unattended.py`
 - `apps/services/gateway/gateway/brief/run.py` (the one caller of the ledger)
@@ -298,6 +300,15 @@ Each path was read on `ce29836ea`.
 | Rule | Fence |
 |---|---|
 | An unattended run cannot approve its own action | AUTO-7a: `tests/unit/test_no_person_present.py`, `tests/unit/test_no_person_present_r8.py` (R8) and `evals/trajectories/test_no_person_trajectory.py`. A mutation that drops the mark turns it red |
+| A parked gate writes one decision and no proposal (F1) | AUTO-7b: `tests/unit/test_auto_park.py`, `test_f1_*` (R8 and hermetic) |
+| Off, a refusal, no owner or no org: the broker door of AUTO-7a, byte for byte (F2) | `test_auto_park.py`, `test_f2_*` |
+| A run with no person cannot answer, and only the decision row decides (F3) | `test_auto_park.py`, `test_f3_*` (R8 and hermetic) |
+| The decider is `workflows.owner_email` (F4) | `test_auto_park.py`, `test_f4_*` (R8 and hermetic) |
+| The settle code writes no answer, calls no `answer_decision` and counts no person (F5) | `test_auto_park.py`, `test_f5_*` (source scans) |
+| A yes resumes once, under two scans or a scan and the broker door (F6) | `test_auto_park.py`, `test_f6_*` (R8 races) |
+| A no ends the run, and an expiry ends it by the DB clock and tells once (F7) | `test_auto_park.py`, `test_f7_*` (R8) |
+| After a resume the run keeps its mark, and a second gate parks again (F8) | `test_auto_park.py`, `test_f8_*` (R8) |
+| The new module needs no new allow-list entry in `test_no_person_present.py` (F9) | `test_auto_park.py`, `test_f9_*` |
 | An unattended path sends only through Reach | New with AUTO-6: a scan in `tests/unit/test_unattended_silent.py` for a direct send, a bell write or a mail call in the new modules |
 | A run with no candidate makes no model call | New with AUTO-8: `tests/unit/test_headless_turn.py` (R8) |
 | A turn stops at its credit cap | New with AUTO-8: same file |
@@ -316,6 +327,8 @@ bash scripts/ci_local.sh
 ```
 
 For this spec only: `uv run pytest tests/unit/test_index_completeness.py tests/unit/test_decision_ids.py tests/unit/test_board_index.py -q`.
+
+For AUTO-7b: `uv run pytest tests/unit/test_auto_park.py tests/unit/test_no_person_present.py tests/unit/test_workflows_start_run_org_fence.py -q`, with `TENANT_LADDER_DATABASE_URL` set for the R8 cases.
 
 ---
 

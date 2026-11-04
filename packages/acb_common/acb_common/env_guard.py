@@ -182,6 +182,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-ALN ALN-2a: DECISIONS_ORGS opens "one person decides" for an org. A
     # tenant that set it could open the bell row for every org on the box.
     "DECISIONS_ORGS",
+    # WS-AUTO AUTO-7b: AUTO_PARK_ORGS parks the gate of an unattended run on a
+    # decision of the workflow's owner. It moves who settles a run, so only
+    # the operator writes it.
+    "AUTO_PARK_ORGS",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).

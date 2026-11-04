@@ -515,7 +515,9 @@ class _RunDb:
         text = str(sql)
         if text.startswith("UPDATE"):
             self.writes.append(text)
-            return SimpleNamespace(fetchone=lambda: None)
+            # AUTO-7b: each UPDATE of a resume is a compare-and-set with
+            # RETURNING. One row back means that this resume won.
+            return SimpleNamespace(fetchone=lambda: SimpleNamespace(id="won"))
         row = self.run if "FROM workflow_runs" in text else self.pause
         return SimpleNamespace(fetchone=lambda: row)
 

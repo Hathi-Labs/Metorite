@@ -829,6 +829,16 @@ class Settings(BaseSettings):
     # reload applies a change (`gateway/flag_reload.py`). Fence:
     # tests/unit/test_decisions.py.
     decisions_orgs: str = ""
+    # ── Park and ask (WS-AUTO AUTO-7b, proactive_agent.md §4.2) ─────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, the approval gate of a workflow run with no person
+    # present asks the workflow's owner through ONE decision, instead of a
+    # broker proposal. `decisions_orgs` must list the org too. Off, the gate
+    # files the broker proposal of AUTO-7a, byte for byte. The one reader is
+    # `gateway.routes.workflows.park.park_allowed`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). Fence: tests/unit/test_auto_park.py.
+    auto_park_orgs: str = ""
     # ── The trigger of the project alignment check (WS-ALN ALN-1, D160) ─────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

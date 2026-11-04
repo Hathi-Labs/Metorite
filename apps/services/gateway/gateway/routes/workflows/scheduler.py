@@ -35,8 +35,13 @@ from typing import Any
 # that one org with `_tenant_session(org)` for each step. A step never holds a
 # session across a commit, because a commit drops the bound tenant. The org of
 # a run or a workflow comes from the row, never from the ambient context.
-from gateway.routes.workflows import unattended
-from gateway.routes.workflows.core import _log, _tenant_session, parse_jsonb
+from gateway.routes.workflows import park, unattended
+from gateway.routes.workflows.core import (
+    _log,
+    _tenant_session,
+    parse_jsonb,
+    publish_workflow_activity,
+)
 from gateway.routes.workflows.service import (
     _MEMBER_BLIND_REASON,
     RunRejected,
@@ -300,19 +305,35 @@ async def scan_due_waits(now: float | None = None) -> int:
     snapshot rather than sleeping in-process, so it survives a restart. This
     scan (same loop as cron triggers — one timekeeper, not two) picks up every
     matured wait and hands it to the SAME ``resume_run`` the approvals inbox
-    uses. The CAS claim on ``status`` means concurrent workers cannot
-    double-resume one pause.
+    uses. ``resume_run`` claims the pause with ``AND status = 'pending'`` and
+    the run with ``AND status = 'paused'``, each with ``RETURNING``. So
+    concurrent workers cannot double-resume one pause. AUTO-7b added that
+    guard: this docstring claimed it before the code held it.
 
     H-328 part (b): the scan loops over the orgs of ``_organization_ids()`` and
     skips an org that is not on ``WORKFLOW_UNATTENDED_ORGS`` BEFORE it reads a
     pause. A resumed run carries the org of its run ROW. With the list empty,
     the scan reads no pause and resumes no run.
+
+    AUTO-7b: the same org loop settles the parked gates of the org with
+    :func:`scan_decided_pauses`, after the list check. There is no second loop
+    over the orgs and no second scheduler.
     """
     now = now if now is not None else time.time()
     resumed = 0
     for org in await _organization_ids():
         if not unattended.org_allowed(org):
             continue
+        try:
+            resumed += await scan_decided_pauses(org)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # one org must not hide the others
+            _log.warning(
+                "workflows.decided_org_failed",
+                organization_id=org,
+                error=type(exc).__name__,
+            )
         try:
             async with _tenant_session(org) as db:
                 rows = (
@@ -347,8 +368,8 @@ async def scan_due_waits(now: float | None = None) -> int:
                 continue
             if resume_at > now:
                 continue
-            # resume_run flips the pause to 'resolved' under the same read, so a
-            # loser of this race simply finds no pending pause and no-ops.
+            # resume_run claims the pause with a compare-and-set, so a loser
+            # of this race matches no row and starts nothing.
             try:
                 result = await resume_run(
                     str(row.run_id),
@@ -365,6 +386,93 @@ async def scan_due_waits(now: float | None = None) -> int:
             if result.get("ok"):
                 resumed += 1
     return resumed
+
+
+async def scan_decided_pauses(org: str) -> int:
+    """Settle the parked gates of ONE org from their decision rows (AUTO-7b).
+
+    Only the org loop of :func:`scan_due_waits` calls this, after its list
+    check. So the org comes from the loop's own enumeration, never from a
+    request, a payload or the ambient tenant. Each step opens its own
+    ``_tenant_session(org)``.
+
+    The answer comes from the ``pm_decisions`` row only, through
+    ``park.outcome_of``. The snapshot, the trigger payload and a node output
+    never decide.
+
+    * ``yes`` from the decider: ``resume_run`` as the decider. Its
+      compare-and-set lets exactly one caller start the run. The run keeps
+      its stored kind, so it stays marked, and a second gate parks again.
+    * any other answer: the pause ``rejected`` and the run ``cancelled``,
+      with the error ``decision declined``.
+    * no answer, and the DB clock passed ``expires_at``: the same end, with
+      ``decision expired``. The winner of the pause compare-and-set tells the
+      owner once, as a comment on the subject task.
+
+    This scan runs with no ``no_person_scope``. It answers nothing, and it
+    writes no column of the answer. Returns the number of settled gates.
+    """
+    async with _tenant_session(org) as db:
+        rows = (await db.execute(text(park.PARKED_SQL), {"org": org})).fetchall()
+    settled = 0
+    for row in rows:
+        if str(getattr(row, "organization_id", "")).lower() != org.lower():
+            continue  # the row names another org: never settle it under this one
+        snapshot = parse_jsonb(row.snapshot, {}) or {}
+        decision_id = park.decision_id_of(snapshot)
+        if decision_id is None:
+            continue
+        run_id = str(row.run_id)
+        try:
+            async with _tenant_session(org) as db:
+                decision = await park.read_decision(db, decision_id, run_id)
+            outcome = park.outcome_of(decision)
+            if outcome == park.WAIT:
+                continue
+            if outcome == park.RESUME:
+                result = await resume_run(
+                    run_id,
+                    resumed_by=str(decision.answered_by).strip().lower(),
+                    organization_id=str(row.organization_id),
+                )
+                if result.get("ok"):
+                    settled += 1
+                continue
+            try:
+                async with _tenant_session(org) as db:
+                    ended = await park.end_parked(
+                        db,
+                        pause_id=str(row.id),
+                        run_id=run_id,
+                        outcome=outcome,
+                        workflow_id=str(row.workflow_id),
+                        subject_task_id=str(decision.subject_id),
+                        decision_id=decision_id,
+                    )
+            except park.ParkLost:
+                ended = False
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # one bad run must not stall the rest
+            _log.warning(
+                "workflows.decided_settle_failed",
+                run_id=run_id,
+                error=type(exc).__name__,
+            )
+            continue
+        if ended:
+            settled += 1
+            reason = park.DECLINED if outcome == park.DECLINE else park.EXPIRED
+            _log.info("workflows.parked_run_ended", run_id=run_id, reason=reason)
+            publish_workflow_activity(
+                str(row.workflow_id),
+                str(row.workflow_name or ""),
+                phase="end",
+                run_id=run_id,
+                status="cancelled",
+                reason=reason,
+            )
+    return settled
 
 
 async def _scheduler_loop() -> None:
