@@ -1,3 +1,4 @@
+# ruff: noqa: F811
 """R8: ``executor._member_zones`` against a real database (task 1649).
 
 The unit half is ``tests/unit/test_chat_now_line.py``. Here the read runs as
