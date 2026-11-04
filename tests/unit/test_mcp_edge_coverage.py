@@ -237,6 +237,35 @@ def test_the_archive_and_its_approval_stay_off_the_edge():
     assert not reached & set(ARCHIVE_ROUTES), reached & set(ARCHIVE_ROUTES)
 
 
+#: MCP-P1b-1 (§19.5, "The member routes"). A person's decision on an app
+#: request, and the member's list of requests. Neither is ever a pair of the
+#: edge or of the app door, so branch 0 refuses a signed call to either.
+MEMBER_ONLY_REQUEST_ROUTES = (
+    ("POST", "/agent-access/requests/{request_id}/decision"),
+    ("GET", "/agent-access/requests"),
+)
+
+
+def test_decision_route_not_in_door_sets():
+    """MCP-P1b-1 (§19.5, §19.11). The decision route serves a member session
+    only. It is in no set of the door: not ``MCP_ROUTES``, not
+    ``MCP_WRITE_ROUTES`` and not ``door_routes()``, and no edge tool reaches
+    it. Mutation: put the decision pair in ``MCP_WRITE_ROUTES``, and this
+    test fails."""
+    from acb_common import app_manifests
+
+    served = _gateway_routes()
+    door = set(app_manifests.door_routes())
+    for pair in MEMBER_ONLY_REQUEST_ROUTES:
+        assert pair in served, pair
+        assert pair not in MCP_ROUTES and pair not in MCP_WRITE_ROUTES, pair
+        assert pair not in door, pair
+    from agent_edge.tools import TOOLS
+
+    reached = _reached(TOOLS)
+    assert not reached & set(MEMBER_ONLY_REQUEST_ROUTES)
+
+
 def test_rule_1_each_pair_is_a_route_the_gateway_serves():
     served = _gateway_routes()
     missing = sorted(pair for pair in MCP_ROUTES if pair not in served)

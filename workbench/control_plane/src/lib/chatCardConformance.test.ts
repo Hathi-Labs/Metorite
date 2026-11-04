@@ -58,6 +58,9 @@ function code(src: string): string {
 const CHAT_CARDS: Record<string, { seam: true } | { exempt: string }> = {
   "components/ElicitationCard.tsx": { seam: true },
   "components/ConfirmationCard.tsx": { seam: true },
+  // MCP-P1b-1: the one card of an app request. Integrations mounts it now,
+  // and the chat mounts it in B2c, so it keeps the look of a chat card.
+  "components/AppRequestCard.tsx": { seam: true },
   "components/ChatErrorCard.tsx": { seam: true },
   "components/ToolCardShell.tsx": { seam: true },
   "components/GenerativeUINode.tsx": { seam: true },

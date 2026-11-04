@@ -93,6 +93,11 @@ EXPECTED: dict[str, dict[str, str]] = {
         "awaiting": "stopping",
     },
     "member_start": {"created": "created"},
+    # MCP-P1b-1 (§19.5): the two events of an app run. A spend closes an
+    # approved request in `acb_auth.app_requests.SPEND_SQL`.
+    "app_ask": {"created": "awaiting"},
+    "app_close": {"awaiting": "completed", "in_progress": "completed",
+                  "stale": "completed"},
 }
 
 

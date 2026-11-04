@@ -4,8 +4,11 @@
  * The AI agents view of /integrations (WS-55 EA-4b, D-EA-9).
  *
  * Spec: `project-docs/specs/external_agent_access.md` §5.4 and §15 EA-4b.
- * Every member sees it. Three parts:
+ * Every member sees it. Four parts:
  *
+ * 0. **Waiting for you** (MCP-P1b-1, §19.5). The changes that an agent asks
+ *    to make, each on `AppRequestCard`, with Approve and Decline
+ *    (`WaitingRequests.tsx`). It shows nothing while agent access is off.
  * 1. **Connect an AI agent.** The MCP address with a copy button, one tab per
  *    client of §17.1, and what an agent can and cannot do.
  * 2. **My connected agents.** The member's own live connections, with Revoke.
@@ -37,6 +40,8 @@ import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
+
+import WaitingRequests from "./WaitingRequests";
 
 import {
   AGENT_ACCESS_KEY,
@@ -433,6 +438,8 @@ export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) 
 
   return (
     <div data-testid="agents-view" className="flex flex-1 flex-col gap-6 overflow-y-auto p-4 sm:p-6">
+      {off ? null : <WaitingRequests />}
+
       {off ? null : <ConnectCard />}
 
       {off ? null : <DeleteSwitchCard />}
