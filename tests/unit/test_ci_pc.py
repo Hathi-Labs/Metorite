@@ -307,3 +307,8 @@ def test_one_backup_job_runs_at_a_time_on_the_daemon():
     assert '"${lk[@]}" docker run --rm --name "ci-job-$label-$TAG"' in _RUN_SUITE
     count = (_ROOT / "scripts/rehearse_verify_scratch.sh").read_text(encoding="utf-8")
     assert "docker ps -aq --filter label=acb.backup-verify=1" in count
+
+
+def test_the_timed_frontend_tests_do_not_share_the_cpu_with_another_run():
+    # bodyLook.test.ts asserts "under 100 ms". Two runs at once gave 110 ms.
+    assert '[ "$label" = frontend ] && lk=(flock "$HOME/.ci-frontend.lock")' in _RUN_SUITE
