@@ -4,7 +4,8 @@
  * "Waiting for you": the app requests that wait for the member (WS-MCP
  * MCP-P1b-1, MCP-Q3 of `external_agent_access.md` §19.14).
  *
- * The first part of Integrations, AI agents. Each request is one
+ * The last part of Integrations, AI agents, so its arrival after a cold
+ * fetch moves nothing above it (re-review P3). Each request is one
  * `AppRequestCard`. The member presses Approve or Decline. The card leaves
  * the list when the answer lands, and a toast names the result. A refused
  * answer stays on its card, next to the buttons, and the member may press

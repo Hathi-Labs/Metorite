@@ -71,6 +71,21 @@ describe("the section shows only when a request waits", () => {
     expect(waitingView({ data: undefined, error: "The list did not load." }, NONE).kind).toBe("error");
   });
 
+  // Re-review P3 (M1, keep space for async content). With a cold cache the
+  // list appears after its fetch. At the top of the view it pushed the
+  // Connect card down, so it sits after the agent lists, where nothing
+  // below it moves.
+  it("sits after the agent lists, so its arrival moves nothing above it", () => {
+    const src = readFileSync(`${SRC}/components/AgentsView.tsx`, "utf8");
+    const view = src.slice(src.indexOf('data-testid="agents-view"'));
+    const waiting = view.indexOf("<WaitingRequests />");
+    expect(waiting).toBeGreaterThan(0);
+    for (const before of ["<ConnectCard />", "<DeleteSwitchCard />", 'testId="agents-mine"', 'testId="agents-org"']) {
+      expect(view.indexOf(before), before).toBeGreaterThan(0);
+      expect(view.indexOf(before), before).toBeLessThan(waiting);
+    }
+  });
+
   it("the view holds no empty-state words any more", () => {
     const src = readFileSync(`${SRC}/components/WaitingRequests.tsx`, "utf8");
     expect(src).not.toContain("No agent waits for your approval");
