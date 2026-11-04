@@ -523,7 +523,7 @@ async def test_a_draft_that_changes_between_the_read_and_the_publish_is_not_publ
         gw, redis) -> None:
     """A save of the same response lands after the read of the publish. The
     store refuses, and no version is made. Mutation M17 -> red."""
-    m, pid = await _built()
+    _m, pid = await _built()
 
     def studio_edit() -> None:
         gw.packages[pid]["manifest"] = _jsonb(_visit(name="Edited at once"))
