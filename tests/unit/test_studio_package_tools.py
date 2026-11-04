@@ -73,6 +73,30 @@ and the tree was clean after each restore.
   ``held_chat_shows_one_card``, ``held_chat_sends_nothing`` (3),
   ``long_notes``, ``route_refuses_shows_no_card``, ``draft_that_moved``.
 * M16, change a copied limit: ``each_copy_of_the_route``, ``held_create_at_the_limit``.
+
+Fix round 1 (2026-11-04, review P1 and P2, verifier P3s). Each went red, and
+the tree was clean after each restore. R8 means a private database, one suite
+for each process.
+
+* M17, send no based_on with the publish: ``name_the_hash_that_they_checked``,
+  ``changes_between_the_read_and_the_publish``, and both R8 race fences of
+  ``test_studio_chat_build_r8.py``.
+* M18, send no based_on with the draft save: ``name_the_hash_that_they_checked``,
+  ``changes_between_the_read_and_the_save_is_kept``.
+* M22, drop the compare from ``publish_version``: R8 ``stale_based_on`` of
+  ``test_studio_package_routes_r8.py``, and both R8 race fences.
+* M23, drop the compare from ``update_manifest``: R8 ``stale_hash`` and R8
+  ``two_saves_with_one_hash``.
+* M24, the publish route passes no expected hash: two tests of
+  ``test_studio_package_routes.py``.
+* M19, skip the withdraw of a stopped or revised plan: ``withdraws_the_earlier
+  _approval`` (both), ``withdraw_that_faults_says_so``.
+* M20, the plan card ends with the old line: two tests of
+  ``test_studio_interview_plan.py``.
+* M21, no line of the tables on the plan card: ``counts_hot_and_required``.
+* M25, the approved save card writes a plan record: ``held_save_card_writes_no_plan_record``.
+* M26, a TTL of one hour: ``only_approved_writes_the_record[approved]``.
+* M27, the drop after a 201 deletes with no compare: ``keeps_the_record_of_a_newer_plan``.
 """
 from __future__ import annotations
 
