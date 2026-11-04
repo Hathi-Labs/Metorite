@@ -279,8 +279,10 @@ def test_the_exit_trap_expands_the_worktree_path_when_it_is_set():
     assert '\\"$wt\\"' in trap
 
 
-def test_the_backup_job_has_a_pid_space_that_two_runs_do_not_share():
-    # backup_db.sh names its verify container acb-verify-<epoch>-$$ on the
-    # shared Docker daemon. Two runs in one second got one name (2026-11-04).
-    assert '[ "$label" = backup-restore ] && net+=(--pid=host)' in _RUN_SUITE
-    assert 'acb-verify-$(date -u +%s)-$$' in (_ROOT / "scripts/backup_db.sh").read_text(encoding="utf-8")
+def test_one_backup_job_runs_at_a_time_on_the_daemon():
+    # rehearse_verify_scratch.sh counts the verify containers of the whole
+    # Docker daemon. A second run's container made two runs fail (2026-11-04).
+    assert 'lk=(flock "$HOME/.ci-backup-restore.lock")' in _RUN_SUITE
+    assert '"${lk[@]}" docker run --rm --name "ci-job-$label-$TAG"' in _RUN_SUITE
+    count = (_ROOT / "scripts/rehearse_verify_scratch.sh").read_text(encoding="utf-8")
+    assert "docker ps -aq --filter label=acb.backup-verify=1" in count
