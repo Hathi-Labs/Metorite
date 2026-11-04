@@ -1,31 +1,29 @@
 "use client";
 
 /**
- * ConfirmationQueue — every pending confirmation card, one at a time.
+ * ConfirmationQueue — every pending confirmation card, as ONE card.
  *
- * A turn can park many gated tools at once (2026-10-06: ten). One card shows,
- * with "1 of N" and arrows to reach the rest. One at a time, and not a
- * stack, because the Projects rail is narrow: ten stacked cards push the
- * turn that asked for them out of view. Answering a card removes it, and the
- * next card takes its place.
+ * A turn can park many gated tools at once (2026-10-06: ten). One card
+ * shows. With two cards or more, the cards that wait together are TABS inside
+ * that card (owner, 2026-11-03, D173): "Instead of having, say, a stacked
+ * cards animation, we just have one card. When there are multiple cards that
+ * need to be approved, it shows up as one single card with tabs." A count
+ * leads the row, and a dot marks a card the member has not opened. No stacked
+ * edges, no swipe and no swap animation. Answering a card removes it, and the
+ * next tab to the right opens, else the one to the left.
  *
  * No "Approve all". Each card is one consent, and a card the member did not
- * page to is a card nobody read (the Projects writes rule, MAX_BATCH). A
- * batch tool with ONE card is the answer to many cards of one kind.
+ * open is a card nobody read (the Projects writes rule, MAX_BATCH). A batch
+ * tool with ONE card is the answer to many cards of one kind.
  *
- * The stack (owner, 2026-10-24): with two cards or more, a banner counts
- * them, the edges of the cards behind peek out under the shown one, a
- * sideways swipe on a touch screen moves between them, and the first stack
- * of a page nudges once to show the swipe. The member could miss "1 of 2" in
- * the corner. The nudge stops for a member who asked for less motion.
- *
- * The queue itself is `lib/confirmationQueue.ts`.
+ * The queue itself is `lib/confirmationQueue.ts`. The tab rules are
+ * `lib/cardTabs.ts`, and the row is `components/ui/CardTabs.tsx`.
  */
 
-import { useReducer, useState } from "react";
+import { useId, useReducer, useState } from "react";
 
 import ConfirmationCard, { cardSummary } from "@/components/ConfirmationCard";
-import CardStack, { type CardStackTab } from "@/components/ui/CardStack";
+import CardTabs, { cardPanelId, cardTabId, type CardTab } from "@/components/ui/CardTabs";
 import {
   NO_TICKS,
   rowTicksReducer,
@@ -33,6 +31,7 @@ import {
   type PendingConfirmation,
   type RowsApproval,
 } from "@/lib/confirmationQueue";
+import { cardKind, KIND_ICON, restoredFirst, tabLabel } from "@/lib/cardTabs";
 import { unfenced } from "@/lib/fencedText";
 import type { ReplyApproval } from "@/lib/replyCard";
 
@@ -75,12 +74,45 @@ export function pickShown(cards: PendingConfirmation[], shown: Shown): number {
   return found >= 0 ? found : shownIndex(shown.index, cards.length);
 }
 
+/**
+ * What the queue holds after its cards changed: the keys it saw, and the
+ * card it shows. A card that came back first opens (`restoredFirst`), and any
+ * other change keeps the member's card. Pure and idempotent, so a render that
+ * React runs twice reaches the same state. The component calls it, and
+ * `confirmationQueue.test.ts` runs it over a real Undo.
+ */
+export function reconcileShown(
+  prevKeys: readonly string[],
+  cards: PendingConfirmation[],
+  shown: Shown,
+): { keys: readonly string[]; shown: Shown } {
+  const keys = cards.map((c) => c.key);
+  if (keys.length === prevKeys.length && keys.every((k, i) => k === prevKeys[i])) return { keys: prevKeys, shown };
+  const opened = restoredFirst(prevKeys, keys);
+  return { keys, shown: opened !== null ? { key: opened, index: 0 } : shown };
+}
+
 export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0 }: ConfirmationQueueProps) {
   const [shown, setShown] = useState<Shown>({ key: null, index: initialIndex });
   // The member's ticks of every card with rows, by key. The queue holds
   // them, so a page away and back keeps them (PR #691 review). The logic is
   // `rowTicksReducer` and `rowsView`, and this component holds none.
   const [ticks, tick] = useReducer(rowTicksReducer, NO_TICKS);
+  const uid = useId();
+  // The cards the member has opened, by key: a tab not in it wears a dot.
+  const [seen, setSeen] = useState<ReadonlySet<string>>(() => new Set());
+  // The keys of the last render, in state and not in a ref: a render that
+  // React runs twice (StrictMode) must see the same change both times.
+  const [prevKeys, setPrevKeys] = useState<readonly string[]>([]);
+  // The queue pins the shown card in `shown`, so opening a tab marks it seen.
+  const shownKey = shown.key;
+  if (shownKey !== null && !seen.has(shownKey)) setSeen(new Set(seen).add(shownKey));
+  // A card that comes back first (Undo of a Reject) opens, so the member
+  // sees what they tried to answer. Any other change keeps the member's card.
+  // (React's adjust-state-during-render pattern, as for `shown` below.)
+  const next = reconcileShown(prevKeys, cards, shown);
+  if (next.keys !== prevKeys) setPrevKeys(next.keys);
+  if (next.shown !== shown) setShown(next.shown);
   if (cards.length === 0) return null;
   const at = pickShown(cards, shown);
   const card = cards[at];
@@ -90,7 +122,7 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
   }
   const go = (to: number) => setShown({ key: cards[to].key, index: to });
   const view = rowsView(card, ticks);
-  const stacked = cards.length > 1;
+  const tabbed = cards.length > 1;
   const shownCard = (
     <ConfirmationCard
       // A new key per card: a long body scrolled on one card does not stay
@@ -104,10 +136,10 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
       error={errors?.get(card.key)}
       rows={view.rows}
       onToggle={(id, on) => tick({ type: "toggle", card, id, on })}
-      // Stacked, the stack's tabs are the one switcher (owner, 2026-11-01),
-      // so the card draws no "1 of N" pager of its own.
+      // With tabs, they are the one switcher (D173), so the card draws no
+      // "1 of N" pager of its own.
       position={
-        stacked
+        tabbed
           ? undefined
           : { index: at, total: cards.length, onPrev: () => go(Math.max(0, at - 1)), onNext: () => go(Math.min(cards.length - 1, at + 1)) }
       }
@@ -119,23 +151,26 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
       onReject={() => onAnswer(card, "REJECT")}
       // EM-CR: a reply card answers with the member's choice and body.
       {...(card.reply !== undefined ? { reply: card.reply, onReply: (a: ReplyApproval) => onAnswer(card, a) } : {})}
+      // The tab row sits inside the card's frame, and the card is its panel.
+      {...(tabbed
+        ? {
+            tabs: <CardTabs uid={uid} index={at} onGo={go} tabs={cards.map((c) => ({ ...cardTab(c), unseen: !seen.has(c.key) }))} />,
+            tabPanel: { id: cardPanelId(uid), labelledBy: cardTabId(uid, at) },
+          }
+        : {})}
     />
   );
-  // The stack's tabs, deck edges, swipe and spring (owner, 2026-10-24 and
-  // 2026-11-01) are the shared `CardStack`; a single card draws as it is.
-  return (
-    <CardStack total={cards.length} index={at} onGo={go} tabs={cards.map(cardTab)}>
-      {shownCard}
-    </CardStack>
-  );
+  return shownCard;
 }
 
-/** A card's tab: its kind and the short name its own header leads with. */
-export function cardTab(card: PendingConfirmation): CardStackTab {
+/** A card's tab: its kind, a short label (`tabLabel`), and the card's full
+ *  summary for the tooltip. */
+export function cardTab(card: PendingConfirmation): CardTab {
   const { summary } = cardSummary(card.title, card.detail);
   return {
     key: card.key,
-    label: card.fenced ? unfenced(summary) : summary,
-    icon: card.reply !== undefined ? "Reply" : "ShieldCheck",
+    label: tabLabel(card),
+    title: card.fenced ? unfenced(summary) : summary,
+    icon: KIND_ICON[cardKind(card)],
   };
 }

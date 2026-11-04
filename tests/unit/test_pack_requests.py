@@ -135,6 +135,7 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "fit_for_task": ("who is the best fit for this task?",),
     "link_tasks": ("make this task block the other task",),
     "link_tasks_batch": ("link these tasks in order as dependencies",),
+    "update_tasks": ("update these tasks, a different due date for each",),
     "needs_attention": ("which tasks need attention?",),
     "propose_plan": ("propose a project plan for launching the site",),
     "rebalance": ("rebalance the workload",),
@@ -215,6 +216,10 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "unarchive_project": ("unarchive the project Website Relaunch",),
     "unarchive_task": ("restore the archived task",),
     "watch": ("watch this task",),
+    # -- projects-authority (WS-ALN ALN-4) --
+    "project_authorities": ("which page is the authority page of this project?",),
+    "pin_authority": ("pin this page as the authority of the project",),
+    "unpin_authority": ("remove the authority page of the project",),
     # -- studio (STU-G1) --
     "studio_describe": ("which field types can a studio app manifest use?",),
     "studio_draft": ("draft an app manifest in AI Studio",),
