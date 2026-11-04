@@ -30,6 +30,9 @@
   - branch 0 and the route allowlists (`external_agent_access.md` §10.1),
   - credit prices (`credit_pricing.md`),
   - the box (`box_hardening.md`).
+  - the scratch tool `run_code`, the source bridge to MCP and API
+    actions, data handles, the tool library, stewards and forks
+    (`chat_built_tools.md`, WS-CBT, 2026-11-04).
 
 **Ids in this spec.** Every id carries the `SBX-` prefix (R2). The slices
 are `SBX-0` to `SBX-11`, the fences `SBX-F1` and up, the owner gates
@@ -733,6 +736,9 @@ owner answers, every tool stays private, and the share button is not built.
 - An approver may pin `org_version` back to any earlier version.
 - `run_tool` refuses a version that the caller may not run, and a tool that
   is not `active`.
+- For an organization tool, `chat_built_tools.md` §9.4 sets who runs which
+  version: every member runs `org_version`, and only the proposer runs a
+  proposed version (CBT-8a changes SBX-F13 to match).
 
 ### 8.3 Kill switches
 
