@@ -230,6 +230,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     "FAILED", "FORENSICS", "OURS_FAILED", "ROUTES", "SCRATCH", "STAMP",
     "SVC_USER", "UNITS", "UNITS_CHANGED", "VENV_OWNER", "VERIFY_RESTORE",
     "UX_OUT",
+    # STU-B2c-1: vps_apply.sh holds the key of the Studio direct proof here.
+    # Do not name that key in this file: only the proof module and the
+    # settings may name it (test_studio_direct_proof.py).
+    "DIRECT_KEY",
     # WS-49 BH-6: the scripts of the root copy (root_lib_files.txt) are in
     # the scan now. These are their own variables and the BH-6 deploy steps.
     "ACK", "DROPIN", "EXPIRES", "EXPIRY_WHY", "HEALTH_TRIES", "NAME",
