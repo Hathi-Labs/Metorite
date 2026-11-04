@@ -318,8 +318,29 @@ def test_the_spend_is_one_statement_with_each_guard() -> None:
         "> clock_timestamp()",
         "r.app IS NOT NULL AND r.app = :app",
         "r.organization_id = CAST(:org AS uuid)",
+        # Verifier P3-6: the newest prompt answers THIS elicitation.
+        "p.in_reply_to = e.id AND p.content->'selected'->>0 = 'approve'",
     ):
         assert guard in sql, guard
+
+
+def test_each_statement_with_a_where_names_the_org() -> None:
+    """Verifier P3-5. FORCE RLS binds the org once, and each statement of the
+    store names it once more, so a missed bind shows in review. Each
+    module-level SQL text of both modules that holds a WHERE names
+    ``organization_id = CAST(:org AS uuid)``. An INSERT takes the org from
+    the column default, the bound tenant."""
+    texts = {
+        name: value
+        for module in (store, app_requests)
+        for name, value in vars(module).items()
+        if isinstance(value, str) and name.lstrip("_").endswith(("_SQL", "_SELECT"))
+    }
+    assert {"SPEND_SQL", "_CLASSIFY_SQL", "_REQUEST_SELECT", "_CAP_SQL",
+            "_REPLAY_SQL"} <= set(texts), sorted(texts)
+    missing = [name for name, sql in texts.items()
+               if " WHERE " in sql and "organization_id = CAST(:org AS uuid)" not in sql]
+    assert missing == [], missing
 
 
 # ── The digest (AD-17 as amended) ───────────────────────────────────────────
