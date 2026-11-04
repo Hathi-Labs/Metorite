@@ -97,6 +97,43 @@ export const MY_NOTES = "My notes";
 export const MY_NOTES_CHOICE = "";
 
 /**
+ * The id of the stand-in "My notes" space (KB-2s). It is drawn when the member
+ * has no `me` row yet. It is never sent to the gateway: `createBody` leaves it
+ * out, so the first write makes the real row (§4.1).
+ */
+export const PENDING_ME_ID = "my-notes-pending";
+
+/** True for the stand-in space, which has no row and no pages to read. */
+export function isPendingMe(id: string | null | undefined): boolean {
+  return id === PENDING_ME_ID;
+}
+
+/**
+ * The spaces with "My notes" last when the member has no `me` space yet. The
+ * stand-in lets the rail and the switcher show it from the first open. No
+ * row is made until the member writes.
+ */
+export function withPendingMe(spaces: readonly Space[]): Space[] {
+  if (spaces.some((s) => s.kind === "me")) return [...spaces];
+  return [
+    ...spaces,
+    {
+      id: PENDING_ME_ID,
+      slug: "me",
+      name: MY_NOTES,
+      purpose: "Private to you. Your drafts and the chat answers that you save land here.",
+      icon: "",
+      kind: "me",
+      owner_email: null,
+      archived_at: null,
+      created_at: null,
+      level: "write",
+      page_count: 0,
+    },
+  ];
+}
+
+/**
  * The spaces a member may make a page in, for the New page form. The `me`
  * space is made on the first write, so before that the form offers "My
  * notes" as a choice with no id, and the gateway makes the space.
@@ -127,7 +164,7 @@ export function createBody(input: { space: string; parentId?: string | null; tit
   title: string;
 } {
   const body: { space_id?: string; parent_id?: string; title: string } = { title: input.title.trim() };
-  if (input.space !== MY_NOTES_CHOICE) body.space_id = input.space;
+  if (input.space !== MY_NOTES_CHOICE && !isPendingMe(input.space)) body.space_id = input.space;
   if (input.parentId) body.parent_id = input.parentId;
   return body;
 }
