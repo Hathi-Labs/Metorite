@@ -166,6 +166,19 @@ _TOPIC_HEADERS = {
 #: credit estimator exists, and a number here would be invented.
 COST_LINE = "Build cost: not priced yet. Credit limits come with a later release."
 
+#: The last line of the plan card (G1c review round 1, P2). In a clear chat
+#: the plan card is the only approval of a save and a publish, and no member
+#: can undo a publish until A5b and A5c ship. In a held chat a save and a
+#: publish each show one more card (D169).
+PLAN_APPROVE_CLEAR = (
+    "Approve to save and publish this app now, with no other card. Its objects become tables "
+    "in your organization, and a publish cannot be undone yet. Reject to build nothing. To "
+    "change the plan, tell me in chat.")
+PLAN_APPROVE_HELD = (
+    "Approve to start the build. This chat read outside mail, so a save and a publish each show "
+    "one more card. When it is published, its objects become tables in your organization. "
+    "Reject to build nothing. To change the plan, tell me in chat.")
+
 CATALOG_PATH = "/studio/actions"
 
 _NO_MEMBER = "There is no member for this run, so the Studio tools cannot act."
@@ -674,18 +687,57 @@ def parts_count(manifest: Any) -> int:
             + _count(manifest, "workflows") + skill + _count(manifest, "connections"))
 
 
-def plan_card_text(manifest: Any) -> str:
-    """The text of the plan card: the outline, the count of parts, the cost line.
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}" + ("" if count == 1 else "s")
+
+
+def structure_line(manifest: Any) -> str:
+    """One short line of what the tables keep: the fields, the hot fields, the
+    required fields and the rules, with the roll-ups and the formulas when the
+    manifest holds them (G1c review round 1, P2).
+
+    Pure. It reads any value and never raises. The plan card and each package
+    card show it, because a publish makes these tables and no member can undo
+    it yet."""
+    fields = hot = required = rules = rollups = formulas = 0
+    objects = manifest.get("objects") if isinstance(manifest, dict) else None
+    for obj in objects if isinstance(objects, list) else []:
+        if not isinstance(obj, dict):
+            continue
+        found = obj.get("fields")
+        for f in found if isinstance(found, list) else []:
+            if isinstance(f, dict):
+                fields += 1
+                hot += f.get("hot") is True
+                required += f.get("required") is True
+        found = obj.get("rules")
+        for r in found if isinstance(found, list) else []:
+            if isinstance(r, dict):
+                rules += 1
+                rollups += r.get("kind") == studio_rules.ROLLUP
+                formulas += r.get("kind") == studio_rules.FORMULA
+    kinds = [_plural(rollups, "roll-up")] if rollups else []
+    kinds += [_plural(formulas, "formula")] if formulas else []
+    tail = f" ({', '.join(kinds)})" if kinds else ""
+    return f"Fields: {fields} ({hot} hot, {required} required). Rules: {rules}{tail}."
+
+
+def plan_card_text(manifest: Any, held: bool = False) -> str:
+    """The text of the plan card: the outline, the count of parts, the line of
+    the tables, the cost line, and what approval does.
 
     Pure and deterministic. It holds the outline (seven lines, each of at most
-    :data:`MAX_OUTLINE_LINE_CHARS` characters) and three short lines, so the
+    :data:`MAX_OUTLINE_LINE_CHARS` characters) and four short lines, so the
     text fits the context limit of the card (4,000 characters). It holds no
-    price and no turn count: no number stands next to "credit"."""
+    price and no turn count: no number stands next to "credit". With *held*
+    (a chat that read outside mail), the last line says that a save and a
+    publish each show one more card."""
     return "\n".join([
         outline_text(manifest, fence=True),
         f"Parts: {parts_count(manifest)}",
+        structure_line(manifest),
         COST_LINE,
-        "Approve to start the build. Reject to build nothing. To change the plan, tell me in chat.",
+        PLAN_APPROVE_HELD if held else PLAN_APPROVE_CLEAR,
     ])
 
 
@@ -708,7 +760,7 @@ async def studio_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         return _result(False, checked["errors"], [])  # no card for an invalid manifest
     title = f"Build {_name(doc.get('name', '?'), True)}?"
     detail = f"{parts_count(doc)} parts. {COST_LINE}"
-    context = plan_card_text(doc)
+    context = plan_card_text(doc, held=await _must_ask())
     from acb_skills import ask_tools
 
     # The run's own member may answer, and no other (PZ-32). The member is the
@@ -2161,6 +2213,7 @@ def _package_rows(manifest: dict[str, Any], digest: str,
         *(head or []),
         *(("outline", line) for line in _outline_of(manifest).splitlines()),
         ("parts", f"Parts: {parts_count(manifest)}"),
+        ("structure", structure_line(manifest)),
         ("size", f"Size: {_size(manifest)} characters"),
         ("hash", _hash_line(digest)),
     ]
@@ -2530,7 +2583,8 @@ STUDIO_TOOLS = (
 
 __all__ = [
     "MAX_ACTION_ROWS", "MAX_MANIFEST_CHARS", "MAX_SKILL_ROWS", "STUDIO_SKILL_TOOLS",
-    "STUDIO_TOOLS", "outline_text", "parts_count", "plan_card_text", "studio_describe",
+    "STUDIO_TOOLS", "outline_text", "parts_count", "plan_card_text", "structure_line",
+    "studio_describe",
     "studio_draft", "studio_interview", "studio_list_actions", "studio_outline", "studio_patch",
     "studio_plan", "studio_skill_list", "studio_skill_save", "studio_skill_state",
     "studio_validate",

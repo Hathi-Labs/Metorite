@@ -755,6 +755,7 @@ async def test_a_held_chat_shows_one_card_for_a_save_and_one_for_a_publish(held,
         ctx = shown["context"]
         assert "Objects (1): «visit» (3 fields)" in ctx and f"Hash: {digest[:12]}" in ctx
         assert f"Size: {st._size(m)} characters" in ctx and "Parts: 1" in ctx
+        assert st.structure_line(m) in ctx.splitlines()  # review round 1, P2
     assert "Version: 1" in card.shown[2]["context"]
     assert "Notes: «First version.»" in card.shown[2]["context"]
     assert held.writes() == [("POST", "/studio/packages"), ("POST", "/studio/packages/{}/versions")]
