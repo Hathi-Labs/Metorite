@@ -93,6 +93,9 @@ EXPECTED: dict[str, dict[str, str]] = {
         "awaiting": "stopping",
     },
     "member_start": {"created": "created"},
+    # WS-55 MCP-G15: the agent records a decision that its member made
+    # outside Metorite. It ends the wait, and nothing else.
+    "agent_outside_decision": {"awaiting": "in_progress"},
 }
 
 
