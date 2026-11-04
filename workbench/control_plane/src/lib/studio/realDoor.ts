@@ -180,10 +180,10 @@ export function createRealDoor(opts: RealDoorOptions): StudioDataDoor {
   if (!PACKAGE_ID.test(opts.packageId)) throw new Error("A package id is a uuid.");
   const verbs = verbMap(opts.actions);
   const declared = new Set((opts.actions ?? []).map((a) => a?.id).filter((x): x is string => typeof x === "string"));
-  const send = opts.fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
+  const fetchImpl: typeof fetch = opts.fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
 
   async function post(actionId: string, body: Record<string, unknown>): Promise<{ status: number; body: unknown; wait: string | null }> {
-    const res = await send(actionUrl(opts.packageId, actionId), {
+    const res = await fetchImpl(actionUrl(opts.packageId, actionId), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -264,14 +264,14 @@ export class StudioOff extends Error {
   constructor() { super(STUDIO_OFF); }
 }
 
-async function getJson(url: string, fetchImpl?: typeof fetch): Promise<unknown> {
-  const res = await (fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a)))(url);
+async function getJson(url: string, fetchImpl: typeof fetch = fetch): Promise<unknown> {
+  const res = await fetchImpl(url);
   if (res.status === 404) throw new StudioOff();
   if (!res.ok) throw new Error(ACTION_FAILED);
   return res.json().catch(() => ({}));
 }
 
-export async function listPackages(fetchImpl?: typeof fetch): Promise<PackageSummary[]> {
+export async function listPackages(fetchImpl: typeof fetch = fetch): Promise<PackageSummary[]> {
   const body = await getJson("/api/studio/packages", fetchImpl);
   const raw = isObject(body) && Array.isArray(body.packages) ? body.packages : [];
   return raw.filter(isObject).map((p) => ({
@@ -280,7 +280,7 @@ export async function listPackages(fetchImpl?: typeof fetch): Promise<PackageSum
   }));
 }
 
-export async function getPackage(id: string, fetchImpl?: typeof fetch): Promise<PackageDetail> {
+export async function getPackage(id: string, fetchImpl: typeof fetch = fetch): Promise<PackageDetail> {
   if (!PACKAGE_ID.test(id)) throw new StudioOff();
   const body = await getJson(`/api/studio/packages/${id}`, fetchImpl);
   const pkg = isObject(body) && isObject(body.package) ? body.package : {};

@@ -49,8 +49,8 @@ WHEN = {
     "projects-authority": "Load for the authority page of a project: to read it, pin a page as the authority, or remove a pin.",
     # STU-G1: the Studio builder pack.
     "studio": (
-        "Load for AI Studio: build an app (manifest, actions), or save, publish, "
-        "pause and list your skills."),
+        "Load for AI Studio: build an app (manifest, actions), manage your skills, "
+        "or read the records of a package."),
 }
 
 
