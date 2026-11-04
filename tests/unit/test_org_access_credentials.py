@@ -223,17 +223,27 @@ async def test_the_session_member_wins_over_a_body_claim(monkeypatch) -> None:
 def test_each_run_path_hands_the_session_member_to_the_check() -> None:
     """MCP-C1 source fence: each call of the check in the executor passes
     ``session_user``. A call without it reads the body alone, and the stream
-    route has removed the body's claim (H-337)."""
-    import re
+    route has removed the body's claim (H-337). The route's own half, that it
+    passes ``session_user=_session_member(user)``, is fenced in
+    ``tests/unit/test_usage_attribution.py``."""
+    import ast
     from pathlib import Path
 
     import orchestrator.executor as executor
 
-    source = Path(executor.__file__).read_text(encoding="utf-8")
-    calls = re.findall(r"await _integration_authorizer\((.*?)\)", source, re.S)
+    tree = ast.parse(Path(executor.__file__).read_text(encoding="utf-8"))
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_integration_authorizer"
+    ]
     assert len(calls) >= 2, "the two run paths no longer call the check"
-    for args in calls:
-        assert "session_user=session_user" in args, args
+    for call in calls:
+        passed = {kw.arg: kw.value for kw in call.keywords}
+        value = passed.get("session_user")
+        assert isinstance(value, ast.Name) and value.id == "session_user", (
+            f"line {call.lineno}: the check gets no session member")
 
 
 # ── Org memory gate ─────────────────────────────────────────────────────────
