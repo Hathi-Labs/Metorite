@@ -452,6 +452,39 @@ def test_r8_a_rejected_plan_in_the_same_response_never_publishes_the_new_draft(
     _settled(world, pid, published)
 
 
+# ── g. Numbers that jsonb writes in its own way (review round 2) ────────────
+
+#: The values of the probe of review round 2. jsonb keeps no sign of zero, so
+#: ``-0.0`` comes back as ``0.0``. The rest come back as they were sent.
+WIDE_ARGS: dict[str, Any] = {
+    "neg": -0.0, "negf": -0.5, "i": 12345678901234567890, "f": 0.1, "one": 1.0,
+    "bigf": 123456789012345.5, "small": 0.0001,
+    "u": "Caf\u00e9 \u2713 \U0001F600 \u2028", "nested": [[1, 2.5], {"b": 1, "a": [True, None]}],
+}
+
+
+def test_r8_a_manifest_with_a_negative_zero_and_wide_numbers_publishes(world) -> None:
+    """Before the fix, each plan of this manifest ended in "no approved plan",
+    because the plan hashed ``-0.0`` and the store kept ``0.0``. Mutation M28:
+    hash ``-0.0`` as written -> red."""
+    m = _visit_log(_mid())
+    m["views"] = [{"id": "all", "block": "table",
+                   "source": {"object": "visit", "args": copy.deepcopy(WIDE_ARGS)}}]
+
+    async def go() -> tuple[dict[str, Any], dict[str, Any]]:
+        assert (await st.studio_plan(m))["decision"] == "approved"
+        saved = await st.studio_save(m)
+        return saved, await st.studio_publish(saved["package_id"])
+
+    saved, published = _run(world, go)
+    assert published["ok"] and published["version"] == 1, published
+    stored = _stored(world, saved["package_id"])
+    args = stored["views"][0]["source"]["args"]
+    assert json.dumps(args["neg"]) == "0.0" and args == WIDE_ARGS  # non-vacuity: jsonb dropped the sign
+    assert st.manifest_hash(stored) == st.manifest_hash(m) == saved["based_on"]
+    assert _versions(world, saved["package_id"]) == [1]
+
+
 def test_this_suite_is_named_in_the_ci_skip_guard() -> None:
     """The ``--must-run`` list is a hand list. A suite that leaves it skips with
     no database and still reads green."""

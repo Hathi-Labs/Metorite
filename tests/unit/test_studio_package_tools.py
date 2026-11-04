@@ -142,7 +142,10 @@ def _visit(mid: str = "visits", fields: list[dict[str, Any]] | None = None,
 
 def _jsonb(value: Any) -> Any:
     """*value* as ``jsonb`` keeps it: the keys of each object sorted by length,
-    then by bytes."""
+    then by bytes, and a negative zero written as ``0.0`` (a numeric has no
+    sign of zero)."""
+    if isinstance(value, float) and value == 0.0:
+        return 0.0
     if isinstance(value, dict):
         order = sorted(value, key=lambda k: (len(k.encode("utf-8")), k.encode("utf-8")))
         return {k: _jsonb(value[k]) for k in order}
@@ -594,6 +597,28 @@ async def test_the_record_goes_only_after_a_201(gw, redis) -> None:
     assert redis.data == {}
     again = await st.studio_publish(pid)
     assert again["ok"] is False and _msg(again) == st._NO_PLAN, "one approval buys one publish"
+
+
+# -- 5a. A number that jsonb writes in its own way (review round 2) ------------
+
+
+def test_the_hash_writes_each_zero_as_zero() -> None:
+    """jsonb keeps no sign of zero. Mutation M28: hash ``-0.0`` as written -> red."""
+    assert st.manifest_hash({"a": -0.0, "b": [-0.0, {"c": -0.0}]}) == st.manifest_hash(
+        {"a": 0.0, "b": [0.0, {"c": 0.0}]})
+    assert st.manifest_hash({"a": -0.5}) != st.manifest_hash({"a": 0.5})
+    assert st.manifest_hash({"a": 0}) != st.manifest_hash({"a": 0.0})  # an int stays an int
+
+
+async def test_a_manifest_with_a_negative_zero_publishes(gw) -> None:
+    """The plan hashes the manifest as sent, and the publish hashes the draft
+    as the store keeps it. Mutation M28 -> red."""
+    m = _visit()
+    m["views"] = [{"id": "all", "block": "table",
+                   "source": {"object": "visit", "args": {"neg": -0.0, "negf": -0.5}}}]
+    _m, pid = await _built(m)
+    out = await st.studio_publish(pid)
+    assert out["ok"] and out["version"] == 1, out
 
 
 # -- 5b. The store compares the checked hash (review round 1, P1) --------------
