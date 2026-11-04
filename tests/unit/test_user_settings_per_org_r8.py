@@ -22,6 +22,7 @@ owner that FORCE RLS binds and with no tenant, the way the deploy runs it.
 from __future__ import annotations
 
 import contextlib
+import json
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -327,3 +328,79 @@ def test_239_refuses_a_row_with_no_organization_when_two_exist(db) -> None:
     finally:
         trans.rollback()
         conn.close()
+
+
+# ── The five reads under the owner role, which bypasses RLS (H-312) ─────────
+
+
+@contextlib.asynccontextmanager
+async def _as_owner(ns, org: str):
+    """Bind ``org``, and point the shared engine at the SUPERUSER. It bypasses
+    RLS, as the owner role of production does, so only the statement filters."""
+    with _tenant(org):
+        async with tenant_engine_scope(
+                ns.admin_engine.url.render_as_string(hide_password=False)):
+            yield
+
+
+_SEED = (
+    "INSERT INTO user_settings (user_id, organization_id, chat_model, clarify_model, "
+    "atomize_model, email_capture_model, clarify_use_llm, background_sync, "
+    "mirror_done_tasks, planning_prompt, max_focus_run_mins, break_mins, "
+    "lunch_start_hour, lunch_end_hour, day_templates, timezone, day_start_hour, "
+    "day_end_hour, daily_capacity_mins, buffer_mins) VALUES (:u, CAST(:o AS uuid), "
+    ":m, :m, :m, :m, :flag, :flag, :flag, :prompt, :run, :brk, :ls, :le, "
+    "CAST(:tpl AS jsonb), :tz, :ds, :de, :cap, :buf)"
+)
+
+
+def _seed(c, *, email: str, org: str, tag: str, flag: bool, n: int, zone: str) -> None:
+    c.execute(text(_SEED), {
+        "u": email, "o": org, "m": f"model-{tag}", "flag": flag,
+        "prompt": f"prompt-{tag}", "run": 30 + n, "brk": n, "ls": n, "le": n + 1,
+        "tpl": json.dumps([{"days": [1], "start_hour": n, "end_hour": n + 1,
+                            "kind": "focus", "label": f"label-{tag}"}]),
+        "tz": zone, "ds": n, "de": n + 10, "cap": 100 + n, "buf": n,
+    })
+
+
+async def test_the_five_reads_return_only_the_bound_orgs_row_under_the_owner_role(
+        db) -> None:
+    """One address with a row in each org. Org A's row goes in first, so a
+    read that drops the org filter would most likely find it. Under the owner
+    role RLS does not help, so only the statement keeps org A out."""
+    from gateway.routes.tasks.calendar import (
+        _day_templates,
+        _load_settings_row,
+        _planning_prefs,
+    )
+    from gateway.routes.tasks.settings import task_models, task_toggles
+
+    email = _address()
+    db.made.append(email)
+    with db.admin_engine.begin() as c:
+        _seed(c, email=email, org=db.org_a, tag="orga", flag=False, n=3,
+              zone="Asia/Tokyo")
+        _seed(c, email=email, org=db.org_b, tag="orgb", flag=True, n=7,
+              zone="Europe/Berlin")
+    # Non-vacuity: org A holds a row for the owner role to leak.
+    assert _rows(db, email) == sorted(
+        [(db.org_a, "Asia/Tokyo"), (db.org_b, "Europe/Berlin")])
+
+    async with _as_owner(db, db.org_b), tenant_session() as s:
+        models = await task_models(s, email)
+        toggles = await task_toggles(s, email)
+        plan = await _planning_prefs(s, email)
+        templates = await _day_templates(s, email)
+        row = await _load_settings_row(s, email)
+
+    assert set(models.values()) == {"model-orgb"}
+    assert toggles == {"clarify_use_llm": True, "background_sync": True,
+                       "mirror_done_tasks": True}
+    assert plan == {"planning_prompt": "prompt-orgb", "max_focus_run_mins": 37,
+                    "break_mins": 7, "lunch_start_hour": 7, "lunch_end_hour": 8}
+    assert [t["label"] for t in templates] == ["label-orgb"]
+    assert (row.timezone, row.day_start_hour, row.daily_capacity_mins) == (
+        "Europe/Berlin", 7, 107)
+    seen = json.dumps([models, toggles, plan, templates, list(row)], default=str)
+    assert "orga" not in seen and "Asia/Tokyo" not in seen
