@@ -1,6 +1,6 @@
 # CRM-M — The CRM you talk to: say it, see it, keep it
 
-**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is built on the branch `crm-m1-change-history-mt-22a37d3b` (2026-11-02), with fix rounds 1 and 2 (2026-11-03), not merged. No other slice is built.** Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
+**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 336). No other slice is built.** Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
 
 Every anchor below was re-read at `930839f2e`. §13 lists the few that moved.
 
@@ -211,7 +211,7 @@ R8 binds each slice with SQL. Run the SQL against a real database. Name the exac
 5. The log table has FORCE row level security. A test reads it as a second org and gets zero rows (R5, R8).
 6. The migration is expand/contract and takes the next free number at build time (R1, R6).
 
-**Status.** PR 1 is built on the branch `crm-m1-change-history-mt-22a37d3b` (2026-11-02), with fix rounds 1 and 2 (2026-11-03), not merged. PR 2 is not built. Done when 1 holds for the PR 1 routes, and done when 2, 3, 5 and 6 hold. Done when 4 waits for PR 2 and the cards of CRM-M2.
+**Status.** PR 1 is merged (2026-11-04, migration 336). PR 2 is not built. Done when 1 holds for the PR 1 routes, and done when 2, 3, 5 and 6 hold. Done when 4 waits for PR 2 and the cards of CRM-M2.
 
 **Fence.** Two test files hold this slice.
 
