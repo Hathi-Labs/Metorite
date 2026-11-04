@@ -96,6 +96,7 @@ from gateway.routes.projects.filters import (
 # `notifications` imports only `core` and `watchers`, so this direction adds no
 # cycle — the same note `notifications` itself carries about `watchers`, and the
 # same import `tasks`, `bulk` and `activities` already take.
+from gateway.routes.projects.mine import READY_AGENT_SQL
 from gateway.routes.projects.notifications import EXCERPT_CHARS, notify
 from gateway.routes.projects.tasks import (
     _TRACKED_TASK_FIELDS,
@@ -1488,8 +1489,12 @@ def _project_task(row: Any) -> tuple[dict[str, Any], str]:
 #: have seen who put the task there. A capture in my own tree is not "from
 #: Projects" either. One spelling, shared by the route and the live check
 #: (`tests/live/live_ws39_s6e.py`), so the two cannot drift.
+#:
+#: A READY agent task is never untriaged (D170 amendment, PJP-14): the one
+#: rule is `mine.READY_AGENT_SQL`, twin of `mine.is_ready_agent_task`.
 UNTRIAGED_CLAUSE = (
     "(p.task_id IS NULL OR p.disposition IS NULL) AND proj.personal_owner IS NULL"
+    " AND NOT COALESCE(" + READY_AGENT_SQL + ", false)"
 )
 
 #: "Not yet" — hidden from my inbox until the LATER of my own defer date and
