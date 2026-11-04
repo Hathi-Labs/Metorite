@@ -44,6 +44,18 @@ describe("a long text change", () => {
     expect(out).toContain(`${LONG} and more`);
     expect(out).not.toContain("changes to");
   });
+  it("draws the server's fenced change as a block, with Before muted", () => {
+    // `writes.py` `_card_rows` fences each side: `description: «old» → «new»`.
+    expect(isLongTextChange(parseFieldValue(`«${LONG}» → «new»`), "text")).toBe(true);
+    const out = html(`«${LONG}» → «${LONG} and more»`);
+    expect(out).toContain("Before");
+    expect(out).toContain(`${LONG} and more`);
+    expect(out).not.toContain("«");
+    expect(out).not.toContain("changes to");
+    // Nothing between the Before caption and the toggle repaints the old text.
+    const before = out.slice(out.indexOf("Before"), out.indexOf("<button"));
+    expect(before).not.toMatch(/[" ]text-foreground/);
+  });
   it("keeps the inline arrow for a short text and a status change", () => {
     expect(html("old → new")).toContain("changes to");
     expect(html("«Open» → «Done»", "status")).toContain("changes to");

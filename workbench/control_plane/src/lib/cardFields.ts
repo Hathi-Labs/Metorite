@@ -442,11 +442,11 @@ export function valueIsLong(parsed: FieldValue): boolean {
 }
 
 /**
- * True when a field draws as a Before / Now block: a change whose sides are
- * both plain text (no chip, no status, no person) and one side is long.
+ * True when a field draws as a Before / Now block: a change to a text field
+ * (no chip, no status, no person) with one side long. The server fences each
+ * side (`description: «old» → «new»`), so a side is a named item, and in a
+ * text field a named item still draws as text.
  */
 export function isLongTextChange(parsed: FieldValue, kind: FieldKind): boolean {
-  if (!parsed.before || kind !== "text") return false;
-  const plainText = [...parsed.before, ...parsed.after].every((i) => !i.named);
-  return plainText && valueIsLong(parsed);
+  return !!parsed.before && kind === "text" && valueIsLong(parsed);
 }
