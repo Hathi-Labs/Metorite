@@ -73,3 +73,19 @@ describe("an edit that cannot go says why (task 1653)", () => {
     expect(chat).not.toMatch(/if \(loadingHistory\) return null;\s*\n\s*const out = await submitEdit/);
   });
 });
+
+describe("Edit then Send with unchanged text re-runs the turn (task 1653)", () => {
+  const src = readFileSync(join(__dirname, "MessageBubble.tsx"), "utf8");
+  const start = src.indexOf("const handleEditSubmit");
+  const fn = src.slice(start, src.indexOf("const cancelEdit", start));
+
+  it("does not close silently on an unchanged text", () => {
+    expect(start).toBeGreaterThan(0);
+    expect(fn).not.toMatch(/trimmed === message\.content\.trim\(\)/);
+    expect(fn).toContain("await onEditLast(message.id, trimmed)");
+  });
+
+  it("only an empty text closes without a send", () => {
+    expect(fn).toContain("if (!trimmed || !onEditLast) {");
+  });
+});
