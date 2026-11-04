@@ -18,7 +18,7 @@
  * A change draws as the old value, muted, an arrow, and the new value.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { FencedTaskRef } from "@/components/ChatTaskRef";
 import FencedText from "@/components/FencedText";
@@ -169,6 +169,19 @@ function LongChange({
 }) {
   const [open, setOpen] = useState(false);
   const cuttable = before.some((i) => isLongText(i.text.trim()));
+  // The toggle shows only when the clamp cuts text: in a wide card a long
+  // old text can fit in two lines, and a toggle that opens nothing misleads.
+  const clamp = useRef<HTMLSpanElement>(null);
+  const [cut, setCut] = useState(cuttable);
+  useEffect(() => {
+    const el = clamp.current;
+    if (!el || open || typeof ResizeObserver === "undefined") return;
+    const check = () => setCut(el.scrollHeight > el.clientHeight + 1);
+    check();
+    const watch = new ResizeObserver(check);
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [open]);
   // A fenced side draws as its words in the colour of its line: the default
   // element paints `text-foreground`, and Before must stay muted.
   const words = (item: ValueItem, i: number) =>
@@ -185,11 +198,12 @@ function LongChange({
       <span className="flex min-w-0 flex-col items-start gap-0.5">
         <span className="text-[11px] text-muted-foreground">Before</span>
         <span
+          ref={clamp}
           className={`min-w-0 max-w-full whitespace-pre-wrap break-words text-muted-foreground ${open ? "" : "line-clamp-2"}`}
         >
           {before.map(words)}
         </span>
-        {cuttable && (
+        {cuttable && (cut || open) && (
           <button
             type="button"
             aria-expanded={open}
