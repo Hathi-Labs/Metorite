@@ -117,13 +117,14 @@ Your agent finds the work when it next starts a session, because `my_work` gives
 
 While the agent works, it can ask you a question on the task. The task then shows "Waiting for" and your name, and the bell tells you. Answer on the task. The agent reads your answer, also in a later session. You can stop the agent from the same place.
 
-Six tools work with these runs:
+Seven tools work with these runs:
 
 | Tool | What it does |
 |---|---|
 | `start_agent_run` | It starts a run on a task, so the task shows that the agent works on it |
 | `post_agent_activity` | It posts a progress line, a result or a question in the run |
 | `ask_on_task` | It asks you a question on a task, with choices or free text |
+| `record_outside_decision` | You answered the question in another place, such as the agent's chat. It records your answer on the task, so the task stops waiting on you |
 | `get_agent_run` | It reads a run and your answers |
 | `list_agent_runs` | It lists all your runs, from each agent, for the full history |
 | `finish_agent_run` | It ends a run |
