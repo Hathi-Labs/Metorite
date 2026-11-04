@@ -433,6 +433,10 @@ A tool answer that starts with "Refused:" gives the server's words and a "Next:"
     Section("crm", ("crm_search_notes",), """### CRM notes by meaning
 - **crm_search_notes(query, limit?)** — Finds notes by meaning and returns note ids and snippets. It finds text, never a number: a count or a total comes from crm_aggregate. When it says that search by meaning is off, use crm_list_records with q.
 """),
+    # WS-CRM CRM-M1: the Change history, gated on the one tool.
+    Section("crm", ("crm_change_history",), """### CRM Change history
+- **crm_change_history(since?, until?, area?, page?)** — Who changed the CRM set-up, when, through what, and the value before and after: access, stages, lost reasons, pipelines, saved views, business rules and record names. Give since and until as dates for a question such as "What changed last Tuesday?". It reads only. It cannot undo a change.
+"""),
     # WS-53 CRM-Q32-5: the org-facts read, gated on the one tool.
     Section("crm", ("org_facts",), """### Facts of the organization
 - **org_facts(app?, query?)** — The fixed facts of the organization's data: what each CRM module is for, its key fields, its stages and what revenue means. A CRM admin answered each one, or Metorite found it. Use each fact as given.
@@ -591,6 +595,10 @@ COMPACT_SECTIONS: tuple[Section, ...] = (
     Section("crm", ("crm_search_notes",), (
         "crm_search_notes(query,limit?) — CRM notes by meaning; a number "
         "comes from crm_aggregate"
+    )),
+    Section("crm", ("crm_change_history",), (
+        "crm_change_history(since?,until?,area?,page?) — who changed the CRM "
+        "set-up, when, before and after; it reads only"
     )),
     Section("crm", ("org_facts",), (
         "org_facts(app?,query?) — the fixed facts of the org's data; use them as given"

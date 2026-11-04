@@ -169,11 +169,18 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-67 RX-1: the orgs where a chat that read outside mail keeps the writes
     # that a card shows. It moves a guard, so only the operator writes it.
     "HELD_CARD_WRITES_ORGS",
+    # §18.10: the orgs whose chat shows a new mail on the card that the member
+    # edits. It changes the card of a send, so only the operator writes it.
+    "EMAIL_EDIT_CARD_ORGS",
     # WS-63 PZ-33: the orgs that get a summary of each private chat. The job
     # spends the org's AI credits with no request of the member, so only the
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
     # not cover it.
     "ASSISTANT_CHAT_SUMMARY_ORGS",
+    # WS-63 PZ-34: the orgs whose chat opens with the briefing block. It puts
+    # the member's other chats into a run, so only the operator writes it. The
+    # `ASSISTANT_PROFILE_` prefix below does not cover it.
+    "ASSISTANT_BRIEFING_ORGS",
     # H-328 part (b): the orgs whose unattended workflow runs may start. A run
     # can send mail or WhatsApp and spend credits with no person present, so
     # only the operator writes it. The `WORKFLOW_` prefix covers it too, and
@@ -182,6 +189,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-ALN ALN-2a: DECISIONS_ORGS opens "one person decides" for an org. A
     # tenant that set it could open the bell row for every org on the box.
     "DECISIONS_ORGS",
+    # WS-AUTO AUTO-7b: AUTO_PARK_ORGS parks the gate of an unattended run on a
+    # decision of the workflow's owner. It moves who settles a run, so only
+    # the operator writes it.
+    "AUTO_PARK_ORGS",
     # WS-MCP SW-31a: AGENT_GUIDANCE_ORGS opens the org's written rules for
     # agents. The text reaches every agent session of the org, so a tenant
     # must not open it for another org.

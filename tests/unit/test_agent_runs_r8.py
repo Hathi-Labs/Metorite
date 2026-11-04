@@ -98,6 +98,9 @@ EXPECTED: dict[str, dict[str, str]] = {
     "app_ask": {"created": "awaiting"},
     "app_close": {"awaiting": "completed", "in_progress": "completed",
                   "stale": "completed"},
+    # WS-55 MCP-G15: the agent records a decision that its member made
+    # outside Metorite. It ends the wait, and nothing else.
+    "agent_outside_decision": {"awaiting": "in_progress"},
 }
 
 

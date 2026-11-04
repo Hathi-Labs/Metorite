@@ -1,6 +1,6 @@
 # CRM-M — The CRM you talk to: say it, see it, keep it
 
-**Status: ACTIVE, 2026-11-02. Specified, and nothing is built.** Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
+**Status: ACTIVE, 2026-11-02. CRM-M1 PR 1 is merged (2026-11-04, migration 341). No other slice is built.** Verified against code on 2026-11-02 at `main` `930839f2e`. The research notes are the comment "Research notes, 2026-11-02" on Metorite epic #477. They were made at `fc1b5edb6`.
 
 Every anchor below was re-read at `930839f2e`. §13 lists the few that moved.
 
@@ -54,7 +54,7 @@ The owner answered in chat on 2026-11-02, after the design page. The answers are
 | 3 | Build order: Wave 1 (CRM-M1, CRM-M2), then Wave 2 (CRM-M3, CRM-M4, CRM-M5). | §7 of this spec |
 | 4 | Many pipelines. A stage name shares one row. Win chance and warn limit move to the pipeline membership. Phase is the shared group. | **D166**, closes D-CRM-11 for Native mode |
 | 5 | Defaults. Deal phases Qualify, Propose, Close, Won, Lost, On hold. Lead phases New, Contacted, Qualified, Converted, Dropped. The word is Campaign. The thank-you mail goes first from the form owner's mailbox. | §3, §8 |
-| 6 | Still open, marked **OPEN**: anonymous form writes, whether a form submitter counts as "named" for a send, and the consent wording. | §12 |
+| 6 | Forms (answered 2026-11-04). A public form writes through the one public door and never reads. Its submitter is "named" for one thank-you mail. Consent wording v1 waits on a lawyer before a real event. | **D174**, **D175**, §12 |
 
 **Order of work.** Waves 3 to 6 follow in the order of §7. The owner may move Wave 3 earlier if reps get access soon, or Wave 5 earlier if an event date is close. The owner did not choose either.
 
@@ -211,7 +211,53 @@ R8 binds each slice with SQL. Run the SQL against a real database. Name the exac
 5. The log table has FORCE row level security. A test reads it as a second org and gets zero rows (R5, R8).
 6. The migration is expand/contract and takes the next free number at build time (R1, R6).
 
-**Fence.** `tests/unit/test_crm_change_history.py` (planned). It lists each config route and fails on a route with no log row.
+**Status.** PR 1 is merged (2026-11-04, migration 341). PR 2 is not built. Done when 1 holds for the PR 1 routes, and done when 2, 3, 5 and 6 hold. Done when 4 waits for PR 2 and the cards of CRM-M2.
+
+**Fence.** Two test files hold this slice.
+
+- `tests/unit/test_crm_change_history.py`. Its static part lists each write route of `routes/crm/` in one list: logged, the Undo, pending for PR 2, or out. A new route in no list fails, and so does a logged route that does not reach `change_log.log_change`. Its R8 part has `_DB_GATE` and runs the real router as the app role.
+- `workbench/control_plane/src/app/crm/components/crmM1.test.ts`. It holds the section, the words of a row and the three notices.
+
+#### The routes of CRM-M1
+
+The table is the list of record. `test_crm_change_history.py` holds the same lists. "Undo" says whether an Undo can reverse the logged row.
+
+| Route | PR | Area | Ladder | Undo |
+|---|---|---|---|---|
+| `PATCH /crm/settings`, the access rule | 1 | `access` | company | Yes. It writes the old rule. |
+| `PATCH /crm/settings`, the mode | 1 | `setup` | company | No. A switch seeds or deletes the pipeline. |
+| `PUT /crm/settings/labels` | 1 | `record_names` | company | Yes. It writes the old names. |
+| `POST /crm/statuses/{kind}` | 1 | `deal_stage`, `lead_status` | team | Yes. It removes the stage, and refuses while records sit in it. |
+| `PATCH /crm/statuses/{kind}/{id}` | 1 | `deal_stage`, `lead_status` | team | Yes. In Mirror mode only the overlay columns write. The route logs nothing when it refuses a write. |
+| `POST /crm/lost-reasons` | 1 | `lost_reason` | team | Yes. It removes the reason, and refuses while a record names it. |
+| `PATCH /crm/lost-reasons/{id}` | 1 | `lost_reason` | team | Yes |
+| `PATCH /crm/pipelines/{id}` | 1 | `pipeline` | company | Yes. It writes the old name. |
+| `POST /crm/pipelines/{id}/stages` | 1 | `pipeline_stage` | team | Yes. It takes the stage out, and refuses while a deal of the pipeline sits in it. |
+| `DELETE /crm/pipelines/{id}/stages/{status_id}` | 1 | `pipeline_stage` | team | Yes. It puts the stage back at its old place. |
+| `POST`, `PATCH`, `DELETE /crm/views[/{id}]` | 1 | `view` | own | Yes. A deleted view comes back with its id and its owner. |
+| `POST /crm/rules`, `PATCH /crm/rules/{id}` | 1 | `rule` | team, or own for a member's rule | Yes |
+| `POST /crm/rules/pending/{id}` | 1 | `rule` | team, or own | Yes. The row says `chat` or `whatsapp`. |
+| Field rules, the conversion map, the field studio, the catalogue, the sync holds, the mapping plans and suggestions, the open questions | 2 | | | Pending. The row of a plan names the plan version. |
+| `DELETE` of a status, a lost reason or a rule, `PUT .../order`, `POST .../order/reset` | 2 | | | Pending. A delete card says "This cannot be undone". |
+| `POST /crm/import/zoho/stages` (the Zoho stage import) and `POST /crm/import/zoho` (the legacy import) | 2 | | | Pending. With `apply=true`, the import of the stages writes their names, places and win chances. The legacy import makes stages through `import_zoho.ensure_status`. PR 2 decides how each one logs. |
+| The cutover (`cutover.py`) and the start over (`POST /crm/reset`) | Out | | | No. Each is one-way and keeps its own audit line. |
+| Connect, disconnect, Sync now, the analysis rerun, the mapping preview, the rule hold | Out | | | They change no set-up value, or they write nothing. |
+| Each record write: records, activities, deal contacts, module records, lead convert | Out | | | A record is not the set-up. |
+
+**What no Undo reverses.** The route logs a change of the mode, and no Undo reverses it. The cutover and the start over keep their own audit lines and write no Change history row. An Undo row cannot be undone either. A person makes the change again.
+
+#### Built as (PR 1)
+
+- **The seam.** `routes/crm/change_log.py::log_change` is the one writer of `crm_change_log`. Each logged route calls it with the session of its own write. So a write that rolls back leaves no row. It is not `acb_audit.record`, which writes outside the transaction.
+- **The table.** `crm_change_log` has the tenant `organization_id` and FORCE row level security. An index allows one Undo for each row. A trigger keeps a row fixed. Only `undone_by` changes, and only once. The CRM start over keeps the rows.
+- **Undo.** `POST /crm/change-history/{id}/undo` writes the stored "before" through the write helper of the route. Each module registers the Undo of its own areas. The Undo refuses with a plain reason in six cases. The change cannot be undone, or it is undone already. The CRM mode changed since. The thing changed again since. The thing is gone or holds records. Another stage, lead status or lost reason holds the old name now (`name_taken`, fix round 2).
+- **The check before an Undo.** Each Undo reads its thing `FOR UPDATE` first. Then it compares the current values with the "after" of the row, for a create too. So the Undo of a create refuses with `changed_since` when the thing changed after the create. An Undo of an admin area needs an admin now, even for the member who made the change.
+- **Who reads.** An admin reads each row that is not private to another member. A member who is not an admin reads only their own changes. A private view and a member's own rule are private to that member. An Undo row has the same readers as the row it undoes, because `log_change` copies the `private_to` of that row (fix round 2).
+- **A member purge.** The purge deletes the rows that are private to the member (`crm_private_changes` in `routes/admin/members._PURGE_DELETES`). So a row and its Undo go together, and the count is the number of rows that go. The org's rows that the member made stay with the address, as the audit log does. The purge does not delete the member's private saved views (`crm_views`). Fences: `tests/unit/test_admin_member_purge.py` and the purge tests (R8) in `tests/unit/test_crm_change_history.py`.
+- **Through what.** Each PR 1 route writes `ui`. The confirm of a rule writes `chat` or `whatsapp`. CRM-M2 passes `chat` from its tools.
+- **The ladder.** `approved_by` is the actor in PR 1. A member's own rule is at the `own` level, and an org rule at the `team` level. The approval card is CRM-M2.
+- **The chat read.** `crm_change_history` reads `GET /crm/change-history` as the member. The CRM assistant holds it, and the `crm-records` pack holds it for the one assistant. The orchestrator's base does not hold it. The base was at the 110-tool cap beside the email pack and the Projects core pack. One more tool there dropped the Projects pack from a mixed turn (`tests/unit/test_projects_packs.py`). A turn that names the CRM, or that runs on the CRM page, loads the pack. Fence: `tests/unit/test_tool_packs_choice.py::test_a_crm_history_question_loads_the_pack_that_holds_the_read`.
+- **The section.** Settings → Change history is last in the rail, for an admin, in both modes. ⚠️ It shows no Undo button in PR 1. A new UI action needs a chat tool (owner rule, 2026-11-01, `tests/unit/test_chat_parity.py`), and the chat Undo is CRM-M2. So the button lands with CRM-M2.
 
 ### CRM-M2. Chat parity (#1432) — Wave 1
 
@@ -239,6 +285,8 @@ R8 binds each slice with SQL. Run the SQL against a real database. Name the exac
 6. A chat turn on the live path loads each new tool. A test proves it.
 
 **Fence.** `tests/unit/test_crm_ui_actions.py` (planned), a ratchet like `test_projects_ui_actions.py`.
+
+**A trap from CRM-M1.** The views code logs each view change at the `own` level, a delete and an edit of a shared view too. D164 puts a delete at "always asks". So CRM-M2 must not take the ladder level of a card from these rows.
 
 ### CRM-M3. Many deal pipelines (#1097) — Wave 2
 
@@ -452,7 +500,7 @@ R8 binds each slice with SQL. Run the SQL against a real database. Name the exac
 
 ### CRM-M10. Forms (#1438) — Wave 5
 
-**Gate.** **HIGH tier with a full review. OWNER-GATE** until the anonymous-write decision (OPEN-1, §12). Build nothing past the spec until the owner answers. **Depends on** CRM-M8. Owns CRM-S8 (`crm_platform.md:768`) and the capture half of E-41 (#740).
+**Gate.** **HIGH tier with a full review.** The owner allowed the write with no sign-in on 2026-11-04 (D174.1). The door only writes (D175.1). **Depends on** CRM-M8. Owns CRM-S8 (`crm_platform.md:768`) and the capture half of E-41 (#740).
 
 **The door.**
 
@@ -486,7 +534,7 @@ A `form` value needs a migration on the `source` CHECK of four tables. A Mirror 
 
 ### CRM-M11. Consent and suppression (#1439) — Wave 5
 
-**Gate.** **HIGH tier. OWNER-GATE:** a lawyer reads the wording before a real event (OPEN-3). **Build this with CRM-M10, never after it.**
+**Gate.** **HIGH tier.** Wording v1 is below (D175.4). A lawyer reads it before the first real event. **Build this with CRM-M10, never after it.**
 
 **Today.** No consent field, no suppression list and no outbound unsubscribe. `project-docs/specs/saas_operations_doctrine.md:225` says consent is per purpose, versioned, timestamped and withdrawable. WS-37 has no spec.
 
@@ -496,6 +544,11 @@ A `form` value needs a migration on the `source` CHECK of four tables. A Mirror 
 - A consent record: purpose, wording version, time, source form.
 - An unsubscribe link, a suppression list, and a check on every send path.
 - Zoho `Email_Opt_Out` maps across at the switch.
+
+**Consent wording v1** (2026-11-04, D175.4). A lawyer reads it before the first real event. `{org}` is the org's name. `{contact}` is the address that the form names for privacy requests.
+
+- The notice under each form, always shown: "{org} uses your name, email and phone to answer this request. We keep them in our customer records. To see, correct or delete them, write to {contact}. You can also complain to the Data Protection Board of India."
+- The marketing box, separate and unticked: "[ ] Send me news and offers from {org} by email. I can stop them at any time with the link in each email."
 
 **Done when.**
 
@@ -510,7 +563,7 @@ A `form` value needs a migration on the `source` CHECK of four tables. A Mirror 
 
 ### CRM-M12. Thank-you mail and "connect it to our email" (#1440) — Wave 5
 
-**Gate.** **OWNER-GATE.** It sends mail to a person outside the org. A third-party flip is owner-only (`CLAUDE.md` §3a rule 3). **Depends on** CRM-M10 and CRM-M11.
+**Gate.** **OWNER-GATE.** It sends mail to a person outside the org. A third-party flip is owner-only (`CLAUDE.md` §3a rule 3). The submitter is "named" for this one mail (D174.2, D175.2), so each send needs no card. Every other send still asks (D175.3). **Depends on** CRM-M10 and CRM-M11.
 
 **Today.** No path sends an unattended mail to an outside person. Rule actions make drafts only.
 
@@ -672,13 +725,13 @@ The names and numbers in the design page screens (Priya, Northwind Castings, IMT
 
 ## 12. Open questions
 
-Three questions are **OPEN** for the owner. The build waits on the first one for CRM-M10, and on the third one for a real event.
+The owner answered the three questions on 2026-11-04. D174 decides OPEN-1 and OPEN-2 for every public surface. D175 applies them to CRM forms and answers OPEN-3. A real event still waits on a lawyer's read of the consent wording.
 
 | ID | Question | Blocks |
 |---|---|---|
-| **OPEN-1** | Does an anonymous form write get through? Three specs decline anonymous links for reads. A public form writes a record with no sign-in. | CRM-M10 |
-| **OPEN-2** | Does a person who submits a form count as "named" for a send (`project-docs/specs/ai_studio.md:438`, D131.7)? | CRM-M12 |
-| **OPEN-3** | The consent wording. A lawyer reads it. | A real event, CRM-M11 |
+| **OPEN-1** | Does an anonymous form write get through? Three specs decline anonymous links for reads. A public form writes a record with no sign-in. | ✅ **Decided, D174.1** (STU-Q16). The door only writes (D175.1). CRM-M10 |
+| **OPEN-2** | Does a person who submits a form count as "named" for a send (`project-docs/specs/ai_studio.md:438`, D131.7)? | ✅ **Decided, D174.2** (STU-Q17). The one send is the thank-you mail (D175.2). CRM-M12 |
+| **OPEN-3** | The consent wording. A lawyer reads it. | ✅ **Wording v1 is in CRM-M11** (D175.4). A lawyer reads it before the first real event. CRM-M11 |
 
 Working defaults. These are not owner decisions. The slice audit may change them.
 

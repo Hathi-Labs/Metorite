@@ -146,7 +146,9 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     adds the archive request (§9.5, EA3-40). EA-6h adds the agent delete
     (EA3-51). EA-14a adds the release (§12.3). MCP-G2 adds the PUT of the
     assignees and the task move (§9.2). MCP-G1 adds the node POST and PATCH,
-    the move preview and the move (§9.2)."""
+    the move preview and the move (§9.2). MCP-G15 adds the outside decision
+    (§12.1): an agent records a decision that its member made outside
+    Metorite, on its own awaiting run."""
     expected = {
         ("POST", "/projects/nodes"),
         ("PATCH", "/projects/nodes/{project_id}"),
@@ -163,6 +165,7 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/agent-runs/{run_id}/activities"),
         ("POST", "/projects/agent-runs/{run_id}/finish"),
         ("POST", "/projects/agent-runs/{run_id}/release"),
+        ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
         ("POST", "/projects/tasks/{task_id}/archive-request"),
         ("POST", "/projects/tasks/{task_id}/agent-delete"),
     }

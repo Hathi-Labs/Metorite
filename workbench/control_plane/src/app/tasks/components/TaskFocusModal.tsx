@@ -1,12 +1,35 @@
 "use client";
 
 import Icon from "@/components/Icon";
-import { useEffect, useMemo } from "react";
+import { TASK_CARD_FRAME } from "@/lib/layers";
+import { useViewMode } from "@/components/ViewModeProvider";
+import { useEffect, useMemo, useRef } from "react";
+import { isTypingTarget } from "@/lib/keyboard";
 import { useTaskStore } from "../lib/taskStore";
 import { TaskDetail } from "./ItemDetail";
 
 const NOOP = () => {};
 
+/**
+ * Whether an Escape on `window` closes the card (TC-1). An Escape that another
+ * handler already used (`defaultPrevented`, as the Ask bar does) does not. An
+ * Escape typed in a text field outside the card does not either, so Escape in
+ * the Ask bar never closes the card behind it.
+ */
+export function shouldCloseOnEscape(
+  e: Pick<KeyboardEvent, "key" | "defaultPrevented" | "target">,
+  card: { contains(n: unknown): boolean } | null,
+): boolean {
+  if (e.key !== "Escape" || e.defaultPrevented) return false;
+  const t = e.target as HTMLElement | null;
+  if (isTypingTarget(t) && !card?.contains(t)) return false;
+  return true;
+}
+
+// TC-1 (2026-11-03): the overlay fills the page column (a desktop) or ends above
+// the bottom nav (a phone), so the assistant stays in view (D172.4,
+// `lib/layers.ts`).
+//
 // Full-page task view — a ClickUp/Linear-style focused overlay over the same
 // editable TaskDetail. Escape / backdrop / × closes it. It has two lives, and
 // `tasks/page.tsx` picks which one by whether it passes `itemId`:
@@ -36,6 +59,7 @@ export function TaskFocusModal({
   const items = useTaskStore((s) => s.items);
   const backend = useTaskStore((s) => s.backend);
   const closeFocus = useTaskStore((s) => s.closeFocus);
+  const { isMobile } = useViewMode();
 
   const controlled = itemId !== undefined;
   const openId = controlled ? itemId : focusedItemId;
@@ -47,12 +71,13 @@ export function TaskFocusModal({
     [controlled, onClose, closeFocus],
   );
 
+  const cardRef = useRef<HTMLDivElement>(null);
   const item = openId ? items.find((i) => i.id === openId) : undefined;
 
   useEffect(() => {
     if (!openId) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
+      if (shouldCloseOnEscape(e, cardRef.current)) close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -61,7 +86,7 @@ export function TaskFocusModal({
   if (!item) return null;
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-background/70 backdrop-blur-sm sm:p-8">
+    <div ref={cardRef} className={`${isMobile ? TASK_CARD_FRAME.phone : TASK_CARD_FRAME.desktop} flex items-start justify-center overflow-y-auto bg-background/70 backdrop-blur-sm sm:p-8`}>
       {/* backdrop */}
       <button
         type="button"
@@ -73,7 +98,7 @@ export function TaskFocusModal({
           vh) so the browser chrome on phones doesn't hide the bottom.
           Radius is `rounded-lg` off `--radius`, not a fixed 2xl — DESIGN_SYSTEM
           §4: a 16px corner ignores Graphite's 0.125rem and Material's 1rem. */}
-      <div className="relative flex h-dvh max-h-dvh w-full max-w-3xl flex-col overflow-hidden border-border bg-card shadow-2xl sm:h-auto sm:max-h-[calc(100dvh-4rem)] sm:rounded-lg sm:border">
+      <div className="relative flex h-full max-h-full w-full max-w-3xl flex-col overflow-hidden border-border bg-card shadow-2xl sm:h-auto sm:max-h-[calc(100dvh-4rem)] sm:rounded-lg sm:border">
         <button
           type="button"
           onClick={close}

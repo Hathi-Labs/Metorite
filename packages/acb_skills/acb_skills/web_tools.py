@@ -90,6 +90,23 @@ fetch_page(url, max_chars=8000) -> str
        ``jina`` and the local text is shorter than :data:`MIN_LOCAL_CHARS`.
        Then Jina's text wins when it is longer.
 
+    9. **Files and types (WEB-3).** With the flag on, rule 5 of the spec
+       refuses a content type outside :func:`_allowed_type`: HTML, text, JSON,
+       PDF, the Office types, EPUB and images. The refusal names the type,
+       cleaned to ``type/subtype`` (:func:`_type_name`). A PDF, DOCX, PPTX,
+       XLSX, CSV or EPUB file (:data:`_FILE_TYPES`) goes to the SAME child as
+       a page, in file mode (``web_reader_worker.py``, extension as argv).
+       MarkItDown reads it, and pdfplumber reads a PDF that it cannot. The
+       parent imports neither. The child has :data:`FILE_TIMEOUT_S`, and the
+       slots of rule 8 serve it too. Each fault gives what rule 8 gives for the
+       type: the binary line for a PDF or an Office file, the strip for CSV.
+       The text of a file is framed whole, and when it is longer than
+       ``max_chars`` it spills through CTX-1
+       (``tool_result_spill.spill_result``) with a locator in its footer, when
+       ``TOOL_RESULT_SPILL`` is ``on``. Else it is cut as a page is. Each file
+       read writes one ``web_reader.read`` log line (URL without its query,
+       reader, size, chars, spill ref).
+
     A refusal returns one line that names the host of the URL and the reason,
     never the path or the query. A page controls the host of a redirect, so
     a line outside the block never names it. The tool never raises.
@@ -102,8 +119,9 @@ fetch_page(url, max_chars=8000) -> str
     pattern of ``gateway.outbound_guard._PinnedTransport``. The address rule
     itself is NOT copied.
 
-    Fences: ``tests/unit/test_web_fetch_guard.py`` (rules 1 to 7) and
-    ``tests/unit/test_web_readers.py`` (rule 8).
+    Fences: ``tests/unit/test_web_fetch_guard.py`` (rules 1 to 7),
+    ``tests/unit/test_web_readers.py`` (rule 8) and
+    ``tests/unit/test_web_files.py`` (rule 9).
 """
 from __future__ import annotations
 
@@ -309,6 +327,9 @@ MAX_READER_CHILDREN_PER_ORG = 2
 #: of a page as six bytes at most, and this leaves room for the Markdown. One
 #: more byte kills the child.
 MAX_READER_ANSWER_BYTES = 2 * 1024 * 1024
+#: WEB-3: seconds that one FILE child lives. A PDF of many pages costs more
+#: than a page. The child's own CPU cap is 20 s (``FILE_CPU_SECONDS``).
+FILE_TIMEOUT_S = 25.0
 #: With ``WEB_READER_REMOTE=jina``, local text shorter than this asks Jina.
 MIN_LOCAL_CHARS = 200
 #: The content types that the local reader reads. ``""`` is no type.
@@ -335,6 +356,30 @@ _BINARY_TYPES = frozenset({"application/pdf", "application/octet-stream", "appli
 _BINARY_HEADS = ("image/", "audio/", "video/", "font/", "application/vnd.ms-",
                  "application/vnd.openxmlformats", "application/vnd.oasis.opendocument")
 
+#: WEB-3: the content type of each file the child reads, and its extension.
+#: The extension goes to the child as argv. The parent picks it from this
+#: table, never from the file.
+_FILE_TYPES = {
+    "application/pdf": ".pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "text/csv": ".csv",
+    "application/csv": ".csv",
+    "application/epub+zip": ".epub",
+}
+#: A server that sends no real type for a file. Then the extension of the path
+#: of the URL decides, if it names a type of :data:`_FILE_TYPES`.
+_GENERIC_TYPES = frozenset({"application/octet-stream", "binary/octet-stream"})
+_FILE_EXTENSIONS = frozenset(_FILE_TYPES.values())
+#: Types that hold text or a picture, besides ``text/*`` and ``image/*``.
+_TEXT_LIKE_TYPES = frozenset({"application/json", "application/xml", "application/javascript",
+                              "application/pdf", "application/msword", "application/epub+zip"})
+_OFFICE_HEADS = ("application/vnd.openxmlformats", "application/vnd.ms-",
+                 "application/vnd.oasis.opendocument")
+#: A media type of a refusal line: only these characters, at most this long.
+_TYPE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]{0,60}/[a-z0-9][a-z0-9!#$&^_.+-]{0,60}$")
+
 _SCHEMES = ("http", "https")
 _REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 #: The longest host that a refusal names. A host can be 253 characters.
@@ -344,6 +389,8 @@ _TYPE_IN_HEADER = 100
 #: The longest title and date that the header of a page names (WEB-2).
 _TITLE_IN_HEADER = 300
 _DATE_IN_HEADER = 40
+#: WEB-3: the longest URL that the log line of a file read keeps, and the readers it names.
+_READER_NAMES = frozenset({"markitdown", "pdfplumber"})
 _NOTE = "The text below is a web page from outside Metorite."
 #: The line before the note when the local reader has no reader for the type
 #: (WEB-2). It names no value of the page, so it can sit outside the block.
@@ -855,6 +902,7 @@ class _Local:
     date: str = ""
     other_type: bool = False
     binary: bool = False
+    reader: str = ""
 
 
 def _is_html(content_type: str) -> bool:
@@ -874,6 +922,50 @@ def _binary_type(content_type: str) -> bool:
     if kind.endswith(("+json", "+xml")):
         return False
     return kind in _BINARY_TYPES or kind.startswith(_BINARY_HEADS)
+
+
+def _kind(content_type: str) -> str:
+    """The media type of a ``Content-Type`` header, in lower case, with no
+    parameter."""
+    return content_type.split(";", 1)[0].strip().lower()
+
+
+def _path_extension(url: httpx.URL) -> str:
+    """The extension of the path of *url* in lower case, with its dot."""
+    name = url.path.rsplit("/", 1)[-1]
+    return "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+
+
+def _file_extension(content_type: str, url: httpx.URL) -> str:
+    """The extension of the file reader for this answer, or ``""``.
+
+    The content type decides. Only a generic type (``octet-stream``) lets the
+    extension of the path of the URL decide."""
+    kind = _kind(content_type)
+    if kind in _FILE_TYPES:
+        return _FILE_TYPES[kind]
+    ext = _path_extension(url)
+    return ext if kind in _GENERIC_TYPES and ext in _FILE_EXTENSIONS else ""
+
+
+def _allowed_type(content_type: str, url: httpx.URL) -> bool:
+    """Rule 5 of the spec: HTML, plain text, JSON, PDF, the Office types, CSV,
+    EPUB and images pass. Each other type is refused. No type passes, as HTML.
+    A generic type passes only when the extension of the path names a file
+    that the reader knows."""
+    kind = _kind(content_type)
+    if not kind or kind in _HTML_TYPES or kind in _TEXT_LIKE_TYPES:
+        return True
+    if kind.startswith(("text/", "image/", *_OFFICE_HEADS)) or kind.endswith(("+json", "+xml")):
+        return True
+    return kind in _GENERIC_TYPES and _path_extension(url) in _FILE_EXTENSIONS
+
+
+def _type_name(content_type: str) -> str:
+    """The media type for a refusal line. A server writes it, so it keeps only
+    the characters of a media type, and else it says so."""
+    kind = _kind(content_type)
+    return kind if _TYPE_NAME_RE.match(kind) else "an unreadable type"
 
 
 def _page_charset(answer: _Answer) -> str | None:
@@ -916,23 +1008,40 @@ _SLOT_LOCK = threading.Lock()
 #: The children that live now, by org. It is process-wide, never per event
 #: loop, so a second loop cannot pass the limits.
 _SLOTS_IN_USE: Counter[str] = Counter()
+#: WEB-3: the file children among them, by org. A file child may peak at
+#: about 1.2 GB resident (2 GiB cap), and the box has 7.9 GB, so files have
+#: their own lower caps INSIDE the pool of :data:`MAX_READER_CHILDREN`.
+_FILE_SLOTS_IN_USE: Counter[str] = Counter()
+MAX_FILE_CHILDREN = 2
+MAX_FILE_CHILDREN_PER_ORG = 1
 
 
-def _take_reader_slot(org: str) -> bool:
-    """One child slot for ``org``, or False. It never waits."""
+def _take_reader_slot(org: str, *, file: bool = False) -> bool:
+    """One child slot for ``org``, or False. It never waits.
+
+    A file read (WEB-3) takes a pool slot too, and it also needs a file slot:
+    :data:`MAX_FILE_CHILDREN` in the process, and
+    :data:`MAX_FILE_CHILDREN_PER_ORG` for each org."""
     with _SLOT_LOCK:
         if (sum(_SLOTS_IN_USE.values()) >= MAX_READER_CHILDREN
                 or _SLOTS_IN_USE[org] >= MAX_READER_CHILDREN_PER_ORG):
             return False
+        if file and (sum(_FILE_SLOTS_IN_USE.values()) >= MAX_FILE_CHILDREN
+                     or _FILE_SLOTS_IN_USE[org] >= MAX_FILE_CHILDREN_PER_ORG):
+            return False
         _SLOTS_IN_USE[org] += 1
+        if file:
+            _FILE_SLOTS_IN_USE[org] += 1
         return True
 
 
-def _give_reader_slot(org: str) -> None:
+def _give_reader_slot(org: str, *, file: bool = False) -> None:
     with _SLOT_LOCK:
-        _SLOTS_IN_USE[org] -= 1
-        if _SLOTS_IN_USE[org] <= 0:
-            del _SLOTS_IN_USE[org]
+        counters = (_SLOTS_IN_USE, _FILE_SLOTS_IN_USE) if file else (_SLOTS_IN_USE,)
+        for counter in counters:
+            counter[org] -= 1
+            if counter[org] <= 0:
+                del counter[org]
 
 
 def _reader_argv() -> list[str]:
@@ -963,11 +1072,12 @@ class _ReaderAnswer:
         return not self.flooded
 
 
-def _parse_answer(raw: bytes) -> _Local | None:
+def _parse_answer(raw: bytes, *, log_empty: bool = False) -> _Local | None:
     """The page in the child's one JSON line, or None.
 
     No text is the honest answer of a page that holds none, so it writes no
-    log line. Each other None writes one."""
+    log line. A file read (WEB-3) asks ``log_empty``, and an empty file text
+    writes one. Each other None writes one."""
     try:
         item = json.loads(raw)
     except ValueError:
@@ -978,15 +1088,25 @@ def _parse_answer(raw: bytes) -> _Local | None:
     if fault is not None:
         return _reader_fault(fault if fault in _CHILD_FAULTS else "bad_answer")
     text, title, date = item.get("text", ""), item.get("title", ""), item.get("date", "")
-    if not all(isinstance(field, str) for field in (text, title, date)):
+    reader = item.get("reader", "")
+    if not all(isinstance(field, str) for field in (text, title, date, reader)):
         return _reader_fault("bad_answer")
-    return _Local(text.strip(), title=title, date=date) if text.strip() else None
+    if not text.strip():
+        return _reader_fault("empty") if log_empty else None
+    return _Local(text.strip(), title=title, date=date, reader=reader if reader in _READER_NAMES else "")
 
 
 async def _child_read(html: str) -> _Local | None:
-    """Trafilatura's reading of ``html`` in a new child process, or None.
+    """Trafilatura's reading of ``html`` in a new child process, or None."""
+    return await _run_child(html.encode("utf-8", errors="replace"), _reader_argv(),
+                            READER_TIMEOUT_S)
 
-    One child serves one read. Its process group is killed at the end of
+
+async def _run_child(payload: bytes, argv: list[str], timeout: float, *,
+                     log_empty: bool = False) -> _Local | None:
+    """The ONE driver of a reader child: *payload* on its stdin, its answer.
+
+    A page (Trafilatura) and a file (WEB-3) both run here. One child serves one read. Its process group is killed at the end of
     each read, and the child is reaped. A timeout, a cancel of the caller and
     an answer past the cap end the read the same way. So no parse and no
     forked process outlives its read. A loop that cannot spawn a child
@@ -994,7 +1114,7 @@ async def _child_read(html: str) -> _Local | None:
     answer: Any = _ReaderAnswer()
     try:
         proc = await asyncio.create_subprocess_exec(
-            *_reader_argv(),
+            *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
@@ -1005,8 +1125,8 @@ async def _child_read(html: str) -> _Local | None:
         return _reader_fault("no_start")
     timed_out = False
     try:
-        async with asyncio.timeout(READER_TIMEOUT_S):
-            await _talk(proc, html.encode("utf-8", errors="replace"), answer)
+        async with asyncio.timeout(timeout):
+            await _talk(proc, payload, answer)
     except TimeoutError:
         timed_out = True
     finally:
@@ -1026,7 +1146,7 @@ async def _child_read(html: str) -> _Local | None:
         return _reader_fault("flooded")
     if proc.returncode != 0:
         return _reader_fault("crash")
-    return _parse_answer(bytes(answer.raw))
+    return _parse_answer(bytes(answer.raw), log_empty=log_empty)
 
 
 async def _read_html(answer: _Answer, charset: str | None = None) -> _Local | None:
@@ -1049,6 +1169,34 @@ async def _read_html(answer: _Answer, charset: str | None = None) -> _Local | No
         _give_reader_slot(org)
 
 
+async def _read_file(answer: _Answer, ext: str) -> _Local | None:
+    """The text of a file by the child in file mode (WEB-3), or None, and then
+    the type gets what rule 8 gives it. It takes a slot first and never waits.
+    The bytes go to the child as they are, and the parent decodes nothing."""
+    org = _run_org().lower()
+    if not _take_reader_slot(org, file=True):
+        return _reader_fault("busy")
+    try:
+        return await _run_child(answer.body, [*_reader_argv(), ext], FILE_TIMEOUT_S,
+                                log_empty=True)
+    except Exception as exc:  # a fault here is the old read, never a raise
+        return _reader_fault(type(exc).__name__)
+    finally:
+        _give_reader_slot(org, file=True)
+
+
+def _log_read(url: httpx.URL, reader: str, size: int, chars: int, spill: str) -> None:
+    """The one line of a file read (spec section 8 point 2). The URL has no
+    query, because a query can hold a token. A fault of the log is no fault of
+    the read."""
+    try:
+        shown = f"{url.scheme}://{url.netloc.decode('ascii', 'replace')}{url.path}"
+        _log.info("web_reader.read", url=shown, reader=reader, size=size,
+                  chars=chars, spill=spill)
+    except Exception:  # a log fault is no read fault
+        pass
+
+
 async def _local_text(walk: _Walk) -> _Local:
     """The text of the walk's answer from the local reader.
 
@@ -1060,6 +1208,11 @@ async def _local_text(walk: _Walk) -> _Local:
     if answer is None or not 200 <= answer.status < 300:
         text, fault = await _direct_text(walk)
         return _Local(text, fault)
+    ext = _file_extension(answer.content_type, walk.target.url)
+    if ext:
+        page = await _read_file(answer, ext)
+        if page is not None:
+            return page
     charset = _page_charset(answer)
     if await _is_binary(answer, charset):
         return _Local("", binary=True)
@@ -1078,6 +1231,10 @@ async def _read_locally(walk: _Walk, max_chars: int) -> str:
     Jina gets the URL of the call only when ``WEB_READER_REMOTE`` is
     ``jina`` and the local text is shorter than :data:`MIN_LOCAL_CHARS`.
     Then Jina's text wins when it is longer."""
+    answer = walk.answer
+    if (answer is not None and 200 <= answer.status < 300
+            and not _allowed_type(answer.content_type, walk.target.url)):
+        return _type_refusal(walk.first.host, answer.content_type)
     page = await _local_text(walk)
     text, source, title, date = page.text, walk.target.url, page.title, page.date
     other_type = page.other_type
@@ -1100,8 +1257,46 @@ async def _read_locally(walk: _Walk, max_chars: int) -> str:
     # The frame passes over up to MAX_CHARS characters on the loop, so it
     # gets its own step, as in fetch_page.
     await asyncio.sleep(0)
+    spill = ""
+    if page.reader and text is page.text:
+        out, spill = _spill_file(text, source, content_type, max_chars, title, date)
+        _log_read(source, page.reader, len(walk.answer.body) if walk.answer else 0,
+                  len(text), spill)
+        if out:
+            return out
     out = frame_page(text, source, content_type, max_chars, title=title, date=date)
     return f"{_OTHER_TYPE_LINE}\n{out}" if other_type else out
+
+
+def _spill_file(text: str, source: httpx.URL, content_type: str, max_chars: int,
+                title: str, date: str) -> tuple[str, str]:
+    """``(output, ref)`` for a file text longer than ``max_chars``, or
+    ``("", "")`` when it fits or cannot spill.
+
+    The whole framed text goes to the CTX-1 store, and the output is its
+    preview with the locator (``read_tool_result``). With ``TOOL_RESULT_SPILL``
+    not ``on``, with no keyed run, or past the store cap, nothing spills and
+    the caller cuts the text as it cuts a page."""
+    if len(text) <= max_chars:
+        return "", ""
+    try:
+        from acb_skills.tool_result_spill import spill_result
+
+        framed = frame_page(text, source, content_type, max_chars, title=title,
+                            date=date, uncut=True)
+        spilled = spill_result(framed, "fetch_page", max_chars)
+    except Exception as exc:  # a spill fault leaves the cut text
+        _log.warning("web_reader.spill_failed", error=type(exc).__name__)
+        return "", ""
+    return spilled if spilled else ("", "")
+
+
+def _type_refusal(host: str, content_type: str) -> str:
+    """Rule 5 of the spec: one line outside every frame. It names the type,
+    cleaned, and the host of the URL of the call."""
+    return (f"fetch_page refused a file of type {_type_name(content_type)} on host "
+            f"{host[:_HOST_IN_MESSAGE]}: it reads HTML, text, JSON, PDF, Office, "
+            "CSV, EPUB and image files only.")
 
 
 def _refusal(refused: _Refused) -> str:
@@ -1127,7 +1322,7 @@ def char_limit(max_chars: object) -> int:
 
 def frame_page(text: str, url: object, content_type: str = "",
                max_chars: object = DEFAULT_CHARS, *, title: object = "",
-               date: object = "") -> str:
+               date: object = "", uncut: bool = False) -> str:
     """The output of :func:`fetch_page` for the text of one page.
 
     It gives the note, then ONE closed ``WEB PAGE`` block with the header
@@ -1138,7 +1333,7 @@ def frame_page(text: str, url: object, content_type: str = "",
     close line is never cut. The eval fixture of ``fetch_page`` calls it too,
     so the fixture gives the shape of the real tool."""
     limit = char_limit(max_chars)
-    cut = len(text) > limit
+    cut = len(text) > limit and not uncut
     if cut:
         text = text[:limit]
     header = f"URL: {url}"
