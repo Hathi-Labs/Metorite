@@ -103,6 +103,10 @@ describe("the answer of a new-mail card", () => {
   it("sends nothing with no text, a bad subject or no ticked To", () => {
     expect(newMailAnswer(form, { action: "send", subject: "Rates", body: "   ", ticks })).toBeNull();
     expect(newMailAnswer(form, { action: "send", subject: "Rates\nBcc: x@evil.example", body: "x", ticks })).toBeNull();
+    // Fix round 1: the Unicode line and paragraph separators break a line too.
+    expect(newMailAnswer(form, { action: "send", subject: "Rates\u2028Bcc: x", body: "x", ticks })).toBeNull();
+    expect(newMailAnswer(form, { action: "send", subject: "Rates\u2029Bcc: x", body: "x", ticks })).toBeNull();
+    expect(subjectCanGo("\u26a0\ufe0f Invoice due")).toBe(true);
     expect(newMailAnswer(form, { action: "send", subject: "x".repeat(MAX_SUBJECT + 1), body: "x", ticks })).toBeNull();
     const noTo = toggleTick(ticks, true, "kim@contoso.test");
     expect(newMailAnswer(form, { action: "send", subject: "Rates", body: "x", ticks: noTo })).toBeNull();

@@ -661,9 +661,12 @@ export function isNewMail(form: ReplyForm | null | undefined): boolean {
   return form?.kind === "new";
 }
 
+/** A line break of any kind in a subject: CR, LF, U+2028 and U+2029. */
+export const SUBJECT_BREAK = /[\r\n\u2028\u2029]/;
+
 /** The subject may go: one line, and it fits. An empty subject may go. */
 export function subjectCanGo(subject: string): boolean {
-  return subject.length <= MAX_SUBJECT && !/[\r\n]/.test(subject);
+  return subject.length <= MAX_SUBJECT && !SUBJECT_BREAK.test(subject);
 }
 
 /** "Email to kim@…": each ticked To, in full. */

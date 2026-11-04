@@ -1250,11 +1250,23 @@ def _clean_text(text_: str) -> str:
     return _check_text(text_ or "")
 
 
+#: The line breaks that a subject may not hold: CR, LF, and the Unicode line
+#: and paragraph separators (fix round 1 of §18.10).
+SUBJECT_LINE_BREAKS = frozenset("\r\n\u2028\u2029")
+
+
 def _clean_subject(subject: str) -> str:
-    from acb_skills.reply_card import is_invisible_char
+    """The subject as it leaves, or a 422.
+
+    The subject takes the character rule of the text (``reply_card.
+    has_hidden_text``): an emoji keeps its presentation selector and its
+    joiner, so "⚠️ Invoice due" goes. A zero-width space, a tag character, a
+    bidi control and a stray selector are refused. A line break of any kind
+    is refused, because it can start a header."""
+    from acb_skills.reply_card import has_hidden_text
 
     raw = str(subject or "")
-    if any(ch in "\r\n" or is_invisible_char(ch) for ch in raw):
+    if any(ch in SUBJECT_LINE_BREAKS for ch in raw) or has_hidden_text(raw):
         raise HTTPException(status_code=422, detail=SUBJECT_REFUSED)
     if len(raw) > 200:
         raise HTTPException(status_code=422, detail="The subject is longer than 200 characters.")

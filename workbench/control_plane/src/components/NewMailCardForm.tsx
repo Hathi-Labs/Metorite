@@ -201,7 +201,7 @@ export default function NewMailCardForm({
           aria-label="Subject"
           value={subject}
           maxLength={MAX_SUBJECT}
-          onChange={(e) => setSubject(e.target.value.replace(/[\r\n]+/g, " "))}
+          onChange={(e) => setSubject(e.target.value.replace(/[\r\n\u2028\u2029]+/g, " "))}
           disabled={disabled}
           className="min-w-0 flex-1"
         />

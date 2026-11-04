@@ -1001,7 +1001,7 @@ def _clean_new_mail_form(form: dict) -> dict:
         raise ValueError("a new-mail form needs a recipient")
     subject = form.get("subject")
     subject = subject if isinstance(subject, str) else ""
-    if len(subject) > MAX_SUBJECT or any(ch in subject for ch in "\r\n"):
+    if len(subject) > MAX_SUBJECT or any(ch in subject for ch in "\r\n\u2028\u2029"):
         raise ValueError("a new-mail subject shows whole on one line")
     notices = form.get("notices") if isinstance(form.get("notices"), list) else []
     if len(notices) > 4:

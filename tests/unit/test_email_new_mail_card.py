@@ -233,15 +233,37 @@ async def test_hidden_text_in_the_answered_text_sends_nothing(world, body: str) 
 
 @pytest.mark.parametrize("subject", [
     "Rates\nBcc: x@evil.example",                # a header in a subject
+    "Rates\rBcc: x@evil.example",                # a carriage return
+    "Rates" + chr(0x2028) + "Bcc: x",            # a line separator
+    "Rates" + chr(0x2029) + "Bcc: x",            # a paragraph separator
     "Rates" + chr(0x200B) + "now",               # a zero-width space
+    "Rates " + chr(0x202E) + "won",              # a bidi control
 ])
 async def test_a_bad_subject_sends_nothing(world, subject: str) -> None:
-    """Mutation: skip ``_clean_subject`` in the act → red."""
+    """Mutation: skip ``_clean_subject`` in the act, or drop U+2028 from
+    ``SUBJECT_LINE_BREAKS`` → red."""
     card = await _card()
     with pytest.raises(HTTPException) as e:
         await _act(card["card_id"], _answer(subject=subject))
     assert e.value.status_code == 422
     assert world["sends"].mails == []
+
+
+@pytest.mark.parametrize("subject", [
+    chr(0x26A0) + chr(0xFE0F) + " Invoice due",              # a sign with VS16
+    chr(0x2764) + chr(0xFE0F),                               # a heart with VS16
+    "Thanks " + chr(0x1F44D) + chr(0x1F3FD),                 # a skin tone
+    chr(0x1F468) + chr(0x200D) + chr(0x1F469) + chr(0x200D) + chr(0x1F467) + " Family",  # a ZWJ run
+])
+async def test_an_emoji_subject_goes_whole(world, subject: str) -> None:
+    """Fix round 1: a subject takes the text's character rule, so an emoji
+    keeps its selector and its joiner. Mutation: go back to
+    ``is_invisible_char`` for each character → red."""
+    card = await _card(subject=subject)
+    assert card["subject"] == subject
+    await _act(card["card_id"], _answer(subject=subject))
+    [sent] = world["sends"].mails
+    assert sent.subject == subject
 
 
 async def test_a_second_answer_sends_nothing(world) -> None:
