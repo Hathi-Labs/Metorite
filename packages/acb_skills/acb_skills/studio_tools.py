@@ -960,10 +960,11 @@ class _Reply:
         return 200 <= self.status < 300
 
 
-async def _send(method: str, path: str, body: Any, act: str = "") -> _Reply:
+async def _send(method: str, path: str, body: Any, act: str = "", miss: str = "") -> _Reply:
     """One request as the member. *act* names a write (save, publish, resume
     or pause), and a read gives none. Raise :class:`_Refused` with a sentence
-    when the member is missing or the network fails."""
+    when the member is missing or the network fails. *miss* is that sentence
+    for a package route (STU-G1c), and a skill route gives none."""
     headers = _headers()
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -971,7 +972,8 @@ async def _send(method: str, path: str, body: Any, act: str = "") -> _Reply:
                 method, f"{_gateway_url()}{path}", headers=headers, json=body)
     except httpx.HTTPError as exc:
         raise _Refused(
-            _MAYBE_DONE.format(act=act) if act
+            miss if miss
+            else _MAYBE_DONE.format(act=act) if act
             else f"The skill could not be read ({type(exc).__name__}). Try again.") from None
     try:
         data = resp.json()
@@ -1822,6 +1824,7 @@ _PKG_MAYBE_PUBLISHED = ("The publish may have worked. A second publish of the sa
                         "a new version and no new tables, so it is safe to call studio_publish "
                         "once more.")
 _PKG_BUSY = "Nothing was {act}. Try again."
+_PKG_UNREAD = "The package could not be read. Nothing was changed. Try again."
 _PKG_STALE = ("A save to a package needs the based_on of its stored draft. This save has none, "
               "or an old one. Nothing was saved. Use the based_on that the last save of this "
               "package gave.")
@@ -1864,17 +1867,17 @@ _PKG_WONT_FIT = ("The outline of this app does not fit on one card, so nothing w
 #: kind and the ONE fix line that the tool owns. The text of the server is
 #: never passed on, so a name in it cannot carry an instruction.
 _KIND_WORDS = {
-    "object_removed": "The object is in the stored tables and not in the manifest.",
-    "field_removed": "The field is in the stored table and not in the manifest.",
+    "object_removed": "The manifest drops a stored object.",
+    "field_removed": "The manifest drops a stored field.",
     "field_changed": "The field differs from the stored field.",
-    "required_over_records": "The new field is required, and the table holds records.",
+    "required_over_records": "A new required field on a table with records.",
     "rules_refused": "The store refused this rule.",
     "field_refused": "The store refused this field.",
     "store_refused": "The store refused this change.",
 }
 _FIX_LINES = {
-    "object_removed": ("Put the object back. A published object cannot go yet. To start "
-                       "again, create a new package with a new manifest id."),
+    "object_removed": ("Put it back: a published object cannot go yet. Or create a new "
+                       "package with a new manifest id."),
     "field_removed": "Put the field back as it was. To change it, keep it and add a new field.",
     "field_changed": "Put the field back as it was. To change it, keep it and add a new field.",
     "required_over_records": "Make the new field optional.",
@@ -1883,11 +1886,12 @@ _FIX_LINES = {
     "store_refused": ("A limit stopped it. Remove an object or a field, or ask an admin to "
                       "remove a package."),
 }
-_OTHER_WORDS = "The objects of the manifest do not fit the stored tables."
+_OTHER_WORDS = "The manifest does not fit the stored tables."
 _OTHER_FIX = "Change the manifest so that it fits the stored tables."
-#: The longest name in one problem. Three names and the fixed text stay under
-#: :data:`MAX_ERROR_MESSAGE_CHARS`, so no problem loses its fix line to a cut.
-MAX_PROBLEM_NAME_CHARS = 40
+#: The longest name in one problem. Three names, the longest kind and the
+#: longest fixed text stay under :data:`MAX_ERROR_MESSAGE_CHARS`, so no
+#: problem loses its fix line to a cut.
+MAX_PROBLEM_NAME_CHARS = 36
 
 
 def manifest_hash(manifest: Any) -> str:
@@ -1993,6 +1997,11 @@ async def _drop_plan(digest: str) -> None:
             await _plan_redis().delete(key(PLAN_NAMESPACE, part, digest))
     except Exception as exc:
         _log_fault("studio.plan.drop_failed", exc)
+
+
+async def _pkg_get(path: str) -> _Reply:
+    """A read of a package route as the member."""
+    return await _send("GET", path, None, miss=_PKG_UNREAD)
 
 
 def _package_of(reply: _Reply) -> dict[str, Any]:
@@ -2141,7 +2150,7 @@ async def _existing(pid: str) -> dict[str, Any]:
     """The answer to a create of a manifest id that the member holds: the id,
     the outline of the stored draft and its ``based_on``. A stored draft over
     the cap gives the outline only, and ``truncated``."""
-    current = await _get(f"{PACKAGES_PATH}/{pid}")
+    current = await _pkg_get(f"{PACKAGES_PATH}/{pid}")
     if not current.ok:
         return _package_fail(current)
     manifest = _package_of(current).get("manifest")
@@ -2197,7 +2206,7 @@ async def _create(doc: dict[str, Any]) -> dict[str, Any]:
         held = await _held_create(doc)
         if held is not None:
             return held
-    reply = await _send("POST", PACKAGES_PATH, doc, "save")
+    reply = await _send("POST", PACKAGES_PATH, doc, "save", _PKG_MAYBE_SAVED)
     if reply.status == 409 and _code(reply) == _PACKAGE_EXISTS:
         found = _detail(reply).get("package_id")
         pid = _skill_path(found) if found else None
@@ -2214,7 +2223,7 @@ async def _held_create(doc: dict[str, Any]) -> dict[str, Any] | None:
     problem = _structure_problem(doc)
     if problem:
         return problem
-    listed = await _get(PACKAGES_PATH)
+    listed = await _pkg_get(PACKAGES_PATH)
     if not listed.ok:
         return _package_fail(listed, by_id=False)
     found = listed.data.get("packages") if isinstance(listed.data, dict) else None
@@ -2246,7 +2255,7 @@ async def _save_draft(pid: str, doc: dict[str, Any], based_on: str) -> dict[str,
     stored draft over the cap is never replaced from chat. A manifest equal to
     the stored draft writes nothing, so a second try after a network miss is
     safe. Raise :class:`_Refused` when the network fails."""
-    current = await _get(f"{PACKAGES_PATH}/{pid}")
+    current = await _pkg_get(f"{PACKAGES_PATH}/{pid}")
     if not current.ok:
         return _package_fail(current)
     stored = _package_of(current).get("manifest")
@@ -2272,12 +2281,12 @@ async def _save_draft(pid: str, doc: dict[str, Any], based_on: str) -> dict[str,
                                  "It replaces the stored draft. Nothing goes live.", context)
         if decision != "approved":
             return _pkg_not_done("Nothing was saved.", decision, context, rows)
-        again = await _get(f"{PACKAGES_PATH}/{pid}")
+        again = await _pkg_get(f"{PACKAGES_PATH}/{pid}")
         if not again.ok:
             return _package_fail(again, decision=decision)
         if manifest_hash(_package_of(again).get("manifest")) != digest:
             return _refusal(_PKG_MOVED.format(act="saved"), decision=decision)
-    reply = await _send("PUT", f"{PACKAGES_PATH}/{pid}/draft", doc, "save")
+    reply = await _send("PUT", f"{PACKAGES_PATH}/{pid}/draft", doc, "save", _PKG_MAYBE_SAVED)
     if not reply.ok:
         return _package_fail(reply)
     return _saved_package(reply)
@@ -2373,7 +2382,7 @@ async def studio_publish(package_id: str, notes: str = "") -> dict[str, Any]:
     if not isinstance(notes, str):
         return _notes_problem(notes) or _refusal(_NOTES_TEXT)
     try:
-        current = await _get(f"{PACKAGES_PATH}/{pid}")
+        current = await _pkg_get(f"{PACKAGES_PATH}/{pid}")
         if not current.ok:
             return _package_fail(current, "published")
         stored = _package_of(current).get("manifest")
@@ -2387,7 +2396,7 @@ async def studio_publish(package_id: str, notes: str = "") -> dict[str, Any]:
             if held is not None:
                 return held
         reply = await _send("POST", f"{PACKAGES_PATH}/{pid}/versions", {"notes": notes},
-                            "publish")
+                            "publish", _PKG_MAYBE_PUBLISHED)
     except _Refused as exc:
         return _refusal(str(exc))
     if reply.status == 409 and _code(reply) == _OUT_OF_SYNC:
@@ -2422,7 +2431,7 @@ async def _held_publish(
                              f"Version {number}. Its objects become tables.", context)
     if decision != "approved":
         return _pkg_not_done("Nothing was published.", decision, context, rows)
-    again = await _get(f"{PACKAGES_PATH}/{pid}")
+    again = await _pkg_get(f"{PACKAGES_PATH}/{pid}")
     if not again.ok:
         return _package_fail(again, "published", decision=decision)
     if manifest_hash(_package_of(again).get("manifest")) != digest:
