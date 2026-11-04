@@ -719,30 +719,22 @@ export function whereVisibilityHint(input: {
 /**
  * The items a Clarify session walks, oldest first (GTD processes FIFO).
  *
- * Two sets feed the walk. The first is my captures, which are INBOX. The
- * second is the "From Projects" group (S6e): a board task that a colleague
- * assigned to me and that I have not triaged. Its disposition is derived
- * (NEXT, SOMEDAY or WAITING), so a walk that reads INBOX alone skips it, and
- * the modal used to close on the first render for every such row.
+ * The walk is the inbox: my captures, which are INBOX (D170, INB-1). An
+ * assigned, untriaged board task is no longer in the inbox, so it is not in
+ * the walk. Clarify can still open on it from My tasks (`isClarifiable`).
  *
  * `done` is the ids decided in this session. They never come back into the
- * walk, whatever a stale re-read of `fromProjectIds` says. A re-read that
- * lands before the triage write puts the id straight back into that set, and
- * the walk used to open the same row a second time (review of PR #440, P1).
+ * walk.
  */
 export function clarifyQueue<
   T extends { id: string; disposition: string; createdAt: string; archivedAt?: string },
 >(
   items: readonly T[],
-  fromProjectIds: ReadonlySet<string>,
   done: ReadonlySet<string> = new Set(),
 ): T[] {
   return items
     .filter((i) => !done.has(i.id))
-    .filter(
-      (i) =>
-        i.disposition === "INBOX" || (fromProjectIds.has(i.id) && !i.archivedAt),
-    )
+    .filter((i) => i.disposition === "INBOX")
     .sort(
       (a, b) =>
         new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
