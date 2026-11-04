@@ -20945,11 +20945,13 @@ second card mechanism exists.
    posts `POST /email/held-card` with kind `new`, as before. That route also gives the
    form now.
 2. The card shows each person of the server with a tick box. It shows the subject and
-   the text to edit, and the files as fixed rows. One line under the text says "Want it
-   changed? Tell me in the chat below." Two example chips put their words in the chat box.
-   A chip sends nothing.
-3. Send and Save draft answer `APPROVE {"reply": {...}}` with exactly the keys `kind`,
-   `action`, `subject`, `body`, `to`, `cc` and `bcc`. A reply answer and a new-mail answer
+   the text to edit. The plain card shows the files as fixed rows. The held card gives
+   each file a tick box and its source, as §21.1 item 3 says. One line under the text
+   says "Want it changed? Tell me in the chat below." Two example chips put their words
+   in the chat box. A chip sends nothing.
+3. Send and Save draft answer `APPROVE {"reply": {...}}` with the keys `kind`, `action`,
+   `subject`, `body`, `to`, `cc` and `bcc`. A held answer may also give `files`, the ids
+   of the ticked files. The parser refuses any other key. A reply answer and a new-mail answer
    never parse as each other. Discard answers `REJECT` and writes nothing.
 4. `POST /agent/respond-input` records the digest of the answer, as for a reply. The act
    route takes the answer once and the record once.
@@ -20965,7 +20967,9 @@ held record of kind `new`, do these steps. Each refusal sends and saves nothing.
    characters (`held_card._clean_subject`).
 4. A held record also refuses a look-alike word (`refuse_lookalike`), a Bcc to a new
    address, and a text over `HELD_TEXT_MAX`. A new address starts unticked, as §21 says.
-5. The files go exactly as the record holds them. The member cannot add or drop a file.
+5. The files come from the record. The plain act sends every recorded file. The held act
+   sends only the ticked files, and a file id that is not on the record refuses the
+   answer. The member cannot add a file.
 6. Send sends the answered subject and text. Save draft writes a NEW draft with them, and
    sends nothing.
 
