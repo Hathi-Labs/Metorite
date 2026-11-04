@@ -287,6 +287,10 @@ worker.register("email.send_later", send, mode="detached", idempotent=True)
   one newest row give one live job. `chat_summary_job.py` adds the hook at
   import, and `main.py` imports it. `personalization.md` §15.3 and §15.9
   hold the design.
+- **The third consumer (BR-2d, built dark).** `brief/monitor.py` seeds the
+  session kind `brief.slo` once each hour and org, with the dedupe key
+  `slo:<hour>`. It logs `brief.slo_missed` at error when the org is under
+  99% on time over 7 days. `core_brief.md` §7 holds the rules.
 - **Fence.** `test_r8_run_org_runs_each_seed_hook_once_for_each_org_and_bucket`
   in `test_job_queue.py`.
 
