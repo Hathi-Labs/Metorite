@@ -6,8 +6,9 @@ This agent is **not a second assistant** (D99, D125). The member talks to
 Mira only. The pack machinery (``acb_skills.tool_packs.owner_tools``) reads
 :func:`_agent_tools` from this module, and the main assistant holds those
 tools in a Studio turn. The tools are in ``acb_skills.studio_tools`` and this
-module keeps no copy. They are stateless, read the action catalog over HTTP
-as the member, and take no org or member argument.
+module keeps no copy. They call the Studio routes over HTTP as the member,
+and take no org or member argument. The builder tools keep no draft. The
+package tools (STU-G1c) save a draft and publish it.
 
 It never runs as an agent. The name "studio-builder" is in no agent list: not
 the registry, the picker, a specialist tool or the registry block. Only the
@@ -24,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from acb_common import get_settings
-from acb_skills.studio_tools import STUDIO_SKILL_TOOLS, STUDIO_TOOLS
+from acb_skills.studio_tools import STUDIO_PACKAGE_TOOLS, STUDIO_SKILL_TOOLS, STUDIO_TOOLS
 
 _INSTRUCTIONS_FILE = Path(__file__).parent / "instructions.md"
 INSTRUCTIONS = (
@@ -33,7 +34,7 @@ INSTRUCTIONS = (
     else "You hold the AI Studio builder tools. You are not a second assistant."
 )
 
-_TOOLS = [*STUDIO_TOOLS, *STUDIO_SKILL_TOOLS]
+_TOOLS = [*STUDIO_TOOLS, *STUDIO_SKILL_TOOLS, *STUDIO_PACKAGE_TOOLS]
 
 
 def _register_agent_tools() -> dict[str, Any]:
@@ -84,8 +85,8 @@ def build_agents() -> list[Any]:
             name="studio-builder",
             description=(
                 "Owns the studio tool pack: draft, patch, validate and outline an "
-                "AI Studio app manifest, list the actions an app may use, and save, "
-                "publish, pause and list the skills of a member."
+                "AI Studio app manifest, list the actions an app may use, save and "
+                "publish the app, and save, publish, pause and list the skills of a member."
             ),
             tools=_agent_tools(),
         )

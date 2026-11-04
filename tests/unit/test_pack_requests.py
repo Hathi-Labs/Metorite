@@ -233,6 +233,9 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "studio_skill_list": ("list my studio skills",),
     "studio_skill_save": ("save a new studio skill that summarises a meeting",),
     "studio_skill_state": ("publish my studio skill",),
+    # -- studio packages (STU-G1c) --
+    "studio_save": ("save my studio app",),
+    "studio_publish": ("publish my studio app",),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),

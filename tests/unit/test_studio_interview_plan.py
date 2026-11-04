@@ -284,11 +284,25 @@ def test_studio_plan_imports_no_db_or_store_module() -> None:
             assert not banned.search(node.id), node.id
         if isinstance(node, ast.Attribute):
             assert not banned.search(node.attr), node.attr
-    # The module itself imports no db or store module either.
-    top = [n for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom))]
+    # The module itself imports no db or store module either. STU-G1c: the one
+    # exception is the tenant Redis wrapper (R5), and only in the helpers of the
+    # approval record of a plan, which ``studio_plan`` calls after "approved".
+    record = {"_plan_redis", "_record_plan", "_plan_on_record", "_drop_plan"}
+    top: list[ast.AST] = []
+    for fn_node in [n for n in ast.walk(tree)
+                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and n.name not in record]:
+        top += [n for n in ast.walk(fn_node) if isinstance(n, (ast.Import, ast.ImportFrom))]
+    top += [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
     text = " ".join((getattr(n, "module", None) or "") + " ".join(a.name for a in n.names)
                     for n in top)
     assert not re.search(r"acb_common\.db|sqlalchemy|redis|studio_store", text)
+    helpers = {n.name: n for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in record}
+    assert set(helpers) == record, "non-vacuity: the helpers of the record exist"
+    for name, node in helpers.items():
+        for imp in [n for n in ast.walk(node) if isinstance(n, ast.ImportFrom)]:
+            assert imp.module == "acb_common.tenant_redis", (name, imp.module)
 
 
 def test_the_new_tools_are_read_only_annotated() -> None:
@@ -345,7 +359,8 @@ def test_the_family_holds_both_new_tools_in_the_order_of_the_module() -> None:
     """Mutation: drop ``studio_plan`` from the family -> red."""
     tools = tuple(sf.SKILL_FAMILIES["studio"]["tools"])
     assert "studio_interview" in tools and "studio_plan" in tools
-    assert tools == tuple(fn.__name__ for fn in (*st.STUDIO_TOOLS, *st.STUDIO_SKILL_TOOLS))
+    assert tools == tuple(fn.__name__ for fn in (
+        *st.STUDIO_TOOLS, *st.STUDIO_SKILL_TOOLS, *st.STUDIO_PACKAGE_TOOLS))
     assert all(inspect.iscoroutinefunction(fn) for fn in st.STUDIO_TOOLS)
 
 
