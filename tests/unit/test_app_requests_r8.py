@@ -477,11 +477,11 @@ async def test_the_request_routes_are_dark_without_the_org_flag(monkeypatch, org
 def test_the_org_flag_has_one_reader_and_ships_empty() -> None:
     """``APP_REQUESTS_ORGS`` ships empty, a tenant cannot write it, and
     ``app_requests.requests_allowed`` is its one reader."""
-    from acb_common.env_guard import check_env_write
+    from acb_common.env_guard import EnvWriteRefused, check_env_write
     from acb_common.settings import Settings
 
     assert Settings.model_fields["app_requests_orgs"].default == ""
-    with pytest.raises(Exception):
+    with pytest.raises(EnvWriteRefused):
         check_env_write("APP_REQUESTS_ORGS", "*")
     readers = [p.relative_to(_REPO).as_posix() for top in ("apps", "packages")
                for p in (_REPO / top).rglob("*.py")
@@ -1204,3 +1204,111 @@ class TestAppRequestsOnARealDatabase:
             assert (await ctx(w.a, "GET", "/agent-access/requests")).status_code == 404
             got = await _decide(ctx, w.a, str(uuid.uuid4()), "approve")
             assert got.status_code == 404
+
+    # ── Fix round 1 ─────────────────────────────────────────────────────────
+
+    async def test_18_a_value_the_card_cannot_show_exactly_is_refused(self, w):
+        """Review P2-2 and P3-2. The browser parses an integer past 2**53 - 1
+        to another number, so the card would show a number other than the
+        one that runs. U+0000 breaks the JSONB insert, and NaN and Infinity
+        are no JSON at all. Each is 422 ``bad_args`` at any depth, and
+        nothing is stored."""
+        safe = 2**53 - 1
+        bad: list[dict[str, Any]] = [
+            {"name": "x", "qty": 2**53 + 1},
+            {"name": "x", "qty": -(2**53 + 1)},
+            {"name": "x", "meta": {"lines": [{"qty": 2**53 + 1}]}},
+            {"name": "a\u0000b"},
+            {"name": "x", "meta": {"k\u0000": 1}},
+        ]
+        # httpx refuses to write NaN, so these bodies go as raw text. The
+        # gateway's JSON parse takes NaN and Infinity.
+        raw = ['{"name": "x", "ratio": NaN}', '{"name": "x", "ratio": Infinity}',
+               '{"name": "x", "meta": [-Infinity]}']
+        async with _session(w.p) as ctx:
+            for args in bad:
+                got = await _ask(ctx, w, args)
+                assert got.status_code == 422, (repr(args)[:60], got.text)
+                assert got.json()["detail"]["error"] == "bad_args", got.text
+            ctx.users[str(id(w.agent_a))] = w.agent_a
+            for text_args in raw:
+                body = f'{{"op": "make_item", "idempotency_key": "{_key()}", "args": {text_args}}}'
+                got = await ctx.client.post(
+                    f"/agent-access/apps/{APP_ID}/requests", content=body,
+                    headers={"x-test-as": str(id(w.agent_a)),
+                             "content-type": "application/json"})
+                assert got.status_code == 422, (text_args, got.text)
+                assert got.json()["detail"]["error"] == "bad_args", got.text
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_runs") == 0
+            fits = await _ask(ctx, w, {"name": "x", "qty": safe, "neg": -safe, "f": 1.5})
+            assert fits.status_code == 201, fits.text
+            listed = (await ctx(w.a, "GET", "/agent-access/requests")).json()["rows"]
+            # The decision key is stored as it came, so U+0000 in it is a 422.
+            nul_key = await _decide(ctx, w.a, fits.json()["request_id"], "approve",
+                                    key="k\u0000k")
+            assert nul_key.status_code == 422, nul_key.text
+        assert listed[0]["call"]["body"]["qty"] == safe
+
+    async def test_19_a_studio_spend_holds_the_binding_of_its_request(self, w):
+        """Review P3-1. A Studio request of package A never spends under the
+        binding of package B, even with the stored digest. Before the fix
+        the spend read only the connection part of the binding."""
+        rid, call = await self._studio(w, PKG1)
+        stored = store.call_digest(call, store.studio_binding(w.a_email, "studio", PKG1))
+        other = store.studio_binding(w.a_email, "studio", PKG2)
+        async with _session(w.p):
+            spent, why = await _spend(w, rid, stored, binding=other, app="studio")
+            assert spent is None and why == "not_found"
+            spent, _ = await _spend(w, rid, stored,
+                                    binding=store.studio_binding(w.a_email, "studio", PKG1),
+                                    app="studio")
+        assert spent is not None
+
+    async def test_20_the_cap_holds_under_a_race(self, w):
+        """The probe of the review, kept. Four asks at once at 19 live
+        requests: one gets in, three get 429."""
+        async with _session(w.p) as ctx:
+            for i in range(app_requests.OPEN_CAP - 1):
+                assert (await _ask(ctx, w, {"name": f"n{i}"})).status_code == 201
+            got = await asyncio.gather(*[_ask(ctx, w, {"name": f"r{i}"}) for i in range(4)])
+        assert sorted(r.status_code for r in got) == [201, 429, 429, 429]
+
+    async def test_21_an_approve_and_many_spends_at_once_spend_once(self, w):
+        """The probe of the review, kept. An approve races four spends, and
+        four more follow: one spend wins in all."""
+        async with _session(w.p) as ctx:
+            rid = (await _ask(ctx, w)).json()["request_id"]
+            digest = _edge_digest({"name": "x"}, w.conn_a)
+            first = await asyncio.gather(_decide(ctx, w.a, rid, "approve"),
+                                         *[_spend(w, rid, digest) for _ in range(4)])
+            later = await asyncio.gather(*[_spend(w, rid, digest) for _ in range(4)])
+        wins = [s for s, _ in [*first[1:], *later] if s is not None]
+        assert len(wins) == 1
+        assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities"
+                           " WHERE type = 'action'") == 1
+
+    async def test_22_a_replay_gives_the_state_of_the_request(self, w):
+        """Verifier P3-8. The same key and call after an approve give the
+        first request in its real state, not ``awaiting``."""
+        key = _key()
+        async with _session(w.p) as ctx:
+            first = (await _ask(ctx, w, key=key)).json()
+            assert (await _decide(ctx, w.a, first["request_id"], "approve")).status_code == 200
+            again = await _ask(ctx, w, key=key)
+            assert again.status_code == 200, again.text
+            assert again.json()["state"] == "approved"
+            assert again.json()["expires_at"] == first["expires_at"]
+
+    async def test_23_the_class_never_comes_from_the_body(self, w):
+        """Verifier P3-7. A body key ``cls`` is 422, because the body forbids
+        extra keys. An ``args`` key ``cls`` is a plain field of the call: the
+        class stays the manifest's."""
+        async with _session(w.p) as ctx:
+            top = await ctx(w.agent_a, "POST", f"/agent-access/apps/{APP_ID}/requests",
+                            {"op": "make_item", "args": {"name": "x"}, "cls": "A",
+                             "idempotency_key": _key()})
+            assert top.status_code == 422, top.text
+            inner = await _ask(ctx, w, {"name": "x", "cls": "A"})
+            assert inner.status_code == 201, inner.text
+            [row] = (await ctx(w.a, "GET", "/agent-access/requests")).json()["rows"]
+        assert row["class"] == "B" and row["call"]["body"]["cls"] == "A"

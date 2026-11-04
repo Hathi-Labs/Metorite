@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import uuid
 from collections.abc import Mapping
@@ -104,6 +105,10 @@ LIST_LIMIT = 50
 #: two lists equal.
 SECRET_WORDS: tuple[str, ...] = ("token", "secret", "password", "credential", "api_key")
 
+#: The largest integer that a browser's JSON parse keeps exactly (review P2-2).
+#: Past it, the card would show a number other than the one that runs.
+MAX_SAFE_INT = 2**53 - 1
+
 #: The classes that wait for the member. A is a read and X is on no door.
 ASKING_CLASSES: tuple[str, ...] = ("B", "C")
 
@@ -133,6 +138,7 @@ CLASS_REFUSED = "class_refused"
 KEY_REUSED = "idempotency_key_reused"
 ALREADY_DECIDED = "already_decided"
 REQUEST_EXPIRED = "request_expired"
+BAD_ARGS = "bad_args"
 
 _APP = re.compile(r"[a-z]{1,32}")
 _OP = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
@@ -182,6 +188,30 @@ def _holds_secret_key(value: Any) -> bool:
         return False
     if isinstance(value, (list, tuple)):
         return any(_holds_secret_key(inner) for inner in value)
+    return False
+
+
+def _unshowable(value: Any) -> bool:
+    """True when *value*, at any depth, holds a value that the card cannot
+    show exactly, or that Postgres cannot store (review P2-2 and P3-2):
+
+    * an integer past :data:`MAX_SAFE_INT` either way, which a browser
+      parses to another number;
+    * a number that is not finite (NaN, Infinity), which is no JSON;
+    * a text, or a key, that holds U+0000, which JSONB refuses.
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return abs(value) > MAX_SAFE_INT
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, Mapping):
+        return any(_unshowable(str(k)) or _unshowable(v) for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(_unshowable(v) for v in value)
     return False
 
 
@@ -483,6 +513,10 @@ async def open_request(
         raise ValueError("the org is not the org of the bound session")
 
     stored = _clean_call(call)
+    if _unshowable(stored):
+        raise _refuse(422, BAD_ARGS,
+                      "The change holds a value that the card cannot show exactly: a whole "
+                      "number past 2^53 - 1, a number that is not finite, or U+0000.")
     if _holds_secret_key(stored["body"]) or any(
             any(word in k.lower() for word in SECRET_WORDS) for k, _ in stored["query"]):
         raise _refuse(422, SECRET_IN_PAYLOAD,
@@ -619,6 +653,7 @@ __all__ = [
     "CLASS_LINES",
     "LIST_LIMIT",
     "MAX_CALL_BYTES",
+    "MAX_SAFE_INT",
     "OPEN_CAP",
     "OPTIONS",
     "REQUEST_BODY",

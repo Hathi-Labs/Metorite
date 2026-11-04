@@ -91,7 +91,9 @@ class DecisionIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     decision: Literal["approve", "decline"]
-    idempotency_key: str = Field(min_length=1, max_length=128)
+    # The key is stored as it came, and a TEXT column refuses U+0000 (review
+    # P3-2), so a key that holds it is a 422 here, never a 500.
+    idempotency_key: str = Field(min_length=1, max_length=128, pattern=r"^[^\x00]+$")
 
 
 def _org(user: UserContext) -> str:
