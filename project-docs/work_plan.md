@@ -5242,6 +5242,8 @@ The agent showed the cause. The inbox added every company task assigned to the m
 
 Fence: named in `one_projects_app.md` §9b for INB-1 and SEL-1. Advisory until each slice builds.
 
+Amended 2026-11-04 (PJP-14, task 1605): the owner said "The tasks added by the MCP mostly show up in my tasks inbox. If all the aspects of the task are properly set up, these tasks should go directly into the projects. I am not going to sit and clarify them." A ready agent task is not New. It shows under Next or Someday. Ready means: a company board, `source` is `mcp`, an assignee, a description, a type, and a status outside `triage`. The task creator made my assignment. A date or an estimate is not required. A person's hand-off still shows New, so item 2 holds for people. The rule writes nothing, and an edit that breaks a condition makes the task New again.
+
 ### D171 — Everything that waits on the member shows in My Day (2026-11-03)
 
 Owner directive, 2026-11-03, in chat. The owner gave the design to the agent: "I leave it up to you to figure out how to decide what is best to be done." Board: **WS-51** (chat run continuity), owner `specs/chat_run_continuity.md` §8.

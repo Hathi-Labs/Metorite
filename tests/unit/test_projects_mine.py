@@ -253,6 +253,28 @@ def test_new_work_is_assigned_untriaged_and_on_a_company_board() -> None:
     assert new(None, on_board=True, is_mine=True, effective="DONE") is False
 
 
+def test_a_ready_agent_task_is_not_new_and_each_condition_matters() -> None:
+    """PJP-14 (D170 amendment). Seven conditions make an agent task ready."""
+    ready = pm_mine.is_ready_agent_task
+    base = {
+        "on_board": True, "source": "mcp", "has_assignee": True,
+        "has_description": True, "has_type": True, "status_category": "todo",
+        "assigned_by_creator": True,
+    }
+    assert ready(**base) is True
+    for key, bad in (
+        ("on_board", False), ("source", "manual"), ("has_assignee", False),
+        ("has_description", False), ("has_type", False),
+        ("status_category", "triage"), ("assigned_by_creator", False),
+    ):
+        assert ready(**{**base, key: bad}) is False, key
+    new = pm_mine.new_work
+    assert new(None, on_board=True, is_mine=True, effective="NEXT",
+               ready_agent=True) is False
+    assert new(None, on_board=True, is_mine=True, effective="NEXT",
+               ready_agent=False) is True
+
+
 # ── GET /projects/my/summary ────────────────────────────────────────────────
 
 
