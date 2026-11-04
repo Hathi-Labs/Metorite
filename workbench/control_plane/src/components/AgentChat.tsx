@@ -106,7 +106,7 @@ import {
 } from "@/lib/chatSteer";
 import { canRetry, retryPlan } from "@/lib/chatRetry";
 import { mergeCappedText } from "@/lib/chatTurnFailure";
-import { editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
+import { EDIT_LOADING, editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
 import { describeToolStep } from "@/lib/toolSteps";
 import { RoomHeader } from "@/components/room/RoomHeader";
 import { ShareSheet } from "@/components/room/ShareSheet";
@@ -1892,7 +1892,9 @@ export default function AgentChat({
   // Resolves with null when the server accepted the edit, or the reason it
   // refused. The composer stays open with the text on a refusal.
   const handleEditLast = useCallback(async (messageId: string, content: string): Promise<string | null> => {
-    if (loadingHistory) return null;
+    // A silent null here closed the composer as if the edit had gone through,
+    // and nothing happened (task 1653). Say why, and keep the text.
+    if (loadingHistory) return EDIT_LOADING;
     const out = await submitEdit(
       {
         threadId: sessionId,

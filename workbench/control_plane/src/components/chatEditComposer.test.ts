@@ -60,3 +60,11 @@ describe("the edit composer is a variant of the chat composer", () => {
     expect(chat.match(/<ChatSendButton\b/g)).toHaveLength(1);
   });
 });
+
+describe("an edit that cannot go says why (task 1653)", () => {
+  it("a thread still loading refuses the edit with a reason, not a silent close", () => {
+    const chat = readFileSync(join(__dirname, "AgentChat.tsx"), "utf8");
+    expect(chat).toContain("if (loadingHistory) return EDIT_LOADING;");
+    expect(chat).not.toMatch(/if \(loadingHistory\) return null;\s*\n\s*const out = await submitEdit/);
+  });
+});
