@@ -48,8 +48,9 @@ a committed tree and restored with ``git checkout``.
 * M2. ``SPEND_SQL``: drop the digest predicate.
   ``test_05_a_wrong_digest_changes_nothing``.
 * M3. ``SPEND_SQL``: drop ``r.connection_id IS NOT DISTINCT FROM``.
-  ``test_06_another_connection_member_or_org_gets_nothing``,
-  ``test_07_a_studio_request_spends_only_under_its_binding``.
+  ``test_25_a_request_whose_connection_is_gone_never_spends``. Before fix
+  round 1 it turned test_06 and test_07 red. The binding of fix 3 now names
+  the connection too, so only a deleted connection tells the two apart.
 * M4. ``SPEND_SQL``: drop ``AND r.member_email = :member``.
   ``test_06_another_connection_member_or_org_gets_nothing``.
 * M5. ``SPEND_SQL``: drop the expiry predicate.
@@ -72,6 +73,28 @@ a committed tree and restored with ``git checkout``.
 * M13. ``routes/agent_requests.AppRequestIn``: take ``organization_id`` from
   the body. ``tests/unit/test_tenant_request_binding.py::
   test_the_app_request_routes_take_no_tenant_from_input``.
+
+Fix round 1 (2026-11-04), each run on a committed tree:
+
+* M14. ``open_request``: drop the ``_unshowable`` check.
+  ``test_18_a_value_the_card_cannot_show_exactly_is_refused``.
+* M15. ``SPEND_SQL``: drop the binding predicate.
+  ``test_19_a_studio_spend_holds_the_binding_of_its_request`` and
+  ``test_the_spend_is_one_statement_with_each_guard``.
+* M16. ``routes/agent_requests._require_access``: drop the org flag.
+  ``test_the_request_routes_are_dark_without_the_org_flag`` (both cases) and
+  ``test_17_the_routes_are_dark``.
+* M17. ``_replay``: answer ``awaiting`` again.
+  ``test_22_a_replay_gives_the_state_of_the_request``.
+* M18. ``SPEND_SQL``: drop ``p.in_reply_to = e.id``.
+  ``test_the_spend_is_one_statement_with_each_guard``.
+* M19. ``_CAP_SQL``: drop the org.
+  ``test_each_statement_with_a_where_names_the_org``.
+* M20. ``list_open``: answer ``more=0``.
+  ``test_24_the_list_says_how_many_more_wait``.
+* M21. ``AppRequestIn``: take a ``cls`` field.
+  ``test_23_the_class_never_comes_from_the_body`` and
+  ``test_the_app_request_routes_take_no_tenant_from_input``.
 
 The record of each red run is in the report of the MCP-P1b-1 build.
 """
@@ -1354,3 +1377,20 @@ class TestAppRequestsOnARealDatabase:
             _expire(w.p, listed["rows"][0]["request_id"])
             again = (await ctx(w.a, "GET", "/agent-access/requests")).json()
         assert len(again["rows"]) == app_requests.LIST_LIMIT and again["more"] == 1
+
+    async def test_25_a_request_whose_connection_is_gone_never_spends(self, w):
+        """Fix round 1. The binding now pins the connection too, so the
+        connection guard of the spend needs a case of its own: a connection
+        row that is deleted sets the run's ``connection_id`` to NULL, and the
+        stored binding still names it. The spend refuses (mutation M3)."""
+        conn = _seed_connection(w.p, w.p.org_a, w.a_email)
+        agent = _principal(w.a_email, w.p.org_a, connection=conn)
+        async with _session(w.p) as ctx:
+            rid = (await _ask(ctx, w, {"name": "x"}, user=agent)).json()["request_id"]
+            assert (await _decide(ctx, w.a, rid, "approve")).status_code == 200
+            with w.p.admin_engine.begin() as c:
+                c.execute(text("DELETE FROM agent_connection WHERE id = CAST(:c AS uuid)"),
+                          {"c": conn})
+            spent, why = await _spend(w, rid, _edge_digest({"name": "x"}, conn),
+                                      binding=store.mcp_binding(conn))
+        assert spent is None and why == "not_found"
