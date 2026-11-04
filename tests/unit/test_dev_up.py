@@ -127,6 +127,26 @@ class TestStudioSwitch:
         assert "STUDIO_ORGS" not in FLAGS.read_text(encoding="utf-8")
 
 
+class TestAppRequestsSwitch:
+    """MCP-P1b-1 fix round 1. APP_REQUESTS_ORGS is the dark switch of the app
+    requests. One fixed line in `gateway_env` lets the owner preview the list
+    "Waiting for you" on the stack of this PC, which holds made-up orgs only.
+    The flags file of production never carries it."""
+
+    @needs_bash
+    def test_the_gateway_lists_every_org(self, tmp_path):
+        assert _print_env(tmp_path)["gateway"]["APP_REQUESTS_ORGS"] == "*"
+
+    @needs_bash
+    def test_the_web_app_does_not_get_it(self, tmp_path):
+        assert "APP_REQUESTS_ORGS" not in _print_env(tmp_path)["web"]
+
+    def test_the_line_is_fixed_in_the_gateway_function_only(self):
+        gateway = BODY.split("gateway_env() {", 1)[1].split("\n}\n", 1)[0]
+        assert '"APP_REQUESTS_ORGS=*"' in gateway
+        assert "APP_REQUESTS_ORGS" not in FLAGS.read_text(encoding="utf-8")
+
+
 class TestProductionParity:
     @needs_bash
     def test_the_gateway_connects_as_the_non_superuser_app_role(self, tmp_path):

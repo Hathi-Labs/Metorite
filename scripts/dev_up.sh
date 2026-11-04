@@ -111,7 +111,8 @@ flag_env() {
 
 # STUDIO_ORGS=* is the AI Studio skill switch (STU-F2b). It is not a name of the
 # SWITCH pattern, so production's flags cannot carry it. The stack on this PC holds
-# two made-up orgs, so a fixed line here flips no box.
+# two made-up orgs, so a fixed line here flips no box. APP_REQUESTS_ORGS=* is the
+# same for the list "Waiting for you" of MCP-P1b-1, so the owner can preview it.
 gateway_env() {
   base_env
   flag_env root
@@ -121,7 +122,8 @@ gateway_env() {
     "REDIS_URL=redis://127.0.0.1:$REDIS_PORT/0" \
     "GATEWAY_INTERNAL_TOKEN=$TOKEN" \
     "EXECUTIVE_EMAILS=$ME" \
-    "STUDIO_ORGS=*"
+    "STUDIO_ORGS=*" \
+    "APP_REQUESTS_ORGS=*"
 }
 
 web_env() {
