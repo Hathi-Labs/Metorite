@@ -130,6 +130,19 @@ CATCH_UP_MAX_MISSES = 6
 #: Google counts its limit in windows of one minute, so one minute clears it.
 SYNC_RESUME_SECS = 60
 
+#: The least time between two resumes of an import at the storage limit in
+#: this process (WS-17 EM-T6f). After a release, or after a raise of the
+#: limit, each mailbox that the limit stopped can resume in the same minute.
+#: Each import reads the provider and runs the meter after each batch, and a
+#: burst of I/O on a small compute stopped production on 2026-10-07. So one
+#: mailbox resumes in each loop interval of 300 seconds, and the others wait
+#: for a later cycle. The import keeps its own pacing and batch size.
+STORAGE_RESUME_GAP_SECS = 300.0
+
+#: When the last resume in this process took its turn (``time.monotonic``),
+#: or None. A restart starts it again at None, as ``_rate_limit_since`` does.
+_storage_resume_at: float | None = None
+
 #: The time of the first rate limit that moved nothing, for each mailbox
 #: (EM-G4b-f3). A time and not a count, so that clicks of "Sync now" cannot
 #: bring the error forward. It lives in this process, as
@@ -331,6 +344,8 @@ _IMPORT_DONE = text(
 #: The end of a first import that the storage limit stopped (WS-17 EM-T6c
 #: item 5). The newest mail is present, and the gap is at the old end
 #: (D-EM-12). The next cycle runs the recurring sweep only (owner answer Q2).
+#: When the meter is under the limit again, a loop cycle resumes the import
+#: (``_resume_at_storage_limit``, EM-T6f).
 _IMPORT_LIMIT = text(
     """UPDATE email_accounts
        SET initial_sync_done = true, import_phase = 'limit', updated_at = now()
@@ -367,6 +382,64 @@ _IMPORT_ERROR_LOG = text(
        SET status = 'error', error_message = :import_error
        WHERE id = :log_id"""
 )
+
+#: The account row of phase (a). ``import_phase`` and ``stored_bytes`` are
+#: for the resume at the storage limit (EM-T6f). A resume reads the row
+#: again, so the rest of the cycle sees ``initial_sync_done`` false.
+_ACCOUNT_ROW = text(
+    """SELECT id, provider, credentials_encrypted, last_history_id,
+              sync_interval_secs, initial_sync_done,
+              import_since, import_reached_at, import_count,
+              import_phase, stored_bytes,
+              last_synced_at, created_at,
+              clock_timestamp() AS db_now
+       FROM email_accounts
+       WHERE id = :id"""
+)
+
+
+async def _resume_at_storage_limit(db: Any, account_id: str, row: Any) -> bool:
+    """Resume an import that the storage limit stopped (WS-17 EM-T6f).
+
+    Phase (a) of a loop cycle calls it, in its own block and under the
+    mailbox lock, so no removal, webhook sync or rerun runs at the same time.
+    ``storage.import_resumes`` is the one rule, and ``storage.resume_import``
+    is the one conditional write. Returns True when it wrote the row. The
+    import of this cycle then goes on from ``import_reached_at``, with the
+    count that it reached, and it stops at the limit again as before.
+
+    Load (``STORAGE_RESUME_GAP_SECS``): one mailbox in this process takes a
+    turn in each gap. A mailbox that waits keeps its phase and asks again at
+    its next cycle. The turn is taken before the write, with no ``await``
+    between the test and the take, so two loops cannot both take it. A write
+    that finds no row gives the turn back.
+
+    The log line is ``sync.storage_resume`` with the meter and the limit,
+    beside ``sync.storage_limit``."""
+    global _storage_resume_at
+    phase = getattr(row, "import_phase", None)
+    stored = getattr(row, "stored_bytes", None)
+    reached = getattr(row, "import_reached_at", None)
+    if not storage.import_resumes(phase, stored, reached):
+        return False
+    now = time.monotonic()
+    before = _storage_resume_at
+    if before is not None and now - before < STORAGE_RESUME_GAP_SECS:
+        logger.info("sync.storage_resume_waits account=%s stored=%s",
+                    account_id, stored)
+        return False
+    _storage_resume_at = now
+    resumed = False
+    try:
+        resumed = await storage.resume_import(
+            db, account_id, phase=phase, stored_bytes=stored, reached_at=reached)
+    finally:
+        if not resumed:
+            _storage_resume_at = before
+    if resumed:
+        logger.info("sync.storage_resume account=%s stored=%s limit=%s",
+                    account_id, stored, storage.storage_limit_bytes())
+    return resumed
 
 
 async def _record_import_error(
@@ -1049,6 +1122,34 @@ async def _import_in_batches(
             _IMPORT_PAUSED if tally["paused"] else None)
 
 
+#: The mails that an import which goes on from a point reads in one cycle
+#: (WS-17 EM-T6f review P2). The mailbox lock is held for the whole import,
+#: and the recurring sweep runs after it, so a long import held back new mail
+#: (owner answer Q2). A resume at the storage limit can have a gap of tens of
+#: thousands of mails, and Outlook and IMAP set no cap of their own. At this
+#: cap the cycle pauses: the sweep runs, and the loop comes back after
+#: ``SYNC_RESUME_SECS``. A provider cap that is smaller (Gmail, 400) wins.
+RESUME_CYCLE_MAILS = 1000
+
+
+def _cycle_mails(provider: Any, *, progress: bool, goes_on: bool) -> int | None:
+    """The mails that this import reads before the cycle pauses, or ``None``.
+
+    A deep sync of a member act has no resume point, so it reads to the end.
+    A first import from now keeps the cap of its provider, which is
+    ``None`` for Outlook and IMAP. An import that goes on from
+    ``import_reached_at`` (``goes_on``) takes ``RESUME_CYCLE_MAILS`` too.
+    That is a resume at the storage limit (EM-T6f), and also a first import
+    in its second cycle or later."""
+    if not progress:
+        return None
+    own = getattr(provider, "IMPORT_CYCLE_MAILS", None)
+    own = own if isinstance(own, int) and not isinstance(own, bool) else None
+    if not goes_on:
+        return own
+    return RESUME_CYCLE_MAILS if own is None else min(own, RESUME_CYCLE_MAILS)
+
+
 async def _run_import(
     org: str, account_id: str, provider: Any, row: Any, *,
     floor: datetime, progress: bool, tally: dict[str, Any],
@@ -1057,9 +1158,15 @@ async def _run_import(
     ``tally`` counts the rows that it wrote. WS-17 EM-T6b items 4 to 8.
 
     The storage limit stops it (WS-17 EM-T6c items 4 and 5). The block of
-    each batch runs the meter after its messages. At or over the limit, the
+    each batch writes the meter after its messages. ``storage.ImportMeter``
+    runs the full meter after the first batch and near the limit only, and
+    it adds the growth of the batch after each other batch (EM-T6f review
+    P1). So a run makes at most ``storage.IMPORT_FULL_METERS`` full meters,
+    whatever its size. At or over the limit, the
     import fetches no next batch and sets ``tally["limit"]``. A first import
     then writes ``import_phase = 'limit'`` and ``initial_sync_done = true``.
+    When the meter is under the limit again, a loop cycle resumes that import
+    at ``import_reached_at`` (``_resume_at_storage_limit``, EM-T6f).
     The deep sync of a member act stops in the same way. A stopped import
     runs no reconcile, because a page that it did not read can hold rows of
     the same second as its last message.
@@ -1100,13 +1207,18 @@ async def _run_import(
     (EM-G4b-f3). A paced Gmail read takes 0.75 seconds, so the cycle gives
     the mailbox lock back, the recurring sweep gets its turn, and the next
     cycle resumes. The log says ``sync.import_paused``. A deep sync has no
-    resume point, so it reads to the end."""
+    resume point, so it reads to the end. An import that goes on from
+    ``import_reached_at`` also stops after ``RESUME_CYCLE_MAILS``, for each
+    provider (``_cycle_mails``, EM-T6f review P2). So a resume at the
+    storage limit holds the mailbox lock for one share at a time, and new
+    mail syncs between the shares (owner answer Q2)."""
     snapshot: list[tuple[str, str, Any]] | None = (
         [] if not progress and getattr(provider, "import_full_snapshot", False)
         else None)
     until = getattr(row, "import_reached_at", None) if progress else None
     count = (getattr(row, "import_count", None) or 0) if until is not None else 0
-    cycle_mails = getattr(provider, "IMPORT_CYCLE_MAILS", None) if progress else None
+    cycle_mails = _cycle_mails(provider, progress=progress,
+                               goes_on=until is not None)
     read = 0
     on_estimate = None
     if progress:
@@ -1123,11 +1235,16 @@ async def _run_import(
                 await db.execute(_IMPORT_ESTIMATE,
                                  {"id": account_id, "estimate": total})
 
+    # EM-T6f review P1: the full meter runs after the first batch and near the
+    # limit only. Each other batch adds the growth of its own rows.
+    meter = storage.ImportMeter(account_id)
     async with aclosing(provider.import_batches(
             since=floor, until=until, size=IMPORT_BATCH_SIZE,
             on_estimate=on_estimate)) as batches:
         async for batch in batches:
+            pids = [m.provider_message_id for m in batch if m.provider_message_id]
             async with tenant_session(org) as db:
+                await meter.before_write(db, pids)
                 kept, _, _ = await _write_messages(
                     db, account_id, batch, floor,
                     reclaim=getattr(provider, "REKEYS_MESSAGE_IDS", False))
@@ -1136,7 +1253,7 @@ async def _run_import(
                     await db.execute(_IMPORT_BATCH, {
                         "id": account_id, "reached": _oldest_received(kept),
                         "count": count})
-                stored = await storage.measure_stored_bytes(db, account_id)
+                stored = await meter.after_write(db, pids)
             tally["written"] += len(kept)
             if snapshot is not None:
                 snapshot.extend((m.provider_message_id, m.folder, m.received_at)
@@ -1144,7 +1261,8 @@ async def _run_import(
             if storage.at_limit(stored):
                 tally["limit"] = True
                 logger.info("sync.import_stopped_at_limit account=%s stored=%d "
-                            "written=%d", account_id, stored, tally["written"])
+                            "written=%d full_meters=%d", account_id, stored,
+                            tally["written"], meter.full_meters)
                 break
             read += len(batch)
             if isinstance(cycle_mails, int) and read >= cycle_mails:
@@ -1167,8 +1285,9 @@ async def _run_import(
         end = _IMPORT_LIMIT if tally["limit"] else _IMPORT_DONE
         async with tenant_session(org) as db:
             await db.execute(end, {"id": account_id})
-        logger.info("sync.import_done account=%s count=%d limit=%s",
-                    account_id, count, tally["limit"])
+        logger.info("sync.import_done account=%s count=%d limit=%s "
+                    "full_meters=%d", account_id, count, tally["limit"],
+                    meter.full_meters)
 
 
 def _credentials_json(provider: Any) -> str | None:
@@ -1566,7 +1685,10 @@ async def _sync_cycle(
     The work runs in phases, and each phase is its own ``tenant_session(org)``
     with no ``commit()`` (EM-T1b-1 item 6):
 
-    (a) read the account, set ``syncing``, write the ``email_sync_log`` row;
+    (a) read the account, set ``syncing``, write the ``email_sync_log`` row.
+        A loop cycle first resumes an import that the storage limit stopped,
+        when the meter is under the limit again (EM-T6f,
+        ``_resume_at_storage_limit``);
     (b) authenticate and fetch from the provider with NO session open — a
         rotated token is persisted in a short session between the two calls.
         The first import, or the deep sync of a member act, runs here in
@@ -1629,21 +1751,21 @@ async def _sync_cycle(
     try:
         # ── (a) the account row, the 'syncing' status and the log row ──────
         async with tenant_session(org) as db:
-            row = (await db.execute(
-                text(
-                    """SELECT id, provider, credentials_encrypted, last_history_id,
-                              sync_interval_secs, initial_sync_done,
-                              import_since, import_reached_at, import_count,
-                              last_synced_at, created_at,
-                              clock_timestamp() AS db_now
-                       FROM email_accounts
-                       WHERE id = :id"""
-                ),
-                {"id": account_id},
-            )).fetchone()
+            row = (await db.execute(_ACCOUNT_ROW, {"id": account_id})).fetchone()
             if not row:
                 # ``gone`` tells the loop to stop (EM-T4f part 2).
                 return dict(ACCOUNT_GONE)
+
+            # EM-T6f: a loop cycle resumes an import that the storage limit
+            # stopped, once the meter is under the limit. The write runs here,
+            # under the mailbox lock, and the row is read again, so this cycle
+            # runs the import as a first import that goes on.
+            if (from_loop and deep is None
+                    and await _resume_at_storage_limit(db, account_id, row)):
+                row = (await db.execute(
+                    _ACCOUNT_ROW, {"id": account_id})).fetchone()
+                if not row:
+                    return dict(ACCOUNT_GONE)
 
             # The resync (EM-T4f fix round 2): the purge and the cursor reset
             # run here, under the mailbox lock, so a tick that ran before it
