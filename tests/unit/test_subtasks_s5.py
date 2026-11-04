@@ -322,7 +322,7 @@ def patch_door(monkeypatch):
     async def load_visible_task(db, vis, task_id):
         return PARENT
 
-    async def apply_status_transition(db, task, status_id, *, created_by):
+    async def apply_status_transition(db, task, status_id, *, created_by, completed_at=None):
         return {
             "row": task,
             "from": SimpleNamespace(name="To do"),
