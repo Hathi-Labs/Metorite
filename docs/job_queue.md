@@ -167,6 +167,12 @@ await queue.enqueue(db, "email.send_later", {"draft_id": draft_id},
 
 A kind matches `[a-z][a-z0-9_.]{0,63}`.
 
+**State the effect (BR-7a).** `register` takes `effect`: `read`, `own_rows`,
+`send` or `write`. A `send` or `write` kind also names its `policy`, and
+`register` refuses it without one. `tests/unit/test_job_effects_fence.py`
+fails on a kind with no effect, on a `register` call in `gateway/` with no
+`effect=`, and on a send seam in the `gateway/brief/` imports.
+
 **A producer on a member's write.** `align/trigger.py::enqueue_check` (WS-ALN
 ALN-1) enqueues `align.check` on the session of a task write, inside
 `db.begin_nested()`. So the write and the job commit together, and a failed
@@ -287,6 +293,10 @@ worker.register("email.send_later", send, mode="detached", idempotent=True)
   one newest row give one live job. `chat_summary_job.py` adds the hook at
   import, and `main.py` imports it. `personalization.md` §15.3 and §15.9
   hold the design.
+- **The third consumer (BR-2d, built dark).** `brief/monitor.py` seeds the
+  session kind `brief.slo` once each hour and org, with the dedupe key
+  `slo:<hour>`. It logs `brief.slo_missed` at error when the org is under
+  99% on time over 7 days. `core_brief.md` §7 holds the rules.
 - **Fence.** `test_r8_run_org_runs_each_seed_hook_once_for_each_org_and_bucket`
   in `test_job_queue.py`.
 
