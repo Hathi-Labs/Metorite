@@ -119,6 +119,7 @@ import { NotificationBell } from "./components/NotificationBell";
 import { shellDockOn } from "@/lib/shell/dockFlag";
 import { shellChatOn } from "@/lib/shell/chatFlag";
 import { useAssistantFacts } from "@/lib/shell/assistant";
+import { TASK_CARD_FRAME } from "@/lib/layers";
 import { projectsAssistantFacts } from "./lib/assistantFacts";
 import { assistantLevel, describeFilters } from "./lib/assistantPersona";
 import { type CreatingDraft, ProjectTree } from "./components/ProjectTree";
@@ -5580,9 +5581,11 @@ function ProjectsWorkspace() {
         {taskPanel ? (
           // The panel's own `max-w-sm` (384px) is a docked-column width; on a phone the
           // surface IS the screen, so the cap is lifted here rather than in the
-          // panel, which knows nothing about the shell. `z-[60]` clears the
-          // bottom nav (z-50); the panel closes from its own ✕.
-          <div className="fixed inset-0 z-[60] flex bg-background pt-safe pb-safe [&>aside]:max-w-none">
+          // panel, which knows nothing about the shell. TC-1 (2026-11-03): the card
+          // ends ABOVE the bottom nav, so the Ask tab stays in reach, and it sits
+          // below the nav and the assistant sheet (`lib/layers.ts`). The panel
+          // closes from its own ✕.
+          <div className={`${TASK_CARD_FRAME.phone} flex bg-background pt-safe [&>aside]:max-w-none`}>
             {taskPanel}
           </div>
         ) : null}
@@ -5813,12 +5816,14 @@ function ProjectsWorkspace() {
       </div>
       </SidePanelFitContext.Provider>
 
-      {/* WS-27ab — the `full` stop. A scrim plus the same panel, at the same
+      {/* TC-1 (2026-11-03): the card fills the page column, not the window, so the
+          shell bar, the Ask bar and the docked assistant stay in view (D172.4).
+          WS-27ab — the `full` stop. A scrim plus the same panel, at the same
           `max-w-3xl` reading width `/tasks`' maximise-out-of-the-pane uses.
           Clicking the scrim closes it; the panel keeps its own ✕ and Escape. */}
       {taskPanel && isOverlayMode(panelMode) ? (
         <div
-          className="fixed inset-0 z-50 flex items-stretch justify-center bg-background/70 p-4 sm:p-8"
+          className={`${TASK_CARD_FRAME.desktop} flex items-stretch justify-center bg-background/70 p-4 sm:p-8`}
           role="presentation"
           onClick={() => setOpenTask(null)}
         >

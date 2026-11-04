@@ -129,8 +129,8 @@ function TasksPageBody() {
   const [maximisedFor, setMaximisedFor] = useState<string | null>(null);
   const taskItems = useTaskStore((s) => s.items);
   const assistantFacts = useMemo(
-    () => (chatOn ? tasksAssistantFacts({ items: taskItems, selectedView, openItemId: selectedItemId }) : null),
-    [chatOn, taskItems, selectedView, selectedItemId],
+    () => (chatOn ? tasksAssistantFacts({ items: taskItems, selectedView, openItemId: focusedItemId ?? selectedItemId }) : null),
+    [chatOn, taskItems, selectedView, selectedItemId, focusedItemId],
   );
   useAssistantFacts(assistantFacts);
   const isInbox = selectedView === "inbox";
