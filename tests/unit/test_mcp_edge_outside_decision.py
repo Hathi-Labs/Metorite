@@ -742,7 +742,7 @@ class TestTheRefusals:
         assert _run_status(runs, run_id) == "awaiting"
 
     async def test_d10_the_same_key_replays_and_a_used_key_is_refused(self, runs):
-        task, run_id, asked = await _asked(runs, "d10 replay")
+        _, run_id, _ = await _asked(runs, "d10 replay")
         key = _key()
         first = _structured(await _record(runs, run_id, key=key))
         again = _structured(await _record(runs, run_id, key=key))
@@ -750,7 +750,7 @@ class TestTheRefusals:
         assert again["activity"]["id"] == first["activity"]["id"]
         assert [r.type for r in _activities(runs, run_id)] == ["elicitation", "response"]
         # The key of the question is not the key of an outside decision.
-        _, run2, asked2 = await _asked(runs, "d10 used key")
+        _, run2, _ = await _asked(runs, "d10 used key")
         r = await _agent(runs, TOOL, run_id=run2, decision="Approve", where="chat",
                          idempotency_key=_activities(runs, run2)[0].idempotency_key)
         assert _text(r) == tools.TEXT_OUTSIDE_KEY_USED
