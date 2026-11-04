@@ -841,6 +841,19 @@ class Settings(BaseSettings):
     # reload applies a change (`gateway/flag_reload.py`). Fence:
     # tests/unit/test_decisions.py.
     decisions_orgs: str = ""
+    # ── Park and ask (WS-AUTO AUTO-7b, proactive_agent.md §4.2) ─────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, the approval gate of a workflow run with no person
+    # present asks the workflow's owner through ONE decision, instead of a
+    # broker proposal. `decisions_orgs` must list the org too. Off, the gate
+    # files the broker proposal of AUTO-7a, byte for byte. The one reader is
+    # `gateway.routes.workflows.park.park_allowed`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). Fence: tests/unit/test_auto_park.py.
+    # ⚠️ The wait scan settles a parked gate only for an org on
+    # `workflow_unattended_orgs`. If the org leaves that list, a yes resumes
+    # nothing and no expiry ends the run, until the org is on it again.
+    auto_park_orgs: str = ""
     # ── Guidance for agents (WS-MCP SW-31a, agent_coordination.md SW-31) ────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -974,6 +987,20 @@ class Settings(BaseSettings):
     # mail may write, so name the flag and the box in the same message.
     # Fence: tests/unit/test_held_card_writes.py.
     held_card_writes_orgs: str = ""
+
+    # ── The one email card of a new mail (email_app_master_plan.md §18.10) ──
+    #
+    # `email_edit_card_orgs` lists the organization ids whose chat shows a new
+    # mail on the ONE email card that the member edits, or `*` for each one.
+    # Empty means off, and a new mail shows the cards of before: the plain send
+    # card, and the rows card of a held chat. The one reader is
+    # `acb_skills.reply_card.edit_card_on`, and it fails closed. The name ends
+    # in `_orgs`, so a SIGHUP applies a change with no restart.
+    #
+    # A value on a box is an `enforcement-flip`: it changes the card of a send.
+    # Name the flag and the box in the same message.
+    # Fence: tests/unit/test_email_new_mail_card.py.
+    email_edit_card_orgs: str = ""
 
     # ── Web research (WS-WEB, D148, `web_research.md` §3.2 and §11) ─────────
     #
@@ -1764,11 +1791,13 @@ class Settings(BaseSettings):
     email_outlook_delta_accounts: str = ""
 
     # The storage limit of ONE mailbox, in MB (WS-17 EM-T6c, D-EM-14, owner
-    # answer Q1). The meter counts the copy that Metorite keeps, never the
-    # mailbox in Outlook. ``email_ingestion.storage`` reads it, and the limit
-    # in bytes is this value times 1,048,576. A change on a box is gate
-    # ``env-write``. Fence: tests/unit/test_email_storage_limit.py.
-    email_mailbox_storage_limit_mb: int = 500
+    # answer Q1). It is 2 GB since the owner's word of 2026-11-04. The meter
+    # counts the copy that Metorite keeps, never the mailbox in Outlook.
+    # ``email_ingestion.storage`` reads it, and the limit in bytes is this
+    # value times 1,048,576. A mailbox that the old limit stopped goes on
+    # with its import at its next loop cycle (EM-T6f). A change on a box is
+    # gate ``env-write``. Fence: tests/unit/test_email_storage_limit.py.
+    email_mailbox_storage_limit_mb: int = 2048
 
     # ── The HTML hot window (WS-17 EM-S1, D-EM-49) ──────────────────────────
     #

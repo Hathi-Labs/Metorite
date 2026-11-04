@@ -47,6 +47,8 @@ interface ConfirmationQueueProps {
   onAnswer: (card: PendingConfirmation, answer: ConfirmationAnswer) => void;
   /** The card to show first. Tests and the visual rig set it. */
   initialIndex?: number;
+  /** Put words in the chat box, and send nothing (a new-mail card's chips, §18.10). */
+  onSuggest?: (text: string) => void;
 }
 
 /** The index the queue shows: the one asked for, held inside the list. */
@@ -92,7 +94,7 @@ export function reconcileShown(
   return { keys, shown: opened !== null ? { key: opened, index: 0 } : shown };
 }
 
-export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0 }: ConfirmationQueueProps) {
+export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0, onSuggest }: ConfirmationQueueProps) {
   const [shown, setShown] = useState<Shown>({ key: null, index: initialIndex });
   // The member's ticks of every card with rows, by key. The queue holds
   // them, so a page away and back keeps them (PR #691 review). The logic is
@@ -150,7 +152,7 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
       }}
       onReject={() => onAnswer(card, "REJECT")}
       // EM-CR: a reply card answers with the member's choice and body.
-      {...(card.reply !== undefined ? { reply: card.reply, onReply: (a: ReplyApproval) => onAnswer(card, a) } : {})}
+      {...(card.reply !== undefined ? { reply: card.reply, onReply: (a: ReplyApproval) => onAnswer(card, a), onSuggest } : {})}
       // The tab row sits inside the card's frame, and the card is its panel.
       {...(tabbed
         ? {

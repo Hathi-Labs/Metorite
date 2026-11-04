@@ -652,7 +652,8 @@ def _tool_results(model: ScriptedModel) -> list[str]:
 
 def _drive(monkeypatch, srv, model, *, payload=None, answer: str | None = None,
            thread: str = "thread-h299-e2e", shows_cards: bool = True,
-           always_confirm: bool | None = None, read_only_key: bool | None = None):
+           always_confirm: bool | None = None, read_only_key: bool | None = None,
+           session_user: str | None = None):
     set_flag(monkeypatch, _ORG)
     RegistrySpy([row("probe-srv", org=_ORG, url=srv.url,
                      always_confirm=always_confirm,
@@ -673,7 +674,7 @@ def _drive(monkeypatch, srv, model, *, payload=None, answer: str | None = None,
         events, built = drive_native(
             _AGENT, "apps/agents/agent-apis-config", monkeypatch, model,
             thread_id=thread, extra_payload=payload, on_event=_on_event,
-            shows_cards=shows_cards,
+            shows_cards=shows_cards, session_user=session_user,
         )
     return events, built, seen, logs
 
@@ -736,6 +737,48 @@ def test_a_run_with_no_member_refuses_end_to_end(monkeypatch):
     assert seen["cards"] == [], "a run with no member showed a card"
     assert srv.calls == []
     assert any("no member can confirm" in r for r in _tool_results(model))
+
+
+def _a_session_member(monkeypatch: pytest.MonkeyPatch, email: str) -> None:
+    """The REAL ``_integration_authorizer``, over an active member that the
+    access read finds. Only the database read is replaced."""
+    import acb_auth
+
+    from acb_auth import build_access
+
+    access = build_access(["integrations:use:*"])
+
+    async def _resolve(_email: str, **_k: Any) -> Any:
+        return access
+
+    async def _fold(_thread: Any, actor: Any) -> Any:
+        return access, [actor]
+
+    monkeypatch.setattr(acb_auth, "resolve_access", _resolve)
+    monkeypatch.setattr(acb_auth, "resolve_session_access", _fold)
+
+
+@pytest.mark.usefixtures("_a_tenant")
+def test_a_session_member_with_no_body_claim_gets_the_card_end_to_end(monkeypatch):
+    """🔴 MCP-C1. The web chat route removes the body's ``user_email``
+    (H-337) and passes the member as ``session_user``. The real access check
+    must find that member, so the card shows and an approved tool runs.
+    Before the fix, every web chat refused it with ``no_member`` (production,
+    2026-11-04)."""
+    member = "sharat@c1.test"
+    _a_session_member(monkeypatch, member)
+    with local_mcp_server() as srv:
+        model = ScriptedModel([
+            tool_turn("probe-srv_delete_record", '{"record_id": "r-9"}'), text_turn("done"),
+        ])
+        events, _built, seen, logs = _drive(
+            monkeypatch, srv, model, answer="APPROVE", session_user=member)
+    assert not [e for e in events if e.get("type") == "RUN_ERROR"], events
+    refused = [e for e in logs if e["event"] == "mcp.confirm"
+               and e.get("outcome") in ("no_member", "no_channel")]
+    assert refused == [], "a web chat member could not answer the card"
+    assert len(seen["cards"]) == 1, "the destructive tool showed no card"
+    assert srv.calls == ["delete:r-9"], "the approved tool did not run"
 
 
 # ── Hardening: review of PR #888 (three P2s and two nits) ────────────────────

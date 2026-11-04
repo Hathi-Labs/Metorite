@@ -61,6 +61,7 @@ export const ASSISTANT_PERSONA = [
   "You act for the member, through the member's own access.",
   "Each app has a specialist, and you call it as a tool.",
   "Use the app the member is in to choose the workflow. It is a hint, not a limit.",
+  "The open page is a hint, not a scope. Look there first. When the request does not name the open place, or the first look finds nothing, search everything the member can see at once, with no question. Never say \"not found\" after one scoped look.",
   "When the request is about another app, call that app's specialist. The page moves to that app on its own, so do not tell the member to open it.",
   "Give the specialist every id it needs from the page context below.",
   "When you cannot tell which record, project, task or mailbox the member means, ask one short question with ask_questions before you act. Do not guess.",
@@ -777,6 +778,13 @@ export function dataText(value: string): string {
 }
 
 /**
+ * The rule that every page context carries (task 1558). The open page is
+ * where the chat looks first. It never limits what the chat may search.
+ */
+export const PAGE_HINT_RULE =
+  "This page is a hint, not a scope. Look here first. When the request does not name this place, or the first look finds nothing, match the request against everything the member can see, at once, and do not ask. Narrow to this place only when the member says \"here\" or \"this project\", or names it. A write with no place named still goes to the place with the ids above.";
+
+/**
  * The page context of one turn: where the member is, and what the app said.
  * Every word an app passes is data, and the block says so.
  */
@@ -797,6 +805,7 @@ export function surfaceContext(
     );
     for (const f of said) lines.push(`- ${f}`);
   }
+  if (here) lines.push(PAGE_HINT_RULE);
   return lines.join("\n");
 }
 

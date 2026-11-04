@@ -510,6 +510,8 @@ async def test_the_response_says_what_happened_table_by_table(
         "sign_in_requests": 1,
         # WS-53 CRM-Q33: the fake holds no CRM rule of the member.
         "crm_member_rules": 0,
+        # WS-CRM CRM-M1: the fake holds no private Change history row.
+        "crm_private_changes": 0,
         # WS-61 KB-2f: the fake holds no star of the member.
         "knowledge_favorites": 0,
         # WS-66 RM-1: her two private reminders. The ledger goes by cascade.
@@ -889,6 +891,31 @@ def test_the_goals_of_this_org_go_and_no_other() -> None:
     keys = [r.key for r in _PURGE_DELETES]
     assert keys.index("goal_records") < keys.index("member_record")
     assert cascade_closure("goal_records") == set()
+
+
+def test_the_member_s_private_change_history_goes() -> None:
+    """WS-CRM CRM-M1: the Change history rows private to the member go.
+
+    A row private to the member holds the text of a private view or an own
+    rule, which only the member reads, so the row goes too. The purge
+    deletes the own rules, and not the saved views. The clause keys on
+    ``private_to``, not on the actor, because an admin may change a
+    member's rule and that row is still the member's. The org's rows stay
+    with the address, as ``app_audit`` does, and are not on the keep side.
+
+    ⚠️ Mutation-checked: dropping the entry fails here and in the count dict
+    above.
+    """
+    from gateway.routes.admin.members import _PURGE_DELETES, _PURGE_KEEPS
+    from gateway.routes.tasks.settings import _BOUND_ORG
+
+    [gone] = [r for r in _PURGE_DELETES if r.table == "crm_change_log"]
+    assert gone.key == "crm_private_changes"
+    assert gone.where == (
+        f"lower(private_to) = :email AND organization_id = {_BOUND_ORG}")
+    assert "crm_change_log" not in {r.table for r in _PURGE_KEEPS}
+    keys = [r.key for r in _PURGE_DELETES]
+    assert keys.index("crm_private_changes") < keys.index("member_record")
 
 
 def test_the_two_halves_of_chat_session_partition_it() -> None:

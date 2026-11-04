@@ -257,9 +257,9 @@ def register_jobs(*, replace: bool = False) -> None:
     """Register the two kinds, the seed hook and the prune hook. Safe to
     call twice: a hook is added once."""
     worker.register(planner.PLAN_KIND, planner.plan, mode="detached", idempotent=True,
-                    replace=replace)
+                    replace=replace, effect="own_rows")
     worker.register(planner.RUN_KIND, run, mode="detached", idempotent=True,
-                    replace=replace)
+                    replace=replace, effect="own_rows")
     if planner.seed not in worker.seed_hooks:
         worker.seed_hooks.append(planner.seed)
     if prune not in worker.prune_hooks:

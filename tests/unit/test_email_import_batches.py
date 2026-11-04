@@ -926,7 +926,10 @@ async def test_a_deep_sync_of_a_member_act_writes_no_progress(core) -> None:
     progress_writes = ("import_phase", "SET import_estimate",
                        "import_count = :count", "import_reached_at = COALESCE",
                        "initial_sync_done =")
-    for sql in (s for _, s, _ in core.log):
+    # Phase (a) reads ``import_phase`` for the resume at the storage limit
+    # (EM-T6f). A read is no progress, so only the writes count.
+    for sql in (s for _, s, _ in core.log
+                if not s.lstrip().upper().startswith("SELECT")):
         assert not any(w in sql for w in progress_writes), sql
     # Each batch still has its own block.
     assert core.upserts[0][0] != core.upserts[1][0]

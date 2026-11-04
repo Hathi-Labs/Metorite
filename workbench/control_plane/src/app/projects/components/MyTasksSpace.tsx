@@ -44,7 +44,7 @@ import {
   projectsKey,
 } from "../lib/api";
 import { type AttentionPage, LENS_LABEL } from "../lib/needsAttention";
-import { EMPTY_FILTERS, type Filters, type GroupBy, NO_LANES, type BoardLanes, type SubtaskMode, groupTasks, toQuery } from "../lib/grouping";
+import { EMPTY_FILTERS, type Filters, type GroupBy, NO_LANES, type BoardLanes, type SubtaskMode, groupTasks, isFiltered, toQuery } from "../lib/grouping";
 import { DEFAULT_SHOWN } from "../lib/shownFields";
 import { appendTasks, nextTaskPage } from "../lib/paging";
 import { chromeKind, loadedOfTotal } from "../lib/compactChrome";
@@ -61,15 +61,18 @@ import {
   type OwnStatuses,
   chipCount,
   chipNeedsEveryPage,
+  MY_TASKS_EMPTY_TEXT,
   chipRows,
   mineStatuses,
   myTasksQuery,
+  myTasksTrulyEmpty,
   planMineDrop,
   quickAddHome,
   stageGroups,
   truncationNotice,
 } from "../lib/myTasks";
 import { useSubtaskComplete } from "./useSubtaskComplete";
+import { useTaskUndo } from "./useTaskUndo";
 import { myDayLink } from "../lib/reportEntry";
 import { FilterChrome } from "./CompactFilterBar";
 import { CalendarView } from "./CalendarView";
@@ -149,7 +152,8 @@ export function MyTasksActionRow({
   onCapture,
 }: {
   view: MyTasksView;
-  onView: (next: MyTasksView) => void;
+  /** `pick` is true for an explicit tab choice, so the page keeps it. */
+  onView: (next: MyTasksView, pick?: boolean) => void;
   attentionCount: number | null;
   onReport: (href: string) => void;
   onCapture: () => void;
@@ -160,7 +164,7 @@ export function MyTasksActionRow({
         modes={MODE_OPTIONS}
         mode={view.attention ? null : view.mode}
         layout="toolbar"
-        onPick={(mode) => onView({ ...view, mode, attention: false })}
+        onPick={(mode) => onView({ ...view, mode, attention: false }, true)}
       />
       <Button
         variant="ghost"
@@ -229,7 +233,8 @@ export function MyTasksChips({
 
 interface Props {
   view: MyTasksView;
-  onView: (next: MyTasksView) => void;
+  /** `pick` is true for an explicit tab choice, so the page keeps it. */
+  onView: (next: MyTasksView, pick?: boolean) => void;
   /** A phone, with the compact chrome. The tabs then live in the View sheet. */
   phone: boolean;
   compactChrome: boolean;
@@ -250,6 +255,8 @@ interface Props {
   onReport: (href: string) => void;
   /** Bumped by the page when the panel changed a task, so the rows read again. */
   version: number;
+  /** PJP-12a — opens the project tree, the way the sidebar does. */
+  onOpenProjects: () => void;
 }
 
 const NO_ROWS: TaskRow[] = [];
@@ -270,6 +277,7 @@ export default function MyTasksSpace({
   onOpenProject,
   onReport,
   version,
+  onOpenProjects,
 }: Props) {
   const { mode, chip, attention } = view;
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
@@ -287,6 +295,8 @@ export default function MyTasksSpace({
   const again = useCallback(() => setReload((n) => n + 1), []);
   useLiveRefresh(again, "projects");
   const subtaskComplete = useSubtaskComplete();
+  // UNDO-1 — a board write and a calendar drag on My tasks offer Undo.
+  const taskUndo = useTaskUndo();
 
   // ── The summary, the Overview and the chips ────────────────────────────
   const summary = useMySummary(true);
@@ -506,7 +516,15 @@ export default function MyTasksSpace({
         const asked = await subtaskComplete.changeStatus(task, status, own.rows, () => reloadAll());
         if (asked) return;
       }
-      await projectsApi.patchTask(task.id, plan.patch);
+      const fresh = await projectsApi.patchTask(task.id, plan.patch);
+      // UNDO-1 (fix round 1, finding 4) — the drag, the Mark-done tick and
+      // the Status menu take the SAME undo path as the project board.
+      const lane = status ? own.rows.find((s) => s.id === status)?.name : null;
+      taskUndo.edited(task, plan.patch, fresh, {
+        label: `moved ${task.title}`,
+        receipt: lane ? `Moved to ${lane}` : "Task moved",
+        after: reloadAll,
+      });
     } catch (err) {
       setWriteError(String((err as Error).message));
     }
@@ -568,14 +586,23 @@ export default function MyTasksSpace({
   // A chip other than All reads at most MY_TASKS_MAX_ROWS rows. Past that it
   // says so, in the place of the board's "Load more" bar (item 5).
   const truncated = wantsAll && listMode && listLoaded ? truncationNotice(list.rows.length, list.total) : null;
-  const emptyChip =
+  // PJP-12a — chip All, read done, no row, no filter: the member has no tasks.
+  const trulyEmpty = myTasksTrulyEmpty({ chip, loaded: listLoaded, total: list.total ?? list.rows.length, filtered: isFiltered(filters) });
+  const emptyChip = trulyEmpty ? (
+    <EmptyState
+      icon="ListChecks"
+      message={MY_TASKS_EMPTY_TEXT}
+      action={{ label: "Go to Projects", icon: "FolderKanban", onClick: onOpenProjects }}
+    />
+  ) : (
     chip !== "all" && listLoaded && shown.length === 0 ? (
       <EmptyState
         icon="ListChecks"
         message={`Nothing in ${MY_TASKS_CHIPS.find((c) => c.id === chip)?.label ?? chip}.`}
         action={{ label: "Show all", icon: "List", onClick: () => onView({ ...view, chip: "all" }) }}
       />
-    ) : null;
+    ) : null
+  );
 
   return (
     <div className="flex min-w-0 flex-1 flex-col overflow-hidden" data-testid="my-tasks-space" data-mode={mode}>
@@ -592,7 +619,7 @@ export default function MyTasksSpace({
             phone={phone}
             // On a phone the tabs live in the View sheet (OP-1).
             modes={MODE_OPTIONS}
-            onMode={(next) => onView({ ...view, mode: next as MyTasksMode })}
+            onMode={(next) => onView({ ...view, mode: next as MyTasksMode }, true)}
             resultCount={list.total}
             loadedLabel={loadedOfTotal(list.rows.length, list.total)}
             agentSummary={null}
@@ -709,6 +736,13 @@ export default function MyTasksSpace({
                 setWriteError(null);
                 void projectsApi
                   .patchTask(task.id, patch)
+                  .then((fresh) =>
+                    taskUndo.edited(task, patch, fresh, {
+                      label: `rescheduled ${task.title}`,
+                      receipt: "Task rescheduled",
+                      after: reloadAll,
+                    }),
+                  )
                   .catch((err: unknown) => setWriteError(String((err as Error).message)))
                   .finally(reloadAll);
               }}

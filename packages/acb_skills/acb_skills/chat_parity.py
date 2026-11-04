@@ -287,6 +287,10 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/email/drafts": "edit_draft",
     "PUT /api/email/voice-profile": "voice_profile",
     # ── CRM ──
+    # WS-CRM CRM-M1: the chat reaches this tool through the `crm-records`
+    # pack, and the CRM assistant holds it. The orchestrator's base does not
+    # (tests/unit/test_crm_change_history.py holds the reach).
+    "GET /api/crm/change-history": "crm_change_history",
     "GET /api/crm/deals/{}/contacts": "crm_deal_contacts",
     "GET /api/crm/fields/{}": "crm_list_fields",
     "GET /api/crm/lost-reasons": "update_deal_status",
@@ -353,6 +357,13 @@ COVERED: dict[str, str | tuple[str, str]] = {
     "PUT /api/auth/me/assistant-profile": ("profile_set", "PUT /auth/me/assistant-profile"),
     # ── AI Studio (STU-F2d) ──
     "GET /api/studio/actions": "studio_list_actions",
+    # STU-D2b: the READ side of a package page. The door POST is a list from chat. A create,
+    # an update and a delete from chat wait for B2c-2 (no chat call carries a direct proof,
+    # so the door answers 403 approval_required). The fence reads only the route, so it
+    # cannot see that gap. chat_parity.md section 4 names it.
+    "GET /api/studio/packages": "studio_package_get",
+    "GET /api/studio/packages/{}": "studio_package_get",
+    "POST /api/studio/apps/{}/actions/{}": "studio_record_list",
     "GET /api/studio/skills": "studio_skill_list",
     "GET /api/studio/skills/{}": "studio_skill_list",
     "PATCH /api/studio/skills/{}/state": "studio_skill_state",
