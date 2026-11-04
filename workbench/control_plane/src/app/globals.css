@@ -406,6 +406,10 @@ html[data-look="glass"] {
   --glass-edge: rgb(255 255 255 / 0.1);
   --glass-highlight: rgb(255 255 255 / 0.14);
   --glass-shadow: 0 10px 34px rgb(0 0 0 / 0.55), 0 1px 3px rgb(0 0 0 / 0.3);
+  /* A panel that floats over the live page (the sidebar's peek): a crisp
+     edge and a deep lift, so it parts from the page under it. */
+  --glass-float-shadow: 0 0 0 0.5px rgb(255 255 255 / 0.16), 0 2px 6px rgb(0 0 0 / 0.35),
+    0 16px 40px rgb(0 0 0 / 0.55), 0 40px 90px rgb(0 0 0 / 0.45);
   /* Menus: near-opaque, because a menu opened inside glass cannot blur what
      is behind that glass (backdrop-filter stops at the nearest blurred
      ancestor). */
@@ -498,6 +502,8 @@ html[data-look="glass"].light {
   --glass-edge: rgb(0 0 0 / 0.07);
   --glass-highlight: rgb(255 255 255 / 0.9);
   --glass-shadow: 0 10px 34px rgb(0 0 0 / 0.08), 0 1px 3px rgb(0 0 0 / 0.05);
+  --glass-float-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.12), 0 2px 6px rgb(0 0 0 / 0.06),
+    0 12px 32px rgb(0 0 0 / 0.14), 0 32px 80px rgb(0 0 0 / 0.12);
   --glass-thick-bg: rgb(248 248 250 / 0.94);
   --card-shadow: 0 0 0 0.5px rgb(0 0 0 / 0.07), 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 14px rgb(0 0 0 / 0.035);
 
@@ -2404,6 +2410,16 @@ html[data-look="glass"] .sidebar-rail[data-peek] [data-rail-row]:not([aria-curre
 html[data-look="glass"] .sidebar-rail[data-peek] {
   background-color: transparent;
 }
+/* The peek lies over the live page, and its tint is within a few percent of
+   the page's own (owner, 2026-11-03: "they are mixing into each other"). So
+   it parts from the page by its edge and its lift, never by a second colour:
+   a crisp hairline and a deeper shadow than a menu's. The lift holds while
+   the peek closes, so it does not drop off mid-motion. */
+html[data-look="glass"] .sidebar-rail[data-peek] {
+  box-shadow:
+    inset 0 0.5px 0 0 var(--glass-highlight),
+    var(--glass-float-shadow);
+}
 html[data-look="glass"] .sidebar-rail[data-peek]::before {
   content: "";
   position: absolute;
@@ -2691,89 +2707,6 @@ html.ask-morph::view-transition-new(ask-panel) {
 }
 .animate-bounce-subtle {
   animation: bounce-subtle 1.5s ease-in-out infinite;
-}
-
-/* A stack of cards that wait on the member (components/ui/CardStack.tsx,
-   owner 2026-10-24: "the card moves a little bit to the side in slight
-   angle and then comes back like a spring … almost like Tinder"). The top
-   card swings out once, turned, and springs back past its rest; the card
-   behind lifts as it goes. A release after a drag uses the spring easing.
-   With reduced motion nothing moves, and the banner and the edges say it. */
-@keyframes card-stack-nudge {
-  0%   { transform: translateX(0) rotate(0); }
-  30%  { transform: translateX(-28px) rotate(-4deg); }
-  52%  { transform: translateX(9px) rotate(1.2deg); }
-  70%  { transform: translateX(-4px) rotate(-0.5deg); }
-  85%  { transform: translateX(2px) rotate(0.2deg); }
-  100% { transform: translateX(0) rotate(0); }
-}
-@keyframes card-stack-lift {
-  0%, 100% { translate: 0 0; scale: 1; }
-  30%      { translate: 0 -6px; scale: 1.02; }
-}
-@media (prefers-reduced-motion: no-preference) {
-  .card-stack-nudge[data-nudge] {
-    transform-origin: 50% 100%;
-    animation: card-stack-nudge 1.25s var(--motion-easing) 0.35s 1 both;
-  }
-  .card-stack-lift {
-    animation: card-stack-lift 1.25s var(--motion-easing) 0.35s 1;
-  }
-}
-
-/* A change of card moves as the deck does (`swapStackCard`, owner
-   2026-11-01: "make the animation for the task cards better when I switch
-   between the cards"). Forward, the card left is thrown to the left and
-   turned, as a swipe throws it, and the next one rises from the deck on the
-   spring. Back is the mirror: the card comes back from the left on the
-   spring, and the one left sinks into the deck. The card that moves to the
-   side is always on top. The page does not cross-fade: the tabs and the
-   deck's edges stay live under the card. */
-/* ⚠️ The card on top stays SOLID while it moves, and fades only at its far
-   end. A card that faded the whole way let the one under it show through,
-   and the two read as a double exposure (measured 2026-11-01). The card
-   below is whole from the start: it is the deck's next card. */
-@keyframes card-swap-throw {
-  55%  { opacity: 1; }
-  100% { transform: translateX(-55%) rotate(-8deg); opacity: 0; }
-}
-@keyframes card-swap-rise {
-  from { transform: translateY(10px) scale(0.96); }
-}
-@keyframes card-swap-return {
-  0%  { transform: translateX(-55%) rotate(-8deg); opacity: 0; }
-  35% { opacity: 1; }
-}
-@keyframes card-swap-sink {
-  70%  { opacity: 1; }
-  100% { transform: translateY(10px) scale(0.96); opacity: 0; }
-}
-html.card-swap::view-transition-old(root),
-html.card-swap::view-transition-new(root) {
-  animation: none;
-}
-html.card-swap::view-transition-group(stack-card) {
-  animation-duration: var(--panel-duration);
-  animation-timing-function: var(--panel-easing);
-}
-html.card-swap::view-transition-old(stack-card),
-html.card-swap::view-transition-new(stack-card) {
-  transform-origin: 50% 100%;
-  mix-blend-mode: normal;
-}
-html.card-swap[data-card-swap="next"]::view-transition-old(stack-card) {
-  z-index: 1;
-  animation: card-swap-throw var(--panel-duration) var(--panel-easing) both;
-}
-html.card-swap[data-card-swap="next"]::view-transition-new(stack-card) {
-  animation: card-swap-rise var(--spring-duration) var(--spring-easing) both;
-}
-html.card-swap[data-card-swap="prev"]::view-transition-old(stack-card) {
-  animation: card-swap-sink var(--panel-duration) var(--panel-easing) both;
-}
-html.card-swap[data-card-swap="prev"]::view-transition-new(stack-card) {
-  z-index: 1;
-  animation: card-swap-return var(--spring-duration) var(--spring-easing) both;
 }
 
 /* ── Scrollbars ────────────────────────────────────────────── */

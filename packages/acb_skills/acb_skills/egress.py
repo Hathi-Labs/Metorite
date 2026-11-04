@@ -1337,6 +1337,7 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "edit_task": _pin("task_id"),
     "file_tasks": _pin("moves include_subtasks"),
     "unarchive_task": _pin("task_id"),
+    "update_tasks": _pin("changes"),
     "watch": _pin("target_id kind stop"),
     # The class B tools of projects-plan.
     "add_task_ref": _pin("task_id url title"),

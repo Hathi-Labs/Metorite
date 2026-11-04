@@ -72,7 +72,8 @@ def test_every_work_plan_passes_on_both_arms(scripted) -> None:
 
 def test_the_set_has_the_turns_the_spec_asks_for() -> None:
     assert _turns(CRM_SCENARIOS) == 12
-    assert 18 <= _turns(PROJECTS_SCENARIOS) <= 20
+    # ALN-4: 21, because each Projects pack needs a turn and projects-authority is the sixth.
+    assert 18 <= _turns(PROJECTS_SCENARIOS) <= 21
     assert _turns(MIXED_SCENARIOS) >= 3
     assert all(s.set == "crm" for s in CRM_SCENARIOS)
     assert all(s.set == "projects" for s in PROJECTS_SCENARIOS)
@@ -330,8 +331,8 @@ def test_the_pack_flag_turns_on_every_pack_of_each_owner() -> None:
     want = {s for o in pack.OWNERS for s in tool_packs.owner_packs(o)}
     assert slugs == want and flag["tool_packs_orgs"] == run.ds.ORG
     assert {"crm-records", "projects", "projects-plan", "projects-structure",
-            "projects-bulk", "projects-reminders"} <= slugs
-    assert len(tool_packs.owner_packs(PROJECTS)) == 5
+            "projects-bulk", "projects-reminders", "projects-authority"} <= slugs
+    assert len(tool_packs.owner_packs(PROJECTS)) == 6  # ALN-4: + projects-authority
     # The email chats keep the email owner alone, as in OA-7h.
     assert set(run.pack_flag()["tool_packs"].split(",")) == set(tool_packs.owner_packs(EA))
     assert run.owners_of(scenario("read_invoice")) == (EA,)

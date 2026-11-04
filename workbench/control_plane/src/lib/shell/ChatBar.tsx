@@ -413,7 +413,10 @@ export function AskField({
       return;
     }
     toChat(() => {
-      openAssistant({ text: words });
+      // WS-63 D-PZ-37: the member typed these words in the field, which is
+      // one box with the chat's composer, so they carry the typed mark. A
+      // start below is a click, and sends none.
+      openAssistant({ text: words, typed: true });
       setText("");
     });
   };

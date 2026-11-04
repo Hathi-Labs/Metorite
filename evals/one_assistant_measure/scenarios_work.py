@@ -298,6 +298,14 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
               Check("right_pack", "projects-reminders"), Check("no_unasked_write", 0)),
              Plan((("list_reminders", {}),), "You have no open reminders.")),
     )),
+    # projects-authority: a read of the authority page of a project (WS-ALN ALN-4).
+    _pm("pm_authority", "Authority pack: the authority page of a project", (
+        Turn("Show the authority page of Website Relaunch",
+             (Check("ran_tool", ("project_authorities",), "read_the_pins"),
+              Check("right_pack", "projects-authority"), Check("no_unasked_write", 0)),
+             Plan((("project_authorities", {"project_id": NODE_WEB}),),
+                  "No page is pinned as the authority of Website Relaunch yet.")),
+    )),
     _pm("pm_calendar", "Calendar surface: what is due", (
         Turn("What is due this week?",
              (Check("ran_tool", ("my_work", "calendar", "list_tasks"), "read_my_work"),

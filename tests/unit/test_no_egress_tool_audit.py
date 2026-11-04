@@ -97,6 +97,8 @@ EXPECTED_WITHHELD: dict[str, frozenset[str]] = {
         "merge_tasks", "move_project", "nudge_task", "remove_report_recipient",
         "rename_area", "report_delete", "revert_activity", "revoke_access",
         "set_report_schedule", "set_status_set", "unarchive_project",
+        # WS-ALN ALN-4: a pin or an unpin is class C, so a held run gets no card.
+        "pin_authority", "unpin_authority",
         # WS-ALN ALN-2a: a decision answer is class C, so a held run gets no card.
         "answer_decision",
     }),
