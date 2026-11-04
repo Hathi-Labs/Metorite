@@ -54,7 +54,7 @@ The owner answered in chat on 2026-11-02, after the design page. The answers are
 | 3 | Build order: Wave 1 (CRM-M1, CRM-M2), then Wave 2 (CRM-M3, CRM-M4, CRM-M5). | §7 of this spec |
 | 4 | Many pipelines. A stage name shares one row. Win chance and warn limit move to the pipeline membership. Phase is the shared group. | **D166**, closes D-CRM-11 for Native mode |
 | 5 | Defaults. Deal phases Qualify, Propose, Close, Won, Lost, On hold. Lead phases New, Contacted, Qualified, Converted, Dropped. The word is Campaign. The thank-you mail goes first from the form owner's mailbox. | §3, §8 |
-| 6 | Still open, marked **OPEN**: anonymous form writes, whether a form submitter counts as "named" for a send, and the consent wording. | §12 |
+| 6 | Forms (answered 2026-11-04). A public form writes through the one public door and never reads. Its submitter is "named" for one thank-you mail. Consent wording v1 waits on a lawyer before a real event. | **D174**, **D175**, §12 |
 
 **Order of work.** Waves 3 to 6 follow in the order of §7. The owner may move Wave 3 earlier if reps get access soon, or Wave 5 earlier if an event date is close. The owner did not choose either.
 
@@ -452,7 +452,7 @@ R8 binds each slice with SQL. Run the SQL against a real database. Name the exac
 
 ### CRM-M10. Forms (#1438) — Wave 5
 
-**Gate.** **HIGH tier with a full review. OWNER-GATE** until the anonymous-write decision (OPEN-1, §12). Build nothing past the spec until the owner answers. **Depends on** CRM-M8. Owns CRM-S8 (`crm_platform.md:768`) and the capture half of E-41 (#740).
+**Gate.** **HIGH tier with a full review.** The owner allowed the write with no sign-in on 2026-11-04 (D174.1). The door only writes (D175.1). **Depends on** CRM-M8. Owns CRM-S8 (`crm_platform.md:768`) and the capture half of E-41 (#740).
 
 **The door.**
 
@@ -486,7 +486,7 @@ A `form` value needs a migration on the `source` CHECK of four tables. A Mirror 
 
 ### CRM-M11. Consent and suppression (#1439) — Wave 5
 
-**Gate.** **HIGH tier. OWNER-GATE:** a lawyer reads the wording before a real event (OPEN-3). **Build this with CRM-M10, never after it.**
+**Gate.** **HIGH tier.** Wording v1 is below (D175.4). A lawyer reads it before the first real event. **Build this with CRM-M10, never after it.**
 
 **Today.** No consent field, no suppression list and no outbound unsubscribe. `project-docs/specs/saas_operations_doctrine.md:225` says consent is per purpose, versioned, timestamped and withdrawable. WS-37 has no spec.
 
@@ -496,6 +496,11 @@ A `form` value needs a migration on the `source` CHECK of four tables. A Mirror 
 - A consent record: purpose, wording version, time, source form.
 - An unsubscribe link, a suppression list, and a check on every send path.
 - Zoho `Email_Opt_Out` maps across at the switch.
+
+**Consent wording v1** (2026-11-04, D175.4). A lawyer reads it before the first real event. `{org}` is the org's name. `{contact}` is the address that the form names for privacy requests.
+
+- The notice under each form, always shown: "{org} uses your name, email and phone to answer this request. We keep them in our customer records. To see, correct or delete them, write to {contact}. You can also complain to the Data Protection Board of India."
+- The marketing box, separate and unticked: "[ ] Send me news and offers from {org} by email. I can stop them at any time with the link in each email."
 
 **Done when.**
 
@@ -510,7 +515,7 @@ A `form` value needs a migration on the `source` CHECK of four tables. A Mirror 
 
 ### CRM-M12. Thank-you mail and "connect it to our email" (#1440) — Wave 5
 
-**Gate.** **OWNER-GATE.** It sends mail to a person outside the org. A third-party flip is owner-only (`CLAUDE.md` §3a rule 3). **Depends on** CRM-M10 and CRM-M11.
+**Gate.** **OWNER-GATE.** It sends mail to a person outside the org. A third-party flip is owner-only (`CLAUDE.md` §3a rule 3). The submitter is "named" for this one mail (D174.2, D175.2), so each send needs no card. Every other send still asks (D175.3). **Depends on** CRM-M10 and CRM-M11.
 
 **Today.** No path sends an unattended mail to an outside person. Rule actions make drafts only.
 
@@ -672,13 +677,13 @@ The names and numbers in the design page screens (Priya, Northwind Castings, IMT
 
 ## 12. Open questions
 
-Three questions are **OPEN** for the owner. The build waits on the first one for CRM-M10, and on the third one for a real event.
+The owner answered the three questions on 2026-11-04 (D174, D175). A real event still waits on a lawyer's read of the consent wording.
 
 | ID | Question | Blocks |
 |---|---|---|
 | **OPEN-1** | Does an anonymous form write get through? Three specs decline anonymous links for reads. A public form writes a record with no sign-in. | CRM-M10 |
 | **OPEN-2** | Does a person who submits a form count as "named" for a send (`project-docs/specs/ai_studio.md:438`, D131.7)? | CRM-M12 |
-| **OPEN-3** | The consent wording. A lawyer reads it. | A real event, CRM-M11 |
+| **OPEN-3** | The consent wording. A lawyer reads it. | ✅ **Wording v1 is in CRM-M11** (D175.4). A lawyer reads it before the first real event |
 
 Working defaults. These are not owner decisions. The slice audit may change them.
 
