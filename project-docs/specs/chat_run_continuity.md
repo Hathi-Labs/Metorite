@@ -1288,3 +1288,26 @@ npx vitest run src/lib/runStatus.test.ts src/lib/liveRuns.test.ts src/lib/chatSt
 npx playwright test e2e/chat-run-status.spec.ts --project=ci
 uv run pytest tests/unit/test_pending_ask_flow.py
 ```
+
+## 8. Waiting cards reach My Day (D171, 2026-11-03)
+
+**Status:** 📋 SPEC. The parts exist, and they are dark. Metorite: task 1523.
+
+**The ask.** A chat card that the member did not answer must not be lost. Today a card waits in memory for one hour (`ASK_USER_TIMEOUT`), and then it closes as TIMEOUT. Outside its chat, nothing shows it.
+
+**What exists, dark.**
+- `chat_pending_ask` (migration 237, `orchestrator/pending_ask.py`) keeps a waiting card. The flag is `CHAT_DURABLE_ASKS`, off. With it on, the run parks after 600 s, and the row stays answerable for 168 h.
+- The My Day feed has an `agent_asks` card (`feed.py:957-1015`). Two gates hide it: `CHAT_DURABLE_ASKS`, and `MY_DAY_PROVIDERS`, which is empty in production. Its title says only "{agent} asked you a question".
+- The "AI waiting on you" group of My Day (`lib/shell/AiWaitingCard.tsx`) reads chats in the state `needs_input`. That state exists only with the flag on.
+- A late answer goes to `POST /agent/respond-input`. It starts a new run, and for an approval that run asks again on a new card.
+
+**The slices.**
+
+| Slice | Task | What | Done when | Tier |
+|---|---|---|---|---|
+| WAIT-1 | 1550 | Turn on durable asks: `CHAT_DURABLE_ASKS` and the `agent_asks` provider. First on this PC, then in production for one org, then for all | An unanswered approval in a chat that the member closed shows in My Day after the park. A tap opens that chat at the card. The answer reaches the run, or a new run asks again on a new card | MEDIUM. The production flag flip is named in the PR, with the box and the evidence |
+| WAIT-2 | 1551 | The My Day card names the ask: the approval title or the question, the chat, and the age | The card shows the text that the chat card showed, fenced as data. It never shows a payload that the member cannot read | LOW |
+| WAIT-3 | — | The proactive agent (WS-AUTO) and decisions (ALN-2a) use the same group | A proposal of the proactive agent shows in "Needs you" beside the chat cards. WS-AUTO and WS-ALN build it on their own boards | — |
+
+**Fences.** WAIT-1: `tests/unit/test_pending_ask_flow.py` holds the park and the late answer. A new test shows that the feed lists a parked card for its member only. WAIT-2: a test that the card text is fenced and names the chat. Advisory until each slice builds.
+

@@ -803,6 +803,8 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: export_tasks reads through the gateway and saves one CSV into the chat, as render_report does.
 #: 2026-10-24 (WS-64 OP-6b, D-OP-9): grant_access and revoke_access joined. Each writes
 #: only through the gateway, behind one card, and says open_world=False.
+#: 2026-11-02 (WS-ALN ALN-4, D-OP-9): project_authorities (a read), pin_authority and
+#: unpin_authority (one card each) joined. Each reaches only the gateway, and says open_world=False.
 #: 2026-10-24 (WS-64 OP-6d, D-OP-9): report_recipients (a read) and add_report_recipient,
 #: remove_report_recipient and set_report_schedule (one card each) joined. None sends mail.
 #: 2026-10-24 (WS-64 OP-6e, D-OP-13): waiting_agent_requests (a read) joined. It lists, links the
@@ -814,6 +816,8 @@ def test_a_scope_change_during_the_run_does_not_clear_the_flag(
 #: 2026-10-25 (WS-66 RM-3, D114): list_reminders (a read) and the six reminder writes
 #: joined. Each write is the member's own reminder, through the gateway, behind one
 #: card, and says open_world=False. None sends anything outside Metorite.
+#: 2026-11-02 (WS-PJP PJP-4, D168.1): update_tasks joined. Each ticked row is one
+#: update_task patch through the gateway, behind one card, and says open_world=False.
 COVERED_PROJECTS_TOOLS = frozenset({
     "add_subtasks", "add_task_ref", "remove_task_ref", "analytics_finished", "analytics_load", "analytics_outlook",
     "analytics_stuck", "analytics_throughput", "archive_project", "archive_task",
@@ -824,7 +828,8 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "create_type", "create_types", "defer",
     "create_area", "delete_area", "rename_area",
     "nudge_task", "export_tasks", "attach_to_task",
-    "grant_access", "revoke_access", "answer_decision", "my_decisions",
+    "grant_access", "revoke_access", "pin_authority", "unpin_authority", "project_authorities",
+    "answer_decision", "my_decisions",
     "report_recipients", "add_report_recipient", "remove_report_recipient", "set_report_schedule",
     "waiting_agent_requests", "needs_attention",
     "delete_attachment", "delete_comment", "delete_field", "delete_project", "delete_status", "delete_task",
@@ -846,7 +851,7 @@ COVERED_PROJECTS_TOOLS = frozenset({
     "save_view", "set_my_overlay", "set_recurrence", "set_status_set",
     "status_report", "task_dataset", "task_detail", "team_capacity",
     "triage_intake", "unarchive_project", "unarchive_task", "unlink_tasks",
-    "update_field", "update_project", "update_status", "update_tag", "update_task",
+    "update_field", "update_project", "update_status", "update_tag", "update_task", "update_tasks",
     "update_type", "vocabulary", "watch", "watchers",
     "list_reminders", "set_reminder", "update_reminder", "resolve_reminder",
     "reopen_reminder", "reschedule_reminder", "promote_reminder",

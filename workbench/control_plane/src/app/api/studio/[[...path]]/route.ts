@@ -6,12 +6,30 @@
  * via the shared gateway helper (internal bearer + user identity).
  *
  * A copy of the workflows proxy for the prefix `/studio`, with PATCH added
- * for the skill state route (STU-F2b). It adds no header, no identity and no
- * path rule: the gateway holds the real checks (the member, the feature, the
+ * for the skill state route (STU-F2b). It adds no identity and no path rule:
+ * the gateway holds the real checks (the member, the feature, the
  * STUDIO_ORGS switch and the org of the bound session).
+ *
+ * STU-B2c-1: for a POST to `apps/<id>/actions/<action>` ONLY, it adds the
+ * direct proof that `studioDirectHeaders` signs for the signed-in member. A
+ * member's own Save is the approval of a write, and the gateway door checks the
+ * proof. No browser header reaches the gateway. It forwards `Retry-After`, so
+ * a 503 of a busy org keeps its wait.
+ *
+ * ⚠️ It signs only a request from a page of this ORIGIN (`sameOrigin`). The
+ * session cookie is `SameSite=Lax`, so a page of another host of the same site
+ * can make the browser send this POST. Such a POST goes on unsigned, and the
+ * gateway answers 403 `approval_required`.
  */
 import { NextRequest, NextResponse } from "next/server";
-import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/lib/gateway";
+import { sameOrigin } from "@/lib/accountsServer";
+import {
+  GATEWAY_URL,
+  gatewayHeaders,
+  requireIdentity,
+  gatewayFetch,
+  studioDirectHeaders,
+} from "@/lib/gateway";
 import { refuseUnsafePath } from "@/lib/gatewayPath";
 
 export const dynamic = "force-dynamic";
@@ -44,11 +62,14 @@ async function forward(
   try {
     const init: RequestInit = {
       method,
-      headers: await gatewayHeaders(
-        method === "GET" || method === "DELETE"
-          ? {}
-          : { "Content-Type": "application/json" }
-      ),
+      headers: {
+        ...(await gatewayHeaders(
+          method === "GET" || method === "DELETE"
+            ? {}
+            : { "Content-Type": "application/json" }
+        )),
+        ...(sameOrigin(req) ? studioDirectHeaders(me.email, method, path) : {}),
+      },
       signal: AbortSignal.timeout(60_000),
     };
     if (method !== "GET" && method !== "DELETE") {
@@ -63,7 +84,10 @@ async function forward(
       return new NextResponse(null, { status: 204 });
     }
     const resBody = await res.json().catch(() => ({}));
-    return NextResponse.json(resBody, { status: res.status });
+    const answer = NextResponse.json(resBody, { status: res.status });
+    const wait = res.headers.get("Retry-After");
+    if (wait) answer.headers.set("Retry-After", wait);
+    return answer;
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 502 });
   }

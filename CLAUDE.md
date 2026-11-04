@@ -253,15 +253,26 @@ session that changes the repo or a box follows these steps:
 2. **Claim it.** Call `claim_task`. A 409 means another session holds it.
    Take another task.
 3. **Show progress.** Post a short note at least once a minute with
-   `post_agent_activity`, or a comment at each step.
-4. **Link the work.** Put the task URL in the pull request body. Call
-   `add_task_reference` for the branch and the pull request.
-5. **Move the status.** Move the task to review when the pull request opens.
-   Move it to done after the merge, with the evidence in a comment.
+   `post_agent_activity`, or a comment at each step. Before each wait on a
+   sub-agent, CI or the owner, post what you wait on and for how long. Do
+   this on EVERY open run of the session, not only the newest one.
+4. **Link the work.** Push the branch when its first commit lands, and call
+   `add_task_reference` for it. Put the task URL in the pull request body,
+   and call `add_task_reference` for the pull request.
+5. **Move the status** with `set_task_status`. Move the task to review when the pull request opens.
+   A project with no review status keeps the task in progress. Move it to done
+   after the merge, with the evidence in a comment. Then call
+   `finish_agent_run` with what shipped and what is left.
 6. **Hand off when you stop.** Call `release_task`, with a note of what is
    done, what is left and the next step.
+7. **Give each spec slice a task.** A spec that adds slice rows gets a task
+   for each row. Make them in the same session, in Backlog, under the epic.
+   Write each task number in its row.
 
-A session that only reads or answers needs no task.
+A session that only reads or answers needs no task. After an `ask_on_task`,
+read the run with `get_agent_run` before you say the owner has not answered.
+`next-ticket.md` "The task board" binds each step to the cycle. Fence:
+`tests/unit/test_task_routine.py`. Extended by the owner on 2026-11-03.
 
 Rules that make it work:
 
@@ -356,11 +367,17 @@ Rules that make it work:
   mean.
 - `uv run pytest …` is the runner. Frontend: `npx tsc --noEmit && npx vitest run`
   in `workbench/control_plane`.
-- **Run the whole pr-check suite on this PC before you push:**
-  `bash scripts/ci_local.sh`. It runs in the preset `metorite-ci` WSL2
-  distro. It tests the COMMIT, so commit first. Setup and isolation:
-  `engineering_practice.md` §7a.
-  ⚠️ **When WSL or Docker hangs** (`HCS_E_CONNECTION_TIMEOUT`, Docker
+- **The home server is the CI and agent machine** (task 1534). It is a
+  Windows PC with Ubuntu 24.04 in WSL, on the tailnet as `metorite-home`.
+  From this PC, `ssh metorite-home` reaches user `dev`, and
+  `ssh metorite-home-admin` reaches `acb`, who has sudo.
+  `scripts/home_server/` sets it up.
+- **Run the whole pr-check suite before you push:** `bash scripts/ci_local.sh`.
+  **The home server runs it**, as user `ci`. This PC's `metorite-ci` WSL2
+  distro takes the run only when the home server is busy or does not answer.
+  `--home` or `--pc` picks one lane. It tests the COMMIT, so commit first.
+  Setup and isolation: `engineering_practice.md` §7a.
+  ⚠️ **When WSL or Docker hangs on this PC** (`HCS_E_CONNECTION_TIMEOUT`, Docker
   answers 500), run `bash scripts/ci_pc/doctor.sh`. `--fix` repairs it in a
   known order, and it restarts SHARED things. Use it only when the report says
   they are broken. Do not fall back to GitHub-only CI in silence. Say the

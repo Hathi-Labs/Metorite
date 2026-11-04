@@ -55,7 +55,8 @@ is the backstop. Each writes its ``app_audit`` row in the same transaction.
 approval is J2. The install is WS-PKG, and ``apps.live_version`` is only the
 pointer of the author.
 
-**Not here.** No route and no UI. Install is WS-PKG.
+**Not here.** No UI. Install is WS-PKG. The routes are
+``routes/studio/packages.py`` (A5), which runs no SQL of its own.
 """
 
 from __future__ import annotations
@@ -116,6 +117,15 @@ _LIST_SQL = (
     "AND owner_email = :m ORDER BY updated_at DESC, id"
 )
 
+#: The summary of A5: no manifest, so a list of 100 packages never loads 100
+#: manifests. ``manifest_id`` is the id inside the manifest.
+_SUMMARY_SQL = (
+    "SELECT id::text, slug, name, description, status, live_version, created_at, "
+    "updated_at, manifest->>'id' FROM apps "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m ORDER BY updated_at DESC, id"
+)
+
 #: The catalog read of B1c. One statement for all packages of the member. It
 #: reads the object names and the action ids and targets with jsonb path
 #: reads, so it never loads a whole manifest. ``:app`` is NULL for no filter.
@@ -154,12 +164,15 @@ _VERSION_INSERT_SQL = (
     f"RETURNING app_id::text, {_VERSION_FIELDS}"
 )
 
+#: One page of versions, newest first (STU-A5): at most ``:limit``, each older
+#: than the cursor ``:before``.
 _VERSION_LIST_SQL = (
     "SELECT v.app_id::text, v.version, NULL, v.bundle_sha256, v.release_notes, "
     "v.published_by, v.published_at, v.review_status "
     "FROM app_versions v JOIN apps a ON a.id = v.app_id "
     f"WHERE a.organization_id = {_BOUND_ORG} AND a.format = 'manifest' "
-    "AND a.owner_email = :m AND a.id = CAST(:id AS uuid) ORDER BY v.version DESC"
+    "AND a.owner_email = :m AND a.id = CAST(:id AS uuid) "
+    "AND v.version < CAST(:before AS bigint) ORDER BY v.version DESC LIMIT :limit"
 )
 
 _VERSION_GET_SQL = (
@@ -194,6 +207,8 @@ _AUDIT_SQL = (
 MAX_NOTES_CHARS = 2000
 #: The version column is an INT4.
 MAX_VERSION = 2**31 - 1
+#: The most versions in one page of :func:`list_versions`.
+MAX_VERSIONS_PAGE = 100
 #: The refusal of a rollback to the live version.
 ROLLBACK_LIVE = "That version is already the live version."
 
@@ -230,6 +245,21 @@ class Package:
     live_version: int | None
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True)
+class PackageSummary:
+    """One package with no manifest (STU-A5): what a list and a limit need."""
+
+    id: str
+    slug: str
+    name: str
+    description: str
+    status: str
+    live_version: int | None
+    created_at: datetime
+    updated_at: datetime
+    manifest_id: str
 
 
 @dataclass(frozen=True)
@@ -412,6 +442,17 @@ async def list_packages(db: Any, member: str) -> list[Package]:
     """The packages that *member* owns in the bound org, newest change first."""
     rows = (await db.execute(text(_LIST_SQL), {"m": _member(member)})).all()
     return [_package(r) for r in rows]
+
+
+async def list_summaries(db: Any, member: str) -> list[PackageSummary]:
+    """The packages that *member* owns in the bound org, newest change first,
+    with no manifest. One statement. A5 counts them for the limit and finds the
+    manifest id of a repeat create from them."""
+    rows = (await db.execute(text(_SUMMARY_SQL), {"m": _member(member)})).all()
+    return [PackageSummary(
+        id=str(r[0]), slug=str(r[1]), name=str(r[2]), description=str(r[3] or ""),
+        status=str(r[4]), live_version=None if r[5] is None else int(r[5]),
+        created_at=r[6], updated_at=r[7], manifest_id=str(r[8] or "")) for r in rows]
 
 
 def _jsonb(value: Any) -> Any:
@@ -629,11 +670,19 @@ async def rollback(db: Any, member: str, package_id: str, version: int, *,
     return new
 
 
-async def list_versions(db: Any, member: str, package_id: str) -> list[PackageVersion]:
-    """The versions of a package of *member*, newest first, with no manifest.
-    A package of another member or org answers an empty list."""
+async def list_versions(db: Any, member: str, package_id: str, *,
+                        limit: int = MAX_VERSIONS_PAGE,
+                        before: int | None = None) -> list[PackageVersion]:
+    """One page of the versions of a package of *member*, newest first, with
+    no manifest: at most *limit* (1 to :data:`MAX_VERSIONS_PAGE`), and only
+    the versions older than *before* when it is given. A package of another
+    member or org answers an empty list."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_VERSIONS_PAGE:
+        raise PackageStoreError(f"limit must be an integer from 1 to {MAX_VERSIONS_PAGE}")
+    cursor = MAX_VERSION + 1 if before is None else _version_number(before)
     rows = (await db.execute(text(_VERSION_LIST_SQL), {
-        "m": _member(member), "id": _package_id(package_id)})).all()
+        "m": _member(member), "id": _package_id(package_id), "before": cursor,
+        "limit": limit})).all()
     return [_version(r) for r in rows]
 
 

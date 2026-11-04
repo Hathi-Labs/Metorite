@@ -644,6 +644,7 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "revert_activity",
             "unarchive_project",
             "unarchive_task",
+            "update_tasks",
             "watch",
         ),
         "owner": "projects-assistant",
@@ -678,6 +679,34 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "resolve_reminder",
             "set_reminder",
             "update_reminder",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    # WS-ALN ALN-4: the authority page of a project. It has its own pack, because
+    # the reminders and bulk packs must fit under MAX_REQUEST_TOOLS in their
+    # measured turns.
+    "projects-authority": {
+        "label": "Projects authority page",
+        "summary": (
+            "The authority page of a project: read which pages are pinned "
+            "as the rules of the project, pin one, or remove a pin."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for the "
+            "authority page of a project, for the main assistant to load "
+            "when a turn names the authority page. The pack holds the tools "
+            "to read the pins of a project, to pin a page and to remove a "
+            "pin. Each change asks the member first. A run loads a pack "
+            "only where tool packs are on, so until then this switch has "
+            "no effect."
+        ),
+        "tools": (
+            "pin_authority",
+            "project_authorities",
+            "unpin_authority",
         ),
         "owner": "projects-assistant",
         "core": False,
