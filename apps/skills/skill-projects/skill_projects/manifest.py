@@ -147,6 +147,13 @@ MANIFEST: tuple[Route, ...] = (
     # decides who may write it (D-OP-11, `authority.assert_may_write_grant`).
     Route("POST", "/projects/nodes/{project_id}/grants", "grant_access", "C"),
     Route("DELETE", "/projects/nodes/{project_id}/grants/{grant_id}", "revoke_access", "C"),
+    # WS-ALN ALN-4 repair (D-OP-9): the pin of a Knowledge page to a project.
+    # The route decides who may pin (`authority.assert_may_write_grant`).
+    Route("GET", "/projects/nodes/{project_id}/authorities", "project_authorities", "A"),
+    Route("POST", "/projects/nodes/{project_id}/authorities", "pin_authority", "C"),
+    Route(
+        "DELETE", "/projects/nodes/{project_id}/authorities/{pin_id}", "unpin_authority", "C"
+    ),
     # WS-ALN ALN-2a (D-OP-9): one person decides. The reader is the decider
     # only, and the route is dark behind DECISIONS_ORGS. The answer is the
     # person's word: the tool refuses a run with no person present, then raises
@@ -597,6 +604,7 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # S5 — three reads name the row through another read's route.
     "watchers": frozenset({"task_detail", "project_summary"}),
     "project_access": frozenset({"project_summary"}),
+    "project_authorities": frozenset({"project_summary"}),
     "project_views": frozenset({"project_summary"}),
     "edit_task": frozenset({"update_task"}),
     "edit_project": frozenset({"update_project"}),
@@ -968,6 +976,11 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     ("POST", "/projects/tasks/{task_id}/attachments"): {"file": "attach_to_task.file_name"},
     # WS-64 OP-6b: the one field of a grant.
     ("POST", "/projects/nodes/{project_id}/grants"): {"subject": "grant_access.subject"},
+    # WS-ALN ALN-4: the one field of a pin, and the removed pins of a read.
+    ("GET", "/projects/nodes/{project_id}/authorities"): {
+        "include_removed": "project_authorities.include_removed"
+    },
+    ("POST", "/projects/nodes/{project_id}/authorities"): {"page_id": "pin_authority.page_id"},
     # WS-ALN ALN-2a: the one field of an answer.
     ("POST", "/projects/decisions/{decision_id}/answer"): {
         "answer_key": "answer_decision.answer_key"

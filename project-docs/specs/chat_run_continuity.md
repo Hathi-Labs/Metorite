@@ -1303,11 +1303,11 @@ uv run pytest tests/unit/test_pending_ask_flow.py
 
 **The slices.**
 
-| Slice | What | Done when | Tier |
-|---|---|---|---|
-| WAIT-1 | Turn on durable asks: `CHAT_DURABLE_ASKS` and the `agent_asks` provider. First on this PC, then in production for one org, then for all | An unanswered approval in a chat that the member closed shows in My Day after the park. A tap opens that chat at the card. The answer reaches the run, or a new run asks again on a new card | MEDIUM. The production flag flip is named in the PR, with the box and the evidence |
-| WAIT-2 | The My Day card names the ask: the approval title or the question, the chat, and the age | The card shows the text that the chat card showed, fenced as data. It never shows a payload that the member cannot read | LOW |
-| WAIT-3 | The proactive agent (WS-AUTO) and decisions (ALN-2a) use the same group | A proposal of the proactive agent shows in "Needs you" beside the chat cards. WS-AUTO and WS-ALN build it on their own boards | — |
+| Slice | Task | What | Done when | Tier |
+|---|---|---|---|---|
+| WAIT-1 | 1550 | Turn on durable asks: `CHAT_DURABLE_ASKS` and the `agent_asks` provider. First on this PC, then in production for one org, then for all | An unanswered approval in a chat that the member closed shows in My Day after the park. A tap opens that chat at the card. The answer reaches the run, or a new run asks again on a new card | MEDIUM. The production flag flip is named in the PR, with the box and the evidence |
+| WAIT-2 | 1551 | The My Day card names the ask: the approval title or the question, the chat, and the age | The card shows the text that the chat card showed, fenced as data. It never shows a payload that the member cannot read | LOW |
+| WAIT-3 | — | The proactive agent (WS-AUTO) and decisions (ALN-2a) use the same group | A proposal of the proactive agent shows in "Needs you" beside the chat cards. WS-AUTO and WS-ALN build it on their own boards | — |
 
 **Fences.** WAIT-1: `tests/unit/test_pending_ask_flow.py` holds the park and the late answer. A new test shows that the feed lists a parked card for its member only. WAIT-2: a test that the card text is fenced and names the chat. Advisory until each slice builds.
 

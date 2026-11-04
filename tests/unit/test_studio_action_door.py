@@ -58,6 +58,7 @@ These turn a test of this file red:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import re
@@ -806,6 +807,8 @@ class _Body:
     def __init__(self, world: Any, chunk: bytes = b"{}", repeat: int = 1,
                  fails: bool = False) -> None:
         self.world, self.chunk, self.repeat, self.fails = world, chunk, repeat, fails
+        self.method, self.headers = "POST", {}
+        self.url = SimpleNamespace(path="/studio/apps/x/actions/y")
         self.reads = 0
         self.sent = 0
 
@@ -1009,6 +1012,14 @@ class TestTheTables:
         for _, verb in invoke.OPEN_EXECUTORS:
             assert str(verb) in invoke.REFUSALS["source_not_open"]
 
+    def test_the_refusal_text_names_each_direct_verb(self):
+        """B2c-1 fix round 1: the door runs the direct writes too, so a text
+        that names only get and list is false."""
+        text = invoke.REFUSALS["source_not_open"]
+        for _, verb in invoke.DIRECT_EXECUTORS:
+            assert str(verb) in text
+        assert "only the get and list" not in text
+
     def test_one_check_runs_twice(self):
         """One check before the body read and the same check after it. A
         second read of a package in this module is a second copy of the rule."""
@@ -1050,3 +1061,486 @@ class TestTheTables:
         assert block, "the --must-run argument list is missing"
         assert re.search(r"^[ \t]+tests/unit/test_studio_action_door_r8\.py(?: \\)?$",
                          block.group(1), re.M)
+
+
+# ── The direct writes (STU-B2c-1) ──────────────────────────────────────────
+
+import time  # noqa: E402
+
+from acb_auth import AgentScope, direct_proof  # noqa: E402
+from acb_common.studio_fields import FieldError, RecordError  # noqa: E402
+from acb_common.studio_rules import (  # noqa: E402
+    COMPUTED_FIELD,
+    ConstraintViolation,
+    FormulaError,
+    MoveViolation,
+    RuleViolation,
+)
+
+DIRECT_KEY = "d" * 40
+
+
+@pytest.fixture
+def dw(world, monkeypatch):
+    """The world, with a usable direct key, and a fake ``apply_writes`` and
+    audit writer that log into ``world.log`` in the order they run."""
+    monkeypatch.setattr(get_settings(), "studio_direct_key", DIRECT_KEY)
+    world.writes, world.audits_in, world.write_raises = [], [], None
+    world.audit_in_raises, world.write_gate = None, None
+
+    async def _apply(db, actor, *, package_id, writes):
+        world.log.append("write")
+        world.writes.append((db, actor, package_id, list(writes)))
+        if world.write_gate is not None:
+            await world.write_gate.wait()
+        if world.write_raises is not None:
+            raise world.write_raises
+        step = writes[0]
+        if step.op == "delete":
+            return [True]
+        return [objects_store.Record(str(step.record_id or uuid.uuid4()), step.object_id,
+                                     dict(step.data or {}), actor, actor, NOW, NOW)]
+
+    async def _audit_in(db, **kw):
+        world.log.append("audit_in")
+        world.audits_in.append((db, kw))
+        if world.audit_in_raises is not None:
+            raise world.audit_in_raises
+
+    monkeypatch.setattr(objects_store, "apply_writes", _apply)
+    monkeypatch.setattr(invoke, "record_app_audit_in", _audit_in)
+    invoke._IN_FLIGHT.clear()
+    yield world
+    invoke._IN_FLIGHT.clear()
+
+
+def _proof(pid: str, action: str, email: str = ANA, *, method: str = "POST",
+           path: str | None = None, now: float | None = None, key: str = DIRECT_KEY) -> dict:
+    where = path or f"/studio/apps/{pid}/actions/{action}"
+    return {direct_proof.HEADER: direct_proof.sign(key, email, method, where, now=now)}
+
+
+def _post(c: TestClient, pid: str, action: str, body: Any, headers: dict | None = None) -> Any:
+    return c.post(f"/studio/apps/{pid}/actions/{action}", json=body, headers=headers or {})
+
+
+def _signed_post(dw: Any, pid: str, action: str, body: Any, **over: Any) -> Any:
+    return _post(_client(dw), pid, action, body, _proof(pid, action, **over))
+
+
+BODIES = {
+    "add": {"data": {"site": "Plant 9"}},
+    "change": {"id": str(uuid.uuid4()), "data": {"notes": "Moved"}},
+    "remove": {"id": str(uuid.uuid4())},
+}
+
+
+def _client_as(world: Any, user: UserContext, **kw: Any) -> TestClient:
+    app = FastAPI()
+    app.include_router(actions.router)
+
+    def _user() -> UserContext:
+        world.org = ORG
+        return user
+
+    app.dependency_overrides[get_current_user] = _user
+    return TestClient(app, **kw)
+
+
+class TestTheDirectWrites:
+    @pytest.mark.parametrize("action", ["add", "change", "remove"])
+    def test_a_direct_write_runs_and_audits_in_the_same_session(self, dw, action):
+        pid, _, _ = _setup(dw)
+        r = _signed_post(dw, pid, action, BODIES[action])
+        assert r.status_code == 200, r.text
+        assert dw.log == ["open", "close", "open", "write", "audit_in", "close"]
+        (wdb, actor, package_id, writes), (adb, kw) = dw.writes[0], dw.audits_in[0]
+        assert wdb is adb
+        assert (actor, package_id, len(writes)) == (ANA, pid, 1)
+        assert kw["detail"]["outcome"] == "ran" and kw["kind"] == "action"
+        assert dw.audits == []  # the best-effort writer never ran
+        assert "Plant 9" not in json.dumps(kw["detail"])
+
+    def test_the_audit_row_names_the_record_of_each_direct_write(self, dw):
+        """Fix round 1: the new id for a create, and the id of the body for
+        an update and a delete."""
+        pid, _, _ = _setup(dw)
+        made = _signed_post(dw, pid, "add", BODIES["add"])
+        _signed_post(dw, pid, "change", BODIES["change"])
+        _signed_post(dw, pid, "remove", BODIES["remove"])
+        ids = [kw["detail"].get("record_id") for _, kw in dw.audits_in]
+        assert ids == [made.json()["record"]["id"], BODIES["change"]["id"],
+                       BODIES["remove"]["id"]]
+
+    def test_a_refused_update_names_its_record_and_an_id_that_is_no_uuid_is_not_echoed(
+            self, dw):
+        pid, _, _ = _setup(dw)
+        dw.write_raises = _batch(FieldError("notes", "Field `notes` is too long."))
+        _signed_post(dw, pid, "change", BODIES["change"])
+        _signed_post(dw, pid, "add", BODIES["add"])
+        dw.write_raises = objects_store.ObjectStoreError("record_id must be a UUID")
+        _signed_post(dw, pid, "remove", {"id": "not-a-uuid <b>"})
+        details = [kw["detail"] for _, kw in dw.audits_in]
+        assert [d["outcome"] for d in details] == ["refused"] * 3
+        assert details[0]["record_id"] == BODIES["change"]["id"]
+        assert "record_id" not in details[1]  # a refused create has no id
+        assert "record_id" not in details[2] and "<b>" not in json.dumps(details[2])
+
+    def test_the_direct_write_and_its_audit_share_one_session(self, dw):
+        pid, _, _ = _setup(dw)
+        _signed_post(dw, pid, "add", BODIES["add"])
+        assert dw.log.count("open") == 2  # the first check and the write session
+
+    def test_create_update_and_delete_send_one_write_each(self, dw):
+        pid, oid, _ = _setup(dw)
+        rid = BODIES["change"]["id"]
+        r1 = _signed_post(dw, pid, "add", BODIES["add"])
+        r2 = _signed_post(dw, pid, "change", BODIES["change"])
+        r3 = _signed_post(dw, pid, "remove", BODIES["remove"])
+        assert [x.status_code for x in (r1, r2, r3)] == [200, 200, 200]
+        ops = [w[3][0] for w in dw.writes]
+        assert [(o.op, o.object_id) for o in ops] == [("create", oid), ("update", oid),
+                                                      ("delete", oid)]
+        assert ops[1].record_id == rid and ops[1].data == {"notes": "Moved"}
+        assert r1.json()["record"]["data"] == {"site": "Plant 9"}
+        assert r3.json() == {"deleted": True, "id": BODIES["remove"]["id"]}
+
+    @pytest.mark.parametrize("action", ["add", "change", "remove"])
+    @pytest.mark.parametrize("case", ["none", "bad", "old", "email", "path", "method"])
+    def test_a_missing_or_wrong_proof_is_403_and_writes_nothing(self, dw, action, case):
+        pid, _, _ = _setup(dw)
+        headers = {
+            "none": {},
+            "bad": {direct_proof.HEADER: "v1.1790000000." + "a" * 64},
+            "old": _proof(pid, action, now=time.time() - 120),
+            "email": _proof(pid, action, email=BEN),
+            "path": _proof(pid, action, path=f"/studio/apps/{pid}/actions/other"),
+            "method": _proof(pid, action, method="GET"),
+        }[case]
+        r = _post(_client(dw), pid, action, BODIES[action], headers)
+        assert (r.status_code, _code(r)) == (403, "approval_required")
+        assert dw.writes == [] and dw.audits_in == []
+        assert [a["detail"]["reason"] for a in dw.audits] == ["approval_required"]
+
+    def test_a_proof_for_a_future_time_is_403(self, dw):
+        pid, _, _ = _setup(dw)
+        r = _signed_post(dw, pid, "add", BODIES["add"], now=time.time() + 60)
+        assert (r.status_code, _code(r)) == (403, "approval_required")
+        assert dw.writes == []
+
+    def test_a_valid_proof_with_an_agent_scope_is_403(self, dw):
+        pid, _, _ = _setup(dw)
+        user = UserContext(email=ANA, role=UserRole.EMPLOYEE, organization_id=ORG,
+                           access=build_access(["feature:workflows"]),
+                           agent=AgentScope(connection_id="c1"))
+        r = _post(_client_as(dw, user), pid, "add", BODIES["add"], _proof(pid, "add"))
+        assert (r.status_code, _code(r)) == (403, "approval_required")
+        assert dw.writes == []
+
+    @pytest.mark.parametrize("email,role", [
+        ("system:internal", UserRole.EMPLOYEE), ("ana@example.test", UserRole.AGENT),
+        ("no-at-sign", UserRole.EMPLOYEE)])
+    def test_a_system_or_agent_user_with_a_valid_proof_is_403(self, dw, email, role):
+        pid = _package(dw, owner=email)  # the package is theirs, so only the proof rule stops them
+        _object(dw, pid)
+        user = UserContext(email=email, role=role, organization_id=ORG,
+                           access=build_access(["feature:workflows"]))
+        r = _post(_client_as(dw, user), pid, "add", BODIES["add"],
+                  _proof(pid, "add", email=email))
+        assert (r.status_code, _code(r)) == (403, "approval_required")
+        assert dw.writes == []
+
+    def test_an_unset_key_means_no_write_is_direct(self, dw, monkeypatch):
+        pid, _, _ = _setup(dw)
+        headers = _proof(pid, "add")
+        for value in ("", "short", get_settings().gateway_internal_token):
+            monkeypatch.setattr(get_settings(), "studio_direct_key", value)
+            r = _post(_client(dw), pid, "add", BODIES["add"], headers)
+            assert (r.status_code, _code(r)) == (403, "approval_required")
+        assert dw.writes == []
+
+    def test_another_member_and_org_b_get_404(self, dw):
+        pid, _, _ = _setup(dw)
+        r = _post(_client(dw, email=BEN), pid, "add", BODIES["add"],
+                  _proof(pid, "add", email=BEN))
+        assert (r.status_code, r.json()) == (404, NOT_FOUND)
+        r = _post(_client(dw, org=OTHER), pid, "add", BODIES["add"], _proof(pid, "add"))
+        assert (r.status_code, r.json()) == (404, NOT_FOUND)
+        assert dw.writes == [] and dw.audits_in == []
+
+    def test_the_switch_off_is_404_and_writes_nothing(self, dw, monkeypatch):
+        pid, _, _ = _setup(dw)
+        _open(monkeypatch, "")
+        r = _signed_post(dw, pid, "add", BODIES["add"])
+        assert (r.status_code, r.json()) == (404, NOT_FOUND)
+        assert dw.writes == []
+
+    def test_a_get_and_a_list_stay_open_without_a_proof(self, dw):
+        pid, _, rid = _setup(dw)
+        c = _client(dw)
+        assert _call(c, pid, "peek", {"id": rid}).status_code == 200
+        assert _call(c, pid, "find").status_code == 200
+
+    @pytest.mark.parametrize("action,body", [
+        ("add", {}), ("add", {"data": {}, "id": "x"}), ("add", {"data": []}),
+        ("add", {"data": {}, "organization_id": ORG}), ("add", {"id": str(uuid.uuid4())}),
+        ("change", {"data": {}}), ("change", {"id": str(uuid.uuid4())}),
+        ("change", {"id": 7, "data": {}}),
+        ("change", {"id": str(uuid.uuid4()), "data": {}, "package_id": "x"}),
+        ("remove", {}), ("remove", {"id": str(uuid.uuid4()), "data": {}}),
+        ("remove", {"id": ["x"]}),
+    ])
+    def test_a_body_with_other_keys_is_422_and_writes_nothing(self, dw, action, body):
+        pid, _, _ = _setup(dw)
+        r = _signed_post(dw, pid, action, body)
+        assert r.status_code == 422
+        assert r.json()["detail"] == {"code": "bad_input", "message": invoke.BAD_WRITE_INPUT,
+                                      "rule": None, "fieldErrors": []}
+        assert dw.writes == []
+        assert dw.audits_in[0][1]["detail"]["reason"] == "bad_input"
+
+    def test_a_body_that_is_not_json_is_422(self, dw):
+        pid, _, _ = _setup(dw)
+        r = _client(dw).post(f"/studio/apps/{pid}/actions/add", content="[1",
+                             headers={**_proof(pid, "add"), "content-type": "application/json"})
+        assert r.status_code == 422 and dw.writes == []
+
+    def test_an_object_that_the_package_lacks_is_object_missing(self, dw):
+        pid = _package(dw)
+        r = _signed_post(dw, pid, "add", BODIES["add"])
+        assert (r.status_code, _code(r)) == (404, "object_missing")
+        assert dw.writes == []
+
+    def test_a_body_past_the_cap_is_413_and_writes_nothing(self, dw):
+        pid, _, _ = _setup(dw)
+        big = {"data": {"notes": "x" * invoke.MAX_BODY_BYTES}}
+        r = _signed_post(dw, pid, "add", big)
+        assert (r.status_code, _code(r)) == (413, "body_too_large")
+        assert dw.writes == []
+
+
+def _batch(cause: Exception) -> objects_store.BatchError:
+    return objects_store.BatchError(0, cause)
+
+
+_CAUSES: list[tuple[Exception, int, str]] = [
+    (FieldError("site", "Field `site` is too long."), 422, "field_invalid"),
+    (ConstraintViolation("range", "visit", "Rule `range`: out of range."), 422, "rule_refused"),
+    (MoveViolation("flow", "visit", "a", "b", "Rule `flow`: no such move."), 422, "rule_refused"),
+    (FormulaError("sum", "visit", "div_zero", "Rule `sum` failed."), 422, "rule_refused"),
+    (FormulaError("sum", "visit", COMPUTED_FIELD, "Field `total` is computed.", field="total"),
+     422, COMPUTED_FIELD),
+    (RuleViolation("any", "Rule `any` refused."), 422, "rule_refused"),
+    (RecordError("The record is too large."), 422, "record_invalid"),
+    (objects_store.BudgetExceeded("too many"), 422, "record_invalid"),
+    (objects_store.ObjectStoreError("a bad id"), 422, "record_invalid"),
+]
+
+
+class TestTheDirectRefusals:
+    @pytest.mark.parametrize("cause,status,code", _CAUSES,
+                             ids=[f"{c[2]}-{i}" for i, c in enumerate(_CAUSES)])
+    def test_each_refusal_maps_to_the_422_shape(self, dw, cause, status, code):
+        pid, _, _ = _setup(dw)
+        dw.write_raises = _batch(cause)
+        r = _signed_post(dw, pid, "add", BODIES["add"])
+        assert r.status_code == status
+        detail = r.json()["detail"]
+        assert set(detail) == {"code", "message", "rule", "fieldErrors"}
+        assert detail["code"] == code and isinstance(detail["message"], str)
+        if isinstance(cause, RuleViolation):
+            assert detail["rule"] == cause.rule
+        if isinstance(cause, FieldError):
+            assert detail["fieldErrors"] == [{"field": "site", "message": cause.message}]
+        if code == COMPUTED_FIELD:
+            assert detail["fieldErrors"][0]["field"] == "total"
+        # The session leaves cleanly, and the audit row is written first.
+        assert dw.log[-3:] == ["write", "audit_in", "close"]
+        assert dw.audits_in[0][1]["detail"] == {
+            "action": "add", "uses": "object:visit.create", "class": "B",
+            "outcome": "refused", "reason": code}
+
+    def test_a_refusal_raised_before_a_batch_maps_too(self, dw):
+        pid, _, _ = _setup(dw)
+        dw.write_raises = objects_store.ObjectStoreError("record_id must be a UUID")
+        r = _signed_post(dw, pid, "change", BODIES["change"])
+        assert (r.status_code, _code(r)) == (422, "record_invalid")
+
+    def test_store_busy_is_503_before_object_store_error(self, dw):
+        pid, _, _ = _setup(dw)
+        assert issubclass(objects_store.StoreBusy, objects_store.ObjectStoreError)
+        dw.write_raises = _batch(objects_store.StoreBusy("busy"))
+        r = _signed_post(dw, pid, "add", BODIES["add"])
+        assert r.status_code == 503 and r.headers["Retry-After"] == "1"
+        assert _code(r) == "store_busy"
+        assert dw.audits_in[0][1]["detail"]["outcome"] == "failed"
+
+    def test_a_record_that_is_not_there_is_404(self, dw):
+        pid, _, _ = _setup(dw)
+        dw.write_raises = _batch(objects_store.RecordNotFound("none"))
+        r = _signed_post(dw, pid, "remove", BODIES["remove"])
+        assert (r.status_code, r.json()) == (404, NOT_FOUND)
+        assert dw.audits_in[0][1]["detail"]["outcome"] == "not_found"
+
+    def test_a_rule_check_timeout_is_503_with_retry_after_2(self, dw):
+        pid, _, _ = _setup(dw)
+        dw.write_raises = _batch(QueryError(studio_query.TIMEOUT, "took too long"))
+        r = _signed_post(dw, pid, "change", BODIES["change"])
+        assert r.status_code == 503 and r.headers["Retry-After"] == "2"
+
+    def test_a_raw_fault_is_500_and_writes_no_audit_row(self, dw):
+        pid, _, _ = _setup(dw)
+        dw.write_raises = _batch(RuntimeError("the statement failed"))
+        c = TestClient(_client(dw).app, raise_server_exceptions=False)
+        r = _post(c, pid, "add", BODIES["add"], _proof(pid, "add"))
+        assert r.status_code == 500
+        assert dw.audits_in == [] and dw.audits == []
+
+    def test_a_failed_audit_fails_the_call(self, dw):
+        pid, _, _ = _setup(dw)
+        dw.audit_in_raises = RuntimeError("the audit insert failed")
+        c = TestClient(_client(dw).app, raise_server_exceptions=False)
+        r = _post(c, pid, "add", BODIES["add"], _proof(pid, "add"))
+        assert r.status_code == 500
+        assert dw.log[-3:] == ["write", "audit_in", "close"]
+        assert dw.audits == []
+
+    def test_the_refusal_is_raised_after_the_session_closes(self, dw, monkeypatch):
+        """An HTTPException inside the block would roll back the audit row."""
+        pid, _, _ = _setup(dw)
+        dw.write_raises = _batch(FieldError("site", "Field `site` is too long."))
+        seen: list[str] = []
+        real = invoke._answer
+
+        def spy(out):
+            seen.append(dw.log[-1])
+            return real(out)
+
+        monkeypatch.setattr(invoke, "_answer", spy)
+        _signed_post(dw, pid, "add", BODIES["add"])
+        assert seen == ["close"]
+
+
+def _handler_call(dw: Any, pid: str, action: str, body: Any) -> Any:
+    """The handler with a signed request, for the tests that run many calls
+    in one event loop. Answers the status, the answer and the headers."""
+    raw = json.dumps(body).encode()
+    path = f"/studio/apps/{pid}/actions/{action}"
+    headers = _proof(pid, action)
+
+    class _Req:
+        method = "POST"
+        url = SimpleNamespace(path=path)
+
+        async def stream(self):
+            yield raw
+
+    _Req.headers = headers  # type: ignore[attr-defined]
+    user = UserContext(email=ANA, role=UserRole.EMPLOYEE, organization_id=ORG,
+                       access=build_access(["feature:workflows"]))
+
+    async def go() -> tuple[int, Any, Any]:
+        try:
+            return 200, await invoke.invoke_action(pid, action, request=_Req(), user=user), None
+        except HTTPException as exc:
+            return exc.status_code, exc.detail, exc.headers
+
+    return go()
+
+
+class TestTheWriterCap:
+    def test_the_fourth_writer_of_an_org_is_503_and_holds_no_session(self, dw):
+        pid, _, _ = _setup(dw)
+        dw.org = ORG
+
+        async def run() -> list[Any]:
+            dw.write_gate = asyncio.Event()
+            tasks = [asyncio.ensure_future(_handler_call(dw, pid, "add", BODIES["add"]))
+                     for _ in range(3)]
+            for _ in range(50):
+                await asyncio.sleep(0)
+            assert invoke._IN_FLIGHT == {ORG: 3}
+            opened = dw.log.count("open")
+            # A door with no cap would wait on the gate for ever, so the wait is bounded.
+            fourth = await asyncio.wait_for(_handler_call(dw, pid, "add", BODIES["add"]), 5)
+            assert dw.log.count("open") == opened + 1  # only its first check
+            dw.write_gate.set()
+            return [fourth, *await asyncio.gather(*tasks)]
+
+        fourth, *rest = asyncio.run(run())
+        assert fourth[0] == 503 and fourth[1]["code"] == "store_busy"
+        assert fourth[2] == {"Retry-After": "1"}
+        assert [r[0] for r in rest] == [200, 200, 200]
+        assert invoke._IN_FLIGHT == {}
+        assert len(dw.audits_in) == 3  # the busy call wrote no row
+
+    def test_the_slot_goes_back_after_a_fault_and_an_empty_org_has_no_entry(self):
+        invoke._IN_FLIGHT.clear()
+        with pytest.raises(RuntimeError), invoke._writer_slot("o", True) as held:
+            assert held and invoke._IN_FLIGHT == {"o": 1}
+            raise RuntimeError("fault")
+        assert invoke._IN_FLIGHT == {}
+
+    def test_two_full_orgs_leave_a_third_org_its_first_writer_and_a_read_takes_no_slot(self):
+        """Fix round 1: the total cap binds only the second and later writers
+        of an org, so two busy orgs cannot shut out every other org."""
+        invoke._IN_FLIGHT.clear()
+        with contextlib.ExitStack() as stack:
+            held = [stack.enter_context(invoke._writer_slot(f"o{i // 3}", True))
+                    for i in range(6)]
+            assert held == [True] * 6 and invoke._IN_FLIGHT == {"o0": 3, "o1": 3}
+            with invoke._writer_slot("o9", True) as first:
+                assert first is True and invoke._IN_FLIGHT["o9"] == 1
+                with invoke._writer_slot("o9", True) as second:
+                    assert second is False
+            with invoke._writer_slot("o0", True) as fourth:
+                assert fourth is False
+            with invoke._writer_slot("o0", False) as read:
+                assert read is False
+            assert invoke._IN_FLIGHT == {"o0": 3, "o1": 3}
+        assert invoke._IN_FLIGHT == {}
+
+    def test_many_first_writers_pass_the_total_and_then_no_second_writer_does(self):
+        invoke._IN_FLIGHT.clear()
+        with contextlib.ExitStack() as stack:
+            firsts = [stack.enter_context(invoke._writer_slot(f"o{i}", True))
+                      for i in range(invoke.WRITERS_TOTAL + 2)]
+            assert firsts == [True] * (invoke.WRITERS_TOTAL + 2)
+            with invoke._writer_slot("o0", True) as second:
+                assert second is False
+        assert invoke._IN_FLIGHT == {}
+
+    def test_a_second_writer_counts_against_the_total(self):
+        invoke._IN_FLIGHT.clear()
+        with contextlib.ExitStack() as stack:
+            held = [stack.enter_context(invoke._writer_slot(org, True))
+                    for org in ("o0", "o1", "o2", "o0", "o1", "o2")]
+            assert held == [True] * 6
+            with invoke._writer_slot("o0", True) as third:
+                assert third is False  # 6 in flight, and o0 has one already
+        assert invoke._IN_FLIGHT == {}
+
+    def test_two_full_orgs_leave_the_first_write_of_a_third_org_a_slot(self, dw):
+        """Through the handler: the first write of the org runs, and a second
+        write of the same org at that time gets 503 at once."""
+        pid, _, _ = _setup(dw)
+        dw.org = ORG
+        busy = {"org-x": invoke.WRITERS_PER_ORG, "org-y": invoke.WRITERS_PER_ORG}
+        invoke._IN_FLIGHT.update(busy)
+
+        async def run() -> tuple[Any, Any, dict[str, int]]:
+            dw.write_gate = asyncio.Event()
+            first = asyncio.ensure_future(_handler_call(dw, pid, "add", BODIES["add"]))
+            for _ in range(50):
+                await asyncio.sleep(0)
+            during = dict(invoke._IN_FLIGHT)
+            second = await asyncio.wait_for(_handler_call(dw, pid, "add", BODIES["add"]), 5)
+            dw.write_gate.set()
+            return await first, second, during
+
+        first, second, during = asyncio.run(run())
+        assert during == {**busy, ORG: 1}
+        assert first[0] == 200
+        assert (second[0], second[1]["code"], second[2]) == (
+            503, "store_busy", {"Retry-After": "1"})
+        assert busy == invoke._IN_FLIGHT

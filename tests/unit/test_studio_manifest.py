@@ -16,6 +16,7 @@ import pytest
 from acb_common.studio_manifest import (
     BLOCKS,
     FIELD_TYPES,
+    SOURCE_NOT_A_READ,
     Manifest,
     ManifestError,
     validate_manifest,
@@ -641,6 +642,49 @@ def test_source_object_is_checked_when_object_is_set():
     d["views"][2]["source"] = {"object": "ghost"}
     paths = {e.path for e in validate_manifest(d)}
     assert "$.views[2].source.object" in paths
+
+
+# A view source is a READ (STU-B2c-1, fix round 1). A page reads its sources
+# when it opens, on window focus and on refresh, with no click. A source that
+# writes would write a record each time, with no card and no click.
+
+
+def _sourced(uses: str) -> dict:
+    """The example, with view 0 reading through a declared action of *uses*."""
+    d = copy.deepcopy(EXAMPLE)
+    d["actions"].append({"id": "feed", "uses": uses})
+    d["views"][0]["source"] = {"object": "visit", "action": "feed"}
+    return d
+
+
+@pytest.mark.parametrize("op", ["create", "update", "delete"])
+def test_a_view_source_that_writes_an_object_is_refused(op):
+    e = one(_sourced(f"object:visit.{op}"), "$.views[0].source.action", contains="read")
+    assert f"object:visit.{op}" in e.message
+    assert e.message.startswith(SOURCE_NOT_A_READ)
+
+
+@pytest.mark.parametrize("cls", ["B", "C"])
+def test_a_view_source_that_writes_through_the_catalog_is_refused(cls):
+    uses = "integration:whatsapp.send_template"
+    one(_sourced(uses), "$.views[0].source.action", catalog={uses: cls}, contains="read")
+
+
+@pytest.mark.parametrize("op", ["list", "get"])
+def test_a_view_source_that_reads_an_object_passes(op):
+    assert validate_manifest(_sourced(f"object:visit.{op}")) == []
+    assert validate_manifest(_sourced(f"object:visit.{op}"), catalog=CATALOG) == []
+
+
+def test_a_view_source_of_class_a_in_the_catalog_passes():
+    uses = "crm.list_accounts"
+    assert validate_manifest(_sourced(uses), catalog={**CATALOG, uses: "A"}) == []
+
+
+def test_with_no_catalog_a_source_of_another_kind_is_checked_at_publish():
+    """With no catalog the class of a door op is unknown, so only structure is
+    checked, as for each other catalog rule. Publish passes the catalog."""
+    assert validate_manifest(_sourced("integration:whatsapp.send_template")) == []
 
 
 @pytest.mark.parametrize(
