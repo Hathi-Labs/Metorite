@@ -199,6 +199,10 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   pass alone and fail together can land on `main`. A red `main` also blocks
   that night's release. If the job is red, fix forward or revert at once, and
   say so in the report. (No merge queue. Owner decision, 2026-10-16.)
+  - If that job shows as cancelled, a later merge folded it into the next
+    batch. Then watch the `test` job of the newest push run to its end. Its
+    summary names the tested range and its PRs. If that job is red, fix
+    forward or revert at once.
 - Deploy auto-applies migrations and you cannot undo a bad one (R6). Before a
   migration reaches production, confirm the pre-migration backup completed.
 

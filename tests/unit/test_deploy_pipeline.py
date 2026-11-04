@@ -18,6 +18,7 @@ until the deploy it was supposed to catch.
 """
 from __future__ import annotations
 
+import ast
 import io
 import json
 import os
@@ -162,11 +163,15 @@ def test_the_deploy_job_is_bounded(parsed: dict) -> None:
 # `cancelled` and skip, and that day's release would be lost. So a schedule
 # run or a dispatch gets a group of its own, named by its run id. It never
 # queues, and nothing cancels it.
+#
+# A person's rerun of an old push run (attempt 2 or more) also gets a group
+# of its own. In the push group, its pending job would cancel a newer
+# pending batch, and that batch holds the newer merges.
 
 #: The ONE concurrency group that `test` may have, character for character.
 SUITE_GROUP = (
-    "${{ github.event_name == 'push' && 'main-full-suite' "
-    "|| format('release-{0}', github.run_id) }}"
+    "${{ github.event_name == 'push' && github.run_attempt == 1 "
+    "&& 'main-full-suite' || format('release-{0}', github.run_id) }}"
 )
 
 #: The step that names the tested range of a push batch.
@@ -192,6 +197,119 @@ def test_a_push_batch_shares_one_group_and_a_release_gets_its_own(parsed: dict) 
         "shares with a push lets the next merge cancel the release's tests. "
         "cancel-in-progress true would kill a running batch at every merge, "
         "and then no batch would ever finish."
+    )
+
+
+def _gh_eval(expr: str, github: dict[str, object]) -> object:
+    """Evaluate a GitHub Actions expression of the shape the group uses.
+
+    It models the GitHub rules that the group depends on:
+    - `&&` and `||` return an operand, not a boolean. `&&` returns the first
+      falsy operand, or the last one. `||` returns the first truthy operand,
+      or the last one.
+    - `==` on two strings ignores case. On other types, GitHub casts both
+      sides to a number.
+    - `format()` puts each argument in its `{N}` place.
+    Any other node fails the test, so a new shape cannot pass by accident.
+    """
+    body = expr.strip()
+    assert body.startswith("${{") and body.endswith("}}"), body
+    inner = body[3:-2].replace("&&", " and ").replace("||", " or ").strip()
+    return _gh_node(ast.parse(inner, mode="eval"), github)
+
+
+def _gh_number(value: object) -> float:
+    # GitHub casts null, false and the empty string to 0, and true to 1.
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return 0.0
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _gh_equal(left: object, right: object) -> bool:
+    if isinstance(left, str) and isinstance(right, str):
+        return left.lower() == right.lower()
+    return _gh_number(left) == _gh_number(right)
+
+
+def _gh_bool_op(node: ast.BoolOp, github: dict[str, object]) -> object:
+    # `&&` stops at the first falsy operand, `||` at the first truthy one.
+    value: object = None
+    for part in node.values:
+        value = _gh_node(part, github)
+        if (not value) if isinstance(node.op, ast.And) else bool(value):
+            return value
+    return value
+
+
+def _gh_node(node: ast.AST, github: dict[str, object]) -> object:
+    if isinstance(node, ast.Expression):
+        return _gh_node(node.body, github)
+    if isinstance(node, ast.BoolOp):
+        return _gh_bool_op(node, github)
+    if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq):
+        return _gh_equal(_gh_node(node.left, github), _gh_node(node.comparators[0], github))
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "github":
+        return github[node.attr]
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "format":
+        template, *args = (_gh_node(a, github) for a in node.args)
+        return str(template).format(*args)
+    raise AssertionError(f"the group uses a shape this model does not know: {ast.dump(node)}")
+
+
+_RUN_ID = "41884338138"
+
+
+@pytest.mark.parametrize(("event", "attempt", "group"), [
+    # The first attempt of a push joins the batch.
+    ("push", "1", "main-full-suite"),
+    # A person's rerun of an old push run tests its old commit at once. In
+    # the push group it would cancel a newer pending batch.
+    ("push", "2", f"release-{_RUN_ID}"),
+    ("push", "3", f"release-{_RUN_ID}"),
+    # The release and a dispatch never queue behind a push.
+    ("schedule", "1", f"release-{_RUN_ID}"),
+    ("schedule", "2", f"release-{_RUN_ID}"),
+    ("workflow_dispatch", "1", f"release-{_RUN_ID}"),
+    ("workflow_dispatch", "2", f"release-{_RUN_ID}"),
+])
+@pytest.mark.parametrize("as_number", [False, True], ids=["attempt-string", "attempt-number"])
+def test_each_trigger_and_attempt_gets_the_planned_group(
+    parsed: dict, event: str, attempt: str, group: str, as_number: bool,
+) -> None:
+    """The context gives `run_attempt` and `run_id` as strings. `== 1` casts
+    the string to a number. Both forms must give a string group, never a
+    boolean, because a boolean group would put every run in one group."""
+    expr = parsed["jobs"]["test"]["concurrency"]["group"]
+    github = {
+        "event_name": event,
+        "run_attempt": int(attempt) if as_number else attempt,
+        "run_id": int(_RUN_ID) if as_number else _RUN_ID,
+    }
+    got = _gh_eval(expr, github)
+    assert isinstance(got, str) and got, f"the group evaluated to {got!r}, not a name"
+    assert got == group, f"{event} attempt {attempt}: group {got!r}, want {group!r}"
+
+
+def test_a_hung_batch_cannot_hold_the_group_for_six_hours(parsed: dict) -> None:
+    """Without a limit, GitHub stops a job after 360 minutes.
+
+    A hung push batch would hold `main-full-suite` that long, and every later
+    merge would wait. The last four batches took 35 to 37 minutes (measured
+    2026-11-04). 90 minutes is about 2.4 times that. On a release, the same
+    limit ends a hung gate, and a red gate holds that day's release. A lower
+    limit can stop a slow but sound release, so change it only after a new
+    measurement.
+    """
+    assert parsed["jobs"]["test"].get("timeout-minutes") == 90, (
+        "the `test` job needs `timeout-minutes: 90`. Read this test's "
+        "docstring before you change the number."
     )
 
 

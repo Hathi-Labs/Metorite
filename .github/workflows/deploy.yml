@@ -130,10 +130,11 @@ jobs:
   # gate again. `publish-release` needs it green. See the note on that job.
   #
   # ── CIV-4: a push runs the full suite in BATCHES (spec ci_velocity.md §5) ──
-  # A push run joins the group `main-full-suite`, so one full suite runs at a
-  # time. GitHub keeps one running job and one pending job in a group, and a
-  # newer pending job CANCELS the older one. So the merges that land during a
-  # run wait, and the next run tests them together at the newest commit.
+  # The first attempt of a push run joins the group `main-full-suite`, so one
+  # full suite runs at a time. GitHub keeps one running and one pending job in
+  # a group, and a newer pending job CANCELS the older one. So the merges that
+  # land during a run wait, and the next run tests them together at the
+  # newest commit.
   #
   # ⚠️ A CANCELLED `test` JOB ON A PUSH IS THE DESIGN, not a fault. It is a
   # merge that a later run folded in. That later run's summary names it, from
@@ -147,16 +148,28 @@ jobs:
   # each such run gets a group of its own, named by its run id. It never
   # queues, and nothing cancels it.
   #
+  # ⚠️ A person's RERUN of an old push run (attempt 2 or more) gets a group of
+  # its own too. It tests its old commit at once. In the push group, its
+  # pending job would cancel a newer pending batch, which holds the newer
+  # merges. `run_attempt` is a string in the `github` context, and `== 1`
+  # casts it to a number. Both branches of `&& ||` give a non-empty string.
+  #
   # `cancel-in-progress: false`: a merge must not kill a RUNNING batch. With
   # `true`, a busy day would start a batch at each merge and finish none.
+  #
+  # `timeout-minutes: 90`: without it, GitHub stops a hung job after 360 min,
+  # and a hung batch holds the push group that long. The last four batches
+  # took 35 to 37 min (2026-11-04). On a release, a timeout is a red gate,
+  # so production stays on its current release that day.
   # Fence: tests/unit/test_deploy_pipeline.py.
   test:
     name: "Unit tests (a signal on a push, a gate on a release)"
     runs-on: ubuntu-latest
     needs: lint
     if: ${{ !inputs.skip_tests }}
+    timeout-minutes: 90
     concurrency:
-      group: ${{ github.event_name == 'push' && 'main-full-suite' || format('release-{0}', github.run_id) }}
+      group: ${{ github.event_name == 'push' && github.run_attempt == 1 && 'main-full-suite' || format('release-{0}', github.run_id) }}
       cancel-in-progress: false
     # Read only. `actions: read` is for the range step's Actions API calls.
     # A job-level block replaces the workflow's, so `contents` comes again.
