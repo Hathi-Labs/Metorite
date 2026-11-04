@@ -157,7 +157,8 @@ def test_the_summary_reads_the_verdict_not_a_test_name():
 
 
 def test_run_suite_refuses_a_starved_vm():
-    assert re.search(r'if \[ "\$avail_gb" -lt 8 \]; then', _RUN_SUITE)
+    # Run by hand (no slot grant), a VM with under 8 GB free is refused.
+    assert re.search(r'\[ "\$avail_gb" -lt 8 \]; then', _RUN_SUITE)
 
 
 _DOCTOR = (_ROOT / "scripts/ci_pc/doctor.sh").read_text(encoding="utf-8")
@@ -205,3 +206,76 @@ def test_the_local_run_is_full_for_the_selection_jobs() -> None:
         out = steps.render(job, _CTX, {})
         # The pick step appends to $GITHUB_OUTPUT. Unset, `tee -a ""` fails.
         assert 'export GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"' in out
+
+
+# ── CIV-6: several runs at once on one lane (task 1634) ─────────────────────
+_CI_LOCAL = (_ROOT / "scripts/ci_local.sh").read_text(encoding="utf-8")
+_REMOTE = (_ROOT / "scripts/ci_pc/remote_run.sh").read_text(encoding="utf-8")
+
+
+def test_each_run_gets_its_own_worktree():
+    # Two runs in one working tree overwrite each other's checkout, `.next`
+    # and `junit/`. The run's worktree is named by its pid.
+    assert 'git -C "$CI_BASE" worktree add -q --detach "$wt" "$sha"' in _REMOTE
+    assert 'wt="$CI_WT_DIR/${sha:0:12}-$$"' in _REMOTE
+    # No run checks out into the shared clone any more.
+    assert "checkout -q -f" not in _CI_LOCAL
+    assert "git clean -fdxq" not in _CI_LOCAL
+
+
+def test_ci_local_no_longer_holds_the_lane_exclusively():
+    assert "flock -w 3600 9" not in _CI_LOCAL
+    # A new run holds the old lane lock SHARED, so an older ci_local.sh (which
+    # holds it exclusive and works in ~/metorite) cannot overlap with it.
+    assert 'flock -s -w 3600 9' in _REMOTE
+    assert "ci_slot_acquire" in _REMOTE
+
+
+def test_ci_local_ships_the_slot_code_with_the_run():
+    assert "scripts/ci_pc/slots.sh scripts/ci_pc/remote_run.sh" in _CI_LOCAL
+    assert "ci_remote_run $sha$args" in _CI_LOCAL
+
+
+def test_the_shared_clone_has_one_git_writer_at_a_time():
+    assert _CI_LOCAL.count("$GITLOCK") >= 2
+    assert "flock -w 300 5" in _REMOTE
+
+
+def test_the_default_run_is_the_civ2_selection_and_full_is_opt_in():
+    assert "affected_tests.py --gate --base origin/main" in _REMOTE
+    assert "--full) full=yes" in _REMOTE
+    assert "--select-file" in _RUN_SUITE
+    # A selector that fails, or says full, runs every test (it fails open).
+    assert 'sel_args=(--select-file' in _REMOTE
+    assert "the selector says full" in _REMOTE
+
+
+def test_a_selected_run_swaps_the_folder_for_the_files_and_skips_the_whole_suite_guard():
+    out = steps.render("test", _CTX, {}, {"tests/unit/ -v": "tests/unit/test_a.py -v"})
+    assert "tests/unit/test_a.py -v -rs" in out
+    # The guard wants every must-run file in the reports. A selected run has
+    # not run them, so the guard job is inside the "not selected" branch.
+    guard = _RUN_SUITE.index('job unit-tests "" unit-tests')
+    assert _RUN_SUITE.rindex('if [ -z "$SELECT_FILE" ]; then', 0, guard) > _RUN_SUITE.index("shards_ok=success")
+
+
+def test_two_runs_started_in_one_second_do_not_share_a_name():
+    # Container names and the log folder carry the pid.
+    assert re.search(r'^TAG="\$\(date \+%H%M%S\)-\$\$"', _RUN_SUITE, re.M)
+    assert re.search(r'^RUN="\$HOME/runs/.*-\$SHA-\$\$"', _RUN_SUITE, re.M)
+
+
+def test_a_run_under_slots_does_not_use_the_one_run_memory_refusal():
+    # Another run lowers MemAvailable on purpose; slots.sh has reserved room.
+    assert 'if [ -z "${CI_SLOT_GRANTED:-}" ] && [ "$avail_gb" -lt 8 ]; then' in _RUN_SUITE
+
+
+def test_node_modules_come_from_a_store_keyed_by_the_lockfile():
+    assert 'store="$CI_DEPS_DIR/$app-${lock:0:16}"' in _RUN_SUITE
+    # A hard-linked tool cache must not be written through the link.
+    assert 'rm -rf "$store/node_modules/.cache"' in _RUN_SUITE
+
+
+def test_the_lane_choice_asks_for_room_not_for_an_idle_lane():
+    assert "has_room" in _CI_LOCAL
+    assert "lock_free" not in _CI_LOCAL
