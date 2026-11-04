@@ -466,9 +466,13 @@ async def _replay(db: Any, org: str, me: str, key_hash: str, *, app: str, op: st
     if (request.get("digest"), request.get("app"), request.get("op")) != (digest, app, op):
         raise _refuse(409, KEY_REUSED,
                       "This idempotency_key asked for another change. Send a new key.")
+    # The first request in its state now (verifier P3-8): a replay after an
+    # approve, a decline or the expiry says so.
+    now = (await db.execute(text(f"{_REQUEST_SELECT} AND e.id = CAST(:rid AS uuid)"),
+                            {"org": org, "me": me, "rid": str(found.request_id)})).fetchone()
     return Opened(request_id=str(found.request_id), run_id=str(found.run_id),
-                  state="awaiting", expires_at=str(request.get("expires_at")),
-                  created=False)
+                  state=_state(now) if now is not None else "awaiting",
+                  expires_at=str(request.get("expires_at")), created=False)
 
 
 async def open_request(
