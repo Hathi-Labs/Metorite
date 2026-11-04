@@ -175,6 +175,7 @@ and a stale row after a 409 reads as success.
 
 ## HITL (Human-in-the-Loop)
 - ConfirmationCard.tsx — Approve/Reject prompt for agent confirmation requests
+- AppRequestCard.tsx — THE card of an app request (MCP-P1b-1). Integrations, AI agents mounts it in the list "Waiting for you", and Studio and the chat mount it later. Each value of the call is a text node under the mark "Text from the agent. Check it.". Never inner HTML or Markdown. The decision relay is same origin only. Fences: `AppRequestCard.test.ts`, `app/api/agent-access/requests/relay.test.ts`
 - ElicitationCard.tsx — structured question card. It never blocks Submit without a reason (`submitBlockedReason` in `lib/elicitationAnswer.ts`). Fences: `lib/elicitationAnswer.test.ts`, `e2e/genui-option-picker.spec.ts`.
 - A blocking card answers through `/api/agent/respond-input`. A 4xx sends the answer as a message, so it is never lost.
 - The Email app's chat pane draws each card because it renders the shared `AgentChat` on `/agent/run/stream`. Do not give the pane a chat of its own. Fences: `app/email/components/emailPaneCards.test.ts`, `e2e/email-pane-confirm-card.spec.ts`.
