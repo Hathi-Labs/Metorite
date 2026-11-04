@@ -4867,11 +4867,14 @@ async def _integration_authorizer(
     H-337 removes the body's ``user_email`` in the stream route, so a check
     that read the body found nobody in EVERY web chat. Then this returned
     ``None``: no integration filter, and no MCP card (``member_present``
-    False). *session_user* wins, and a run with no session keeps the body's
-    claim, as before. Fence: ``tests/unit/test_org_access_credentials.py``
-    and ``tests/unit/test_maf_mcp_confirm.py``.
+    False). *session_user* wins, and a run whose caller passes none keeps the
+    body's claim, as before. A VERIFIED member who does not resolve active
+    gets nothing, never ``None``: a session names a person, so "the platform
+    started this run" cannot be the reason (review of MCP-C1). Fence:
+    ``tests/unit/test_org_access_credentials.py`` and
+    ``tests/unit/test_maf_mcp_confirm.py``.
     """
-    email, _verified = _run_member(event_payload, session_user)
+    email, verified = _run_member(event_payload, session_user)
     if not email or ":" in email:
         return None
 
@@ -4891,6 +4894,11 @@ async def _integration_authorizer(
 
         access = await resolve_access(email)
         if not access.is_active:
+            if verified:
+                # A degraded read or a suspension of a session member: deny
+                # every credential for this run, as for IdentityUnavailable.
+                _log.warning("executor.integration_authorizer_inactive_member")
+                return lambda _service: False
             return None
 
         # Shared-session fold: the intersection REPLACES the actor's access

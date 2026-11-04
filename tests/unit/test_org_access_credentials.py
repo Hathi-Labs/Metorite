@@ -202,6 +202,29 @@ async def test_authorizer_filters_the_session_member_with_no_body_claim(
 
 
 @pytest.mark.asyncio
+async def test_an_inactive_session_member_gets_no_credential(monkeypatch) -> None:
+    """Review of MCP-C1 (P3). A session names a person, so a member who does
+    not resolve active (a degraded read, a suspension) gets nothing. Only a
+    run with no session keeps the old ``None``, which means every credential."""
+    import orchestrator.executor as executor
+    import acb_auth
+
+    async def _inactive(email, **kwargs):
+        return build_access(["integrations:use:*"], is_active=False)
+
+    monkeypatch.setattr(acb_auth, "resolve_access", _inactive)
+    predicate = await executor._integration_authorizer(
+        {"message": "hi"}, session_user="ghost@fracktal.in",
+    )
+    assert predicate is not None, "an inactive session member got every credential"
+    assert not predicate("clickup")
+    # The same address as a body claim with no session: the platform's run.
+    assert await executor._integration_authorizer(
+        {"user_email": "ghost@fracktal.in"}
+    ) is None
+
+
+@pytest.mark.asyncio
 async def test_the_session_member_wins_over_a_body_claim(monkeypatch) -> None:
     """A body that names another member never picks whose access applies."""
     import orchestrator.executor as executor
