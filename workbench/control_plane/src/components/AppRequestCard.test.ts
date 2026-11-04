@@ -232,7 +232,7 @@ describe("the server's frame and the agent's values", () => {
     expect(clientHost("mcp:claude.ai:claude-code")).toBe("claude.ai");
     expect(clientHost("mcp:claude.ai")).toBe("claude.ai");
     expect(clientHost("studio:approve-order")).toBe("");
-    expect(askLine({ ...request(), source: "studio", client_via: "studio:x", card: { client: "Studio", app_name: "Orders" } }))
+    expect(askLine({ ...request(), client_via: "studio:x", card: { client: "Studio", app_name: "Orders" } }))
       .toBe("Studio asks to change Orders.");
   });
 });

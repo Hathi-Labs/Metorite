@@ -47,11 +47,11 @@ function row(id: string): AppRequest {
 const NONE = new Set<string>();
 
 describe("the section shows only when a request waits", () => {
-  it.each([
+  it.each<[string, Parameters<typeof waitingView>[0]]>([
     ["while it loads", { data: undefined, error: null }],
     ["while the store is dark (404)", { data: null, error: null }],
     ["for an empty list", { data: { rows: [], more: 0 }, error: null }],
-  ] as const)("draws nothing %s", (_name, state) => {
+  ])("draws nothing %s", (_name, state) => {
     expect(waitingView(state, NONE).kind).toBe("none");
   });
 
