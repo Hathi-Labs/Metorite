@@ -8,7 +8,7 @@
  * `subject=me`. This file holds its pure rules, so the page and the component
  * stay thin:
  *
- * 1. **The chips.** All, Today, Next, Waiting, Someday and Done. Each chip is
+ * 1. **The chips.** All, New, Today, Next, Waiting, Someday and Done. Each chip is
  *    a filter on the row's overlay, with the rules of the server's
  *    `mine.fold_dispositions`. The counts on the chips come from
  *    `by_disposition`, never from a page of rows.
@@ -57,10 +57,86 @@ export function myTasksModeFor(mode: string): MyTasksMode | null {
   return MY_TASKS_MODES.find((entry) => entry.id === mode)?.id ?? null;
 }
 
+/**
+ * PJP-13 — the tab My tasks opens on. A member who picked a tab keeps it. With
+ * no pick, a desktop opens the Board and a phone opens the List, the same rule
+ * the project boards use. `chosen` is null until the member picks.
+ */
+export function myTasksMode(chosen: MyTasksMode | null, isMobile: boolean): MyTasksMode {
+  return chosen ?? (isMobile ? "list" : "board");
+}
+
+/** PJP-13 — the session key that keeps a picked tab across a remount (the page remounts when the viewport crosses the phone line). */
+export const MY_TASKS_PICK_KEY = "cc-my-tasks-picked-mode";
+
+interface PickStore {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+/** The tab the member picked this session, or null. Never throws. */
+export function readPickedMode(store: PickStore | null | undefined): MyTasksMode | null {
+  try {
+    const raw = store?.getItem(MY_TASKS_PICK_KEY);
+    return raw ? myTasksModeFor(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Keeps the picked tab for the session. Never throws. */
+export function writePickedMode(store: PickStore | null | undefined, mode: MyTasksMode): void {
+  try {
+    store?.setItem(MY_TASKS_PICK_KEY, mode);
+  } catch {
+    /* storage is off: the pick then lasts until the next remount */
+  }
+}
+
+/** What the page holds for My tasks. `chosen` is the explicit tab pick, null until the member picks one. */
+export interface MyTasksRaw {
+  attention: boolean;
+  chip: MyTasksChip;
+  chosen: MyTasksMode | null;
+}
+
+/**
+ * PJP-13 — one update of the My tasks view. `pick` is true only for an
+ * explicit tab choice (a tab click, the mode command, a link that opens List,
+ * the phone tab). It records `chosen` even when it equals the default. A chip
+ * change, or an echo of the shown view, leaves `chosen` as it was.
+ */
+export function applyMyTasksUpdate(
+  raw: MyTasksRaw,
+  isMobile: boolean,
+  update: { mode: MyTasksMode; attention: boolean; chip: MyTasksChip } | ((v: { mode: MyTasksMode; attention: boolean; chip: MyTasksChip }) => { mode: MyTasksMode; attention: boolean; chip: MyTasksChip }),
+  pick: boolean,
+): MyTasksRaw {
+  const current = { mode: myTasksMode(raw.chosen, isMobile), attention: raw.attention, chip: raw.chip };
+  const next = typeof update === "function" ? update(current) : update;
+  return { attention: next.attention, chip: next.chip, chosen: pick ? next.mode : raw.chosen };
+}
+
+/** PJP-12a — the text of an empty My tasks, chip All, nothing hidden by a filter. */
+export const MY_TASKS_EMPTY_TEXT = "It's empty. Go to Projects and pick up tasks.";
+
+/** PJP-12a — true when My tasks is truly empty: chip All, read done, no row, no filter. */
+export function myTasksTrulyEmpty(opts: {
+  chip: MyTasksChip;
+  loaded: boolean;
+  total: number;
+  filtered: boolean;
+}): boolean {
+  return opts.chip === "all" && opts.loaded && opts.total === 0 && !opts.filtered;
+}
+
 // ── The chips ───────────────────────────────────────────────────────────────
 
 export const MY_TASKS_CHIPS = [
   { id: "all", label: "All" },
+  // D170 (INB-1, 2026-11-03): work assigned to me that I have not opened or
+  // planned. The inbox holds captures only, so this is where it shows.
+  { id: "new", label: "New" },
   { id: "today", label: "Today" },
   { id: "next", label: "Next" },
   { id: "waiting", label: "Waiting" },
@@ -100,7 +176,14 @@ export function chipForApp(id: string | null | undefined): MyTasksChip | null {
 /** The overlay facts a chip reads off a row (`with_overlay=1`). */
 export type ChipRow = Pick<
   TaskRow,
-  "disposition" | "is_mine" | "completed_at" | "archived_at" | "defer_until" | "start_date" | "due_at"
+  | "disposition"
+  | "is_mine"
+  | "is_new"
+  | "completed_at"
+  | "archived_at"
+  | "defer_until"
+  | "start_date"
+  | "due_at"
 >;
 
 /**
@@ -110,6 +193,7 @@ export type ChipRow = Pick<
  * - Waiting, Someday and Done: the effective disposition.
  * - Today: `isInToday`, the one Today rule (`tasks/lib/today.ts`), which the
  *   server's `in_today` mirrors.
+ * - New: the server's `is_new` (`mine.new_work`), no stated disposition of mine.
  * - All: every row but TRASH. TRASH is in no chip.
  *
  * `disposition` arrives EFFECTIVE (`effective_disposition`, D77), so a closed
@@ -120,6 +204,8 @@ export function inChip(row: ChipRow, chip: MyTasksChip, today: string, timeZone?
   switch (chip) {
     case "all":
       return effective !== "TRASH";
+    case "new":
+      return Boolean(row.is_new);
     case "next":
       return effective === "NEXT" && Boolean(row.is_mine);
     case "waiting":

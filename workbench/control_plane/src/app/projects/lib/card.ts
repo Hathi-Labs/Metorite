@@ -129,6 +129,18 @@ export function cardChips(
   types?: ReadonlyMap<string, TypeFact>
 ): MetaChip[] {
   const chips = taskMeta(taskFacts(task, colours, types), nowMs);
+  // D170 (INB-1): "New" leads the row. It is a state notice, not a field a
+  // view can hide (`visibleChips` lets it through). Opening the task and
+  // stating any disposition clears `is_new` on the server.
+  if (task.is_new) {
+    chips.unshift({
+      key: "new",
+      icon: "Sparkles",
+      label: "New",
+      tone: "accent",
+      title: "New: assigned to you, and you have not planned it yet",
+    });
+  }
   const priority = importanceChip(task, nowMs);
   if (priority) {
     const at = chips.findIndex((chip) => chip.key === "blocked") + 1;
@@ -184,6 +196,7 @@ export function visibleChips(
 ): MetaChip[] {
   return cardChips(task, nowMs, colours, types).filter((chip) => {
     const kind = chipKind(chip.key);
+    if (kind === "new") return true;
     return shownFields.includes(CHIP_FIELD[kind] ?? kind);
   });
 }

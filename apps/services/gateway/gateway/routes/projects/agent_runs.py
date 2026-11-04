@@ -15,6 +15,8 @@ decisions EA12-1 to EA12-13) and row EA-12a of §15.
     POST /projects/tasks/{task_id}/archive-request    → {activity, run, created}
     POST /projects/agent-runs/{run_id}/archive-approval
                                                   → {activity, run, created, archived}
+    POST /projects/agent-runs/{run_id}/outside-decision
+                                                  → {activity, run, created}  (MCP-G15)
 
 An outside agent works on a task inside a RUN. The run holds typed
 ACTIVITIES: ``prompt``, ``thought``, ``action``, ``response``,
@@ -74,6 +76,15 @@ The rules, each one stated in the spec:
   open strand that the sweep of ``gateway/agent_run_sweep.py`` found). The sweep
   decides; the writes to these two tables stay here
   (:func:`close_archived_runs`, :func:`write_strand_line`).
+* **A decision made outside Metorite** (WS-55 MCP-G15, Metorite task 1567).
+  The member can answer the agent's question in another place, such as the
+  agent's own chat. The agent then records it through ``outside-decision``
+  on its OWN awaiting run. The route writes an AGENT ``response``, never a
+  ``prompt``: the server sets its ``in_reply_to`` to the open question and
+  types it with ``content_metadata.decided_elsewhere``. So every open-question
+  read finds the question closed, and the run moves ``awaiting`` →
+  ``in_progress``. A typed request (EA-6g) never closes this way: only the
+  member answers it, in Metorite.
 """
 
 from __future__ import annotations
@@ -122,7 +133,12 @@ from gateway.routes.projects.filters import (
     strand_fits_sql,
     task_closed_sql,
 )
-from gateway.routes.projects.notifications import excerpt_of, notify, task_audience
+from gateway.routes.projects.notifications import (
+    excerpt_of,
+    mark_rows_read,
+    notify,
+    task_audience,
+)
 from gateway.routes.projects.tasks import archive_task_in
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
@@ -315,6 +331,28 @@ class ArchiveApprovalIn(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=128)
 
 
+#: MCP-G15. The longest ``decision`` and ``where`` of an outside decision.
+MAX_DECISION = 2_000
+MAX_WHERE = 80
+
+
+class OutsideDecisionIn(BaseModel):
+    """``POST /projects/agent-runs/{id}/outside-decision`` (WS-55 MCP-G15).
+
+    ``decision`` is the member's decision in the member's words. ``selected``
+    names the option ids of the open question, when the member picked one.
+    ``where`` says where the member decided, for example "Claude Code chat".
+    The server sets ``in_reply_to`` and the marker. No body names them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: str = Field(min_length=1, max_length=MAX_DECISION)
+    where: str = Field(min_length=1, max_length=MAX_WHERE)
+    selected: list[str] | None = Field(default=None, min_length=1, max_length=10)
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
 #: The two options of every typed archive request. The server fixes them,
 #: and no input names them (EA3-40 rule 1).
 ARCHIVE_OPTIONS: tuple[OptionIn, ...] = (
@@ -405,6 +443,11 @@ _MOVES: dict[str, dict[str, str]] = {
     # as a `response`, and the run stays `completed`. Only `finish_agent_run`
     # passes it, after `_server_closed` holds.
     "late_summary": {"completed": "completed"},
+    # WS-55 MCP-G15. The member decided outside Metorite, and the agent
+    # records it: its `response` closes the open question, so the run works
+    # again. Only `record_outside_decision` passes it, after its own checks.
+    # It is an AGENT event: no agent ever writes `member_prompt`.
+    "agent_outside_decision": {"awaiting": "in_progress"},
 }
 
 
@@ -880,14 +923,25 @@ async def _answer(
             status_code=422,
             detail="selected answers a question with options, and none is open.",
         )
+    labels = option_labels(meta, selected)
+    content["selected"] = list(selected)
+    content["labels"] = labels
+    return reply, {"question_id": str(question.id)}
+
+
+def option_labels(meta: dict[str, Any], selected: list[str]) -> list[str]:
+    """The labels of *selected*, the option ids of one ``select`` (R3).
+
+    Each id must be an option of the question, with no repeat, and one id
+    unless ``allow_multiple``. Else 422. ONE rule: a member's answer
+    (:func:`_answer`) and an outside decision (MCP-G15) both read it.
+    """
     by_id = {o["id"]: o for o in meta.get("options") or []}
     if len(set(selected)) != len(selected) or any(s not in by_id for s in selected):
         raise HTTPException(status_code=422, detail="selected names an id that is not an option.")
     if len(selected) > 1 and not meta.get("allow_multiple"):
         raise HTTPException(status_code=422, detail="This question takes one option.")
-    content["selected"] = list(selected)
-    content["labels"] = [by_id[s]["label"] for s in selected]
-    return reply, {"question_id": str(question.id)}
+    return [by_id[s]["label"] for s in selected]
 
 
 class _Written:
@@ -931,6 +985,8 @@ async def _write_activity(
     typed: bool = False,
     extra: dict[str, Any] | None = None,
     quiet: bool = False,
+    closes: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> _Written:
     """Write one activity on a LOCKED run, inside the caller's transaction.
 
@@ -945,6 +1001,12 @@ async def _write_activity(
 
     SW-11a. *quiet* keeps the timeline comment and sends no bell: Resume
     writes a note to the agent, not a comment to people (spec §12.7).
+
+    MCP-G15. *closes* and *metadata* go on an agent ``response`` only. Only
+    :func:`record_outside_decision` passes them, and it checks the kind:
+    *closes* is the id of the open question, which becomes ``in_reply_to``,
+    and *metadata* becomes ``content_metadata``. The server reads both,
+    never a request body.
 
     AUTO-7a. This is the one write path of an activity, so a marked prompt
     stops here (:func:`_refuse_a_marked_prompt`).
@@ -972,10 +1034,11 @@ async def _write_activity(
         await _clear_for_reopen(db, run, user)
 
     content: dict[str, Any] = {"body": body}
-    content_metadata: dict[str, Any] | None = None
+    # MCP-G15: only `record_outside_decision` passes these, on a response.
+    content_metadata: dict[str, Any] | None = dict(metadata) if metadata is not None else None
     signal_out: str | None = None
     signal_meta: dict[str, Any] | None = None
-    in_reply_to: str | None = None
+    in_reply_to: str | None = closes
     if kind == "elicitation" and options:
         signal_out = "select"
         signal_meta = {
@@ -2437,6 +2500,204 @@ async def _task_now(db: Any, user: UserContext, task_id: str) -> dict[str, Any]:
     return row
 
 
+# ── A decision made outside Metorite (WS-55 MCP-G15, task 1567) ─────────────
+
+#: The key of the marker in ``content_metadata`` of the agent's response.
+DECIDED_ELSEWHERE = "decided_elsewhere"
+
+#: The stable codes of the refusals. Each detail is ``{"error", "message"}``,
+#: and the edge maps the code to its own fixed text (§9.6 rule 13).
+OUTSIDE_NOT_YOURS = "run_not_yours"
+OUTSIDE_NOT_AWAITING = "run_not_awaiting"
+OUTSIDE_NO_QUESTION = "no_open_question"
+OUTSIDE_TYPED = "typed_request"
+OUTSIDE_SELECTED = "selected_refused"
+OUTSIDE_CODES: tuple[str, ...] = (
+    OUTSIDE_NOT_YOURS, OUTSIDE_NOT_AWAITING, OUTSIDE_NO_QUESTION, OUTSIDE_TYPED,
+    OUTSIDE_SELECTED,
+)
+
+
+def _refusal(status: int, code: str, message: str) -> HTTPException:
+    return HTTPException(status_code=status, detail={"error": code, "message": message})
+
+
+def typed_question(row: Any) -> bool:
+    """True when the elicitation *row* is typed by the server.
+
+    Only the server writes ``content_metadata`` on an elicitation, and no
+    request body can carry it (``extra="forbid"``). Today the one kind is the
+    archive request of EA-6g (:func:`archive_request_of`). Any later kind
+    counts too: only the member answers a typed request, in Metorite.
+    """
+    return bool(from_jsonb(getattr(row, "content_metadata", None)))
+
+
+def outside_comment(where: str, decision: str, labels: list[str]) -> str:
+    """The timeline text: "Decided outside Metorite (Claude Code chat):
+    Approve. <note>". The labels lead. When the decision already starts with
+    them, the decision stands alone, so the text never says a label twice."""
+    head = f"Decided outside Metorite ({where}): "
+    picked = ", ".join(labels)
+    if not labels or decision.casefold().startswith(picked.casefold()):
+        return head + decision
+    return f"{head}{picked}. {decision}"
+
+
+def _marked_outside(row: Any) -> bool:
+    """True when *row* is the response of an outside decision."""
+    meta = from_jsonb(row.content_metadata) or {}
+    return row.type == "response" and isinstance(meta.get(DECIDED_ELSEWHERE), dict)
+
+
+@router.post("/agent-runs/{run_id}/outside-decision", status_code=201,
+             dependencies=_ENABLED)
+async def record_outside_decision(
+    run_id: str, payload: OutsideDecisionIn, response: Response,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """The agent records a decision that its member made outside Metorite.
+
+    The member can answer the agent's question in another place, such as the
+    agent's own chat. Without this route the run stays ``awaiting``, and the
+    task keeps asking the member for an answer that the member already gave.
+
+    * **An agent act, never a member prompt.** The route writes one AGENT
+      ``response`` through :func:`_write_activity`, the one write path. The
+      server sets its ``in_reply_to`` to the open question and its
+      ``content_metadata.decided_elsewhere`` (``where``, ``question_id`` and
+      ``decision``). So every open-question read finds the question closed:
+      ``_OPEN_ELICITATIONS_SQL``, :func:`_newest_open_question` and
+      :func:`_has_answered_select`. The event ``agent_outside_decision``
+      moves the run ``awaiting`` → ``in_progress``. The response is the
+      newest agent activity, so the derived state reads ``working``.
+    * **The agent's OWN run.** :func:`may_end_run` decides, the rule of
+      Release: the same member and the same client stamp. Else 403
+      ``run_not_yours``. A person gets 403: a person answers on the task.
+    * **One open question, and not a typed one.** A run that is not
+      ``awaiting`` gets 409 ``run_not_awaiting``. A run with no open question
+      gets 409 ``no_open_question``. A typed request (EA-6g, and any later
+      kind, :func:`typed_question`) gets 409 ``typed_request``: only the
+      member answers it, in Metorite.
+    * ``selected`` names option ids of that question, by the rule of a
+      member's answer (:func:`option_labels`). Else 422 ``selected_refused``.
+    * The same ``idempotency_key`` again returns the first response with
+      200. A key of another activity gets 409.
+    * **The bell** (fix round 1). The member's ``agent_question`` row of the
+      question becomes read in the same transaction
+      (:func:`_clear_question_bell`), so the bell and My Day stop asking.
+      After the commit, ``personal.bump_my_day`` moves My Day.
+
+    Fences: ``tests/unit/test_mcp_edge_outside_decision.py`` (R8 and
+    database-free).
+    """
+    run_id = _parse_uuid(run_id, "Agent run")
+    _require_write_scope(user)
+    via = _agent_via(user)
+    if via is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Only an agent records a decision made outside Metorite. "
+                   "Answer the question on the task.",
+        )
+    decision = _clean_body(payload.decision)
+    where = " ".join((payload.where or "").replace("\x00", "").split())
+    if not decision or not where:
+        raise HTTPException(status_code=422, detail="decision and where need text.")
+    key = payload.idempotency_key
+    async with _tenant_session() as db:
+        await _load_visible_run(db, user, run_id)
+        run = await _lock_run(db, run_id)
+        if not await may_end_run(db, run, user):
+            raise _refusal(403, OUTSIDE_NOT_YOURS,
+                           "This agent run belongs to another member or another agent client.")
+        replay = await _existing_activity(db, run_id, key)
+        if replay is not None:
+            if not _marked_outside(replay):
+                raise HTTPException(status_code=409, detail=_KEY_USED)
+            response.status_code = 200
+            out_run = (await _runs_out(db, [run]))[0]
+            return {"activity": _activity_out(replay), "run": out_run, "created": False}
+        if run.status != "awaiting":
+            raise _refusal(409, OUTSIDE_NOT_AWAITING,
+                           f"This agent run is {run.status}. No question waits on the member.")
+        question = await _newest_open_question(db, run_id)
+        if question is None:
+            raise _refusal(409, OUTSIDE_NO_QUESTION, "This agent run has no open question.")
+        if typed_question(question):
+            raise _refusal(409, OUTSIDE_TYPED,
+                           "Only the member answers this request, on the task in Metorite.")
+        labels = _outside_labels(question, payload.selected)
+        record: dict[str, Any] = {
+            "where": where, "question_id": str(question.id), "decision": decision,
+        }
+        written = await _write_activity(
+            db, run, user, kind="response", key=key,
+            body=outside_comment(where, decision, labels),
+            event="agent_outside_decision", closes=str(question.id),
+            metadata={DECIDED_ELSEWHERE: record},
+            extra=({"selected": list(payload.selected), "labels": labels}
+                   if payload.selected is not None else None),
+        )
+        if not written.created:
+            response.status_code = 200
+        # Fix round 1 (P2). The member answered, so the bell row of the
+        # question, and the My Day card it makes, must go too.
+        cleared = (await _clear_question_bell(db, _member(user), question)
+                   if written.created else 0)
+        out_run = (await _runs_out(db, [await _load_run(db, run_id)]))[0]
+        out_activity = _activity_out(written.activity)
+    if written.commented:
+        await emit("pm.task.comment_added", {"task_id": out_run["task_id"]})
+    if cleared:
+        # After the commit, as `notifications.mark_read` does: a read note
+        # leaves My Day, and a read emits no `pm.*` event.
+        from gateway.routes.projects.personal import bump_my_day
+
+        await bump_my_day(user.organization_id, _member(user))
+    return {"activity": out_activity, "run": out_run, "created": written.created}
+
+
+def _outside_labels(question: Any, selected: list[str] | None) -> list[str]:
+    """The labels of the option ids that the member chose, or ``[]`` with no
+    ids. A question with no options gets 422 ``selected_refused``, and so does
+    an id that :func:`option_labels` refuses."""
+    if selected is None:
+        return []
+    meta = from_jsonb(question.signal_metadata)
+    if question.signal != "select" or not meta:
+        raise _refusal(422, OUTSIDE_SELECTED, "selected names options, and this question has none.")
+    try:
+        return option_labels(meta, selected)
+    except HTTPException as exc:
+        raise _refusal(422, OUTSIDE_SELECTED, str(exc.detail)) from None
+
+
+#: The member's unread bell rows of one question: ``kind = 'agent_question'``,
+#: and ``activity_id`` is the timeline row of the question (``_comment``
+#: writes the bell with ``activity_id`` = that row).
+_QUESTION_BELL_SQL = (
+    "SELECT id FROM pm_notifications"
+    " WHERE recipient = :me AND kind = 'agent_question'"
+    " AND activity_id = CAST(:aid AS uuid) AND read_at IS NULL"
+)
+
+
+async def _clear_question_bell(db: Any, me: str, question: Any) -> int:
+    """Mark the member's bell row of *question* read, in the caller's
+    transaction, through the ONE writer of ``read_at``
+    (``notifications.mark_rows_read``). Only the member's own row: the bell
+    of an assignee or a watcher stays theirs to read. The count it marked."""
+    activity = getattr(question, "pm_activity_id", None)
+    if activity is None:
+        return 0
+    found = (await db.execute(text(_QUESTION_BELL_SQL),
+                              {"me": me, "aid": str(activity)})).fetchall()
+    if not found:
+        return 0
+    return await mark_rows_read(db, me, [str(row.id) for row in found])
+
+
 __all__ = [
     "ACTIVITY_TYPES",
     "ARCHIVE_APPROVE",
@@ -2446,8 +2707,15 @@ __all__ = [
     "ARCHIVE_REQUEST_KIND",
     "ARCHIVE_REQUEST_TTL",
     "CLOSED_TASK_BODIES",
+    "DECIDED_ELSEWHERE",
     "EPHEMERAL_CAP",
     "MAX_WAIT_S",
+    "OUTSIDE_CODES",
+    "OUTSIDE_NOT_AWAITING",
+    "OUTSIDE_NOT_YOURS",
+    "OUTSIDE_NO_QUESTION",
+    "OUTSIDE_SELECTED",
+    "OUTSIDE_TYPED",
     "POLL_S",
     "RUN_STATUSES",
     "TASK_HELD",
@@ -2456,6 +2724,7 @@ __all__ = [
     "ArchiveRequestIn",
     "FinishIn",
     "OptionIn",
+    "OutsideDecisionIn",
     "ReleaseIn",
     "StartIn",
     "archive_applied_run_ids",
@@ -2465,6 +2734,10 @@ __all__ = [
     "closed_task_runs",
     "load_run",
     "member_name",
+    "option_labels",
+    "outside_comment",
+    "record_outside_decision",
     "transition",
+    "typed_question",
     "write_strand_line",
 ]

@@ -482,6 +482,12 @@ MANIFEST: tuple[Route, ...] = (
     # one member prompt, with the rule of Release. The task does not change, so
     # class B. The chat gets the tool with the other run tools in EA-12e.
     Route("POST", "/projects/agent-runs/{run_id}/resume", "resume_agent_run", "B"),
+    # WS-55 MCP-G15. An outside agent records a decision that its member made
+    # outside Metorite, on its own awaiting run. It writes an agent response
+    # and changes no task, so class B. The chat acts as the member, and the
+    # member answers the question on the task, so the chat waits for EA-12e.
+    Route("POST", "/projects/agent-runs/{run_id}/outside-decision",
+          "record_outside_decision", "B"),
     # WS-55 EA-6g (EA3-40). An outside agent ASKS to archive over MCP: the
     # request writes a question and archives nothing, so it is class B. The
     # run's member answers on the task. The approval archives, so it is
@@ -554,6 +560,9 @@ PLANNED: dict[str, str] = {
     # WS-55 EA-6g (2026-10-15) added the archive request and its approval.
     # The chat archives through `archive_task`.
     "request_task_archive": "WS-55, in-product chat parity, after EA-12e",
+    # WS-55 MCP-G15 (2026-11-04) added the outside decision for an outside
+    # agent. The chat acts as the member, who answers on the task.
+    "record_outside_decision": "WS-55, in-product chat parity, after EA-12e",
     # ⚠️ `approve_task_archive` is NOT a chat tool, ever (EA3-40, D-OP-13). Its
     # route is class X with a reason, and `waiting_agent_requests` lists it.
     # WS-66 RM-3 (2026-10-25) built the seven reminder tools that RM-1 planned.
@@ -1470,6 +1479,10 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/projects/tasks/{task_id}/archive-request"): {"idempotency_key": "G23"},
     # WS-55 SW-11a: the resume of a stalled run, with the other run tools.
     ("POST", "/projects/agent-runs/{run_id}/resume"): {"idempotency_key": "G23"},
+    # WS-55 MCP-G15: the outside decision, with the other run tools.
+    ("POST", "/projects/agent-runs/{run_id}/outside-decision"): {
+        "decision": "G23", "where": "G23", "selected": "G23", "idempotency_key": "G23",
+    },
 }
 
 

@@ -34,7 +34,7 @@ export function ClarifyModal() {
   const item = selectedItemId
     ? items.find((i) => i.id === selectedItemId)
     : undefined;
-  const queue = clarifyQueue(items, fromProjectIds, done);
+  const queue = clarifyQueue(items, done);
   const inboxLeft = queue.length;
   const total = processed + inboxLeft;
   const pct = total ? Math.round((processed / total) * 100) : 0;

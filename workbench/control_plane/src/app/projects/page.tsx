@@ -86,7 +86,7 @@ import {
   myWorkNavCounts,
   projectsUndoScope,
 } from "./lib/myWork";
-import { MY_TASKS_MODES, asChip, myTasksHref, myTasksModeFor, phoneMyTasksTap, withoutMyTasks } from "./lib/myTasks";
+import { MY_TASKS_MODES, asChip, myTasksHref, applyMyTasksUpdate, myTasksMode, myTasksModeFor, phoneMyTasksTap, readPickedMode, writePickedMode, type MyTasksRaw, withoutMyTasks } from "./lib/myTasks";
 import MyTasksSpace, {
   DEFAULT_MY_TASKS_VIEW,
   MyTasksActionRow,
@@ -224,7 +224,9 @@ import {
   visibleTasks,
 } from "./lib/subtaskView";
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
-import { inversePatch } from "@/lib/undo";
+import { type UndoEntry, inversePatch } from "@/lib/undo";
+import { type MovedRow, moveUndoPlan } from "./lib/taskUndo";
+import { useTaskUndo } from "./components/useTaskUndo";
 import {
   CASCADE_DEFAULTS,
   archiveReceipt,
@@ -921,7 +923,7 @@ function ProjectsWorkspace() {
   // beside a five-mode canvas, plus a third column when a task opened, inside
   // the shell's `pb-nav` scroller. Every other app in the tree decides its
   // layout here.
-  const { isMobile } = useViewMode();
+  const { isMobile, mounted: viewMounted } = useViewMode();
   const { open: openDrawer, close: closeDrawer, isOpen: drawerOpen } = useMobileDrawer();
   // NS-6: with the shell's one bell on, this app mounts no bell of its own.
   // Read once, as the shell reads its flags: the dev override is in
@@ -1046,7 +1048,34 @@ function ProjectsWorkspace() {
   const [app, setApp] = useState<ProjectAppId | null>(null);
   // WS-64 OP-11 — My tasks: its tab, its lens and its chip, and a counter the
   // task panel bumps so the roll-up reads its rows again.
-  const [myTasks, setMyTasks] = useState<MyTasksView>(DEFAULT_MY_TASKS_VIEW);
+  // PJP-13 — the tab is `null` until the member picks one. Then a desktop opens
+  // the Board and a phone the List. Until the viewport is known it reads List,
+  // so a phone never flashes a board. A pick, and the legacy `?app=my-today`
+  // link, count as a choice: they differ from the tab on screen.
+  const [myTasksRaw, setMyTasksRaw] = useState<MyTasksRaw>(() => ({
+    attention: DEFAULT_MY_TASKS_VIEW.attention,
+    chip: DEFAULT_MY_TASKS_VIEW.chip,
+    // The page remounts when the viewport crosses the phone line, so a pick
+    // lives in sessionStorage too. My tasks is not drawn at first paint.
+    chosen: typeof window === "undefined" ? null : readPickedMode(window.sessionStorage),
+  }));
+  useEffect(() => {
+    if (myTasksRaw.chosen) writePickedMode(window.sessionStorage, myTasksRaw.chosen);
+  }, [myTasksRaw.chosen]);
+  const myTasks = useMemo<MyTasksView>(
+    () => ({
+      mode: myTasksMode(myTasksRaw.chosen, isMobile || !viewMounted),
+      attention: myTasksRaw.attention,
+      chip: myTasksRaw.chip,
+    }),
+    [myTasksRaw, isMobile, viewMounted],
+  );
+  const setMyTasks = useCallback(
+    (update: MyTasksView | ((v: MyTasksView) => MyTasksView), pick = false) => {
+      setMyTasksRaw((raw) => applyMyTasksUpdate(raw, isMobile || !viewMounted, update, pick));
+    },
+    [isMobile, viewMounted],
+  );
   const [myTasksVersion, setMyTasksVersion] = useState(0);
   const appRef = useRef(app);
   useEffect(() => {
@@ -1458,6 +1487,8 @@ function ProjectsWorkspace() {
    * away from, and pressing Ctrl+Z there must not reach back into it.
    */
   const undoApi = useUndoScope(projectsUndoScope(app, selected?.id));
+  // UNDO-1 — one helper for every plain task edit on this page.
+  const taskUndo = useTaskUndo();
   // D-PM-38 decision 2 (S5) — the one complete prompt for the board's doors.
   const subtaskComplete = useSubtaskComplete();
   const [zoom, setZoom] = useState<TimelineZoom>("month");
@@ -1488,7 +1519,7 @@ function ProjectsWorkspace() {
         } else {
           setSheet(null);
           setApp("my-tasks");
-          setMyTasks((v) => ({ ...v, mode: "list", attention: false }));
+          setMyTasks((v) => ({ ...v, mode: "list", attention: false }), true);
         }
       } else if (tab === "projects-capture") {
         // WS-64 OP-4 — Capture must work with no My work view open. The quick
@@ -3159,6 +3190,7 @@ function ProjectsWorkspace() {
       const legacy = appLink.trim().toLowerCase() !== "my-tasks";
       setMyTasks((v) =>
         legacy ? { ...v, chip, mode: "list", attention: false } : v.chip === chip ? v : { ...v, chip },
+        legacy,
       );
       const target = myTasksHref(searchParams.toString(), chip);
       if (legacy) router.replace(target);
@@ -3375,7 +3407,7 @@ function ProjectsWorkspace() {
         // wrote the hidden project's mode before, so "List view" did nothing.
         if (isMyTasksApp(app)) {
           const tab = myTasksModeFor(next);
-          if (tab) setMyTasks((v) => ({ ...v, mode: tab, attention: false }));
+          if (tab) setMyTasks((v) => ({ ...v, mode: tab, attention: false }), true);
           return;
         }
         setAttentionFor(null);
@@ -3759,7 +3791,40 @@ function ProjectsWorkspace() {
         await projectsApi.unarchiveTask(taskId);
         await refreshRef.current();
         setTreeKey((k) => k + 1);
-        toast.show({ variant: "success", title: "Task restored from the archive" });
+        // UNDO-1 — unarchive files the task again. One flag serves the toast
+        // and Ctrl+Z, as in the archive path below. The toast's Undo runs
+        // through the provider's gate (fix round 1, finding 6).
+        let back = true;
+        const refiled: UndoEntry = {
+          label: `restored ${row?.title ?? "a task"} from the archive`,
+          undo: async () => {
+            if (!back) return;
+            back = false;
+            await projectsApi.archiveTask(taskId);
+            await refreshRef.current();
+            setTreeKey((k) => k + 1);
+          },
+          redo: async () => {
+            if (back) return;
+            back = true;
+            await projectsApi.unarchiveTask(taskId);
+            await refreshRef.current();
+            setTreeKey((k) => k + 1);
+          },
+        };
+        undoApi.record(refiled);
+        toast.show({
+          key: `projects:archive:${taskId}`,
+          variant: "success",
+          title: "Task restored from the archive",
+          action: {
+            label: "Undo",
+            onClick: () =>
+              void undoApi
+                .undoEntry(refiled)
+                .catch((err: Error) => setError(String(err.message))),
+          },
+        });
         return;
       }
       const include = Boolean(answer?.includeSubtasks);
@@ -3777,7 +3842,7 @@ function ProjectsWorkspace() {
         await refreshRef.current();
         setTreeKey((k) => k + 1);
       };
-      undoApi.record({
+      const archivedEntry: UndoEntry = {
         label: `archived ${row?.title ?? "a task"}`,
         undo: restore,
         redo: async () => {
@@ -3790,12 +3855,19 @@ function ProjectsWorkspace() {
           await refreshRef.current();
           setTreeKey((k) => k + 1);
         },
-      });
+      };
+      undoApi.record(archivedEntry);
       toast.show({
         key: `projects:archive:${taskId}`,
         variant: "success",
         title: archiveReceipt(res.subtasks_archived ?? 0),
-        action: { label: "Undo", onClick: () => void restore() },
+        action: {
+          label: "Undo",
+          onClick: () =>
+            void undoApi
+              .undoEntry(archivedEntry)
+              .catch((err: Error) => setError(String(err.message))),
+        },
       });
     } catch (err) {
       setError(String((err as Error).message));
@@ -3845,6 +3917,8 @@ function ProjectsWorkspace() {
     includeSubtasks = false,
   ) {
     const ids = movingTasks ?? [];
+    // UNDO-1 — each task as it was before, for the way home and its checks.
+    const homes = tasks.filter((t) => ids.includes(t.id));
     setMovingTasksBusy(true);
     setMoveTasksError(null);
     try {
@@ -3895,12 +3969,79 @@ function ProjectsWorkspace() {
         res.subtasks_moved ?? 0,
         projectName(res.destination_project_id ?? destinationId),
       );
+      // UNDO-1 (fix round 1, finding 3) — offered only when the way home
+      // restores each task exactly: no subtask went along, no value dropped,
+      // and each task kept its space, number, type and done date. Otherwise
+      // the toast says why, and what to do instead.
+      const after: Record<string, MovedRow | null> = {};
+      if (res.dropped_fields.length === 0 && !(res.subtask_ids?.length ?? res.subtasks_moved)) {
+        const movedIds = res.task_ids ?? ids;
+        const rows = await Promise.all(
+          movedIds.map((id) => projectsApi.task(id).catch(() => null)),
+        );
+        movedIds.forEach((id, i) => (after[id] = rows[i]));
+      }
+      const way = moveUndoPlan(ids, homes, after, res);
+      let movedBack: UndoEntry | undefined;
+      if (way.ok && way.calls.length > 0) {
+        const sendHome = async () => {
+          for (const call of way.calls) {
+            await projectsApi.moveTasks({
+              task_ids: call.taskIds,
+              destination_project_id: call.projectId,
+              status_map: call.statusMap,
+              accept_drops: true,
+            });
+          }
+          setTreeKey((k) => k + 1);
+          await refreshRef.current();
+        };
+        let moved_ = true;
+        movedBack = {
+          label: `moved ${homes.length === 1 ? homes[0].title : `${homes.length} tasks`}`,
+          undo: async () => {
+            if (!moved_) return;
+            moved_ = false;
+            await sendHome();
+          },
+          redo: async () => {
+            if (moved_) return;
+            moved_ = true;
+            // No subtask went along the first time (the plan's rule), so the
+            // replay takes none either.
+            await projectsApi.moveTasks({
+              task_ids: [...(res.task_ids ?? ids)],
+              destination_project_id: destinationId,
+              status_map: statusMap,
+              accept_drops: true,
+            });
+            setTreeKey((k) => k + 1);
+            await refreshRef.current();
+          },
+        };
+        undoApi.record(movedBack);
+      }
+      // The toast's Undo runs through the provider's gate, as Ctrl+Z does
+      // (fix round 1, finding 6).
+      const entry = movedBack;
       toast.show({
         variant: "success",
         title:
           res.dropped_fields.length > 0
             ? `${moved} — dropped ${res.dropped_fields.join(", ")}`
             : moved,
+        ...(way.ok ? {} : { description: way.reason }),
+        ...(entry
+          ? {
+              action: {
+                label: "Undo",
+                onClick: () =>
+                  void undoApi
+                    .undoEntry(entry)
+                    .catch((err: Error) => setError(String(err.message))),
+              },
+            }
+          : {}),
       });
     } catch (err) {
       // Stays OPEN on a refusal, and the message renders IN the card: the
@@ -4179,7 +4320,21 @@ function ProjectsWorkspace() {
       setTasks((current) => optimisticDrop(current, task.id, patch));
     }
     try {
-      if (patch) await projectsApi.patchTask(task.id, patch);
+      if (patch) {
+        const fresh = await projectsApi.patchTask(task.id, patch);
+        // UNDO-1 — a plain status change (reopen included) or any other drop
+        // field can be taken back. The slot write below is not undone.
+        taskUndo.edited(task, patch, fresh, {
+          label: `moved ${task.title}`,
+          receipt: status
+            ? `Moved to ${statuses.find((s) => s.id === status)?.name ?? "a new lane"}`
+            : "Task moved",
+          after: async () => {
+            if (selected) await loadProject(selected);
+            else await refreshRef.current();
+          },
+        });
+      }
       const rootViews = await projectsApi.views(task.root_project_id);
       const board = orderBearingView(rootViews.rows);
       if (board) await projectsApi.setPositions(board.id, writes);
@@ -4572,6 +4727,11 @@ function ProjectsWorkspace() {
     <MyTasksSpace
       view={myTasks}
       onView={setMyTasks}
+      onOpenProjects={() => {
+        // PJP-12a — the project tree, the way the sidebar opens it.
+        if (isMobile) setSheet("tree");
+        else setRailOpen(true);
+      }}
       phone={isMobile}
       compactChrome={compactChrome}
       me={me}
