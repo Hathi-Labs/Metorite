@@ -159,6 +159,10 @@ not write a second copy of that seam. A bare test file name is under
    - Fence: `test_chat_parity.py`.
 5o. reports.py -- `make_report`, the ONE report tool of the chat (spec `projects_ai_chat.md` §14.10). It keeps no copy of the checks of `documents.py`.
    - `by_code` is the ONE gate of a report that a tool builds from its own reads. Fences: `test_chat_reports.py`, `test_reports_by_code.py`.
+5p. studio_tools.py -- the chat tools of the `studio` pack (spec `ai_studio.md` §14 G1, G2, F2d and G1c). Each tool calls a `/studio` route over HTTP as the member of the run, and takes no org or member argument.
+   - G1c: `studio_plan` writes the approval record of a plan to tenant Redis only on `approved`. The key holds a hash of the member and `manifest_hash`, and it lives 2 hours (`PLAN_NAMESPACE`).
+   - `studio_publish` reads the record of the stored draft and fails closed. Only a 201 deletes it. No other code reads or writes the record.
+   - Fences: `test_studio_package_tools.py`, `test_studio_chat_build_r8.py` (R8), `test_studio_interview_plan.py`, `test_studio_skill_tools.py`.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox. It is advisory only: it never blocks a write and never raises.
    - `CC_CLASSES` mirrors the stylesheet in `SandboxedHtml.tsx`, so register a new `cc-` block in BOTH places. Fence: `test_artifact_lint.py`.
 
