@@ -315,6 +315,18 @@ def test_each_split_pack_comes_from_a_pack_of_its_own_owner() -> None:
         assert sf.SKILL_FAMILIES[split]["owner"] == sf.SKILL_FAMILIES[source]["owner"]
 
 
+def test_with_splits_adds_each_split_pack_of_a_source_and_nothing_else() -> None:
+    """PJP-2 fix round 3 (P3-1). ``with_splits`` is the one reader of
+    ``SPLIT_FROM``: ``packs_on`` widens the allow list with it, and the run
+    widens the families that an admin turned off with it. Mutation: return
+    the slugs as they are -> a disabled ``projects-plan`` leaves the reports
+    pack on -> red."""
+    assert tp.with_splits({"projects-plan"}) == {"projects-plan", "projects-reports"}
+    assert tp.with_splits({"projects-reports"}) == {"projects-reports"}
+    assert tp.with_splits({"email", "memory"}) == {"email", "memory"}
+    assert tp.with_splits(()) == frozenset()
+
+
 def test_packs_on_fails_closed_on_a_settings_fault(monkeypatch) -> None:
     """Mutation: the reader lets a fault through, or answers a pack on it."""
     import acb_common

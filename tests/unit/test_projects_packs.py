@@ -1014,6 +1014,29 @@ async def test_an_access_request_reaches_the_owner_once_the_flag_line_has_every_
     assert not _specialist(agents[0]), "the hand-off leaves"
 
 
+async def test_a_split_pack_is_off_where_an_admin_turned_its_source_off(
+    store, agents, monkeypatch,
+) -> None:
+    """PJP-2 fix round 3 (P3-1). ``projects-reports`` split out of
+    ``projects-plan`` (``tool_packs.SPLIT_FROM``). An admin turned
+    ``projects-plan`` off for the orchestrator, so the run loads no report pack
+    and the loader does not offer it, though the words ask for a status
+    report. Mutation: drop ``with_splits`` from the admin's list in
+    ``_apply_tool_packs`` -> the reports pack loads -> red."""
+    words = "Show the status report"
+    monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda _n: frozenset())
+    control = await _apply_on(agents, words, "projects", PROJ)
+    assert control is not None and "projects-reports" in control.record.slugs, "non-vacuity"
+    monkeypatch.setattr(ti, "_load_disabled_skill_families",
+                        lambda _n: frozenset({"projects-plan"}))
+    fresh = L._fresh()
+    applied = await _apply_on(fresh, words, "projects", PROJ)
+    off = {"projects-plan", "projects-reports"}
+    assert applied is not None and not off & set(applied.record.slugs), applied.record.slugs
+    provider = L._provider(fresh[0])
+    assert provider is None or not off & set(provider.loader.offered)
+
+
 # ── PJP-2 fence (project_planning.md section 10) ─────────────────────────────
 
 #: Production's TOOL_PACKS on 2026-11-02 (owner-only, work_plan.md section 6 D4).
@@ -1135,13 +1158,19 @@ def test_a_dropped_core_pack_is_recorded_in_skipped() -> None:
     assert choice.slugs == ("projects-plan",) and "projects" in choice.skipped
 
 
-# ── PJP-2 fix round 2 (P1-2): the step-aside runs after the cap ─────────────
+# ── PJP-2 fix rounds 2 and 3: the step-aside runs after the cap ─────────────
 #
-# The step-aside used to run before the cap, and it took the sticky pack that
-# the member used least recently, also when the member named it in this turn.
-# So "remind me" on the Projects page moved the reminders pack out. Now the
-# cap runs first, and the step-aside moves a sticky pack out in the cap's order
-# (project_planning.md section 3.3, rule 2).
+# Fix round 2: the step-aside used to run before the cap, and it took the
+# sticky pack that the member used least recently, also when the member named
+# it in this turn. Now the cap runs first. Fix round 3: a sticky pack of any
+# owner that the words of the turn do not name leaves first, in the cap's
+# order. Then the core pack, then a named sticky pack or a new pack of the
+# owner, the last one first (project_planning.md section 3.3, rule 2).
+#
+# Since ALN-4, ``projects-authority`` holds 3 tools. Where it is allowed, the
+# owner is reached while the request has room for 3 more tools, so the
+# step-aside acts only near the cap. The cases of the order use a base where
+# it acts, and each says why.
 
 #: The real base (56) and the load tool (1), and the one specialist tool.
 _BASE = 57
@@ -1161,20 +1190,41 @@ def _owner_reached(choice: tp.Choice, base: int = _BASE,
     return PA in plan.via_loader
 
 
-def test_a_reminder_on_the_projects_page_keeps_the_sticky_reminders_pack() -> None:
-    """The case of the review. ``projects-reminders`` is sticky (used in turn
-    13), ``projects-plan`` is sticky (turn 19), the member is on the Projects
-    page and says "remind me". The plan pack leaves, the reminders pack and the
-    core pack stay (99 tools), and the owner is reached through the reports pack
-    (99 - 1 + 11 = 109). Mutation: run the step-aside before the cap -> both
-    sticky packs leave and the run holds only the core pack -> red."""
-    choice = tp.choose(
+def _case_a() -> tp.Choice:
+    return tp.choose(
         _sticky_turn("remind me tomorrow at 9 to call Ravi", "projects",
                      tp.Sticky("projects-reminders", (10, 0), 13),
                      tp.Sticky("projects-plan", (11, 0), 19)),
         allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+
+
+def test_a_reminder_on_the_projects_page_keeps_the_sticky_reminders_pack() -> None:
+    """The case of the review. ``projects-reminders`` is sticky (used in turn
+    13), ``projects-plan`` is sticky (turn 19), the member is on the Projects
+    page and says "remind me". With ``HELD_CARD_WRITES_ORGS`` on for the org,
+    the cap moves the plan pack out, because the words name the reminders pack.
+    The reminders and core packs stay (99 tools), and the owner is reached.
+    Mutation: run the step-aside before the cap -> both sticky packs leave and
+    the run holds only the core pack -> red."""
+    choice = _case_a()
     assert choice.slugs == ("projects-reminders", "projects"), choice
     assert choice.evicted == ("projects-plan",) and choice.skipped == (), choice
+    assert _owner_reached(choice)
+
+
+def test_with_the_switch_off_the_cap_moves_the_older_reminders_pack_out(monkeypatch) -> None:
+    """Fix round 3 (P3-2). With ``HELD_CARD_WRITES_ORGS`` off for the org, the
+    cap does not read the words of the turn (RX-1), so the least recently used
+    sticky pack leaves: the reminders pack. The plan and core packs stay (104
+    tools), and the 3 tools of ``projects-authority`` still fit, so the owner
+    is reached and nothing steps aside. Mutation: let the cap read the words
+    with the switch off -> the reminders pack stays -> red."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "")
+    choice = _case_a()
+    assert choice.slugs == ("projects-plan", "projects"), choice
+    assert choice.evicted == ("projects-reminders",) and choice.skipped == (), choice
     assert _owner_reached(choice)
 
 
@@ -1182,10 +1232,9 @@ def test_a_sticky_pack_of_another_owner_leaves_before_a_projects_pack() -> None:
     """The case of ``test_pack_room.py``: ``crm-records``, ``projects`` and
     ``projects-plan`` are sticky (turns 5, 6 and 7), and "remind me" adds the
     reminders pack. The cap moves ``crm-records`` out first, then the core pack.
-    The plan and reminders packs stay (99 tools), and the owner is reached
-    through the reports pack (99 + 11 = 110). Mutation: run the step-aside
-    before the cap -> ``crm-records`` stays and both newer Projects packs leave
-    -> red."""
+    The plan and reminders packs stay (99 tools), and the owner is reached.
+    Mutation: run the step-aside before the cap -> ``crm-records`` stays and
+    both newer Projects packs leave -> red."""
     turn = tp.PackTurn(ORG, SESSION, tp._member_part(MEMBER), 9,
                        (tp.Sticky("crm-records", (1, 0), 5), tp.Sticky("projects", (1, 1), 6),
                         tp.Sticky("projects-plan", (1, 2), 7)),
@@ -1197,33 +1246,90 @@ def test_a_sticky_pack_of_another_owner_leaves_before_a_projects_pack() -> None:
 
 
 def test_the_step_aside_moves_the_sticky_pack_that_the_member_did_not_name() -> None:
-    """Two sticky Projects packs fit the caps (105 tools) and keep the owner
-    unreached. The member asks for a burndown, so the older plan pack is a need
-    of this turn, and the newer structure pack steps aside. Mutation: drop the
-    first term of ``_sticky_key`` -> the plan pack leaves -> red."""
+    """Two sticky Projects packs fit the caps (110 tools at base 62) and keep
+    the owner unreached: the 3 tools of ``projects-authority`` do not fit
+    (110 - 1 + 3 > 110). The member asks for a burndown, so the older plan pack
+    is a need of this turn, and the newer structure pack steps aside. Mutation:
+    let a named sticky pack leave by age alone -> the plan pack leaves -> red."""
     choice = tp.choose(
         _sticky_turn("show the burndown", "",
                      tp.Sticky("projects-plan", (10, 0), 13),
                      tp.Sticky("projects-structure", (11, 0), 19)),
-        allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+        allowed=EVERY, base_tools=62, specialists=_SPECIALIST)
     assert choice.slugs == ("projects-plan",), choice
     assert choice.evicted == ("projects-structure",), choice
-    assert _owner_reached(choice)
+    assert _owner_reached(choice, base=62)
 
 
 def test_a_sticky_pack_of_another_owner_does_not_keep_the_core_pack_on_the_page() -> None:
     """``email`` is sticky, the member is on the Projects page, and asks who is
-    overloaded. The cap moves ``email`` out. Then the core pack steps aside, so
-    the plan pack alone reaches the owner. Before this round the step-aside ran
+    overloaded. At base 62 the cap moves ``email`` out, and the core and plan
+    packs (109 tools) leave no room for 3 more. The core pack steps aside, so
+    the plan pack alone reaches the owner. Before fix round 2 the step-aside ran
     first, found no room with ``email`` held, and kept the two Projects packs
     with the owner unreached. Mutation: run the step-aside before the cap ->
     red."""
     choice = tp.choose(
         _sticky_turn("who is overloaded", "projects", tp.Sticky("email", (10, 0), 19)),
-        allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+        allowed=EVERY, base_tools=62, specialists=_SPECIALIST)
     assert choice.slugs == ("projects-plan",), choice
     assert choice.evicted == ("email",) and choice.skipped == ("projects",), choice
-    assert _owner_reached(choice)
+    assert _owner_reached(choice, base=62)
+
+
+@pytest.mark.parametrize(("base", "slugs", "skipped"), [
+    # The real base: the two fit (102 tools) with room for 3 more, so the
+    # owner is reached and nothing steps aside.
+    (_BASE, ("projects-bulk", "projects"), ()),
+    # Base 64: the two make 109 tools, and the step-aside acts.
+    (64, ("projects-bulk",), ("projects",)),
+])
+def test_a_sticky_pack_that_the_words_name_again_outlasts_the_core_pack(
+    base: int, slugs: tuple[str, ...], skipped: tuple[str, ...],
+) -> None:
+    """Fix round 3 (P1-1). ``projects-bulk`` is sticky from the last turn, and
+    the member says "archive tasks that are done" on the Projects page. The
+    words name the bulk pack again, so where a pack must step aside, the core
+    pack goes and the bulk pack stays. A repeat turn pays no load step.
+    Mutation: let every sticky pack go before the core pack (fix round 2) ->
+    the bulk pack leaves at base 64 -> red."""
+    choice = tp.choose(
+        _sticky_turn("archive tasks that are done", "projects",
+                     tp.Sticky("projects-bulk", (19, 0), 19)),
+        allowed=EVERY, base_tools=base, specialists=_SPECIALIST)
+    assert tp.matched_layer("projects-bulk", "archive tasks that are done") == "words"
+    assert choice.slugs == slugs and choice.skipped == skipped, choice
+    assert choice.evicted == (), choice
+    assert _owner_reached(choice, base=base)
+
+
+@pytest.mark.parametrize(("base", "by"), [
+    # Base 56: 110 tools fit the cap, and the 3 tools of projects-authority
+    # do not fit beside them. The step-aside moves crm-records out.
+    (56, "the step-aside"),
+    # Base 57: 111 tools. The cap moves crm-records out by its order, because
+    # the words name the bulk pack and not crm-records.
+    (_BASE, "the cap"),
+])
+def test_an_unnamed_sticky_pack_of_another_owner_leaves_before_the_projects_packs(
+    base: int, by: str,
+) -> None:
+    """Fix round 3 (P2-1). ``crm-records`` (turn 18) and ``projects-bulk`` (turn
+    19) are sticky, and the member says "archive tasks that are done" on the
+    Projects page. The order is: ``crm-records``, which the words do not name,
+    leaves first. The bulk pack, which the words name, and the core pack, which
+    the page and the words ask for, stay. The cap gives this order over the
+    cap, and the step-aside gives it under the cap. Mutation: let only Projects
+    packs step aside -> the core pack leaves and ``crm-records`` stays at base
+    56 -> red."""
+    choice = tp.choose(
+        _sticky_turn("archive tasks that are done", "projects",
+                     tp.Sticky("crm-records", (18, 0), 18),
+                     tp.Sticky("projects-bulk", (19, 1), 19)),
+        allowed=EVERY, base_tools=base, specialists=_SPECIALIST)
+    assert choice.slugs == ("projects-bulk", "projects"), (by, choice)
+    assert choice.evicted == ("crm-records",) and choice.skipped == (), (by, choice)
+    assert _owner_reached(choice, base=base)
 
 
 # ── MT-1228. "Remind me" loads a pack that holds set_reminder ───────────────

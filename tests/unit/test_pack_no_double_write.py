@@ -52,10 +52,10 @@ from tests.unit.test_tool_packs_choice import CONFIG, MEMBER, ORG, SESSION
 PA = "projects-assistant"
 EA = "email-assistant"
 CRM = "crm-assistant"
-#: PJP-2: no ``projects-reports``, so the loader cannot reach the owner and the
-#: specialist stays. That is the case when an admin turns the reports family
-#: off. Production's list reaches the owner, because ``packs_on`` adds the
-#: reports pack wherever ``projects-plan`` is on (``tool_packs.SPLIT_FROM``).
+#: Each Projects pack but ``projects-reports`` (PJP-2), so the loader cannot
+#: reach the owner and the specialist stays. That is the case when an admin
+#: turns the reports family off. ``packs_on`` adds the reports pack wherever
+#: ``projects-plan`` is on (``tool_packs.SPLIT_FROM``).
 PROJ = frozenset(("projects", "projects-plan", "projects-structure", "projects-bulk",
                   "projects-reminders", "projects-authority"))
 UUID = "0b0b0b0b-0000-4000-8000-0000000000b1"
@@ -570,7 +570,7 @@ def test_the_write_kinds_cover_each_projects_write() -> None:
     from acb_skills.subagent_contract import annotated_read_only
 
     owner = {slug for slug in sf.pack_slugs() if sf.SKILL_FAMILIES[slug].get("owner") == PA}
-    assert owner == PROJ, "non-vacuity"
+    assert owner == PROJ | {"projects-reports"}, "non-vacuity"  # PJP-2 + ALN-4: 7 packs
     writes = {name for slug in owner for name in sf.SKILL_FAMILIES[slug]["tools"]
               if not annotated_read_only(name) and name not in tp.CHAT_FILE_TOOLS}
     assert set(tp.WRITE_KINDS) == writes

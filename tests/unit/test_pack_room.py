@@ -129,20 +129,22 @@ def test_the_core_pack_on_the_surface_and_three_sticky_packs_all_give_way() -> N
     counts too. The reminder pack still loads. Mutation: drop the new pack
     first -> red.
 
-    PJP-2 fix round 2 (project_planning.md §3.3, rule 2): the cap moves the two
-    email packs out. The core and the reminders packs then make 107 tools with
-    ``crm-records``, and no third Projects pack fits (107 + 11 > 110), so the
-    owner is not reached. The core pack steps aside, and the reminders pack
-    alone reaches the owner. The model loads the core pack again when it needs
-    it (84 + 23 = 107). Before this round the step-aside ran before the cap,
-    saw the email packs, and kept the owner unreached."""
+    PJP-2 fix round 3 (project_planning.md §3.3, rule 2): the cap moves the two
+    email packs out. ``crm-records``, the core and the reminders packs then
+    fill the 3 packs, and a run at 3 packs offers no load, so the owner is not
+    reached. The step-aside moves the sticky pack that the words do not name
+    first, of any owner: ``crm-records`` leaves, and the core pack that the
+    page asked for stays (P2-1). So no new need loses to an old sticky pack.
+    Fix round 2 moved the core pack out and kept ``crm-records``. Mutation:
+    let only Projects packs step aside -> red."""
     choice = tp.choose(_turn(REMIND, _sticky("email", "email-setup", "crm-records"),
                              surface="projects"), allowed=EVERY, base_tools=56)
-    assert choice.slugs == ("crm-records", REMINDERS), choice
-    assert choice.evicted == ("email", "email-setup") and choice.skipped == ("projects",)
+    assert choice.slugs == ("projects", REMINDERS), choice
+    assert choice.evicted == ("email", "email-setup", "crm-records"), choice
+    assert choice.skipped == ()
     assert _total(choice, 56) <= tp.MAX_REQUEST_TOOLS
     plan = tp.plan_loader(EVERY, choice.slugs, current=_total(choice, 56))
-    assert PA in plan.via_loader and "projects" in plan.offered
+    assert PA in plan.via_loader
 
 
 def test_the_reminder_ceiling_is_the_cap_less_the_pack() -> None:

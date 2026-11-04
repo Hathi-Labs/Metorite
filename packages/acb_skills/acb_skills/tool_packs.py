@@ -941,6 +941,17 @@ SPLIT_FROM: dict[str, str] = {
 }
 
 
+def with_splits(slugs: Iterable[str]) -> frozenset[str]:
+    """*slugs*, and each pack of :data:`SPLIT_FROM` whose source is in them.
+
+    The one reader of :data:`SPLIT_FROM`. :func:`packs_on` widens the allow
+    list with it, and the run widens the families that an admin turned off
+    with it (``orchestrator._tool_injection._apply_tool_packs``). So a split
+    pack follows its source both ways (PJP-2 fix round 3, P3-1)."""
+    base = frozenset(slugs)
+    return base | {split for split, source in SPLIT_FROM.items() if source in base}
+
+
 def pack(slug: str) -> Pack | None:
     """The pack *slug*, or None when no skill family of that slug is a pack."""
     if not is_pack(slug):
@@ -1084,9 +1095,7 @@ def packs_on(org: object) -> frozenset[str]:
     known = frozenset(slug for slug in PACKS if is_pack(slug))
     if ALL in slugs:
         return known
-    named = known & slugs
-    return named | {split for split, source in SPLIT_FROM.items()
-                    if source in named and split in known}
+    return with_splits(known & slugs) & known
 
 
 # ── OA-7c: layer (a), the sticky state and the persona (§4.2.2) ─────────────
@@ -1666,7 +1675,7 @@ def _leave_order(
 def _step_aside(
     order: Sequence[str], layers: Mapping[str, str], sticky: Mapping[str, Sticky], *,
     allow: frozenset[str], total: Callable[[Sequence[str]], int],
-    stays: Mapping[str, int], key: Callable[[Sticky], Any],
+    stays: Mapping[str, int], key: Callable[[Sticky], Any], words: str,
 ) -> list[str]:
     """The packs that step aside so that the loader reaches their owner, in order.
 
@@ -1675,13 +1684,21 @@ def _step_aside(
     leave no room for a third. The specialist then stayed, and the model
     handed off: the fault of 2026-11-02. So, for each owner of
     :data:`SPECIALIST_STAYS_UNTIL_REACHED`, while two or more of its packs in
-    *order* keep the owner unreached, one of them steps aside. A sticky pack
-    goes first, in the order of the cap (*key*). So a sticky pack that the
-    member named in this turn goes after each other sticky pack (fix round 2,
-    P1-2). Then the core pack goes, then the last new pack. The steps stay
-    only when they reach the owner within both caps. Else none stay (a mixed
-    email turn keeps email and the core pack). The model loads a pack again
-    in the run when it needs a tool of it.
+    *order* keep the owner unreached, one pack steps aside, in this order
+    (fix round 3):
+
+    1. a sticky pack of ANY owner that the member's *words* of this turn do
+       not name (:func:`matched_layer`), in the order of the cap (*key*). An
+       old ``crm-records`` goes before a Projects pack that the turn asked
+       for (P2-1);
+    2. the core pack of the owner;
+    3. a sticky pack that the words name, or a new pack, of the owner: the
+       last one first. So a sticky pack that the member names again stays
+       longer than the core pack (P1-1).
+
+    The steps stay only when they reach the owner within both caps. Else none
+    stay (a mixed email turn keeps email and the core pack). The model loads
+    a pack again in the run when it needs a tool of it.
 
     :func:`choose` calls it after the cap, on the packs that the cap left.
     *total* gives the tools of a request, and *stays* the specialist tools of
@@ -1701,11 +1718,12 @@ def _step_aside(
             mine = [s for s in trial if (f := pack(s)) is not None and f.owner == owner]
             if len(mine) < 2:
                 break
-            olds = [sticky[s] for s in mine if layers.get(s) == "sticky"]
+            unnamed = [sticky[s] for s in trial
+                       if layers.get(s) == "sticky" and matched_layer(s, words) is None]
             cores = [s for s in mine if any(
                 (f := pack(o)) is not None and f.replaces_core == s for o in mine)]
-            if olds:
-                victim = min(olds, key=key).slug
+            if unnamed:
+                victim = min(unnamed, key=key).slug
             elif cores:
                 victim = cores[0]
             else:
@@ -1744,9 +1762,11 @@ def choose(
        P1-A). Else the last new pack leaves.
     5. The step-aside (PJP-2): after the cap, the packs of an owner of
        :data:`SPECIALIST_STAYS_UNTIL_REACHED` step aside while two or more of
-       them keep the loader from reaching the owner. A sticky pack leaves
-       first, in the order of step 4. Then the core pack, then the last new
-       pack. The steps stay only when they reach the owner.
+       them keep the loader from reaching the owner. A sticky pack of any
+       owner that this turn's words do not name leaves first, in the order of
+       step 4. Then the core pack, then a named sticky pack or a new pack of
+       the owner, the last one first. The steps stay only when they reach the
+       owner (:func:`_step_aside`).
 
     *allowed* is :func:`packs_on` of the bound tenant less the families that
     an admin turned off. A slug that is no pack is dropped, and so is a pack
@@ -1832,7 +1852,7 @@ def choose(
 
     # PJP-2: the step-aside runs AFTER the cap (fix round 2, P1-2).
     for victim in _step_aside(order, layers, sticky, allow=allow, total=_total,
-                              stays=stays, key=_sticky_key):
+                              stays=stays, key=_sticky_key, words=turn.words):
         order.remove(victim)
         layers.pop(victim, None)
         (evicted if victim in sticky else skipped).append(victim)
