@@ -974,13 +974,14 @@ async def test_an_access_request_on_the_projects_page_keeps_the_specialist(
     store, agents,
 ) -> None:
     """"Grant Priya access to this project" on /projects loads the core pack.
-    PJP-2: the packs fit now, but the production ``TOOL_PACKS`` list lacks
-    ``projects-reports`` until the owner adds it. ``plan_loader`` needs EVERY
-    pack of the owner in the list, so the owner is not reached. The
-    specialist tool stays, the persona keeps its line, and the rules route the
-    work to ``call_agent``. Mutation: drop ``_specialist_leaves`` from
-    ``PackRun.of`` -> the specialist leaves and the access work has no tool
-    and no path -> red."""
+    PJP-2: the packs fit now, but here the allow list lacks
+    ``projects-reports``, as when an admin turns the reports family off.
+    ``plan_loader`` needs EVERY pack of the owner in the list, so the owner is
+    not reached. The specialist tool stays, the persona keeps its line, and
+    the rules route the work to ``call_agent``. (Production's ``TOOL_PACKS``
+    gets the reports pack from ``projects-plan``, ``tool_packs.SPLIT_FROM``.)
+    Mutation: drop ``_specialist_leaves`` from ``PackRun.of`` -> the
+    specialist leaves and the access work has no tool and no path -> red."""
     persona = agents[0].default_options["instructions"]
     applied = await _apply_on(
         agents, "Grant Priya access to this project", "projects",
@@ -1000,10 +1001,11 @@ async def test_an_access_request_on_the_projects_page_keeps_the_specialist(
 async def test_an_access_request_reaches_the_owner_once_the_flag_line_has_every_pack(
     store, agents,
 ) -> None:
-    """The same request with the full list (PJP-2 adds ``projects-reports``):
-    the core pack loads, the owner is reached through the loader, and the
-    specialist leaves. Mutation: drop ``via_loader`` from the plan -> the
-    specialist stays and the model hands off -> red."""
+    """The same request with the full list (``packs_on`` adds
+    ``projects-reports`` wherever ``projects-plan`` is on): the core pack
+    loads, the owner is reached through the loader, and the specialist leaves.
+    Mutation: drop ``via_loader`` from the plan -> the specialist stays and the
+    model hands off -> red."""
     applied = await _apply_on(
         agents, "Grant Priya access to this project", "projects", PROJ)
     assert applied is not None and applied.record.slugs == ("projects",)
@@ -1014,6 +1016,8 @@ async def test_an_access_request_reaches_the_owner_once_the_flag_line_has_every_
 # ── PJP-2 fence (project_planning.md section 10) ─────────────────────────────
 
 #: Production's TOOL_PACKS on 2026-11-02 (owner-only, work_plan.md section 6 D4).
+#: ``packs_on`` adds ``projects-reports`` to it, because the list names
+#: ``projects-plan`` (``tool_packs.SPLIT_FROM``, owner decision of 2026-11-04).
 PRODUCTION_PACKS = frozenset({
     "email", "email-setup", "crm-records", "projects", "projects-plan",
     "projects-structure", "projects-bulk", "projects-reminders",
@@ -1036,12 +1040,13 @@ def test_each_other_projects_pack_fits_beside_the_core_pack_and_the_owner_is_rea
     assert PA in plan.via_loader
 
 
-def test_the_owner_is_not_reached_until_projects_reports_is_in_the_flag_line() -> None:
-    """The flag line matters: ``plan_loader`` needs EVERY pack of the owner in
-    the allow list. Today's production list lacks ``projects-reports``, so the
-    hand-off stays until the owner adds the slug. Mutation: let ``plan_loader``
-    skip a missing pack -> the owner is reached with a pack the run cannot
-    load -> red."""
+def test_the_owner_is_not_reached_while_a_pack_of_it_is_off() -> None:
+    """``plan_loader`` needs EVERY pack of the owner in the allow list. An allow
+    list that lacks ``projects-reports`` (an admin turned the family off)
+    keeps the hand-off. Production's list does not lack it: ``packs_on`` adds
+    it from ``projects-plan`` (``test_tool_packs_registry.py``). Mutation: let
+    ``plan_loader`` skip a missing pack -> the owner is reached with a pack the
+    run cannot load -> red."""
     plan = tp.plan_loader(PRODUCTION_PACKS, ("projects",), current=79, removable={PA: 1})
     assert PA not in plan.via_loader
 

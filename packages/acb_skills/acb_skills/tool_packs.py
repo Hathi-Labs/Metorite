@@ -641,10 +641,8 @@ _PROJECTS_PLAN_WORDS = (
 _PROJECTS_STRUCTURE_WORDS = (
     "task status", "task statuses", "status set", "task type", "task types",
     "custom field", "custom fields", "task tag", "task tags", "project tags",
-    "project access", "saved view", "saved views",
-
-    "who watches",
-    "watchers", "watcher",
+    "project access", "saved view", "saved views", "who watches", "watchers",
+    "watcher",
 )
 _PROJECTS_REPORTS_WORDS = (
     "status report", "status reports", "weekly report", "weekly reports",
@@ -856,7 +854,8 @@ PACKS: dict[str, Pack] = {
         loader_route=_PROJECTS_LOAD_LINE,
     ),
     # PJP-2 (project_planning.md section 3.3): the report tools left projects-plan.
-    # The slug must be in TOOL_PACKS, or plan_loader never reaches the owner.
+    # It is on wherever projects-plan is on (SPLIT_FROM), so TOOL_PACKS need not
+    # name it, and plan_loader reaches the owner.
     "projects-reports": Pack(
         slug="projects-reports",
         when="Load for a status report, saved reports, who gets a report and when, or to export tasks.",
@@ -877,6 +876,16 @@ PACKS: dict[str, Pack] = {
         delegation_refusal=_STUDIO_DELEGATION_REFUSED,
         surface="studio",
     ),
+}
+
+#: A pack split out of another pack, and the pack that it came from. The split
+#: pack is on wherever its source pack is on (:func:`packs_on`), so a split
+#: never turns tools off on a box whose ``TOOL_PACKS`` names the source.
+#: Owner decision "Inherit", 2026-11-04, task 1479 (PJP-2 fix round 2, P1-3).
+#: Production's list names ``projects-plan``, so ``projects-reports`` is on
+#: there with no flag change. Fence: ``tests/unit/test_tool_packs_registry.py``.
+SPLIT_FROM: dict[str, str] = {
+    "projects-reports": "projects-plan",
 }
 
 
@@ -994,6 +1003,10 @@ def packs_on(org: object) -> frozenset[str]:
     * a slug that is no pack is dropped;
     * a fault in the settings read gives no pack.
 
+    A pack of :data:`SPLIT_FROM` is on when the list names its source pack
+    (owner decision "Inherit", 2026-11-04, task 1479). The list can still name
+    it alone.
+
     The caller passes the bound tenant of the run, never a value from request
     input (R5, ``user_management_contract.md`` R11). Any value other than
     empty on a box is OWNER-ONLY (``work_plan.md`` §6 D4). OA-7c added the
@@ -1017,7 +1030,11 @@ def packs_on(org: object) -> frozenset[str]:
     if ALL not in orgs and org_id not in orgs:
         return frozenset()
     known = frozenset(slug for slug in PACKS if is_pack(slug))
-    return known if ALL in slugs else known & slugs
+    if ALL in slugs:
+        return known
+    named = known & slugs
+    return named | {split for split, source in SPLIT_FROM.items()
+                    if source in named and split in known}
 
 
 # ── OA-7c: layer (a), the sticky state and the persona (§4.2.2) ─────────────
@@ -1874,12 +1891,14 @@ NO_PERSONA_BULLETS: frozenset[str] = frozenset({"crm-assistant", "studio-builder
 
 #: OA-8b fix round 1 (P2-2). The owners whose specialist tool STAYS beside a
 #: loaded pack, unless the loader reaches the owner (``via_loader``) or the run
-#: holds every pack of the owner. The Projects core pack cannot be joined by
-#: ``projects-plan`` or ``projects-structure`` at the real base (113 and 114
-#: tools; PJP-2 cut both packs to 24, so they fit at base 56 now, but only
-#: when ``projects-reports`` is in TOOL_PACKS), so a core load alone would strand their work with no tool and no
-#: path. Email and CRM keep the older rule: a loaded pack removes the
-#: specialist. Fence: ``tests/unit/test_projects_packs.py``.
+#: holds every pack of the owner. Before PJP-2 the Projects core pack could not
+#: be joined by ``projects-plan`` or ``projects-structure`` at the real base
+#: (113 and 114 tools), so a core load alone would strand their work with no
+#: tool and no path. PJP-2 cut both packs to 24, so each fits beside the core
+#: pack at base 56 (project_planning.md §3.3). ``projects-reports`` is on
+#: wherever ``projects-plan`` is on (:data:`SPLIT_FROM`). Email and CRM keep the
+#: older rule: a loaded pack removes the specialist. Fence:
+#: ``tests/unit/test_projects_packs.py``.
 SPECIALIST_STAYS_UNTIL_REACHED: frozenset[str] = frozenset({"projects-assistant"})
 
 

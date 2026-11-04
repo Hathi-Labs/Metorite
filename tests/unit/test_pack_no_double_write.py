@@ -49,8 +49,12 @@ from tests.unit.test_tool_packs_choice import CONFIG, MEMBER, ORG, SESSION
 PA = "projects-assistant"
 EA = "email-assistant"
 CRM = "crm-assistant"
+#: PJP-2: no ``projects-reports``, so the loader cannot reach the owner and the
+#: specialist stays. That is the case when an admin turns the reports family
+#: off. Production's list reaches the owner, because ``packs_on`` adds the
+#: reports pack wherever ``projects-plan`` is on (``tool_packs.SPLIT_FROM``).
 PROJ = frozenset(("projects", "projects-plan", "projects-structure", "projects-bulk",
-                  "projects-reminders"))  # PJP-2: production's list, with no projects-reports
+                  "projects-reminders"))
 UUID = "0b0b0b0b-0000-4000-8000-0000000000b1"
 #: The turn of OA-8e run 4 on the Tasks page. The surface loads the core
 #: pack, and the plan and structure packs cannot join it, so the specialist

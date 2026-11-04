@@ -8,7 +8,8 @@ catches. What is locked:
    ``own_tool_scope``, no tool is in both, and the split is 31 and 28.
 2. A pack holds at most 35 tools.
 3. ``packs_on`` is the one reader of the flag, it fails closed, and no
-   caller reads it yet.
+   caller reads it yet. A split pack is on wherever its source pack is on
+   (``SPLIT_FROM``, PJP-2).
 4. A pack is not an injected family: a toggle of it narrows no injected
    scope, and the skill index and the per-agent matrix never list it.
 5. ``build_catalog`` prices a pack from its owner's tools and its rules, and
@@ -265,6 +266,53 @@ def test_packs_on_keeps_only_real_pack_slugs(_flag) -> None:
     """Mutation: an unknown slug, or a family that is no pack, comes back."""
     _flag("email, bogus, memory", ORG_A)
     assert tp.packs_on(ORG_A) == frozenset({"email"})
+
+
+#: Production's ``TOOL_PACKS`` on 2026-11-04, as the owner gave it (task 1479).
+PRODUCTION_TOOL_PACKS = (
+    "email,email-setup,crm-records,projects,projects-plan,projects-structure,"
+    "projects-bulk,projects-reminders")
+
+
+def test_a_split_pack_is_on_wherever_its_source_pack_is_on(_flag) -> None:
+    """PJP-2 fix round 2 (P1-3), owner decision "Inherit" (2026-11-04, task
+    1479). Production's list does not name ``projects-reports``, and the pack
+    is on there. So the loader reaches the Projects owner in a turn with no
+    Projects pack held (current 57). Mutation: drop the ``SPLIT_FROM`` union
+    from ``packs_on`` -> the report tools are off and the owner is not reached
+    -> red."""
+    _flag(PRODUCTION_TOOL_PACKS, ORG_A)
+    on = tp.packs_on(ORG_A)
+    assert "projects-reports" in on
+    assert on == frozenset(PRODUCTION_TOOL_PACKS.split(",")) | {"projects-reports"}
+    plan = tp.plan_loader(on, (), current=57, removable={PROJECTS: 1})
+    assert PROJECTS in plan.via_loader
+    assert "projects-reports" in plan.offered
+
+
+def test_a_split_pack_is_off_without_its_source_pack(_flag) -> None:
+    """The split pack follows its source and nothing else. Mutation: turn each
+    pack of ``SPLIT_FROM`` on always -> red. Mutation: drop the named slugs
+    from the result -> a list that names the split pack alone gives nothing ->
+    red."""
+    without = ",".join(s for s in PRODUCTION_TOOL_PACKS.split(",") if s != "projects-plan")
+    _flag(without, ORG_A)
+    assert "projects-reports" not in tp.packs_on(ORG_A)
+    _flag("projects-reports", ORG_A)
+    assert tp.packs_on(ORG_A) == frozenset({"projects-reports"})
+    _flag("*", ORG_A)
+    assert tp.packs_on(ORG_A) == frozenset(sf.pack_slugs())
+
+
+def test_each_split_pack_comes_from_a_pack_of_its_own_owner() -> None:
+    """``SPLIT_FROM`` is data beside ``PACKS``. Each key and each value is a
+    registered pack, the two share one owner, and no pack is its own source.
+    Mutation: name a slug that is no pack, or a pack of another owner -> red."""
+    assert tp.SPLIT_FROM == {"projects-reports": "projects-plan"}
+    for split, source in tp.SPLIT_FROM.items():
+        assert tp.pack(split) is not None and tp.pack(source) is not None
+        assert split != source
+        assert sf.SKILL_FAMILIES[split]["owner"] == sf.SKILL_FAMILIES[source]["owner"]
 
 
 def test_packs_on_fails_closed_on_a_settings_fault(monkeypatch) -> None:
