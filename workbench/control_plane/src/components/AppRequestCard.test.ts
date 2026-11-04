@@ -195,16 +195,16 @@ describe("the server's frame and the agent's values", () => {
     const rows = payloadRows({
       method: "POST",
       path: "/a",
-      body: { ["na⁦me"]: "invoice‮fdp.exe", note: "a⁧b⁩‎c؜" },
+      body: { ["na\u2066me"]: "invoice\u202Efdp.exe", note: "a\u2067b\u2069\u200Ec\u061C" },
     });
     expect(rows.find((r) => r.key.endsWith("me"))?.value).toBe("invoicefdp.exe");
     expect(rows.find((r) => r.key.endsWith("me"))?.label).toBe("Name");
     expect(rows.find((r) => r.key === "body:note")?.value).toBe("abc");
     const out = html({
-      request: request({ call: { method: "POST", path: "/x‮", body: { title: "invoice‮fdp.exe" } } }),
+      request: request({ call: { method: "POST", path: "/x\u202E", body: { title: "invoice\u202Efdp.exe" } } }),
     });
     expect(out).toContain("invoicefdp.exe");
-    expect(out).not.toMatch(/[؜‎‏‪-‮⁦-⁩]/);
+    expect(out).not.toMatch(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/);
   });
 
   it("reads the host of a stamp as the gateway does", () => {

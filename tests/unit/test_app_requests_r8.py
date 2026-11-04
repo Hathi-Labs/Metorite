@@ -435,6 +435,48 @@ def test_the_bindings() -> None:
         store.binding_connection("member:a@x.io")
 
 
+# ── No literal control in a file of the slice (re-review P3) ────────────────
+
+#: The files of MCP-P1b-1. A literal bidi control in source is the Trojan
+#: Source pattern: the code reads one way and runs another, GitHub warns on
+#: the pull request, and nobody can read the set. Each one is an escape.
+SLICE_FILES: tuple[str, ...] = (
+    "infra/postgres/342_pm_agent_runs_app_subject.sql",
+    "packages/acb_auth/acb_auth/app_requests.py",
+    "apps/services/gateway/gateway/app_requests.py",
+    "apps/services/gateway/gateway/routes/agent_requests.py",
+    "tests/unit/test_app_requests_r8.py",
+    "workbench/control_plane/src/lib/bidi.ts",
+    "workbench/control_plane/src/lib/bidi.test.ts",
+    "workbench/control_plane/src/lib/appRequest.ts",
+    "workbench/control_plane/src/components/AppRequestCard.tsx",
+    "workbench/control_plane/src/components/AppRequestCard.test.ts",
+    "workbench/control_plane/src/app/integrations/lib/appRequests.ts",
+    "workbench/control_plane/src/app/integrations/lib/appRequests.test.ts",
+    "workbench/control_plane/src/app/integrations/components/WaitingRequests.tsx",
+    "workbench/control_plane/src/app/api/agent-access/requests/relay.ts",
+    "workbench/control_plane/src/app/api/agent-access/requests/relay.test.ts",
+)
+
+#: The bidi set of ``lib/bidi.ts``, the tag block and the other characters
+#: with no glyph. Written with escapes, so this file passes its own test.
+_LITERAL_CONTROL = re.compile(
+    "[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\u200b\u2060\ufeff\u00ad"
+    "\U000e0000-\U000e007f]")
+
+
+def test_no_slice_file_holds_a_literal_bidi_control() -> None:
+    """Re-review P3. Each control of a file of the slice is written as an
+    escape (``\u202E``), never as the character itself."""
+    found = []
+    for rel in SLICE_FILES:
+        text = (_REPO / rel).read_text(encoding="utf-8")
+        for number, line in enumerate(text.splitlines(), 1):
+            for ch in _LITERAL_CONTROL.findall(line):
+                found.append(f"{rel}:{number} U+{ord(ch):04X}")
+    assert found == [], found
+
+
 def test_the_secret_words_are_the_edge_words() -> None:
     """D8 rule 4. The store refuses the keys that the edge drops."""
     tools = pytest.importorskip("agent_edge.tools")
