@@ -721,7 +721,7 @@ async def studio_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         decision = "approved"
         # STU-G1c: the proof that studio_publish reads. Only this branch writes
         # it, so revised, stopped and no_card leave no record.
-        if not await _record_plan(manifest_hash(doc)):
+        if not await _record_plan(doc):
             extra["note"] = _PLAN_NOT_KEPT
     elif answer is ask_tools.REVISED:
         decision = "revised"
@@ -731,6 +731,10 @@ async def studio_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         decision = "no_card"
     else:
         decision = "stopped"
+    if decision in ("revised", "stopped"):
+        # The member turned this plan down. An older approval of the same app
+        # must not publish it (review round 1).
+        extra["note"] = _PLAN_WITHDRAWN if await _withdraw_plan(doc) else _PLAN_NOT_WITHDRAWN
     return _result(True, [], [], None, title=title, detail=detail, context=context,
                    decision=decision, **extra)
 
@@ -1801,12 +1805,12 @@ async def studio_skill_state(skill_id: str, state: str) -> dict[str, Any]:
 PACKAGES_PATH = "/studio/packages"
 
 #: The tenant-Redis namespace of the approval record of a plan card. The key
-#: holds a hash of the member of the run and the hash of the manifest.
+#: holds a hash of the member of the run and a hash of the manifest id, so a
+#: member holds at most one approval of an app. The value is the hash of the
+#: approved manifest (``studio_manifest.manifest_hash``).
 PLAN_NAMESPACE = "studio_plan"
 #: The life of the approval record, in seconds (2 hours).
 PLAN_TTL_SECONDS = 2 * 60 * 60
-#: The value of the approval record.
-_PLAN_VALUE = "approved"
 
 #: Copies of route and store limits. A package cannot import the gateway, so
 #: ``test_studio_package_tools.py`` reads each copy against the real value.
@@ -1870,6 +1874,11 @@ _PLAN_UNREAD = ("The approval of the plan could not be read, so nothing was publ
                 "again.")
 _PLAN_NOT_KEPT = ("The approval could not be kept, so a publish of this manifest asks for the "
                   "plan again.")
+_PLAN_WITHDRAWN = ("Any earlier approval of this app is withdrawn. A publish needs a new plan "
+                   "card that the member approves.")
+_PLAN_NOT_WITHDRAWN = ("An earlier approval of this app could not be withdrawn, and it can last "
+                       "2 hours. Do not publish this app until the member approves a new plan "
+                       "card.")
 
 #: The fixed first line of each package card.
 _PKG_SAVE_NOTE = "Approve to save this draft. Nothing goes live. Reject to save nothing."
@@ -1946,58 +1955,97 @@ def _plan_redis() -> Any:
     return get_tenant_redis()
 
 
-async def _record_plan(digest: str) -> bool:
-    """Write the approval record of the manifest with hash *digest*, for the
-    member of the run, in the org of the run, for :data:`PLAN_TTL_SECONDS`.
-    True when it is written. A fault writes nothing and is False."""
-    org, part = _run_org(), _member_part()
-    if not (org and part):
+def _app_part(manifest: Any) -> str:
+    """The app of *manifest* as one key part: a hash of its manifest id, which
+    a package keeps for good (``packages_store.ID_FIXED``). "" when the
+    manifest names no id."""
+    mid = manifest.get("id") if isinstance(manifest, dict) else None
+    if not isinstance(mid, str) or not mid:
+        return ""
+    return hashlib.blake2b(mid.encode("utf-8", "surrogatepass"), digest_size=12).hexdigest()
+
+
+async def _record_plan(manifest: Any) -> bool:
+    """Write the approval record of the plan of *manifest*, for the member of
+    the run, in the org of the run, for :data:`PLAN_TTL_SECONDS`.
+
+    The key names the member and the app (the manifest id). The value is the
+    hash of the manifest. So the newest approval of an app replaces an older
+    one, and a publish needs the hash of its stored draft. True when it is
+    written. A fault writes nothing and is False."""
+    org, member, app = _run_org(), _member_part(), _app_part(manifest)
+    if not (org and member and app):
         return False
     try:
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
             await _plan_redis().setex(
-                key(PLAN_NAMESPACE, part, digest), PLAN_TTL_SECONDS, _PLAN_VALUE)
+                key(PLAN_NAMESPACE, member, app), PLAN_TTL_SECONDS, manifest_hash(manifest))
     except Exception as exc:
         _log_fault("studio.plan.record_failed", exc)
         return False
     return True
 
 
-async def _plan_on_record(digest: str) -> bool:
-    """True when the member of the run approved the plan of the manifest with
-    hash *digest* in the last :data:`PLAN_TTL_SECONDS`. A fault, or a run
-    with no org or member, raises :class:`_Refused`: the gate fails closed."""
-    org, part = _run_org(), _member_part()
-    if not (org and part):
+async def _approved_hash(manifest: Any) -> str:
+    """The hash that the member of the run approved for the app of
+    *manifest*, or "". A fault, or a run with no org or member, raises
+    :class:`_Refused`: the gate fails closed."""
+    org, member, app = _run_org(), _member_part(), _app_part(manifest)
+    if not (org and member):
         raise _Refused(_PLAN_UNREAD)
+    if not app:
+        return ""
     try:
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
-            got = await _plan_redis().get(key(PLAN_NAMESPACE, part, digest))
+            got = await _plan_redis().get(key(PLAN_NAMESPACE, member, app))
     except Exception as exc:
         _log_fault("studio.plan.read_failed", exc)
         raise _Refused(_PLAN_UNREAD) from None
     if isinstance(got, bytes):
         got = got.decode("utf-8", "replace")
-    return bool(got == _PLAN_VALUE)
+    return got if isinstance(got, str) else ""
 
 
-async def _drop_plan(digest: str) -> None:
-    """Delete the approval record after a publish, so one approval buys one
-    publish. A fault only logs: the record ends with its TTL."""
-    org, part = _run_org(), _member_part()
-    if not (org and part):
+async def _plan_on_record(stored: Any) -> bool:
+    """True when the member of the run approved the plan of the stored draft
+    *stored*, by its hash, in the last :data:`PLAN_TTL_SECONDS`."""
+    approved = await _approved_hash(stored)
+    return bool(approved) and approved == manifest_hash(stored)
+
+
+async def _drop_plan(stored: Any) -> None:
+    """Delete the approval record after a publish of *stored*, so one approval
+    buys one publish. A record of a newer plan of the app stays. A fault only
+    logs: the record ends with its TTL."""
+    try:
+        if await _approved_hash(stored) != manifest_hash(stored):
+            return
+        await _withdraw_plan(stored)
+    except _Refused:
         return
+
+
+async def _withdraw_plan(manifest: Any) -> bool:
+    """Delete any approval of the app of *manifest* by the member of the run.
+    A plan card that the member stopped or revised calls it, so an older
+    approval of the app cannot publish. True when the delete ran. A fault
+    only logs, and the record ends with its TTL."""
+    org, member, app = _run_org(), _member_part(), _app_part(manifest)
+    if not (org and member and app):
+        return False
     try:
         from acb_common.tenant_redis import key, organization_scope
 
         with organization_scope(org):
-            await _plan_redis().delete(key(PLAN_NAMESPACE, part, digest))
+            await _plan_redis().delete(key(PLAN_NAMESPACE, member, app))
     except Exception as exc:
-        _log_fault("studio.plan.drop_failed", exc)
+        _log_fault("studio.plan.withdraw_failed", exc)
+        return False
+    return True
 
 
 async def _pkg_get(path: str) -> _Reply:
@@ -2396,7 +2444,7 @@ async def studio_publish(package_id: str, notes: str = "") -> dict[str, Any]:
         if not isinstance(stored, dict):
             return _refusal(_PKG_SHAPE)
         digest = manifest_hash(stored)
-        if not await _plan_on_record(digest):
+        if not await _plan_on_record(stored):
             return _refusal(_NO_PLAN, package_id=pid)
         if await _must_ask():
             held = await _held_publish(pid, current, stored, digest, notes)
@@ -2417,7 +2465,7 @@ async def studio_publish(package_id: str, notes: str = "") -> dict[str, Any]:
         return _problems(reply, stored)
     if not reply.ok:
         return _package_fail(reply, "published")
-    await _drop_plan(digest)
+    await _drop_plan(stored)
     return _published(reply, pid)
 
 

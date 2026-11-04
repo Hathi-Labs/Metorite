@@ -408,10 +408,80 @@ async def test_only_approved_writes_the_record(gw, card, redis, answer, open_, d
     out = await st.studio_plan(_visit())
     assert out["decision"] == decision
     if decision == "approved":
-        assert len(redis.data) == 1 and list(redis.ttl.values()) == [st.PLAN_TTL_SECONDS]
+        # Verifier P3 1: the value of the TTL, not the constant that sets it.
+        assert len(redis.data) == 1 and list(redis.ttl.values()) == [7200]
         assert "note" not in out
     else:
         assert redis.data == {}
+
+
+@pytest.mark.parametrize("answer", [ask_tools.REVISED, False])
+async def test_a_stopped_or_revised_plan_withdraws_the_earlier_approval_of_the_app(
+        gw, card, redis, answer) -> None:
+    """Review round 1: the member turns a plan of the app down, so an older
+    approval of the same app cannot publish it. Mutation M19: skip the
+    withdraw -> red."""
+    m, pid = await _built()
+    card.answer = answer
+    out = await st.studio_plan({**m, "name": "Install visits 2"})
+    assert out["decision"] in ("revised", "stopped") and out["note"] == st._PLAN_WITHDRAWN
+    assert redis.data == {}
+    published = await st.studio_publish(pid)
+    assert published["ok"] is False and _msg(published) == st._NO_PLAN
+
+
+async def test_no_card_keeps_the_earlier_approval(gw, card, redis) -> None:
+    """A chat with no card asked nothing, and the member turned nothing down."""
+    _m, pid = await _built()
+    card.answer, card.open = False, False
+    assert (await st.studio_plan(_visit(name="Other")))["decision"] == "no_card"
+    assert len(redis.data) == 1 and (await st.studio_publish(pid))["ok"]
+
+
+async def test_a_new_approval_of_an_app_replaces_the_older_one(gw, redis) -> None:
+    """One approval of an app for each member: the newest. The draft of the
+    older plan does not publish."""
+    m, pid = await _built()
+    newer = {**m, "name": "Install visits 2"}
+    await _plan(newer)
+    assert list(redis.data.values()) == [st.manifest_hash(newer)]
+    out = await st.studio_publish(pid)
+    assert out["ok"] is False and _msg(out) == st._NO_PLAN
+
+
+async def test_a_withdraw_that_faults_says_so(gw, card, redis) -> None:
+    _m, _pid = await _built()
+    redis.fault = {"delete"}
+    card.answer = False
+    out = await st.studio_plan(_visit(name="Other"))
+    assert out["decision"] == "stopped" and out["note"] == st._PLAN_NOT_WITHDRAWN
+
+
+async def test_a_publish_keeps_the_record_of_a_newer_plan(gw, redis) -> None:
+    """The drop after a 201 deletes the record of the published draft only."""
+    m, pid = await _built()
+    newer = {**m, "name": "Install visits 2"}
+
+    def plan_while_publishing() -> None:
+        redis.data[next(iter(redis.data))] = st.manifest_hash(newer)
+
+    gw.between = plan_while_publishing  # the member approves a newer plan meanwhile
+    out = await st.studio_publish(pid)
+    assert out["ok"], out
+    assert list(redis.data.values()) == [st.manifest_hash(newer)]
+
+
+async def test_a_held_save_card_writes_no_plan_record(held, card, redis) -> None:
+    """Verifier P3 2: the approved card of a save is not the approval of a
+    plan. Mutation: write the record from the save card -> red."""
+    m = _visit()
+    saved = await _save(m)  # the held create card, approved
+    assert card.shown and card.shown[-1]["title"].startswith("Save the app")
+    assert redis.data == {}
+    out = await st.studio_save(_visit(name="B"), saved["package_id"], saved["based_on"])
+    assert out["ok"] and card.shown[-1]["title"].startswith("Save the draft of")
+    assert redis.data == {}
+    assert _msg(await st.studio_publish(saved["package_id"])) == st._NO_PLAN
 
 
 async def test_a_plan_that_could_not_keep_its_record_says_so(gw, redis) -> None:
@@ -436,8 +506,9 @@ async def test_the_record_binds_the_canonical_hash_of_the_stored_draft(gw, redis
     stored = gw.packages[pid]["manifest"]
     assert json.dumps(stored) != json.dumps(m) and stored == m  # non-vacuity
     member = hashlib.blake2b(MEMBER.encode("utf-8"), digest_size=12).hexdigest()
+    app = hashlib.blake2b(b"visits", digest_size=12).hexdigest()
     digest = st.manifest_hash(stored)
-    assert list(redis.data) == [f"cc:{ORG}:{st.PLAN_NAMESPACE}:{member}:{digest}"]
+    assert redis.data == {f"cc:{ORG}:{st.PLAN_NAMESPACE}:{member}:{app}": digest}
     assert saved["based_on"] == digest
     assert (await st.studio_publish(pid))["ok"]
 
@@ -631,7 +702,7 @@ async def test_no_result_holds_the_text_of_a_stored_manifest_of_100_kib(gw, mark
         await st.studio_save(_visit(), pid, st.manifest_hash(big)),  # a draft over the cap
         await st.studio_save(_visit()),  # 409 package_exists
     ]
-    assert await st._record_plan(st.manifest_hash(big))
+    assert await st._record_plan(big)
     gw.problems = [{"kind": "field_changed", "object": "visit", "field": "site",
                     "message": plant}]
     outs.append(await st.studio_publish(pid))
@@ -785,7 +856,7 @@ async def test_a_held_write_that_the_route_refuses_shows_no_card(held, card) -> 
     unserved["actions"] = [{"id": "post", "uses": "integration:nope.post"}]
     assert validate_manifest(unserved) == []  # non-vacuity: only the catalog refuses it
     pid2 = held.seed(unserved)
-    assert await st._record_plan(st.manifest_hash(unserved))
+    assert await st._record_plan(unserved)
     out = await st.studio_publish(pid2)
     assert out["ok"] is False and out["status"] == 422
     assert len(card.shown) == shown and held.writes() == []
