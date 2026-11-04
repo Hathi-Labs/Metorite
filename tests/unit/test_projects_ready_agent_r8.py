@@ -123,6 +123,20 @@ def world():
     make("manual", source="manual")
     make("in_triage", status=triage)
     make("personal_board", project=a_root.id)
+    # A person hands an agent-made ready task to A. The creator is B, the
+    # hand-off is by C (D170.2): it shows New.
+    make("by_person")
+    s.one("UPDATE pm_task_assignees SET assigned_by = :a WHERE task_id ="
+          " CAST(:t AS uuid) RETURNING task_id", a="carol@pjp14.test",
+          t=t["by_person"])
+    # A legacy row with an empty assigned_by shows New. The column is NOT NULL
+    # (migration 146), so a NULL cannot exist. SQL lower(NULL) = ... is not
+    # true, and the empty string is the nearest legacy shape.
+    make("null_by")
+    s.one("UPDATE pm_task_assignees SET assigned_by = '' WHERE task_id ="
+          " CAST(:t AS uuid) RETURNING task_id", t=t["null_by"])
+    # The agent's own hand-off to a colleague stays ready: the creator is B,
+    # and B wrote the row.
     make("breaks")  # ready now, edited in the break test
     # Ready, assigned to B only: it is not A's, so it is in no list of A.
     make("others", assignee=B)
@@ -185,7 +199,7 @@ class TestReadyAgentTask:
 
     async def test_a_task_missing_a_condition_stays_new(self, armed):
         rows, counts, untriaged = await _state(armed)
-        stays = {"no_desc", "blank_desc", "no_type", "manual"}
+        stays = {"no_desc", "blank_desc", "no_type", "manual", "by_person", "null_by"}
         assert _named(armed, {i for i, r in rows.items() if r["is_new"]}) == stays
         # The untriaged read keeps the triage-stage task: it is not ready.
         assert _named(armed, untriaged) == stays | {"in_triage"}
@@ -238,7 +252,7 @@ class TestReadyAgentTask:
         with armed.admin.begin() as c:
             c.execute(text("SELECT set_config('app.tenant_id', :t, true)"),
                       {"t": armed.org})
-            rows = c.execute(text(sql)).fetchall()
+            rows = c.execute(text(sql), {"who": A}).fetchall()
         assert len(rows) == len(armed.t)
         answers = {}
         for r in rows:
@@ -247,4 +261,5 @@ class TestReadyAgentTask:
             answers[str(r.id)] = py
         back = {v: k for k, v in armed.t.items()}
         ready = {back[i] for i, v in answers.items() if v}
-        assert ready == {"ready", "ready_later", "breaks", "others"}
+        # "others" is B's: A holds no assignee row, so it is not ready for A.
+        assert ready == {"ready", "ready_later", "breaks"}

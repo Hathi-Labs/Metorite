@@ -189,6 +189,7 @@ Projects
    Changed 2026-11-03 by D170 (INB-1): the inbox holds only captures. Assigned untriaged work shows in My tasks as New.
    Amended 2026-11-04 by D170 (PJP-14, task 1605): a ready agent task is never New. Ready means all of these hold.
    The task is on a company board, and its `source` is `mcp`. It has an assignee, a description and a type. Its status is not in the `triage` stage.
+   My assignment was made by the task's creator, so a person's hand-off still shows New.
    A date or an estimate is not required. A ready task keeps its derived disposition, Next or Someday.
    The rule writes nothing. An edit that breaks a condition makes the task New again.
    `mine.is_ready_agent_task` and `mine.READY_AGENT_SQL` hold the rule. `personal.UNTRIAGED_CLAUSE` composes the SQL.
@@ -1335,7 +1336,8 @@ is dark until a UI slice calls it.
     The untriaged board row is open and on a company board. A colleague
     assigned it to me, and I set no disposition. This is
     `personal.UNTRIAGED_CLAUSE`, the set of `/my/inbox?untriaged=true`. It
-    counts in `by_disposition.new` and in `next` or `someday`. The client
+    counts in `by_disposition.new` and in `next` or `someday`. A ready agent
+    task (D170 amendment) is not here. It shows under Next or Someday. The client
     counters are independent.
 11. **Cost: measured, and not fixed here.** `/my/inbox` takes about 1.5 to
     2.3 s at 5000 tasks. This change did not cause it. The overlay join uses

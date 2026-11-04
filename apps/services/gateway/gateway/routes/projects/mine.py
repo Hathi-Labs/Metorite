@@ -31,6 +31,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.core import (
+    AGENT_TASK_SOURCE,
     CLOSING_CATEGORIES,
     Visibility,
     _tenant_session,
@@ -87,26 +88,34 @@ async def mine_scope(db: Any, vis: Visibility) -> tuple[str, dict[str, Any]]:
     return mine_clause("t"), await mine_binds(db, vis.email)
 
 
-#: The task source of an agent (``pm_tasks.source``, migration 265).
-AGENT_SOURCE = "mcp"
-
 #: The two facts of a ready agent task that live on the task row. Aliases
 #: ``t`` and ``s`` are the task and its status.
 _HAS_DESCRIPTION_SQL = "(t.description IS NOT NULL AND btrim(t.description) <> '')"
 _HAS_TYPE_SQL = "(t.type_id IS NOT NULL)"
 
+#: Who gave me the task (D170.2). My assignee row was written by the task's
+#: creator, so an agent's own hand-off is ready, and a person's hand-off, or
+#: a legacy row with no ``assigned_by``, still shows New. Binds ``:who``.
+_MY_ASSIGNMENT_BY_CREATOR_SQL = (
+    "EXISTS (SELECT 1 FROM pm_task_assignees ra WHERE ra.task_id = t.id"
+    " AND lower(ra.assignee) = :who"
+    " AND lower(ra.assigned_by) = lower(t.created_by))"
+)
+
 #: What :func:`is_ready_agent_task` reads from a row, as select items.
 AGENT_FACTS_SQL = (
     f"t.source AS t_source, {_HAS_DESCRIPTION_SQL} AS has_description,"
-    f" {_HAS_TYPE_SQL} AS has_type"
+    f" {_HAS_TYPE_SQL} AS has_type,"
+    f" {_MY_ASSIGNMENT_BY_CREATOR_SQL} AS assigned_by_creator"
 )
 
 #: The SQL twin of :func:`is_ready_agent_task` (D170 amendment, PJP-14). ONE
 #: spelling: ``personal.UNTRIAGED_CLAUSE`` composes it, and a test holds the
 #: Python and SQL answers equal. Aliases ``t`` and ``s``.
 READY_AGENT_SQL = (
-    f"(COALESCE(t.source = '{AGENT_SOURCE}', false)"
+    f"(COALESCE(t.source = '{AGENT_TASK_SOURCE}', false)"
     f" AND {_HAS_DESCRIPTION_SQL} AND {_HAS_TYPE_SQL}"
+    f" AND {_MY_ASSIGNMENT_BY_CREATOR_SQL}"
     " AND s.category <> 'triage'"
     " AND EXISTS (SELECT 1 FROM pm_task_assignees ra WHERE ra.task_id = t.id)"
     " AND NOT EXISTS (SELECT 1 FROM pm_projects rpj"
@@ -302,20 +311,22 @@ def in_today(
 
 def is_ready_agent_task(
     *, on_board: bool, source: Any, has_assignee: bool, has_description: bool,
-    has_type: bool, status_category: Any,
+    has_type: bool, status_category: Any, assigned_by_creator: bool,
 ) -> bool:
     """An agent-made task that is set up in full (D170 amendment, PJP-14).
 
     On a company board, ``source`` is ``mcp``, at least one assignee, a
     description, a type, and a status that is not in the ``triage`` stage.
+    My assignment was made by the task's creator, so a person's hand-off
+    still shows New.
     A date or an estimate is not required. The SQL twin is
     :data:`READY_AGENT_SQL`, and a test holds the two to one answer. The
     rule reads the row and writes nothing, so an edit that breaks a
     condition makes the task New again.
     """
     return bool(
-        on_board and source == AGENT_SOURCE and has_assignee and has_description
-        and has_type and status_category != "triage"
+        on_board and source == AGENT_TASK_SOURCE and has_assignee and has_description
+        and has_type and status_category != "triage" and assigned_by_creator
     )
 
 
@@ -327,6 +338,7 @@ def _ready_from_row(row: Any) -> bool:
         has_assignee=bool(getattr(row, "has_assignee", False)),
         has_description=bool(getattr(row, "has_description", False)),
         has_type=bool(getattr(row, "has_type", False)),
+        assigned_by_creator=bool(getattr(row, "assigned_by_creator", False)),
         status_category=getattr(row, "status_category", None)
         or getattr(row, "category", None),
     )
