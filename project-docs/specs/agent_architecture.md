@@ -1,7 +1,7 @@
 # Agent Architecture — how agents are declared, stored, and run
 
 **Status:** Active · **Date:** 2026-08-03 · verified against code on 2026-08-03 · **Owner:** vjvarada
-**Updated:** 2026-10-12. §12.2 WS-8c adds the admin's "always confirm" switch for each MCP server (H-300, item 31). It also adds on-demand MCP tools (items 22 to 30), merged in #922. Earlier the same day, it added the MCP confirmation card (H-299, items 13 to 17) and its hardening (items 18 to 21). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
+**Updated:** 2026-11-04. §12.2 WS-8c adds the admin's read-only key for each MCP server (MCP-C2, item 32, owner request). 2026-10-12: §12.2 WS-8c adds the admin's "always confirm" switch for each MCP server (H-300, item 31). It also adds on-demand MCP tools (items 22 to 30), merged in #922. Earlier the same day, it added the MCP confirmation card (H-299, items 13 to 17) and its hardening (items 18 to 21). 2026-10-11: §12.2 WS-8c is re-scoped: MAF agents get an MCP client behind `MAF_MCP_ORGS`, and the production flip is gate `enforcement-flip`. On 2026-10-03, `apis-config` moved to native MAF, and `task-manager` stays on the Copilot path until H-215 (§11.3.1).
 **Supersedes:** the distributed-repo framing in the 2026-07-26 first draft of this file.
 
 > **Read §12.1 before writing any code against this spec.** Roughly 60% of what §12 calls
@@ -1150,6 +1150,48 @@ logs `mcp.tool_annotations_changed`. Item 31 gives the admin a switch that ignor
       Metorite does not trust the server's claim. It is on for a new server. A member
       without `integrations:manage` sees it disabled.
 
+**The read-only key (MCP-C2, owner request 2026-11-04).** The owner asked for full read access
+to an outside MCP server with no card for each read. Shaurrya Console is the first case. About
+900 operations sit behind one tool, `call_operation`. That tool says that it is destructive,
+because it can write. The key of the org has read scopes only, so the server refuses each write.
+Item 32 is the switch. Metorite task 1584.
+
+32. **The admin's read-only key.** `provider_meta.read_only_key` on the `mcp:<name>` registry
+    row. The admin states that the key of the server can only read.
+    - **The rule.** With the switch on, no tool of that server waits for the card, whatever its
+      hints say. The gate passes the flag to `decide()` as the fact `mcp_read_only_key`. Then
+      `decide()` answers `mcp_read_only_key`, and the gate runs the tool as it runs
+      `mcp_read_only`. `decide()` stays the one gate.
+    - **The order.** The untrusted answer (step 3a) comes first, and it still asks the card.
+      `mcp_always_confirm` comes next, and it wins. The read-only key comes third. The hints
+      come last.
+    - **Two switches, one answer.** The two switches cannot both be on. `POST` and `PATCH`
+      refuse a body that sets both to true, with 422. A stored row with both true reads as
+      always confirm, so a damaged row fails closed.
+    - **Defaults.** A new server gets `false`. A row with no key reads as `false`. Any value
+      but a real `true` reads as `false`.
+    - **What it does not open.** A run that holds untrusted input still gets no server
+      (H-236, EM-G11d, OA-7b). A `no_egress` run gets no server. The grant
+      `integrations:use:mcp-<name>` still applies. A run with no member runs the tools, as it
+      runs a read-only tool today.
+    - **The index.** The list loader (item 25) shows `read_only` as true for each tool of
+      such a server.
+    - **The change.** `PATCH /integrations/mcp/{name}` takes `always_confirm`,
+      `read_only_key`, or both, and it needs one at least. It needs `integrations:manage`, and
+      it takes the org from the caller's tenant. Each change of `read_only_key` writes one
+      audit event, `integration.mcp.read_only_key`, through `audit_integration`.
+      `POST /integrations/mcp` takes `read_only_key` too, and the event
+      `integration.mcp.registered` records it.
+    - **The reads.** `GET /integrations/mcp` returns `read_only_key`. The read model returns
+      `detail.read_only_key` as `"true"` or `"false"`.
+    - **The console.** The Add MCP form and the MCP side panel show a second labelled tick on
+      the shared `Checkbox`: "This key can only read". Its help line says: "Every tool of this
+      server runs without asking. Turn this on only when the key cannot change data at the
+      source." A tick of one switch clears the other. A member without
+      `integrations:manage` sees it disabled.
+    - **The log.** Each attach logs `mcp.attached` with `read_only_key`, the names of the
+      servers that have the switch on.
+
 **The pinned client.** `outbound_guard.mcp_client(url)` runs `check_url`. Then it sends each
 request to the address that the check resolved, with the host name as SNI. It allows `https` on
 port 443 only. It sets `follow_redirects=False` and `trust_env=False`.
@@ -1207,6 +1249,10 @@ The client refuses a 3xx answer and a request to another origin. The default cli
 | A32 | A new server is set to always confirm. A row with no key and a moved `mcp_servers` row read as false. R8. | `test_mcp_always_confirm_r8.py` |
 | A33 | `PATCH /integrations/mcp/{name}` flips the switch and keeps the headers, and writes one audit event. A re-POST with the switch off writes one audit event with no header in it. A string value gets 422. A member without `integrations:manage` gets 403. Another org's name is 404. R8, two orgs, the app role. | `test_mcp_always_confirm_r8.py` |
 | A34 | `GET /integrations/mcp` and the read model return the flag, and no header value reaches a response or a log line. The console toggle is on for a new server, and it sends `always_confirm`. | `test_mcp_always_confirm_r8.py`, `alwaysConfirm.test.ts` |
+| A35 | With `read_only_key` true, a tool with `destructiveHint` true runs with no card, on the gate and on the real `run_agent_stream` with a FastMCP server. It runs in a run with no member too. With the switch off, A12 to A14 hold. | `test_maf_mcp_confirm.py` |
+| A36 | With both switches true on a row, every tool waits for the card. After an untrusted answer, a tool of a read-only-key server still waits for the card. The list loader shows `read_only` true for each tool of a read-only-key server. | `test_maf_mcp_confirm.py`, `test_maf_mcp_budget.py` |
+| A37 | `PATCH` sets the switch, keeps the headers, and writes one audit event. A body with both switches true gets 422, and so does a string value. A member without `integrations:manage` gets 403. Another org's name is 404. A new server reads as false. R8, two orgs, the app role. | `test_mcp_read_only_key_r8.py` |
+| A38 | `GET /integrations/mcp` and the read model return the flag. The console tick sends `read_only_key`, and a tick of one switch clears the other. | `test_mcp_read_only_key_r8.py`, `alwaysConfirm.test.ts` |
 
 This ticket inverts the flag-OFF test of `test_mcp_servers_org_scope.py`. With `ACB_GRAPH_TENANT_BIND`
 off, the Copilot path reads the rows of the run's org only.
@@ -1217,7 +1263,8 @@ off, the Copilot path reads the rows of the run's org only.
     uv run pytest tests/unit/test_maf_mcp_injection.py tests/unit/test_maf_mcp_org_scope_r8.py \
       tests/unit/test_mcp_outbound_pin.py tests/unit/test_no_mcp_stdio.py \
       tests/unit/test_mcp_register_r8.py tests/unit/test_mcp_servers_org_scope.py \
-      tests/unit/test_maf_mcp_confirm.py tests/unit/test_mcp_always_confirm_r8.py -v -rs
+      tests/unit/test_maf_mcp_confirm.py tests/unit/test_mcp_always_confirm_r8.py \
+      tests/unit/test_mcp_read_only_key_r8.py -v -rs
 
 No R8 suite may skip.
 
