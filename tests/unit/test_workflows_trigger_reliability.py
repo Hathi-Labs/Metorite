@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 from fastapi import HTTPException
-from gateway.routes.workflows import crud, scheduler
+from gateway.routes.workflows import crud, scheduler, unattended
 from gateway.routes.workflows.core import HOOK_PATH, hook_url
 
 
@@ -220,6 +220,7 @@ def _trigger_row(**over: Any) -> SimpleNamespace:
         name="Nightly sync",
         latest_version=4,
         variables={},
+        organization_id="org-1",
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -232,10 +233,21 @@ def _run_scan(monkeypatch, db: _ScriptedDb, **stubs: Any) -> tuple[int, list[dic
         skipped.append(kw)
         return "run-x"
 
-    async def fake_get_db() -> Any:
-        return db
+    async def fake_orgs() -> list[str]:
+        return ["org-1"]
 
-    monkeypatch.setattr(scheduler, "_get_db", fake_get_db)
+    @asynccontextmanager
+    async def fake_tenant_session(org: str | None = None) -> Any:
+        yield db
+
+    # H-328 part (b): the scan reads the orgs, checks the allowlist, then binds
+    # one org for each step. Org "org-1" is the one listed org here.
+    monkeypatch.setattr(scheduler, "_organization_ids", fake_orgs)
+    monkeypatch.setattr(scheduler, "_tenant_session", fake_tenant_session)
+    monkeypatch.setattr(
+        unattended, "get_settings",
+        lambda: SimpleNamespace(workflow_unattended_orgs="org-1"),
+    )
     monkeypatch.setattr(scheduler, "record_skipped_run", fake_record)
     for name, value in stubs.items():
         monkeypatch.setattr(scheduler, name, value)

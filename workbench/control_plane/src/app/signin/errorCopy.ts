@@ -51,6 +51,19 @@ export function signInErrorMessage(code: string | null): string | null {
   switch (code) {
     case "OAuthCallbackError":
       return "Sign-in was cancelled or failed. Try again.";
+    case "undefined":
+      // A bare `/api/auth/error` link. `@auth/core` copies the missing
+      // `?error=` into the redirect as the string "undefined" (task 1535).
+      // There is no type to report, so the copy names none.
+      return "Sign-in did not finish. Try again. If it keeps failing, contact your admin.";
+    case "MissingCSRF":
+      // The sign-in form posts a token that must match a cookie. A tab left
+      // open past the cookie, or a browser that blocks the cookie, fails that
+      // check (task 1535). The other `clientErrors` types cannot arrive: no
+      // Credentials or WebAuthn provider is configured, and the OTP adapter
+      // answers `getUserByEmail` with null, so `OAuthAccountNotLinked` is
+      // never thrown.
+      return "This sign-in page expired, or your browser blocked its cookie. Reload the page and try again. If it fails again, allow cookies for this site.";
     case "Verification":
       // The email code did not verify: mistyped, expired, already used, or
       // the code from an email sent to a different address. The gateway

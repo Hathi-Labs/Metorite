@@ -413,6 +413,13 @@ def _crm_follow_up(cleaned: list[dict]) -> tuple[float | None, list[dict]]:
         return None, []
 
 
+_QUESTIONS_SHAPE_HINT = (
+    'Pass a JSON string like \'{"questions":[{"header":"Confirm",'
+    '"question":"Proceed?"}]}\'. A JSON array of question objects also works.'
+)
+_QUESTIONS_SHAPE_ERROR = "Error: questions is not valid JSON of the expected shape. " + _QUESTIONS_SHAPE_HINT
+
+
 async def ask_questions(questions: str) -> str:
     """Ask the user one or more clarifying questions before proceeding.
 
@@ -463,20 +470,32 @@ async def ask_questions(questions: str) -> str:
     if cards_refused():
         # WS-47 WAC-3: no card channel. Answer at once, push and park nothing.
         return NO_CARD_QUESTIONS
-    try:
-        data = _json.loads(questions)
-    except (_json.JSONDecodeError, TypeError):
-        return (
-            "Error: questions must be valid JSON, e.g. "
-            '\'{"questions":[{"header":"Confirm","question":"Proceed?"}]}\''
-        )
-
-    if not isinstance(data, dict):
-        return "Error: questions must be a JSON object with a 'questions' key"
-
-    qs = data.get("questions", [])
+    # Task 1533: a model sends three shapes. A JSON string of an object with a
+    # 'questions' key (the documented one), a JSON string of the list itself,
+    # and a list or object that is already parsed. All three are accepted.
+    # MAF reads the parameter as `questions: str`, so a model call through MAF
+    # always gives a string, and the parsed shape never comes from that path.
+    # The parsed branch serves a direct Python caller, and it costs nothing.
+    # Fence: tests/unit/test_ask_questions_shapes.py.
+    data: Any = questions
+    if isinstance(questions, (str, bytes)):
+        try:
+            data = _json.loads(questions)
+        except (_json.JSONDecodeError, TypeError, UnicodeDecodeError):
+            return _QUESTIONS_SHAPE_ERROR
+    if isinstance(data, list):
+        qs = data
+    elif isinstance(data, dict):
+        qs = data.get("questions", [])
+    else:
+        return _QUESTIONS_SHAPE_ERROR
+    if isinstance(qs, str):  # a doubly encoded list
+        try:
+            qs = _json.loads(qs)
+        except (_json.JSONDecodeError, TypeError):
+            return _QUESTIONS_SHAPE_ERROR
     if not isinstance(qs, list) or len(qs) == 0:
-        return "Error: 'questions' must be a non-empty array"
+        return "Error: 'questions' must be a non-empty array. " + _QUESTIONS_SHAPE_HINT
 
     cleaned: list[dict] = []
     for i, q in enumerate(qs):
