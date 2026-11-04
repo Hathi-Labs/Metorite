@@ -194,6 +194,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # project for an org. A pin changes what a finding quotes, so only the
     # owner writes it.
     "AUTHORITY_PINS_ORGS",
+    # WS-ALN ALN-5a: PROJECT_RULES_ORGS opens the rules of a project for an
+    # org. A rule reaches each agent and each check of the project, so a
+    # tenant must not open it for another org.
+    "PROJECT_RULES_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",
