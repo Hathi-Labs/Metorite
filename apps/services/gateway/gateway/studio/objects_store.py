@@ -145,6 +145,24 @@ skipped. A child that a money roll-up counts, in another currency than the rule,
 is refused. A roll-up that does not fit now, or that the store cannot read,
 refuses the batch.
 
+**The sync of a manifest (A5).** :func:`sync_objects` brings the rows of one
+package to the ``objects`` of a published manifest, and the publish route is
+its one caller. It adds an object (:func:`define_object`, whose one caller it
+is), adds a field, flips ``hot``, and brings each rules list to the manifest
+through :func:`set_constraints`. The phases run in this order: rules pass 1
+(only the stored rules that stay), fields that turn cold, new objects, new
+fields, fields that turn hot, and rules pass 2 (the full lists). So a rule
+that goes is gone before its field turns cold or a roll-up checks its
+source, and a swap of hot fields at a cap passes, also when a rule moves
+with it. It builds the whole plan from reads, then writes in a SAVEPOINT. An
+object that goes, a field that goes or changes, a new required field on an
+object with records, and each refusal of a store call (a rule included) raise
+:class:`ObjectsOutOfSync` with a list of :class:`SyncProblem`. A refusal of a
+field step names the field. ⚠️ The lock
+order: the caller holds the ``apps`` row ``FOR UPDATE``, and the sync takes
+the org lock after it. :func:`list_objects` reads the objects of one package
+in two statements.
+
 **On a floor of 0 or less, a write that does not lower a group never reads
 the group.** The store adds up the net change of the batch on each key of
 ``group_sum_min``, in exact ``Decimal``, from the values that it read under
@@ -185,6 +203,7 @@ import uuid
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from dataclasses import field as dc_field
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -201,6 +220,7 @@ from acb_common.studio_fields import (
     MAX_OBJECTS_PER_ORG,
     MAX_OBJECTS_PER_PACKAGE,
     NAME_PATTERN,
+    FieldError,
     FieldSpec,
     check_can_be_hot,
     hot_value,
@@ -277,6 +297,8 @@ _LOCK_WAIT_BACK_SQL = "SELECT set_config('lock_timeout', :ms, true)"
 #: Postgres picked it as the victim of a deadlock.
 _BUSY_SQLSTATES = ("55P03", "40P01")
 _BUSY_MESSAGE = "This app is busy. Try again in a moment."
+#: The next step of a refusal at the hot budget. One sentence with the cap.
+_TURN_COLD = ", so turn a hot field cold first."
 
 #: A backfill reads and writes the records in pages of this size.
 BACKFILL_PAGE = 2_000
@@ -385,6 +407,21 @@ _IN_PACKAGE = (
     "EXISTS (SELECT 1 FROM studio_objects o "
     f"WHERE o.organization_id = {_BOUND_ORG} AND o.id = CAST(:oid AS uuid) "
     "AND o.package_id = CAST(:pid AS uuid))"
+)
+
+#: Every object of one package, and then every field of those objects. The
+#: caller (``sync_objects``) holds the org lock, so the two reads agree.
+_LIST_OBJECTS_SQL = (
+    f"SELECT {_OBJECT_COLUMNS} FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) "
+    "ORDER BY created_at, name"
+)
+
+_LIST_FIELDS_SQL = (
+    "SELECT object_id::text, key, type, spec, hot FROM studio_object_fields "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id IN ("
+    f"SELECT id FROM studio_objects WHERE organization_id = {_BOUND_ORG} "
+    "AND package_id = CAST(:pid AS uuid)) ORDER BY object_id, position, key"
 )
 
 _FIELDS_SQL = (
@@ -713,7 +750,7 @@ def _check_fields(fields: Sequence[Mapping[str, Any]]) -> list[FieldSpec]:
     if len(set(keys)) != len(keys):
         raise ObjectStoreError("Each field key of an object must be unique.")
     if sum(s.hot for s in specs) > MAX_HOT_PER_OBJECT:
-        raise BudgetExceeded(f"An object holds at most {MAX_HOT_PER_OBJECT} hot fields.")
+        raise BudgetExceeded(f"An object holds at most {MAX_HOT_PER_OBJECT} hot fields{_TURN_COLD}")
     return specs
 
 
@@ -742,10 +779,13 @@ async def define_object(db: Any, actor: str, *, package_id: str, name: str,
     if int(in_package) >= MAX_OBJECTS_PER_PACKAGE:
         raise BudgetExceeded(f"A package holds at most {MAX_OBJECTS_PER_PACKAGE} objects.")
     if int(in_org) >= MAX_OBJECTS_PER_ORG:
-        raise BudgetExceeded(f"An organization holds at most {MAX_OBJECTS_PER_ORG} objects.")
+        # No route deletes a package yet (A5c), so the refusal names a next step.
+        raise BudgetExceeded(f"An organization holds at most {MAX_OBJECTS_PER_ORG} objects, "
+                             "so ask an admin to remove a package.")
     hot = sum(s.hot for s in specs)
     if hot and await _org_hot(db) + hot > MAX_HOT_PER_ORG:
-        raise BudgetExceeded(f"An organization holds at most {MAX_HOT_PER_ORG} hot fields.")
+        raise BudgetExceeded(
+            f"An organization holds at most {MAX_HOT_PER_ORG} hot fields{_TURN_COLD}")
     rows = [{"key": s.key, "type": s.type, "spec": s.stored_spec(), "hot": s.hot,
              "position": i} for i, s in enumerate(specs)]
     row = (await db.execute(text(_DEFINE_SQL), {
@@ -814,9 +854,10 @@ async def add_field(db: Any, object_id: str, spec: Mapping[str, Any]) -> FieldSp
 
 def _check_hot_room(object_hot: int, org_hot: int) -> None:
     if object_hot >= MAX_HOT_PER_OBJECT:
-        raise BudgetExceeded(f"An object holds at most {MAX_HOT_PER_OBJECT} hot fields.")
+        raise BudgetExceeded(f"An object holds at most {MAX_HOT_PER_OBJECT} hot fields{_TURN_COLD}")
     if org_hot >= MAX_HOT_PER_ORG:
-        raise BudgetExceeded(f"An organization holds at most {MAX_HOT_PER_ORG} hot fields.")
+        raise BudgetExceeded(
+            f"An organization holds at most {MAX_HOT_PER_ORG} hot fields{_TURN_COLD}")
 
 
 async def _backfill(db: Any, oid: str, field: FieldSpec) -> int:
@@ -1018,6 +1059,373 @@ async def set_constraints(db: Any, object_id: str, constraints: Any, *,
     row = (await db.execute(text(_SET_RULES_SQL), {
         **binds, "rules": json.dumps([r.stored() for r in rules], ensure_ascii=False)})).one()
     return _object(row, fields)
+
+
+# --- the sync of a manifest (STU-A5) ----------------------------------------
+
+#: The kinds of a sync problem.
+OBJECT_REMOVED = "object_removed"
+FIELD_REMOVED = "field_removed"
+FIELD_CHANGED = "field_changed"
+REQUIRED_OVER_RECORDS = "required_over_records"
+RULES_REFUSED = "rules_refused"
+FIELD_REFUSED = "field_refused"
+STORE_REFUSED = "store_refused"
+
+#: The parts of a field that a sync cannot change. ``hot`` is not one of them.
+_FIELD_ATTRS = ("type", "many", "options", "to", "required", "label")
+
+
+@dataclass(frozen=True)
+class SyncProblem:
+    """One reason that a manifest does not fit the stored objects. ``message``
+    is one sentence. It names the object, the field or the rule, and no value."""
+
+    kind: str
+    object: str
+    field: str | None = None
+    rule: str | None = None
+    message: str = ""
+
+
+class ObjectsOutOfSync(ObjectStoreError):
+    """The manifest does not fit the stored objects. The sync wrote nothing.
+    ``problems`` lists each reason."""
+
+    def __init__(self, problems: Sequence[SyncProblem]) -> None:
+        super().__init__("The objects of the manifest do not fit the stored objects.")
+        self.problems: list[SyncProblem] = list(problems)
+
+
+@dataclass(frozen=True)
+class SyncResult:
+    """What a sync wrote. All four are empty when the rows already matched."""
+
+    objects_created: tuple[str, ...] = ()
+    fields_added: tuple[tuple[str, str], ...] = ()
+    hot_changed: tuple[tuple[str, str, bool], ...] = ()
+    rules_set: tuple[str, ...] = ()
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.objects_created or self.fields_added or self.hot_changed or self.rules_set)
+
+
+@dataclass
+class _Item:
+    """One object of the manifest, checked, with what the sync does for it."""
+
+    name: str
+    label: str | None
+    raw_fields: list[Mapping[str, Any]]
+    fields: list[FieldSpec]
+    raw_rules: Any
+    rules: tuple[Rule, ...]
+    row: StudioObject | None = None
+    add: list[Mapping[str, Any]] = dc_field(default_factory=list)
+    heat: list[tuple[str, bool]] = dc_field(default_factory=list)
+    set_rules: bool = False
+
+
+async def list_objects(db: Any, package_id: str) -> list[StudioObject]:
+    """The objects of the package *package_id* in the bound org, with their
+    fields and rules, in the order of their creation. It checks no owner:
+    the caller reads the package as its member first. Two statements."""
+    pid = _uuid(package_id, "package_id")
+    rows = (await db.execute(text(_LIST_OBJECTS_SQL), {"pid": pid})).all()
+    if not rows:
+        return []
+    by_object: dict[str, list[FieldSpec]] = {}
+    found = (await db.execute(text(_LIST_FIELDS_SQL), {"pid": pid})).all()
+    for oid, key, kind, spec, hot in found:
+        by_object.setdefault(str(oid), []).append(
+            stored_field(str(key), str(kind), _json(spec), bool(hot)))
+    return [_object(r, by_object.get(str(r[0]), [])) for r in rows]
+
+
+def _rules_json(rules: Sequence[Rule]) -> str:
+    """The rules as the store keeps them, in one stable text, for a compare."""
+    return json.dumps([r.stored() for r in rules], sort_keys=True, ensure_ascii=False)
+
+
+def _read_entry(entry: Any, problems: list[SyncProblem]) -> _Item | None:
+    """One object of the manifest, or None with a problem. The manifest check
+    of A2 ran at publish, so this only guards the store."""
+    name = entry.get("name") if isinstance(entry, Mapping) else None
+    try:
+        clean = _check_name(name)
+        label = _check_label(entry.get("label"))
+        raw_fields = list(entry.get("fields") or [])
+        fields = _check_fields(raw_fields)
+    except FieldError as exc:
+        problems.append(SyncProblem(
+            FIELD_REFUSED, str(name), field=exc.field, message=exc.message))
+        return None
+    except ObjectStoreError as exc:
+        problems.append(SyncProblem(STORE_REFUSED, str(name), message=str(exc)))
+        return None
+    raw_rules = entry.get("rules") or []
+    try:
+        rules = parse_rules(raw_rules)
+    except ConstraintError as exc:
+        problems.append(SyncProblem(RULES_REFUSED, clean, rule=exc.rule, message=exc.message))
+        return None
+    return _Item(clean, label, raw_fields, fields, raw_rules, rules)
+
+
+async def _plan_fields(db: Any, item: _Item, row: StudioObject,
+                       problems: list[SyncProblem]) -> None:
+    """The field plan of an object that the rows hold: a new field is added,
+    a change of ``hot`` flips, and each other difference is a problem."""
+    old = {f.key: f for f in row.fields}
+    has_records: bool | None = None
+    for raw, spec in zip(item.raw_fields, item.fields, strict=True):
+        cur = old.get(spec.key)
+        if cur is None:
+            if spec.required:
+                if has_records is None:
+                    has_records = bool((await db.execute(
+                        text(_HAS_RECORDS_SQL), {"oid": row.id})).scalar_one())
+                if has_records:
+                    problems.append(SyncProblem(
+                        REQUIRED_OVER_RECORDS, item.name, field=spec.key,
+                        message=f"Field `{spec.key}` of `{item.name}` is new and required, but the "
+                        "object holds records. Add it as optional."))
+                    continue
+            item.add.append(raw)
+            continue
+        changed = [a for a in _FIELD_ATTRS if getattr(cur, a) != getattr(spec, a)]
+        if changed:
+            problems.append(SyncProblem(
+                FIELD_CHANGED, item.name, field=spec.key,
+                message=f"Field `{spec.key}` of `{item.name}` changed ({', '.join(changed)}). "
+                "A published field cannot change yet."))
+        elif cur.hot != spec.hot:
+            item.heat.append((spec.key, spec.hot))
+    wanted = {f.key for f in item.fields}
+    for key in old:
+        if key not in wanted:
+            problems.append(SyncProblem(
+                FIELD_REMOVED, item.name, field=key,
+                message=f"Field `{key}` of `{item.name}` is not in the manifest. "
+                "A published field cannot go yet."))
+
+
+async def _plan_sync(db: Any, rows: Sequence[StudioObject],
+                     objects: Sequence[Any]) -> tuple[list[_Item], list[SyncProblem]]:
+    """The whole plan, from reads only. A problem in the list means no write."""
+    problems: list[SyncProblem] = []
+    items: list[_Item] = []
+    by_name = {r.name: r for r in rows}
+    for entry in objects:
+        item = _read_entry(entry, problems)
+        if item is None:
+            continue
+        item.row = by_name.get(item.name)
+        if item.row is None:
+            item.set_rules = bool(item.rules)
+        else:
+            await _plan_fields(db, item, item.row, problems)
+            item.set_rules = _rules_json(item.rules) != _rules_json(item.row.constraints)
+        items.append(item)
+    kept = {i.name for i in items}
+    for row in rows:
+        if row.name not in kept and not any(p.object == row.name for p in problems):
+            problems.append(SyncProblem(
+                OBJECT_REMOVED, row.name,
+                message=f"Object `{row.name}` is not in the manifest. A published object "
+                "cannot go yet."))
+    return items, problems
+
+
+@dataclass
+class _Done:
+    """What the write phase did so far, and the object and the field it works
+    on. The two name the place of a refusal."""
+
+    ids: dict[str, str] = dc_field(default_factory=dict)
+    where: str = ""
+    field: str | None = None
+    created: list[str] = dc_field(default_factory=list)
+    added: list[tuple[str, str]] = dc_field(default_factory=list)
+    heated: list[tuple[str, str, bool]] = dc_field(default_factory=list)
+    ruled: list[str] = dc_field(default_factory=list)
+
+
+async def _sync_new_objects(db: Any, who: str, pid: str, items: Sequence[_Item],
+                            done: _Done) -> None:
+    for it in items:
+        done.where, done.field = it.name, None
+        if it.row is not None:
+            continue
+        made = await define_object(
+            db, who, package_id=pid, name=it.name, label=it.label, fields=it.raw_fields)
+        if made is None:
+            raise ObjectStoreError("The package is gone.")
+        done.ids[it.name] = made.id
+        done.created.append(it.name)
+
+
+async def _sync_new_fields(db: Any, items: Sequence[_Item], done: _Done) -> None:
+    for it in items:
+        for raw in it.add:
+            done.where, done.field = it.name, str(raw["key"])
+            if await add_field(db, done.ids[it.name], raw) is None:
+                raise ObjectStoreError("The object is gone.")
+            done.added.append((it.name, str(raw["key"])))
+
+
+async def _flip(db: Any, it: _Item, done: _Done, key: str, hot: bool) -> None:
+    done.where, done.field = it.name, key
+    if await set_field_hot(db, done.ids[it.name], key, hot):
+        done.heated.append((it.name, key, hot))
+
+
+async def _sync_heat(db: Any, items: Sequence[_Item], done: _Done, *, hot: bool) -> None:
+    for it in items:
+        for key, want in it.heat:
+            if want is hot:
+                await _flip(db, it, done, key, hot)
+
+
+def _rule_form(rule: Rule) -> str:
+    return json.dumps(rule.stored(), sort_keys=True, ensure_ascii=False)
+
+
+def _staying_rules(it: _Item) -> list[Rule] | None:
+    """The first pass of the rules of *it*: each stored rule that stays. A rule
+    stays when the manifest holds the same stored form, or a formula or a
+    roll-up with the same computed key. None when no stored rule goes, so the
+    first pass writes nothing for *it*."""
+    if it.row is None or not it.set_rules:
+        return None
+    forms = {_rule_form(r) for r in it.rules}
+    keys = {(r.kind, _computed_key(r)) for r in it.rules if r.kind in (FORMULA, ROLLUP)}
+    stored = it.row.constraints
+    kept = [r for r in stored if _rule_form(r) in forms
+            or (r.kind in (FORMULA, ROLLUP) and (r.kind, _computed_key(r)) in keys)]
+    return None if len(kept) == len(stored) else kept
+
+
+async def _set_rules(db: Any, pid: str, it: _Item, done: _Done, rules: Any) -> None:
+    done.where, done.field = it.name, None
+    if await set_constraints(db, done.ids[it.name], rules, package_id=pid) is None:
+        raise ObjectStoreError("The object is gone.")
+
+
+async def _sync_rules_first(db: Any, pid: str, items: Sequence[_Item],
+                            done: _Done) -> dict[str, str]:
+    """Pass 1 of the rules: for each object, only the stored rules that stay.
+    So each removal lands before a field turns cold, before a field takes the
+    room in the hot budget, and before a roll-up checks its source. The list
+    is a subset of a stored list, so it needs no new field and no new hot
+    field. Answers the list that each object holds after it."""
+    first: dict[str, str] = {}
+    for it in items:
+        kept = _staying_rules(it)
+        if kept is not None:
+            await _set_rules(db, pid, it, done, [r.stored() for r in kept])
+            first[it.name] = _rules_json(kept)
+    return first
+
+
+async def _sync_rules_full(db: Any, pid: str, items: Sequence[_Item], done: _Done,
+                           first: Mapping[str, str]) -> None:
+    """Pass 2 of the rules: the full manifest list of each object, through the
+    one store path :func:`set_constraints`. A list that equals the stored one
+    writes nothing.
+
+    A roll-up checks the stored rules of its source, and a source checks the
+    stored roll-ups that read it (C7b). Pass 1 removed each rule that goes, so
+    the order of the objects in the manifest never decides a valid manifest.
+    """
+    for it in items:
+        if it.set_rules and first.get(it.name) != _rules_json(it.rules):
+            await _set_rules(db, pid, it, done, it.raw_rules)
+    done.ruled.extend(it.name for it in items if it.set_rules)
+
+
+async def _apply_sync(db: Any, who: str, pid: str, items: Sequence[_Item]) -> SyncResult:
+    """Write the plan in one SAVEPOINT, so a refusal leaves no part of it.
+
+    The phases run in this order: rules pass 1 (the stored rules that stay),
+    fields that turn cold, new objects, new fields, fields that turn hot, and
+    rules pass 2 (the full lists). A rule that goes is gone before its field
+    turns cold. A cold field frees its room in the hot budget before a new
+    object, a new field or a field that turns hot takes it, so a swap at a
+    cap passes, also when a rule moves with it. A rule needs its fields in
+    place and hot, so pass 2 comes last. The store still refuses a cold flip
+    that a staying rule reads. A refusal of a field step names the field.
+    """
+    done = _Done(ids={it.name: it.row.id for it in items if it.row is not None})
+    try:
+        async with db.begin_nested():
+            first = await _sync_rules_first(db, pid, items, done)
+            await _sync_heat(db, items, done, hot=False)
+            await _sync_new_objects(db, who, pid, items, done)
+            await _sync_new_fields(db, items, done)
+            await _sync_heat(db, items, done, hot=True)
+            await _sync_rules_full(db, pid, items, done, first)
+    except StoreBusy:
+        raise
+    except ConstraintError as exc:
+        raise ObjectsOutOfSync([SyncProblem(
+            RULES_REFUSED, done.where, rule=exc.rule, message=exc.message)]) from None
+    except FieldError as exc:
+        raise ObjectsOutOfSync([SyncProblem(
+            FIELD_REFUSED, done.where, field=exc.field or done.field,
+            message=exc.message)]) from None
+    except ObjectStoreError as exc:
+        raise ObjectsOutOfSync([SyncProblem(
+            STORE_REFUSED, done.where, field=done.field, message=str(exc))]) from None
+    return SyncResult(
+        tuple(done.created), tuple(done.added), tuple(done.heated), tuple(done.ruled))
+
+
+async def sync_objects(db: Any, actor: str, *, package_id: str,
+                       objects: Sequence[Any]) -> SyncResult | None:
+    """Bring the stored objects of the package *package_id* to the list
+    *objects*, the ``objects`` of one manifest (STU-A5, ``ai_studio.md`` §14).
+
+    The manifest is the only source. The call adds an object with
+    :func:`define_object`, a field with :func:`add_field`, a change of ``hot``
+    with :func:`set_field_hot`, and a rules list with :func:`set_constraints`.
+    The rules go in two passes, removals first, so the order of the objects
+    in the manifest never decides a roll-up, and a rule that goes frees its
+    field before a hot swap. A list of rules that equals the stored one
+    writes nothing. ``pages`` and each other part of a manifest are not rows,
+    so this call ignores them.
+
+    It takes the org lock, reads the rows, and builds the whole plan before a
+    write. Each other difference is a problem: an object that the manifest no
+    longer holds, a field that is gone, a field that changed (its type, ``many``,
+    ``options``, ``to``, ``required`` or label), a new required field on an
+    object with records, and a refusal of a store call, rules included. A
+    problem raises :class:`ObjectsOutOfSync` with the list, and the write phase
+    runs in a SAVEPOINT, so no part of it stays. Records are never rewritten.
+
+    Answers None when the bound org holds no Studio package of the id, and the
+    :class:`SyncResult` otherwise. It raises :class:`StoreBusy` when the org
+    lock does not come in time.
+
+    ⚠️ **The lock order.** The caller holds the ``apps`` row ``FOR UPDATE``
+    (inside ``packages_store.publish_version``), and this call takes the org
+    lock after it. :func:`define_object` takes them the other way, so a caller
+    of it outside a publish can deadlock with a publish. This function is its
+    one caller (``test_define_object_has_one_caller``).
+    """
+    who = _actor(actor)
+    pid = _uuid(package_id, "package_id")
+    if isinstance(objects, str | bytes | Mapping) or not isinstance(objects, Sequence):
+        raise ObjectStoreError("objects must be a list of objects")
+    await _lock_org(db)
+    if (await db.execute(text(_PACKAGE_SQL), {"pid": pid})).first() is None:
+        return None
+    rows = await list_objects(db, pid)
+    items, problems = await _plan_sync(db, rows, objects)
+    if problems:
+        raise ObjectsOutOfSync(problems)
+    return await _apply_sync(db, who, pid, items)
 
 
 async def create_record(db: Any, actor: str, object_id: str, data: Mapping[str, Any], *,

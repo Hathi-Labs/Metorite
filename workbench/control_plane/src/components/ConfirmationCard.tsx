@@ -53,7 +53,7 @@ import Button from "@/components/ui/Button";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Icon from "@/components/Icon";
-import { cardKey, fieldSpec, repeatsLine } from "@/lib/cardFields";
+import { cardKey, fieldSpec, parseFieldValue, repeatsLine, valueIsLong } from "@/lib/cardFields";
 import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
 import { unfenced } from "@/lib/fencedText";
 import { isNewMail, type ReplyApproval, type ReplyForm } from "@/lib/replyCard";
@@ -483,12 +483,24 @@ export default function ConfirmationCard({
             </p>
           ))}
           {body.fields.length > 0 && (
-            <dl className="space-y-1">
+            <dl className="@container space-y-1">
               {body.fields.map((f, i) => {
                 const spec = fieldSpec(f.key);
+                // A long value stacks at any width. A short one stacks only in
+                // a narrow card (container query, below 24rem).
+                const long = [f.value, ...(f.values ?? [])].some(
+                  (v) => typeof v === "string" && valueIsLong(parseFieldValue(v, spec.many)),
+                );
                 return (
-                  <div key={`${f.key}-${i}`} className="flex gap-3 text-xs" data-card-field={cardKey(f.key)}>
-                    <dt className="w-24 shrink-0 pt-px text-muted-foreground">{f.label}</dt>
+                  <div
+                    key={`${f.key}-${i}`}
+                    className={`flex flex-col gap-0.5 text-xs ${long ? "" : "@sm:flex-row @sm:gap-3"}`}
+                    data-card-field={cardKey(f.key)}
+                    data-stacked={long ? "" : undefined}
+                  >
+                    <dt className={`text-[11px] text-muted-foreground ${long ? "" : "@sm:w-24 @sm:shrink-0 @sm:pt-px @sm:text-xs"}`}>
+                      {f.label}
+                    </dt>
                     <dd className="min-w-0 flex-1 whitespace-pre-wrap break-words text-foreground">
                       {f.values ? (
                         <ul className="space-y-1">

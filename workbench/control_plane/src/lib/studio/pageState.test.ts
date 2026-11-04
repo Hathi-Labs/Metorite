@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { EMPTY_PAGE_STATE, boundPageState, decodePageState, encodePageState } from "./pageState";
+import { EMPTY_PAGE_STATE, boundPageState, decodePageState, encodePageState, filterInputValue } from "./pageState";
 
 describe("pageState", () => {
   it("round-trips a state", () => {
@@ -101,5 +101,17 @@ describe("decodePageState never throws", () => {
 
   it("survives a broken percent sequence", () => {
     expect(() => decodePageState("sel=%E0%A4%A&tab=%")).not.toThrow();
+  });
+});
+
+describe("filterInputValue", () => {
+  it("shows the draft while the URL holds the value it was typed over", () => {
+    expect(filterInputValue({ base: "a", text: "ab" }, "a")).toBe("ab");
+    expect(filterInputValue(null, "a")).toBe("a");
+  });
+
+  it("shows the URL value after Back changes it", () => {
+    expect(filterInputValue({ base: "abc", text: "abcd" }, "ab")).toBe("ab");
+    expect(filterInputValue({ base: "abc", text: "abcd" }, "")).toBe("");
   });
 });
