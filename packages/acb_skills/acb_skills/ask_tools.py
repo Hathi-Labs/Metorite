@@ -1052,7 +1052,21 @@ def _clean_new_mail_form(form: dict) -> dict:
         out["marks"] = _reply_marks(form["marks"], people)
     if isinstance(form.get("file_rows"), list) and form["file_rows"]:
         out["file_rows"] = _new_mail_file_rows(form["file_rows"])
+    # §18.11 step 6: the card that this card replaces, and its draft number.
+    # The gateway sets both, and the tool copies them from its answer. The
+    # client draws the card in that card's slot, as "Draft <n>".
+    if "revises" in form or "draft" in form:
+        revises, draft = form.get("revises"), form.get("draft")
+        if (not isinstance(revises, str) or not _CARD_ID_RE.fullmatch(revises)
+                or not isinstance(draft, int) or isinstance(draft, bool)
+                or not 1 < draft <= _NEW_MAIL_DRAFT_MAX):
+            raise ValueError("a new-mail form names the card it revises and its draft")
+        out["revises"], out["draft"] = revises, draft
     return out
+
+
+#: The highest draft number of a new-mail card (``redraft.MAX_DRAFT``).
+_NEW_MAIL_DRAFT_MAX = 99
 
 
 def _new_mail_file_rows(rows: list) -> list[dict]:

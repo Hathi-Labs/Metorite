@@ -677,6 +677,47 @@ async def take_record(
     return rec
 
 
+async def peek_record(
+    user: UserContext, card_id: str, *, thread_id: str, namespace: str = RECORD_NAMESPACE,
+) -> dict[str, Any] | None:
+    """Read one card record WITHOUT spending it (``GET``), for §18.11.
+
+    The record must belong to the session's member, and to the chat thread
+    *thread_id* that the card shows in. A record that names no thread (a
+    card of a run that draws no card to edit, such as WhatsApp) never
+    matches. None for no record, a fault, another member or another thread.
+    Nothing reads a record this way to act: the act takes it once with
+    :func:`take_record`."""
+    from acb_common.tenant_redis import organization_scope
+
+    want = str(thread_id or "").strip()
+    if not want:
+        return None
+    try:
+        with organization_scope(_org_of(user)):
+            raw = await _tenant_redis().get(_record_key(card_id, namespace))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.warning("email.held_card_peek_failed", error=type(exc).__name__)
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        rec = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(rec, dict):
+        return None
+    if str(rec.get("owner") or "").lower() != (user.email or "").strip().lower():
+        return None
+    if str(rec.get("thread") or "") != want:
+        return None
+    return rec
+
+
 # ── The card of a saved draft: send it now, or later ─────────────────────────
 
 #: The draft of a member's own mailbox, with what its card shows.
@@ -729,6 +770,12 @@ class HeldCardRequest(BaseModel):
     files: list[str] = Field(default_factory=list, max_length=MAX_ROWS)
     #: ``forward``: carry every file of the mail when no ``files`` are named.
     include_attachments: bool = True
+    #: ``new`` (§18.11): the chat thread that draws the card to edit. The
+    #: tool sends its run's own thread, never a value of the model. The record
+    #: keeps it, so only that thread can send a snapshot of the card or take
+    #: its link. There is no ``revises`` and no ``draft`` field: the gateway
+    #: sets those, and ``extra="forbid"`` refuses a request that names them.
+    card_thread_id: str = Field(default="", max_length=200)
 
     @model_validator(mode="after")
     def _fields_of_the_kind(self) -> HeldCardRequest:
@@ -752,10 +799,11 @@ _KIND_FIELDS: dict[str, frozenset[str]] = {
     "schedule": frozenset({"account_id", "draft_id", "send_at"}),
     "unsubscribe": frozenset({"account_id", "email", "emails"}),
     "forward": frozenset({"account_id", "message_id", "to", "cc", "bcc", "note", "files"}),
-    "new": frozenset({"account_id", "to", "cc", "bcc", "note", "subject", "files"}),
+    "new": frozenset({"account_id", "to", "cc", "bcc", "note", "subject", "files",
+                      "card_thread_id"}),
 }
 _KIND_FIELD_NAMES = ("draft_id", "send_at", "email", "emails", "message_id", "to", "cc",
-                     "bcc", "note", "subject", "files")
+                     "bcc", "note", "subject", "files", "card_thread_id")
 #: The fields that each kind of held card must name. A forward may leave out
 #: its mailbox, which the mail names.
 _KIND_NEEDS: dict[str, tuple[str, ...]] = {
@@ -1369,16 +1417,25 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     if len(rows) > MAX_ROWS:
         raise HTTPException(status_code=422, detail="Too many rows for one card.")
     context = "\n".join([f"Subject: {subject or '(no subject)'}", "", "The text:", body])
+    from acb_skills.reply_card import edit_card_on
+    from gateway.routes.email.automation.redraft import form_link, link_fields
+
+    edit = edit_card_on(_org_of(user))
+    # §18.11 step 6: the gateway, never the tool, links this card to the card
+    # of the thread that a chat message revised. The classes and the ticks of
+    # the rows above come from the server alone, as for any held card: a
+    # snapshot of the revised card never ticks a new address (rule 4).
+    linked = await link_fields(user, req.card_thread_id) if edit else {}
     out = await _person_card(user, req, rows, context, {
         "kind": "new", "account_id": req.account_id, "subject": subject, "body": body,
+        **({"thread": req.card_thread_id.strip()} if edit and req.card_thread_id.strip() else {}),
+        **linked,
     }, title="Send this new email?", mailbox=me)
     # §18.10: the same record, drawn as the one email card that the member
     # edits. The rows card stays for a run that cannot draw it (WhatsApp).
     # With EMAIL_EDIT_CARD_ORGS off the answer is exactly as before.
-    from acb_skills.reply_card import edit_card_on
-
-    if edit_card_on(_org_of(user)):
-        out["form"] = new_mail_form(rows, subject, body, _box_text(me))
+    if edit:
+        out["form"] = {**new_mail_form(rows, subject, body, _box_text(me)), **form_link(linked)}
     return out
 
 
