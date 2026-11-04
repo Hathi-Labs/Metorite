@@ -1552,6 +1552,13 @@ CREATE POLICY goal_records_tenant_isolation ON goal_records
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
 
+ALTER TABLE pm_project_authorities ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_project_authorities FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_project_authorities_tenant_isolation ON pm_project_authorities;
+CREATE POLICY pm_project_authorities_tenant_isolation ON pm_project_authorities
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
 ALTER TABLE pm_decisions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE pm_decisions FORCE  ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS pm_decisions_tenant_isolation ON pm_decisions;

@@ -567,6 +567,14 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_kb_flags.py.
     knowledge_sync: str = ""
 
+    # H-328 part (b): the orgs whose UNATTENDED workflow runs may start. A
+    # schedule tick, a matured wait and the startup sweep act only for an org
+    # in this comma list. Empty, the default, means no org, and there is no
+    # `*`. The one reader is `gateway.routes.workflows.unattended`. A run can
+    # send mail or WhatsApp and spend credits, so a flip is the owner's. Fence:
+    # tests/unit/test_workflows_unattended_flag.py.
+    workflow_unattended_orgs: str = ""
+
     reach_enabled: bool = False
     reach_orgs: str = ""
     reach_members: str = ""
@@ -843,6 +851,16 @@ class Settings(BaseSettings):
     # flip spends nothing, and it is gate `enforcement-flip`. Fence:
     # tests/unit/test_align_trigger.py.
     align_jobs_orgs: str = ""
+
+    # ── The authority page of a project (WS-ALN ALN-4) ───────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, the three authority routes answer 404 and the three
+    # chat tools make no card. The one reader is
+    # `gateway.routes.projects.authorities.authority_pins_allowed`. A SIGHUP
+    # reload applies a change. A flip needs a D145 preview of the chat cards
+    # (ALN-4b). Fence: tests/unit/test_project_authorities_r8.py.
+    authority_pins_orgs: str = ""
 
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #

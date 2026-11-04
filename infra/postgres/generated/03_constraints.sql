@@ -2630,6 +2630,18 @@ ALTER TABLE goal_records ADD CONSTRAINT goal_records_org_fk
     FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS goal_records_org_idx ON goal_records (organization_id);
 
+-- pm_project_authorities
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pm_project_authorities WHERE organization_id IS NULL) THEN
+        RAISE EXCEPTION 'MT-1b: pm_project_authorities still has unowned rows — run phase 2 (backfill) to completion first';
+    END IF;
+END $$;
+ALTER TABLE pm_project_authorities ALTER COLUMN organization_id SET NOT NULL;
+ALTER TABLE pm_project_authorities ADD CONSTRAINT pm_project_authorities_org_fk
+    FOREIGN KEY (organization_id) REFERENCES organization(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS pm_project_authorities_org_idx ON pm_project_authorities (organization_id);
+
 -- pm_decisions
 DO $$
 BEGIN

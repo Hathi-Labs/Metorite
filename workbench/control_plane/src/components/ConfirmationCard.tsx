@@ -40,7 +40,7 @@
  * `src/lib/chatCardConformance.test.ts` (the header and the icon).
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import CardFieldValue from "@/components/CardFieldValue";
 import { splitCardEmailText } from "@/lib/cardEmailText";
@@ -270,6 +270,11 @@ interface ConfirmationCardProps {
   reply?: ReplyForm | null;
   /** Send or Save to Drafts on a reply card: the whole answer. */
   onReply?: (answer: ReplyApproval) => void;
+  /** The tab row of the queue (owner, 2026-11-03, D173), drawn inside the
+   *  card frame above its header, when two cards or more wait. */
+  tabs?: ReactNode;
+  /** The tab panel: the card is the panel the tabs control. */
+  tabPanel?: { id: string; labelledBy: string };
 }
 
 /** A line of card text: fenced names as tokens, or the text as sent. */
@@ -292,6 +297,8 @@ export default function ConfirmationCard({
   reply,
   onReply,
   error,
+  tabs,
+  tabPanel,
 }: ConfirmationCardProps) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
@@ -334,11 +341,13 @@ export default function ConfirmationCard({
     >
     <section
       aria-label={fenced ? unfenced(summary) : summary}
+      {...(tabPanel ? { id: tabPanel.id, role: "tabpanel", "aria-labelledby": tabPanel.labelledBy } : {})}
       data-confirmation-card=""
       // Glass only (GL-4): it wants an answer, so it is the raised card with a
       // hairline in the tint, and an orange tile.
       className={`${CARD_FRAME_CLASS} glass:glass-card-tile glass:[--tile:var(--system-orange)] glass:rounded-[16px] glass:border-primary/35 glass:glass-raised glass:p-4`}
     >
+      {tabs}
       <div className="flex min-w-0 items-center gap-2">
         <div className="min-w-0 flex-1">
           <RollupHeader />
