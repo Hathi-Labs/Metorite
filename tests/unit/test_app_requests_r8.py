@@ -405,6 +405,93 @@ def test_the_status_machine_holds_the_two_app_events() -> None:
             agent_runs.transition(status, "app_ask")
 
 
+# ── Dark by org (fix round 1, review P2-1) ──────────────────────────────────
+
+_HERMETIC_ORG = "11111111-1111-4111-8111-111111111111"
+_HERMETIC_CONN = "22222222-2222-4222-8222-222222222222"
+
+
+def _request_routes_app(user: Any) -> Any:
+    """The router of the request routes alone, with *user* as the caller.
+    No database: a route that passes the gates fails at the session."""
+    from acb_auth import get_current_user
+    from acb_common.db import bind_tenant
+    from fastapi import FastAPI
+    from gateway.routes import agent_requests
+
+    async def _caller() -> Any:
+        bind_tenant(user.organization_id)
+        return user
+
+    app = FastAPI()
+    app.include_router(agent_requests.router)
+    app.dependency_overrides[get_current_user] = _caller
+    return app
+
+
+@pytest.mark.parametrize("orgs", ["", "33333333-3333-4333-8333-333333333333"])
+async def test_the_request_routes_are_dark_without_the_org_flag(monkeypatch, orgs: str) -> None:
+    """Review P2-1. Agent access is ON in production (WS-55 is live), so it
+    is not the dark switch of these routes. ``APP_REQUESTS_ORGS`` is: while
+    it does not hold the caller's org, each of the four routes answers 404
+    before any read. Mutation: drop the org check, and each route reaches
+    the session, so this fails."""
+    from acb_auth import AgentScope, UserContext, UserRole, build_access
+    from acb_common import get_settings
+    from acb_common.db import clear_tenant, release_tenant
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "agent_access_enabled", True)
+    monkeypatch.setattr(settings, "agent_access_writes_enabled", True)
+    monkeypatch.setattr(settings, "agent_door_apps", APP_ID)
+    monkeypatch.setattr(settings, "app_requests_orgs", orgs, raising=False)
+    monkeypatch.setattr(am, "APPS", (*am.APPS, TEST_APP))
+    access = build_access(["feature:projects"])
+    member = UserContext(email="m@dark.test", role=UserRole.EMPLOYEE, access=access,
+                         organization_id=_HERMETIC_ORG)
+    agent = UserContext(
+        email="m@dark.test", role=UserRole.EMPLOYEE, access=access,
+        organization_id=_HERMETIC_ORG,
+        agent=AgentScope(connection_id=_HERMETIC_CONN, scopes=(f"{APP_ID}:write",),
+                         include_personal=False, client_origin=ORIGIN, actor_via=VIA))
+    rid = str(uuid.uuid4())
+    calls = [
+        (agent, "POST", f"/agent-access/apps/{APP_ID}/requests",
+         {"op": "make_item", "args": {"name": "x"}, "idempotency_key": "k"}),
+        (member, "GET", "/agent-access/requests", None),
+        (member, "GET", f"/agent-access/requests/{rid}", None),
+        (member, "POST", f"/agent-access/requests/{rid}/decision",
+         {"decision": "approve", "idempotency_key": "k"}),
+    ]
+    scope = clear_tenant()
+    try:
+        for user, method, path, body in calls:
+            transport = httpx.ASGITransport(app=_request_routes_app(user))
+            async with httpx.AsyncClient(transport=transport, base_url="http://gw.test") as c:
+                got = await c.request(method, path, json=body)
+            assert got.status_code == 404, (path, got.text)
+    finally:
+        release_tenant(scope)
+
+
+def test_the_org_flag_has_one_reader_and_ships_empty() -> None:
+    """``APP_REQUESTS_ORGS`` ships empty, a tenant cannot write it, and
+    ``app_requests.requests_allowed`` is its one reader."""
+    from acb_common.env_guard import check_env_write
+    from acb_common.settings import Settings
+
+    assert Settings.model_fields["app_requests_orgs"].default == ""
+    with pytest.raises(Exception):
+        check_env_write("APP_REQUESTS_ORGS", "*")
+    readers = [p.relative_to(_REPO).as_posix() for top in ("apps", "packages")
+               for p in (_REPO / top).rglob("*.py")
+               if "tests" not in p.parts and ".venv" not in p.parts
+               and "app_requests_orgs" in p.read_text(encoding="utf-8")]
+    assert sorted(readers) == ["apps/services/gateway/gateway/app_requests.py",
+                               "packages/acb_common/acb_common/settings.py"], readers
+    assert app_requests.requests_allowed(None) is False
+
+
 # ── The migration, found by content (R1) ────────────────────────────────────
 
 
@@ -608,6 +695,7 @@ def w(world, monkeypatch):
     monkeypatch.setattr(settings, "agent_access_writes_enabled", True)
     monkeypatch.setattr(settings, "agent_runs_enabled", True)
     monkeypatch.setattr(settings, "agent_door_apps", APP_ID)
+    monkeypatch.setattr(settings, "app_requests_orgs", "*")
     monkeypatch.setattr(am, "APPS", (*am.APPS, TEST_APP))
     with world.p.admin_engine.begin() as c:
         c.execute(text("DELETE FROM pm_agent_runs"))
@@ -1104,6 +1192,12 @@ class TestAppRequestsOnARealDatabase:
         from acb_common import get_settings
 
         async with _session(w.p) as ctx:
+            # Review P2-1: agent access on, the org flag on another org.
+            monkeypatch.setattr(get_settings(), "app_requests_orgs", w.p.org_b)
+            assert (await ctx(w.a, "GET", "/agent-access/requests")).status_code == 404
+            assert (await _ask(ctx, w)).status_code == 404
+            monkeypatch.setattr(get_settings(), "app_requests_orgs", w.p.org_a)
+            assert (await ctx(w.a, "GET", "/agent-access/requests")).status_code == 200
             monkeypatch.setattr(get_settings(), "agent_door_apps", "")
             assert (await _ask(ctx, w)).status_code == 404
             monkeypatch.setattr(get_settings(), "agent_access_enabled", False)

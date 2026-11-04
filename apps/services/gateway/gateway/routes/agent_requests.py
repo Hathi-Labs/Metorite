@@ -31,8 +31,10 @@ The store is ``gateway/app_requests.py``. These routes only check who asks.
    (AD-16): another connection is 404, with no oracle.
 5. **The org and the member come from the session (R5, R11).** Each body
    forbids extra keys, so no body names an org, a member or a connection.
-6. **Dark.** Each route answers 404 while ``agent_access_enabled`` is off.
-   The ask also answers 404 while ``agent_door_apps`` names no app.
+6. **Dark.** Each route answers 404 while ``APP_REQUESTS_ORGS`` does not
+   hold the caller's org (default empty, an owner flip), and while
+   ``agent_access_enabled`` is off. The ask also answers 404 while
+   ``agent_door_apps`` names no app.
 
 Fences: ``tests/unit/test_app_requests_r8.py`` (R8) and
 ``tests/unit/test_mcp_edge_coverage.py::test_decision_route_not_in_door_sets``.
@@ -56,9 +58,12 @@ from pydantic import BaseModel, ConfigDict, Field
 _ID = r"^[0-9a-fA-F-]{36}$"
 
 
-async def _require_access() -> None:
-    """404 while agent access is off."""
-    if not agent_oauth.enabled():
+async def _require_access(user: UserContext = Depends(get_current_user)) -> None:
+    """404 while agent access is off, or while ``APP_REQUESTS_ORGS`` does not
+    hold the caller's org (fix round 1, review P2-1). Agent access is on in
+    production, so the org flag is the dark switch."""
+    if not agent_oauth.enabled() or not app_requests.requests_allowed(
+            getattr(user, "organization_id", None)):
         raise HTTPException(status_code=404, detail="Not Found")
 
 

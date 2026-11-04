@@ -61,7 +61,7 @@ from typing import Any
 
 from acb_auth import agent_oauth
 from acb_auth import app_requests as store
-from acb_common import get_logger
+from acb_common import get_logger, get_settings
 from fastapi import HTTPException
 from sqlalchemy import text
 
@@ -69,6 +69,23 @@ from gateway.routes.projects import agent_runs
 from gateway.routes.projects.core import from_jsonb, wire
 
 _log = get_logger("gateway.app_requests")
+
+
+def requests_allowed(organization_id: str | None) -> bool:
+    """True when ``APP_REQUESTS_ORGS`` holds the org, or holds ``*``. Default
+    OFF. The ONE reader of the flag (fix round 1, review P2-1).
+
+    It is the dark switch of the store, because ``AGENT_ACCESS_ENABLED`` is
+    on in production. The org comes from the session, never from request
+    input (R5). It reads the settings on each call, so a flag reload applies
+    a change with no restart.
+    """
+    org = str(organization_id or "").strip().lower()
+    if not org:
+        return False
+    raw = str(getattr(get_settings(), "app_requests_orgs", "") or "")
+    listed = {p.strip().lower() for p in raw.split(",") if p.strip()}
+    return "*" in listed or org in listed
 
 #: A request lives this long (EA3-40 rule 5, §19.5 "The timeout").
 REQUEST_TTL = agent_runs.ARCHIVE_REQUEST_TTL
