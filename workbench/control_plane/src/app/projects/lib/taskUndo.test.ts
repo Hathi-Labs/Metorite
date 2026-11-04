@@ -240,6 +240,43 @@ describe("custom fields merge on the server (fix round 1, finding 2)", () => {
   });
 });
 
+describe("the done date comes back with a Reopen (round 2, fix B)", () => {
+  const DONE_AT = "2026-11-01T08:00:00+00:00";
+
+  it("the inverse of a Reopen carries the done date the task held", () => {
+    const done = { id: "t1", status_id: "s-done", completed_at: DONE_AT };
+    expect(taskInverse(done, { status_id: "s-open" })).toEqual({
+      status_id: "s-done",
+      completed_at: DONE_AT,
+    });
+  });
+
+  it("the inverse of a done tick sends no date: the server clears it", () => {
+    const open = { id: "t1", status_id: "s-open", completed_at: null };
+    expect(taskInverse(open, { status_id: "s-done" })).toEqual({ status_id: "s-open" });
+  });
+
+  it("a patch that moves no status sends no date", () => {
+    const done = { id: "t1", status_id: "s-done", completed_at: DONE_AT };
+    expect(taskInverse(done, { title: "N" })).toEqual({ title: null });
+  });
+
+  it("Undo of a Reopen writes the held date, and redo writes the plain patch", async () => {
+    const r = rig();
+    recordTaskEdit(r.io, r.hooks, {
+      before: { id: "t1", status_id: "s-done", completed_at: DONE_AT },
+      patch: { status_id: "s-open" },
+      version: "v0",
+      label: "moved T",
+    });
+    const step = stepBack(r.stack)!;
+    await step.entry.undo();
+    expect(r.calls.at(-1)?.payload).toEqual({ status_id: "s-done", completed_at: DONE_AT });
+    await stepForward(step.stack)!.entry.redo();
+    expect(r.calls.at(-1)?.payload).toEqual({ status_id: "s-open" });
+  });
+});
+
 describe("recordTaskEdit", () => {
   it.each([
     ["status_id", { status_id: "s-open" }, { status_id: "s-done" }],
@@ -492,5 +529,20 @@ describe("the doors wire the helper (source)", () => {
     expect(page).toMatch(/undoApi\s*\.undoEntry\(refiled\)/);
     expect(page).toMatch(/undoApi\s*\.undoEntry\(entry\)/);
     expect(page).not.toMatch(/onClick: \(\) => void (refile|undoMove!?)\(\)/);
+  });
+
+  it("the archive toast and the subtask-complete toast use the gate too (round 2, fix A)", () => {
+    const page = read("page.tsx");
+    expect(page).toMatch(/undoApi\s*\.undoEntry\(archivedEntry\)/);
+    expect(page).not.toMatch(/onClick: \(\) => void restore\(\)/);
+    const hook = read("components/useSubtaskComplete.tsx");
+    expect(hook).toMatch(/undoApi\s*\.undoEntry\(entry\)/);
+    expect(hook).not.toMatch(/onClick: \(\) => void revert\(\)/);
+  });
+
+  it("the board drag and the card Reopen toasts name the lane (round 2, fix C)", () => {
+    const page = read("page.tsx");
+    expect(page).not.toMatch(/receipt: "Task moved"/);
+    expect(page).toMatch(/Moved to \$\{statuses\.find/);
   });
 });

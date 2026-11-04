@@ -3805,7 +3805,7 @@ function ProjectsWorkspace() {
         await refreshRef.current();
         setTreeKey((k) => k + 1);
       };
-      undoApi.record({
+      const archivedEntry: UndoEntry = {
         label: `archived ${row?.title ?? "a task"}`,
         undo: restore,
         redo: async () => {
@@ -3818,12 +3818,19 @@ function ProjectsWorkspace() {
           await refreshRef.current();
           setTreeKey((k) => k + 1);
         },
-      });
+      };
+      undoApi.record(archivedEntry);
       toast.show({
         key: `projects:archive:${taskId}`,
         variant: "success",
         title: archiveReceipt(res.subtasks_archived ?? 0),
-        action: { label: "Undo", onClick: () => void restore() },
+        action: {
+          label: "Undo",
+          onClick: () =>
+            void undoApi
+              .undoEntry(archivedEntry)
+              .catch((err: Error) => setError(String(err.message))),
+        },
       });
     } catch (err) {
       setError(String((err as Error).message));
@@ -4282,7 +4289,9 @@ function ProjectsWorkspace() {
         // field can be taken back. The slot write below is not undone.
         taskUndo.edited(task, patch, fresh, {
           label: `moved ${task.title}`,
-          receipt: "Task moved",
+          receipt: status
+            ? `Moved to ${statuses.find((s) => s.id === status)?.name ?? "a new lane"}`
+            : "Task moved",
           after: async () => {
             if (selected) await loadProject(selected);
             else await refreshRef.current();

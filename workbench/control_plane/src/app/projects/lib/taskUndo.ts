@@ -178,6 +178,14 @@ export function taskInverse(
       Object.keys(sent).map((key) => [key, held[key] ?? null]),
     );
   }
+  // A status change out of a closed lane (Reopen) puts the task back to its
+  // lane on Undo. The server stamps "now" on entering a closing lane, so the
+  // inverse carries the held done date (UNDO-1 round 2, fix B). The server
+  // honours it only when the same write enters a closing lane.
+  const held = (before as { completed_at?: string | null }).completed_at;
+  if ("status_id" in patch && typeof held === "string" && held) {
+    out.completed_at = held;
+  }
   return out;
 }
 
