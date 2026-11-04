@@ -2931,3 +2931,135 @@ async def _full_measure(fn, account_id: str, org: str) -> int | None:
     """The full meter, through ``fn``, in its own block."""
     async with tenant_session(org) as db:
         return await fn(db, account_id)
+
+
+# ── 15. EM-T6f review P2: the cap of mails for each cycle ───────────────────
+
+
+class _Capped(_AskedProvider):
+    """``_AskedProvider`` with the cap of Gmail."""
+
+    IMPORT_CYCLE_MAILS = 400
+
+
+@pytest.mark.parametrize(("provider", "progress", "goes_on", "cap"), [
+    (_AskedProvider(), True, True, 1000),
+    (_AskedProvider(), True, False, None),
+    (_AskedProvider(), False, True, None),
+    (_Capped(), True, True, 400),
+    (_Capped(), True, False, 400),
+], ids=["outlook_goes_on", "outlook_from_now", "deep_sync", "gmail_goes_on",
+        "gmail_from_now"])
+def test_the_cap_of_each_cycle(provider, progress, goes_on, cap) -> None:
+    """R7 fence ``email-storage-t6f-cap`` (EM-T6f review P2). An import that
+    goes on from a point reads at most ``RESUME_CYCLE_MAILS`` in a cycle, for
+    each provider, and a smaller cap of the provider wins. A first import
+    from now keeps the cap of its provider, and a deep sync reads to the
+    end."""
+    assert sched.RESUME_CYCLE_MAILS == 1000
+    assert sched._cycle_mails(provider, progress=progress, goes_on=goes_on) == cap
+
+
+@pytest.mark.parametrize("goes_on", [True, False], ids=["resumed", "new_mailbox"])
+async def test_a_resumed_outlook_cycle_pauses_at_the_cap_and_the_sweep_runs(
+    core_run, monkeypatch, goes_on,
+) -> None:
+    """R7 fence ``email-storage-t6f-cap``, on the core. A resumed Outlook
+    import (no cap of its own) reads up to the cap, pauses, and the
+    recurring sweep of the same cycle runs. The result says
+    ``resume_soon``, so the loop comes back after ``SYNC_RESUME_SECS``. The
+    first import of a new mailbox (no ``import_reached_at``) reads to the
+    end as before."""
+    monkeypatch.setattr(sched, "RESUME_CYCLE_MAILS", 4)
+    now = _now()
+    if goes_on:
+        row = _limit_row()
+        top = row.import_reached_at
+    else:
+        row = _account_row(initial_sync_done=False, import_reached_at=None)
+        top = now
+    batches = [[_msg(f"c{b}-{i}", top - timedelta(hours=b * 3 + i))
+                for i in range(2)] for b in range(1, 6)]
+    provider = _AskedProvider(batches, recurring=[_msg("fresh", now)])
+    log: list = []
+    monkeypatch.setattr(sched, "build_provider", lambda name, creds: provider)
+    monkeypatch.setattr(sched, "tenant_session",
+                        _resume_sessions(row, log, meter=500))
+    res = await sched._sync_account("acc-1", organization_id=_ORG, from_loop=True)
+    assert "error" not in res, res
+    assert provider.sweeps == 1, "the sweep did not run in the cycle (Q2)"
+    sqls = [s for s, _ in log]
+    if goes_on:
+        assert provider.fetched == 2, "the resumed import read past the cap"
+        assert res.get("resume_soon") is True, res
+        assert not any("import_phase = 'done'" in s for s in sqls)
+    else:
+        assert provider.fetched == 5, "the first import of a new mailbox paused"
+        assert "resume_soon" not in res
+        assert any("import_phase = 'done'" in s for s in sqls)
+
+
+@_DB_GATE
+class TestTheCapOnARealDatabase:
+
+    async def test_a_resumed_cycle_stops_at_the_cap_and_new_mail_lands(
+        self, promoted, app_engine, monkeypatch,  # noqa: F811
+    ):
+        """R7 fence ``email-storage-t6f-cap``, R8 half (EM-T6f review P2,
+        owner answer Q2). With a cap of 10 and batches of 5, the resumed
+        cycle writes 10 older mails, pauses, and the sweep writes the new
+        mail of the same cycle. The phase stays ``importing``, and the next
+        loop cycle goes on from the new ``import_reached_at``, with no
+        second resume."""
+        _assert_non_priv(app_engine)
+        p = promoted
+        now = _now()
+        reached = now - timedelta(days=10)
+        x = _stopped_mailbox(p.admin_engine, org=p.org_b,
+                             owner=f"t6p-{uuid.uuid4().hex[:6]}@em-t6f.test",
+                             now=now, reached=reached)
+        tag = uuid.uuid4().hex[:6]
+        older = [_msg(f"old-{tag}-{k:02d}", reached - timedelta(hours=k + 1))
+                 for k in range(30)]
+        fresh = _msg(f"fresh-{tag}", now)
+        provider = _AskedOffers(older, recurring=[fresh])
+        _loop_env(monkeypatch, provider)
+        monkeypatch.setattr(sched, "IMPORT_BATCH_SIZE", 5)
+        monkeypatch.setattr(sched, "RESUME_CYCLE_MAILS", 10)
+        token = clear_tenant()
+        try:
+            async with tenant_engine_scope(_dsn(p)):
+                stored = await _measure(x, p.org_b)
+                monkeypatch.setattr(storage, "storage_limit_bytes",
+                                    lambda: stored + 10 * _MB)
+                first = await sched._sync_account(
+                    x, organization_id=p.org_b, from_loop=True)
+                paused = _import_state(p.admin_engine, x)
+                landed = _scalar(p.admin_engine,
+                                 "SELECT count(*) FROM email_messages WHERE "
+                                 "account_id = CAST(:a AS uuid) AND "
+                                 "provider_message_id = :p",
+                                 a=x, p=fresh.provider_message_id)
+                monkeypatch.setattr(sched, "_storage_resume_at", None)
+                second = await sched._sync_account(
+                    x, organization_id=p.org_b, from_loop=True)
+            assert "error" not in first and "error" not in second
+            assert first.get("resume_soon") is True, first
+            assert landed == 1, "the new mail waited for the import (Q2)"
+            assert (paused["import_phase"], paused["initial_sync_done"]) == (
+                "importing", False)
+            assert paused["import_count"] == 3 + 10
+            assert paused["import_reached_at"] == older[9].received_at
+            assert len(provider.asked) == 2
+            assert provider.asked[1][1] == older[9].received_at, (
+                "the next cycle did not go on from the point of the pause")
+            after = _import_state(p.admin_engine, x)
+            assert after["import_reached_at"] == older[18].received_at
+            # Each share reads the point of the pause again (by design), and
+            # the upsert keeps one row for it. The count holds it twice.
+            assert after["import_count"] == 3 + 10 + 10
+            assert sched._storage_resume_at is None, (
+                "the second cycle wrote a second resume")
+        finally:
+            release_tenant(token)
+            _wipe(p.admin_engine, [x])

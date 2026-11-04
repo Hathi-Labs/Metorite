@@ -1122,6 +1122,34 @@ async def _import_in_batches(
             _IMPORT_PAUSED if tally["paused"] else None)
 
 
+#: The mails that an import which goes on from a point reads in one cycle
+#: (WS-17 EM-T6f review P2). The mailbox lock is held for the whole import,
+#: and the recurring sweep runs after it, so a long import held back new mail
+#: (owner answer Q2). A resume at the storage limit can have a gap of tens of
+#: thousands of mails, and Outlook and IMAP set no cap of their own. At this
+#: cap the cycle pauses: the sweep runs, and the loop comes back after
+#: ``SYNC_RESUME_SECS``. A provider cap that is smaller (Gmail, 400) wins.
+RESUME_CYCLE_MAILS = 1000
+
+
+def _cycle_mails(provider: Any, *, progress: bool, goes_on: bool) -> int | None:
+    """The mails that this import reads before the cycle pauses, or ``None``.
+
+    A deep sync of a member act has no resume point, so it reads to the end.
+    A first import from now keeps the cap of its provider, which is
+    ``None`` for Outlook and IMAP. An import that goes on from
+    ``import_reached_at`` (``goes_on``) takes ``RESUME_CYCLE_MAILS`` too.
+    That is a resume at the storage limit (EM-T6f), and also a first import
+    in its second cycle or later."""
+    if not progress:
+        return None
+    own = getattr(provider, "IMPORT_CYCLE_MAILS", None)
+    own = own if isinstance(own, int) and not isinstance(own, bool) else None
+    if not goes_on:
+        return own
+    return RESUME_CYCLE_MAILS if own is None else min(own, RESUME_CYCLE_MAILS)
+
+
 async def _run_import(
     org: str, account_id: str, provider: Any, row: Any, *,
     floor: datetime, progress: bool, tally: dict[str, Any],
@@ -1179,13 +1207,18 @@ async def _run_import(
     (EM-G4b-f3). A paced Gmail read takes 0.75 seconds, so the cycle gives
     the mailbox lock back, the recurring sweep gets its turn, and the next
     cycle resumes. The log says ``sync.import_paused``. A deep sync has no
-    resume point, so it reads to the end."""
+    resume point, so it reads to the end. An import that goes on from
+    ``import_reached_at`` also stops after ``RESUME_CYCLE_MAILS``, for each
+    provider (``_cycle_mails``, EM-T6f review P2). So a resume at the
+    storage limit holds the mailbox lock for one share at a time, and new
+    mail syncs between the shares (owner answer Q2)."""
     snapshot: list[tuple[str, str, Any]] | None = (
         [] if not progress and getattr(provider, "import_full_snapshot", False)
         else None)
     until = getattr(row, "import_reached_at", None) if progress else None
     count = (getattr(row, "import_count", None) or 0) if until is not None else 0
-    cycle_mails = getattr(provider, "IMPORT_CYCLE_MAILS", None) if progress else None
+    cycle_mails = _cycle_mails(provider, progress=progress,
+                               goes_on=until is not None)
     read = 0
     on_estimate = None
     if progress:
