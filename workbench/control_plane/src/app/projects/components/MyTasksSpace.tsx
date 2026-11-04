@@ -574,7 +574,7 @@ export default function MyTasksSpace({
   // says so, in the place of the board's "Load more" bar (item 5).
   const truncated = wantsAll && listMode && listLoaded ? truncationNotice(list.rows.length, list.total) : null;
   // PJP-12a — chip All, read done, no row, no filter: the member has no tasks.
-  const trulyEmpty = myTasksTrulyEmpty({ chip, loaded: listLoaded, total: list.total, filtered: isFiltered(filters) });
+  const trulyEmpty = myTasksTrulyEmpty({ chip, loaded: listLoaded, total: list.total ?? list.rows.length, filtered: isFiltered(filters) });
   const emptyChip = trulyEmpty ? (
     <EmptyState
       icon="ListChecks"
