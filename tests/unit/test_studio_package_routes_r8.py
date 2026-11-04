@@ -149,11 +149,15 @@ def _user(org: str, email: str) -> UserContext:
 
 
 class _Request:
-    """The one part of a request that a handler reads: the stream of the body."""
+    """The parts of a request that a handler reads: the stream of the body,
+    and, for the action door, the method, the path and the headers of the
+    direct proof (B2c-1). It carries no proof, so a door call is not direct."""
 
     def __init__(self, payload: Any = None, raw: bytes | None = None) -> None:
         self._raw = raw if raw is not None else (
             b"" if payload is None else json.dumps(payload).encode("utf-8"))
+        self.method, self.headers = "POST", {}
+        self.url = SimpleNamespace(path="/studio/apps/x/actions/y")
         self.reads = 0
 
     async def stream(self) -> Any:
