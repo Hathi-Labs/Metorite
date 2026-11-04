@@ -1987,7 +1987,7 @@ async def _plan_on_record(digest: str) -> bool:
         raise _Refused(_PLAN_UNREAD) from None
     if isinstance(got, bytes):
         got = got.decode("utf-8", "replace")
-    return got == _PLAN_VALUE
+    return bool(got == _PLAN_VALUE)
 
 
 async def _drop_plan(digest: str) -> None:
@@ -2319,7 +2319,7 @@ def _problem_path(manifest: dict[str, Any], obj: Any, field: Any, rule: Any) -> 
     name. An object that the draft does not hold gives ``$.objects``."""
     objects = manifest.get("objects")
     oi = _index_of(objects, "name", obj)
-    if oi is None:
+    if oi is None or not isinstance(objects, list):
         return "$.objects"
     entry = objects[oi]
     fi = _index_of(entry.get("fields"), "key", field)
@@ -2360,14 +2360,15 @@ def _problems(reply: _Reply, manifest: dict[str, Any]) -> dict[str, Any]:
 
 def _published(reply: _Reply, pid: str) -> dict[str, Any]:
     """The result of a publish: the version, and the names of the tables."""
-    data = reply.data if isinstance(reply.data, dict) else {}
-    version = data.get("version") if isinstance(data.get("version"), dict) else {}
-    objects = data.get("objects") if isinstance(data.get("objects"), list) else []
-    sync = data.get("sync") if isinstance(data.get("sync"), dict) else {}
-    names = [_title_name(o.get("name")) for o in objects if isinstance(o, dict)]
-    counts = {k: len(v) for k, v in sync.items() if isinstance(v, list)}
+    data: dict[str, Any] = reply.data if isinstance(reply.data, dict) else {}
+    version, objects, sync = data.get("version"), data.get("objects"), data.get("sync")
+    names = [_title_name(o.get("name")) for o in (objects if isinstance(objects, list) else [])
+             if isinstance(o, dict)]
+    counts = {k: len(v) for k, v in (sync.items() if isinstance(sync, dict) else ())
+              if isinstance(v, list)}
+    number = version.get("version") if isinstance(version, dict) else None
     return {"ok": True, "errors": [], "diff": [], "package_id": pid,
-            "version": version.get("version"), "tables": _line("Tables", names),
+            "version": number, "tables": _line("Tables", names),
             "changed": counts, "note": f"{_PKG_PUBLISHED} {_PKG_DATA}"}
 
 
