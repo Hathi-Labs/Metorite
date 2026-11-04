@@ -50,9 +50,17 @@ TAGS = "Hi" + "".join(chr(0xE0000 + ord(c)) for c in "acct")
 LOOKALIKE_WORD = "Please p" + chr(0x0430) + "y the invoice."
 
 
+def edit_card(monkeypatch, value: str) -> None:
+    """``EMAIL_EDIT_CARD_ORGS`` for this test only: "" is off, "*" is on."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "email_edit_card_orgs", value)
+
+
 @pytest.fixture()
 def world(monkeypatch) -> dict[str, Any]:
     F.flag_on(monkeypatch)
+    edit_card(monkeypatch, "*")
     monkeypatch.setattr(nm, "ANSWER_WAIT_S", 0.0)
     monkeypatch.setattr(hc, "ANSWER_WAIT_S", 0.0)
     redis = F.install_redis(monkeypatch)
@@ -467,6 +475,64 @@ async def test_held_form_answer_with_no_to_sends_nothing(world) -> None:
     assert world["sends"].mails == []
 
 
+# ── 5a. Dark: EMAIL_EDIT_CARD_ORGS (fix round 1) ─────────────────────────────
+
+
+@pytest.mark.parametrize(("value", "org", "on"), [
+    ("", F.ORG, False),                           # empty: off, the default
+    ("*", F.ORG, True),                           # each org
+    (f"other-org, {F.ORG}", F.ORG, True),         # a list that names the org
+    ("other-org", F.ORG, False),                  # a list that does not
+    (F.ORG, "", False),                           # no tenant under a list
+])
+def test_the_flag_reads_its_list_and_fails_closed(monkeypatch, value, org, on) -> None:
+    """Mutation: read an empty list as each org → red."""
+    edit_card(monkeypatch, value)
+    assert rcard.edit_card_on(org) is on
+
+
+@pytest.mark.parametrize(("flag", "channel", "whatsapp", "open_"), [
+    ("", True, False, False),     # flag off: the cards of before
+    ("*", True, False, True),     # flag on, a live chat
+    ("*", True, True, False),     # a WhatsApp run keeps the card of before
+    ("*", False, False, False),   # no card channel keeps it too
+])
+def test_the_edit_card_needs_the_flag_a_channel_and_no_whatsapp(
+    monkeypatch, flag, channel, whatsapp, open_,
+) -> None:
+    """``ask_tools.edit_card_channel_open``. Mutation: drop any of its three
+    tests → red."""
+    edit_card(monkeypatch, flag)
+    monkeypatch.setattr(ask_tools, "confirmation_channel_open", lambda: channel)
+    monkeypatch.setattr(ask_tools, "_whatsapp_run", lambda: whatsapp)
+    assert ask_tools.edit_card_channel_open() is open_
+
+
+async def test_the_new_card_routes_are_dark_while_the_flag_is_off(world, monkeypatch) -> None:
+    """Off, each route answers 404 and records nothing. Mutation: drop
+    ``_off`` from either route → red."""
+    edit_card(monkeypatch, "")
+    with pytest.raises(HTTPException) as e:
+        await _card()
+    assert e.value.status_code == 404 and world["redis"].keys == {}
+    req = nm.NewMailActRequest(card_id="c" * 32, card_thread_id="t", answer=_answer())
+    with pytest.raises(HTTPException) as e:
+        await nm.new_mail_card_act(req, BackgroundTasks(), F.user())
+    assert e.value.status_code == 404 and world["sends"].mails == []
+
+
+async def test_held_card_with_the_flag_off_is_exactly_the_rows_card(world, monkeypatch) -> None:
+    """Off, the held card gives no form, and its act takes no form answer.
+    Mutation: add the form with the flag off → red."""
+    edit_card(monkeypatch, "")
+    card = await _held()
+    assert "form" not in card and card["rows"]
+    with pytest.raises(HTTPException) as e:
+        await _held_act(card["card_id"], _answer(cc=()))
+    assert e.value.status_code == 409
+    assert world["sends"].mails == []
+
+
 # ── 6. send_email draws the card and acts on the exact answer ───────────────
 
 
@@ -585,6 +651,35 @@ async def test_send_email_with_no_edit_card_keeps_the_old_card(monkeypatch, gw) 
     await agents.send_email(F.BOX, body=TEXT, to=[F.KNOWN], subject="Rates")
     assert [p for p, _b in gw.posts] == ["/email/send"]
     assert "reply" not in cards[0]
+
+
+@pytest.mark.parametrize(("flag", "posts"), [
+    ("", ["/email/send"]),                                  # off: the plain card
+    ("*", ["/email/new-card", "/email/new-card/act"]),      # on: the edit card
+])
+async def test_send_email_follows_the_flag(monkeypatch, gw, flag, posts) -> None:
+    """The real ``_edit_card_open``, in a live chat. Off, the plain card of
+    before, exactly. Mutation: drop ``edit_card_on`` from
+    ``edit_card_channel_open`` → red."""
+    edit_card(monkeypatch, flag)
+    monkeypatch.setattr(ask_tools, "_whatsapp_run", lambda: False)
+    cards = _cards(monkeypatch, _answer(cc=()) if flag else None)
+    await agents.send_email(F.BOX, body=TEXT, to=[F.KNOWN], cc=[F.COLLEAGUE], subject="Rates")
+    assert [p for p, _b in gw.posts] == posts
+    assert ("reply" in cards[0]) is bool(flag)
+
+
+@pytest.mark.parametrize(("flag", "drawn"), [("", "rows"), ("*", "reply")])
+async def test_a_held_new_mail_follows_the_flag(monkeypatch, gw, flag, drawn) -> None:
+    """A held chat: off, the rows card of §21. On, the held form."""
+    edit_card(monkeypatch, flag)
+    monkeypatch.setattr(agents, "_held_card_mode", lambda: True)
+    monkeypatch.setattr(agents, "_egress_held", lambda: True)
+    monkeypatch.setattr(ask_tools, "_whatsapp_run", lambda: False)
+    monkeypatch.setattr("acb_skills.ask_tools.reply_card_channel_open", lambda: True)
+    cards = _cards(monkeypatch, _answer(cc=()) if flag else None)
+    await agents.send_email(F.BOX, body=TEXT, to=[F.KNOWN, F.STRANGER], subject="Rates")
+    assert drawn in cards[0] and ("reply" if drawn == "rows" else "rows") not in cards[0]
 
 
 async def test_send_email_of_a_held_chat_draws_the_held_form(monkeypatch, gw) -> None:

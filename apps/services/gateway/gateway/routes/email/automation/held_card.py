@@ -1374,7 +1374,11 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     }, title="Send this new email?", mailbox=me)
     # §18.10: the same record, drawn as the one email card that the member
     # edits. The rows card stays for a run that cannot draw it (WhatsApp).
-    out["form"] = new_mail_form(rows, subject, body, _box_text(me))
+    # With EMAIL_EDIT_CARD_ORGS off the answer is exactly as before.
+    from acb_skills.reply_card import edit_card_on
+
+    if edit_card_on(_org_of(user)):
+        out["form"] = new_mail_form(rows, subject, body, _box_text(me))
     return out
 
 
@@ -1770,7 +1774,10 @@ async def held_card_act(
             status_code=409,
             detail="The card of this send has expired or was used, so nothing was sent.")
     rows = [r for r in rec.get("rows") or [] if isinstance(r, dict)]
-    if rec.get("kind") == "new" and looks_like_new_mail_answer(req.answer):
+    from acb_skills.reply_card import edit_card_on
+
+    if (rec.get("kind") == "new" and edit_card_on(org)
+            and looks_like_new_mail_answer(req.answer)):
         # §18.10: the member answered the form of this card. A rows answer
         # of the same card still acts below, as before.
         return await _act_new_form(req.card_id, req.answer, rec, rows, background, user)

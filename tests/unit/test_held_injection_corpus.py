@@ -40,12 +40,18 @@ class _Member:
         self.says_no = False
 
 
-@pytest.fixture()
-def harness(monkeypatch):
+@pytest.fixture(params=["rows card", "edit card"])
+def harness(monkeypatch, request):
+    """Each case runs twice: with ``EMAIL_EDIT_CARD_ORGS`` off, a held new mail
+    shows the rows card of §21, and on, the one email card (§18.10). The
+    member answers each one with the server's start ticks."""
+    from acb_common import get_settings
     from acb_skills import ask_tools
     from acb_skills.write_artifact import bind_artifact_context
 
     F.flag_on(monkeypatch)
+    monkeypatch.setattr(get_settings(), "email_edit_card_orgs",
+                        "*" if request.param == "edit card" else "")
     monkeypatch.setattr(hc, "ANSWER_WAIT_S", 0.0)
     F.install_redis(monkeypatch)
     db = F.install_db(monkeypatch)
@@ -193,11 +199,17 @@ async def test_a_lookalike_domain_is_marked_and_does_not_go(harness) -> None:
     out = await agents.send_email(F.BOX, body="Updated as asked.", to=[F.LOOKALIKE],
                                   subject="Update")
     assert out.startswith("Send cancelled") or out.startswith("Not sent")
-    # §18.10: the web draws the held new mail as the one email card.
-    form = member.cards[0]["reply"]
-    assert form["classes"][F.LOOKALIKE] == "new"
-    assert F.LOOKALIKE not in form["ticked"]["reply_all"]["to"]
-    assert any("contoso.test" in n for n in form["notices"])
+    card = member.cards[0]
+    if card.get("reply") is not None:
+        # §18.10, the flag on: the one email card of a held new mail.
+        form = card["reply"]
+        assert form["classes"][F.LOOKALIKE] == "new"
+        assert F.LOOKALIKE not in form["ticked"]["reply_all"]["to"]
+        assert any("contoso.test" in n for n in form["notices"])
+    else:
+        row = card["rows"][0]
+        assert row["class"] == "new" and row["checked"] is False
+        assert "contoso.test" in row["warning"]
     assert sends.mails == []
 
 

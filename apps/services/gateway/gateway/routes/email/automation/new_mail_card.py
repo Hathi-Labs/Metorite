@@ -131,6 +131,21 @@ def checked_text(body: str) -> str:
     return shown
 
 
+#: The answer of each route while ``EMAIL_EDIT_CARD_ORGS`` leaves the org out.
+EDIT_CARD_OFF = "Not found"
+
+
+def _off(user: UserContext) -> None:
+    """404 unless ``EMAIL_EDIT_CARD_ORGS`` names the session's organization
+    (``reply_card.edit_card_on``, the one reader). The org comes from the
+    session, never from the request (R5)."""
+    from acb_skills.reply_card import edit_card_on
+
+    org = str(getattr(user, "organization_id", None) or "")
+    if not org or not edit_card_on(org):
+        raise HTTPException(status_code=404, detail=EDIT_CARD_OFF)
+
+
 def _mailbox_text(me: Any) -> str:
     label, address = str(getattr(me, "label", "") or ""), str(getattr(me, "address", "") or "")
     return f"{label} · {address}" if label and address and label != address else address
@@ -154,6 +169,7 @@ async def new_mail_card(
     from gateway.routes.email.core import _assert_account_owner
     from gateway.routes.email.transport.metorite_files import resolve_metorite_files
 
+    _off(user)
     owner = _owner(user)
     lists = _people(req)
     body = clean_reply_body(req.body)
@@ -230,6 +246,7 @@ async def new_mail_card_act(
         send_email,
     )
 
+    _off(user)
     # The session's email as it is: `mailbox_predicate` compares `user_id`
     # with case (fix round 1). Only the digest of the answer folds the case.
     member = _owner(user)

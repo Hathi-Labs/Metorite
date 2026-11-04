@@ -30,7 +30,7 @@
 > ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
 > 🔨 **AI-call attribution is BUILT on branch `ai-call-attribution` (2026-10-10).** Each email model call now names its feature on the usage report, as `email.rule_match`. A mailbox job names `email.automation`. Before, 97% of the email calls showed as "not attributed". It has no flag, because it changes metadata only. `customer_console.md` §4.3a owns the rule and lists the names.
 > 🔨 **§18.5.1 (H-374) is BUILT on branch `h374-send-draft`, not merged (2026-10-22).** The owner chose "Drafts, with a card" and "Schedule a send". A held chat now sends or schedules a saved draft behind a card. A forward, a new mail, a file, an unsubscribe and a settings change stay held.
-> 🔨 **§18.10 is BUILT on branch `mt-5f606b3e-email-edit-card`, not merged (2026-11-03).** A new mail from the chat shows ONE card. The member edits the subject and the text, ticks the people, and presses Send, Save draft or Discard. No migration, and no flag.
+> 🔨 **§18.10 is BUILT on branch `mt-5f606b3e-email-edit-card`, not merged (2026-11-03).** A new mail from the chat shows ONE card. The member edits the subject and the text, ticks the people, and presses Send, Save draft or Discard. No migration. Dark behind `EMAIL_EDIT_CARD_ORGS` (default empty, off), with fix round 1.
 > 🔨 **§18.9 is BUILT on branch `chat-draft-upsert`, not merged (2026-10-22), with fix round 1.** A chat reply draft lands in Drafts, it never writes over a draft of the member, and the Email app continues it.
 > 🔨 **§18.9.1 is BUILT on branch `mt-0f55cd43-reply-card-sent`, not merged (2026-11-03, task 1526), with fix round 1.** A reply card whose draft left Drafts sends and saves nothing. The act answers 409 `draft_gone` or `already_replied`, and the card collapses to its title and Close. No migration, and no flag.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
@@ -20915,8 +20915,19 @@ Save made an orphan draft.
 
 ### 18.10 One email card for a new mail (2026-11-03, owner)
 
-**Status:** 🔨 BUILT on branch `mt-5f606b3e-email-edit-card`, not merged. No migration,
-and no flag. Metorite task 1533, slice 2 of 4.
+**Status:** 🔨 BUILT on branch `mt-5f606b3e-email-edit-card`, not merged, with fix round 1.
+No migration. Metorite task 1533, slice 2 of 4.
+
+**Dark.** `EMAIL_EDIT_CARD_ORGS` lists the organization ids that get the card, or `*` for
+each one, and it is empty (off) by default. Off, a new mail shows the cards of before,
+exactly, and the two routes of the card answer 404. `reply_card.edit_card_on` is the one reader,
+and it fails closed. To turn the card on for one org, set `EMAIL_EDIT_CARD_ORGS=<org id>`
+on the box and send SIGHUP to the gateway. A value on a box is an `enforcement-flip`.
+
+**Fix round 1.** After an edit, the chips hide, and the nudge line says that a request in
+the chat starts again from the assistant's draft. A subject takes the character rule of
+the text, so an emoji goes, and the act refuses each line break. A held form gives each file a
+tick and its hint, and the act sends only the ticked files.
 
 **Origin.** The owner asked on 2026-11-03 to edit a draft in the chat, and to ask the chat
 to improve it. The owner approved panel 2 of the design.

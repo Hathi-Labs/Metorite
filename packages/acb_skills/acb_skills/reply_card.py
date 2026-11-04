@@ -65,6 +65,7 @@ __all__ = [
     "NewMailChoice",
     "ReplyChoice",
     "clean_reply_body",
+    "edit_card_on",
     "has_hidden_text",
     "has_invisible_spacing",
     "is_invisible_char",
@@ -772,6 +773,35 @@ def parse_new_mail_answer(answer: Any) -> NewMailChoice | None:
 def looks_like_new_mail_answer(answer: Any) -> bool:
     """True when *answer* parses as a new-mail answer (§18.10)."""
     return parse_new_mail_answer(answer) is not None
+
+
+def edit_card_on(org: object = None) -> bool:
+    """True when the ONE email card of a new mail is on for organization
+    *org* (§18.10). THE reader of ``EMAIL_EDIT_CARD_ORGS``.
+
+    The value is a comma list of organization ids, or ``*`` for each one.
+    Empty means off, the default: a new mail then shows the cards of before.
+    It reads the settings at each call, so a flag reload applies a change. It
+    parses the list with the shared ``assistant_profile._parse_orgs``. *org*
+    defaults to the bound tenant of the run. The gateway passes the session's
+    organization, and no request field reaches this function (R5). It fails
+    closed: a fault, or a frame with no tenant under a list of ids, reads as
+    off. Fence: ``tests/unit/test_email_new_mail_card.py``."""
+    try:
+        from acb_common import get_settings
+        from acb_common.assistant_profile import _parse_orgs
+
+        orgs = _parse_orgs(str(getattr(get_settings(), "email_edit_card_orgs", "") or ""),
+                           star=True)
+        if not orgs or "*" in orgs:
+            return bool(orgs)
+        if org is None:
+            from acb_common.db import current_tenant
+
+            org = current_tenant()
+        return str(org or "").strip().lower() in orgs
+    except Exception:
+        return False
 
 
 def looks_like_send_answer(answer: Any) -> bool:

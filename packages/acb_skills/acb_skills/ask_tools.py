@@ -1438,14 +1438,19 @@ def reply_card_channel_open() -> bool:
 
 
 def edit_card_channel_open() -> bool:
-    """True when this run can show a card that the member EDITS (§18.10): a
-    card channel (:func:`confirmation_channel_open`) and no WhatsApp run.
+    """True when this run can show a card that the member EDITS (§18.10):
+    ``EMAIL_EDIT_CARD_ORGS`` names the run's organization
+    (``reply_card.edit_card_on``), a card channel is open
+    (:func:`confirmation_channel_open`), and the run is not of WhatsApp.
 
-    A WhatsApp run draws no card to edit, so a new mail there keeps the card
+    With the flag off, a new mail shows the cards of before, exactly. A
+    WhatsApp run draws no card to edit, so a new mail there keeps the card
     of before, which parks for the member's reply code (H-391). A run with no
     channel keeps it too, and that card fails closed. A fault reads False."""
     try:
-        return confirmation_channel_open() and not _whatsapp_run()
+        from acb_skills.reply_card import edit_card_on
+
+        return edit_card_on() and confirmation_channel_open() and not _whatsapp_run()
     except Exception:
         return False
 
