@@ -902,7 +902,8 @@ def _bound_org() -> str:
 
 async def _assert_account_owner(
     db: Any, account_id: str, user_email: str, *,
-    # On: every caller runs in a bound tenant, and an unbound one fails closed with 404.
+    # On: every caller opens tenant_session, which refuses an unbound tenant.
+    # A session with no app.tenant_id compares to NULL and gets 404.
     this_tenant: bool = True,
     level: str = "manage",
 ) -> None:
