@@ -4830,7 +4830,9 @@ async def _detect_agent_commits(
         )
 
 
-async def _integration_authorizer(event_payload: Any, thread_id: str | None = None):
+async def _integration_authorizer(
+    event_payload: Any, thread_id: str | None = None, *, session_user: str | None = None,
+):
     """Build the per-run integration filter for the run's authority, or None.
 
     Org access control (spec §5, seam 3). An agent's ``config.json`` declares
@@ -4848,8 +4850,9 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
     Returns ``None`` — meaning no filtering, the pre-org-access-control
     behaviour — whenever the run is **not** attributable to an active member:
 
-    * no ``user_email`` in the payload (cron, reconciler, webhook-triggered
-      runs: the platform acting on its own behalf, not a person's);
+    * no session member and no ``user_email`` in the payload (cron,
+      reconciler, webhook-triggered runs: the platform acting on its own
+      behalf, not a person's);
     * a synthetic principal such as ``system:internal``;
     * an address that does not resolve to an ACTIVE member.
 
@@ -4859,12 +4862,16 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
     happened not to be a provisioned member. Who may start a run at all is
     already enforced upstream by ``assert_can_run_agent``, so an
     unidentifiable address here means "platform-initiated", not "attacker".
+
+    🔴 **The member is the session's, through** :func:`_run_member` (MCP-C1).
+    H-337 removes the body's ``user_email`` in the stream route, so a check
+    that read the body found nobody in EVERY web chat. Then this returned
+    ``None``: no integration filter, and no MCP card (``member_present``
+    False). *session_user* wins, and a run with no session keeps the body's
+    claim, as before. Fence: ``tests/unit/test_org_access_credentials.py``
+    and ``tests/unit/test_maf_mcp_confirm.py``.
     """
-    email = ""
-    if isinstance(event_payload, dict):
-        email = str(
-            event_payload.get("user_email") or event_payload.get("user_id") or ""
-        ).strip()
+    email, _verified = _run_member(event_payload, session_user)
     if not email or ":" in email:
         return None
 
@@ -5540,7 +5547,9 @@ async def _run_agent_inner(
             optional_integrations: list[str] = loaded.config.get("optional_integrations", [])
             # One access lookup for the run, as on the stream path. The
             # integrations and the MCP servers (WAC-P3) read the same answer.
-            _authorizer = await _integration_authorizer(event_payload, thread_id)
+            _authorizer = await _integration_authorizer(
+                event_payload, thread_id, session_user=session_user,
+            )
             integrations, integration_warnings = build_integrations(
                 mandatory_integrations, optional_integrations, settings,
                 is_authorized=_authorizer,
@@ -6553,7 +6562,9 @@ async def run_agent_stream(
             optional = loaded.config.get("optional_integrations", [])
             # One access lookup for the run. The integrations below and the
             # MCP servers of a native agent (WS-8c) read the same answer.
-            _authorizer = await _integration_authorizer(event_payload, thread_id)
+            _authorizer = await _integration_authorizer(
+                event_payload, thread_id, session_user=session_user,
+            )
             _laps.lap("authorizer")
             # Filter BEFORE the env injection below, so a credential the
             # acting member may not use never enters the run's environment at

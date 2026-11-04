@@ -170,6 +170,72 @@ async def test_authorizer_filters_an_active_member(monkeypatch) -> None:
     assert not predicate("zoho-crm")
 
 
+# ── MCP-C1: the member comes from the session ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_authorizer_filters_the_session_member_with_no_body_claim(
+    monkeypatch,
+) -> None:
+    """🔴 MCP-C1. The stream route removes the body's ``user_email`` (H-337).
+    Before the fix, the check read the body only, found nobody, and returned
+    ``None``: no filter in any web chat. The session's member must be found."""
+    import orchestrator.executor as executor
+    import acb_auth
+
+    asked: list[str] = []
+
+    async def _active(email, **kwargs):
+        asked.append(email)
+        return build_access(
+            ["integrations:use:*"], [("integrations:use:zoho-crm", "deny")]
+        )
+
+    monkeypatch.setattr(acb_auth, "resolve_access", _active)
+    predicate = await executor._integration_authorizer(
+        {"message": "hi"}, session_user="priya@fracktal.in",
+    )
+    assert predicate is not None, "a web chat member got no integration filter"
+    assert asked == ["priya@fracktal.in"]
+    assert predicate("clickup")
+    assert not predicate("zoho-crm")
+
+
+@pytest.mark.asyncio
+async def test_the_session_member_wins_over_a_body_claim(monkeypatch) -> None:
+    """A body that names another member never picks whose access applies."""
+    import orchestrator.executor as executor
+    import acb_auth
+
+    asked: list[str] = []
+
+    async def _active(email, **kwargs):
+        asked.append(email)
+        return build_access(["integrations:use:*"])
+
+    monkeypatch.setattr(acb_auth, "resolve_access", _active)
+    await executor._integration_authorizer(
+        {"user_email": "mallory@fracktal.in"}, session_user="priya@fracktal.in",
+    )
+    assert asked == ["priya@fracktal.in"]
+
+
+def test_each_run_path_hands_the_session_member_to_the_check() -> None:
+    """MCP-C1 source fence: each call of the check in the executor passes
+    ``session_user``. A call without it reads the body alone, and the stream
+    route has removed the body's claim (H-337)."""
+    import re
+    from pathlib import Path
+
+    import orchestrator.executor as executor
+
+    source = Path(executor.__file__).read_text(encoding="utf-8")
+    calls = re.findall(r"await _integration_authorizer\((.*?)\)", source, re.S)
+    assert len(calls) >= 2, "the two run paths no longer call the check"
+    for args in calls:
+        assert "session_user=session_user" in args, args
+
+
 # ── Org memory gate ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
