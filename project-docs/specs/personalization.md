@@ -2084,7 +2084,7 @@ a chat never holds the summary of that same chat.
 
 **The block.** `_context_preamble_parts` gains one block,
 `_member_briefing_block`, right after the profile block
-(`executor.py:10630-10642`). Nothing above it moves. The block holds two
+(`executor.py:10654-10666`). Nothing above it moves. The block holds two
 parts:
 
 1. **Recent chats.** The member's newest 3 summaries of other chats, each
@@ -2098,14 +2098,14 @@ parts:
   is true.
 - `ASSISTANT_BRIEFING_ORGS` names the org (§15.8).
 - The run has a verified member (`_verified_run_member`,
-  `executor.py:9820`).
-- The room is solo (`_RUN_SOLO_ROOM`, `executor.py:2147`). A delegated,
+  `executor.py:9844`).
+- The room is solo (`_RUN_SOLO_ROOM`, `executor.py:2170`). A delegated,
   detached, scheduled or shared-room run gets no block.
 - The run is a web chat. A WhatsApp run gets no block while D115 holds. A
   solo WhatsApp run also binds `_RUN_SOLO_ROOM` True
   (`routes/whatsapp_channel/bot_run.py`), so the solo gate alone does not
   mean "web". The prime also needs a run that shows cards and is not a
-  batch run, as `_start_pack_turn` does (`executor.py:1592`).
+  batch run, as `_start_pack_turn` does (`executor.py:1606`).
 
 **Only the member's own data.** The recent chats come from
 `assistant_summaries.recent(db, member, exclude=<this chat>)`. It reads the
@@ -2154,7 +2154,7 @@ context on turn 2. Also each byte after the place of the block would move,
 so the cache would miss.
 
 The build runs in an async prime, `_prime_member_briefing`, beside
-`_prime_chat_constraints` (`executor.py:1199`, awaited at `:6768`). The sync
+`_prime_chat_constraints` (`executor.py:1199`, awaited at `:6792`). The sync
 builder only reads the run binding. A build of more than 1 second, or a
 Redis fault, gives no block for that turn. The turn never waits for it.
 
@@ -2173,7 +2173,7 @@ For more from a past chat, search the past chats. Do not guess.
 ```
 
 A task title is data that other people can write. So the block marks the
-tasks as data, as `_PROJECTS_RULES` does (`tool_packs.py:439-440`). A
+tasks as data, as `_PROJECTS_RULES` does (`tool_packs.py:440-441`). A
 chat title can come from a model, so the block marks the chats as data too.
 
 **As built, PZ-34 (2026-11-04, dark).** Task 1132. `ASSISTANT_BRIEFING_ORGS`
@@ -2398,7 +2398,7 @@ feature off.
 - Each slice adds its name to `ALLOWED_KEYS` (`acb-staging-flag:178`), to
   `tests/unit/test_acb_staging_flag.py` and to
   `deploy/hostinger/staging/README.md`.
-- The env guard prefix `ASSISTANT_PROFILE_` (`packages/acb_common/acb_common/env_guard.py:300-304`) does
+- The env guard prefix `ASSISTANT_PROFILE_` (`packages/acb_common/acb_common/env_guard.py:312-317`) does
   not cover the new names. Each slice adds its name to `PLATFORM_ENV_NAMES`
   (`packages/acb_common/acb_common/env_guard.py:108`). A test asserts `is_platform_env(name)`, as
   `test_brief_run.py:68` does.
