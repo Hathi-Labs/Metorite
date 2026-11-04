@@ -507,7 +507,3 @@ export function settleAnswer(
   if (outcome === "drop") return { type: "dropped", key: card.key, ...(reason ? { reason } : {}) };
   return { type: "answered", key: card.key };
 }
-
-// The stack of waiting cards lives in `lib/cardStack.ts`, shared with every
-// stack of cards in the chat. Re-exported here for the queue's callers.
-export { SWIPE_STEP_PX, stackBanner, stackDepth, swipeStep } from "./cardStack";
