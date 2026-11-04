@@ -1129,6 +1129,97 @@ def test_a_dropped_core_pack_is_recorded_in_skipped() -> None:
     assert choice.slugs == ("projects-plan",) and "projects" in choice.skipped
 
 
+# ── PJP-2 fix round 2 (P1-2): the step-aside runs after the cap ─────────────
+#
+# The step-aside used to run before the cap, and it took the sticky pack that
+# the member used least recently, also when the member named it in this turn.
+# So "remind me" on the Projects page moved the reminders pack out. Now the
+# cap runs first, and the step-aside moves a sticky pack out in the cap's order
+# (project_planning.md section 3.3, rule 2).
+
+#: The real base (56) and the load tool (1), and the one specialist tool.
+_BASE = 57
+_SPECIALIST = {PA: 1}
+
+
+def _sticky_turn(words: str, surface: str, *entries: tp.Sticky) -> tp.PackTurn:
+    return tp.PackTurn(
+        ORG, SESSION, tp._member_part(MEMBER), 20, entries, words, True, surface=surface)
+
+
+def _owner_reached(choice: tp.Choice, base: int = _BASE,
+                   removable: dict[str, int] | None = None) -> bool:
+    total = base + sum(len(_family(slug)) for slug in choice.slugs)
+    plan = tp.plan_loader(EVERY, choice.slugs, current=total,
+                          removable=_SPECIALIST if removable is None else removable)
+    return PA in plan.via_loader
+
+
+def test_a_reminder_on_the_projects_page_keeps_the_sticky_reminders_pack() -> None:
+    """The case of the review. ``projects-reminders`` is sticky (used in turn
+    13), ``projects-plan`` is sticky (turn 19), the member is on the Projects
+    page and says "remind me". The plan pack leaves, the reminders pack and the
+    core pack stay (99 tools), and the owner is reached through the reports pack
+    (99 - 1 + 11 = 109). Mutation: run the step-aside before the cap -> both
+    sticky packs leave and the run holds only the core pack -> red."""
+    choice = tp.choose(
+        _sticky_turn("remind me tomorrow at 9 to call Ravi", "projects",
+                     tp.Sticky("projects-reminders", (10, 0), 13),
+                     tp.Sticky("projects-plan", (11, 0), 19)),
+        allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    assert choice.slugs == ("projects-reminders", "projects"), choice
+    assert choice.evicted == ("projects-plan",) and choice.skipped == (), choice
+    assert _owner_reached(choice)
+
+
+def test_a_sticky_pack_of_another_owner_leaves_before_a_projects_pack() -> None:
+    """The case of ``test_pack_room.py``: ``crm-records``, ``projects`` and
+    ``projects-plan`` are sticky (turns 5, 6 and 7), and "remind me" adds the
+    reminders pack. The cap moves ``crm-records`` out first, then the core pack.
+    The plan and reminders packs stay (99 tools), and the owner is reached
+    through the reports pack (99 + 11 = 110). Mutation: run the step-aside
+    before the cap -> ``crm-records`` stays and both newer Projects packs leave
+    -> red."""
+    turn = tp.PackTurn(ORG, SESSION, tp._member_part(MEMBER), 9,
+                       (tp.Sticky("crm-records", (1, 0), 5), tp.Sticky("projects", (1, 1), 6),
+                        tp.Sticky("projects-plan", (1, 2), 7)),
+                       "remind me to call Ravi at 5", True)
+    choice = tp.choose(turn, allowed=EVERY, base_tools=56)
+    assert choice.slugs == ("projects-plan", "projects-reminders"), choice
+    assert choice.evicted == ("crm-records", "projects"), choice
+    assert _owner_reached(choice, base=56, removable={})
+
+
+def test_the_step_aside_moves_the_sticky_pack_that_the_member_did_not_name() -> None:
+    """Two sticky Projects packs fit the caps (105 tools) and keep the owner
+    unreached. The member asks for a burndown, so the older plan pack is a need
+    of this turn, and the newer structure pack steps aside. Mutation: drop the
+    first term of ``_sticky_key`` -> the plan pack leaves -> red."""
+    choice = tp.choose(
+        _sticky_turn("show the burndown", "",
+                     tp.Sticky("projects-plan", (10, 0), 13),
+                     tp.Sticky("projects-structure", (11, 0), 19)),
+        allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    assert choice.slugs == ("projects-plan",), choice
+    assert choice.evicted == ("projects-structure",), choice
+    assert _owner_reached(choice)
+
+
+def test_a_sticky_pack_of_another_owner_does_not_keep_the_core_pack_on_the_page() -> None:
+    """``email`` is sticky, the member is on the Projects page, and asks who is
+    overloaded. The cap moves ``email`` out. Then the core pack steps aside, so
+    the plan pack alone reaches the owner. Before this round the step-aside ran
+    first, found no room with ``email`` held, and kept the two Projects packs
+    with the owner unreached. Mutation: run the step-aside before the cap ->
+    red."""
+    choice = tp.choose(
+        _sticky_turn("who is overloaded", "projects", tp.Sticky("email", (10, 0), 19)),
+        allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    assert choice.slugs == ("projects-plan",), choice
+    assert choice.evicted == ("email",) and choice.skipped == ("projects",), choice
+    assert _owner_reached(choice)
+
+
 # ── MT-1228. "Remind me" loads a pack that holds set_reminder ───────────────
 
 REMIND_TURNS = (

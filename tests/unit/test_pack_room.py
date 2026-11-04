@@ -63,7 +63,13 @@ REMIND = "remind me to call Ravi at 5"
 #: No word of any pack, so only the model can ask for the pack.
 NO_WORD = "Set an alarm so that I call Ravi at 5"
 REMINDERS = "projects-reminders"
+#: PJP-2 (project_planning.md §3.3): the reminders pack is also the pack of the
+#: member's own organising, and its label says so.
+REMINDERS_LABEL = "Projects reminders and own organising"
 PA = "projects-assistant"
+#: The largest base at which the reminders pack fits alone. PJP-2 moved 10
+#: tools into it (19 now), so 110 - 19 = 91. A real run has a base of about 56.
+REMINDERS_CEILING = 91
 
 
 @pytest.fixture
@@ -121,15 +127,36 @@ def test_the_core_pack_on_the_surface_and_three_sticky_packs_all_give_way() -> N
     """The example of the slice: ``email``, ``email-setup`` and ``crm-records``
     are sticky, and the turn comes from the Projects app, so the core pack
     counts too. The reminder pack still loads. Mutation: drop the new pack
-    first -> red."""
+    first -> red.
+
+    PJP-2 fix round 2 (project_planning.md §3.3, rule 2): the cap moves the two
+    email packs out. The core and the reminders packs then make 107 tools with
+    ``crm-records``, and no third Projects pack fits (107 + 11 > 110), so the
+    owner is not reached. The core pack steps aside, and the reminders pack
+    alone reaches the owner. The model loads the core pack again when it needs
+    it (84 + 23 = 107). Before this round the step-aside ran before the cap,
+    saw the email packs, and kept the owner unreached."""
     choice = tp.choose(_turn(REMIND, _sticky("email", "email-setup", "crm-records"),
                              surface="projects"), allowed=EVERY, base_tools=56)
-    assert REMINDERS in choice.slugs and "projects" in choice.slugs, choice
-    assert choice.evicted[0] == "email"
+    assert choice.slugs == ("crm-records", REMINDERS), choice
+    assert choice.evicted == ("email", "email-setup") and choice.skipped == ("projects",)
     assert _total(choice, 56) <= tp.MAX_REQUEST_TOOLS
+    plan = tp.plan_loader(EVERY, choice.slugs, current=_total(choice, 56))
+    assert PA in plan.via_loader and "projects" in plan.offered
 
 
-@pytest.mark.parametrize("base", [70, 85, 95, 100])
+def test_the_reminder_ceiling_is_the_cap_less_the_pack() -> None:
+    """The bases below stop at :data:`REMINDERS_CEILING`. Above it, the pack
+    cannot load even alone, so the case would test nothing. Mutation: add a
+    tool to the reminders pack -> the ceiling moves -> red."""
+    tools = len(sf.SKILL_FAMILIES[REMINDERS]["tools"])
+    assert REMINDERS_CEILING + tools == tp.MAX_REQUEST_TOOLS
+    assert sf.SKILL_FAMILIES[REMINDERS]["label"] == REMINDERS_LABEL
+
+
+# PJP-2: the bases were 70, 85, 95 and 100 while the pack held 9 tools. It holds
+# 19 now, so 95 and 100 leave no room for it alone. 91 is the new ceiling.
+@pytest.mark.parametrize("base", [70, 85, REMINDERS_CEILING])
 def test_a_reminder_wins_when_the_tool_cap_is_close(base: int) -> None:
     """Under 3 packs, the tool cap alone must move a sticky pack out. Mutation:
     count only ``MAX_PACKS`` in ``_over`` -> over 110 -> red."""
@@ -323,7 +350,7 @@ async def test_a_model_load_at_the_pack_cap_moves_the_oldest_sticky_pack_out(
     loader = _loader(run, key)
     with _frame(run, key):
         answer, went_on = await _call(loader, REMINDERS, live)
-    assert went_on is False and answer.startswith("Loaded the Projects reminders tools")
+    assert went_on is False and answer.startswith(f"Loaded the {REMINDERS_LABEL} tools")
     assert run.holds() == ("email-setup", "crm-records", REMINDERS)
     names = set(_names(live))
     assert "set_reminder" in names, "the pack joined in the same turn"
@@ -444,7 +471,7 @@ async def test_three_packs_of_this_turn_keep_the_old_refusal(store, monkeypatch)
     with _frame(run, key):
         answer, _ = await _call(_loader(run, key), REMINDERS, live)
     assert answer == tp.LOAD_PAST_CAP.format(
-        label="Projects reminders", packs=tp.MAX_PACKS, tools=tp.MAX_REQUEST_TOOLS,
+        label=REMINDERS_LABEL, packs=tp.MAX_PACKS, tools=tp.MAX_REQUEST_TOOLS,
         slug=REMINDERS, owner=PA)
     assert live == before and run.left == set()
 

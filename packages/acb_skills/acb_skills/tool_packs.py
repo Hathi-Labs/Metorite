@@ -1504,6 +1504,77 @@ def _replaces_specialist(slug: str) -> bool:
     return bool(found is not None and found.delegation_refusal)
 
 
+def _leave_order(
+    turn: PackTurn, room_rule: bool,
+) -> Callable[[Sticky], tuple[bool, int, tuple[int, int]]]:
+    """The key of the order in which sticky packs leave (RX-1). With
+    *room_rule* on (``HELD_CARD_WRITES_ORGS``), a sticky pack that the member
+    named in this turn leaves after each other sticky pack. Then the least
+    recently used one leaves first. The cap and the step-aside both use it."""
+
+    def key(entry: Sticky) -> tuple[bool, int, tuple[int, int]]:
+        return (room_rule and _asked_now(turn, entry.slug) is not None,
+                entry.used, entry.first)
+
+    return key
+
+
+def _step_aside(
+    order: Sequence[str], layers: Mapping[str, str], sticky: Mapping[str, Sticky], *,
+    allow: frozenset[str], total: Callable[[Sequence[str]], int],
+    stays: Mapping[str, int], key: Callable[[Sticky], Any],
+) -> list[str]:
+    """The packs that step aside so that the loader reaches their owner, in order.
+
+    PJP-2 (project_planning.md §3.3, rule 2). Only two Projects packs fit in
+    one request, so two held packs (the core and the plan packs, 103 tools)
+    leave no room for a third. The specialist then stayed, and the model
+    handed off: the fault of 2026-11-02. So, for each owner of
+    :data:`SPECIALIST_STAYS_UNTIL_REACHED`, while two or more of its packs in
+    *order* keep the owner unreached, one of them steps aside. A sticky pack
+    goes first, in the order of the cap (*key*). So a sticky pack that the
+    member named in this turn goes after each other sticky pack (fix round 2,
+    P1-2). Then the core pack goes, then the last new pack. The steps stay
+    only when they reach the owner within both caps. Else none stay (a mixed
+    email turn keeps email and the core pack). The model loads a pack again
+    in the run when it needs a tool of it.
+
+    :func:`choose` calls it after the cap, on the packs that the cap left.
+    *total* gives the tools of a request, and *stays* the specialist tools of
+    each owner in the base.
+    """
+
+    def _reached(slugs: Sequence[str], owner: str) -> bool:
+        plan = plan_loader(allow, slugs, current=total(slugs),
+                           removable={owner: stays.get(owner, 0)})
+        return owner in plan.via_loader
+
+    current = list(order)
+    out: list[str] = []
+    for owner in SPECIALIST_STAYS_UNTIL_REACHED:
+        trial, gone = list(current), []
+        while not _reached(trial, owner):
+            mine = [s for s in trial if (f := pack(s)) is not None and f.owner == owner]
+            if len(mine) < 2:
+                break
+            olds = [sticky[s] for s in mine if layers.get(s) == "sticky"]
+            cores = [s for s in mine if any(
+                (f := pack(o)) is not None and f.replaces_core == s for o in mine)]
+            if olds:
+                victim = min(olds, key=key).slug
+            elif cores:
+                victim = cores[0]
+            else:
+                victim = mine[-1]
+            trial.remove(victim)
+            gone.append(victim)
+        if (gone and _reached(trial, owner) and len(trial) <= MAX_PACKS
+                and total(trial) <= MAX_REQUEST_TOOLS):
+            current = trial
+            out.extend(gone)
+    return out
+
+
 def choose(
     turn: PackTurn, *, allowed: Iterable[str], base_tools: int,
     specialists: Mapping[str, int] | None = None,
@@ -1527,6 +1598,11 @@ def choose(
        So when both email packs match and only one fits, ``email-setup``
        stays, and ``email_assistant`` still reads the mail (fix round 1,
        P1-A). Else the last new pack leaves.
+    5. The step-aside (PJP-2): after the cap, the packs of an owner of
+       :data:`SPECIALIST_STAYS_UNTIL_REACHED` step aside while two or more of
+       them keep the loader from reaching the owner. A sticky pack leaves
+       first, in the order of step 4. Then the core pack, then the last new
+       pack. The steps stay only when they reach the owner.
 
     *allowed* is :func:`packs_on` of the bound tenant less the families that
     an admin turned off. A slug that is no pack is dropped, and so is a pack
@@ -1592,60 +1668,16 @@ def choose(
             layers.pop(core, None)
             skipped.append(core)
 
-    # PJP-2 (project_planning.md §3.3): Projects packs step aside while they
-    # keep the loader from reaching their owner. Only two Projects packs fit
-    # in one request, so two held packs (the core and the plan packs, 103
-    # tools) leave no room for a third. The specialist then stayed, and the
-    # model handed off: the fault of 2026-11-02. A sticky pack that this
-    # turn's words did not ask for leaves first, the least recently used one
-    # first. Then the core pack leaves, then the last new pack. The model
-    # loads a pack again in the run when it needs a tool of it.
-    def _reached(slugs: Sequence[str], owner: str) -> bool:
-        plan = plan_loader(allow, slugs, current=_total(slugs),
-                           removable={owner: stays.get(owner, 0)})
-        return owner in plan.via_loader
-
-    def _fits_caps(slugs: Sequence[str]) -> bool:
-        return len(slugs) <= MAX_PACKS and _total(slugs) <= MAX_REQUEST_TOOLS
-
-    for owner in SPECIALIST_STAYS_UNTIL_REACHED:
-        trial, gone = list(order), []
-        while not _reached(trial, owner):
-            mine = [s for s in trial if (f := pack(s)) is not None and f.owner == owner]
-            if len(mine) < 2:
-                break
-            olds = [sticky[s] for s in mine if layers.get(s) == "sticky"]
-            cores = [s for s in mine if any(
-                (f := pack(o)) is not None and f.replaces_core == s for o in mine)]
-            if olds:
-                victim = min(olds, key=lambda e: (e.used, e.first)).slug
-            elif cores:
-                victim = cores[0]
-            else:
-                victim = mine[-1]
-            trial.remove(victim)
-            gone.append(victim)
-        # Keep the steps only when they reach the owner within the caps. Else
-        # the turn keeps its packs, and the cap below decides as before (a
-        # mixed email turn keeps email and the core pack).
-        if not gone or not _reached(trial, owner) or not _fits_caps(trial):
-            continue
-        for victim in gone:
-            order.remove(victim)
-            layers.pop(victim, None)
-            (evicted if victim in sticky else skipped).append(victim)
-
     def _over() -> bool:
         return len(order) > MAX_PACKS or _total(order) > MAX_REQUEST_TOOLS
 
     from acb_skills.egress import held_card_writes_on
 
-    room_rule = held_card_writes_on(turn.org)
+    _sticky_key = _leave_order(turn, held_card_writes_on(turn.org))
     while order and _over():
         olds = [sticky[slug] for slug in order if slug in sticky]
         if olds:
-            victim = min(olds, key=lambda e: (
-                room_rule and _asked_now(turn, e.slug) is not None, e.used, e.first)).slug
+            victim = min(olds, key=_sticky_key).slug
             evicted.append(victim)
         else:
             replacing = [slug for slug in order if _replaces_specialist(slug)]
@@ -1653,6 +1685,13 @@ def choose(
             skipped.append(victim)
         order.remove(victim)
         layers.pop(victim, None)
+
+    # PJP-2: the step-aside runs AFTER the cap (fix round 2, P1-2).
+    for victim in _step_aside(order, layers, sticky, allow=allow, total=_total,
+                              stays=stays, key=_sticky_key):
+        order.remove(victim)
+        layers.pop(victim, None)
+        (evicted if victim in sticky else skipped).append(victim)
     first = {slug: sticky[slug].first if slug in sticky else (now, place)
              for place, slug in enumerate(order)}
     return Choice(slugs=tuple(order), layers=layers, first=first,
