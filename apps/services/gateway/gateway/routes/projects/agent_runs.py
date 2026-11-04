@@ -405,6 +405,15 @@ _MOVES: dict[str, dict[str, str]] = {
     # as a `response`, and the run stays `completed`. Only `finish_agent_run`
     # passes it, after `_server_closed` holds.
     "late_summary": {"completed": "completed"},
+    # MCP-P1b-1 (spec §19.5, AD-5). An app run opens with its one request:
+    # `gateway/app_requests.open_request` writes the elicitation and moves a
+    # `created` run to `awaiting`. Only that function passes it.
+    "app_ask": {"created": "awaiting"},
+    # MCP-P1b-1. A decline closes a waiting app request (`app_requests.decide`).
+    # The spend closes an approved one: `acb_auth.app_requests.SPEND_SQL` writes
+    # that move in its one UPDATE, because `acb_auth` cannot import the
+    # gateway. An approve is the `member_prompt` above.
+    "app_close": {"awaiting": "completed", "in_progress": "completed"},
 }
 
 
@@ -581,7 +590,7 @@ _OPEN_STRANDS_SQL = f"""
 SELECT DISTINCT ON (s.run_id) s.run_id, s.reason, s.nudged_at, s.recovered_at
   FROM pm_agent_run_strands s
   JOIN pm_agent_runs r ON {strand_fits_sql('s', 'r')}
- WHERE s.run_id = ANY(CAST(:ids AS uuid[]))
+ WHERE s.run_id = ANY(CAST(:ids AS uuid[])) AND r.task_id IS NOT NULL
  ORDER BY s.run_id, s.nudged_at DESC
 """
 
@@ -662,9 +671,21 @@ async def _runs_out(db: Any, rows: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
-async def _load_run(db: Any, run_id: str) -> Any:
+#: MCP-P1b-1 (AD-16). A run has ONE subject: a task, or an app (migration
+#: ``pm_agent_runs_app_subject``). Each read of this module names the task
+#: subject, so an app run never shows in the runs list, the pill, the board,
+#: ``my_work``, Needs attention or the sweep. Fence:
+#: ``test_every_pm_agent_runs_query_names_its_subject``.
+_LOAD_TASK_RUN_SQL = f"{_RUN_SELECT} WHERE r.id = CAST(:rid AS uuid) AND r.task_id IS NOT NULL"
+#: The load of an app run, for ``gateway/app_requests.py`` only.
+_LOAD_APP_RUN_SQL = f"{_RUN_SELECT} WHERE r.id = CAST(:rid AS uuid) AND r.app IS NOT NULL"
+
+
+async def _load_run(db: Any, run_id: str, *, app: bool = False) -> Any:
+    """One run by id, or 404. A task run, or with *app* an app run. A run of
+    the other subject is 404, never a 500 on its NULL task."""
     row = (await db.execute(
-        text(f"{_RUN_SELECT} WHERE r.id = CAST(:rid AS uuid)"), {"rid": run_id},
+        text(_LOAD_APP_RUN_SQL if app else _LOAD_TASK_RUN_SQL), {"rid": run_id},
     )).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Agent run not found")
@@ -683,13 +704,24 @@ async def _load_visible_run(db: Any, user: UserContext, run_id: str) -> Any:
     return row
 
 
-async def _lock_run(db: Any, run_id: str) -> Any:
-    """The run row, locked for this transaction (EA12-5)."""
+#: The lock of one run of each subject (EA12-5, MCP-P1b-1).
+_LOCK_TASK_RUN_SQL = (
+    "SELECT id FROM pm_agent_runs WHERE id = CAST(:rid AS uuid)"
+    " AND task_id IS NOT NULL FOR UPDATE"
+)
+_LOCK_APP_RUN_SQL = (
+    "SELECT id FROM pm_agent_runs WHERE id = CAST(:rid AS uuid)"
+    " AND app IS NOT NULL FOR UPDATE"
+)
+
+
+async def _lock_run(db: Any, run_id: str, *, app: bool = False) -> Any:
+    """The run row, locked for this transaction (EA12-5). *app* locks an app
+    run (MCP-P1b-1). A run of the other subject takes no lock and is 404."""
     await db.execute(
-        text("SELECT id FROM pm_agent_runs WHERE id = CAST(:rid AS uuid) FOR UPDATE"),
-        {"rid": run_id},
+        text(_LOCK_APP_RUN_SQL if app else _LOCK_TASK_RUN_SQL), {"rid": run_id},
     )
-    return await _load_run(db, run_id)
+    return await _load_run(db, run_id, app=app)
 
 
 async def _clock(db: Any) -> Any:
@@ -1222,6 +1254,7 @@ async def list_task_agent_runs(
         rows = (await db.execute(
             text(
                 f"{_RUN_SELECT} WHERE r.task_id = CAST(:tid AS uuid) "
+                "   AND r.task_id IS NOT NULL"
                 " ORDER BY r.created_at DESC, r.id DESC LIMIT 50"
             ),
             {"tid": task_id},
@@ -1243,7 +1276,7 @@ _HOLDER_SQL = (
     " (SELECT u.display_name FROM app_user u"
     "   WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name "
     "FROM pm_agent_runs r WHERE r.task_id = CAST(:tid AS uuid) "
-    "  AND r.status = ANY(:open) "
+    "  AND r.task_id IS NOT NULL AND r.status = ANY(:open) "
     "ORDER BY r.created_at DESC, r.id DESC LIMIT 1"
 )
 
@@ -1492,6 +1525,7 @@ _INSERT_RUN_SQL = (
 #: person binds NULL connection and skips the arm.
 _OPEN_RUN_SQL = (
     f"{_RUN_SELECT} WHERE r.task_id = CAST(:tid AS uuid) AND r.member_email = :me "
+    "   AND r.task_id IS NOT NULL"
     "   AND r.status = ANY(:open) AND r.client_via = :via "
     "   AND (CAST(:cid AS uuid) IS NULL OR r.connection_id = CAST(:cid AS uuid)) "
     "   AND (CAST(:cid AS uuid) IS NULL OR r.session_key IS NULL "
@@ -1524,7 +1558,8 @@ async def _replay_start(db: Any, me: str, key: str | None, task_id: str) -> dict
     if not key:
         return None
     by_key = (await db.execute(
-        text(f"{_RUN_SELECT} WHERE r.member_email = :me AND r.idempotency_key = :key"),
+        text(f"{_RUN_SELECT} WHERE r.member_email = :me AND r.idempotency_key = :key"
+             " AND r.task_id IS NOT NULL"),
         {"me": me, "key": key},
     )).fetchone()
     if by_key is None:
@@ -1703,7 +1738,7 @@ async def list_my_agent_runs(
             params["via"] = client_via.strip().lower()
         rows = (await db.execute(
             text(
-                f"{_RUN_SELECT} WHERE {' AND '.join(clauses)} "
+                f"{_RUN_SELECT} WHERE r.task_id IS NOT NULL AND {' AND '.join(clauses)} "
                 " ORDER BY r.created_at DESC, r.id DESC LIMIT :limit OFFSET :offset"
             ),
             {**params, "limit": limit + 1, "offset": offset},
@@ -1886,7 +1921,7 @@ async def may_end_run(db: Any, run: Any, user: UserContext) -> bool:
         return True
     held = (await db.execute(
         text(f"SELECT {person_may_end_sql('r')} FROM pm_agent_runs r"
-             " WHERE r.id = CAST(:rid AS uuid)"),
+             " WHERE r.id = CAST(:rid AS uuid) AND r.task_id IS NOT NULL"),
         {"rid": str(run.id), "me": me},
     )).scalar()
     return bool(held)
@@ -1945,7 +1980,8 @@ RESUME_BODY = "Resume this work: pick this run up where it stopped."
 _OPEN_RECOVERY_SQL = (
     "SELECT s.id FROM pm_agent_run_strands s"
     " JOIN pm_agent_runs r ON r.id = s.run_id"
-    f" WHERE r.id = CAST(:rid AS uuid) AND {open_recovery_sql('s', 'r')}"
+    f" WHERE r.id = CAST(:rid AS uuid) AND r.task_id IS NOT NULL"
+    f"   AND {open_recovery_sql('s', 'r')}"
     " LIMIT 1"
 )
 
@@ -1954,6 +1990,7 @@ _OPEN_RECOVERY_SQL = (
 #: so Resume refuses, and Close the run is the act (spec §12.7).
 _RUN_CONNECTION_GONE_SQL = (
     f"SELECT {connection_gone_sql('r')} FROM pm_agent_runs r WHERE r.id = CAST(:rid AS uuid)"
+    " AND r.task_id IS NOT NULL"
 )
 
 #: The refusal of Resume on a run with a dead connection.
@@ -1968,6 +2005,7 @@ _RESUME_KEY_SQL = "UPDATE pm_agent_runs SET session_key = NULL WHERE id = CAST(:
 #: True when the task of the run is closed (``filters.task_closed_sql``).
 _RUN_TASK_CLOSED_SQL = (
     f"SELECT {task_closed_sql('r')} FROM pm_agent_runs r WHERE r.id = CAST(:rid AS uuid)"
+    " AND r.task_id IS NOT NULL"
 )
 
 
@@ -2078,7 +2116,7 @@ async def close_archived_run(db: Any, run: Any) -> None:
 #: deploy window only. ``SKIP LOCKED``: a writer that holds the run wins.
 _ARCHIVE_APPLIED_SQL = (
     "SELECT r.id FROM pm_agent_runs r"
-    " WHERE r.status = 'in_progress'"
+    " WHERE r.status = 'in_progress' AND r.task_id IS NOT NULL"
     f"   AND {AGENT_RUN_ANSWER_WAITS_SQL}"
     "   AND EXISTS (SELECT 1 FROM pm_tasks t WHERE t.id = r.task_id"
     "               AND t.archived_at IS NOT NULL)"
@@ -2126,7 +2164,7 @@ def _closed_task_runs_sql() -> str:
         "  FROM pm_agent_runs r"
         "  JOIN pm_tasks t ON t.id = r.task_id"
         "  LEFT JOIN pm_task_statuses st ON st.id = t.status_id"
-        " WHERE r.status = 'in_progress'"
+        " WHERE r.status = 'in_progress' AND r.task_id IS NOT NULL"
         f"   AND {holder_free_sql('r')}"
         f"   AND {task_closed_sql('r')}"
         " ORDER BY r.last_activity_at, r.id LIMIT :n FOR UPDATE OF r SKIP LOCKED"
@@ -2193,7 +2231,7 @@ async def _earlier_archive_request(db: Any, task_id: str, me: str, key: str) -> 
             "SELECT a.* FROM pm_agent_run_activities a "
             "  JOIN pm_agent_runs r ON r.id = a.run_id "
             " WHERE r.task_id = CAST(:tid AS uuid) AND r.member_email = :me "
-            "   AND a.idempotency_key = :key "
+            "   AND r.task_id IS NOT NULL AND a.idempotency_key = :key "
             " ORDER BY a.seq DESC LIMIT 1"
         ),
         {"tid": task_id, "me": me, "key": key},

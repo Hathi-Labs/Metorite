@@ -150,7 +150,7 @@ _CLEAR_SQL = (
     "                       ELSE 'new_activity' END"
     "  FROM pm_agent_runs r"
     " WHERE r.id = s.run_id AND r.organization_id = s.organization_id"
-    "   AND s.cleared_at IS NULL"
+    "   AND r.task_id IS NOT NULL AND s.cleared_at IS NULL"
     "   AND (r.status <> 'in_progress' OR r.last_activity_at <> s.seen_activity_at)"
     " RETURNING s.id"
 )
@@ -180,6 +180,7 @@ def _stranded_sql() -> str:
         f"   AND s.cleared_at IS NULL AND s.reason = {STRAND_REASON_SQL}"
         "   AND s.seen_activity_at = r.last_activity_at"
         f" WHERE {stranded_clause()}"
+        "   AND r.task_id IS NOT NULL"
         "   AND (s.id IS NULL OR s.recovered_at IS NULL)"
         " ORDER BY r.last_activity_at, r.id"
         " LIMIT :n"
@@ -196,7 +197,7 @@ _FIRST_MISS_SQL = (
     " SELECT r.id, r.task_id, r.member_email, :reason, r.last_activity_at"
     "   FROM pm_agent_runs r"
     "  WHERE r.id = CAST(:rid AS uuid) AND r.last_activity_at = :seen"
-    "    AND r.status = 'in_progress'"
+    "    AND r.task_id IS NOT NULL AND r.status = 'in_progress'"
     " ON CONFLICT (organization_id, run_id, reason) WHERE cleared_at IS NULL"
     " DO NOTHING RETURNING id"
 )
