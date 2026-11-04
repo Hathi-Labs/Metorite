@@ -2117,6 +2117,7 @@ _KIND_TOOLS: dict[str, tuple[str, ...]] = {
     "area": ("create_area", "rename_area", "delete_area"),
     "view": ("save_view", "delete_view"),
     "access": ("grant_access", "revoke_access"),
+    "authority": ("pin_authority", "unpin_authority"),
     "notification": ("mark_notifications_read",),
 }
 WRITE_KINDS: Mapping[str, str] = {

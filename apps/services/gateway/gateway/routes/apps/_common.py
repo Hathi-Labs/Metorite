@@ -560,6 +560,28 @@ def _app_audit_params(
     }
 
 
+async def record_app_audit_in(
+    db: Any,
+    *,
+    app_id: str,
+    user_email: str,
+    kind: str,
+    detail: dict[str, Any] | None = None,
+    app_version: int | None = None,
+) -> None:
+    """Append one ``app_audit`` row in the OPEN session *db*, and RAISE on a
+    failure (STU-B2c-1).
+
+    The twin of :func:`record_app_audit_bound` for a write that must not exist
+    without its audit row. It runs in the transaction of the caller, so the
+    write and the row commit together, and a failed insert propagates out of
+    ``tenant_session``, which rolls the write back. It never catches.
+    """
+    await db.execute(text(_APP_AUDIT_SQL), _app_audit_params(
+        app_id=app_id, user_email=user_email, kind=kind, detail=detail,
+        app_version=app_version))
+
+
 async def record_app_audit_bound(
     *,
     app_id: str,

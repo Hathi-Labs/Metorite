@@ -212,10 +212,13 @@ class FormulaError(RuleViolation):
     ``code`` is a code of ``studio_expr``, or ``computed_field`` for a caller that
     writes a target. The message never echoes a value."""
 
-    def __init__(self, rule: str, object_name: str, code: str, message: str) -> None:
+    def __init__(self, rule: str, object_name: str, code: str, message: str,
+                 field: str | None = None) -> None:
         super().__init__(rule, message)
         self.object = object_name
         self.code = code
+        #: The key of the field that the refusal names, or None (B2c-1).
+        self.field = field
 
 
 class RollupError(RuleViolation):
@@ -1239,7 +1242,7 @@ def refuse_computed_keys(plan: FormulaPlan | None, object_name: str, data: Any) 
             raise FormulaError(
                 rule.name, object_name, COMPUTED_FIELD,
                 f"Rule `{rule.name}` of object `{object_name}`: field `{key}` is computed. "
-                "Write no value for it.")
+                "Write no value for it.", field=str(key))
 
 
 def without_targets(plan: FormulaPlan | None, data: Mapping[str, Any]) -> dict[str, Any]:
