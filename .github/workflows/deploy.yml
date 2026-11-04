@@ -133,11 +133,16 @@ jobs:
   # The first attempt of a push run joins the group `main-full-suite`, so one
   # full suite runs at a time. GitHub keeps one running and one pending job in
   # a group, and a newer pending job CANCELS the older one. So the merges that
-  # land during a run wait, and the next run tests them together at the
-  # newest commit.
+  # land during a run wait, and the next run tests them together.
   #
-  # ⚠️ A CANCELLED `test` JOB ON A PUSH IS THE DESIGN, not a fault. It is a
-  # merge that a later run folded in. That later run's summary names it, from
+  # ⚠️ GitHub does not promise the ORDER of pending jobs. Its docs say they
+  # wait in FIFO order of the time each one started to wait, and "ordering is
+  # not guaranteed". So the pending job that survives can be an OLDER merge
+  # than the tip. The step "Test the tip of main" moves a batch job to the tip
+  # when the job starts. A batch then tests every merge up to that moment.
+  #
+  # ⚠️ A CANCELLED `test` JOB ON A PUSH THAT NEVER STARTED IS THE DESIGN, not
+  # a fault. A later run folded it in, and that run's summary names it, from
   # the step "Name the tested range". A FAILED job is a red batch: fix
   # forward or revert at once.
   #
@@ -159,8 +164,12 @@ jobs:
   #
   # `timeout-minutes: 90`: without it, GitHub stops a hung job after 360 min,
   # and a hung batch holds the push group that long. The last four batches
-  # took 35 to 37 min (2026-11-04). On a release, a timeout is a red gate,
-  # so production stays on its current release that day.
+  # took 35 to 37 min (2026-11-04).
+  # ⚠️ GitHub gives a job that it stops at the timeout the conclusion
+  # `cancelled`, the same as a fold. The job ran for 90 min, and it carries
+  # the annotation "The job has exceeded the maximum execution time". That is
+  # a HUNG batch, and it is red. On a release, `publish-release` then reads
+  # `cancelled` and skips, so production stays on its current release.
   # Fence: tests/unit/test_deploy_pipeline.py.
   test:
     name: "Unit tests (a signal on a push, a gate on a release)"
@@ -171,21 +180,51 @@ jobs:
     concurrency:
       group: ${{ github.event_name == 'push' && github.run_attempt == 1 && 'main-full-suite' || format('release-{0}', github.run_id) }}
       cancel-in-progress: false
-    # Read only. `actions: read` is for the range step's Actions API calls.
-    # A job-level block replaces the workflow's, so `contents` comes again.
+    # Read only. The range step reads the Actions API (`actions: read`) and
+    # the notice of the last green batch (`checks: read`). A job-level block
+    # replaces the workflow's, so `contents` comes again.
     permissions:
       contents: read
       actions: read
+      checks: read
     steps:
+      # GITHUB_SHA. The release, a dispatch and a rerun test this commit.
       - uses: actions/checkout@v5
 
+      # ── A push batch tests the TIP of main (CIV-4) ─────────────────────
+      # The condition is the push term of the group, so only a job in the
+      # batch group moves. The release, a dispatch and a rerun keep
+      # GITHUB_SHA, because they ship it or check it again. The step leaves
+      # the state that actions/checkout leaves on a push: local `main` at
+      # `origin/main`, both at the tested commit. Its notice names that
+      # commit, and the next batch reads it as the start of its range. If the
+      # fetch fails, the job tests GITHUB_SHA and says so. A failed checkout
+      # fails the job, because a half-moved tree must not run the suite.
+      - name: Test the tip of main
+        id: tip
+        if: ${{ github.event_name == 'push' && github.run_attempt == 1 }}
+        run: |
+          set -euo pipefail
+          tested="$GITHUB_SHA"
+          if git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main; then
+            tested="$(git rev-parse refs/remotes/origin/main)"
+            git checkout -q -B main refs/remotes/origin/main
+          else
+            echo "::warning title=Tip of main unknown::The fetch of main failed, so this batch tests its own commit ${GITHUB_SHA:0:12}."
+          fi
+          echo "sha=${tested}" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Tested commit::${tested}"
+
       # ── The tested range of a push batch (CIV-4) ──────────────────────
-      # The last green push run of THIS job, from the Actions API, to this
-      # commit, with the PR of each commit between them. It reads the JOB,
-      # not the run: a run is red when only `publish-staging` failed. With no
-      # answer, it writes "unknown". It writes nothing but the summary, and it
-      # runs before the suite, so a red batch still names its PRs. A failure
-      # here never fails `test` (`continue-on-error`).
+      # From what the last green push batch of THIS job tested, to what this
+      # job tests, with the PR of each commit between them. A batch names its
+      # tested commit in its "Tested commit" notice. An older batch has no
+      # notice, and the step then takes its push commit: an ancestor of what
+      # it tested, so the range can hold more commits, never fewer. It reads
+      # the JOB, not the run: a run is red when only `publish-staging` failed.
+      # With no answer, it writes "unknown". It writes nothing but the
+      # summary, and it runs before the suite, so a red batch still names its
+      # PRs. A failure here never fails `test` (`continue-on-error`).
       - name: Name the tested range
         if: ${{ github.event_name == 'push' }}
         continue-on-error: true
@@ -194,6 +233,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           # The job's own `name:`. The jobs API names a job by it.
           SUITE_JOB: "Unit tests (a signal on a push, a gate on a release)"
+          # The tip on a batch. GITHUB_SHA on a rerun, which skips the tip step.
+          TESTED_SHA: ${{ steps.tip.outputs.sha || github.sha }}
         run: |
           set +e
           set -uo pipefail
@@ -219,26 +260,48 @@ jobs:
                   if str(run.get("id")) != sys.argv[3]:
                       print(run.get("id"), run.get("head_sha"))
           elif mode == "green":
+              # Print the id of the suite job when it passed. The id is also
+              # the id of its check run, which holds its notices.
               jobs = (load(sys.argv[2]) or {}).get("jobs") or []
-              sys.exit(0 if any(j.get("name") == sys.argv[3]
-                                and j.get("conclusion") == "success"
-                                for j in jobs) else 1)
+              ids = [j.get("id") for j in jobs
+                     if j.get("name") == sys.argv[3] and j.get("conclusion") == "success"]
+              if not ids:
+                  sys.exit(1)
+              print(ids[0])
+          elif mode == "tested":
+              notes = load(sys.argv[2])
+              shas = [str(n.get("message", "")).strip()
+                      for n in (notes if isinstance(notes, list) else [])
+                      if isinstance(n, dict) and n.get("title") == "Tested commit"]
+              shas = [s for s in shas if re.fullmatch(r"[0-9a-f]{40}", s)]
+              if not shas:
+                  sys.exit(1)
+              print(shas[0])
           elif mode == "summary":
-              path, head, base, run_url, why = sys.argv[2:7]
+              path, head, own, base, run_url, why = sys.argv[2:8]
               out = ["### Tested range", "",
-                     "- To: `" + head[:12] + "`, the commit of this run."]
+                     "- To: `" + head[:12] + "`, the commit that this job tested."]
+              if head != own:
+                  out.append("- This run's push was `" + own[:12] + "`. The job tested the"
+                             " tip of main when it started, which holds that push.")
               doc = load(path) if base else None
+              doc = doc if isinstance(doc, dict) else None
+              status = doc.get("status") if doc else None
               if base and doc is None:
                   why = "the compare API gave no answer"
-              elif doc is not None and doc.get("status") not in ("ahead", "identical"):
-                  why = base[:12] + " is not an ancestor of this commit"
-                  doc = None
-              if doc is None:
+              elif status == "behind":
+                  why = ("the last green batch tested `" + base[:12]
+                         + "`, which is newer than this commit")
+              elif status == "diverged":
+                  why = "`" + base[:12] + "` and this commit have diverged"
+              elif doc is not None and status not in ("ahead", "identical"):
+                  why = "the compare API gave the status " + str(status)
+              if doc is None or status not in ("ahead", "identical"):
                   out.append("- From: unknown (" + why + ").")
               else:
                   commits = doc.get("commits") or []
                   total = doc.get("total_commits", len(commits))
-                  out.append("- From: `" + base[:12] + "`, the last green push run of this job: " + run_url)
+                  out.append("- From: `" + base[:12] + "`, what the last green batch tested: " + run_url)
                   prs, rows = [], []
                   for c in commits:
                       msg = (c.get("commit") or {}).get("message") or ""
@@ -267,9 +330,13 @@ jobs:
               fi
               # stdin from /dev/null, so no call can eat the list of runs.
               if gh api "${api}/actions/runs/${id}/jobs?per_page=100" > "$tmp/jobs.json" < /dev/null \
-                 && python3 "$tmp/range.py" green "$tmp/jobs.json" "$SUITE_JOB" < /dev/null; then
+                 && job="$(python3 "$tmp/range.py" green "$tmp/jobs.json" "$SUITE_JOB" < /dev/null)"; then
                 from="$sha"
                 from_run="$id"
+                if gh api "${api}/check-runs/${job}/annotations?per_page=100" > "$tmp/notes.json" < /dev/null \
+                   && noted="$(python3 "$tmp/range.py" tested "$tmp/notes.json" < /dev/null)"; then
+                  from="$noted"
+                fi
                 break
               fi
             done < "$tmp/ids.txt"
@@ -278,9 +345,9 @@ jobs:
           fi
           # `gh api` prints an error body on stdout. A failed call leaves no file.
           if [ -n "$from" ]; then
-            gh api "${api}/compare/${from}...${GITHUB_SHA}" > "$tmp/compare.json" || rm -f "$tmp/compare.json"
+            gh api "${api}/compare/${from}...${TESTED_SHA}" > "$tmp/compare.json" || rm -f "$tmp/compare.json"
           fi
-          python3 "$tmp/range.py" summary "$tmp/compare.json" "$GITHUB_SHA" "$from" \
+          python3 "$tmp/range.py" summary "$tmp/compare.json" "$TESTED_SHA" "$GITHUB_SHA" "$from" \
             "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${from_run}" "$why" \
             >> "$GITHUB_STEP_SUMMARY"
 

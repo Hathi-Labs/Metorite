@@ -167,6 +167,13 @@ def test_the_deploy_job_is_bounded(parsed: dict) -> None:
 # A person's rerun of an old push run (attempt 2 or more) also gets a group
 # of its own. In the push group, its pending job would cancel a newer
 # pending batch, and that batch holds the newer merges.
+#
+# ⚠️ GitHub does not promise the order of pending jobs: "ordering is not
+# guaranteed" (docs, `actions-group-concurrency`). So the pending job that
+# survives can hold an OLDER merge than the tip. A batch job therefore tests
+# the tip of main when it starts, not its own GITHUB_SHA. The release, a
+# dispatch and a rerun test GITHUB_SHA, because that is what they ship or
+# check again.
 
 #: The ONE concurrency group that `test` may have, character for character.
 SUITE_GROUP = (
@@ -177,15 +184,31 @@ SUITE_GROUP = (
 #: The step that names the tested range of a push batch.
 RANGE_STEP = "Name the tested range"
 
+#: The step that moves a push batch to the tip of main, and its condition.
+TIP_STEP = "Test the tip of main"
+TIP_IF = "${{ github.event_name == 'push' && github.run_attempt == 1 }}"
+#: The one fetch that the tip step makes. It keeps `origin/main` equal to HEAD.
+TIP_FETCH = "git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main"
+#: The state that actions/checkout leaves on a push: local `main` at origin/main.
+TIP_CHECKOUT = "git checkout -q -B main refs/remotes/origin/main"
+
 
 def _steps(parsed: dict, job: str) -> list[dict]:
     return parsed["jobs"][job]["steps"]
 
 
-def _range_step(parsed: dict) -> dict:
-    found = [s for s in _steps(parsed, "test") if s.get("name") == RANGE_STEP]
-    assert len(found) == 1, f"the `test` job needs exactly one step named {RANGE_STEP!r}"
+def _named_step(parsed: dict, name: str) -> dict:
+    found = [s for s in _steps(parsed, "test") if s.get("name") == name]
+    assert len(found) == 1, f"the `test` job needs exactly one step named {name!r}"
     return found[0]
+
+
+def _range_step(parsed: dict) -> dict:
+    return _named_step(parsed, RANGE_STEP)
+
+
+def _tip_step(parsed: dict) -> dict:
+    return _named_step(parsed, TIP_STEP)
 
 
 def test_a_push_batch_shares_one_group_and_a_release_gets_its_own(parsed: dict) -> None:
@@ -297,6 +320,92 @@ def test_each_trigger_and_attempt_gets_the_planned_group(
     assert got == group, f"{event} attempt {attempt}: group {got!r}, want {group!r}"
 
 
+@pytest.mark.parametrize(("event", "attempt"), [
+    ("push", "1"), ("push", "2"), ("schedule", "1"), ("schedule", "2"),
+    ("workflow_dispatch", "1"), ("workflow_dispatch", "2"),
+])
+def test_a_job_tests_the_tip_exactly_when_it_is_in_the_batch_group(
+    parsed: dict, event: str, attempt: str,
+) -> None:
+    """A batch job tests the tip, so a fold cannot leave the tip untested.
+
+    Every job outside the batch group tests GITHUB_SHA. The release ships
+    GITHUB_SHA, so its gate must test that commit and no other.
+    """
+    github = {"event_name": event, "run_attempt": attempt, "run_id": _RUN_ID}
+    in_batch = _gh_eval(parsed["jobs"]["test"]["concurrency"]["group"], github) == "main-full-suite"
+    moves_to_tip = bool(_gh_eval(_tip_step(parsed)["if"], github))
+    assert moves_to_tip == in_batch, f"{event} attempt {attempt}: tip={moves_to_tip}, batch={in_batch}"
+
+
+def test_a_push_batch_tests_the_tip_and_a_release_tests_its_own_commit(parsed: dict) -> None:
+    steps = _steps(parsed, "test")
+    names = [s.get("name") for s in steps]
+    tip = _tip_step(parsed)
+    assert tip.get("id") == "tip"
+    assert tip.get("if") == TIP_IF
+    assert TIP_IF.removeprefix("${{ ").removesuffix(" }}") in SUITE_GROUP, (
+        "the tip step and the batch group must read the same condition"
+    )
+    # A half-moved tree must fail the job, never test in silence.
+    assert "continue-on-error" not in tip
+    assert TIP_FETCH in tip["run"] and TIP_CHECKOUT in tip["run"]
+    # The checkout itself takes GITHUB_SHA. That is the release path.
+    assert steps[0]["uses"].startswith("actions/checkout@") and not steps[0].get("with"), (
+        "the checkout must take GITHUB_SHA, with no `ref:`. The release ships that commit."
+    )
+    assert names[1] == TIP_STEP, "the tip step comes straight after the checkout"
+    assert names.index(TIP_STEP) < names.index(RANGE_STEP) < names.index("Sync deps") < names.index(
+        "Run unit tests"), "move the tree first, then name it, then install and test it"
+    movers = [
+        s.get("name") or s.get("uses") for s in steps
+        if s is not tip and re.search(r"\bgit\s+(fetch|checkout|switch|reset|pull)\b", s.get("run", ""))
+    ]
+    assert not movers, f"only the tip step may move the tree: {movers}"
+    assert _range_step(parsed)["env"]["TESTED_SHA"] == "${{ steps.tip.outputs.sha || github.sha }}", (
+        "the range must end at the commit that the job tested"
+    )
+
+
+def _run_tip(parsed: dict, tmp_path: Path, fetch_ok: bool) -> tuple[str, str, list[str]]:
+    """Run the tip step in bash. A shell function stands in for `git`."""
+    step = _tip_step(parsed)
+    log, out = tmp_path / "git.log", tmp_path / "output"
+    shims = (
+        "git() {\n"
+        '  printf \'%s\\n\' "git $*" >> "$GIT_LOG"\n'
+        '  case "$1" in\n'
+        '    fetch) [ "$FETCH_OK" = 1 ] ;;\n'
+        "    rev-parse) printf '%s\\n' \"$TIP\" ;;\n"
+        "    *) return 0 ;;\n"
+        "  esac\n"
+        "}\n"
+    )
+    env = {
+        **os.environ, "GIT_LOG": log.as_posix(), "FETCH_OK": "1" if fetch_ok else "0",
+        "TIP": _TIP, "GITHUB_SHA": _SHA[_OWN], "GITHUB_OUTPUT": str(out),
+    }
+    done = subprocess.run(
+        [_BASH, "--noprofile", "--norc", "-eo", "pipefail", "-c", shims + step["run"]],
+        env=env, capture_output=True, text=True, timeout=120, cwd=tmp_path,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return out.read_text(encoding="utf-8"), done.stdout, calls
+
+
+def test_the_suite_job_token_reads_and_never_writes(parsed: dict) -> None:
+    """The range step reads the Actions API and the check-run annotations.
+
+    It needs `actions: read` and `checks: read`, and no write. A job-level
+    block REPLACES the workflow's `contents: read`, so the job names
+    `contents: read` again for its checkout.
+    """
+    assert parsed["jobs"]["test"].get("permissions") == {
+        "contents": "read", "actions": "read", "checks": "read",
+    }
+
+
 def test_a_hung_batch_cannot_hold_the_group_for_six_hours(parsed: dict) -> None:
     """Without a limit, GitHub stops a job after 360 minutes.
 
@@ -329,17 +438,6 @@ def test_no_other_group_in_any_workflow_can_meet_the_suite_group() -> None:
     others = [g for g in groups if g != SUITE_GROUP]
     clash = [g for g in others if "main-full-suite" in g or "release-" in g]
     assert not clash, f"these groups can meet the suite group: {clash}"
-
-
-def test_the_suite_job_token_reads_and_never_writes(parsed: dict) -> None:
-    """The range step reads the Actions API. It needs `actions: read`, no more.
-
-    A job-level block REPLACES the workflow's `contents: read`, so the job
-    names `contents: read` again for its checkout.
-    """
-    assert parsed["jobs"]["test"].get("permissions") == {
-        "contents": "read", "actions": "read",
-    }
 
 
 def test_the_range_step_runs_on_a_push_and_cannot_fail_the_suite(parsed: dict) -> None:
@@ -383,14 +481,34 @@ _REPO = "Hathi-Labs/Metorite"
 _RUNS = f"repos/{_REPO}/actions/workflows/deploy.yml/runs?branch=main&event=push&per_page=40"
 _OWN, _FOLDED, _GREEN, _OLDER = 300, 299, 298, 297
 _SHA = {_OWN: "c" * 40, _FOLDED: "b" * 40, _GREEN: "a" * 40, _OLDER: "9" * 40}
+#: The tip of main when this run's job started. It holds this run's push.
+_TIP = "e" * 40
+#: What the green batch really tested: the tip at ITS start, per its notice.
+_GREEN_TESTED = "d" * 40
+
+
+def _job_id(run_id: int) -> int:
+    return run_id * 10
 
 
 def _jobs_path(run_id: int) -> str:
     return f"repos/{_REPO}/actions/runs/{run_id}/jobs?per_page=100"
 
 
-def _compare_path(base: str) -> str:
-    return f"repos/{_REPO}/compare/{base}...{_SHA[_OWN]}"
+def _notes_path(run_id: int) -> str:
+    return f"repos/{_REPO}/check-runs/{_job_id(run_id)}/annotations?per_page=100"
+
+
+def _notes(tested: str) -> list[dict]:
+    # The shape GitHub gives a `::notice title=...::` line (read 2026-11-05).
+    return [
+        {"annotation_level": "notice", "path": ".github", "title": "", "message": '"The ubuntu-latest label moves."'},
+        {"annotation_level": "notice", "path": ".github", "title": "Tested commit", "message": tested},
+    ]
+
+
+def _compare_path(base: str, head: str = _TIP) -> str:
+    return f"repos/{_REPO}/compare/{base}...{head}"
 
 
 def _runs(conclusions: dict[int, str | None]) -> dict:
@@ -401,10 +519,10 @@ def _runs(conclusions: dict[int, str | None]) -> dict:
     ]}
 
 
-def _jobs(suite_conclusion: str | None, name: str) -> dict:
+def _jobs(run_id: int, suite_conclusion: str | None, name: str) -> dict:
     return {"jobs": [
-        {"name": "Lint & type-check", "conclusion": "success"},
-        {"name": name, "conclusion": suite_conclusion},
+        {"id": _job_id(run_id) + 1, "name": "Lint & type-check", "conclusion": "success"},
+        {"id": _job_id(run_id), "name": name, "conclusion": suite_conclusion},
     ]}
 
 
@@ -417,7 +535,8 @@ def _compare(status: str, *subjects: str) -> dict:
 
 
 def _run_range(
-    parsed: dict, tmp_path: Path, fixtures: dict[str, dict], clock: int = -600,
+    parsed: dict, tmp_path: Path, fixtures: dict[str, object], clock: int = -600,
+    tested: str = _TIP,
 ) -> tuple[str, list[str]]:
     step = _range_step(parsed)
     fix = tmp_path / "fix"
@@ -450,7 +569,7 @@ def _run_range(
         **os.environ, **step["env"], "FIX": fix.as_posix(),
         "GITHUB_REPOSITORY": _REPO, "GITHUB_RUN_ID": str(_OWN),
         "GITHUB_SHA": _SHA[_OWN], "GITHUB_SERVER_URL": "https://github.com",
-        "GITHUB_STEP_SUMMARY": str(summary),
+        "GITHUB_STEP_SUMMARY": str(summary), "TESTED_SHA": tested,
     }
     # The flags GitHub gives a `run:` step: bash --noprofile --norc -eo pipefail.
     done = subprocess.run(
@@ -462,7 +581,9 @@ def _run_range(
     text = summary.read_text(encoding="utf-8") if summary.exists() else ""
     assert done.returncode == 0, done.stdout + done.stderr
     assert "### Tested range" in text, done.stdout + done.stderr
-    assert f"`{_SHA[_OWN][:12]}`" in text, "the range ends at this run's commit"
+    assert f"- To: `{tested[:12]}`, the commit that this job tested." in text, text
+    if tested != _SHA[_OWN]:
+        assert f"This run's push was `{_SHA[_OWN][:12]}`" in text, text
     return text, calls
 
 
@@ -470,44 +591,81 @@ needs_bash = pytest.mark.skipif(_BASH is None, reason="no bash on this machine")
 
 
 @needs_bash
-def test_the_range_starts_at_the_last_green_suite_and_names_each_pr(parsed: dict, tmp_path: Path) -> None:
+def test_the_tip_step_moves_the_tree_to_the_tip_and_names_it(parsed: dict, tmp_path: Path) -> None:
+    out, stdout, calls = _run_tip(parsed, tmp_path, fetch_ok=True)
+    assert out.strip() == f"sha={_TIP}"
+    assert f"::notice title=Tested commit::{_TIP}" in stdout
+    assert calls[0] == TIP_FETCH and TIP_CHECKOUT in calls, calls
+
+
+@needs_bash
+def test_a_failed_fetch_tests_the_run_commit_and_says_so(parsed: dict, tmp_path: Path) -> None:
+    out, stdout, calls = _run_tip(parsed, tmp_path, fetch_ok=False)
+    assert out.strip() == f"sha={_SHA[_OWN]}"
+    assert "::warning title=Tip of main unknown::" in stdout
+    assert f"::notice title=Tested commit::{_SHA[_OWN]}" in stdout
+    assert not any(c.startswith("git checkout") for c in calls), "no fetch, so the tree stays"
+
+
+@needs_bash
+def test_the_range_starts_at_what_the_last_green_batch_tested(parsed: dict, tmp_path: Path) -> None:
+    """The green batch tested the tip at ITS start. Its notice names it."""
     name = parsed["jobs"]["test"]["name"]
     text, calls = _run_range(parsed, tmp_path, {
         _RUNS: _runs({_OWN: None, _FOLDED: "cancelled", _GREEN: "success", _OLDER: "success"}),
         # A folded run: its suite never started.
-        _jobs_path(_FOLDED): _jobs("cancelled", name),
-        _jobs_path(_GREEN): _jobs("success", name),
-        _compare_path(_SHA[_GREEN]): _compare(
+        _jobs_path(_FOLDED): _jobs(_FOLDED, "cancelled", name),
+        _jobs_path(_GREEN): _jobs(_GREEN, "success", name),
+        _notes_path(_GREEN): _notes(_GREEN_TESTED),
+        _compare_path(_GREEN_TESTED): _compare(
             "ahead", "Chat: one fix (#11)", "Merge pull request #12 from Hathi-Labs/x"),
     })
-    assert f"`{_SHA[_GREEN][:12]}`" in text
+    assert f"- From: `{_GREEN_TESTED[:12]}`" in text, text
     assert f"actions/runs/{_GREEN}" in text
     assert "2 new commit(s)" in text
     assert "PRs: #11, #12." in text, "the subject names the PR, and the body does not"
     assert "#999" not in text
+    assert _compare_path(_GREEN_TESTED) in calls, "the range ends at the tested tip"
     assert _jobs_path(_OWN) not in calls, "this run is not its own last green run"
     assert _jobs_path(_OLDER) not in calls, "the search stops at the newest green run"
     assert calls[0] == _RUNS, "push runs on main only"
 
 
 @needs_bash
-def test_a_green_suite_in_a_red_run_still_counts(parsed: dict, tmp_path: Path) -> None:
-    """It reads the JOB. A run is red when only `publish-staging` failed."""
+def test_a_green_batch_with_no_notice_starts_at_its_own_commit(parsed: dict, tmp_path: Path) -> None:
+    """An older batch, or a failed notice read. Its push commit is an ancestor
+    of what it tested, so the range can hold more commits, never fewer.
+    It reads the JOB: a run is red when only `publish-staging` failed."""
     name = parsed["jobs"]["test"]["name"]
     text, _ = _run_range(parsed, tmp_path, {
         _RUNS: _runs({_OWN: None, _FOLDED: "failure", _GREEN: "success"}),
-        _jobs_path(_FOLDED): _jobs("success", name),
+        _jobs_path(_FOLDED): _jobs(_FOLDED, "success", name),
         _compare_path(_SHA[_FOLDED]): _compare("ahead", "Docs: a line (#13)"),
     })
+    assert f"- From: `{_SHA[_FOLDED][:12]}`" in text, text
     assert f"actions/runs/{_FOLDED}" in text
     assert "PRs: #13." in text
+
+
+@needs_bash
+def test_a_rerun_names_its_own_commit(parsed: dict, tmp_path: Path) -> None:
+    """A rerun skips the tip step, so it tests and names GITHUB_SHA."""
+    name = parsed["jobs"]["test"]["name"]
+    text, _ = _run_range(parsed, tmp_path, {
+        _RUNS: _runs({_OWN: None, _GREEN: "success"}),
+        _jobs_path(_GREEN): _jobs(_GREEN, "success", name),
+        _compare_path(_SHA[_GREEN], _SHA[_OWN]): _compare("ahead", "Fix (#15)"),
+    }, tested=_SHA[_OWN])
+    assert "This run's push was" not in text
+    assert "PRs: #15." in text
 
 
 @needs_bash
 @pytest.mark.parametrize(("case", "why"), [
     ("api-down", "the Actions API gave no list of runs"),
     ("no-green-run", "no push run of this job passed in the last 40 runs"),
-    ("not-an-ancestor", " is not an ancestor of this commit"),
+    ("base-newer", f"the last green batch tested `{_SHA[_GREEN][:12]}`, which is newer than this commit"),
+    ("diverged", f"`{_SHA[_GREEN][:12]}` and this commit have diverged"),
     ("compare-down", "the compare API gave no answer"),
     ("slow-api", "the search for a green run took over 90 s"),
 ])
@@ -515,19 +673,22 @@ def test_the_range_reads_unknown_and_the_step_still_ends_clean(
     parsed: dict, tmp_path: Path, case: str, why: str,
 ) -> None:
     name = parsed["jobs"]["test"]["name"]
-    fixtures: dict[str, dict] = {}
+    fixtures: dict[str, object] = {}
     if case != "api-down":
         fixtures[_RUNS] = _runs({_OWN: None, _FOLDED: "cancelled", _GREEN: "success"})
-        fixtures[_jobs_path(_FOLDED)] = _jobs("cancelled", name)
+        fixtures[_jobs_path(_FOLDED)] = _jobs(_FOLDED, "cancelled", name)
         fixtures[_jobs_path(_GREEN)] = _jobs(
-            "failure" if case == "no-green-run" else "success", name)
-    if case == "not-an-ancestor":
+            _GREEN, "failure" if case == "no-green-run" else "success", name)
+    if case == "base-newer":
+        fixtures[_compare_path(_SHA[_GREEN])] = _compare("behind")
+    if case == "diverged":
         fixtures[_compare_path(_SHA[_GREEN])] = _compare("diverged", "Other (#14)")
     # 1000 s on the bash clock: the budget is spent before the first call.
     text, calls = _run_range(parsed, tmp_path, fixtures, clock=1000 if case == "slow-api" else -600)
     assert "- From: unknown (" in text, text
     assert why in text, text
     assert "PRs:" not in text
+    assert "is not an ancestor" not in text
     if case == "slow-api":
         assert not any("/jobs" in c for c in calls), "a spent budget makes no more calls"
 
