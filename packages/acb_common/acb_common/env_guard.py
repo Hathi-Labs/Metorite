@@ -186,6 +186,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-ALN ALN-2a: DECISIONS_ORGS opens "one person decides" for an org. A
     # tenant that set it could open the bell row for every org on the box.
     "DECISIONS_ORGS",
+    # WS-MCP SW-31a: AGENT_GUIDANCE_ORGS opens the org's written rules for
+    # agents. The text reaches every agent session of the org, so a tenant
+    # must not open it for another org.
+    "AGENT_GUIDANCE_ORGS",
     # WS-ALN ALN-1: the orgs whose task writes enqueue an `align.check` job.
     # A queued row waits for the worker, so only the operator writes it
     # (project_alignment.md §5 item 8).

@@ -562,9 +562,11 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
 
 STUDIO = "studio-builder"
 STUDIO_DIR = "apps/agents/agent-studio-builder"
+#: The eight read-only tools, then the three skill tools (STU-F2d).
 STUDIO_TOOLS = ("studio_describe", "studio_draft", "studio_interview",
                 "studio_list_actions", "studio_outline", "studio_patch", "studio_plan",
-                "studio_validate")
+                "studio_validate", "studio_skill_list", "studio_skill_save",
+                "studio_skill_state")
 
 
 def _studio_scope() -> set[str]:
@@ -578,7 +580,7 @@ def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -
     assert family["owner"] == STUDIO and sf.is_pack("studio") and family["core"] is False
     assert tuple(family["tools"]) == STUDIO_TOOLS
     assert set(family["tools"]) == _studio_scope()
-    assert len(family["tools"]) == 8 <= tp.MAX_PACK_TOOLS == 35
+    assert len(family["tools"]) == 11 <= tp.MAX_PACK_TOOLS == 35
 
 
 def test_the_studio_owner_is_in_no_registry_list() -> None:
@@ -627,7 +629,7 @@ def test_the_pack_loader_finds_the_owner_in_the_owner_list() -> None:
     assert tuple(tool_name(fn) for fn in tp.owner_tools("studio", module)) == STUDIO_TOOLS
 
 
-def test_the_built_studio_pack_is_the_eight_tools_as_coroutines() -> None:
+def test_the_built_studio_pack_is_the_eleven_tools_as_coroutines() -> None:
     import inspect
 
     tools = tp.owner_tools("studio", load_agent_module(STUDIO_DIR))
@@ -638,8 +640,9 @@ def test_the_built_studio_pack_is_the_eight_tools_as_coroutines() -> None:
 def test_the_studio_rules_name_only_tools_of_the_pack() -> None:
     """Mutation: name a tool of another pack in the rules -> red."""
     found = tp.PACKS["studio"]
-    # "no_card" is a value of the "decision" of studio_plan, not a tool.
-    named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules)) - {"no_card"}
+    # "no_card" is a value of the "decision" of studio_plan, and "based_on" a
+    # parameter of studio_skill_save (STU-F2d review round 2). Neither is a tool.
+    named = set(re.findall(r"[a-z]+(?:_[a-z]+)+", found.rules)) - {"no_card", "based_on"}
     assert named and named <= set(STUDIO_TOOLS), named - set(STUDIO_TOOLS)
     assert found.owner == STUDIO and found.delegation_refusal
     assert tp.owner_packs(STUDIO) == ("studio",)

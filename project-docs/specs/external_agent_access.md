@@ -923,6 +923,14 @@ MCP-G2 adds two write pairs. `PUT /projects/tasks/{task_id}/assignees` is the ro
 
 MCP-G1 adds four write pairs: `POST /projects/nodes`, `PATCH /projects/nodes/{project_id}`, `POST /projects/tasks/move/preview` and `POST /projects/tasks/move`. The manifest holds each as class B already, for the chat tools `create_project`, `update_project` and `move_task`. The preview writes nothing. It is a write pair only because branch 0 admits a POST for a pair of `MCP_WRITE_ROUTES` only. `READ_ONLY_POST_TOOLS` of the fence gives its tool the hints of a read. The grant routes, the node move, the node archive and the node delete stay out (`NEVER_ON_THE_EDGE`). No pair changes branch 0, so the digest of §10.1 does not change.
 
+SW-31a (`agent_coordination.md` SW-31) adds two read pairs: `GET /agent-guidance/tasks/{task_id}` and `GET /agent-guidance/refs`. They are not Projects routes, so `NAMED_EXCEPTIONS` of the fence names each one (rule 2). The save and the history stay off the edge, because only a member writes guidance. Neither pair changes branch 0.
+
+- **The flag.** Both routes answer 404 while `AGENT_GUIDANCE_ORGS` does not name the organization. The edge then leaves out each guidance key.
+- **`guidance`.** `get_task_context` and `claim_task` gain the key `guidance`, the object `{blocks, dropped}`. The blocks come nearest first: the project, its parents, the space, then the organization.
+- **The wrap.** Each block body and each source name leaves as `{"untrusted_text": ...}` (§9.4). A block of a project that the member cannot see has the source `{"hidden": true}`, with no name and no project id.
+- **`dropped`.** It counts the farthest blocks that the cap of the gateway cut. A value above 0 tells the agent that the answer does not hold all the rules.
+- **`guidance_ref`.** Each `my_work` row gains `guidance_ref`: the id and the version of the nearest block, or null. It holds no body. A project that the member cannot see gets null, as an unknown id does.
+
 **What stays untouched.** Do not edit `apps/skills/skill-projects/skill_projects/manifest.py`, with one exception. Do not edit `tests/unit/test_projects_chat_coverage.py` or `tests/unit/test_projects_field_parity.py`.
 
 **The one exception (EA-6b).** A new `/projects` route needs a row in the manifest, or `test_projects_chat_coverage.py` fails. So the claim route has one class B row with the tool `claim_task`, a `PLANNED` entry, and an entry for `If-Match` in `FIELD_EXEMPT`. The in-product chat has no claim tool yet. EA-12a added its six rows in the same way (EA12-9).
