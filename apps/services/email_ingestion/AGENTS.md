@@ -126,6 +126,7 @@ persists them directly to `email_messages`. The gateway lifespan starts and stop
 - ⚠️ **Three guards protect the reconcile of a member-act import** (`reconcile.import_reconcile_candidates`, the 50-row and 2% skip, `trash_import_rows`). A failed lookup keeps its row.
 - ⚠️ **Each mailbox has a storage limit.** `storage.py` is the one owner of the limit, the meter and the removal, and it imports nothing from `providers`.
   - The meter sums `pg_column_size`. Do not use `octet_length`. The removal deletes Metorite's copy only and skips `drafts` (`KEPT_FOLDERS_SQL`). Fence: `test_email_storage_limit.py`.
+  - **The resume (EM-T6f).** A loop cycle resumes an import in the phase `limit` when the meter is under the limit. `storage.import_resumes` is the one rule, and `storage.resume_import` is the one conditional write. Phase (a) calls them under the mailbox lock. `STORAGE_RESUME_GAP_SECS` lets one mailbox resume in each gap. Fences: the `email-storage-t6f-*` set in `test_email_storage_limit.py`.
 - ⚠️ `post_sync.triage_once_per_cycle` is the one reader of `EMAIL_TRIAGE_ONCE_PER_CYCLE`, and `post_sync.status_skips_rule_match` of `EMAIL_STATUS_SKIPS_RULE_MATCH`. Fence: `test_email_triage_once.py`.
 - Interval: `email_accounts.sync_interval_secs` (default 300s)
 - `refresh_account_sync(account_id, organization_id)` and `remove_account_sync()` serve the CRUD routes. The organization comes from the session or the verified OAuth state, never from request input.
