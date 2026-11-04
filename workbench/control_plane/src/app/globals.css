@@ -1462,8 +1462,11 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
 /* EA-13g, EA-13h: an agent's card looks alive while the agent holds it. The
    `<li>` of a board card carries `data-agent-edge` (`agentCardLook`). No edge
    is dashed (owner, 2026-10-30). Tokens only, so each organisation's accent
-   shows through.
-   - live: the accent travels round the card and fades out behind itself.
+   shows through the quiet edges.
+   - live: the chat box's spectrum (`--glow-1` … `--glow-5`) turns round the
+     card at the chat box's speed (owner, 2026-11-04: "use the same colored
+     spinner that we use for the text box of the chat"). It turns a layer
+     (transform only, §4), where the chat box turns `--glow-angle`.
    - breathing (idle): a soft accent glow rises and falls. The glow is a still
      layer (`::after`) whose opacity moves (§4: transform and opacity only).
    - steady (queued): a still, thin, solid accent edge.
@@ -1506,7 +1509,7 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
   overflow: hidden;
   isolation: isolate;
   padding: 2px;
-  background: var(--primary);
+  background: conic-gradient(var(--glow-1), var(--glow-2), var(--glow-3), var(--glow-4), var(--glow-5), var(--glow-1));
 }
 [data-agent-edge="live"] > [role="button"] {
   z-index: 1;
@@ -1524,9 +1527,6 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
   50%      { opacity: 0.35; }
 }
 @media (prefers-reduced-motion: no-preference) {
-  [data-agent-edge="live"] {
-    background: color-mix(in srgb, var(--primary) 30%, transparent);
-  }
   [data-agent-edge="live"]::before {
     content: "";
     position: absolute;
@@ -1535,9 +1535,10 @@ html[data-look="glass"] .cc-control:is(input, textarea) {
     width: 300%;
     aspect-ratio: 1;
     z-index: 0;
-    background: conic-gradient(from 0deg, transparent 0 70%, var(--primary) 100%);
+    background: conic-gradient(var(--glow-1), var(--glow-2), var(--glow-3), var(--glow-4), var(--glow-5), var(--glow-1));
     transform: translate(-50%, -50%);
-    animation: agent-edge-travel 3s linear infinite;
+    /* 5 s: the turn of the chat box's live edge (`glass-glow-turn`). */
+    animation: agent-edge-travel 5s linear infinite;
   }
   [data-agent-edge="breathing"]::after {
     animation: agent-edge-breathe 3.5s ease-in-out infinite;
