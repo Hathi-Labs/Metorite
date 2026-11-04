@@ -20,8 +20,9 @@ Four fences.
 **Mutations (R7).**
 
 * M1. Drop ``effect="read"`` from ``brief/monitor.py``. Fences 1 and 2 go red.
-* M2. Add ``from gateway.reach import push_channel`` to ``brief/run.py``.
-  Fence 3 goes red.
+* M2. Add ``from gateway.reach import push_channel`` to ``brief/run.py``, or
+  ``from gateway.reach.loop import send_brief``. Fence 3 goes red. Fence 3 is
+  an ALLOWLIST of gateway imports, and it resolves relative imports.
 """
 
 from __future__ import annotations
@@ -45,12 +46,22 @@ _GATEWAY = _ROOT / "apps/services/gateway/gateway"
 _MODULES = ("gateway.jobs.worker", "gateway.brief.run", "gateway.brief.monitor",
             "gateway.chat_summary_job", "gateway.align.check")
 
-#: The imports that the brief must never make: a send seam, or a route of
-#: another app. ``gateway.routes.shell.feed`` and ``.state`` are reads.
-_FORBIDDEN = ("gateway.reach.push_channel", "gateway.reach.outbox", "gateway.reach.whatsapp",
-              "gateway.reach.due_push", "gateway.push", "gateway.email",
-              "gateway.routes.email", "gateway.routes.projects", "gateway.routes.tasks",
-              "gateway.routes.crm", "gateway.routes.calendar")
+#: The ONLY gateway modules that the brief may import (an allowlist, so a new
+#: send seam is refused until someone adds it here on purpose). ``reach.loop``
+#: serves the reads ``resolve`` and ``snapshot``, and its senders stay out
+#: (:data:`_ALLOWED_NAMES`). ``routes.shell.feed`` and ``.state`` are reads.
+_ALLOWED = ("gateway.brief", "gateway.jobs", "gateway.reach.plan", "gateway.reach.loop",
+            "gateway.my_day_loop", "gateway.routes.shell.feed", "gateway.routes.shell.state",
+            "gateway.work_schedule", "gateway.db")
+#: The names that the brief may take from a module of :data:`_ALLOWED` that
+#: also holds a sender.
+_ALLOWED_NAMES: dict[str, frozenset[str]] = {
+    "gateway.reach.loop": frozenset({"resolve", "snapshot", "Snapshot"})}
+#: ``from gateway.reach import <name>``: only these modules.
+_PACKAGE_NAMES: dict[str, frozenset[str]] = {
+    "gateway.reach": frozenset({"plan", "loop"}),
+    "gateway.routes.shell": frozenset({"feed", "state"}),
+    "gateway": frozenset({"my_day_loop", "work_schedule", "db", "brief", "jobs"})}
 
 
 def violations(effects: dict[str, tuple[str | None, str | None]]) -> list[str]:
@@ -67,34 +78,52 @@ def violations(effects: dict[str, tuple[str | None, str | None]]) -> list[str]:
 
 
 def unlabelled_calls(source: str) -> list[int]:
-    """The lines of ``register(...)`` calls that state no ``effect=``. Pure."""
+    """The lines of ``register(...)`` calls that state no ``effect=``, or state
+    ``effect=None``. It matches the name ``register`` on any owner, so an alias
+    (``worker as w``, ``from ... import register``) does not hide a call. A
+    call with ``**kw`` counts as unlabelled. Pure."""
     lines: list[int] = []
     for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, ast.Call):
+        if not isinstance(node, ast.Call) or not node.args:
             continue
         fn = node.func
-        name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
-        owner = fn.value.id if isinstance(fn, ast.Attribute) and isinstance(
-            fn.value, ast.Name) else ""
-        if name == "register" and owner == "worker" and node.args and not any(
-                k.arg == "effect" for k in node.keywords):
+        if (fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")) != "register":
+            continue
+        eff = [k for k in node.keywords if k.arg == "effect"]
+        none = bool(eff) and isinstance(eff[0].value, ast.Constant) and eff[0].value.value is None
+        if not eff or none:
             lines.append(node.lineno)
     return lines
 
 
-def forbidden_imports(source: str) -> list[str]:
-    """The forbidden modules that *source* imports. Pure."""
+def forbidden_imports(source: str, package: str = "gateway.brief") -> list[str]:
+    """The imports of *source* that are not on the allowlist. A relative
+    import resolves against *package*. Pure."""
     found: list[str] = []
     for node in ast.walk(ast.parse(source)):
-        names: list[str] = []
-        if isinstance(node, ast.ImportFrom) and node.module:
-            names = [node.module] + [f"{node.module}.{a.name}" for a in node.names]
-        elif isinstance(node, ast.Import):
+        if isinstance(node, ast.Import):
+            found += [a.name for a in node.names
+                      if a.name.split(".")[0] == "gateway" and not _ok(a.name, None)]
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if node.level:
+                parts = package.split(".")[: len(package.split(".")) - node.level + 1]
+                module = ".".join(parts + ([module] if module else []))
+            if module.split(".")[0] != "gateway":
+                continue
             names = [a.name for a in node.names]
-        for name in names:
-            if any(name == f or name.startswith(f + ".") for f in _FORBIDDEN):
-                found.append(name)
+            if module in _PACKAGE_NAMES:
+                found += [f"{module}.{n}" for n in names if n not in _PACKAGE_NAMES[module]]
+            else:
+                found += [f"{module}.{n}" for n in names if not _ok(module, n)]
     return found
+
+
+def _ok(module: str, name: str | None) -> bool:
+    if not any(module == a or module.startswith(a + ".") for a in _ALLOWED):
+        return False
+    allowed = _ALLOWED_NAMES.get(module)
+    return allowed is None or name is None or name in allowed
 
 
 def _registry() -> dict[str, tuple[str | None, str | None]]:
@@ -136,19 +165,30 @@ def test_register_refuses_a_send_or_write_with_no_policy() -> None:
 def test_every_register_call_in_the_gateway_states_an_effect() -> None:
     bad: list[str] = []
     for path in sorted(_GATEWAY.rglob("*.py")):
-        if path.name == "worker.py" and path.parent.name == "jobs":
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-            # Skip the definition itself; the bare call at the bottom is checked.
-            src_calls = [n.lineno for n in ast.walk(tree) if isinstance(n, ast.Call)
-                         and isinstance(n.func, ast.Name) and n.func.id == "register"
-                         and not any(k.arg == "effect" for k in n.keywords)]
-            bad += [f"{path.name}:{ln}" for ln in src_calls]
-            continue
         text = path.read_text(encoding="utf-8")
-        if "worker.register(" not in text:
+        if "register" not in text:
             continue
-        bad += [f"{path.relative_to(_GATEWAY)}:{ln}" for ln in unlabelled_calls(text)]
+        for ln in unlabelled_calls(text):
+            # The definition's own signature is not a call. Other
+            # ``register`` methods (routers, atexit) take no kind.
+            if "jobs" in text or path.name == "worker.py":
+                bad.append(f"{path.relative_to(_GATEWAY)}:{ln}")
     assert bad == []
+
+
+def test_the_module_list_covers_every_module_that_registers_a_kind() -> None:
+    """A module that calls ``worker.register`` must be in ``_MODULES``, so
+    fence 1 sees its kind."""
+    missing: list[str] = []
+    for path in sorted(_GATEWAY.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if "jobs" not in text or "register(" not in text:
+            continue
+        if unlabelled_calls(text) or "effect=" in text:
+            mod = "gateway." + ".".join(path.relative_to(_GATEWAY).with_suffix("").parts)
+            if mod not in _MODULES:
+                missing.append(mod)
+    assert missing == []
 
 
 # ── Fence 3: the brief does not act ─────────────────────────────────────────
@@ -175,4 +215,13 @@ def test_the_fences_see_a_planted_violation() -> None:
     assert forbidden_imports("from gateway.reach import push_channel") == [
         "gateway.reach.push_channel"]
     assert forbidden_imports("from gateway.routes.email.send import go") != []
+    assert forbidden_imports("from gateway.reach.loop import send_brief") != []
+    assert forbidden_imports("from gateway.reach import push_message") != []
+    assert forbidden_imports("from ..reach import push_channel") != []
+    assert forbidden_imports("from ..reach.loop import member_pass") != []
     assert forbidden_imports("from gateway.reach import plan") == []
+    assert forbidden_imports("from gateway.reach.loop import resolve, snapshot") == []
+    assert forbidden_imports("from . import store\nfrom ..jobs import queue") == []
+    assert unlabelled_calls("w.register('a.b', h)") == [1]
+    assert unlabelled_calls("register('a.b', h, effect=None)") == [1]
+    assert unlabelled_calls("register('a.b', h, effect='read')") == []
