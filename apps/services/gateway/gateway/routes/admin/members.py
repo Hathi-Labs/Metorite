@@ -808,7 +808,7 @@ _PURGE_DELETES: tuple[_PersonRows, ...] = (
     # row goes with them. The clause names
     # the bound org beside RLS, as `reminders` does. The org's rows that the
     # member made stay with the address, as `app_audit` does, because a row
-    # never changes (migration 336). They are not counted as kept: the table
+    # never changes (migration 341). They are not counted as kept: the table
     # cascades into itself, so `test_no_keep_clause_survives_a_cascade_on_
     # the_delete_side` takes a keep clause only as the exact complement of
     # this one, and the org's rows are keyed by `actor_email`, not by

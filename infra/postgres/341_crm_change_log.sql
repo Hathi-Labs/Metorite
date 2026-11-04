@@ -1,5 +1,5 @@
 -- ============================================================================
--- 336_crm_change_log.sql — the Change history of the CRM settings (WS-CRM
+-- 341_crm_change_log.sql — the Change history of the CRM settings (WS-CRM
 -- CRM-M1, Metorite #1431).
 --
 -- What: one new table, `crm_change_log`. Each row is one change of the CRM
@@ -55,7 +55,10 @@
 -- (334_pm_project_authorities.sql). Other branches and worktrees held 333
 -- (333_chat_message_member_typed.sql, 333_studio_hot_relation.sql) and 335
 -- (335_pm_agent_guidance.sql). No main file, open PR, branch or worktree
--- held 336, so this file took 336. Check it again at merge.
+-- held 336, so this file took 336. On 2026-11-04 origin/main held 337, 338
+-- and 339 (339_pm_project_authorities.sql, WS-ALN ALN-4), and the SW-31a
+-- worktree held 340 (340_pm_agent_guidance.sql). No main file, open PR,
+-- recent branch or worktree held 341, so this file took 341.
 -- Pinned by tests/unit/test_crm_change_history.py, which finds this file by
 -- CONTENT, never by number (R1).
 -- ============================================================================
