@@ -677,13 +677,13 @@ The names and numbers in the design page screens (Priya, Northwind Castings, IMT
 
 ## 12. Open questions
 
-The owner answered the three questions on 2026-11-04 (D174, D175). A real event still waits on a lawyer's read of the consent wording.
+The owner answered the three questions on 2026-11-04. D174 decides OPEN-1 and OPEN-2 for every public surface. D175 applies them to CRM forms and answers OPEN-3. A real event still waits on a lawyer's read of the consent wording.
 
 | ID | Question | Blocks |
 |---|---|---|
-| **OPEN-1** | Does an anonymous form write get through? Three specs decline anonymous links for reads. A public form writes a record with no sign-in. | CRM-M10 |
-| **OPEN-2** | Does a person who submits a form count as "named" for a send (`project-docs/specs/ai_studio.md:438`, D131.7)? | CRM-M12 |
-| **OPEN-3** | The consent wording. A lawyer reads it. | ✅ **Wording v1 is in CRM-M11** (D175.4). A lawyer reads it before the first real event |
+| **OPEN-1** | Does an anonymous form write get through? Three specs decline anonymous links for reads. A public form writes a record with no sign-in. | ✅ **Decided, D174.1** (STU-Q16). The door only writes (D175.1). CRM-M10 |
+| **OPEN-2** | Does a person who submits a form count as "named" for a send (`project-docs/specs/ai_studio.md:438`, D131.7)? | ✅ **Decided, D174.2** (STU-Q17). The one send is the thank-you mail (D175.2). CRM-M12 |
+| **OPEN-3** | The consent wording. A lawyer reads it. | ✅ **Wording v1 is in CRM-M11** (D175.4). A lawyer reads it before the first real event. CRM-M11 |
 
 Working defaults. These are not owner decisions. The slice audit may change them.
 

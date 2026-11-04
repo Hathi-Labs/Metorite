@@ -253,7 +253,7 @@ These are the rows of the board before D118. Each row keeps its ID, so a spec th
 | WS-60 | Artifacts: one library | 🟢 open | `specs/artifact_management.md` | now in WS-CHAT |
 | WS-61 | Knowledge | 🟢 open | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | now in WS-KB |
 | WS-62 | Chat first | 🟢 open | `specs/chat_first_surface.md` | now in WS-CHAT. CF-4b (D-CF-8): the starter pills become action prompts from the feed, built 2026-11-03 |
-| WS-63 | Personalization | 🟢 open | `specs/personalization.md` | now in WS-CHAT · §15 (D142, 2026-10-30) adds PZ-33 to PZ-36 · PZ-33a and PZ-35 built (dark) 2026-11-01, PZ-33b (the summary job) built (dark) 2026-11-02, and its round 4 adds the ONE typed mark (D-PZ-37, migration 337). PZ-34 and PZ-36 are not built |
+| WS-63 | Personalization | 🟢 open | `specs/personalization.md` | now in WS-CHAT · §15 (D142, 2026-10-30) adds PZ-33 to PZ-36 · PZ-33a and PZ-35 built (dark) 2026-11-01, PZ-33b (the summary job) built (dark) 2026-11-02, and its round 4 adds the ONE typed mark (D-PZ-37, migration 337). PZ-34 (the briefing at the start of a chat) built (dark) 2026-11-04, behind `ASSISTANT_BRIEFING_ORGS`, and the owner decided its two defaults as D-PZ-38. PZ-36 is not built |
 | WS-64 | One Projects app | 🟢 open | `specs/one_projects_app.md` | now in WS-PT |
 | WS-65 | Shared mailbox | 🟢 open | `specs/shared_mailbox.md` | now in WS-EM |
 | WS-66 | Reminders and web push | 🟢 open | `specs/calendar_events_reminders.md` §5 | now in WS-CAL |
@@ -5293,6 +5293,27 @@ Owner directive, 2026-11-03, in chat. Task: Metorite 1533 (`mt-5f606b3e`). It am
 5. **Each card is still one consent.** There is no "Approve all". D168.1 stands in every other respect.
 
 Fence: `workbench/control_plane/src/lib/cardTabs.test.ts` (rules, ARIA, no `<CardStack`, no stack CSS), `src/lib/confirmationQueue.test.ts` (the tab row, the count, the next tab) and `e2e/approval-stack.spec.ts`.
+
+### D174 — The outside-world questions STU-Q16 to STU-Q23 are accepted as recommended (2026-11-04)
+
+Owner directive, 2026-11-04, in chat. The question stood on the Metorite epic 1504 (run `81ab6075-af2a-495a-9d4c-bc0a9f8a219e`, seq 1066). The answer is on that run at seq 1260. Owner spec: `specs/ai_studio.md` §20. It decides CRM OPEN-1 and OPEN-2 in `specs/crm_conversational.md` §12.
+
+```text
+"continue with your recommendations for both decisions"
+```
+
+1. **STU-Q16 (= CRM OPEN-1).** Yes. A person outside the org may submit to an org's app with no sign-in. The person uses a link, a QR code or a kiosk. The request goes through the one public door (O1). That door has its own host with no cookies, a shared rate limit and a bot trap. It serves org-scope apps only, and an admin turns each surface on.
+2. **STU-Q17 (= CRM OPEN-2).** Yes. A person who submits is "named" for a send that the manifest declares. An admin approves that send once at publish. The send goes to that person only, and the person can opt out.
+3. **STU-Q18.** Each org connects its own Razorpay account, one click where Razorpay allows it. Metorite holds no money and takes no cut. Other providers come later.
+4. **STU-Q19.** Metorite joins Meta as a Tech Provider with Embedded Signup. An org connects its own number in one step, and Meta bills the org.
+5. **STU-Q20.** Mail from the org's own domain goes first, with one provider and DKIM set up in onboarding. SMS comes later, through one Indian provider.
+6. **STU-Q21.** Sensitive fields are restricted by default (C9). They are encrypted, never embedded and never sent to a model. An admin may open one field to the AI, with a notice in the consent text. Real patient data waits on WS-37 (DPDP) and a lawyer, as STU-Q11.
+7. **STU-Q22.** Outside people live in `crm_contacts`, the one store, also for an org that does not use the CRM pipeline.
+8. **STU-Q23.** AI steps spend the org's AI credits through `usage_event`. Meta and payment fees go to the org's own accounts. No fee for each app (STU-Q7).
+
+**Still owner acts.** Each act below binds Metorite to a third party. It needs the owner when it comes up. The acts are the Meta Tech Provider application, a DPDP lawyer, and a contract with an SMS provider. A live send to a real person and a live payment account stay under CLAUDE.md §3a rule 3.
+
+Fence: the Group O slices in `specs/ai_studio.md` §14 name theirs. Advisory until each slice builds.
 
 ### D175 — A CRM form only writes, its one named send is the thank-you mail, and consent wording v1 waits on a lawyer (2026-11-04)
 

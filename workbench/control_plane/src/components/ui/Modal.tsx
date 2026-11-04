@@ -163,7 +163,7 @@ const PLACEMENT: Record<ModalPlacement, string> = {
  *
  * ⚠️ `alert` exists because not every overlay is a Modal yet. Measured
  * 2026-09-24: hand-rolled `fixed` overlays sit at `z-[55]` up to `z-[95]`.
- * My Tasks' TaskFocusModal is `z-[80]`, so a delete confirmed from it opened
+ * My Tasks' TaskFocusModal is `z-[15]`, so a delete confirmed from it opened
  * BEHIND it at `z-50`. Focus went to a confirm button nobody could see, and
  * Enter deleted the task with no visible prompt.
  *
