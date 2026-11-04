@@ -138,3 +138,11 @@ def test_the_sweep_runs_before_the_admit_lock_is_released():
     text = _SLOTS.read_text(encoding="utf-8")
     body = text.split("ci_slot_acquire() {")[1]
     assert body.index("rm -f") < body.index("flock -u 8\n      return 0")
+
+
+def test_the_defaults_are_the_measured_peaks():
+    # 2026-11-04, task 1634: 3.2 to 4.4 GB per shard, 5 GB around it. A default
+    # below the measurement lets two full runs fill the box.
+    text = _SLOTS.read_text(encoding="utf-8")
+    assert ': "${CI_SHARD_GB:=3}"' in text
+    assert ': "${CI_FIXED_GB:=5}"' in text
