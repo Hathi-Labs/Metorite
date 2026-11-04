@@ -19,6 +19,7 @@ Schema export is ``studio_manifest.schema.json`` beside this file.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -949,6 +950,22 @@ def validate_manifest(doc: Any, *, catalog: Mapping[str, str] | None = None) -> 
             seen.add((e.path, e.message))
             unique.append(e)
     return sorted(unique, key=lambda e: e.path)
+
+
+def manifest_hash(manifest: Any) -> str:
+    """The SHA-256 of the canonical JSON of *manifest*: sorted keys, no space,
+    UTF-8. Pure, and it never raises (STU-G1c).
+
+    THE one hash of a draft. The package store compares it under its row lock
+    (``packages_store.publish_version`` and ``update_manifest``), and the chat
+    tools send it as ``based_on`` and key the approval of a plan on it. The
+    store keeps a manifest as ``jsonb``, which orders the keys in its own way.
+    The sorted keys make the hash of the stored manifest equal to the hash of
+    the manifest that was sent (``test_studio_chat_build_r8.py`` proves it on
+    a real database)."""
+    text = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                      default=repr)
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def validate_shell_manifests(directory: Path | None = None) -> list[ManifestError]:

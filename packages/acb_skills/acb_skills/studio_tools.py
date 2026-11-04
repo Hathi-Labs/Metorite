@@ -95,6 +95,7 @@ from acb_common.studio_manifest import (
     STUDIO_VERSION,
     Manifest,
     ManifestError,
+    manifest_hash,
     validate_manifest,
 )
 from acb_common.studio_patch import PatchError, apply_patch
@@ -1898,20 +1899,6 @@ _OTHER_FIX = "Change the manifest so that it fits the stored tables."
 #: longest fixed text stay under :data:`MAX_ERROR_MESSAGE_CHARS`, so no
 #: problem loses its fix line to a cut.
 MAX_PROBLEM_NAME_CHARS = 36
-
-
-def manifest_hash(manifest: Any) -> str:
-    """The SHA-256 of the canonical JSON of *manifest*: sorted keys, no space,
-    UTF-8. Pure, and it never raises.
-
-    ``based_on`` and the key of the approval record are this hash. The store
-    keeps a manifest as ``jsonb``, which orders the keys in its own way. The
-    sorted keys make the hash of the stored manifest equal to the hash of the
-    manifest that was sent (``test_studio_chat_build_r8.py`` proves it on a
-    real database)."""
-    text = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-                      default=repr)
-    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def _log_fault(event: str, exc: BaseException) -> None:
