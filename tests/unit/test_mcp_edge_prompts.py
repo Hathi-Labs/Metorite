@@ -765,8 +765,14 @@ class TestTheProtocol:
         _in_order(text, ("3. A 409 task_held", "A run of another connection",
                          "is never yours", "4. Call get_task_context"))
         assert "A waiting run of another connection or another machine is never yours" in text
+        # MCP-G15 fix round 1: the text says what the gateway takes, so the
+        # agent knows that the rule above is its own to keep.
+        flat = " ".join(text.split())
+        assert ("Metorite still takes a write on any run of your member and your client,"
+                " from any machine. So do not write on such a run.") in flat
         queued = await _prompt_text()
         _in_order(queued, ("A waiting run of another connection", "is never yours",
+                           "Metorite still takes a write on any run of mine through your client",
                            "Take only a row that my_work lists"))
 
     async def test_a_read_only_connection_gets_no_protocol(self, armed):

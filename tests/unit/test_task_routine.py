@@ -88,6 +88,17 @@ def test_the_loop_reads_the_answer_before_it_reports_awaiting_owner():
     assert "Do not report `AWAITING-OWNER` before that read" in board
 
 
+def test_an_answer_in_chat_is_recorded_on_the_task():
+    """WS-55 MCP-G15 (Metorite task 1567). The owner may answer a question in
+    the chat and not on the task. The session records that answer with the
+    tool, or the task keeps waiting on the owner. Both files name the tool."""
+    assert "`record_outside_decision`" in _claude_routine()
+    board = _task_board()
+    preview = board[board.index("4b Preview"):board.index("7 Land")]
+    assert "`record_outside_decision`" in preview
+    assert "answers in chat" in preview
+
+
 def test_the_final_report_states_the_run():
     report = NEXT_TICKET[NEXT_TICKET.index("## Final report"):]
     assert "run state" in report
