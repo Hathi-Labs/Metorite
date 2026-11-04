@@ -743,6 +743,44 @@ async def test_a_draft_that_changes_between_the_read_and_the_save_is_kept(gw) ->
     assert gw.packages[pid]["manifest"] == edited
 
 
+def test_the_draft_changed_texts_name_a_recovery_that_the_model_can_run() -> None:
+    """Review round 2: a refusal names a step that the model can take with what
+    it holds. Mutation M32: the old texts -> red."""
+    assert st._PKG_RACED_SAVE == (
+        "Another save changed the stored draft while this save ran, so nothing was saved. To "
+        "read the outline and the based_on of the stored draft, call studio_save with your "
+        "manifest and no package_id. Or ask the member which draft to keep.")
+    assert st._PKG_RACED_PUBLISH == (
+        "The stored draft changed after its plan was checked, so nothing was published. Ask the "
+        "member which draft to publish. To get the based_on of the stored draft, call "
+        "studio_save with your manifest and no package_id. Save with it, show the plan card, "
+        "then publish.")
+    # A refusal shows whole: the result cuts a message at this limit.
+    for text in (st._PKG_RACED_SAVE, st._PKG_RACED_PUBLISH):
+        assert len(text) <= st.MAX_ERROR_MESSAGE_CHARS, len(text)
+
+
+async def test_the_recovery_of_a_draft_changed_gives_the_based_on_of_the_stored_draft(gw) -> None:
+    """The step that the texts name works: a save with no package_id of the
+    same app answers with the based_on of the stored draft, and a save with it
+    writes."""
+    m = _visit()
+    pid = gw.seed(m)
+    edited = _jsonb(_visit(name="Edited in Studio"))
+
+    def studio_edit() -> None:
+        gw.packages[pid]["manifest"] = edited
+
+    gw.between = studio_edit
+    mine = _visit(name="Mine")
+    assert (await st.studio_save(mine, pid, st.manifest_hash(m)))["code"] == "draft_changed"
+    gw.between = None
+    found = await st.studio_save(mine)  # the step that the text names
+    assert found["code"] == "package_exists" and found["package_id"] == pid
+    assert found["based_on"] == st.manifest_hash(edited)
+    assert (await st.studio_save(mine, pid, found["based_on"]))["ok"]
+
+
 async def test_a_record_that_cannot_be_dropped_still_publishes(gw, redis) -> None:
     _m, pid = await _built()
     redis.fault = {"delete"}

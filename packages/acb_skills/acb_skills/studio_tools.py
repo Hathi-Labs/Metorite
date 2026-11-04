@@ -1911,11 +1911,17 @@ _PKG_BIG = ("The stored draft is over {limit} characters, so a chat cannot hold 
 _PKG_SAME = "The stored draft already equals this manifest. Nothing changed."
 #: The answers to a 409 ``draft_changed``: the store compared the hash that
 #: the tool checked, under its row lock, and the draft had changed.
+#: Each names a step that the model can take with what it holds (review round
+#: 2): a save with no package_id of the same app answers 409 package_exists
+#: with the outline and the based_on of the stored draft.
 _PKG_RACED_SAVE = ("Another save changed the stored draft while this save ran, so nothing was "
-                   "saved. Save again with the based_on that the newest save gave.")
+                   "saved. To read the outline and the based_on of the stored draft, call "
+                   "studio_save with your manifest and no package_id. Or ask the member which "
+                   "draft to keep.")
 _PKG_RACED_PUBLISH = ("The stored draft changed after its plan was checked, so nothing was "
-                      "published. Show the plan card of the stored manifest with studio_plan, "
-                      "then publish.")
+                      "published. Ask the member which draft to publish. To get the based_on of "
+                      "the stored draft, call studio_save with your manifest and no package_id. "
+                      "Save with it, show the plan card, then publish.")
 _PKG_MOVED = "The stored draft changed while the card was open. Nothing was {act}. Ask again."
 _PKG_EXISTS = ("You have a package with this manifest id. To save to it, call studio_save with "
                "its package_id and based_on.")
