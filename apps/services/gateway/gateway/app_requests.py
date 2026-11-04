@@ -425,7 +425,8 @@ def _uuid_or_none(value: object) -> str | None:
 _CAP_SQL = (
     "SELECT count(*) FROM pm_agent_runs r"
     "  JOIN pm_agent_run_activities e ON e.run_id = r.id AND e.type = 'elicitation'"
-    " WHERE r.app IS NOT NULL AND r.member_email = :me"
+    " WHERE r.app IS NOT NULL AND r.organization_id = CAST(:org AS uuid)"
+    "   AND r.member_email = :me"
     "   AND r.status IN ('awaiting', 'in_progress')"
     "   AND CAST(e.content_metadata->'request'->>'expires_at' AS timestamptz)"
     "       > clock_timestamp()"
@@ -438,7 +439,8 @@ _REPLAY_SQL = (
     "SELECT r.id AS run_id, e.id AS request_id, e.content_metadata"
     "  FROM pm_agent_runs r"
     "  JOIN pm_agent_run_activities e ON e.run_id = r.id AND e.type = 'elicitation'"
-    " WHERE r.app IS NOT NULL AND r.member_email = :me AND r.idempotency_key = :key"
+    " WHERE r.app IS NOT NULL AND r.organization_id = CAST(:org AS uuid)"
+    "   AND r.member_email = :me AND r.idempotency_key = :key"
     " ORDER BY e.seq LIMIT 1"
 )
 
@@ -452,11 +454,12 @@ _INSERT_APP_RUN_SQL = (
 )
 
 
-async def _replay(db: Any, me: str, key_hash: str, *, app: str, op: str,
+async def _replay(db: Any, org: str, me: str, key_hash: str, *, app: str, op: str,
                   digest: str) -> Opened | None:
     """The first request of this key, or ``None``. Another call under the
     same key is 409."""
-    found = (await db.execute(text(_REPLAY_SQL), {"me": me, "key": key_hash})).fetchone()
+    found = (await db.execute(text(_REPLAY_SQL),
+                              {"org": org, "me": me, "key": key_hash})).fetchone()
     if found is None:
         return None
     request = (from_jsonb(found.content_metadata) or {}).get("request") or {}
@@ -534,10 +537,11 @@ async def open_request(
     scope = conn if conn is not None else f"{me}:{app}"
     await db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
                      {"k": f"app_request:{org_id}:{scope}"})
-    replay = await _replay(db, me, key_hash, app=app, op=op, digest=digest)
+    replay = await _replay(db, org_id, me, key_hash, app=app, op=op, digest=digest)
     if replay is not None:
         return replay
-    live = int((await db.execute(text(_CAP_SQL), {"me": me, "conn": conn, "app": app}))
+    live = int((await db.execute(text(_CAP_SQL),
+                                 {"org": org_id, "me": me, "conn": conn, "app": app}))
                .scalar() or 0)
     if live >= OPEN_CAP:
         raise _refuse(429, TOO_MANY_REQUESTS,
@@ -549,7 +553,7 @@ async def open_request(
         "app": app, "me": me, "cid": conn, "via": via, "ts": ts, "key": key_hash,
     })).fetchone()
     if made is None:  # the key index decided a race that the lock missed
-        replay = await _replay(db, me, key_hash, app=app, op=op, digest=digest)
+        replay = await _replay(db, org_id, me, key_hash, app=app, op=op, digest=digest)
         if replay is None:
             raise HTTPException(status_code=409, detail="Send the request again.")
         return replay
