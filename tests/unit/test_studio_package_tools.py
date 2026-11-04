@@ -39,9 +39,40 @@ The copies of route text and limits are read against the route source
 (``test_each_copy_of_the_route_matches_the_route``,
 ``test_the_notes_check_matches_the_store``).
 
-Mutation runs (2026-11-04). Each line names the change, then the red tests:
+Mutation runs (2026-11-04, this file and the R8 file on a private database).
+Each line names the change, then the tests that went red. Every one went red,
+and the tree was clean after each restore.
 
-* M1 skip the record check in ``studio_publish``: (filled in by the build).
+* M1, skip the record check in ``studio_publish``: 8 red. R8 ``draft that
+  changed``, R8 ``no approved plan``, ``a_draft_that_changed``,
+  ``no_plan_sends_no_publish_request``, ``redis_fault`` (both),
+  ``another_members_approval``, ``record_goes_only_after_a_201``.
+* M2, write the record on revised, stopped and no_card: 4 red, each of
+  ``only_approved_writes_the_record`` but approved.
+* M3, hash with no ``sort_keys`` (a form that is not the canonical stored
+  form): 25 red, with R8 ``stored_manifest_hashes_equal``, R8 ``visit_log``
+  and R8 ``drops_a_field``, and ``record_binds_the_canonical_hash``.
+* M4, drop the member from the record key: ``another_members_approval``,
+  ``record_binds_the_canonical_hash``.
+* M5, read a Redis fault as approved: ``redis_fault[org]``.
+* M6, drop the record before the publish POST: ``record_goes_only_after_a_201``,
+  ``no_result_holds`` (clear and held).
+* M7, skip the based_on compare: 3 red, each of ``needs_the_based_on``.
+* M8, drop the cap in ``studio_save``: ``over_the_cap_is_refused``.
+* M9, return the stored manifest in a save result: ``save_result_gives_the_id``.
+* M10, treat revised, stopped and no_card as approved on a publish card:
+  3 red, each of ``held_chat_sends_nothing``.
+* M11, read a fault of ``write_must_show_card`` as a clear chat:
+  ``fault_of_the_mark_shows_the_card``.
+* M12, put the raw id in the path of ``studio_publish``: 4 red, each of
+  ``not_a_uuid_is_refused``.
+* M13, pass the server message raw in a problem: R8 ``drops_a_field``,
+  ``problems_are_framed``, ``keeps_its_fix_line``, ``no_result_holds`` (both).
+* M14, add an ``organization_id`` parameter: ``no_package_tool_takes_an_identity``.
+* M15, show no card for a publish in a held chat: 8 red, with
+  ``held_chat_shows_one_card``, ``held_chat_sends_nothing`` (3),
+  ``long_notes``, ``route_refuses_shows_no_card``, ``draft_that_moved``.
+* M16, change a copied limit: ``each_copy_of_the_route``, ``held_create_at_the_limit``.
 """
 from __future__ import annotations
 
@@ -418,7 +449,7 @@ async def test_another_members_approval_opens_nothing(gw, who) -> None:
 # -- 4. A Redis fault refuses ------------------------------------------------------
 
 
-@pytest.mark.parametrize("org", [ORG, ""])
+@pytest.mark.parametrize("org", [ORG, ""], ids=["org", "no-org"])
 async def test_a_redis_fault_refuses_the_publish(gw, redis, monkeypatch, org) -> None:
     """Fence 4. A fault of the read, and a run with no org, refuse. Mutation
     M5: read a fault as approved -> red."""
