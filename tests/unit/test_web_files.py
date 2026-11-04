@@ -419,7 +419,39 @@ async def test_each_fault_writes_one_log_line(monkeypatch, tmp_path, log: _Log) 
 async def test_no_slot_gives_the_old_read_at_once(monkeypatch, tmp_path, log: _Log) -> None:
     _on(monkeypatch)
     _fake_child(monkeypatch, tmp_path, _STAND_IN)
-    monkeypatch.setattr(web_tools, "_take_reader_slot", lambda _org: False)
+    monkeypatch.setattr(web_tools, "_take_reader_slot", lambda _org, **_k: False)
+    _serve_bytes(monkeypatch, _bytes("julia.pdf"), PDF)
+    assert await web_tools.fetch_page(URL) == web_tools._BINARY_LINE
+    assert log.named("web_reader.fallback") == [{"why": "busy"}]
+
+
+def test_file_children_have_their_own_caps_inside_the_pool(monkeypatch) -> None:
+    """2 file children in the process and 1 for each org. A page keeps 4 and
+    2, and a file slot is a pool slot too."""
+    monkeypatch.setattr(web_tools, "_SLOTS_IN_USE", web_tools.Counter())
+    monkeypatch.setattr(web_tools, "_FILE_SLOTS_IN_USE", web_tools.Counter())
+    take, give = web_tools._take_reader_slot, web_tools._give_reader_slot
+    assert take("a", file=True)
+    assert not take("a", file=True), "one file child for each org"
+    assert take("b", file=True)
+    assert not take("c", file=True), "two file children in the process"
+    # Pages still use the rest of the pool: 4 in the process, 2 for each org.
+    assert take("a") and take("b") and not take("c") and not take("a")
+    give("a")
+    give("b")
+    give("a", file=True)
+    assert take("c", file=True), "a freed file slot is taken again"
+    give("b", file=True)
+    give("c", file=True)
+    assert not web_tools._SLOTS_IN_USE and not web_tools._FILE_SLOTS_IN_USE
+
+
+async def test_no_file_slot_gives_the_old_read_and_one_log_line(
+        monkeypatch, tmp_path, log: _Log) -> None:
+    _on(monkeypatch)
+    _fake_child(monkeypatch, tmp_path, _STAND_IN)
+    monkeypatch.setattr(web_tools, "_FILE_SLOTS_IN_USE", web_tools.Counter({ORG.lower(): 1}))
+    monkeypatch.setattr(web_tools, "_SLOTS_IN_USE", web_tools.Counter({ORG.lower(): 1}))
     _serve_bytes(monkeypatch, _bytes("julia.pdf"), PDF)
     assert await web_tools.fetch_page(URL) == web_tools._BINARY_LINE
     assert log.named("web_reader.fallback") == [{"why": "busy"}]

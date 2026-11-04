@@ -1008,23 +1008,40 @@ _SLOT_LOCK = threading.Lock()
 #: The children that live now, by org. It is process-wide, never per event
 #: loop, so a second loop cannot pass the limits.
 _SLOTS_IN_USE: Counter[str] = Counter()
+#: WEB-3: the file children among them, by org. A file child may peak at
+#: about 1.2 GB resident (2 GiB cap), and the box has 7.9 GB, so files have
+#: their own lower caps INSIDE the pool of :data:`MAX_READER_CHILDREN`.
+_FILE_SLOTS_IN_USE: Counter[str] = Counter()
+MAX_FILE_CHILDREN = 2
+MAX_FILE_CHILDREN_PER_ORG = 1
 
 
-def _take_reader_slot(org: str) -> bool:
-    """One child slot for ``org``, or False. It never waits."""
+def _take_reader_slot(org: str, *, file: bool = False) -> bool:
+    """One child slot for ``org``, or False. It never waits.
+
+    A file read (WEB-3) takes a pool slot too, and it also needs a file slot:
+    :data:`MAX_FILE_CHILDREN` in the process, and
+    :data:`MAX_FILE_CHILDREN_PER_ORG` for each org."""
     with _SLOT_LOCK:
         if (sum(_SLOTS_IN_USE.values()) >= MAX_READER_CHILDREN
                 or _SLOTS_IN_USE[org] >= MAX_READER_CHILDREN_PER_ORG):
             return False
+        if file and (sum(_FILE_SLOTS_IN_USE.values()) >= MAX_FILE_CHILDREN
+                     or _FILE_SLOTS_IN_USE[org] >= MAX_FILE_CHILDREN_PER_ORG):
+            return False
         _SLOTS_IN_USE[org] += 1
+        if file:
+            _FILE_SLOTS_IN_USE[org] += 1
         return True
 
 
-def _give_reader_slot(org: str) -> None:
+def _give_reader_slot(org: str, *, file: bool = False) -> None:
     with _SLOT_LOCK:
-        _SLOTS_IN_USE[org] -= 1
-        if _SLOTS_IN_USE[org] <= 0:
-            del _SLOTS_IN_USE[org]
+        counters = (_SLOTS_IN_USE, _FILE_SLOTS_IN_USE) if file else (_SLOTS_IN_USE,)
+        for counter in counters:
+            counter[org] -= 1
+            if counter[org] <= 0:
+                del counter[org]
 
 
 def _reader_argv() -> list[str]:
@@ -1157,7 +1174,7 @@ async def _read_file(answer: _Answer, ext: str) -> _Local | None:
     the type gets what rule 8 gives it. It takes a slot first and never waits.
     The bytes go to the child as they are, and the parent decodes nothing."""
     org = _run_org().lower()
-    if not _take_reader_slot(org):
+    if not _take_reader_slot(org, file=True):
         return _reader_fault("busy")
     try:
         return await _run_child(answer.body, [*_reader_argv(), ext], FILE_TIMEOUT_S,
@@ -1165,7 +1182,7 @@ async def _read_file(answer: _Answer, ext: str) -> _Local | None:
     except Exception as exc:  # a fault here is the old read, never a raise
         return _reader_fault(type(exc).__name__)
     finally:
-        _give_reader_slot(org)
+        _give_reader_slot(org, file=True)
 
 
 def _log_read(url: httpx.URL, reader: str, size: int, chars: int, spill: str) -> None:
