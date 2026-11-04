@@ -18,6 +18,7 @@
  * Pure: no fetch and no DOM. Fence: `components/AppRequestCard.test.ts`.
  */
 
+import { withoutBidi } from "@/lib/bidi";
 import { fieldSpec } from "@/lib/cardFields";
 
 /** The states of a request, as the gateway reads them. */
@@ -78,31 +79,54 @@ export interface PayloadRow {
   value: string;
 }
 
-/** A value as plain text, whole. A string stays as the agent wrote it. */
+/**
+ * A value as plain text, whole. A string stays as the agent wrote it, less
+ * each bidi control (`lib/bidi.ts`, fix round 1): an override in agent text
+ * can make "invoice<RLO>fdp.exe" read as "invoiceexe.pdf".
+ */
 export function valueText(value: unknown): string {
   if (value === null || value === undefined) return "None";
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return withoutBidi(value);
   if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return JSON.stringify(value, null, 2);
+  return withoutBidi(JSON.stringify(value, null, 2));
+}
+
+/** The labels of the rows of the frame. A field of the agent never takes one. */
+const FRAME_LABELS: ReadonlySet<string> = new Set(["target", "version"]);
+
+/**
+ * The label of one field of the agent (review P3-3). It is the field's product
+ * word, unless that word is the label of a row of the frame: a field named
+ * `target` or `version` reads `Field "target"`, so it cannot pass for the
+ * real Target or Version of the call.
+ */
+function fieldLabel(rawKey: string): string {
+  const key = withoutBidi(rawKey);
+  const label = fieldSpec(key).label;
+  return FRAME_LABELS.has(label.trim().toLowerCase()) ? `Field "${key}"` : label;
 }
 
 /**
  * The rows of the call, in a fixed order: the target, each query pair, the
  * version, then each field of the body. Every value shows, whole.
+ *
+ * Each row of the agent has a key of its own kind (`query:<key>`,
+ * `body:<key>`), so no field can share the key of the `target` or `if_match`
+ * row of the frame (review P3-3).
  */
 export function payloadRows(call: AppRequestCall): PayloadRow[] {
   const rows: PayloadRow[] = [];
   if (call.path) {
-    rows.push({ key: "target", label: "Target", value: `${call.method ?? ""} ${call.path}`.trim() });
+    rows.push({ key: "target", label: "Target", value: valueText(`${call.method ?? ""} ${call.path}`.trim()) });
   }
   for (const [key, value] of call.query ?? []) {
-    rows.push({ key: `query:${key}`, label: fieldSpec(key).label, value: valueText(value) });
+    rows.push({ key: `query:${withoutBidi(key)}`, label: fieldLabel(key), value: valueText(value) });
   }
-  if (call.if_match) rows.push({ key: "if_match", label: "Version", value: call.if_match });
+  if (call.if_match) rows.push({ key: "if_match", label: "Version", value: valueText(call.if_match) });
   const body = call.body;
   if (body && typeof body === "object" && !Array.isArray(body)) {
     for (const [key, value] of Object.entries(body as Record<string, unknown>)) {
-      rows.push({ key, label: fieldSpec(key).label, value: valueText(value) });
+      rows.push({ key: `body:${withoutBidi(key)}`, label: fieldLabel(key), value: valueText(value) });
     }
   } else if (body !== undefined && body !== null) {
     rows.push({ key: "body", label: "Body", value: valueText(body) });

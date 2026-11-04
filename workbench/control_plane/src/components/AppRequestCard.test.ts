@@ -157,9 +157,54 @@ describe("the server's frame and the agent's values", () => {
       if_match: "3",
       body: { title: "T", tags: ["x", "y"], due_at: null },
     });
-    expect(rows.map((r) => r.key)).toEqual(["target", "query:notify", "if_match", "title", "tags", "due_at"]);
-    expect(rows.find((r) => r.key === "tags")?.value).toBe('[\n  "x",\n  "y"\n]');
-    expect(rows.find((r) => r.key === "due_at")?.value).toBe("None");
+    expect(rows.map((r) => r.key)).toEqual([
+      "target",
+      "query:notify",
+      "if_match",
+      "body:title",
+      "body:tags",
+      "body:due_at",
+    ]);
+    expect(rows.find((r) => r.key === "body:tags")?.value).toBe('[\n  "x",\n  "y"\n]');
+    expect(rows.find((r) => r.key === "body:due_at")?.value).toBe("None");
+  });
+
+  // Review P3-3. A field of the agent named `target`, `version` or
+  // `if_match` must not copy the key or the label of a row of the frame.
+  it("keeps the keys and the labels of the Target and Version rows for the frame", () => {
+    const rows = payloadRows({
+      method: "PATCH",
+      path: "/a/b",
+      query: [["target", "q"]],
+      if_match: "3",
+      body: { target: "PATCH /something/harmless", version: "9", if_match: "x", title: "ok" },
+    });
+    const keys = rows.map((r) => r.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys.slice(0, 3)).toEqual(["target", "query:target", "if_match"]);
+    const frame = rows.filter((r) => r.label === "Target" || r.label === "Version");
+    expect(frame.map((r) => r.key)).toEqual(["target", "if_match"]);
+    expect(rows.find((r) => r.key === "body:target")?.label).toBe('Field "target"');
+    expect(rows.find((r) => r.key === "body:version")?.label).toBe('Field "version"');
+    expect(rows.find((r) => r.key === "query:target")?.label).toBe('Field "target"');
+  });
+
+  // A noted item of the review. A right-to-left override in agent text can
+  // make "invoice<RLO>fdp.exe" read as "invoiceexe.pdf".
+  it("drops each bidi control from a value and from a field name", () => {
+    const rows = payloadRows({
+      method: "POST",
+      path: "/a",
+      body: { ["na⁦me"]: "invoice‮fdp.exe", note: "a⁧b⁩‎c؜" },
+    });
+    expect(rows.find((r) => r.key.endsWith("me"))?.value).toBe("invoicefdp.exe");
+    expect(rows.find((r) => r.key.endsWith("me"))?.label).toBe("Name");
+    expect(rows.find((r) => r.key === "body:note")?.value).toBe("abc");
+    const out = html({
+      request: request({ call: { method: "POST", path: "/x‮", body: { title: "invoice‮fdp.exe" } } }),
+    });
+    expect(out).toContain("invoicefdp.exe");
+    expect(out).not.toMatch(/[؜‎‏‪-‮⁦-⁩]/);
   });
 
   it("reads the host of a stamp as the gateway does", () => {
