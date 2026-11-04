@@ -910,44 +910,57 @@ def test_there_are_compound_words_that_also_match_the_core_word() -> None:
     assert {slug for slug, _w in COMPOUND} >= {"projects-plan", "projects-structure"}
 
 
+def _no_room_base(*held: str) -> int:
+    """The smallest base at which the packs *held* leave no room for any other
+    Projects pack: there the step-aside acts (project_planning.md §3.3)."""
+    others = [len(_family(slug)) for slug in SLUGS if slug not in held]
+    return tp.MAX_REQUEST_TOOLS + 1 - sum(len(_family(slug)) for slug in held) - min(others)
+
+
 @pytest.mark.parametrize(("slug", "word"), COMPOUND)
 def test_a_compound_word_loads_its_specific_pack_at_the_measured_base(
     slug: str, word: str, orchestrator,
 ) -> None:
     """The word also matches the core word. After PJP-2 the two fit at the
-    real base (56), but together they leave no room for a third Projects
-    pack, so the owner would not be reached and the specialist would stay.
-    The core pack steps aside, and the specific pack alone reaches the owner
-    (project_planning.md §3.3). Mutation: drop the step-aside -> the core
-    pack stays -> red."""
+    real base (56). Fix round 3: since ALN-4, the 3 tools of
+    ``projects-authority`` still fit beside the two, so the owner is reached
+    and both packs stay. Where no other Projects pack fits beside the two, the
+    core pack steps aside, and the specific pack alone reaches the owner
+    (project_planning.md §3.3). Mutation: drop the step-aside -> the core pack
+    stays at the tight base -> red. Mutation: drop the specific words -> only
+    the core pack loads -> red."""
     base = _real_base(orchestrator)
     n = len(_family("projects")) + len(_family(slug))
-    choice = tp.choose(_surface_turn(f"Show the {word}"), allowed=EVERY, base_tools=base)
     # PJP-2: every pack is 24 tools or fewer, so each fits beside the core pack at 56.
     assert base + n <= tp.MAX_REQUEST_TOOLS, "no Projects pack is too big for the core"
-    if slug == "projects-reports":
-        # The reports pack is small: the core and it leave room for one more
-        # Projects pack, so the owner is reached and both stay.
-        assert choice.slugs == ("projects", slug), (word, choice)
-        return
-    assert choice.slugs == (slug,), (word, choice)
+    choice = tp.choose(_surface_turn(f"Show the {word}"), allowed=EVERY, base_tools=base)
+    assert choice.slugs == ("projects", slug), (word, choice)
+    assert _owner_reached(choice, base=base, removable={}), (word, choice)
+    tight = _no_room_base("projects", slug)
+    choice = tp.choose(_surface_turn(f"Show the {word}"), allowed=EVERY, base_tools=tight)
+    assert choice.slugs == (slug,), (word, tight, choice)
     assert "projects" in choice.skipped, (word, choice)
+    assert _owner_reached(choice, base=tight, removable={}), (word, choice)
 
 
 def test_a_capacity_question_on_the_projects_page_loads_the_planning_pack(
     orchestrator,
 ) -> None:
     """Surface ``projects`` loads the core pack. "team capacity" matches the
-    planning pack. Both cannot fit at the real base, so the planning pack
-    stays. PJP-2: both fit now, but the core pack steps aside so that the
-    owner is reached (project_planning.md §3.3). Mutation: drop the planning
-    words -> only the core pack loads and the capacity tools are missing -> red."""
+    planning pack. PJP-2: both fit at the real base. Fix round 3: the 3 tools
+    of ``projects-authority`` fit beside them, so the owner is reached and
+    both stay. Where no other Projects pack fits beside them, the core pack
+    steps aside (project_planning.md §3.3). Mutation: drop the planning words
+    -> only the core pack loads and the capacity tools are missing -> red."""
     base = _real_base(orchestrator)
+    tight = _no_room_base("projects", "projects-plan")
     for surface in ("projects", "tasks", "calendar"):
-        choice = tp.choose(
-            _surface_turn("Who has spare team capacity?", surface),
-            allowed=EVERY, base_tools=base)
-        assert choice.slugs == ("projects-plan",), (surface, choice)
+        turn = _surface_turn("Who has spare team capacity?", surface)
+        choice = tp.choose(turn, allowed=EVERY, base_tools=base)
+        assert choice.slugs == ("projects", "projects-plan"), (surface, choice)
+        assert _owner_reached(choice, base=base, removable={}), (surface, choice)
+        choice = tp.choose(turn, allowed=EVERY, base_tools=tight)
+        assert choice.slugs == ("projects-plan",), (surface, tight, choice)
     only = tp.choose(_surface_turn("", "projects"), allowed=EVERY, base_tools=base)
     assert only.slugs == ("projects",), "the surface alone still loads the core pack"
 
@@ -980,7 +993,7 @@ async def test_an_access_request_on_the_projects_page_keeps_the_specialist(
     ``plan_loader`` needs EVERY pack of the owner in the list, so the owner is
     not reached. The specialist tool stays, the persona keeps its line, and
     the rules route the work to ``call_agent``. (Production's ``TOOL_PACKS``
-    gets the reports pack from ``projects-plan``, ``tool_packs.SPLIT_FROM``.)
+    gets the reports pack from ``projects-plan``, ``tool_packs.FOLLOWS``.)
     Mutation: drop ``_specialist_leaves`` from ``PackRun.of`` -> the
     specialist leaves and the access work has no tool and no path -> red."""
     persona = agents[0].default_options["instructions"]
@@ -1002,8 +1015,8 @@ async def test_an_access_request_on_the_projects_page_keeps_the_specialist(
 async def test_an_access_request_reaches_the_owner_once_the_flag_line_has_every_pack(
     store, agents,
 ) -> None:
-    """The same request with the full list (``packs_on`` adds
-    ``projects-reports`` wherever ``projects-plan`` is on): the core pack
+    """The same request with the full list (``packs_on`` adds the packs of
+    ``tool_packs.FOLLOWS`` wherever their parents are on): the core pack
     loads, the owner is reached through the loader, and the specialist leaves.
     Mutation: drop ``via_loader`` from the plan -> the specialist stays and the
     model hands off -> red."""
@@ -1014,24 +1027,26 @@ async def test_an_access_request_reaches_the_owner_once_the_flag_line_has_every_
     assert not _specialist(agents[0]), "the hand-off leaves"
 
 
-async def test_a_split_pack_is_off_where_an_admin_turned_its_source_off(
-    store, agents, monkeypatch,
+@pytest.mark.parametrize(("parent", "follower", "words"), [
+    ("projects-plan", "projects-reports", "Show the status report"),
+    ("projects", "projects-authority", "Show the authority page of Website Relaunch"),
+])
+async def test_a_following_pack_is_off_where_an_admin_turned_its_parent_off(
+    parent: str, follower: str, words: str, store, agents, monkeypatch,
 ) -> None:
-    """PJP-2 fix round 3 (P3-1). ``projects-reports`` split out of
-    ``projects-plan`` (``tool_packs.SPLIT_FROM``). An admin turned
-    ``projects-plan`` off for the orchestrator, so the run loads no report pack
-    and the loader does not offer it, though the words ask for a status
-    report. Mutation: drop ``with_splits`` from the admin's list in
-    ``_apply_tool_packs`` -> the reports pack loads -> red."""
-    words = "Show the status report"
+    """PJP-2 fix round 3 (P3-1). Each pack of ``tool_packs.FOLLOWS`` follows
+    its parent. An admin turned the parent off for the orchestrator, so the
+    run loads neither pack and the loader offers neither, though the words ask
+    for the work of the following pack. Mutation: drop ``with_followers`` from
+    the admin's list in ``_apply_tool_packs`` -> the following pack loads ->
+    red."""
     monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda _n: frozenset())
     control = await _apply_on(agents, words, "projects", PROJ)
-    assert control is not None and "projects-reports" in control.record.slugs, "non-vacuity"
-    monkeypatch.setattr(ti, "_load_disabled_skill_families",
-                        lambda _n: frozenset({"projects-plan"}))
+    assert control is not None and follower in control.record.slugs, "non-vacuity"
+    monkeypatch.setattr(ti, "_load_disabled_skill_families", lambda _n: frozenset({parent}))
     fresh = L._fresh()
     applied = await _apply_on(fresh, words, "projects", PROJ)
-    off = {"projects-plan", "projects-reports"}
+    off = {parent, follower}
     assert applied is not None and not off & set(applied.record.slugs), applied.record.slugs
     provider = L._provider(fresh[0])
     assert provider is None or not off & set(provider.loader.offered)
@@ -1040,8 +1055,9 @@ async def test_a_split_pack_is_off_where_an_admin_turned_its_source_off(
 # ── PJP-2 fence (project_planning.md section 10) ─────────────────────────────
 
 #: Production's TOOL_PACKS on 2026-11-02 (owner-only, work_plan.md section 6 D4).
-#: ``packs_on`` adds ``projects-reports`` to it, because the list names
-#: ``projects-plan`` (``tool_packs.SPLIT_FROM``, owner decision of 2026-11-04).
+#: ``packs_on`` adds ``projects-reports`` and ``projects-authority`` to it,
+#: because the list names their parents (``tool_packs.FOLLOWS``, owner
+#: decisions of 2026-11-04).
 PRODUCTION_PACKS = frozenset({
     "email", "email-setup", "crm-records", "projects", "projects-plan",
     "projects-structure", "projects-bulk", "projects-reminders",
@@ -1059,16 +1075,16 @@ def test_each_other_projects_pack_fits_beside_the_core_pack_and_the_owner_is_rea
         assert len(_family(slug)) <= 31, slug
         assert 79 - 1 + len(_family(slug)) <= tp.MAX_REQUEST_TOOLS, slug
     plan = tp.plan_loader(
-        PRODUCTION_PACKS | {"projects-reports"}, ("projects",), current=79,
+        tp.with_followers(PRODUCTION_PACKS), ("projects",), current=79,
         removable={PA: 1})
     assert PA in plan.via_loader
 
 
 def test_the_owner_is_not_reached_while_a_pack_of_it_is_off() -> None:
     """``plan_loader`` needs EVERY pack of the owner in the allow list. An allow
-    list that lacks ``projects-reports`` (an admin turned the family off)
-    keeps the hand-off. Production's list does not lack it: ``packs_on`` adds
-    it from ``projects-plan`` (``test_tool_packs_registry.py``). Mutation: let
+    list that lacks ``projects-reports`` and ``projects-authority`` keeps the
+    hand-off. Production's list does not lack them: ``packs_on`` adds them
+    from their parents (``test_tool_packs_registry.py``). Mutation: let
     ``plan_loader`` skip a missing pack -> the owner is reached with a pack the
     run cannot load -> red."""
     plan = tp.plan_loader(PRODUCTION_PACKS, ("projects",), current=79, removable={PA: 1})

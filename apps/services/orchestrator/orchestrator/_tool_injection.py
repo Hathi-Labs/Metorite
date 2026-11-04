@@ -3798,9 +3798,9 @@ async def _apply_tool_packs(
     if not current_tenant():
         _log.warning("executor.packs_refused", reason="no_tenant")
         return None
-    # PJP-2 fix round 3 (P3-1): a split pack is off where an admin turned its
-    # source off, as it is on where the pack flag names its source.
-    disabled = tool_packs.with_splits(_load_disabled_skill_families(agent_name))
+    # PJP-2 fix round 3 (P3-1): a pack of FOLLOWS is off where an admin turned
+    # its parent off, as it is on where the pack flag names its parent.
+    disabled = tool_packs.with_followers(_load_disabled_skill_families(agent_name))
     allow = frozenset(allowed) - disabled
     base = _pack_base_count(agent, agent_name=agent_name, tool_scope=tool_scope,
                             agent_config=agent_config, disabled=disabled)

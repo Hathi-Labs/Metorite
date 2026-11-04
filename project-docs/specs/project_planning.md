@@ -2,7 +2,7 @@
 
 > **Product:** Metorite · **Feature:** planning in the Projects chat · **Updated:** 2026-11-04 · **Owner:** vjvarada
 
-> **Status:** 🚧 **BUILDING.** PJP-0 (this spec) and PJP-1 (pills, swatches and six hues) merged on 2026-11-02 (`4bbe7c5b4`, `19d998d99`). PJP-4 (`update_tasks`, many task edits on one card) merged on 2026-11-03. Each reaches production at the next 21:30 UTC release. PJP-2 (no hand-off to `projects-assistant`) is BUILT and in review, not merged (fix round 3, 2026-11-04). It needs no flag change for `projects-reports`, which is on wherever `projects-plan` is on (§3.3, "The flag line").
+> **Status:** 🚧 **BUILDING.** PJP-0 (this spec) and PJP-1 (pills, swatches and six hues) merged on 2026-11-02 (`4bbe7c5b4`, `19d998d99`). PJP-4 (`update_tasks`, many task edits on one card) merged on 2026-11-03. Each reaches production at the next 21:30 UTC release. PJP-2 (no hand-off to `projects-assistant`) is BUILT and in review, not merged (fix round 3, 2026-11-04). It needs no flag change: `projects-reports` and `projects-authority` follow their parent packs (§3.3, "The flag line").
 
 > **D173** (2026-11-03) changed the stack of cards that wait together to ONE card with tabs. `cardTabs.test.ts` is its fence.
 
@@ -182,7 +182,7 @@ A delete stays a single guarded act (class C). No batch tool deletes.
 
    An example: the reminders pack (turn 13) and the plan pack (turn 19) are sticky, and the member says "remind me" on the Projects page. With the switch on, the cap moves the plan pack out, and the reminders and core packs stay (99 tools). With the switch off, the cap moves the reminders pack out, and the plan and core packs stay (104 tools).
 
-   **Since ALN-4.** `projects-authority` holds 3 tools. Where the list allows it, the owner is reached until a request comes within 3 tools of the cap. So the step-aside acts only near the cap.
+   **Since ALN-4.** `projects-authority` holds 3 tools, and it is on wherever the core pack is on. So the owner is reached until a request comes within 3 tools of the cap, and the step-aside acts only near the cap.
 
 These tests changed because their premise changed:
 
@@ -192,18 +192,19 @@ These tests changed because their premise changed:
 - `test_pack_cues.py:45`, `test_pack_guards.py:1200`, `test_pack_no_double_write.py:52`, `test_pack_rules_oa8g.py:13` and `:46`, `test_tool_packs_choice.py:1413`, `test_tool_packs_registry.py:104`, `test_one_assistant_measure_oa8e.py:333` and `evals/one_assistant_measure/scenarios_work.py`.
 - Fix round 2: `test_pack_room.py`. The reminders pack holds 19 tools, so the highest base of the tool-cap case is 91 (110 − 19). Two cases pin the new label. The core pack on the Projects page with three sticky packs stays, and `crm-records` steps aside (fix round 3). The real-run load at the pack cap seeds ONE Projects pack, because two of them now step aside.
 - Fix round 2: `evals/trajectories/test_held_card_write_trajectory.py`. In a held chat, the reminders pack drops `delete_area` and `rename_area` too. They are class C, and they moved here from `projects-structure`.
+- Fix round 3: `test_projects_packs.py`. The compound words and the capacity question keep both packs at the real base, because the 3 tools of `projects-authority` fit beside them. Each case also checks the step-aside at the base where no other Projects pack fits. The order cases of rule 2 name the base where the step-aside acts.
 
 The rule text changes in `tool_packs.py`. The core rules (about :421 to :431) and `_PROJECTS_PLAN_RULES` (:440 to :460) change. The structure rules (:492 to :500), `_PROJECTS_STRUCTURE_WORDS` (:611 to :615) and the plan words (:583 to :588) change. The `when` lines of plan, structure and reminders change. The new pack needs a `Pack` and a `SKILL_FAMILIES` entry with its `owner` and `replaces_core`. The rules-length cap of the test is 3500 characters, and the core rules hold 3470.
 
 `projects-reminders` becomes the pack of "my own organising": reminders, the task inbox, areas and contexts, and notifications. Its `when` line and its load words change to match. The slug stays, because `TOOL_PACKS` names it.
 
-**The flag line.** `projects-reports` is a new slug. Production's `TOOL_PACKS` is an explicit list. `plan_loader` needs EVERY pack of the owner in the allow list.
+**The flag line.** `projects-reports` and `projects-authority` (ALN-4) are new slugs. Production's `TOOL_PACKS` is an explicit list. `plan_loader` needs EVERY pack of the owner in the allow list.
 
-**A split pack inherits its source (owner decision "Inherit", 2026-11-04, task 1479).** When the list allows a pack, it also allows each pack that split out of it. `SPLIT_FROM` in `tool_packs.py` holds the link as data beside `PACKS`: `projects-reports` comes from `projects-plan`. `packs_on`, the one reader of `TOOL_PACKS`, adds the split pack wherever the list names its source.
+**A pack follows its parent (owner decisions "Inherit", 2026-11-04, task 1479).** When the list allows a parent pack, it also allows each pack that follows it. `FOLLOWS` in `tool_packs.py` holds the links as data beside `PACKS`. `projects-reports` follows `projects-plan`, because it split out of it (PJP-2). `projects-authority` (ALN-4) follows the core `projects` pack. `packs_on`, the one reader of `TOOL_PACKS`, adds each following pack wherever the list names its parent.
 
-Production's list names `projects-plan`, so the report tools stay on with no flag change. The list can still name the split pack alone. An admin who turns `projects-plan` off for an agent turns `projects-reports` off too (`with_splits`, fix round 3). `*` still allows each pack. The moves from structure to reminders need no rule, because the list names `projects-reminders`. Fence: `tests/unit/test_tool_packs_registry.py`.
+Production's list names `projects-plan` and `projects`, so both following packs are on with no flag change. The loader then reaches the owner: each pack of the owner is allowed, and one fits. The list can still name a following pack alone. An admin who turns a parent off for an agent turns its following pack off too (`with_followers`, fix round 3).
 
-**Open (2026-11-04).** `plan_loader` reaches the owner only when the list allows each pack of the owner. Since ALN-4 that includes `projects-authority`, and production's list does not name it. So production does not reach the owner until the owner decides how `projects-authority` turns on.
+`*` still allows each pack. The moves from structure to reminders need no rule, because the list names `projects-reminders`. Fence: `tests/unit/test_tool_packs_registry.py`.
 
 **The rail.** With the three shell flags on, production already withdraws the Projects page's "AI chat" entry and its docked rail (§2.2). The page publishes its place to the shell assistant (`projectsAssistantFacts`, through `useAssistantFacts` in `lib/shell/assistant.ts`). So PJP-2b removes the dead `CHAT_LIVE` paths. These are `page.tsx` :4621 to :4628, :5791, :3022, :5220 and :5545 to :5613, `AssistantRail.tsx` and its use in `lib/chatDock.ts`.
 

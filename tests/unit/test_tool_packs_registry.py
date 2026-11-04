@@ -8,8 +8,8 @@ catches. What is locked:
    ``own_tool_scope``, no tool is in both, and the split is 31 and 28.
 2. A pack holds at most 35 tools.
 3. ``packs_on`` is the one reader of the flag, it fails closed, and no
-   caller reads it yet. A split pack is on wherever its source pack is on
-   (``SPLIT_FROM``, PJP-2).
+   caller reads it yet. A pack of ``FOLLOWS`` is on wherever its parent
+   is on (PJP-2).
 4. A pack is not an injected family: a toggle of it narrows no injected
    scope, and the skill index and the per-agent matrix never list it.
 5. ``build_catalog`` prices a pack from its owner's tools and its rules, and
@@ -272,59 +272,69 @@ def test_packs_on_keeps_only_real_pack_slugs(_flag) -> None:
 PRODUCTION_TOOL_PACKS = (
     "email,email-setup,crm-records,projects,projects-plan,projects-structure,"
     "projects-bulk,projects-reminders")
+#: The packs of ``tool_packs.FOLLOWS``: each is on wherever its parent is on.
+FOLLOWERS = frozenset({"projects-reports", "projects-authority"})
 
 
-def test_a_split_pack_is_on_wherever_its_source_pack_is_on(_flag) -> None:
-    """PJP-2 fix round 2 (P1-3), owner decision "Inherit" (2026-11-04, task
-    1479). Production's list does not name ``projects-reports``, and the pack
-    is on there. So the loader reaches the Projects owner in a turn with no
-    Projects pack held (current 57). Mutation: drop the ``SPLIT_FROM`` union
-    from ``packs_on`` -> the report tools are off and the owner is not reached
-    -> red."""
+def test_a_following_pack_is_on_wherever_its_parent_is_on(_flag) -> None:
+    """Owner decisions "Inherit" (2026-11-04, task 1479). Production's list
+    names neither ``projects-reports`` (PJP-2) nor ``projects-authority``
+    (ALN-4), and both packs are on there: the reports pack follows
+    ``projects-plan``, and the authority pack follows the core ``projects``
+    pack. So the loader reaches the Projects owner in a turn with no Projects
+    pack held (current 57). Mutation: drop the ``FOLLOWS`` union from
+    ``packs_on``, or drop one entry of ``FOLLOWS`` -> a pack of the owner is
+    off and the owner is not reached -> red."""
     _flag(PRODUCTION_TOOL_PACKS, ORG_A)
     on = tp.packs_on(ORG_A)
-    assert "projects-reports" in on
-    assert on == frozenset(PRODUCTION_TOOL_PACKS.split(",")) | {"projects-reports"}
+    assert on == frozenset(PRODUCTION_TOOL_PACKS.split(",")) | FOLLOWERS
     plan = tp.plan_loader(on, (), current=57, removable={PROJECTS: 1})
     assert PROJECTS in plan.via_loader
-    assert "projects-reports" in plan.offered
+    assert set(plan.offered) >= FOLLOWERS
 
 
-def test_a_split_pack_is_off_without_its_source_pack(_flag) -> None:
-    """The split pack follows its source and nothing else. Mutation: turn each
-    pack of ``SPLIT_FROM`` on always -> red. Mutation: drop the named slugs
-    from the result -> a list that names the split pack alone gives nothing ->
-    red."""
-    without = ",".join(s for s in PRODUCTION_TOOL_PACKS.split(",") if s != "projects-plan")
-    _flag(without, ORG_A)
-    assert "projects-reports" not in tp.packs_on(ORG_A)
-    _flag("projects-reports", ORG_A)
-    assert tp.packs_on(ORG_A) == frozenset({"projects-reports"})
+def test_a_following_pack_is_off_without_its_parent(_flag) -> None:
+    """A pack follows its parent and nothing else. Mutation: turn each pack of
+    ``FOLLOWS`` on always -> red. Mutation: drop the named slugs from the
+    result -> a list that names a following pack alone gives nothing -> red."""
+    names = PRODUCTION_TOOL_PACKS.split(",")
+    _flag(",".join(s for s in names if s != "projects-plan"), ORG_A)
+    on = tp.packs_on(ORG_A)
+    assert "projects-reports" not in on and "projects-authority" in on
+    _flag(",".join(s for s in names if s != "projects"), ORG_A)
+    on = tp.packs_on(ORG_A)
+    assert "projects-authority" not in on and "projects-reports" in on
+    for alone in sorted(FOLLOWERS):
+        _flag(alone, ORG_A)
+        assert tp.packs_on(ORG_A) == frozenset({alone})
     _flag("*", ORG_A)
     assert tp.packs_on(ORG_A) == frozenset(sf.pack_slugs())
 
 
-def test_each_split_pack_comes_from_a_pack_of_its_own_owner() -> None:
-    """``SPLIT_FROM`` is data beside ``PACKS``. Each key and each value is a
-    registered pack, the two share one owner, and no pack is its own source.
+def test_each_following_pack_has_a_parent_of_its_own_owner() -> None:
+    """``FOLLOWS`` is data beside ``PACKS``. Each key and each value is a
+    registered pack, the two share one owner, and no pack is its own parent.
     Mutation: name a slug that is no pack, or a pack of another owner -> red."""
-    assert tp.SPLIT_FROM == {"projects-reports": "projects-plan"}
-    for split, source in tp.SPLIT_FROM.items():
-        assert tp.pack(split) is not None and tp.pack(source) is not None
-        assert split != source
-        assert sf.SKILL_FAMILIES[split]["owner"] == sf.SKILL_FAMILIES[source]["owner"]
+    assert tp.FOLLOWS == {"projects-reports": "projects-plan",
+                          "projects-authority": "projects"}
+    assert set(tp.FOLLOWS) == FOLLOWERS
+    for follower, parent in tp.FOLLOWS.items():
+        assert tp.pack(follower) is not None and tp.pack(parent) is not None
+        assert follower != parent and parent not in tp.FOLLOWS
+        assert sf.SKILL_FAMILIES[follower]["owner"] == sf.SKILL_FAMILIES[parent]["owner"]
 
 
-def test_with_splits_adds_each_split_pack_of_a_source_and_nothing_else() -> None:
-    """PJP-2 fix round 3 (P3-1). ``with_splits`` is the one reader of
-    ``SPLIT_FROM``: ``packs_on`` widens the allow list with it, and the run
+def test_with_followers_adds_each_following_pack_of_a_parent_and_nothing_else() -> None:
+    """PJP-2 fix round 3 (P3-1). ``with_followers`` is the one reader of
+    ``FOLLOWS``: ``packs_on`` widens the allow list with it, and the run
     widens the families that an admin turned off with it. Mutation: return
-    the slugs as they are -> a disabled ``projects-plan`` leaves the reports
-    pack on -> red."""
-    assert tp.with_splits({"projects-plan"}) == {"projects-plan", "projects-reports"}
-    assert tp.with_splits({"projects-reports"}) == {"projects-reports"}
-    assert tp.with_splits({"email", "memory"}) == {"email", "memory"}
-    assert tp.with_splits(()) == frozenset()
+    the slugs as they are -> a disabled parent leaves its following pack on
+    -> red."""
+    assert tp.with_followers({"projects-plan"}) == {"projects-plan", "projects-reports"}
+    assert tp.with_followers({"projects"}) == {"projects", "projects-authority"}
+    assert tp.with_followers({"projects-reports"}) == {"projects-reports"}
+    assert tp.with_followers({"email", "memory"}) == {"email", "memory"}
+    assert tp.with_followers(()) == frozenset()
 
 
 def test_packs_on_fails_closed_on_a_settings_fault(monkeypatch) -> None:

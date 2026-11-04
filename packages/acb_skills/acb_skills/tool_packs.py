@@ -895,8 +895,8 @@ PACKS: dict[str, Pack] = {
         loader_route=_PROJECTS_LOAD_LINE,
     ),
     # PJP-2 (project_planning.md section 3.3): the report tools left projects-plan.
-    # It is on wherever projects-plan is on (SPLIT_FROM), so TOOL_PACKS need not
-    # name it, and plan_loader reaches the owner.
+    # It is on wherever projects-plan is on (FOLLOWS), so TOOL_PACKS need not
+    # name it.
     "projects-reports": Pack(
         slug="projects-reports",
         when="Load for a status report, saved reports, who gets a report and when, or to export tasks.",
@@ -907,7 +907,8 @@ PACKS: dict[str, Pack] = {
         handoff_swap=(_PROJECTS_NO_AGENT_LINE, _PROJECTS_ROUTE_LINE),
         loader_route=_PROJECTS_LOAD_LINE,
     ),
-    # WS-ALN ALN-4: last of the Projects packs, so the cap drops it first.
+    # WS-ALN ALN-4: last of the Projects packs, so the cap drops it first. It is
+    # on wherever the core pack is on (FOLLOWS).
     "projects-authority": Pack(
         slug="projects-authority",
         when="Load for the authority page of a project: to read it, pin a page as the authority, or remove a pin.",
@@ -930,26 +931,30 @@ PACKS: dict[str, Pack] = {
     ),
 }
 
-#: A pack split out of another pack, and the pack that it came from. The split
-#: pack is on wherever its source pack is on (:func:`packs_on`), so a split
-#: never turns tools off on a box whose ``TOOL_PACKS`` names the source.
-#: Owner decision "Inherit", 2026-11-04, task 1479 (PJP-2 fix round 2, P1-3).
-#: Production's list names ``projects-plan``, so ``projects-reports`` is on
-#: there with no flag change. Fence: ``tests/unit/test_tool_packs_registry.py``.
-SPLIT_FROM: dict[str, str] = {
+#: A pack that follows a parent pack, and that parent. The pack is on wherever
+#: its parent is on (:func:`packs_on`), and off wherever an admin turned the
+#: parent off. So a new pack of an owner turns no tool off, and needs no new
+#: line, on a box whose ``TOOL_PACKS`` names the parent. Owner decisions
+#: "Inherit", 2026-11-04, task 1479: ``projects-reports`` split out of
+#: ``projects-plan`` (PJP-2 fix round 2, P1-3), and ``projects-authority``
+#: (WS-ALN ALN-4) follows the core ``projects`` pack (fix round 3).
+#: Production's list names both parents, so both packs are on there with no
+#: flag change. Fence: ``tests/unit/test_tool_packs_registry.py``.
+FOLLOWS: dict[str, str] = {
     "projects-reports": "projects-plan",
+    "projects-authority": "projects",
 }
 
 
-def with_splits(slugs: Iterable[str]) -> frozenset[str]:
-    """*slugs*, and each pack of :data:`SPLIT_FROM` whose source is in them.
+def with_followers(slugs: Iterable[str]) -> frozenset[str]:
+    """*slugs*, and each pack of :data:`FOLLOWS` whose parent is in them.
 
-    The one reader of :data:`SPLIT_FROM`. :func:`packs_on` widens the allow
+    The one reader of :data:`FOLLOWS`. :func:`packs_on` widens the allow
     list with it, and the run widens the families that an admin turned off
-    with it (``orchestrator._tool_injection._apply_tool_packs``). So a split
-    pack follows its source both ways (PJP-2 fix round 3, P3-1)."""
+    with it (``orchestrator._tool_injection._apply_tool_packs``). So a pack
+    follows its parent both ways (PJP-2 fix round 3, P3-1)."""
     base = frozenset(slugs)
-    return base | {split for split, source in SPLIT_FROM.items() if source in base}
+    return base | {pack for pack, parent in FOLLOWS.items() if parent in base}
 
 
 def pack(slug: str) -> Pack | None:
@@ -1066,9 +1071,9 @@ def packs_on(org: object) -> frozenset[str]:
     * a slug that is no pack is dropped;
     * a fault in the settings read gives no pack.
 
-    A pack of :data:`SPLIT_FROM` is on when the list names its source pack
-    (owner decision "Inherit", 2026-11-04, task 1479). The list can still name
-    it alone.
+    A pack of :data:`FOLLOWS` is on when the list names its parent pack
+    (owner decisions "Inherit", 2026-11-04, task 1479). The list can still
+    name it alone.
 
     The caller passes the bound tenant of the run, never a value from request
     input (R5, ``user_management_contract.md`` R11). Any value other than
@@ -1095,7 +1100,7 @@ def packs_on(org: object) -> frozenset[str]:
     known = frozenset(slug for slug in PACKS if is_pack(slug))
     if ALL in slugs:
         return known
-    return with_splits(known & slugs) & known
+    return with_followers(known & slugs) & known
 
 
 # ── OA-7c: layer (a), the sticky state and the persona (§4.2.2) ─────────────
@@ -2043,7 +2048,8 @@ NO_PERSONA_BULLETS: frozenset[str] = frozenset({"crm-assistant", "studio-builder
 #: (113 and 114 tools), so a core load alone would strand their work with no
 #: tool and no path. PJP-2 cut both packs to 24, so each fits beside the core
 #: pack at base 56 (project_planning.md §3.3). ``projects-reports`` is on
-#: wherever ``projects-plan`` is on (:data:`SPLIT_FROM`). Email and CRM keep the
+#: wherever ``projects-plan`` is on, and ``projects-authority`` wherever the
+#: core pack is on (:data:`FOLLOWS`). Email and CRM keep the
 #: older rule: a loaded pack removes the specialist. Fence:
 #: ``tests/unit/test_projects_packs.py``.
 SPECIALIST_STAYS_UNTIL_REACHED: frozenset[str] = frozenset({"projects-assistant"})

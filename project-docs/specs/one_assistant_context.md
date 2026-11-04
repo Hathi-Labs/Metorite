@@ -1282,7 +1282,7 @@ OA-5 §7 named OA-4 as the home of the rule (report `:324-326`). The owner chose
 - **`TOOL_PACKS`** is a comma list of pack slugs, or `*`. Empty means off.
 - **`TOOL_PACKS_ORGS`** lists the organization ids that may use packs, or `*`. Empty allows none.
 - **The one reader** is `acb_skills.tool_packs.packs_on(org)`. It fails closed.
-- **A split pack inherits its source** (owner decision "Inherit", 2026-11-04, task 1479). `packs_on` adds each pack of `tool_packs.SPLIT_FROM` wherever the list names its source pack. Today the one entry is `projects-reports`, from `projects-plan` (PJP-2, `project_planning.md` §3.3). So a split turns no tool off on a box with an explicit list. An admin who turns the source family off for an agent turns the split pack off too (`with_splits`, fix round 3). Fence: `tests/unit/test_tool_packs_registry.py`.
+- **A pack follows its parent** (owner decisions "Inherit", 2026-11-04, task 1479). `packs_on` adds each pack of `tool_packs.FOLLOWS` wherever the list names its parent. `projects-reports` follows `projects-plan` (PJP-2), and `projects-authority` follows `projects` (ALN-4). See `project_planning.md` §3.3. So a new pack of an owner turns no tool off on a box with an explicit list. An admin who turns a parent family off for an agent turns its following pack off too (`with_followers`). Fence: `tests/unit/test_tool_packs_registry.py`.
 - **The gate** is OWNER-GATE in production, and `work_plan.md` §6 D4 names it. The flag moves the guards and the spend.
 
 **Off leaves these byte-identical:**

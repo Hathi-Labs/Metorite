@@ -55,7 +55,7 @@ CRM = "crm-assistant"
 #: Each Projects pack but ``projects-reports`` (PJP-2), so the loader cannot
 #: reach the owner and the specialist stays. That is the case when an admin
 #: turns the reports family off. ``packs_on`` adds the reports pack wherever
-#: ``projects-plan`` is on (``tool_packs.SPLIT_FROM``).
+#: ``projects-plan`` is on (``tool_packs.FOLLOWS``).
 PROJ = frozenset(("projects", "projects-plan", "projects-structure", "projects-bulk",
                   "projects-reminders", "projects-authority"))
 UUID = "0b0b0b0b-0000-4000-8000-0000000000b1"
