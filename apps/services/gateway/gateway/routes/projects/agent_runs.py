@@ -2530,13 +2530,12 @@ def typed_question(row: Any) -> bool:
 
 def outside_comment(where: str, decision: str, labels: list[str]) -> str:
     """The timeline text: "Decided outside Metorite (Claude Code chat):
-    Approve. <note>". The note is left out when it only repeats the labels."""
+    Approve. <note>". The labels lead. When the decision already starts with
+    them, the decision stands alone, so the text never says a label twice."""
     head = f"Decided outside Metorite ({where}): "
-    if not labels:
-        return head + decision
     picked = ", ".join(labels)
-    if decision.rstrip(". ").casefold() == picked.casefold():
-        return f"{head}{picked}."
+    if not labels or decision.casefold().startswith(picked.casefold()):
+        return head + decision
     return f"{head}{picked}. {decision}"
 
 
