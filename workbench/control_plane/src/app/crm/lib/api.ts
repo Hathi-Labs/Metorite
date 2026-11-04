@@ -42,6 +42,7 @@ import type {
   SumCheck,
 } from "./questions";
 import type { BusinessRule, MyChoice, RuleScope, RulesBody } from "./rules";
+import { CHANGE_PAGE_SIZE, type ChangeList } from "./changeHistory";
 import type { RecordCounts, ResetThen } from "./setup";
 import type { ResetResult } from "./startOver";
 import type {
@@ -478,6 +479,14 @@ export function getOwnerLeaderboard(): Promise<OwnerLeaderboard> {
 export async function listDigests(limit = 4): Promise<CrmDigest[]> {
   const res = await call<{ digests: CrmDigest[] }>(`/digests?limit=${limit}`);
   return res?.digests ?? [];
+}
+
+/**
+ * One page of the Change history of the CRM set-up, newest first (WS-CRM
+ * CRM-M1). Read only. The chat reads the same route (`crm_change_history`).
+ */
+export function listChanges(page = 1): Promise<ChangeList> {
+  return call<ChangeList>(`/change-history?page=${page}&page_size=${CHANGE_PAGE_SIZE}`);
 }
 
 // ── The generic Zoho modules (WS-53 CRM-Q6b) ──────────────────────────────

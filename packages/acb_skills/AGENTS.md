@@ -121,7 +121,7 @@ not write a second copy of that seam. A bare test file name is under
 5k. agent_site.py -- the ONE builder of an agent install (spec `box_hardening.md` §5 BH-7).
    - Installs go into `/var/lib/acb-gateway/agent-site` with `uv pip install --target`, never into the shared venv.
    - The gateway APPENDS agent-site to `sys.path`. Never use `site.addsitedir` on it, and never write a `.pth` file or a `sitecustomize` there. Fence: `test_agent_deps_target.py`.
-5l. crm_tools.py -- the 13 CRM read tools, the ONE copy (spec `crm_platform.md` §20.10).
+5l. crm_tools.py -- the 14 CRM read tools, the ONE copy (spec `crm_platform.md` §20.10). `crm_change_history` reads the Change history of the CRM set-up (`crm_conversational.md` §8). The chat reaches it through the `crm-records` pack, not the orchestrator's base. Fences: `test_crm_change_history.py` and `test_tool_packs_choice.py`.
    - Each tool reads a `/crm` route as the run's member, and refuses with no member. It opens no database session and takes no SQL.
    - Each path segment goes through a validator. `CLOSE_SHARE` equals `gateway.crm_sync.terms.CLOSE_SHARE`. No word of one org goes in this code.
    - Fences: `test_crm_agent.py`, `test_crm_answer_consistency.py`, `test_crm_answer_consistency_r8.py`.
