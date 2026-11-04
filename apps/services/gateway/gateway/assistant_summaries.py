@@ -856,13 +856,10 @@ def _member_key(member: Any) -> str:
     return who
 
 
-async def list_for_member(db: Any, member: str, limit: int = LIST_MAX) -> list[Listed]:
-    """The summaries of the solo chats of *member*, newest first, at most
-    *limit* (50 at most). A chat that reads ``off`` and a chat with no text
-    and no follow-up stay out. The member comes from the session."""
-    cap = max(1, min(int(limit), LIST_MAX + 1))
-    rows = (await db.execute(text(LIST_FOR_MEMBER_SQL),
-                             {"member": _member_key(member), "lim": cap})).fetchall()
+def _listed(rows: Iterable[Any]) -> list[Listed]:
+    """The rows ``(id, title, updated_at, member_summary)`` of a member read
+    as :class:`Listed`. A chat that reads ``off`` and a chat with no text and
+    no follow-up stay out. Settings and the briefing read through it."""
     out: list[Listed] = []
     for row in rows:
         one = stored(row[3])
@@ -871,6 +868,16 @@ async def list_for_member(db: Any, member: str, limit: int = LIST_MAX) -> list[L
         out.append(Listed(session_id=str(row[0]), title=str(row[1] or ""),
                           updated_at=row[2], text=one.text, follow_ups=one.follow_ups))
     return out
+
+
+async def list_for_member(db: Any, member: str, limit: int = LIST_MAX) -> list[Listed]:
+    """The summaries of the solo chats of *member*, newest first, at most
+    *limit* (50 at most). A chat that reads ``off`` and a chat with no text
+    and no follow-up stay out. The member comes from the session."""
+    cap = max(1, min(int(limit), LIST_MAX + 1))
+    rows = (await db.execute(text(LIST_FOR_MEMBER_SQL),
+                             {"member": _member_key(member), "lim": cap})).fetchall()
+    return _listed(rows)
 
 
 async def clear_one_for_member(db: Any, session_id: str, member: str) -> bool:
@@ -1391,11 +1398,4 @@ async def recent(db: Any, member: str, *, exclude: str,
         return []
     rows = (await db.execute(text(RECENT_SQL), {
         "member": who, "exclude": str(exclude or ""), "lim": cap})).fetchall()
-    out: list[Listed] = []
-    for row in rows:
-        one = stored(row[3])
-        if one is None or one.off or not (one.text or one.follow_ups):
-            continue
-        out.append(Listed(session_id=str(row[0]), title=str(row[1] or ""),
-                          updated_at=row[2], text=one.text, follow_ups=one.follow_ups))
-    return out
+    return _listed(rows)
