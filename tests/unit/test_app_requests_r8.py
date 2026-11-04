@@ -96,6 +96,14 @@ Fix round 1 (2026-11-04), each run on a committed tree:
   ``test_23_the_class_never_comes_from_the_body`` and
   ``test_the_app_request_routes_take_no_tenant_from_input``.
 
+Fix round 2 (2026-11-05):
+
+* M22. ``_unshowable``: drop the ``is_invisible`` check.
+  ``test_26_a_character_with_no_glyph_is_refused``.
+* M23. ``JOINERS``: make it empty, so ZWJ and ZWNJ are refused too.
+  ``test_26_a_character_with_no_glyph_is_refused`` (the emoji and the Indic
+  word).
+
 The record of each red run is in the report of the MCP-P1b-1 build.
 """
 
