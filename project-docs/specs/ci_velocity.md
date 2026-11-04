@@ -1,7 +1,7 @@
 # CI velocity: the relevant tests per PR, the full suite once per batch (WS-CIV)
 
 **Status:** ACTIVE (owner directive, 2026-11-04). Verified against code on
-2026-11-04 (branch base `fb26ada52`, after a spec audit). CIV-1 is done.
+2026-11-04 (branch base `fb26ada52`, after a spec audit). CIV-1 is done. CIV-6 is built (task 1634, PR open).
 CIV-2 to CIV-9 are AGENT-SAFE. CIV-4 is HIGH tier, because it changes the
 deploy path.
 
@@ -232,6 +232,18 @@ AGENT-SAFE. STANDARD tier.
 **Verify:** `uv run pytest tests/unit/test_ci_pc.py -q`, then two runs at
 once on the box, both green.
 AGENT-SAFE. STANDARD tier.
+
+**Built (2026-11-04).** Measured on the home box with cgroup `memory.peak`: a
+shard is 3.2 to 4.4 GB, a full run of 5 shards peaked at 17.7 GB, and the jobs
+around the shards add about 5 GB. The slot defaults are 3 GB per shard and 5 GB
+fixed (`scripts/ci_pc/slots.sh`). A 23 GB box takes two selected runs at once,
+or one full run. Evidence: two selected runs at once, both green, in 245 s and
+252 s. A selected run alone took 184 s. Two jobs run one at a time across runs,
+because they read the whole Docker daemon or the CPU clock: `backup-restore`
+and `frontend`. Two tests fail in every full run on the box, before and after
+this slice: `test_attachment_ocr.py` and `test_web_reader_confine.py`
+(`test_each_attack_works_unconfined`). That is a finding for the board. The PC
+lane is unchanged in kind, but nobody ran `--pc` from Windows yet.
 
 ### CIV-7 · The harness says it
 
