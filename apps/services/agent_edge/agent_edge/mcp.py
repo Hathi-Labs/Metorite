@@ -213,7 +213,9 @@ def _terminals() -> str:
 
 #: The agent-run part (WS-55 EA-12, §12.1). It shows only while
 #: ``agent_runs_enabled`` is on, as the six tools do. Fence:
-#: ``test_mcp_edge_agent_runs.py`` ``TestTheInstructions``.
+#: ``test_mcp_edge_agent_runs.py`` ``TestTheInstructions``. MCP-G15: the
+#: sentence of ``record_outside_decision``, fenced by
+#: ``test_mcp_edge_outside_decision.py``.
 _RUN_INSTRUCTIONS = (
     " Only one AI session may hold a task. Never work on a held task: a task"
     " whose held_by is not stale. The one exception is a my_work row with the"
@@ -225,7 +227,10 @@ _RUN_INSTRUCTIONS = (
     " heartbeat of your hold. If you stop and will not finish, call"
     " release_task. To ask the member, call"
     " ask_on_task, then call get_agent_run with wait_seconds 20 until the"
-    " answer arrives. When a run reads stopping, stop the work at once and"
+    " answer arrives. When the member decides outside Metorite, such as in"
+    " this chat, call record_outside_decision at once. The question then"
+    " closes, and the task stops waiting on the member."
+    " When a run reads stopping, stop the work at once and"
     " call finish_agent_run. To archive a task, call request_task_archive."
     " Only the member can approve it, in Metorite. Read the answer with"
     " get_agent_run. An archive never takes the subtasks."

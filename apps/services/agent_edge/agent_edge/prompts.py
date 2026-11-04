@@ -262,7 +262,11 @@ def _work_steps(*, runs: bool) -> list[str]:
             "Report progress. While a run is open, send a thought with"
             " post_agent_activity at least once a minute. That is your"
             " heartbeat. After 2 hours with no activity, another session can"
-            " take the task from you. When no run is open, call add_comment.")
+            " take the task from you. When no run is open, call add_comment."
+            # WS-55 MCP-G15. Fence: `test_mcp_edge_outside_decision.py`.
+            " When you asked me with ask_on_task and I answer outside Metorite,"
+            " such as in this chat, call record_outside_decision at once. The"
+            " question then closes, and the task stops waiting on me.")
     else:
         steps.append("Report progress with add_comment.")
     steps += [
