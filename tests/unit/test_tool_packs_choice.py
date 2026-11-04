@@ -1541,6 +1541,30 @@ async def test_the_three_packs_are_over_the_cap_at_the_measured_base(orchestrato
     assert base + sum(n.values()) > tp.MAX_REQUEST_TOOLS
 
 
+@pytest.mark.parametrize("words", [
+    "What changed in the CRM last Tuesday?",
+    "Who changed the CRM setup this week?",
+])
+async def test_a_crm_history_question_loads_the_pack_that_holds_the_read(
+    words: str, store, orchestrator,
+) -> None:
+    """WS-CRM CRM-M1 (crm_conversational.md §8). The chat reaches the read of
+    the CRM Change history only through ``crm-records``: the orchestrator's
+    base does not hold ``crm_change_history``, because the base was at the
+    110-tool cap (``test_projects_packs.py``). A CRM history question loads
+    the pack in the real run, and then the run holds the tool. Mutation: drop
+    the tool from the family → the run lacks it → red. Mutation: put it back
+    in the orchestrator ``tool_scope`` → the base holds it → red."""
+    assert "crm_change_history" not in CONFIG["tool_scope"]
+    assert "crm_change_history" not in _names(orchestrator), "the base must not hold it"
+    with _tenant():
+        applied = await _apply(orchestrator, words, allowed=CRM_ONLY)
+    assert applied is not None and applied.record.slugs == ("crm-records",), applied
+    assert "crm_change_history" in _names(orchestrator)
+    assert "Use crm_change_history" in tp.PACKS["crm-records"].rules
+    assert "CRM change history" in tp.PACKS["crm-records"].when
+
+
 def test_the_crm_persona_swaps_nothing_and_adds_the_rules() -> None:
     """The orchestrator has no CRM text, so ``PACK_DELEGATION_BULLETS`` holds
     no ``crm-assistant`` and the swap is skipped. The base persona stays

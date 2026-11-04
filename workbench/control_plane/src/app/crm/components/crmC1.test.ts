@@ -106,6 +106,8 @@ describe("the sections a caller sees", () => {
       "field-mapping",
       "suggestions",
       "sync-health",
+      // CRM-M1: the Change history, last, for an admin in each mode.
+      "change-history",
     ]);
     // Native with no studio: the Field mapping section is hidden (CRM-C6a).
     for (const mode of ["native", null] as CrmMode[]) {
@@ -117,6 +119,7 @@ describe("the sections a caller sees", () => {
           "lead-statuses",
           "lost-reasons",
           "fields",
+          "change-history",
         ]);
       }
     }
@@ -132,6 +135,7 @@ describe("the sections a caller sees", () => {
         "lost-reasons",
         "fields",
         "field-mapping",
+        "change-history",
       ]);
       // A member never opens it, whatever the flag says.
       expect(ids(visibleSections({ isAdmin: false, mode, studioAdmin: true }))).not.toContain(
@@ -173,6 +177,10 @@ describe("the sections a caller sees", () => {
     for (const isAdmin of [true, false]) {
       for (const mode of MODES) {
         for (const section of visibleSections({ isAdmin, mode })) {
+          // CRM-M1: the page draws the Change history card itself
+          // (`ChangeHistory.tsx`), so PipelineSettings draws none for it.
+          // `crmM1.test.ts` holds that card and the branch of the page.
+          if (section.id === "change-history") continue;
           const html = settings(isAdmin, mode, section.id as SettingsSectionId);
           expect(html, `${section.id} ${isAdmin} ${mode}`).toMatch(/<section/);
         }
@@ -539,6 +547,9 @@ describe("the card headings", () => {
       for (const mode of MODES) {
         for (const section of visibleSections({ isAdmin, mode, studioAdmin: true })) {
           if (section.id === "setup" || section.id === "access") continue;
+          // CRM-M1: the page draws the Change history card. `crmM1.test.ts`
+          // holds its heading.
+          if (section.id === "change-history") continue;
           const html = settings(isAdmin, mode, section.id as SettingsSectionId, {}, true);
           // The Native conversion card says what it does, not "Field mapping" (CRM-U12).
           const heading =

@@ -141,6 +141,11 @@ the table, and only for an org on ``CRM_DIGEST_ORGS``.
 and of each member (table ``crm_business_rules``), and the hold and the
 confirm of a rule from the chat. An org outside ``CRM_ANSWER_FIRST_ORGS``
 gets 404 ``rules_off``.
+
+``change_log.py`` is WS-CRM CRM-M1 — ``GET /crm/change-history`` and
+``POST /crm/change-history/{id}/undo`` (table ``crm_change_log``), and
+``log_change``, the one writer of a Change history row. Each feature module
+registers the Undo of its own areas there.
 """
 
 from gateway.routes.crm import activities as _activities  # noqa: F401
@@ -148,6 +153,7 @@ from gateway.routes.crm import admin as _admin  # noqa: F401
 from gateway.routes.crm import aggregate as _aggregate  # noqa: F401
 from gateway.routes.crm import analysis as _analysis  # noqa: F401
 from gateway.routes.crm import catalogue as _catalogue  # noqa: F401
+from gateway.routes.crm import change_log as _change_log  # noqa: F401
 from gateway.routes.crm import connection as _connection  # noqa: F401
 from gateway.routes.crm import convert_mapping as _convert_mapping  # noqa: F401
 from gateway.routes.crm import cutover as _cutover  # noqa: F401
