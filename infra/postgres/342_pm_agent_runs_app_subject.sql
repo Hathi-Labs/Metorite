@@ -32,10 +32,12 @@
 -- NOT EXISTS change nothing on a second run. Each CHECK is added only while
 -- `pg_constraint` lacks it, or lacks `studio` in its definition. CREATE INDEX
 -- IF NOT EXISTS.
--- The ALTER TABLE statements take the ACCESS EXCLUSIVE lock of each table for
--- a moment. VALIDATE then reads the rows under a lighter lock. So the file
--- sets lock_timeout first, as 338 does, and the runner tries the whole file
--- again on a lock timeout.
+-- The ALTER TABLE statements take the ACCESS EXCLUSIVE lock of each table, and
+-- the file holds it until COMMIT, because it is one transaction. So VALIDATE
+-- reads the rows under that lock too, and NOT VALID only splits the work in
+-- two. The tables hold one row for each agent run and each activity, so the
+-- scan is short. The file sets lock_timeout first, as 338 does, and the
+-- runner tries the whole file again on a lock timeout.
 --
 -- Tenant-scoped (R5): no new table. RLS and the policies of 267 cover both
 -- tables, and the generated phases already carry them. The org of a new row
