@@ -28,6 +28,28 @@ export function compactChromeEnabled(env?: Record<string, string | undefined>): 
   return ["1", "true", "on", "yes"].includes(String(raw ?? "").trim().toLowerCase());
 }
 
+/**
+ * What tool row an Overview keeps (MOB-1, phone audit 2026-11-03). A phone has
+ * no action row, so its tabs live in the View sheet. The Overview used to hide
+ * the whole row, and with it the only way back to the List. It now keeps the
+ * View button alone: the search and Filters act on no roll-up. A desktop
+ * Overview stays bare, because the action row above it holds the tabs.
+ */
+export type ChromeKind = "full" | "view-only" | "none";
+
+export function chromeKind({
+  overview,
+  phone,
+  compact,
+}: {
+  overview: boolean;
+  phone: boolean;
+  compact: boolean;
+}): ChromeKind {
+  if (!overview) return "full";
+  return phone && compact ? "view-only" : "none";
+}
+
 /** What a chip clears. `filters` is a patch of `Filters`; the two toggles are page state. */
 export interface ActiveChip {
   key: string;

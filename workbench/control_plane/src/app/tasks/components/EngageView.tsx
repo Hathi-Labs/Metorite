@@ -172,7 +172,7 @@ export function EngageView() {
           </p>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto">
+        <div className="isolate flex-1 overflow-y-auto">
           {groups.map((g) => {
             const GroupIcon = CELL_ICON[g.key as PriorityCell];
             return (
