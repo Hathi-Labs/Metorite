@@ -38,6 +38,7 @@ import { useRunActivity } from "@/hooks/useActiveSessions";
 import { shouldPollWorkspace } from "@/lib/access";
 import { visibleSections } from "@/lib/nav";
 import { morphAskBox } from "@/lib/panelMotion";
+import { LAYER_CLASS } from "@/lib/layers";
 
 import { closeActivity, openActivity, useActivityOpen } from "./ActivityControl";
 import { type AskRest, foldKey, readFolds, useAskRest, writeFold } from "./askBarRest";
@@ -244,7 +245,7 @@ function AskBarFoot() {
   }, []);
 
   return (
-    <div ref={wrapRef} data-ask-bar="" data-ask-rest={form} className="pointer-events-none absolute inset-0 z-30">
+    <div ref={wrapRef} data-ask-bar="" data-ask-rest={form} className={`pointer-events-none absolute inset-0 ${LAYER_CLASS.askBar}`}>
       <div
         ref={barRef}
         onPointerEnter={() => setHover(true)}
@@ -412,7 +413,10 @@ export function AskField({
       return;
     }
     toChat(() => {
-      openAssistant({ text: words });
+      // WS-63 D-PZ-37: the member typed these words in the field, which is
+      // one box with the chat's composer, so they carry the typed mark. A
+      // start below is a click, and sends none.
+      openAssistant({ text: words, typed: true });
       setText("");
     });
   };

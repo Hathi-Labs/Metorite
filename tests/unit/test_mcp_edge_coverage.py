@@ -71,6 +71,17 @@ NAMED_EXCEPTIONS: dict[tuple[str, str], str] = {
         "EA-6h (EA3-51). The edge reads the member's delete switch at"
         " tools/list. It is not a Projects route. Its PUT stays off the edge."
     ),
+    # WS-MCP SW-31a (agent_coordination.md SW-31): the guidance of a task and
+    # the refs of `my_work`. They are not Projects routes (the editor is a
+    # Settings screen, and the chat tool is a follow-up).
+    ("GET", "/agent-guidance/tasks/{task_id}"): (
+        "SW-31a. `get_task_context` and `claim_task` read the org's guidance for"
+        " a task. It is not a Projects route (agent_coordination.md SW-31)."
+    ),
+    ("GET", "/agent-guidance/refs"): (
+        "SW-31a. `my_work` reads the id and version of the nearest guidance block"
+        " of each row. It is not a Projects route (agent_coordination.md SW-31)."
+    ),
     # MCP-P1a (spec §19.5, "The new pairs"): the two list routes of the app
     # door. They hold no data of an app.
     ("GET", "/agent-access/apps"): (
@@ -135,7 +146,9 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
     adds the archive request (§9.5, EA3-40). EA-6h adds the agent delete
     (EA3-51). EA-14a adds the release (§12.3). MCP-G2 adds the PUT of the
     assignees and the task move (§9.2). MCP-G1 adds the node POST and PATCH,
-    the move preview and the move (§9.2)."""
+    the move preview and the move (§9.2). MCP-G15 adds the outside decision
+    (§12.1): an agent records a decision that its member made outside
+    Metorite, on its own awaiting run."""
     expected = {
         ("POST", "/projects/nodes"),
         ("PATCH", "/projects/nodes/{project_id}"),
@@ -152,6 +165,7 @@ def test_the_write_pairs_are_those_of_ea_6a_ea_6d_and_ea_12a():
         ("POST", "/projects/agent-runs/{run_id}/activities"),
         ("POST", "/projects/agent-runs/{run_id}/finish"),
         ("POST", "/projects/agent-runs/{run_id}/release"),
+        ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
         ("POST", "/projects/tasks/{task_id}/archive-request"),
         ("POST", "/projects/tasks/{task_id}/agent-delete"),
     }

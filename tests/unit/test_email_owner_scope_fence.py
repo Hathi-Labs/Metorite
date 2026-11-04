@@ -126,6 +126,13 @@ OWNER_SCOPE_EXEMPT: dict[str, str] = {
         "join holds ea.user_id = :uid, and _save_draft opens provider_session "
         "for the caller (EM-CR)."
     ),
+    "reply_card_draft_state": (
+        "A thin wrapper (task 1526, 2026-11-03). draft_in_drafts reads the one "
+        "draft row with _DRAFT_STATE_SQL, whose join holds mailbox_predicate("
+        "'ea', level='read') for the session's own email. A draft of another "
+        "member reads as not in Drafts. It writes nothing and calls no "
+        "provider (R8: test_reply_card_left_drafts_r8.py)."
+    ),
     "compose_assist": (
         "A thin wrapper. _compose_assist_run calls _assert_account_owner "
         "before it reads the account."

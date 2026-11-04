@@ -94,6 +94,7 @@ const INFO_META: Record<string, { icon: string; label: string }> = {
   status_report: { icon: "Flag", label: "Status report" },
   // S5 — the rest of the reads
   project_access: { icon: "Users", label: "Access" },
+  project_authorities: { icon: "Users", label: "Authority pages" },
   my_decisions: { icon: "Users", label: "Decisions" },
   project_views: { icon: "LayoutList", label: "Views" },
   my_contexts: { icon: "AtSign", label: "Contexts" },
@@ -151,6 +152,7 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   move_task: { icon: "MoveRight", label: "Task moved" },
   file_tasks: { icon: "MoveRight", label: "Tasks filed" },
   link_tasks_batch: { icon: "Link", label: "Tasks linked" },
+  update_tasks: { icon: "PenLine", label: "Tasks updated" },
   watch: { icon: "Eye", label: "Watching changed" },
   complete: { icon: "CheckCircle2", label: "Task done" },
   defer: { icon: "CalendarClock", label: "Deferred" },
@@ -198,6 +200,8 @@ const ACTION_META: Record<string, { icon: string; label: string }> = {
   attach_to_task: { icon: "Paperclip", label: "File attached" },
   grant_access: { icon: "UserPlus", label: "Access given" },
   revoke_access: { icon: "UserMinus", label: "Access removed" },
+  pin_authority: { icon: "UserPlus", label: "Authority page pinned" },
+  unpin_authority: { icon: "UserMinus", label: "Authority page removed" },
   answer_decision: { icon: "UserPlus", label: "Decision answered" },
   add_report_recipient: { icon: "UserPlus", label: "Recipient added" },
   remove_report_recipient: { icon: "UserMinus", label: "Recipient removed" },
@@ -312,6 +316,8 @@ export const GUARDED_TOOLS: ReadonlySet<string> = new Set([
   "attach_to_task",
   "grant_access",
   "revoke_access",
+  "pin_authority",
+  "unpin_authority",
   "answer_decision",
   "add_report_recipient",
   "remove_report_recipient",
@@ -502,7 +508,7 @@ function TaskRowView({ row }: { row: ProjectTaskRow }) {
 function listLabel(e: ToolEvent): string {
   const args = (e.args ?? {}) as Record<string, unknown>;
   if (e.name === "find_tasks") return `Search${args.query ? ` · ${String(args.query)}` : ""}`;
-  if (e.name === "my_work") return String(args.view ?? "") === "inbox" ? "My task inbox" : "Assigned to me";
+  if (e.name === "my_work") return String(args.view ?? "") === "inbox" ? "My task inbox" : args.untriaged ? "New in My tasks" : "Assigned to me";
   if (e.name === "calendar") return "Calendar";
   if (e.name === "intake_queue") return "Intake";
   if (e.name === "notifications") return "Notifications";
@@ -917,6 +923,8 @@ export const BATCH_TOOLS: ReadonlyMap<string, BatchKind> = new Map<string, Batch
   // 2026-10-19: `writes.py` `link_tasks_batch` prints each link made as the
   // row of its first task, with the link in the row's facts.
   ["link_tasks_batch", { rows: "task", maybe: "Links may have been made" }],
+  // WS-PJP PJP-4: `writes.py` `update_tasks` prints each task changed as a task row.
+  ["update_tasks", { rows: "task", maybe: "Tasks may have been updated" }],
 ]);
 
 const NL = "\n";
@@ -973,8 +981,8 @@ export function batchNotes(result: string): string[] {
     }
     if (/^\s*full_id:/i.test(line) || !line.trim()) continue;
     if (/listed above exist\. Never create them again/.test(line)) continue;
-    // The same line of the two batches of `writes.py` (`_batch_receipt`).
-    if (/listed above (?:moved|exist)\. Do not (?:move|link) them again/.test(line)) continue;
+    // The same line of the batches of `writes.py` (`_batch_receipt`).
+    if (/listed above (?:moved|exist|changed)\. Do not (?:move|link|change) them again/.test(line)) continue;
     kept.push(line);
   }
   return forPeopleFenced(kept.join(NL)).split(NL).filter((l) => l.trim());

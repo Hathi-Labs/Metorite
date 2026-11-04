@@ -37,7 +37,7 @@ import type { ToolEvent } from "@/components/MarkdownMessage";
 import ProjectToolCards, { PROJECT_CARD_TOOLS, projectEvidence } from "@/components/projects/ProjectToolCards";
 import TaskToolCards, { TASK_CARD_TOOLS, taskEvidence } from "@/components/tasks/TaskToolCards";
 import { PROFILE_CARD_TOOLS } from "@/components/profile/ProfileToolCards";
-import { ToolStepRow } from "@/components/ThinkingContainer";
+import { ToolStepRow, TrailStartsOpen } from "@/components/ThinkingContainer";
 import {
   CACHED_SEGMENTS_MAX_CHARS,
   PLACEMENT,
@@ -153,7 +153,10 @@ describe("a read draws in its step, and never as a card after the answer", () =>
 
 describe("the owner's turn (2026-10-08)", () => {
   const [, turn] = ownerTurn({ live: true });
-  const html = renderToStaticMarkup(createElement(MessageBubble, { message: turn, sessionId: "s1" }));
+  // The trail as a member sees it once they open it (it starts closed).
+  const html = renderToStaticMarkup(
+    createElement(TrailStartsOpen.Provider, { value: true }, createElement(MessageBubble, { message: turn, sessionId: "s1" })),
+  );
 
   it("the four reads sit in the steps, as four steps that open", () => {
     expect(html.match(/data-step-has-evidence/g)?.length).toBe(OWNER_READS.length);

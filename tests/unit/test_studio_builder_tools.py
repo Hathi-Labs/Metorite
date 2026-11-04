@@ -571,6 +571,25 @@ def test_every_tool_is_annotated_read_only_and_closed_world() -> None:
         assert hints["read_only"] is True and hints["open_world"] is False, fn.__name__
 
 
+def test_no_skill_tool_takes_an_org_or_a_member_argument() -> None:
+    """STU-F2d: the second tuple holds the three skill tools, and none takes an identity."""
+    identity = {"organization_id", "org_id", "organization", "org", "tenant", "tenant_id",
+                "member", "member_email", "user", "user_email", "email", "actor", "as_user",
+                "owner", "owner_email", "visibility", "confirm", "confirmed"}
+    assert len(st.STUDIO_SKILL_TOOLS) == 3
+    for fn in st.STUDIO_SKILL_TOOLS:
+        assert not set(inspect.signature(fn).parameters) & identity, fn.__name__
+        assert inspect.iscoroutinefunction(fn)
+
+
+def test_the_skill_list_is_read_only_and_the_other_two_write_and_all_are_closed_world() -> None:
+    hints = {fn.__name__: fn.__tool_risk__ for fn in st.STUDIO_SKILL_TOOLS}
+    assert hints["studio_skill_list"]["read_only"] is True
+    assert hints["studio_skill_save"]["read_only"] is False
+    assert hints["studio_skill_state"]["read_only"] is False
+    assert all(h["open_world"] is False for h in hints.values())
+
+
 # -- the fence: no studio module runs code -----------------------------------
 
 _STUDIO_MODULES = (

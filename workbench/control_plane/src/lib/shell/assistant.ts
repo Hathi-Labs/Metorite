@@ -61,6 +61,7 @@ export const ASSISTANT_PERSONA = [
   "You act for the member, through the member's own access.",
   "Each app has a specialist, and you call it as a tool.",
   "Use the app the member is in to choose the workflow. It is a hint, not a limit.",
+  "The open page is a hint, not a scope. Look there first. When the request does not name the open place, or the first look finds nothing, search everything the member can see at once, with no question. Never say \"not found\" after one scoped look.",
   "When the request is about another app, call that app's specialist. The page moves to that app on its own, so do not tell the member to open it.",
   "Give the specialist every id it needs from the page context below.",
   "When you cannot tell which record, project, task or mailbox the member means, ask one short question with ask_questions before you act. Do not guess.",
@@ -333,6 +334,12 @@ export interface AssistantAsk {
    * stays live beside the open panel).
    */
   join?: boolean;
+  /**
+   * WS-63 D-PZ-37: the member typed these words, in the Ask field or the
+   * command bar. Only then does the send carry the typed mark
+   * (`lib/typedMark.ts`). A start pill and "Get to know me" leave it unset.
+   */
+  typed?: boolean;
 }
 
 export interface AssistantState {
@@ -433,6 +440,9 @@ export interface OpenOptions {
   fresh?: boolean;
   /** A reminder id to open in the fresh chat that this open asks for (RM-4). */
   reminder?: string;
+  /** WS-63 D-PZ-37: the member typed `text` or `draft` in a box of the
+   *  shell. Leave it unset for words that a click sends. */
+  typed?: boolean;
 }
 
 /**
@@ -477,8 +487,12 @@ export function openAssistant(opts: OpenOptions = {}): void {
     open: true,
     mode: modeOnOpen({ phone, open: base.open, current: base.mode, opts }),
     sessionId: opts.sessionId !== undefined ? opts.sessionId : base.sessionId,
-    ask: text ? { seq: ++_askSeq, text, join: base.open } : base.ask,
-    draft: draft ? { seq: ++_askSeq, text: draft } : base.draft,
+    ask: text
+      ? { seq: ++_askSeq, text, join: base.open, ...(opts.typed === true ? { typed: true } : {}) }
+      : base.ask,
+    draft: draft
+      ? { seq: ++_askSeq, text: draft, ...(opts.typed === true ? { typed: true } : {}) }
+      : base.draft,
     freshSeq: opts.fresh ? base.freshSeq + 1 : base.freshSeq,
     reminder: reminder || base.reminder,
     focusSeq: base.focusSeq + 1,
@@ -764,6 +778,13 @@ export function dataText(value: string): string {
 }
 
 /**
+ * The rule that every page context carries (task 1558). The open page is
+ * where the chat looks first. It never limits what the chat may search.
+ */
+export const PAGE_HINT_RULE =
+  "This page is a hint, not a scope. Look here first. When the request does not name this place, or the first look finds nothing, match the request against everything the member can see, at once, and do not ask. Narrow to this place only when the member says \"here\" or \"this project\", or names it. A write with no place named still goes to the place with the ids above.";
+
+/**
  * The page context of one turn: where the member is, and what the app said.
  * Every word an app passes is data, and the block says so.
  */
@@ -784,6 +805,7 @@ export function surfaceContext(
     );
     for (const f of said) lines.push(`- ${f}`);
   }
+  if (here) lines.push(PAGE_HINT_RULE);
   return lines.join("\n");
 }
 

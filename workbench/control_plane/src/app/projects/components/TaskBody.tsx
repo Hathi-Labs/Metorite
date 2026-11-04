@@ -1012,7 +1012,7 @@ export function TaskBody({
               <FieldCell label="Status" icon="CircleDot">
                 <SelectButton
                   label="Status"
-                  // Above My Tasks' TaskFocusModal (`z-[80]`), which draws
+                  // Above My Tasks' TaskFocusModal (`z-[15]`), which draws
                   // this body. At the default layer the list opened under it.
                   layer="top"
                   widthClass="w-full"

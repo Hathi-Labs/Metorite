@@ -1,6 +1,9 @@
+import { redirect } from "next/navigation";
+
 import { configuredProviders, type AuthEnv } from "@/authPosture";
 
 import SignInForm from "./SignInForm";
+import { codeStepRedirect } from "./errorCopy";
 
 /**
  * The sign-in page derives its buttons from the CONFIGURED providers via the
@@ -21,6 +24,16 @@ import SignInForm from "./SignInForm";
 // baked the build-time list. Fence: `signin.test.ts`.
 export const dynamic = "force-dynamic";
 
-export default function SignIn() {
+export default async function SignIn({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string | string[] }>;
+}) {
+  // `pages.error` is this page (`auth.ts`), so a wrong email code arrives here
+  // as `?error=Verification`. Send it back to the page where the code is typed.
+  const { error } = await searchParams;
+  const back = codeStepRedirect(typeof error === "string" ? error : null);
+  if (back) redirect(back);
+
   return <SignInForm providers={configuredProviders(process.env as AuthEnv)} />;
 }

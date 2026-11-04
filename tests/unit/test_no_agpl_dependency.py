@@ -52,6 +52,12 @@ _AGPL_BY_NAME = frozenset({"pymupdf", "pymupdfb", "pymupdf4llm"})
 #: The packages that WEB-2 added for Trafilatura. Each must be checked.
 WEB2_CLOSURE = frozenset({"trafilatura", "courlan", "htmldate", "justext",
                           "lxml-html-clean", "dateparser", "babel", "tld"})
+#: The packages that WEB-3 added for the file readers (MarkItDown with the
+#: pdf, docx, pptx and xlsx extras, and pdfplumber). All are MIT, BSD, PSF or
+#: Apache-2.0 (checked on 2026-11-04). Each must be in the closure.
+WEB3_CLOSURE = frozenset({"markitdown", "pdfplumber", "pdfminer-six", "magika", "mammoth",
+                          "cobble", "markdownify", "beautifulsoup4", "soupsieve",
+                          "defusedxml", "python-pptx", "xlsxwriter", "pandas"})
 
 
 def _lock() -> dict[str, dict]:
@@ -143,6 +149,7 @@ def test_the_acb_skills_closure_is_checked_in_full() -> None:
     lock = _lock()
     closure = _closure(lock, "acb-skills")
     assert closure >= WEB2_CLOSURE, sorted(WEB2_CLOSURE - closure)
+    assert closure >= WEB3_CLOSURE, sorted(WEB3_CLOSURE - closure)
     unread: list[str] = []
     for name in sorted(closure):
         if "registry" not in lock[name].get("source", {}):

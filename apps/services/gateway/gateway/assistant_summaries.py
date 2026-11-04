@@ -5,7 +5,7 @@ and §15.9. Migration: ``infra/postgres/319_chat_session_member_summary.sql``
 (319 at the merge, R1: 318 went to WS-66 RE-9b first).
 
 A summary covers one solo chat with Mira on the web, and only its member
-sees it. This module has two parts.
+sees it. This module has three parts.
 
 **The store.** :func:`read`, :func:`mark`, :func:`write_marked`,
 :func:`turn_off`, :func:`clear_for_member` and :func:`clear_on_share` are the
@@ -16,7 +16,8 @@ the column, and when a module that is not on its list imports this one.
 * Each function takes a session that the caller opened with
   ``acb_common.db.tenant_session(org)``, so RLS binds each statement to that
   tenant. :func:`clear_on_share` takes the sync ``acb_graph`` session of the
-  room routes. No function takes an org, opens a session or commits (R5).
+  room routes. No store function takes an org, opens a session or commits
+  (R5). The one exception is :func:`seed`, below.
 * Each caller checks the member. A statement finds the chat by its id only,
   and RLS binds the tenant only. So a caller that acts for a member checks
   that the chat is that member's own before it calls. The job of PZ-33b
@@ -32,9 +33,11 @@ the column, and when a module that is not on its list imports this one.
   ``last_preview`` or ``message_count``. So the chat keeps its place in the
   list, and the idle clock does not move. ``routes/chat.py`` keeps the same
   rule for an archive.
-* A summary that the member deleted reads ``{"v": 1, "off": true}``. No mark
-  and no write changes it, because each of those statements holds the rule in
-  its WHERE.
+* A Delete of the member (D-PZ-33, :func:`clear_one_for_member`) takes the
+  text, the follow-ups and the mark away, and leaves a waterline. A chat that
+  reads ``{"v": 1, "off": true}`` keeps it: no mark and no write changes it,
+  because each of those statements holds the rule in its WHERE. No route
+  writes ``off`` now. :func:`turn_off` is the guard that a test uses.
 * The job of PZ-33b marks the chat before its model call (:func:`mark`). It
   writes the result with the mark in the WHERE (:func:`write_marked`). So a
   Delete, a Forget or a share during the call wins, and the write changes
@@ -48,21 +51,43 @@ the column, and when a module that is not on its list imports this one.
 **The answer checks.** Pure functions, with no I/O.
 
 * :func:`member_texts`, :func:`member_words` and :func:`prompt_rows` choose
-  what may reach the model. A row of the member counts only through
-  ``acb_common.assistant_profile.typed_text``, so a pasted mail and a text of
-  more than 1,500 characters stay out. A card answer stays out too, because
-  it quotes the question that the model wrote
-  (``gateway.chat_recovery.is_card_answer_text``). A row of Mira gives its
-  ``content`` only. Tool events, reasoning, custom events, system rows and
-  the brief row (``brief-<date>``) stay out.
+  what may reach the model: the member's own typed words, and nothing else
+  (the owner, 2026-11-02, D-PZ-28). A row of the member counts only with
+  the ONE typed mark, ``chat_message.member_typed`` is ``True`` (D-PZ-37,
+  migration 337). So a tapped pill, a choice, a card action, a feed starter,
+  the Fix prompt and each row from before the mark stay out. Then it counts
+  only through ``acb_common.assistant_profile.typed_text``, so a pasted mail
+  and a text of more than 1,500 characters stay out. A card answer stays out
+  too, because it quotes the question that the model wrote
+  (``gateway.chat_recovery.is_card_answer_text``). No row of Mira, no tool
+  text, no row of another author, no system row and no brief row
+  (``brief-<date>``) goes in, because each of them can carry text that a
+  stranger wrote.
 * :func:`check_answer` parses the answer of the model and applies the caps:
   at most 3 sentences and 400 characters of text, and at most 3 follow-ups of
   120 characters each. :func:`_keep` gives the rule of a line, and the stored
   text as one string must pass it too. It calls the rules of
   ``acb_common.assistant_profile`` and copies none of them. An answer that
   does not parse gives None, so the job writes nothing.
+* The strict digit rule (PZ-33b, :func:`digit_runs`): each character that is
+  not a letter joins two digits, and a run of 6 digits or more must be a run
+  that the member typed. Digits of each script count, after NFKD.
 
-The module imports no litellm and no streamed completion. PZ-33b makes the
+**The seed and the reads of the job (PZ-33b).** :func:`seed` is the
+``worker.seed_hooks`` hook of the job queue, as ``brief/planner.seed`` is. It
+takes the org from the worker and opens its own short sessions, because a
+seed hook must. It reads the idle chats with :data:`IDLE_SQL`, and it
+enqueues the kind :data:`KIND` with the payload ``{session_id, through}``
+only. :func:`read_job_chat` is the read of the handler. Both SQL texts name
+the column, so they live here. The handler, the prompt and the model call
+live in ``gateway/chat_summary_job.py``.
+
+**The read of the briefing (PZ-34).** :func:`recent` gives the newest
+summaries of the member's other chats to the executor, which shows them at
+the start of a chat (``personalization.md`` §15.4). It reads the flag, the
+switch and the rules of this module, and copies none of them.
+
+The module imports no litellm and no streamed completion. The job makes the
 one model call through ``acb_llm.context.acompletion_with_fallback`` with the
 Router on (§15.3). Fences: ``tests/unit/test_chat_summary.py``,
 ``tests/unit/test_chat_summary_private.py`` and
@@ -71,22 +96,35 @@ Router on (§15.3). Fences: ``tests/unit/test_chat_summary.py``,
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from acb_common import get_logger
 from acb_common.assistant_profile import (
+    APP_PREFERENCES,
+    APP_READ_SQL,
+    CONFIRM_DIGITS,
+    MEMBERS_APP_SQL,
+    TYPED_MAX,
+    chat_summary_for,
     confirm_form_without_token,
     fold,
     grounded,
     is_sensitive,
     needs_confirm,
     sensitive_terms,
+    stored_app_prefs,
+    stored_profile,
     typed_text,
+)
+from acb_common.assistant_profile import (
+    READ_SQL as PROFILE_READ_SQL,
 )
 from acb_common.pg_text import storable
 from sqlalchemy import text
@@ -96,6 +134,9 @@ from gateway.rooms import SOLO_ROOM_SQL
 
 #: The version of the stored shape.
 VERSION = 1
+#: The one agent that a summary covers: Mira (§15.3). The agent name is the
+#: ``author_email`` of each of her rows (``routes/chat.py::_attribute``).
+AGENT = "orchestrator"
 #: The caps of a summary (§15.3): the text, its sentences, the follow-ups
 #: and each follow-up.
 TEXT_MAX = 400
@@ -107,6 +148,12 @@ FOLLOW_UP_MAX = 120
 INPUT_MAX = 12_000
 #: The longest row id that a mark or a summary may name.
 THROUGH_MAX = 200
+#: The most characters of typed words that :func:`check_answer` grounds a
+#: line against in the job. The check is pure Python on the event loop of the
+#: shared worker, and its time grows with the words: about 0.4 s for 20,000
+#: characters and 12 s for 520,000, measured on 2026-11-02. A thread shares the
+#: GIL with the loop, so it would not bound the work. This cap does.
+WORDS_MAX = 24_000
 
 #: The id of the brief row of a day, as ``routes/chat_brief.brief_message_id``
 #: makes it. ``tests/unit/test_chat_summary.py`` holds the two together.
@@ -119,12 +166,10 @@ _ROW_BREAK = "\n;\n"
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
 #: The form of a stored time.
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
-#: One to three marks between two digits, with spaces around them or not.
-#: ``needs_confirm`` reads only a space, a dot, a dash and a bracket as a
-#: number joint. So for this check "98450/12345", "98450 – 12345",
-#: "98450! 12345" and "984, 501, 2345" each read as one number (review rounds
-#: 1 and 2). An underscore counts too, as it did in round 1.
-_DIGIT_JOINT = re.compile(r"(?<=\d)\s*(?:[^\w\s]|_){1,3}\s*(?=\d)")
+#: The fewest digits of a run that the member must have typed (the strict
+#: digit rule of PZ-33b, :func:`digit_runs`). The profile guard counts the
+#: same number of digits (``assistant_profile.CONFIRM_DIGITS``).
+RUN_DIGITS = CONFIRM_DIGITS
 #: A domain in words behind the end of a sentence: "acme. Example dot com".
 #: ``needs_confirm`` reads a domain in words only after "at". It runs on
 #: folded text.
@@ -159,12 +204,23 @@ def is_brief_row(row: Any) -> bool:
 
 
 def _is_member_row(row: Any, member: Any) -> bool:
-    """True when *row* is a turn of *member*. In a solo chat only the member
-    writes a ``user`` row. A row that names another author never counts.
+    """True when *row* is a turn that *member* typed. In a solo chat only the
+    member writes a ``user`` row. A row that names another author never
+    counts.
+
+    ⚠️ The ONE typed mark (D-PZ-37, the owner on 2026-11-02): only a row
+    whose ``member_typed`` is ``True`` counts. The run route stores it when
+    the member typed the message in the message box
+    (``routes/agent.py::_write_prompt_row``). A tapped pill, a choice, a card
+    action, a feed starter and the Fix prompt store False. A row that no run
+    request saved, and each row from before migration 337, reads NULL. So
+    each of them counts for nothing.
 
     A card answer never counts. Its text quotes the question of the card,
     which the model wrote, so it grounds nothing (``routes/agent.py``)."""
     if _field(row, "role") != "user" or is_brief_row(row):
+        return False
+    if _field(row, "member_typed") is not True:
         return False
     if is_card_answer_text(str(_field(row, "content") or "").strip()):
         return False
@@ -174,19 +230,13 @@ def _is_member_row(row: Any, member: Any) -> bool:
     return not author or author == _key(member)
 
 
-def _is_mira_row(row: Any) -> bool:
-    """True when *row* is a reply of the agent, and not the brief row."""
-    if _field(row, "role") != "assistant" or is_brief_row(row):
-        return False
-    return _field(row, "author_kind") in (None, "", "agent")
-
-
 def member_texts(rows: Iterable[Any], member: Any) -> list[str]:
     """The typed text of each row of *member*, oldest first.
 
-    A row counts only through ``typed_text``. A pasted mail, a text of more
-    than 1,500 characters and an empty row give nothing. The count of the
-    list is the count of typed rows that the idle rule of PZ-33b reads."""
+    A row counts only with the typed mark (:func:`_is_member_row`, D-PZ-37)
+    and through ``typed_text``. A pasted mail, a text of more than 1,500
+    characters and an empty row give nothing. The count of the list is the
+    count of typed rows that the idle rule of PZ-33b reads."""
     out: list[str] = []
     for row in rows:
         if not _is_member_row(row, member):
@@ -197,72 +247,216 @@ def member_texts(rows: Iterable[Any], member: Any) -> list[str]:
     return out
 
 
-def member_words(rows: Iterable[Any], member: Any) -> str:
+def member_words(rows: Iterable[Any], member: Any, *, limit: int | None = None) -> str:
     """The typed words of *member* in the chat. :func:`check_answer` grounds
-    a line against them. ``""`` grounds nothing."""
-    return _ROW_BREAK.join(member_texts(rows, member))
+    a line against them. ``""`` grounds nothing.
+
+    With *limit*, the newest whole rows that fit in *limit* characters, and
+    no part of a row: a cut row could hold the first digits of a number as a
+    run that the member never typed. A typed row is shorter than
+    :data:`WORDS_MAX`, so the newest row always fits."""
+    texts = member_texts(rows, member)
+    if limit is not None:
+        kept: list[str] = []
+        room = max(0, int(limit))
+        for words in reversed(texts):
+            if len(words) > room:
+                break
+            kept.append(words)
+            room -= len(words) + len(_ROW_BREAK)
+        texts = kept[::-1]
+    return _ROW_BREAK.join(texts)
 
 
 def prompt_rows(rows: Iterable[Any], member: Any, *,
-                limit: int = INPUT_MAX) -> list[tuple[str, str]]:
-    """The rows that may reach the model, as ``(who, words)``, oldest first.
+                limit: int = INPUT_MAX) -> list[str]:
+    """The words that may reach the model, oldest first: the typed text of each
+    row of *member* (:func:`member_texts`), and nothing else.
 
-    *rows* are in time order, oldest first. *who* is ``"member"`` or
-    ``"mira"``. A row of the member gives its typed text only. A row of Mira
-    gives its ``content`` only, so no tool event, reasoning or custom event
-    goes in. A system row and the brief row give nothing.
+    The owner decided on 2026-11-02 that the prompt holds the member's own
+    words only. A reply of Mira can restate a mail, a CRM record, a WhatsApp
+    message or a tool answer, and no list of tools can tell which. So no row
+    of Mira, no tool text, no card answer and no row of another author goes
+    in (D-PZ-28).
 
-    The rows hold at most *limit* characters. The newest rows go in first,
+    The words hold at most *limit* characters. The newest rows go in first,
     and the oldest row that goes in can lose its end."""
-    chosen: list[tuple[str, str]] = []
-    for row in rows:
-        if _is_member_row(row, member):
-            words = typed_text(_field(row, "content")).strip()
-            who = "member"
-        elif _is_mira_row(row):
-            content = _field(row, "content")
-            words = content.strip() if isinstance(content, str) else ""
-            who = "mira"
-        else:
-            continue
-        if words:
-            chosen.append((who, words))
-    kept: list[tuple[str, str]] = []
+    kept: list[str] = []
     room = max(0, int(limit))
-    for who, words in reversed(chosen):
+    for words in reversed(member_texts(rows, member)):
         if room <= 0:
             break
         part = words[:room]
-        kept.append((who, part))
+        kept.append(part)
         room -= len(part)
     kept.reverse()
     return kept
 
 
-def _one_line(value: str) -> str:
+def _no_format(value: str) -> str:
     """*value* with each format character taken out, such as a zero-width
-    space, and each run of white space as one space."""
-    plain = "".join(ch for ch in value if unicodedata.category(ch) != "Cf")
-    return " ".join(plain.split())
+    space."""
+    return "".join(ch for ch in value if unicodedata.category(ch) != "Cf")
+
+
+def _one_line(value: str) -> str:
+    """*value* with no format character, and each run of white space as one
+    space."""
+    return " ".join(_no_format(value).split())
 
 
 def sentences(value: str) -> list[str]:
-    """The sentences and lines of *value*, each on one line, none empty."""
-    return [s for s in (_one_line(p) for p in _SENTENCE_END.split(value)) if s]
+    """The sentences and lines of *value*, each on one line, none empty. The
+    format characters go before the split, so a zero-width space cannot hide
+    the end of a sentence from the cap."""
+    return [s for s in (_one_line(p) for p in _SENTENCE_END.split(_no_format(value))) if s]
 
 
-def _joint(text: str) -> str:
-    """*text* with each mark of :data:`_DIGIT_JOINT` as a dash. Each typed
-    row keeps its own joints: the row break stays, so two rows never join
-    into one number."""
-    return _ROW_BREAK.join(_DIGIT_JOINT.sub("-", part) for part in text.split(_ROW_BREAK))
+# ── The strict digit rule (PZ-33b) ──────────────────────────────────────────
+#
+# Three review rounds of PZ-33a each found a new mark between two digit groups
+# that the rule of a joint missed, such as "98450!!!!12345" or "98450 , ,
+# 12345". So PZ-33b reads digits in one way only: each character that is not a
+# real letter joins two digits. A real letter is a character of the Unicode
+# category L, less the letters that read as marks (:func:`_reads_as_mark`). A
+# space, a mark, a symbol, an underscore, a format character and a line break
+# each join. A run of RUN_DIGITS digits or more must be a run of the member's
+# typed words, read the same way. So a time range, a date or a price of six
+# digits or more that the member did not type drops too. The agent accepted
+# that cost for a private summary of two or three lines. A real letter ends a
+# run, so "98450x12345" is two runs. That is the agent's call too, and the
+# owner may overrule it (`personalization.md` §15.9).
+
+#: The letters of the category Lo that read as a mark: the click letters read
+#: as a bar, a double bar, a cross and a bang.
+_MARK_LETTERS = frozenset("\u01c0\u01c1\u01c2\u01c3")
+
+
+def _reads_as_mark(ch: str) -> bool:
+    """True for a letter that a reader sees as a mark, so it joins two digits:
+    a modifier letter (Lm), such as U+02D0, U+30FC and U+FF70, and each of
+    :data:`_MARK_LETTERS`."""
+    return ch in _MARK_LETTERS or unicodedata.category(ch) == "Lm"
+
+
+def _read_digits(value: str) -> str:
+    """*value* after NFKD, with each digit of any script as an ASCII digit.
+    So a fullwidth, an Arabic-Indic, a Devanagari, a superscript and a
+    circled digit each read as the digit that it shows.
+
+    A character is a letter only when its OWN category is a letter. NFKD turns
+    some symbols into letters (U+2122 to "TM", U+2116 to "No", U+2160 to "I"), and a
+    letter ends a digit run. So a character that is not a real letter keeps
+    its own form, or gives its digits only, and never a letter. A letter that
+    reads as a mark stays as it is, because NFKD turns some of them into real
+    letters (U+02B0 to "h")."""
+    out: list[str] = []
+    for raw in value:
+        if _reads_as_mark(raw):
+            out.append(raw)
+            continue
+        parts = unicodedata.normalize("NFKD", raw)
+        if unicodedata.category(raw).startswith("L"):
+            out.append(parts)
+            continue
+        digits = [unicodedata.digit(ch, None) for ch in parts]
+        if all(d is None for d in digits):
+            out.append(raw)
+            continue
+        for ch, digit in zip(parts, digits, strict=True):
+            if digit is not None:
+                out.append(str(digit))
+            elif not unicodedata.category(ch).startswith("L"):
+                out.append(ch)
+    return "".join(out)
+
+
+def _is_letter(ch: str) -> bool:
+    """True for a real letter, which ends a digit run."""
+    return unicodedata.category(ch).startswith("L") and not _reads_as_mark(ch)
+
+
+def digit_runs(value: Any) -> list[str]:
+    """Each run of digits in *value*, in order, as ASCII digits only.
+
+    The digits are read through :func:`_read_digits`. Each character between
+    two digits that is not a real letter joins them into one run. A real
+    letter ends a run. So "98450!!!!12345", "98450 , , 12345", "98450\u02d012345"
+    and "98450\\n12345" are each the one run "9845012345", and "98450x12345"
+    is two runs."""
+    runs: list[str] = []
+    run: list[str] = []
+    for ch in _read_digits(str(value or "")):
+        if "0" <= ch <= "9":
+            run.append(ch)
+        elif _is_letter(ch) and run:
+            runs.append("".join(run))
+            run = []
+    if run:
+        runs.append("".join(run))
+    return runs
+
+
+def _typed_runs(words: str) -> set[str]:
+    """The digit runs of the member's typed words. Each typed row is read
+    alone, so two rows never join into one run (:data:`_ROW_BREAK`)."""
+    return {run for part in words.split(_ROW_BREAK) for run in digit_runs(part)}
+
+
+def _long_runs(line: str) -> list[str]:
+    return [run for run in digit_runs(line) if len(run) >= RUN_DIGITS]
+
+
+def _runs_typed(line: str, words: str) -> bool:
+    """True when each run of :data:`RUN_DIGITS` digits or more in *line* is a
+    whole run of the member's typed words. The digit strings must be equal:
+    a part of a longer typed run does not count."""
+    long = _long_runs(line)
+    return not long or set(long) <= _typed_runs(words)
+
+
+def _one_number(text: str) -> str:
+    """*text* with each digit run of :func:`digit_runs` as one number of
+    ASCII digits: the characters between two digits of a run go. A joint
+    that holds an "@" stays, so an address keeps its shape.
+
+    ``grounded`` reads a number across a space, a dot, a dash and a bracket
+    only. Both of its sides go through this function first, so a number
+    that the member typed with other marks still matches."""
+    out: list[str] = []
+    held: list[str] = []
+    in_run = False
+    for ch in _read_digits(text):
+        if "0" <= ch <= "9":
+            if not (in_run and "@" not in held):
+                out.extend(held)
+            held = []
+            out.append(ch)
+            in_run = True
+        elif _is_letter(ch):
+            out.extend(held)
+            held = []
+            out.append(ch)
+            in_run = False
+        elif in_run:
+            held.append(ch)
+        else:
+            out.append(ch)
+    out.extend(held)
+    return "".join(out)
+
+
+def _one_number_words(words: str) -> str:
+    """:func:`_one_number` of each typed row alone. The row break stays, so
+    two rows never join into one number."""
+    return _ROW_BREAK.join(_one_number(part) for part in words.split(_ROW_BREAK))
 
 
 def _flagged(line: str) -> bool:
-    """True when *line* holds a sensitive word, an address, a link, a long
-    number (:func:`_joint`) or a domain in words behind the end of a
-    sentence (:data:`_SPOKEN_DOT`)."""
-    return (is_sensitive(line) or needs_confirm(line) or needs_confirm(_joint(line))
+    """True when *line* holds a sensitive word, an address, a link, a run of
+    :data:`RUN_DIGITS` digits or more (:func:`digit_runs`), or a domain in
+    words behind the end of a sentence (:data:`_SPOKEN_DOT`)."""
+    return (is_sensitive(line) or needs_confirm(line) or bool(_long_runs(line))
             or _SPOKEN_DOT.search(fold(line)) is not None)
 
 
@@ -270,9 +464,11 @@ def _keep(line: str, words: str) -> bool:
     """True when the summary may store *line*. A line that is not flagged
     stays. A flagged line stays only when each of these holds:
 
-    * the typed words of the member hold the line (``grounded``). Both sides
-      read each number through :func:`_joint`, so "98450 – 12345" needs the
-      member to have typed that one number;
+    * each long digit run of the line is a run of the typed words of the
+      member (:func:`_runs_typed`, the strict digit rule);
+    * the typed words hold the line (``grounded``). Both sides read each
+      number through :func:`_one_number`, so a typed number matches in any
+      marks;
     * they hold each sensitive term of the line (``sensitive_terms``). So 80%
       of the words of a line is not enough when the member never typed the
       sensitive word itself;
@@ -284,7 +480,9 @@ def _keep(line: str, words: str) -> bool:
     stores what the member did not say (D-PZ-16, D-PZ-28)."""
     if not _flagged(line):
         return True
-    if not grounded(_joint(line), _joint(words)):
+    if not _runs_typed(line, words):
+        return False
+    if not grounded(_one_number(line), _one_number_words(words)):
         return False
     if not sensitive_terms(line) <= sensitive_terms(words):
         return False
@@ -333,7 +531,7 @@ def _parse(raw: Any) -> dict[str, Any] | None:
         return None
     try:
         data = json.loads(raw[start:end + 1])
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
     return data if isinstance(data, dict) else None
 
@@ -356,6 +554,10 @@ def check_answer(raw: Any, words: Any) -> Answer | None:
       line drops, even a grounded one, and the check runs again. If it still
       fails, a form crosses the end of a line, and the answer gives None.
     * With no text and no follow-up left, the answer gives None.
+
+    It never raises on an answer of the model. :func:`sentences` cuts the
+    text before these steps, and each kept line holds no sentence end, so the
+    joined text holds as many sentences as lines, and :class:`Answer` takes it.
     """
     data = _parse(raw)
     if data is None:
@@ -405,6 +607,25 @@ class Stored:
     #: The intent mark of the job: the row id that it started on, and when.
     mark_through: str | None = None
     mark_at: str | None = None
+    #: The time of the row of the mark. A paid call that stored nothing leaves
+    #: no ``through_ms``, and this keeps its waterline.
+    mark_ms: int | None = None
+
+    @property
+    def waterline(self) -> int | None:
+        """The newest row time that a summary, a clear or a paid call covers.
+        A next try needs a new turn of the member after it."""
+        return _waterline(self.through_ms, self.mark_ms)
+
+
+def _opt_ms(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _waterline(*values: Any) -> int | None:
+    """The newest of *values*. A value of another type reads as absent."""
+    times = [ms for ms in map(_opt_ms, values) if ms is not None]
+    return max(times, default=None)
 
 
 def _opt_text(value: Any) -> str | None:
@@ -427,16 +648,16 @@ def stored(raw: Any) -> Stored | None:
         return Stored(off=True)
     items = raw.get("follow_ups")
     follow = tuple(i for i in items if isinstance(i, str)) if isinstance(items, list) else ()
-    ms = raw.get("through_ms")
     intent = raw.get("mark") if isinstance(raw.get("mark"), dict) else {}
     return Stored(
         text=raw["text"] if isinstance(raw.get("text"), str) else "",
         follow_ups=follow,
         through=_opt_text(raw.get("through")),
-        through_ms=ms if isinstance(ms, int) and not isinstance(ms, bool) else None,
+        through_ms=_opt_ms(raw.get("through_ms")),
         at=_opt_text(raw.get("at")),
         mark_through=_opt_text(intent.get("through")),
         mark_at=_opt_text(intent.get("at")),
+        mark_ms=_opt_ms(intent.get("through_ms")),
     )
 
 
@@ -496,7 +717,14 @@ _CLEARED = f"""CASE WHEN {_OFF}
 READ_SQL = "SELECT member_summary FROM chat_session WHERE id = :sid"
 
 #: The intent mark of the job. It keeps the summary that is there, and a
-#: chat that reads `off` does not change.
+#: chat that reads `off` does not change. A mark of the same row refuses: a
+#: claim that lost its lease and the claim after it can both read no mark,
+#: and only one of them may make the call. A chat whose `through` names the
+#: row refuses too: a clear takes the mark away and leaves `through`, so a
+#: Forget or a Delete just before the mark must win, and no call may run on
+#: the rows that it covered. Row ids alone are not enough: a new row can come
+#: before the clear, and the clear then names that row. So a chat whose stored
+#: `through_ms` is at or after the time of the marked row refuses too.
 MARK_SQL = f"""
 UPDATE chat_session
    SET member_summary =
@@ -504,10 +732,18 @@ UPDATE chat_session
              THEN member_summary ELSE CAST('{{}}' AS jsonb) END)
        || jsonb_build_object(
               'v', {VERSION},
-              'mark', jsonb_build_object('through', CAST(:through AS text),
-                                         'at', CAST(:at AS text)))
+              'mark', jsonb_strip_nulls(jsonb_build_object(
+                          'through', CAST(:through AS text),
+                          'through_ms', CAST(:through_ms AS bigint),
+                          'at', CAST(:at AS text))))
  WHERE id = :sid
    AND NOT {_OFF}
+   AND (member_summary -> 'mark' ->> 'through') IS DISTINCT FROM CAST(:through AS text)
+   AND (member_summary ->> 'through') IS DISTINCT FROM CAST(:through AS text)
+   AND NOT COALESCE(
+         CASE WHEN jsonb_typeof(member_summary -> 'through_ms') = 'number'
+              THEN CAST(member_summary ->> 'through_ms' AS numeric) END
+         >= CAST(:through_ms AS bigint), false)
 RETURNING id
 """
 
@@ -531,7 +767,8 @@ WRITE_MARKED_SQL = (
     + "RETURNING id\n"
 )
 
-#: The Delete of the member. No later mark or write changes the chat.
+#: The guard ``off``: no later mark or write changes the chat. No route writes
+#: it since D-PZ-33, because a Delete leaves a waterline instead.
 OFF_SQL = f"""
 UPDATE chat_session
    SET member_summary = jsonb_build_object('v', {VERSION}, 'off', true)
@@ -619,13 +856,10 @@ def _member_key(member: Any) -> str:
     return who
 
 
-async def list_for_member(db: Any, member: str, limit: int = LIST_MAX) -> list[Listed]:
-    """The summaries of the solo chats of *member*, newest first, at most
-    *limit* (50 at most). A chat that reads ``off`` and a chat with no text
-    and no follow-up stay out. The member comes from the session."""
-    cap = max(1, min(int(limit), LIST_MAX + 1))
-    rows = (await db.execute(text(LIST_FOR_MEMBER_SQL),
-                             {"member": _member_key(member), "lim": cap})).fetchall()
+def _listed(rows: Iterable[Any]) -> list[Listed]:
+    """The rows ``(id, title, updated_at, member_summary)`` of a member read
+    as :class:`Listed`. A chat that reads ``off`` and a chat with no text and
+    no follow-up stay out. Settings and the briefing read through it."""
     out: list[Listed] = []
     for row in rows:
         one = stored(row[3])
@@ -634,6 +868,16 @@ async def list_for_member(db: Any, member: str, limit: int = LIST_MAX) -> list[L
         out.append(Listed(session_id=str(row[0]), title=str(row[1] or ""),
                           updated_at=row[2], text=one.text, follow_ups=one.follow_ups))
     return out
+
+
+async def list_for_member(db: Any, member: str, limit: int = LIST_MAX) -> list[Listed]:
+    """The summaries of the solo chats of *member*, newest first, at most
+    *limit* (50 at most). A chat that reads ``off`` and a chat with no text
+    and no follow-up stay out. The member comes from the session."""
+    cap = max(1, min(int(limit), LIST_MAX + 1))
+    rows = (await db.execute(text(LIST_FOR_MEMBER_SQL),
+                             {"member": _member_key(member), "lim": cap})).fetchall()
+    return _listed(rows)
 
 
 async def clear_one_for_member(db: Any, session_id: str, member: str) -> bool:
@@ -653,12 +897,20 @@ async def read(db: Any, session_id: str) -> Stored | None:
     return None if row is None else stored(row[0])
 
 
-async def mark(db: Any, session_id: str, *, through: str, at: datetime) -> bool:
+async def mark(db: Any, session_id: str, *, through: str, at: datetime,
+               through_ms: int | None = None) -> bool:
     """Set the intent mark of the job on the chat: the newest row id that it
     starts on, and the time. The summary that is there stays. Answers False
-    when no chat has the id, and when the chat reads ``off``."""
+    when no chat has the id, when the chat reads ``off``, when the mark
+    already names *through* (another claim holds that call), and when
+    ``through`` already names it or ``through_ms`` is at or after
+    *through_ms* (a summary, a Delete or a Forget covers it).
+
+    *through_ms* is the time of that row. It stays in the mark, so a paid call
+    that stores nothing still leaves a waterline (:attr:`Stored.waterline`)."""
     row = (await db.execute(text(MARK_SQL), {
-        "sid": session_id, "through": _through(through), "at": _stamp(at)})).first()
+        "sid": session_id, "through": _through(through), "at": _stamp(at),
+        "through_ms": through_ms})).first()
     return row is not None
 
 
@@ -666,8 +918,8 @@ async def write_marked(db: Any, session_id: str, answer: Answer, *, through: str
                        through_ms: int, at: datetime) -> bool:
     """Store *answer* only while the mark of the chat names *through*.
 
-    The mark is in the WHERE, so a Delete (:func:`turn_off`) after the mark
-    wins, and this changes nothing. A newer mark wins too. Answers True when
+    The mark is in the WHERE, so a Delete or a Forget after the mark wins,
+    and this changes nothing. A newer mark wins too. Answers True when
     the summary is stored."""
     row = (await db.execute(text(WRITE_MARKED_SQL), {
         "sid": session_id,
@@ -678,8 +930,8 @@ async def write_marked(db: Any, session_id: str, answer: Answer, *, through: str
 
 
 async def turn_off(db: Any, session_id: str) -> bool:
-    """The Delete of the member: the chat reads ``{"v": 1, "off": true}``,
-    and no later mark or write changes it. Answers False when no chat has
+    """The guard ``off``: the chat reads ``{"v": 1, "off": true}``, and no
+    later mark or write changes it. No route calls it since D-PZ-33. Answers False when no chat has
     the id. The caller checks that the chat is the member's own."""
     row = (await db.execute(text(OFF_SQL), {"sid": session_id})).first()
     return row is not None
@@ -710,3 +962,440 @@ def clear_on_share(s: Any, session_id: str) -> bool:
     ``off`` stays ``off``. Answers True when a summary was cleared.
     """
     return s.execute(text(CLEAR_ON_SHARE_SQL), {"sid": session_id}).first() is not None
+
+
+# ── The job of PZ-33b: the kind, the seed and the read of the handler ────────
+#
+# Spec: personalization.md §15.3 ("When a chat is idle", "Which job writes
+# it") and docs/job_queue.md §5a and §5c. The handler, the prompt and the
+# model call are in gateway/chat_summary_job.py, which registers the kind
+# and adds :func:`seed` to ``worker.seed_hooks``.
+
+_log = get_logger("assistant.chat_summary")
+
+#: The kind of the job queue that writes a summary (§15.3).
+KIND = "assistant.chat_summary"
+#: The tries of one job. A retry is safe, because the handler reads its mark
+#: first and makes no second call (``docs/job_queue.md`` §5a).
+ATTEMPTS = 3
+#: A chat is idle this long after its newest row (D-PZ-26).
+IDLE = timedelta(minutes=30)
+#: The seed reads only the chats with a row in this window (§15.3).
+WINDOW = timedelta(days=7)
+#: The slack of the cheap filter of :data:`IDLE_SQL` on ``updated_at`` (PZ-33b
+#: round 4). Each new row moves ``updated_at`` to the server time of its
+#: insert (``routes/chat.py::_TOUCH_SESSION_SQL``). The time of a row is the
+#: browser clock, and a first checkpoint can move it later while the row is
+#: empty. So the filter reads one more day back than the window, and it keeps
+#: each chat that the exact rule keeps while no row is more than one day
+#: ahead of its insert. A chat with a row further ahead gets no summary,
+#: which is the safe way to fail.
+IDLE_SLACK = timedelta(days=1)
+#: The most jobs that one seed enqueues for one org (§15.3). The worker runs
+#: the orgs in turn, and one job at a time (``jobs/worker.py``). So 20 slow
+#: calls of one org would hold the worker for minutes, and the ``brief.run``
+#: of another org would start late. With ``chat_summary_job.CALL_TIMEOUT_S``,
+#: 5 chats hold the worker for at most 150 seconds in a tick.
+SUMMARY_SEED_MAX = 5
+#: The most candidate chats that one seed reads. The typed-row rule and the
+#: status of the member run in Python, so the SQL reads more chats than the cap.
+SEED_SCAN_MAX = 60
+#: The newest short rows of the member that the seed reads for each chat.
+SEED_ROWS = 20
+#: The fewest typed rows of the member that a chat needs (§15.3).
+TYPED_ROWS_MIN = 2
+#: The most rows of one chat that the handler reads, the newest first.
+JOB_ROWS_MAX = 400
+#: The app and the key of the member's switch, "Keep chat summaries"
+#: (PZ-35, §15.5). A missing value reads as on.
+SWITCH_APP = "chat"
+SWITCH_KEY = "summaries"
+
+#: True when the chat `s` is one that a summary may cover: a chat of the
+#: bound org with Mira on the web, not archived, not deleted by the member
+#: (`off`), and solo (`rooms.SOLO_ROOM_SQL`). No other agent is in the chat.
+#: A member can add a mentioned agent to a solo chat, and the chat stays
+#: solo (`routes/rooms.py`), so `s.agent_name` alone is not enough. An agent
+#: that left keeps its rows, so the rows count too. A NULL kind of an
+#: `assistant` row reads as an agent, as `routes/chat.py` reads it. It binds
+#: no parameter.
+ELIGIBLE_SQL = f"""(
+        s.organization_id = {_BOUND_ORG}
+        AND s.agent_name = '{AGENT}'
+        AND s.channel IS NULL
+        AND s.archived_at IS NULL
+        AND NOT COALESCE(s.member_summary @> jsonb_build_object('off', true), false)
+        AND NOT EXISTS (
+            SELECT 1 FROM chat_session_agent ag
+             WHERE ag.session_id = s.id AND ag.agent_name <> '{AGENT}')
+        AND NOT EXISTS (
+            SELECT 1 FROM chat_message g
+             WHERE g.session_id = s.id
+               AND COALESCE(g.author_kind,
+                            CASE g.role WHEN 'assistant' THEN 'agent' END) = 'agent'
+               AND COALESCE(NULLIF(g.author_email, ''), '{AGENT}') <> '{AGENT}')
+        AND {SOLO_ROOM_SQL}
+    )"""
+
+#: True when an agent row of the chat `s` is not sealed: a run is open
+#: (migration 220, `run_final_at`).
+OPEN_RUN_SQL = """EXISTS (
+        SELECT 1 FROM chat_message o
+         WHERE o.session_id = s.id AND o.role = 'assistant'
+           AND o.run_final_at IS NULL)"""
+
+#: The idle chats of the bound org that need a summary, the newest first.
+#: The newest row is between `:since_ms` and `:idle_ms`, no run is open, the
+#: newest row id is neither `through` nor `mark.through`, and the chat holds
+#: `:typed_min` short user rows with the typed mark or more (D-PZ-37). The
+#: seed then counts the typed rows of the member in Python (`member_texts`).
+#: `through_ms` is the waterline that a summary, a Delete or a Forget left,
+#: and `mark_ms` is the one that a paid call left. One statement, with the
+#: window in the WHERE. Round 2 ran the window first in a MATERIALIZED step,
+#: because the mail rule read the JSON of each agent row. That rule is gone.
+#:
+#: ⚠️ `s.updated_at >= :since` (PZ-33b round 4) is a cheap filter. The plan
+#: was measured on a database with `chat_session_org_idx`, which only
+#: `infra/postgres/generated/03_constraints.sql` (the phase-3 set that a
+#: person applies) makes: a BitmapAnd of it and `chat_session_user_idx
+#: (user_id, updated_at DESC)`. Without it the planner reads
+#: `chat_session_user_idx` or scans `chat_session`, which is cheap at today's
+#: size, and the filter still runs before the LATERAL. It keeps a
+#: superset of the chats that the LATERAL keeps, and the LATERAL stays the
+#: exact rule. Each new row moves `updated_at` (`routes/chat.py::
+#: _TOUCH_SESSION_SQL`), and `:since` is the window less `IDLE_SLACK`. Without
+#: it, each tick read every Mira chat of the org. On 8,000 chats with 300 in
+#: the window it took 9.8 s, and with it 28 ms (measured 2026-11-02, §15.3).
+IDLE_SQL = f"""
+SELECT s.id, s.user_id, newest.id AS newest_id, newest.timestamp_ms AS newest_ms,
+       s.member_summary -> 'through_ms' AS through_ms,
+       s.member_summary -> 'mark' -> 'through_ms' AS mark_ms
+  FROM chat_session s
+ CROSS JOIN LATERAL (
+       SELECT m.id, m.timestamp_ms FROM chat_message m
+        WHERE m.session_id = s.id
+        ORDER BY m.timestamp_ms DESC, m.id DESC
+        LIMIT 1) AS newest
+ WHERE s.updated_at >= :since
+   AND {ELIGIBLE_SQL}
+   AND newest.timestamp_ms BETWEEN :since_ms AND :idle_ms
+   AND newest.id IS DISTINCT FROM (s.member_summary ->> 'through')
+   AND newest.id IS DISTINCT FROM (s.member_summary -> 'mark' ->> 'through')
+   AND NOT {OPEN_RUN_SQL}
+   AND (SELECT count(*) FROM chat_message u
+         WHERE u.session_id = s.id AND u.role = 'user'
+           AND u.member_typed IS TRUE
+           AND length(u.content) <= :typed_max) >= :typed_min
+ ORDER BY newest.timestamp_ms DESC, s.id
+ LIMIT :scan
+"""
+
+#: The newest short user rows with the typed mark of each chat in `:sids`,
+#: `:rows` for each chat at most (D-PZ-37). RLS binds the tenant.
+SEED_ROWS_SQL = """
+SELECT r.session_id, r.id, r.role, r.content, r.author_kind, r.author_email,
+       r.timestamp_ms, r.member_typed
+  FROM (SELECT m.session_id, m.id, m.role, m.content, m.author_kind, m.author_email,
+               m.timestamp_ms, m.member_typed,
+               row_number() OVER (PARTITION BY m.session_id
+                                  ORDER BY m.timestamp_ms DESC, m.id DESC) AS k
+          FROM chat_message m
+         WHERE m.session_id = ANY(CAST(:sids AS text[])) AND m.role = 'user'
+           AND m.member_typed IS TRUE
+           AND length(m.content) <= :typed_max) AS r
+ WHERE r.k <= :rows
+"""
+
+#: The chat of one job: its member, the stored summary, and the two rules
+#: as booleans. A chat of another org gives no row (RLS and the bound org).
+JOB_CHAT_SQL = f"""
+SELECT s.user_id, s.member_summary, {ELIGIBLE_SQL} AS eligible,
+       {OPEN_RUN_SQL} AS open_run
+  FROM chat_session s
+ WHERE s.id = :sid
+   AND s.organization_id = {_BOUND_ORG}
+"""
+
+#: The newest `:rows` rows of one chat, oldest first, with the columns that
+#: the answer checks read and nothing else. `member_typed` is the typed mark
+#: (D-PZ-37). Only a row with the mark counts (`_is_member_row`).
+JOB_ROWS_SQL = """
+SELECT t.id, t.role, t.content, t.author_kind, t.author_email, t.timestamp_ms,
+       t.member_typed
+  FROM (SELECT m.id, m.role, m.content, m.author_kind, m.author_email, m.timestamp_ms,
+               m.member_typed
+          FROM chat_message m
+         WHERE m.session_id = :sid
+         ORDER BY m.timestamp_ms DESC, m.id DESC
+         LIMIT :rows) AS t
+ ORDER BY t.timestamp_ms, t.id
+"""
+
+
+def _ms(moment: datetime) -> int:
+    return int(moment.timestamp() * 1000)
+
+
+def idle_params(now: datetime) -> dict[str, Any]:
+    """The parameters of :data:`IDLE_SQL` at *now*. ``since`` is the cheap
+    filter on ``updated_at``: the window, less :data:`IDLE_SLACK`."""
+    return {
+        "since": now - WINDOW - IDLE_SLACK,
+        "since_ms": _ms(now - WINDOW), "idle_ms": _ms(now - IDLE),
+        "typed_max": TYPED_MAX, "typed_min": TYPED_ROWS_MIN,
+        "scan": SEED_SCAN_MAX,
+    }
+
+
+def rows_after(rows: Iterable[Any], through_ms: int | None) -> list[Any]:
+    """The rows of *rows* that the waterline *through_ms* does not cover. A
+    summary, a Delete, a Forget and a paid call each leave one. With no
+    waterline, each row. A chat with no typed row of the member here has
+    nothing new, such as a brief, a reminder, a card answer or a tapped pill
+    that came after a Delete. So it gets no call: the prompt holds the
+    member's words only. The caller counts the rows through
+    :func:`member_texts`, so only a row with the typed mark is new (D-PZ-37)."""
+    if through_ms is None:
+        return list(rows)
+    return [r for r in rows if int(_field(r, "timestamp_ms") or 0) > through_ms]
+
+
+def dedupe_key(session_id: str, through: str) -> str:
+    """``summary:<session_id>:<through>`` (§15.3). A key longer than the queue
+    takes (``queue.DEDUPE_CHARS``) becomes ``summary:`` and a SHA-256 of the
+    pair, so the same pair always gives the same key."""
+    from gateway.jobs.queue import DEDUPE_CHARS
+
+    key = f"summary:{session_id}:{through}"
+    if len(key) <= DEDUPE_CHARS:
+        return key
+    return "summary:" + hashlib.sha256(f"{session_id}\n{through}".encode()).hexdigest()
+
+
+def switch_on(stored: Any) -> bool:
+    """The member's switch "Keep chat summaries" in the stored ``apps.chat``
+    object of the profile. A missing value or a value of the wrong type reads
+    as on. When the profile declares the key (PZ-35, ``APP_PREFERENCES``),
+    its reader and its default decide."""
+    if SWITCH_KEY in APP_PREFERENCES.get(SWITCH_APP, {}):
+        return stored_app_prefs(stored, SWITCH_APP)[SWITCH_KEY] is True
+    if isinstance(stored, str):
+        try:
+            stored = json.loads(stored)
+        except ValueError:
+            return True
+    return not (isinstance(stored, dict) and stored.get(SWITCH_KEY) is False)
+
+
+async def member_switch_on(db: Any, org: str, member: str) -> bool:
+    """The switch of *member* in *org*, read through the one row rule of the
+    profile (``assistant_profile.APP_READ_SQL``). The caller resolved the
+    member from ``chat_session.user_id``, never from a payload."""
+    row = (await db.execute(text(APP_READ_SQL), {
+        "app": SWITCH_APP, "org": org, "m": member})).first()
+    return switch_on(None if row is None else row[1])
+
+
+async def member_learning_on(db: Any, org: str, member: str) -> bool:
+    """False when *member* turned "Let the assistant remember what I tell it"
+    off (``learning`` of the profile, §7 item 3). Off stops every write, and a
+    summary is a new note about the member, so the seed and the job skip
+    them. The kept summaries stay. This is an agent default that the owner
+    may overrule (§15.11, D-PZ-36). The read is the one profile row read
+    (``assistant_profile.READ_SQL``), and a member with no row has the
+    default, on."""
+    row = (await db.execute(text(PROFILE_READ_SQL), {"org": org, "m": member})).first()
+    return stored_profile(None if row is None else row[0])["learning"] is not False
+
+
+async def member_switches(db: Any, org: str) -> dict[str, bool]:
+    """The switch of each ACTIVE member of *org*, by address in lower case
+    (``assistant_profile.MEMBERS_APP_SQL``). A member who is not active is
+    not in the map."""
+    rows = (await db.execute(text(MEMBERS_APP_SQL), {"app": SWITCH_APP, "org": org})).all()
+    return {_key(r[0]): switch_on(r[1]) for r in rows}
+
+
+@dataclass(frozen=True)
+class JobChat:
+    """The chat of one job, as :func:`read_job_chat` reads it."""
+
+    member: str
+    stored: Stored | None
+    #: :data:`ELIGIBLE_SQL`: Mira on the web, not archived, not ``off``, solo.
+    eligible: bool
+    #: :data:`OPEN_RUN_SQL`: an agent row of the chat is not sealed.
+    open_run: bool
+    #: The newest rows of the chat, oldest first (:data:`JOB_ROWS_MAX`).
+    rows: tuple[Mapping[str, Any], ...]
+
+    @property
+    def newest_id(self) -> str | None:
+        return str(self.rows[-1]["id"]) if self.rows else None
+
+    @property
+    def newest_ms(self) -> int | None:
+        return int(self.rows[-1]["timestamp_ms"]) if self.rows else None
+
+
+async def read_job_chat(db: Any, session_id: str, *,
+                        rows: int = JOB_ROWS_MAX) -> JobChat | None:
+    """The chat *session_id* for the job, or None when the bound org has no
+    such chat. The member is ``chat_session.user_id``, with no outer space and
+    in lower case."""
+    head = (await db.execute(text(JOB_CHAT_SQL), {"sid": session_id})).first()
+    if head is None:
+        return None
+    found = (await db.execute(text(JOB_ROWS_SQL), {"sid": session_id, "rows": rows})).all()
+    return JobChat(
+        member=_key(head.user_id),
+        stored=stored(head.member_summary),
+        eligible=bool(head.eligible),
+        open_run=bool(head.open_run),
+        rows=tuple(dict(r._mapping) for r in found),
+    )
+
+
+async def _gone(org: str, member: str) -> bool | None:
+    """True when *member* left *org* (``my_day_loop.departed``), False when
+    they did not, and None when the read failed. A failed read does not say
+    that they left. The seed stops at it for this tick, so a slow identity
+    read costs a tick one read and not one for each member."""
+    from gateway.my_day_loop import departed
+
+    try:
+        return await departed(org, member) is not None
+    except Exception as exc:
+        _log.warning("assistant.chat_summary_member_check_failed", error=type(exc).__name__)
+        return None
+
+
+async def seed(org: str, now: datetime) -> None:
+    """The ``worker.seed_hooks`` hook of PZ-33b (§15.3, "Which job writes it").
+
+    It runs once for each org and 15-minute bucket. It enqueues one job of
+    :data:`KIND` for each idle chat, :data:`SUMMARY_SEED_MAX` at most, with
+    the payload ``{session_id, through}`` and the dedupe key of
+    :func:`dedupe_key`. It enqueues nothing when the flag is off for the org
+    (``chat_summary_for``), and nothing when ``acb_llm.routed.routing_is_on()``
+    is False: a call off the Router writes no usage row and draws no credit.
+
+    A chat gets a job when :data:`IDLE_SQL` selects it, its member is active
+    with the switch on (:func:`member_switches`) and learning on
+    (:func:`member_learning_on`), the newest short rows hold
+    :data:`TYPED_ROWS_MIN` typed rows of the member (:func:`member_texts`),
+    and a typed row is after the waterline (:func:`rows_after`). Then
+    ``my_day_loop.departed`` must say that the member did not leave. The first
+    failed read of it ends the loop for this tick (:func:`_gone`)."""
+    from acb_common.db import tenant_session
+    from acb_llm import routed
+
+    from gateway.jobs import queue
+
+    if not chat_summary_for(org) or not routed.routing_is_on():
+        return
+    async with tenant_session(org) as db:
+        found = (await db.execute(text(IDLE_SQL), idle_params(now))).all()
+        if not found:
+            return
+        typed: dict[str, list[Any]] = {}
+        for row in (await db.execute(text(SEED_ROWS_SQL), {
+                "sids": [str(c.id) for c in found], "typed_max": TYPED_MAX,
+                "rows": SEED_ROWS})).all():
+            typed.setdefault(str(row.session_id), []).append(row)
+        switches = await member_switches(db, org)
+        learns = {member: await member_learning_on(db, org, member)
+                  for member in {_key(c.user_id) for c in found}}
+    picked: list[Any] = []
+    left: dict[str, bool] = {}
+    for chat in found:
+        member = _key(chat.user_id)
+        newest = str(chat.newest_id)
+        # A blank row id would raise in the mark, and each try would fail.
+        if ("@" not in member or not switches.get(member, False)
+                or not learns.get(member, False) or not newest.strip()
+                or len(newest) > THROUGH_MAX):
+            continue
+        rows = typed.get(str(chat.id), [])
+        if len(member_texts(rows, member)) < TYPED_ROWS_MIN:
+            continue
+        if not member_texts(rows_after(rows, _waterline(chat.through_ms, chat.mark_ms)), member):
+            continue
+        if member not in left:
+            left[member] = await _gone(org, member)
+        if left[member] is None:
+            break
+        if left[member]:
+            continue
+        picked.append(chat)
+        if len(picked) >= SUMMARY_SEED_MAX:
+            break
+    if not picked:
+        return
+    new = 0
+    async with tenant_session(org) as db:
+        for chat in picked:
+            sid, through = str(chat.id), str(chat.newest_id)
+            out = await queue.enqueue(db, KIND, {"session_id": sid, "through": through},
+                                      dedupe_key=dedupe_key(sid, through),
+                                      max_attempts=ATTEMPTS, now=now)
+            new += int(out.created)
+    _log.info("assistant.chat_summary_seeded", chats=len(picked), new=new)
+
+
+# ── The briefing of PZ-34: the member's recent chats ─────────────────────────
+#
+# Spec: personalization.md §15.4 ("Only the member's own data"). The executor
+# (`orchestrator/executor.py::_prime_member_briefing`) is the one caller. It
+# shows the newest summaries of the member's OTHER chats at the start of a
+# chat. It lives after `ELIGIBLE_SQL`, because its SQL reads that rule.
+
+#: The most chats that the briefing reads.
+RECENT_MAX = 3
+
+#: The org that RLS binds for the caller's session, as text, or NULL.
+BOUND_ORG_SQL = f"SELECT CAST({_BOUND_ORG} AS text)"
+
+#: The member's own chats that the briefing may show, newest first: the solo
+#: chats of the member in the bound org (`_MINE`), each with a summary that
+#: holds a text or a follow-up (`_HAS_SUMMARY`), and each one that a summary
+#: may cover (`ELIGIBLE_SQL`: Mira on the web, not archived, not `off`, no
+#: other agent). The current chat stays out (`:exclude`). Named columns only
+#: (fence b), and no message text: the block passes the stored summary on.
+RECENT_SQL = (
+    "SELECT s.id, s.title, s.updated_at, s.member_summary FROM chat_session AS s"
+    + _MINE + _HAS_SUMMARY
+    + f"   AND {ELIGIBLE_SQL}\n"
+    + "   AND s.id <> :exclude\n"
+    + " ORDER BY s.updated_at DESC, s.id DESC LIMIT :lim"
+)
+
+
+async def recent(db: Any, member: str, *, exclude: str,
+                 limit: int = RECENT_MAX) -> list[Listed]:
+    """The newest summaries of the member's other chats, for the briefing.
+
+    *db* is a session that the caller opened with ``tenant_session(org)``.
+    The member comes from the run's verified member, never from a payload,
+    and *exclude* is the id of the current chat, which never shows. It reads
+    nothing and answers ``[]`` when the flag of PZ-33 is off for the bound org
+    (``chat_summary_for``), and when the member's switch "Keep chat
+    summaries" is off (:func:`member_switch_on`). Each other rule is one of
+    this module: :data:`RECENT_SQL` reads ``_MINE``, ``_HAS_SUMMARY`` and
+    :data:`ELIGIBLE_SQL`. At most :data:`RECENT_MAX` chats.
+
+    "Let the assistant remember" off does not hide a kept summary here
+    (D-PZ-38). The member hides one with Delete or with the switch.
+    """
+    who = _member_key(member)
+    cap = max(0, min(int(limit), RECENT_MAX))
+    if cap == 0:
+        return []
+    org = str((await db.execute(text(BOUND_ORG_SQL))).scalar() or "")
+    if not org or not chat_summary_for(org):
+        return []
+    if not await member_switch_on(db, org, who):
+        return []
+    rows = (await db.execute(text(RECENT_SQL), {
+        "member": who, "exclude": str(exclude or ""), "lim": cap})).fetchall()
+    return _listed(rows)

@@ -83,6 +83,7 @@ import {
 import { runReminderAct } from "@/lib/shell/reminderOpen";
 import { ShellJob } from "@/lib/shell/doJob";
 import { browserTimeZone } from "@/app/tasks/lib/utils";
+import { dueDays } from "@/lib/taskCard";
 import { zoneToSave } from "@/lib/shell/saveZone";
 
 export function CalendarView() {
@@ -357,12 +358,12 @@ export function CalendarView() {
     // eslint-disable-next-line react-hooks/purity
     const nowMs = Date.now();
     const horizon = nowMs + 14 * 86400000;
+    // Whole local days by RX-5's rule (`dueDays`): 0 is today, a negative
+    // count is overdue. A rounded-up count of hours called a task due tonight
+    // "due tomorrow", and a task three weeks late "due today".
     return unscheduled
       .filter((i) => i.dueAt && new Date(i.dueAt).getTime() <= horizon)
-      .map((i) => ({
-        item: i,
-        days: Math.ceil((new Date(i.dueAt as string).getTime() - nowMs) / 86400000),
-      }))
+      .map((i) => ({ item: i, days: dueDays(i.dueAt, nowMs) ?? 0 }))
       .sort((a, b) => a.days - b.days);
   }, [unscheduled]);
 
@@ -706,7 +707,7 @@ export function CalendarView() {
   );
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col bg-background">
+    <div className="relative isolate flex h-full min-h-0 flex-col bg-background">
       {/* The reader of `?date=&at=` (MD-3a). `useSearchParams` needs a
           Suspense boundary, and this one holds only the reader. */}
       <Suspense fallback={null}>

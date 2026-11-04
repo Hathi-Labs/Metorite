@@ -523,6 +523,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         _log.warning("gateway.brief_jobs_skipped", error=str(exc))
     try:
+        # The chat summary kind and its seed hook register at import (WS-63
+        # PZ-33b, gateway/chat_summary_job.py). Dark: the seed needs
+        # ASSISTANT_CHAT_SUMMARY_ORGS and the Router on. Its own try, as above.
+        from gateway import chat_summary_job  # noqa: F401
+    except Exception as exc:
+        _log.warning("gateway.chat_summary_jobs_skipped", error=str(exc))
+    try:
         # The stub of `align.check` registers at import (WS-ALN ALN-1,
         # gateway/align/check.py). Its own try, for the reason above.
         from gateway.align import check as _align_check  # noqa: F401
@@ -2129,6 +2136,17 @@ try:
     from gateway.routes.agent_apps import router as _agent_apps_router
 
     app.include_router(_agent_apps_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-MCP SW-31a — the org's written rules for agents
+    # (agent_coordination.md SW-31): the save, the history, the blocks that
+    # apply to a task, and the refs for `my_work`. Ships dark: 404 while
+    # `AGENT_GUIDANCE_ORGS` does not hold the caller's org.
+    from gateway.routes.agent_guidance import router as _agent_guidance_router
+
+    app.include_router(_agent_guidance_router)
 except Exception:  # pragma: no cover
     pass
 

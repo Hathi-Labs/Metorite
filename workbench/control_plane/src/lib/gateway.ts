@@ -50,6 +50,7 @@
 // (packages/acb_auth/acb_auth/access.py), so a stale role header cannot grant
 // access the member does not have.
 
+import { createHmac } from "node:crypto";
 import { NextResponse } from "next/server";
 import { auth, isAuthEnabled } from "@/auth";
 import { gatewayFetch } from "@/lib/gatewayFetch";
@@ -190,6 +191,77 @@ export function serviceHeaders(
 ): Record<string, string> {
   void reason;
   return { Authorization: `Bearer ${INTERNAL_TOKEN}`, ...extra };
+}
+
+// ── The direct proof of a Studio write (STU-B2c-1) ──────────────────────────
+//
+// A member's own Save, edit or move is the approval of that write. This server
+// is the one party that holds the member's session, so it signs a header that
+// the gateway action door checks (`acb_auth/direct_proof.py`). This file is the
+// ONLY reader of STUDIO_DIRECT_KEY in the workbench. The Python signer and this
+// one sign one string, and `tests/fixtures/studio_direct_proof_vector.json`
+// holds them equal.
+
+/** The header that carries the proof. */
+export const STUDIO_DIRECT_HEADER = "X-Studio-Direct";
+
+const MIN_DIRECT_KEY_BYTES = 32;
+const STUDIO_APP_ID = /^[0-9a-fA-F-]{36}$/;
+const STUDIO_ACTION_ID = /^[a-z][a-z0-9_]{0,47}$/;
+
+/**
+ * The key, or null when it counts as unset: under 32 bytes, or equal to the
+ * gateway token or the LiteLLM master key. Read at call time, so a test can set
+ * it.
+ */
+function studioDirectKey(): string | null {
+  const key = (process.env.STUDIO_DIRECT_KEY ?? "").trim();
+  if (Buffer.byteLength(key, "utf8") < MIN_DIRECT_KEY_BYTES) return null;
+  if (key === INTERNAL_TOKEN || key === (process.env.LITELLM_MASTER_KEY ?? "").trim()) {
+    return null;
+  }
+  return key;
+}
+
+/**
+ * The gateway path of an action call, `/studio/apps/<id>/actions/<action>`, or
+ * null for any other path. The segments are matched strictly, so the signed
+ * path is byte-for-byte the path that the gateway receives.
+ */
+export function studioActionPath(path: string[]): string | null {
+  if (path.length !== 4 || path[0] !== "apps" || path[2] !== "actions") return null;
+  if (!STUDIO_APP_ID.test(path[1]) || !STUDIO_ACTION_ID.test(path[3])) return null;
+  return `/studio/${path.join("/")}`;
+}
+
+/** The proof for one call: `v1.<seconds>.<hex HMAC-SHA256>`. */
+export function signStudioDirect(
+  key: string,
+  email: string,
+  method: string,
+  gatewayPath: string,
+  nowSeconds: number = Math.floor(Date.now() / 1000)
+): string {
+  const msg = `v1\n${nowSeconds}\n${email.trim().toLowerCase()}\n${method.toUpperCase()}\n${gatewayPath}`;
+  return `v1.${nowSeconds}.${createHmac("sha256", key).update(msg, "utf8").digest("hex")}`;
+}
+
+/**
+ * The proof header for a call, or an empty object. It signs a POST to the
+ * action route only, for a member, and only with a usable key. With no key the
+ * gateway refuses every direct write, so this slice stays dark.
+ */
+export function studioDirectHeaders(
+  email: string,
+  method: string,
+  path: string[],
+  nowSeconds?: number
+): Record<string, string> {
+  const key = studioDirectKey();
+  const where = studioActionPath(path);
+  const who = (email ?? "").trim();
+  if (!key || !where || !who || method.toUpperCase() !== "POST") return {};
+  return { [STUDIO_DIRECT_HEADER]: signStudioDirect(key, who, "POST", where, nowSeconds) };
 }
 
 /** 401 body shared by every route, so the client can branch on one shape. */

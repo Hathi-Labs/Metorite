@@ -83,8 +83,8 @@ describe("the old ids open My tasks with a chip", () => {
     expect(asChip(" Next ")).toBe("next");
   });
 
-  it("the chips are All, Today, Next, Waiting, Someday and Done", () => {
-    expect(MY_TASKS_CHIPS.map((c) => c.label)).toEqual(["All", "Today", "Next", "Waiting", "Someday", "Done"]);
+  it("the chips are All, New, Today, Next, Waiting, Someday and Done", () => {
+    expect(MY_TASKS_CHIPS.map((c) => c.label)).toEqual(["All", "New", "Today", "Next", "Waiting", "Someday", "Done"]);
   });
 });
 
@@ -121,6 +121,9 @@ const RULES: [string, ChipRow, MyTasksChip[]][] = [
   ["SOMEDAY", row({ disposition: "SOMEDAY" }), ["all", "someday"]],
   ["DONE, due today", row({ disposition: "DONE", due_at: "2026-10-27", completed_at: "2026-10-26T10:00:00Z" }), ["all", "done"]],
   ["INBOX", row({ disposition: "INBOX", is_mine: false }), ["all"]],
+  // D170 (INB-1): assigned, untriaged work shows as New. The server's `is_new` decides.
+  ["NEXT and mine, New (no disposition of mine yet)", row({ is_new: true }), ["all", "new", "next"]],
+  ["SOMEDAY by derivation, New", row({ disposition: "SOMEDAY", is_new: true }), ["all", "new", "someday"]],
   ["TRASH", row({ disposition: "TRASH" }), []],
 ];
 
@@ -145,7 +148,10 @@ describe("each chip is the server's rule", () => {
       path.join(ROOT, "..", "..", "..", "..", "..", "apps", "services", "gateway", "gateway", "routes", "projects", "mine.py"),
       "utf8",
     );
-    expect(mine).toContain('DISPOSITION_KEYS: tuple[str, ...] = ("inbox", "today", "next", "waiting", "someday", "done")');
+    expect(mine).toMatch(
+      /DISPOSITION_KEYS: tuple\[str, \.\.\.\] = \(\s*"inbox", "today", "next", "waiting", "someday", "done", "new",?\s*\)/,
+    );
+    expect(mine).toContain("counts[\"new\"] += 1");
     expect(mine).toContain('elif effective == "NEXT" and mine:');
     expect(mine).toContain('elif effective == "WAITING":');
     expect(mine).toContain('elif effective == "SOMEDAY":');

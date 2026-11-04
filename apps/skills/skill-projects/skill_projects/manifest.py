@@ -147,6 +147,13 @@ MANIFEST: tuple[Route, ...] = (
     # decides who may write it (D-OP-11, `authority.assert_may_write_grant`).
     Route("POST", "/projects/nodes/{project_id}/grants", "grant_access", "C"),
     Route("DELETE", "/projects/nodes/{project_id}/grants/{grant_id}", "revoke_access", "C"),
+    # WS-ALN ALN-4 repair (D-OP-9): the pin of a Knowledge page to a project.
+    # The route decides who may pin (`authority.assert_may_write_grant`).
+    Route("GET", "/projects/nodes/{project_id}/authorities", "project_authorities", "A"),
+    Route("POST", "/projects/nodes/{project_id}/authorities", "pin_authority", "C"),
+    Route(
+        "DELETE", "/projects/nodes/{project_id}/authorities/{pin_id}", "unpin_authority", "C"
+    ),
     # WS-ALN ALN-2a (D-OP-9): one person decides. The reader is the decider
     # only, and the route is dark behind DECISIONS_ORGS. The answer is the
     # person's word: the tool refuses a run with no person present, then raises
@@ -475,6 +482,12 @@ MANIFEST: tuple[Route, ...] = (
     # one member prompt, with the rule of Release. The task does not change, so
     # class B. The chat gets the tool with the other run tools in EA-12e.
     Route("POST", "/projects/agent-runs/{run_id}/resume", "resume_agent_run", "B"),
+    # WS-55 MCP-G15. An outside agent records a decision that its member made
+    # outside Metorite, on its own awaiting run. It writes an agent response
+    # and changes no task, so class B. The chat acts as the member, and the
+    # member answers the question on the task, so the chat waits for EA-12e.
+    Route("POST", "/projects/agent-runs/{run_id}/outside-decision",
+          "record_outside_decision", "B"),
     # WS-55 EA-6g (EA3-40). An outside agent ASKS to archive over MCP: the
     # request writes a question and archives nothing, so it is class B. The
     # run's member answers on the task. The approval archives, so it is
@@ -547,6 +560,9 @@ PLANNED: dict[str, str] = {
     # WS-55 EA-6g (2026-10-15) added the archive request and its approval.
     # The chat archives through `archive_task`.
     "request_task_archive": "WS-55, in-product chat parity, after EA-12e",
+    # WS-55 MCP-G15 (2026-11-04) added the outside decision for an outside
+    # agent. The chat acts as the member, who answers on the task.
+    "record_outside_decision": "WS-55, in-product chat parity, after EA-12e",
     # ⚠️ `approve_task_archive` is NOT a chat tool, ever (EA3-40, D-OP-13). Its
     # route is class X with a reason, and `waiting_agent_requests` lists it.
     # WS-66 RM-3 (2026-10-25) built the seven reminder tools that RM-1 planned.
@@ -597,6 +613,7 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # S5 — three reads name the row through another read's route.
     "watchers": frozenset({"task_detail", "project_summary"}),
     "project_access": frozenset({"project_summary"}),
+    "project_authorities": frozenset({"project_summary"}),
     "project_views": frozenset({"project_summary"}),
     "edit_task": frozenset({"update_task"}),
     "edit_project": frozenset({"update_project"}),
@@ -618,6 +635,10 @@ COMPOSITE: dict[str, frozenset[str]] = {
     # 2026-10-19 — several links under ONE card with a checkbox for each
     # link. Each ticked row is link_tasks' own POST.
     "link_tasks_batch": frozenset({"link_tasks"}),
+    # WS-PJP PJP-4 — several edits under ONE card with a checkbox for each
+    # task. Each ticked row is update_task's own planned PATCH
+    # (`_plan_task_edit`), on update_task's route.
+    "update_tasks": frozenset({"update_task"}),
     # S6 — navigation reads the row it opens, then dispatches to the page.
     "open_in_app": frozenset({"task_detail", "project_summary"}),
     # WS-66 RM-3 (D114): the reminder tools read the member's saved zone
@@ -964,6 +985,11 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
     ("POST", "/projects/tasks/{task_id}/attachments"): {"file": "attach_to_task.file_name"},
     # WS-64 OP-6b: the one field of a grant.
     ("POST", "/projects/nodes/{project_id}/grants"): {"subject": "grant_access.subject"},
+    # WS-ALN ALN-4: the one field of a pin, and the removed pins of a read.
+    ("GET", "/projects/nodes/{project_id}/authorities"): {
+        "include_removed": "project_authorities.include_removed"
+    },
+    ("POST", "/projects/nodes/{project_id}/authorities"): {"page_id": "pin_authority.page_id"},
     # WS-ALN ALN-2a: the one field of an answer.
     ("POST", "/projects/decisions/{decision_id}/answer"): {
         "answer_key": "answer_decision.answer_key"
@@ -1453,6 +1479,10 @@ FIELD_PLANNED: dict[tuple[str, str], dict[str, str]] = {
     ("POST", "/projects/tasks/{task_id}/archive-request"): {"idempotency_key": "G23"},
     # WS-55 SW-11a: the resume of a stalled run, with the other run tools.
     ("POST", "/projects/agent-runs/{run_id}/resume"): {"idempotency_key": "G23"},
+    # WS-55 MCP-G15: the outside decision, with the other run tools.
+    ("POST", "/projects/agent-runs/{run_id}/outside-decision"): {
+        "decision": "G23", "where": "G23", "selected": "G23", "idempotency_key": "G23",
+    },
 }
 
 

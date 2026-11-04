@@ -83,6 +83,12 @@ line — never reclaim a number by deleting the other entry.
 
 # OPEN
 
+### H-442 · Confirm migration 337 and its backup on production after the 2026-11-03 release · [AGENT]
+- **Why:** PZ-33b (merged 952e4315d) adds `chat_message.member_typed` in `infra/postgres/337_chat_message_member_typed.sql`. A migration is one-way (R6), and a deploy once reported success while it shipped nothing (CLAUDE.md §3 rule 8).
+- **Check:** on the box, read the ledger: `SELECT filename, applied_at FROM schema_migrations WHERE filename LIKE '337_%'`. No row means STILL PENDING. With a row, also read the deploy log for the pre-migration backup line of that release, and run `SELECT count(*) FROM information_schema.columns WHERE table_name = 'chat_message' AND column_name = 'member_typed'`. A count of 1 closes the entry.
+- **Authority:** `specs/personalization.md` §15.11 (D-PZ-37). Metorite task 1131.
+- **Added:** 2026-11-03 · PZ-33b merge, recorded on branch `mt-907c0244-cf4b-action-pills`
+
 ### H-441 · A restore through the production pooler still builds indexes at 64 MB, and `restore_db.sh` hides a failed restore · [AGENT]
 - **Metorite:** no task yet, so the full entry is here. The parent is #1229 (LD-8c).
 - **Why:** LD-8c sends `maintenance_work_mem=256MB` to each restore through `PGOPTIONS`.
@@ -1598,6 +1604,9 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `git grep -n "await _get_db()" -- apps/services/gateway/gateway/routes/workflows/`.
   Each hit is an unbound read or write on a FORCE RLS table. This entry is
   open until the only hits left are tenant-discovery reads.
+- **State (2026-11-03):** Part (b) is built: the scans bind each listed org, and the list `WORKFLOW_UNATTENDED_ORGS` ships empty.
+  A scheduled run of a listed org has no billing member, so an agent node fails, and five failures disable the workflow.
+  Before the owner lists an org, read two lists for that org: its published workflows with an agent node, and its paused waits of a kind other than schedule, webhook and event.
 - **Added:** 2026-10-15 · PR #1052 review round 1
 
 ### H-320 · An unticked checkbox has no visible edge · [AGENT]
