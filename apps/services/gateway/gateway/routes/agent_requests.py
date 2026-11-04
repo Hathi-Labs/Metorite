@@ -4,7 +4,7 @@ Spec ``project-docs/specs/external_agent_access.md`` §19.5 (path 2, "The
 member routes") and AD-16, and row MCP-P1b-1 of §19.13.
 
     POST /agent-access/apps/{app}/requests          → {request_id, run_id, state, expires_at, created}
-    GET  /agent-access/requests                      → {rows}
+    GET  /agent-access/requests                      → {rows, more}
     GET  /agent-access/requests/{request_id}         → the request
     POST /agent-access/requests/{request_id}/decision → {request_id, run_id, decision, state, created}
 
@@ -179,8 +179,8 @@ async def list_app_requests(user: UserContext = Depends(get_current_user)) -> di
         raise HTTPException(status_code=404, detail="Not Found")
     org = _org(user)
     async with tenant_session() as db:
-        rows = await app_requests.list_open(db, org=org, member=user.email)
-    return {"rows": rows}
+        found = await app_requests.list_open(db, org=org, member=user.email)
+    return {"rows": found.rows, "more": found.more}
 
 
 @router.get("/requests/{request_id}")

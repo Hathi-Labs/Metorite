@@ -326,16 +326,33 @@ async def read_request(
     return _request_out(row) if row is not None else None
 
 
-async def list_open(db: Any, *, org: str, member: str) -> list[dict[str, Any]]:
+@dataclass(frozen=True)
+class OpenList:
+    """The requests that wait for a member: the newest rows, and how many
+    live requests the page leaves out (fix round 1, a noted item)."""
+
+    rows: list[dict[str, Any]]
+    more: int
+
+
+#: The open requests of one member, each row with the count of all of them.
+#: The window count runs before the LIMIT, so it counts the rows left out.
+_OPEN_SELECT = _REQUEST_SELECT.replace("SELECT ", "SELECT count(*) OVER () AS waiting, ", 1)
+
+
+async def list_open(db: Any, *, org: str, member: str) -> OpenList:
     """The requests that wait for *member*: no decision yet and live, newest
-    first, at most :data:`LIST_LIMIT`."""
+    first, at most :data:`LIST_LIMIT`. ``more`` counts the live ones that the
+    page leaves out, so the list can say so."""
     rows = (await db.execute(text(
-        f"{_REQUEST_SELECT} AND r.status = 'awaiting' AND d.decision IS NULL"
+        f"{_OPEN_SELECT} AND r.status = 'awaiting' AND d.decision IS NULL"
         "   AND CAST(e.content_metadata->'request'->>'expires_at' AS timestamptz)"
         "       > clock_timestamp()"
         " ORDER BY e.created_at DESC, e.id DESC LIMIT :limit"
     ), {"org": org, "me": _member(member), "limit": LIST_LIMIT})).fetchall()
-    return [_request_out(row) for row in rows]
+    total = int(rows[0].waiting) if rows else 0
+    return OpenList(rows=[_request_out(row) for row in rows],
+                    more=max(total - len(rows), 0))
 
 
 # ── The one write of an activity on an app run ──────────────────────────────
@@ -668,6 +685,7 @@ __all__ = [
     "REQUEST_TTL",
     "SECRET_WORDS",
     "Decided",
+    "OpenList",
     "Opened",
     "decide",
     "list_open",

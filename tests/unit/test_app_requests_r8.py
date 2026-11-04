@@ -1336,3 +1336,21 @@ class TestAppRequestsOnARealDatabase:
             assert inner.status_code == 201, inner.text
             [row] = (await ctx(w.a, "GET", "/agent-access/requests")).json()["rows"]
         assert row["class"] == "B" and row["call"]["body"]["cls"] == "A"
+
+    async def test_24_the_list_says_how_many_more_wait(self, w):
+        """Noted item. The list gives the newest 50 requests, and ``more``
+        counts the live ones that it leaves out. Each connection has a cap
+        of 20, so three connections hold 52."""
+        conns = [w.conn_a, w.conn_a2, _seed_connection(w.p, w.p.org_a, w.a_email)]
+        async with _session(w.p) as ctx:
+            for n, conn in zip((20, 20, 12), conns, strict=True):
+                agent = _principal(w.a_email, w.p.org_a, connection=conn)
+                for i in range(n):
+                    got = await _ask(ctx, w, {"name": f"{conn[:4]}-{i}"}, user=agent)
+                    assert got.status_code == 201, got.text
+            listed = (await ctx(w.a, "GET", "/agent-access/requests")).json()
+            assert len(listed["rows"]) == app_requests.LIST_LIMIT
+            assert listed["more"] == 2
+            _expire(w.p, listed["rows"][0]["request_id"])
+            again = (await ctx(w.a, "GET", "/agent-access/requests")).json()
+        assert len(again["rows"]) == app_requests.LIST_LIMIT and again["more"] == 1
