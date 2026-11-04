@@ -1436,3 +1436,32 @@ class TestAppRequestsOnARealDatabase:
             spent, why = await _spend(w, rid, _edge_digest({"name": "x"}, conn),
                                       binding=store.mcp_binding(conn))
         assert spent is None and why == "not_found"
+
+    async def test_26_a_character_with_no_glyph_is_refused(self, w):
+        """Re-review P2. Show all or refuse: a character that the card draws
+        as nothing could hide words behind a short title (the tag block), or
+        store a title other than the one the member approved (a bidi control
+        that the card drops). Each is 422 ``bad_args`` in a value or a key at
+        any depth, and nothing is stored. ZWJ and ZWNJ stay legal, because an
+        emoji and Indic text need them."""
+        hidden = [
+            "\u061C", "\u200E", "\u200F", "\u202A", "\u202B", "\u202C", "\u202D", "\u202E",
+            "\u2066", "\u2067", "\u2068", "\u2069",
+            "\U000e0000", "\U000e0041", "\U000e007f",
+            "\u200B", "\u2060", "\uFEFF", "\u00AD",
+        ]
+        async with _session(w.p) as ctx:
+            for ch in hidden:
+                for args in ({"name": f"Q3 plan{ch}"},
+                             {"name": "x", "meta": {"lines": [f"a{ch}b"]}},
+                             {"name": "x", "meta": {f"k{ch}": 1}}):
+                    got = await _ask(ctx, w, args)
+                    assert got.status_code == 422, (f"U+{ord(ch):04X}", got.text)
+                    assert got.json()["detail"]["error"] == "bad_args", got.text
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_runs") == 0
+            emoji = "\U0001f469\u200D\U0001f4bb"  # woman technologist: ZWJ
+            indic = "क्\u200Cष"  # a Devanagari conjunct with ZWNJ
+            fits = await _ask(ctx, w, {"name": emoji, "note": indic})
+            assert fits.status_code == 201, fits.text
+            [row] = (await ctx(w.a, "GET", "/agent-access/requests")).json()["rows"]
+        assert row["call"]["body"] == {"name": emoji, "note": indic}

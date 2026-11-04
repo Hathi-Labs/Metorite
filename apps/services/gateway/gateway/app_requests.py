@@ -63,6 +63,7 @@ from typing import Any
 from acb_auth import agent_oauth
 from acb_auth import app_requests as store
 from acb_common import get_logger, get_settings
+from acb_skills.untrusted import is_invisible
 from fastapi import HTTPException
 from sqlalchemy import text
 
@@ -108,6 +109,11 @@ SECRET_WORDS: tuple[str, ...] = ("token", "secret", "password", "credential", "a
 #: The largest integer that a browser's JSON parse keeps exactly (review P2-2).
 #: Past it, the card would show a number other than the one that runs.
 MAX_SAFE_INT = 2**53 - 1
+
+#: The joiners that an emoji and Indic text need. ``is_invisible`` counts
+#: them, because they draw no glyph of their own, but they change no word
+#: that the card shows, so a request may hold them (re-review P2).
+JOINERS: frozenset[str] = frozenset({"\u200c", "\u200d"})
 
 #: The classes that wait for the member. A is a read and X is on no door.
 ASKING_CLASSES: tuple[str, ...] = ("B", "C")
@@ -198,7 +204,13 @@ def _unshowable(value: Any) -> bool:
     * an integer past :data:`MAX_SAFE_INT` either way, which a browser
       parses to another number;
     * a number that is not finite (NaN, Infinity), which is no JSON;
-    * a text, or a key, that holds U+0000, which JSONB refuses.
+    * a text, or a key, that holds U+0000, which JSONB refuses;
+    * a text, or a key, that holds a character with no glyph (re-review
+      P2): a bidi control, the tag block, U+200B, U+2060, U+FEFF, U+00AD
+      and each other format character. The card would draw it as nothing,
+      so a short title could hide words, or the stored text could differ
+      from the text that the member approved. Show all or refuse. The ONE
+      rule is ``acb_skills.untrusted.is_invisible``, less :data:`JOINERS`.
     """
     if isinstance(value, bool):
         return False
@@ -207,7 +219,8 @@ def _unshowable(value: Any) -> bool:
     if isinstance(value, float):
         return not math.isfinite(value)
     if isinstance(value, str):
-        return "\x00" in value
+        return "\x00" in value or any(
+            is_invisible(ch) and ch not in JOINERS for ch in value)
     if isinstance(value, Mapping):
         return any(_unshowable(str(k)) or _unshowable(v) for k, v in value.items())
     if isinstance(value, (list, tuple)):
@@ -540,7 +553,8 @@ async def open_request(
     if _unshowable(stored):
         raise _refuse(422, BAD_ARGS,
                       "The change holds a value that the card cannot show exactly: a whole "
-                      "number past 2^53 - 1, a number that is not finite, or U+0000.")
+                      "number past 2^53 - 1, a number that is not finite, U+0000, or a "
+                      "character with no glyph.")
     if _holds_secret_key(stored["body"]) or any(
             any(word in k.lower() for word in SECRET_WORDS) for k, _ in stored["query"]):
         raise _refuse(422, SECRET_IN_PAYLOAD,
@@ -676,6 +690,7 @@ async def decide(
 __all__ = [
     "ASKING_CLASSES",
     "CLASS_LINES",
+    "JOINERS",
     "LIST_LIMIT",
     "MAX_CALL_BYTES",
     "MAX_SAFE_INT",
