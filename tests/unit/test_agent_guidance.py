@@ -310,3 +310,24 @@ def test_a_member_without_projects_is_refused(monkeypatch: pytest.MonkeyPatch) -
     assert _answers() == [403] * 4
     monkeypatch.setattr(get_settings(), "agent_guidance_orgs", "")
     assert _answers() == [404] * 4
+
+def test_the_flag_is_owner_only_in_env_guard() -> None:
+    """R7 (SW-31a verify, P2): ``AGENT_GUIDANCE_ORGS`` stays in the owner-only set."""
+    from acb_common import env_guard
+
+    assert "AGENT_GUIDANCE_ORGS" in set(env_guard.PLATFORM_ENV_NAMES)
+
+
+def test_the_numbered_migration_writes_the_tenant_policy() -> None:
+    """R7 (SW-31a verify, P2). Production gets the policy from the numbered file
+    alone. The R8 fixture also applies ``generated/04_policies.sql``, which
+    replaces the policy, so no R8 case can see a weak policy in this file."""
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "infra" / "postgres" / "340_pm_agent_guidance.sql"
+    sql = " ".join(path.read_text(encoding="utf-8").split())
+    assert "ALTER TABLE pm_agent_guidance FORCE ROW LEVEL SECURITY" in sql
+    pred = "(organization_id = current_setting('app.tenant_id', true)::uuid)"
+    assert f"USING {pred}" in sql
+    assert f"WITH CHECK {pred}" in sql
+    assert "(true)" not in sql
