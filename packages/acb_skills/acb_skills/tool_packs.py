@@ -688,6 +688,15 @@ _PROJECTS_BULK_WORDS = (
     "revert the change", "revert this change", "watch this task",
     "watch the task", "watch that task", "watch this project",
     "watch the project", "stop watching", "unwatch", "follow this task",
+    # PJP-2 fix round 4 (P3): a cleanup of the finished tasks names the bulk
+    # pack, also with no "task" word ("now archive the done ones"). Checked:
+    # no hit on the OA-5 turns, CRM_TURNS or LOADS_NOTHING, and no change to
+    # the work-eval turns. The one known false hit is "archive the done threads".
+    "archive the done", "archive all done", "archive done", "archive all the done",
+    "archive the completed", "archive all completed", "archive completed",
+    "archive all the completed", "archive the finished", "archive finished",
+    "delete the done", "delete all done", "delete the completed",
+    "rest of the done", "rest of the completed",
 )
 #: The words of the reminders pack. A reminder is its own object (D114), not a
 #: task. A bare "alert" or "ping" is out: a mail or a CRM turn uses them.
@@ -2054,6 +2063,17 @@ NO_PERSONA_BULLETS: frozenset[str] = frozenset({"crm-assistant", "studio-builder
 #: ``tests/unit/test_projects_packs.py``.
 SPECIALIST_STAYS_UNTIL_REACHED: frozenset[str] = frozenset({"projects-assistant"})
 
+#: PJP-2 fix round 4. The fewest tools that a pack must hold to count in the
+#: reach test of :func:`plan_loader` for an owner of
+#: :data:`SPECIALIST_STAYS_UNTIL_REACHED` ("ONE of its packs fits"). A pack
+#: this small cannot carry a work request. Since ALN-4, the 3 tools of
+#: ``projects-authority`` fitted up to 107 tools, so the specialist left while
+#: no work pack fitted: a load of bulk beside the core and plan packs (103
+#: tools) then refused with ``LOAD_NO_PATH``, and the chat handed off one round
+#: later. Any value from 4 to 11 gives the same result today. Fence:
+#: ``tests/unit/test_projects_packs.py``.
+REACH_MIN_TOOLS = 4
+
 
 def _specialist_leaves(owner: str, held_slugs: Iterable[str], via: Iterable[str]) -> bool:
     """True when the specialist tool and persona text of *owner* leave the run
@@ -2633,9 +2653,10 @@ def plan_loader(
 
     PJP-2 (project_planning.md §3.3): an owner of
     :data:`SPECIALIST_STAYS_UNTIL_REACHED` is also reached when each of its
-    packs is allowed and ONE of them fits. Each of its packs stays on offer, so
-    a load that does not fit fails on the cap in ``_admit`` and opens the
-    hand-off (``via_failed``, :data:`LOAD_NO_PATH`).
+    packs is allowed and ONE of them fits. Only a pack of
+    :data:`REACH_MIN_TOOLS` tools or more counts (fix round 4). Each of its
+    packs stays on offer, so a load that does not fit fails on the cap in
+    ``_admit`` and opens the hand-off (``via_failed``, :data:`LOAD_NO_PATH`).
     """
     held_set = frozenset(held)
     cut = dict(removable or {})
@@ -2661,13 +2682,16 @@ def plan_loader(
             via.add(owner)
         elif (owner in SPECIALIST_STAYS_UNTIL_REACHED
               and all(slug in pool for slug in rest)
-              and any(_fits(slug, cut.get(owner, 0)) for slug in rest)):
+              and any(_fits(slug, cut.get(owner, 0)) for slug in rest
+                      if _tool_count(slug) >= REACH_MIN_TOOLS)):
             # PJP-2 (project_planning.md §3.3): the Projects owner is reached
             # when each of its packs is allowed and one of them fits. Only two
             # Projects packs fit in one request, so "every pack fits" kept the
             # specialist in almost every turn. A pack that does not fit stays
             # on offer: its load fails on the cap in `_admit`, which marks
-            # `via_failed` and opens the hand-off (LOAD_NO_PATH).
+            # `via_failed` and opens the hand-off (LOAD_NO_PATH). Fix round 4:
+            # only a pack of REACH_MIN_TOOLS or more counts, because a pack
+            # this small cannot carry a work request (projects-authority).
             via.add(owner)
             by_load.add(owner)
     offered: list[str] = []
