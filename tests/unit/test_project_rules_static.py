@@ -273,8 +273,23 @@ def test_the_rule_module_holds_no_copy_of_the_knowledge_sql() -> None:
                    "visible_pages_clause", "_subject_match"):
         assert needle not in src, needle
     for helper in ("load_page", "load_space", "page_version_text", "quote_occurs",
-                   "same_line_ends", "visible_page_heads"):
+                   "same_line_ends", "readable_page_versions"):
         assert f"kb.{helper}(" in src or f"_kb().{helper}(" in src, helper
+
+
+def test_a_refusal_names_the_rules_and_keeps_the_one_authority_rule() -> None:
+    """Repair round 1 (reviewer P2). The rule module asks
+    ``guidance_write_refusal``, the one rule, and maps its two sentences to the
+    words of a rule. It calls no ``assert_may_write_*`` of its own."""
+    from gateway.routes import project_rules
+    from gateway.routes.projects import authority
+
+    assert project_rules.guidance_write_refusal is authority.guidance_write_refusal
+    assert project_rules.PERSONAL_GUIDANCE_REFUSED == authority.PERSONAL_GUIDANCE_REFUSED
+    for sentence in (project_rules.RULE_WRITE_REFUSED, project_rules.PERSONAL_RULE_REFUSED):
+        assert "rule" in sentence.lower() and "guidance" not in sentence.lower()
+    src = _RULES.read_text(encoding="utf-8")
+    assert "assert_may_write_guidance" not in src and "may_write_grant" not in src
 
 
 def test_the_quote_check_is_an_exact_substring() -> None:

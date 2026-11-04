@@ -853,6 +853,43 @@ async def visible_page_heads(
     }
 
 
+async def readable_page_versions(
+    db: Any, user: UserContext, pairs: list[tuple[str, int]],
+) -> set[tuple[str, int]]:
+    """The ``(page id, version)`` pairs of *pairs* that the CALLER can read.
+
+    ALN-5a (``project_alignment.md`` §4.2, §7.2 point 2): a rule shows its
+    quote only to a reader of the page AND of that version. Two steps, the
+    rule of ``history.get_version``: :func:`visible_pages_clause` for the
+    page, then :func:`history_floor` for the version. So a version from
+    before a move to a wider space stays hidden from the readers of the new
+    space, as its history route answers 404 for it. A pair that fails either
+    step is left out.
+    """
+    wanted: dict[str, set[int]] = {}
+    for page_id, version in pairs:
+        pid = parse_id(page_id)
+        if pid is not None and version is not None:
+            wanted.setdefault(pid, set()).add(int(version))
+    if not wanted:
+        return set()
+    vis, params = visible_pages_clause(user, "p")
+    rows = (await db.execute(
+        text("SELECT p.id, p.history_from, s.kind, s.owner_email FROM kb_pages p "
+             "JOIN kb_spaces s ON s.id = p.space_id "
+             "AND s.organization_id = p.organization_id "
+             f"WHERE p.id = ANY(CAST(:pids AS uuid[])) AND {vis}"),
+        {**params, "pids": sorted(wanted)},
+    )).fetchall()
+    out: set[tuple[str, int]] = set()
+    for row in rows:
+        # The row holds the page column and the two space columns that
+        # history_floor reads, so it serves as both.
+        floor = history_floor(user, row, row)
+        out.update((str(row.id), v) for v in wanted.get(str(row.id), ()) if v >= floor)
+    return out
+
+
 async def sibling_rows(
     db: Any, user: UserContext, space_id: str, parent_id: str | None,
 ) -> list[Any]:

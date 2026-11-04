@@ -42,9 +42,11 @@ A route under ``/projects`` needs a chat tool in the manifest
 (``test_projects_chat_coverage``), and the chat tools of rules are a
 follow-up slice.
 
-**Who writes.** :func:`authority.assert_may_write_guidance`, the one rule: a
-lead of the project or of an ancestor, or a holder of
-``projects:settings:write``. It refuses a personal tree. An agent
+**Who writes.** :func:`authority.guidance_write_refusal`, the one rule of a
+guidance write: a lead of the project or of an ancestor, or a holder of
+``projects:settings:write``. It refuses a personal tree. Its two sentences
+name guidance, so :func:`_assert_writable` answers with the words of a rule
+(:data:`RULE_WRITE_REFUSED`, :data:`PERSONAL_RULE_REFUSED`). An agent
 connection never writes (D104).
 
 **The quote.** A quote, its page and its page version come together or not
@@ -55,10 +57,16 @@ and :func:`knowledge.core.quote_occurs`). An edit of the page later does not
 change the rule, because the rule names its version.
 
 **Who reads, and the quote.** Any member who can open the project reads its
-rules. A reader who cannot open the page of a rule gets the sentence, the
-level and the state. ``quote``, ``source_page_id`` and
-``source_page_version`` are null, and ``quote_hidden`` is true. The read
-runs :func:`knowledge.core.visible_page_heads`, the one Knowledge predicate.
+rules. A reader who cannot read the page AND the version that a rule
+quotes gets the sentence, the level and the state. ``quote``,
+``source_page_id`` and ``source_page_version`` are null, and
+``quote_hidden`` is true. The read runs
+:func:`knowledge.core.readable_page_versions`: the one Knowledge predicate,
+then the history floor, the rule of ``knowledge/history.py``. So a version
+from before a move to a wider space stays hidden from its new readers.
+⚠️ The sentence shows to every reader of the project by design
+(``project_alignment.md`` §7.2 point 2), so a lead must not copy the words of
+a narrower page into it.
 
 **Caps.** A sentence holds at most :data:`BODY_MAX` characters and a quote at
 most :data:`QUOTE_MAX` (422 above). A project holds at most
@@ -87,7 +95,10 @@ from acb_common import get_logger, get_settings
 from acb_common.db import current_tenant
 from fastapi import APIRouter, Depends, HTTPException, Query
 from gateway.db import tenant_session as _tenant_session
-from gateway.routes.projects.authority import assert_may_write_guidance
+from gateway.routes.projects.authority import (
+    PERSONAL_GUIDANCE_REFUSED,
+    guidance_write_refusal,
+)
 from gateway.routes.projects.core import actor, load_visible_project, resolve_visibility
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import text
@@ -139,6 +150,13 @@ EMPTY_BODY = "The rule needs a sentence."
 EMPTY_QUOTE = "The quote is empty. Copy the exact words of the page, or send no quote."
 CONTROL_CHARACTER = "The text holds a control character that cannot be saved."
 RULE_NOT_FOUND = "Rule not found"
+#: The 403 of a rule write by a member who is not a lead. The rule is
+#: ``authority.guidance_write_refusal``, and only the words are the rules' own.
+RULE_WRITE_REFUSED = (
+    "Only the project lead or a Projects admin can change the rules of this project."
+)
+#: The 403 of a rule write on a personal tree.
+PERSONAL_RULE_REFUSED = "A personal space has no shared rules. Write the rule on a team project."
 
 
 # ── The flag ────────────────────────────────────────────────────────────────
@@ -186,9 +204,12 @@ def _kb() -> Any:
 # ── The wire ────────────────────────────────────────────────────────────────
 
 
-def _sentence(value: str | None) -> str | None:
-    if value is None:
-        return None
+def _sentence(value: Any) -> Any:
+    """The sentence, stripped BEFORE the length check (``mode="before"``), so
+    300 characters and a space pass. A value that is not text goes on to the
+    type check of the field."""
+    if not isinstance(value, str):
+        return value
     if "\x00" in value:
         raise ValueError(CONTROL_CHARACTER)
     cleaned = value.strip()
@@ -197,9 +218,10 @@ def _sentence(value: str | None) -> str | None:
     return cleaned
 
 
-def _quote(value: str | None) -> str | None:
-    if value is None:
-        return None
+def _quote(value: Any) -> Any:
+    """The quote, stripped before the length check, as :func:`_sentence`."""
+    if not isinstance(value, str):
+        return value
     if "\x00" in value:
         raise ValueError(CONTROL_CHARACTER)
     cleaned = value.strip()
@@ -220,14 +242,14 @@ class RuleIn(BaseModel):
     source_page_version: int | None = Field(default=None, ge=1, le=PAGE_VERSION_MAX)
     quote: str | None = Field(default=None, max_length=QUOTE_MAX)
 
-    @field_validator("body")
+    @field_validator("body", mode="before")
     @classmethod
-    def _check_body(cls, value: str | None) -> str | None:
+    def _check_body(cls, value: Any) -> Any:
         return _sentence(value)
 
-    @field_validator("quote")
+    @field_validator("quote", mode="before")
     @classmethod
-    def _check_quote(cls, value: str | None) -> str | None:
+    def _check_quote(cls, value: Any) -> Any:
         return _quote(value)
 
 
@@ -242,14 +264,14 @@ class RuleEditIn(BaseModel):
     source_page_version: int | None = Field(default=None, ge=1, le=PAGE_VERSION_MAX)
     quote: str | None = Field(default=None, max_length=QUOTE_MAX)
 
-    @field_validator("body")
+    @field_validator("body", mode="before")
     @classmethod
-    def _check_body(cls, value: str | None) -> str | None:
+    def _check_body(cls, value: Any) -> Any:
         return _sentence(value)
 
-    @field_validator("quote")
+    @field_validator("quote", mode="before")
     @classmethod
-    def _check_quote(cls, value: str | None) -> str | None:
+    def _check_quote(cls, value: Any) -> Any:
         return _quote(value)
 
 
@@ -343,24 +365,32 @@ RETURNING {_COLUMNS}
 # ── The view ────────────────────────────────────────────────────────────────
 
 
-async def _readable_pages(db: Any, user: UserContext, rows: list[Any]) -> set[str]:
-    """The source pages of *rows* that the caller can read now, through the
-    one Knowledge predicate (``visible_page_heads``)."""
-    ids = sorted({str(r.source_page_id) for r in rows if r.source_page_id is not None})
-    if not ids:
+async def _readable_sources(
+    db: Any, user: UserContext, rows: list[Any],
+) -> set[tuple[str, int]]:
+    """The ``(page id, version)`` sources of *rows* that the caller can read
+    now: the page through the one Knowledge predicate, and the version at or
+    above the history floor (``knowledge.core.readable_page_versions``)."""
+    pairs = sorted({
+        (str(r.source_page_id), int(r.source_page_version)) for r in rows
+        if r.source_page_id is not None and r.source_page_version is not None
+    })
+    if not pairs:
         return set()
-    return set(await _kb().visible_page_heads(db, user, ids))
+    return await _kb().readable_page_versions(db, user, pairs)
 
 
-def _rule_out(row: Any, readable: set[str]) -> dict[str, Any]:
+def _rule_out(row: Any, readable: set[tuple[str, int]]) -> dict[str, Any]:
     """One version of a rule for the caller.
 
-    A reader who cannot open the source page gets no quote, no page id and no
-    page version, and ``quote_hidden`` is true (``project_alignment.md`` §7.2
-    point 2). The sentence, the level and the state stay.
+    A reader who cannot read the source page, or that version of it, gets no
+    quote, no page id and no page version, and ``quote_hidden`` is true
+    (``project_alignment.md`` §7.2 point 2). The sentence, the level and the
+    state stay.
     """
     page = str(row.source_page_id) if row.source_page_id is not None else None
-    hidden = page is not None and page not in readable
+    version = int(row.source_page_version) if row.source_page_version is not None else None
+    hidden = page is not None and (page, version) not in readable
     return {
         "id": str(row.id),
         "rule_key": str(row.rule_key),
@@ -383,7 +413,7 @@ def _rule_out(row: Any, readable: set[str]) -> dict[str, Any]:
 
 
 async def _out_one(db: Any, user: UserContext, row: Any) -> dict[str, Any]:
-    return _rule_out(row, await _readable_pages(db, user, [row]))
+    return _rule_out(row, await _readable_sources(db, user, [row]))
 
 
 # ── The checks ──────────────────────────────────────────────────────────────
@@ -396,10 +426,18 @@ def _refuse_agent(user: UserContext) -> None:
 
 
 async def _assert_writable(db: Any, user: UserContext, project: Any) -> None:
-    """409 for an archived project, 403 for a caller who is not a lead."""
+    """409 for an archived project, 403 for a caller who is not a lead.
+
+    ``authority.guidance_write_refusal`` is the one rule. This maps its two
+    sentences to the words of a rule, so a refusal never says "guidance".
+    """
     if project.archived_at is not None or project.status == "archived":
         raise HTTPException(status_code=409, detail=ARCHIVED_REFUSED)
-    await assert_may_write_guidance(db, user, project)
+    refused = await guidance_write_refusal(db, user, project)
+    if refused == PERSONAL_GUIDANCE_REFUSED:
+        raise HTTPException(status_code=403, detail=PERSONAL_RULE_REFUSED)
+    if refused:
+        raise HTTPException(status_code=403, detail=RULE_WRITE_REFUSED)
 
 
 async def _writable_project(db: Any, user: UserContext, project_id: str) -> Any:
@@ -555,15 +593,17 @@ async def list_rules(
     """The rules of a project now (the newest version of each), in *state*.
 
     The default is ``active``, so a proposed rule stays out of the active
-    read. 404 for a project that the caller cannot see.
+    read. 404 for a project that the caller cannot see. ``count`` is the
+    number of rows in the answer, not a total of the project.
     """
     pid = _uuid_or_404(project_id, "Project")
     async with _tenant_session() as db:
         await load_visible_project(db, await resolve_visibility(db, user), pid)
         rows = (await db.execute(
             text(_LIST_SQL), {"pid": pid, "state": state, "lim": limit})).fetchall()
-        readable = await _readable_pages(db, user, rows)
-    return {"rows": [_rule_out(r, readable) for r in rows], "total": len(rows)}
+        readable = await _readable_sources(db, user, rows)
+    # ``count`` is the number of rows in this answer, at most *limit*.
+    return {"rows": [_rule_out(r, readable) for r in rows], "count": len(rows)}
 
 
 @router.post("/projects/{project_id}", status_code=201)
@@ -611,7 +651,7 @@ async def rule_history(
     async with _tenant_session() as db:
         await _visible_rule(db, user, key)
         rows = (await db.execute(text(_HISTORY_SQL), {"key": key, "lim": limit})).fetchall()
-        readable = await _readable_pages(db, user, rows)
+        readable = await _readable_sources(db, user, rows)
     return {"rows": [_rule_out(r, readable) for r in rows]}
 
 

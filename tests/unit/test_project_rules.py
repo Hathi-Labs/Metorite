@@ -36,7 +36,7 @@ a pass.
 Mutations (R7), each turns the named test red. ``R`` is
 ``apps/services/gateway/gateway/routes/project_rules.py``.
 
-* R1. ``R`` ``_assert_writable``: skip ``assert_may_write_guidance``.
+* R1. ``R`` ``_assert_writable``: skip ``guidance_write_refusal``.
   ``test_a_lead_writes_a_rule_and_a_member_gets_403``.
 * R2. ``R`` ``_checked_source``: skip the ``quote_occurs`` check.
   ``test_a_quote_that_is_not_in_the_version_is_refused``.
@@ -52,6 +52,13 @@ Mutations (R7), each turns the named test red. ``R`` is
   ``test_the_database_refuses_a_rule_row_of_a_bad_shape``.
 * R9. ``generated/04_policies.sql``: the policy of ``pm_agent_guidance``
   ``USING (true)``. ``test_org_b_reads_none_of_org_a``.
+* R10 (repair round 1). ``knowledge/core.py`` ``readable_page_versions``: drop
+  the ``v >= floor`` test. ``test_a_version_from_before_a_move_stays_hidden``.
+* R11 (repair round 1). ``R`` ``_change``: use the first read, not the read
+  under the lock. ``test_two_accepts_at_once_add_one_row``.
+* R12 (repair round 1). ``R`` ``_assert_writable``: raise the authority's own
+  words. ``test_a_lead_writes_a_rule_and_a_member_gets_403`` and
+  ``test_a_personal_tree_takes_no_rule``.
 """
 
 from __future__ import annotations
@@ -339,8 +346,16 @@ async def test_a_lead_writes_a_rule_and_a_member_gets_403(world) -> None:
         unknown = await _create(call, w.lead, str(uuid.uuid4()))
         spoofed = await _create(call, w.lead, w.p1, written_by="mira",
                                 organization_id=w.b)
+        # The sentence is stripped before the cap: 300 characters and a space pass.
+        padded = await _create(call, w.lead, w.p1, "x" * 300 + " ")
     assert member.status_code == 403, member.text
     assert other_lead.status_code == 403 and agent.status_code == 403
+    # A refusal names the rules, never the guidance of the shared rule.
+    assert member.json()["detail"] == project_rules.RULE_WRITE_REFUSED
+    assert other_lead.json()["detail"] == project_rules.RULE_WRITE_REFUSED
+    assert "guidance" not in member.text.lower()
+    assert padded.status_code == 201, padded.text
+    assert padded.json()["body"] == "x" * 300
     assert agent.json()["detail"] == project_rules.AGENT_WRITE_REFUSED
     assert hand.status_code == 201, hand.text
     got = hand.json()
@@ -354,7 +369,7 @@ async def test_a_lead_writes_a_rule_and_a_member_gets_403(world) -> None:
     # A body key for the actor or the tenant is refused, never used (R11).
     assert spoofed.status_code == 422
     rows = _rule_rows(w)
-    assert len(rows) == 4
+    assert len(rows) == 5
     assert {str(r.organization_id) for r in rows} == {w.a}
     assert {r.written_by for r in rows} == {LEAD, ADMIN}
 
@@ -720,14 +735,15 @@ async def test_concurrent_creates_hold_the_cap(world, monkeypatch: pytest.Monkey
     w = world
     _reset(w)
     monkeypatch.setattr(project_rules, "ACTIVE_MAX", 2)
-    real_check = project_rules.assert_may_write_guidance
+    real_check = project_rules.guidance_write_refusal
     gate = asyncio.Barrier(RACE_PARTIES)
 
-    async def _check_then_wait(db: Any, user: Any, project: Any) -> None:
-        await real_check(db, user, project)
+    async def _check_then_wait(db: Any, user: Any, project: Any) -> str:
+        refused = await real_check(db, user, project)
         await asyncio.wait_for(gate.wait(), timeout=20)
+        return refused
 
-    monkeypatch.setattr(project_rules, "assert_may_write_guidance", _check_then_wait)
+    monkeypatch.setattr(project_rules, "guidance_write_refusal", _check_then_wait)
     async with _session(w.p) as call:
         rs = await asyncio.wait_for(asyncio.gather(
             *(_create(call, w.lead, w.p_race, f"Race rule {n}.") for n in range(RACE_PARTIES))),
@@ -736,6 +752,87 @@ async def test_concurrent_creates_hold_the_cap(world, monkeypatch: pytest.Monkey
     active = _rows(w, "SELECT 1 FROM pm_agent_guidance WHERE kind = 'rule' "
                       "AND project_id = :p AND state = 'active'", p=w.p_race)
     assert len(active) == 2
+
+
+async def test_two_accepts_at_once_add_one_row(
+    world, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repair round 1 (verifier P2). Two accepts of one proposal wait at a
+    barrier after the write check, just before the lock. The second reads the
+    rule again under the lock, finds it active, and answers it with no new
+    row. With no read under the lock, each accept adds a row: proposed,
+    active, active."""
+    w = world
+    _reset(w)
+    async with _session(w.p) as call:
+        made = await _create(call, w.lead, w.p1, "Accept me once.", state="proposed")
+        key = made.json()["rule_key"]
+        real_check = project_rules.guidance_write_refusal
+        gate = asyncio.Barrier(2)
+
+        async def _check_then_wait(db: Any, user: Any, project: Any) -> str:
+            refused = await real_check(db, user, project)
+            await asyncio.wait_for(gate.wait(), timeout=20)
+            return refused
+
+        monkeypatch.setattr(project_rules, "guidance_write_refusal", _check_then_wait)
+        rs = await asyncio.wait_for(asyncio.gather(
+            call(w.lead, "POST", _rule(key, "/accept")),
+            call(w.admin, "POST", _rule(key, "/accept"))), timeout=60)
+    assert [r.status_code for r in rs] == [200, 200], [r.text for r in rs]
+    assert [r.json()["version"] for r in rs] == [2, 2]
+    assert {r.json()["state"] for r in rs} == {"active"}
+    rows = _rows(w, "SELECT version, state FROM pm_agent_guidance WHERE rule_key = :k "
+                    "ORDER BY version", k=key)
+    assert [(r.version, r.state) for r in rows] == [(1, "proposed"), (2, "active")]
+
+
+# ── Case 6b: a version from before a move to a wider space ──────────────────
+
+
+async def test_a_version_from_before_a_move_stays_hidden(world) -> None:
+    """Repair round 1 (P0). A lead quotes version 1 of a page in a closed
+    space. An edit takes the words out (version 2), and a move puts the page
+    in an org space (version 3, ``history_from = 3``, as ``pages.move_page``
+    writes). A member who could never read the closed space now reads the
+    page, and Knowledge answers 404 for version 1. So the rule hides the quote
+    from that member, and from every reader of the new space. A rule on the
+    current version shows its quote."""
+    w = world
+    _reset(w)
+    old_words = "The vendor rates stay inside the finance team."
+    with w.p.admin_engine.begin() as c:
+        page = _page(c, w.a, w.k_closed, "Moving rules", [f"# Rates\n{old_words}"])
+    async with _session(w.p) as call:
+        made = await _create(call, w.lead, w.p1, "Keep the rates private.",
+                             source_page_id=page, source_page_version=1, quote=old_words)
+        assert made.status_code == 201, made.text
+        key = made.json()["rule_key"]
+        with w.p.admin_engine.begin() as c:
+            _version(c, w.a, page, 2, "# Rates\nAsk the finance team.")
+            _version(c, w.a, page, 3, "# Rates\nAsk the finance team.")
+            c.execute(text(
+                "UPDATE kb_pages SET space_id = :s, body_md = :b, history_from = 3 "
+                "WHERE id = :p"),
+                {"s": w.k_open, "b": "# Rates\nAsk the finance team.", "p": page})
+        current = await _create(call, w.lead, w.p1, "Ask finance.", source_page_id=page,
+                                source_page_version=3, quote="Ask the finance team.")
+        member_list = await call(w.member, "GET", _projects(w.p1))
+        member_history = await call(w.member, "GET", _rule(key, "/history"))
+        lead_list = await call(w.lead, "GET", _projects(w.p1))
+    assert current.status_code == 201, current.text
+    for r in (member_list, member_history, lead_list):
+        assert r.status_code == 200, r.text
+        assert old_words not in r.text, "a version under the history floor leaked"
+    by_key = {row["rule_key"]: row for row in member_list.json()["rows"]}
+    old = by_key[key]
+    assert old["body"] == "Keep the rates private." and old["state"] == "active"
+    assert old["quote_hidden"] is True and old["quote"] is None
+    assert old["source_page_id"] is None and old["source_page_version"] is None
+    assert member_history.json()["rows"][0]["quote_hidden"] is True
+    new = by_key[current.json()["rule_key"]]
+    assert new["quote_hidden"] is False and new["quote"] == "Ask the finance team."
+    assert new["source_page_version"] == 3
 
 
 # ── Case 10: a personal tree, and an archived project ───────────────────────
@@ -748,7 +845,8 @@ async def test_a_personal_tree_takes_no_rule(world) -> None:
         owner = await _create(call, w.member, w.personal, "My own rule.")
         admin = await _create(call, w.admin, w.personal, "An admin rule.")
         archived = await _create(call, w.lead, w.archived, "An old rule.")
-    assert owner.status_code == 403 and "personal" in owner.json()["detail"].lower()
+    assert owner.status_code == 403
+    assert owner.json()["detail"] == project_rules.PERSONAL_RULE_REFUSED
     # A personal tree is private, so the admin cannot even see it.
     assert admin.status_code == 404
     assert archived.status_code == 409
