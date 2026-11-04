@@ -5315,6 +5315,22 @@ Owner directive, 2026-11-04, in chat. The question stood on the Metorite epic 15
 
 Fence: the Group O slices in `specs/ai_studio.md` §14 name theirs. Advisory until each slice builds.
 
+### D175 — A CRM form only writes, its one named send is the thank-you mail, and consent wording v1 waits on a lawyer (2026-11-04)
+
+Owner decision, 2026-11-04, in chat: "go ahead with your recommendations for all the questions." The agent wrote the recommendations, and the owner accepted them as one set. Board: **WS-CRM**. Task: Metorite 1569 (`mt-4d56d6f5`). Owning spec: `specs/crm_conversational.md` (CRM-M10 to CRM-M12, §12). D174.1 and D174.2 decide CRM OPEN-1 and OPEN-2. This entry applies them to CRM forms, and it answers OPEN-3.
+
+1. **A CRM form uses the door of D174.1, and the door only writes.** A submission makes or links one lead, then shows a thank-you page. No anonymous link reads a record. A form closes when its campaign ends.
+2. **The send that a CRM form declares is its one thank-you mail (D174.2).** It goes once for each submission, to the address that the person typed, from the template that the form owner approved at publish. It carries an opt-out link. A suppressed address gets nothing.
+3. **Every other send to a submitter still asks (D131.7).** Item 2 does not cover a follow-up, a sequence or a campaign mail. A marketing mail also needs the marketing consent of item 4.
+4. **Consent wording v1 is in `crm_conversational.md` CRM-M11 (OPEN-3).** Forms may be built and tested with it. A lawyer reads it before the first real outside person submits a form. Each consent record stores the wording version. A change of wording makes a new version.
+5. **A member purge deletes the member's private CRM saved views (Metorite 1443, item 11).** Shared views stay. Metorite 1570 builds it.
+
+**What stays.** The switch that lets an org send mail to an outside person stays owner-only (`CLAUDE.md` §3a rule 3). The lawyer's read is the DPDP owner act that D174 names.
+
+**Why.** The owner asked for event forms with a link, an iframe and email (2026-11-02). A person who types their address and submits expects one reply. Each other mail needs consent, as DPDP asks.
+
+**Fence.** Advisory until each slice builds its test: `tests/unit/test_crm_public_form.py` (CRM-M10, item 1), `tests/unit/test_crm_thank_you_queue.py` (CRM-M12, items 2 and 3), the consent tests of CRM-M11 (item 4), and the member purge R8 suite (Metorite 1570, item 5).
+
 ## 4. Single-owner registry (who owns duplicated work)
 
 
