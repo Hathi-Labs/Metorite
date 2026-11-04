@@ -26,9 +26,10 @@ import { clearAll, put } from "@/lib/dataCache";
 import { tableBlock } from "@/lib/studio/blocks";
 import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type StudioDataDoor, sourceKey } from "@/lib/studio/dataDoor";
+import type { FieldSpec } from "@/lib/studio/fieldCheck";
 
 const door: StudioDataDoor = { scope: "t:live", read: async () => [], run: vi.fn(async () => ({ ok: true })) };
-const FIELDS = [
+const FIELDS: FieldSpec[] = [
   { key: "title", type: "text", label: "Title", required: true },
   { key: "qty", type: "number", label: "Pallets" },
   { key: "total", type: "number", label: "Total" },

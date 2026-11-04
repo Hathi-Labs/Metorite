@@ -246,6 +246,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # Do not name that key in this file: only the proof module and the
     # settings may name it (test_studio_direct_proof.py).
     "DIRECT_KEY",
+    # STU-D2b-1: scripts/dev_seed_studio.py reads the gateway token of a local
+    # dev_up.sh stack. It never runs on a box.
+    "DEV_UP_GATEWAY_TOKEN",
     # WS-49 BH-6: the scripts of the root copy (root_lib_files.txt) are in
     # the scan now. These are their own variables and the BH-6 deploy steps.
     "ACK", "DROPIN", "EXPIRES", "EXPIRY_WHY", "HEALTH_TRIES", "NAME",
