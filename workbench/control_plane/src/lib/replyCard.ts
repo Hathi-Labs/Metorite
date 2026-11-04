@@ -643,6 +643,19 @@ export const NUDGE_TEXT = "Tell me in the chat below.";
  */
 export const NUDGE_CHIPS: readonly string[] = ["make it shorter", "make it more formal"];
 
+/**
+ * The nudge line once the member changed the subject or the text (fix round
+ * 1, P1). A request in the chat closes this card, and the assistant writes a
+ * new card from ITS draft: the member's edits do not go with the request yet
+ * (slice 3 carries them). So the line says so, and the chips hide.
+ */
+export const NUDGE_EDITED = "A request in the chat starts again from the assistant's draft. Save draft keeps your version.";
+
+/** True when the member changed the subject or the text of the card. */
+export function newMailEdited(form: ReplyForm, subject: string, body: string): boolean {
+  return subject !== form.subject || body !== form.body;
+}
+
 /** True for the card of a new mail. */
 export function isNewMail(form: ReplyForm | null | undefined): boolean {
   return form?.kind === "new";

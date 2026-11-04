@@ -41,8 +41,10 @@ import {
   newMailHint,
   newMailSummary,
   NUDGE_CHIPS,
+  NUDGE_EDITED,
   NUDGE_LEAD,
   NUDGE_TEXT,
+  newMailEdited,
   recipientsFor,
   sendsCount,
   startTicks,
@@ -76,19 +78,36 @@ export interface NewMailCardFormProps {
  * the chat for a change. Each chip puts its words in the chat box through
  * `onSuggest`, and that is all it does: it sends nothing, and it answers no
  * card. With no `onSuggest`, the line shows with no chips.
+ *
+ * `edited` (fix round 1, P1): the member changed the subject or the text. A
+ * request in the chat would start again from the assistant's draft and drop
+ * those edits, so the chips hide and the line says so (`NUDGE_EDITED`).
  */
-export function NudgeLine({ onSuggest, disabled = false }: { onSuggest?: (text: string) => void; disabled?: boolean }) {
+export function NudgeLine({
+  onSuggest,
+  disabled = false,
+  edited = false,
+}: {
+  onSuggest?: (text: string) => void;
+  disabled?: boolean;
+  edited?: boolean;
+}) {
   return (
     <div
       className="flex flex-wrap items-center gap-1.5 rounded-md bg-muted/40 px-2.5 py-1.5 text-xs glass:rounded-[10px] glass:bg-secondary glass:px-3 glass:py-2"
-      data-new-mail-nudge=""
+      data-new-mail-nudge={edited ? "edited" : ""}
     >
       <Icon name="Sparkles" size={12} className="shrink-0 text-muted-foreground" />
-      <span className="text-foreground">
-        <span className="font-medium">{NUDGE_LEAD}</span>{" "}
-        <span className="text-muted-foreground">{NUDGE_TEXT}</span>
-      </span>
+      {edited ? (
+        <span className="text-foreground">{NUDGE_EDITED}</span>
+      ) : (
+        <span className="text-foreground">
+          <span className="font-medium">{NUDGE_LEAD}</span>{" "}
+          <span className="text-muted-foreground">{NUDGE_TEXT}</span>
+        </span>
+      )}
       {onSuggest &&
+        !edited &&
         NUDGE_CHIPS.map((chip) => (
           <Button
             key={chip}
@@ -214,7 +233,7 @@ export default function NewMailCardForm({
         </ul>
       )}
 
-      <NudgeLine onSuggest={onSuggest} disabled={disabled} />
+      <NudgeLine onSuggest={onSuggest} disabled={disabled} edited={newMailEdited(form, subject, body)} />
 
       <div className="flex flex-wrap items-center gap-2">
         <Button

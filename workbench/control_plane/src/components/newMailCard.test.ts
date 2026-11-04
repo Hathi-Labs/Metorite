@@ -24,7 +24,9 @@ import Button from "@/components/ui/Button";
 import {
   MAX_SUBJECT,
   NUDGE_CHIPS,
+  NUDGE_EDITED,
   isNewMail,
+  newMailEdited,
   newMailAnswer,
   newMailSummary,
   replyFromEvent,
@@ -164,6 +166,27 @@ describe("a chip puts its words in the chat box and sends nothing", () => {
     (chips[0].props as { onClick: () => void }).onClick();
     expect(onSuggest).toHaveBeenCalledTimes(1);
     expect(onSuggest).toHaveBeenCalledWith("make it shorter");
+  });
+
+  it("hides the chips and says that a chat request starts again, once the member edited (fix round 1, P1)", () => {
+    // A chip or any chat message closes the card, and the new card comes from
+    // the assistant's draft. Mutation: keep the chips after an edit → red.
+    const form = replyFromEvent(VALUE)!;
+    expect(newMailEdited(form, form.subject, form.body)).toBe(false);
+    expect(newMailEdited(form, "Rates for May", form.body)).toBe(true);
+    expect(newMailEdited(form, form.subject, `${form.body} More.`)).toBe(true);
+    const onSuggest = vi.fn();
+    const chips = elements(NudgeLine({ onSuggest, edited: true })).filter((el) => el.type === Button);
+    expect(chips).toHaveLength(0);
+    const html = renderToStaticMarkup(createElement(NudgeLine, { onSuggest, edited: true }));
+    expect(html).toContain(NUDGE_EDITED.replace("'", "&#x27;"));
+    expect(html).not.toContain("Want it changed?");
+    expect(html).not.toContain("data-nudge-chip");
+    // Two short sentences at most, and Save draft keeps the member's version.
+    expect(NUDGE_EDITED.split(". ").length).toBeLessThanOrEqual(2);
+    expect(NUDGE_EDITED).toContain("Save draft keeps your version.");
+    // The card passes the edit state to the line.
+    expect(read("components/NewMailCardForm.tsx")).toContain("edited={newMailEdited(form, subject, body)}");
   });
 
   it("draws no chip where no chat box can take the words", () => {
