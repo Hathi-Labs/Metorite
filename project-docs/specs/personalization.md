@@ -2216,6 +2216,11 @@ is empty on each box, so no run gets the block yet.
   the agent, the flag, the verified member, the solo room and the run id
   again. A delegated run binds its own context and run id, so it never gets
   the block of its parent.
+- **The one call.** `run_agent_stream` awaits the prime once, after
+  `bind_artifact_context` and `_prime_chat_constraints`, with the gates of
+  the run boundary. No other function calls it. Fence:
+  `test_1_the_stream_run_awaits_the_prime_once_after_the_binding` (repair
+  round 1, F1).
 - **The setup lap.** `run_agent_stream` laps `briefing` after `constraints`
   (`test_setup_laps.py`).
 - Fences: `test_executor_briefing_block.py`,

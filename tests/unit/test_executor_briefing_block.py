@@ -40,12 +40,14 @@ budget; run the build on the turn's own task (the org leaks).
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import hashlib
 import json
 import random
 import time
 from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -234,6 +236,50 @@ def _key(org: str = ORG, session: str = SESSION, member: str = MEMBER) -> str:
 
 
 # ── Item 1: the block shows, right after the profile block ──────────────────
+
+
+EXECUTOR = (Path(__file__).resolve().parents[2]
+            / "apps" / "services" / "orchestrator" / "orchestrator" / "executor.py")
+
+
+def _function(tree: ast.Module, name: str) -> ast.AsyncFunctionDef:
+    return next(n for n in ast.walk(tree)
+                if isinstance(n, ast.AsyncFunctionDef) and n.name == name)
+
+
+def _calls(node: ast.AST, name: str) -> list[ast.Call]:
+    return [n for n in ast.walk(node) if isinstance(n, ast.Call)
+            and ast.unparse(n.func) == name]
+
+
+def test_1_the_stream_run_awaits_the_prime_once_after_the_binding() -> None:
+    """Repair round 1 (F1): the one call of the prime. ``run_agent_stream``
+    awaits it once, after ``bind_artifact_context`` and after
+    ``_prime_chat_constraints``, with the gates of the run boundary. No
+    other function calls it, so the batch path (WhatsApp) and a delegated
+    run never prime. Mutation: drop the call, call it twice, call it before
+    the binding, or pass another value for a gate → red."""
+    tree = ast.parse(EXECUTOR.read_text(encoding="utf-8"))
+    callers = {fn.name for fn in ast.walk(tree)
+               if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and _calls(fn, "_prime_member_briefing")}
+    assert callers == {"run_agent_stream"}, callers
+    stream = _function(tree, "run_agent_stream")
+    calls = _calls(stream, "_prime_member_briefing")
+    assert len(calls) == 1, "one prime for each run"
+    (call,) = calls
+    assert any(isinstance(n, ast.Await) and n.value is call for n in ast.walk(stream)), (
+        "the run must await the prime")
+    assert [ast.unparse(a) for a in call.args] == ["agent_name"]
+    assert {k.arg: ast.unparse(k.value) for k in call.keywords} == {
+        "organization_id": "organization_id", "thread_id": "thread_id",
+        "delegated": "_delegated_run", "shows_cards": "shows_cards",
+        "batch_thread": "_batch_thread"}
+    (bind,) = _calls(stream, "bind_artifact_context")
+    (constraints,) = _calls(stream, "_prime_chat_constraints")
+    at = (call.lineno, call.col_offset)
+    assert (bind.lineno, bind.col_offset) < at, "the prime reads the run binding"
+    assert (constraints.lineno, constraints.col_offset) < at
 
 
 def test_1_a_solo_web_run_gets_the_block_right_after_the_profile_block(run) -> None:
