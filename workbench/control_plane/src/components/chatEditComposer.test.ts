@@ -62,6 +62,11 @@ describe("the edit composer is a variant of the chat composer", () => {
 });
 
 describe("an edit that cannot go says why (task 1653)", () => {
+  it("no message offers Edit while the saved history still loads", () => {
+    const chat = readFileSync(join(__dirname, "AgentChat.tsx"), "utf8");
+    expect(chat).toMatch(/loadingHistory \? null : editableLastUserId\(/);
+  });
+
   it("a thread still loading refuses the edit with a reason, not a silent close", () => {
     const chat = readFileSync(join(__dirname, "AgentChat.tsx"), "utf8");
     expect(chat).toContain("if (loadingHistory) return EDIT_LOADING;");

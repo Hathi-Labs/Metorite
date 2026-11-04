@@ -2286,9 +2286,14 @@ export default function AgentChat({
   const roomPeople = useMemo(() => (room ? peopleOf(room) : []), [room]);
   // Only the member's OWN last user message offers Edit (lib/chatEdit.ts).
   // An earlier one would fork, and another person's is not theirs to edit.
+  // While the saved history loads, the thread on screen is the browser's
+  // cache. It can end at an older turn than the server's, so its last message
+  // is not yet THE last one: no message offers Edit until the load ends (task
+  // 1653). It showed Edit under an older message, and a Send from it did
+  // nothing.
   const lastUserId = useMemo(
-    () => editableLastUserId(messages, viewerEmail || undefined, isRoom),
-    [messages, viewerEmail, isRoom],
+    () => (loadingHistory ? null : editableLastUserId(messages, viewerEmail || undefined, isRoom)),
+    [messages, viewerEmail, isRoom, loadingHistory],
   );
   // A watcher reads the room and cannot drive its agents. The composer says so
   // instead of failing the send with a 403 after they have typed a paragraph.
