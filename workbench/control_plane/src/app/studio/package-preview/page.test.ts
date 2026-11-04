@@ -16,7 +16,10 @@ import { describe, expect, it } from "vitest";
 
 import { featureForPath } from "@/lib/access";
 import { PANES } from "@/lib/nav";
-import { fieldSpecs, pickObject, previewHref, recordTitle, tableFields } from "@/lib/studio/packagePreview";
+import { computedKeys } from "@/lib/studio/inlineEdit";
+import {
+  fieldSpecs, formFields, missingObjectNote, pickObject, previewHref, recordTitle, tableFields,
+} from "@/lib/studio/packagePreview";
 
 const page = readFileSync(new URL("./page.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -85,5 +88,37 @@ describe("the preview model", () => {
   it("builds the href with the query", () => {
     expect(previewHref("p1", "visit")).toBe("/studio/package-preview?pkg=p1&object=visit");
     expect(previewHref("p1")).toBe("/studio/package-preview?pkg=p1");
+  });
+});
+
+describe("fix round 1: the Forms, the door and the object pick", () => {
+  const fields = [
+    { key: "qty", type: "number" as const }, { key: "price", type: "number" as const },
+    { key: "total", type: "number" as const },
+  ];
+  const rules = [{ name: "t", kind: "formula", target: "total", expr: {} }, { kind: "rollup", target: "sum" }];
+  it("a Form never holds a computed field, and the Detail sheet keeps it", () => {
+    expect(formFields(fields, computedKeys(rules)).map((f) => f.key)).toEqual(["qty", "price"]);
+    expect(formFields(fields, computedKeys([])).map((f) => f.key)).toEqual(["qty", "price", "total"]);
+  });
+  it("both Form mounts take the filtered fields and the Detail takes all of them", () => {
+    const forms = page.match(/<StudioForm[^>]*?fields=\{[^}]*\}/g) ?? [];
+    expect(forms).toHaveLength(2);
+    for (const f of forms) expect(f).toContain("fields={formFields(");
+    expect(page).toContain("<StudioDetail fields={fields}");
+  });
+  it("the page keeps one door through a re-read of the package", () => {
+    expect(page).toContain("createDoorKeeper");
+    expect(page).not.toMatch(/useMemo\(\s*\(\) => \(detail\.data \? createRealDoor/);
+  });
+  it("the Table header does not say the read error a second time", () => {
+    expect(page).not.toContain("error={rows.error}");
+  });
+  it("says so when the query names no object", () => {
+    const objects = [{ name: "visit", label: "Visit" }, { name: "site", label: null }] as never;
+    expect(missingObjectNote(objects, "nope")).toBe("No object named nope. Showing Visit.");
+    expect(missingObjectNote(objects, "site")).toBeNull();
+    expect(missingObjectNote(objects, null)).toBeNull();
+    expect(page).toContain("missingObjectNote(");
   });
 });

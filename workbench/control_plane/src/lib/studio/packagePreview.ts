@@ -43,6 +43,23 @@ export function tableFields(fields: readonly FieldSpec[]): FieldSpec[] {
   return [...single, ...many].slice(0, MAX_TABLE_COLUMNS);
 }
 
+/**
+ * The fields of a Form. A field that a `formula` or `rollup` rule fills is left out:
+ * the store refuses a write to it (422 `computed_field`), even `null`. The Detail
+ * sheet and the Table still show it.
+ */
+export function formFields(fields: readonly FieldSpec[], computed: ReadonlySet<string>): FieldSpec[] {
+  return fields.filter((f) => !computed.has(f.key));
+}
+
+/** The sentence for a query that names no object, or null. The page then shows the first object. */
+export function missingObjectNote(
+  objects: readonly Pick<ObjectRow, "name" | "label">[], wanted: string | null,
+): string | null {
+  if (!wanted || objects.length === 0 || objects.some((o) => o.name === wanted)) return null;
+  return `No object named ${wanted}. Showing ${objects[0].label ?? objects[0].name}.`;
+}
+
 /** The field that names a record: the first text field, else the first field. */
 export function titleKeyOf(fields: readonly FieldSpec[]): string | null {
   return (fields.find((f) => f.type === "text" && !f.many) ?? fields[0])?.key ?? null;

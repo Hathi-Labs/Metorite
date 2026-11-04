@@ -34,9 +34,9 @@ import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, sourceKey } from "@/lib/studio/dataDoor";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import {
-  fieldSpecs, pickObject, previewHref, recordTitle, tableFields,
+  fieldSpecs, formFields, missingObjectNote, pickObject, previewHref, recordTitle, tableFields,
 } from "@/lib/studio/packagePreview";
-import { STUDIO_OFF, createRealDoor, getPackage, listPackages } from "@/lib/studio/realDoor";
+import { STUDIO_OFF, createDoorKeeper, getPackage, listPackages } from "@/lib/studio/realDoor";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 const PANEL = "rounded-xl border border-border bg-card p-3 sm:p-4";
@@ -71,17 +71,18 @@ function Off() {
 function Records({ pkg, objectName }: { pkg: string; objectName: string | null }) {
   const router = useRouter();
   const detail = useCachedResource(`studio:package-preview:pkg:${pkg}`, () => getPackage(pkg));
-  const door = useMemo(
-    () => (detail.data ? createRealDoor({ packageId: pkg, actions: detail.data.actions }) : null),
-    [pkg, detail.data],
-  );
+  // One door while the actions stay the same: a focus read of the package gives a new object,
+  // and a new door would reset the edit store and the delete flow.
+  const [keeper] = useState(() => createDoorKeeper());
+  const door = detail.data ? keeper(pkg, detail.data.actions) : null;
   const object = detail.data ? pickObject(detail.data.objects, objectName) : undefined;
   const fields = useMemo(() => (object ? fieldSpecs(object) : []), [object]);
+  const computed = useMemo(() => computedKeys(object?.rules), [object?.rules]);
   const list = useMemo(() => ({ action: `object:${object?.name ?? "none"}.list` }), [object?.name]);
   const node = useMemo(
     () => tableBlock(tableFields(fields), list, object?.label ?? object?.name,
-      { editable: true, computed: [...computedKeys(object?.rules)] }),
-    [fields, list, object?.label, object?.name, object?.rules],
+      { editable: true, computed: [...computed] }),
+    [fields, list, object?.label, object?.name, computed],
   );
   const rows = useCachedResource<Row[]>(
     door && object ? sourceKey(door, list) : null,
@@ -109,18 +110,22 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
 
   const all = rows.data ?? [];
   const record = all.find((r) => r.id === picked) ?? all[0];
+  const note = missingObjectNote(detail.data.objects, objectName);
   const objectPicks = detail.data.objects.map((o) => ({ value: o.name, label: o.label ?? o.name }));
 
   return (
     <Shell note={
-      <SelectButton label="Object" value={object.name} widthClass="w-48" options={objectPicks}
-        onChange={(v) => router.replace(previewHref(pkg, v))} />
+      <>
+        <SelectButton label="Object" value={object.name} widthClass="w-48" options={objectPicks}
+          onChange={(v) => router.replace(previewHref(pkg, v))} />
+        {note ? <span role="status" className="text-xs text-muted-foreground">{note}</span> : null}
+      </>
     }>
       <StudioDataContext.Provider value={door}>
         <section aria-label="Table" className={PANEL}>
           <div className="mb-2 flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold text-foreground">Table</h2>
-            <RecordsStatus loading={rows.loading} error={rows.error} onRetry={rows.refresh} />
+            <RecordsStatus loading={rows.loading} error={null} onRetry={rows.refresh} />
           </div>
           <GenerativeUINode spec={node} />
           <p className="mt-3 text-xs text-muted-foreground">
@@ -130,7 +135,7 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
 
         <div className="grid grid-cols-1 gap-3 sm:gap-4 xl:grid-cols-2">
           <section aria-label="Form" className={PANEL}>
-            <StudioForm fields={fields} door={door} action={`object:${object.name}.create`}
+            <StudioForm fields={formFields(fields, computed)} door={door} action={`object:${object.name}.create`}
               title={`New ${object.label ?? object.name}`} submitLabel="Add record" savedMessage="Record added" />
           </section>
 
@@ -144,7 +149,7 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
             {record ? (
               <div className="space-y-3">
                 {editing ? (
-                  <StudioForm key={String(record.id)} fields={fields} door={door}
+                  <StudioForm key={String(record.id)} fields={formFields(fields, computed)} door={door}
                     action={`object:${object.name}.update`} initial={record} extraArgs={{ id: record.id }}
                     title="Edit record" submitLabel="Save changes" savedMessage="Changes saved"
                     onSaved={() => setEditing(false)} />

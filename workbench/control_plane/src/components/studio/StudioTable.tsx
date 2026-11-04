@@ -151,9 +151,12 @@ export default function StudioTable({ data, rows, door, source }: StudioTablePro
 
   return (
     <div className="space-y-2">
-      {st.alert ? (
-        <p role="alert" className="rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive">{st.alert}</p>
-      ) : null}
+      {/* The slot keeps its height, so a refusal does not push the grid down. */}
+      <div data-refusal-slot="" className="min-h-7">
+        {st.alert ? (
+          <p role="alert" className="rounded-md bg-destructive/10 px-2 py-1 text-xs text-destructive">{st.alert}</p>
+        ) : null}
+      </div>
       <p className="sr-only" aria-live="polite">{st.live}</p>
       <DataGrid data={grid} edit={edit} />
     </div>

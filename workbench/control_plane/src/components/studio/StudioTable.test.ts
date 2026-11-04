@@ -20,8 +20,12 @@ vi.mock("next/navigation", () => ({
   usePathname: () => "/studio/package-preview",
 }));
 
+import GenerativeUINode, { BoundStatus } from "@/components/GenerativeUINode";
 import StudioTable, { updateOf } from "@/components/studio/StudioTable";
-import type { StudioDataDoor } from "@/lib/studio/dataDoor";
+import { clearAll, put } from "@/lib/dataCache";
+import { tableBlock } from "@/lib/studio/blocks";
+import { StudioDataContext } from "@/lib/studio/dataContext";
+import { type StudioDataDoor, sourceKey } from "@/lib/studio/dataDoor";
 
 const door: StudioDataDoor = { scope: "t:live", read: async () => [], run: vi.fn(async () => ({ ok: true })) };
 const FIELDS = [
@@ -82,5 +86,57 @@ describe("a row with a UUID id", () => {
     expect(html).not.toContain(`href="${ID}"`);
     expect(html).not.toContain("<a ");
     expect(html).toContain('aria-label="Edit Title"');
+  });
+});
+
+describe("fix round 1: the plain grid, the read error, the edit mark, the refusal line", () => {
+  const PKG_FIELDS = FIELDS.filter((f) => f.key !== "total");
+  const bound = (editable: boolean) => {
+    const src = { action: "object:visit.list" };
+    const d: StudioDataDoor = { scope: "t:fix1", read: async () => [], run: vi.fn(async () => ({ ok: true })) };
+    put(sourceKey(d, src), ROWS);
+    return renderToStaticMarkup(createElement(
+      StudioDataContext.Provider, { value: d },
+      createElement(GenerativeUINode, { spec: tableBlock(PKG_FIELDS, src, "Visits", editable ? { editable: true } : undefined) }),
+    ));
+  };
+  it("a bound dataGrid without editable draws with no StudioTable wrapper and no edit button", () => {
+    clearAll();
+    const html = bound(false);
+    expect(html).toContain("Filter rows");
+    expect(html).not.toContain('aria-live="polite"');
+    expect(html).not.toContain("data-cell-edit");
+  });
+  it("the same grid with editable draws the wrapper", () => {
+    clearAll();
+    const html = bound(true);
+    expect(html).toContain('aria-live="polite"');
+    expect(html).toContain("data-cell-edit");
+  });
+  it("a read error shows the sentence of the door once, with no retry for a refusal", () => {
+    const html = renderToStaticMarkup(createElement(BoundStatus, { view: "error", onRetry: () => {}, error: "That record is gone. Reload the list." }));
+    expect(html).toContain("That record is gone. Reload the list.");
+    expect(html).not.toContain("Could not load this list.");
+    expect(html).not.toContain("Try again");
+    expect((html.match(/role="alert"/g) ?? []).length).toBe(1);
+  });
+  it("a wait or a network fault shows its sentence and a Retry", () => {
+    const html = renderToStaticMarkup(createElement(BoundStatus, { view: "error", onRetry: () => {}, error: "This app is busy now. Try again in 1 second." }));
+    expect(html).toContain("This app is busy now.");
+    expect(html).toContain(">Try again<");
+  });
+  it("a fault with no sentence keeps the old words and a Retry", () => {
+    const html = renderToStaticMarkup(createElement(BoundStatus, { view: "error", onRetry: () => {} }));
+    expect(html).toContain("Could not load this list.");
+    expect(html).toContain(">Try again<");
+  });
+  it("an editable cell wears a pencil mark that needs no hover", () => {
+    const html = draw({ title: "Visits", fields: FIELDS, filterable: true, editable: true, computed: ["total"] });
+    expect(html).toContain("data-edit-mark");
+    expect((html.match(/data-edit-mark/g) ?? []).length).toBe(html.match(/data-cell-edit/g)?.length);
+  });
+  it("keeps room for the refusal line, so the grid does not jump", () => {
+    const html = draw({ title: "Visits", fields: FIELDS, filterable: true, editable: true });
+    expect(html).toContain('data-refusal-slot');
   });
 });

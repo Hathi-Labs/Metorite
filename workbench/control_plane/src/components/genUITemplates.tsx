@@ -1738,6 +1738,11 @@ export function DataGrid({ data, layout, edit }: { data: Data; layout?: GridLayo
         onClick={() => edit.open(id, c.index)} style={{ color: "inherit" }}
         className="min-h-5 w-full min-w-8 cursor-text text-left">
         {isEmptyCell(arr(r.cells)[c.index]) ? <span style={{ color: "var(--muted-foreground)" }}>—</span> : plain}
+        {/* A quiet pencil says the cell edits. It needs no hover, so touch sees it too. */}
+        <span data-edit-mark="" aria-hidden="true"
+          style={{ display: "inline-block", marginLeft: 4, verticalAlign: "middle", opacity: 0.45 }}>
+          <Icon name="Pencil" size={10} />
+        </span>
       </Button>
     );
   };

@@ -59,8 +59,22 @@ MANIFEST = {
             {"key": "notes", "type": "longText", "label": "Notes"},
         ],
         # A rule gives the preview a refusal to show: an edit of Pallets past 500.
+        # A rule gives the preview a refusal to show: an edit of Pallets past 500.
         "rules": [{"name": "qty_range", "kind": "range", "field": "qty", "min": 0, "max": 500,
                    "message": "Pallets must be between 0 and 500."}],
+    }, {
+        # A formula fills Total, so the Forms must leave it out (the store refuses a write to it).
+        # A formula must be declared before the first record, so this object holds none from the seed.
+        "name": "line",
+        "label": "Order line",
+        "fields": [
+            {"key": "name", "type": "text", "label": "Name", "required": True},
+            {"key": "qty", "type": "number", "label": "Quantity", "hot": True},
+            {"key": "price", "type": "number", "label": "Price", "hot": True},
+            {"key": "total", "type": "number", "label": "Total (formula)"},
+        ],
+        "rules": [{"name": "line_total", "kind": "formula", "target": "total", "rounding": "half_up",
+                   "scale": 2, "expr": {"fn": "mul", "args": [{"ref": "qty"}, {"ref": "price"}]}}],
     }],
     "actions": [
         {"id": "find", "uses": "object:visit.list"},
@@ -68,6 +82,10 @@ MANIFEST = {
         {"id": "add", "uses": "object:visit.create"},
         {"id": "change", "uses": "object:visit.update"},
         {"id": "remove", "uses": "object:visit.delete"},
+        {"id": "find_line", "uses": "object:line.list"},
+        {"id": "add_line", "uses": "object:line.create"},
+        {"id": "change_line", "uses": "object:line.update"},
+        {"id": "remove_line", "uses": "object:line.delete"},
     ],
 }
 
