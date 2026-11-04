@@ -36,7 +36,7 @@ ORG = "aaaaaaaa-0000-0000-0000-0000000d0151"
 SESSION = "chat-d151"
 MEMBER = "jane@acme.test"
 REMIND = "remind me to call Rajendra at 5"
-#: The class C tools of the reminders pack (WS-ALN). A held chat drops each one,
+#: The class C tool of the reminders pack (WS-ALN). A held chat drops it,
 #: as every class C tool but ``promote_reminder``. The reminder writes all stay.
 #: PJP-2 (project_planning.md §3.3) moved the area tools into this pack.
 #: ``delete_area`` and ``rename_area`` are class C (``OFF_PROJECTS`` in

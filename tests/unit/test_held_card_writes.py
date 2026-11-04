@@ -57,7 +57,7 @@ CRM_AGENT = REPO / "apps" / "agents" / "agent-crm" / "agents.py"
 PA = "projects-assistant"
 CRM = "crm-assistant"
 PROJECT_PACKS = ("projects", "projects-plan", "projects-structure", "projects-bulk",
-                 "projects-reminders", "projects-reports")
+                 "projects-reminders", "projects-reports", "projects-authority")
 
 # ── 1. The table ────────────────────────────────────────────────────────────
 
@@ -92,6 +92,8 @@ OFF_PROJECTS = frozenset({
     "merge_tasks", "move_project", "nudge_task", "remove_report_recipient", "rename_area",
     "report_delete", "revert_activity", "revoke_access", "set_report_schedule",
     "set_status_set", "unarchive_project",
+    # WS-ALN ALN-4, off in a held chat as every class C tool but promote_reminder.
+    "pin_authority", "unpin_authority",
 })
 
 #: The class A Projects tools that write a file of the chat. They stay.
@@ -407,7 +409,7 @@ async def test_a_chat_that_read_mail_builds_each_project_pack_with_the_table(sto
     assert tools >= KEPT_PROJECTS and tools >= CHAT_FILES
     assert not tools & OFF_PROJECTS
     reminders = {_name(t) for t in built["projects-reminders"].tools}
-    # The pack holds class C decision tools since WS-ALN, and a held chat drops them.
+    # The class C tool of this pack (the decision answer) is off in a held chat.
     assert reminders == set(SKILL_FAMILIES["projects-reminders"]["tools"]) - OFF_PROJECTS
 
 

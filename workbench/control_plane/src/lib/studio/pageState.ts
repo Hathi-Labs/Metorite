@@ -114,3 +114,17 @@ export function decodePageState(
     return emptyState();
   }
 }
+
+/** A filter edit that the URL has not caught up with. `base` is the URL value when the member typed. */
+export interface FilterDraft {
+  base: string;
+  text: string;
+}
+
+/**
+ * The text for a filter input. The draft shows only while the URL still holds the value it
+ * was typed over. When the URL value changes (Back, a shared link), the URL wins.
+ */
+export function filterInputValue(draft: FilterDraft | null, urlValue: string): string {
+  return draft && draft.base === urlValue ? draft.text : urlValue;
+}

@@ -47,10 +47,11 @@ WHEN = {
         'Load for "remind me", or to list, move, snooze or resolve a reminder (not a task). '
         "Also my areas, task inbox and notifications."),
     "projects-reports": "Load for a status report, saved reports, who gets a report and when, or to export tasks.",
+    "projects-authority": "Load for the authority page of a project: to read it, pin a page as the authority, or remove a pin.",
     # STU-G1: the Studio builder pack.
     "studio": (
-        "Load to build an app in AI Studio: draft, change and check its manifest, "
-        "and find the actions it may use."),
+        "Load for AI Studio: build an app (manifest, actions), or save, publish, "
+        "pause and list your skills."),
 }
 
 

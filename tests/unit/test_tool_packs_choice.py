@@ -1514,9 +1514,9 @@ def test_the_crm_pack_is_last_in_the_order_so_the_cap_drops_it_first() -> None:
     email pack leaves first -> red."""
     # OA-8b: the four Projects packs follow it, so the order ends with them.
     # STU-G1: the studio pack is last of all.
-    assert list(tp.PACKS)[-8:] == [
+    assert list(tp.PACKS)[-9:] == [
         "crm-records", "projects", "projects-plan", "projects-structure", "projects-bulk",
-        "projects-reminders", "projects-reports", "studio"]
+        "projects-reminders", "projects-reports", "projects-authority", "studio"]
     assert list(tp.PACKS).index("crm-records") > list(tp.PACKS).index("email-setup")
     # Email 31 and CRM 9 beside a base of 75 is over 110: the CRM pack leaves,
     # and the email pack stays.

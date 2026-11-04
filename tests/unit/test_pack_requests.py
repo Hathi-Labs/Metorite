@@ -216,6 +216,10 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "unarchive_project": ("unarchive the project Website Relaunch",),
     "unarchive_task": ("restore the archived task",),
     "watch": ("watch this task",),
+    # -- projects-authority (WS-ALN ALN-4) --
+    "project_authorities": ("which page is the authority page of this project?",),
+    "pin_authority": ("pin this page as the authority of the project",),
+    "unpin_authority": ("remove the authority page of the project",),
     # -- studio (STU-G1) --
     "studio_describe": ("which field types can a studio app manifest use?",),
     "studio_draft": ("draft an app manifest in AI Studio",),
@@ -225,6 +229,10 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "studio_patch": ("change the title in the app manifest",),
     "studio_plan": ("plan the studio app",),
     "studio_validate": ("validate the app manifest",),
+    # -- studio skills (STU-F2d) --
+    "studio_skill_list": ("list my studio skills",),
+    "studio_skill_save": ("save a new studio skill that summarises a meeting",),
+    "studio_skill_state": ("publish my studio skill",),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),

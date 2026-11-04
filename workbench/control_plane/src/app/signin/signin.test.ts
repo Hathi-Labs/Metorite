@@ -124,6 +124,18 @@ describe("error copy speaks Auth.js v5", () => {
     expect(signInErrorMessage(null)).toBeNull();
   });
 
+  it("shows no raw code for a stale form or a bare error link (task 1535)", () => {
+    // Production served both as "Sign-in failed (<code>)" on 2026-11-03.
+    const csrf = signInErrorMessage("MissingCSRF");
+    expect(csrf).toMatch(/expired/);
+    expect(csrf).toMatch(/Reload the page/);
+    expect(csrf).not.toMatch(/MissingCSRF/);
+    // `/api/auth/error` with no `?error=` arrives as the string "undefined".
+    const bare = signInErrorMessage("undefined");
+    expect(bare).toMatch(/did not finish/);
+    expect(bare).not.toMatch(/undefined/);
+  });
+
   it("explains a wrong email code and the two OTP limits (task 1529)", () => {
     // `Verification` is the wrong-code error. It used to reach Auth.js's
     // built-in page, a dead end, so it had no copy of its own at all.

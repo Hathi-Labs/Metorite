@@ -1467,18 +1467,18 @@ The audit captured every Projects surface at 390 px and 360 px, in dark and ligh
 | Slice | Task | What | Done when | Tier |
 |---|---|---|---|---|
 | MOB-1 | 1521 | Leave Overview on a phone | From each Overview at 390 px, one tap returns to the List. The command "List view" works from Overview | LOW |
-| MOB-2 | — | A phone row for the List: tick, title, project, due, status | At 390 px and 360 px, the row shows all five with no sideways scroll. One tap finishes a task | MEDIUM |
-| MOB-3 | — | The address follows the phone: `?task=` on open, Back closes the task, `?project=` stays | Back closes an open task. A reload keeps the project and the task | MEDIUM |
-| MOB-4 | — | Find, add, capture: a title button opens the Projects sheet, capture stays in place, an empty project offers "Add a task" | Each of the three works at 390 px. No keyboard hint shows on a touch screen | MEDIUM |
+| MOB-2 | 1537 | A phone row for the List: tick, title, project, due, status | At 390 px and 360 px, the row shows all five with no sideways scroll. One tap finishes a task | MEDIUM |
+| MOB-3 | 1538 | The address follows the phone: `?task=` on open, Back closes the task, `?project=` stays | Back closes an open task. A reload keeps the project and the task | MEDIUM |
+| MOB-4 | 1539 | Find, add, capture: a title button opens the Projects sheet, capture stays in place, an empty project offers "Add a task" | Each of the three works at 390 px. No keyboard hint shows on a touch screen | MEDIUM |
 | MOB-5 | 1499 | Empty My tasks names projects with open work (PJP-12) | With no open task, up to 5 projects or spaces show, each with its count and a link | MEDIUM |
-| MOB-6 | — | Phone shapes for Calendar (an agenda), Timeline (off the phone) and the View sheet (a grid) | No mode is hidden at 360 px. Calendar reads as a list of days | LOW |
-| MOB-7 | — | Touch sizes and sheets: the bulk bar, card menus, remove buttons, `SelectButton` | Each control is 44 px or larger. The bulk bar takes at most 20% of the screen | LOW |
-| MOB-8 | — | States: the phone skeleton, the search error, a failed tree read | Each state says what happened and offers the next step | LOW |
+| MOB-6 | 1540 | Phone shapes for Calendar (an agenda), Timeline (off the phone) and the View sheet (a grid) | No mode is hidden at 360 px. Calendar reads as a list of days | LOW |
+| MOB-7 | 1541 | Touch sizes and sheets: the bulk bar, card menus, remove buttons, `SelectButton` | Each control is 44 px or larger. The bulk bar takes at most 20% of the screen | LOW |
+| MOB-8 | 1542 | States: the phone skeleton, the search error, a failed tree read | Each state says what happened and offers the next step | LOW |
 | INB-1 | 1522 | The inbox holds captures only (D170) | The list, the count and both chat tools hold only captures. An assigned untriaged task shows in My tasks as New | MEDIUM |
-| UNDO-1 | — | Undo for a status change (and a reopen), each panel edit, a move, archive and unarchive | Each act shows a toast with Undo and answers Ctrl+Z. Undo restores the exact state before | MEDIUM |
-| UNDO-2 | — | Undo for bulk acts and delete | One Undo restores every task of a bulk act. Delete acts at once with Undo, as D109.5 asks | MEDIUM |
-| SEL-1 | — | Select many in My tasks (each chip, Done too) and in Table, with Ctrl+A and a bulk bar across projects | The member selects every done task and archives them in one act, with Undo | MEDIUM |
-| ARC-1 | — | One Archive view across projects in My work | It lists the member's archived tasks. Restore works for one task or many | LOW |
+| UNDO-1 | 1528 | Undo for a status change (and a reopen), each panel edit, a move, archive and unarchive | Each act shows a toast with Undo and answers Ctrl+Z. Undo restores the exact state before | MEDIUM |
+| UNDO-2 | 1543 | Undo for bulk acts and delete | One Undo restores every task of a bulk act. Delete acts at once with Undo, as D109.5 asks | MEDIUM |
+| SEL-1 | 1544 | Select many in My tasks (each chip, Done too) and in Table, with Ctrl+A and a bulk bar across projects | The member selects every done task and archives them in one act, with Undo | MEDIUM |
+| ARC-1 | 1545 | One Archive view across projects in My work | It lists the member's archived tasks. Restore works for one task or many | LOW |
 
 ### 9b.5 Fences
 
@@ -1506,13 +1506,13 @@ Each fence is advisory until its slice builds.
 
 Each slice except TC-1 ships behind `NEXT_PUBLIC_TASK_CARD_V2`. None needs a migration.
 
-| Slice | What | Done when | Tier |
-|---|---|---|---|
-| TC-1 | The pill stays. No card covers the AI pill, and Calendar publishes its open task to the assistant's facts | At each width, with a card open (side or full), the pill shows and opens the assistant. The facts name the open task in Projects, Tasks and Calendar | MEDIUM |
-| TC-2 | The task chip in the pill (D172.4 to D172.6): a removable reference, one chat per task, and the Re-clarify and Fill details chips | A message with the chip goes to the task's chat and carries the task as context. Removing the chip sends to the normal chat. A change still asks on its card | MEDIUM, with the full review |
-| TC-3 | One card everywhere: Calendar and `/tasks` use the Projects card. The side panel by default, and expand to full screen | The same component draws the card on the three surfaces. Expand and Escape work on each | MEDIUM |
-| TC-4 | Read first: the header, the title and status pill, the five facts, edit on click, "More details" | Each fact reads as text and opens its editor on one click. The header holds at most five controls | LOW |
-| TC-5 | The My plan line | My plan folds to one line by default and opens in place. Only the member sees it | MEDIUM |
+| Slice | Task | What | Done when | Tier |
+|---|---|---|---|---|
+| TC-1 | 1527 | The pill stays. No card covers the AI pill, and Calendar publishes its open task to the assistant's facts | At each width, with a card open (side or full), the pill shows and opens the assistant. The facts name the open task in Projects, Tasks and Calendar | MEDIUM |
+| TC-2 | 1546 | The task chip in the pill (D172.4 to D172.6): a removable reference, one chat per task, and the Re-clarify and Fill details chips | A message with the chip goes to the task's chat and carries the task as context. Removing the chip sends to the normal chat. A change still asks on its card | MEDIUM, with the full review |
+| TC-3 | 1547 | One card everywhere: Calendar and `/tasks` use the Projects card. The side panel by default, and expand to full screen | The same component draws the card on the three surfaces. Expand and Escape work on each | MEDIUM |
+| TC-4 | 1548 | Read first: the header, the title and status pill, the five facts, edit on click, "More details" | Each fact reads as text and opens its editor on one click. The header holds at most five controls | LOW |
+| TC-5 | 1549 | The My plan line | My plan folds to one line by default and opens in place. Only the member sees it | MEDIUM |
 
 ### 9c.3 Fences
 

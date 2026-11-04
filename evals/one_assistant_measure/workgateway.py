@@ -467,6 +467,9 @@ class WorkGateway:
             return self._summary(parts[1])
         if tail in (["types"], ["tags"], ["fields"]):
             return {"rows": []}
+        if tail == ["authorities"]:
+            # WS-ALN ALN-4: no page is pinned in the fake.
+            return {"rows": [], "total": 0}
         return None
 
     @staticmethod

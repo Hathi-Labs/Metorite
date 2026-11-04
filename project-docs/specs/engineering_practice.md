@@ -210,7 +210,8 @@ worktree. The independent verifier, and the reviewer by tier, run beside it.
 The gate tests the merge of the branch with today's `origin/main`, not the
 branch alone. It runs four steps:
 
-1. The full pr-check suite, in the `metorite-ci` distro (`scripts/ci_local.sh`).
+1. The full pr-check suite on a local CI lane (`scripts/ci_local.sh`). The
+   home server runs it first.
 2. The production build: `next build` and `next start`, and the gateway with
    no reload, as `acb_app` under FORCE RLS.
 3. The migration rehearsal. It restores last night's reduced copy at
@@ -627,19 +628,27 @@ fence goes into one list in the PR that adds it. If you are not sure, choose
 **Before you push.** `bash scripts/prepush.sh` runs the fences and the
 affected tests in a few minutes.
 
-**The whole suite, on this PC.** `bash scripts/ci_local.sh` runs every
-pr-check job in the `metorite-ci` WSL2 distro. The distro is preset, so a run
+**The whole suite, on the home server or this PC.** `bash scripts/ci_local.sh`
+runs every pr-check job on a preset machine. The machine is preset, so a run
 spends its time on tests, not on installs. The jobs come from
 `.github/workflows/pr-check.yml` through `scripts/ci_pc/steps.py`, so the two
-cannot drift. Set it up once with `bash scripts/ci_pc/setup.sh`.
+cannot drift.
 
+- **Two lanes (task 1534).** The home server runs the suite as user `ci`
+  (`ci@metorite-home`, port 2222, over Tailscale). This PC's `metorite-ci`
+  WSL2 distro takes the run when the home server is busy or does not answer.
+  So two suites can run at once. `--home` or `--pc` picks one lane. Each lane
+  runs one suite at a time, behind a lock.
+- **Setup.** This PC's lane: `bash scripts/ci_pc/setup.sh`. The home server:
+  `scripts/home_server/remote_access.ps1`, then `wsl_setup.ps1`. That runs
+  `setup.sh`, which presets the `ci` user with the same `bootstrap.sh`.
 - It tests a COMMIT. Commit first.
-- The distro cannot read the Windows drives and cannot start a Windows
-  program. The code reaches it through `git`, never through a mount.
+- Neither lane can read the Windows drives or start a Windows program. The
+  code reaches it through `git`, never through a mount.
 - It is not the merge gate. pr-check on GitHub is.
-- It shares ONE WSL2 VM with Docker Desktop and every distro. So it sizes its
-  shards by free memory, caps each container, and refuses to start below
-  8 GB free. On 2026-10-20 an uncapped run hung the VM for every session.
+- Each lane shares ONE WSL2 VM with the other distros of its machine. So it
+  sizes its shards by free memory, caps each container, and refuses to start
+  below 8 GB free. On 2026-10-20 an uncapped run hung the VM for every session.
 - When WSL or Docker hangs, run `bash scripts/ci_pc/doctor.sh` from
   Windows. `--fix` repairs it in a known order: `wsl --shutdown`, then the
   WSL service (one UAC prompt), then Docker Desktop and only its own distro,
