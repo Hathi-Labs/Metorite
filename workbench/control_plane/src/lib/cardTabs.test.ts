@@ -42,7 +42,11 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
     expect(kind("Set this reminder?")).toBe("reminder");
     expect(kind("Create this CRM lead?")).toBe("other");
     expect(kind("Send from which mailbox?")).toBe("other");
-    expect(KIND_ICON).toEqual({ send: "Mail", reply: "Reply", task: "CheckSquare", reminder: "Bell", other: "ShieldCheck" });
+    // §18.10: a new-mail form is its own kind, told by the form's kind and
+    // never by the title. Mutation: return "reply" for every form → red.
+    expect(kind("Email to sharat@x.test", { kind: "new" })).toBe("new");
+    expect(kind("Reply to 1 recipient?", { kind: "new" })).toBe("new");
+    expect(KIND_ICON).toEqual({ send: "Mail", reply: "Reply", new: "Mail", task: "CheckSquare", reminder: "Bell", other: "ShieldCheck" });
   });
 
   it("a tab is a kind word and a short object, at most 24 characters", () => {
@@ -62,6 +66,9 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
     expect(tabLabel({ title: "Send this email?", rows: one })).toBe("Email to Kim");
     const reply = { messageId: "m", replyAll: false, recipients: { reply: { to: ["Pat Jones <pat@x.test>"], cc: [] }, reply_all: { to: ["z@x.test"], cc: [] } } };
     expect(tabLabel({ title: "Reply to 1 recipient?", reply: reply as never })).toBe("Reply to Pat Jones");
+    // §18.10: the tab of a new-mail card reads "Email to", whatever the title.
+    const fresh = { kind: "new", messageId: "", replyAll: true, recipients: { reply: { to: ["sharat.satyanarayana@x.test"], cc: [] }, reply_all: { to: ["sharat.satyanarayana@x.test"], cc: [] } } };
+    expect(tabLabel({ title: "Reply to sharat@x.test?", reply: fresh as never })).toBe("Email to Sharat");
     expect(tabLabel({ title: "Create this task?", detail: `${long} · status Open` })).toBe("Task: Send Neuropeak a…");
     expect(tabLabel({ title: "Set this reminder?", detail: "Call Rajendra · Wed 10:00" })).toBe("Reminder: Call Rajendra");
     expect(tabLabel({ title: "Create this CRM lead?" })).toBe("Create this CRM lead");

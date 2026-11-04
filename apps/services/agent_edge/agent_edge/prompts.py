@@ -202,7 +202,9 @@ def _queued_text() -> str:
         " step 2 again. When claim_task refuses for another reason, tell me"
         " why, and take the next row. A waiting run of another connection, such"
         " as one on another machine, is never yours, and my_work does not list"
-        " it." + _terminals() + " Take only a row that my_work lists.",
+        " it. Metorite still takes a write on any run of mine through your"
+        " client, from any machine. So do not write on such a run."
+        + _terminals() + " Take only a row that my_work lists.",
         _context_step(start_run=True) + " Note the version of the task.",
         *_work_steps(runs=True),
     ]
@@ -262,7 +264,11 @@ def _work_steps(*, runs: bool) -> list[str]:
             "Report progress. While a run is open, send a thought with"
             " post_agent_activity at least once a minute. That is your"
             " heartbeat. After 2 hours with no activity, another session can"
-            " take the task from you. When no run is open, call add_comment.")
+            " take the task from you. When no run is open, call add_comment."
+            # WS-55 MCP-G15. Fence: `test_mcp_edge_outside_decision.py`.
+            " When you asked me with ask_on_task and I answer outside Metorite,"
+            " such as in this chat, call record_outside_decision at once. The"
+            " question then closes, and the task stops waiting on me.")
     else:
         steps.append("Report progress with add_comment.")
     steps += [

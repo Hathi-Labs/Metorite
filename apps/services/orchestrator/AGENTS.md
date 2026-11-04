@@ -145,6 +145,13 @@ A bare test file name is under `tests/unit/`, and a bare spec name is under
    - A load makes no pack sticky. A pack becomes sticky when one of its tools runs (`_pack_call`). The catalog offers only a pack that fits the cap.
    - Fence: `tests/unit/test_load_skill_tools.py`.
 
+29. **The orchestrator's per-turn context carries the briefing of the member's other chats** (WS-63 PZ-34, `project-docs/specs/personalization.md` §15.4). It ships dark behind `ASSISTANT_BRIEFING_ORGS`.
+   - `_prime_member_briefing` runs in `run_agent_stream` only, after `bind_artifact_context` and `_prime_chat_constraints`. The run awaits it once. Fence: `test_executor_briefing_block.py::test_1_the_stream_run_awaits_the_prime_once_after_the_binding`. It needs the agent `orchestrator`, `assistant_profile.briefing_for(org)`, a verified member and a solo room. The run must also show cards, and it must not be a batch run or a delegated run. So a WhatsApp run gets no block.
+   - The block goes into the run binding as `(run_id, org, member, text)`. `_member_briefing_block` checks each gate and the run id again, so a delegated run never gets the block of its parent. It reads no database and no Redis.
+   - The store is `tenant_redis.key("chat-briefing", session, member hash)`, 24 hours, and the empty marker counts. A stored block wins in its chat, also after a Forget, a Delete or a change of access (D-PZ-38).
+   - ⚠️ The build runs in its own task, within `_BRIEFING_TIMEOUT_S`. `acb_auth.deps.member_context` binds the member's org, and the task keeps that binding away from the run. A fault costs the block, never the turn. A failed identity or role read (`identity_read_failed()`, `role_read_failed()`) stops the build, so the store keeps nothing.
+   - The block sits right after the profile block. Each block above it keeps its bytes. Fences: `test_executor_briefing_block.py`, `test_executor_briefing_block_r8.py` (R8), `test_setup_laps.py`.
+
 ## Work Guidance
 
 ### Adding a new agent runtime feature

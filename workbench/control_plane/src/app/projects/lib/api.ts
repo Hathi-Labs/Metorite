@@ -23,6 +23,7 @@ import {
   resumeBody,
 } from "./needsAttention";
 import type { Rule as RecurrenceRule } from "./recurrence";
+import { taskVersions } from "./taskUndo";
 
 /**
  * Projects · the browser's client for /api/projects/*.
@@ -306,7 +307,7 @@ export interface NodeSummary {
   due_soon?: number;
   due_soon_days?: number;
   by_disposition?: Partial<
-    Record<"inbox" | "today" | "next" | "waiting" | "someday" | "done", number>
+    Record<"inbox" | "today" | "next" | "waiting" | "someday" | "done" | "new", number>
   >;
   today?: string;
   time_zone?: string;
@@ -1838,6 +1839,11 @@ export interface TaskRow {
    */
   disposition?: string | null;
   is_triaged?: boolean;
+  /**
+   * D170 (INB-1) — "New": assigned to me on a company board and I have not
+   * stated a disposition yet (`mine.new_work`). A disposition write clears it.
+   */
+  is_new?: boolean;
   is_mine?: boolean;
   context?: string | null;
   energy?: string | null;
@@ -2687,6 +2693,9 @@ export const projectsApi = {
    * the open subtasks too. `opts.ifMatch` is the row's `updated_at` as last
    * read, so a write that lands after somebody else's answers 412 (D79,
    * Undo). Both are optional and absent means the old request exactly.
+   *
+   * UNDO-1 — each answer's `updated_at` goes into `taskVersions`, so an undo
+   * sends the version of this session's last write as its If-Match.
    */
   patchTask: (
     taskId: string,
@@ -2700,7 +2709,10 @@ export const projectsApi = {
         body: JSON.stringify(payload),
         ...(opts?.ifMatch ? { headers: { "If-Match": opts.ifMatch } } : {}),
       },
-    ),
+    ).then((row) => {
+      taskVersions.note(taskId, row?.updated_at);
+      return row;
+    }),
 
   /**
    * File a task out of every default list, board, calendar and search.
@@ -2766,10 +2778,16 @@ export const projectsApi = {
       `tasks/${taskId}/subtree`,
     ),
 
-  setAssignees: (taskId: string, assignees: string[]) =>
+  /**
+   * `opts.ifMatch` is the row's `updated_at` as last read, under the PATCH's
+   * rule (`tasks._check_version`): a field change since answers 412. Absent
+   * means the old request exactly. UNDO-1 sends it on an undo.
+   */
+  setAssignees: (taskId: string, assignees: string[], opts?: { ifMatch?: string | null }) =>
     call<{ task_id: string; assignees: string[] }>(`tasks/${taskId}/assignees`, {
       method: "PUT",
       body: JSON.stringify({ assignees }),
+      ...(opts?.ifMatch ? { headers: { "If-Match": opts.ifMatch } } : {}),
     }),
 
   /**

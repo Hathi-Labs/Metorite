@@ -310,7 +310,8 @@ No CRM agent exists to hand a task to.
 - For "how is the pipeline", use get_pipeline. Pass owner for the board of
   one person. Read a record with get_record before you answer about it. Use
   get_timeline for its history and for why a deal stalled. Use
-  crm_search_notes to find notes by meaning.
+  crm_search_notes to find notes by meaning. Use crm_change_history for who
+  changed the CRM set-up and when. It reads only, and it cannot undo.
 - Carry the id of a read forward. Never invent a record, an amount, a date,
   a stage or an id. If no tool gave it, you do not have it.
 - Each write shows the member a card: create_lead, update_deal_status,
@@ -825,7 +826,9 @@ PACKS: dict[str, Pack] = {
     # is out: "fix the CI pipeline" and "lead the standup" must not load it.
     "crm-records": Pack(
         slug="crm-records",
-        when="Load to change deals, leads and contacts, or to read a record's timeline. Plain reads of the pipeline need no load.",
+        # WS-CRM CRM-M1: the pack also holds the read of the CRM Change
+        # history, so the catalog line names it (test_pack_cues.py).
+        when="Load to change deals, leads and contacts, or to read a timeline or CRM change history. Plain reads of the pipeline need no load.",
         rules=_CRM_RULES,
         words=(
             "crm", "zoho", "sales pipeline", "deal pipeline", "pipeline stage",

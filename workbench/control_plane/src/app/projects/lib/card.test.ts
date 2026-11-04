@@ -425,6 +425,15 @@ describe("visibleChips — the shown-fields gate (WS-27x)", () => {
       expect(FIELD_KEYS as readonly string[]).toContain(field);
     }
   });
+
+  it("a New task (D170, INB-1) leads with a New chip that no field gate hides", () => {
+    const fresh = row({ is_new: true, blocked_by_count: 1 });
+    expect(cardChips(fresh, NOW)[0]).toMatchObject({ key: "new", label: "New", tone: "accent" });
+    // A state notice, not a field: it shows even when the view shows no field.
+    expect(visibleChips(fresh, [], NOW).map((c) => c.key)).toEqual(["new"]);
+    // A task the member has stated a disposition for earns none.
+    expect(cardChips(row({ is_new: false }), NOW).map((c) => c.key)).not.toContain("new");
+  });
 });
 
 describe("taskRef", () => {
