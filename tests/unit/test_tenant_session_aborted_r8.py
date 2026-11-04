@@ -7,9 +7,10 @@ goes on. Postgres then refuses each later statement of the transaction
 
 The seam now marks the connection when a statement fails (a ``handle_error``
 listener). At the clean end of a marked block it sends one ``SELECT 1``. When
-that fails with 25P02, it rolls back and logs ``db.tenant_session_aborted``.
-``TENANT_SESSION_ABORT_MODE=raise`` also raises ``TenantTransactionAborted``.
-A clean block sends no probe.
+that fails with 25P02, it logs ``db.tenant_session_aborted``. In ``log`` mode it
+changes nothing else, so the block ends as it did before H-249.
+``TENANT_SESSION_ABORT_MODE=raise`` also rolls back and raises
+``TenantTransactionAborted``. A clean block sends no probe.
 
 The DB half runs the real seam on a REAL Postgres. A hermetic fake would agree
 with any SQL it is handed, and it has no transaction to abort. The fake half
@@ -31,6 +32,7 @@ import pytest
 pytest.importorskip("sqlalchemy")
 
 from acb_common import db as shared
+from acb_common import env_guard
 from acb_common.db import TenantTransactionAborted, tenant_session
 from acb_common.settings import get_settings
 from sqlalchemy import create_engine, event, text
@@ -211,6 +213,113 @@ async def test_raise_mode_raises_for_a_pending_orm_write(table: str) -> None:
     assert _rows(table) == []
 
 
+# ── 2b: log mode is the old behaviour, with one log line ─────────────────
+
+
+@pytest.fixture
+def kv_table() -> Iterator[str]:
+    """A scratch table with one row ``('a', 'one')``, dropped after the test."""
+    name = f"h249_kv_{uuid.uuid4().hex[:10]}"
+    admin = create_engine(_URL)
+    with admin.begin() as c:
+        c.execute(text(f"CREATE TABLE {name} (k TEXT PRIMARY KEY, w TEXT NOT NULL)"))
+        c.execute(text(f"INSERT INTO {name} VALUES ('a', 'one')"))
+    try:
+        yield name
+    finally:
+        with admin.begin() as c:
+            c.execute(text(f"DROP TABLE IF EXISTS {name}"))
+        admin.dispose()
+
+
+def _kv_row(name: str) -> type:
+    """A mapped class over the ``kv_table``."""
+    from sqlalchemy import Column, Table, Text
+    from sqlalchemy.orm import registry
+
+    reg = registry()
+
+    class Row:
+        pass
+
+    reg.map_imperatively(
+        Row,
+        Table(name, reg.metadata, Column("k", Text, primary_key=True), Column("w", Text)),
+    )
+    return Row
+
+
+@_DB_GATE
+async def test_log_mode_keeps_a_loaded_object_readable_after_the_block(
+    kv_table: str,
+) -> None:
+    # The session sets expire_on_commit=False. A rollback in log mode would
+    # expire the object, and the close would detach it (DetachedInstanceError).
+    row = _kv_row(kv_table)
+    with _abort_mode("log"):
+        async with tenant_engine_scope(_URL):
+            with capture_logs() as logs:
+                async with tenant_session(ORG) as db:
+                    obj = await db.get(row, "a")
+                    await _fail_and_swallow(db)
+            assert obj.w == "one"
+    assert len(_events(logs)) == 1
+
+
+@_DB_GATE
+async def test_log_mode_an_attribute_set_to_its_own_value_ends_with_no_error(
+    kv_table: str,
+) -> None:
+    # The session reads the object as dirty, but the flush has no UPDATE to
+    # send. The commit then sends no statement, and it ends with no error.
+    row = _kv_row(kv_table)
+    with _abort_mode("log"):
+        async with tenant_engine_scope(_URL):
+            with capture_logs() as logs:
+                async with tenant_session(ORG) as db:
+                    obj = await db.get(row, "a")
+                    await _fail_and_swallow(db)
+                    obj.w = "one"
+                    assert obj in db.dirty
+            assert obj.w == "one"
+    assert len(_events(logs)) == 1
+
+
+@_DB_GATE
+async def test_log_mode_a_real_update_still_raises_25p02(kv_table: str) -> None:
+    row = _kv_row(kv_table)
+    with _abort_mode("log"):
+        async with tenant_engine_scope(_URL):
+            with capture_logs() as logs, pytest.raises(DBAPIError) as err:
+                async with tenant_session(ORG) as db:
+                    obj = await db.get(row, "a")
+                    await _fail_and_swallow(db)
+                    obj.w = "two"
+    assert getattr(err.value.orig, "sqlstate", None) == "25P02"
+    assert len(_events(logs)) == 1
+
+
+@_DB_GATE
+async def test_log_mode_does_not_roll_back_before_the_commit() -> None:
+    # Log mode sends no statement of its own after the probe. The commit is
+    # the next thing the session does, as before H-249.
+    async with tenant_engine_scope(_URL):
+        with _abort_mode("log"):
+            seen = _statements()
+            async with tenant_session(ORG) as db:
+                await _fail_and_swallow(db)
+                calls: list[str] = []
+                real = db.rollback
+
+                async def _spy() -> None:
+                    calls.append("rollback")
+                    await real()
+
+                db.rollback = _spy  # type: ignore[method-assign]
+    assert calls == []
+    assert seen.count(PROBE) == 1, seen
+
+
 # ── 3: the clean block ─────────────────────────────────────────────────────
 
 
@@ -320,3 +429,11 @@ async def test_a_fake_session_runs_as_before(
             assert db is fake
     assert fake.calls == ["begin", "execute", "commit", "close"]
     assert _events(logs) == []
+
+
+# ── 7: the flag is owner-only ──────────────────────────────────────────────
+
+
+def test_only_the_owner_writes_the_abort_mode() -> None:
+    assert "TENANT_SESSION_ABORT_MODE" in env_guard.PLATFORM_ENV_NAMES
+    assert env_guard.is_platform_env("TENANT_SESSION_ABORT_MODE") is True

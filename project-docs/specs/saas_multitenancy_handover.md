@@ -27,8 +27,8 @@ enacted**) ·
 `test_h6_identity_shadow.py::TestFlagOnAndFlagOffAgree`. It found no `app_user`-to-shadow drift
 on the ladder, so no reconcile migration exists. H6a enacted §H3.3 (D120.3). The flips stay OWNER-GATE. ·
 **H-249 phase 1 BUILT 2026-11-04 (dark, task 561):** `tenant_session` finds an aborted transaction
-at the clean end of a block. It rolls back and logs `db.tenant_session_aborted`.
-`TENANT_SESSION_ABORT_MODE` is `log` by default. `raise` also raises `TenantTransactionAborted`.
+at the clean end of a block. It logs `db.tenant_session_aborted`, and the commit runs as before.
+`TENANT_SESSION_ABORT_MODE` is `log` by default. `raise` also rolls back and raises `TenantTransactionAborted`.
 The owner decides the default mode. A value on a box is the grant `enforcement-flip`.
 Fence: `tests/unit/test_tenant_session_aborted_r8.py` (R8). ·
 **Created:** 2026-08-08 ·

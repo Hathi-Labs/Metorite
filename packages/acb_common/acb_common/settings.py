@@ -128,8 +128,8 @@ class Settings(BaseSettings):
     # H-249 (WS-29): what `tenant_session` does when its transaction is
     # aborted at the clean end of a block. That happens when a caller swallows
     # a failed statement. The commit then commits nothing. `log` (the default)
-    # rolls back and logs `db.tenant_session_aborted`. `raise` rolls back,
-    # logs and raises `TenantTransactionAborted`. Any other value reads as
+    # only logs `db.tenant_session_aborted`, and the commit runs as before.
+    # `raise` logs, rolls back and raises `TenantTransactionAborted`. Any other value reads as
     # `log`. The one reader is `tenant_session_abort_mode` below. The flag
     # needs a restart (`docs/flag_reload.md`). A value on a box is the grant
     # `enforcement-flip`. Fence: tests/unit/test_tenant_session_aborted_r8.py.

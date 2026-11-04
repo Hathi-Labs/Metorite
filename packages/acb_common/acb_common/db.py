@@ -414,16 +414,20 @@ def _marked(session: Any, conn: Any, root: Any) -> bool:
 
 
 async def _end_aborted(session: Any, conn: Any, tenant: str) -> None:
-    """Probe a marked session. Roll back and report when it is aborted.
+    """Probe a marked session. Report when it is aborted.
 
     The probe goes through the connection and not through the session, so it
     does not flush the pending objects of the session.
 
+    In ``log`` mode this only logs. It does not roll back. The commit that
+    follows then runs as it did before H-249. A flush with work raises the
+    25P02 error. A commit with no work becomes a rollback in Postgres. The
+    session keeps its loaded objects, because ``expire_on_commit`` is off.
+    In ``raise`` mode it rolls back and raises.
+
     Raises:
         TenantTransactionAborted: the transaction is aborted and the mode is
             ``raise``.
-        DBAPIError: the transaction is aborted, the mode is ``log`` and the
-            session holds pending ORM writes. The commit raised this before.
     """
     from sqlalchemy.exc import DBAPIError
 
@@ -445,10 +449,6 @@ async def _end_aborted(session: Any, conn: Any, tenant: str) -> None:
     # goes back to the pool.
     with contextlib.suppress(Exception):
         conn.sync_connection.info.pop(_STMT_ERROR, None)
-    # Before this check, a commit flushed the pending ORM writes of such a
-    # block, and the flush raised. Log mode keeps that error.
-    pending = bool(session.new or session.dirty or session.deleted)
-    await session.rollback()
     mode = tenant_session_abort_mode()
     caller = _caller_site()
     get_logger("acb_common.db").warning(
@@ -457,14 +457,16 @@ async def _end_aborted(session: Any, conn: Any, tenant: str) -> None:
         caller=caller,
         mode=mode,
     )
-    if mode == "raise":
-        raise TenantTransactionAborted(
-            f"the transaction of a tenant_session at {caller} was aborted "
-            "by a failed statement that the block caught, so the block wrote "
-            "nothing (H-249). Put a savepoint around that statement."
-        ) from aborted
-    if pending:
-        raise aborted
+    if mode != "raise":
+        # Log mode: change nothing. A rollback here would expire the loaded
+        # objects, and the close would then detach them.
+        return
+    await session.rollback()
+    raise TenantTransactionAborted(
+        f"the transaction of a tenant_session at {caller} was aborted "
+        "by a failed statement that the block caught, so the block wrote "
+        "nothing (H-249). Put a savepoint around that statement."
+    ) from aborted
 
 
 def bind_tenant(organization_id: str) -> Token[str | None]:
@@ -531,7 +533,7 @@ async def tenant_session(organization_id: str | None = None) -> AsyncIterator[An
 
     ⚠️ **A caught statement error aborts the transaction** (H-249). The block
     goes on, and the commit then writes nothing. At the clean end of the block
-    the session finds that, rolls back and logs ``db.tenant_session_aborted``.
+    the session finds that and logs ``db.tenant_session_aborted``.
     Put a savepoint (``begin_nested``) around a statement that may fail.
 
     Raises:
