@@ -1149,7 +1149,9 @@ async def _decisions(user: UserContext) -> Found:
                 entity=entity, title=entity["label"],
                 facts={"question": str(first.get("question") or ""),
                        "who": _who(first.get("asked_by")),
-                       "waiting_since": _iso(first.get("created_at")),
+                       # Not `waiting_since`: that is a state fact, and the
+                       # card's fingerprint must not move for a decision.
+                       "asked_at": _iso(first.get("created_at")),
                        "expires_at": _iso(first.get("expires_at")),
                        "open": len(group)},
                 href=task_href(task_id),

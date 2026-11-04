@@ -203,6 +203,11 @@ class TestAFoldNeverMovesTheStateFingerprint:
     def test_a_folded_feed_only_kind_keeps_the_fingerprint(self, main, folded):
         alone = _fp(_signal_of(main))
         assert _fp(_signal_of(main), _signal_of(folded)) == alone
+        if folded == "decision":
+            # WS-ALN ALN-2b: a decision LEADS its card (`build_cards`), so it is
+            # not a fold. Its own facts hold no state fact (`needs._decisions`,
+            # pinned in test_decisions_my_day.py), so the line above holds.
+            return
         assert _fp(_signal_of(main), _with_every_state_fact(_signal_of(folded))) == alone
 
     def test_only_these_folds_carry_a_needs_kind(self):

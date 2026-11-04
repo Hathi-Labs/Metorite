@@ -97,6 +97,11 @@ async def test_one_signal_for_each_task_with_a_link_act(provider) -> None:
     # The decision that closes first, and the number that wait.
     assert signal.facts["question"] == "Or tomorrow?" and signal.facts["open"] == 2
     assert signal.signal_id == f"tasks:{TASK}" and signal.title == "Fix the extruder"
+    # No state fact on a decision (state.STATE_FACTS): the card's fingerprint
+    # must not move for it.
+    from gateway.routes.shell import state
+
+    assert not set(signal.facts) & set(state.STATE_FACTS)
     assert signal.href == f"/projects?task={TASK}"
     assert [(a["way"], a["href"]) for a in signal.acts] == [("open", signal.href)]
     assert signal.expires_at == "2026-11-05T08:00:00+00:00"
@@ -127,9 +132,19 @@ async def test_a_decision_is_a_needs_you_card_that_folds_with_its_bell_row(provi
         "task_title": "Fix the extruder", "excerpt": "Ship the extruder fix today?",
         "created_at": NOW - timedelta(hours=2)}])
     [card] = feed.build_cards([signal, *note], NOW, TZ, TODAY)
-    assert card["kind"] == "notification" and card["folded"] == ["decision"]
+    # The decision LEADS the card, though a notification has the higher base.
+    assert card["kind"] == "decision" and card["folded"] == ["notification"]
     assert card["group"] == "needs_you" and "Ship the extruder fix today?" in card["why"]
-    assert [a["id"] for a in card["acts"]] == ["read", "open"]  # one link to the place
+    # The bell row says the same, so its clause is not repeated.
+    assert "asked you to decide on this task" not in card["why"]
+    assert [a["id"] for a in card["acts"]] == ["answer", "read"]  # one link to the place
+    # A comment on the same task still shows its clause, and a plain
+    # notification (no decision) keeps leading its own card.
+    plain = needs._note_signals([{
+        "id": "n-2", "task_id": TASK, "kind": "comment", "actor": "sam@x.test",
+        "task_title": "Fix the extruder", "excerpt": "ok", "created_at": NOW}])
+    [only_note] = feed.build_cards(plain, NOW, TZ, TODAY)
+    assert only_note["kind"] == "notification" and only_note["folded"] == []
 
 
 def test_an_answered_bell_row_alone_still_asks_for_nothing_new() -> None:
