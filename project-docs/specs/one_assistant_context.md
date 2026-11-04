@@ -2431,4 +2431,83 @@ must stay green with `test_crm_answer_check.py`,
 
 - An image-reading model for drawings. The owner chose OCR first.
 - WhatsApp (D115).
-- A change to the held-chat guard itself.
+- A change to the held-chat guard itself. §9 adds a way around it (a fresh chat) and changes no guard.
+
+## 9. A way through a held chat (task 1648, owner brief 2026-11-05)
+
+**Status:** design. The review below is from the code of 2026-11-05. It
+changes no guard. The slices in §9.4 build it, and the first one is dark.
+
+### 9.1 The rule
+
+No reply ends at a refusal and "open a new chat". When this chat cannot do an
+act, the reply offers ONE tap. The tap continues the request in a fresh chat.
+A fresh chat has no hold mark (`test_delegation_no_egress.py:1708`), so it can
+do the act. The member's own words go across. Untrusted text never goes across.
+
+A swap in place is **not** a way through a hold. The mark is keyed on
+`(org, session_id)` and slides for 400 days (`egress.py:219-285`). No code
+clears it. `_pack_held` re-reads the same mark (`_tool_injection.py:3198`), so
+a new persona or a reloaded pack stays held. A swap in place is for a **topic
+change that is not held**. It reuses `persona_for` (`tool_packs.py:1907`) and
+`load_tool` (`:2515`), and adds no second router. A mark-clear act is a
+separate HIGH design, and it is out of scope here.
+
+### 9.2 The review: each act the hold removes
+
+| Act | Reason | Verdict |
+|---|---|---|
+| `send_email`, `forward_email`, `unsubscribe_sender` | egress, new recipient | Card (RX-1). `EMAIL_HELD_CARD_SEND` already does it. |
+| `update_assistant_settings` closed keys | later egress | Card. `org_domains` and `always_copy` stay refused. |
+| Projects class B writes, reminders, CRM writes | first-party or open-world write | Card. `HELD_CARD_WRITES_ORGS` already does it. |
+| `nudge_task`, report recipients, `set_report_schedule` | tells a person, later mail | Card later, with the person-class tick of email plan §21.4. |
+| Class C (`delete_*`, `archive_*`, `merge_*`, `revert_activity`, `move_project`) | hard to undo | Card with an Undo receipt later. Until then: fresh chat. |
+| `save_memory`, `save_episode`, `save_note`, `save_knowledge`, `voice_profile` | store that a later run reads | Leaves the chat. No card shows a hidden later read. Fresh chat. |
+| `web_search`, `fetch_page`, `run_workflow`, MCP tools | open world | Leaves the chat. The orchestrator keeps its web tools behind a card. Fresh chat. |
+| Delegation, `spawn_copilot_agent`, `my_tasks_delegate` | the child run has no hold | Leaves the chat. Fresh chat. |
+| `grant_access`, `revoke_access`, `pin_authority`, `lead`, `org_wide` | a steered model would choose the access | Leaves the chat. Fresh chat. |
+| `bulk_update`, `apply_settings_to_mailboxes` | bulk | Leaves the chat. Fresh chat. |
+
+**Today's cause of the "new chat" copy.** It is live only while
+`HELD_CARD_WRITES_ORGS` is empty, which is the default
+(`settings.py:989`). The texts are `EGRESS_HELD_PACK_ANSWER_NO_WRITES` and
+`EGRESS_HOLD_NOTE_PACK_NO_WRITES` (`egress.py:827,836`).
+
+### 9.3 The carry
+
+1. The server does the carry. The client never builds the text.
+2. It reads only `chat_message` rows with `role = 'user'` and
+   `member_typed IS TRUE` (migration 337). Tool results live in assistant rows
+   (`tool_events`, `custom_events`), so none can cross. `NULL` rows do not cross.
+3. It sends the **last typed message that asked for the act**, and no other
+   row. It sends no assistant row, no `member_summary` and no file of the old
+   chat. `prepare_new_session` purges by id only, so the carry never copies a
+   file id.
+4. A member can paste mail text into the box. That row is still `TRUE`. The
+   carry marks the first row of the new chat `member_typed = TRUE` and shows
+   the text in the composer before it runs, so the member sees what crosses.
+   This is the residual risk. The new chat starts with a stranger-text frame
+   when the pasted text matches a stored mail body.
+5. The link is a new nullable column `chat_session.continued_from` (R6:
+   expand only, tenant-scoped by the table's existing RLS). `chat_organization.md`
+   (CO-5) designs the "Related" chip that reads it.
+
+### 9.4 Slices
+
+| Slice | What | Tier |
+|---|---|---|
+| WT-1 | Migration: `chat_session.continued_from`. Route `POST /chat/sessions/{id}/continue`: reads the typed row, makes the new session, links it, seeds the row, returns the new id. Dark behind `CHAT_CONTINUE_ORGS`. | HIGH |
+| WT-2 | The tap. A `Continue in a fresh chat` pill on the refusal and the hold note. The web shell opens the new chat. | STANDARD |
+| WT-3 | Copy: the two `NO_WRITES` texts offer the tap, and no copy says "open a new chat". Update the pinned tests. | HIGH |
+| WT-4 | Topic change: a suggestion chip when the topic changes (not held). Swap in place through `persona_for` and `load_tool`. Line: "Switched to Calendar". | STANDARD |
+| WT-5 | Owner flips `HELD_CARD_WRITES_ORGS` and `EMAIL_HELD_CARD_SEND` (OWNER-GATE: enforcement flip). | owner |
+| WT-6 | Class C cards with an Undo receipt, and the person-class tick for `nudge_task`. | HIGH |
+
+### 9.5 Fences (R7)
+
+- `tests/unit/test_continue_carry.py`: a held chat with a mail body in an
+  assistant row and in a tool result. The new chat holds none of it. A `NULL`
+  row and a `FALSE` row do not cross. The test runs on a real database (R8).
+- `tests/unit/test_no_new_chat_copy.py`: no `EGRESS_HOLD_NOTE_*` or
+  `EGRESS_HELD_*` text holds "new chat". Each text holds the tap.
+- `test_delegation_no_egress.py:1708` stays green: a fresh chat has no mark.
