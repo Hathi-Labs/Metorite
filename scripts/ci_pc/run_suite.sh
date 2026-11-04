@@ -151,15 +151,14 @@ job() {
   local label="$1" pod="$2"; shift 2
   .venv/bin/python scripts/ci_pc/steps.py "$@" > "$RUN/$label.sh" || { echo "1 0" > "$RUN/$label.rc"; return; }
   local net=(); [ -n "$pod" ] && net=(--network "container:$pod")
-  # ⚠️ backup_db.sh names its verify container acb-verify-<epoch>-$$ on the
-  # SHARED Docker daemon. In a container of its own, $$ is the same small
-  # number in every run, so two runs that start in one second chose one name
-  # and removed each other's container (2026-11-04, CIV-6). With the host's
-  # pid space $$ is unique. The job already holds the Docker socket.
-  [ "$label" = backup-restore ] && net+=(--pid=host)
+  # ⚠️ ONE backup-restore job at a time on the daemon (CIV-6, 2026-11-04). The
+  # rehearsal (rehearse_verify_scratch.sh) counts the verify containers of the
+  # WHOLE Docker daemon and fails when it sees another run's. It is about 30
+  # seconds, so the lock costs little. The lock file is on the host.
+  local lk=(); [ "$label" = backup-restore ] && lk=(flock "$HOME/.ci-backup-restore.lock")
   (
     s=$(date +%s)
-    docker run --rm --name "ci-job-$label-$TAG" -w "$PWD" "${net[@]}" --memory 4g --memory-swap 4g \
+    "${lk[@]}" docker run --rm --name "ci-job-$label-$TAG" -w "$PWD" "${net[@]}" --memory 4g --memory-swap 4g \
       -v "$HOME:$HOME" -v /var/run/docker.sock:/var/run/docker.sock --group-add "$DOCKER_GID" \
       "$IMAGE" bash "$RUN/$label.sh" > "$RUN/$label.log" 2>&1
     echo "$? $(( $(date +%s) - s ))" > "$RUN/$label.rc"
