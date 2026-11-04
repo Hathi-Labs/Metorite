@@ -27,14 +27,57 @@ export class AppRequestError extends Error {
   }
 }
 
-/** The requests that wait for the member. `null` when agent access is off. */
-export async function listRequests(): Promise<AppRequest[] | null> {
+/** The newest requests that wait, and how many more the page leaves out. */
+export interface WaitingList {
+  rows: AppRequest[];
+  more: number;
+}
+
+/**
+ * The requests that wait for the member. `null` when the store is dark for
+ * this org: `APP_REQUESTS_ORGS` does not hold it, or agent access is off.
+ */
+export async function listRequests(): Promise<WaitingList | null> {
   const res = await fetch("/api/agent-access/requests", { cache: "no-store" });
-  // 404: agent access is off for this deployment. Not an error to show.
+  // 404: the store is dark here. Not an error to show.
   if (res.status === 404) return null;
   if (!res.ok) throw new AppRequestError("The list did not load. Try again.", res.status);
-  const body = (await res.json().catch(() => ({}))) as { rows?: AppRequest[] };
-  return Array.isArray(body.rows) ? body.rows : [];
+  const body = (await res.json().catch(() => ({}))) as { rows?: AppRequest[]; more?: number };
+  const rows = Array.isArray(body.rows) ? body.rows : [];
+  const more = typeof body.more === "number" && body.more > 0 ? Math.floor(body.more) : 0;
+  return { rows, more: rows.length ? more : 0 };
+}
+
+/** What the list draws. */
+export type WaitingView =
+  | { kind: "none" }
+  | { kind: "error"; error: string }
+  | { kind: "list"; rows: AppRequest[]; more: number };
+
+/**
+ * What "Waiting for you" draws, from the cached read and the ids that the
+ * member answered here (fix round 1). When no request waits, it draws no
+ * section at all: while it loads, while the store is dark (404), for an
+ * empty list, and once each row has an answer. The coordinator recommended
+ * it on 2026-11-04, and the owner may change it at the preview. A list that
+ * fails with nothing to show keeps its error, so the member can try again.
+ */
+export function waitingView(
+  read: { data: WaitingList | null | undefined; error: string | null },
+  answered: ReadonlySet<string>,
+): WaitingView {
+  if (read.data === null) return { kind: "none" };
+  if (read.data === undefined) return read.error ? { kind: "error", error: read.error } : { kind: "none" };
+  const rows = read.data.rows.filter((r) => !answered.has(r.request_id));
+  return rows.length ? { kind: "list", rows, more: read.data.more } : { kind: "none" };
+}
+
+/** The line under a list that leaves rows out, or "" when it leaves none. */
+export function moreLine(more: number): string {
+  if (more <= 0) return "";
+  return more === 1
+    ? "1 more request waits. Answer these first, and it shows here."
+    : `${more} more requests wait. Answer these first, and they show here.`;
 }
 
 /** The words of a refused decision: the server's sentence when it gives one. */
