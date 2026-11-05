@@ -26,20 +26,28 @@ g. In a chat, a Studio tool that a member without the feature runs gets the
    refusal text, and the handler never runs.
 h. The R8 half is in the ``--must-run`` list of the CI skip guard.
 
-**The mutations (R7).** Each ran on 2026-11-05. The red tests are in the
-build report of J1-1.
+**The mutations (R7).** Each ran on 2026-11-05, and each test named here
+went red.
 
 * M1: in ``actions.py``, restore ``require_feature_router("workflows")``.
-  Red: ``test_a_workflows_member_gets_403_on_each_route``,
-  ``test_a_studio_holder_passes_the_gate_on_each_route``,
+  88 tests went red: ``test_a_workflows_member_gets_403_on_each_route`` (28),
+  ``test_a_member_without_studio_gets_403_on_each_route`` (28, the two
+  override cases), ``test_a_studio_holder_passes_the_gate_on_each_route``
+  (14), ``test_no_route_adds_a_second_gate_or_the_share_verb`` (14),
   ``test_the_router_carries_one_feature_gate_and_it_is_studio``,
-  ``test_no_studio_file_names_the_workflows_gate``,
-  ``test_a_chat_tool_of_a_member_without_the_feature_gets_the_refusal``.
-* M2: add a route to the router with no case here. Red:
+  ``test_no_studio_file_names_the_workflows_gate`` and both chat tests. The
+  R8 half went red too (its docstring names the tests).
+* M2: add ``GET /studio/ping`` to the router with no case here. Red:
   ``test_expected_routes_are_the_routes_of_the_router``.
 * M3: add ``dependencies=[require_permission("studio:publish")]`` to the
   publish route. Red: ``test_no_route_adds_a_second_gate_or_the_share_verb``
-  and ``test_a_studio_holder_passes_the_gate_on_each_route``.
+  and ``test_a_studio_holder_passes_the_gate_on_each_route`` (the
+  ``feature:studio`` and ``feature:*`` holders) on that route, and
+  ``test_the_share_verb_is_a_capability_that_no_studio_route_reads``.
+* M5: remove ``"studio"`` from ``FEATURES`` and ``"studio:publish"`` from
+  ``CAPABILITIES``. Red: ``test_the_share_verb_is_a_capability_that_no_studio_route_reads``,
+  and the pins in ``test_org_access_control.py`` and
+  ``test_auth_me_features.py``.
 """
 
 from __future__ import annotations

@@ -42,15 +42,15 @@ f. The ``studio`` row of ``feature_catalog`` exists, with ``is_default``
    true. No role of the org holds a ``feature:studio`` or a
    ``studio:publish`` row.
 
-**The mutations (R7).** Each ran on 2026-11-05.
+**The mutations (R7).** Each ran on 2026-11-05, and each test named here
+went red.
 
 * M1: in ``actions.py``, restore ``require_feature_router("workflows")``.
   Red: ``test_a_member_who_holds_workflows_but_not_studio_gets_403`` and
-  ``test_a_member_with_a_deny_override_gets_403``.
-* M4: remove ``"studio"`` from ``FEATURES`` and ``"studio:publish"`` from
-  ``CAPABILITIES``. ``build_access`` drops nothing, so the gate still
-  holds. Red: ``test_the_catalog_row_is_a_default_and_no_role_holds_a_studio_row``
-  and the vocabulary pins of the hermetic half.
+  ``test_a_member_with_a_deny_override_gets_403``. Each of those members
+  holds ``feature:workflows``, so the old gate lets them in.
+* M4: in ``346_studio_feature.sql``, drop the ``INSERT``. Red:
+  ``test_the_catalog_row_is_a_default_and_no_role_holds_a_studio_row``.
 """
 
 from __future__ import annotations
