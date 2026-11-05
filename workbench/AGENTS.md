@@ -178,3 +178,4 @@ and a stale row after a 409 reads as success.
 - ElicitationCard.tsx — structured question card. It never blocks Submit without a reason (`submitBlockedReason` in `lib/elicitationAnswer.ts`). Fences: `lib/elicitationAnswer.test.ts`, `e2e/genui-option-picker.spec.ts`.
 - A blocking card answers through `/api/agent/respond-input`. A 4xx sends the answer as a message, so it is never lost.
 - The Email app's chat pane draws each card because it renders the shared `AgentChat` on `/agent/run/stream`. Do not give the pane a chat of its own. Fences: `app/email/components/emailPaneCards.test.ts`, `e2e/email-pane-confirm-card.spec.ts`.
+- `NewMailCardForm.tsx` is the body of the card of a new mail (§18.10). It draws people with `ReplyCardForm`'s `AddressRow`, and `lib/replyCard.ts` holds its rules. Its chips put words in the chat box through `onSuggest`, the one seam (`AgentChat.suggestToComposer`), and send nothing. Fence: `components/newMailCard.test.ts`.

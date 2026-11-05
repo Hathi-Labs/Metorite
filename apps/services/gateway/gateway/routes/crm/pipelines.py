@@ -22,6 +22,15 @@ floor and ``CRM_MIRROR``. It returns the edition, the currency, the modules and
 a pipeline count. It never returns a record, a token or a company name.
 
 The organization comes from the bound tenant (R5), never from the request.
+
+**Change history** (WS-CRM CRM-M1, ``crm_conversational.md`` §8). Each of
+the three writes logs one row through ``change_log.log_change``, in its own
+transaction: a rename at the ``company`` level, a stage in or out of a
+pipeline at the ``team`` level. A write that changes nothing logs nothing.
+The Undo of a rename writes the old name, the Undo of an added stage takes
+it out (409 while a deal of the pipeline sits in it), and the Undo of a
+removed stage puts it back at its old place. Each Undo goes through the
+helper of the route.
 """
 
 from __future__ import annotations
@@ -31,13 +40,16 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user, require_permission
 from fastapi import Depends, HTTPException
+from gateway.routes.crm import change_log
 from gateway.routes.crm.access import ADMIN_PERMISSION
+from gateway.routes.crm.change_log import Change, Logged, log_change, quoted
 from gateway.routes.crm.core import (
     EFFECTIVE_STATUS_COLUMNS,
     _tenant_session,
     assert_writable,
     checked_uuid,
     current_tenant,
+    load_row,
     provider_link_context,
     require_row,
     router,
@@ -157,15 +169,17 @@ async def read_pipelines(db: Any, only: str | None = None) -> list[PipelineModel
     return out
 
 
-async def _native_pipeline(db: Any, pipeline_id: str) -> None:
-    """404 for an unknown pipeline, 409 ``mirror_mode_settings`` in Mirror mode.
+async def _native_pipeline(db: Any, pipeline_id: str) -> Any:
+    """The pipeline row. 404 for an unknown pipeline, 409
+    ``mirror_mode_settings`` in Mirror mode.
 
     CRM-Z10c: the lock follows the mode and not ``ext_source``. An org that went
     from Mirror back to Native keeps its imported pipelines, and it may edit
     them. ``assert_writable`` is the only guard.
     """
-    await require_row(db, "crm_pipelines", pipeline_id, "Pipeline")
+    row = await require_row(db, "crm_pipelines", pipeline_id, "Pipeline")
     await assert_writable(db, current_tenant(), "crm_pipelines")
+    return row
 
 
 async def _one(db: Any, pipeline_id: str) -> PipelineModel:
@@ -200,9 +214,25 @@ async def rename_pipeline(
             detail=f"A pipeline needs a name of 1 to {MAX_NAME} characters.",
         )
     async with _tenant_session() as db:
-        await _native_pipeline(db, wanted)
-        await update_row(db, "crm_pipelines", wanted, {"name": name}, touch=False)
+        await rename_pipeline_in(db, user, wanted, name)
         return await _one(db, wanted)
+
+
+async def rename_pipeline_in(
+    db: Any, user: Any, pipeline_id: str, name: str, *, undoes: str | None = None,
+) -> None:
+    """The write of ``PATCH /crm/pipelines/{id}``, in the caller's
+    transaction. The route and the Undo of a rename both call it. It logs
+    one row when the name changes (CRM-M1)."""
+    row = await _native_pipeline(db, pipeline_id)
+    await update_row(db, "crm_pipelines", pipeline_id, {"name": name}, touch=False)
+    if row.name != name:
+        await log_change(db, user, Change(
+            area="pipeline", action=change_log.CHANGE,
+            summary=f"Renamed the pipeline {quoted(row.name)} to {quoted(name)}",
+            ladder=change_log.COMPANY, entity_id=str(pipeline_id),
+            before={"name": row.name}, after={"name": name},
+        ), undoes=undoes)
 
 
 @router.post(
@@ -221,27 +251,60 @@ async def add_pipeline_stage(
     wanted = checked_uuid(pipeline_id, "pipeline_id")
     status_id = checked_uuid(payload.status_id, "status_id")
     async with _tenant_session() as db:
-        await _native_pipeline(db, wanted)
-        await require_row(db, "crm_deal_statuses", status_id, "Status")
-        await assert_writable(db, current_tenant(), "crm_pipeline_stages")
-        position = payload.position
-        if position is None:
-            position = int((await db.execute(
-                text(
-                    "SELECT COALESCE(max(position), 0) + 1 FROM crm_pipeline_stages "
-                    "WHERE pipeline_id = CAST(:p AS uuid)"
-                ),
-                {"p": wanted},
-            )).scalar() or 1)
-        await db.execute(
-            text(
-                "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position) "
-                "VALUES (CAST(:p AS uuid), CAST(:s AS uuid), :pos) "
-                "ON CONFLICT (pipeline_id, status_id) DO NOTHING"
-            ),
-            {"p": wanted, "s": status_id, "pos": position},
-        )
+        await add_stage_in(db, user, wanted, status_id, payload.position)
         return await _one(db, wanted)
+
+
+#: Where a stage sits in a pipeline, or no row.
+_PLACE_SQL = (
+    "SELECT position FROM crm_pipeline_stages WHERE pipeline_id = CAST(:p AS uuid) "
+    "AND status_id = CAST(:s AS uuid)"
+)
+
+
+async def add_stage_in(
+    db: Any, user: Any, pipeline_id: str, status_id: str, position: int | None,
+    *, undoes: str | None = None,
+) -> bool:
+    """The write of ``POST /crm/pipelines/{id}/stages``, in the caller's
+    transaction. The route and the Undo of a removal both call it. It logs
+    one row when ITS statement put the stage in the pipeline (CRM-M1), and
+    returns whether it did. A write of another request that put the stage
+    there first, between the check and the INSERT, makes the INSERT do
+    nothing, so no row is logged."""
+    pipeline = await _native_pipeline(db, pipeline_id)
+    stage = await require_row(db, "crm_deal_statuses", status_id, "Status")
+    await assert_writable(db, current_tenant(), "crm_pipeline_stages")
+    if (await db.execute(text(_PLACE_SQL), {"p": pipeline_id, "s": status_id})).first():
+        return False  # It sits there already, and keeps its place.
+    if position is None:
+        position = int((await db.execute(
+            text(
+                "SELECT COALESCE(max(position), 0) + 1 FROM crm_pipeline_stages "
+                "WHERE pipeline_id = CAST(:p AS uuid)"
+            ),
+            {"p": pipeline_id},
+        )).scalar() or 1)
+    inserted = (await db.execute(
+        text(
+            "INSERT INTO crm_pipeline_stages (pipeline_id, status_id, position) "
+            "VALUES (CAST(:p AS uuid), CAST(:s AS uuid), :pos) "
+            "ON CONFLICT (pipeline_id, status_id) DO NOTHING RETURNING position"
+        ),
+        {"p": pipeline_id, "s": status_id, "pos": position},
+    )).first()
+    if inserted is None:
+        return False  # Another write put it there first. This one changed nothing.
+    await log_change(db, user, Change(
+        area="pipeline_stage", action=change_log.CREATE,
+        summary=(
+            f"Added the stage {quoted(stage.name)} to the pipeline "
+            f"{quoted(pipeline.name)}"
+        ),
+        ladder=change_log.TEAM, entity_id=str(pipeline_id),
+        after={"status_id": status_id, "position": position, "stage": stage.name},
+    ), undoes=undoes)
+    return True
 
 
 @router.delete(
@@ -260,34 +323,114 @@ async def remove_pipeline_stage(
     wanted = checked_uuid(pipeline_id, "pipeline_id")
     stage = checked_uuid(status_id, "status_id")
     async with _tenant_session() as db:
-        await _native_pipeline(db, wanted)
-        await assert_writable(db, current_tenant(), "crm_pipeline_stages")
-        in_use = int((await db.execute(
-            text(
-                "SELECT count(*) FROM crm_deals WHERE pipeline_id = CAST(:p AS uuid) "
-                "AND status_id = CAST(:s AS uuid)"
-            ),
-            {"p": wanted, "s": stage},
-        )).scalar() or 0)
-        if in_use:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "stage_in_use",
-                    "message": (
-                        f"This stage still holds {in_use} deal(s) of this pipeline. "
-                        "Move them to another stage first."
-                    ),
-                },
-            )
-        await db.execute(
-            text(
-                "DELETE FROM crm_pipeline_stages WHERE pipeline_id = CAST(:p AS uuid) "
-                "AND status_id = CAST(:s AS uuid)"
-            ),
-            {"p": wanted, "s": stage},
-        )
+        await remove_stage_in(db, user, wanted, stage)
         return await _one(db, wanted)
+
+
+async def remove_stage_in(
+    db: Any, user: Any, pipeline_id: str, status_id: str,
+    *, undoes: str | None = None,
+) -> bool:
+    """The write of ``DELETE /crm/pipelines/{id}/stages/{status_id}``, in the
+    caller's transaction. The route and the Undo of an added stage both call
+    it. It logs one row when ITS statement took the stage out (CRM-M1), and
+    returns whether it did. The place in the row comes from ``RETURNING``,
+    so a removal by another request at the same time logs nothing here."""
+    pipeline = await _native_pipeline(db, pipeline_id)
+    await assert_writable(db, current_tenant(), "crm_pipeline_stages")
+    in_use = int((await db.execute(
+        text(
+            "SELECT count(*) FROM crm_deals WHERE pipeline_id = CAST(:p AS uuid) "
+            "AND status_id = CAST(:s AS uuid)"
+        ),
+        {"p": pipeline_id, "s": status_id},
+    )).scalar() or 0)
+    if in_use:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "stage_in_use",
+                "message": (
+                    f"This stage still holds {in_use} deal(s) of this pipeline. "
+                    "Move them to another stage first."
+                ),
+            },
+        )
+    place = (await db.execute(
+        text(
+            "DELETE FROM crm_pipeline_stages WHERE pipeline_id = CAST(:p AS uuid) "
+            "AND status_id = CAST(:s AS uuid) RETURNING position"
+        ),
+        {"p": pipeline_id, "s": status_id},
+    )).first()
+    if place is None:
+        return False  # It was not there, or another write took it. Nothing changed here.
+    stage = await load_row(db, "crm_deal_statuses", status_id)
+    name = getattr(stage, "name", None) or "a stage"
+    await log_change(db, user, Change(
+        area="pipeline_stage", action=change_log.DELETE,
+        summary=f"Took the stage {quoted(name)} out of the pipeline {quoted(pipeline.name)}",
+        ladder=change_log.TEAM, entity_id=str(pipeline_id),
+        before={"status_id": status_id, "position": int(place.position or 0), "stage": name},
+    ), undoes=undoes)
+    return True
+
+
+# ── The Undo of a change (CRM-M1) ───────────────────────────────────────────
+
+
+@change_log.undoes("pipeline")
+async def _undo_rename(db: Any, user: Any, logged: Logged) -> None:
+    """Write the old name back through :func:`rename_pipeline_in`. The row
+    is locked first, so the check of its name holds until the write."""
+    row = await load_row(db, "crm_pipelines", str(logged.entity_id or ""), lock=True)
+    if row is None:
+        raise change_log.gone(logged.area)
+    if not change_log.same_values({"name": row.name}, logged.after):
+        raise change_log.changed_since()
+    await rename_pipeline_in(
+        db, user, str(row.id), str((logged.before or {}).get("name") or ""),
+        undoes=logged.id,
+    )
+
+
+@change_log.undoes("pipeline_stage")
+async def _undo_stage(db: Any, user: Any, logged: Logged) -> None:
+    """An added stage goes out. A removed stage goes back at its old place.
+    The pipeline row and the place of the stage are locked first."""
+    pipeline_id = str(logged.entity_id or "")
+    if await load_row(db, "crm_pipelines", pipeline_id, lock=True) is None:
+        raise change_log.gone(logged.area)
+    if logged.action == change_log.CREATE:
+        after = logged.after or {}
+        status_id = str(after.get("status_id") or "")
+        place = (await db.execute(
+            text(_PLACE_SQL + " FOR UPDATE"), {"p": pipeline_id, "s": status_id},
+        )).first()
+        # The stage must still sit in the pipeline at the place of this
+        # change. The name of the stage in "after" is for the reader only.
+        if place is None or not change_log.same_values(
+            {"status_id": status_id, "position": int(place.position or 0)},
+            {k: after[k] for k in ("status_id", "position") if k in after},
+        ):
+            raise change_log.changed_since()
+        if not await remove_stage_in(db, user, pipeline_id, status_id, undoes=logged.id):
+            raise change_log.changed_since()
+        return
+    before = logged.before or {}
+    status_id = str(before.get("status_id") or "")
+    # Locked, as each other read of this Undo (fix round 2).
+    if await load_row(db, "crm_deal_statuses", status_id, lock=True) is None:
+        raise change_log.gone("deal_stage")
+    if (await db.execute(text(_PLACE_SQL), {"p": pipeline_id, "s": status_id})).first():
+        raise change_log.changed_since()
+    # False: another request put the stage back between the check and the
+    # INSERT. That is a change since, and not an Undo with no row.
+    if not await add_stage_in(
+        db, user, pipeline_id, status_id, int(before.get("position") or 0),
+        undoes=logged.id,
+    ):
+        raise change_log.changed_since()
 
 
 @router.get(

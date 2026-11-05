@@ -379,7 +379,9 @@ TASK_SOURCES: tuple[str, ...] = (
 #: WS-55 EA-6d. The sources that only the server stamps. `mcp` marks a task
 #: that an outside agent made through the MCP edge, and `tasks.create_task`
 #: sets it from `UserContext.agent`, never from a request body.
-SERVER_TASK_SOURCES: tuple[str, ...] = ("mcp",)
+#: The one spelling of the agent stamp (``pm_tasks.source``, migration 265).
+AGENT_TASK_SOURCE = "mcp"
+SERVER_TASK_SOURCES: tuple[str, ...] = (AGENT_TASK_SOURCE,)
 #: The sources that a request body may name. A body that names `mcp` gets 422.
 #: Each route that reads a source from a request checks it against THIS tuple.
 CLIENT_TASK_SOURCES: tuple[str, ...] = tuple(
