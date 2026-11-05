@@ -5,6 +5,8 @@ OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-4 is
 built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-5
 is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
 
+§9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. Nothing in §9 is built.
+
 OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3.2). The flag flip is OWNER-GATE.
 
 OA-8b is BUILT, dark behind `TOOL_PACKS` (2026-10-28, "As built, OA-8b" in §4.3.2). The flag flip is OWNER-GATE.
@@ -2433,4 +2435,132 @@ must stay green with `test_crm_answer_check.py`,
 
 - An image-reading model for drawings. The owner chose OCR first.
 - WhatsApp (D115).
-- A change to the held-chat guard itself.
+- A change to the held-chat guard itself. §9 adds a way around it (a fresh chat) and changes no guard.
+
+## 9. A way through a held chat (task 1648, owner brief 2026-11-05)
+
+**Status:** design (2026-11-04). Task 1648. The review below is checked against
+the code on 2026-11-04 at `origin/main` `7ad8dc559`. It changes no guard. The slices
+in §9.4 build it, and the first one is dark. Owner of `chat_session.continued_from`:
+this section. `chat_organization.md` §7.1 reads it and writes it never.
+
+### 9.1 The rule
+
+No reply ends at a refusal and "open a new chat". When this chat cannot do an
+act, the reply offers ONE tap. The tap continues the request in a fresh chat.
+A fresh chat has no hold mark (`test_delegation_no_egress.py:1708`), so it can
+do the act. The member's own words go across. Untrusted text never goes across.
+
+A swap in place is **not** a way through a hold. The mark is keyed on
+`(org, session_id)` and slides for 400 days (`packages/acb_skills/acb_skills/egress.py:328-453`, slide at :430). No code
+clears it. `_pack_held` re-reads the same mark (`_tool_injection.py:3198`), so
+a new persona or a reloaded pack stays held. A swap in place is for a **topic
+change that is not held**. It reuses `persona_for` (`tool_packs.py:1907`) and
+`load_tool` (`:2515`), and adds no second router. A mark-clear act is a
+separate HIGH design, and it is out of scope here.
+
+### 9.2 The review: each act the hold removes
+
+| Act | Reason | Verdict |
+|---|---|---|
+| `send_email`, `forward_email`, `unsubscribe_sender` | egress, new recipient | Card (RX-1). `EMAIL_HELD_CARD_SEND` already does it. |
+| `update_assistant_settings` closed keys | later egress | Card. `org_domains` and `always_copy` stay refused. |
+| Projects class B writes, reminders, CRM writes | first-party or open-world write | Card. `HELD_CARD_WRITES_ORGS` already does it. |
+| `nudge_task`, report recipients, `set_report_schedule` | tells a person, later mail | Card later, with the person-class tick of email plan §21.4. |
+| Class C (`delete_*`, `archive_*`, `merge_*`, `revert_activity`, `move_project`) | hard to undo | Card with an Undo receipt later. Until then: fresh chat. |
+| `save_memory`, `save_episode`, `save_note`, `save_knowledge`, `voice_profile` | store that a later run reads | Leaves the chat. No card shows a hidden later read. Fresh chat. |
+| `web_search`, `fetch_page`, `run_workflow`, MCP tools | open world | Leaves the chat. The orchestrator keeps its web tools behind a card. Fresh chat. |
+| Delegation, `spawn_copilot_agent`, `my_tasks_delegate` | the child run has no hold | Leaves the chat. Fresh chat. |
+| `grant_access`, `revoke_access`, `pin_authority`, `lead`, `org_wide` | a steered model would choose the access | Leaves the chat. Fresh chat. |
+| `bulk_update`, `apply_settings_to_mailboxes` | bulk | Leaves the chat. Fresh chat. |
+
+**Today's cause of the "new chat" copy.** It is live only while
+`HELD_CARD_WRITES_ORGS` is empty, which is the default
+(`packages/acb_common/acb_common/settings.py:989`). The texts are `EGRESS_HELD_PACK_ANSWER_NO_WRITES` and
+`EGRESS_HOLD_NOTE_PACK_NO_WRITES` (`packages/acb_skills/acb_skills/egress.py:823,830`).
+
+### 9.3 The carry
+
+1. The server does the carry. The client never builds the text.
+2. **Selection.** The route takes the newest row with `role = 'user'`,
+   `member_typed IS TRUE` and `author_email` equal to the caller, by
+   `timestamp_ms`. Tool results live in assistant rows (`tool_events`,
+   `custom_events`), so none can cross. `NULL` and `FALSE` rows do not cross.
+   With no such row the route answers 409.
+3. **Author.** In a shared room, only the caller's own row can cross. A row of
+   another member never runs in the caller's unheld chat.
+4. **Access.** The route reads the source chat with `resolve_room_access(...)`
+   and needs `can_read`, as `get_messages` does. It answers 404 when the caller
+   cannot read it, or when `CHAT_CONTINUE_ORGS` does not hold the caller's
+   organization. The organization comes from `UserContext` only (R5e).
+5. **Fields.** The carry copies `content` and nothing else. It never copies
+   `custom_events`, `agent_state`, `authority`, `tool_events`,
+   `member_summary` or a file reference. `prepare_new_session` purges by id
+   only, so no file id crosses.
+6. **No seed row.** The route writes no `chat_message` row. It returns
+   `{session_id, text}`. The web shell puts `text` in the composer, and the
+   member sends it. `_write_prompt_row` (`apps/services/gateway/gateway/routes/agent.py:2625`)
+   then writes the `member_typed = TRUE` row. That function stays the only
+   writer (migration 337).
+7. **Session id.** The server mints the id and never takes it from the
+   request. The new session passes `_session_is_new` and `prepare_new_session`
+   (`routes/chat.py:241,261`).
+8. **The link.** A new nullable column `chat_session.continued_from TEXT`.
+   It is a foreign key to `chat_session(id)` with `ON DELETE SET NULL`, added
+   `NOT VALID` and validated in a later release (the pattern of migration
+   148), with `SET lock_timeout` (as migration 337). The RLS policy does not
+   change (R5). The route reads the source under the caller's tenant before it
+   writes the link. **Only three readers may use the column:** the WT-1 route,
+   the session list, and the chip of CO-5. A context builder, the summary job
+   and memory assembly never read the old chat through it.
+9. **Pasted mail text** is the residual risk. A pasted row is still `TRUE`.
+   Because WT-1 returns the text to the composer, the member sees it before it
+   runs. An API caller skips that preview. So the flag flip waits for WT-2
+   (the composer) and for slice WT-1b (a stranger-text frame when the text
+   matches a stored mail body), or for the owner's written acceptance of the
+   risk.
+
+### 9.4 Slices
+
+| Slice | What | Tier | Gate |
+|---|---|---|---|
+| WT-1 | Migration (next free number at build. It was 344 on 2026-11-04) for `continued_from`. Route `POST /chat/sessions/{id}/continue` in `routes/chat.py` by §9.3. Flag `CHAT_CONTINUE_ORGS` in `settings.py` and `env_guard.py`, default empty. | HIGH | AGENT-SAFE, dark |
+| WT-1b | The stranger-text frame for a typed row that matches a stored mail body: the match rule, the store, the cost, the test. | HIGH | AGENT-SAFE, dark |
+| WT-2 | The tap. A `Continue in a fresh chat` pill on the refusal and the hold note. The web shell opens the new chat and fills the composer. | STANDARD | AGENT-SAFE, dark |
+| WT-3 | Copy: the two `NO_WRITES` texts offer the tap, and no copy says "open a new chat". Update the pinned tests. | HIGH | AGENT-SAFE |
+| WT-4 | Topic change (not held): a suggestion chip, and a swap in place through `persona_for` and `load_tool`. Line: "Switched to Calendar". | STANDARD | AGENT-SAFE |
+| WT-5 | The flips: `CHAT_CONTINUE_ORGS`, `HELD_CARD_WRITES_ORGS`, `EMAIL_HELD_CARD_SEND`. | — | **OWNER-GATE** (`work_plan.md` §6 D4) |
+| WT-6 | Class C cards with an Undo receipt, and the person-class tick for `nudge_task`. | HIGH | AGENT-SAFE, dark |
+
+**WT-1 done when:** each case of §9.5 passes on a real database, the flag-off
+answer is 404, and the verification commands of §9.6 pass.
+
+### 9.5 Fences (R7)
+
+- `tests/unit/test_continue_carry.py`: a held chat with a mail body in an
+  assistant row and in a tool result. The new chat holds none of it. A `NULL`
+  row and a `FALSE` row do not cross. The test runs on a real database (R8).
+- `tests/unit/test_no_new_chat_copy.py`: no `EGRESS_HOLD_NOTE_*` or
+  `EGRESS_HELD_*` text holds "new chat". Each text holds the tap.
+- `test_delegation_no_egress.py:1708` stays green: a fresh chat has no mark.
+- `tests/unit/test_continue_carry.py` also holds these cases:
+  - The newest typed row of ANOTHER member in a shared room does not cross.
+    With no own row, the route answers 409.
+  - A caller who cannot read the source gets 404.
+  - Another organization gets 404.
+  - The flag off gives 404.
+  - The route writes no `chat_message` row.
+  - The new id is the server's.
+  - The carry holds only `content`.
+- `tests/unit/test_continued_from_readers.py`: a structural scan allows the
+  `continued_from` column in three places only. They are the WT-1 route, the
+  session list and the CO-5 chip read.
+
+### 9.6 Verification
+
+```
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_continue_carry.py tests/unit/test_continued_from_readers.py tests/unit/test_delegation_no_egress.py tests/unit/test_chat_summary_r8.py tests/unit/test_held_card_writes.py tests/unit/test_tenant_coverage.py -q
+uv run ruff check apps/services/gateway packages/acb_common
+uv run python scripts/affected_tests.py --run
+```
