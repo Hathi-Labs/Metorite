@@ -11,6 +11,7 @@
 #   bash scripts/dev_up.sh --down           stop, then remove the containers and the data
 #   bash scripts/dev_up.sh --reset          --down, then a fresh start
 #   bash scripts/dev_up.sh --refresh-flags  copy production's switches from the staging box
+#   DEV_UP_ORGS_ON="GUIDE_ORGS" bash scripts/dev_up.sh   a per-org dark switch on, for a preview
 #
 # WHAT YOU GET, per worktree, on 127.0.0.1 only:
 #   * Postgres (pgvector) with the whole ladder AND the RLS promotion, so FORCE
@@ -109,6 +110,21 @@ flag_env() {
   for name in "${!out[@]}"; do printf '%s=%s\n' "$name" "${out[$name]}"; done | sort
 }
 
+# orgs_on: the per-org switches that DEV_UP_ORGS_ON names, on for every org of
+# THIS stack ("*"), so a dark feature behind a *_ORGS list can show in a local
+# preview (D145). A held switch and a name that is not *_ORGS stay out.
+#   DEV_UP_ORGS_ON="GUIDE_ORGS" bash scripts/dev_up.sh
+orgs_on() {
+  local name
+  for name in ${DEV_UP_ORGS_ON:-}; do
+    if [[ ! "$name" =~ ^[A-Z0-9_]+_ORGS$ ]] || [[ "$name" =~ $HELD ]]; then
+      printf 'dev_up: DEV_UP_ORGS_ON skips %s (a *_ORGS name that is not held)\n' "$name" >&2
+      continue
+    fi
+    printf '%s=*\n' "$name"
+  done
+}
+
 # STUDIO_ORGS=* is the AI Studio skill switch (STU-F2b). It is not a name of the
 # SWITCH pattern, so production's flags cannot carry it. The stack on this PC holds
 # two made-up orgs, so a fixed line here flips no box. APP_REQUESTS_ORGS=* is the
@@ -127,6 +143,7 @@ studio_key_env() {
 gateway_env() {
   base_env
   flag_env root
+  orgs_on
   printf '%s\n' \
     "ACB_ENV=dev" \
     "DATABASE_URL=postgresql+psycopg://acb_app:acb_app@127.0.0.1:$DB_PORT/acb_dev" \
