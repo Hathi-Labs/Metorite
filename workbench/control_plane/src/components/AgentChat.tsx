@@ -31,6 +31,7 @@ import { starterPills } from "@/lib/starterPills";
 import { chatFirstOn } from "@/lib/shell/chatFlag";
 import { type FeedAnswer, feedAppIcon, feedKey, fetchFeed } from "@/lib/shell/feed";
 import { holdsOnlyBrief } from "@/lib/shell/briefTurn";
+import { isHelloRow } from "@/lib/shell/buddyHello";
 import { useCachedResource } from "@/lib/useCachedResource";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
 import ConfirmationReceipts from "@/components/ConfirmationReceipts";
@@ -2537,6 +2538,8 @@ export default function AgentChat({
           )}
           {!isLoading && !outage && !interruptedId && messages.length > 0 && !(briefOnly && starterFeedWanted) && (() => {
             const last = lastNonSteer(messages);
+            // No follow-ups under the hello: its chips are the next step (BUD-1).
+            if (last && isHelloRow(last.id)) return null;
             if (last?.role === "assistant" && last.content.trim() && !last.streaming) {
               return (
                 <SuggestionPills

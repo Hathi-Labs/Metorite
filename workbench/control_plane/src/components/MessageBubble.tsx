@@ -8,6 +8,7 @@ import type { FileEntry } from "@/components/ArtifactSidebar";
 import { parseStoredRunError } from "@/lib/runErrors";
 import MarkdownMessage, { MarkdownBody } from "@/components/MarkdownMessage";
 import MessageActionBar from "@/components/MessageActionBar";
+import { isHelloRow } from "@/lib/shell/buddyHello";
 import GenerativeUIPanel from "@/components/GenerativeUIPanel";
 import ArtifactCard, { type ArtifactMeta } from "@/components/ArtifactCard";
 import { fileCardsOf } from "@/lib/artifactCards";
@@ -814,7 +815,9 @@ function MessageBubble({
       />
       {!message.streaming && (
         <div className="flex items-center gap-2 mt-1.5 opacity-100 transition-opacity">
-          {message.content.trim() && (
+          {/* The hello is words that code wrote, not a model answer: no Copy
+              and no feedback under it (BUD-1). */}
+          {message.content.trim() && !isHelloRow(message.id) && (
             <MessageActionBar
               content={message.content}
               messageId={message.id}

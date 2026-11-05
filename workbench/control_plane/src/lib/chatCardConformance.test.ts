@@ -328,12 +328,14 @@ describe("a template with its own head draws it as the card's one header", () =>
     report: "ReportTemplate",
     // A reminder that a tap opened (WS-66 RM-4).
     reminderCard: "ReminderCard",
-    // The hello of a new member (WS-BUD BUD-1).
-    buddyHello: "BuddyHello",
   };
 
+  // WS-BUD BUD-1: the hello draws no head at all, so nothing draws twice. It
+  // is in OWN_HEAD_TEMPLATES only so the frame adds no generic header.
+  const HEADLESS_TEMPLATES: ReadonlySet<string> = new Set(["buddyHello"]);
+
   it("names every chat template", () => {
-    expect([...OWN_HEAD_TEMPLATES].sort()).toEqual(Object.keys(NAMES).sort());
+    expect([...OWN_HEAD_TEMPLATES].filter((n) => !HEADLESS_TEMPLATES.has(n)).sort()).toEqual(Object.keys(NAMES).sort());
   });
 
   it("every template in the registry draws its own head, so no title draws twice", () => {

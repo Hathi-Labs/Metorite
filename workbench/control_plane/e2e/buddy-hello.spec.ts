@@ -54,7 +54,7 @@ const NEVER = {
 };
 const ANSWERED = { ...NEVER, preset: "engineer", answered: "answered" };
 const SERVER_TIME = "2026-11-05T12:00:00.000Z";
-const HELLO = "Hi Priya, welcome to Metorite. There's a lot here, so the first look can feel like much. You don't have to learn it all today. I'm here whenever you need me. Ask me anything, and I'll show you where it is.";
+const HELLO = "Hi Priya, welcome to Metorite. It can look like a lot at first, and that's okay. You don't have to learn it all today. I'm here whenever you need me. Ask me anything, and I'll show you where it is.";
 const CHIPS = [
   { id: "tour", label: "Show me around" },
   { id: "ask", label: "What can you do here?" },

@@ -424,9 +424,9 @@ HELLO_TITLE = "Welcome"
 #: The words of the hello: ONE constant, with the member's first name as
 #: ``{name}``. It names no model and no inner service.
 HELLO_COPY = (
-    "Hi {name}, welcome to Metorite. There's a lot here, so the first look "
-    "can feel like much. You don't have to learn it all today. I'm here "
-    "whenever you need me. Ask me anything, and I'll show you where it is."
+    "Hi {name}, welcome to Metorite. It can look like a lot at first, and "
+    "that's okay. You don't have to learn it all today. I'm here whenever "
+    "you need me. Ask me anything, and I'll show you where it is."
 )
 #: The chips, as ids the client maps to an action (``buddyHello`` in
 #: ``genUITemplates.tsx``). The ids are the contract with the client.
