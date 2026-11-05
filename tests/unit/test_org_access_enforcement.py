@@ -310,6 +310,17 @@ def test_an_ungated_router_still_resolves_an_identity(module: str) -> None:
 #: router in neither registry is unchecked, and NS-4b adds routes to this one).
 DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
     "gateway.routes.shell": {
+        "/shell/manifest": (
+            "PKG-5b part 2. The resolve keeps a claim that names a feature only "
+            "when `user.can_use_feature(payload.feature)` holds, so a member "
+            "without the app's feature gets no claim of it. A claim with no "
+            "feature is open to every member (spec §5.2 step 3) "
+            "(`test_package_host_resolve.py::test_a_feature_the_viewer_lacks_hides_the_entry`, "
+            "`test_package_host_resolve_r8.py` case 5). The tenant is the bound "
+            "session under FORCE RLS and the viewer is `user.email`. The route "
+            "reads no input but `If-None-Match`, and the flag "
+            "`PACKAGE_HOST_ORGS` answers 404 first."
+        ),
         "/shell/search": (
             "NS-4a. Each provider in `PROVIDERS` checks "
             "`user.has_permission('feature:<app>')` before it calls the app's own "
