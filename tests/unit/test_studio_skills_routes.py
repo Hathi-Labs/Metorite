@@ -781,6 +781,23 @@ class TestTheHiddenCharacters:
         assert r.json() == {"detail": _hidden("body.instructions", 5, _TAG_A)}
         assert world.tables.skills[sid]["state"] == start
 
+    @pytest.mark.parametrize(("field", "value", "detail"), [
+        ("name", "Quotes" + _ZWSP, _hidden("name", 7, _ZWSP)),
+        ("description", "Use" + _TAG_A, _hidden("description", 4, _TAG_A)),
+    ], ids=["name", "description"])
+    def test_a_publish_of_a_stored_hidden_name_or_description_is_422(
+            self, world, field, value, detail):
+        """A store before F1b kept a hidden character in a column too. The
+        publish gate reads both columns, after the body.
+        Mutation: drop the column terms of the gate -> red."""
+        c = _client(world)
+        sid = _create(c, body=_body())["skill"]["id"]
+        world.tables.skills[sid][field] = value
+        r = c.patch(f"/studio/skills/{sid}/state", json={"state": "published"})
+        assert r.status_code == 422, r.text
+        assert r.json() == {"detail": detail}
+        assert world.tables.skills[sid]["state"] == "draft"
+
     def test_a_live_skill_with_a_stored_hidden_character_can_still_pause(self, world):
         """A member must be able to stop a skill that an older store kept."""
         c = _client(world)

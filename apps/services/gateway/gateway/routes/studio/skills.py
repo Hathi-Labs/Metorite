@@ -33,8 +33,12 @@ session (``actions.catalog_rows``), so a request never holds two.
 **The states.** :data:`TRANSITIONS` holds each legal move. A move to the
 same state is a no-op. A publish needs a version, and it runs the catalog
 check again on the newest version. Then it runs the hidden-character check
-of the body (WS-STU F1b, ``acb_skills.hidden_text``), so a row that a store
-before F1b kept cannot publish or resume. A new version of a published skill
+(WS-STU F1b, ``acb_skills.hidden_text``) on the newest body, then on the name
+and the description columns. So a row that a store before F1b kept cannot
+publish or resume. A pause is not gated, so a member can always stop a live
+skill. No route renames a skill, so a skill with a hidden character in its
+name cannot go live again: the member makes a new skill. A new version of a
+published skill
 returns the skill to ``draft`` in the same transaction. No route changes the
 visibility, so each skill stays ``private`` (J2 owns the share).
 
@@ -54,7 +58,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from acb_common.studio_manifest import MAX_DEPTH
-from acb_skills.hidden_text import body_hidden_problem
+from acb_skills.hidden_text import body_hidden_problem, hidden_problem
 from acb_skills.tool_packs import MAX_PACK_TOOLS
 from fastapi import Body, Depends, HTTPException
 from gateway.db import tenant_session as _tenant_session
@@ -401,10 +405,13 @@ async def set_skill_state(
                 if newest is None:
                     raise _refuse(409, ADD_A_VERSION)
                 ids = _actions_of(newest.body)
-                # The store refuses a hidden character since F1b. A body that
-                # an older store kept stops here, so it never goes live.
+                # The store refuses a hidden character since F1b. A body or a
+                # column that an older store kept stops here, so it never
+                # goes live.
                 problem = (_count_problem(ids) or _catalog_problem(ids, known)
-                           or body_hidden_problem(newest.body))
+                           or body_hidden_problem(newest.body)
+                           or hidden_problem(skill.name, "name")
+                           or hidden_problem(skill.description, "description"))
                 if problem is not None:
                     raise _refuse(422, problem)
             await store.set_state(db, user.email, sid, target)

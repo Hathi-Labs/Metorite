@@ -54,6 +54,11 @@ h. (WS-STU F1b) A hidden character in the body or the name is 422 with the
   ``test_r8_a_publish_of_a_stored_hidden_character_is_422`` goes red, and so
   does ``test_a_publish_or_a_resume_of_a_stored_hidden_character_is_422`` of
   the hermetic suite.
+* M4. In ``skills.set_skill_state``, drop the ``hidden_problem`` terms of
+  the name and the description. The hidden-name step of
+  ``test_r8_a_publish_of_a_stored_hidden_character_is_422`` goes red, and so
+  does ``test_a_publish_of_a_stored_hidden_name_or_description_is_422`` of the
+  hermetic suite.
 """
 
 from __future__ import annotations
@@ -501,7 +506,8 @@ def test_r8_a_hidden_character_is_422_on_create_and_writes_nothing(world) -> Non
 def test_r8_a_publish_of_a_stored_hidden_character_is_422(world) -> None:
     """A store before F1b could keep a hidden character. The superuser writes
     such a version, because a version cannot be updated. Then a publish
-    answers 422 and the skill stays a draft. A clean version publishes."""
+    answers 422 and the skill stays a draft. A clean version still stops at a
+    hidden name, and a clean name publishes."""
     a = world.org_a
     bad = {**_body(), "instructions": "Read" + _TAG_A + " the list."}
 
@@ -520,16 +526,30 @@ def test_r8_a_publish_of_a_stored_hidden_character_is_422(world) -> None:
         c.execute(text("UPDATE studio_skills SET current_version = 1 "
                        "WHERE id = CAST(:sid AS uuid)"), {"sid": sid})
 
-    async def publish() -> tuple[tuple[int, Any], tuple[int, Any], tuple[int, Any]]:
+    async def first() -> tuple[tuple[int, Any], tuple[int, Any]]:
         refused = await _call(a, ANA, skills.set_skill_state, sid,
                               payload={"state": "published"})
         added = await _call(a, ANA, skills.add_skill_version, sid, payload={"body": _body()})
-        moved = await _call(a, ANA, skills.set_skill_state, sid,
-                            payload={"state": "published"})
-        return refused, added, moved
+        return refused, added
 
-    refused, added, moved = _run(world, publish)
+    async def move() -> tuple[int, Any]:
+        return await _call(a, ANA, skills.set_skill_state, sid,
+                           payload={"state": "published"})
+
+    def set_name(name: str) -> None:
+        with world.admin_engine.begin() as c:
+            c.execute(text("UPDATE studio_skills SET name = :n WHERE id = CAST(:sid AS uuid)"),
+                      {"n": name, "sid": sid})
+
+    refused, added = _run(world, first)
     assert refused == (422, _hidden("body.instructions", 5, _TAG_A))
-    assert added[0] == 200 and moved[0] == 200
-    assert moved[1]["skill"]["state"] == "published"
+    assert added[0] == 200
+    # The body is clean now. A name that an older store kept stops the publish
+    # too (review round 1, P3-4).
+    set_name("Quotes" + _ZWSP)
+    assert _run(world, move) == (422, _hidden("name", 7, _ZWSP))
+    assert _row(world, sid)[2] == "draft"
+    set_name("Quotes")
+    moved = _run(world, move)
+    assert moved[0] == 200 and moved[1]["skill"]["state"] == "published"
     assert _row(world, sid) == (world.org_a, ANA, "published", "private", 2, 2)
