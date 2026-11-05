@@ -148,7 +148,7 @@ async def seed(org: str, now: datetime) -> None:
 
 def register_jobs(*, replace: bool = False) -> None:
     """Register the kind and the seed hook. Safe to call twice."""
-    worker.register(SLO_KIND, check, replace=replace)
+    worker.register(SLO_KIND, check, replace=replace, effect="read")
     if seed not in worker.seed_hooks:
         worker.seed_hooks.append(seed)
 

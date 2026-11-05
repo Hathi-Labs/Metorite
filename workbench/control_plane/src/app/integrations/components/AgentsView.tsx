@@ -4,7 +4,7 @@
  * The AI agents view of /integrations (WS-55 EA-4b, D-EA-9).
  *
  * Spec: `project-docs/specs/external_agent_access.md` §5.4 and §15 EA-4b.
- * Every member sees it. Three parts:
+ * Every member sees it. Four parts:
  *
  * 1. **Connect an AI agent.** The MCP address with a copy button, one tab per
  *    client of §17.1, and what an agent can and cannot do.
@@ -15,6 +15,11 @@
  * 3. **All agent connections.** Every live connection of the org, with the
  *    member's email and Revoke. Only with `integrations:manage`
  *    (`canManageOrg`), and the gateway checks it again.
+ * 4. **Waiting for you** (MCP-P1b-1, §19.5). The changes that an agent asks
+ *    to make, each on `AppRequestCard`, with Approve and Decline
+ *    (`WaitingRequests.tsx`). It shows no section when no request waits, and
+ *    while the store is dark. It comes last, so its arrival after a cold
+ *    fetch moves nothing above it (DESIGN_SYSTEM.md M1).
  *
  * Each row headlines the VERIFIED host and shows the claimed name second, as
  * the consent page does (§10.5). `last_used_at` is stamped on a token issue
@@ -37,6 +42,8 @@ import { SkeletonRows } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 import { invalidate, put } from "@/lib/dataCache";
 import { useCachedResource } from "@/lib/useCachedResource";
+
+import WaitingRequests from "./WaitingRequests";
 
 import {
   AGENT_ACCESS_KEY,
@@ -468,6 +475,10 @@ export default function AgentsView({ canManageOrg }: { canManageOrg: boolean }) 
           onRevoke={(row) => setAsking({ row, admin: true })}
         />
       ) : null}
+
+      {/* Last, so its arrival after a cold fetch moves nothing above it
+          (re-review P3, DESIGN_SYSTEM.md M1). */}
+      {off ? null : <WaitingRequests />}
 
       <ConfirmDialog
         open={asking !== null}

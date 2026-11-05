@@ -499,26 +499,24 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "dynamic": False,
     },
     "projects-plan": {
-        "label": "Projects planning and reports",
+        "label": "Projects planning",
         "summary": (
-            "Plan and report on projects: analytics, team capacity, who fits "
-            "a task, conflicts, a task table, export, reports and their "
-            "schedule, a timeline, a plan from a goal, task links, repeat "
-            "rules, new projects and project settings."
+            "Plan projects: analytics, team capacity, who fits a task, "
+            "conflicts, a task table, a timeline, a plan from a goal, task "
+            "links, repeat rules, new projects and project settings."
         ),
         "description": (
-            "A tool pack: the Projects Assistant's own tools to plan and to "
-            "report, for the main assistant to load when a turn needs them. "
+            "A tool pack: the Projects Assistant's own tools to plan, for "
+            "the main assistant to load when a turn needs them. "
             "It holds the five analytics reads, the team's capacity, who "
-            "fits a task, plan conflicts, the task table and its export, the "
-            "saved reports with their recipients and schedule, the "
+            "fits a task, plan conflicts, the task table, the "
             "timeline, a plan from a goal, links between tasks, repeat "
-            "rules, and a new project with its settings. A run loads a pack "
+            "rules, and a new project with its settings. The reports are in "
+            "projects-reports. A run loads a pack "
             "only where tool packs are on, so until then this switch has no "
             "effect."
         ),
         "tools": (
-            "add_report_recipient",
             "add_task_ref",
             "analytics_finished",
             "analytics_load",
@@ -527,7 +525,6 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "analytics_throughput",
             "create_project",
             "edit_project",
-            "export_tasks",
             "find_conflicts",
             "fit_for_task",
             "link_tasks",
@@ -536,18 +533,9 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "propose_plan",
             "rebalance",
             "recurrence",
-            "remove_report_recipient",
             "remove_task_ref",
-            "render_report",
             "render_timeline",
-            "report_delete",
-            "report_list",
-            "report_recipients",
-            "report_render",
-            "report_save",
             "set_recurrence",
-            "set_report_schedule",
-            "status_report",
             "task_dataset",
             "team_capacity",
             "unlink_tasks",
@@ -563,48 +551,36 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "label": "Projects structure",
         "summary": (
             "Shape a project: the statuses, types, fields and tags, who can "
-            "see a project, saved views, watchers, the member's own areas, "
-            "the intake queue and notifications."
+            "see a project, saved views and watchers."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools to shape a "
             "project, for the main assistant to load when a turn needs "
             "them. It holds the tools for statuses, task types, fields and "
-            "tags, who can see a project, saved views, watchers, the "
-            "member's own areas, the intake queue and the notifications. "
+            "tags, who can see a project, saved views and watchers. "
             "A run loads a pack only where tool packs are on, so until "
             "then this switch has no effect."
         ),
         "tools": (
-            "capture_intake",
-            "create_area",
             "create_field",
             "create_status",
             "create_tag",
             "create_tags",
             "create_type",
             "create_types",
-            "delete_area",
             "delete_field",
             "delete_status",
             "delete_tag",
             "delete_type",
             "delete_view",
             "grant_access",
-            "intake_queue",
-            "mark_notifications_read",
             "merge_tags",
-            "my_areas",
-            "my_contexts",
-            "notifications",
             "project_access",
             "project_views",
-            "rename_area",
             "revoke_access",
             "save_view",
             "set_status_set",
             "show_view",
-            "triage_intake",
             "update_field",
             "update_status",
             "update_tag",
@@ -664,11 +640,11 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
         "dynamic": False,
     },
     "projects-reminders": {
-        "label": "Projects reminders",
+        "label": "Projects reminders and own organising",
         "summary": (
-            "The member's own reminders, which are not tasks: set one, list "
-            "them, change the time, snooze, resolve, reopen, or promote one "
-            "to a task, or answer a decision that waits for you."
+            "The member's own organising: reminders, which are not tasks, the "
+            "decisions that wait for the member, the task inbox, areas, "
+            "contexts and notifications."
         ),
         "description": (
             "A tool pack: the Projects Assistant's own tools for the "
@@ -676,20 +652,63 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "says \"remind me\" or names a reminder. A reminder is its own "
             "object. It is not a task, and it may name a task as its "
             "subject. The pack holds the tools to set, list, change, "
-            "reschedule, resolve, reopen and promote a reminder. Each write "
-            "asks the member first. A run loads a pack only where tool "
+            "reschedule, resolve, reopen and promote a reminder. It also "
+            "holds the task inbox, the member's own areas and contexts, and "
+            "the notifications, and the decisions that wait for the member. A reminder acts at once with Undo. Each other write asks the member first. A run loads a pack only where tool "
             "packs are on, so until then this switch has no effect."
         ),
         "tools": (
             "answer_decision",
+            "capture_intake",
+            "create_area",
+            "delete_area",
+            "intake_queue",
             "list_reminders",
+            "mark_notifications_read",
+            "my_areas",
+            "my_contexts",
             "my_decisions",
+            "notifications",
             "promote_reminder",
+            "rename_area",
             "reopen_reminder",
             "reschedule_reminder",
             "resolve_reminder",
             "set_reminder",
+            "triage_intake",
             "update_reminder",
+        ),
+        "owner": "projects-assistant",
+        "core": False,
+        "scope_governed": True,
+        "dynamic": False,
+    },
+    "projects-reports": {
+        "label": "Projects reports",
+        "summary": (
+            "Reports on projects: a status report, saved reports, their "
+            "recipients and schedule, and the export of tasks."
+        ),
+        "description": (
+            "A tool pack: the Projects Assistant's own tools for reports, "
+            "for the main assistant to load when a turn needs them. It "
+            "holds the status report, the saved reports with their "
+            "recipients and schedule, and the export of tasks. A run loads "
+            "a pack only where tool packs are on, so until then this switch "
+            "has no effect."
+        ),
+        "tools": (
+            "add_report_recipient",
+            "export_tasks",
+            "remove_report_recipient",
+            "render_report",
+            "report_delete",
+            "report_list",
+            "report_recipients",
+            "report_render",
+            "report_save",
+            "set_report_schedule",
+            "status_report",
         ),
         "owner": "projects-assistant",
         "core": False,
@@ -726,22 +745,25 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     },
     # STU-G1 (ai_studio.md section 6.2): the AI Studio builder tools, for the
     # one assistant to hold in a Studio turn. The owner is `studio-builder`,
-    # which is NOT a second assistant. Eight stateless tools (G1b added the describe tool, G2 the interview and the plan card): no draft store
-    # exists. A run loads a pack only where tool packs are on, and the pack
+    # which is NOT a second assistant. Eight stateless builder tools (G1b added the describe tool,
+    # G2 the interview and the plan card), three skill tools (F2d) and two package tools (G1c:
+    # save and publish over the A5 routes). A run loads a pack only where tool packs are on, and the pack
     # builds nothing for an org that STUDIO_ORGS does not hold.
     "studio": {
         "label": "AI Studio builder",
         "summary": (
             "Build an AI Studio app: draft a manifest from a brief, patch it, "
-            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, and save, publish, pause and list your skills."
+            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save and publish the app, save, publish, pause and list your skills, and read the records of a package."
         ),
         "description": (
             "A tool pack: the builder tools of AI Studio, for the main "
             "assistant to load in a Studio turn. It holds the tools to draft "
             "an app manifest, patch it, validate it, outline it and list the "
-            "actions an app may use. It also holds the skill tools: save, "
-            "publish, pause and list the skills of a member. The tools keep no draft: the chat holds "
-            "the manifest. A run loads a pack only where tool packs are on, "
+            "actions an app may use. It also holds the package tools: save "
+            "an app as a draft and publish it. It also holds the skill tools: save, "
+            "publish, pause and list the skills of a member. Two read tools list the "
+            "packages of a member and read the records of an object. The tools keep no "
+            "draft: the chat holds the manifest. A run loads a pack only where tool packs are on, "
             "so until then this switch has no effect."
         ),
         "tools": (
@@ -756,6 +778,10 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_skill_list",
             "studio_skill_save",
             "studio_skill_state",
+            "studio_save",
+            "studio_publish",
+            "studio_package_get",
+            "studio_record_list",
         ),
         "owner": "studio-builder",
         "core": False,

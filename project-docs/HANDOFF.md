@@ -1661,11 +1661,16 @@ line — never reclaim a number by deleting the other entry.
   this is open.
 - **Added:** 2026-10-16 · WS-27bm §14.10.9 B3 review
 
-### H-334 · The email owner check names no tenant by default · [AGENT]
-- **Metorite:** #563. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** `git grep -n "this_tenant: bool = False" -- apps/services/gateway/gateway/routes/email/core.py`.
-  A hit means this entry stays.
-- **Added:** 2026-10-15 · MD-3d build · rewritten 2026-10-16, MD-3d review
+### H-334 · Three email mailbox list reads name no tenant · [AGENT]
+- **Metorite:** #1692. Task 563 closed the owner check: `_assert_account_owner` names the
+  bound tenant by default (WS-29, 2026-11-04). Three list reads stay open: `list_accounts`
+  and `feed_mailboxes` in `transport/accounts.py`, and `resolve_self_addresses` in
+  `automation/identity.py` through `_MEMBER_MAILBOXES_SQL`.
+- **Check:** run this from the repo root. It prints the reads that name no tenant.
+  `uv run python -c "import inspect as I; from gateway.routes.email.transport import accounts as a; from gateway.routes.email.automation import identity as i; S={'list_accounts': I.getsource(a.list_accounts), 'feed_mailboxes': I.getsource(a.feed_mailboxes), 'resolve_self_addresses': i._MEMBER_MAILBOXES_SQL}; print([k for k, s in S.items() if not any(t in s for t in ('app.tenant_id', '_bound_org', '_BOUND_ORG'))])"`
+  A name in the list means this entry stays. An empty list closes it.
+- **Added:** 2026-10-15 · MD-3d build · rewritten 2026-10-16, MD-3d review ·
+  narrowed 2026-11-04, WS-29 task 563
 
 ### H-336 · W10: the chat's unmount save can copy mail into Mem0, so WS-7 keeps Mem0 off · [AGENT]
 - **Metorite:** #694. The task holds the full entry (moved 2026-10-28, D118).

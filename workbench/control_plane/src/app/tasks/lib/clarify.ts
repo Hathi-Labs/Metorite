@@ -88,6 +88,30 @@ export interface ClarifyProposal {
    *  proposal, scoped to the matched project). Lets the card file it as a
    *  subtask under that task instead of as a standalone. */
   parentSuggestion?: ParentMatch;
+  /** who answered (server proposal only). "heuristic" means the rule-based
+   *  fallback: the card shows a "Rule-based suggestion" mark (CL-1). */
+  clarifiedBy?: "llm" | "heuristic";
+  /** why the model did not answer: truncated, bad_json, unknown_disposition,
+   *  empty_next_action, timeout or error. Absent when the model was off. */
+  fallbackReason?: string;
+}
+
+/** The plain words for a fallback reason, for the mark's tooltip. */
+export function fallbackReasonText(reason?: string): string {
+  switch (reason) {
+    case "timeout":
+      return "The assistant took too long to answer.";
+    case "truncated":
+      return "The assistant's answer was cut off.";
+    case "bad_json":
+    case "unknown_disposition":
+    case "empty_next_action":
+      return "The assistant's answer could not be used.";
+    case "error":
+      return "The assistant could not be reached.";
+    default:
+      return "The assistant is switched off for clarify.";
+  }
 }
 
 /** A likely-existing PM-tool task the inbox capture may duplicate (dedup). */

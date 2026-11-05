@@ -41,6 +41,7 @@ import { invalidate, onClear, peek, put } from "@/lib/dataCache";
 import { chatScope, type ChatSession } from "@/lib/sessions";
 import { useCachedResource } from "@/lib/useCachedResource";
 
+import { setGuideAllowed, setGuideHold } from "./guide";
 import { EMPTY_SHELL, shellLayout, type ShellLayout, type StoredShell } from "./presets";
 import { asLayout, readCachedLayout, writeCachedLayout, writeNudgeRetired } from "./shellCache";
 import { shellNavOn } from "./shellNav";
@@ -68,12 +69,17 @@ let saveSeq = 0;
 let confirmedSeq = 0;
 /** The number of the newest save when it settled, success or failure. */
 let settledSeq = 0;
+/** This page already sent the tour mark, or holds a layout that has it (GD-5a). */
+let tourSeenHere = false;
 
 onClear(() => {
   confirmed = undefined;
   unsaved = undefined;
   askedHere = false;
   confirmedSeq = saveSeq;
+  tourSeenHere = false;
+  // A new member: the guide waits for their own read (GD-5a).
+  setGuideAllowed(null);
 });
 
 /** Tests only: start a new page. */
@@ -82,6 +88,7 @@ export function __newShellPageForTests(): void {
   unsaved = undefined;
   askedHere = false;
   confirmedSeq = saveSeq;
+  tourSeenHere = false;
 }
 
 export function markAsked(): void {
@@ -107,12 +114,27 @@ export function latestShell(): StoredShell | undefined {
   return peek<StoredShell>(SHELL_PREFS_PATH)?.data;
 }
 
+/**
+ * The guide's switch in an answer (GD-5a): `guide` is true only when the
+ * gateway says so. A missing field, as from an older gateway, reads as off.
+ */
+export function guideOn(body: unknown): boolean {
+  return !!body && typeof body === "object" && (body as { guide?: unknown }).guide === true;
+}
+
 export async function readShellPrefs(): Promise<StoredShell> {
   const res = await fetch(SHELL_PREFS_PATH, { cache: "no-store" });
   if (!res.ok) throw new Error(`shell layout ${res.status}`);
-  const layout = asLayout(await res.json());
+  const body: unknown = await res.json();
+  const layout = asLayout(body);
   if (!layout) throw new Error("shell layout: not a layout");
   confirmed = layout;
+  // A member the server never asked sees the welcome picker next. The guide
+  // holds a start for it BEFORE the switch answers, or the tour would begin
+  // under the dialog. The dialog's close lets it go (`welcomeSteps.ts`).
+  if (layout.answered === null && shellNavOn() && !askedHere) setGuideHold(true);
+  // The one read tells the guide whether its entries may show (GD-5a).
+  setGuideAllowed(guideOn(body));
   return layout;
 }
 
@@ -122,10 +144,18 @@ export async function readShellPrefs(): Promise<StoredShell> {
  * keeps the stored value for a key the body omits. A layout built from
  * `EMPTY_SHELL`, as the welcome dialog's is, would name it null otherwise,
  * and bring the nudge back on every device.
+ *
+ * The tour mark (`tour_seen_at`, GD-5a) is never sent: `markTourSeen` alone
+ * writes it, and the server keeps it for a body that omits it. The body names
+ * the layout's keys and no other, so a fact of the server such as `guide`
+ * never goes back (the gateway refuses an unknown key with a 422).
  */
-export function bodyFor(next: StoredShell | null): Omit<StoredShell, "chat_first_message_at"> & { chat_first_message_at?: string } | null {
+export function bodyFor(
+  next: StoredShell | null,
+): (Omit<StoredShell, "chat_first_message_at" | "tour_seen_at"> & { chat_first_message_at?: string }) | null {
   if (!next) return null;
-  const { chat_first_message_at, ...rest } = next;
+  const { preset, answered, pins, known, cardOrder, newOrder, chat_first_message_at } = next;
+  const rest = { preset, answered, pins, known, cardOrder, newOrder };
   return chat_first_message_at ? { ...rest, chat_first_message_at } : rest;
 }
 
@@ -307,6 +337,42 @@ export async function markChatFirstMessage(scope: string | null | undefined): Pr
     put(SHELL_PREFS_PATH, saved);
   } catch {
     /* the browser copy holds for this device; another device shows it once */
+  }
+}
+
+// ── The tour mark (WS-OB GD-5a, `assistant_guide.md` §5.3) ─────────────────
+//
+// `tour_seen_at` is one field of the layout, on the path of the nudge mark.
+// It is a record for GD-14, never a gate: the account menu keeps "Take the
+// tour", so a member may take it again. It hides nothing, so it needs no
+// browser copy.
+
+/**
+ * The member started the tour. The server takes it once, as a KEY-ONLY
+ * write, as `markChatFirstMessage` does, and stores its own time in place of
+ * this device's. A layout that already holds the mark is left alone, so the
+ * record keeps the FIRST start. A second call in one page does nothing.
+ */
+export async function markTourSeen(): Promise<void> {
+  if (tourSeenHere) return;
+  tourSeenHere = true;
+  const latest = latestShell() ?? confirmed;
+  if (latest?.tour_seen_at) return;
+  try {
+    const res = await fetch(SHELL_PREFS_PATH, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tour_seen_at: new Date().toISOString() }),
+    });
+    if (!res.ok) return;
+    const saved = asLayout(await res.json());
+    if (!saved) return;
+    confirmed = saved;
+    // A layout save that is still out owns the screen. Its answer carries the
+    // mark too, because the server keeps it.
+    if (settledSeq === saveSeq) put(SHELL_PREFS_PATH, saved);
+  } catch {
+    /* a lost record: the tour itself is not affected */
   }
 }
 

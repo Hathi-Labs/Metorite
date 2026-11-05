@@ -78,6 +78,7 @@ from typing import Any
 
 from acb_common import get_logger
 
+from gateway.brief import flags as brief_flags
 from gateway.jobs import unattended
 from gateway.reach import flags, outbox, plan, requests
 from gateway.reach import whatsapp as channel
@@ -404,7 +405,9 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
     logged = await outbox.logged_pairs(org, member)
     # WhatsApp only: a reminder never interrupts there, whatever its class
     # (D114.7, RM-9 lifts it).
-    candidates = plan.interrupt_candidates(plan.on_whatsapp(snap.cards), logged, snap.now)
+    candidates = plan.interrupt_candidates(plan.on_whatsapp(snap.cards), logged, snap.now,
+                                           rules=brief_flags.exceptions(org),
+                                           muted=await muted_rules(org, member))
 
     brief, how = await _brief_step(org, member, snap, reach)
     if brief is not None:
@@ -426,6 +429,13 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
         asks = []
     await _message_step(org, member, snap, reach, candidates, asks, did)
     return ",".join(did) or "nothing"
+
+
+async def muted_rules(org: str, member: str) -> frozenset[str]:
+    """The rules that the member muted. Dark, it reads nothing (BR-5)."""
+    if not brief_flags.exceptions(org):
+        return frozenset()
+    return await outbox.muted_rules(org, member)
 
 
 class _Budget:

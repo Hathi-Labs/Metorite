@@ -108,6 +108,21 @@ class TestOutboundStaysOff:
                     f"{section} gets {name}")
 
 
+class TestPreviewSwitches:
+    @needs_bash
+    def test_dev_up_orgs_on_turns_a_per_org_switch_on_for_this_stack(self, tmp_path, monkeypatch):
+        """A dark feature behind a *_ORGS list shows in the owner's local preview (D145)."""
+        monkeypatch.setenv("DEV_UP_ORGS_ON", "GUIDE_ORGS")
+        assert _print_env(tmp_path)["gateway"]["GUIDE_ORGS"] == "*"
+
+    @needs_bash
+    def test_dev_up_orgs_on_skips_a_held_switch_and_a_non_orgs_name(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DEV_UP_ORGS_ON", "PUSH_PROMPT_ORGS DATABASE_URL")
+        gw = _print_env(tmp_path)["gateway"]
+        assert "PUSH_PROMPT_ORGS" not in gw
+        assert gw["DATABASE_URL"].startswith("postgresql+psycopg://acb_app:")
+
+
 class TestStudioSwitch:
     @needs_bash
     def test_the_gateway_lists_every_org_for_studio(self, tmp_path):
@@ -120,11 +135,46 @@ class TestStudioSwitch:
     def test_the_web_app_does_not_get_it(self, tmp_path):
         assert "STUDIO_ORGS" not in _print_env(tmp_path)["web"]
 
+    @needs_bash
+    def test_a_direct_key_comes_only_from_the_operator_shell(self, tmp_path):
+        """STU-D2b: the gateway and the web app get one `STUDIO_DIRECT_KEY`, and only when
+        the operator sets `DEV_UP_STUDIO_DIRECT_KEY`. The repo holds no key."""
+        key = "k" * 48
+        env = {**os.environ, "DEV_UP_REPO": tmp_path.as_posix(), "DEV_UP_STUDIO_DIRECT_KEY": key}
+        res = subprocess.run(
+            [_BASH, SCRIPT.as_posix(), "--print-env"],
+            capture_output=True, text=True, encoding="utf-8", timeout=60, env=env,
+        )
+        assert res.returncode == 0, res.stderr
+        assert res.stdout.count(f"STUDIO_DIRECT_KEY={key}") == 2
+        assert "STUDIO_DIRECT_KEY" not in FLAGS.read_text(encoding="utf-8")
+        assert "STUDIO_DIRECT_KEY=" not in BODY.replace("STUDIO_DIRECT_KEY=%s", "")
+
     def test_the_line_is_fixed_in_the_gateway_function_only(self):
         assert BODY.count("STUDIO_ORGS") >= 1
         gateway = BODY.split("gateway_env() {", 1)[1].split("\n}\n", 1)[0]
         assert '"STUDIO_ORGS=*"' in gateway
         assert "STUDIO_ORGS" not in FLAGS.read_text(encoding="utf-8")
+
+
+class TestAppRequestsSwitch:
+    """MCP-P1b-1 fix round 1. APP_REQUESTS_ORGS is the dark switch of the app
+    requests. One fixed line in `gateway_env` lets the owner preview the list
+    "Waiting for you" on the stack of this PC, which holds made-up orgs only.
+    The flags file of production never carries it."""
+
+    @needs_bash
+    def test_the_gateway_lists_every_org(self, tmp_path):
+        assert _print_env(tmp_path)["gateway"]["APP_REQUESTS_ORGS"] == "*"
+
+    @needs_bash
+    def test_the_web_app_does_not_get_it(self, tmp_path):
+        assert "APP_REQUESTS_ORGS" not in _print_env(tmp_path)["web"]
+
+    def test_the_line_is_fixed_in_the_gateway_function_only(self):
+        gateway = BODY.split("gateway_env() {", 1)[1].split("\n}\n", 1)[0]
+        assert '"APP_REQUESTS_ORGS=*"' in gateway
+        assert "APP_REQUESTS_ORGS" not in FLAGS.read_text(encoding="utf-8")
 
 
 class TestProductionParity:

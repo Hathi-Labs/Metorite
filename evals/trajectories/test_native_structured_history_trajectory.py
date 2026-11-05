@@ -105,13 +105,17 @@ def test_flag_on_the_model_reads_turns_and_memory_in_the_system_message(monkeypa
         ("user", "yes"),
     ]
     system = messages[0]["content"]
-    # WS-53 §18.16 part 1: the per-turn context ends with today's date.
-    from acb_common.today import today_line
-
-    assert system == (
+    # WS-53 §18.16 part 1: the per-turn context ends with the "Now" line
+    # (task 1649): date, time and zone, and the rule that the chat never asks
+    # for the time. The minute moves between the run and this check, so the
+    # line is checked by its shape, not compared whole.
+    head, _, now_line = system.rpartition("\n")
+    assert head == (
         f"{_INSTRUCTIONS}\n{CACHE_BREAK}\n## Memory from past conversations\n{_MEMORY}"
-        f"\n{today_line()}"
     )
+    assert now_line.startswith("Now: "), now_line
+    assert "(Asia/Kolkata)" in now_line, now_line
+    assert now_line.endswith("Never ask the member what time it is."), now_line
     # The gateway's one caching transform strips the sentinel for a
     # non-Anthropic model, so the model reads the memory and never the marker.
     wired, _tools, _extra = apply_prompt_caching(

@@ -36,13 +36,24 @@ export function shellCacheKey(scope: string | null | undefined): string | null {
   return `${SHELL_CACHE_PREFIX}${scope}`;
 }
 
+/** The keys of a layout. Any other key of an answer is not the layout's. */
+const LAYOUT_KEYS = Object.keys(EMPTY_SHELL) as (keyof StoredShell)[];
+
 /**
  * A body is a layout only when it says whether the member was asked. Any
  * other body is not an answer, so it must never read as "never asked".
+ *
+ * ⚠️ It keeps the layout's own keys only. The answer also carries `guide`
+ * (GD-5a), a fact of the server, and a layout save sends the layout back.
+ * The gateway refuses an unknown key (`ShellPrefs`, `extra="forbid"`), so a
+ * kept `guide` would fail every star save with a 422.
  */
 export function asLayout(body: unknown): StoredShell | null {
   if (!body || typeof body !== "object" || Array.isArray(body) || !("answered" in body)) return null;
-  return { ...EMPTY_SHELL, ...(body as Partial<StoredShell>) };
+  const from = body as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...EMPTY_SHELL };
+  for (const k of LAYOUT_KEYS) if (k in from) out[k] = from[k];
+  return out as unknown as StoredShell;
 }
 
 function storage(): Storage | null {

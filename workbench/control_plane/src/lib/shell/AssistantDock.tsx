@@ -100,6 +100,8 @@ import {
 } from "@/lib/sessions";
 
 import { requestBrief } from "./briefTurn";
+import GuideOffer from "./GuideOffer";
+import { offerGuide, startGuide } from "./guide";
 import { chatFirstOn } from "./chatFlag";
 import {
   REMINDER_HOLD_MS,
@@ -133,6 +135,7 @@ import {
   effectiveMode,
   focusAssistant,
   markBriefAsked,
+  guideAct,
   navigateAct,
   onChatLink,
   runMovesPage,
@@ -905,6 +908,14 @@ function AssistantSurface({ phone }: { phone: boolean }) {
       if (!runMovesPage(live)) return;
       router.push(target.href);
     },
+    // WS-OB GD-4: the run named a guide. It starts where the page may move
+    // (`guideAct`), and elsewhere the member taps the chip. The store checks the id.
+    onGuide: ({ guideId, threadId }) => {
+      const live = liveRef.current;
+      const act = guideAct({ open: live.open, threadId, activeId: live.activeId, guideId, phone, form: live.form });
+      if (act === "start" && guideId) startGuide(guideId, "agent");
+      else if (act === "offer" && guideId) offerGuide(guideId);
+    },
     // WS-62 CF-3: the run opened a page with show_in_app. Once per turn is
     // the server's rule. The client checks the path again and acts.
     onNavigate: ({ path, threadId }) => {
@@ -1215,6 +1226,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 // the way (`chat_first_surface.md` §4.8).
                 phoneChrome={phoneChrome}
                 moreActs={moreActs}
+                aboveComposer={<GuideOffer />}
                 persona={persona}
                 surface={surface}
                 memories={memories}
