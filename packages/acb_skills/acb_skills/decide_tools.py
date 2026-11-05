@@ -16,9 +16,12 @@ a service caller keeps its body claim, and the webhook door spreads the
 sender's payload. So the tool reads the run binding
 (``acb_common.get_run_context``) through the one idiom,
 ``write_artifact._verified_member``. It sends ``member=<user>`` and
-``member_proven=True`` only when the route bound ``member_verified="1"``
-from a signed-in session (H-73) and the user is an address. In every other
-case it sends ``member=None, member_proven=False``:
+``member_proven=True`` only when the run binding holds ``member_verified="1"``
+and the user is an address. Only a server-side fact binds that flag (H-73):
+a signed-in session, or a member from our own tables. ``job_member_scope``,
+a workflow run and the WhatsApp link bind the second kind. A request body
+never sets it. In every other case the tool sends ``member=None,
+member_proven=False``:
 
 * the org arm names its organization by the key, and the call serves;
 * the deployment arm refuses an unproven member locally in the client

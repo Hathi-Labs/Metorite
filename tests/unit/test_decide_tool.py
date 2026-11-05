@@ -324,9 +324,8 @@ async def test_an_unverified_user_claim_sends_no_member(monkeypatch):
     assert fake.calls[0]["member_proven"] is False
 
 
-@pytest.mark.parametrize("user", ["room:thread-1", ""])
-async def test_a_room_id_or_no_user_sends_no_member(monkeypatch, user):
-    """(3) A ``room:`` id or an empty user is never a member.
+async def test_a_room_id_sends_no_member(monkeypatch):
+    """(3) A ``room:`` id is never a member, even with the proof flag.
 
     The memory id holds a real address here. The tool must not read it.
     """
@@ -334,7 +333,32 @@ async def test_a_room_id_or_no_user_sends_no_member(monkeypatch, user):
     from acb_skills.memory_tools import _set_memory_user_id
 
     _set_memory_user_id("memory@example.com")
-    bind_run_context(run_id="run-9", user=user, member_verified=True)
+    bind_run_context(run_id="run-9", user="room:thread-1", member_verified=True)
+    await decide("Q?", "ctx")
+    assert fake.calls[0]["member"] is None
+    assert fake.calls[0]["member_proven"] is False
+
+
+@pytest.mark.parametrize("user", ["", "   "])
+async def test_a_verified_empty_user_sends_no_member(monkeypatch, user):
+    """(3b) A binding with the proof flag and an empty user names nobody.
+
+    ``bind_run_context`` binds no user and no flag for an empty user, and
+    ``get_run_context`` drops an empty field. So neither can build this
+    binding. The test patches ``get_run_context`` to return it, and so it
+    reaches the guard in ``_proven_member`` itself.
+    """
+    import acb_common
+
+    fake = _facade(monkeypatch, answer=BooleanAnswer(probability=0.5))
+    from acb_skills.memory_tools import _set_memory_user_id
+
+    _set_memory_user_id("memory@example.com")
+    monkeypatch.setattr(
+        acb_common,
+        "get_run_context",
+        lambda: {"run_id": "run-9", "user": user, "member_verified": "1"},
+    )
     await decide("Q?", "ctx")
     assert fake.calls[0]["member"] is None
     assert fake.calls[0]["member_proven"] is False
