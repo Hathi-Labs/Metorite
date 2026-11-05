@@ -344,8 +344,12 @@ async def _lanes(item_id: str) -> list[dict[str, Any]]:
          "position": int(r.get("position") or 0)}
         for r in _rows(res) if r.get("name")
     ]
-    # `lib/statusCategory.ts::stageLanes`: position, then name.
-    return sorted(lanes, key=lambda s: (s["position"], s["name"]))
+    # The gateway orders a set by stage, then position, then name (task 1792).
+    # This skill cannot import the gateway, so it keeps the same rule here.
+    rank = {c: i for i, c in enumerate(
+        ("triage", "backlog", "todo", "in_progress", "done", "cancelled"))}
+    return sorted(lanes, key=lambda s: (
+        rank.get(s["category"], len(rank)), s["position"], s["name"]))
 
 
 def _norm(value: str) -> str:

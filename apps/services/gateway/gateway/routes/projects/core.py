@@ -322,6 +322,45 @@ STATUS_CATEGORIES: tuple[str, ...] = (
     "backlog", "todo", "in_progress", "done", "cancelled", "triage",
 )
 
+#: The LIFECYCLE order of the stages (task 1792). ONE rule orders status lanes
+#: everywhere: stage rank, then ``position``, then ``name``. Position orders
+#: lanes INSIDE a stage and never moves a lane into another stage, so a Done
+#: row with the lowest position still draws after In progress. Mirrors
+#: ``STATUS_CATEGORIES`` in ``workbench/control_plane/src/lib/statusCategory.ts``
+#: (``test_projects_status_order_r8.py`` fails if the two disagree). An unknown
+#: stage sorts last.
+STATUS_STAGE_ORDER: tuple[str, ...] = (
+    "triage", "backlog", "todo", "in_progress", "done", "cancelled",
+)
+
+
+def status_order_sql(alias: str = "") -> str:
+    """The ONE SQL ``ORDER BY`` body for status lanes: stage, position, name.
+
+    ``alias`` is the table alias with no dot (``"n"`` gives ``n.category``).
+    The stage names are constants, never request input.
+    """
+    a = f"{alias}." if alias else ""
+    whens = " ".join(
+        f"WHEN '{c}' THEN {i}" for i, c in enumerate(STATUS_STAGE_ORDER)
+    )
+    return (
+        f"CASE {a}category {whens} ELSE {len(STATUS_STAGE_ORDER)} END, "
+        f"{a}position, {a}name"
+    )
+
+
+def status_sort_key(category: Any, position: Any, name: Any) -> tuple[int, int, str]:
+    """The Python twin of :func:`status_order_sql`, for a list in memory."""
+    c = str(category or "")
+    rank = (
+        STATUS_STAGE_ORDER.index(c)
+        if c in STATUS_STAGE_ORDER
+        else len(STATUS_STAGE_ORDER)
+    )
+    return (rank, int(position or 0), str(name or ""))
+
+
 #: The one category the default list reads exclude (WS-27u). A constant rather
 #: than a literal in the clause below so the vocabulary word and the predicate
 #: cannot drift apart silently.
@@ -2943,9 +2982,9 @@ COALESCE(
   (SELECT n.id FROM pm_task_statuses n
     WHERE n.project_id = CAST(:owner AS uuid)
       AND n.category <> :triage
-    ORDER BY n.position, n.name LIMIT 1)
+    ORDER BY __ORDER__ LIMIT 1)
 )
-"""
+""".replace("__ORDER__", status_order_sql("n"))
 
 
 async def remap_task_statuses(
@@ -3288,18 +3327,29 @@ async def load_default_status(
         clauses.append("category = :category")
         params["category"] = category
     else:
-        clauses.append("category <> :triage")
+        # Task 1792. A new task never starts in a closed lane. Stage rank
+        # orders the rest, so a Done row at position 1 cannot win.
+        closed = ", ".join(f"'{c}'" for c in sorted(CLOSING_CATEGORIES))
+        clauses.append(f"category <> :triage AND category NOT IN ({closed})")
         params["triage"] = TRIAGE_CATEGORY
     row = (await db.execute(
         text(
             "SELECT * FROM pm_task_statuses WHERE "
             + " AND ".join(clauses)
-            + " ORDER BY position, name LIMIT 1"
+            + f" ORDER BY {status_order_sql()} LIMIT 1"
         ),
         params,
     )).fetchone()
     if row is not None:
         return row
+    if category is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This project has no open status for a new task. Add a "
+                "Backlog, To do or In progress status first."
+            ),
+        )
     if category is not None:
         raise HTTPException(
             status_code=422,

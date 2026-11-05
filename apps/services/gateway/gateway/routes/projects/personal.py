@@ -75,6 +75,7 @@ from gateway.routes.projects.core import (
     resolve_visibility,
     router,
     row_to_dict,
+    status_order_sql,
     status_owner_id,
     task_visibility_clause,
     touch_task,
@@ -2404,7 +2405,7 @@ async def my_task(
 MY_TASK_LANES_SQL = (
     "SELECT id, name, category, position, color, is_default "
     "  FROM pm_task_statuses WHERE project_id = CAST(:root AS uuid) "
-    " ORDER BY position, name"
+    " ORDER BY " + status_order_sql()
 )
 
 

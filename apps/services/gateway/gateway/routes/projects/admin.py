@@ -58,6 +58,7 @@ from gateway.routes.projects.core import (
     router,
     row_to_dict,
     shadowed,
+    status_order_sql,
     status_owner_id,
     status_scope_ids,
     update_row,
@@ -163,7 +164,7 @@ async def list_statuses(
         rows = (await db.execute(
             text(
                 "SELECT * FROM pm_task_statuses WHERE project_id = CAST(:root AS uuid) "
-                "ORDER BY position, name"
+                f"ORDER BY {status_order_sql()}"
             ),
             {"root": root},
         )).fetchall()
@@ -503,7 +504,7 @@ async def _lanes_of(db: Any, owner_id: str) -> list[Any]:
     return list((await db.execute(
         text(
             "SELECT * FROM pm_task_statuses "
-            " WHERE project_id = CAST(:owner AS uuid) ORDER BY position, name"
+            f" WHERE project_id = CAST(:owner AS uuid) ORDER BY {status_order_sql()}"
         ),
         {"owner": owner_id},
     )).fetchall())

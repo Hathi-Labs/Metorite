@@ -57,6 +57,7 @@ from gateway.routes.projects.core import (
     record_activity,
     reserve_task_numbers,
     resolve_visibility_for,
+    status_order_sql,
     status_owner_id,
     update_row,
     vocabulary_scope,
@@ -217,7 +218,7 @@ LIVE_NODES_SQL = (
 #: helper, never ``is_default``, decides where a task with no status lands.
 STATUSES_OF_SQL = (
     "SELECT id, name, category, position FROM pm_task_statuses "
-    " WHERE project_id = CAST(:project AS uuid) ORDER BY position, name"
+    " WHERE project_id = CAST(:project AS uuid) ORDER BY " + status_order_sql()
 )
 #: The name each earlier lane carries NOW, so a run that continues follows a
 #: member's rename (the I-10 review, P2-b). The tenant is named here and by
