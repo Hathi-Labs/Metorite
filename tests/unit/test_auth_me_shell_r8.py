@@ -481,7 +481,7 @@ async def test_the_hello_mark_is_written_by_the_route_only_and_each_save_keeps_i
         for extra in ({}, {"buddy_hello_at": None}, {"buddy_hello_at": "2005-05-05T00:00:00.000Z"}):
             kept = await _put(db.org_a, user, {"answered": "skipped", **extra})
             assert kept["buddy_hello_at"] == first
-    other = await _get(db.org_b, user)
+        other = await _get(db.org_b, user)
     # The mark is per organization, as the layout is.
     assert other["buddy_hello_at"] is None
     [(_, raw)] = _stored(db, email)
