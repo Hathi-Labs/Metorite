@@ -422,6 +422,55 @@ async def test_a_cookie_does_not_cross_to_another_host(
     assert [r.headers.get("cookie") for r in net.direct] == [None, None], "a cookie crossed hosts"
 
 
+async def test_a_domain_cookie_is_kept_for_the_host_that_set_it(monkeypatch) -> None:
+    """A site sets ``Domain=.example.com`` and redirects to itself until the
+    cookie returns. The jar keeps the cookie for that host, so the walk ends
+    in two hops and does not loop."""
+    def _site(request: httpx.Request) -> httpx.Response:
+        if request.headers.get("cookie") == "seen=1":
+            return httpx.Response(200, headers={"content-type": "text/html"},
+                                  stream=httpx.ByteStream(b"<p>inside the site</p>"))
+        return httpx.Response(
+            302, headers={"location": "/", "set-cookie": "seen=1; Domain=.example.com; Path=/"},
+            stream=httpx.ByteStream(b""))
+
+    net = _Net(pages={("www.example.com", "/"): _site}).install(monkeypatch)
+    _Dns({"www.example.com": [PUBLIC_IP]}).install(monkeypatch)
+    out = await web_tools.fetch_page("https://www.example.com/")
+    assert "inside the site" in "\n".join(_block(out)[1]), out
+    assert [r.headers.get("cookie") for r in net.direct] == [None, "seen=1"]
+
+
+async def test_a_domain_cookie_never_reaches_a_sibling_host(monkeypatch) -> None:
+    """The kept cookie is host-only. A later hop to ``b.example.com`` gets none."""
+    def _set(_r: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            302, headers={"location": "https://b.example.com/",
+                          "set-cookie": "seen=1; Domain=.example.com; Path=/"},
+            stream=httpx.ByteStream(b""))
+
+    net = _Net(pages={("a.example.com", "/"): _set,
+                      ("b.example.com", "/"): _page("<p>sibling</p>")}).install(monkeypatch)
+    _Dns({"a.example.com": [PUBLIC_IP], "b.example.com": ["93.184.216.2"]}).install(monkeypatch)
+    out = await web_tools.fetch_page("https://a.example.com/")
+    assert "sibling" in out, out
+    assert [r.headers.get("cookie") for r in net.direct] == [None, None]
+
+
+def test_a_domain_that_does_not_match_the_host_is_not_stored() -> None:
+    jar = web_tools._walk_jar()
+    request = httpx.Request("GET", "https://a.example.com/")
+    response = httpx.Response(200, request=request, headers={
+        "set-cookie": "s=1; Domain=other.com; Path=/"})
+    jar.extract_cookies(response)
+    assert len(jar.jar) == 0
+    ok = httpx.Response(200, request=request, headers={
+        "set-cookie": "t=1; Domain=example.com; Path=/"})
+    jar.extract_cookies(ok)
+    assert [(c.name, c.domain, c.domain_specified) for c in jar.jar] == [
+        ("t", "a.example.com", False)]
+
+
 # ── 3. Shape, pin and proxy ──────────────────────────────────────────────────
 
 @pytest.mark.parametrize(("url", "reason"), [
