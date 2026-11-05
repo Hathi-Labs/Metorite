@@ -14,6 +14,10 @@ Key                Value
 ``corrections``    The member's lines for ``decide``, newest first: 10 at
                    most, 300 characters each, 1,500 in all (§10.5). MD-6b
                    reads it.
+``rule_mutes``     A list of exception rule ids, one row of
+                   ``reach.exceptions.RULES`` each (BR-5, ``core_brief.md``
+                   §6). A muted rule matches nothing. Reach reads it through
+                   :func:`muted_rules`. A mute never changes the feed.
 =================  ==========================================================
 
 A kind is a row of ``feed_rank.BASE``, the one table of the feed's kinds.
@@ -63,7 +67,7 @@ logger = logging.getLogger(__name__)
 #: The keys of ``my_day_prefs``: three of §16 MD-2d, and ``hide_push_details``
 #: (WS-66 RE-9a), a boolean.
 PREF_KEYS: tuple[str, ...] = ("mutes", "open_in_app", "corrections", "hide_push_details",
-                              "push_prompt")
+                              "push_prompt", "rule_mutes")
 #: The longest list of kinds that ``mutes`` and ``open_in_app`` take.
 MAX_KINDS = 30
 #: The most lines that ``corrections`` takes.
@@ -176,8 +180,28 @@ def _push_prompt(value: Any) -> dict[str, Any]:
     return out
 
 
+def rule_ids() -> frozenset[str]:
+    """The ids of the exception rules: the rows of ``exceptions.RULES``."""
+    from gateway.reach import exceptions
+
+    return frozenset(r.id for r in exceptions.RULES)
+
+
+def _rule_mutes(value: Any) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ValueError("the value is a list of rule ids")
+    ids = rule_ids()
+    if len(value) > len(ids):
+        raise ValueError(f"at most {len(ids)} rules")
+    unknown = sorted({v for v in value if v not in ids})
+    if unknown:
+        raise ValueError(f"unknown rule: {', '.join(unknown)[:200]}")
+    return _unique(value)
+
+
 _CLEAN = {"mutes": _kinds, "open_in_app": _kinds, "corrections": _corrections,
-          "hide_push_details": _flag, "push_prompt": _push_prompt}
+          "hide_push_details": _flag, "push_prompt": _push_prompt,
+          "rule_mutes": _rule_mutes}
 
 
 class PrefPut(BaseModel):
@@ -185,7 +209,8 @@ class PrefPut(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    key: Literal["mutes", "open_in_app", "corrections", "hide_push_details", "push_prompt"]
+    key: Literal["mutes", "open_in_app", "corrections", "hide_push_details", "push_prompt",
+                 "rule_mutes"]
     value: Any
 
     @model_validator(mode="after")
@@ -214,6 +239,10 @@ def stored_prefs(raw: Any) -> dict[str, Any]:
     v = raw.get("corrections")
     if isinstance(v, list):
         out["corrections"] = [x for x in v if isinstance(x, str)][:MAX_CORRECTIONS]
+    v = raw.get("rule_mutes")
+    if isinstance(v, list):
+        ids = rule_ids()
+        out["rule_mutes"] = _unique([x for x in v if isinstance(x, str) and x in ids])
     if isinstance(raw.get("hide_push_details"), bool):
         out["hide_push_details"] = raw["hide_push_details"]
     if isinstance(raw.get("push_prompt"), dict):
@@ -276,6 +305,34 @@ async def hide_push_details(db: Any, member: str) -> bool:
 
     return bool((await db.execute(text(_HIDE_ANY_CASE_SQL.format(org=_BOUND_ORG)),
                                   {"uid": member})).scalar())
+
+
+#: The rule ids that the member muted, over EVERY spelling of the address in
+#: the BOUND tenant (BR-5). The union is right: a mute under any spelling
+#: holds. ``jsonb_typeof`` guards the expansion, because
+#: ``jsonb_array_elements_text`` raises on a value that is not an array, and
+#: SQL does not promise the order of the guard and the call, so the CASE
+#: keeps the call inside the guard.
+_MUTED_ANY_CASE_SQL = (
+    "SELECT DISTINCT rule_id FROM user_settings, "
+    "LATERAL jsonb_array_elements_text("
+    "CASE WHEN jsonb_typeof(my_day_prefs -> 'rule_mutes') = 'array' "
+    "THEN my_day_prefs -> 'rule_mutes' ELSE CAST('[]' AS jsonb) END) AS rule_id "
+    "WHERE organization_id = {org} AND lower(user_id) = lower(:uid)"
+)
+
+
+async def muted_rules(db: Any, member: str) -> frozenset[str]:
+    """The exception rules that *member* muted (``rule_mutes``), under ANY
+    spelling of the address. Read on *db*, a session that the caller bound to
+    the tenant. An id that is not a rule now drops. No row is the empty set.
+    A read error raises: the caller logs it and counts no mutes."""
+    from gateway.routes.tasks.settings import _BOUND_ORG
+    from sqlalchemy import text
+
+    rows = (await db.execute(text(_MUTED_ANY_CASE_SQL.format(org=_BOUND_ORG)),
+                             {"uid": member})).all()
+    return frozenset(str(r[0]) for r in rows) & rule_ids()
 
 
 async def _read(db: Any, uid: str) -> Any:

@@ -31,8 +31,10 @@ fetch_page(url, max_chars=8000) -> str
     4. **Redirects.** The guard follows them by hand, at most
        :data:`MAX_REDIRECTS`. Each hop passes rules 1 to 3 again. One cookie
        jar holds the cookies of the hops of one read, and no other read. The
-       jar keeps only a host-only cookie. It refuses a cookie with a
-       ``Domain`` attribute, because it knows no public suffix.
+       jar keeps only a host-only cookie, because it knows no public suffix.
+       A cookie with a ``Domain`` attribute is kept for the exact host that
+       set it, as if it had no ``Domain``. The jar refuses a ``Domain`` that
+       does not match that host.
     5. **Caps.** Each read stops at :data:`TOTAL_TIMEOUT_S` seconds and at
        :data:`MAX_READ_BYTES` bytes, on the wire and after a gzip decode.
        The walk is one read and the Jina read is another, so one call can
@@ -567,15 +569,36 @@ class _HostOnlyCookies(http.cookiejar.DefaultCookiePolicy):
     """The cookie rule of one walk: a host-only cookie, and no other.
 
     The jar knows no public suffix, so a cookie with ``Domain=co.uk`` would go
-    to each host under it. This rule refuses each cookie with a ``Domain``
-    attribute. A host-only cookie goes back only to the host that set it."""
+    to each host under it. This rule keeps such a cookie for the host that set
+    it, and for no other host. A site that sets ``Domain=.example.com`` and
+    redirects to itself then still gets its cookie back. A ``Domain`` that
+    does not match the setting host is refused."""
 
     def __init__(self) -> None:
         super().__init__(
             strict_ns_domain=http.cookiejar.DefaultCookiePolicy.DomainStrictNonDomain)
 
     def set_ok(self, cookie: http.cookiejar.Cookie, request: object) -> bool:
-        return not cookie.domain_specified and super().set_ok(cookie, request)
+        if cookie.domain_specified:
+            req_host, erhn = http.cookiejar.eff_request_host(request)
+            domain = cookie.domain.lower().lstrip(".")
+            if not _domain_matches(req_host, domain):
+                return False
+            cookie.domain = erhn
+            cookie.domain_specified = False
+            cookie.domain_initial_dot = False
+        return super().set_ok(cookie, request)
+
+
+def _domain_matches(host: str, domain: str) -> bool:
+    """True when ``host`` is ``domain`` or a sub-host of it. An IP must be equal."""
+    if not domain:
+        return False
+    if host == domain:
+        return True
+    if http.cookiejar.IPV4_RE.search(host):
+        return False
+    return host.endswith("." + domain)
 
 
 def _walk_jar() -> httpx.Cookies:

@@ -110,7 +110,7 @@ def _put(body: Any, user: UserContext | None = None):
 class TestTheAllowlist:
     def test_the_keys_are_the_spec_s(self) -> None:
         assert prefs.PREF_KEYS == ("mutes", "open_in_app", "corrections",
-                                   "hide_push_details", "push_prompt")
+                                   "hide_push_details", "push_prompt", "rule_mutes")
         assert set(prefs._CLEAN) == set(prefs.PREF_KEYS)
 
     @pytest.mark.parametrize("body", [
@@ -326,6 +326,26 @@ class TestTheRead:
         fake.fail = True
         res = _client(_user()).get("/shell/feed/prefs")
         assert res.status_code == 503
+
+
+class TestRuleMutes:
+    """BR-5: ``rule_mutes`` is a list of exception rule ids."""
+
+    def test_a_list_of_rules_is_written_deduplicated(self, fake: _FakeDB) -> None:
+        res = _put({"key": "rule_mutes", "value": ["agent_asks", "agent_asks"]})
+        assert res.status_code == 200, res.text
+        [(_, params)] = _writes(fake)
+        assert json.loads(params["pval"]) == ["agent_asks"]
+
+    @pytest.mark.parametrize("value", [["nope"], "agent_asks", [1], None, {"a": 1},
+                                       ["agent_asks", "agent_asks", "approval_waiting",
+                                        "block_soon_asked", "source_sync_failed", "x"]])
+    def test_a_bad_value_is_422(self, fake: _FakeDB, value: Any) -> None:
+        assert _put({"key": "rule_mutes", "value": value}).status_code == 422
+
+    def test_the_read_drops_an_unknown_rule(self) -> None:
+        got = prefs.stored_prefs({"rule_mutes": ["agent_asks", "gone", 3]})
+        assert got == {"rule_mutes": ["agent_asks"]}
 
 
 class TestHidePushDetails:
