@@ -339,6 +339,10 @@ describe("the composer names the email that a message changes", () => {
     expect(chat).toContain("const changing = changingCard(confirmations.cards);");
     expect(chat).toContain('data-redraft-changing=""');
     expect(chat).toContain("{changingLine(changing)}");
+    // At 390 px the run status keeps its words and the name is cut (fix round).
+    // Mutation: give the status row `min-w-0` again → red.
+    expect(chat).toContain('<div className="flex min-w-fit flex-1 items-center gap-2">');
+    expect(chat).toContain('className="min-w-0 truncate text-[10px] text-primary"');
   });
 });
 

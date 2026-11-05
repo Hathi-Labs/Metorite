@@ -128,7 +128,7 @@ describe("the tabs of one approval card (owner, 2026-11-03, D173)", () => {
     expect(tabs).toContain("new ResizeObserver");
     expect(tabs).toContain("ro.disconnect()");
     expect(tabs).toContain("aria-label={slim");
-    expect(tabs).toContain("aria-label={tabsCount(total)}");
+    expect(tabs).toContain("aria-label={tabsCount(waiting)}");
   });
 
   it("the row has a fade at an edge with more tabs, and a narrow tab width", () => {

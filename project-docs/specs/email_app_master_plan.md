@@ -21008,6 +21008,11 @@ in step.
 `EMAIL_EDIT_CARD_ORGS`. No migration and no SQL. HIGH tier: the send path. Metorite task
 1533, slice 3 of 4 (task 1650).
 
+**Fix round 1 (2026-11-05, Opus review).** A steer carries a snapshot of each open
+new-mail card. Draft 2 keeps each unticked person unticked, and the "Changed:" line names
+the people. A slot closes with no false line when a new card arrived. Only its owner takes the
+link, and the tab count leaves out the slot. A closed `send_email` card says "Draft being changed".
+
 **Build notes.** The stream door keeps the snapshot in the STEER branch, before the steer
 goes out, because `_route_incoming_turn` only reads the world. The record of a card keeps
 the run's chat thread, which the tool sends from its run context (`_run_thread`), and its
@@ -21033,17 +21038,16 @@ The new card also arrives with no link to the old one.
 1. **The client sends the snapshot.** `NewMailCardForm` keeps its subject, text and ticks
    in a ref that `AgentChat` reads. The member sends a chat message while a new-mail card
    is open. Then the chat request (`POST /api/agent/chat`, the steer path of
-   `lib/chatSteer.ts`) carries one optional field, `card_draft`: a list with one entry for
-   EACH open new-mail card, `{request_id, subject, body, to, cc, bcc}`. A card the member
-   did not edit, or put back to its start, sends its start. So the gateway replaces a
-   snapshot that an older steer left, and the card that the steer closes keeps its own
-   edit. At most 8 entries. Only the web chat sends it, because only the web chat draws
-   the edit card.
+   `lib/chatSteer.ts`) carries one optional field, `card_draft`. It is a list with one entry
+   for EACH open new-mail card: `{request_id, subject, body, to, cc, bcc}`. A card that the
+   member did not edit sends its start. So the gateway replaces a snapshot that an older
+   steer left. The card that the steer closes keeps its own edit. The list has at most 8
+   entries. Only the web chat sends it, because only the web chat draws the edit card.
 2. **The gateway checks and stores it.** `_route_incoming_turn` (`routes/agent.py`) reads
    `card_draft` only when the flag is on and the channel is the web chat. It reads the
    record of that card WITHOUT spending it, a new `peek_record`. The record must belong to
    this member and this thread. The gateway then checks the snapshot:
-   - the entry has the keys of `CardDraft` and no others;
+   - the entry has the keys of `CardDraft` and no others.
    - the subject has at most 200 characters and passes the subject rule of §18.10;
    - the text is no longer than the limit of the path;
    - each person is on the record.
