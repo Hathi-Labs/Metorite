@@ -106,7 +106,7 @@ import {
 } from "@/lib/chatSteer";
 import { canRetry, retryPlan } from "@/lib/chatRetry";
 import { mergeCappedText } from "@/lib/chatTurnFailure";
-import { editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
+import { EDIT_LOADING, editableLastUserId, submitEdit, withoutSuperseded, type EditOutcome } from "@/lib/chatEdit";
 import { describeToolStep } from "@/lib/toolSteps";
 import { RoomHeader } from "@/components/room/RoomHeader";
 import { ShareSheet } from "@/components/room/ShareSheet";
@@ -1898,7 +1898,9 @@ export default function AgentChat({
   // Resolves with null when the server accepted the edit, or the reason it
   // refused. The composer stays open with the text on a refusal.
   const handleEditLast = useCallback(async (messageId: string, content: string): Promise<string | null> => {
-    if (loadingHistory) return null;
+    // A silent null here closed the composer as if the edit had gone through,
+    // and nothing happened (task 1653). Say why, and keep the text.
+    if (loadingHistory) return EDIT_LOADING;
     const out = await submitEdit(
       {
         threadId: sessionId,
@@ -2290,9 +2292,14 @@ export default function AgentChat({
   const roomPeople = useMemo(() => (room ? peopleOf(room) : []), [room]);
   // Only the member's OWN last user message offers Edit (lib/chatEdit.ts).
   // An earlier one would fork, and another person's is not theirs to edit.
+  // While the saved history loads, the thread on screen is the browser's
+  // cache. It can end at an older turn than the server's, so its last message
+  // is not yet THE last one: no message offers Edit until the load ends (task
+  // 1653). It showed Edit under an older message, and a Send from it did
+  // nothing.
   const lastUserId = useMemo(
-    () => editableLastUserId(messages, viewerEmail || undefined, isRoom),
-    [messages, viewerEmail, isRoom],
+    () => (loadingHistory ? null : editableLastUserId(messages, viewerEmail || undefined, isRoom)),
+    [messages, viewerEmail, isRoom, loadingHistory],
   );
   // A watcher reads the room and cannot drive its agents. The composer says so
   // instead of failing the send with a 403 after they have typed a paragraph.

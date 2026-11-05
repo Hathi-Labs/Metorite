@@ -347,7 +347,8 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # page reader, and WEB_READER_REMOTE=jina sends each URL of those orgs to
     # a third party. A tenant that set either would change it for every org
     # on the box, so only the owner writes them.
-    "WEB_RESEARCH_", "WEB_READER_",
+    # WEB-4: SEARXNG_URL names the search host of every org on the box.
+    "WEB_RESEARCH_", "WEB_READER_", "SEARXNG_",
     # WS-66 RM-1: reminders. CALENDAR_REMINDERS is the switch of the reminder
     # routes, so a tenant that set it could turn them on for every org.
     "CALENDAR_REMINDERS",

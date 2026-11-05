@@ -1079,6 +1079,12 @@ class Settings(BaseSettings):
     # is under 200 characters. Any other value means no remote reader.
     # 🔴 OWNER-ONLY on a box: `jina` sends each URL to a third party (WEB-Q3).
     web_reader_remote: str = ""
+    # `searxng_url` is the base URL of the self-hosted SearXNG (WEB-4, §3.3),
+    # for example `http://127.0.0.1:8888`. Empty means no SearXNG, and the
+    # provider list skips it. The URL is not a member input: only the operator
+    # writes it (`env_guard`, prefix `SEARXNG_`).
+    # Fence: tests/unit/test_web_search_providers.py.
+    searxng_url: str = ""
 
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
