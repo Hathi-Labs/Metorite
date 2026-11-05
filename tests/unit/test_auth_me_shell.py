@@ -199,11 +199,13 @@ class TestTheNudgeMark:
         res = _client(_user()).put("/auth/me/shell", json=body)
         assert res.status_code == 200, res.text
         [(sql, params)] = _writes(fake)
-        assert ("DO UPDATE SET shell_prefs = jsonb_set(jsonb_set(EXCLUDED.shell_prefs, "
+        assert ("DO UPDATE SET shell_prefs = jsonb_set(jsonb_set(jsonb_set(EXCLUDED.shell_prefs, "
                 "ARRAY['chat_first_message_at'], "
                 "COALESCE(user_settings.shell_prefs->'chat_first_message_at', "
                 "CAST('null' AS jsonb)), true), ARRAY['tour_seen_at'], "
                 "COALESCE(user_settings.shell_prefs->'tour_seen_at', "
+                "CAST('null' AS jsonb)), true), ARRAY['buddy_hello_at'], "
+                "COALESCE(user_settings.shell_prefs->'buddy_hello_at', "
                 "CAST('null' AS jsonb)), true)") in sql
         assert sql.endswith("RETURNING shell_prefs")
         assert json.loads(params["shell_prefs"])["preset"] == "engineer"
@@ -233,7 +235,7 @@ class TestTheNudgeMark:
         # The nudge mark is written as named. Only the omitted tour mark is
         # kept (WS-OB GD-5a).
         assert "ARRAY['chat_first_message_at']" not in sql
-        assert "DO UPDATE SET shell_prefs = jsonb_set(EXCLUDED.shell_prefs, ARRAY['tour_seen_at']" in sql
+        assert "DO UPDATE SET shell_prefs = jsonb_set(jsonb_set(EXCLUDED.shell_prefs, ARRAY['tour_seen_at']" in sql
         assert json.loads(params["shell_prefs"])["chat_first_message_at"] is None
 
     def test_a_member_with_no_row_reads_null(self, fake: _FakeDB) -> None:
@@ -269,7 +271,8 @@ class TestTheTourMark:
         assert res.status_code == 200, res.text
         [(sql, _)] = _writes(fake)
         assert ("ARRAY['tour_seen_at'], COALESCE(NULLIF(user_settings.shell_prefs->'tour_seen_at', "
-                "CAST('null' AS jsonb)), EXCLUDED.shell_prefs->'tour_seen_at'), true)") in sql
+                "CAST('null' AS jsonb)), EXCLUDED.shell_prefs->'tour_seen_at', "
+                "CAST('null' AS jsonb)), true)") in sql
 
     def test_the_nudge_mark_alone_still_takes_the_new_time(self, fake: _FakeDB) -> None:
         res = _client(_user()).put("/auth/me/shell", json={"chat_first_message_at": STAMP})
@@ -307,9 +310,32 @@ class TestTheTourMark:
         res = _client(_user()).put("/auth/me/shell", json=body)
         assert res.status_code == 200, res.text
         [(sql, _)] = _writes(fake)
-        assert ("DO UPDATE SET shell_prefs = jsonb_set(EXCLUDED.shell_prefs, "
+        assert ("DO UPDATE SET shell_prefs = jsonb_set(jsonb_set(EXCLUDED.shell_prefs, "
                 "ARRAY['tour_seen_at'], ") in sql
         assert "ARRAY['chat_first_message_at']" not in sql
+
+    def test_the_hello_mark_keeps_a_stored_time_in_sql(self, fake: _FakeDB) -> None:
+        """BUD-1: ``buddy_hello_at`` is first-write-wins too. The R8 twin
+        proves the value."""
+        res = _client(_user()).put("/auth/me/shell", json={"buddy_hello_at": STAMP})
+        assert res.status_code == 200, res.text
+        [(sql, params)] = _writes(fake)
+        assert ("ARRAY['buddy_hello_at'], COALESCE(NULLIF(user_settings.shell_prefs->'buddy_hello_at', "
+                "CAST('null' AS jsonb)), EXCLUDED.shell_prefs->'buddy_hello_at', "
+                "CAST('null' AS jsonb)), true)") in sql
+        written = json.loads(params["shell_prefs"])
+        assert list(written) == ["buddy_hello_at"]
+        assert written["buddy_hello_at"] != STAMP, "the server's time, never the device's"
+
+    def test_a_layout_save_never_writes_the_hello_mark(self, fake: _FakeDB) -> None:
+        for sent in (None, STAMP):
+            fake.stored = json.dumps({"answered": "skipped", "buddy_hello_at": STAMP})
+            body = {"answered": "skipped", "chat_first_message_at": None, "buddy_hello_at": sent}
+            res = _client(_user()).put("/auth/me/shell", json=body)
+            assert res.status_code == 200, res.text
+            [(sql, params)] = _writes(fake)[-1:]
+            assert "ARRAY['buddy_hello_at'], COALESCE(user_settings.shell_prefs->'buddy_hello_at'" in sql
+            assert json.loads(params["shell_prefs"])["buddy_hello_at"] is None
 
     def test_the_read_carries_the_mark_and_drops_a_bad_one(self, fake: _FakeDB) -> None:
         fake.stored = json.dumps({"answered": "skipped", "tour_seen_at": STAMP})
@@ -401,7 +427,7 @@ class TestTheWrite:
         assert params["day_start_hour"] == 8 and params["day_end_hour"] == 19
         # An existing row takes the layout only, never the seed. The body
         # omits the nudge mark, so the stored one is kept in SQL (CF-2).
-        assert "DO UPDATE SET shell_prefs = jsonb_set(jsonb_set(EXCLUDED.shell_prefs" in sql
+        assert "DO UPDATE SET shell_prefs = jsonb_set(jsonb_set(jsonb_set(EXCLUDED.shell_prefs" in sql
         assert sql.endswith("updated_at = now() RETURNING shell_prefs")
         assert "day_start_hour = EXCLUDED" not in sql
 
@@ -438,7 +464,7 @@ class TestTheRead:
         assert body == {"preset": None, "answered": "skipped", "pins": ["/tasks"],
                         "known": None, "cardOrder": None, "newOrder": ["capture"],
                         "chat_first_message_at": None, "tour_seen_at": None,
-                        "guide": False}
+                        "buddy_hello_at": None, "guide": False}
 
     def test_a_stale_known_entry_is_dropped_not_refused(self, fake: _FakeDB) -> None:
         fake.stored = json.dumps({"answered": "answered", "preset": "engineer",

@@ -332,6 +332,8 @@ describe("a template with its own head draws it as the card's one header", () =>
     report: "ReportTemplate",
     // A reminder that a tap opened (WS-66 RM-4).
     reminderCard: "ReminderCard",
+    // The hello of a new member (WS-BUD BUD-1).
+    buddyHello: "BuddyHello",
   };
 
   it("names every chat template", () => {

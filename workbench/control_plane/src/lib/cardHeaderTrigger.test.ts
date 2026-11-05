@@ -67,6 +67,8 @@ const DATA: Record<string, Record<string, unknown>> = {
   },
   // WS-66 RM-4: the chips are pills in the body, never in the toggle.
   reminderCard: { reminderId: UUID, title: LINKED, when: "15:00 today", state: "due", kind: "action", link: "Task: Fix" },
+  // WS-BUD BUD-1: the chips are pills in the body, never in the toggle.
+  buddyHello: { chips: [{ id: "tour", label: "Show me around" }, { id: "ask", label: "What can you do here?" }, { id: "look", label: "I'll look around" }] },
 };
 
 /** An older long card in a transcript: its toggle shows. */
