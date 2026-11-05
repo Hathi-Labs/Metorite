@@ -170,7 +170,10 @@ class _Board(_Gateway):
             if leaf == "agent-runs":
                 return 200, {"rows": self.task_runs}
             if leaf == "timeline":
-                return 200, {"rows": self.timeline, "total": len(self.timeline)}
+                size = int(r.pairs.get("page_size") or len(self.timeline) or 1)
+                start = (int(r.pairs.get("page") or 1) - 1) * size
+                return 200, {"rows": self.timeline[start:start + size],
+                             "total": len(self.timeline)}
         if parts[:2] == ["projects", "nodes"] and len(parts) == 3:
             node = self.nodes.get(parts[2])
             return (200, node) if node is not None else (404, {"detail": "Not Found"})
@@ -348,6 +351,48 @@ class TestTheContext:
         assert timeline[0].pairs == {"kind": "comments", "page": "1",
                                      "page_size": str(tools.CONTEXT_COMMENTS)}
         assert tools.CONTEXT_COMMENTS == 20
+
+    async def test_civ14c_all_returns_every_comment_and_the_default_the_newest_20(
+            self, board):
+        """CIV-14c. 30 comments: 30 with ``comments: "all"``, 20 by default.
+        One of them is the answer of a closed run (``Answered: ...``), which
+        the gateway writes as a timeline comment (``agent_runs.py::_comment``).
+        Mutation: send ``page_size`` 20 in the ``all`` mode, and this fails."""
+        board.timeline = [{"id": _uuid(7000 + n), "type": "comment", "body": f"c{n}"}
+                          for n in range(30)]  # newest first
+        board.timeline[25]["body"] = "Answered: Ship it"
+        board.timeline[25]["meta"] = {"agent_run_id": _uuid(7999), "agent_kind": "prompt"}
+        default = _structured(await _tool("get_task_context", {"task_id": TASK}))
+        assert len(default["recent_comments"]) == 20
+        assert "comments_truncated" not in default
+        board.requests.clear()
+        body = _structured(await _tool("get_task_context",
+                                       {"task_id": TASK, "comments": "all"}))
+        texts = [c["body"]["untrusted_text"] for c in body["recent_comments"]]
+        assert len(texts) == 30 and texts[0] == "c29" and texts[-1] == "c0"
+        assert "Answered: Ship it" in texts
+        assert body["comments_truncated"] is False
+
+    async def test_civ14c_all_stops_at_500_and_says_so_within_the_call_fence(
+            self, board):
+        """Mutation: drop the ``[:CONTEXT_ALL_COMMENTS]`` cut or the flag, and
+        this fails. The deepest chain is the worst case for the call count."""
+        _chain(board, 7, project=OTHER_PROJECT)
+        board.timeline = [{"id": _uuid(8000 + n), "type": "comment", "body": f"c{n}"}
+                          for n in range(620)]
+        board.requests.clear()
+        body = _structured(await _tool("get_task_context",
+                                       {"task_id": TASK, "comments": "all"}))
+        texts = [c["body"]["untrusted_text"] for c in body["recent_comments"]]
+        assert len(texts) == tools.CONTEXT_ALL_COMMENTS == 500
+        assert texts[-1] == "c0" and texts[0] == "c499"
+        assert body["comments_truncated"] is True
+        assert len(board.requests) <= tools.CONTEXT_ALL_CALL_CEILING
+        assert tools.CONTEXT_ALL_CALL_CEILING == tools.CONTEXT_CALL_CEILING + 4
+
+    async def test_civ14c_a_bad_mode_is_refused(self, board):
+        result = await _tool("get_task_context", {"task_id": TASK, "comments": "some"})
+        assert result["isError"] is True
 
     async def test_x11_every_value_that_a_person_wrote_is_untrusted(self, board):
         (near,) = _chain(board, 1)

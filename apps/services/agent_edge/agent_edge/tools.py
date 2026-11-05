@@ -2671,6 +2671,17 @@ CONTEXT_COMMENTS = 20
 #: ``get_task``, one for each parent, the project node and the timeline.
 #: SW-31a adds one, the read of the guidance (:func:`_guidance_of`), so 13.
 CONTEXT_CALL_CEILING = 13
+#: CIV-14c. With ``comments: "all"`` the timeline is read in pages of the
+#: route's cap, up to this many comments in total. The newest ones win.
+CONTEXT_ALL_COMMENTS = 500
+#: The page of the timeline route in that mode (the route's own cap).
+CONTEXT_ALL_PAGE = 100
+#: The extra timeline calls of that mode: page 1 rides in the 13 above.
+CONTEXT_ALL_EXTRA_CALLS = CONTEXT_ALL_COMMENTS // CONTEXT_ALL_PAGE - 1
+#: The most gateway calls of ``get_task_context`` with ``comments: "all"``.
+CONTEXT_ALL_CALL_CEILING = CONTEXT_CALL_CEILING + CONTEXT_ALL_EXTRA_CALLS
+#: The values of the ``comments`` input.
+CONTEXT_COMMENTS_MODES: tuple[str, ...] = ("recent", "all")
 
 #: The keys of one parent of ``ancestors`` (§12.4).
 ANCESTOR_KEYS: tuple[str, ...] = ("id", "task_number", "title", "status", "description")
@@ -2682,6 +2693,19 @@ CONTEXT_KEYS: tuple[str, ...] = (
 
 #: The one stub of a parent that the member cannot see. It has no title.
 _HIDDEN_ANCESTOR: Mapping[str, bool] = {"hidden": True}
+
+_CONTEXT_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        **_TASK_ID_INPUT["properties"],
+        "comments": {
+            "type": "string", "enum": list(CONTEXT_COMMENTS_MODES), "default": "recent",
+            "description": "recent: the newest 20 comments. all: every comment,"
+                           " up to 500, with comments_truncated when more exist."},
+    },
+    "required": ["task_id"],
+    "additionalProperties": False,
+}
 
 _ANCESTOR_STATUS_SCHEMA = _object({
     "id": {"type": "string"}, "name": _UNTRUSTED_OR_NULL, "category": _NULLABLE_STRING,
@@ -2841,6 +2865,8 @@ _CONTEXT_PROJECT_SCHEMA: dict[str, Any] = {"anyOf": [
              "description": _UNTRUSTED_OR_NULL}),
     {"type": "null"},
 ]}
+#: Present only with ``comments: "all"`` (CIV-14c).
+COMMENTS_TRUNCATED_KEY = "comments_truncated"
 _CONTEXT_OUTPUT: dict[str, Any] = _optional(_object({
     "task": _TASK_SCHEMA,
     "ancestors": {"type": "array", "items": _ANCESTOR_SCHEMA},
@@ -2854,6 +2880,7 @@ _CONTEXT_OUTPUT: dict[str, Any] = _optional(_object({
     "recent_comments": {"type": "array", "items": _TIMELINE_OUTPUT["properties"][
         "activities"]["items"]},
 }), GUIDANCE_KEY, _GUIDANCE_SCHEMA)
+_CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, COMMENTS_TRUNCATED_KEY, {"type": "boolean"})
 
 
 async def _statuses_of(ctx: Context, project: str) -> dict[str, Mapping[str, Any]]:
@@ -2990,6 +3017,8 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
     most :data:`CONTEXT_CALL_CEILING` gateway calls.
     """
     where = {"task_id": str(args["task_id"])}
+    every = args.get("comments", CONTEXT_COMMENTS_MODES[0]) == "all"
+    size = CONTEXT_ALL_PAGE if every else CONTEXT_COMMENTS
     row = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where)
     if not isinstance(row, dict):
         raise ToolError(TEXT_BUSY)
@@ -3012,7 +3041,7 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
         _project_of(ctx, project) if valid else nothing(),
         _get(ctx, TIMELINE_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where,
              query=[("kind", "comments"), ("page", "1"),
-                    ("page_size", str(CONTEXT_COMMENTS))]),
+                    ("page_size", str(size))]),
         _walk_up(ctx, row),
         _guidance_of(ctx, where["task_id"]),
     )
@@ -3028,7 +3057,23 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
         for p in reversed(walk.parents)
     ]
     # The timeline answers newest first. The result reads oldest first.
-    comments = [_activity(r) for r in reversed(_rows_of(timeline))]
+    newest = _rows_of(timeline)
+    truncated = False
+    if every:
+        total = timeline.get("total") if isinstance(timeline, dict) else None
+        total = total if isinstance(total, int) else len(newest)
+        truncated = total > CONTEXT_ALL_COMMENTS
+        pages = -(-min(total, CONTEXT_ALL_COMMENTS) // CONTEXT_ALL_PAGE)
+        if pages > 1:
+            more = await _together(*(
+                _get(ctx, TIMELINE_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where,
+                     query=[("kind", "comments"), ("page", str(n)),
+                            ("page_size", str(CONTEXT_ALL_PAGE))])
+                for n in range(2, pages + 1)))
+            for body in more:
+                newest = [*newest, *_rows_of(body)]
+        newest = newest[:CONTEXT_ALL_COMMENTS]
+    comments = [_activity(r) for r in reversed(newest)]
     result: dict[str, Any] = {
         "task": task,
         "ancestors": ancestors,
@@ -3044,6 +3089,8 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
     }
     if guidance is not None:
         result[GUIDANCE_KEY] = guidance
+    if every:
+        result[COMMENTS_TRUNCATED_KEY] = truncated
     return result
 
 
@@ -3057,7 +3104,9 @@ GET_TASK_CONTEXT = Tool(
         " project with the description, the tasks that block it (blocked_by)"
         " and the tasks it blocks (blocks), each with its status category, its"
         " subtasks, its open agent runs, held_by, its references and the"
-        " newest 20 comments, oldest first. A parent that this member cannot"
+        " comments, oldest first. By default these are the newest 20. Send"
+        " comments: \"all\" for every comment, up to 500. The result then has"
+        " comments_truncated, true when older comments did not fit. A parent that this member cannot"
         " see shows as {\"hidden\": true}, and the parents above it do not"
         " show. Each parent has the first 500 characters of its description."
         " A parent in another project shows its status category only."
@@ -3073,10 +3122,11 @@ GET_TASK_CONTEXT = Tool(
         + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
-    input_schema=_TASK_ID_INPUT,
+    input_schema=_CONTEXT_INPUT,
     output_schema=_CONTEXT_OUTPUT,
     route=TASK_ROUTE,
     params={"task_id": "task_id"},
+    edge_inputs=frozenset({"comments"}),
     not_found=TEXT_TASK_NOT_FOUND,
     run=_get_task_context,
     routes=(TASK_ROUTE, RELATIONS_ROUTE, REFS_ROUTE, TASK_RUNS_ROUTE, STATUSES_ROUTE,
@@ -7230,6 +7280,7 @@ __all__ = [
     "COMMENT_KEYS",
     "COMMENT_REPLAY_KEYS",
     "COMPLETED_CATEGORY",
+    "CONTEXT_ALL_CALL_CEILING",
     "CONTEXT_CALL_CEILING",
     "CONTEXT_COMMENTS",
     "CONTEXT_KEYS",
