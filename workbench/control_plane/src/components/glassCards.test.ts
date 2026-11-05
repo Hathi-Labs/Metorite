@@ -10,7 +10,11 @@
 import { createHash } from "node:crypto";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// The hello's chips go to the tour by the router (WS-BUD BUD-1). The static
+// render has no app router.
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 import { TEMPLATE_REGISTRY } from "./genUITemplates";
 import { classicMarkup } from "@/lib/theme/classicMarkup";

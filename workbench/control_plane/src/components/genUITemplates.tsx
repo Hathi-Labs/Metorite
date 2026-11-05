@@ -2038,11 +2038,28 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
 /** The words over the chips. */
 const HELLO_CHIPS_LABEL = "Where to start";
 
-function BuddyHello({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
+/** The chips. Its own component, so only a card that can act asks for the router. */
+function HelloChips({ chips, onAction }: { chips: Array<{ label: string; message: string }>; onAction: (text: string) => void }) {
   const router = useRouter();
   // One chip acts, and all three hold: a second tap would send the question
   // twice (the reminder chips, `ReminderCard`, hold the same way).
   const [busy, setBusy] = useState(false);
+  return (
+    <SuggestionPills
+      suggestions={chips}
+      onPick={(id) => {
+        if (busy) return;
+        setBusy(true);
+        runHelloChip(id, onAction, (href) => router.push(href));
+      }}
+      disabled={busy}
+      label={HELLO_CHIPS_LABEL}
+      align="start"
+    />
+  );
+}
+
+function BuddyHello({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   const chips = arr(data.chips)
     .map((c) => (c ?? {}) as Data)
     .map((c) => ({ label: str(c.label).trim(), message: str(c.id).trim() }))
@@ -2051,19 +2068,7 @@ function BuddyHello({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
     <div data-buddy-hello="">
       {/* No header, icon or chevron: the chat's title already says Welcome. */}
       <TemplateBody>
-        {ctx?.onAction && chips.length > 0 ? (
-          <SuggestionPills
-            suggestions={chips}
-            onPick={(id) => {
-              if (busy) return;
-              setBusy(true);
-              runHelloChip(id, ctx.onAction, (href) => router.push(href));
-            }}
-            disabled={busy}
-            label={HELLO_CHIPS_LABEL}
-            align="start"
-          />
-        ) : null}
+        {ctx?.onAction && chips.length > 0 ? <HelloChips chips={chips} onAction={ctx.onAction} /> : null}
       </TemplateBody>
     </div>
   );
