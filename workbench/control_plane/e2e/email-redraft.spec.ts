@@ -6,23 +6,29 @@ import { expect, test, type Page } from "@playwright/test";
  * of a new mail, asks for a change in the chat, and reads "Draft 2" in place.
  *
  * The chat stream is a stub, as in `chat-steer.spec.ts`. The first request
- * starts the run, which shows the card and waits. The member's message is a
+ * starts the run, which shows the cards and waits. The member's message is a
  * steer: it answers 202 `{steered: true}`, and the stub records its body. The
- * run then closes the old card as REVISED, and waits for the test to release
- * the new draft, so each moment can be read.
+ * run then closes the old cards as REVISED, and waits for the test to release
+ * the new drafts, so each moment can be read.
+ *
+ * Fix round 2 (rule 7): the GATEWAY starts the person the member unticked
+ * unticked, and names that person (`ticked`, `unticked`). The stub's new forms
+ * carry what the gateway sends, and the test reads that the card draws them.
  */
 
 const OLD = "a".repeat(32);
 const NEW = "b".repeat(32);
+const OLD_BOB = "c".repeat(32);
+const NEW_BOB = "d".repeat(32);
 const KIM = "kim@contoso.test";
 const GEO = "geo@acme.test";
+const BOB = "bob@contoso.test";
 const FIRST = "Hi Kim,\n\nPlease find the rates for May attached.";
 const EDITED = "Hi Kim,\n\nPlease find the rates for May attached. Call me on Friday.";
 const SHORTER = "Hi Kim,\n\nThe May rates are attached. Call me on Friday.";
 const STEER = "make it shorter";
 
-function form(body: string, link: Record<string, unknown> = {}) {
-  const people = { to: [KIM], cc: [GEO] };
+function form(body: string, link: Record<string, unknown> = {}, people = { to: [KIM], cc: [GEO] }) {
   return {
     kind: "new", message_id: "", mailbox: "Work · jane@acme.test", subject: "Rates for May",
     original: { from: "", subject: "", received: "", excerpt: "" },
@@ -31,8 +37,15 @@ function form(body: string, link: Record<string, unknown> = {}) {
   };
 }
 
-async function install(page: Page) {
-  await page.addInitScript(({ old, fresh, first, shorter, steer, oldForm, newForm }) => {
+/** What the gateway adds to the next card: Geo starts unticked, and is named. */
+const KEPT = { ticked: { reply: { to: [KIM], cc: [] }, reply_all: { to: [KIM], cc: [] } }, unticked: [GEO] };
+
+interface StubCard { request_id: string; title: string; reply: unknown }
+
+const stubCard = (id: string, title: string, reply: unknown): StubCard => ({ request_id: id, title, reply });
+
+async function install(page: Page, firstCards: StubCard[], newCards: StubCard[]) {
+  await page.addInitScript(({ steer, firstCards, newCards }) => {
     window.localStorage.clear();
     const w = window as unknown as Record<string, unknown>;
     const steers: unknown[] = [];
@@ -80,44 +93,46 @@ async function install(page: Page) {
               try { c.enqueue(frame(e)); } catch { /* closed */ }
             };
             send({ type: "message_start", messageId: "m-1" });
-            send({ type: "delta", messageId: "m-1", content: "Here is the email to Kim.\n\n" });
-            send({ type: "tool_start", id: "t-1", name: "send_email", args: {} });
-            send({ type: "custom", name: "confirmation_requested", value: {
-              title: "Email to kim@contoso.test", detail: "From Work · jane@acme.test · Rates for May",
-              request_id: old, reply: oldForm,
-            } });
+            send({ type: "delta", messageId: "m-1", content: "Here is the email.\n\n" });
+            firstCards.forEach((c, i) => {
+              send({ type: "tool_start", id: `t-${i}`, name: "send_email", args: {} });
+              send({ type: "custom", name: "confirmation_requested", value: {
+                title: c.title, detail: "From Work · jane@acme.test · Rates for May",
+                request_id: c.request_id, reply: c.reply,
+              } });
+            });
             await steeredOnce;
-            // The steer closes the card as REVISED (`close_on_steer`).
-            send({ type: "custom", name: "confirmation_resolved", value: { request_id: old, answer: "REVISED" } });
-            send({ type: "tool_end", id: "t-1", name: "send_email", success: true,
-                   result: "The member wrote in the chat while the card was open." });
+            // The steer names no card, so it closes each one as REVISED (`close_on_steer`).
+            firstCards.forEach((c, i) => {
+              send({ type: "custom", name: "confirmation_resolved", value: { request_id: c.request_id, answer: "REVISED" } });
+              send({ type: "tool_end", id: `t-${i}`, name: "send_email", success: true,
+                     result: "The member wrote in the chat while the card was open." });
+            });
             await release;
-            send({ type: "tool_start", id: "t-2", name: "send_email", args: {} });
-            send({ type: "custom", name: "confirmation_requested", value: {
-              title: "Email to kim@contoso.test", detail: "From Work · jane@acme.test · Rates for May",
-              request_id: fresh, reply: newForm,
-            } });
-            // The run waits on the new card. The stream stays open.
-            void first; void shorter;
+            newCards.forEach((c, i) => {
+              send({ type: "tool_start", id: `n-${i}`, name: "send_email", args: {} });
+              send({ type: "custom", name: "confirmation_requested", value: {
+                title: c.title, detail: "From Work · jane@acme.test · Rates for May",
+                request_id: c.request_id, reply: c.reply,
+              } });
+            });
+            // The run waits on the new cards. The stream stays open.
           },
         });
         return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
       }
       return orig(input, init);
     };
-  }, {
-    old: OLD, fresh: NEW, first: FIRST, shorter: SHORTER, steer: STEER,
-    oldForm: form(FIRST), newForm: form(SHORTER, { revises: OLD, draft: 2 }),
-  });
+  }, { steer: STEER, firstCards, newCards });
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
   await page.route(/.*\/api\/integrations\/status.*/, (r) => r.fulfill({ json: [] }));
   await page.route("**/api/memory/**", (r) => r.fulfill({ json: [] }));
 }
 
-async function openCard(page: Page) {
+async function openCard(page: Page, firstCards: StubCard[], newCards: StubCard[]) {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await install(page);
+  await install(page, firstCards, newCards);
   await page.goto("/chat");
   const picker = page.getByText("New session", { exact: true });
   const box = page.getByRole("textbox", { name: /^Message / });
@@ -136,7 +151,9 @@ test.describe("a redraft through the chat keeps the member's edits", () => {
   test.describe.configure({ timeout: 120_000 });
 
   test("edit the card, ask in the chat, and read Draft 2 in place", async ({ page }) => {
-    const box = await openCard(page);
+    const box = await openCard(page,
+      [stubCard(OLD, `Email to ${KIM}`, form(FIRST))],
+      [stubCard(NEW, `Email to ${KIM}`, form(SHORTER, { revises: OLD, draft: 2, ...KEPT }))]);
     // While the card is open, the composer names the email a message changes.
     await expect(page.locator("[data-redraft-changing]")).toHaveText("Changing: Email to Kim");
 
@@ -177,6 +194,37 @@ test.describe("a redraft through the chat keeps the member's edits", () => {
     // unticked. One click would otherwise send to a person the member removed.
     await expect(page.getByRole("checkbox", { name: `Send to ${GEO}` })).not.toBeChecked();
     await expect(page.getByRole("checkbox", { name: `Send to ${KIM}` })).toBeChecked();
-    await expect(page.locator("[data-redraft-kept-out]")).toContainText(GEO);
+    await expect(page.locator("[data-redraft-kept-out]")).toHaveText(`Still unticked from your last draft: ${GEO}.`);
+    // The line reads cleanly: no semicolon, and a word on each side of a comma.
+    await expect(changed).not.toContainText(";");
+  });
+
+  test("one message closes two cards, and the colleague stays unticked on the new card", async ({ page }) => {
+    // Path 1 of the review: the gateway links neither new card ("many"), so no
+    // card takes a slot by its link. The gateway still starts Geo unticked.
+    const bobPeople = { to: [BOB], cc: [] as string[] };
+    const box = await openCard(page,
+      [stubCard(OLD, `Email to ${KIM}`, form(FIRST)), stubCard(OLD_BOB, `Email to ${BOB}`, form(FIRST, {}, bobPeople))],
+      [stubCard(NEW_BOB, `Email to ${BOB}`, form(SHORTER, {}, bobPeople)), stubCard(NEW, `Email to ${KIM}`, form(SHORTER, KEPT))]);
+    // The member unticks Geo on Kim's card, then asks for a change.
+    await page.getByRole("tab", { name: /Kim/ }).click();
+    await page.getByRole("checkbox", { name: `Send to ${GEO}` }).uncheck();
+    await box.fill(STEER);
+    await page.locator('[data-chat-primary="send"]').click();
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __steers: unknown[] }).__steers.length)).toBe(1);
+    const [sent] = await page.evaluate(() => (window as unknown as { __steers: { cardDraft?: { request_id: string; cc: string[] }[] }[] }).__steers);
+    expect(sent.cardDraft?.map((d) => d.request_id).sort()).toEqual([OLD, OLD_BOB].sort());
+    expect(sent.cardDraft?.find((d) => d.request_id === OLD)?.cc).toEqual([]);
+    // Both slots wait: the row says so, and never "0 to approve".
+    await expect(page.locator("[data-card-tabs-count]")).toHaveText("Updating 2 drafts");
+    await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+    // Each new card took a slot. No slot is left beside the drafts that came.
+    await expect(page.locator("[data-card-tabs-count]")).toHaveText("2 to approve");
+    await expect(page.locator("[data-redraft-slot]")).toHaveCount(0);
+    await page.getByRole("tab", { name: /Kim/ }).click();
+    await expect(page.getByRole("textbox", { name: "Email text" })).toHaveValue(SHORTER);
+    await expect(page.getByRole("checkbox", { name: `Send to ${GEO}` })).not.toBeChecked();
+    await expect(page.getByRole("checkbox", { name: `Send to ${KIM}` })).toBeChecked();
+    await expect(page.locator("[data-redraft-kept-out]")).toHaveText(`Still unticked from your last draft: ${GEO}.`);
   });
 });

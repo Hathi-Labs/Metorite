@@ -23,6 +23,22 @@ R7. Each test names the mutation that turns it red. The eight of §18.11:
 8. a held snapshot that ticks a new address:
    ``test_a_held_snapshot_never_ticks_a_new_address``.
 
+Rule 7 (fix round 2): the gateway keeps the member's unticks, and the next
+card starts them unticked. Each mutation below turned the named tests red:
+
+9. a new-card route that skips the apply (plain or held):
+   ``test_the_next_card_starts_the_unticked_person_unticked_and_only_unticks``,
+   ``test_a_held_card_starts_the_members_untick_unticked_and_never_names_a_new_address``;
+10. a hash keyed with no member, or a take with no owner check:
+    ``test_the_unticks_of_one_member_and_thread_change_no_other_card``;
+11. a take that spends the hash at once, in place of counting ``left``:
+    ``test_two_revised_cards_untick_each_new_card``;
+12. a revise that keeps nothing, or that counts a new address as an untick:
+    ``test_the_revise_keeps_the_members_unticks_for_the_member_and_the_thread``;
+13. a chain that reads only the snapshot: ``test_a_chain_of_drafts_keeps_the_untick``;
+14. a list over the cap that the gateway drops whole:
+    ``test_a_list_over_the_cap_keeps_its_first_ones_and_a_bad_item_keeps_nothing``.
+
 The database, Redis and the provider are fakes, and no test sends a mail.
 There is no SQL, so R8 does not apply. ``TestTheOrderOnARealRedis`` runs the
 order of step 4 on a PRIVATE real Redis when ``HELD_R8_REDIS_URL`` names one,

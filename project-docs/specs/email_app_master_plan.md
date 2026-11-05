@@ -21013,6 +21013,13 @@ new-mail card. Draft 2 keeps each unticked person unticked, and the "Changed:" l
 the people. A slot closes with no false line when a new card arrived. Only its owner takes the
 link, and the tab count leaves out the slot. A closed `send_email` card says "Draft being changed".
 
+**Fix round 2 (2026-11-06, Opus review).** The gateway now keeps the people that the member
+unticked, and it starts them unticked on the next card (rule 7). So each path gets the same
+ticks: a slot, no slot, two revised cards, a remount, a reload and a replay. The client no
+longer changes a tick. A list of more than 8 snapshots keeps its first 8, with the edited
+cards first. A new card with no link takes the slot that waits. A row of slots says
+"Updating 2 drafts", and the "Changed:" line has no semicolon.
+
 **Build notes.** The stream door keeps the snapshot in the STEER branch, before the steer
 goes out, because `_route_incoming_turn` only reads the world. The record of a card keeps
 the run's chat thread, which the tool sends from its run context (`_run_thread`), and its
@@ -21025,8 +21032,8 @@ The owner approved this design on 2026-11-03 and asked for the build on 2026-11-
 flag of §18.10. With the flag off, nothing below runs.
 
 **Not in this slice.** The reply card (`compose_reply`). WhatsApp. A parked card
-(`CHAT_DURABLE_ASKS`), which is slice 4. Edits kept across a page reload: the snapshot lives
-only in the page.
+(`CHAT_DURABLE_ASKS`), which is slice 4. Text edits kept across a page reload: the snapshot
+lives only in the page. The unticks of rule 7 live in the gateway, so a reload keeps them.
 
 **The problem.** While a new-mail card is open, a chat message such as "make it shorter"
 closes the card as REVISED (`close_on_steer`). The model then writes a new card from its
@@ -21041,8 +21048,12 @@ The new card also arrives with no link to the old one.
    `lib/chatSteer.ts`) carries one optional field, `card_draft`. It is a list with one entry
    for EACH open new-mail card: `{request_id, subject, body, to, cc, bcc}`. A card that the
    member did not edit sends its start. So the gateway replaces a snapshot that an older
-   steer left. The card that the steer closes keeps its own edit. The list has at most 8
-   entries. Only the web chat sends it, because only the web chat draws the edit card.
+   steer left. The card that the steer closes keeps its own edit. `to`, `cc` and `bcc` are
+   the people that the member left ticked. The gateway finds each unticked person from its
+   own record. Only the web chat sends it, because only the web chat draws the edit card.
+   - The list has at most 8 entries (`MAX_CARD_DRAFTS`). The edited cards go first.
+   - A card that starts a person unticked for the member (rule 7) goes next, then the rest.
+   - The chat proxy and the gateway keep the first 8 of a longer list, so no edit is lost.
 2. **The gateway checks and stores it.** `_route_incoming_turn` (`routes/agent.py`) reads
    `card_draft` only when the flag is on and the channel is the web chat. It reads the
    record of that card WITHOUT spending it, a new `peek_record`. The record must belong to
@@ -21052,7 +21063,7 @@ The new card also arrives with no link to the old one.
    - the text is no longer than the limit of the path;
    - each person is on the record.
 
-   A list of more than 8 entries is dropped whole. An entry that fails a check is dropped,
+   A list of more than 8 entries keeps its first 8. An entry that fails a check is dropped,
    and the steer goes on without it. A good
    snapshot goes to tenant Redis, through `acb_common.tenant_redis`, under
    `email:card_draft:<thread>:<request_id>`, with a life of 900 seconds.
@@ -21061,9 +21072,11 @@ The new card also arrives with no link to the old one.
    `POST /email/new-card/revise`, with the old card id. In this order, the route:
    1. spends the record of the old card (`take_record`), so a late answer finds no record;
    2. takes the snapshot of that card (`GETDEL`), if there is one;
-   3. writes the link `email:card_revised:<thread>` = `{card_id, draft}` with a life of
+   3. keeps the people that the member unticked on that card (rule 7), with a life of 900
+      seconds, under `email:card_unticked:<thread>:<member>`;
+   4. writes the link `email:card_revised:<thread>` = `{card_id, draft}` with a life of
       900 seconds. `draft` is the draft number of the old card plus one.
-   4. answers the snapshot as neutral data.
+   5. answers the snapshot as neutral data.
 
    A held record goes through the same route, with the same steps.
 5. **The model reads it.** The REVISED text of `send_email` adds the snapshot, when there is
@@ -21078,7 +21091,7 @@ The new card also arrives with no link to the old one.
    `revises` and `draft` on the new record and the new form. Only the gateway sets these
    fields. A field of that name from the tool or the model is refused. When two cards of
    the thread were revised before the next card, the gateway links none, and the new card
-   is "Draft 1".
+   is "Draft 1". The same route then starts the member's kept unticks unticked (rule 7).
 7. **The client draws it in place.**
    - When a new-mail card closes as REVISED, its slot shows "Updating the draft…", with no
      buttons.
@@ -21088,15 +21101,20 @@ The new card also arrives with no link to the old one.
    - It shows a "Changed:" line and marks the changed words. The client computes both
      from its own copy of the member's last version and the new text. It uses `diffKeys` of
      `workbench/control_plane/src/app/knowledge/lib/wordDiff.ts`, and never a claim of the
-     model. The line also names the people: who was added, who was removed, and who the
-     member unticked and the card offers again (they stay unticked).
-   - The new card starts with each person that the member unticked still unticked. The
-     client only unticks. It never ticks a person that the new card did not tick, and it
-     never adds a person.
-   - A slot closes with no line when a new-mail card arrived after it and took no slot
-     (two revised cards, or no link). "The draft did not change." shows only when the run
-     drew no new-mail card.
-   - The tab count does not count a slot. It counts the cards that wait on the member.
+     model.
+   - Each change reads as a phrase: "“x” to “y”", "added “y”" or "removed “x”". A comma
+     joins the phrases. The people go in their own sentences: "Now also to a." and "No
+     longer to b." The card and its accessible name draw the same pieces (`linePieces`).
+   - The card draws the gateway's start of the ticks, and the client never changes a tick
+     (rule 7). The note "Still unticked from your last draft: <people>." reads the names on
+     the form, so it shows on each path, also with no "Changed:" line.
+   - A new-mail card with no link takes the first slot that waits, in its tab. This is the
+     case of two revised cards. The client cannot tell which card it replaces, so it draws
+     no "Changed:" line.
+   - A slot closes with no line when a new-mail card arrived after it. "The draft did not
+     change." shows only when the run drew no new-mail card.
+   - The tab count does not count a slot. It counts the cards that wait on the member. A
+     row of slots only reads "Updating 2 drafts", never "0 to approve".
    - The closed `send_email` card says "Draft being changed", never "Email sent", because
      nothing was sent.
    - A run that ends with no new card turns the slot into "The draft did not change." and
@@ -21119,7 +21137,28 @@ The new card also arrives with no link to the old one.
 7. A person that the member unticked on the old card starts unticked on Draft 2, even when
    the tool copies that person again (an always-copy colleague). The card still offers the
    person, so one tick brings the person back. No snapshot ticks a person, and no snapshot
-   adds one.
+   adds one. The GATEWAY owns this rule (fix round 2), so each path of the client gets the
+   same ticks:
+   - At revise (step 4.3), the gateway compares its record of the old card with the
+     member's version. Each person whose tick was the member's to take away, and that the
+     version does not tick, is an untick. A plain card ticks each person at its start.
+     A held card ticks only a row that its class ticks, so a new address is never an untick.
+   - With no snapshot, the gateway keeps the people that the old card itself started
+     unticked for this reason (`unticked` on its record). So a chain of drafts keeps them.
+   - The gateway keeps the unticks in one hash for the member and the thread, through
+     `tenant_redis`: `owner`, `left` and one field for each person. One MULTI writes it, so
+     two revises at the same moment both count. Another member's card never reads it.
+   - Each new-mail card of the member in the thread starts those people unticked, and its
+     form names them (`unticked`). Each card takes one from `left`, and the last card
+     deletes the hash. When one message revised two cards, each new card takes the unticks
+     of both. An extra untick is safe, and a lost one sends mail to a person the member
+     took out.
+   - It only unticks. It never ticks a person, never adds one, and never removes one from
+     the lists. The record keeps every person, and the act sends only to the ticks of the
+     member's answer at Send.
+   - The tool copies the start and the names from the gateway's answer, and sets neither.
+     `clean_reply_form` refuses a name that is not a person of the card, or that starts
+     ticked. The card log stores the form, so a replay and a remount draw the same start.
 
 **Done when.**
 
@@ -21131,6 +21170,11 @@ The new card also arrives with no link to the old one.
   link. A card of another member in the same thread does not take the link.
 - Two cards (step 1): a steer that closes only Bob's card keeps Bob's edit, though Kim's
   edit is newer.
+- The unticks (rule 7): a person that the member unticked starts unticked on the next card.
+  This holds with a slot, with no slot, for two revised cards, after a remount and on a
+  replay. Another member's card and another thread do not change. The send goes only to
+  the ticks at Send.
+- The cap (step 1): with 9 or more open cards, the first 8 go, and each edited card is in them.
 - The client (step 7): the slot, the label, the "Changed:" line and the composer line show,
   in light and dark, at 1440 and at 390.
 
@@ -21146,17 +21190,36 @@ The new card also arrives with no link to the old one.
 - a held snapshot that ticks a new address;
 - a link that another member's card spends (`link_fields` takes before it checks);
 - a steer that keeps only one snapshot of two open cards;
-- a copy of a gateway constant (`_MEMBER_VERSION_MAX`, `_NEW_MAIL_DRAFT_MAX`) that drifts.
+- a copy of a gateway constant (`_MEMBER_VERSION_MAX`, `_NEW_MAIL_DRAFT_MAX`) that drifts;
+- rule 7: a new-card route that skips the kept unticks, a plain or a held one;
+- rule 7: a hash with no member in its key, or a take with no owner check;
+- rule 7: a take that spends the hash at once, in place of counting `left`;
+- rule 7: a revise that keeps no unticks, or that counts a new address as one;
+- rule 7: a chain that reads only the snapshot, with no fallback to the record;
+- a list over the cap that the gateway drops whole.
 
 `workbench/control_plane/src/components/redraftCard.test.ts` holds the snapshot of each open
-card on a steer, the slot, the label, the "Changed:" line with its people, the unticked
-people of Draft 2, the end with no new card, and the tab count.
+card on a steer, the slot, the label, the "Changed:" line with its people, and the end with
+no new card. It holds the server's unticks on each path: a slot, no slot, two revised cards,
+a remount through the card log, and a replay. It also holds the tab count of a slot and of
+slots only, and the cap of a steer's list. Its named mutations:
+
+- a form whose `unticked` the client does not read;
+- a note that shows only with a "Changed:" line;
+- a card with no link that does not take the slot that waits;
+- a row of slots that reads "0 to approve";
+- a cut of a steer's list in the queue's order;
+- a line that joins its phrases with a semicolon.
+
 `workbench/control_plane/e2e/email-redraft.spec.ts` edits a card, asks for a change in the
-chat, and reads "Draft 2" in place.
+chat, and reads "Draft 2" in place. It also closes two cards with one message, and reads the
+colleague still unticked on the new card.
 
 **Verify with.**
 
 - `uv run pytest tests/unit/test_email_redraft_snapshot.py tests/unit/test_email_new_mail_card.py tests/unit/test_card_closes_on_steer.py tests/unit/test_email_chat_reply.py tests/unit/test_steer_routing.py tests/unit/test_held_send_classes.py tests/unit/test_chat_parity.py tests/unit/test_email_owner_scope_fence.py -q`
+  - Set `HELD_R8_REDIS_URL` to a PRIVATE real Redis, or `TestTheOrderOnARealRedis` skips.
+    A skip is not a pass.
 - In `workbench/control_plane`:
   - `npx vitest run src/components/redraftCard.test.ts src/components/newMailCard.test.ts src/lib/cardTabs.test.ts src/lib/confirmationQueue.test.ts src/lib/chatCardConformance.test.ts`;
   - the focused strict tsc on the changed files;
