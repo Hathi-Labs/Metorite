@@ -143,7 +143,8 @@ not write a second copy of that seam. A bare test file name is under
    - Do not build a `<<<` marker anywhere else. Fences: `test_untrusted_frame.py`, `evals/email_injection/`.
 5m-1. hidden_text.py -- the ONE rule of a hidden character in owner text that a store keeps (WS-STU F1b, spec `ai_studio.md` §14 F1b).
    - `find_hidden`, `strip_hidden`, `hidden_problem` and `body_hidden_problem`. The base is `reply_card.is_invisible_char`, which is wider than `untrusted.is_invisible`. A new line, a tab and a carriage return are legal.
-   - A ZWNJ or a ZWJ is legal only between two visible characters. U+FE0E and U+FE0F are legal only after one visible symbol, or in a keycap. So Persian, Hindi, Bengali and emoji keep theirs.
+   - A ZWNJ or a ZWJ is legal between two visible characters. At a word end, ONE joiner is legal directly after a virama (combining class 9). A Malayalam chillu, a Bengali khanda ta and an explicit halant need it. So Persian, Hindi, Bengali, Malayalam and emoji keep theirs.
+   - U+FE0E and U+FE0F are legal only after one visible symbol of category S, or in a keycap. The five emoji bases outside category S (`_EMOJI_BASES_NOT_S`) take one too. The rule refuses a selector after other punctuation.
    - The skill store refuses with the one sentence of `hidden_problem`, and it never strips. A chat read of an old row calls `strip_hidden`. The F3 loader must call `strip_hidden` on each skill text.
    - `skills_store.py` and `studio_tools.py` keep no code point list of their own. Do not use `reply_card.clean_reply_body` for owner text, because it cleans in silence and breaks Indic text. Fence: `test_hidden_text.py`, with `tests/fixtures/hidden_text_cases.json`.
 5n. company_search_tools.py -- `search_company`, the assistant's one read over every app (D105, spec `knowledge_base.md` §20.5).

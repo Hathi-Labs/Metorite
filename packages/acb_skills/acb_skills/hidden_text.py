@@ -38,9 +38,9 @@ category C. These exceptions apply:
   and so is a selector after other punctuation, such as a period.
 
 **Accepted costs.** The rule refuses the LRM and RLM marks, the Arabic marks
-U+0600 to U+0605 and U+06DD, the ideographic variation sequences (U+E0100
-and up), and the tag flags (England, Scotland, Wales), because those use the
-TAG block. It also refuses a character that is newer than the Unicode of the
+U+0600 to U+0605 and U+06DD, the ideographic variation sequences (the
+selectors from U+E0100 up), and the tag flags (England, Scotland, Wales),
+which use the TAG block. It also refuses a character that is newer than the Unicode of the
 runtime (Python 3.12 has Unicode 15.0), because the runtime reads it as an
 unassigned code point (category Cn). An example is the emoji U+1FAE9.
 
@@ -48,9 +48,14 @@ unassigned code point (category Cn). An example is the emoji U+1FAE9.
 silence, and it keeps a joiner only between two pictographs, so it breaks
 Hindi, Bengali and Persian. Do not use it for owner text.
 
-**The residual risk.** A legal joiner between two letters still carries one
-bit for each gap. The rule bounds it (no edge, no double, never next to white
-space), but it cannot close it.
+**The residual risk.** The legal joiners and selectors still carry data.
+Each gap between two visible characters can hold nothing, a ZWJ or a ZWNJ:
+about 1.6 bits (log2 of 3). A visible symbol adds about 1.6 bits more,
+because it can take nothing, U+FE0E or U+FE0F. A virama at a word end adds
+about 1.6 bits. So 1,000 characters of plain text can carry about 200 bytes,
+and a text with many symbols can carry more. The rule bounds the channel to
+these places (no edge, no double, no selector after other punctuation), but
+it cannot close it.
 
 **A position** is 1-based and counts code points, as Python indexes a string.
 A client that counts UTF-16 units must convert.
