@@ -1,7 +1,7 @@
 # Web research — Mira reads the web at large, on open-source parts (WS-WEB)
 
 > **Product:** Metorite · **Feature:** web search, page and file reading, crawling, browsing and research jobs for the one assistant · **Updated:** 2026-11-04 · **Owner:** vjvarada
-> **Status:** 🔨 **IN BUILD.** WEB-1 (the fetch guard) is built, 2026-11-01. WEB-2 (the local HTML reader) is built dark behind `WEB_RESEARCH_ORGS`, 2026-11-02, with Trafilatura in a child process. WEB-2b (the confinement of that child) is built, 2026-11-02, and it must merge before that flag flips. WEB-10, the goal record, is built on 2026-11-01 (§6.1): the table `goal_records` and its store, with no caller yet. WEB-3 (the file readers) is built dark behind `WEB_RESEARCH_ORGS`, 2026-11-04. MarkItDown reads PDF, DOCX, PPTX, XLSX, CSV and EPUB in the same child. pdfplumber reads a PDF that it cannot. A long file spills through CTX-1. The type refusal of §3.1 rule 5 is built with it. WEB-4 is next. `web_search` and `fetch_page` existed before WEB-0 (§2).
+> **Status:** 🔨 **IN BUILD.** WEB-1 (the fetch guard) is built, 2026-11-01. WEB-2 (the local HTML reader) is built dark behind `WEB_RESEARCH_ORGS`, 2026-11-02, with Trafilatura in a child process. WEB-2b (the confinement of that child) is built, 2026-11-02, and it must merge before that flag flips. WEB-10, the goal record, is built on 2026-11-01 (§6.1): the table `goal_records` and its store, with no caller yet. WEB-3 (the file readers) is built dark behind `WEB_RESEARCH_ORGS`, 2026-11-04. MarkItDown reads PDF, DOCX, PPTX, XLSX, CSV and EPUB in the same child. pdfplumber reads a PDF that it cannot. A long file spills through CTX-1. The type refusal of §3.1 rule 5 is built with it. WEB-1c (task 1739, 2026-11-05) closes three small gaps of WEB-1. The guard scan sees `sys.modules`, a process spawn and `get(**kw)`. The `Type:` line names Markdown when Jina's text wins. The direct read marks a cut at 512 KiB. WEB-4 is next. `web_search` and `fetch_page` existed before WEB-0 (§2).
 > **Verified against code on 2026-11-01 at `f59a636b5`.** Each path in §12 was read on that commit.
 > **Board:** WS-WEB in `work_plan.md` §2.1. **Decision:** D148. D85, D117, D124, D129, D130 and D139 bind it.
 > **Metorite:** project "Agent Tooling", epic 1235, this spec task 1237. The slices WEB-1 to WEB-12 are tasks 1259 to 1270, in order.
@@ -144,6 +144,16 @@ The guard picks the reader by the content type.
 | **OpenAlex, arXiv, Wikipedia** | Scholarly and reference sources | None | When the call names `source: "papers"` or `source: "wiki"` |
 
 **A provider is offered only when it is ready.** The list skips a provider whose health check failed in the last 5 minutes. The result names the provider that answered. Results from two providers are merged by URL.
+
+**As built, WEB-4 (2026-11-05).** `web_search` asks the provider list when `WEB_RESEARCH_ORGS` holds the org of the run. Off, the SerpAPI and ddgs chain runs as before, byte for byte.
+
+- **One module.** `acb_skills/web_search_providers.py` holds the list. `web_tools.web_search` gains `source` (`web`, `papers`, `wiki`). Another value means `web`.
+- **Order.** A web call asks SearXNG, SerpAPI and ddgs in that order. It stops when the merged hits fill `max_results`. A fault or an empty answer passes to the next provider. `papers` asks OpenAlex and arXiv together. `wiki` asks Wikipedia.
+- **Ready.** SearXNG needs `SEARXNG_URL` and a `200` from `/healthz`. SerpAPI needs its key. A provider that faults, or fails its check, is skipped for `HEALTH_TTL_S` (300 s). A success clears the mark.
+- **Stamp and merge.** A hit shows `Provider:` and `Date:`. The date is the one the source states. With none, it reads `retrieved <day>`. Two hits merge when their URLs match after the host is lower-cased, `www.`, the fragment, the default port, `utm_*` and the trailing slash are removed. The first provider keeps the hit and the others join `also`.
+- **Safety.** `SEARXNG_URL` is an operator value (`env_guard` prefix `SEARXNG_`). Each answer has a 2 MB cap. arXiv XML with a DTD is refused. Hit text is one plain line with a cap.
+- **Left for later.** Hit text has no `UntrustedFrame` mark yet. SearXNG itself is WEB-5.
+- Fence: `tests/unit/test_web_search_providers.py`.
 
 ---
 
