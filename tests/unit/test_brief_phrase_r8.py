@@ -277,6 +277,30 @@ def test_r8_a_stuck_run_with_no_lead_takes_the_lead_of_its_stored_claims(
     assert [c.text for c in _claims(world, str(run.id))] == [c.text for c in claims]
 
 
+def test_r8_a_try_that_loses_the_phrasing_mark_writes_no_lead(world, monkeypatch) -> None:
+    """Review F3. A try whose ``mark_phrasing`` answers False owns nothing,
+    so it writes no template lead over a model lead of the winner, and makes
+    no call. Mutation: move ``set_lead`` back before the mark in
+    ``run._gather_and_phrase``. This test goes red."""
+    _compose(monkeypatch, world)
+    world.cards[ANA] = _cards()
+    calls = _model(monkeypatch, _answer(("Hi.", ["c1"])))
+    leads: list[str] = []
+    real = store.set_lead
+
+    async def spy(db, member, run_id, lead, **kw):
+        leads.append(lead)
+        return await real(db, member, run_id, lead, **kw)
+
+    async def lose(*a, **kw):
+        return False
+
+    monkeypatch.setattr(store, "mark_phrasing", lose)
+    monkeypatch.setattr(store, "set_lead", spy)
+    _seed_and_run(world)
+    assert calls == [] and leads == []
+
+
 def test_r8_the_member_block_reaches_the_prompt(world, monkeypatch) -> None:
     """The member block is read on the real tables, in the bound tenant,
     and it reaches the system prompt of the call."""

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -159,7 +160,9 @@ def unsafe_reason(sentence: str) -> str | None:
     low = sentence.lower()
     if any(mark in low for mark in LINK_MARKS):
         return "link"
-    words = {w.strip(".,;:!?()\"'-") for w in low.split()}
+    # Split on every non-letter, so "twenty-one", "four/five" and a curly
+    # apostrophe do not hide a number word (review, P2).
+    words = {w for w in re.split(r"[^a-z]+", low) if w}
     if words & NUMBER_WORDS:
         return "number_word"
     return None
