@@ -23,9 +23,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from web_worker.egress import EgressLog, route_handler
-from web_worker.fetch import AddressChecker
+from web_worker.fetch import JobScope, Refused, parse_hop, port_of
 from web_worker.jobs import Job
-from web_worker.limits import JOB_TIMEOUT_S, MAX_MARKDOWN_BYTES, MAX_SESSIONS
+from web_worker.limits import JOB_TIMEOUT_S, MAX_DOCUMENT_BYTES, MAX_MARKDOWN_BYTES, MAX_SESSIONS
 
 #: Chromium flags. The route fulfills each request, so Chromium itself needs
 #: no network. The proxy address is one where nothing listens, also for a
@@ -47,6 +47,9 @@ CHROMIUM_ARGS = (
 #: thread can still run. The pool has one thread for each job slot, so such
 #: threads never pass MAX_SESSIONS, and later work waits in the queue.
 MARKDOWN_POOL = ThreadPoolExecutor(max_workers=MAX_SESSIONS, thread_name_prefix="web-worker-md")
+
+#: The size of the DOM in UTF-16 units. A UTF-8 byte count is at least this.
+DOM_SIZE = "() => document.documentElement ? document.documentElement.outerHTML.length : 0"
 
 #: Every URL, for ``context.route`` and ``context.route_web_socket``.
 ALL = re.compile(r".*")
@@ -113,33 +116,50 @@ class ChromiumRenderer:
             await self._pw.stop()
 
     async def __call__(self, url: str, job: Job) -> Rendered:
-        checker = AddressChecker()
-        reason = await checker.refusal(url)
-        if reason is not None:
-            raise PageRefused(reason)
-        record = EgressLog()
-        context = await self._browser.new_context(
-            service_workers="block",
-            accept_downloads=False,
-        )
         try:
-            await context.route(ALL, route_handler(record, checker))
-            await context.route_web_socket(ALL, _close_socket)
-            page = await context.new_page()
+            top_port = port_of(parse_hop(url))
+        except Refused as exc:
+            raise PageRefused(exc.reason) from None
+        scope = JobScope(org=job.org_id, top_port=top_port)
+        try:
+            reason = await scope.checker.refusal(url, top_port)
+            if reason is not None:
+                raise PageRefused(reason)
+            record = EgressLog()
+            context = await self._browser.new_context(
+                service_workers="block",
+                accept_downloads=False,
+            )
             try:
-                await page.goto(url, wait_until="load", timeout=JOB_TIMEOUT_S * 1000)
-            except Exception:
-                # A refused hop of the top document is a refusal, not a fault.
-                if record.top_refused is not None:
-                    raise PageRefused(record.top_refused) from None
-                raise
-            html = await page.content()
-            final_url = record.top_url or page.url
-            title = await page.title()
+                html, final_url, title = await self._load(context, url, record, scope)
+            finally:
+                scope.close()
+                await context.close()
         finally:
-            await context.close()
+            scope.close()
         (job.dir / "page.html").write_text(html, encoding="utf-8")
         markdown = cut(await asyncio.get_running_loop().run_in_executor(
             MARKDOWN_POOL, to_markdown, html, final_url))
         (job.dir / "page.md").write_text(markdown, encoding="utf-8")
         return Rendered(markdown, final_url, title, record)
+
+    async def _load(self, context: Any, url: str, record: EgressLog,
+                    scope: JobScope) -> tuple[str, str, str]:
+        await context.route(ALL, route_handler(record, scope))
+        await context.route_web_socket(ALL, _close_socket)
+        page = await context.new_page()
+        try:
+            await page.goto(url, wait_until="load", timeout=JOB_TIMEOUT_S * 1000)
+        except Exception:
+            # A refused hop of the top document is a refusal, not a fault.
+            if record.top_refused is not None:
+                raise PageRefused(record.top_refused) from None
+            raise
+        # The DOM can grow past the cap of the answer (a script writes it).
+        # Ask its size first, so a big page never reaches Python.
+        if await page.evaluate(DOM_SIZE) > MAX_DOCUMENT_BYTES:
+            raise PageRefused("too large")
+        html = await page.content()
+        if len(html.encode("utf-8")) > MAX_DOCUMENT_BYTES:
+            raise PageRefused("too large")
+        return html, record.top_url or page.url, await page.title()

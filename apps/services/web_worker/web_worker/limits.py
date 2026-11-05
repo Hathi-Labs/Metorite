@@ -48,9 +48,37 @@ MAX_SUBRESOURCE_BYTES = 5 * 1024 * 1024
 #: Seconds that one address check can take. A slower check refuses the host.
 CHECK_TIMEOUT_S = 5
 
-#: Address checks of one job at once. A check that hangs keeps its thread
-#: until it ends, so one job holds at most this many threads of the pool.
-CHECKS_PER_JOB = 2
+#: Address checks of one organization at once, for all its jobs. A check that
+#: hangs keeps its slot until its thread ends, also after its job ended. So
+#: one organization holds at most this many threads of the pool.
+CHECKS_PER_ORG = 2
 
 #: Seconds that one HTTP hop can take, to connect and to read.
 HTTP_TIMEOUT_S = 20
+
+#: Fetches of one job at once. A request past this count waits for a slot.
+FETCHES_PER_JOB = 6
+
+#: Fetches in the container at once, for all jobs.
+MAX_FETCHES = 16
+
+#: Decoded bytes that one job can read, for all its answers together. The
+#: route aborts each request that would pass this count.
+MAX_JOB_BYTES = 40 * 1024 * 1024
+
+#: The ports that a hop can use: these two, and the port of the top URL of
+#: the job. A port in UNSAFE_PORTS is refused, also as the port of the top URL.
+DEFAULT_PORTS = frozenset({80, 443})
+
+#: Chromium's list of restricted ports (net/base/port_util.cc), and the ports
+#: of common data stores. No hop connects to one of them.
+UNSAFE_PORTS = frozenset({
+    1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
+    87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137,
+    139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532,
+    540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723,
+    2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669,
+    6679, 6697, 10080,
+    # Data stores and admin ports that Chromium does not list.
+    2375, 2376, 3306, 5432, 6379, 9200, 11211, 27017,
+})

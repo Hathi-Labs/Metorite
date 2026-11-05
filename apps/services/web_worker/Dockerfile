@@ -14,12 +14,15 @@ FROM mcr.microsoft.com/playwright/python:v1.64.1-noble
 # Crawl4AI imports a fork of litellm. LITELLM_LOCAL_MODEL_COST_MAP makes
 # litellm read its model price map from the package, with no fetch at import.
 # A uid with no home gets HOME=/, so HOME is /tmp, which uid 1000 can write.
+# RES_OPTIONS bounds each DNS query of glibc, so a check thread that waits on
+# a DNS server that never answers ends in about 2 s (fetch.AddressChecker).
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     LITELLM_LOCAL_MODEL_COST_MAP=True \
     HOME=/tmp \
+    RES_OPTIONS="timeout:2 attempts:1" \
     CRAWL4_AI_BASE_DIRECTORY=/tmp \
     WEB_WORKER_JOB_ROOT=/tmp/web-worker-jobs \
     PATH=/opt/venv/bin:$PATH

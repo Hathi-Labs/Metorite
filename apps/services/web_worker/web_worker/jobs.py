@@ -10,8 +10,7 @@ call, and the worker trusts it only behind the token (``main.py``).
   never gives org B a ``409``, and :meth:`JobStore.lookup` finds a job only
   for the organization that started it. A job of another organization and a
   job that does not exist give the same :class:`JobNotFound`.
-* No HTTP route reads a job file. ``files`` and ``read`` serve a later
-  slice that reads a job while it runs (WEB-8).
+* No HTTP route reads a job file. The job directory goes when the job ends.
 * A job takes a slot of its organization and a slot of the container before
   it starts. With no slot it does not wait.
 
@@ -36,16 +35,13 @@ from web_worker.limits import MAX_SESSIONS, MAX_SESSIONS_PER_ORG
 #: and a slug fit. A dot, a slash and an empty value do not.
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
-#: The name of a file in a job directory: no path part, no leading dot.
-_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-
 
 class BadId(ValueError):
     """An organization id or a job id that the worker does not take."""
 
 
 class JobNotFound(LookupError):
-    """No job of this organization has this id, or the file is not in it."""
+    """No job of this organization has this id."""
 
 
 class NoSlot(RuntimeError):
@@ -119,21 +115,3 @@ class JobStore:
         if job is None:
             raise JobNotFound("not found")
         return job
-
-    def files(self, org_id: str, job_id: str) -> list[str]:
-        job = self.lookup(org_id, job_id)
-        try:
-            return sorted(p.name for p in job.dir.iterdir() if p.is_file())
-        except OSError:
-            raise JobNotFound("not found") from None
-
-    def read(self, org_id: str, job_id: str, name: str) -> bytes:
-        """The bytes of one file of a job. The name must be a plain file name
-        that the job directory holds now."""
-        job = self.lookup(org_id, job_id)
-        if not _FILE.fullmatch(name) or name not in self.files(org_id, job_id):
-            raise JobNotFound("not found")
-        try:
-            return (job.dir / name).read_bytes()
-        except OSError:
-            raise JobNotFound("not found") from None

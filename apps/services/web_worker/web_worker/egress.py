@@ -10,7 +10,9 @@ to ``fetch.pinned_fetch``, and fulfills the request with the answer.
   address that passed. A second DNS answer never reaches a socket.
 * Playwright does not route the next hop of a redirect. The fetch follows
   each redirect itself, so Chromium never sees a ``3xx``.
-* Each answer has a cap of decoded bytes, and each job has a cap of requests.
+* Each answer has a cap of decoded bytes. Each job has a cap of requests,
+  of decoded bytes and of fetches at once, and a deadline. When the job
+  ends, its scope cancels each fetch that still runs.
 * Each refusal and each fault gets an abort (fail closed).
 
 Chromium also gets a proxy address where nothing listens (``render.py``). So
@@ -28,8 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from web_worker.fetch import (
-    AddressChecker,
-    Budget,
+    JobScope,
     Refused,
     TooLarge,
     fulfil_headers,
@@ -58,7 +59,6 @@ class EgressLog:
     top_url: str | None = None
     #: The reason when the route refused the top document or a hop of it.
     top_refused: str | None = None
-    budget: Budget = field(default_factory=Budget)
 
 
 def _is_top(request: Any) -> bool:
@@ -74,13 +74,14 @@ Fetch = Callable[..., Any]
 
 def route_handler(
     record: EgressLog,
-    checker: AddressChecker,
+    scope: JobScope,
     fetch: Fetch = pinned_fetch,
 ) -> Callable[[Any, Any], Any]:
     """The handler for ``context.route(ALL, ...)`` of one job.
 
-    A test gives a fake route and a fake request, and a checker with a fake
-    resolver, so the handler runs with no Chromium."""
+    ``scope`` holds the deadline, the slots, the checker and the budget of
+    the job. A test gives a fake route and a fake request, so the handler
+    runs with no Chromium."""
 
     async def _refuse(route: Any, request: Any, host: str, reason: str) -> None:
         record.refused.append(f"{host} {reason}")
@@ -105,8 +106,7 @@ def route_handler(
                 headers=await request.all_headers(),
                 body=request.post_data_buffer,
                 cap=MAX_DOCUMENT_BYTES if is_document else MAX_SUBRESOURCE_BYTES,
-                checker=checker,
-                budget=record.budget,
+                scope=scope,
             )
             if is_document and _is_top(request):
                 record.top_url = answer.url

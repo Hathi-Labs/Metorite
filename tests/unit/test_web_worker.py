@@ -189,11 +189,12 @@ class FakeRoute:
         self.fulfilled = kwargs
 
 
-def _route(web: FakeWeb, request: FakeRequest,
-           record: egress.EgressLog | None = None) -> tuple[FakeRoute, egress.EgressLog]:
+def _route(web: FakeWeb, request: FakeRequest, record: egress.EgressLog | None = None,
+           scope: fetch.JobScope | None = None) -> tuple[FakeRoute, egress.EgressLog]:
     record = record or egress.EgressLog()
     route = FakeRoute()
-    handler = egress.route_handler(record, fetch.AddressChecker(), fetch=web.fetcher())
+    scope = scope or fetch.JobScope()
+    handler = egress.route_handler(record, scope, fetch=web.fetcher())
     asyncio.run(handler(route, request))
     return route, record
 
@@ -361,7 +362,8 @@ def test_the_route_stops_after_the_redirect_limit() -> None:
 def test_the_route_stops_after_the_page_limit() -> None:
     web = FakeWeb({f"public.example/{i}": ok() for i in range(30)})
     record = egress.EgressLog()
-    results = [_route(web, FakeRequest(f"https://public.example/{i}"), record)[0].aborted
+    scope = fetch.JobScope()
+    results = [_route(web, FakeRequest(f"https://public.example/{i}"), record, scope)[0].aborted
                for i in range(limits.MAX_PAGES_PER_JOB + 1)]
     assert results[:-1] == [None] * limits.MAX_PAGES_PER_JOB
     assert results[-1] == egress.ABORT_CODE
@@ -370,10 +372,11 @@ def test_the_route_stops_after_the_page_limit() -> None:
 def test_the_route_stops_after_the_request_limit() -> None:
     web = FakeWeb({"public.example/a.js": lambda: ok(b"x")})
     record = egress.EgressLog()
+    scope = fetch.JobScope()
     for _ in range(limits.MAX_REQUESTS_PER_JOB):
         assert _route(web, FakeRequest("https://public.example/a.js", "script"),
-                      record)[0].aborted is None
-    route, _ = _route(web, FakeRequest("https://public.example/a.js", "script"), record)
+                      record, scope)[0].aborted is None
+    route, _ = _route(web, FakeRequest("https://public.example/a.js", "script"), record, scope)
     assert route.aborted == egress.ABORT_CODE
     assert len(web.seen) == limits.MAX_REQUESTS_PER_JOB
 
@@ -478,16 +481,16 @@ def test_a_hanging_resolver_does_not_stall_a_second_job() -> None:
     pool = ThreadPoolExecutor(max_workers=4)
 
     async def go() -> tuple[list[str], float, bool]:
-        job_a = fetch.AddressChecker(resolve, pool=pool, per_job=2, timeout=0.3)
-        job_b = fetch.AddressChecker(resolve, pool=pool, per_job=2, timeout=0.3)
+        job_a = fetch.AddressChecker(resolve, org="org-a", pool=pool, per_org=2, timeout=0.3)
+        job_b = fetch.AddressChecker(resolve, org="org-b", pool=pool, per_org=2, timeout=0.3)
         urls = [fetch.parse_hop(f"https://hang{i}.example/") for i in (1, 2, 1, 2)]
         results = await asyncio.gather(*(job_a.pin(u) for u in urls), return_exceptions=True)
         reasons = [r.reason for r in results if isinstance(r, fetch.Refused)]
         start = time.monotonic()
         await job_b.pin(fetch.parse_hop("https://public.example/"))
         took = time.monotonic() - start
-        # The slots of job A come back only when its threads end.
-        held = job_a._slots.locked()
+        # The slots of org A come back only when its threads end.
+        held = fetch._slots("org-check:org-a:2", 2).locked()
         return reasons, took, held
 
     try:
@@ -518,7 +521,7 @@ def test_a_job_checks_each_host_once() -> None:
 
 
 def test_the_check_pool_is_bounded() -> None:
-    assert fetch._POOL._max_workers == limits.MAX_SESSIONS * limits.CHECKS_PER_JOB
+    assert fetch._POOL._max_workers == limits.MAX_SESSIONS * limits.CHECKS_PER_ORG
     assert limits.CHECK_TIMEOUT_S == 5
 
 
@@ -528,7 +531,7 @@ def test_the_check_pool_is_bounded() -> None:
 def test_the_renderer_routes_each_request_and_each_socket() -> None:
     text = (WORKER / "web_worker" / "render.py").read_text(encoding="utf-8")
     assert "new_context(" in text and 'service_workers="block"' in text
-    assert "context.route(ALL, route_handler(record, checker))" in text
+    assert "context.route(ALL, route_handler(record, scope))" in text
     assert "context.route_web_socket(ALL, _close_socket)" in text
     assert "await context.close()" in text
     assert render.ALL.fullmatch("wss://anything/at/all")
@@ -701,21 +704,16 @@ def test_a_job_past_the_timeout_ends_and_leaves_no_dir(tmp_path: Path,
 # ── Org isolation of jobs ───────────────────────────────────────────────────
 
 
-def test_org_b_cannot_find_list_or_read_a_job_of_org_a(tmp_path: Path) -> None:
+def test_org_b_cannot_find_a_job_of_org_a(tmp_path: Path) -> None:
     store = jobs.JobStore(tmp_path / "jobs")
     with store.open("org-a", "job-a") as job:
-        (job.dir / "page.md").write_text("# org A only", encoding="utf-8")
-        assert store.files("org-a", "job-a") == ["page.md"]
-        assert store.read("org-a", "job-a", "page.md") == b"# org A only"
-        for call in (lambda: store.lookup("org-b", "job-a"),
-                     lambda: store.files("org-b", "job-a"),
-                     lambda: store.read("org-b", "job-a", "page.md"),
-                     lambda: store.read("org-a", "job-a", "../page.md"),
-                     lambda: store.read("org-a", "job-a", ".hidden")):
+        assert store.lookup("org-a", "job-a") is job
+        for org, job_id in (("org-b", "job-a"), ("org-a", "job-x"), ("../org-a", "job-a")):
             with pytest.raises(jobs.JobNotFound):
-                call()
+                store.lookup(org, job_id)
     with pytest.raises(jobs.JobNotFound):
         store.lookup("org-a", "job-a")
+    assert not hasattr(store, "files") and not hasattr(store, "read")
 
 
 def test_a_job_id_of_org_a_never_gives_org_b_a_409(tmp_path: Path) -> None:
@@ -862,7 +860,8 @@ def test_a_hop_to_another_origin_gets_no_credential(location: str) -> None:
             return {"cookie": "sid=1", "authorization": "Bearer x",
                     "proxy-authorization": "Basic y", "user-agent": "x"}
 
-    route, _ = _route(web, WithAuth("https://public.example/a", "script"))
+    route, _ = _route(web, WithAuth("https://public.example/a", "script"),
+                      scope=fetch.JobScope(top_port=8443))
     assert route.fulfilled is not None, route.aborted
     first, second = web.seen[0][3].headers, web.seen[1][3].headers
     assert first["authorization"] == "Bearer x" and first["cookie"] == "sid=1"
@@ -894,4 +893,288 @@ def test_the_markdown_pool_has_one_thread_for_each_job_slot() -> None:
     assert render.MARKDOWN_POOL._max_workers == limits.MAX_SESSIONS
     text = (WORKER / "web_worker" / "render.py").read_text(encoding="utf-8")
     assert "asyncio.to_thread(to_markdown" not in text
-    assert text.count("run_in_executor(\n            MARKDOWN_POOL, to_markdown") == 2
+    assert text.count("MARKDOWN_POOL, to_markdown") == 2
+
+
+# ── Review round 3: the end of a job, the job budget, IDN and ports ────────
+
+
+class Drip:
+    """A body that gives one chunk and then waits a long time (a slow drip)."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        try:
+            yield b"<p>"
+            self.started.set()
+            await asyncio.sleep(30)
+            yield b"never"
+        finally:
+            self.closed = True
+
+
+def test_a_slow_drip_stops_when_the_job_ends() -> None:
+    drip = Drip()
+    web = FakeWeb({"public.example/drip": lambda: httpx.Response(200, content=drip)})
+
+    async def go() -> tuple[float, FakeRoute, fetch.JobScope]:
+        scope = fetch.JobScope()
+        route = FakeRoute()
+        handler = egress.route_handler(egress.EgressLog(), scope, fetch=web.fetcher())
+        task = asyncio.ensure_future(handler(route, FakeRequest("https://public.example/drip")))
+        await asyncio.wait_for(drip.started.wait(), 2)
+        start = time.monotonic()
+        scope.close()
+        await asyncio.wait_for(task, 2)
+        return time.monotonic() - start, route, scope
+
+    took, route, scope = asyncio.run(go())
+    assert took < 0.5, f"the fetch ran {took:.2f} s after the end of the job"
+    assert route.fulfilled is None
+    assert scope.busy() == 0 and drip.closed
+
+
+def test_a_slow_drip_stops_at_the_deadline_of_the_job() -> None:
+    web = FakeWeb({"public.example/drip": lambda: httpx.Response(200, content=Drip())})
+    start = time.monotonic()
+    route, record = _route(web, FakeRequest("https://public.example/drip"),
+                           scope=fetch.JobScope(deadline_s=0.3))
+    assert time.monotonic() - start < 2
+    assert route.aborted == egress.ABORT_CODE
+    assert record.refused == ["public.example deadline"]
+
+
+def test_a_closed_job_starts_no_fetch() -> None:
+    web = FakeWeb({"public.example/": ok()})
+    scope = fetch.JobScope()
+    scope.close()
+    route, record = _route(web, FakeRequest("https://public.example/"), scope=scope)
+    assert route.aborted == egress.ABORT_CODE and web.seen == []
+    assert record.refused == ["public.example job ended"]
+
+
+def test_a_hung_resolver_of_an_ended_job_does_not_starve_another_org() -> None:
+    gate = threading.Event()
+    calls: list[str] = []
+
+    def resolve(host: str, port: int) -> str:
+        calls.append(host)
+        if host.startswith("hang"):
+            gate.wait(10)
+        return "93.184.215.14"
+
+    pool = ThreadPoolExecutor(max_workers=4)
+
+    async def go() -> tuple[float, int, int]:
+        for round_ in range(5):  # five jobs of org A, each ends at once
+            checker = fetch.AddressChecker(resolve, org="org-a", pool=pool, per_org=2,
+                                           timeout=limits.CHECK_TIMEOUT_S)
+            pins = [asyncio.ensure_future(checker.pin(fetch.parse_hop(f"https://hang{round_}-{i}.example/")))
+                    for i in range(3)]
+            await asyncio.sleep(0.05)
+            checker.close()
+            _done, pending = await asyncio.wait(pins, timeout=1)
+            assert not pending, "a check of an ended job still waits"
+        start = time.monotonic()
+        org_b = fetch.AddressChecker(resolve, org="org-b", pool=pool, per_org=2,
+                                     timeout=limits.CHECK_TIMEOUT_S)
+        await org_b.pin(fetch.parse_hop("https://public.example/"))
+        took = time.monotonic() - start
+        busy = sum(1 for t in asyncio.all_tasks() if t is not asyncio.current_task())
+        return took, sum(1 for c in calls if c.startswith("hang")), busy
+
+    try:
+        took, hung, busy = asyncio.run(go())
+    finally:
+        gate.set()
+        pool.shutdown(wait=True)
+    assert took < 0.5, f"org B waited {took:.2f} s"
+    assert hung == 2, f"org A held {hung} threads, the cap is 2"
+    assert busy == 0, "a task of an ended job still runs"
+
+
+def test_a_job_reads_at_most_its_byte_budget() -> None:
+    """Twenty gzip bombs of 4 MiB each, on one host, at once."""
+    bomb = gzip.compress(b"\0" * (4 * MIB))
+    pages = {f"public.example/b{i}": (lambda: httpx.Response(
+        200, headers={"content-encoding": "gzip"}, content=Source(bomb, 1))) for i in range(20)}
+    web = FakeWeb(pages)
+
+    async def go() -> tuple[list[FakeRoute], fetch.JobScope]:
+        scope = fetch.JobScope()
+        handler = egress.route_handler(egress.EgressLog(), scope, fetch=web.fetcher())
+        routes = [FakeRoute() for _ in range(20)]
+        await asyncio.gather(*(handler(r, FakeRequest(f"https://public.example/b{i}", "image"))
+                               for i, r in enumerate(routes)))
+        return routes, scope
+
+    routes, scope = asyncio.run(go())
+    kept = sum(len(r.fulfilled["body"]) for r in routes if r.fulfilled)
+    assert kept <= limits.MAX_JOB_BYTES
+    assert scope.budget.bytes <= limits.MAX_JOB_BYTES
+    # A decode step never passes the bytes that are left, so the job never
+    # holds more than the budget and one byte for each read at once.
+    assert scope.budget.peak <= limits.MAX_JOB_BYTES + limits.FETCHES_PER_JOB
+    assert sum(1 for r in routes if r.aborted) >= 10
+
+
+def test_a_queued_check_of_a_closed_job_does_nothing() -> None:
+    calls: list[str] = []
+    checker = fetch.AddressChecker(lambda h, p: calls.append(h) or "93.184.215.14")
+    checker.close()
+    with pytest.raises(fetch.Refused, match="job ended"):
+        checker._run("public.example", 443)
+    assert calls == []
+
+
+def test_a_job_runs_at_most_its_fetches_at_once() -> None:
+    live = {"now": 0, "most": 0}
+
+    class Slow:
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            live["now"] += 1
+            live["most"] = max(live["most"], live["now"])
+            await asyncio.sleep(0.05)
+            live["now"] -= 1
+            yield b"x"
+
+    web = FakeWeb({f"public.example/{i}": (lambda: httpx.Response(200, content=Slow()))
+                   for i in range(20)})
+
+    async def go() -> None:
+        scope = fetch.JobScope()
+        handler = egress.route_handler(egress.EgressLog(), scope, fetch=web.fetcher())
+        await asyncio.gather(*(handler(FakeRoute(), FakeRequest(f"https://public.example/{i}", "script"))
+                               for i in range(20)))
+
+    asyncio.run(go())
+    assert 1 <= live["most"] <= limits.FETCHES_PER_JOB
+
+
+def test_the_page_content_has_a_cap_before_python_reads_it() -> None:
+    text = (WORKER / "web_worker" / "render.py").read_text(encoding="utf-8")
+    assert "await page.evaluate(DOM_SIZE) > MAX_DOCUMENT_BYTES" in text
+    assert text.index("page.evaluate(DOM_SIZE)") < text.index("await page.content()")
+    assert 'len(html.encode("utf-8")) > MAX_DOCUMENT_BYTES' in text
+    assert "scope.close()" in text
+
+
+@pytest.mark.parametrize("url", ["https://xn--mnchen-3ya.de/", "https://münchen.de/",
+                                 "https://Public.Example/", "https://WWW.xn--mnchen-3ya.de/a"])
+def test_an_idn_or_mixed_case_host_parses(url: str) -> None:
+    host = fetch.parse_hop(url).raw_host.decode("ascii")
+    assert host.isascii() and host == host.lower()
+
+
+def test_an_idn_host_fetches_with_its_ascii_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    _NAMES["xn--mnchen-3ya.de"] = ["93.184.215.14"]
+    try:
+        web = FakeWeb({"xn--mnchen-3ya.de/": ok(b"<p>m</p>")})
+        route, _ = _route(web, FakeRequest("https://münchen.de/"))
+    finally:
+        _NAMES.pop("xn--mnchen-3ya.de")
+    assert route.fulfilled is not None and route.fulfilled["body"] == b"<p>m</p>"
+    assert web.seen[0][3].extensions["sni_hostname"] == "xn--mnchen-3ya.de"
+
+
+@pytest.mark.parametrize("url", ["https://public.example:25/", "http://public.example:6379/",
+                                 "http://public.example:22/", "http://public.example:5432/"])
+def test_an_unsafe_port_is_refused_as_the_top_url(url: str) -> None:
+    assert _refusal(url) == "port"
+    web = FakeWeb({})
+    route, _ = _route(web, FakeRequest(url, "document"),
+                      scope=fetch.JobScope(top_port=fetch.port_of(httpx.URL(url))))
+    assert route.aborted == egress.ABORT_CODE and web.seen == []
+
+
+@pytest.mark.parametrize("target", ["http://public.example:25/", "http://other.example:6379/",
+                                    "https://public.example:8081/", "http://other.example:22/x"])
+def test_a_redirect_to_another_port_is_refused(target: str) -> None:
+    web = FakeWeb({"public.example/form": httpx.Response(307, headers={"location": target})})
+    route, record = _route(web, FakeRequest("https://public.example/form", "document",
+                                            method="POST", body=b"MAIL FROM:<x>"))
+    assert route.aborted == egress.ABORT_CODE
+    assert len(web.seen) == 1
+    assert record.refused[-1].endswith(" port")
+
+
+def test_a_hop_keeps_the_port_of_the_top_url() -> None:
+    web = FakeWeb({"public.example/a": redirect(302, "http://public.example:8080/b"),
+                   "public.example/b": ok()})
+    route, _ = _route(web, FakeRequest("http://public.example:8080/a", "script"),
+                      scope=fetch.JobScope(top_port=8080))
+    assert route.fulfilled is not None, route.aborted
+
+
+@pytest.mark.parametrize("wbits", [-15, 15])
+def test_deflate_decodes_in_the_raw_and_the_zlib_form(wbits: int) -> None:
+    import zlib
+
+    packer = zlib.compressobj(wbits=wbits)
+    body = packer.compress(b"<p>deflated</p>") + packer.flush()
+    web = FakeWeb({"public.example/d": lambda: httpx.Response(
+        200, headers={"content-encoding": "deflate"}, content=body)})
+    route, _ = _route(web, FakeRequest("https://public.example/d"))
+    assert route.fulfilled["body"] == b"<p>deflated</p>"
+
+
+def test_a_body_that_does_not_decode_gets_an_abort() -> None:
+    web = FakeWeb({"public.example/g": lambda: httpx.Response(
+        200, headers={"content-encoding": "gzip"}, content=Source(b"not gzip at all", 1))})
+    route, record = _route(web, FakeRequest("https://public.example/g"))
+    assert route.aborted == egress.ABORT_CODE
+    assert record.refused == ["public.example encoding"]
+
+
+def test_the_image_bounds_each_dns_query() -> None:
+    assert 'RES_OPTIONS="timeout:2 attempts:1"' in _dockerfile()
+
+
+def test_the_new_limits_are_in_the_spec() -> None:
+    assert limits.MAX_JOB_BYTES == 40 * MIB
+    assert limits.FETCHES_PER_JOB == 6 and limits.MAX_FETCHES == 16
+    assert {25, 6379, 22} <= limits.UNSAFE_PORTS
+    spec = (REPO / "project-docs/specs/web_research.md").read_text(encoding="utf-8")
+    for row in ("| Bytes of one job | 40 MiB |", "| Fetches of one job at once | 6 |",
+                "| Fetches in the container at once | 16 |",
+                "| Address checks of one organization at once | 2 |"):
+        assert row in spec, row
+
+
+def test_a_failed_read_frees_its_buffer_at_once() -> None:
+    """A failed read must not wait for the garbage collector. A reference
+    cycle through the task and the traceback held each buffer (1 GiB in the
+    image for 190 bombs)."""
+    import gc
+
+    bomb = gzip.compress(b"\0" * (8 * MIB))
+    web = FakeWeb({"public.example/b": lambda: httpx.Response(
+        200, headers={"content-encoding": "gzip"}, content=Source(bomb, 1))})
+    seen: list[Any] = []
+    real = fetch.read_capped
+
+    async def spy(resp: httpx.Response, cap: int, host: str = "",
+                  budget: fetch.Budget | None = None) -> bytes:
+        try:
+            return await real(resp, cap, host, budget)
+        except fetch.TooLarge as exc:
+            frame = exc.__traceback__.tb_next.tb_frame if exc.__traceback__.tb_next else None
+            if frame is not None and "buf" in frame.f_locals:
+                seen.append(len(frame.f_locals["buf"]))
+            raise
+
+    gc.disable()
+    try:
+        orig = fetch.read_capped
+        fetch.read_capped = spy
+        try:
+            route, _ = _route(web, FakeRequest("https://public.example/b", "image"))
+        finally:
+            fetch.read_capped = orig
+    finally:
+        gc.enable()
+    assert route.aborted == egress.ABORT_CODE
+    assert seen == [0], f"the failed read kept {seen} bytes"

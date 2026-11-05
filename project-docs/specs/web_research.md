@@ -197,6 +197,10 @@ One container, `web_worker`, in the pattern of `apps/services/meeting_bot/`:
   | Bytes of one document | 10 MiB |
   | Bytes of one subresource | 5 MiB |
   | Time of one address check | 5 s |
+  | Bytes of one job | 40 MiB |
+  | Fetches of one job at once | 6 |
+  | Fetches in the container at once | 16 |
+  | Address checks of one organization at once | 2 |
 
   The container drops all capabilities (`cap_drop: [ALL]`) and sets `no-new-privileges`. It binds `127.0.0.1` only (`test_compose_ports_local.py`).
 - **The API.** `POST /render` takes a URL, an organization id and a job id. It answers with Markdown. The bearer token is the internal token. The worker refuses to start with an empty token. Docling joins in WEB-7 and Playwright MCP in WEB-9.
@@ -208,17 +212,23 @@ One container, `web_worker`, in the pattern of `apps/services/meeting_bot/`:
 - **The pinned fetch.** Chromium fetches nothing itself. The route gives each request to `fetch.pinned_fetch` and fulfills it with the answer. The fetch resolves each host once, checks the address with `acb_common.public_address`, and connects to that address. `Host` and the TLS name stay the name of the URL. So a DNS answer that changes later (DNS rebinding) never reaches a socket.
 - **Each hop.** A hop URL with a backslash, a control character, a space or userinfo gets a refusal before a parser reads it. Two parsers can read such a URL as two hosts. A hop to another origin gets no `Cookie`, `Authorization` or `Proxy-Authorization`.
 - **Redirects.** Playwright does not route the next hop of a redirect. So the fetch follows each redirect itself, up to 5, and checks each hop first. Chromium never sees a `3xx`. A refused hop of the top document answers `422 refused`.
-- **Caps.** The fetch reads at most 10 MiB of a document and 5 MiB of a subresource, decoded. It asks only for gzip and deflate, and it decodes them with a bound. A job makes at most 200 requests. Each cap aborts the request.
-- **The checks.** One pool of 8 threads runs the address checks. A job runs 2 checks at once, and a hung check keeps its slot until its thread ends. A resolve has 5 s. A job checks each host once.
+- **Caps.** The fetch reads at most 10 MiB of a document and 5 MiB of a subresource, decoded. It asks only for gzip and deflate, and it decodes them with a bound. It takes deflate in the zlib form and in the raw form. A job makes at most 200 requests. Each cap aborts the request.
+- **The checks.** One pool of 8 threads runs the address checks. An organization runs 2 checks at once, for all its jobs. A hung check keeps its slot until its thread ends, also after its job ended. The wait for a slot and the resolve together have 5 s. A job checks each host once. The image sets `RES_OPTIONS=timeout:2 attempts:1`, so a hung DNS query in a pool thread ends in about 2 s.
+- **The end of a job.** Each fetch runs in a task of the job scope, inside the deadline of the job. When the job ends, the scope cancels each fetch and each check that waits. A check in the pool queue of an ended job never runs.
+- **The job budget.** A job reads at most 40 MiB, decoded, for all its answers. A decode step never gives more than the budget that is left. A job runs 6 fetches at once, and the container runs 16. The renderer asks the size of the DOM before it reads the page, and a page past 10 MiB gets `422 too large`.
+- **Ports.** A hop uses port 80, 443 or the port of the top URL. No hop uses a port of Chromium's restricted list or a data-store port, such as 25 or 6379.
+- **IDN.** A host with other letters parses, and the fetch sends its ASCII form as `Host` and as the TLS name.
+- **Redirects and the URL.** Chromium gets the last answer of a redirect under the first URL. So a relative link of a redirected subresource resolves against the first URL. The Markdown of the top page uses the last URL.
 - **The Markdown pool.** It has 4 threads, one for each job slot. A job that times out stops waiting, and its thread stays inside this pool.
 - **Sockets and workers.** Each browser context blocks the service worker of a page. A route closes each WebSocket, and no socket reaches a server.
 - **No network for Chromium.** Chromium gets a proxy address where nothing listens, also for loopback. So a preconnect, a favicon or a DNS prefetch goes nowhere. WebRTC gets no UDP.
-- **The sandbox.** Chromium runs with the default `--no-sandbox` of Playwright. So the container is the only sandbox: uid 1000, no capabilities, `no-new-privileges`, a read-only root, a tmpfs `/tmp` and a pids limit of 1024.
+- **The sandbox.** Chromium runs with the default `--no-sandbox` of Playwright. So the container is the only sandbox: uid 1000, no capabilities, `no-new-privileges`, a read-only root, a tmpfs `/tmp` and a pids limit of 1024. The 512 MiB tmpfs holds the job directories and the shared memory of Chromium, because Chromium runs with `--disable-dev-shm-usage`.
 - **The files.** No HTTP route reads a job file. The store keys each job by organization and job id, so a job id of org A never gives org B a `409`.
 - **The closure.** `requirements.lock.txt` pins the full closure with hashes. `licences.json` holds the licence of each package. The AGPL fence fails when the two do not name the same packages.
 - **The compose block.** The block names the image `acb-web-worker:latest` and no build, because the root copy of the box does not hold the repo root. Build the image from a checkout. The block is in the profile `webworker` and binds `127.0.0.1:8096`. The network `web_worker_net` holds no other service. With no `WEB_WORKER_TOKEN`, the worker does not start.
 - **The check in the image.** A Chromium probe used a fake public server and a fake private server. The probe refused a backslash redirect, a private hop late in a chain and a 12 MiB page. It also refused a private script, image, frame, fetch and socket.
 - **Rebinding in the image.** In the same probe, Chromium's own DNS gave the private address for the page host. The worker connected to the checked address. The private server got no TCP connection, also from a preconnect and a favicon.
+- **Load in the image.** A page with a slow image ended at the job timeout. Its fetch stopped within 1.5 seconds, and another organization then rendered in 0.1 seconds. A page with 200 gzip bombs kept the job at its 40 MiB budget, and the worker stayed under 300 MiB. A failed read frees its buffer at once.
 - **Public pages.** Under the compose flags, `https://example.com/` returned Markdown, and an `http` to `https` redirect worked.
 - **Open work.** The network layer does not block the metadata address. Only the worker check refuses it. A rule on the box for `169.254.169.254` is open work.
 
