@@ -1533,6 +1533,26 @@ async def lock_org(db: Any) -> None:
     await _lock_org(db)
 
 
+@asynccontextmanager
+async def bounded_wait(db: Any, ms: int) -> AsyncIterator[None]:
+    """Run the block with a LOCAL ``lock_timeout`` of *ms*, and put the old
+    value back after it (A5c-1, the ``apps`` row of a delete step).
+
+    A wait past the bound, or a deadlock at it, raises :class:`StoreBusy`.
+    It reuses the statements and the codes of :func:`_lock_org`, but it opens
+    no SAVEPOINT. So a busy wait aborts the caller's transaction, and the
+    caller ends that transaction."""
+    wait = await db.execute(text(_LOCK_WAIT_SQL), {"ms": str(ms)})
+    old = str(wait.one()[0])
+    try:
+        yield
+    except DBAPIError as exc:
+        if _sqlstate(exc) in _BUSY_SQLSTATES:
+            raise StoreBusy(_BUSY_MESSAGE) from None
+        raise
+    await db.execute(text(_LOCK_WAIT_BACK_SQL), {"ms": old})
+
+
 def _deadline(ms: int = studio_query.TIMEOUT_MS, cap: float | None = None) -> float:
     """A deadline of *ms* from now, and never later than *cap* (a time of
     ``_clock``)."""

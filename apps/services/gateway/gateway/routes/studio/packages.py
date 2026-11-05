@@ -112,9 +112,12 @@ that ends with records left logs ``studio.packages.delete_partial``.
 
 A later step checks the object names of the preview that the member
 confirmed. A name that a publish added between two steps ends the call with
-409 ``counts_changed`` and the new preview. A ``store_busy`` on a later step
-ends the call with 202, because the earlier steps hold, or with 503 when the
-preview is busy too. Both write the partial audit row.
+409 ``counts_changed``, the new preview, ``records_removed`` and a text that
+names that count. A ``store_busy`` on a later step ends the call with 202,
+because the earlier steps hold, or with 503 when the preview is busy too. A
+step waits at most 1 s for the ``apps`` row. When another call deleted the
+package between two steps, the answer is 404. Each of these ends writes the
+partial audit row of the earlier steps.
 """
 
 from __future__ import annotations
@@ -614,11 +617,21 @@ async def delete_package(
                     db, user.email, pid, confirm=token if names is None else None,
                     names=names, removed=removed, end_at=end_at)
         except store.CountsChanged as exc:
+            # Only the first step raises it, so the call removed nothing.
             raise HTTPException(status_code=409, detail={
-                "code": COUNTS_CHANGED, "message": str(exc),
+                "code": COUNTS_CHANGED, "message": str(exc), "records_removed": 0,
                 "preview": _preview_out(exc.preview)}) from None
         except objects_store.StoreBusy as exc:
-            # Only the first step raises it, and the call removed nothing yet.
+            if names is None:
+                # The first step: the call removed nothing yet.
+                raise _busy(exc) from None
+            # A later step waited too long for the apps row, and that wait
+            # ended its transaction. The earlier steps of the call hold, so a
+            # new session writes their partial audit row.
+            async with _tenant_session() as db:
+                await store.record_partial(db, user.email, pid, removed, "busy")
+            _log.info("studio.packages.delete_partial", package_id=pid, records=removed,
+                      changed=False, busy=True)
             raise _busy(exc) from None
         if step is None:
             raise _not_found()
@@ -627,18 +640,21 @@ async def delete_package(
             _log.info("studio.packages.deleted", package_id=pid, records=removed)
             return {"deleted": True, "package_id": pid, "records_removed": removed}
         names = step.names
-        if step.left is None and not step.busy:
+        if step.left is None and not step.busy and not step.gone:
             continue
-        # The call ends with records left. The last step wrote the partial
-        # audit row in its own transaction.
+        # The call ends with records left, or another call deleted the
+        # package. The last step wrote the partial audit row.
         _log.info("studio.packages.delete_partial", package_id=pid, records=removed,
                   changed=step.changed, busy=step.busy)
+        if step.gone:
+            raise _not_found()
         if step.left is None:
             raise _busy(objects_store.StoreBusy(objects_store._BUSY_MESSAGE))
         if step.changed:
             raise HTTPException(status_code=409, detail={
-                "code": COUNTS_CHANGED, "message": store.COUNTS_CHANGED_TEXT,
-                "preview": _preview_out(step.left)})
+                "code": COUNTS_CHANGED,
+                "message": store.COUNTS_CHANGED_LATER_TEXT.format(removed=removed),
+                "records_removed": removed, "preview": _preview_out(step.left)})
         response.status_code = 202
         return {"deleted": False, "package_id": pid, "remaining": step.left.records,
                 "remaining_capped": step.left.capped, "records_removed": removed,

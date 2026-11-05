@@ -238,12 +238,22 @@ def step(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     pid = str(uuid.uuid4())
     w = SimpleNamespace(pid=pid, log=[], records={"visit": 700, "site": 300}, busy=False,
                         busy_purge=False, busy_counts=False, extra=[], now=100.0,
-                        deadlines=[])
+                        deadlines=[], gone=False, row_busy=False, row_waits=[],
+                        counts_calls=0, busy_counts_from=None)
 
     async def get_package(db: Any, member: str, package_id: str, *,
                           for_update: bool = False) -> store.Package | None:
         w.log.append(f"get(for_update={for_update})")
+        if w.gone:
+            return None
         return _package(pid) if (package_id, member) == (pid, ANA) else None
+
+    @asynccontextmanager
+    async def bounded_wait(db: Any, ms: int) -> Any:
+        w.row_waits.append(ms)
+        if w.row_busy:
+            raise objects_store.StoreBusy("This app is busy. Try again in a moment.")
+        yield
 
     async def lock_org(db: Any) -> None:
         w.log.append("lock_org")
@@ -252,7 +262,9 @@ def step(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
     async def package_counts(db: Any, package_id: str, *, cap: int = 100_000) -> Any:
         w.log.append("package_counts")
-        if w.busy_counts:
+        w.counts_calls += 1
+        if w.busy_counts or (w.busy_counts_from is not None
+                             and w.counts_calls >= w.busy_counts_from):
             raise objects_store.StoreBusy("This app is busy. Try again in a moment.")
         return _counts({**w.records, **dict.fromkeys(w.extra, 0)})
 
@@ -279,6 +291,7 @@ def step(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setattr(objects_store, "object_names", object_names)
     monkeypatch.setattr(objects_store, "purge_records", purge_records)
     monkeypatch.setattr(objects_store, "_clock", lambda: w.now)
+    monkeypatch.setattr(objects_store, "bounded_wait", bounded_wait)
     return w
 
 
@@ -383,6 +396,69 @@ def test_a_busy_preview_at_the_end_keeps_the_partial_row_and_gives_no_token(
     got = _run(store.delete_package(db, ANA, step.pid, names=_NAMES, end_at=step.now))
     assert got.left is None and got.busy is True and got.removed == 500
     assert db.audits[0]["detail"]["op"] == store.PARTIAL_OP
+
+
+def test_a_busy_final_count_of_a_later_step_ends_the_call_with_a_partial_row(
+        step: SimpleNamespace) -> None:
+    """Fix round 2, item 1. A later step drains the last records, and the
+    count of the final row is busy. The earlier steps and this purge hold, so
+    the step writes the partial row with both, and the package stays."""
+    step.records = {"visit": 120}
+    step.busy_counts = True
+    db = _StoreDb(step.log)
+    got = _run(store.delete_package(db, ANA, step.pid, names=("visit",), removed=1500,
+                                    end_at=step.now + 100))
+    assert (got.deleted, got.removed, got.busy, got.left) == (False, 120, True, None)
+    [audit] = db.audits
+    assert audit["detail"]["op"] == store.PARTIAL_OP
+    assert (audit["detail"]["records_this_call"], audit["detail"]["reason"]) == (1620, "busy")
+    assert "delete" not in step.log
+
+
+def test_a_busy_final_count_of_the_first_step_raises(step: SimpleNamespace) -> None:
+    """The first step removed nothing that holds, so it rolls back whole."""
+    step.records = {"visit": 120}
+    step.busy_counts_from = 2
+    with pytest.raises(objects_store.StoreBusy):
+        _run(store.delete_package(_StoreDb(step.log), ANA, step.pid,
+                                  confirm=store.confirm_token(step.pid, _counts(step.records),
+                                                              2, 1, 0)))
+
+
+def test_a_later_step_that_finds_the_package_gone_writes_the_partial_row(
+        step: SimpleNamespace) -> None:
+    """Fix round 2, item 1. Another call deleted the package between two steps
+    of this call. ``app_audit`` has no foreign key, so the step still writes
+    the partial row of its earlier steps, and it locks nothing."""
+    step.gone = True
+    db = _StoreDb(step.log)
+    got = _run(store.delete_package(db, ANA, step.pid, names=_NAMES, removed=700))
+    assert (got.deleted, got.removed, got.gone) == (False, 0, True)
+    [audit] = db.audits
+    assert (audit["id"], audit["m"], audit["v"]) == (step.pid, ANA, None)
+    assert audit["detail"] == {"op": store.PARTIAL_OP, "by": "owner", "owner": ANA,
+                               "records_this_call": 700, "reason": "gone"}
+    assert step.log == ["get(for_update=True)", "audit"]
+
+
+def test_a_first_step_that_finds_the_package_gone_writes_nothing(step: SimpleNamespace) -> None:
+    step.gone = True
+    db = _StoreDb(step.log)
+    assert _run(store.delete_package(db, ANA, step.pid, confirm=_token(step))) is None
+    assert db.audits == []
+
+
+def test_each_step_waits_for_the_apps_row_with_a_bound(step: SimpleNamespace) -> None:
+    """Fix round 2, item 3. The row read of a step runs under the bounded
+    wait, and a busy wait raises before any other statement."""
+    _run(store.delete_package(_StoreDb(step.log), ANA, step.pid, names=_NAMES))
+    assert step.row_waits == [store.ROW_LOCK_WAIT_MS] == [1000]
+    step.log.clear()
+    step.row_busy = True
+    for kw in ({"names": _NAMES, "removed": 500}, {"confirm": _token(step)}):
+        with pytest.raises(objects_store.StoreBusy):
+            _run(store.delete_package(_StoreDb(step.log), ANA, step.pid, **kw))
+    assert step.log == []
 
 
 def test_store_busy_on_the_first_step_raises(step: SimpleNamespace) -> None:
@@ -662,6 +738,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:  # noqa: C901 - o
     """A fake store of packages with records. Each step removes at most
     ``chunk`` records, and a session rolls the world back on an error."""
     w = SimpleNamespace(packages={}, org=None, sessions=0, steps=[], busy_steps=set(),
+                        row_busy_steps=set(),
                         chunk=500, audits=[], preview_busy=False, clock=0.0, tick=0.0)
 
     def add(owner: str = ANA, org: str = ORG, records: int = 1200) -> str:
@@ -713,8 +790,14 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:  # noqa: C901 - o
         w.steps.append({"member": member, "confirm": confirm, "names": names,
                         "removed": removed, "session": w.sessions, "end_at": end_at})
         assert (confirm is None) != (names is None)
+        if names is not None and len(w.steps) in w.row_busy_steps:
+            raise objects_store.StoreBusy("This app is busy. Try again in a moment.")
         row = mine(db, member, pid)
         if row is None:
+            if names is not None and removed > 0:
+                w.audits.append({"op": store.PARTIAL_OP, "member": member,
+                                 "records_this_call": removed, "reason": "gone"})
+                return store.DeleteStep(deleted=False, removed=0, names=tuple(names), gone=True)
             return None
         now = preview(pid, row)
         seen = tuple(sorted(o.name for o in now.objects)) if names is None else tuple(names)
@@ -754,6 +837,13 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:  # noqa: C901 - o
     monkeypatch.setattr(store, "get_package", get_package)
     monkeypatch.setattr(store, "delete_preview", delete_preview)
     monkeypatch.setattr(store, "delete_package", delete_package)
+
+    async def record_partial(db: _DB, member: str, pid: str, this_call: int,
+                             reason: str) -> None:
+        w.audits.append({"op": store.PARTIAL_OP, "member": member,
+                         "records_this_call": this_call, "reason": reason, "session": w.sessions})
+
+    monkeypatch.setattr(store, "record_partial", record_partial)
     monkeypatch.setattr(get_settings(), "studio_orgs", "*")
     return w
 
@@ -893,6 +983,7 @@ def test_a_stale_token_is_409_with_the_new_preview_and_deletes_nothing(
     assert r.status_code == 409, r.text
     detail = r.json()["detail"]
     assert detail["code"] == "counts_changed" and detail["message"] == store.COUNTS_CHANGED_TEXT
+    assert "Nothing was deleted" in detail["message"] and detail["records_removed"] == 0
     assert detail["preview"]["totals"]["records"] == 1201
     assert detail["preview"]["confirm"] == world.preview(pid).confirm != stale
     assert world.packages[pid]["records"] == 1201
@@ -1006,6 +1097,12 @@ def test_a_new_object_between_two_steps_is_409_with_the_new_preview(
     assert r.status_code == 409, r.text
     detail = r.json()["detail"]
     assert detail["code"] == "counts_changed"
+    # Fix round 2, item 2: the text and the key name the 500 that went.
+    assert detail["records_removed"] == 500
+    assert detail["message"] == (
+        "The package changed during this delete. The delete stopped after it removed 500 "
+        "records. Read the new preview, then confirm it to delete the rest.")
+    assert "Nothing was deleted" not in detail["message"]
     assert [o["name"] for o in detail["preview"]["objects"]] == ["invoices", "visit"]
     assert world.packages[pid]["records"] == 700
     assert world.audits[-1]["reason"] == "changed"
@@ -1044,6 +1141,33 @@ def test_a_package_that_goes_during_the_call_is_404(world: SimpleNamespace,
     monkeypatch.setattr(store, "delete_package", gone_after_one)
     r = _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
     assert (r.status_code, r.json()) == (404, NOT_FOUND)
+    # Fix round 2, item 1: the partial row names the 500 of the first step.
+    assert world.audits == [{"op": store.PARTIAL_OP, "member": ANA, "records_this_call": 500,
+                             "reason": "gone"}]
+
+
+def test_a_busy_row_wait_of_a_later_step_is_503_and_writes_the_partial_row(
+        world: SimpleNamespace) -> None:
+    """Fix round 2, items 1 and 3. The row wait of step 2 is busy, and it ended
+    the transaction of that step. The route writes the partial row of step 1
+    in a new session, then answers 503."""
+    pid = world.add(records=1200)
+    world.row_busy_steps = {2}
+    r = _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
+    assert r.status_code == 503 and r.json()["detail"]["code"] == "store_busy"
+    assert r.headers["Retry-After"] == packages.RETRY_AFTER
+    [row] = world.audits
+    assert (row["records_this_call"], row["reason"]) == (500, "busy")
+    assert row["session"] == world.steps[-1]["session"] + 1
+    assert world.packages[pid]["records"] == 700
+
+
+def test_a_busy_row_wait_of_the_first_step_is_503_and_writes_nothing(
+        world: SimpleNamespace) -> None:
+    pid = world.add(records=1200)
+    world.busy_steps = {1}
+    r = _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
+    assert r.status_code == 503 and world.audits == []
 
 
 def test_a_body_that_names_another_owner_or_org_changes_nothing(world: SimpleNamespace) -> None:
@@ -1114,7 +1238,12 @@ def test_only_delete_package_deletes_a_package() -> None:
                    if isinstance(fn, ast.AsyncFunctionDef | ast.FunctionDef)
                    and any(isinstance(n, ast.Name) and n.id == "_DELETE_SQL"
                            for n in ast.walk(fn)))
-    assert users == ["delete_package"]
+    assert users == ["_finish_delete"]
+    finishers = sorted(fn.name for fn in ast.walk(tree)
+                       if isinstance(fn, ast.AsyncFunctionDef | ast.FunctionDef)
+                       and any(isinstance(n, ast.Call) and ast.unparse(n.func) == "_finish_delete"
+                               for n in ast.walk(fn)))
+    assert finishers == ["delete_package"]
     from gateway.routes.admin import members
     from gateway.routes.apps import _common, lifecycle
     assert "format IS DISTINCT FROM 'manifest'" in inspect.getsource(_common.load_app)
@@ -1136,10 +1265,15 @@ def test_the_lock_order_is_in_the_source() -> None:
     """The ``apps`` row FOR UPDATE, then the org lock, then the purge, then the
     DELETE, then the audit, in one function and so one session."""
     src = inspect.getsource(store.delete_package)
-    marks = ["get_package(db, m, pid, for_update=True)", "objects_store.lock_org(db)",
-             "objects_store.purge_records(", "text(_DELETE_SQL)", "await _audit("]
+    marks = ["_read_for_delete(db, m, pid)", "objects_store.lock_org(db)",
+             "objects_store.purge_records(", "_finish_delete("]
     where = [src.find(m) for m in marks]
     assert -1 not in where and where == sorted(where), dict(zip(marks, where, strict=True))
+    read = inspect.getsource(store._read_for_delete)
+    assert "bounded_wait(db, ROW_LOCK_WAIT_MS)" in read
+    assert "get_package(db, m, pid, for_update=True)" in read
+    finish = inspect.getsource(store._finish_delete)
+    assert -1 < finish.find("text(_DELETE_SQL)") < finish.find("await _audit(")
 
 
 def test_the_audit_is_written_in_the_store_and_not_by_the_route() -> None:
@@ -1149,7 +1283,7 @@ def test_the_audit_is_written_in_the_store_and_not_by_the_route() -> None:
     for name in ("delete_preview", "delete_package"):
         names = {n.id for n in ast.walk(_function(tree, name)) if isinstance(n, ast.Name)}
         assert not {"record_app_audit", "record_app_audit_bound"} & names, name
-    assert "await _audit(" in inspect.getsource(store.delete_package)
+    assert "await _audit(" in inspect.getsource(store._finish_delete)
 
 
 def test_the_route_runs_one_session_for_each_step() -> None:
@@ -1191,10 +1325,12 @@ def test_the_worst_call_ends_before_the_chat_tool_gives_up() -> None:
     budget = packages.DELETE_BUDGET_SECONDS
     count = objects_store.COUNT_TIMEOUT_MS / 1000
     lock = objects_store.ORG_LOCK_WAIT_MS / 1000
+    row = store.ROW_LOCK_WAIT_MS / 1000
     assert budget + count < _client_timeout()
-    assert lock + objects_store.PURGE_TIMEOUT_MS / 1000 == store.STEP_SECONDS
+    # Fix round 2, item 3: a step also waits for the apps row, with a bound.
+    assert row + lock + objects_store.PURGE_TIMEOUT_MS / 1000 == store.STEP_SECONDS
     assert budget > store.STEP_SECONDS
-    assert lock + count < budget
+    assert row + lock + count < budget
 
 
 def test_the_route_module_still_runs_no_sql() -> None:

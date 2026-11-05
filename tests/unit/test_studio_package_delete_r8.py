@@ -770,7 +770,7 @@ def test_r8_a_holder_of_the_apps_row_takes_the_org_lock_while_a_delete_waits(wor
         async with tenant_session(world.a) as hold:
             assert await packages_store.get_package(hold, ANA, pid, for_update=True)
             task = asyncio.create_task(_delete(world.a, ANA, pid, got["confirm"]))
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
             assert not task.done()
             start = time.monotonic()
             await objects_store.lock_org(hold)
@@ -795,7 +795,7 @@ def test_r8_a_delete_waits_for_a_publish_that_holds_the_apps_row(world, monkeypa
         async with tenant_session(world.a) as hold:
             assert await packages_store.get_package(hold, ANA, pid, for_update=True)
             task = asyncio.create_task(_delete(world.a, ANA, pid, got["confirm"]))
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(0.4)
             mid = _records(world, pid)
             assert not task.done()
         return pid, mid, await task
@@ -1038,6 +1038,10 @@ def test_r8_a_publish_between_two_steps_that_adds_an_object_ends_the_call_with_4
     assert [p[0] for p in published] == [200], published
     assert status == 409, detail
     assert detail["code"] == "counts_changed"
+    # Fix round 2, item 2: the answer names the 10 that the first step removed.
+    assert detail["records_removed"] == 10
+    assert "removed 10 records" in detail["message"]
+    assert "Nothing was deleted" not in detail["message"]
     assert [o["name"] for o in detail["preview"]["objects"]] == ["invoices", "visit"]
     assert _records(world, pid) == 20
     assert sorted(_scalar(world, "SELECT array_agg(name) FROM studio_objects "
@@ -1105,4 +1109,121 @@ def test_r8_a_purge_after_a_bulk_load_reads_a_bounded_number_of_rows(world, app_
     top = (plan if isinstance(plan, list) else json.loads(plan))[0]["Plan"]
     blocks = int(top["Shared Hit Blocks"]) + int(top["Shared Read Blocks"])
     assert blocks < 30_000, blocks
+    # The purge found its 500: RLS hides each row from a session with no org.
+    assert int(top["Plans"][0]["Actual Rows"]) == 500, top["Plans"][0]
     assert _records(world, pid) == 20_000
+
+
+# ── Fix round 2: a lost partial row, and the wait for the apps row ─────────
+
+
+def test_r8_a_busy_final_count_of_a_later_step_keeps_the_partial_row(
+        world, monkeypatch) -> None:
+    """Fix round 2, item 1. Step 1 removes 10 and commits. Step 2 drains the
+    last 5, and the count of the final row is busy. The step keeps its purge
+    and writes the partial row with all 15, so no removed record is without
+    an audit row. A later call deletes the package."""
+    monkeypatch.setattr(packages_store, "DELETE_CHUNK", 10)
+    real = objects_store.package_counts
+    calls = {"n": 0, "on": False}
+
+    async def busy_from_the_second(db: Any, package_id: str, **kw: Any) -> Any:
+        if calls["on"]:
+            calls["n"] += 1
+            if calls["n"] >= 2:
+                raise objects_store.StoreBusy("This app is busy. Try again in a moment.")
+        return await real(db, package_id, **kw)
+
+    async def go() -> tuple[str, tuple[int, Any, Any], int, list[int]]:
+        pid = await _live(world.a, ANA, _manifest(_mid("finalbusy")))
+        await _fill(world.a, ANA, pid, 15)
+        _status, got = await _preview(world.a, ANA, pid)
+        monkeypatch.setattr(objects_store, "package_counts", busy_from_the_second)
+        calls["on"] = True
+        first = await _delete(world.a, ANA, pid, got["confirm"])
+        calls["on"] = False
+        left = _records(world, pid)
+        return pid, first, left, await _delete_all(world.a, ANA, pid)
+
+    pid, (status, detail, _h), left, seen = _run(world, go)
+    assert status == 503 and detail["code"] == "store_busy", detail
+    assert left == 0
+    [row] = _partials(world, pid)
+    assert (row["records_this_call"], row["reason"]) == (15, "busy")
+    assert seen == [200]
+    [final] = _deletes(world, pid)
+    assert (final["records_this_call"], final["records_total"]) == (0, 15)
+
+
+def test_r8_a_call_whose_package_another_call_deletes_writes_its_partial_row(
+        world, monkeypatch) -> None:
+    """Fix round 2, item 1. Call A removes 10 in its first step. Call B then
+    deletes the package whole, between two steps of A. A's next step finds no
+    package: it writes the partial row of its first step (``app_audit`` has no
+    foreign key), and A answers 404."""
+    monkeypatch.setattr(packages_store, "DELETE_CHUNK", 10)
+    real_session = packages._tenant_session
+    state = {"armed": False, "inside": False, "opened": 0}
+    other: list[list[int]] = []
+    holder: dict[str, str] = {}
+
+    @asynccontextmanager
+    async def spy(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+        if state["armed"] and not state["inside"]:
+            state["opened"] += 1
+            # 1: the owner read of A, 2: the first step of A, 3: its second step.
+            if state["opened"] == 3:
+                state["inside"] = True
+                try:
+                    other.append(await _delete_all(world.a, ANA, holder["pid"]))
+                finally:
+                    state["inside"] = False
+        async with real_session(*args, **kwargs) as db:
+            yield db
+
+    async def go() -> tuple[str, tuple[int, Any, Any]]:
+        pid = await _live(world.a, ANA, _manifest(_mid("twocalls")))
+        holder["pid"] = pid
+        await _fill(world.a, ANA, pid, 30)
+        _status, got = await _preview(world.a, ANA, pid)
+        monkeypatch.setattr(packages, "_tenant_session", spy)
+        state["armed"] = True
+        return pid, await _delete(world.a, ANA, pid, got["confirm"])
+
+    pid, (status, detail, _h) = _run(world, go)
+    assert other == [[200]], other
+    assert (status, detail) == (404, NOT_FOUND)
+    [row] = _partials(world, pid)
+    assert (row["records_this_call"], row["reason"], row["owner"]) == (10, "gone", ANA)
+    [final] = _deletes(world, pid)
+    assert final["records_this_call"] == 20
+    assert row["records_this_call"] + final["records_this_call"] == 30
+
+
+def test_r8_a_held_apps_row_gives_store_busy_in_about_one_second(world) -> None:
+    """Fix round 2, item 3. A publish or another delete holds the ``apps``
+    row. The delete waits at most ``ROW_LOCK_WAIT_MS`` for it, answers 503
+    ``store_busy``, and changes nothing. Without the bound it would wait for
+    the holder, and the client of the chat tool gives up first."""
+    async def go() -> tuple[str, tuple[int, Any, Any], float]:
+        pid = await _live(world.a, ANA, _manifest(_mid("heldrow")))
+        await _fill(world.a, ANA, pid, 5)
+        _status, got = await _preview(world.a, ANA, pid)
+        ends: list[float] = []
+        async with tenant_session(world.a) as hold:
+            assert await packages_store.get_package(hold, ANA, pid, for_update=True)
+            start = time.monotonic()
+            task = asyncio.create_task(_delete(world.a, ANA, pid, got["confirm"]))
+            task.add_done_callback(lambda _t: ends.append(time.monotonic()))
+            # The holder keeps the row for 3 s at most, so a delete with no
+            # bound waits for it, and the test fails in place of a hang.
+            await asyncio.wait({task}, timeout=3.0)
+        answer = await task
+        return pid, answer, ends[0] - start
+
+    pid, (status, detail, headers), took = _run(world, go)
+    assert status == 503 and detail["code"] == "store_busy", detail
+    assert headers.get("Retry-After")
+    assert 0.8 < took < 2.5, took
+    assert _records(world, pid) == 5
+    assert _partials(world, pid) == [] and _deletes(world, pid) == []
