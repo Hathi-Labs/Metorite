@@ -163,6 +163,14 @@ order: the caller holds the ``apps`` row ``FOR UPDATE``, and the sync takes
 the org lock after it. :func:`list_objects` reads the objects of one package
 in two statements.
 
+**The delete of a package (A5c-1).** ``packages_store.delete_package`` owns
+it, in the same lock order: the ``apps`` row ``FOR UPDATE``, then
+:func:`lock_org`. :func:`purge_records` deletes the records of the package
+in chunks of :data:`PURGE_CHUNK` under the 5 s deadline, and the cascade
+from ``apps`` deletes the objects, the fields and each hot row that is left.
+:func:`package_counts` counts the objects, the fields and the records (up to
+:data:`COUNT_CAP` for each object) for the preview.
+
 **On a floor of 0 or less, a write that does not lower a group never reads
 the group.** The store adds up the net change of the batch on each key of
 ``group_sum_min``, in exact ``Decimal``, from the values that it read under
@@ -705,8 +713,20 @@ async def _lock_org(db: Any) -> None:
     :class:`StoreBusy` at the bound, and when Postgres picks this wait as the
     victim of a deadlock.
 
-    ⚠️ A deadlock on a later statement stays a database error. So a caller that
-    holds ``apps`` FOR UPDATE takes the org lock first.
+    ⚠️ **The one lock order is the ``apps`` row, then this lock.** A deadlock
+    on a later statement stays a database error. So a caller that holds the
+    ``apps`` row ``FOR UPDATE`` takes this lock next, before any other
+    statement. A publish (A5, ``publish_version`` and then
+    :func:`sync_objects`) and the delete of a package (A5c-1,
+    ``packages_store.delete_package`` and then :func:`lock_org`) do that. No
+    holder of this lock then waits for an ``apps`` row: a record write locks
+    object rows and record rows only, and the foreign key of a record names
+    ``studio_objects``, never ``apps``. The one exception is
+    :func:`define_object`, whose foreign key check reads the ``apps`` row
+    ``FOR KEY SHARE``, so its one caller is the sync of a publish, which holds
+    that row already. Fence:
+    ``test_r8_two_deletes_and_a_publish_in_one_org_never_deadlock`` in
+    ``test_studio_package_delete_r8.py``.
     """
     wait = await db.execute(text(_LOCK_WAIT_SQL), {"ms": str(ORG_LOCK_WAIT_MS)})
     old = str(wait.one()[0])
@@ -779,9 +799,10 @@ async def define_object(db: Any, actor: str, *, package_id: str, name: str,
     if int(in_package) >= MAX_OBJECTS_PER_PACKAGE:
         raise BudgetExceeded(f"A package holds at most {MAX_OBJECTS_PER_PACKAGE} objects.")
     if int(in_org) >= MAX_OBJECTS_PER_ORG:
-        # No route deletes a package yet (A5c), so the refusal names a next step.
+        # The delete of a package (A5c-1) frees the room, so the refusal names it.
         raise BudgetExceeded(f"An organization holds at most {MAX_OBJECTS_PER_ORG} objects, "
-                             "so ask an admin to remove a package.")
+                             "so delete a package that you do not use, or ask its owner "
+                             "to delete it.")
     hot = sum(s.hot for s in specs)
     if hot and await _org_hot(db) + hot > MAX_HOT_PER_ORG:
         raise BudgetExceeded(
@@ -1426,6 +1447,128 @@ async def sync_objects(db: Any, actor: str, *, package_id: str,
     if problems:
         raise ObjectsOutOfSync(problems)
     return await _apply_sync(db, who, pid, items)
+
+
+# --- the delete of a package (A5c-1) ----------------------------------------
+#
+# ``packages_store.delete_package`` owns the delete. It locks the ``apps`` row
+# FOR UPDATE, takes the org lock through :func:`lock_org`, and then calls
+# :func:`purge_records` here, because this module holds all SQL of the four
+# tables. The cascade from ``apps`` deletes the objects, the fields and the hot
+# rows of the records that are left. So the purge is the only step whose size
+# has no cap: a record count has no limit.
+
+#: The most records that one step of a package delete removes.
+PURGE_CHUNK = 500
+#: A count of the records of one object stops past this number. The preview
+#: of a delete shows "100,000 or more" for a larger object.
+COUNT_CAP = 100_000
+
+#: The objects of one package by name, with their field count and their record
+#: count up to one past the cap (``:cap``). One statement for the package.
+_PACKAGE_COUNTS_SQL = (
+    "SELECT o.name, "
+    "(SELECT count(*) FROM studio_object_fields f "
+    f"WHERE f.organization_id = {_BOUND_ORG} AND f.object_id = o.id), "
+    "(SELECT count(*) FROM (SELECT 1 FROM studio_records r "
+    f"WHERE r.organization_id = {_BOUND_ORG} AND r.object_id = o.id LIMIT :cap) c) "
+    f"FROM studio_objects o WHERE o.organization_id = {_BOUND_ORG} "
+    "AND o.package_id = CAST(:pid AS uuid) ORDER BY o.name"
+)
+
+#: The object ids of one package, in id order, for the purge.
+_PACKAGE_OBJECT_IDS_SQL = (
+    "SELECT id::text FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) ORDER BY id"
+)
+
+#: At most ``:n`` records of one object, and their hot rows by cascade. The
+#: unique key ``(organization_id, object_id, id)`` serves the subselect.
+_PURGE_SQL = (
+    "DELETE FROM studio_records "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
+    "AND id IN (SELECT id FROM studio_records "
+    f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
+    "ORDER BY id LIMIT :n)"
+)
+
+
+@dataclass(frozen=True)
+class ObjectCount:
+    """The size of one object of a package, for the preview of a delete.
+
+    ``records`` holds at most :data:`COUNT_CAP`. ``capped`` is True when the
+    object holds more."""
+
+    name: str
+    fields: int
+    records: int
+    capped: bool
+
+
+async def lock_org(db: Any) -> None:
+    """Take the advisory lock of the org with the bound of :func:`_lock_org`.
+
+    The delete of a package (A5c-1) calls it right after it locks the
+    ``apps`` row ``FOR UPDATE``: the one lock order. The lock holds to the end
+    of the caller's transaction. Raises :class:`StoreBusy` at the bound."""
+    await _lock_org(db)
+
+
+def _deadline() -> float:
+    """One deadline of :data:`~acb_common.studio_query.TIMEOUT_MS` from now."""
+    return float(_clock() + studio_query.TIMEOUT_MS / 1000)
+
+
+async def package_counts(db: Any, package_id: str, *,
+                         cap: int = COUNT_CAP) -> list[ObjectCount]:
+    """The objects of the package *package_id* in the bound org, by name, with
+    their field count and their record count up to *cap* (A5c-1).
+
+    It checks no owner: the caller reads the package as its member first. The
+    statement runs under the 5 s deadline of :func:`_time_limit`. A timeout
+    raises :class:`StoreBusy`, and the caller's transaction stays usable."""
+    pid = _uuid(package_id, "package_id")
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+        raise ObjectStoreError("cap must be a whole number from 1")
+    try:
+        async with _time_limit(db, _deadline(), _BUSY_MESSAGE) as timed:
+            rows = (await timed.execute(
+                text(_PACKAGE_COUNTS_SQL), {"pid": pid, "cap": cap + 1})).all()
+    except QueryError:
+        raise StoreBusy(_BUSY_MESSAGE) from None
+    return [ObjectCount(name=str(r[0]), fields=int(r[1]), records=min(int(r[2]), cap),
+                        capped=int(r[2]) > cap) for r in rows]
+
+
+async def purge_records(db: Any, package_id: str, *, limit: int = PURGE_CHUNK) -> int:
+    """Delete at most *limit* records of the package *package_id*, and their
+    hot rows by cascade (A5c-1). Answers the number of records deleted.
+
+    ⚠️ The caller holds the ``apps`` row ``FOR UPDATE`` and then the org lock
+    (:func:`lock_org`), in that order. Each record write takes the org lock,
+    so no record of the package comes in while the caller holds it. So an
+    answer below *limit* means that the package holds no record now.
+
+    The statements run under one deadline of 5 s (:func:`_time_limit`). A
+    timeout rolls back this call only, deletes nothing, and raises
+    :class:`StoreBusy`. A retry continues: nothing is lost. The purge runs no
+    rule of an object, because each record of the package goes."""
+    pid = _uuid(package_id, "package_id")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ObjectStoreError("limit must be a whole number from 1")
+    left = limit
+    try:
+        async with _time_limit(db, _deadline(), _BUSY_MESSAGE) as timed:
+            found = (await timed.execute(text(_PACKAGE_OBJECT_IDS_SQL), {"pid": pid})).all()
+            for (oid,) in found:
+                if left <= 0:
+                    break
+                gone = await timed.execute(text(_PURGE_SQL), {"oid": str(oid), "n": left})
+                left -= int(gone.rowcount or 0)
+    except QueryError:
+        raise StoreBusy(_BUSY_MESSAGE) from None
+    return limit - left
 
 
 async def create_record(db: Any, actor: str, object_id: str, data: Mapping[str, Any], *,

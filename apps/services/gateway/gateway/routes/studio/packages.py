@@ -1,19 +1,21 @@
-"""The package routes of AI Studio (STU-A5, ``ai_studio.md`` §14 A5).
+"""The package routes of AI Studio (STU-A5, ``ai_studio.md`` §14 A5 and A5c-1).
 
-Six routes over the package store (A3 and A4, ``studio/packages_store.py``)
+Eight routes over the package store (A3 and A4, ``studio/packages_store.py``)
 and the object store (C1, ``studio/objects_store.py``). They register on the
 router of ``actions.py``, as ``skills.py`` and ``invoke.py`` do, so
 ``main.py`` mounts no second router. The gate ``require_feature_router
 ("workflows")`` and the prefix ``/studio`` hold here too.
 
-====================================  =========================================
-``POST /packages``                    create a package from a manifest (201)
-``GET /packages``                     the packages of the caller, no manifest
-``GET /packages/{id}``                one package, with its manifest and objects
-``PUT /packages/{id}/draft``          replace the draft manifest
-``POST /packages/{id}/versions``      publish the draft, and project its objects
-``GET /packages/{id}/versions``       a page of 100 versions, no manifest
-====================================  =========================================
+=======================================  ======================================
+``POST /packages``                       create a package from a manifest (201)
+``GET /packages``                        the packages of the caller, no manifest
+``GET /packages/{id}``                   one package, its manifest and objects
+``PUT /packages/{id}/draft``             replace the draft manifest
+``POST /packages/{id}/versions``         publish the draft, project its objects
+``GET /packages/{id}/versions``          a page of 100 versions, no manifest
+``GET /packages/{id}/delete-preview``    what a delete removes, and its token
+``DELETE /packages/{id}``                delete the package (200 or 202)
+=======================================  ======================================
 
 **The switch.** The first line of each handler reads ``STUDIO_ORGS``. An org
 outside it gets 404 ``Not found`` for each body, because the handler takes
@@ -81,6 +83,28 @@ a route behaves as before. A value that is not 64 hex digits is 422.
 manifest id by the same member answers 409 ``package_exists`` with the id of
 the first. Two creates at the same moment can both pass, and that is
 accepted. A member holds at most :data:`MAX_PACKAGES_PER_MEMBER` packages.
+
+**The delete (A5c-1).** Two steps, with no state in the database. The owner
+reads ``GET /packages/{id}/delete-preview``: each object with its field
+count and its record count (up to 100,000), the versions, the installs, the
+installs that reach another member, and the token ``confirm``. Then the
+owner sends ``DELETE /packages/{id}`` with the body ``{"confirm": token}``
+(at most :data:`MAX_DELETE_BODY_BYTES`). A missing or malformed token is
+422. A token that is not the token of now is 409 ``counts_changed`` with the
+new preview, and nothing is deleted. Only the owner reaches either route:
+another member, another org and an App Workshop app get 404. No route here
+has an admin path, and no body key changes the member.
+
+Each step runs in its own ``tenant_session``: the ``apps`` row ``FOR
+UPDATE``, the org lock, then a chunk of records (``store.delete_package``).
+No lock stays between two steps, so the other writes of the org run. The
+last step deletes the ``apps`` row and writes the audit row in the store,
+in one transaction. A call runs steps for at most
+:data:`DELETE_BUDGET_SECONDS`. Then it answers 202 ``{deleted: false,
+remaining, confirm}``, and the caller sends the DELETE again with the new
+``confirm``. A 503 ``store_busy`` on a later step also answers 202, because
+the earlier steps hold. The answer of the last step is 200 ``{deleted:
+true}``. Then each route answers 404 for the id.
 """
 
 from __future__ import annotations
@@ -89,13 +113,14 @@ import contextlib
 import hashlib
 import json
 import re
+import time
 import uuid
 from collections.abc import Iterator
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, Response
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.apps._common import record_app_audit_bound
 from gateway.routes.studio import actions, flags
@@ -103,8 +128,9 @@ from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store
 from gateway.studio import packages_store as store
 
-__all__ = ["DRAFT_CHANGED", "MAX_BODY_BYTES", "MAX_PACKAGES_PER_MEMBER", "MAX_PROBLEMS",
-           "VERSIONS_PAGE", "router"]
+__all__ = ["COUNTS_CHANGED", "DELETE_BUDGET_SECONDS", "DRAFT_CHANGED", "MAX_BODY_BYTES",
+           "MAX_DELETE_BODY_BYTES", "MAX_PACKAGES_PER_MEMBER", "MAX_PROBLEMS", "VERSIONS_PAGE",
+           "router"]
 
 _log = get_logger("gateway.studio.packages")
 
@@ -120,8 +146,15 @@ MAX_AUDIT_NAMES = 50
 RETRY_AFTER = "2"
 #: The most versions in one page of the versions list.
 VERSIONS_PAGE = store.MAX_VERSIONS_PAGE
+#: The most bytes of the body of a delete (4 KiB). It holds the token only.
+MAX_DELETE_BODY_BYTES = 4 * 1024
+#: The longest run of the steps of one delete call, in seconds. Past it the
+#: call answers 202, and the caller sends the DELETE again.
+DELETE_BUDGET_SECONDS = 20.0
 _DIGITS = re.compile(r"[0-9]{1,10}", re.ASCII)
 _HASH = re.compile(r"[0-9a-f]{64}", re.ASCII)
+#: The clock of the delete budget. A test replaces it.
+_clock = time.monotonic
 
 PACKAGE_EXISTS = "package_exists"
 PACKAGE_LIMIT = "package_limit"
@@ -130,6 +163,7 @@ CATALOG_UNAVAILABLE = "catalog_unavailable"
 STORE_BUSY = "store_busy"
 BODY_TOO_LARGE = "body_too_large"
 DRAFT_CHANGED = "draft_changed"
+COUNTS_CHANGED = "counts_changed"
 
 CATALOG_DOWN = "The action catalog is not available now, so try the publish again later."
 BODY_OVER_CAP = "This body is too large, so send a smaller manifest."
@@ -138,6 +172,8 @@ TOO_DEEP = "The body nests too deep to read. Flatten it."
 BAD_CURSOR = "The cursor before is a version number, so send a whole number from 1."
 BAD_HASH = ("based_on is the hash of the draft that you read: 64 hexadecimal digits. Send it, "
             "or leave it out.")
+BAD_CONFIRM = ("confirm is the token of the delete preview: 64 hexadecimal digits. Read the "
+               "preview, then send its token.")
 
 
 def _not_found() -> HTTPException:
@@ -210,23 +246,23 @@ def _store_errors() -> Iterator[None]:
         raise _unprocessable(TOO_DEEP) from None
 
 
-async def _read_body(request: Request) -> bytes | None:
-    """The bytes of the body, or None past :data:`MAX_BODY_BYTES`. The read
-    stops at the first chunk past the cap."""
+async def _read_body(request: Request, cap: int = MAX_BODY_BYTES) -> bytes | None:
+    """The bytes of the body, or None past *cap*. The read stops at the
+    first chunk past the cap."""
     chunks: list[bytes] = []
     size = 0
     async for chunk in request.stream():
         size += len(chunk)
-        if size > MAX_BODY_BYTES:
+        if size > cap:
             return None
         chunks.append(chunk)
     return b"".join(chunks)
 
 
-async def _raw_body(request: Request) -> bytes:
+async def _raw_body(request: Request, cap: int = MAX_BODY_BYTES) -> bytes:
     """The bytes of the body. No session is open during the read. A body past
-    the cap is 413, before any read of the database."""
-    raw = await _read_body(request)
+    *cap* is 413, before any read of the database."""
+    raw = await _read_body(request, cap)
     if raw is None:
         raise HTTPException(status_code=413, detail={
             "code": BODY_TOO_LARGE, "message": BODY_OVER_CAP})
@@ -487,3 +523,107 @@ async def list_versions(
     more = len(found) == VERSIONS_PAGE and found[-1].version > 1
     return {"versions": [_version_out(v) for v in found],
             "next_before": found[-1].version if more else None}
+
+
+# ── The delete (A5c-1) ─────────────────────────────────────────────────────
+
+
+def _confirm(body: dict[str, Any]) -> str:
+    """The token of the body. A missing token, or one that is not 64 hex
+    digits, is 422. It says nothing about the package."""
+    raw = body.get("confirm")
+    if isinstance(raw, str) and _HASH.fullmatch(raw.strip().lower()):
+        return raw.strip().lower()
+    raise _unprocessable(BAD_CONFIRM, [{"path": "$.confirm", "message": BAD_CONFIRM}])
+
+
+def _preview_out(found: store.DeletePreview) -> dict[str, Any]:
+    """The preview as the answer holds it: names and counts, no manifest text."""
+    return {
+        "package": {"id": found.id, "name": found.name, "slug": found.slug},
+        "objects": [{"name": o.name, "fields": o.fields, "records": o.records,
+                     "capped": o.capped} for o in found.objects],
+        "totals": {"objects": len(found.objects), "fields": found.fields,
+                   "records": found.records, "records_capped": found.capped,
+                   "versions": found.versions, "installs": found.installs,
+                   "other_member_installs": found.other_member_installs},
+        "confirm": found.confirm,
+    }
+
+
+def _busy(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=503, detail={"code": STORE_BUSY, "message": str(exc)},
+                         headers={"Retry-After": RETRY_AFTER})
+
+
+@router.get("/packages/{package_id}/delete-preview")
+async def delete_preview(
+    package_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """What a delete of a package of the caller removes, and the token
+    ``confirm`` that the DELETE must send. A read: it changes nothing."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    pid = _package_id(package_id)
+    async with _tenant_session() as db:
+        with _store_errors():
+            found = await store.delete_preview(db, user.email, pid)
+        if found is None:
+            raise _not_found()
+    return _preview_out(found)
+
+
+@router.delete("/packages/{package_id}")
+async def delete_package(
+    package_id: str,
+    request: Request,
+    response: Response,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Delete a package of the caller, with the token of its delete preview.
+
+    Each step is its own transaction, and no lock stays between two steps.
+    The first step checks the token under the locks. 200 when the package is
+    gone, 202 with what is left and a new token past the budget."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    pid = _package_id(package_id)
+    raw = await _raw_body(request, MAX_DELETE_BODY_BYTES)
+    await _require_owned(user.email, pid)
+    token = _confirm(_parse_json(raw, empty_ok=True))
+    start = _clock()
+    removed = 0
+    first = True
+    while True:
+        try:
+            async with _tenant_session() as db:
+                step = await store.delete_package(
+                    db, user.email, pid, confirm=token if first else None, removed=removed)
+        except store.CountsChanged as exc:
+            raise HTTPException(status_code=409, detail={
+                "code": COUNTS_CHANGED, "message": str(exc),
+                "preview": _preview_out(exc.preview)}) from None
+        except objects_store.StoreBusy as exc:
+            if first:
+                raise _busy(exc) from None
+            # The earlier steps hold, so the call answers what is left.
+            break
+        if step is None:
+            raise _not_found()
+        removed += step.removed
+        if step.deleted:
+            _log.info("studio.packages.deleted", package_id=pid, records=removed)
+            return {"deleted": True, "package_id": pid, "records_removed": removed}
+        first = False
+        if _clock() - start >= DELETE_BUDGET_SECONDS:
+            break
+    async with _tenant_session() as db:
+        with _store_errors():
+            left = await store.delete_preview(db, user.email, pid)
+        if left is None:
+            raise _not_found()
+    response.status_code = 202
+    return {"deleted": False, "package_id": pid, "remaining": left.records,
+            "remaining_capped": left.capped, "records_removed": removed,
+            "confirm": left.confirm}

@@ -65,7 +65,7 @@ import hashlib
 import json
 import math
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -73,6 +73,8 @@ from typing import Any
 from acb_common.secret_shapes import looks_like_secret
 from acb_common.studio_manifest import ManifestError, manifest_hash, validate_manifest
 from sqlalchemy import text
+
+from gateway.studio import objects_store
 
 #: The value of ``apps.format`` for a Studio package.
 FORMAT = "manifest"
@@ -215,6 +217,41 @@ ROLLBACK_LIVE = "That version is already the live version."
 #: draft (STU-G1c review round 1).
 DRAFT_CHANGED_TEXT = ("The draft changed after the read that this request names. Nothing was "
                       "written. Read the package again.")
+
+#: The records that one step of a delete removes (A5c-1). A test makes it
+#: smaller, and :func:`delete_package` reads it at each call.
+DELETE_CHUNK = objects_store.PURGE_CHUNK
+#: The op of the audit row of a delete.
+DELETE_OP = "package.delete"
+#: The refusal of a delete whose confirm token is not the token of now.
+COUNTS_CHANGED_TEXT = ("The package changed after the preview that this request names. Nothing "
+                       "was deleted. Read the new preview, then confirm it.")
+_TOKEN_HEX = frozenset("0123456789abcdef")
+
+#: The versions, the installs, and the installs that reach a member other
+#: than the owner, of one package. An archived install reaches nobody.
+_DELETE_COUNTS_SQL = (
+    "SELECT (SELECT count(*) FROM app_versions v WHERE v.app_id = a.id), "
+    "(SELECT count(*) FROM package_install i "
+    "WHERE i.organization_id = a.organization_id AND i.app_id = a.id), "
+    "(SELECT count(*) FROM package_install i "
+    "WHERE i.organization_id = a.organization_id AND i.app_id = a.id "
+    "AND i.state <> 'archived' "
+    "AND NOT (i.scope_kind = 'private' AND i.scope_subject = a.owner_email)) "
+    f"FROM apps a WHERE a.organization_id = {_BOUND_ORG} AND a.format = 'manifest' "
+    "AND a.owner_email = :m AND a.id = CAST(:id AS uuid)"
+)
+
+#: The one ``DELETE FROM apps`` of a package. The foreign keys cascade to the
+#: versions, the objects, the fields, the records that are left, the hot rows,
+#: the installs, the contributions, the grants, the files, the pins, the tool
+#: grants and the data. ``app_audit`` has no foreign key, so its rows stay.
+#: Fence: ``test_only_delete_package_deletes_a_package``.
+_DELETE_SQL = (
+    "DELETE FROM apps "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m AND id = CAST(:id AS uuid) RETURNING id::text"
+)
 
 
 class PackageStoreError(ValueError):
@@ -608,7 +645,7 @@ async def _append_version(db: Any, m: str, pid: str, encoded: str, notes: str) -
     return _version(row)
 
 
-async def _audit(db: Any, m: str, pid: str, version: int, kind: str,
+async def _audit(db: Any, m: str, pid: str, version: int | None, kind: str,
                  detail: dict[str, Any]) -> None:
     """The audit row, in the caller's transaction. It never drops an error."""
     await db.execute(text(_AUDIT_SQL), {
@@ -724,3 +761,165 @@ async def get_version(db: Any, member: str, package_id: str,
     row = (await db.execute(text(_VERSION_GET_SQL), {
         "m": _member(member), "id": _package_id(package_id), "v": version})).first()
     return None if row is None else _version(row)
+
+
+# --- the delete of a package (A5c-1) ----------------------------------------
+
+
+@dataclass(frozen=True)
+class DeletePreview:
+    """What a delete of one package removes, and the token that confirms it.
+
+    ``objects`` holds each object by name, with its field count and its
+    record count up to ``objects_store.COUNT_CAP``. ``confirm`` is
+    :func:`confirm_token` of these counts. The preview holds no manifest
+    text and no record value."""
+
+    id: str
+    name: str
+    slug: str
+    objects: tuple[objects_store.ObjectCount, ...]
+    versions: int
+    installs: int
+    other_member_installs: int
+    confirm: str
+
+    @property
+    def fields(self) -> int:
+        """The fields of all objects."""
+        return sum(o.fields for o in self.objects)
+
+    @property
+    def records(self) -> int:
+        """The records of all objects, each up to the cap."""
+        return sum(o.records for o in self.objects)
+
+    @property
+    def capped(self) -> bool:
+        """True when an object holds more records than the cap."""
+        return any(o.capped for o in self.objects)
+
+
+@dataclass(frozen=True)
+class DeleteStep:
+    """One step of a delete. ``deleted`` is True when the ``apps`` row is
+    gone. ``removed`` is the records that this step removed."""
+
+    deleted: bool
+    removed: int
+
+
+class CountsChanged(Exception):
+    """The confirm token is not the token of the package now, so nothing was
+    deleted. ``preview`` is the preview of now, with its own token. The route
+    answers 409 ``counts_changed`` with it."""
+
+    def __init__(self, preview: DeletePreview) -> None:
+        super().__init__(COUNTS_CHANGED_TEXT)
+        self.preview = preview
+
+
+def confirm_token(package_id: str, objects: Sequence[objects_store.ObjectCount],
+                  versions: int, installs: int, other_member_installs: int) -> str:
+    """The SHA-256 of the canonical JSON of the id, the object names and the
+    counts. The token stops a delete after a stale preview. It is not an
+    authorization: the owner check runs before it."""
+    doc = {
+        "v": 1, "id": package_id, "versions": versions, "installs": installs,
+        "other_member_installs": other_member_installs,
+        "objects": [[o.name, o.fields, o.records, o.capped]
+                    for o in sorted(objects, key=lambda o: o.name)],
+    }
+    canonical = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("ascii")).hexdigest()
+
+
+def _confirm(token: object) -> str:
+    """A confirm token is 64 lower-case hex digits. The refusal names no value."""
+    if not isinstance(token, str) or len(token) != 64 or not set(token) <= _TOKEN_HEX:
+        raise PackageStoreError("confirm must be 64 lower-case hexadecimal digits")
+    return token
+
+
+def _count(value: object, what: str, low: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < low:
+        raise PackageStoreError(f"{what} must be a whole number from {low}")
+    return value
+
+
+async def _preview(db: Any, m: str, current: Package) -> DeletePreview:
+    objects = await objects_store.package_counts(db, current.id)
+    versions, installs, other = (await db.execute(text(_DELETE_COUNTS_SQL), {
+        "m": m, "id": current.id})).one()
+    found = tuple(objects)
+    return DeletePreview(
+        id=current.id, name=current.name, slug=current.slug, objects=found,
+        versions=int(versions), installs=int(installs), other_member_installs=int(other),
+        confirm=confirm_token(current.id, found, int(versions), int(installs), int(other)))
+
+
+async def delete_preview(db: Any, member: str, package_id: str) -> DeletePreview | None:
+    """The preview of a delete of the package *package_id* of *member*, or
+    None. A package of another member or org, and an App Workshop app,
+    answer None. A read: it takes no lock. The record counts run under the
+    5 s deadline of the object store, and a timeout raises ``StoreBusy``."""
+    m = _member(member)
+    current = await get_package(db, m, _package_id(package_id))
+    return None if current is None else await _preview(db, m, current)
+
+
+async def delete_package(db: Any, member: str, package_id: str, *,
+                         confirm: str | None = None, chunk: int | None = None,
+                         removed: int = 0) -> DeleteStep | None:
+    """One step of the delete of the package *package_id* of *member*, in the
+    caller's transaction (A5c-1). Answers None when no package of the member
+    has the id: then nothing changes.
+
+    **The lock order.** The ``apps`` row ``FOR UPDATE`` first, then the org
+    lock (``objects_store.lock_org``), the order of a publish. So a delete
+    and a publish of one package run one at a time, and no step deadlocks
+    with a record write. A wait for the org lock past 1 s raises
+    ``StoreBusy`` and changes nothing.
+
+    **The token.** With *confirm*, the step builds the preview under both
+    locks first. A token that is not :func:`confirm_token` of now raises
+    :class:`CountsChanged` with the preview of now, and nothing changes. The
+    route sends *confirm* with the first step of each call.
+
+    **The step.** It deletes at most *chunk* records (:data:`DELETE_CHUNK`
+    when None) through ``objects_store.purge_records``. When the chunk is
+    full, records can be left, and the step answers ``deleted=False``. The
+    caller commits and runs the next step in a new transaction, so no lock
+    stays between two steps. Else no record is left, because the org lock
+    keeps each record writer out. Then the same transaction deletes the
+    ``apps`` row (the cascade takes the rest) and writes the ``app_audit``
+    row (kind ``action``, op :data:`DELETE_OP`) through :func:`_audit`. A
+    failed audit rolls the delete back. *removed* is the records that the
+    earlier steps of the caller removed. Only the audit row reads it.
+    """
+    m = _member(member)
+    pid = _package_id(package_id)
+    token = None if confirm is None else _confirm(confirm)
+    size = _count(DELETE_CHUNK if chunk is None else chunk, "chunk", 1)
+    before = _count(removed, "removed", 0)
+    current = await get_package(db, m, pid, for_update=True)
+    if current is None:
+        return None
+    await objects_store.lock_org(db)
+    if token is not None:
+        now = await _preview(db, m, current)
+        if now.confirm != token:
+            raise CountsChanged(now)
+    gone = await objects_store.purge_records(db, pid, limit=size)
+    if gone >= size:
+        return DeleteStep(deleted=False, removed=gone)
+    left = await _preview(db, m, current)
+    row = (await db.execute(text(_DELETE_SQL), {"m": m, "id": pid})).first()
+    if row is None:  # pragma: no cover - the row lock holds the row
+        raise PackageStoreError("The package was not deleted.")
+    await _audit(db, m, pid, current.live_version, "action", {
+        "op": DELETE_OP, "by": "owner", "owner": current.owner_email, "name": current.name,
+        "slug": current.slug, "objects": len(left.objects), "fields": left.fields,
+        "records": before + gone, "versions": left.versions, "installs": left.installs,
+        "other_member_installs": left.other_member_installs})
+    return DeleteStep(deleted=True, removed=gone)
