@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +27,9 @@ from web_worker.egress import EgressLog, route_handler
 from web_worker.fetch import JobScope, Refused, parse_hop, port_of
 from web_worker.jobs import Job
 from web_worker.limits import JOB_TIMEOUT_S, MAX_DOCUMENT_BYTES, MAX_MARKDOWN_BYTES, MAX_SESSIONS
+
+#: The JavaScript heap of one renderer, in MiB.
+RENDERER_HEAP_MB = 512
 
 #: Chromium flags. The route fulfills each request, so Chromium itself needs
 #: no network. The proxy address is one where nothing listens, also for a
@@ -41,6 +45,9 @@ CHROMIUM_ARGS = (
     "--webrtc-ip-handling-policy=disable_non_proxied_udp",
     "--dns-prefetch-disable",
     "--disable-background-networking",
+    # A cap on the JavaScript heap of each renderer. A page that builds a
+    # huge string crashes its own renderer, and the job fails alone.
+    f"--js-flags=--max-old-space-size={RENDERER_HEAP_MB}",
 )
 
 #: The ONE pool of Markdown work. A job that times out stops waiting, and its
@@ -48,8 +55,83 @@ CHROMIUM_ARGS = (
 #: threads never pass MAX_SESSIONS, and later work waits in the queue.
 MARKDOWN_POOL = ThreadPoolExecutor(max_workers=MAX_SESSIONS, thread_name_prefix="web-worker-md")
 
-#: The size of the DOM in UTF-16 units. A UTF-8 byte count is at least this.
-DOM_SIZE = "() => document.documentElement ? document.documentElement.outerHTML.length : 0"
+#: The name of the isolated world that reads the page. Page scripts run in
+#: the main world, and they cannot see or patch the objects of this world.
+READ_WORLD = "web-worker-read"
+
+#: One snapshot of the document, in the isolated world. The renderer keeps
+#: the string in a global of that world, and Python reads it in slices. The
+#: title is cut here, so a huge title never leaves the renderer.
+SNAPSHOT_JS = """(() => {
+  const d = document;
+  const html = (d.doctype ? '<!DOCTYPE ' + d.doctype.name + '>' : '')
+    + (d.documentElement ? d.documentElement.outerHTML : '');
+  globalThis.__webWorkerDoc = html;
+  return {length: html.length, title: String(d.title || '').slice(0, 1000)};
+})()"""
+
+#: UTF-16 units of one slice. A slice is at most 3 times this in UTF-8.
+READ_SLICE = 256 * 1024
+
+DROP_JS = "delete globalThis.__webWorkerDoc"
+
+Evaluate = Callable[[str], Awaitable[Any]]
+
+
+async def read_document(evaluate: Evaluate, cap: int = MAX_DOCUMENT_BYTES) -> tuple[str, str]:
+    """The HTML and the title of the page, read in the isolated world.
+
+    The snapshot gives the length in UTF-16 units. A UTF-8 byte count is at
+    least that, so a longer snapshot gets ``too large`` and no slice is read.
+    Else Python reads slices of READ_SLICE units, and it stops when the UTF-8
+    bytes pass ``cap``. So Python never holds more than ``cap`` and one slice.
+    It never asks the main world for the HTML, because the page controls
+    that world and can make its answer unbounded."""
+    try:
+        snap = await evaluate(SNAPSHOT_JS)
+        length = int(snap["length"])
+        title = str(snap.get("title", ""))[:1000]
+        if length > cap:
+            raise PageRefused("too large")
+        parts: list[str] = []
+        size = 0
+        for start in range(0, length, READ_SLICE):
+            part = await evaluate(
+                f"globalThis.__webWorkerDoc.slice({start}, {min(start + READ_SLICE, length)})")
+            if not isinstance(part, str) or len(part) > READ_SLICE:
+                raise PageRefused("unreadable")
+            size += len(part.encode("utf-8"))
+            if size > cap:
+                raise PageRefused("too large")
+            parts.append(part)
+        return "".join(parts), title
+    finally:
+        with contextlib.suppress(Exception):
+            await evaluate(DROP_JS)
+
+
+async def isolated_evaluator(context: Any, page: Any) -> Evaluate:
+    """An evaluate in a new isolated world of the main frame, over CDP."""
+    session = await context.new_cdp_session(page)
+    tree = await session.send("Page.getFrameTree")
+    world = await session.send("Page.createIsolatedWorld", {
+        "frameId": tree["frameTree"]["frame"]["id"],
+        "worldName": READ_WORLD,
+        "grantUniveralAccess": False,
+    })
+    context_id = world["executionContextId"]
+
+    async def evaluate(expression: str) -> Any:
+        answer = await session.send("Runtime.evaluate", {
+            "expression": expression,
+            "contextId": context_id,
+            "returnByValue": True,
+        })
+        if "exceptionDetails" in answer:
+            raise PageRefused("unreadable")
+        return answer["result"].get("value")
+
+    return evaluate
 
 #: Every URL, for ``context.route`` and ``context.route_web_socket``.
 ALL = re.compile(r".*")
@@ -155,11 +237,8 @@ class ChromiumRenderer:
             if record.top_refused is not None:
                 raise PageRefused(record.top_refused) from None
             raise
-        # The DOM can grow past the cap of the answer (a script writes it).
-        # Ask its size first, so a big page never reaches Python.
-        if await page.evaluate(DOM_SIZE) > MAX_DOCUMENT_BYTES:
-            raise PageRefused("too large")
-        html = await page.content()
-        if len(html.encode("utf-8")) > MAX_DOCUMENT_BYTES:
-            raise PageRefused("too large")
-        return html, record.top_url or page.url, await page.title()
+        # A script can grow the DOM past the cap of the answer, and it can
+        # patch what the main world sees. So the read runs in an isolated
+        # world, in slices, and never through the main world.
+        html, title = await read_document(await isolated_evaluator(context, page))
+        return html, record.top_url or page.url, title

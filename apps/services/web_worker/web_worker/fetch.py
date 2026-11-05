@@ -506,7 +506,9 @@ async def read_capped(resp: httpx.Response, cap: int, host: str = "",
             if encoding == "deflate" and inflate is None:
                 inflate = _deflate(chunk)
             before = len(buf)
-            buf += chunk if inflate is None else inflate.decompress(chunk, room())
+            # Plain bytes take at most the room too, so no step passes a cap
+            # by more than one byte.
+            buf += chunk[:room()] if inflate is None else inflate.decompress(chunk, room())
             count(len(buf) - before)
             if len(buf) > cap or (inflate is not None and inflate.unconsumed_tail):
                 raise TooLarge("decoded")

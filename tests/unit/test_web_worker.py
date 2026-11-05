@@ -1054,12 +1054,93 @@ def test_a_job_runs_at_most_its_fetches_at_once() -> None:
     assert 1 <= live["most"] <= limits.FETCHES_PER_JOB
 
 
-def test_the_page_content_has_a_cap_before_python_reads_it() -> None:
+class FakeWorld:
+    """An isolated world over a fake document. It records each expression,
+    so a test can show which slices Python asked for."""
+
+    def __init__(self, html: str, title: str = "T") -> None:
+        self.html, self.title = html, title
+        self.asked: list[str] = []
+        self.doc: str | None = None
+
+    async def evaluate(self, expression: str) -> Any:
+        self.asked.append(expression)
+        if expression == render.SNAPSHOT_JS:
+            self.doc = self.html
+            return {"length": len(self.html), "title": self.title[:1000]}
+        if expression == render.DROP_JS:
+            self.doc = None
+            return True
+        m = re.fullmatch(r"globalThis.__webWorkerDoc.slice\((\d+), (\d+)\)", expression)
+        assert m and self.doc is not None, expression
+        return self.doc[int(m.group(1)):int(m.group(2))]
+
+
+def test_the_document_is_read_in_slices_and_dropped() -> None:
+    html = "<html><body>" + "x" * (3 * render.READ_SLICE) + "</body></html>"
+    world = FakeWorld(html, "Title")
+    got, title = asyncio.run(render.read_document(world.evaluate))
+    assert got == html and title == "Title"
+    slices = [e for e in world.asked if e.startswith("globalThis.__webWorkerDoc.slice(")]
+    assert len(slices) == 4
+    assert world.asked[-1] == render.DROP_JS and world.doc is None
+
+
+def test_a_document_past_the_cap_is_never_read() -> None:
+    world = FakeWorld("A" * (limits.MAX_DOCUMENT_BYTES + 1))
+    with pytest.raises(render.PageRefused, match="too large"):
+        asyncio.run(render.read_document(world.evaluate))
+    assert not [e for e in world.asked if e.startswith("globalThis.__webWorkerDoc.slice(")], "a slice was read"
+    assert world.asked[-1] == render.DROP_JS
+
+
+def test_a_document_of_wide_letters_stops_at_the_byte_cap() -> None:
+    """Under the cap in UTF-16 units, but three times over in UTF-8. Python
+    stops after the slice that passes the cap."""
+    cap = 4 * render.READ_SLICE
+    world = FakeWorld("€" * (cap - 1))
+    with pytest.raises(render.PageRefused, match="too large"):
+        asyncio.run(render.read_document(world.evaluate, cap))
+    slices = [e for e in world.asked if e.startswith("globalThis.__webWorkerDoc.slice(")]
+    assert len(slices) == 2, slices
+
+
+def test_a_huge_title_stays_in_the_renderer() -> None:
+    world = FakeWorld("<p>x</p>", "t" * 10_000_000)
+    _, title = asyncio.run(render.read_document(world.evaluate))
+    assert len(title) == 1000
+
+
+def test_the_renderer_never_reads_the_page_in_the_main_world() -> None:
+    """A page can patch the main world (``outerHTML``) and grow the DOM. The
+    read uses an isolated world over CDP, and never ``page.content()``."""
     text = (WORKER / "web_worker" / "render.py").read_text(encoding="utf-8")
-    assert "await page.evaluate(DOM_SIZE) > MAX_DOCUMENT_BYTES" in text
-    assert text.index("page.evaluate(DOM_SIZE)") < text.index("await page.content()")
-    assert 'len(html.encode("utf-8")) > MAX_DOCUMENT_BYTES' in text
-    assert "scope.close()" in text
+    code = "\n".join(ln for ln in text.splitlines() if not ln.strip().startswith("#"))
+    assert "page.content(" not in code and "page.evaluate(" not in code
+    assert "page.title(" not in code
+    assert '"Page.createIsolatedWorld"' in code and '"contextId": context_id' in code
+    assert "await read_document(await isolated_evaluator(context, page))" in code
+    assert "scope.close()" in code
+    assert f"--js-flags=--max-old-space-size={render.RENDERER_HEAP_MB}" in render.CHROMIUM_ARGS
+
+
+def test_plain_bytes_never_pass_the_job_budget_by_a_chunk() -> None:
+    """Identity bodies of 1 MiB chunks, many at once: each step takes at most
+    the bytes left, so the job holds the budget and one byte per fetch."""
+    pages = {f"public.example/p{i}": (lambda: httpx.Response(200, content=Source(b"a" * MIB, 4)))
+             for i in range(20)}
+    web = FakeWeb(pages)
+
+    async def go() -> fetch.JobScope:
+        scope = fetch.JobScope()
+        handler = egress.route_handler(egress.EgressLog(), scope, fetch=web.fetcher())
+        await asyncio.gather(*(handler(FakeRoute(), FakeRequest(f"https://public.example/p{i}", "image"))
+                               for i in range(20)))
+        return scope
+
+    scope = asyncio.run(go())
+    assert scope.budget.peak <= limits.MAX_JOB_BYTES + limits.FETCHES_PER_JOB
+    assert scope.budget.bytes <= limits.MAX_JOB_BYTES
 
 
 @pytest.mark.parametrize("url", ["https://xn--mnchen-3ya.de/", "https://münchen.de/",
