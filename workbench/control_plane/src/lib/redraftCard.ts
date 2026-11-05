@@ -27,7 +27,7 @@
 import { diffKeys } from "@/app/knowledge/lib/wordDiff";
 import { tabLabel } from "@/lib/cardTabs";
 import type { PendingConfirmation } from "@/lib/confirmationQueue";
-import { isNewMail, startTicks, tickedFor, type ReplyForm, type ReplyTicks } from "@/lib/replyCard";
+import { isNewMail, startTicks, tickedFor, type ReplyForm, type ReplyRecipients, type ReplyTicks } from "@/lib/replyCard";
 
 /**
  * The member's version of an open new-mail card, as a steer carries it. The
@@ -59,25 +59,103 @@ export interface CardText {
   body: string;
 }
 
+/**
+ * The version of a card that a steer carried: its text, and the people the
+ * member left ticked. Lower-case addresses, as the form keeps its ticks.
+ */
+export interface SentVersion extends CardText {
+  to?: string[];
+  cc?: string[];
+  bcc?: string[];
+}
+
+/** The people of the member's last version of the old card (P1). */
+export interface PeopleBefore {
+  /** The people the member left ticked. */
+  ticked: string[];
+  /** The people the member unticked. */
+  unticked: string[];
+}
+
+/** The people of the new card. */
+export interface PeopleAfter {
+  /** Every person the new card offers. */
+  all: string[];
+  /** The people it starts with ticked, after the member's unticks. */
+  ticked: string[];
+}
+
+const low = (list: readonly string[] | undefined) => (list ?? []).map((a) => a.toLowerCase());
+
+/** The people of a sent version: the ones it left ticked. */
+export function tickedOfSent(v: SentVersion): string[] {
+  return low([...(v.to ?? []), ...(v.cc ?? []), ...(v.bcc ?? [])]);
+}
+
+/**
+ * The people of the old card that the member unticked: every person it
+ * offered that its sent version did not keep ticked. UNTICK ONLY: the result
+ * only ever removes a tick from the new card (P1).
+ */
+export function untickedOf(form: ReplyForm, sent: SentVersion): string[] {
+  const all = form.recipients.reply_all;
+  const offered = low([...all.to, ...all.cc, ...(all.bcc ?? [])]);
+  const on = new Set(tickedOfSent(sent));
+  return [...new Set(offered)].filter((a) => !on.has(a));
+}
+
+/**
+ * The form of a redrafted card with each person the member unticked still
+ * unticked (P1). It narrows the ticked start and never widens it: a person the
+ * new card did not tick stays unticked, and nobody is added.
+ */
+export function withUnticked(form: ReplyForm, unticked: readonly string[]): ReplyForm {
+  if (!unticked.length) return form;
+  const off = new Set(low(unticked));
+  const narrow = (r: ReplyRecipients): ReplyRecipients => ({
+    to: r.to.filter((a) => !off.has(a.toLowerCase())),
+    cc: r.cc.filter((a) => !off.has(a.toLowerCase())),
+    ...(r.bcc ? { bcc: r.bcc.filter((a) => !off.has(a.toLowerCase())) } : {}),
+  });
+  const start = form.ticked ?? form.recipients;
+  return { ...form, ticked: { reply: narrow(start.reply), reply_all: narrow(start.reply_all) } };
+}
+
 const sameList = (a: readonly string[], b: readonly string[]) =>
   a.length === b.length && a.every((x, i) => x === b[i]);
 
 /**
+ * The member's version of a new-mail card, whether they edited it or not:
+ * the subject, the text and the people they left ticked, from the server's
+ * own lists. A steer carries one for EACH open card (P2), so the gateway
+ * replaces the snapshot that an older steer left for a card the member has
+ * since put back to its start. Null for a card that is not a new mail.
+ */
+export function snapshotOf(
+  form: ReplyForm,
+  requestId: string,
+  now: { subject: string; body: string; ticks: ReplyTicks },
+): CardDraft | null {
+  if (!isNewMail(form) || !/^[0-9a-f]{32}$/.test(requestId)) return null;
+  const picked = tickedFor(form, true, now.ticks);
+  return { request_id: requestId, subject: now.subject, body: now.body, to: picked.to, cc: picked.cc, bcc: picked.bcc ?? [] };
+}
+
+/**
  * The member's version of a new-mail card, or null when the card shows its
- * own start: no edit of the subject, the text or the ticks. A steer carries
- * a version only after an edit (§18.11 step 1). `to`, `cc` and `bcc` are the
- * people that the member left ticked, from the server's own lists.
+ * own start: no edit of the subject, the text or the ticks. `to`, `cc` and
+ * `bcc` are the people that the member left ticked, from the server's own
+ * lists.
  */
 export function cardDraftOf(
   form: ReplyForm,
   requestId: string,
   now: { subject: string; body: string; ticks: ReplyTicks },
 ): CardDraft | null {
-  if (!isNewMail(form) || !/^[0-9a-f]{32}$/.test(requestId)) return null;
+  if (!isNewMail(form)) return null;
   const ticksMoved = !sameList(startTicks(form).reply_all, now.ticks.reply_all);
   if (now.subject === form.subject && now.body === form.body && !ticksMoved) return null;
-  const picked = tickedFor(form, true, now.ticks);
-  return { request_id: requestId, subject: now.subject, body: now.body, to: picked.to, cc: picked.cc, bcc: picked.bcc ?? [] };
+  return snapshotOf(form, requestId, now);
 }
 
 /** The version that a card's form last reported, with the order of the edit. */
@@ -97,21 +175,30 @@ function isOpenNewMail(card: PendingConfirmation): boolean {
 }
 
 /**
- * The version that the next steer carries: the newest edit of an open
- * new-mail card, or null when no open card has one. A slot, an answered card
- * and a card of another kind give none.
+ * The versions that the next steer carries (P2): one for EACH open new-mail
+ * card, in the queue's order. A card the member edited gives its newest
+ * edit. A card at its start gives its start, so the gateway replaces or
+ * deletes a snapshot that an older steer left for it. A slot, an answered
+ * card and a card of another kind give none.
  */
-export function pickCardDraft(
+export function pickCardDrafts(
   cards: readonly PendingConfirmation[],
   kept: ReadonlyMap<string, KeptDraft>,
-): CardDraft | null {
-  let best: KeptDraft | null = null;
+): CardDraft[] {
+  const out: CardDraft[] = [];
   for (const card of cards) {
-    if (!isOpenNewMail(card)) continue;
+    if (!isOpenNewMail(card) || !card.reply) continue;
     const k = kept.get(card.key);
-    if (k && k.draft.request_id === card.requestId && (!best || k.seq > best.seq)) best = k;
+    if (k && k.draft.request_id === card.requestId) {
+      out.push(k.draft);
+      continue;
+    }
+    const start = snapshotOf(card.reply, card.requestId ?? "", {
+      subject: card.reply.subject, body: card.reply.body, ticks: startTicks(card.reply),
+    });
+    if (start) out.push(start);
   }
-  return best?.draft ?? null;
+  return out;
 }
 
 /** The newest open new-mail card, for the composer's line, or null. */
@@ -146,14 +233,26 @@ export interface ChangeRun {
   added: string;
 }
 
+/** The people that changed between the old card and the new one (P1). */
+export interface PeopleChange {
+  /** Ticked on the new card, and not ticked on the member's version. */
+  added: string[];
+  /** Ticked on the member's version, and not ticked on the new card. */
+  removed: string[];
+  /** Unticked by the member, offered again, and kept unticked. */
+  keptOut: string[];
+}
+
 export interface Changes {
+  /** The people who changed. */
+  people: PeopleChange;
   /** The first changes, in the card's order. */
   runs: ChangeRun[];
   /** How many more changes the line does not show. */
   more: number;
   /** The diff stopped at its limit, so the middle of the text is one change. */
   coarse: boolean;
-  /** The new card has the same words as the member's last version. */
+  /** The new card has the same words and the same people as the member's last version. */
   none: boolean;
 }
 
@@ -190,32 +289,61 @@ function runsOf(where: ChangeRun["where"], before: string, after: string): { run
 }
 
 /**
- * What changed from the member's last version to the new card, word by word.
- * The subject comes first, then the text. A change of spaces or of line
- * breaks alone is no change.
+ * What changed from the member's last version to the new card, word by word,
+ * and person by person. The subject comes first, then the text. A change of
+ * spaces or of line breaks alone is no change.
  */
-export function changesOf(before: CardText, after: CardText): Changes {
+export function changesOf(
+  before: CardText & { people?: PeopleBefore },
+  after: CardText & { people?: PeopleAfter },
+): Changes {
   const s = runsOf("subject", before.subject, after.subject);
   const t = runsOf("text", before.body, after.body);
   const all = [...s.runs, ...t.runs];
+  const people: PeopleChange = { added: [], removed: [], keptOut: [] };
+  if (before.people && after.people) {
+    const was = new Set(before.people.ticked);
+    const now = new Set(after.people.ticked);
+    const offered = new Set(after.people.all);
+    people.added = after.people.ticked.filter((a) => !was.has(a));
+    people.removed = before.people.ticked.filter((a) => !now.has(a));
+    people.keptOut = before.people.unticked.filter((a) => offered.has(a) && !now.has(a));
+  }
   return {
+    people,
     runs: all.slice(0, MAX_RUNS),
     more: Math.max(0, all.length - MAX_RUNS),
     coarse: s.coarse || t.coarse,
-    none: all.length === 0,
+    none: all.length === 0 && !people.added.length && !people.removed.length,
   };
+}
+
+/** The people of a change as plain words: "people added a; removed b". */
+export function peopleParts(p: PeopleChange): string[] {
+  const out: string[] = [];
+  if (p.added.length) out.push(`people added ${p.added.join(", ")}`);
+  if (p.removed.length) out.push(`people removed ${p.removed.join(", ")}`);
+  return out;
+}
+
+/** The note on the people that stay unticked, or "". */
+export function keptOutText(p: PeopleChange): string {
+  return p.keptOut.length ? `Still unticked: ${p.keptOut.join(", ")}.` : "";
 }
 
 /** The "Changed:" line as plain words, for its accessible name and tests. */
 export function changedText(c: Changes): string {
-  if (c.none) return "Changed: no words. This draft has the words of your last version.";
-  if (c.coarse) return "Changed: most of the text.";
-  const parts = c.runs.map((r) => {
-    const lead = r.where === "subject" ? "subject " : "";
-    if (r.removed && r.added) return `${lead}“${r.removed}” to “${r.added}”`;
-    if (r.added) return `${lead}added “${r.added}”`;
-    return `${lead}removed “${r.removed}”`;
-  });
-  const more = c.more ? `, and ${c.more} more ${c.more === 1 ? "change" : "changes"}` : "";
-  return `Changed: ${parts.join("; ")}${more}.`;
+  const keep = keptOutText(c.people);
+  const tail = keep ? ` ${keep}` : "";
+  if (c.none) return `Changed: no words. This draft has the words of your last version.${tail}`;
+  const words = c.coarse
+    ? ["most of the text"]
+    : c.runs.map((r) => {
+        const lead = r.where === "subject" ? "subject " : "";
+        if (r.removed && r.added) return `${lead}“${r.removed}” to “${r.added}”`;
+        if (r.added) return `${lead}added “${r.added}”`;
+        return `${lead}removed “${r.removed}”`;
+      });
+  const more = !c.coarse && c.more ? `, and ${c.more} more ${c.more === 1 ? "change" : "changes"}` : "";
+  return `Changed: ${[...words, ...peopleParts(c.people)].join("; ")}${more}.${tail}`;
 }

@@ -15,13 +15,14 @@ import { expect, test, type Page } from "@playwright/test";
 const OLD = "a".repeat(32);
 const NEW = "b".repeat(32);
 const KIM = "kim@contoso.test";
+const GEO = "geo@acme.test";
 const FIRST = "Hi Kim,\n\nPlease find the rates for May attached.";
 const EDITED = "Hi Kim,\n\nPlease find the rates for May attached. Call me on Friday.";
 const SHORTER = "Hi Kim,\n\nThe May rates are attached. Call me on Friday.";
 const STEER = "make it shorter";
 
 function form(body: string, link: Record<string, unknown> = {}) {
-  const people = { to: [KIM], cc: [] };
+  const people = { to: [KIM], cc: [GEO] };
   return {
     kind: "new", message_id: "", mailbox: "Work · jane@acme.test", subject: "Rates for May",
     original: { from: "", subject: "", received: "", excerpt: "" },
@@ -141,6 +142,8 @@ test.describe("a redraft through the chat keeps the member's edits", () => {
 
     // The member edits the text, then asks for a change in the chat.
     await page.getByRole("textbox", { name: "Email text" }).fill(EDITED);
+    // P1: the member takes the always-copy colleague out.
+    await page.getByRole("checkbox", { name: `Send to ${GEO}` }).uncheck();
     await box.fill(STEER);
     // The composer's own Send: the card has a Send of its own.
     await page.locator('[data-chat-primary="send"]').click();
@@ -148,9 +151,9 @@ test.describe("a redraft through the chat keeps the member's edits", () => {
     // The steer carried the member's own version of the card.
     await expect.poll(() => page.evaluate(() => (window as unknown as { __steers: unknown[] }).__steers.length)).toBe(1);
     const [sent] = await page.evaluate(() => (window as unknown as { __steers: { cardDraft?: unknown }[] }).__steers);
-    expect(sent.cardDraft).toEqual({
+    expect(sent.cardDraft).toEqual([{
       request_id: OLD, subject: "Rates for May", body: EDITED, to: [KIM], cc: [], bcc: [],
-    });
+    }]);
 
     // The closed card keeps its slot, with no buttons.
     const slot = page.locator('[data-redraft-slot="updating"]');
@@ -170,5 +173,10 @@ test.describe("a redraft through the chat keeps the member's edits", () => {
     await expect(changed.locator("del").first()).toBeVisible();
     await expect(changed.locator("mark").first()).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Email text" })).toHaveValue(SHORTER);
+    // P1: the new card offers the colleague again, and the colleague stays
+    // unticked. One click would otherwise send to a person the member removed.
+    await expect(page.getByRole("checkbox", { name: `Send to ${GEO}` })).not.toBeChecked();
+    await expect(page.getByRole("checkbox", { name: `Send to ${KIM}` })).toBeChecked();
+    await expect(page.locator("[data-redraft-kept-out]")).toContainText(GEO);
   });
 });

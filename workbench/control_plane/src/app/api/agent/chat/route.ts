@@ -700,9 +700,11 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   const { agentName, message, messages, threadId, mode, model, context, surface, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId, userMessageTs, steerFollowUp, cardAnswer, typed } = body;
-  // §18.11: the member's version of an open new-mail card. Only an object
-  // goes on, and the gateway checks each part of it.
-  const cardDraft = body.cardDraft && typeof body.cardDraft === "object" ? body.cardDraft : null;
+  // §18.11: the member's version of each open new-mail card. Only an object
+  // or a short list of objects goes on, and the gateway checks each part.
+  const cardDraft = Array.isArray(body.cardDraft)
+    ? (body.cardDraft.length > 0 && body.cardDraft.length <= 8 ? body.cardDraft : null)
+    : body.cardDraft && typeof body.cardDraft === "object" ? body.cardDraft : null;
   // A steer follow-up has no words of its own: the gateway's ENGAGE seam
   // makes the stored steers its message. It runs on the gateway path only.
   const followUp = steerFollowUp === true && mode === "copilot" && !!threadId;

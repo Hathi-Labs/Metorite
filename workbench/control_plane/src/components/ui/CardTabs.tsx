@@ -34,6 +34,9 @@ export interface CardTab {
   icon: string;
   /** The member has not opened this card yet. */
   unseen?: boolean;
+  /** §18.11: the tab of a slot that waits on a new draft. It is not a card
+   *  that waits on the member, so the count leaves it out. */
+  updating?: boolean;
 }
 
 /** The DOM id of tab `i` and of the one panel, from the row's `uid`. */
@@ -85,6 +88,9 @@ const LEVELS = [0, 1, 2] as const;
 
 export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps) {
   const total = tabs.length;
+  // The count says how many cards wait on the member. A slot that waits on a
+  // new draft is a tab, and it is not one of them.
+  const waiting = tabs.filter((t) => !t.updating).length;
   const outerRef = useRef<HTMLDivElement>(null);
   const probeRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -162,11 +168,11 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
     l >= 2 ? (
       // Level 2: the count is its number in a small pill. The words stay
       // for a screen reader.
-      <span role="img" aria-label={tabsCount(total)} title={tabsCount(total)} className={PILL_CLASS}>
-        {total}
+      <span role="img" aria-label={tabsCount(waiting)} title={tabsCount(waiting)} className={PILL_CLASS}>
+        {waiting}
       </span>
     ) : (
-      tabsCount(total)
+      tabsCount(waiting)
     );
 
   return (
@@ -183,7 +189,7 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
       <div
         ref={listRef}
         role="tablist"
-        aria-label={tabsLabel(total, noun)}
+        aria-label={tabsLabel(waiting, noun)}
         onKeyDown={onKey}
         onScroll={measure}
         data-fade={fade.left && fade.right ? "both" : fade.left ? "left" : fade.right ? "right" : undefined}

@@ -31,7 +31,8 @@
  */
 
 import { unfenced } from "@/lib/fencedText";
-import { isNewMail, replyFromEvent, type ReplyForm } from "@/lib/replyCard";
+import { untickedOf, withUnticked, tickedOfSent, type PeopleBefore, type SentVersion } from "@/lib/redraftCard";
+import { isNewMail, replyFromEvent, startTicks, type ReplyForm } from "@/lib/replyCard";
 import { classOf, kindOf, sendCanGo, type PersonClass, type SendRowKind } from "@/lib/sendCard";
 
 /** The event a closed card arrives as. The server owns the name
@@ -80,17 +81,23 @@ export interface PendingConfirmation {
    */
   redraft?: "updating" | "unchanged";
   /**
+   * P3: a new-mail card arrived after this slot, so the run did draw a draft
+   * and "The draft did not change." would be false. The run's end closes
+   * such a slot with no line.
+   */
+  newerCard?: true;
+  /**
    * §18.11: the member's version that a chat message carried for this card
    * (`lib/redraftCard.ts`). The card that revises it reads it for its
    * "Changed:" line.
    */
-  sent?: { subject: string; body: string };
+  sent?: SentVersion;
   /**
    * §18.11: the member's last version of the card that this card revises:
    * the version a chat message carried, else that card's own text. The
    * client computes the "Changed:" line from it, never from the model.
    */
-  before?: { subject: string; body: string };
+  before?: { subject: string; body: string; people?: PeopleBefore };
 }
 
 /** The answer of a card that a chat message closed. The server owns it
@@ -372,7 +379,7 @@ export type ConfirmationAction =
    *  slot (§18.11). */
   | { type: "resolved"; requestId: string; answer?: string }
   /** §18.11: a chat message carried this version of the card. */
-  | { type: "memberVersion"; key: string; version: { subject: string; body: string } }
+  | { type: "memberVersion"; key: string; version: SentVersion }
   /** §18.11: the slots that read "The draft did not change." close. */
   | { type: "closeUnchanged" }
   /** An answer is in flight. With `label`, a receipt line says so (UXD-3). */
@@ -425,6 +432,42 @@ function withAdded(set: ReadonlySet<string>, key: string): Set<string> {
   return next;
 }
 
+/**
+ * The new card that takes the slot of the card it revises (§18.11 step 7).
+ * `before` is the client's own copy of the member's last version, its text
+ * and its people. The new card starts with each person the member unticked
+ * still unticked (P1, untick only), so a click never sends to a person they
+ * took out.
+ */
+function redrafted(card: PendingConfirmation, old: PendingConfirmation): PendingConfirmation {
+  const oldForm = old.reply && isNewMail(old.reply) ? old.reply : null;
+  const text = old.sent ?? (old.reply ? { subject: old.reply.subject, body: old.reply.body } : undefined);
+  let unticked: string[] = [];
+  let people: PeopleBefore | undefined;
+  if (oldForm) {
+    const ticked = old.sent && (old.sent.to || old.sent.cc || old.sent.bcc)
+      ? tickedOfSent(old.sent)
+      : startTicks(oldForm).reply_all;
+    const sent: SentVersion = old.sent && (old.sent.to || old.sent.cc || old.sent.bcc)
+      ? old.sent
+      : { subject: oldForm.subject, body: oldForm.body, to: ticked };
+    unticked = untickedOf(oldForm, sent);
+    people = { ticked, unticked };
+  }
+  const reply = card.reply && unticked.length ? withUnticked(card.reply, unticked) : card.reply;
+  return {
+    ...card,
+    ...(reply !== undefined ? { reply } : {}),
+    ...(text ? { before: { subject: text.subject, body: text.body, ...(people ? { people } : {}) } } : {}),
+  };
+}
+
+/** P3: every other slot that waits sees a new-mail card arrive after it. */
+function noteNewer(cards: PendingConfirmation[], at: number, card: PendingConfirmation): PendingConfirmation[] {
+  if (!card.reply || !isNewMail(card.reply)) return cards;
+  return cards.map((c, i) => (i !== at && c.redraft === "updating" && !c.newerCard ? { ...c, newerCard: true as const } : c));
+}
+
 function withRemoved(set: ReadonlySet<string>, key: string): Set<string> {
   const next = new Set(set);
   next.delete(key);
@@ -456,12 +499,11 @@ export function confirmationReducer(
       const slot = revises ? state.cards.findIndex((c) => c.key === revises && c.redraft !== undefined) : -1;
       if (slot >= 0) {
         const old = state.cards[slot];
-        const before = old.sent ?? (old.reply ? { subject: old.reply.subject, body: old.reply.body } : undefined);
         const cards = state.cards.slice();
-        cards[slot] = { ...card, ...(before ? { before } : {}) };
-        return { ...state, cards };
+        cards[slot] = redrafted(card, old);
+        return { ...state, cards: noteNewer(cards, slot, card) };
       }
-      return { ...state, cards: [...state.cards, card] };
+      return { ...state, cards: noteNewer([...state.cards, card], state.cards.length, card) };
     }
     case "resolved": {
       const key = action.requestId;
@@ -562,7 +604,9 @@ export function confirmationReducer(
       return {
         ...state,
         cards: state.cards.flatMap((c) => {
-          if (c.redraft === "updating") return [{ ...c, redraft: "unchanged" as const }];
+          // A new-mail card arrived after the slot (P3): the run did draw a
+          // draft, so the slot closes with no line.
+          if (c.redraft === "updating") return c.newerCard ? [] : [{ ...c, redraft: "unchanged" as const }];
           return !c.requestId || c.redraft === "unchanged" ? [c] : [];
         }),
       };

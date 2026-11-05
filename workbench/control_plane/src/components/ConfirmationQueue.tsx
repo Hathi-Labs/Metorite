@@ -186,5 +186,7 @@ export function cardTab(card: PendingConfirmation): CardTab {
     label: tabLabel(card),
     title: card.fenced ? unfenced(summary) : summary,
     icon: KIND_ICON[cardKind(card)],
+    // A slot of a redraft is a tab, and no card waits on the member in it.
+    ...(card.redraft ? { updating: true } : {}),
   };
 }

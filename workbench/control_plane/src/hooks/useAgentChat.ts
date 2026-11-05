@@ -236,11 +236,11 @@ interface UseAgentChatOptions {
    */
   onRunCapped?: (pendingText: string, typed: boolean) => void;
   /**
-   * §18.11: the member's version of an open new-mail card that they edited,
-   * or null (`lib/redraftCard.ts`). Each steer asks it once, and carries the
-   * answer as `cardDraft`. A send that starts a run never carries it.
+   * §18.11: the member's version of EACH open new-mail card, edited or not
+   * (`lib/redraftCard.ts`). Each steer asks it once, and carries the answer
+   * as `cardDraft`. A send that starts a run never carries it.
    */
-  cardDraft?: () => CardDraft | null;
+  cardDraft?: () => CardDraft[];
 }
 
 interface UseAgentChatReturn {
@@ -1016,7 +1016,7 @@ export function useAgentChat({
     const replyId = nanoid();
     const card = opts?.cardAnswer ?? null;
     // §18.11 step 1: the member's own version of an open new-mail card.
-    const draft = cardDraftRef.current?.() ?? null;
+    const draft = cardDraftRef.current?.() ?? [];
     const out = await sendSteer({
       threadId,
       text: content,
@@ -1039,7 +1039,7 @@ export function useAgentChat({
         userMessageId,
         userMessageTs,
         ...(card ? { cardAnswer: card } : {}),
-        ...(draft ? { cardDraft: draft } : {}),
+        ...(draft.length ? { cardDraft: draft } : {}),
         // WS-63 D-PZ-37: a steer carries the typed mark the same way a send
         // does. Only the composer sets it (`lib/typedMark.ts`).
         ...typedField(opts?.typed),

@@ -491,6 +491,58 @@ async def test_a_card_of_another_member_takes_no_link(env) -> None:
     assert await rd.link_fields(F.user(F.OTHER), THREAD) == {"draft": 1}
 
 
+async def test_the_card_of_another_member_does_not_spend_the_link(env) -> None:
+    """P3. A shared room thread: the next card of ANOTHER member must not
+    delete the link of the member whose card was revised. Mutation: take the
+    link with ``getdel`` before the owner check → red."""
+    old = await _card()
+    await _revise(old["card_id"])
+    assert await rd.link_fields(F.user(F.OTHER), THREAD) == {"draft": 1}
+    assert [k for k in env["redis"].keys if ":card_revised:" in k], "the link stays"
+    new = await _card()
+    assert new["revises"] == old["card_id"] and new["draft"] == 2
+
+
+# ── P2: one steer keeps a snapshot of EACH open card ─────────────────────────
+
+
+async def test_a_steer_keeps_a_snapshot_of_each_open_card_and_replaces_an_old_one(env) -> None:
+    """P2. Two cards wait, both edited. The steer carries both, so the card
+    the steer closes keeps its OWN edit. A later steer carries the card at
+    its start, and that start REPLACES the edit that stayed in Redis.
+    Mutation: keep only the first item of a list → red."""
+    kim, bob = await _card(), await _card()
+    assert await rd.keep_card_draft(F.user(), THREAD, [
+        _draft(kim["card_id"], body="Kim edit."), _draft(bob["card_id"], body="Bob edit.")]) is True
+    snaps = {k.rsplit(":", 1)[1]: json.loads(v)["body"] for k, v in env["redis"].keys.items()
+             if f":{rd.SNAPSHOT_PART}:" in k}
+    assert snaps == {kim["card_id"]: "Kim edit.", bob["card_id"]: "Bob edit."}
+    # The member put Bob back to its start: the next steer carries it, and it replaces.
+    assert await rd.keep_card_draft(F.user(), THREAD, [
+        _draft(kim["card_id"], body="Kim edit."), _draft(bob["card_id"], body=TEXT, subject="Rates")]) is True
+    taken = await _revise(bob["card_id"])
+    assert "Bob edit." not in taken["snapshot"] and TEXT.splitlines()[0] in taken["snapshot"]
+
+
+async def test_a_list_over_the_cap_or_with_a_bad_item_keeps_the_good_items_only(env) -> None:
+    card = await _card()
+    many = [_draft(card["card_id"]) for _ in range(rd.MAX_SNAPSHOTS + 1)]
+    assert await rd.keep_card_draft(F.user(), THREAD, many) is False
+    assert _snapshot_keys(env["redis"]) == []
+    assert await rd.keep_card_draft(F.user(), THREAD, [{"evil": 1}, _draft(card["card_id"])]) is True
+    assert len(_snapshot_keys(env["redis"])) == 1
+
+
+# ── R7: the copies of the gateway's constants ────────────────────────────────
+
+
+def test_the_copies_of_the_gateway_constants_hold_their_values() -> None:
+    """R7. The tool and the skill copy two numbers of the gateway, because
+    they may not import it. Mutation: change one side only → red."""
+    assert agents._MEMBER_VERSION_MAX == cr.CARD_DRAFT_MAX
+    assert ask_tools._NEW_MAIL_DRAFT_MAX == rd.MAX_DRAFT
+
+
 # ── Rule 4: a held chat keeps every rule of §21 ──────────────────────────────
 
 

@@ -42,7 +42,9 @@ import {
   changingCard,
   changingLine,
   draftLabel,
-  pickCardDraft,
+  pickCardDrafts,
+  snapshotOf,
+  withUnticked,
   type KeptDraft,
 } from "@/lib/redraftCard";
 import { replyFromEvent, startTicks, toggleTick } from "@/lib/replyCard";
@@ -102,8 +104,8 @@ describe("the snapshot on a steer", () => {
     expect(cardDraftOf(form, "r-1", { subject: "x", body: "y", ticks })).toBeNull();
   });
 
-  it("a steer takes the newest edit of an open new-mail card", () => {
-    // Mutation: take the first edit, or a slot's edit → red.
+  it("a steer takes a version of EACH open new-mail card, edited or not", () => {
+    // P2. Mutation: take only the newest edit, or skip an unedited card → red.
     const state = run([
       { type: "requested", value: mailCard(OLD) },
       { type: "requested", value: mailCard(NEW) },
@@ -111,23 +113,28 @@ describe("the snapshot on a steer", () => {
     ]);
     const a = cardDraftOf(replyFromEvent(FORM, OLD)!, OLD, { subject: "A", body: "a", ticks })!;
     const b = cardDraftOf(replyFromEvent(FORM, NEW)!, NEW, { subject: "B", body: "b", ticks })!;
-    expect(pickCardDraft(state.cards, kept([[OLD, { draft: a, seq: 1 }], [NEW, { draft: b, seq: 2 }]]))).toEqual(b);
-    expect(pickCardDraft(state.cards, kept([[OLD, { draft: a, seq: 3 }], [NEW, { draft: b, seq: 2 }]]))).toEqual(a);
-    // No edit: no snapshot. A slot's version goes no more.
-    expect(pickCardDraft(state.cards, kept([]))).toBeNull();
+    // Both edited: the card that a steer closes keeps its OWN edit.
+    expect(pickCardDrafts(state.cards, kept([[OLD, { draft: a, seq: 1 }], [NEW, { draft: b, seq: 2 }]]))).toEqual([a, b]);
+    // One edited, one at its start: the start goes too, so it replaces an old edit.
+    const newForm = replyFromEvent(FORM, NEW)!;
+    const start = snapshotOf(newForm, NEW, { subject: FORM.subject, body: FORM.body, ticks: startTicks(newForm) })!;
+    expect(pickCardDrafts(state.cards, kept([[OLD, { draft: a, seq: 3 }]]))).toEqual([a, start]);
+    expect(start.body).toBe(FORM.body);
+    // A task card gives none. A slot's version goes no more.
+    expect(pickCardDrafts(run([{ type: "requested", value: taskCard }]).cards, kept([]))).toEqual([]);
     const slotted = run([{ type: "resolved", requestId: OLD, answer: REVISED_ANSWER }], state);
-    expect(pickCardDraft(slotted.cards, kept([[OLD, { draft: a, seq: 9 }]]))).toBeNull();
+    expect(pickCardDrafts(slotted.cards, kept([[OLD, { draft: a, seq: 9 }]]))).toEqual([start]);
   });
 
   it("each steer of the chat carries it, and the chat proxy passes it on", () => {
     // Mutation: drop any hop of the field → red.
     const hook = read("hooks/useAgentChat.ts");
-    expect(hook).toContain("const draft = cardDraftRef.current?.() ?? null;");
-    expect(hook).toContain("...(draft ? { cardDraft: draft } : {}),");
+    expect(hook).toContain("const draft = cardDraftRef.current?.() ?? [];");
+    expect(hook).toContain("...(draft.length ? { cardDraft: draft } : {}),");
     const chat = read("components/AgentChat.tsx");
     expect(chat).toContain("cardDraft: takeCardDraft,");
     expect(chat).toContain("onDraftChange={onCardDraft}");
-    expect(chat).toContain("pickCardDraft(cardsRef.current, cardDraftsRef.current)");
+    expect(chat).toContain("pickCardDrafts(cardsRef.current, cardDraftsRef.current)");
     const route = read("app/api/agent/chat/route.ts");
     expect(route).toContain("...(cardDraft ? { card_draft: cardDraft } : {}),");
     // The form reports each edit, and the queue passes it up by the card's key.
@@ -195,7 +202,10 @@ describe("the new draft takes the slot, as Draft <n>", () => {
     const card = state.cards[1];
     expect(card.redraft).toBeUndefined();
     expect(card.reply?.draft).toBe(2);
-    expect(card.before).toEqual({ subject: "Rates for May", body: "My text." });
+    expect(card.before).toEqual({
+      subject: "Rates for May", body: "My text.",
+      people: { ticked: ["kim@contoso.test", "geo@acme.test"], unticked: [] },
+    });
     // A replay of the new card keeps what the client knows of it.
     expect(run([{ type: "requested", value: mailCard(NEW, revising) }], state).cards[1].before)
       .toEqual(card.before);
@@ -207,7 +217,10 @@ describe("the new draft takes the slot, as Draft <n>", () => {
       { type: "resolved", requestId: OLD, answer: REVISED_ANSWER },
       { type: "requested", value: mailCard(NEW, revising) },
     ]);
-    expect(state.cards[0].before).toEqual({ subject: FORM.subject, body: FORM.body });
+    expect(state.cards[0].before).toEqual({
+      subject: FORM.subject, body: FORM.body,
+      people: { ticked: ["kim@contoso.test", "geo@acme.test"], unticked: [] },
+    });
   });
 
   it("a card that names no slot of the queue is a new card", () => {
@@ -326,5 +339,107 @@ describe("the composer names the email that a message changes", () => {
     expect(chat).toContain("const changing = changingCard(confirmations.cards);");
     expect(chat).toContain('data-redraft-changing=""');
     expect(chat).toContain("{changingLine(changing)}");
+  });
+});
+
+describe("P1: the people of a redraft", () => {
+  const revising = { ...FORM, body: "Hi Kim, the rates.", revises: OLD, draft: 2 };
+  const sentOff = {
+    subject: "Rates", body: "My text.", to: ["kim@contoso.test"], cc: [] as string[], bcc: [] as string[],
+  };
+
+  it("starts Draft 2 with a person the member unticked still unticked, and says so", () => {
+    // FAILS WITHOUT THE FIX: the gateway ticks the always-copy colleague
+    // again, and one click sent the mail to a person the member removed.
+    // Mutation: drop `withUnticked` in `redrafted` → red.
+    const state = run([
+      { type: "requested", value: mailCard(OLD) },
+      { type: "memberVersion", key: OLD, version: sentOff },
+      { type: "resolved", requestId: OLD, answer: REVISED_ANSWER },
+      { type: "requested", value: mailCard(NEW, revising) },
+    ]);
+    const card = state.cards[0];
+    expect(startTicks(card.reply!).reply_all).toEqual(["kim@contoso.test"]);
+    expect(card.before?.people).toEqual({ ticked: ["kim@contoso.test"], unticked: ["geo@acme.test"] });
+    // The card still OFFERS the colleague, so one tick brings the colleague back.
+    expect(card.reply?.recipients.reply_all.cc).toEqual(["geo@acme.test"]);
+    const c = changesOf(card.before!, {
+      subject: card.reply!.subject, body: card.reply!.body,
+      people: { all: ["kim@contoso.test", "geo@acme.test"], ticked: startTicks(card.reply!).reply_all },
+    });
+    expect(c.people.keptOut).toEqual(["geo@acme.test"]);
+    expect(changedText(c)).toContain("Still unticked: geo@acme.test.");
+  });
+
+  it("only unticks: it never ticks a person and never adds one", () => {
+    // Mutation: tick from the member's version in place of narrowing → red.
+    const ticked = { ...revising, ticked: { reply: { to: [], cc: [] }, reply_all: { to: ["kim@contoso.test"], cc: [] } } };
+    const form = replyFromEvent(ticked, NEW)!;
+    expect(startTicks(form).reply_all).toEqual(["kim@contoso.test"]);
+    expect(withUnticked(form, [])).toBe(form);
+    const narrowed = withUnticked(form, ["kim@contoso.test", "nobody@else.test"]);
+    expect(startTicks(narrowed).reply_all).toEqual([]);
+    expect(narrowed.recipients.reply_all.to).toEqual(["kim@contoso.test"]);
+    expect(narrowed.recipients.reply_all.cc).toEqual(["geo@acme.test"]);
+  });
+
+  it("names the people who changed when 'Also email Bob' replaces Kim's card", () => {
+    // Mutation: compare the text only → red.
+    const bobList = { to: ["bob@acme.test"], cc: [] as string[] };
+    const bob = { ...FORM, recipients: { reply: bobList, reply_all: bobList }, revises: OLD, draft: 2 };
+    const state = run([
+      { type: "requested", value: mailCard(OLD) },
+      { type: "memberVersion", key: OLD, version: { subject: FORM.subject, body: FORM.body, to: ["kim@contoso.test"], cc: ["geo@acme.test"], bcc: [] } },
+      { type: "resolved", requestId: OLD, answer: REVISED_ANSWER },
+      { type: "requested", value: mailCard(NEW, bob) },
+    ]);
+    const card = state.cards[0];
+    const c = changesOf(card.before!, {
+      subject: card.reply!.subject, body: card.reply!.body,
+      people: { all: ["bob@acme.test"], ticked: startTicks(card.reply!).reply_all },
+    });
+    expect(c.none).toBe(false);
+    expect(c.people).toEqual({ added: ["bob@acme.test"], removed: ["kim@contoso.test", "geo@acme.test"], keptOut: [] });
+    expect(changedText(c)).toBe("Changed: people added bob@acme.test; people removed kim@contoso.test, geo@acme.test.");
+    const html = renderToStaticMarkup(createElement(NewMailCardForm, {
+      form: card.reply!, before: card.before, onAnswer: () => {}, onDiscard: () => {}, armed: true,
+    }));
+    expect(html).toContain("data-redraft-people");
+    expect(html).toContain("bob@acme.test");
+  });
+});
+
+describe("P3: a slot with a newer card closes with no false line", () => {
+  it("closes at the run's end when a new-mail card arrived after it", () => {
+    // A new card with no link (two revised cards, or a failed link write).
+    // Mutation: drop `newerCard` from `runFinalized` → red.
+    const ended = run([
+      { type: "requested", value: mailCard(OLD) },
+      { type: "resolved", requestId: OLD, answer: REVISED_ANSWER },
+      { type: "requested", value: mailCard(NEW) },
+      { type: "runFinalized" },
+    ]);
+    expect(ended.cards.some((c) => c.redraft !== undefined)).toBe(false);
+  });
+
+  it("keeps the line when no new-mail card came", () => {
+    const ended = run([
+      { type: "requested", value: mailCard(OLD) },
+      { type: "resolved", requestId: OLD, answer: REVISED_ANSWER },
+      { type: "requested", value: taskCard },
+      { type: "runFinalized" },
+    ]);
+    expect(ended.cards.map((c) => [c.key, c.redraft])).toEqual([[OLD, "unchanged"]]);
+  });
+});
+
+describe("the tab count leaves out the slot", () => {
+  it("counts the cards that wait, and not the slot", () => {
+    // Mutation: count `tabs.length` in the pill → red.
+    const src = read("components/ui/CardTabs.tsx");
+    expect(src).toContain("const waiting = tabs.filter((t) => !t.updating).length;");
+    expect(src).toContain("tabsCount(waiting)");
+    expect(src).not.toContain("tabsCount(total)");
+    expect(read("components/ConfirmationQueue.tsx")).toContain("...(card.redraft ? { updating: true } : {}),");
   });
 });

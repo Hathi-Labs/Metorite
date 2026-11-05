@@ -38,7 +38,7 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
-import { cardDraftOf, changedText, changesOf, draftLabel, type CardDraft, type CardText, type Changes } from "@/lib/redraftCard";
+import { cardDraftOf, changedText, changesOf, draftLabel, keptOutText, peopleParts, type CardDraft, type CardText, type Changes, type PeopleBefore } from "@/lib/redraftCard";
 import {
   leftOutText,
   lineCount,
@@ -88,7 +88,7 @@ export interface NewMailCardFormProps {
    */
   onDraftChange?: (draft: CardDraft | null) => void;
   /** §18.11: the member's last version of the card that this card revises. */
-  before?: CardText;
+  before?: CardText & { people?: PeopleBefore };
 }
 
 /**
@@ -102,7 +102,7 @@ export function ChangedLine({ changes }: { changes: Changes }) {
     <p className="break-words text-[11px] leading-relaxed text-muted-foreground" data-redraft-changed="" aria-label={label}>
       <span className="font-medium text-foreground">Changed:</span>{" "}
       {changes.none && "no words. This draft has the words of your last version."}
-      {!changes.none && changes.coarse && "most of the text."}
+      {!changes.none && changes.coarse && "most of the text"}
       {!changes.none && !changes.coarse && (
         <>
           {changes.runs.map((r, i) => (
@@ -115,8 +115,17 @@ export function ChangedLine({ changes }: { changes: Changes }) {
             </span>
           ))}
           {changes.more > 0 && `, and ${changes.more} more ${changes.more === 1 ? "change" : "changes"}`}
-          .
         </>
+      )}
+      {!changes.none && peopleParts(changes.people).map((t, i) => (
+        <span key={t} data-redraft-people="">
+          {(i > 0 || changes.coarse || changes.runs.length > 0) && "; "}
+          {t}
+        </span>
+      ))}
+      {!changes.none && "."}
+      {keptOutText(changes.people) && (
+        <span data-redraft-kept-out=""> {keptOutText(changes.people)}</span>
       )}
     </p>
   );
@@ -198,7 +207,17 @@ export default function NewMailCardForm({
   }, [form, subject, body, ticks]);
   const label = draftLabel(form.draft);
   // The new text against the member's last version: never a claim of the model.
-  const changes = before ? changesOf(before, { subject: form.subject, body: form.body }) : null;
+  const offered = recipientsFor(form, true);
+  const changes = before
+    ? changesOf(before, {
+        subject: form.subject,
+        body: form.body,
+        people: {
+          all: [...offered.to, ...offered.cc, ...(offered.bcc ?? [])].map((a) => a.toLowerCase()),
+          ticked: startTicks(form).reply_all,
+        },
+      })
+    : null;
   // The box is as tall as its text, so no line hides under an inner scroll.
   useLayoutEffect(() => {
     const el = box.current;

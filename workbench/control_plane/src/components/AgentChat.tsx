@@ -68,9 +68,10 @@ import {
   UNCHANGED_CLOSE_MS,
   changingCard,
   changingLine,
-  pickCardDraft,
+  pickCardDrafts,
   type CardDraft,
   type KeptDraft,
+  type SentVersion,
 } from "@/lib/redraftCard";
 import { sendRespondInputResult } from "@/lib/respondInput";
 import { createRejectHold } from "@/lib/rejectHold";
@@ -630,12 +631,16 @@ export default function AgentChat({
   const cardDraftsRef = useRef(new Map<string, KeptDraft>());
   const draftSeqRef = useRef(0);
   const cardsRef = useRef<readonly PendingConfirmation[]>([]);
-  const markSentRef = useRef<(key: string, version: { subject: string; body: string }) => void>(() => {});
-  const takeCardDraft = useCallback((): CardDraft | null => {
-    const draft = pickCardDraft(cardsRef.current, cardDraftsRef.current);
-    // The card keeps what went, so its next draft can say what changed.
-    if (draft) markSentRef.current(draft.request_id, { subject: draft.subject, body: draft.body });
-    return draft;
+  const markSentRef = useRef<(key: string, version: SentVersion) => void>(() => {});
+  const takeCardDraft = useCallback((): CardDraft[] => {
+    // P2: one version for EACH open new-mail card, an unedited card too.
+    const drafts = pickCardDrafts(cardsRef.current, cardDraftsRef.current);
+    // Each card keeps what went, so its next draft can say what changed,
+    // people included.
+    for (const d of drafts) {
+      markSentRef.current(d.request_id, { subject: d.subject, body: d.body, to: d.to, cc: d.cc, bcc: d.bcc });
+    }
+    return drafts;
   }, []);
   const {
     messages, isLoading, error, sendMessage, steerMessage, stopGeneration, setMessages,
@@ -657,7 +662,7 @@ export default function AgentChat({
     // composer, unless the member already typed something new.
     onRunCapped: restoreCappedText,
     onSessionRefused,
-    // §18.11: a steer carries the member's version of an open new-mail card.
+    // §18.11: a steer carries the member's version of each open new-mail card.
     cardDraft: takeCardDraft,
     // Load the FULL persisted history into memory so the context sent to the
     // model and the context-usage estimate are both accurate.  We only window
@@ -2674,7 +2679,7 @@ export default function AgentChat({
               email, so the line names it, typed or not. A typed answer to
               the one waiting question still says so. */}
           {changing && !(steerShown && typedTarget) ? (
-            <span data-redraft-changing="" className="min-w-0 truncate text-[10px] text-primary">
+            <span data-redraft-changing="" className="min-w-0 max-w-[40%] truncate text-[10px] text-primary">
               {changingLine(changing)}
             </span>
           ) : steerShown && (

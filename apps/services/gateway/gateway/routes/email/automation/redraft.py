@@ -171,15 +171,20 @@ async def _find_card(
     return None
 
 
+#: The most snapshots of one steer: one for each open new-mail card (P2).
+MAX_SNAPSHOTS = 8
+
+
 async def keep_card_draft(user: UserContext, thread_id: str, raw: Any) -> bool:
-    """Check and keep the member's version of an open card (§18.11 step 2).
+    """Check and keep the member's version of each open card (§18.11 step 2).
 
     The stream door calls it for a steer of the web chat that carries
-    ``card_draft``. True when a checked snapshot went to tenant Redis. A
-    snapshot that fails a check, a flag that is off, and a fault keep
+    ``card_draft``: one snapshot, or a list with one for EACH open new-mail
+    card (P2), an unedited card too, so a snapshot that an older steer left
+    for a card is replaced. True when a checked snapshot went to tenant Redis.
+    A snapshot that fails a check, a flag that is off, and a fault keep
     nothing, and the steer goes on. The tenant and the member come from the
     session. It never raises, so a snapshot can never stop a steer."""
-    from acb_common.tenant_redis import organization_scope
     from acb_skills.reply_card import edit_card_on
 
     try:
@@ -188,6 +193,25 @@ async def keep_card_draft(user: UserContext, thread_id: str, raw: Any) -> bool:
         thread = str(thread_id or "").strip()
         if not org or not member or not thread or not edit_card_on(org):
             return False
+        items = raw if isinstance(raw, list) else [raw]
+        if len(items) > MAX_SNAPSHOTS:
+            _log.info("email.card_draft_dropped", reason="count")
+            return False
+        kept = False
+        for item in items:
+            if await _keep_one(user, org, member, thread, item):
+                kept = True
+    except Exception as exc:  # the class only: a value never reaches a log
+        _log.warning("email.card_draft_failed", error=type(exc).__name__)
+        return False
+    return kept
+
+
+async def _keep_one(user: UserContext, org: str, member: str, thread: str, raw: Any) -> bool:
+    """Check one snapshot against its card's record, and keep a good one."""
+    from acb_common.tenant_redis import organization_scope
+
+    try:
         if not isinstance(raw, dict):
             _log.info("email.card_draft_dropped", reason="shape")
             return False
@@ -239,25 +263,39 @@ def draft_of(rec: dict[str, Any]) -> int:
 async def link_fields(user: UserContext, thread_id: str) -> dict[str, Any]:
     """The link fields of the next new-mail card of the thread (§18.11 step 6).
 
-    It takes the link once (``GETDEL``). ``{"draft": n, "revises": card id}``
-    when one card of the member was revised before this card, else
-    ``{"draft": 1}``. A link of two revised cards, of another member, a bad
-    one and a fault all give ``{"draft": 1}``, and the card shows no label."""
+    It reads the link, checks that it is the caller's, and only then takes it
+    (P3: compare, then delete). A link of another member stays for its
+    owner. ``{"draft": n, "revises": card id}`` when one card of the member
+    was revised before this card, else ``{"draft": 1}``. A link of two
+    revised cards, of another member, a bad one and a fault all give
+    ``{"draft": 1}``, and the card shows no label."""
     from acb_common.tenant_redis import organization_scope
 
     thread = str(thread_id or "").strip()
     if not thread:
         return {"draft": FIRST_DRAFT}
+    member = _member(user)
     try:
         with organization_scope(hc._org_of(user)):
-            raw = await hc._tenant_redis().getdel(_key(LINK_PART, thread))
+            redis = hc._tenant_redis()
+            k = _key(LINK_PART, thread)
+            seen = _parse(await redis.get(k))
+            if seen is None or str(seen.get("owner") or "") != member:
+                return {"draft": FIRST_DRAFT}
+            taken = _parse(await redis.getdel(k))
+            if taken is not None and str(taken.get("owner") or "") != member:
+                # Another member wrote the key between the read and the take.
+                # Put it back for its owner (the first writer wins).
+                await redis.set(k, json.dumps(taken), nx=True, ex=LINK_TTL_S)
+                return {"draft": FIRST_DRAFT}
+            raw = taken
     except HTTPException:
         raise
     except Exception as exc:
         _log.warning("email.card_link_take_failed", error=type(exc).__name__)
         return {"draft": FIRST_DRAFT}
-    link = _parse(raw)
-    if (not link or link.get("many") or str(link.get("owner") or "") != _member(user)
+    link = raw if isinstance(raw, dict) else None
+    if (not link or link.get("many") or str(link.get("owner") or "") != member
             or not _CARD_ID.match(str(link.get("card_id") or ""))):
         return {"draft": FIRST_DRAFT}
     draft = link.get("draft")

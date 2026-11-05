@@ -2292,7 +2292,7 @@ function ActionResultCard({ event: e }: { event: ToolEvent }) {
  *  member, a send that the tool refused, or a cancel. The card for it never
  *  says the act is done. Before EM-T8e-2, "Email sent" stood over a "Not sent."
  *  answer, which told the member that mail went out. */
-export type NoAction = "question" | "not-sent" | "unchanged" | "cancelled" | "refused";
+export type NoAction = "question" | "not-sent" | "unchanged" | "cancelled" | "refused" | "revised";
 
 export function noActionOf(raw: string | null | undefined): NoAction | null {
   const t = (raw || "").trimStart();
@@ -2302,6 +2302,9 @@ export function noActionOf(raw: string | null | undefined): NoAction | null {
   // button whose body is the refusal.
   if (/^Refused:/.test(t)) return "refused";
   if (/^(Send from which mailbox\?|Which mailbox\?)/.test(t)) return "question";
+  // §18.11: a chat message closed the card, and the model writes the new
+  // draft. Nothing was sent, so the card never says "Email sent".
+  if (/^The member wrote in the chat while the card was open/.test(t)) return "revised";
   if (/^Not sent\./.test(t)) return "not-sent";
   if (/^Nothing changed\./.test(t)) return "unchanged";
   if (/^(Send cancelled|Cancelled)\b/.test(t)) return "cancelled";
@@ -2314,7 +2317,12 @@ const NO_ACTION_META: Record<NoAction, { icon: string; label: string }> = {
   unchanged: { icon: "CircleSlash", label: "Nothing changed" },
   cancelled: { icon: "X", label: "Cancelled" },
   refused: { icon: "CircleSlash", label: "Not done" },
+  revised: { icon: "PencilLine", label: "Draft being changed" },
 };
+
+/** The words of a closed card that a chat message revised. The result itself
+ *  is the model's instruction, so the member never reads it. */
+export const REVISED_NOTE = "You wrote in the chat, so this card closed. Nothing was sent. A new draft follows.";
 
 function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) {
   const meta = NO_ACTION_META[kind];
@@ -2326,7 +2334,9 @@ function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) 
       <CardHead tone="text-muted-foreground" />
       <RollupBody>
           {/* No clamp: a question lists each mailbox, and each one matters. */}
-          {result && (
+          {kind === "revised" ? (
+            <p className="mt-0.5 text-xs text-muted-foreground">{REVISED_NOTE}</p>
+          ) : result && (
             <div className="mt-0.5">
               <Readout result={result} />
             </div>
