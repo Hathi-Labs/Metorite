@@ -6,7 +6,7 @@ MAF agents and GitHub Copilot SDK agents identically.
 
 Tools
 -----
-web_search(query, max_results=5) -> str
+web_search(query, max_results=5, source="web") -> str
     Provider chain, best-first: SerpAPI (Google results, when
     SERPAPI_API_KEY / settings.serpapi_api_key is configured) → the free
     ddgs engines (DuckDuckGo/Bing/Brave/…, zero-credential rotation).
@@ -151,7 +151,7 @@ from acb_skills.untrusted import UntrustedFrame
 _log = get_logger("acb_skills.web_tools")
 
 
-async def web_search(query: str, max_results: int = 5) -> str:
+async def web_search(query: str, max_results: int = 5, source: str = "web") -> str:
     """Search the web and return the top results.
 
     Provider chain, best-first: **SerpAPI** (Google results — used whenever a
@@ -166,12 +166,22 @@ async def web_search(query: str, max_results: int = 5) -> str:
     Args:
         query:       The search query string.
         max_results: Number of results to return (1-10).  Default 5.
+        source:      ``"web"`` (default), ``"papers"`` (OpenAlex and arXiv) or
+                     ``"wiki"`` (Wikipedia).  Read only for an organization
+                     that WEB_RESEARCH_ORGS holds; else it is ignored.
 
     Returns:
         A plain-text block with one result per section, or an error message
         if the search could not be completed.
     """
     max_results = max(1, min(10, int(max_results)))
+
+    # WEB-4: an org of WEB_RESEARCH_ORGS gets the provider list (spec 3.3).
+    # Any other org keeps the chain below, byte for byte.
+    if _local_reader_on():
+        from acb_skills import web_search_providers
+
+        return await web_search_providers.search(query, max_results, source)
 
     # ── 1. SerpAPI first (Google — the best result quality) ─────────────
     serp = await _serpapi_search(query, max_results)
