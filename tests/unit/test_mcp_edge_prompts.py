@@ -764,7 +764,6 @@ class TestTheProtocol:
         text = await _instructions()
         _in_order(text, ("3. A 409 task_held", "A run of another connection",
                          "is never yours", "4. Call get_task_context"))
-        assert "A waiting run of another connection or another machine is never yours" in text
         # MCP-G15 fix round 1: the text says what the gateway takes, so the
         # agent knows that the rule above is its own to keep.
         flat = " ".join(text.split())
@@ -815,8 +814,8 @@ class TestTheAnswerRule:
     async def test_the_instructions_carry_the_rule(self, armed, monkeypatch):
         monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
         text = " ".join((await _instructions()).split())
-        assert prompts.ANSWER_POINTER.strip() in text
-        assert "yours is true, you asked it yourself in this session" in text
+        assert prompts.ANSWER_POINTER_ON.strip() in text
+        assert "yours is true and you asked it yourself in this session" in text
 
     async def test_the_rule_names_yours_in_each_text(self, armed, monkeypatch):
         monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
@@ -906,19 +905,35 @@ class TestTheAnswerRule:
         assert tools.run_activity({"id": "a", "type": "prompt",
                                    "content": {"body": "Resume", "resume": True}})["resume"]
 
-    #: P1. Claude Code cuts the instructions at 4096 characters. Main is already
-    #: past it, and the branch must not move the cut by more than the pointer.
+    #: P1 and P2. Claude Code cuts the instructions at 4096 characters. Main is
+    #: already past it. The branch must not push a sentence that ended before
+    #: the cut on main across it, and it grows by 40 characters at most.
     MAIN_LENGTH: ClassVar[dict[bool, int]] = {False: 4597, True: 4612}
     CUT = 4096
+    #: The sentences of main that end before the cut, in either state.
+    KEPT = ("never yours", "So do not write on such a run.",
+            "the heartbeat of your hold.", "If you stop and will not finish, call release_task.")
 
     @pytest.mark.parametrize("on", [False, True])
-    async def test_the_instructions_stay_near_their_length_on_main(
+    async def test_the_instructions_keep_each_sentence_before_the_cut(
             self, armed, monkeypatch, on):
         monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
         text = await _instructions()
-        assert len(text) <= self.MAIN_LENGTH[on] + 200, len(text)
-        pointer = prompts.ANSWER_POINTER.strip()
+        assert len(text) <= self.MAIN_LENGTH[on] + 40, len(text)
+        pointer = prompts.answer_pointer().strip()
         assert text.find(pointer) != -1 and text.find(pointer) < self.CUT
-        rule = "do not write on such a run"
-        assert text.find(rule) != -1 and text.find(rule) + len(rule) < self.CUT
-        assert "never yours" in text[:self.CUT]
+        for sentence in self.KEPT:
+            end = text.find(sentence) + len(sentence)
+            assert text.find(sentence) != -1 and end < self.CUT, (sentence, end)
+
+    def test_the_pointer_follows_the_session_flag(self, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        on = prompts.answer_pointer()
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", False)
+        off = prompts.answer_pointer()
+        assert on != off
+        assert "yours is true" in on
+        assert "yours is true" not in off
+        assert "you asked it yourself in this session" in off
+        assert "restart, erase or stop answer you did not ask" in off
+        assert len(on) <= 110 and len(off) <= 130

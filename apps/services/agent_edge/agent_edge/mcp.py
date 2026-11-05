@@ -146,7 +146,7 @@ _ROUTINE_INSTRUCTIONS = (
     " name. When the pull request opens, call"
     " set_task_status with a status of the category in_progress whose name"
     " says review. Move the task to done only after the merge, and not when"
-    " GitHub already did. The prompt work_on_task gives the full steps."
+    " GitHub already did."
     # MCP-G1. The tools of the project tree and of a move between projects.
     " To make a space, a project or a subproject, call create_project. Change"
     " one with update_project. To move tasks to another project, call"
@@ -220,8 +220,7 @@ _RUN_INSTRUCTIONS = (
     " Only one AI session may hold a task. Never work on a held task: a task"
     " whose held_by is not stale. The one exception is a my_work row with the"
     " reason held_by_you, because its run is of your own connection and its"
-    " session went quiet. A waiting run of another connection or another"
-    " machine is never yours."
+    " session went quiet."
     # MCP-G15 fix round 1. The rule of the code: the gateway takes a write of
     # the same member and the same client stamp (`may_end_run`), whichever
     # connection sends it. So the agent keeps the rule above itself.
@@ -259,12 +258,13 @@ def instructions(scopes: Iterable[str] = ()) -> str:
         return text
     runs = agent_oauth.runs_enabled()
     protocol = _PROTOCOL_RUNS_ON.replace("{terminals}", _terminals()).replace(
-        "{answer}", prompts.ANSWER_POINTER) if runs \
+        "{answer}", prompts.answer_pointer()) if runs \
         else _PROTOCOL_RUNS_OFF
     text += protocol + _ASKED_WORK + _ROUTINE_INSTRUCTIONS + prompts.PR_RULE
     if runs:
         text += _RUN_INSTRUCTIONS
-    return text
+    # Last, so the cut of the client at 4096 characters keeps the rules above it.
+    return text + " Prompt: work_on_task."
 
 #: The methods the route accepts, so that check 3 answers and not the router.
 ROUTE_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
