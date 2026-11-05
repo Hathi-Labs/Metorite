@@ -21014,11 +21014,11 @@ the people. A slot closes with no false line when a new card arrived. Only its o
 link, and the tab count leaves out the slot. A closed `send_email` card says "Draft being changed".
 
 **Fix round 2 (2026-11-06, Opus review).** The gateway now keeps the people that the member
-unticked, and it starts them unticked on the next card (rule 7). So each path gets the same
+unticked, and it starts them unticked on the next card (rule 7). Each path gets the same
 ticks: a slot, no slot, two revised cards, a remount, a reload and a replay. The client no
 longer changes a tick. A list of more than 8 snapshots keeps its first 8, with the edited
-cards first. A new card with no link takes the slot that waits. A row of slots says
-"Updating 2 drafts", and the "Changed:" line has no semicolon.
+cards first. A new card with no link takes the slot that waits, and the "Changed:" line has
+no semicolon.
 
 **Build notes.** The stream door keeps the snapshot in the STEER branch, before the steer
 goes out, because `_route_incoming_turn` only reads the world. The record of a card keeps
@@ -21070,10 +21070,10 @@ The new card also arrives with no link to the old one.
 3. **The card closes as REVISED,** as today (`_close_on_new_steer`, `_steer_target`).
 4. **The tool spends the old card.** On REVISED, `send_email` calls a new gateway route,
    `POST /email/new-card/revise`, with the old card id. In this order, the route:
-   1. spends the record of the old card (`take_record`), so a late answer finds no record;
-   2. takes the snapshot of that card (`GETDEL`), if there is one;
+   1. spends the record of the old card (`take_record`), so a late answer finds no record.
+   2. takes the snapshot of that card (`GETDEL`), if there is one.
    3. keeps the people that the member unticked on that card (rule 7), with a life of 900
-      seconds, under `email:card_unticked:<thread>:<member>`;
+      seconds, under `email:card_unticked:<thread>:<member>`.
    4. writes the link `email:card_revised:<thread>` = `{card_id, draft}` with a life of
       900 seconds. `draft` is the draft number of the old card plus one.
    5. answers the snapshot as neutral data.
@@ -21134,8 +21134,8 @@ The new card also arrives with no link to the old one.
    After they expire, the new card is "Draft 1" and nothing is lost but the label.
 6. With the flag off, or on WhatsApp, the gateway ignores `card_draft`, and the revise route
    answers 404.
-7. A person that the member unticked on the old card starts unticked on Draft 2, even when
-   the tool copies that person again (an always-copy colleague). The card still offers the
+7. A person that the member unticked on the old card starts unticked on Draft 2. This holds
+   when the tool copies that person again (an always-copy colleague). The card still offers the
    person, so one tick brings the person back. No snapshot ticks a person, and no snapshot
    adds one. The GATEWAY owns this rule (fix round 2), so each path of the client gets the
    same ticks:
@@ -21180,35 +21180,35 @@ The new card also arrives with no link to the old one.
 
 **Fences.** `tests/unit/test_email_redraft_snapshot.py`. Named mutations:
 
-- a snapshot read by an act;
-- a revised card that still sends;
-- a snapshot over the cap;
-- a `revises` value that the tool or the model sets;
-- a snapshot of another member or thread;
-- a hostile snapshot that keeps its marks;
-- two revised cards that still link;
-- a held snapshot that ticks a new address;
-- a link that another member's card spends (`link_fields` takes before it checks);
-- a steer that keeps only one snapshot of two open cards;
-- a copy of a gateway constant (`_MEMBER_VERSION_MAX`, `_NEW_MAIL_DRAFT_MAX`) that drifts;
-- rule 7: a new-card route that skips the kept unticks, a plain or a held one;
-- rule 7: a hash with no member in its key, or a take with no owner check;
-- rule 7: a take that spends the hash at once, in place of counting `left`;
-- rule 7: a revise that keeps no unticks, or that counts a new address as one;
-- rule 7: a chain that reads only the snapshot, with no fallback to the record;
+- a snapshot read by an act.
+- a revised card that still sends.
+- a snapshot over the cap.
+- a `revises` value that the tool or the model sets.
+- a snapshot of another member or thread.
+- a hostile snapshot that keeps its marks.
+- two revised cards that still link.
+- a held snapshot that ticks a new address.
+- a link that another member's card spends (`link_fields` takes before it checks).
+- a steer that keeps only one snapshot of two open cards.
+- a copy of a gateway constant (`_MEMBER_VERSION_MAX`, `_NEW_MAIL_DRAFT_MAX`) that drifts.
+- rule 7: a new-card route that skips the kept unticks, a plain or a held one.
+- rule 7: a hash with no member in its key, or a take with no owner check.
+- rule 7: a take that spends the hash at once, in place of counting `left`.
+- rule 7: a revise that keeps no unticks, or that counts a new address as one.
+- rule 7: a chain that reads only the snapshot, with no fallback to the record.
 - a list over the cap that the gateway drops whole.
 
 `workbench/control_plane/src/components/redraftCard.test.ts` holds the snapshot of each open
-card on a steer, the slot, the label, the "Changed:" line with its people, and the end with
-no new card. It holds the server's unticks on each path: a slot, no slot, two revised cards,
+card on a steer, the slot and the label. It holds the "Changed:" line with its people, and
+the end with no new card. It holds the server's unticks on each path: a slot, no slot, two revised cards,
 a remount through the card log, and a replay. It also holds the tab count of a slot and of
 slots only, and the cap of a steer's list. Its named mutations:
 
-- a form whose `unticked` the client does not read;
-- a note that shows only with a "Changed:" line;
-- a card with no link that does not take the slot that waits;
-- a row of slots that reads "0 to approve";
-- a cut of a steer's list in the queue's order;
+- a form whose `unticked` the client does not read.
+- a "Still unticked" line that shows only beside a "Changed:" line.
+- a card with no link that does not take the slot that waits.
+- a row of slots that reads "0 to approve".
+- a cut of a steer's list in the queue's order.
 - a line that joins its phrases with a semicolon.
 
 `workbench/control_plane/e2e/email-redraft.spec.ts` edits a card, asks for a change in the
