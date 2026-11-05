@@ -943,7 +943,7 @@ async def set_switches(
     of *org*. ``None`` when *org* holds no such server. A switch that is
     ``None`` stays as it is, and at least one must be named.
 
-    It changes the named keys in ``provider_meta`` and nothing else: the
+    It changes the two switch keys in ``provider_meta`` and nothing else: the
     headers, the status and the other fields stay. A disabled server can
     change too. An old ``mcp_servers`` row of *org* moves first, so the
     console can set the switch of a server that it listed. The statements
@@ -954,8 +954,15 @@ async def set_switches(
     :func:`_check_switches` checks the row as it would be AFTER the change,
     not the request alone. So ``read_only_key=True`` on a row that reads as
     always confirm raises :class:`McpSwitchRefused`, and so does the key on
-    an OAuth row. An OAuth row ignores a stored key that the change does not
-    name, because the parse reads it as false there.
+    an OAuth row.
+
+    A switch that the change does not name keeps its EFFECTIVE state: the
+    write stores the value that :func:`_always_confirm` or
+    :func:`_read_only_key` reads now, never the raw stored value (review of
+    MCP-C2, P3). So a damaged row with both keys stored true, which reads as
+    always confirm, keeps the key off after ``always_confirm=False``. The
+    stored row then matches what the gate reads, and only a change that
+    names the key can turn it on.
     """
     if always_confirm is None and read_only_key is None:
         raise ValueError("name always_confirm, read_only_key, or both")
@@ -974,12 +981,11 @@ async def set_switches(
             return None
         meta = locked[0].provider_meta or {}
         oauth = _is_oauth(locked[0])
-        _check_switches(
-            always_confirm=change.get("always_confirm", _always_confirm(meta)),
-            read_only_key=change.get(
-                "read_only_key", meta.get("read_only_key") is True and not oauth),
-            oauth=oauth,
-        )
+        # An unnamed switch keeps the state that the one parse reads now.
+        change.setdefault("always_confirm", _always_confirm(meta))
+        change.setdefault("read_only_key", _read_only_key(meta, oauth=oauth))
+        _check_switches(always_confirm=change["always_confirm"],
+                        read_only_key=change["read_only_key"], oauth=oauth)
         conn = await store.merge_meta_by_key(
             db, org, provider_for(name), OWNING_APP, change,
         )

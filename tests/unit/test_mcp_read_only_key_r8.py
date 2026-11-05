@@ -35,6 +35,8 @@ Mutation table (each mutation was made by hand, and the named test failed):
 | R4 | the merge statement of the PATCH loses its org predicate | ``test_the_store_predicate_holds_on_a_session_that_bypasses_rls`` |
 | R5 | the PATCH skips the role check | ``test_a_member_without_manage_gets_403`` |
 | R6 | the PATCH audits the key under the always-confirm action | ``test_the_patch_sets_the_key_keeps_the_headers_and_audits`` |
+| R7 | an unnamed key keeps its RAW stored value, not its parsed state (review P3) | ``test_a_damaged_row_keeps_the_key_off_when_always_confirm_turns_off`` |
+| R8 | the PATCH reads the stored key as false, so it checks the body alone | ``test_always_confirm_on_a_read_only_key_row_is_422`` |
 
 Under R1, the parse still reads the key as false, because the row reads as
 always confirm. So a row that a bad write leaves with both on asks the card.
@@ -309,16 +311,94 @@ async def test_the_key_on_an_always_confirm_row_is_422(ns, audit) -> None:  # no
     assert "always confirm" in res.json()["detail"]
     meta = _meta(ns, ns.org_a, name)
     assert meta["always_confirm"] is True and meta["read_only_key"] is False
-
-    # The other way round: always confirm on a read-only-key row.
-    other = _name("merged-ro")
-    await _read_only_key_server(user, other)
-    audit.clear()
-    res = await _patch(user, other, {"always_confirm": True})
-    assert res.status_code == 422, res.text
-    meta = _meta(ns, ns.org_a, other)
-    assert meta["always_confirm"] is False and meta["read_only_key"] is True
     assert audit == []
+
+
+async def test_always_confirm_on_a_read_only_key_row_is_422(ns, audit) -> None:  # noqa: F811
+    """The other way round (review of MCP-C2): ``{"always_confirm": true}``
+    alone on a row whose key is on would leave both on, so it is 422. The
+    console sends both keys, and that body clears the key."""
+    user = _user(ADMIN_A, ns.org_a)
+    name = _name("merged-ro")
+    await _read_only_key_server(user, name)
+    audit.clear()
+    res = await _patch(user, name, {"always_confirm": True})
+    assert res.status_code == 422, res.text
+    assert "always confirm" in res.json()["detail"]
+    meta = _meta(ns, ns.org_a, name)
+    assert meta["always_confirm"] is False and meta["read_only_key"] is True
+    server = await _stored(ns.org_a, name)
+    assert server.read_only_key is True and server.always_confirm is False
+    assert audit == []
+
+
+async def test_a_damaged_row_keeps_the_key_off_when_always_confirm_turns_off(
+        ns, audit, monkeypatch) -> None:  # noqa: F811
+    """Review of MCP-C2 (P3). A row with both keys stored true reads as always
+    confirm, so its key is off. ``{"always_confirm": false}`` names only one
+    switch, so the key keeps the state that the parse reads: off. Before the
+    fix, the raw stored key came back into force with no admin act and no
+    ``read_only_key`` event, and a destructive tool ran with no card."""
+    from types import SimpleNamespace
+
+    from agent_framework import FunctionTool
+    from orchestrator import _maf_mcp
+
+    user = _user(ADMIN_A, ns.org_a)
+    name = _name("damaged")
+    await _post(user, name, always_confirm=False)
+    with ns.admin_engine.begin() as c:
+        c.execute(text(
+            "UPDATE integration_connections SET provider_meta = provider_meta || "
+            "'{\"always_confirm\": true, \"read_only_key\": true}'::jsonb "
+            "WHERE organization_id = CAST(:o AS uuid) AND provider = :p"),
+            {"o": ns.org_a, "p": f"mcp:{name}"})
+    before = await _stored(ns.org_a, name)
+    assert before.always_confirm is True and before.read_only_key is False
+    audit.clear()
+
+    res = await _patch(user, name, {"always_confirm": False})
+    assert res.status_code == 200, res.text
+    assert res.json() == {"ok": True, "name": name, "always_confirm": False}
+    after = await _stored(ns.org_a, name)
+    assert after.always_confirm is False
+    assert after.read_only_key is False, "the stored key came back with no admin act"
+    assert _meta(ns, ns.org_a, name)["read_only_key"] is False, (
+        "the stored row does not match what the gate reads")
+    assert [e.action for e in audit] == ["integration.mcp.always_confirm"]
+
+    # The run: the tool carries no read-only key, so a destructive tool needs
+    # the card. This run has no card channel, so the gate refuses the call.
+    set_flag(monkeypatch, "*")
+    install_offline(monkeypatch)
+    token = bind_tenant(ns.org_a)
+    try:
+        agent = await _inject(ns.org_a)
+    finally:
+        release_tenant(token)
+    (tool,) = [t for t in agent.mcp_tools if t.name == name]
+    assert _maf_mcp.server_read_only_key(tool) is False
+    ran: list[str] = []
+
+    def _delete(**_k: Any) -> str:
+        ran.append("delete")
+        return "deleted"
+
+    fn = FunctionTool(name=f"{name}_delete_record", func=_delete, description="Delete.",
+                      additional_properties={"_mcp_is_tool": True,
+                                             "_mcp_remote_name": "delete_record"})
+    tool._functions = [fn]
+    tool.__dict__["_ws8c_tool_meta"] = {"delete_record": _maf_mcp.ToolMeta(
+        hints={"readOnlyHint": False, "destructiveHint": True}, description="Delete.")}
+    gate = _maf_mcp.McpPermissionGate(tools=[tool], member_present=True)
+    ctx = SimpleNamespace(function=fn, arguments={"record_id": "r-1"}, result=None)
+
+    async def _call_next() -> None:
+        ran.append("call")
+
+    await gate.process(ctx, _call_next)
+    assert ran == [], "a destructive tool ran with no card"
+    assert ctx.result == _maf_mcp.NO_MEMBER_TEXT.format(tool=fn.name)
 
 
 async def test_the_patch_refuses_a_value_that_is_not_a_boolean(ns, audit) -> None:  # noqa: F811
