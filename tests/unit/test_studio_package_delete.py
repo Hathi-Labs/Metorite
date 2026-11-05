@@ -110,6 +110,11 @@ Each was run alone against both halves, and its R8 failure was read.
   (a shared install counted 0, not 1).
 * M16 (the noted 404). Read the counts with ``.one()``. Red here:
   ``test_a_preview_of_a_package_that_a_concurrent_delete_removed_is_none``.
+* M17 (found by the live 202 check). Purge with ``id IN (subselect)`` in
+  place of ``id = ANY(ARRAY(subselect))``. Red in R8:
+  ``test_r8_a_purge_after_a_bulk_load_reads_a_bounded_number_of_rows``
+  (10,035,297 buffers for one purge of 500 records, against a bound of
+  30,000).
 """
 
 from __future__ import annotations
