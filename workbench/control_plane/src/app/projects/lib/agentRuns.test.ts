@@ -69,6 +69,7 @@ import {
   writeFailure,
   withdrawPayload,
   withdrawShown,
+  withdrawTarget,
 } from "./agentRuns";
 
 const ELICIT: AgentActivity = {
@@ -622,5 +623,17 @@ describe("SW-43 who sees the withdraw line", () => {
   it("shows nothing with no live answer", () => {
     expect(withdrawShown({ ...run, answer: null } as AgentRun, answer, true, true)).toBe(false);
     expect(withdrawShown(run, null, true, true)).toBe(false);
+  });
+});
+
+describe("SW-43 the id to withdraw", () => {
+  it("is the id that the server names in run.answer", () => {
+    // Mutation: read the id from the local activity and a guess goes out.
+    expect(withdrawTarget({ answer: { id: "p9", seq: 1, changeable: true } } as AgentRun)).toBe("p9");
+    expect(withdrawTarget({ answer: null } as AgentRun)).toBeNull();
+    expect(withdrawTarget({} as AgentRun)).toBeNull();
+    expect(
+      withdrawTarget({ answer: { id: "local:k", seq: 1, changeable: true } } as AgentRun),
+    ).toBeNull();
   });
 });

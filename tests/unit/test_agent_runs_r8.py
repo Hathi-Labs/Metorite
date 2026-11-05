@@ -1336,3 +1336,99 @@ class TestWithdrawAnAnswer:
             gone = await _withdraw(call, w.a, rid, aid)
             assert gone.status_code == 409
             assert "no longer the live answer" in gone.json()["detail"]
+
+    # ── SW-43a: the read takes no lock unless it must ───────────────────
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _held(w: Any, rid: str):
+        """Another connection holds ``FOR UPDATE`` on the run."""
+        holder = w.p.admin_engine.connect()
+        tx = holder.begin()
+        try:
+            holder.execute(text("SELECT id FROM pm_agent_runs "
+                                "WHERE id = CAST(:r AS uuid) FOR UPDATE"), {"r": rid})
+            yield
+        finally:
+            tx.rollback()
+            holder.close()
+
+    @staticmethod
+    def _read_at(w: Any, aid: str) -> Any:
+        return _rows(w.p, "SELECT content->>'read_at' AS r FROM pm_agent_run_activities "
+                          "WHERE id = CAST(:i AS uuid)", i=aid)[0].r
+
+    async def test_an_agent_read_of_a_run_with_no_answer_takes_no_lock(self, wd):
+        """Mutation: take ``_lock_run`` before the probe and this hangs."""
+        w = wd
+        async with _session(w.p) as call:
+            run = await _start(w, call)
+            rid = run["id"]
+            await _act(call, w.agent_a, rid, **_select())
+            with self._held(w, rid):
+                got = await asyncio.wait_for(
+                    call(w.agent_a, "GET", f"/projects/agent-runs/{rid}"), timeout=10)
+            assert got.status_code == 200
+            assert got.json()["run"]["status"] == "awaiting"
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities "
+                               "WHERE run_id = CAST(:r AS uuid) AND content ? 'read_at'",
+                          r=rid) == 0
+
+    async def test_a_member_read_of_a_live_answer_takes_no_lock(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            with self._held(w, rid):
+                got = await asyncio.wait_for(
+                    call(w.a, "GET", f"/projects/agent-runs/{rid}"), timeout=10)
+            assert got.status_code == 200
+            assert self._read_at(w, aid) is None
+
+    async def test_with_the_flag_off_an_agent_read_stamps_nothing_and_waits_for_nothing(
+            self, w):
+        """Mutation: remove the flag guard in ``_stamp_answer_read`` and the
+        read hangs on the lock (or stamps)."""
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            with self._held(w, rid):
+                got = await asyncio.wait_for(
+                    call(w.agent_a, "GET", f"/projects/agent-runs/{rid}"), timeout=10)
+            assert got.status_code == 200
+            assert "answer" not in got.json()["run"]
+            assert self._read_at(w, aid) is None
+
+    async def test_a_second_agent_read_stamps_once_and_does_not_block(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            assert (await call(w.agent_a, "GET", f"/projects/agent-runs/{rid}")).status_code == 200
+            first = self._read_at(w, aid)
+            assert first is not None
+            with self._held(w, rid):
+                again = await asyncio.wait_for(
+                    call(w.agent_a, "GET", f"/projects/agent-runs/{rid}"), timeout=10)
+            assert again.status_code == 200
+            assert self._read_at(w, aid) == first
+
+    async def test_after_a_withdraw_an_agent_read_shows_awaiting_and_no_answer(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            assert (await _withdraw(call, w.a, rid, aid)).status_code == 200
+            got = await call(w.agent_a, "GET", f"/projects/agent-runs/{rid}")
+            assert got.json()["run"]["status"] == "awaiting"
+            assert got.json()["run"]["answer"] is None
+
+    async def test_a_member_comment_after_the_answer_leaves_the_window_open(self, wd):
+        """Mutation: remove only ``AND x.actor_via IS NOT NULL`` from
+        ``answer_changeable_sql`` and the member comment closes the window."""
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            note = await _act(call, w.a, rid, type="prompt", body="One more detail")
+            assert note.status_code == 201, note.text
+            assert note.json()["activity"]["in_reply_to"] is None
+            assert note.json()["run"]["answer"]["id"] == aid
+            assert note.json()["run"]["answer"]["changeable"] is True
+            done = await _withdraw(call, w.a, rid, aid)
+            assert done.status_code == 200, done.text

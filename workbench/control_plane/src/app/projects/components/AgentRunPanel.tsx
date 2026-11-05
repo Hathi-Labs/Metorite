@@ -89,6 +89,7 @@ import {
   stopPayload,
   withdrawPayload,
   withdrawShown,
+  withdrawTarget,
   writeFailure,
 } from "../lib/agentRuns";
 import { ASK_COPY, hasOpenRunOf } from "../lib/askAgent";
@@ -399,8 +400,10 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
 
   /** SW-43. The member takes back an answer that no agent has read. */
   async function withdraw() {
-    if (!answer || answer.id.startsWith("local:")) return;
-    const body = withdrawPayload(answer.id);
+    // The server names the live answer. The local copy may be a guess.
+    const target = run ? withdrawTarget(run) : null;
+    if (!target) return;
+    const body = withdrawPayload(target);
     const ok = await write(
       () => agentRunsApi.withdrawAnswer(shownRunId, body),
       "awaiting",

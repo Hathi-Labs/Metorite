@@ -1099,3 +1099,9 @@ export function withdrawShown(
   if (!answer || !run.answer || !isMember) return false;
   return run.answer.changeable || canReply;
 }
+
+/** SW-43. The id to withdraw: the live answer that the server names, never a local guess. */
+export function withdrawTarget(run: AgentRun): string | null {
+  const id = run.answer?.id;
+  return id && !id.startsWith("local:") ? id : null;
+}
