@@ -155,7 +155,10 @@ def test_judge_uses_the_one_fence(monkeypatch) -> None:
 
 def _fake(monkeypatch, content: str | Exception, delay: float = 0.0) -> list[dict]:
     import acb_llm.context
+    import acb_llm.routed
 
+    # phrase.phrase refuses a call when the Router is off (review F4).
+    monkeypatch.setattr(acb_llm.routed, "routing_is_on", lambda: True)
     calls: list[dict] = []
 
     async def fake(**kw: Any) -> Any:

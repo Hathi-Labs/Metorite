@@ -148,6 +148,11 @@ NUMBER_WORDS: frozenset[str] = frozenset({
 LINK_MARKS: tuple[str, ...] = ("](", "http", "www.", "<", ">", "`", "mailto:", "@")
 
 
+class RouterOff(RuntimeError):
+    """The Router went off between the check and the call. The run keeps the
+    template lead."""
+
+
 def unsafe_reason(sentence: str) -> str | None:
     """Why the lead sentence may not stand: ``number_word`` or ``link``, or
     None. Pure."""
@@ -222,5 +227,12 @@ async def phrase(member: str, claims: Sequence[store.Claim], *, ref: str,
     no session while this runs."""
     if not ref.strip():
         raise ValueError("a phrase call needs its client_ref")
+    # The caller read the switch before the gather. A flag reload may have
+    # turned the Router off since. Without it the call would fall to local
+    # litellm with no usage row, so refuse here (review of BR-2a-2, F4).
+    from acb_llm import routed
+
+    if not routed.routing_is_on():
+        raise RouterOff("the Router is off: no unbilled call")
     raw = await _ask(member, messages_for(claims, block), ref)
     return judge(raw, claims)

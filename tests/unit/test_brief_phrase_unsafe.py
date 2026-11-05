@@ -32,3 +32,17 @@ def test_a_link_or_markup_is_refused(text: str) -> None:
     "Your day looks calm."])
 def test_a_plain_sentence_stands(text: str) -> None:
     assert phrase.unsafe_reason(text) is None
+
+
+async def test_the_call_is_refused_when_the_router_went_off(monkeypatch) -> None:
+    """Review F4: no unbilled call after a flag reload. Mutation: drop the
+    ``routing_is_on`` check in ``phrase.phrase``. This test goes red."""
+    from acb_llm import routed
+
+    async def never(*a, **kw):
+        raise AssertionError("no model call with the Router off")
+
+    monkeypatch.setattr(routed, "routing_is_on", lambda: False)
+    monkeypatch.setattr(phrase, "_ask", never)
+    with pytest.raises(phrase.RouterOff):
+        await phrase.phrase("ana@x.test", [], ref="ref-1")
