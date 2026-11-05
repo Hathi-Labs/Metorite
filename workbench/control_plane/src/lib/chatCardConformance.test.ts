@@ -373,3 +373,22 @@ describe("a new question is a new card (review of #945, P1)", () => {
     expect(chat).toMatch(/<ElicitationCard\s+key=\{userInput\.requestId\}/);
   });
 });
+
+describe("a card inside a card keeps a visible border (task 1651)", () => {
+  // The glass frame (`G_FRAME`) sets `border-transparent!`, which beats the
+  // inline hairline. A table drawn inside a report took that frame and drew
+  // only its corners. A card that nests takes `G_NESTED`. Node-env vitest
+  // renders no layout, so this reads the source. The browser twin is the
+  // visual review of a report card with a table.
+  const templates = read("components/genUITemplates.tsx");
+  it("G_NESTED names a visible border and never a transparent one", () => {
+    const line = templates.match(/const G_NESTED = "([^"]*)"/)?.[1];
+    expect(line, "G_NESTED moved").toBeTruthy();
+    expect(line).toContain("glass:border-border!");
+    expect(line).not.toContain("transparent");
+  });
+  it("the report card and the report view draw their tables as nested", () => {
+    expect(templates).toMatch(/<DataGrid key=\{i\} nested=\{fold != null\}/);
+    expect(templates).toContain("<DataGrid data={mapped.data} nested />");
+  });
+});
