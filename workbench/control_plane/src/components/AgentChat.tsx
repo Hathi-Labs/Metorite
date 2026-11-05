@@ -661,9 +661,9 @@ export default function AgentChat({
     // WS-51 D-3: the run cap refused the send. The words come back to the
     // composer, unless the member already typed something new.
     onRunCapped: restoreCappedText,
-    onSessionRefused,
     // §18.11: a steer carries the member's version of each open new-mail card.
     cardDraft: takeCardDraft,
+    onSessionRefused,
     // Load the FULL persisted history into memory so the context sent to the
     // model and the context-usage estimate are both accurate.  We only window
     // the RENDERING (below) for performance — not the data.
