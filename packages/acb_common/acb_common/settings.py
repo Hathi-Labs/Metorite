@@ -125,6 +125,16 @@ class Settings(BaseSettings):
     # hold several sessions. Fence: tests/unit/test_db_background_lane.py.
     db_background_max: int = 4
 
+    # H-249 (WS-29): what `tenant_session` does when its transaction is
+    # aborted at the clean end of a block. That happens when a caller swallows
+    # a failed statement. The commit then commits nothing. `log` (the default)
+    # only logs `db.tenant_session_aborted`, and the commit runs as before.
+    # `raise` logs, rolls back and raises `TenantTransactionAborted`. Any other value reads as
+    # `log`. The one reader is `tenant_session_abort_mode` below. The flag
+    # needs a restart (`docs/flag_reload.md`). A value on a box is the grant
+    # `enforcement-flip`. Fence: tests/unit/test_tenant_session_aborted_r8.py.
+    tenant_session_abort_mode: str = "log"
+
     # The pool of the sync `acb_graph` engine. It counts against the SAME
     # pooler budget as the async pool above (see the note there).
     db_sync_pool_size: int = 2
@@ -2123,6 +2133,25 @@ def crm_answer_check_mode() -> str:
         return "off"
     mode = raw.strip().lower()
     return mode if mode in CRM_ANSWER_CHECK_MODES else "off"
+
+
+#: The modes of ``TENANT_SESSION_ABORT_MODE`` (H-249).
+TENANT_SESSION_ABORT_MODES: tuple[str, ...] = ("log", "raise")
+
+
+def tenant_session_abort_mode() -> str:
+    """The ONE reader of ``TENANT_SESSION_ABORT_MODE``: ``log`` or ``raise``.
+
+    Any other value, and a settings load that fails, read as ``log``.
+    ``acb_common.db.tenant_session`` reads it only when a transaction is
+    aborted, so a clean block never pays for the read.
+    """
+    try:
+        raw = str(getattr(get_settings(), "tenant_session_abort_mode", "log") or "log")
+    except Exception:  # a broken settings load never turns the raise on
+        return "log"
+    mode = raw.strip().lower()
+    return mode if mode in TENANT_SESSION_ABORT_MODES else "log"
 
 
 #: The modes of ``TOOL_RESULT_SPILL`` (CTX-1).
