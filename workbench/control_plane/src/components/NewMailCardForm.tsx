@@ -38,7 +38,7 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
-import { cardDraftOf, changedText, changesOf, draftLabel, keptOutText, peopleParts, type CardDraft, type CardText, type Changes, type PeopleBefore } from "@/lib/redraftCard";
+import { CHANGED_LEAD, cardDraftOf, changedText, changesOf, draftLabel, keptOutOf, keptOutText, linePieces, type CardDraft, type CardText, type Changes, type PeopleBefore } from "@/lib/redraftCard";
 import {
   leftOutText,
   lineCount,
@@ -94,39 +94,40 @@ export interface NewMailCardFormProps {
 /**
  * The "Changed:" line of a redrafted card (§18.11): the words that went, struck
  * through, and the words that came, marked. The client computed it from the
- * member's last version and the new text (`changesOf`).
+ * member's last version and the new text (`changesOf`). The line and its
+ * accessible name draw the same pieces (`linePieces`), so they read alike,
+ * with each change as a phrase and the people in sentences of their own.
  */
 export function ChangedLine({ changes }: { changes: Changes }) {
-  const label = changedText(changes);
+  const [lead, ...rest] = linePieces(changes);
   return (
-    <p className="break-words text-[11px] leading-relaxed text-muted-foreground" data-redraft-changed="" aria-label={label}>
-      <span className="font-medium text-foreground">Changed:</span>{" "}
-      {changes.none && "no words. This draft has the words of your last version."}
-      {!changes.none && changes.coarse && "most of the text"}
-      {!changes.none && !changes.coarse && (
-        <>
-          {changes.runs.map((r, i) => (
-            <span key={i} data-redraft-run={r.where}>
-              {i > 0 && "; "}
-              {r.where === "subject" && "subject "}
-              {r.removed && <del className="text-muted-foreground line-through">{r.removed}</del>}
-              {r.removed && r.added && " "}
-              {r.added && <mark className="rounded-sm bg-primary/10 px-0.5 text-foreground">{r.added}</mark>}
-            </span>
-          ))}
-          {changes.more > 0 && `, and ${changes.more} more ${changes.more === 1 ? "change" : "changes"}`}
-        </>
+    <p className="break-words text-[11px] leading-relaxed text-muted-foreground" data-redraft-changed="" aria-label={changedText(changes)}>
+      <span className="font-medium text-foreground">{"text" in lead ? lead.text.trimEnd() : CHANGED_LEAD.trimEnd()}</span>{" "}
+      {rest.map((p, i) =>
+        "removed" in p ? (
+          <del key={i} className="text-muted-foreground line-through">{p.removed}</del>
+        ) : "added" in p ? (
+          <mark key={i} className="rounded-sm bg-primary/10 text-foreground">{p.added}</mark>
+        ) : (
+          <span key={i}>{p.text}</span>
+        ),
       )}
-      {!changes.none && peopleParts(changes.people).map((t, i) => (
-        <span key={t} data-redraft-people="">
-          {(i > 0 || changes.coarse || changes.runs.length > 0) && "; "}
-          {t}
-        </span>
-      ))}
-      {!changes.none && "."}
-      {keptOutText(changes.people) && (
-        <span data-redraft-kept-out=""> {keptOutText(changes.people)}</span>
-      )}
+    </p>
+  );
+}
+
+/**
+ * The note on the people that start unticked because the member unticked
+ * them on the draft before (§18.11 rule 7). It reads the server's names on
+ * the form, so it shows on every path: in a slot, with no slot, and after a
+ * remount, where the card has no "Changed:" line.
+ */
+export function KeptOutLine({ names }: { names: readonly string[] }) {
+  const text = keptOutText(names);
+  if (!text) return null;
+  return (
+    <p className="break-words text-[11px] leading-relaxed text-muted-foreground" data-redraft-kept-out="">
+      {text}
     </p>
   );
 }
@@ -254,6 +255,7 @@ export default function NewMailCardForm({
         </div>
         {detail && <p className="mt-0.5 break-words text-[11px] text-muted-foreground">{detail}</p>}
         {changes && <ChangedLine changes={changes} />}
+        <KeptOutLine names={keptOutOf(form)} />
       </div>
 
       {form.notices.length > 0 && (

@@ -177,7 +177,12 @@ async def new_mail_card(
     each refused, and no card shows."""
     from acb_skills.held_card import file_label
     from acb_skills.reply_card import clean_reply_body
-    from gateway.routes.email.automation.redraft import form_link, link_fields
+    from gateway.routes.email.automation.redraft import (
+        form_link,
+        link_fields,
+        start_unticked,
+        take_unticked,
+    )
     from gateway.routes.email.core import _assert_account_owner
     from gateway.routes.email.transport.metorite_files import resolve_metorite_files
 
@@ -198,12 +203,19 @@ async def new_mail_card(
     # §18.11 step 6: the gateway, never the tool, links this card to the card
     # of the thread that a chat message revised ("Draft 2").
     linked = await link_fields(user, thread)
+    # §18.11 rule 7: a person that the member unticked on the card that a chat
+    # message revised starts unticked here, even when the tool names that
+    # person again (an always-copy colleague). It only unticks. The record
+    # keeps the names, so the next draft keeps them too. The act still sends
+    # only to the ticks of the member's answer.
+    start, unticked = start_unticked(lists, await take_unticked(user, thread))
     record = {
         "v": 1, "owner": owner.lower(), "kind": "new-mail", "account_id": req.account_id,
         "to": lists["to"], "cc": lists["cc"], "bcc": lists["bcc"],
         "subject": subject, "body": body, "artifacts": artifacts,
         "metorite": [{"ref": f.ref, "digest": f.digest} for f in shared],
         **({"thread": thread} if thread else {}), **linked,
+        **({"unticked": unticked} if unticked else {}),
     }
     card_id = await write_record(user, record, namespace=RECORD_NAMESPACE)
     # The one label of a file row (``held_card.file_label``): the name in
@@ -214,7 +226,9 @@ async def new_mail_card(
               files=len(files))
     return {"card_id": card_id, "mailbox": _mailbox_text(me), "subject": subject,
             "body": body, "to": lists["to"], "cc": lists["cc"], "bcc": lists["bcc"],
-            "files": files, **form_link(linked)}
+            "files": files, **form_link(linked),
+            # The tool copies both to the card's form, and sets neither.
+            **({"ticked": start, "unticked": unticked} if unticked else {})}
 
 
 async def _metorite_attachments(user: UserContext, recorded: list[dict[str, str]]) -> list[Any]:

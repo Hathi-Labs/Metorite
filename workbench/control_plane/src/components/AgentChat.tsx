@@ -2666,7 +2666,11 @@ export default function AgentChat({
             and took its bottom from the message. */}
         {composerRowShown && (
         <div className="max-w-3xl mx-auto mb-1.5 flex min-h-5 items-center gap-2 text-[11px] text-muted-foreground glass:text-caption">
-          <div className="flex min-w-fit flex-1 items-center gap-2">
+          {/* The status starts at its own width and can shrink, so a long
+              step cuts its words and the ring stays in the row. The
+              "Changing:" name shrinks four times as fast, so it is cut first
+              (fix round 2, 390 px). */}
+          <div className="flex min-w-0 flex-auto items-center gap-2">
             {runView ? (
               <RunStatusRow view={runView} placement="composer" />
             ) : null}
@@ -2679,7 +2683,7 @@ export default function AgentChat({
               email, so the line names it, typed or not. A typed answer to
               the one waiting question still says so. */}
           {changing && !(steerShown && typedTarget) ? (
-            <span data-redraft-changing="" className="min-w-0 truncate text-[10px] text-primary">
+            <span data-redraft-changing="" className="min-w-0 shrink-4 truncate text-[10px] text-primary">
               {changingLine(changing)}
             </span>
           ) : steerShown && (

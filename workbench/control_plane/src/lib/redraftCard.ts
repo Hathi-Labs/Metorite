@@ -20,6 +20,11 @@
  * 3. The "Changed:" line. The client computes it from its own copy of the
  *    member's last version and the new text, with `diffKeys` of
  *    `app/knowledge/lib/wordDiff.ts`, and never from a claim of the model.
+ * 4. The people the member unticked (rule 7, fix round 2). The GATEWAY starts
+ *    them unticked on the next card and names them (`ReplyForm.unticked`), so
+ *    every path gets the same ticks: a slot, no slot, two revised cards, a
+ *    remount, a reload and a replay. The client draws the server's start and
+ *    the "Still unticked" note from the form. It ticks and unticks nobody.
  *
  * Fence: `src/components/redraftCard.test.ts`.
  */
@@ -27,7 +32,7 @@
 import { diffKeys } from "@/app/knowledge/lib/wordDiff";
 import { tabLabel } from "@/lib/cardTabs";
 import type { PendingConfirmation } from "@/lib/confirmationQueue";
-import { isNewMail, startTicks, tickedFor, type ReplyForm, type ReplyRecipients, type ReplyTicks } from "@/lib/replyCard";
+import { isNewMail, startTicks, tickedFor, type ReplyForm, type ReplyTicks } from "@/lib/replyCard";
 
 /**
  * The member's version of an open new-mail card, as a steer carries it. The
@@ -45,6 +50,13 @@ export interface CardDraft {
 }
 
 export const CARD_DRAFT_KEYS: readonly (keyof CardDraft)[] = ["request_id", "subject", "body", "to", "cc", "bcc"];
+
+/**
+ * The most versions that one steer carries (P2). The chat proxy and the
+ * gateway (`redraft.MAX_SNAPSHOTS`) keep the first ones, and
+ * `tests/unit/test_email_redraft_snapshot.py` holds the numbers in step.
+ */
+export const MAX_CARD_DRAFTS = 8;
 
 /** The words of the slot while the assistant writes the new draft. */
 export const UPDATING_LINE = "Updating the draft…";
@@ -69,19 +81,17 @@ export interface SentVersion extends CardText {
   bcc?: string[];
 }
 
-/** The people of the member's last version of the old card (P1). */
+/** The people of the member's last version of the old card. */
 export interface PeopleBefore {
   /** The people the member left ticked. */
   ticked: string[];
-  /** The people the member unticked. */
-  unticked: string[];
 }
 
-/** The people of the new card. */
+/** The people of the new card, as the server started them. */
 export interface PeopleAfter {
   /** Every person the new card offers. */
   all: string[];
-  /** The people it starts with ticked, after the member's unticks. */
+  /** The people it starts with ticked: the server's start (`ReplyForm.ticked`). */
   ticked: string[];
 }
 
@@ -93,32 +103,13 @@ export function tickedOfSent(v: SentVersion): string[] {
 }
 
 /**
- * The people of the old card that the member unticked: every person it
- * offered that its sent version did not keep ticked. UNTICK ONLY: the result
- * only ever removes a tick from the new card (P1).
+ * The people that the server started unticked on this card because the
+ * member unticked them on the draft before (rule 7), or none. They come from
+ * the form, never from the client's own copy, so the note is right on every
+ * path, and it never names a new address that the member did not untick.
  */
-export function untickedOf(form: ReplyForm, sent: SentVersion): string[] {
-  const all = form.recipients.reply_all;
-  const offered = low([...all.to, ...all.cc, ...(all.bcc ?? [])]);
-  const on = new Set(tickedOfSent(sent));
-  return [...new Set(offered)].filter((a) => !on.has(a));
-}
-
-/**
- * The form of a redrafted card with each person the member unticked still
- * unticked (P1). It narrows the ticked start and never widens it: a person the
- * new card did not tick stays unticked, and nobody is added.
- */
-export function withUnticked(form: ReplyForm, unticked: readonly string[]): ReplyForm {
-  if (!unticked.length) return form;
-  const off = new Set(low(unticked));
-  const narrow = (r: ReplyRecipients): ReplyRecipients => ({
-    to: r.to.filter((a) => !off.has(a.toLowerCase())),
-    cc: r.cc.filter((a) => !off.has(a.toLowerCase())),
-    ...(r.bcc ? { bcc: r.bcc.filter((a) => !off.has(a.toLowerCase())) } : {}),
-  });
-  const start = form.ticked ?? form.recipients;
-  return { ...form, ticked: { reply: narrow(start.reply), reply_all: narrow(start.reply_all) } };
+export function keptOutOf(form: ReplyForm | null | undefined): string[] {
+  return form && isNewMail(form) ? [...(form.unticked ?? [])] : [];
 }
 
 const sameList = (a: readonly string[], b: readonly string[]) =>
@@ -176,29 +167,33 @@ function isOpenNewMail(card: PendingConfirmation): boolean {
 
 /**
  * The versions that the next steer carries (P2): one for EACH open new-mail
- * card, in the queue's order. A card the member edited gives its newest
- * edit. A card at its start gives its start, so the gateway replaces or
- * deletes a snapshot that an older steer left for it. A slot, an answered
- * card and a card of another kind give none.
+ * card. A card the member edited gives its newest edit. A card at its start
+ * gives its start, so the gateway replaces or deletes a snapshot that an
+ * older steer left for it. A slot, an answered card and a card of another
+ * kind give none.
+ *
+ * At most `MAX_CARD_DRAFTS` go (fix round 2). The edited cards go first, then
+ * a card that starts a person unticked for the member, then the rest, each
+ * group in the queue's order. So the cut loses no edit of the member.
  */
 export function pickCardDrafts(
   cards: readonly PendingConfirmation[],
   kept: ReadonlyMap<string, KeptDraft>,
 ): CardDraft[] {
-  const out: CardDraft[] = [];
+  const groups: CardDraft[][] = [[], [], []];
   for (const card of cards) {
     if (!isOpenNewMail(card) || !card.reply) continue;
     const k = kept.get(card.key);
     if (k && k.draft.request_id === card.requestId) {
-      out.push(k.draft);
+      groups[0].push(k.draft);
       continue;
     }
     const start = snapshotOf(card.reply, card.requestId ?? "", {
       subject: card.reply.subject, body: card.reply.body, ticks: startTicks(card.reply),
     });
-    if (start) out.push(start);
+    if (start) groups[keptOutOf(card.reply).length ? 1 : 2].push(start);
   }
-  return out;
+  return groups.flat().slice(0, MAX_CARD_DRAFTS);
 }
 
 /** The newest open new-mail card, for the composer's line, or null. */
@@ -239,8 +234,6 @@ export interface PeopleChange {
   added: string[];
   /** Ticked on the member's version, and not ticked on the new card. */
   removed: string[];
-  /** Unticked by the member, offered again, and kept unticked. */
-  keptOut: string[];
 }
 
 export interface Changes {
@@ -300,14 +293,12 @@ export function changesOf(
   const s = runsOf("subject", before.subject, after.subject);
   const t = runsOf("text", before.body, after.body);
   const all = [...s.runs, ...t.runs];
-  const people: PeopleChange = { added: [], removed: [], keptOut: [] };
+  const people: PeopleChange = { added: [], removed: [] };
   if (before.people && after.people) {
     const was = new Set(before.people.ticked);
     const now = new Set(after.people.ticked);
-    const offered = new Set(after.people.all);
     people.added = after.people.ticked.filter((a) => !was.has(a));
     people.removed = before.people.ticked.filter((a) => !now.has(a));
-    people.keptOut = before.people.unticked.filter((a) => offered.has(a) && !now.has(a));
   }
   return {
     people,
@@ -318,32 +309,63 @@ export function changesOf(
   };
 }
 
-/** The people of a change as plain words: "people added a; removed b". */
-export function peopleParts(p: PeopleChange): string[] {
-  const out: string[] = [];
-  if (p.added.length) out.push(`people added ${p.added.join(", ")}`);
-  if (p.removed.length) out.push(`people removed ${p.removed.join(", ")}`);
-  return out;
+/**
+ * One piece of the "Changed:" line: plain words, the words that went, or the
+ * words that came. The card and the accessible name draw the SAME pieces
+ * (`linePieces`), so the two always read alike.
+ */
+export type LinePiece = { text: string } | { removed: string } | { added: string };
+
+/** The lead of the line. The card draws it in the strong weight. */
+export const CHANGED_LEAD = "Changed: ";
+
+function runPieces(r: ChangeRun): LinePiece[] {
+  const lead = r.where === "subject" ? "subject " : "";
+  if (r.removed && r.added) return [{ text: lead }, { removed: r.removed }, { text: " to " }, { added: r.added }];
+  if (r.added) return [{ text: `${lead}added ` }, { added: r.added }];
+  return [{ text: `${lead}removed ` }, { removed: r.removed }];
 }
 
-/** The note on the people that stay unticked, or "". */
-export function keptOutText(p: PeopleChange): string {
-  return p.keptOut.length ? `Still unticked: ${p.keptOut.join(", ")}.` : "";
+/**
+ * The pieces of the "Changed:" line (fix round 2). Each change reads as a
+ * phrase: "“x” to “y”", "added “y”" or "removed “x”". A comma joins the
+ * phrases, and one stop ends them. The people go in sentences of their own:
+ * "Now also to a." and "No longer to b." No semicolon, and no separator with
+ * nothing on one side of it.
+ */
+export function linePieces(c: Changes): LinePiece[] {
+  const out: LinePiece[] = [{ text: CHANGED_LEAD }];
+  const t = (text: string) => out.push({ text });
+  if (c.none) {
+    t("no words. This draft has the words of your last version.");
+    return out;
+  }
+  const phrases: LinePiece[][] = c.coarse
+    ? [[{ text: "most of the text" }]]
+    : c.runs.length ? c.runs.map(runPieces) : [[{ text: "the people" }]];
+  phrases.forEach((p, i) => {
+    if (i > 0) t(", ");
+    out.push(...p);
+  });
+  if (!c.coarse && c.more) t(`, and ${c.more} more ${c.more === 1 ? "change" : "changes"}`);
+  t(".");
+  if (c.people.added.length) t(` Now also to ${c.people.added.join(", ")}.`);
+  if (c.people.removed.length) t(` No longer to ${c.people.removed.join(", ")}.`);
+  return out.filter((p) => !("text" in p) || p.text !== "");
 }
 
 /** The "Changed:" line as plain words, for its accessible name and tests. */
 export function changedText(c: Changes): string {
-  const keep = keptOutText(c.people);
-  const tail = keep ? ` ${keep}` : "";
-  if (c.none) return `Changed: no words. This draft has the words of your last version.${tail}`;
-  const words = c.coarse
-    ? ["most of the text"]
-    : c.runs.map((r) => {
-        const lead = r.where === "subject" ? "subject " : "";
-        if (r.removed && r.added) return `${lead}“${r.removed}” to “${r.added}”`;
-        if (r.added) return `${lead}added “${r.added}”`;
-        return `${lead}removed “${r.removed}”`;
-      });
-  const more = !c.coarse && c.more ? `, and ${c.more} more ${c.more === 1 ? "change" : "changes"}` : "";
-  return `Changed: ${[...words, ...peopleParts(c.people)].join("; ")}${more}.${tail}`;
+  return linePieces(c)
+    .map((p) => ("text" in p ? p.text : `“${"removed" in p ? p.removed : p.added}”`))
+    .join("");
+}
+
+/**
+ * The note on the people that start unticked because the member unticked
+ * them on the draft before (rule 7), or "". It reads the server's names
+ * (`keptOutOf`), so it shows on a card with no "Changed:" line too.
+ */
+export function keptOutText(names: readonly string[]): string {
+  return names.length ? `Still unticked from your last draft: ${names.join(", ")}.` : "";
 }

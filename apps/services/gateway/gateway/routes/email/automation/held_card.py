@@ -1418,7 +1418,7 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="Too many rows for one card.")
     context = "\n".join([f"Subject: {subject or '(no subject)'}", "", "The text:", body])
     from acb_skills.reply_card import edit_card_on
-    from gateway.routes.email.automation.redraft import form_link, link_fields
+    from gateway.routes.email.automation.redraft import form_link, link_fields, take_unticked
 
     edit = edit_card_on(_org_of(user))
     # §18.11 step 6: the gateway, never the tool, links this card to the card
@@ -1426,16 +1426,36 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     # the rows above come from the server alone, as for any held card: a
     # snapshot of the revised card never ticks a new address (rule 4).
     linked = await link_fields(user, req.card_thread_id) if edit else {}
+    # §18.11 rule 7: a person that the member unticked on the revised card
+    # starts unticked. Only a row that its class ticks can be one, so a new
+    # address stays as §21 starts it. It changes the form's start only: the
+    # rows keep their classes, and the act sends only to the answer's ticks.
+    off = await take_unticked(user, req.card_thread_id) if edit else frozenset()
+    unticked = unticked_rows(rows, off)
     out = await _person_card(user, req, rows, context, {
         "kind": "new", "account_id": req.account_id, "subject": subject, "body": body,
         **({"thread": req.card_thread_id.strip()} if edit and req.card_thread_id.strip() else {}),
-        **linked,
+        **linked, **({"unticked": unticked} if unticked else {}),
     }, title="Send this new email?", mailbox=me)
     # §18.10: the same record, drawn as the one email card that the member
     # edits. The rows card stays for a run that cannot draw it (WhatsApp).
     # With EMAIL_EDIT_CARD_ORGS off the answer is exactly as before.
     if edit:
-        out["form"] = {**new_mail_form(rows, subject, body, _box_text(me)), **form_link(linked)}
+        out["form"] = {**new_mail_form(rows, subject, body, _box_text(me), unticked=unticked),
+                       **form_link(linked)}
+    return out
+
+
+def unticked_rows(rows: Sequence[dict[str, Any]], off: frozenset[str]) -> list[str]:
+    """The people of *rows* that start unticked because the member unticked
+    them on the card that this card revises (§18.11 rule 7), in lower case.
+    Only a person row that starts ticked can be one: a new address already
+    starts unticked, and the member never unticked it."""
+    out: list[str] = []
+    for r in rows:
+        addr = str(r.get("address") or "").strip().lower()
+        if r["kind"] in RECIPIENT_KINDS and r.get("checked") and addr in off and addr not in out:
+            out.append(addr)
     return out
 
 
@@ -1447,6 +1467,7 @@ def _box_text(mailbox: Any) -> str:
 
 def new_mail_form(
     rows: Sequence[dict[str, Any]], subject: str, body: str, mailbox: str,
+    *, unticked: Sequence[str] = (),
 ) -> dict[str, Any]:
     """The new-mail form of a held card (§18.10), from its RECORDED rows.
 
@@ -1455,9 +1476,13 @@ def new_mail_form(
     and the mark of each row go with it. A lookalike warning is a notice,
     whole. Each file is a row with its tick and its hint, as on the rows card
     (§21.1 item 3): the member can untick it, and the act sends only the
-    ticked recorded files."""
+    ticked recorded files. *unticked* (§18.11 rule 7) are people that the
+    member unticked on the card before: they start unticked, and the form
+    names them, so the card can say why."""
+    off = {a.strip().lower() for a in unticked}
     people = {k: [str(r["address"]) for r in rows if r["kind"] == k] for k in RECIPIENT_KINDS}
-    start = {k: [str(r["address"]) for r in rows if r["kind"] == k and r.get("checked")]
+    start = {k: [str(r["address"]) for r in rows if r["kind"] == k and r.get("checked")
+                 and str(r["address"]).strip().lower() not in off]
              for k in RECIPIENT_KINDS}
     shown = [r for r in rows if r["kind"] in RECIPIENT_KINDS]
     warnings = [f"{r['address']}: {r['warning']}" for r in shown if r.get("warning")]
@@ -1476,6 +1501,8 @@ def new_mail_form(
                       for r in rows if r["kind"] == "file"],
         "notices": warnings[:4],
         "note": " ".join(warnings[4:]),
+        **({"unticked": list(dict.fromkeys(a.strip().lower() for a in unticked))}
+           if off else {}),
     }
 
 

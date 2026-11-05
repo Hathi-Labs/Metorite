@@ -123,6 +123,31 @@ export interface ReplyForm {
   revises?: string;
   /** §18.11, a new mail only: the draft number, 2 or more ("Draft 2"). */
   draft?: number;
+  /**
+   * §18.11 rule 7, a new mail only: the people that start unticked because
+   * the member unticked them on the draft before, by lower case. The gateway
+   * starts them unticked (`ticked`) and names them, on every path: a slot, no
+   * slot, a remount and a replay. The card says so, and one tick brings each
+   * person back. A name that is not a person of the card, or that starts
+   * ticked, is dropped.
+   */
+  unticked?: string[];
+}
+
+/** The kept unticks of a new-mail form (§18.11 rule 7): each a person of the
+ *  card who starts unticked, by lower case, once. Anything else is dropped. */
+function untickedNames(value: unknown, all: ReplyRecipients, ticked: ReplyForm["ticked"] | undefined): { unticked?: string[] } {
+  if (!Array.isArray(value) || !ticked) return {};
+  const have = new Set(lower([...all.to, ...all.cc, ...(all.bcc ?? [])]));
+  const start = ticked.reply_all;
+  const on = new Set(lower([...start.to, ...start.cc, ...(start.bcc ?? [])]));
+  const out: string[] = [];
+  for (const v of value) {
+    if (typeof v !== "string") continue;
+    const a = v.trim().toLowerCase();
+    if (have.has(a) && !on.has(a) && !out.includes(a)) out.push(a);
+  }
+  return out.length ? { unticked: out } : {};
 }
 
 /** The link of a redraft (§18.11): a card id that the gateway minted, and a
@@ -219,6 +244,7 @@ export function replyFromEvent(value: unknown, requestId?: string): ReplyForm | 
     ...marksOf(v.marks, replyAll),
     ...(requestId ? { requestId } : {}),
     ...(isNew ? linkOf(v) : {}),
+    ...(isNew ? untickedNames(v.unticked, replyAll, ticked ?? undefined) : {}),
   };
 }
 

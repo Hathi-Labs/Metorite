@@ -188,10 +188,16 @@ def user(email: str = MEMBER, org: str = ORG) -> UserContext:
 
 
 class FakeRedis:
-    """The commands that the two records use, under the real tenant wrapper."""
+    """The commands that the two records use, under the real tenant wrapper.
+
+    ``hashes``, ``ttls`` and :meth:`pipeline` serve the kept unticks of a
+    redraft (§18.11 rule 7): one hash for each member and thread. A pipeline
+    runs its commands in order when it executes, as a MULTI does."""
 
     def __init__(self) -> None:
         self.keys: dict[str, str] = {}
+        self.hashes: dict[str, dict[str, str]] = {}
+        self.ttls: dict[str, int] = {}
 
     async def set(self, k: str, v: str, nx: bool = False, ex: int | None = None,
                   xx: bool = False, keepttl: bool = False) -> bool:
@@ -200,6 +206,8 @@ class FakeRedis:
         if xx and k not in self.keys:  # §21.15: a Bcc joins only a live record
             return False
         self.keys[k] = v
+        if ex:
+            self.ttls[k] = int(ex)
         return True
 
     async def getdel(self, k: str) -> str | None:
@@ -207,6 +215,56 @@ class FakeRedis:
 
     async def get(self, k: str) -> str | None:
         return self.keys.get(k)
+
+    async def hset(self, k: str, key: str | None = None, value: Any = None,
+                   mapping: dict[str, Any] | None = None) -> int:
+        h = self.hashes.setdefault(k, {})
+        if key is not None:
+            h[str(key)] = str(value)
+        for f, v in (mapping or {}).items():
+            h[str(f)] = str(v)
+        return 1
+
+    async def hgetall(self, k: str) -> dict[str, str]:
+        return dict(self.hashes.get(k, {}))
+
+    async def hincrby(self, k: str, name: str, amount: int = 1) -> int:
+        h = self.hashes.setdefault(k, {})
+        h[name] = str(int(h.get(name, "0")) + int(amount))
+        return int(h[name])
+
+    async def delete(self, *ks: str) -> int:
+        gone = 0
+        for k in ks:
+            gone += int(self.keys.pop(k, None) is not None or self.hashes.pop(k, None) is not None)
+            self.ttls.pop(k, None)
+        return gone
+
+    async def expire(self, k: str, seconds: int) -> bool:
+        if k in self.keys or k in self.hashes:
+            self.ttls[k] = int(seconds)
+            return True
+        return False
+
+    def pipeline(self, transaction: bool = False) -> _FakePipeline:
+        return _FakePipeline(self)
+
+
+class _FakePipeline:
+    """A buffer of commands that :meth:`execute` runs on the fake, in order."""
+
+    def __init__(self, redis: FakeRedis) -> None:
+        self._redis = redis
+        self._ops: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
+
+    def __getattr__(self, name: str) -> Any:
+        def queue(*a: Any, **kw: Any) -> _FakePipeline:
+            self._ops.append((name, a, kw))
+            return self
+        return queue
+
+    async def execute(self) -> list[Any]:
+        return [await getattr(self._redis, n)(*a, **kw) for n, a, kw in self._ops]
 
 
 def install_redis(monkeypatch) -> FakeRedis:

@@ -55,6 +55,7 @@ import { githubSetupNote, splitSetupVars, UNREACHABLE_NOTE } from "@/lib/setupTo
 import { cleanSurface, surfaceField } from "@/lib/shell/surface";
 import { typedField } from "@/lib/typedMark";
 import { bindToRun } from "@/lib/runBinding";
+import { MAX_CARD_DRAFTS } from "@/lib/redraftCard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -701,9 +702,11 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const { agentName, message, messages, threadId, mode, model, context, surface, thinkMode, assistantMessageId, lastEventId, reconnect, resume, supersedes, userMessageId, userMessageTs, steerFollowUp, cardAnswer, typed } = body;
   // §18.11: the member's version of each open new-mail card. Only an object
-  // or a short list of objects goes on, and the gateway checks each part.
+  // or a short list of objects goes on, and the gateway checks each part. A
+  // longer list keeps its first ones (fix round 2): the chat puts each card
+  // that the member edited first, so the cut loses no edit.
   const cardDraft = Array.isArray(body.cardDraft)
-    ? (body.cardDraft.length > 0 && body.cardDraft.length <= 8 ? body.cardDraft : null)
+    ? (body.cardDraft.length > 0 ? body.cardDraft.slice(0, MAX_CARD_DRAFTS) : null)
     : body.cardDraft && typeof body.cardDraft === "object" ? body.cardDraft : null;
   // A steer follow-up has no words of its own: the gateway's ENGAGE seam
   // makes the stored steers its message. It runs on the gateway path only.

@@ -31,7 +31,7 @@
  */
 
 import { unfenced } from "@/lib/fencedText";
-import { untickedOf, withUnticked, tickedOfSent, type PeopleBefore, type SentVersion } from "@/lib/redraftCard";
+import { tickedOfSent, type PeopleBefore, type SentVersion } from "@/lib/redraftCard";
 import { isNewMail, replyFromEvent, startTicks, type ReplyForm } from "@/lib/replyCard";
 import { classOf, kindOf, sendCanGo, type PersonClass, type SendRowKind } from "@/lib/sendCard";
 
@@ -435,29 +435,23 @@ function withAdded(set: ReadonlySet<string>, key: string): Set<string> {
 /**
  * The new card that takes the slot of the card it revises (§18.11 step 7).
  * `before` is the client's own copy of the member's last version, its text
- * and its people. The new card starts with each person the member unticked
- * still unticked (P1, untick only), so a click never sends to a person they
- * took out.
+ * and the people it left ticked, for the "Changed:" line.
+ *
+ * The client never changes the new card's ticks (fix round 2). The GATEWAY
+ * starts each person the member unticked still unticked (rule 7), so the
+ * ticks are the same with a slot, with no slot, after a remount and on a
+ * replay.
  */
 function redrafted(card: PendingConfirmation, old: PendingConfirmation): PendingConfirmation {
   const oldForm = old.reply && isNewMail(old.reply) ? old.reply : null;
   const text = old.sent ?? (old.reply ? { subject: old.reply.subject, body: old.reply.body } : undefined);
-  let unticked: string[] = [];
   let people: PeopleBefore | undefined;
   if (oldForm) {
-    const ticked = old.sent && (old.sent.to || old.sent.cc || old.sent.bcc)
-      ? tickedOfSent(old.sent)
-      : startTicks(oldForm).reply_all;
-    const sent: SentVersion = old.sent && (old.sent.to || old.sent.cc || old.sent.bcc)
-      ? old.sent
-      : { subject: oldForm.subject, body: oldForm.body, to: ticked };
-    unticked = untickedOf(oldForm, sent);
-    people = { ticked, unticked };
+    const named = !!old.sent && !!(old.sent.to || old.sent.cc || old.sent.bcc);
+    people = { ticked: named && old.sent ? tickedOfSent(old.sent) : startTicks(oldForm).reply_all };
   }
-  const reply = card.reply && unticked.length ? withUnticked(card.reply, unticked) : card.reply;
   return {
     ...card,
-    ...(reply !== undefined ? { reply } : {}),
     ...(text ? { before: { subject: text.subject, body: text.body, ...(people ? { people } : {}) } } : {}),
   };
 }
@@ -502,6 +496,20 @@ export function confirmationReducer(
         const cards = state.cards.slice();
         cards[slot] = redrafted(card, old);
         return { ...state, cards: noteNewer(cards, slot, card) };
+      }
+      // Fix round 2: a new mail that names no slot while a slot waits (one
+      // message revised two cards, so the gateway linked none) takes the
+      // first slot that waits, in its tab. No slot then says "Updating the
+      // draft…" beside a draft that came. The client cannot tell which card
+      // it replaces, so it shows no "Changed:" line. The ticks are the
+      // server's in both cases.
+      const free = !revises && card.reply && isNewMail(card.reply)
+        ? state.cards.findIndex((c) => c.redraft === "updating")
+        : -1;
+      if (free >= 0) {
+        const cards = state.cards.slice();
+        cards[free] = card;
+        return { ...state, cards: noteNewer(cards, free, card) };
       }
       return { ...state, cards: noteNewer([...state.cards, card], state.cards.length, card) };
     }

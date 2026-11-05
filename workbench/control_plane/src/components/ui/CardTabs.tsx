@@ -89,8 +89,10 @@ const LEVELS = [0, 1, 2] as const;
 export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps) {
   const total = tabs.length;
   // The count says how many cards wait on the member. A slot that waits on a
-  // new draft is a tab, and it is not one of them.
+  // new draft is a tab, and it is not one of them. A row of slots only says
+  // that the drafts are being changed, never "0 to approve" (fix round 2).
   const waiting = tabs.filter((t) => !t.updating).length;
+  const updating = total - waiting;
   const outerRef = useRef<HTMLDivElement>(null);
   const probeRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -164,15 +166,16 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
     requestAnimationFrame(() => document.getElementById(cardTabId(uid, to))?.focus());
   };
 
+  const words = tabsCount(waiting, updating);
   const count = (l: number) =>
     l >= 2 ? (
       // Level 2: the count is its number in a small pill. The words stay
-      // for a screen reader.
-      <span role="img" aria-label={tabsCount(waiting)} title={tabsCount(waiting)} className={PILL_CLASS}>
-        {waiting}
+      // for a screen reader. A row of slots only shows the busy icon, not 0.
+      <span role="img" aria-label={words} title={words} className={PILL_CLASS}>
+        {waiting > 0 || updating === 0 ? waiting : <Icon name="Loader2" size={11} className="inline-block motion-safe:animate-spin" />}
       </span>
     ) : (
-      tabsCount(waiting)
+      words
     );
 
   return (
@@ -189,7 +192,7 @@ export default function CardTabs({ uid, index, onGo, tabs, noun }: CardTabsProps
       <div
         ref={listRef}
         role="tablist"
-        aria-label={tabsLabel(waiting, noun)}
+        aria-label={tabsLabel(waiting, noun, updating)}
         onKeyDown={onKey}
         onScroll={measure}
         data-fade={fade.left && fade.right ? "both" : fade.left ? "left" : fade.right ? "right" : undefined}

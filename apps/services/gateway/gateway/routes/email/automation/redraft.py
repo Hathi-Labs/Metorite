@@ -19,11 +19,18 @@ its step of ``email_app_master_plan.md`` §18.11.
   /email/held-card`` of kind ``new``, of the thread takes the link once, and
   puts ``revises`` and ``draft`` on the new record and its form. Only this
   module sets them. A request that names them gets a 422 (``extra="forbid"``).
+* :func:`take_unticked` (rule 7). The revise route keeps the people that the
+  member unticked on the old card, for the member and the thread. The next
+  new-mail card of each revised card starts those people unticked, on every
+  path of the client. It only unticks: it never ticks, adds or removes a
+  person.
 
 **The rules.** The snapshot only informs the model, and no act reads it (rule
 1). An answer to a revised card finds no record, so it sends and saves
-nothing (rule 2). The tenant and the member come from the session, never from
-the snapshot, and each key goes through ``acb_common.tenant_redis`` (R5).
+nothing (rule 2). The kept unticks change only the START of the next card's
+ticks, and the act sends only to the ticks of the member's answer. The tenant
+and the member come from the session, never from the snapshot, and each key
+goes through ``acb_common.tenant_redis`` (R5).
 
 **Dark.** While ``EMAIL_EDIT_CARD_ORGS`` leaves the org out, nothing here runs:
 the stream door keeps no snapshot, and the revise route answers 404. A record
@@ -44,15 +51,22 @@ from gateway.routes.email.automation import new_mail_card as nm
 from gateway.routes.email.core import _log, router
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-#: The namespace of both keys of a redraft:
-#: ``cc:<org>:email:card_draft:<thread>:<card id>`` and
-#: ``cc:<org>:email:card_revised:<thread>``.
+#: The namespace of the three keys of a redraft:
+#: ``cc:<org>:email:card_draft:<thread>:<card id>``,
+#: ``cc:<org>:email:card_revised:<thread>`` and
+#: ``cc:<org>:email:card_unticked:<thread>:<member>``.
 NAMESPACE = "email"
 SNAPSHOT_PART = "card_draft"
 LINK_PART = "card_revised"
-#: The life of a snapshot and of a link, in seconds (§18.11 steps 2 and 4).
+UNTICKED_PART = "card_unticked"
+#: The life of a snapshot, of a link and of the kept unticks, in seconds
+#: (§18.11 steps 2 and 4, rule 7).
 SNAPSHOT_TTL_S = 900
 LINK_TTL_S = 900
+UNTICKED_TTL_S = 900
+#: The hash field of each kept person. The prefix keeps an address apart from
+#: the two other fields, ``owner`` and ``left``.
+_PERSON_FIELD = "p:"
 #: The draft number of a record that names none: a card from before §18.11,
 #: or a card that no revise linked. Such a card shows no "Draft" label.
 FIRST_DRAFT = 1
@@ -182,7 +196,9 @@ async def keep_card_draft(user: UserContext, thread_id: str, raw: Any) -> bool:
     ``card_draft``: one snapshot, or a list with one for EACH open new-mail
     card (P2), an unedited card too, so a snapshot that an older steer left
     for a card is replaced. True when a checked snapshot went to tenant Redis.
-    A snapshot that fails a check, a flag that is off, and a fault keep
+    A list of more than :data:`MAX_SNAPSHOTS` keeps its first ones: the chat
+    puts each card that the member edited first (P2 of fix round 2). A
+    snapshot that fails a check, a flag that is off, and a fault keep
     nothing, and the steer goes on. The tenant and the member come from the
     session. It never raises, so a snapshot can never stop a steer."""
     from acb_skills.reply_card import edit_card_on
@@ -195,8 +211,8 @@ async def keep_card_draft(user: UserContext, thread_id: str, raw: Any) -> bool:
             return False
         items = raw if isinstance(raw, list) else [raw]
         if len(items) > MAX_SNAPSHOTS:
-            _log.info("email.card_draft_dropped", reason="count")
-            return False
+            _log.info("email.card_draft_cut", count=len(items))
+            items = items[:MAX_SNAPSHOTS]
         kept = False
         for item in items:
             if await _keep_one(user, org, member, thread, item):
@@ -349,6 +365,122 @@ def _strings(value: Any) -> list[str]:
     return [str(a) for a in value if isinstance(a, str)] if isinstance(value, list) else []
 
 
+# ── Rule 7: the people that the member unticked stay unticked ────────────────
+
+
+def _untickable(rec: dict[str, Any]) -> dict[str, list[str]] | None:
+    """The people of a card record whose tick is the member's to take away,
+    by kind, in lower case and in card order. A plain card (§18.10) starts each
+    person ticked. A held card (§21) starts only a row that its class ticks,
+    so a new address that started unticked is never the member's untick.
+    None for a record that is not a new mail."""
+    kind = rec.get("kind")
+    if kind == "new-mail":
+        return {k: [str(a).strip().lower() for a in rec.get(k) or []] for k in _KINDS}
+    if kind == "new":
+        out: dict[str, list[str]] = {k: [] for k in _KINDS}
+        for row in rec.get("rows") or []:
+            if isinstance(row, dict) and row.get("kind") in out and row.get("checked") is True:
+                out[str(row["kind"])].append(str(row.get("address") or "").strip().lower())
+        return out
+    return None
+
+
+def member_unticked(rec: dict[str, Any], snap: dict[str, Any] | None) -> list[str]:
+    """The people that the member unticked on the card of *rec*, in lower case.
+
+    With a snapshot, each person whose tick was the member's to take away
+    (:func:`_untickable`) and that the member's version does not tick. With
+    no snapshot, the people that the card itself started unticked for this
+    reason (``rec["unticked"]``), so a chain of drafts keeps them. The list
+    names only people of the record: no snapshot can add one."""
+    if snap is None:
+        return [a for a in _strings(rec.get("unticked")) if a == a.strip().lower() and a]
+    start = _untickable(rec)
+    if start is None:
+        return []
+    out: list[str] = []
+    for kind in _KINDS:
+        on = {a.strip().lower() for a in _strings(snap.get(kind))}
+        out += [a for a in start[kind] if a and a not in on and a not in out]
+    return out
+
+
+async def _note_unticked(user: UserContext, thread: str, people: list[str]) -> None:
+    """Keep *people* for the next new-mail cards of the member in the thread.
+
+    One hash for the member and the thread: ``owner``, ``left`` (how many new
+    cards still take it) and one ``p:<address>`` field for each person. Each
+    revised card adds one to ``left``, also with no person, because each one
+    gives a new card. When one message revised two cards, each new card takes
+    the people of both: an extra untick is safe, and a lost one sends mail to
+    a person the member took out. One MULTI, so two revises at once both count."""
+    from acb_common.tenant_redis import organization_scope
+
+    member = _member(user)
+    if not member:
+        return
+    with organization_scope(hc._org_of(user)):
+        k = _key(UNTICKED_PART, thread, member)
+        pipe = hc._tenant_redis().pipeline(transaction=True)
+        pipe.hset(k, mapping={"owner": member, **{_PERSON_FIELD + a: "1" for a in people}})
+        pipe.hincrby(k, "left", 1)
+        pipe.expire(k, UNTICKED_TTL_S)
+        await pipe.execute()
+
+
+def _text(value: Any) -> str:
+    return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else str(value)
+
+
+async def take_unticked(user: UserContext, thread_id: str) -> frozenset[str]:
+    """The people that start unticked on this new-mail card (rule 7), in lower case.
+
+    The new-card routes call it for the next card of the member in the thread
+    while ``EMAIL_EDIT_CARD_ORGS`` names the org. It takes one from ``left``,
+    and the last card deletes the hash. Another member, another thread, no
+    hash and a fault give none. The people change only the start of the
+    card's ticks: the act sends only to the ticks of the member's answer."""
+    from acb_common.tenant_redis import organization_scope
+
+    thread = str(thread_id or "").strip()
+    member = _member(user)
+    if not thread or not member:
+        return frozenset()
+    try:
+        with organization_scope(hc._org_of(user)):
+            redis = hc._tenant_redis()
+            k = _key(UNTICKED_PART, thread, member)
+            raw = await redis.hgetall(k)
+            fields = {_text(f): _text(v) for f, v in (raw or {}).items()}
+            if not fields or fields.get("owner") != member:
+                return frozenset()
+            people = frozenset(f[len(_PERSON_FIELD):] for f in fields
+                               if f.startswith(_PERSON_FIELD) and len(f) > len(_PERSON_FIELD))
+            if int(await redis.hincrby(k, "left", -1)) <= 0:
+                await redis.delete(k)
+    except HTTPException:
+        raise
+    except Exception as exc:  # the class only: an address never reaches a log
+        _log.warning("email.card_unticked_take_failed", error=type(exc).__name__)
+        return frozenset()
+    return people
+
+
+def start_unticked(
+    lists: dict[str, list[str]], off: frozenset[str],
+) -> tuple[dict[str, list[str]], list[str]]:
+    """The ticked start of a plain card's *lists* with each person of *off*
+    unticked, and those people in lower case. UNTICK ONLY: the start is a part
+    of each list, and the lists themselves do not change."""
+    start = {k: [a for a in lists.get(k) or [] if a.strip().lower() not in off] for k in _KINDS}
+    named: list[str] = []
+    for k in _KINDS:
+        named += [a.strip().lower() for a in lists.get(k) or []
+                  if a.strip().lower() in off and a.strip().lower() not in named]
+    return start, named
+
+
 @router.post("/new-card/revise")
 async def revise_new_mail_card(
     req: ReviseRequest,
@@ -362,9 +494,11 @@ async def revise_new_mail_card(
     1. Spend the record of the old card (``take_record``), so a late answer
        finds no record and sends nothing.
     2. Take the snapshot of that card once (``GETDEL``), if there is one.
-    3. Write the link of the thread, ``{card_id, draft}``, for 900 seconds.
+    3. Keep the people that the member unticked on that card, for 900
+       seconds (rule 7, :func:`member_unticked`).
+    4. Write the link of the thread, ``{card_id, draft}``, for 900 seconds.
        ``draft`` is the draft number of the old card plus one.
-    4. Answer the snapshot as a neutral data block, or "" for none.
+    5. Answer the snapshot as a neutral data block, or "" for none.
 
     A fault after step 1 still answers, with no snapshot, so the tool gives
     the model its REVISED text. Nothing here sends or saves a mail. 404 while
@@ -386,6 +520,7 @@ async def revise_new_mail_card(
         raise HTTPException(status_code=409, detail=nm.NO_CARD)
     nxt = min(draft_of(spent) + 1, MAX_DRAFT)
     block = ""
+    snap: dict[str, Any] | None = None
     try:
         snap = await _take_snapshot(user, thread, req.card_id)
         if snap is not None:
@@ -394,9 +529,15 @@ async def revise_new_mail_card(
                 _strings(snap.get("to")), _strings(snap.get("cc")), _strings(snap.get("bcc")))
     except Exception as exc:  # the old card is spent: answer with no snapshot
         _log.warning("email.card_snapshot_take_failed", error=type(exc).__name__)
+    off: list[str] = []
+    try:
+        off = member_unticked(spent, snap)
+        await _note_unticked(user, thread, off)
+    except Exception as exc:  # the next card then starts with the server's ticks
+        _log.warning("email.card_unticked_write_failed", error=type(exc).__name__)
     try:
         await _write_link(user, thread, req.card_id, nxt)
     except Exception as exc:  # the next card is then "Draft 1"
         _log.warning("email.card_link_write_failed", error=type(exc).__name__)
-    _log.info("email.card_revised", draft=nxt, snapshot=bool(block))
+    _log.info("email.card_revised", draft=nxt, snapshot=bool(block), unticked=len(off))
     return {"revised": True, "draft": nxt, "snapshot": block}

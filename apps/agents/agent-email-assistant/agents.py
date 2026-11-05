@@ -6395,7 +6395,8 @@ def _new_mail_form(prep: dict[str, Any], notices: list[str]) -> dict[str, Any]:
     """The form of the card, from the answer of ``POST /email/new-card``.
 
     The people, the subject, the text and the files are the gateway's, as
-    it recorded them. Each person starts ticked. *notices* are the lines of
+    it recorded them. Each person starts ticked, but a person that the
+    member unticked on the draft before (§18.11 rule 7). *notices* are the lines of
     the tool: the usual mailbox, each always-copy colleague and a look-alike
     warning."""
     people: dict[str, list[str]] = {"to": [str(a) for a in prep.get("to") or []],
@@ -6412,6 +6413,14 @@ def _new_mail_form(prep: dict[str, Any], notices: list[str]) -> dict[str, Any]:
     # message revised. The tool copies the two fields, and sets neither.
     if prep.get("revises"):
         form["revises"], form["draft"] = prep["revises"], prep.get("draft")
+    # §18.11 rule 7: the gateway starts each person that the member unticked
+    # on that card unticked, and names them. The tool copies the start and the
+    # names, and sets neither. ``clean_reply_form`` checks that each name is a
+    # person of the card who starts unticked.
+    if isinstance(prep.get("ticked"), dict) and prep.get("unticked"):
+        start = {k: [str(a) for a in prep["ticked"].get(k) or []] for k in people}
+        form["ticked"] = {"reply": start, "reply_all": start}
+        form["unticked"] = [str(a) for a in prep["unticked"]]
     for line in notices:
         if str(line or "").strip():
             _form_notice(form, " ".join(str(line).split()))
