@@ -31,8 +31,8 @@ This file proves:
   ``c1_next_line`` go red.
 * M2. ``_LEGAL_CONTROLS``: drop the carriage return. The kept case
   ``crlf_tab`` goes red.
-* M3. ``_joiner_legal``: return True after the edge check. The refused cases
-  ``zwj_double``, ``zwj_after_space`` and ``zwnj_at_line_end`` go red. Return False: the kept
+* M3. ``_joiner_legal``: return True in place of its last line. The refused
+  cases ``zwj_double``, ``zwj_after_space`` and ``zwj_then_vs16`` go red. Return False: the kept
   cases ``persian_zwnj``, ``hindi_zwj``, ``bengali_zwj`` and
   ``family_emoji`` go red.
 * M3c. ``_joiner_legal``: return False at a word end (drop the virama
