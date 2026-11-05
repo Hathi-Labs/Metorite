@@ -1350,8 +1350,12 @@ line — never reclaim a number by deleting the other entry.
 - **Check:** `grep -rn "with get_session() as" apps/services/gateway/gateway/routes/agent.py packages/acb_skills/acb_skills/loader.py`.
   A hit means this is open. The Redis activity feeds are task 1718, and the
   `agent_avatars` key is task 1719.
-- **Part 2:** closed `observability.py`, `debug.py`, `integrations_skills.py`
-  and the two plugin routes of `integrations.py` on 2026-11-05.
+- **Part 2:** closed the Postgres reads of `observability.py`, `debug.py`,
+  `integrations_skills.py` and the two plugin routes of `integrations.py` on
+  2026-11-05.
+- **Part 3 (task 1718, H-201c):** keys the Redis feed of `observability.py`
+  for each tenant. Built 2026-11-05 on branch `h201c-mt-dea97a06`, not merged.
+  `/cost` still reads the global `cc:cost:{day}`. A follow-up task owns it.
 - **Added:** 2026-09-29 · the WS-27bm S15 session. Part 1 built 2026-09-30.
 
 ### H-202 · Two small follow-ups from the Reports UX pass · [AGENT]

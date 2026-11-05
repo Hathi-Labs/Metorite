@@ -147,14 +147,18 @@ def _emit_and_capture(monkeypatch, *, bind: dict | None = None, **emit_kw):
 
     from acb_common import activity, bind_run_context, clear_run_context
 
+    from acb_common.db import bind_tenant, release_tenant
+
     recorded: list[dict] = []
 
-    async def _fake_axadd(evt):
+    async def _fake_axadd(evt, _org):
         recorded.append(evt)
 
     monkeypatch.setattr(activity, "_axadd", _fake_axadd)
 
     async def _run():
+        # H-201c: the feed drops an event with no tenant, so the run binds one.
+        token = bind_tenant("org-telemetry-test")
         if bind:
             bind_run_context(**bind)
         try:
@@ -163,6 +167,7 @@ def _emit_and_capture(monkeypatch, *, bind: dict | None = None, **emit_kw):
             await asyncio.sleep(0)
         finally:
             clear_run_context()
+            release_tenant(token)
 
     asyncio.run(_run())
     return recorded
@@ -240,17 +245,23 @@ def test_unpriced_model_publishes_unknown_cost_never_zero(monkeypatch):
 
     from acb_common import activity
 
+    from acb_common.db import bind_tenant, release_tenant
+
     recorded: list[dict] = []
 
-    async def _fake_axadd(evt):
+    async def _fake_axadd(evt, _org):
         recorded.append(evt)
 
     monkeypatch.setattr(activity, "_axadd", _fake_axadd)
 
     async def _run():
-        llm_client._emit_usage(model, "tier-fast", _USAGE)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        token = bind_tenant("org-telemetry-test")  # H-201c: a write needs a tenant
+        try:
+            llm_client._emit_usage(model, "tier-fast", _USAGE)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+        finally:
+            release_tenant(token)
 
     asyncio.run(_run())
     ev = recorded[0]
