@@ -4,7 +4,7 @@ Spec: ``project-docs/specs/ai_studio.md`` §9 and §14 J1, and the owner's
 answers STU-Q4 and STU-Q4b (§12). Code: ``require_feature_router("studio")``
 on the one router of ``gateway/routes/studio/actions.py``, the vocabulary of
 ``acb_auth/permissions.py`` and the catalog row of
-``infra/postgres/346_studio_feature.sql``. The hermetic half is
+``infra/postgres/347_studio_feature.sql``. The hermetic half is
 ``test_studio_route_gate.py``.
 
 Each member here holds a REAL system role of org A, seeded by the real
@@ -49,7 +49,7 @@ went red.
   Red: ``test_a_member_who_holds_workflows_but_not_studio_gets_403`` and
   ``test_a_member_with_a_deny_override_gets_403``. Each of those members
   holds ``feature:workflows``, so the old gate lets them in.
-* M4: in ``346_studio_feature.sql``, drop the ``INSERT``. Red:
+* M4: in ``347_studio_feature.sql``, drop the ``INSERT``. Red:
   ``test_the_catalog_row_is_a_default_and_no_role_holds_a_studio_row``.
 """
 

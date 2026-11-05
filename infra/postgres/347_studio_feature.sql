@@ -1,5 +1,5 @@
 -- ============================================================================
--- 346_studio_feature.sql — the `studio` feature of AI Studio.
+-- 347_studio_feature.sql — the `studio` feature of AI Studio.
 --
 -- What: one `feature_catalog` row, `studio`, in the `apps` category at sort
 --       order 96, after Workflows (95). The matching FEATURES entry is in
@@ -27,7 +27,8 @@
 -- Tenant scope (R5): feature_catalog is a global vocabulary table with no
 -- organization_id, and this file adds no table.
 -- The number is taken at build time (R1). On 2026-11-05 origin/main held 345
--- (345_chat_session_continued_from.sql), and no remote branch or worktree
+-- (345_chat_session_continued_from.sql), and the branch
+-- kg4-structural-edges-mt-2a446b84 held 346. No other branch or worktree
 -- held 346 or higher. Check it again at merge (scripts/premerge.sh).
 -- ============================================================================
 
