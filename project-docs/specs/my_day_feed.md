@@ -3358,6 +3358,9 @@ it. These are the parts:
   production, so this is defence in depth (R5). Read past RLS, the list would
   hold the member's mailbox of another organization too. The wrappers refuse
   it with a 404, and the provider skips it. HANDOFF H-334 holds the rest.
+  **Closed 2026-11-05, H-334b (task 1692):** `feed_mailboxes` names the
+  bound tenant now. `tests/unit/test_email_mailbox_list_tenant_r8.py` is
+  the fence.
 
 **Fix round 1, 2026-10-16.** The review found that a fold moved the state
 fingerprint. A `promise_due` folded under a notification card added
