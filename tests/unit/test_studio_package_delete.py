@@ -1,0 +1,874 @@
+"""The delete of a Studio package — the hermetic half (STU-A5c-1).
+
+Spec: ``project-docs/specs/ai_studio.md`` §14 A5c-1. Code:
+``gateway/routes/studio/packages.py`` (the two routes),
+``gateway/studio/packages_store.py`` (``delete_preview``, ``delete_package``,
+``confirm_token``) and ``gateway/studio/objects_store.py`` (``lock_org``,
+``package_counts``, ``purge_records``). The R8 half, on a real Postgres, is
+``test_studio_package_delete_r8.py``. It proves the rows, the locks and the
+dead end that the delete frees.
+
+This file proves:
+
+- a. the store step: the lock order (the ``apps`` row ``FOR UPDATE``, the org
+  lock, then the purge), the token check under the locks, a full chunk that
+  answers ``deleted=False`` with no delete and no audit, and a last step that
+  deletes the row and writes one audit row in the same session;
+- b. the object store: the purge stops at its limit across objects, the
+  counts stop at the cap, and a timeout is ``StoreBusy``;
+- c. the routes: the switch first, the order of the checks (the id, the body
+  cap, the owner, then the parse), 422 for a token that is missing or
+  malformed, 409 ``counts_changed`` with the new preview, one session for
+  each step, 202 past the budget with a new token, 503 ``store_busy`` only on
+  the first step, and a body that names another owner changes nothing;
+- d. the fences: only ``delete_package`` deletes a package from ``apps``, the
+  versions go by the cascade, the audit is in the store, and the R8 suite is
+  in the ``--must-run`` list.
+
+**The mutations (R7).** Each was run on 2026-11-05 against both halves. The
+red tests are listed for each. The R8 half holds the ones that need a
+database.
+
+* M1. Drop ``for_update=True`` from ``delete_package``.
+  ``test_a_step_locks_the_apps_row_then_the_org_then_purges`` and
+  ``test_the_lock_order_is_in_the_source`` go red here, and
+  ``test_r8_a_delete_waits_for_a_publish_that_holds_the_apps_row`` in R8.
+* M2. Swap the lock order (``lock_org`` before ``get_package``).
+  ``test_a_step_locks_the_apps_row_then_the_org_then_purges`` and
+  ``test_the_lock_order_is_in_the_source`` go red here, and
+  ``test_r8_a_holder_of_the_apps_row_takes_the_org_lock_while_a_delete_waits``
+  in R8.
+* M3. Drop the switch check from ``delete_package`` (the route).
+  ``test_with_the_switch_off_both_routes_are_404_and_read_no_byte`` and
+  ``test_each_delete_handler_checks_the_switch_first`` go red.
+* M4. Take the owner from the body (``body.get("owner_email")``).
+  ``test_a_body_that_names_another_owner_or_org_changes_nothing`` goes red
+  here, and ``test_r8_a_body_that_names_the_owner_does_not_let_another_member_delete``
+  in R8.
+* M5. Write the audit through ``record_app_audit_bound`` after the session,
+  in place of ``_audit`` in the store.
+  ``test_the_audit_is_written_in_the_store_and_not_by_the_route`` goes red
+  here, and ``test_r8_a_failed_audit_keeps_the_package_and_its_rows`` in R8.
+* M6. Write the audit in a second session after the delete session.
+  ``test_r8_a_failed_audit_keeps_the_package_and_its_rows`` goes red in R8.
+* M7. Drop the token check of the first step.
+  ``test_a_stale_token_is_409_with_the_new_preview_and_deletes_nothing``
+  and ``test_a_step_with_a_stale_token_raises_before_the_purge`` go red here,
+  and ``test_r8_a_stale_token_is_409_and_deletes_nothing`` in R8.
+* M8. Run every step in one session (no commit between steps).
+  ``test_each_step_runs_in_its_own_session`` goes red here, and
+  ``test_r8_the_org_lock_is_free_between_two_steps`` in R8.
+* M9. Delete the ``apps`` row on the first step, with no purge loop.
+  ``test_a_full_chunk_answers_not_deleted_and_writes_nothing_else`` goes red
+  here, and ``test_r8_1300_records_with_a_chunk_of_100_give_202_and_then_200``
+  in R8.
+"""
+
+from __future__ import annotations
+
+import ast
+import asyncio
+import copy
+import inspect
+import json
+import re
+import uuid
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+from acb_auth import UserContext, UserRole, build_access, get_current_user
+from acb_common import get_settings
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.testclient import TestClient
+from gateway.routes.studio import actions, packages
+from gateway.studio import objects_store
+from gateway.studio import packages_store as store
+from sqlalchemy.exc import DBAPIError
+
+ORG = str(uuid.uuid4())
+OTHER = str(uuid.uuid4())
+ANA = "ana@example.test"
+BEN = "ben@example.test"
+NOT_FOUND = {"detail": "Not found"}
+_ROOT = Path(__file__).resolve().parents[2]
+_PACKAGES_PY = _ROOT / "apps/services/gateway/gateway/routes/studio/packages.py"
+_STORE_PY = _ROOT / "apps/services/gateway/gateway/studio/packages_store.py"
+_JSON = {"content-type": "application/json"}
+
+
+def _run(coro: Any) -> Any:
+    return asyncio.run(coro)
+
+
+def _package(pid: str, owner: str = ANA, live: int | None = 2) -> store.Package:
+    now = datetime.now(UTC)
+    return store.Package(
+        id=pid, slug=f"visits-{pid[:8]}", name="Visits", description="Track visits.",
+        owner_email=owner, visibility="private", status="live",
+        manifest={"studio": 1, "id": "visits", "name": "Visits", "purpose": "Secret purpose."},
+        live_version=live, created_at=now, updated_at=now)
+
+
+def _counts(records: dict[str, int], cap: int = objects_store.COUNT_CAP
+            ) -> list[objects_store.ObjectCount]:
+    return [objects_store.ObjectCount(name=n, fields=3, records=min(r, cap), capped=r > cap)
+            for n, r in sorted(records.items())]
+
+
+# ── a. The store step ──────────────────────────────────────────────────────
+
+
+class _Res:
+    def __init__(self, rows: list[tuple[Any, ...]] | None = None, rowcount: int = 0) -> None:
+        self.rows = list(rows or [])
+        self.rowcount = rowcount
+
+    def first(self) -> Any:
+        return self.rows[0] if self.rows else None
+
+    def one(self) -> Any:
+        assert len(self.rows) == 1, self.rows
+        return self.rows[0]
+
+    def all(self) -> list[Any]:
+        return list(self.rows)
+
+    def scalar_one(self) -> Any:
+        return self.rows[0][0]
+
+
+class _StoreDb:
+    """The session of a store step. It answers the three statements of
+    ``packages_store`` and writes each one to *log*."""
+
+    def __init__(self, log: list[str], *, counts: tuple[int, int, int] = (2, 1, 0),
+                 audit_fails: bool = False) -> None:
+        self.log = log
+        self.counts = counts
+        self.audit_fails = audit_fails
+        self.audits: list[dict[str, Any]] = []
+
+    async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Res:
+        sql, p = str(stmt), dict(params or {})
+        if sql == store._DELETE_COUNTS_SQL:
+            self.log.append("counts")
+            return _Res([self.counts])
+        if sql == store._DELETE_SQL:
+            self.log.append("delete")
+            return _Res([(p["id"],)])
+        if sql == store._AUDIT_SQL:
+            self.log.append("audit")
+            if self.audit_fails:
+                raise RuntimeError("the audit insert failed")
+            self.audits.append({**p, "detail": json.loads(p["detail"])})
+            return _Res()
+        raise AssertionError(f"an unexpected statement: {sql[:60]}")
+
+
+@pytest.fixture
+def step(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """The package of Ana, with records, behind fakes of the object store."""
+    pid = str(uuid.uuid4())
+    w = SimpleNamespace(pid=pid, log=[], records={"visit": 700, "site": 300}, busy=False)
+
+    async def get_package(db: Any, member: str, package_id: str, *,
+                          for_update: bool = False) -> store.Package | None:
+        w.log.append(f"get(for_update={for_update})")
+        return _package(pid) if (package_id, member) == (pid, ANA) else None
+
+    async def lock_org(db: Any) -> None:
+        w.log.append("lock_org")
+        if w.busy:
+            raise objects_store.StoreBusy("This app is busy. Try again in a moment.")
+
+    async def package_counts(db: Any, package_id: str, *, cap: int = 100_000) -> Any:
+        w.log.append("package_counts")
+        return _counts(w.records)
+
+    async def purge_records(db: Any, package_id: str, *, limit: int = 500) -> int:
+        w.log.append(f"purge({limit})")
+        gone = 0
+        for name in sorted(w.records):
+            take = min(limit - gone, w.records[name])
+            w.records[name] -= take
+            gone += take
+        return gone
+
+    monkeypatch.setattr(store, "get_package", get_package)
+    monkeypatch.setattr(objects_store, "lock_org", lock_org)
+    monkeypatch.setattr(objects_store, "package_counts", package_counts)
+    monkeypatch.setattr(objects_store, "purge_records", purge_records)
+    return w
+
+
+def _token(w: SimpleNamespace, counts: tuple[int, int, int] = (2, 1, 0)) -> str:
+    return store.confirm_token(w.pid, _counts(w.records), *counts)
+
+
+def test_a_step_locks_the_apps_row_then_the_org_then_purges(step: SimpleNamespace) -> None:
+    db = _StoreDb(step.log)
+    got = _run(store.delete_package(db, ANA, step.pid, confirm=_token(step)))
+    assert got == store.DeleteStep(deleted=False, removed=500)
+    assert step.log == ["get(for_update=True)", "lock_org", "package_counts", "counts",
+                        "purge(500)"]
+
+
+def test_a_full_chunk_answers_not_deleted_and_writes_nothing_else(step: SimpleNamespace) -> None:
+    db = _StoreDb(step.log)
+    got = _run(store.delete_package(db, ANA, step.pid, chunk=1000))
+    assert got == store.DeleteStep(deleted=False, removed=1000)
+    assert "delete" not in step.log and "audit" not in step.log and db.audits == []
+
+
+def test_the_last_step_deletes_the_row_and_writes_one_audit_row(step: SimpleNamespace) -> None:
+    step.records = {"visit": 120}
+    db = _StoreDb(step.log, counts=(4, 2, 1))
+    got = _run(store.delete_package(db, ANA, step.pid, removed=1500))
+    assert got == store.DeleteStep(deleted=True, removed=120)
+    assert step.log[-4:] == ["package_counts", "counts", "delete", "audit"]
+    [audit] = db.audits
+    assert (audit["id"], audit["m"], audit["kind"], audit["v"]) == (step.pid, ANA, "action", 2)
+    detail = audit["detail"]
+    assert detail == {
+        "op": "package.delete", "by": "owner", "owner": ANA, "name": "Visits",
+        "slug": f"visits-{step.pid[:8]}", "objects": 1, "fields": 3, "records": 1620,
+        "versions": 4, "installs": 2, "other_member_installs": 1}
+    assert "Secret purpose" not in json.dumps(detail)
+
+
+def test_a_step_with_a_stale_token_raises_before_the_purge(step: SimpleNamespace) -> None:
+    stale = _token(step)
+    step.records["visit"] += 1
+    with pytest.raises(store.CountsChanged) as exc:
+        _run(store.delete_package(_StoreDb(step.log), ANA, step.pid, confirm=stale))
+    assert not any(e.startswith("purge") for e in step.log)
+    assert exc.value.preview.confirm == _token(step) != stale
+    assert exc.value.preview.records == 1001
+    assert str(exc.value) == store.COUNTS_CHANGED_TEXT
+
+
+def test_another_member_or_a_bad_token_reads_nothing_and_locks_nothing(
+        step: SimpleNamespace) -> None:
+    assert _run(store.delete_package(_StoreDb(step.log), BEN, step.pid)) is None
+    assert step.log == ["get(for_update=True)"]
+    step.log.clear()
+    for bad in ("A" * 64, "a" * 63, "g" * 64, 7, "a" * 65):
+        with pytest.raises(store.PackageStoreError):
+            _run(store.delete_package(_StoreDb(step.log), ANA, step.pid, confirm=bad))
+    for kw in ({"chunk": 0}, {"chunk": True}, {"removed": -1}, {"removed": 1.5}):
+        with pytest.raises(store.PackageStoreError):
+            _run(store.delete_package(_StoreDb(step.log), ANA, step.pid, **kw))
+    assert step.log == []
+
+
+def test_a_busy_org_lock_raises_store_busy_and_purges_nothing(step: SimpleNamespace) -> None:
+    step.busy = True
+    with pytest.raises(objects_store.StoreBusy):
+        _run(store.delete_package(_StoreDb(step.log), ANA, step.pid, confirm=_token(step)))
+    assert step.log == ["get(for_update=True)", "lock_org"]
+
+
+def test_a_failed_audit_raises_after_the_delete_in_the_same_session(step: SimpleNamespace) -> None:
+    """The audit runs in the session of the delete, so its failure rolls the
+    delete back with the session (the R8 half proves the rollback)."""
+    step.records = {"visit": 3}
+    with pytest.raises(RuntimeError):
+        _run(store.delete_package(_StoreDb(step.log, audit_fails=True), ANA, step.pid))
+    assert step.log[-2:] == ["delete", "audit"]
+
+
+def test_the_preview_is_a_read_with_no_lock(step: SimpleNamespace) -> None:
+    found = _run(store.delete_preview(_StoreDb(step.log, counts=(3, 2, 1)), ANA, step.pid))
+    assert step.log == ["get(for_update=False)", "package_counts", "counts"]
+    assert (found.records, found.fields, found.versions, found.installs,
+            found.other_member_installs, found.capped) == (1000, 6, 3, 2, 1, False)
+    assert found.confirm == _token(step, (3, 2, 1))
+    assert _run(store.delete_preview(_StoreDb(step.log), BEN, step.pid)) is None
+
+
+def test_the_token_is_the_hash_of_the_id_the_names_and_the_counts() -> None:
+    pid = str(uuid.uuid4())
+    objs = _counts({"a": 1, "b": 2})
+    token = store.confirm_token(pid, objs, 1, 0, 0)
+    assert re.fullmatch(r"[0-9a-f]{64}", token)
+    assert store.confirm_token(pid, list(reversed(objs)), 1, 0, 0) == token
+    changed = [
+        store.confirm_token(str(uuid.uuid4()), objs, 1, 0, 0),
+        store.confirm_token(pid, _counts({"a": 1, "c": 2}), 1, 0, 0),
+        store.confirm_token(pid, _counts({"a": 1, "b": 3}), 1, 0, 0),
+        store.confirm_token(pid, objs, 2, 0, 0),
+        store.confirm_token(pid, objs, 1, 1, 0),
+        store.confirm_token(pid, objs, 1, 0, 1),
+    ]
+    assert token not in changed and len(set(changed)) == len(changed)
+
+
+def test_the_store_signatures_hold_no_admin_switch() -> None:
+    """A5c-1 has no admin path: no store function takes a flag that drops the
+    owner filter, and the route passes only the member of the session."""
+    assert list(inspect.signature(store.delete_package).parameters) == [
+        "db", "member", "package_id", "confirm", "chunk", "removed"]
+    assert list(inspect.signature(store.delete_preview).parameters) == [
+        "db", "member", "package_id"]
+
+
+# ── b. The object store ────────────────────────────────────────────────────
+
+
+class _Nested:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        return False
+
+
+class _Orig(Exception):
+    sqlstate = "57014"
+
+
+class _ObjDb:
+    """A session of the object store: the deadline statements, the object
+    ids and the purge of each object."""
+
+    def __init__(self, records: dict[str, int], *, cancel: bool = False,
+                 counts: list[tuple[Any, ...]] | None = None) -> None:
+        self.records = dict(records)
+        self.cancel = cancel
+        self.counts = counts or []
+        self.purges: list[tuple[str, int]] = []
+        self.timeouts: list[str] = []
+
+    async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Res:
+        sql, p = str(stmt), dict(params or {})
+        if sql == objects_store._TIMEOUT_READ_SQL:
+            return _Res([("0",)])
+        if sql == objects_store._TIMEOUT_SQL:
+            self.timeouts.append(p["ms"])
+            return _Res()
+        if self.cancel:
+            raise DBAPIError(sql, p, _Orig())
+        if sql == objects_store._PACKAGE_OBJECT_IDS_SQL:
+            return _Res([(o,) for o in sorted(self.records)])
+        if sql == objects_store._PURGE_SQL:
+            take = min(int(p["n"]), self.records[p["oid"]])
+            self.records[p["oid"]] -= take
+            self.purges.append((p["oid"], int(p["n"])))
+            return _Res(rowcount=take)
+        if sql == objects_store._PACKAGE_COUNTS_SQL:
+            assert p["cap"] == objects_store.COUNT_CAP + 1
+            return _Res(self.counts)
+        raise AssertionError(f"an unexpected statement: {sql[:60]}")
+
+    def begin_nested(self) -> _Nested:
+        return _Nested()
+
+
+_O1, _O2, _O3 = (f"0000000{i}-0000-0000-0000-000000000000" for i in (1, 2, 3))
+_PID = str(uuid.uuid4())
+
+
+def test_the_purge_stops_at_its_limit_across_objects() -> None:
+    db = _ObjDb({_O1: 300, _O2: 300, _O3: 50})
+    assert _run(objects_store.purge_records(db, _PID, limit=500)) == 500
+    assert db.records == {_O1: 0, _O2: 100, _O3: 50}
+    assert db.purges == [(_O1, 500), (_O2, 200)]
+    # A short answer means that nothing is left.
+    assert _run(objects_store.purge_records(db, _PID, limit=500)) == 150
+    assert db.records == {_O1: 0, _O2: 0, _O3: 0}
+
+
+def test_each_purge_statement_runs_under_the_deadline() -> None:
+    db = _ObjDb({_O1: 10})
+    _run(objects_store.purge_records(db, _PID, limit=500))
+    # One LOCAL timeout before each statement, and the old value at the end.
+    assert len(db.timeouts) == 3 and db.timeouts[-1] == "0"
+    assert all(0 < int(ms) <= 5000 for ms in db.timeouts[:-1])
+
+
+def test_a_timeout_of_the_purge_or_the_counts_is_store_busy() -> None:
+    with pytest.raises(objects_store.StoreBusy):
+        _run(objects_store.purge_records(_ObjDb({_O1: 10}, cancel=True), _PID))
+    with pytest.raises(objects_store.StoreBusy):
+        _run(objects_store.package_counts(_ObjDb({}, cancel=True), _PID))
+
+
+def test_the_counts_stop_at_the_cap() -> None:
+    cap = objects_store.COUNT_CAP
+    db = _ObjDb({}, counts=[("lines", 4, cap + 1), ("visit", 2, 17)])
+    got = _run(objects_store.package_counts(db, _PID))
+    assert got == [objects_store.ObjectCount("lines", 4, cap, True),
+                   objects_store.ObjectCount("visit", 2, 17, False)]
+
+
+def test_a_bad_id_or_limit_is_refused_before_any_statement() -> None:
+    db = _ObjDb({_O1: 1})
+    for call in (objects_store.purge_records(db, "nope"),
+                 objects_store.purge_records(db, _PID, limit=0),
+                 objects_store.purge_records(db, _PID, limit=True),
+                 objects_store.package_counts(db, _PID, cap=0)):
+        with pytest.raises(objects_store.ObjectStoreError):
+            _run(call)
+    assert db.purges == [] and db.timeouts == []
+
+
+def test_the_new_statements_bind_the_org_in_each_select() -> None:
+    """RLS is the backstop, and it hides a missing org filter from each R8
+    test, so a source fence holds it."""
+    bound = f"organization_id = {objects_store._BOUND_ORG}"
+    for sql, binds in ((objects_store._PACKAGE_COUNTS_SQL, 3),
+                       (objects_store._PACKAGE_OBJECT_IDS_SQL, 1),
+                       (objects_store._PURGE_SQL, 2), (store._DELETE_COUNTS_SQL, 1),
+                       (store._DELETE_SQL, 1)):
+        assert sql.count(bound) == binds, sql[:60]
+    assert "format = 'manifest'" in store._DELETE_SQL and "owner_email = :m" in store._DELETE_SQL
+    assert "LIMIT :n" in objects_store._PURGE_SQL and "LIMIT :cap" in (
+        objects_store._PACKAGE_COUNTS_SQL)
+
+
+# ── c. The routes ──────────────────────────────────────────────────────────
+
+
+class _DB:
+    def __init__(self, org: str | None) -> None:
+        assert org, "a store session opened with no bound org"
+        self.org = org
+
+
+@pytest.fixture
+def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """A fake store of packages with records. Each step removes at most
+    ``chunk`` records, and a session rolls the world back on an error."""
+    w = SimpleNamespace(packages={}, org=None, sessions=0, steps=[], busy_steps=set(),
+                        chunk=500, audits=[], preview_busy=False, clock=0.0, tick=0.0)
+
+    def add(owner: str = ANA, org: str = ORG, records: int = 1200) -> str:
+        pid = str(uuid.uuid4())
+        w.packages[pid] = {"org": org, "owner": owner, "records": records}
+        return pid
+
+    w.add = add
+
+    def mine(db: _DB, member: str, pid: str) -> dict[str, Any] | None:
+        row = w.packages.get(pid)
+        if row and row["org"] == db.org and row["owner"] == member.strip().lower():
+            return row
+        return None
+
+    def preview(pid: str, row: dict[str, Any]) -> store.DeletePreview:
+        objs = tuple(_counts({"visit": row["records"]}))
+        return store.DeletePreview(
+            id=pid, name="Visits", slug=f"visits-{pid[:8]}", objects=objs, versions=2,
+            installs=1, other_member_installs=0,
+            confirm=store.confirm_token(pid, objs, 2, 1, 0))
+
+    w.preview = lambda pid: preview(pid, w.packages[pid])
+
+    @asynccontextmanager
+    async def _session(*args: Any) -> Any:
+        w.sessions += 1
+        snapshot = copy.deepcopy(w.packages)
+        try:
+            yield _DB(w.org)
+        except BaseException:
+            w.packages = snapshot
+            raise
+
+    async def get_package(db: _DB, member: str, pid: str, *, for_update: bool = False) -> Any:
+        row = mine(db, member, pid)
+        return None if row is None else _package(pid, row["owner"])
+
+    async def delete_preview(db: _DB, member: str, pid: str) -> Any:
+        if w.preview_busy:
+            raise objects_store.StoreBusy("This app is busy. Try again in a moment.")
+        row = mine(db, member, pid)
+        return None if row is None else preview(pid, row)
+
+    async def delete_package(db: _DB, member: str, pid: str, *, confirm: str | None = None,
+                             chunk: int | None = None, removed: int = 0) -> Any:
+        w.steps.append({"member": member, "confirm": confirm, "removed": removed,
+                        "session": w.sessions})
+        row = mine(db, member, pid)
+        if row is None:
+            return None
+        if confirm is not None and confirm != preview(pid, row).confirm:
+            raise store.CountsChanged(preview(pid, row))
+        if len(w.steps) in w.busy_steps:
+            raise objects_store.StoreBusy("This app is busy. Try again in a moment.")
+        gone = min(w.chunk, row["records"])
+        row["records"] -= gone
+        w.clock += w.tick
+        if gone >= w.chunk:
+            return store.DeleteStep(deleted=False, removed=gone)
+        del w.packages[pid]
+        w.audits.append({"member": member, "records": removed + gone})
+        return store.DeleteStep(deleted=True, removed=gone)
+
+    monkeypatch.setattr(packages, "_tenant_session", _session)
+    monkeypatch.setattr(packages, "_clock", lambda: w.clock)
+    monkeypatch.setattr(store, "get_package", get_package)
+    monkeypatch.setattr(store, "delete_preview", delete_preview)
+    monkeypatch.setattr(store, "delete_package", delete_package)
+    monkeypatch.setattr(get_settings(), "studio_orgs", "*")
+    return w
+
+
+def _client(world: SimpleNamespace, org: str | None = ORG, email: str = ANA) -> TestClient:
+    app = FastAPI()
+    app.include_router(actions.router)
+
+    def _user() -> UserContext:
+        world.org = org
+        return UserContext(email=email, role=UserRole.EMPLOYEE,
+                           access=build_access(["feature:workflows"]), organization_id=org)
+
+    app.dependency_overrides[get_current_user] = _user
+    return TestClient(app)
+
+
+def _delete(c: TestClient, pid: str, body: Any = None, raw: bytes | None = None) -> Any:
+    content = raw if raw is not None else json.dumps(body).encode("utf-8")
+    return c.request("DELETE", f"/studio/packages/{pid}", content=content, headers=_JSON)
+
+
+class _Request:
+    """The stream of a body, with a count of the reads."""
+
+    def __init__(self, raw: bytes) -> None:
+        self.raw = raw
+        self.reads = 0
+
+    async def stream(self) -> Any:
+        self.reads += 1
+        yield self.raw
+
+
+def _user(org: str = ORG, email: str = ANA) -> UserContext:
+    return UserContext(email=email, role=UserRole.EMPLOYEE,
+                       access=build_access(["feature:workflows"]), organization_id=org)
+
+
+@pytest.mark.parametrize("value", ["", "other-org", OTHER])
+def test_with_the_switch_off_both_routes_are_404_and_read_no_byte(
+        world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    pid = world.add()
+    monkeypatch.setattr(get_settings(), "studio_orgs", value)
+    req = _Request(b"{not json")
+
+    async def go() -> list[int]:
+        out = []
+        for call in (packages.delete_preview(pid, user=_user()),
+                     packages.delete_package(pid, request=req, response=Response(),
+                                             user=_user())):
+            try:
+                await call
+                out.append(200)
+            except HTTPException as exc:
+                out.append(exc.status_code)
+        return out
+
+    assert _run(go()) == [404, 404]
+    assert req.reads == 0 and world.sessions == 0 and pid in world.packages
+
+
+def test_a_bad_id_is_404_on_both_routes(world: SimpleNamespace) -> None:
+    c = _client(world)
+    assert c.get("/studio/packages/nope/delete-preview").json() == NOT_FOUND
+    r = _delete(c, "nope", {"confirm": "a" * 64})
+    assert (r.status_code, r.json()) == (404, NOT_FOUND)
+    assert world.sessions == 0
+
+
+def test_the_preview_names_counts_and_a_token_and_no_manifest(world: SimpleNamespace) -> None:
+    pid = world.add(records=150_000)
+    r = _client(world).get(f"/studio/packages/{pid}/delete-preview")
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["package"] == {"id": pid, "name": "Visits", "slug": f"visits-{pid[:8]}"}
+    assert got["objects"] == [{"name": "visit", "fields": 3, "records": 100_000,
+                               "capped": True}]
+    assert got["totals"] == {"objects": 1, "fields": 3, "records": 100_000,
+                             "records_capped": True, "versions": 2, "installs": 1,
+                             "other_member_installs": 0}
+    assert got["confirm"] == world.preview(pid).confirm
+    assert "Secret purpose" not in r.text and "manifest" not in got
+
+
+def test_another_member_and_org_b_get_404_on_both_routes(world: SimpleNamespace) -> None:
+    pid = world.add()
+    token = world.preview(pid).confirm
+    for c in (_client(world, email=BEN), _client(world, org=OTHER)):
+        assert c.get(f"/studio/packages/{pid}/delete-preview").status_code == 404
+        r = _delete(c, pid, {"confirm": token})
+        assert (r.status_code, r.json()) == (404, NOT_FOUND)
+    assert world.packages[pid]["records"] == 1200 and world.steps == []
+
+
+def test_a_stranger_with_a_bad_body_gets_404_and_not_422(world: SimpleNamespace) -> None:
+    """The owner read comes before the parse, so a bad body cannot tell a
+    stranger that the package exists."""
+    pid = world.add()
+    assert _delete(_client(world, email=BEN), pid, raw=b"{not json").status_code == 404
+    assert _delete(_client(world), pid, raw=b"{not json").status_code == 422
+
+
+def test_a_body_past_4_kib_is_413_before_any_session(world: SimpleNamespace) -> None:
+    pid = world.add()
+    raw = json.dumps({"confirm": world.preview(pid).confirm, "pad": "x" * 5000}).encode()
+    r = _delete(_client(world, email=BEN), pid, raw=raw)
+    assert r.status_code == 413 and r.json()["detail"]["code"] == "body_too_large"
+    assert world.sessions == 0
+    assert packages.MAX_DELETE_BODY_BYTES == 4096
+
+
+@pytest.mark.parametrize("body", [{}, {"confirm": None}, {"confirm": 7}, {"confirm": "abc"},
+                                  {"confirm": "z" * 64}, {"token": "a" * 64}, []])
+def test_a_missing_or_malformed_token_is_422_and_deletes_nothing(
+        world: SimpleNamespace, body: Any) -> None:
+    pid = world.add()
+    r = _delete(_client(world), pid, body)
+    assert r.status_code == 422, r.text
+    if isinstance(body, dict):
+        assert r.json()["detail"]["errors"][0]["path"] == "$.confirm"
+    assert world.steps == [] and world.packages[pid]["records"] == 1200
+
+
+def test_an_empty_body_is_422(world: SimpleNamespace) -> None:
+    pid = world.add()
+    assert _delete(_client(world), pid, raw=b"").status_code == 422
+    assert world.steps == []
+
+
+def test_a_stale_token_is_409_with_the_new_preview_and_deletes_nothing(
+        world: SimpleNamespace) -> None:
+    pid = world.add()
+    stale = world.preview(pid).confirm
+    world.packages[pid]["records"] += 1
+    r = _delete(_client(world), pid, {"confirm": stale})
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "counts_changed" and detail["message"] == store.COUNTS_CHANGED_TEXT
+    assert detail["preview"]["totals"]["records"] == 1201
+    assert detail["preview"]["confirm"] == world.preview(pid).confirm != stale
+    assert world.packages[pid]["records"] == 1201
+
+
+def test_one_call_deletes_a_package_in_three_steps(world: SimpleNamespace) -> None:
+    pid = world.add(records=1200)
+    r = _delete(_client(world), pid, {"confirm": world.preview(pid).confirm.upper()})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"deleted": True, "package_id": pid, "records_removed": 1200}
+    assert pid not in world.packages
+    assert [s["confirm"] is not None for s in world.steps] == [True, False, False]
+    assert [s["removed"] for s in world.steps] == [0, 500, 1000]
+    assert world.audits == [{"member": ANA, "records": 1200}]
+
+
+def test_each_step_runs_in_its_own_session(world: SimpleNamespace) -> None:
+    """No lock stays between two steps: a step commits when its session
+    closes, and the next step opens a new one."""
+    pid = world.add(records=1200)
+    _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
+    sessions = [s["session"] for s in world.steps]
+    assert len(set(sessions)) == len(sessions) == 3
+    # The owner read, then one session for each step.
+    assert world.sessions == 4
+
+
+def test_past_the_budget_the_call_answers_202_with_a_new_token(world: SimpleNamespace) -> None:
+    pid = world.add(records=1200)
+    world.tick = packages.DELETE_BUDGET_SECONDS
+    c = _client(world)
+    r = _delete(c, pid, {"confirm": world.preview(pid).confirm})
+    assert r.status_code == 202, r.text
+    got = r.json()
+    assert got == {"deleted": False, "package_id": pid, "remaining": 700,
+                   "remaining_capped": False, "records_removed": 500,
+                   "confirm": world.preview(pid).confirm}
+    assert len(world.steps) == 1
+    # The same DELETE with the new token goes on, and an old token is 409.
+    assert _delete(c, pid, {"confirm": got["confirm"]}).status_code == 202
+    assert _delete(c, pid, {"confirm": got["confirm"]}).status_code == 409
+    world.tick = 0.0
+    last = _delete(c, pid, {"confirm": world.preview(pid).confirm})
+    assert last.status_code == 200 and pid not in world.packages
+    # A repeat after the 200 names nothing.
+    assert _delete(c, pid, {"confirm": got["confirm"]}).status_code == 404
+
+
+def test_store_busy_on_the_first_step_is_503_with_retry_after(world: SimpleNamespace) -> None:
+    pid = world.add()
+    world.busy_steps = {1}
+    r = _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
+    assert r.status_code == 503 and r.json()["detail"]["code"] == "store_busy"
+    assert r.headers["Retry-After"] == packages.RETRY_AFTER
+    assert world.packages[pid]["records"] == 1200
+
+
+def test_store_busy_on_a_later_step_answers_202_because_the_earlier_steps_hold(
+        world: SimpleNamespace) -> None:
+    pid = world.add()
+    world.busy_steps = {2}
+    r = _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
+    assert r.status_code == 202, r.text
+    assert (r.json()["remaining"], r.json()["records_removed"]) == (700, 500)
+    assert world.packages[pid]["records"] == 700
+
+
+def test_a_busy_preview_is_503(world: SimpleNamespace) -> None:
+    pid = world.add()
+    world.preview_busy = True
+    r = _client(world).get(f"/studio/packages/{pid}/delete-preview")
+    assert r.status_code == 503 and r.json()["detail"]["code"] == "store_busy"
+
+
+def test_a_package_that_goes_during_the_call_is_404(world: SimpleNamespace,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    pid = world.add()
+    real = store.delete_package
+
+    async def gone_after_one(db: Any, member: str, p: str, **kw: Any) -> Any:
+        got = await real(db, member, p, **kw)
+        world.packages.pop(p, None)
+        return got
+
+    monkeypatch.setattr(store, "delete_package", gone_after_one)
+    r = _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
+    assert (r.status_code, r.json()) == (404, NOT_FOUND)
+
+
+def test_a_body_that_names_another_owner_or_org_changes_nothing(world: SimpleNamespace) -> None:
+    pid = world.add(owner=ANA)
+    token = world.preview(pid).confirm
+    body = {"confirm": token, "owner_email": ANA, "member": ANA, "organization_id": ORG,
+            "as_admin": True}
+    r = _delete(_client(world, email=BEN), pid, body)
+    assert (r.status_code, r.json()) == (404, NOT_FOUND)
+    assert world.steps == [] and world.packages[pid]["records"] == 1200
+    r = _delete(_client(world), pid, {**body, "owner_email": BEN})
+    assert r.status_code == 200
+    assert {s["member"] for s in world.steps} == {ANA}
+
+
+# ── d. The fences (R7) ─────────────────────────────────────────────────────
+
+
+def _tree(path: Path) -> ast.Module:
+    return ast.parse(path.read_text(encoding="utf-8"))
+
+
+def _function(tree: ast.Module, name: str) -> ast.AsyncFunctionDef:
+    [fn] = [n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == name]
+    return fn
+
+
+def test_each_delete_handler_checks_the_switch_first() -> None:
+    tree = _tree(_PACKAGES_PY)
+    for name in ("delete_preview", "delete_package"):
+        body = list(_function(tree, name).body)
+        if isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+            body = body[1:]
+        assert ast.unparse(body[0].test) == "not flags.studio_allowed(user.organization_id)"
+        assert "404" in ast.unparse(body[0].body[0]), name
+
+
+_APPS_DELETE = re.compile(r"\bDELETE\s+FROM\s+apps\b", re.I)
+
+
+def _apps_delete_sites() -> dict[str, list[str]]:
+    """Each string constant of apps/ and packages/ that deletes from ``apps``."""
+    found: dict[str, list[str]] = {}
+    for top in ("apps", "packages"):
+        for path in (_ROOT / top).rglob("*.py"):
+            parts = path.relative_to(_ROOT).parts
+            if {".venv", "__pycache__", "node_modules", "tests"} & set(parts):
+                continue
+            source = path.read_text(encoding="utf-8", errors="replace")
+            if not _APPS_DELETE.search(source):
+                continue
+            for node in ast.walk(ast.parse(source)):
+                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and _APPS_DELETE.search(node.value)):
+                    found.setdefault(path.relative_to(_ROOT).as_posix(), []).append(node.value)
+    return found
+
+
+def test_only_delete_package_deletes_a_package() -> None:
+    """R7 for "the one DELETE FROM apps of a package is in delete_package".
+    The App Workshop delete reaches its row through ``load_app``, which skips a
+    package, and the member purge keeps the ``apps`` rows of a leaver."""
+    sites = _apps_delete_sites()
+    assert set(sites) == {"apps/services/gateway/gateway/studio/packages_store.py",
+                          "apps/services/gateway/gateway/routes/apps/lifecycle.py"}, sites
+    tree = _tree(_STORE_PY)
+    users = sorted(fn.name for fn in ast.walk(tree)
+                   if isinstance(fn, ast.AsyncFunctionDef | ast.FunctionDef)
+                   and any(isinstance(n, ast.Name) and n.id == "_DELETE_SQL"
+                           for n in ast.walk(fn)))
+    assert users == ["delete_package"]
+    from gateway.routes.admin import members
+    from gateway.routes.apps import _common, lifecycle
+    assert "format IS DISTINCT FROM 'manifest'" in inspect.getsource(_common.load_app)
+    assert "get_app_or_404" in inspect.getsource(lifecycle.delete_app)
+    assert "apps" not in {rows.table for rows in members._PURGE_DELETES}
+    assert "apps" in {rows.table for rows in members._PURGE_KEEPS}
+
+
+def test_the_versions_go_by_the_cascade_and_no_statement_names_them() -> None:
+    """The A4 fence stays as it is: the store has no DELETE or UPDATE of
+    ``app_versions``. The cascade from ``apps`` removes the versions."""
+    source = _STORE_PY.read_text(encoding="utf-8")
+    assert not re.search(r"DELETE\s+FROM\s+app_versions|UPDATE\s+app_versions", source, re.I)
+    assert store._DELETE_SQL.startswith("DELETE FROM apps ")
+    assert "app_versions" not in store._DELETE_SQL
+
+
+def test_the_lock_order_is_in_the_source() -> None:
+    """The ``apps`` row FOR UPDATE, then the org lock, then the purge, then the
+    DELETE, then the audit, in one function and so one session."""
+    src = inspect.getsource(store.delete_package)
+    marks = ["get_package(db, m, pid, for_update=True)", "objects_store.lock_org(db)",
+             "objects_store.purge_records(", "text(_DELETE_SQL)", "await _audit("]
+    where = [src.find(m) for m in marks]
+    assert -1 not in where and where == sorted(where), dict(zip(marks, where, strict=True))
+
+
+def test_the_audit_is_written_in_the_store_and_not_by_the_route() -> None:
+    """The route writes no audit row of a delete: a row after the session
+    could land without the delete, or the delete without the row."""
+    tree = _tree(_PACKAGES_PY)
+    for name in ("delete_preview", "delete_package"):
+        names = {n.id for n in ast.walk(_function(tree, name)) if isinstance(n, ast.Name)}
+        assert not {"record_app_audit", "record_app_audit_bound"} & names, name
+    assert "await _audit(" in inspect.getsource(store.delete_package)
+
+
+def test_the_route_runs_one_session_for_each_step() -> None:
+    """``store.delete_package`` runs inside an ``async with`` inside the loop,
+    so each step commits before the next one."""
+    fn = _function(_tree(_PACKAGES_PY), "delete_package")
+    [loop] = [n for n in ast.walk(fn) if isinstance(n, ast.While)]
+    withs = [n for n in ast.walk(loop) if isinstance(n, ast.AsyncWith)]
+    assert any("store.delete_package" in ast.unparse(w) and "_tenant_session" in ast.unparse(w)
+               for w in withs)
+    calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+             and ast.unparse(n.func) == "store.delete_package"]
+    assert len(calls) == 1
+
+
+def test_the_route_module_still_runs_no_sql() -> None:
+    for node in ast.walk(_tree(_PACKAGES_PY)):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            assert not re.search(r"\bDELETE\s+FROM\b", node.value, re.I), node.value[:60]
+
+
+def test_the_r8_suite_is_named_in_the_ci_skip_guard() -> None:
+    workflow = (_ROOT / ".github/workflows/pr-check.yml").read_text(encoding="utf-8")
+    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", workflow)
+    assert block, "the --must-run argument list is missing"
+    assert re.search(r"^[ \t]+tests/unit/test_studio_package_delete_r8\.py(?: \\)?$",
+                     block.group(1), re.M)
