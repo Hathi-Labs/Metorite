@@ -449,19 +449,28 @@ def test_an_unbound_write_is_refused(db, app_engine) -> None:  # noqa: F811
     assert _stored(db, email) == []
 
 
-async def test_the_hello_mark_is_first_write_wins_and_each_save_keeps_it(db) -> None:
-    """WS-BUD BUD-1: ``buddy_hello_at`` is stamped by the server, the first
-    stamp stays, a layout save keeps it (even an old tab's that names it), and
-    the tour mark does not touch it. Postgres runs the real merge."""
+async def test_the_hello_mark_is_written_by_the_route_only_and_each_save_keeps_it(db) -> None:
+    """WS-BUD BUD-1: ``buddy_hello_at`` is claimed by the hello route alone
+    (``stamp-first``, the first stamp stays). A client PUT never writes it,
+    never blocks the hello, and a layout save keeps it. Postgres runs the
+    real merge."""
+    from gateway.routes.admin import me
+
     email = _address()
     db.made.append(email)
     user = _member(email)
     async with tenant_engine_scope(_app_dsn(db)):
         await _put(db.org_a, user, {"preset": "engineer", "answered": "answered", "pins": ["/tasks"]})
-        first = (await _put(db.org_a, user, {"buddy_hello_at": "2001-01-01T00:00:00.000Z"}))["buddy_hello_at"]
-        assert first is not None and first != "2001-01-01T00:00:00.000Z"
-        second = await _put(db.org_a, user, {"buddy_hello_at": "2002-02-02T00:00:00.000Z"})
-        assert second["buddy_hello_at"] == first
+        # A client PUT of the mark alone writes nothing and keeps the layout.
+        alone = await _put(db.org_a, user, {"buddy_hello_at": "2001-01-01T00:00:00.000Z"})
+        assert alone["buddy_hello_at"] is None and alone["pins"] == ["/tasks"]
+        # So the route's claim still wins, once.
+        with _tenant(db.org_a):
+            async with me._tenant_session() as s:
+                won = await me._write_shell(s, email, {"buddy_hello_at": "2010-01-01T00:00:00.000Z"}, "stamp-first")
+                again = await me._write_shell(s, email, {"buddy_hello_at": "2011-01-01T00:00:00.000Z"}, "stamp-first")
+        first = me.stored_shell(won)["buddy_hello_at"]
+        assert first == "2010-01-01T00:00:00.000Z" == me.stored_shell(again)["buddy_hello_at"]
         # The tour mark and the nudge mark merge beside it and leave it.
         tour = await _put(db.org_a, user, {"tour_seen_at": "2003-03-03T00:00:00.000Z"})
         assert (tour["buddy_hello_at"], tour["pins"]) == (first, ["/tasks"])
@@ -472,7 +481,7 @@ async def test_the_hello_mark_is_first_write_wins_and_each_save_keeps_it(db) -> 
         for extra in ({}, {"buddy_hello_at": None}, {"buddy_hello_at": "2005-05-05T00:00:00.000Z"}):
             kept = await _put(db.org_a, user, {"answered": "skipped", **extra})
             assert kept["buddy_hello_at"] == first
-        other = await _get(db.org_b, user)
+    other = await _get(db.org_b, user)
     # The mark is per organization, as the layout is.
     assert other["buddy_hello_at"] is None
     [(_, raw)] = _stored(db, email)

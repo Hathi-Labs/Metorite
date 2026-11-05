@@ -445,8 +445,10 @@ _NAME_SQL = (
 def hello_text(display_name: str | None) -> str:
     """The hello for a member: the first word of the display name, or
     "there". Pure, so a unit test holds it."""
-    first = (display_name or "").strip().split(" ")[0].strip() if display_name else ""
-    return HELLO_COPY.format(name=first or "there")
+    from gateway.reach.plan import first_name
+
+    # One first-name rule for the product. An empty email gives "there".
+    return HELLO_COPY.format(name=first_name(display_name, ""))
 
 
 def hello_event() -> dict[str, Any]:
@@ -554,11 +556,17 @@ async def post_buddy_hello(
             organization_id=org, lead=lead, event=hello_event(),
             now_ms=int(_now().timestamp() * 1000),
         )
-        if posted:
-            await asyncio.to_thread(_set_title, org, session_id, HELLO_TITLE)
     except Exception as exc:
         _log.warning("chat_brief.hello_post_failed", error=str(exc)[:160])
     if not posted:
         await _release_hello(email)
         raise HTTPException(status_code=503, detail="The hello could not be posted. Try again.")
+    # The row exists, so the stamp stays whatever the title does: a missing
+    # title is cheap, a second hello is not. A crash between the claim and the
+    # post leaves a stamp with no row, and that stays accepted: a lost hello
+    # is cheaper than a double one.
+    try:
+        await asyncio.to_thread(_set_title, org, session_id, HELLO_TITLE)
+    except Exception as exc:
+        _log.warning("chat_brief.hello_title_failed", error=str(exc)[:160])
     return {"posted": True, "message_id": HELLO_MESSAGE_ID, "preview": lead, "title": HELLO_TITLE}

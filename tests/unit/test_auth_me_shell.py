@@ -314,18 +314,16 @@ class TestTheTourMark:
                 "ARRAY['tour_seen_at'], ") in sql
         assert "ARRAY['chat_first_message_at']" not in sql
 
-    def test_the_hello_mark_keeps_a_stored_time_in_sql(self, fake: _FakeDB) -> None:
-        """BUD-1: ``buddy_hello_at`` is first-write-wins too. The R8 twin
-        proves the value."""
+    def test_a_client_put_never_writes_the_hello_mark(self, fake: _FakeDB) -> None:
+        """BUD-1: the hello route is the ONLY writer of ``buddy_hello_at``.
+        A body of the mark alone writes nothing, so it cannot block the hello
+        and cannot wipe the layout."""
+        fake.stored = json.dumps({"answered": "skipped", "pins": ["/tasks"]})
         res = _client(_user()).put("/auth/me/shell", json={"buddy_hello_at": STAMP})
         assert res.status_code == 200, res.text
-        [(sql, params)] = _writes(fake)
-        assert ("ARRAY['buddy_hello_at'], COALESCE(NULLIF(user_settings.shell_prefs->'buddy_hello_at', "
-                "CAST('null' AS jsonb)), EXCLUDED.shell_prefs->'buddy_hello_at', "
-                "CAST('null' AS jsonb)), true)") in sql
-        written = json.loads(params["shell_prefs"])
-        assert list(written) == ["buddy_hello_at"]
-        assert written["buddy_hello_at"] != STAMP, "the server's time, never the device's"
+        assert _writes(fake) == []
+        assert res.json()["buddy_hello_at"] is None
+        assert res.json()["pins"] == ["/tasks"]
 
     def test_a_layout_save_never_writes_the_hello_mark(self, fake: _FakeDB) -> None:
         for sent in (None, STAMP):
@@ -336,6 +334,13 @@ class TestTheTourMark:
             [(sql, params)] = _writes(fake)[-1:]
             assert "ARRAY['buddy_hello_at'], COALESCE(user_settings.shell_prefs->'buddy_hello_at'" in sql
             assert json.loads(params["shell_prefs"])["buddy_hello_at"] is None
+
+    def test_a_mark_beside_another_mark_leaves_the_hello_alone(self, fake: _FakeDB) -> None:
+        res = _client(_user()).put(
+            "/auth/me/shell", json={"tour_seen_at": STAMP, "buddy_hello_at": STAMP})
+        assert res.status_code == 200, res.text
+        [(sql, params)] = _writes(fake)
+        assert list(json.loads(params["shell_prefs"])) == ["tour_seen_at"]
 
     def test_the_read_carries_the_mark_and_drops_a_bad_one(self, fake: _FakeDB) -> None:
         fake.stored = json.dumps({"answered": "skipped", "tour_seen_at": STAMP})

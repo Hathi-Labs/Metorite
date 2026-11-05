@@ -637,6 +637,13 @@ async def put_my_shell(
     if body is not None:
         # An old tab sends back the answer it read, ``guide`` included.
         body = {k: v for k, v in body.items() if k not in READ_ONLY_ANSWER_KEYS}
+        # The hello route is the ONLY writer of ``buddy_hello_at`` (BUD-1).
+        # A client PUT never claims it, so it never blocks the hello.
+        if "buddy_hello_at" in body:
+            body.pop("buddy_hello_at")
+            if not body:
+                # The mark was all the body held: write nothing, answer the read.
+                return await get_my_shell(user)
         try:
             model = ShellPrefs.model_validate(body)
         except ValidationError as exc:

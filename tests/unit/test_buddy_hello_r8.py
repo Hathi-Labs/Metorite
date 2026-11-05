@@ -278,3 +278,32 @@ async def test_a_failed_post_gives_the_stamp_back(graph_as_app, guide_on, monkey
         assert _status(again) == 200
     finally:
         _unseed(ns, email)
+
+
+async def test_a_failed_title_keeps_the_stamp_and_the_row(graph_as_app, guide_on, monkeypatch):
+    """The row is posted, so a title fault must not release the stamp: a
+    later visit would post a SECOND hello."""
+    from gateway.routes import chat_brief
+
+    ns = graph_as_app
+    org, email = ns.org_a, _address("gus")
+    _seed(ns, email, org, "Gus")
+    sid, sid2 = f"bud1-{uuid.uuid4().hex[:12]}", f"bud1-{uuid.uuid4().hex[:12]}"
+    user = _member(email, org)
+
+    def _boom(*a, **k):
+        raise RuntimeError("title away")
+
+    try:
+        _new_session(sid, email, org)
+        _new_session(sid2, email, org)
+        async with tenant_engine_scope(_dsn(ns)):
+            monkeypatch.setattr(chat_brief, "_set_title", _boom)
+            first = await _post(user, sid)
+            later = await _post(user, sid2)
+        assert _status(first) == 200 and first["posted"] is True
+        assert _status(later) == 204
+        assert len(_rows(ns, sid)) == 1 and _rows(ns, sid2) == []
+        assert _stamp(ns, email) is not None
+    finally:
+        _unseed(ns, email)
