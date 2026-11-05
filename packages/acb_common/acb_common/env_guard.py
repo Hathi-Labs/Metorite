@@ -352,7 +352,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # a third party. A tenant that set either would change it for every org
     # on the box, so only the owner writes them.
     # WEB-4: SEARXNG_URL names the search host of every org on the box.
-    "WEB_RESEARCH_", "WEB_READER_", "SEARXNG_",
+    # WEB-6: WEB_WORKER_TOKEN is the bearer of the web worker. A tenant that
+    # set it could send a render job for any org.
+    "WEB_RESEARCH_", "WEB_READER_", "SEARXNG_", "WEB_WORKER_",
     # WS-66 RM-1: reminders. CALENDAR_REMINDERS is the switch of the reminder
     # routes, so a tenant that set it could turn them on for every org.
     "CALENDAR_REMINDERS",
