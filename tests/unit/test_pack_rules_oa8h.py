@@ -36,7 +36,9 @@ def test_the_core_rules_keep_the_oa8g_lines_and_the_size_pin() -> None:
     rules = _flat(tp._PROJECTS_RULES)
     assert "No Projects agent exists to hand a task to." in rules
     assert "While a Projects pack is held, do its work with its tools." in rules
-    assert len(tp.rules_for("projects")) < 3500  # MT-1228: was 3400, +reminder line; ALN-4: was 3450, +authority pack
+    # MT-1228: was 3400, +reminder line. ALN-4 and PJP-2: was 3450, +the authority
+    # pack and the pack names of reports and reminders.
+    assert len(tp.rules_for("projects")) < 3500
 
 
 def test_the_route_bullet_still_names_all_three_other_packs() -> None:
