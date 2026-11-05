@@ -220,6 +220,12 @@ export interface StoredShell {
    * the nudge shows. The server keeps it when a layout save omits it.
    */
   chat_first_message_at: string | null;
+  /**
+   * When the member first started the tour (WS-OB GD-5a,
+   * `assistant_guide.md` §5.3). ISO 8601, the server's time. A record for
+   * GD-14, and no gate. A layout save never sends it, and the server keeps it.
+   */
+  tour_seen_at: string | null;
 }
 
 export const EMPTY_SHELL: StoredShell = {
@@ -230,6 +236,7 @@ export const EMPTY_SHELL: StoredShell = {
   cardOrder: null,
   newOrder: null,
   chat_first_message_at: null,
+  tour_seen_at: null,
 };
 
 export interface ShellLayout {

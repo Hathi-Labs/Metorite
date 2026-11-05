@@ -24,6 +24,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -56,7 +57,10 @@ import { openAssistant } from "@/lib/shell/assistant";
 // D99: the one assistant, loaded on demand, so a shell with the flag off
 // never carries the chat in its bundle.
 const AssistantDock = dynamic(() => import("@/lib/shell/AssistantDock"), { ssr: false });
+// WS-OB GD-4: the guide runner's one host. It is a shell part, so no app mounts it.
+const GuideHost = dynamic(() => import("@/lib/shell/GuideHost"), { ssr: false });
 import AppLauncher from "@/lib/shell/AppLauncher";
+import { GUIDE_MENU_EVENT } from "@/lib/shell/guide";
 import {
   ADD_APPS_HINT,
   accountLinks,
@@ -266,6 +270,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     return (
       <SidebarFoldProvider placement="rail">
       <div data-app-shell="" className="relative flex h-dvh overflow-clip glass:bg-grouped">
+        <GuideHost />
         {frame === "full" ? (
           <>
             <Sidebar />
@@ -378,6 +383,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <AccessGate>{children}</AccessGate>
           </main>
         )}
+        <GuideHost phone />
         <WelcomeDialog />
         {/* WS-51 S3: the one activity panel, as a bottom sheet. The Menu
             drawer holds the control, with the shell bar flag on or off. */}
@@ -547,7 +553,7 @@ function MobileBottomNavInner({
         {dockOn ? <ShellBell onBeforeOpen={close} className="h-10 w-10 shrink-0" /> : null}
         <ActivityControl onBeforeOpen={close} className="h-10 w-10 shrink-0" />
       </div>
-      <nav className="flex flex-col overflow-y-auto">
+      <nav data-guide="home.app-list" className="flex flex-col overflow-y-auto">
         {/* Same rule as the desktop rail (§8.1): an unresolved viewer gets
             placeholders, never the full list. The drawer opens on tap, so a
             list that rearranges under the thumb is worse here than on desktop. */}
@@ -738,6 +744,20 @@ function MobileBottomNavInner({
     window.addEventListener("cc-email-empty", h);
     return () => window.removeEventListener("cc-email-empty", h);
   }, []);
+
+  // WS-OB GD-4: the guide opens and closes the Menu drawer, which holds the
+  // phone's app list (`GuideHost` sends the event). The ref keeps the content
+  // current, so the listener binds once.
+  const menuRef = useRef(menuContent);
+  menuRef.current = menuContent;
+  useEffect(() => {
+    const h = (e: Event) => {
+      if ((e as CustomEvent<string>).detail === "open") open(menuRef.current);
+      else close();
+    };
+    window.addEventListener(GUIDE_MENU_EVENT, h);
+    return () => window.removeEventListener(GUIDE_MENU_EVENT, h);
+  }, [open, close]);
 
   const dispatchNav = (detail: string) => {
     window.dispatchEvent(new CustomEvent("cc-mobile-nav", { detail }));
@@ -937,6 +957,7 @@ function MobileBottomNavInner({
             }}
             aria-label={tabBadge ? `Ask Metorite, ${tabBadge.label}` : "Ask Metorite"}
             data-ask-tab=""
+            data-guide="home.ask"
             className="relative flex flex-1 min-w-0 flex-col items-center gap-0.5 rounded-lg px-1 py-1 text-primary transition-colors"
           >
             <span className="relative">

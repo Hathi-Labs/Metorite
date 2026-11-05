@@ -318,6 +318,11 @@ interface AgentChatProps {
    */
   moreActs?: readonly { icon: string; label: string; onClick: () => void }[];
   /**
+   * WS-OB GD-4: a line the shell lends, drawn above the message box (the guide's
+   * step card). The chat knows nothing of it.
+   */
+  aboveComposer?: React.ReactNode;
+  /**
    * One-shot text to drop into the composer (not auto-sent) — used by the email
    * Assistant's "Fix" flow to hand a correction prompt to the user for review.
    * Changing this value injects it; `onPendingInputConsumed` fires once applied.
@@ -386,6 +391,7 @@ export default function AgentChat({
   headSlot = null,
   phoneChrome = false,
   moreActs,
+  aboveComposer,
   pendingInput,
   pendingInputTyped,
   onPendingInputConsumed,
@@ -2687,6 +2693,7 @@ export default function AgentChat({
               message box, as the notes above do. The member's own assistant
               only, after the first turn, and never during a run. The server's
               `prompt` flag decides whether it draws at all. */}
+          {aboveComposer}
           <PushPromptSheet
             ownChat={ownAssistantChat}
             messageCount={messages.length}

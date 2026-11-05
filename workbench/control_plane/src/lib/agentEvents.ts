@@ -43,6 +43,8 @@ export interface AgentEventPayload {
   path?: string;
   /** The one sentence the member reads for it. */
   why?: string;
+  /** The guide a `guide` event names (WS-OB GD-4). The store checks it against its table. */
+  guideId?: string;
   /**
    * Session/thread this event belongs to.  The subscriber registry is global
    * (a single process-wide list), so when more than one session is streaming
@@ -86,6 +88,12 @@ export interface AgentSubscriber {
    * refresh moves no page.
    */
   onNavigate?: (payload: AgentEventPayload) => void;
+  /**
+   * The live run named a guide (WS-OB GD-4, `assistant_guide.md` §3 G1): `guideId`.
+   * The one assistant starts it where it may move the page, and leaves a "Show
+   * me" chip elsewhere. Never emitted on a reconnect replay.
+   */
+  onGuide?: (payload: AgentEventPayload) => void;
 }
 
 // ── Global subscriber registry ─────────────────────────────────────────────
