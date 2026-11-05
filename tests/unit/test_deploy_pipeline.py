@@ -23,6 +23,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -223,7 +224,9 @@ def test_a_push_batch_shares_one_group_and_a_release_gets_its_own(parsed: dict) 
     )
 
 
-def _gh_eval(expr: str, github: dict[str, object]) -> object:
+def _gh_eval(
+    expr: str, github: dict[str, object], inputs: dict[str, object] | None = None,
+) -> object:
     """Evaluate a GitHub Actions expression of the shape the group uses.
 
     It models the GitHub rules that the group depends on:
@@ -231,14 +234,17 @@ def _gh_eval(expr: str, github: dict[str, object]) -> object:
       falsy operand, or the last one. `||` returns the first truthy operand,
       or the last one.
     - `==` on two strings ignores case. On other types, GitHub casts both
-      sides to a number.
-    - `format()` puts each argument in its `{N}` place.
+      sides to a number. `!=` is the opposite of `==`.
+    - `!x` is true when `x` is falsy. A schedule run has no inputs, so
+      `inputs.skip_tests` is null there, and `!inputs.skip_tests` is true.
+    - `format()` puts each argument in its `{N}` place. `always()` is true.
     Any other node fails the test, so a new shape cannot pass by accident.
     """
     body = expr.strip()
     assert body.startswith("${{") and body.endswith("}}"), body
-    inner = body[3:-2].replace("&&", " and ").replace("||", " or ").strip()
-    return _gh_node(ast.parse(inner, mode="eval"), github)
+    inner = body[3:-2].replace("&&", " and ").replace("||", " or ")
+    inner = inner.replace("!=", "@NE@").replace("!", " not ").replace("@NE@", "!=").strip()
+    return _gh_node(ast.parse(inner, mode="eval"), {"github": github, "inputs": inputs or {}})
 
 
 def _gh_number(value: object) -> float:
@@ -259,31 +265,38 @@ def _gh_equal(left: object, right: object) -> bool:
     return _gh_number(left) == _gh_number(right)
 
 
-def _gh_bool_op(node: ast.BoolOp, github: dict[str, object]) -> object:
+def _gh_bool_op(node: ast.BoolOp, ctx: dict[str, dict[str, object]]) -> object:
     # `&&` stops at the first falsy operand, `||` at the first truthy one.
     value: object = None
     for part in node.values:
-        value = _gh_node(part, github)
+        value = _gh_node(part, ctx)
         if (not value) if isinstance(node.op, ast.And) else bool(value):
             return value
     return value
 
 
-def _gh_node(node: ast.AST, github: dict[str, object]) -> object:
+def _gh_node(node: ast.AST, ctx: dict[str, dict[str, object]]) -> object:
     if isinstance(node, ast.Expression):
-        return _gh_node(node.body, github)
+        return _gh_node(node.body, ctx)
     if isinstance(node, ast.BoolOp):
-        return _gh_bool_op(node, github)
-    if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq):
-        return _gh_equal(_gh_node(node.left, github), _gh_node(node.comparators[0], github))
+        return _gh_bool_op(node, ctx)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        return not _gh_node(node.operand, ctx)
+    if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
+        same = _gh_equal(_gh_node(node.left, ctx), _gh_node(node.comparators[0], ctx))
+        return same if isinstance(node.ops[0], ast.Eq) else not same
     if isinstance(node, ast.Constant):
         return node.value
     if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "github":
-        return github[node.attr]
+        return ctx["github"][node.attr]
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "inputs":
+        return ctx["inputs"].get(node.attr)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "always" and not node.args:
+        return True
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "format":
-        template, *args = (_gh_node(a, github) for a in node.args)
+        template, *args = (_gh_node(a, ctx) for a in node.args)
         return str(template).format(*args)
-    raise AssertionError(f"the group uses a shape this model does not know: {ast.dump(node)}")
+    raise AssertionError(f"the expression uses a shape this model does not know: {ast.dump(node)}")
 
 
 _RUN_ID = "41884338138"
@@ -691,6 +704,306 @@ def test_the_range_reads_unknown_and_the_step_still_ends_clean(
     assert "is not an ancestor" not in text
     if case == "slow-api":
         assert not any("/jobs" in c for c in calls), "a spent budget makes no more calls"
+
+
+# ── CIV-4b: the R8 gate of a release ────────────────────────────────────────
+#
+# `project-docs/specs/ci_velocity.md` §5, CIV-4b. The `test` job has no
+# database, so each R8 suite skips there. A skip is not a pass. So a release
+# also runs the R8 files in six shards, with pr-check's two Postgres
+# services, and `publish-release` needs `r8-gate` green.
+#
+# Measured 2026-11-05: with both databases, the full suite needs 128 to 132
+# min of test time on one runner, and `test` stops at 90 min. So the R8
+# files get jobs of their own. CIV-9 makes them fast, and then R8 moves into
+# the push batch.
+#
+# ⚠️ The services, the env, the two assert steps and the guard's lists are
+# COPIES of pr-check.yml's. The 35 R8 suites that check for their own name
+# read pr-check.yml only, so these tests stop the copies from drifting.
+
+_ROOT = WORKFLOW.parents[2]
+PR_CHECK = WORKFLOW.parent / "pr-check.yml"
+R8_SUITE, R8_GATE = "r8-suite", "r8-gate"
+R8_RUN = "Run the R8 suites (this shard)"
+R8_GUARD = "The R8 suites ran, and no fence skipped"
+ASSERT_STEPS = (
+    "Assert the Customer Console database is reachable",
+    "Assert the tenant ladder database is reachable and has pgvector",
+)
+#: The one way past a release gate: a person's dispatch with `skip_tests`.
+SKIP_PAST = (
+    "(github.event_name == 'workflow_dispatch' && inputs.skip_tests "
+    "&& needs.{job}.result == 'skipped')"
+)
+
+sys.path.insert(0, str(_ROOT / "scripts"))
+import affected_tests  # noqa: E402  scripts/affected_tests.py, the --r8 rule
+
+
+@pytest.fixture(scope="module")
+def pr_check() -> dict:
+    return yaml.safe_load(PR_CHECK.read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="module")
+def r8_gate_files() -> list[str]:
+    return affected_tests.r8_gate_files()
+
+
+def _job_step(doc: dict, job: str, name: str) -> dict:
+    found = [s for s in doc["jobs"][job]["steps"] if s.get("name") == name]
+    assert len(found) == 1, f"`{job}` needs exactly one step named {name!r}"
+    return found[0]
+
+
+def _guard_args(run: str) -> dict[str, list[str]]:
+    """The flags of the `ci_unit_guard.py check` command, with their values."""
+    words = shlex.split(run.replace("\\\n", " "))
+    out: dict[str, list[str]] = {}
+    flag = ""
+    for word in words[words.index("check") + 1:]:
+        if word.startswith("--"):
+            flag = word
+            out.setdefault(flag, [])
+        else:
+            out[flag].append(word)
+    return out
+
+
+def _guard_also(parsed: dict) -> list[str]:
+    return _job_step(parsed, R8_SUITE, R8_RUN)["env"]["GUARD_ALSO"].split()
+
+
+#: The release events, by name. A trigger that someone adds later must not
+#: start six shards by accident.
+R8_RELEASE = "github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.skip_tests)"
+
+
+@pytest.mark.parametrize(("event", "inputs", "runs"), [
+    ("push", {}, False),
+    ("schedule", {}, True),
+    ("workflow_dispatch", {"skip_tests": False}, True),
+    ("workflow_dispatch", {"skip_tests": True}, False),
+    # CIV-13 adds a `nightly` input. Every dispatch without skip_tests runs.
+    ("workflow_dispatch", {"skip_tests": False, "nightly": True}, True),
+    ("workflow_dispatch", {"skip_tests": True, "nightly": True}, False),
+    # Not a release event.
+    ("workflow_run", {}, False),
+])
+def test_the_r8_gate_runs_on_a_release_and_never_on_a_push(
+    parsed: dict, event: str, inputs: dict, runs: bool,
+) -> None:
+    """A push batch does not run it. Six shards on every merge cost about
+    120 runner-min, and CIV-9 moves R8 into the batch instead. A dispatch
+    with `skip_tests` skips it, as it skips `test`."""
+    github = {"event_name": event}
+    for job in (R8_SUITE, R8_GATE):
+        got = bool(_gh_eval(parsed["jobs"][job]["if"], github, inputs))
+        assert got is runs, f"{job} on {event} with {inputs}: runs={got}"
+    if event in ("schedule", "workflow_dispatch"):
+        # On a release run, the R8 gate runs exactly when `test` runs.
+        assert bool(_gh_eval(parsed["jobs"]["test"]["if"], github, inputs)) is runs
+
+
+def test_the_r8_jobs_read_the_planned_conditions(parsed: dict) -> None:
+    jobs = parsed["jobs"]
+    assert jobs[R8_SUITE]["if"] == f"${{{{ {R8_RELEASE} }}}}"
+    assert jobs[R8_SUITE]["needs"] == "lint"
+    # `always()`: a failed or skipped shard must turn the gate red. A gate
+    # that skipped would read as a pass.
+    assert jobs[R8_GATE]["if"] == f"${{{{ always() && ({R8_RELEASE}) }}}}"
+    assert jobs[R8_GATE]["needs"] == R8_SUITE
+
+
+def test_the_r8_jobs_join_no_group(parsed: dict) -> None:
+    """A release job in a shared group can be cancelled by the next run.
+    `publish-release` would then skip, and that day's release is lost."""
+    for job in (R8_SUITE, R8_GATE):
+        assert "concurrency" not in parsed["jobs"][job], job
+
+
+def test_the_release_needs_the_r8_gate_with_the_one_way_past(parsed: dict) -> None:
+    job = parsed["jobs"]["publish-release"]
+    assert R8_GATE in job["needs"]
+    cond = " ".join(str(job["if"]).split())
+    assert f"(needs.{R8_GATE}.result == 'success' || {SKIP_PAST.format(job=R8_GATE)})" in cond, (
+        "the release needs `r8-gate` green, or skipped on a `skip_tests` dispatch only"
+    )
+    assert f"(needs.test.result == 'success' || {SKIP_PAST.format(job='test')})" in cond
+    assert cond.count("inputs.skip_tests") == 2, "no other way past a gate"
+    # The clock of the release is read after the last gate.
+    assert R8_GATE in parsed["jobs"]["release-window"]["needs"]
+
+
+def test_the_r8_shards_have_pr_checks_two_databases(parsed: dict, pr_check: dict) -> None:
+    services = parsed["jobs"][R8_SUITE]["services"]
+    assert services == pr_check["jobs"]["test"]["services"], (
+        "the R8 shards must start exactly pr-check's two Postgres services"
+    )
+    assert services["platform-postgres"]["image"] == "postgres:16"
+    assert services["platform-postgres"]["ports"] == ["5433:5432"]
+    # The stock image has no pgvector, and 01_schema.sql cannot build there.
+    assert services["tenant-postgres"]["image"] == "pgvector/pgvector:pg16"
+    assert services["tenant-postgres"]["ports"] == ["5434:5432"]
+
+
+def test_the_r8_shards_set_the_two_variables_and_never_database_url(
+    parsed: dict, pr_check: dict, raw: str,
+) -> None:
+    """DATABASE_URL would arm the two DB-gated tests of
+    test_tenant_coverage.py. They fail by design against a fresh ladder.
+    pr-check.yml's comment on TENANT_LADDER_DATABASE_URL gives the reason."""
+    env = parsed["jobs"][R8_SUITE]["env"]
+    assert set(env) == {"CUSTOMER_CONSOLE_DATABASE_URL", "TENANT_LADDER_DATABASE_URL"}
+    assert env == pr_check["jobs"]["test"]["env"]
+    holders = [parsed, *parsed["jobs"].values()]
+    holders += [s for j in parsed["jobs"].values() for s in j.get("steps", [])]
+    assert not any("DATABASE_URL" in (h.get("env") or {}) for h in holders)
+    assert not re.search(r"\bDATABASE_URL\s*=", raw), "no step may export DATABASE_URL"
+
+
+def test_the_r8_shards_prove_both_databases_before_the_suite(parsed: dict, pr_check: dict) -> None:
+    """Without these, a service that did not come up puts the gate back to
+    silent skips. The second also proves pgvector, the way the wrong image
+    fails."""
+    names = [s.get("name") for s in parsed["jobs"][R8_SUITE]["steps"]]
+    for name in ASSERT_STEPS:
+        assert _job_step(parsed, R8_SUITE, name) == _job_step(pr_check, "test", name), (
+            f"{name!r} must be pr-check's step, character for character"
+        )
+        assert names.index("Sync deps") < names.index(name) < names.index(R8_RUN)
+    assert "'vector'" in _job_step(parsed, R8_SUITE, ASSERT_STEPS[1])["run"]
+
+
+def test_each_r8_shard_runs_the_r8_files_in_pr_checks_split(parsed: dict, pr_check: dict) -> None:
+    job = parsed["jobs"][R8_SUITE]
+    assert job["strategy"] == {"fail-fast": False, "matrix": {"shard": [1, 2, 3, 4, 5, 6]}}
+    run = _job_step(parsed, R8_SUITE, R8_RUN)["run"]
+    assert "python3 scripts/affected_tests.py --r8 > r8_files.txt" in run
+    assert "--splits 6 --group ${{ matrix.shard }}" in run
+    assert "--splitting-algorithm duration_based_chunks" in run
+    assert "-o junit_family=xunit1 --junitxml=junit/r8-shard-${{ matrix.shard }}.xml" in run
+    assert "--reruns 1" in run
+    assert " -x " not in f" {run} ", "no -x: one run must report every failure"
+    pr_run = _job_step(pr_check, "test", "Run unit tests (this shard)")["run"]
+    assert "--splits 6" in pr_run and "--splitting-algorithm duration_based_chunks" in pr_run
+    keep = _job_step(parsed, R8_SUITE, "Keep this shard's report")
+    assert keep["if"] == "always()", "a red shard keeps its report too"
+    assert keep["with"]["name"] == "r8-junit-shard-${{ matrix.shard }}"
+    assert keep["with"]["path"] == "junit/"
+
+
+def test_a_hung_r8_shard_cannot_hold_the_release_for_hours(parsed: dict) -> None:
+    """A shard took about 20 min in the measurement. 60 min is three times
+    that, and it still ends before a late schedule run loses its window."""
+    assert parsed["jobs"][R8_SUITE].get("timeout-minutes") == 60
+
+
+def test_the_r8_gate_reads_every_shard_and_runs_the_guard(parsed: dict) -> None:
+    steps = parsed["jobs"][R8_GATE]["steps"]
+    assert '[ "${{ needs.r8-suite.result }}" = "success" ] || exit 1' in steps[0]["run"]
+    downloads = [s for s in steps if str(s.get("uses", "")).startswith("actions/download-artifact@")]
+    assert len(downloads) == 1
+    assert downloads[0]["with"] == {"pattern": "r8-junit-shard-*", "path": "junit", "merge-multiple": True}
+    guard = _job_step(parsed, R8_GATE, R8_GUARD)["run"]
+    assert guard.lstrip().startswith("python3 scripts/ci_unit_guard.py check --junit junit")
+
+
+def test_the_guard_lists_are_pr_checks_lists(parsed: dict, pr_check: dict) -> None:
+    """Each R8 suite checks for its own name in pr-check.yml only. So a list
+    here that drifts from pr-check's would go unseen. Add a new R8 suite to
+    both files."""
+    ours = _guard_args(_job_step(parsed, R8_GATE, R8_GUARD)["run"])
+    theirs = _guard_args(_job_step(pr_check, "unit-tests", R8_GUARD)["run"])
+    for flag in ("--disarmed", "--never-skip", "--must-run"):
+        missing = sorted(set(theirs.get(flag, [])) - set(ours.get(flag, [])))
+        extra = sorted(set(ours.get(flag, [])) - set(theirs.get(flag, [])))
+        assert ours.get(flag) == theirs.get(flag), (
+            f"deploy.yml's {flag} list is not pr-check's: missing {missing}, extra {extra}. "
+            "Copy pr-check's list."
+        )
+    assert len(ours["--must-run"]) > 50
+    # A release runs every R8 suite. A filter (CIV-3) belongs to pr-check.
+    assert set(ours) == {"--junit", "--disarmed", "--never-skip", "--must-run"}
+
+
+def test_every_file_that_the_guard_names_runs_in_an_r8_shard(
+    parsed: dict, r8_gate_files: list[str],
+) -> None:
+    """Else the guard reports "no shard ran" for it, and every release is red.
+
+    GUARD_ALSO holds the guard's files that need no database. It holds no
+    other file, so it never turns into a second list of R8 suites."""
+    guard = _guard_args(_job_step(parsed, R8_GATE, R8_GUARD)["run"])
+    named = set(guard["--must-run"]) | set(guard["--never-skip"])
+    also = _guard_also(parsed)
+    missing = sorted(named - set(r8_gate_files) - set(also))
+    assert not missing, f"the guard names these, and no R8 shard runs them: {missing}"
+    assert set(also) <= named, "GUARD_ALSO holds only files of the guard's lists"
+    needless = sorted(set(also) & set(r8_gate_files))
+    assert not needless, f"`affected_tests.py --r8` already lists these: {needless}"
+    assert all((_ROOT / p).is_file() for p in also)
+
+
+def test_the_r8_list_holds_the_measured_suites(r8_gate_files: list[str]) -> None:
+    """2026-11-05: 454 files skipped for an unset R8 variable in a deploy
+    run. A rule that finds far fewer has broken."""
+    assert len(r8_gate_files) > 400
+    # A helper-gated file and a file that names the variable.
+    assert "tests/unit/test_auth_me_shell_r8.py" in r8_gate_files
+    assert "tests/unit/test_customer_console_hold_settle.py" in r8_gate_files
+
+
+def _run_r8_step(parsed: dict, tmp_path: Path, files: list[str]) -> tuple[int, str, list[str]]:
+    """Run the R8 step in bash. Shell functions stand in for python3 and uv."""
+    step = _job_step(parsed, R8_SUITE, R8_RUN)
+    run = step["run"].replace("${{ matrix.shard }}", "3")
+    assert "${{" not in run
+    log = tmp_path / "uv.log"
+    shims = (
+        "python3() {\n"
+        '  [ "$1 $2" = "scripts/affected_tests.py --r8" ] || return 9\n'
+        "  [ -z \"$R8_LIST\" ] || printf '%s\\n' $R8_LIST\n"
+        "}\n"
+        "uv() {\n"
+        "  printf '%s\\n' \"$@\" > \"$UV_LOG\"\n"
+        "}\n"
+    )
+    env = {**os.environ, **step["env"], "R8_LIST": " ".join(files), "UV_LOG": log.as_posix()}
+    done = subprocess.run(
+        [_BASH, "--noprofile", "--norc", "-eo", "pipefail", "-c", shims + run],
+        env=env, capture_output=True, text=True, timeout=120, cwd=tmp_path,
+    )
+    args = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return done.returncode, done.stdout + done.stderr, args
+
+
+@needs_bash
+@pytest.mark.parametrize("count", [0, 99])
+def test_a_short_r8_list_never_reaches_pytest(parsed: dict, tmp_path: Path, count: int) -> None:
+    """pytest with no path runs the whole tree, so an empty list stops the
+    shard. A list far below the measured 454 files means the rule broke."""
+    code, out, args = _run_r8_step(parsed, tmp_path, [f"tests/unit/test_r{i}.py" for i in range(count)])
+    assert code == 1, out
+    assert "R8 list too short" in out
+    assert args == [], "pytest must not start"
+
+
+@needs_bash
+def test_the_r8_step_gives_pytest_the_list_the_guard_files_and_the_split(
+    parsed: dict, tmp_path: Path,
+) -> None:
+    files = [f"tests/unit/test_r{i}.py" for i in range(120)]
+    code, out, args = _run_r8_step(parsed, tmp_path, files)
+    assert code == 0, out
+    assert args[:4] == ["run", "python", "-m", "pytest"]
+    also = _guard_also(parsed)
+    assert args[4:4 + len(files) + len(also)] == files + also
+    rest = args[4 + len(files) + len(also):]
+    assert rest[rest.index("--group") + 1] == "3"
+    assert "--junitxml=junit/r8-shard-3.xml" in rest
+    assert "-x" not in rest
 
 
 # ── Verify by evidence, never by a green tick ───────────────────────────────

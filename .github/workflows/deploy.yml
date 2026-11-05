@@ -2,8 +2,9 @@
 #
 # Trigger: push to main, the DAILY RELEASE schedule, or manual dispatch.
 # Flow on a push:     lint → test (a signal) → publish `staging`. NO deploy.
-# Flow on a release:  lint → test (a GATE) → publish `release` → SSH to VPS →
-#                     apply that exact commit → verify by the serving SHA.
+# Flow on a release:  lint → test + r8-gate (GATES) → publish `release` →
+#                     SSH to VPS → apply that exact commit → verify by the
+#                     serving SHA. `r8-gate` runs only on a release (CIV-4b).
 #
 # ⚠️ WS-38 (project-docs/specs/staging_and_daily_release.md), 2026-10-16.
 # Until then every merge deployed to production: 36 gateway starts in one
@@ -368,6 +369,288 @@ jobs:
       - name: Run unit tests
         run: uv run python -m pytest tests/unit/ -x -v --reruns 1 $(python3 scripts/fences.py pytest-ignore)
 
+  # ── The R8 gate of a release (CIV-4b, spec ci_velocity.md §5) ──────────
+  #
+  # The `test` job above has no database, so every R8 suite skips there. A
+  # skip is not a pass. So a release also runs the R8 files against two
+  # real Postgres servers, with the design of pr-check's unit shards, and
+  # `publish-release` needs `r8-gate` green.
+  #
+  # Why a job of its own, and not two services on `test`: with both
+  # databases set, the full suite takes 128 to 132 min of test time on one
+  # runner (two pr-check runs, 2026-11-05). `test` stops at 90 min. The R8
+  # files take about 103 min of that, so six shards take about 20 min each,
+  # beside `test`. CIV-9 makes the R8 files fast. Then R8 moves into the
+  # push batch.
+  #
+  # ⚠️ The schedule, and EVERY dispatch without `skip_tests`, whatever other
+  # input it has (a `nightly` dispatch too, CIV-13). The condition names the
+  # two events, so a trigger that someone adds later does not run it. A push
+  # batch does not run it. A dispatch with `skip_tests` skips it, as it
+  # skips `test`. No group: a release run has its own jobs, so nothing can
+  # fold or cancel them.
+  #
+  # ⚠️ The services, the env and the two assert steps are copies of
+  # pr-check's `test` job. Fence: tests/unit/test_deploy_pipeline.py fails
+  # when they differ.
+  r8-suite:
+    name: "R8 suites (release gate, shard ${{ matrix.shard }}/6)"
+    runs-on: ubuntu-24.04
+    needs: lint
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.skip_tests) }}
+    timeout-minutes: 60
+    # One run reports the failures of every shard.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    services:
+      platform-postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cc
+          POSTGRES_PASSWORD: cc
+          POSTGRES_DB: cc_platform
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U cc"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      # ⚠️ pgvector/pgvector:pg16, NOT postgres:16. infra/postgres/01_schema.sql
+      # runs CREATE EXTENSION vector, and the stock image has no pgvector.
+      tenant-postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: acb
+          POSTGRES_PASSWORD: acb
+          POSTGRES_DB: acb_tenant
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U acb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CUSTOMER_CONSOLE_DATABASE_URL: postgresql+psycopg://cc:cc@127.0.0.1:5433/cc_platform
+      # ⚠️⚠️ THIS IS NOT `DATABASE_URL`, AND THE TWO MUST NOT BE MERGED.
+      # DATABASE_URL would arm the two DB-gated tests of
+      # test_tenant_coverage.py. They fail by design against a fresh ladder:
+      # the FORCE-RLS policies live only in 04_policies.sql, which the ladder
+      # never replays, and a service container's user is the superuser.
+      # They are WS-29 MT-1b/MT-1c's gates. pr-check.yml says the same, and
+      # customer_console.md §6(i)(2) has the full reason. Set no DATABASE_URL
+      # in this workflow.
+      TENANT_LADDER_DATABASE_URL: postgresql+psycopg://acb:acb@127.0.0.1:5434/acb_tenant
+    steps:
+      # GITHUB_SHA, the commit that the release ships.
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Sync deps
+        run: uv sync
+
+      # A service that did not come up would put the gate back to silent
+      # skips. These two steps fail the shard first.
+      - name: Assert the Customer Console database is reachable
+        run: |
+          uv run python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+          url = os.environ["CUSTOMER_CONSOLE_DATABASE_URL"]
+          with create_engine(url).begin() as c:
+              print("customer console db:", c.execute(text("select version()")).scalar_one())
+          PY
+
+      # It also checks for pgvector, because that is how the wrong image fails.
+      - name: Assert the tenant ladder database is reachable and has pgvector
+        run: |
+          uv run python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+          url = os.environ["TENANT_LADDER_DATABASE_URL"]
+          with create_engine(url).begin() as c:
+              print("tenant ladder db:", c.execute(text("select version()")).scalar_one())
+              names = [r[0] for r in c.execute(text(
+                  "select name from pg_available_extensions "
+                  "where name in ('vector', 'uuid-ossp')"))]
+              assert "vector" in names, (
+                  "no pgvector on the tenant service container — "
+                  "infra/postgres/01_schema.sql cannot build. Use "
+                  "pgvector/pgvector:pg16, not postgres:16.")
+              print("extensions available:", sorted(names))
+          PY
+
+      # `affected_tests.py --r8` lists the R8 files: each file that holds
+      # `_DB_GATE`, names an R8 variable, or uses a helper that names one.
+      # It leaves out the process fences, because pytest's `--ignore` does
+      # not drop a file that is named on the command line. An empty list
+      # must never reach pytest, because pytest then runs the whole tree.
+      #
+      # GUARD_ALSO: the files in the guard's lists that need no database.
+      # The guard needs each one in a report. The fence keeps it short.
+      #
+      # No `-x`: one run reports every failure. `--reruns 1`: a timing
+      # flake gets a second try. The split is pr-check's, by duration.
+      - name: Run the R8 suites (this shard)
+        env:
+          GUARD_ALSO: >-
+            tests/unit/test_billing_proxy_route.py
+            tests/unit/test_invite_console_mirror.py
+            tests/unit/test_seat_admin_proxy_route.py
+            tests/unit/test_studio_expr.py
+        run: |
+          set -euo pipefail
+          python3 scripts/affected_tests.py --r8 > r8_files.txt
+          count="$(wc -l < r8_files.txt)"
+          if [ "$count" -lt 100 ]; then
+            echo "::error title=R8 list too short::affected_tests.py --r8 found ${count} files, and the gate expects over 400. This shard stops."
+            exit 1
+          fi
+          echo "R8 files: ${count}"
+          uv run python -m pytest $(cat r8_files.txt) $GUARD_ALSO -v -rs --reruns 1 \
+            --splits 6 --group ${{ matrix.shard }} \
+            --splitting-algorithm duration_based_chunks \
+            -o junit_family=xunit1 --junitxml=junit/r8-shard-${{ matrix.shard }}.xml
+
+      - name: Keep this shard's report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r8-junit-shard-${{ matrix.shard }}
+          path: junit/
+          retention-days: 7
+
+  # ── The R8 gate: every shard passed, and the guard holds ──────────────
+  # The guard of pr-check's "Unit tests" job, over the six R8 reports. It
+  # fails when an R8 variable was unset, when a `--must-run` file has no test
+  # in a report, or when a `--never-skip` file skipped a test.
+  #
+  # ⚠️ The lists are COPIES of pr-check.yml's. Each R8 suite checks for its
+  # own name in pr-check.yml only. Fence: test_deploy_pipeline.py fails when
+  # the two lists differ. Add a new R8 suite to both files.
+  #
+  # `always()`, so a failed shard turns this job red. `publish-release`
+  # reads this job's result, and a skip passes only on a `skip_tests`
+  # dispatch.
+  r8-gate:
+    name: "R8 gate (a release needs it)"
+    runs-on: ubuntu-24.04
+    needs: r8-suite
+    if: ${{ always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.skip_tests)) }}
+    steps:
+      - name: Every R8 shard passed
+        run: |
+          echo "R8 shards: ${{ needs.r8-suite.result }}"
+          [ "${{ needs.r8-suite.result }}" = "success" ] || exit 1
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r8-junit-shard-*
+          path: junit
+          merge-multiple: true
+
+      - name: The R8 suites ran, and no fence skipped
+        run: |
+          python3 scripts/ci_unit_guard.py check --junit junit \
+            --disarmed "CUSTOMER_CONSOLE_DATABASE_URL unset" \
+            --disarmed "TENANT_LADDER_DATABASE_URL unset" \
+            --never-skip \
+              tests/unit/test_console_dependency_boundary.py \
+              tests/unit/test_signin_resolve_route.py \
+              tests/unit/test_seat_admin_proxy_route.py \
+              tests/unit/test_billing_proxy_route.py \
+            --must-run \
+              tests/unit/test_customer_console_sql.py \
+              tests/unit/test_customer_console_key_auth.py \
+              tests/unit/test_customer_console_api.py \
+              tests/unit/test_customer_console_router.py \
+              tests/unit/test_customer_console_lifecycle.py \
+              tests/unit/test_customer_console_resolve.py \
+              tests/unit/test_customer_console_payments.py \
+              tests/unit/test_customer_console_operator_list.py \
+              tests/unit/test_customer_console_member_write.py \
+              tests/unit/test_customer_console_org_rename.py \
+              tests/unit/test_customer_console_seat_overview.py \
+              tests/unit/test_customer_console_billing_reads.py \
+              tests/unit/test_customer_console_billing_checkout.py \
+              tests/unit/test_customer_console_tasks.py \
+              tests/unit/test_customer_console_catalog.py \
+              tests/unit/test_customer_console_decide.py \
+              tests/unit/test_customer_console_embed.py \
+              tests/unit/test_customer_console_aroh_app.py \
+              tests/unit/test_operator_identity.py \
+              tests/unit/test_operator_session.py \
+              tests/unit/test_operator_roles.py \
+              tests/unit/test_operator_admin.py \
+              tests/unit/test_operator_elevation.py \
+              tests/unit/test_operator_activity.py \
+              tests/unit/test_provider_keys.py \
+              tests/unit/test_operator_signin.py \
+              tests/unit/test_deployment_resolve_cache.py \
+              tests/unit/test_console_dependency_boundary.py \
+              tests/unit/test_signin_resolve_route.py \
+              tests/unit/test_seat_admin_proxy_route.py \
+              tests/unit/test_billing_proxy_route.py \
+              tests/unit/test_invite_console_mirror.py \
+              tests/unit/test_signup_provision_route.py \
+              tests/unit/test_signup_reconciler.py \
+              tests/unit/test_console_bootstrap.py \
+              tests/unit/test_billing_purchase_capability.py \
+              tests/unit/test_app_user_upserts.py \
+              tests/unit/test_org_provisioning.py \
+              tests/unit/test_org_provisioning_tenancy.py \
+              tests/unit/test_owner_bootstrap.py \
+              tests/unit/test_credential_tenant_threading.py \
+              tests/unit/test_h3_rls_promotion_rehearsal.py \
+              tests/unit/test_action_broker_tenancy_r8.py \
+              tests/unit/test_org_settings_tenancy_r8.py \
+              tests/unit/test_user_settings_per_org_r8.py \
+              tests/unit/test_auth_me_shell_r8.py \
+              tests/unit/test_h6_identity_shadow.py \
+              tests/unit/test_h6_rbac_rekey.py \
+              tests/unit/test_email_otp_token.py \
+              tests/unit/test_invited_member_promotion.py \
+              tests/unit/test_org_purge_console.py \
+              tests/unit/test_org_purge_tenant.py \
+              tests/unit/test_operator_door.py \
+              tests/unit/test_shell_needs_r8.py \
+              tests/unit/test_my_day_loop_r8.py \
+              tests/unit/test_chat_session_archive_r8.py \
+              tests/unit/test_projects_search_description_r8.py \
+              tests/unit/test_staging_minimise_r8.py \
+              tests/unit/test_studio_objects_r8.py \
+              tests/unit/test_studio_query_r8.py \
+              tests/unit/test_goal_record_r8.py \
+              tests/unit/test_studio_objects_batch_r8.py \
+              tests/unit/test_studio_state_machine_r8.py \
+              tests/unit/test_studio_expr.py \
+              tests/unit/test_studio_formula_r8.py \
+              tests/unit/test_studio_rollup_r8.py \
+              tests/unit/test_no_person_present_r8.py \
+              tests/unit/test_studio_packages_r8.py \
+              tests/unit/test_studio_action_door_r8.py \
+              tests/unit/test_studio_catalog_r8.py \
+              tests/unit/test_studio_packages_versions_r8.py \
+              tests/unit/test_studio_package_routes_r8.py \
+              tests/unit/test_studio_chat_build_r8.py \
+              tests/unit/test_package_host_store_r8.py \
+              tests/unit/test_workflows_lifecycle_rls_r8.py \
+              tests/unit/test_crm_change_history.py \
+              tests/unit/test_auto_park.py \
+              tests/unit/test_staging_export.py
+
   # ── Publish the ref the STAGING box will poll (WS-38) ─────────────────
   # Every green merge fast-forwards `staging`. A push only: a scheduled run
   # carries a sha that a later merge may already have passed, and its push
@@ -425,11 +708,13 @@ jobs:
   # this file and in `pull-delivery` say "re-run this workflow".
   # A step that fails here holds the release: `open` is then empty, and
   # `publish-release` reads empty as closed.
+  # It also waits for `r8-gate` (CIV-4b), so it reads the clock after the
+  # last gate, and not before a slow R8 shard.
   # Fence: tests/unit/test_daily_release.py.
   release-window:
     name: "Release window"
     runs-on: ubuntu-latest
-    needs: [lint, test]
+    needs: [lint, test, r8-gate]
     if: ${{ always() && github.event_name == 'schedule' && vars.RELEASE_HOLD != '1' }}
     outputs:
       open: ${{ steps.clock.outputs.open }}
@@ -464,6 +749,9 @@ jobs:
   # them on every merge. Once a day, at 03:00 IST, 19 minutes costs nothing,
   # and this is the last check before customers. A dispatch with
   # `skip_tests` is the one way past it, for an emergency.
+  # CIV-4b: the R8 gate (`r8-gate`) gates it the same way, with the same one
+  # way past. `test` has no database, so without `r8-gate` no R8 suite would
+  # run before production once a PR runs only its affected tests (CIV-3).
   # `scripts/vps_pull.sh` on the box applies `origin/release`, never `main`,
   # so the box installs only a commit that reached `main`. pr-check tested it
   # as a PR before the merge.
@@ -486,7 +774,7 @@ jobs:
   publish-release:
     name: "Publish release ref"
     runs-on: ubuntu-latest
-    needs: [lint, test, release-window]
+    needs: [lint, test, r8-gate, release-window]
     if: >-
       ${{ always()
       && github.ref == 'refs/heads/main'
@@ -495,7 +783,9 @@ jobs:
       && (github.event_name != 'schedule' || needs.release-window.outputs.open == 'true')
       && needs.lint.result == 'success'
       && (needs.test.result == 'success'
-          || (github.event_name == 'workflow_dispatch' && inputs.skip_tests && needs.test.result == 'skipped')) }}
+          || (github.event_name == 'workflow_dispatch' && inputs.skip_tests && needs.test.result == 'skipped'))
+      && (needs.r8-gate.result == 'success'
+          || (github.event_name == 'workflow_dispatch' && inputs.skip_tests && needs.r8-gate.result == 'skipped')) }}
     permissions:
       contents: write
     steps:
