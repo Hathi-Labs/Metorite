@@ -94,13 +94,14 @@ import {
   enrichSession,
   fetchAndMergeSessionsFromDb,
   getSessions,
+  keepSession,
   renameSession,
   setSessionArchived,
   type ChatSession,
 } from "@/lib/sessions";
 
 import { requestBrief } from "./briefTurn";
-import { claimHello, opensHello, requestHello } from "./buddyHello";
+import { claimHello, opensHello, requestHello, takeBeforeHello } from "./buddyHello";
 import GuideOffer from "./GuideOffer";
 import { offerGuide, startGuide } from "./guide";
 import { chatFirstOn } from "./chatFlag";
@@ -200,6 +201,20 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   // chat before this mounted must still be honoured (review of 2026-10-12).
   const handledFresh = useRef(0);
   const refresh = useCallback(() => setSessions(getSessions()), []);
+  // The chats this page made. A second tab of the member shares the stored
+  // list and can drop one in a racing save, so this page puts it back
+  // (`keepSession`). Without it the chat has no row, and the panel waits.
+  const madeHere = useRef(new Map<string, ChatSession>());
+  const makeFresh = useCallback(() => {
+    const pick = startFresh(ASSISTANT_AGENT);
+    const made = getSessions().find((s) => s.id === pick.activeId);
+    if (made) madeHere.current.set(made.id, { ...made });
+    return pick;
+  }, []);
+  const keepMine = useCallback((id: string) => {
+    const mine = madeHere.current.get(id);
+    return mine ? keepSession(mine) : false;
+  }, []);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   // A new member or org: nothing carries over.
@@ -224,7 +239,7 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     if (!scope || !open) return;
     if (st.freshSeq !== handledFresh.current) {
       handledFresh.current = st.freshSeq;
-      const pick = startFresh(ASSISTANT_AGENT);
+      const pick = makeFresh();
       setRestoredId(null);
       setNotice(null);
       setAssistantSession(pick.activeId);
@@ -245,7 +260,7 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
         setAssistantSession(last.id);
       } else {
         setRestoredId(null);
-        setAssistantSession(startFresh(ASSISTANT_AGENT).activeId);
+        setAssistantSession(makeFresh().activeId);
       }
       refresh();
     };
@@ -259,6 +274,22 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     }
     return () => { cancelled = true; };
   }, [scope, open, st.sessionId, st.freshSeq, refresh]);
+
+  // Keep this page's own chat in the stored list (see `madeHere`). A save
+  // from another tab can drop it at any time, so the storage event asks for
+  // a fresh look, and every look puts the chat back.
+  useEffect(() => {
+    if (!scope || !open) return;
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === null || e.key.endsWith("::sessions")) refresh();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [scope, open, refresh]);
+  useEffect(() => {
+    if (!scope || !open || !st.sessionId || sessions.some((s) => s.id === st.sessionId)) return;
+    if (keepMine(st.sessionId)) refresh();
+  }, [scope, open, st.sessionId, sessions, keepMine, refresh]);
 
   // The bar's words join the open chat only while it is recent. Each ask is
   // decided once, and `AgentChat` gets the words only for the chat the
@@ -383,10 +414,29 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
       refresh();
     };
     const timer = setTimeout(release, REMINDER_HOLD_MS);
+    // A hello that leaves no row puts the panel back as the landing found it
+    // (BUD-1): closed, on the chat it showed before, and with no empty chat
+    // of its own left in the list.
+    const undoHello = (helloId: string) => {
+      const prior = takeBeforeHello();
+      const own = getSessions().find((s) => s.id === helloId);
+      closeAssistant();
+      madeHere.current.delete(helloId);
+      if (assistantState().sessionId === helloId) setAssistantSession(prior);
+      if (own && !own.messageCount && !own.hasUserMessage) deleteSession(helloId);
+      refresh();
+    };
     void requestHello(id)
       .then((posted) => {
-        if (!posted) return;
+        if (!posted) {
+          // The hello left no row: no open panel and no empty chat stays.
+          // A late answer, after the hold ended, leaves a panel the member
+          // may already use, so it is left as it is.
+          if (!released) undoHello(id);
+          return;
+        }
         markBuddyHello();
+        keepMine(id);
         enrichSession(id, { title: posted.title, messageCount: 1, lastPreview: posted.preview });
       })
       .finally(() => {
@@ -394,7 +444,7 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
         setHelloPending(false);
         release();
       });
-  }, [scope, open, st.hello, st.freshSeq, activeIdForBrief, activeCount, refresh]);
+  }, [scope, open, st.hello, st.freshSeq, activeIdForBrief, activeCount, refresh, keepMine]);
 
   // The brief as the first turn (CF-5). Asked once per page per day, and
   // only through the rule. The server decides whether a brief exists and

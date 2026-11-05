@@ -31,7 +31,7 @@ import { starterPills } from "@/lib/starterPills";
 import { chatFirstOn } from "@/lib/shell/chatFlag";
 import { type FeedAnswer, feedAppIcon, feedKey, fetchFeed } from "@/lib/shell/feed";
 import { holdsOnlyBrief } from "@/lib/shell/briefTurn";
-import { isHelloRow } from "@/lib/shell/buddyHello";
+import { announceHelloOnce, isHelloRow } from "@/lib/shell/buddyHello";
 import { useCachedResource } from "@/lib/useCachedResource";
 import ConfirmationQueue, { type ConfirmationAnswer } from "@/components/ConfirmationQueue";
 import ConfirmationReceipts from "@/components/ConfirmationReceipts";
@@ -685,6 +685,16 @@ export default function AgentChat({
     const t = setTimeout(() => setHistoryLoaderVisible(true), HISTORY_LOADER_DELAY_MS);
     return () => clearTimeout(t);
   }, [loadingHistory]);
+
+  // The hello comes without a click, so a screen reader hears its words once
+  // (DESIGN_SYSTEM.md §11 M9). The line is always in the page, empty until
+  // the row is there: a live region that arrives with its text is missed.
+  const helloWords = messages.find((m) => isHelloRow(m.id))?.content ?? "";
+  const [helloSaid, setHelloSaid] = useState("");
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- said once, from the row
+    if (helloWords && announceHelloOnce(sessionId)) setHelloSaid(helloWords);
+  }, [helloWords, sessionId]);
 
   // ── The starter pills (WS-62 CF-4, chat_first_surface.md §4.6) ──────────
   // With the chat-first flag on, the empty chat of the one assistant draws
@@ -2666,6 +2676,7 @@ export default function AgentChat({
         )}
 
         <div className="max-w-3xl mx-auto">
+          <p role="status" aria-live="polite" className="sr-only" data-hello-status="">{helloSaid}</p>
           {/* One note from the parent, for example the email chat after the
               mailbox of its scope left (EM-T8f-3). A status, so a screen
               reader hears it once. */}

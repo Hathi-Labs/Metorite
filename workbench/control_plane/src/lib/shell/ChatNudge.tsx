@@ -58,7 +58,8 @@ import { boundOrganization, identity } from "@/lib/dataCache";
 import { useChatScope } from "@/hooks/useChatSessions";
 import { chatScope, fetchAndMergeSessionsFromDb } from "@/lib/sessions";
 
-import { CHAT_LANDED_KEY, openAssistant, opensOnLanding, useAssistant } from "./assistant";
+import { CHAT_LANDED_KEY, assistantState, openAssistant, opensOnLanding, useAssistant } from "./assistant";
+import { noteBeforeHello } from "./buddyHello";
 import { chatFirstOn } from "./chatFlag";
 import { isActive, useGuide, useGuideAllowed } from "./guide";
 import {
@@ -306,6 +307,9 @@ export function useChatFirstLanding(phone: boolean): void {
         /* storage off */
       }
       setHelloPending(true);
+      // The hello may leave no row (a 204, a refusal): the dock then closes
+      // the panel and puts this chat back.
+      noteBeforeHello(assistantState().sessionId);
       openAssistant({ mode: phone ? "full" : "dock", fresh: true, hello: true });
       return;
     }

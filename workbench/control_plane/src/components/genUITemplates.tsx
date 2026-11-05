@@ -27,6 +27,7 @@
  */
 
 import { createElement, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import GenUIFallback from "@/components/GenUIFallback";
 import LiveChart from "@/components/LiveChart";
@@ -2038,6 +2039,10 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
 const HELLO_CHIPS_LABEL = "Where to start";
 
 function BuddyHello({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
+  const router = useRouter();
+  // One chip acts, and all three hold: a second tap would send the question
+  // twice (the reminder chips, `ReminderCard`, hold the same way).
+  const [busy, setBusy] = useState(false);
   const chips = arr(data.chips)
     .map((c) => (c ?? {}) as Data)
     .map((c) => ({ label: str(c.label).trim(), message: str(c.id).trim() }))
@@ -2049,7 +2054,12 @@ function BuddyHello({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
         {ctx?.onAction && chips.length > 0 ? (
           <SuggestionPills
             suggestions={chips}
-            onPick={(id) => runHelloChip(id, ctx.onAction)}
+            onPick={(id) => {
+              if (busy) return;
+              setBusy(true);
+              runHelloChip(id, ctx.onAction, (href) => router.push(href));
+            }}
+            disabled={busy}
             label={HELLO_CHIPS_LABEL}
             align="start"
           />

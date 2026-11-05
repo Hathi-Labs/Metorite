@@ -8,7 +8,8 @@ import { closeAssistant, openAssistant, assistantState } from "./assistant";
 import { helloOpens } from "./ChatNudge";
 import { EMPTY_SHELL, type StoredShell } from "./presets";
 import { nudgeShows } from "./shellPrefs";
-import { HELLO_QUESTION, __resetHelloForTests, claimHello, helloPath, opensHello, requestHello, runHelloChip } from "./buddyHello";
+import { TOUR_HREF } from "./guide";
+import { HELLO_QUESTION, __resetHelloForTests, announceHelloOnce, claimHello, helloPath, opensHello, requestHello, runHelloChip } from "./buddyHello";
 
 const startGuide = vi.hoisted(() => vi.fn());
 vi.mock("./guide", async (orig) => ({ ...(await orig<typeof import("./guide")>()), startGuide }));
@@ -47,10 +48,23 @@ describe("claimHello", () => {
   });
 });
 
+describe("announceHelloOnce", () => {
+  it("is true once, and only for a chat whose hello opened in this page", () => {
+    expect(announceHelloOnce("s1")).toBe(false);
+    claimHello("s1");
+    expect(announceHelloOnce("s1")).toBe(true);
+    expect(announceHelloOnce("s1")).toBe(false);
+    expect(announceHelloOnce("")).toBe(false);
+  });
+});
+
 describe("the chips", () => {
-  it("'Show me around' starts the tour on a tap", () => {
-    runHelloChip("tour", undefined);
-    expect(startGuide).toHaveBeenCalledWith("home.tour", "button");
+  it("'Show me around' goes to the tour's address and never starts it in place", () => {
+    const go = vi.fn();
+    runHelloChip("tour", undefined, go);
+    expect(go).toHaveBeenCalledWith(TOUR_HREF);
+    expect(TOUR_HREF).toBe("/?guide=home.tour");
+    expect(startGuide).not.toHaveBeenCalled();
   });
   it("'What can you do here?' sends the question as the member's message", () => {
     const send = vi.fn();

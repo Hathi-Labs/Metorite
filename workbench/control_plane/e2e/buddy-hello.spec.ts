@@ -80,6 +80,8 @@ interface Server {
   titles: Record<string, string>;
   helloCalls: Array<{ id: string; status: number }>;
   puts: Record<string, unknown>[];
+  /** Answer the hello with this status (503), or drop the call ("net"). */
+  helloFail?: number | "net";
 }
 
 function makeServer(opts: { layout?: Record<string, unknown>; guide?: boolean; chatted?: boolean } = {}): Server {
@@ -105,7 +107,7 @@ const LOOK = {
   accent: process.env.HELLO_ACCENT ?? "",
 };
 
-async function stub(page: Page, server: Server, opts: { me?: unknown } = {}): Promise<void> {
+async function stub(page: Page, server: Server, opts: { me?: unknown; stale?: boolean } = {}): Promise<void> {
   await page.addInitScript((look) => {
     if (look.theme) localStorage.setItem("theme", look.theme);
     if (look.density) localStorage.setItem("cc-density", look.density);
@@ -130,7 +132,8 @@ async function stub(page: Page, server: Server, opts: { me?: unknown } = {}): Pr
         const { buddy_hello_at: _ignored, ...rest } = body;
         server.layout = { ...server.layout, ...rest, ...(rest.tour_seen_at ? { tour_seen_at: SERVER_TIME } : {}) };
       }
-      return json({ ...server.layout, guide: server.guide });
+      // `stale`: the read says "no hello yet", as a tab does that lost the race.
+      return json({ ...server.layout, ...(opts.stale && req.method() === "GET" && !server.puts.length ? { buddy_hello_at: null } : {}), guide: server.guide });
     }
     const hello = path.match(/^\/api\/chat\/sessions\/([^/]+)\/buddy-hello$/);
     if (hello) {
@@ -140,6 +143,11 @@ async function stub(page: Page, server: Server, opts: { me?: unknown } = {}): Pr
         return status === 204 ? route.fulfill({ status }) : json({ detail: "Not Found" }, status);
       };
       if (!server.guide) return answer(404);
+      if (server.helloFail === "net") {
+        server.helloCalls.push({ id, status: 0 });
+        return route.abort("failed");
+      }
+      if (server.helloFail) return answer(server.helloFail);
       // First write wins: the loser gets 204 and no row.
       if (server.layout.buddy_hello_at) return answer(204);
       server.layout = { ...server.layout, buddy_hello_at: SERVER_TIME };
@@ -263,6 +271,29 @@ test.describe("on the real paths", () => {
     await expect(panel(page)).toHaveCount(0);
   });
 
+  for (const how of [503, "net", 204] as const) {
+    test(`a hello that fails (${how}) leaves no open panel and no empty chat`, async ({ page }) => {
+      const server = makeServer();
+      if (how === 204) server.layout = { ...server.layout, buddy_hello_at: SERVER_TIME };
+      else server.helloFail = how;
+      // The 204 case needs the page to ask: the layout it reads says "new".
+      await stub(page, server, how === 204 ? { stale: true } : {});
+      await page.goto("/");
+      await expect(page.locator('[data-guide="home.app-list"]')).toBeVisible();
+      if (how !== 204) await expect.poll(() => server.helloCalls.length).toBeGreaterThanOrEqual(1);
+      await page.waitForTimeout(1_500);
+      await expect(panel(page)).toBeHidden();
+      await expect(helloCard(page)).toHaveCount(0);
+      // The member's active chat is what it was: none, and no empty chat is stored.
+      const empties = await page.evaluate(() =>
+        Object.entries(localStorage)
+          .filter(([k]) => k.endsWith("::sessions"))
+          .flatMap(([, v]) => JSON.parse(v) as Array<{ messageCount: number }>)
+          .filter((x) => !x.messageCount).length);
+      expect(empties).toBe(0);
+    });
+  }
+
   test("a deep link gets no hello", async ({ page }) => {
     const server = makeServer();
     await stub(page, server);
@@ -296,12 +327,18 @@ test.describe("on the real paths", () => {
     expect(Object.values(server.rows).flat()).toHaveLength(1);
     // A background tab paints late: look at each in turn.
     let shown = 0;
+    const open: boolean[] = [];
     for (const tab of [a, b]) {
       await tab.bringToFront();
       await tab.waitForTimeout(500);
-      shown += await helloCard(tab).count();
+      const cards = await helloCard(tab).count();
+      shown += cards;
+      // The winner shows the hello in its own panel. The loser draws no panel.
+      open.push((await panel(tab).count()) > 0 && (await panel(tab).isVisible()));
+      expect(open[open.length - 1]).toBe(cards === 1);
     }
     expect(shown).toBe(1);
+    expect(open.filter(Boolean)).toHaveLength(1);
   });
 });
 
@@ -328,6 +365,42 @@ test.describe("the chips", () => {
     await chip(page, "What can you do here?").click();
     await expect(panel(page).getByText("What can you do here?", { exact: true }).first()).toBeVisible();
     await expect(card(page)).toHaveCount(0);
+  });
+
+  test("after one chip acts, all three hold: a second tap sends nothing", async ({ page }) => {
+    const server = makeServer();
+    await stub(page, server);
+    await page.goto("/");
+    await expectHello(page);
+    await chip(page, "What can you do here?").click();
+    for (const c of CHIPS) await expect(chip(page, c.label)).toBeDisabled();
+    // Two matches: the chip itself, and the ONE message that it sent.
+    const said = panel(page).getByText("What can you do here?", { exact: true });
+    await expect(said).toHaveCount(2);
+    await chip(page, "What can you do here?").click({ force: true });
+    await page.waitForTimeout(600);
+    await expect(said).toHaveCount(2);
+  });
+
+  test("a screen reader hears the greeting once, and the chips are in the tab order", async ({ page }) => {
+    const server = makeServer();
+    await stub(page, server);
+    await page.goto("/");
+    await expectHello(page);
+    // The one status line of the chat says the hello's words.
+    await expect(page.locator("[data-hello-status]")).toHaveText(HELLO);
+    await expect(page.locator("[data-hello-status]")).toHaveAttribute("role", "status");
+    // The panel puts the cursor in the composer. The chips come before it, so
+    // Shift+Tab reaches them and Tab walks them in order.
+    await expect(panel(page).locator("textarea")).toBeFocused({ timeout: 5_000 });
+    await page.keyboard.press("Shift+Tab");
+    const names: string[] = [];
+    for (let i = 0; i < 12 && names.length < 3; i++) {
+      const name = await page.evaluate(() => document.activeElement?.textContent?.trim() ?? "");
+      if (CHIPS.some((c) => c.label === name)) names.unshift(name);
+      await page.keyboard.press("Shift+Tab");
+    }
+    expect(names).toEqual(CHIPS.map((c) => c.label));
   });
 
   test("'I'll look around' closes the panel and starts nothing", async ({ page }) => {
