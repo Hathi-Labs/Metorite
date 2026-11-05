@@ -72,6 +72,9 @@ export const SETTINGS_SECTIONS = [
   // CRM-Q20-2: the suggestions of the mapping, and Undo of each one in use.
   { id: "suggestions", label: "Suggestions", icon: "Sparkles", audience: "admin", modes: ["mirror"] },
   { id: "sync-health", label: "Sync health", icon: "Activity", audience: "admin", modes: ["mirror"] },
+  // WS-CRM CRM-M1: each change of the CRM set-up, with before and after. The
+  // page draws its card (`ChangeHistory.tsx`), not `PipelineSettings`.
+  { id: "change-history", label: "Change history", icon: "History", audience: "admin", modes: ["native", "mirror"] },
 ] as const satisfies readonly SettingsSection[];
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];

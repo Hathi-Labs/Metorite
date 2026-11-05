@@ -719,6 +719,10 @@ ACTOR_VIA_PATTERN = re.compile(r"^[a-z0-9][a-z0-9:_.-]{0,63}$")
 #: the routes of ``preview_move_tasks`` and ``move_tasks``. The preview writes
 #: nothing, and it is a write pair only because it is a POST. ⚠️ The grant
 #: routes, the node move and the node archive stay OUT of both sets.
+#: WS-55 MCP-G15 adds the outside decision, the route of
+#: ``record_outside_decision``. An agent records a decision that its member
+#: made outside Metorite, on its OWN awaiting run. It writes an agent
+#: ``response`` and never a ``prompt``, and it refuses a typed request.
 #: Fence: ``tests/unit/test_mcp_edge_coverage.py`` (rules 1 and 2).
 MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/nodes"),
@@ -737,6 +741,8 @@ MCP_WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/projects/agent-runs/{run_id}/finish"),
     # EA-14a: the holder gives a task up. The route of ``release_task``.
     ("POST", "/projects/agent-runs/{run_id}/release"),
+    # MCP-G15: the decision a member made outside Metorite.
+    ("POST", "/projects/agent-runs/{run_id}/outside-decision"),
     ("POST", "/projects/tasks/{task_id}/archive-request"),
     ("POST", "/projects/tasks/{task_id}/agent-delete"),
 })
@@ -768,6 +774,12 @@ MCP_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/projects/tasks/{task_id}/agent-runs"),
     ("GET", "/projects/agent-runs"),
     ("GET", "/projects/agent-runs/{run_id}"),
+    # WS-MCP SW-31a (agent_coordination.md SW-31): the org's guidance for a
+    # task, and the refs for `my_work`. Both answer 404 while
+    # `AGENT_GUIDANCE_ORGS` does not hold the org. The save and the history
+    # stay OFF the edge: only a member writes guidance.
+    ("GET", "/agent-guidance/tasks/{task_id}"),
+    ("GET", "/agent-guidance/refs"),
     # MCP-P1a (spec §19.4 and §19.5): the two list routes of the app door,
     # for `list_apps` and `describe_app`. They hold no data of an app.
     ("GET", "/agent-access/apps"),

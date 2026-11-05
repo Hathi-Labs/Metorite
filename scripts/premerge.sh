@@ -2,7 +2,8 @@
 # ════════════════════════════════════════════════════════════════════════════
 # premerge.sh: test the merge with TODAY's main, right before `gh pr merge` (LD-3).
 #
-#   bash scripts/premerge.sh      # in the PR's worktree. Commit everything first.
+#   bash scripts/premerge.sh               # in the PR's worktree. Commit everything first.
+#   bash scripts/premerge.sh --with-tests  # also run the affected tests (slow)
 #
 # WHY. pr-check tests the PR merged with main AS IT WAS when the run started.
 # Branch protection does not ask for an up-to-date branch (strict: false), and
@@ -16,15 +17,29 @@
 #   1. refuses a new migration numbered at or below main's highest (R1);
 #   2. merges origin/main into the worktree WITHOUT a commit;
 #   3. runs the collision fences on that result;
-#   4. when both sides changed the same files, runs the affected tests too;
+#   4. names the files both sides changed. With --with-tests it runs the
+#      affected tests on them too (this PC only, as it did before CIV-12);
 #   5. aborts the merge, so the worktree is as it was.
 # `gh pr merge --squash` lands the same tree that step 2 built. So a pass
 # tests what lands, with no second CI run.
+#
+# DEFAULT = the collision fences only (CIV-12, D176). A PR runs the tests its
+# diff can affect in pr-check, and main runs the full suite in batches. The
+# affected run took hours on the Windows PC, so it is opt-in now.
 #
 # EXIT 0: merge now. EXIT 1: merge origin/main into the branch, fix, push, and
 # wait for pr-check. Fence: tests/unit/test_premerge.py.
 # ════════════════════════════════════════════════════════════════════════════
 set -euo pipefail
+
+with_tests=0
+for arg in "$@"; do
+  case "$arg" in
+    --with-tests) with_tests=1 ;;
+    *) printf 'premerge: FAIL. unknown argument %s. The only flag is --with-tests.
+' "$arg" >&2; exit 1 ;;
+  esac
+done
 
 FENCES=(
   tests/unit/test_migration_prefixes.py
@@ -121,6 +136,11 @@ failed_ids() { { grep -E '^(FAILED|ERROR) ' "$1" || true; } | awk '{print $2}' |
 
 if [ -n "$overlap" ]; then
   say "both sides changed: $(printf '%s' "$overlap" | tr '\n' ' ')"
+  if [ "$with_tests" = 0 ]; then
+    say "the affected tests did not run. Add --with-tests to run them (pr-check and main already run them)."
+  fi
+fi
+if [ -n "$overlap" ] && [ "$with_tests" = 1 ]; then
   say "running the affected tests on the merge result"
   if ! bash -c "$AFFECTED_CMD" > "$logs/affected.log" 2>&1; then
     merged_fail="$(failed_ids "$logs/affected.log")"

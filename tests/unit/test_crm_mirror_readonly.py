@@ -119,6 +119,12 @@ _EXEMPT = {
     # the fence below allows by name. It writes no record table. The guard
     # would refuse it, because the mode is `mirror` until phase 2 commits.
     "cutover.py",
+    # WS-CRM CRM-M1: the Change history. It writes `crm_change_log` and no
+    # record table. Its Undo calls the write helper of the route of each
+    # change (`admin.patch_status_in` and the rest), and that helper keeps
+    # the guard of its route. The registry of the Undo functions hides
+    # those calls from this scan, so `test_crm_change_history.py` holds them.
+    "change_log.py",
 }
 
 

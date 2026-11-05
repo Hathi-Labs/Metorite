@@ -125,6 +125,16 @@ class Settings(BaseSettings):
     # hold several sessions. Fence: tests/unit/test_db_background_lane.py.
     db_background_max: int = 4
 
+    # H-249 (WS-29): what `tenant_session` does when its transaction is
+    # aborted at the clean end of a block. That happens when a caller swallows
+    # a failed statement. The commit then commits nothing. `log` (the default)
+    # only logs `db.tenant_session_aborted`, and the commit runs as before.
+    # `raise` logs, rolls back and raises `TenantTransactionAborted`. Any other value reads as
+    # `log`. The one reader is `tenant_session_abort_mode` below. The flag
+    # needs a restart (`docs/flag_reload.md`). A value on a box is the grant
+    # `enforcement-flip`. Fence: tests/unit/test_tenant_session_aborted_r8.py.
+    tenant_session_abort_mode: str = "log"
+
     # The pool of the sync `acb_graph` engine. It counts against the SAME
     # pooler budget as the async pool above (see the note there).
     db_sync_pool_size: int = 2
@@ -602,6 +612,24 @@ class Settings(BaseSettings):
     # `enforcement-flip`. Spec: core_brief.md §5 and §10 row 5. Fence:
     # tests/unit/test_brief_today.py.
     brief_in_app: bool = False
+    # `brief_exceptions` (WS-BRIEF BR-5, 2026-11-04) is the switch of the
+    # exception engine, default OFF. On, only the four rules of
+    # `core_brief.md` §6 let a card interrupt in Reach (WhatsApp and the
+    # preview), and a card with no rule waits. Off, the class table of
+    # `reach/classes.py` decides, as before. It holds for an org only when
+    # `BRIEF_ENABLED` and `BRIEF_ORGS` hold too. The one reader is
+    # `gateway.brief.flags.exceptions`. A flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_reach_exceptions.py.
+    brief_exceptions: bool = False
+    # `brief_compose` (WS-BRIEF BR-2a-2, 2026-11-05) is the switch of the
+    # phrase step, default OFF. On, a run with 4 claims or more makes ONE
+    # `tier-fast` call through the Console Router, and the model writes the
+    # lead. Off, or with the Router off, the lead is the template lead, as
+    # before. It holds for an org only when `BRIEF_ENABLED` and `BRIEF_ORGS`
+    # hold too. The one reader is `gateway.brief.flags.compose`. The call
+    # spends credits, so a flip on production is OWNER-GATE (core_brief.md
+    # §10 row 4). Fence: tests/unit/test_brief_phrase.py.
+    brief_compose: bool = False
 
     # ── Web push (WS-66 PN-1, 2026-10-25) ───────────────────────────────────
     #
@@ -635,6 +663,12 @@ class Settings(BaseSettings):
     # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:
     # ai_studio.md section 3.2.
     studio_orgs: str = ""
+    # WS-PKG PKG-5b: PACKAGE_HOST_ORGS lists the org ids that may read the
+    # resolved shell manifest (GET /shell/manifest). `*` opens every org.
+    # Empty opens none. Reader:
+    # `gateway.package_host.flags.package_host_allowed`. Spec:
+    # package_host.md section 10.
+    package_host_orgs: str = ""
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_subject: str = ""
@@ -820,6 +854,18 @@ class Settings(BaseSettings):
     # tests/unit/test_chat_summary.py.
     assistant_chat_summary_orgs: str = ""
 
+    # ── The briefing at the start of a chat (WS-63 PZ-34, D142) ─────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. It opens the block of PZ-34: the newest summaries of the
+    # member's other private chats and their tasks that are due
+    # (`personalization.md` §15.4). The profile switch (`enabled_for`) must be
+    # on for the org too. The one reader is
+    # `acb_common.assistant_profile.briefing_for`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). It calls no model. Fences:
+    # tests/unit/test_executor_briefing_block.py, tests/unit/test_chat_summary.py.
+    assistant_briefing_orgs: str = ""
+
     # ── One person decides (WS-ALN ALN-2a, project_alignment.md §3.2) ───────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -829,6 +875,29 @@ class Settings(BaseSettings):
     # reload applies a change (`gateway/flag_reload.py`). Fence:
     # tests/unit/test_decisions.py.
     decisions_orgs: str = ""
+    # ── Park and ask (WS-AUTO AUTO-7b, proactive_agent.md §4.2) ─────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, the approval gate of a workflow run with no person
+    # present asks the workflow's owner through ONE decision, instead of a
+    # broker proposal. `decisions_orgs` must list the org too. Off, the gate
+    # files the broker proposal of AUTO-7a, byte for byte. The one reader is
+    # `gateway.routes.workflows.park.park_allowed`. A SIGHUP reload applies a
+    # change (`gateway/flag_reload.py`). Fence: tests/unit/test_auto_park.py.
+    # ⚠️ The wait scan settles a parked gate only for an org on
+    # `workflow_unattended_orgs`. If the org leaves that list, a yes resumes
+    # nothing and no expiry ends the run, until the org is on it again.
+    auto_park_orgs: str = ""
+    # ── Guidance for agents (WS-MCP SW-31a, agent_coordination.md SW-31) ────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, the `/agent-guidance` routes answer 404 and the MCP
+    # answers of `get_task_context`, `claim_task` and `my_work` carry no
+    # `guidance` key. The one reader is
+    # `gateway.routes.agent_guidance.guidance_allowed`. A SIGHUP reload applies
+    # a change (`gateway/flag_reload.py`). Fence:
+    # tests/unit/test_agent_guidance.py.
+    agent_guidance_orgs: str = ""
     # ── The trigger of the project alignment check (WS-ALN ALN-1, D160) ─────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,
@@ -952,6 +1021,20 @@ class Settings(BaseSettings):
     # mail may write, so name the flag and the box in the same message.
     # Fence: tests/unit/test_held_card_writes.py.
     held_card_writes_orgs: str = ""
+
+    # ── The one email card of a new mail (email_app_master_plan.md §18.10) ──
+    #
+    # `email_edit_card_orgs` lists the organization ids whose chat shows a new
+    # mail on the ONE email card that the member edits, or `*` for each one.
+    # Empty means off, and a new mail shows the cards of before: the plain send
+    # card, and the rows card of a held chat. The one reader is
+    # `acb_skills.reply_card.edit_card_on`, and it fails closed. The name ends
+    # in `_orgs`, so a SIGHUP applies a change with no restart.
+    #
+    # A value on a box is an `enforcement-flip`: it changes the card of a send.
+    # Name the flag and the box in the same message.
+    # Fence: tests/unit/test_email_new_mail_card.py.
+    email_edit_card_orgs: str = ""
 
     # ── Web research (WS-WEB, D148, `web_research.md` §3.2 and §11) ─────────
     #
@@ -1742,11 +1825,13 @@ class Settings(BaseSettings):
     email_outlook_delta_accounts: str = ""
 
     # The storage limit of ONE mailbox, in MB (WS-17 EM-T6c, D-EM-14, owner
-    # answer Q1). The meter counts the copy that Metorite keeps, never the
-    # mailbox in Outlook. ``email_ingestion.storage`` reads it, and the limit
-    # in bytes is this value times 1,048,576. A change on a box is gate
-    # ``env-write``. Fence: tests/unit/test_email_storage_limit.py.
-    email_mailbox_storage_limit_mb: int = 500
+    # answer Q1). It is 2 GB since the owner's word of 2026-11-04. The meter
+    # counts the copy that Metorite keeps, never the mailbox in Outlook.
+    # ``email_ingestion.storage`` reads it, and the limit in bytes is this
+    # value times 1,048,576. A mailbox that the old limit stopped goes on
+    # with its import at its next loop cycle (EM-T6f). A change on a box is
+    # gate ``env-write``. Fence: tests/unit/test_email_storage_limit.py.
+    email_mailbox_storage_limit_mb: int = 2048
 
     # ── The HTML hot window (WS-17 EM-S1, D-EM-49) ──────────────────────────
     #
@@ -1970,6 +2055,16 @@ class Settings(BaseSettings):
     agent_edge_signing_key_previous: str = ""
     agent_edge_gateway_url: str = "http://127.0.0.1:8080"
 
+    # STU-B2c-1, the direct proof of a Studio write (`ai_studio.md` §20.4).
+    # The workbench BFF signs the direct-proof header under this key, and the action
+    # door checks it. `acb_auth.direct_proof` is the one reader. The key is in
+    # the gateway `.env` and in the workbench `.env.local` (`scripts/vps_apply.sh`
+    # copies it). A key under 32 bytes, or equal to GATEWAY_INTERNAL_TOKEN or to
+    # LITELLM_MASTER_KEY, counts as unset. With no usable key, no write is
+    # direct. No skill and no orchestrator code reads it.
+    # 🔴 Setting the key on a box is gate `env-write`.
+    studio_direct_key: str = ""
+
     # ── My Day's read cache (WS-58 MD-5a, 2026-10-14) ───────────────────────
     #
     # `my_day_cache` gates the read cache of `GET /shell/feed`, the change
@@ -2053,6 +2148,25 @@ def crm_answer_check_mode() -> str:
         return "off"
     mode = raw.strip().lower()
     return mode if mode in CRM_ANSWER_CHECK_MODES else "off"
+
+
+#: The modes of ``TENANT_SESSION_ABORT_MODE`` (H-249).
+TENANT_SESSION_ABORT_MODES: tuple[str, ...] = ("log", "raise")
+
+
+def tenant_session_abort_mode() -> str:
+    """The ONE reader of ``TENANT_SESSION_ABORT_MODE``: ``log`` or ``raise``.
+
+    Any other value, and a settings load that fails, read as ``log``.
+    ``acb_common.db.tenant_session`` reads it only when a transaction is
+    aborted, so a clean block never pays for the read.
+    """
+    try:
+        raw = str(getattr(get_settings(), "tenant_session_abort_mode", "log") or "log")
+    except Exception:  # a broken settings load never turns the raise on
+        return "log"
+    mode = raw.strip().lower()
+    return mode if mode in TENANT_SESSION_ABORT_MODES else "log"
 
 
 #: The modes of ``TOOL_RESULT_SPILL`` (CTX-1).

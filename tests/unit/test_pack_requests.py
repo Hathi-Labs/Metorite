@@ -90,6 +90,9 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "convert_lead": ("convert the lead Acme to a deal",),
     "create_lead": ("create a lead for Acme",),
     "crm_search_notes": ("search my crm notes for pricing",),
+    # WS-CRM CRM-M1: the read of the CRM Change history.
+    "crm_change_history": ("what changed in the crm last tuesday",
+                           "who changed the crm setup this week"),
     "get_pipeline": ("show the sales pipeline",),
     "get_record": ("show the Acme record in the crm",),
     "get_timeline": ("show the timeline of the Acme deals",),
@@ -229,6 +232,16 @@ REQUESTS: dict[str, tuple[str, ...]] = {
     "studio_patch": ("change the title in the app manifest",),
     "studio_plan": ("plan the studio app",),
     "studio_validate": ("validate the app manifest",),
+    # -- studio skills (STU-F2d) --
+    "studio_skill_list": ("list my studio skills",),
+    "studio_skill_save": ("save a new studio skill that summarises a meeting",),
+    "studio_skill_state": ("publish my studio skill",),
+    # -- studio packages (STU-G1c) --
+    "studio_save": ("save my studio app",),
+    "studio_publish": ("publish my studio app",),
+    # -- studio records (STU-D2b) --
+    "studio_package_get": ("list my studio packages",),
+    "studio_record_list": ("show the records of my studio package",),
     # -- projects-reminders --
     "list_reminders": ("what reminders do I have?",),
     "promote_reminder": ("turn the reminder into a task",),

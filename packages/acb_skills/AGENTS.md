@@ -34,6 +34,8 @@ not write a second copy of that seam. A bare test file name is under
    - A read takes a slot before the child starts: `MAX_READER_CHILDREN` in the process and `MAX_READER_CHILDREN_PER_ORG` for each org. With no slot it does not wait. No slot and each fault give the regex strip, and each fault writes one log line.
    - `Date:` appears only when a tag or a JSON-LD date field of the page states that date. A `<meta>` tag can name the charset. A binary body gets one line and no text. Each other type gets the strip and one line about WEB-3.
    - Jina gets a URL only when `WEB_READER_REMOTE=jina` and the local text is shorter than `MIN_LOCAL_CHARS`. Fences: `test_web_readers.py`, `test_no_agpl_dependency.py`.
+   - WEB-3: a PDF, DOCX, PPTX, XLSX, CSV or EPUB file runs in the SAME child, in file mode (`web_reader_worker.py .pdf`, the extension from `_FILE_TYPES`). MarkItDown reads it, and pdfplumber reads a PDF that it cannot. `web_tools.py` never imports either. `_run_child` is the ONE driver of a reader child, for a page and for a file.
+   - A file text longer than `max_chars` spills through `tool_result_spill.spill_result`, the one CTX-1 store, when `TOOL_RESULT_SPILL` is `on`. Do not write a second store. `_allowed_type` is the ONE type rule, and it refuses a type with the flag on. Fences: `test_web_files.py`, `TestTheFileChild` in `test_web_reader_confine.py`.
 4a. child_confine.py -- the ONE confinement of a child process that parses hostile input (WS-WEB WEB-2b). Landlock, the seccomp filter, `close_inherited_fds` and `close_limits`. It is stdlib only.
    - A worker loads it BY PATH with `importlib`, never with `import acb_skills`, because the package `__init__` loads the whole tool set. It writes no bytecode on that load. Do not write a second copy of Landlock or of the filter. WEB-3 and each later parser use this module.
    - `confine(min_abi)` fails closed on Linux with `Refused("unavailable")`. The OCR child asks ABI 4, and the web child asks ABI 1 (the file system), because seccomp already refuses `socket`.
@@ -116,10 +118,11 @@ not write a second copy of that seam. A bare test file name is under
    - `refuse_cards()` is the scope of a run with no card channel. Fences: `test_wac_bot_run.py`, `test_wac_writes.py`.
    - A run with no person present (`acb_common.no_person`, AUTO-7a) denies first, before each WhatsApp path, whatever `non_interactive_default` says. `cards_refused()` reads the mark too, so each reader closes. Fence: `test_no_person_present.py`.
    - `responder=` binds a card to the run's own member. Any other answer, and an answer with no responder, is a REJECT. The gateway takes the responder from the session. Fence: `test_profile_pz32.py`.
+   - A reply form with `kind: "new"` is the card of a new mail (§18.10). Only `reply_card.parse_new_mail_answer` approves it, and a reply answer never does. `edit_card_channel_open` is the one test of a run that can draw a card to edit: the flag, a channel, and no WhatsApp run. `reply_card.edit_card_on` is the one reader of `EMAIL_EDIT_CARD_ORGS` (default empty, off), and it fails closed. Fence: `test_email_new_mail_card.py`.
 5k. agent_site.py -- the ONE builder of an agent install (spec `box_hardening.md` §5 BH-7).
    - Installs go into `/var/lib/acb-gateway/agent-site` with `uv pip install --target`, never into the shared venv.
    - The gateway APPENDS agent-site to `sys.path`. Never use `site.addsitedir` on it, and never write a `.pth` file or a `sitecustomize` there. Fence: `test_agent_deps_target.py`.
-5l. crm_tools.py -- the 13 CRM read tools, the ONE copy (spec `crm_platform.md` §20.10).
+5l. crm_tools.py -- the 14 CRM read tools, the ONE copy (spec `crm_platform.md` §20.10). `crm_change_history` reads the Change history of the CRM set-up (`crm_conversational.md` §8). The chat reaches it through the `crm-records` pack, not the orchestrator's base. Fences: `test_crm_change_history.py` and `test_tool_packs_choice.py`.
    - Each tool reads a `/crm` route as the run's member, and refuses with no member. It opens no database session and takes no SQL.
    - Each path segment goes through a validator. `CLOSE_SHARE` equals `gateway.crm_sync.terms.CLOSE_SHARE`. No word of one org goes in this code.
    - Fences: `test_crm_agent.py`, `test_crm_answer_consistency.py`, `test_crm_answer_consistency_r8.py`.
@@ -159,6 +162,10 @@ not write a second copy of that seam. A bare test file name is under
    - Fence: `test_chat_parity.py`.
 5o. reports.py -- `make_report`, the ONE report tool of the chat (spec `projects_ai_chat.md` §14.10). It keeps no copy of the checks of `documents.py`.
    - `by_code` is the ONE gate of a report that a tool builds from its own reads. Fences: `test_chat_reports.py`, `test_reports_by_code.py`.
+5p. studio_tools.py -- the chat tools of the `studio` pack (spec `ai_studio.md` §14 G1, G2, F2d and G1c). Each tool calls a `/studio` route over HTTP as the member of the run, and takes no org or member argument.
+   - G1c: `studio_plan` writes the approval record of a plan to tenant Redis only on `approved`. The key holds a hash of the member and a hash of the manifest id, the value is `manifest_hash`, and it lives 2 hours (`PLAN_NAMESPACE`). A stopped or revised plan card writes a withdraw stamp for the member, and a record from before it gives no plan. When the stamp write fails, `_UNWITHDRAWN` (process memory, bounded) makes the publish of that process refuse.
+   - `studio_publish` reads the record of the stored draft and fails closed. It sends that hash as `based_on`, and the store compares it under its row lock. After a 201 it deletes the record that names the published draft. No other code reads or writes the record. `acb_common.studio_manifest.manifest_hash` is the ONE hash of a draft.
+   - Fences: `test_studio_package_tools.py`, `test_studio_chat_build_r8.py` (R8), `test_studio_interview_plan.py`, `test_studio_skill_tools.py`.
 6. artifact_lint.py -- lints agent-generated HTML before it reaches the sandbox. It is advisory only: it never blocks a write and never raises.
    - `CC_CLASSES` mirrors the stylesheet in `SandboxedHtml.tsx`, so register a new `cc-` block in BOTH places. Fence: `test_artifact_lint.py`.
 

@@ -1265,6 +1265,331 @@ def _inherited_chat_constraints(parent: Any) -> dict[str, Any]:
     return {cc.CONSTRAINTS: tuple(items)} if items else {}
 
 
+# ── The briefing at the start of a chat (WS-63 PZ-34) ───────────────────────
+# ``personalization.md`` §15.4. The async prime builds the block, or reads the
+# stored copy, and binds it for THIS run only. The sync builder reads the run
+# binding and checks each gate again. Fences:
+# ``tests/unit/test_executor_briefing_block.py`` and
+# ``tests/unit/test_executor_briefing_block_r8.py`` (R8).
+
+#: The Redis namespace of the stored block, through the tenant wrapper (R5).
+_BRIEFING_NAMESPACE = "chat-briefing"
+#: The life of a stored block. Each turn of the chat in this time reads the
+#: same bytes, so the block stays stable in the cached prefix (D-PZ-29).
+#: A Forget, a Delete or the switch does not clear a stored block, so one
+#: chat can keep a deleted summary for up to this long (D-PZ-38).
+_BRIEFING_TTL_S = 24 * 3600
+#: The longest wait of a turn for the block: the Redis read, the build and
+#: the store. A slower turn gets no block, and the turn goes on at once.
+_BRIEFING_TIMEOUT_S = 1.0
+#: The run-binding key of the block of THIS run: ``(run_id, org, member,
+#: text)``. A delegated run binds its own context and its own run id, so the
+#: sync builder never gives it the block of its parent.
+_BRIEFING_KEY = "member_briefing"
+#: The version of the stored value.
+_BRIEFING_VERSION = 1
+
+
+def _briefing_now() -> Any:
+    """The clock of the time line. A seam for the tests."""
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC)
+
+
+def _briefing_redis() -> Any:
+    """The tenant Redis client. A seam, so a test passes a fake client."""
+    from acb_common.tenant_redis import get_tenant_redis
+
+    return get_tenant_redis()
+
+
+def _briefing_member_part(member: str) -> str:
+    """A hash of the member, so the key holds no address."""
+    import hashlib
+
+    return hashlib.sha256(member.encode("utf-8")).hexdigest()[:24]
+
+
+def _briefing_slot(
+    agent_name: str,
+    *,
+    organization_id: str | None,
+    thread_id: str | None,
+    delegated: bool,
+    shows_cards: bool,
+    batch_thread: bool,
+) -> tuple[str, str, str] | None:
+    """``(org, session, member)`` of a run that may get the block, or None.
+
+    Only the orchestrator, in the member's own chat on the web: a run that is
+    not delegated, not a batch run, and that shows cards (a WhatsApp run shows
+    none, D115). The org is the run's tenant and must be the bound one. The
+    flag must name it (``assistant_profile.briefing_for``, which needs
+    ``enabled_for`` too). The run needs a verified member and a solo room
+    from the run boundary. Each input comes from the run boundary, never from
+    the payload (R5).
+    """
+    if agent_name != _PROFILE_AGENT or delegated or batch_thread or not shows_cards:
+        return None
+    org = str(organization_id or "").strip()
+    session = str(thread_id or "").strip()
+    if not org or not session or org != str(_current_run_org() or "").strip():
+        return None
+    from acb_common import assistant_profile
+
+    if not assistant_profile.briefing_for(org):
+        return None
+    member = _verified_run_member()
+    if not member or _RUN_SOLO_ROOM.get() is not True:
+        return None
+    return org, session, member
+
+
+def _briefing_aware(value: Any) -> Any:
+    """A stored time as an aware datetime in UTC, or None."""
+    from datetime import UTC, datetime
+
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    if isinstance(value, str) and value.strip():
+        try:
+            at = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return at if at.tzinfo is not None else at.replace(tzinfo=UTC)
+    return None
+
+
+async def _briefing_chats(org: str, session: str, member: str) -> tuple[list[Any], str]:
+    """The member's recent chats for the block, and the member's zone.
+
+    One short session of the run's tenant. ``assistant_summaries.recent`` is
+    the one reader of the summaries, and it holds the flag, the switch and the
+    rules of a chat. The zone is the member's own, read by
+    ``personal.stored_zone``, the one read that the due tasks use too. The
+    current chat never shows: ``recent`` leaves it out, and so does this.
+    """
+    from zoneinfo import ZoneInfo
+
+    from acb_common import assistant_profile as ap
+    from acb_common.db import tenant_session
+    from gateway.assistant_summaries import recent
+    from gateway.routes.projects.due_day import zone_name
+    from gateway.routes.projects.personal import stored_zone
+
+    async with tenant_session(org) as db:
+        found = await recent(db, member, exclude=session)
+        zone = zone_name(await stored_zone(db, member))
+    tz = ZoneInfo(zone)
+    chats: list[Any] = []
+    for item in found:
+        if item.session_id == session:
+            continue
+        at = _briefing_aware(item.updated_at)
+        chats.append(ap.BriefingChat(
+            day=at.astimezone(tz).date() if at is not None else None,
+            title=item.title, text=item.text, follow_ups=tuple(item.follow_ups)))
+    return chats, zone
+
+
+class _BriefingReadFailed(RuntimeError):
+    """The identity read or the role read of the member failed. The build
+    stops, so the store keeps nothing, and the next turn tries again."""
+
+
+async def _briefing_tasks(org: str, member: str, zone: str) -> list[Any]:
+    """At most three of the member's tasks that are due today or overdue.
+
+    ``personal.my_due_tasks`` is the one reader (D-PZ-30), the reader of the
+    needs feed. Like the feed, it runs only for a member with
+    ``feature:projects``. The member's context comes from
+    ``acb_auth.deps.member_context``, as the My Day loop takes it. ⚠️ That
+    call binds the member's org as a side effect, so it runs in the task of
+    :func:`_briefing_within_budget`, and the run's own binding never changes.
+    A context of another org reads nothing.
+
+    ⚠️ A failed read is not "no tasks" (repair round 1, P2-1). The identity
+    read gives ``(None, None)`` and sets ``identity_read_failed()``, and the
+    role read degrades and sets ``role_read_failed()``. Either one raises
+    :class:`_BriefingReadFailed`, so the turn gets no block and the store
+    keeps nothing, as ``my_day_loop.departed`` treats the same flag.
+    """
+    from acb_auth.access import identity_read_failed, role_read_failed
+    from acb_auth.deps import member_context
+    from acb_common import assistant_profile as ap
+    from gateway.routes.projects.due_day import local_date
+    from gateway.routes.projects.personal import my_due_tasks
+
+    user = await member_context(member)
+    if identity_read_failed() or role_read_failed():
+        raise _BriefingReadFailed("the identity or the role read of the member failed")
+    if str(getattr(user, "organization_id", "") or "").strip().lower() != org.lower():
+        return []
+    if not user.has_permission("feature:projects"):
+        return []
+    answer = await my_due_tasks(user, limit=ap.BRIEFING_TASKS_MAX)
+    task_zone = answer.get("timezone") or zone
+    tasks: list[Any] = []
+    for row in answer.get("rows") or []:
+        due = _briefing_aware(row.get("due_at"))
+        tasks.append(ap.BriefingTask(
+            title=str(row.get("title") or ""),
+            due=local_date(task_zone, due) if due is not None else None))
+    return tasks
+
+
+async def _build_member_briefing(org: str, session: str, member: str) -> str:
+    """The text of the block, or ``""`` when it holds no item. One build."""
+    from zoneinfo import ZoneInfo
+
+    from acb_common import assistant_profile as ap
+
+    chats, zone = await _briefing_chats(org, session, member)
+    tasks = await _briefing_tasks(org, member, zone)
+    return ap.render_briefing(chats, tasks, at=_briefing_now().astimezone(ZoneInfo(zone)))
+
+
+async def _briefing_text(org: str, session: str, member: str) -> str:
+    """The stored block of this chat and member, else a new build.
+
+    The key is ``tenant_redis.key("chat-briefing", session, member hash)``
+    under the run's org. A stored value wins, the empty marker too, so a turn
+    after the first runs no read of the database and the bytes stay the
+    same. A build stores its text, or the empty marker, for 24 hours. A
+    Redis fault raises, so the turn gets no block (§15.4).
+    """
+    from acb_common.tenant_redis import key, organization_scope
+
+    redis = _briefing_redis()
+    with organization_scope(org):
+        slot = key(_BRIEFING_NAMESPACE, session, _briefing_member_part(member))
+        raw = await redis.get(slot)
+    if raw is not None:
+        try:
+            stored = json.loads(raw)
+        except (TypeError, ValueError):
+            return ""
+        text = stored.get("text") if isinstance(stored, dict) else None
+        return text if isinstance(text, str) else ""
+    text = await _build_member_briefing(org, session, member)
+    value = json.dumps({"v": _BRIEFING_VERSION, "text": text}, ensure_ascii=False)
+    with organization_scope(org):
+        await redis.setex(slot, _BRIEFING_TTL_S, value)
+    return text
+
+
+def _drop_briefing_result(task: asyncio.Future[Any]) -> None:
+    """Read the end of a build that the turn left, so no warning names it."""
+    if not task.cancelled():
+        task.exception()
+
+
+async def _briefing_within_budget(org: str, session: str, member: str) -> str:
+    """:func:`_briefing_text` within :data:`_BRIEFING_TIMEOUT_S`, else ``""``.
+
+    The work runs in its own task, so a value that it binds (the org of
+    ``member_context``) stays in that task. The turn waits for the budget at
+    most, and never for a cancel. A slow build, a Redis fault and any other
+    fault give ``""`` and a log line with the class only. A cancel of the
+    turn cancels the work too.
+    """
+    task = asyncio.ensure_future(_briefing_text(org, session, member))
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=_BRIEFING_TIMEOUT_S)
+    finally:
+        if not task.done():
+            task.cancel()
+            task.add_done_callback(_drop_briefing_result)
+    if task not in done:
+        _log.warning("executor.briefing_slow", timeout_s=_BRIEFING_TIMEOUT_S)
+        return ""
+    if task.cancelled():
+        return ""
+    exc = task.exception()
+    if exc is not None:
+        _log.warning("executor.briefing_failed", error=type(exc).__name__)
+        return ""
+    text = task.result()
+    return text if isinstance(text, str) else ""
+
+
+async def _prime_member_briefing(
+    agent_name: str,
+    *,
+    organization_id: str | None,
+    thread_id: str | None,
+    delegated: bool,
+    shows_cards: bool,
+    batch_thread: bool,
+) -> None:
+    """Bind the briefing block of this turn into the run, or bind nothing.
+
+    ``personalization.md`` §15.4. The gates are :func:`_briefing_slot`. The
+    run binding must name the verified member and this chat. The block goes
+    into the run binding with this run's id, after ``bind_artifact_context``,
+    so :func:`_member_briefing_block` reads it. A delegated run binds its own
+    context, so it never inherits the block. Awaited once per turn, after the
+    artifact context binds. Never raises, apart from a cancel of the turn.
+    """
+    slot = _briefing_slot(
+        agent_name, organization_id=organization_id, thread_id=thread_id,
+        delegated=delegated, shows_cards=shows_cards, batch_thread=batch_thread)
+    if slot is None:
+        return
+    try:
+        from acb_skills.write_artifact import artifact_context, derive_artifact_context
+    except ImportError:
+        return
+    org, session, member = slot
+    ctx = artifact_context()
+    run_id = str(ctx.get("run_id") or "")
+    if not run_id or ctx.get("batch_thread") is True:
+        return
+    if str(ctx.get("member") or "").strip().lower() != member:
+        return
+    if str(ctx.get("session_id") or "") != session:
+        return
+    text = await _briefing_within_budget(org, session, member)
+    if text:
+        derive_artifact_context(**{_BRIEFING_KEY: (run_id, org, member, text)})
+
+
+def _member_briefing_block(agent_name: str) -> str:
+    """The briefing block of this run, or ``""``.
+
+    It reads the run binding that :func:`_prime_member_briefing` set, and no
+    database and no Redis. It checks each gate again: the agent, the flag of
+    the run's org, the verified member, the solo room, and the run id of the
+    binding. So a run whose parent had a block gets none, and a flag turned
+    off drops the block at once. No exception escapes.
+    """
+    if agent_name != _PROFILE_AGENT:
+        return ""
+    try:
+        from acb_common import assistant_profile
+        from acb_skills.write_artifact import artifact_context
+
+        org = str(_current_run_org() or "").strip()
+        if not org or not assistant_profile.briefing_for(org):
+            return ""
+        member = _verified_run_member()
+        if not member or _RUN_SOLO_ROOM.get() is not True:
+            return ""
+        ctx = artifact_context()
+        entry = ctx.get(_BRIEFING_KEY)
+        if not isinstance(entry, tuple) or len(entry) != 4:
+            return ""
+        run_id, bound_org, bound_member, text = entry
+        if not run_id or run_id != ctx.get("run_id") or ctx.get("batch_thread") is True:
+            return ""
+        if bound_org != org or bound_member != member:
+            return ""
+        return text if isinstance(text, str) else ""
+    except Exception:
+        return ""
+
+
 # ── The tool packs of the one assistant (WS-67 OA-7c) ───────────────────────
 # ``one_assistant_context.md`` §4.2.2 and §4.2.8. Layer (a) in a live run.
 # The read starts beside the load (:func:`_start_pack_turn`), the apply runs
@@ -4505,7 +4830,9 @@ async def _detect_agent_commits(
         )
 
 
-async def _integration_authorizer(event_payload: Any, thread_id: str | None = None):
+async def _integration_authorizer(
+    event_payload: Any, thread_id: str | None = None, *, session_user: str | None = None,
+):
     """Build the per-run integration filter for the run's authority, or None.
 
     Org access control (spec §5, seam 3). An agent's ``config.json`` declares
@@ -4523,8 +4850,9 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
     Returns ``None`` — meaning no filtering, the pre-org-access-control
     behaviour — whenever the run is **not** attributable to an active member:
 
-    * no ``user_email`` in the payload (cron, reconciler, webhook-triggered
-      runs: the platform acting on its own behalf, not a person's);
+    * no session member and no ``user_email`` in the payload (cron,
+      reconciler, webhook-triggered runs: the platform acting on its own
+      behalf, not a person's);
     * a synthetic principal such as ``system:internal``;
     * an address that does not resolve to an ACTIVE member.
 
@@ -4534,12 +4862,19 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
     happened not to be a provisioned member. Who may start a run at all is
     already enforced upstream by ``assert_can_run_agent``, so an
     unidentifiable address here means "platform-initiated", not "attacker".
+
+    🔴 **The member is the session's, through** :func:`_run_member` (MCP-C1).
+    H-337 removes the body's ``user_email`` in the stream route, so a check
+    that read the body found nobody in EVERY web chat. Then this returned
+    ``None``: no integration filter, and no MCP card (``member_present``
+    False). *session_user* wins, and a run whose caller passes none keeps the
+    body's claim, as before. A VERIFIED member who does not resolve active
+    gets nothing, never ``None``: a session names a person, so "the platform
+    started this run" cannot be the reason (review of MCP-C1). Fence:
+    ``tests/unit/test_org_access_credentials.py`` and
+    ``tests/unit/test_maf_mcp_confirm.py``.
     """
-    email = ""
-    if isinstance(event_payload, dict):
-        email = str(
-            event_payload.get("user_email") or event_payload.get("user_id") or ""
-        ).strip()
+    email, verified = _run_member(event_payload, session_user)
     if not email or ":" in email:
         return None
 
@@ -4559,6 +4894,11 @@ async def _integration_authorizer(event_payload: Any, thread_id: str | None = No
 
         access = await resolve_access(email)
         if not access.is_active:
+            if verified:
+                # A degraded read or a suspension of a session member: deny
+                # every credential for this run, as for IdentityUnavailable.
+                _log.warning("executor.integration_authorizer_inactive_member")
+                return lambda _service: False
             return None
 
         # Shared-session fold: the intersection REPLACES the actor's access
@@ -5215,7 +5555,9 @@ async def _run_agent_inner(
             optional_integrations: list[str] = loaded.config.get("optional_integrations", [])
             # One access lookup for the run, as on the stream path. The
             # integrations and the MCP servers (WAC-P3) read the same answer.
-            _authorizer = await _integration_authorizer(event_payload, thread_id)
+            _authorizer = await _integration_authorizer(
+                event_payload, thread_id, session_user=session_user,
+            )
             integrations, integration_warnings = build_integrations(
                 mandatory_integrations, optional_integrations, settings,
                 is_authorized=_authorizer,
@@ -6228,7 +6570,9 @@ async def run_agent_stream(
             optional = loaded.config.get("optional_integrations", [])
             # One access lookup for the run. The integrations below and the
             # MCP servers of a native agent (WS-8c) read the same answer.
-            _authorizer = await _integration_authorizer(event_payload, thread_id)
+            _authorizer = await _integration_authorizer(
+                event_payload, thread_id, session_user=session_user,
+            )
             _laps.lap("authorizer")
             # Filter BEFORE the env injection below, so a credential the
             # acting member may not use never enters the run's environment at
@@ -6466,6 +6810,16 @@ async def run_agent_stream(
             # working set, for the sync context and each delegated task.
             await _prime_chat_constraints(agent_name)
             _laps.lap("constraints")
+            # WS-63 PZ-34 (§15.4): the briefing of the member's other chats,
+            # bound for this run only, for the sync context. A delegated, a
+            # batch or a card-less run (WhatsApp) gets none. One second at
+            # most, and a fault costs the block, never the turn.
+            await _prime_member_briefing(
+                agent_name, organization_id=organization_id, thread_id=thread_id,
+                delegated=_delegated_run, shows_cards=shows_cards,
+                batch_thread=_batch_thread,
+            )
+            _laps.lap("briefing")
             try:
                 # Ensure the three visible workspace directories exist so the
                 # Files Viewer sidebar shows them even before the agent writes
@@ -10239,7 +10593,9 @@ def _context_preamble_parts(
     orchestrator (:func:`_knowledge_index_block`, WS-61 KB-4a), then
     ``memory_context``, then ``system_context`` (which carries the persona),
     then the member's name line (:func:`_member_name_line`), the member's
-    profile block (:func:`_member_profile_block`, WS-63 PZ-2), the member's
+    profile block (:func:`_member_profile_block`, WS-63 PZ-2), the briefing
+    of the member's other chats (:func:`_member_briefing_block`, WS-63
+    PZ-34), the member's
     number-system line (:func:`run_number_system`), today's date
     (``acb_common.today.today_line``), and last the member's part of the day
     beside a profile block that greets (``part_of_day_line``, PZ-4). :func:`_build_event_message`
@@ -10318,6 +10674,16 @@ def _context_preamble_parts(
     if profile_block:
         parts.append(profile_block)
 
+    # WS-63 PZ-34 (personalization.md §15.4): the briefing, the newest
+    # summaries of the member's other private chats and their due tasks. For
+    # the orchestrator in the member's own web chat, behind
+    # ASSISTANT_BRIEFING_ORGS. From the run binding that
+    # `_prime_member_briefing` set, never the payload (R5). Right after the
+    # profile block, so every block above keeps its place and its bytes.
+    briefing = _member_briefing_block(agent_name)
+    if briefing:
+        parts.append(briefing)
+
     # The member's number system, one line (owner, 2026-10-19): lakh and
     # crore by default. From the run boundary, never from the payload (R5).
     # Last, so the blocks above keep their places. A run with no org (a
@@ -10330,9 +10696,12 @@ def _context_preamble_parts(
     # WS-53 §18.16 part 1: today's date, weekday and zone, on both channels.
     # Two runs of 2026-10-19 read a month with no year as two different years
     # because no run knew the date. Last, so each block above keeps its place.
-    from acb_common.today import today_line
+    from acb_common.today import resolve_zone, today_line
 
-    line = today_line()
+    # Task 1649: the line carries the time too, in the member's own zone.
+    settings_zone, people_zone = _member_zones()
+    line = today_line(
+        zone=resolve_zone(settings_zone, people_zone, profile_zone), with_time=True)
     if line:
         parts.append(line)
     # WS-63 PZ-4 (personalization.md §5.2): the member's part of the day, at
@@ -10344,6 +10713,52 @@ def _context_preamble_parts(
 
         parts.append(part_of_day_line(profile_zone or None))
     return parts
+
+
+_ZONE_CACHE: dict[tuple[str, str], tuple[float, str, str]] = {}
+
+
+def _member_zones() -> tuple[str, str]:
+    """``(user_settings.timezone, people.timezone)`` of the run's verified
+    member, or ``("", "")``. Task 1649: the zone of the "now" line.
+
+    From the run boundary, never the payload (R5). One short read, cached for
+    a minute per ``(org, member)``. It never raises. The browser stores its own
+    zone in ``user_settings.timezone`` (``saveZone.ts``), so that column is
+    the browser's zone too."""
+    import time
+
+    org, member = _current_run_org(), _verified_run_member()
+    if not org or not member:
+        return ("", "")
+    key = (str(org), member)
+    hit = _ZONE_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < 60.0:
+        return (hit[1], hit[2])
+    settings_zone = people_zone = ""
+    try:
+        opener = _opener_for_org(str(org))
+        if opener is not None:
+            from acb_common.assistant_profile import ADDRESS_SQL
+            from sqlalchemy import text
+
+            with opener() as session:
+                row = session.execute(
+                    text("SELECT timezone FROM user_settings "
+                         "WHERE organization_id = CAST(:org AS uuid) "
+                         "AND lower(user_id) = lower(:m) "
+                         "ORDER BY updated_at DESC LIMIT 1"),
+                    {"org": str(org), "m": member}).first()
+                names = session.execute(
+                    text(ADDRESS_SQL), {"org": str(org), "m": member}).first()
+            settings_zone = str(row[0] or "") if row else ""
+            people_zone = str(names[1] or "") if names else ""
+    except Exception:
+        return ("", "")
+    _ZONE_CACHE[key] = (time.monotonic(), settings_zone, people_zone)
+    while len(_ZONE_CACHE) > 4096:
+        _ZONE_CACHE.pop(next(iter(_ZONE_CACHE)))
+    return (settings_zone, people_zone)
 
 
 def _run_context_text(

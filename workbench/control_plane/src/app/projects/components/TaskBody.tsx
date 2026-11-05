@@ -101,6 +101,7 @@ import { RepeatEditor } from "./RepeatEditor";
 import { RelationsBlock } from "./RelationsBlock";
 import { AttachmentViewer } from "./AttachmentViewer";
 import { RemindMeModal } from "@/components/RemindMeModal";
+import { useTaskUndo } from "./useTaskUndo";
 import { useSubtaskComplete } from "./useSubtaskComplete";
 import { durationLabel } from "@/lib/taskCard";
 import {
@@ -373,6 +374,8 @@ export function TaskBody({
   const refResolver = taskRefResolverFor(task.root_project_id);
   // D-PM-38 decision 2 (S5) — completing a parent with open subtasks asks.
   const subtaskComplete = useSubtaskComplete();
+  // UNDO-1 — every edit below offers Undo through the shared stack.
+  const taskUndo = useTaskUndo();
 
   //: The attachment whose viewer is open. One at a time.
   const [viewing, setViewing] = useState<AttachmentRow | null>(null);
@@ -759,16 +762,28 @@ export function TaskBody({
           : undefined;
       const asked = await subtaskComplete.changeStatus(task, statusId, statuses, reload, open);
       if (asked) return;
-      await toast.promise(projectsApi.patchTask(task.id, { status_id: statusId }), {
-        key: `projects:task-status:${task.id}`,
+      const prior = task;
+      // UNDO-1 (fix round 1, finding 5) — ONE toast: the Undo toast takes
+      // the key of the status toast, so it replaces it in place.
+      const toastKey = `projects:task-status:${task.id}`;
+      const movedTo = (row: TaskRow) =>
+        `Moved to ${statuses.find((s) => s.id === row.status_id)?.name ?? "a new lane"}`;
+      const fresh = await toast.promise(projectsApi.patchTask(task.id, { status_id: statusId }), {
+        key: toastKey,
         loading: "Changing status…",
-        success: (fresh) =>
-          `Moved to ${statuses.find((s) => s.id === fresh.status_id)?.name ?? "a new lane"}`,
+        success: movedTo,
         error: "Couldn't change the status",
         errorAction: {
           label: "Retry",
           onClick: () => void changeStatus(statusId),
         },
+      });
+      // UNDO-1 — reopening (or any move) can be taken back.
+      taskUndo.edited(prior, { status_id: statusId }, fresh, {
+        label: `moved ${prior.title}`,
+        receipt: movedTo(fresh),
+        after: reload,
+        toastKey,
       });
       await reload();
     } catch (err) {
@@ -784,7 +799,14 @@ export function TaskBody({
     setBusy(true);
     setError(null);
     try {
-      onChanged(await projectsApi.patchTask(task.id, payload));
+      const prior = task;
+      const fresh = await projectsApi.patchTask(task.id, payload);
+      onChanged(fresh);
+      taskUndo.edited(prior, payload, fresh, {
+        label: `edited ${prior.title}`,
+        receipt: "Saved",
+        after: reload,
+      });
     } catch (err) {
       setError(String((err as Error).message));
     } finally {
@@ -796,7 +818,14 @@ export function TaskBody({
     setBusy(true);
     setError(null);
     try {
-      await projectsApi.setAssignees(task.id, next);
+      const prior = assignees;
+      // UNDO-1 (fix round 1, finding 7) — the set the SERVER kept, in its
+      // lower case, so the undo's read guard compares like with like.
+      const saved = await projectsApi.setAssignees(task.id, next);
+      taskUndo.assigneesEdited(task.id, prior, saved.assignees ?? next, {
+        label: `changed assignees of ${task.title}`,
+        after: reload,
+      });
       await reload();
     } catch (err) {
       setError(String((err as Error).message));
@@ -984,7 +1013,7 @@ export function TaskBody({
               <FieldCell label="Status" icon="CircleDot">
                 <SelectButton
                   label="Status"
-                  // Above My Tasks' TaskFocusModal (`z-[80]`), which draws
+                  // Above My Tasks' TaskFocusModal (`z-[15]`), which draws
                   // this body. At the default layer the list opened under it.
                   layer="top"
                   widthClass="w-full"

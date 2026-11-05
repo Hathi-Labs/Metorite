@@ -19,6 +19,7 @@ Schema export is ``studio_manifest.schema.json`` beside this file.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -85,6 +86,13 @@ OBJECT_OP_CLASSES: dict[str, str] = {
     "update": "B",
     "delete": "C",
 }
+
+#: The head of the refusal of a view source that writes (STU-B2c-1, fix round 1).
+#: A page reads each source when it opens, on window focus and on refresh, with
+#: no click. So a source must resolve to a read: an object ``list`` or ``get``,
+#: or an action of class A in the catalog. `_check_view_source` refuses each
+#: other source. A test reads this text, so keep it stable.
+SOURCE_NOT_A_READ = "A view source must read data."
 
 #: The 13 contribution points of package_host.md section 4.
 CONTRIBUTION_POINTS: tuple[str, ...] = (
@@ -689,6 +697,42 @@ def _check_view(
             _undeclared(f"{p}.actions[{i}]", "Action", name, "`actions`", out)
 
 
+def _check_view_source(
+    vi: int,
+    v: ViewDef,
+    uses_by_id: Mapping[str, str],
+    catalog: Mapping[str, str] | None,
+    out: list[ManifestError],
+) -> None:
+    """A view source is a read (STU-B2c-1, fix round 1).
+
+    A page reads each source with no click, so a source that writes would
+    write each time the page opens. The class of an object op comes from
+    `OBJECT_OP_CLASSES`, and the class of each other action from the catalog.
+    Only class A passes. With no catalog, the class of a door op is unknown,
+    so publish checks it. `_check_view` and `_check_uses` refuse an id or a
+    `uses` that names nothing, so this check skips them."""
+    name = v.source.action if v.source else None
+    uses = uses_by_id.get(name) if name else None
+    ref = parse_uses(uses)
+    if uses is None or ref is None:
+        return
+    if ref.source == "object":
+        cls = OBJECT_OP_CLASSES.get(str(ref.op))
+    elif catalog is None or catalog.get(uses) not in set(CLASSES) - {"X"}:
+        return
+    else:
+        cls = catalog[uses]
+    if cls != "A":
+        out.append(
+            _err(
+                f"$.views[{vi}].source.action",
+                f"{SOURCE_NOT_A_READ} Use the list or get action of an object,"
+                f" or an action of class A.{_got(uses)}",
+            )
+        )
+
+
 def _check_pages(m: Manifest, view_ids: set[str], out: list[ManifestError]) -> None:
     """A page lays out declared views. A page has tabs or cells, never both."""
     _dupes([p.id for p in m.pages], "$.pages", "page id", out)
@@ -866,8 +910,13 @@ def _semantic_errors(m: Manifest, catalog: Mapping[str, str] | None) -> list[Man
         if bad:
             out.append(bad)
         _check_set_keys(ai, a, objects, out)
+    # The door runs the first action of an id, so the first one wins here too.
+    uses_by_id: dict[str, str] = {}
+    for a in m.actions:
+        uses_by_id.setdefault(a.id, a.uses)
     for vi, v in enumerate(m.views):
         _check_view(vi, v, objects, action_ids, out)
+        _check_view_source(vi, v, uses_by_id, catalog, out)
     _check_pages(m, {v.id for v in m.views}, out)
     _check_links(m, objects, catalog, out)
     return out
@@ -901,6 +950,39 @@ def validate_manifest(doc: Any, *, catalog: Mapping[str, str] | None = None) -> 
             seen.add((e.path, e.message))
             unique.append(e)
     return sorted(unique, key=lambda e: e.path)
+
+
+def _canonical(value: Any) -> Any:
+    """*value* with each zero float written as ``0.0``. A ``jsonb`` number is a
+    numeric, and a numeric has no sign of zero, so the store keeps ``-0.0`` as
+    ``0.0`` (G1c review round 2). An int stays an int."""
+    if isinstance(value, float) and value == 0.0:
+        return 0.0
+    if isinstance(value, dict):
+        return {k: _canonical(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_canonical(v) for v in value]
+    return value
+
+
+def manifest_hash(manifest: Any) -> str:
+    """The SHA-256 of the canonical JSON of *manifest*: sorted keys, no space,
+    each zero float as ``0.0``, UTF-8. Pure, and it never raises (STU-G1c).
+
+    THE one hash of a draft. The package store compares it under its row lock
+    (``packages_store.publish_version`` and ``update_manifest``), and the chat
+    tools send it as ``based_on`` and key the approval of a plan on it.
+
+    The hash of a manifest that the store took equals the hash of the stored
+    manifest. The store keeps a manifest as ``jsonb``, which changes two
+    things: it orders the keys in its own way, and it drops the sign of a
+    zero. The sorted keys and the written zero cover both. A float keeps its
+    shortest decimal text, and the store refuses an exponent, a NaN and a
+    float of 10^15 or more (``packages_store.first_bad_value``). Fences: the
+    R8 tests a and g of ``test_studio_chat_build_r8.py``."""
+    text = json.dumps(_canonical(manifest), sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, default=repr)
+    return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def validate_shell_manifests(directory: Path | None = None) -> list[ManifestError]:

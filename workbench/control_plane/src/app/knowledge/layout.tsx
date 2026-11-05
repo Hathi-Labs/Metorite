@@ -69,6 +69,7 @@ import KnowledgeRail, { type SubPageParent } from "./components/KnowledgeRail";
 import AddEntityDialog from "./components/AddEntityDialog";
 import NewPageDialog from "./components/NewPageDialog";
 import { usePendingCount } from "./components/useProposals";
+import { withPendingMe } from "./lib/labels";
 import { KNOWLEDGE_CACHE, KnowledgeError, SPACES_KEY, archivePage, listSpaces } from "./lib/api";
 import {
   ENTITY_TYPES,
@@ -219,10 +220,12 @@ function KnowledgeShell({ children }: { children: ReactNode }) {
       </Frame>
     );
   }
-  return <KnowledgeReady spaces={read.data.spaces}>{children}</KnowledgeReady>;
+  return <KnowledgeReady realSpaces={read.data.spaces}>{children}</KnowledgeReady>;
 }
 
-function KnowledgeReady({ spaces, children }: { spaces: Space[]; children: ReactNode }) {
+function KnowledgeReady({ realSpaces, children }: { realSpaces: Space[]; children: ReactNode }) {
+  // KB-2s: "My notes" shows from the first open, before the `me` row exists.
+  const spaces = useMemo(() => withPendingMe(realSpaces), [realSpaces]);
   const pathname = usePathname() ?? KNOWLEDGE_HOME;
   const searchParams = useSearchParams();
   const router = useRouter();

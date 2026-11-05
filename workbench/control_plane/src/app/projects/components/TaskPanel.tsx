@@ -71,6 +71,7 @@ import {
 import { taskDeepLink, taskRef } from "../lib/card";
 import { PANEL_WIDTH_CLASS, type PanelMode, panelEscape } from "../lib/panelMode";
 import { TaskBody, resolveStatus } from "./TaskBody";
+import { useTaskUndo } from "./useTaskUndo";
 import { MineDispositionStrip } from "./MineDispositionStrip";
 import { MyWorkStrip } from "./MyWorkStrip";
 import { myWorkEnabled, pickMine, showMyWorkStrip, statusDrifted } from "../lib/myWork";
@@ -177,6 +178,7 @@ export function TaskPanel({
   const twoColumn = mode === "full";
 
   const toast = useToast();
+  const taskUndo = useTaskUndo();
   // S6e — the way back (§4.8 point 4): what I filed this task as in My
   // Tasks. Null with the lens off, and null when I hold no overlay row.
   const [mine, setMine] = useState<MyOverlay>(null);
@@ -290,7 +292,15 @@ export function TaskPanel({
    */
   async function rename(title: string) {
     try {
-      onChanged(await projectsApi.patchTask(task.id, { title }));
+      const prior = task;
+      const fresh = await projectsApi.patchTask(task.id, { title });
+      onChanged(fresh);
+      // UNDO-1 — a rename can be taken back.
+      taskUndo.edited(prior, { title }, fresh, {
+        label: `renamed ${prior.title}`,
+        receipt: "Task renamed",
+        after: async () => onChanged(await projectsApi.task(prior.id)),
+      });
     } catch {
       toast.show({
         key: `projects:task-title:${task.id}`,

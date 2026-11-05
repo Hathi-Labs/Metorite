@@ -54,10 +54,16 @@ def legend() -> str:
     called a task due yesterday "not overdue", and listed overdue work as
     "due in the next seven days". Every read opens with this line, so every
     answer that compares dates has today beside it. UTC, because the member's
-    timezone would cost one more call per tool.
+    timezone would cost one more call per tool. Task 1649: the line says "UTC
+    date" and points at the "Now:" line of the turn context, which holds the
+    member's own day and time. The UTC day is one day behind that member for
+    hours each evening in India, and the old "Today is" wording hid it.
     """
     now = datetime.now(UTC)
-    return f"{DATA_LEGEND} Today is {now:%A} {now:%Y-%m-%d} (UTC)."
+    return (
+        f"{DATA_LEGEND} UTC date: {now:%A} {now:%Y-%m-%d}. "
+        "The member's own day and time are in the Now line of the context. They win."
+    )
 
 #: The largest page a list tool asks for. ``/projects/search`` caps at 50
 #: (``search.MAX_HITS``). The list routes cap at 100 (``core.MAX_PAGE_SIZE``),
@@ -645,10 +651,11 @@ async def my_work(
     view: str = "assigned", include_done: bool = False, page: int = 1, untriaged: bool = False
 ) -> str:
     """The member's own work. view="assigned" lists tasks assigned to them
-    across every project. view="inbox" lists their personal lens with the
-    per-member overlay (disposition, context, defer). untriaged=true reads
-    the inbox rows the member has never triaged, with who assigned each one:
-    "what landed on my plate". The first line is the member's own date and
+    across every project. view="inbox" lists the member's task inbox: only
+    what they captured, as the app's inbox shows it. untriaged=true reads the
+    work assigned to them that they have not planned, with who
+    assigned each one. My tasks shows it as New: "what landed on my plate". A ready agent
+    task (D170 amendment) is not here. It shows under Next or Someday. The first line is the member's own date and
     zone. Use this for "what is mine?" and for triage. Never for another
     person's work — use list_tasks with assignee for that."""
     which = "inbox" if untriaged else (view or "assigned").strip().lower()
@@ -664,8 +671,14 @@ async def my_work(
             # WS-46 P7 (G18): the route narrows to rows with no overlay of
             # mine, and adds `assigned_by` (personal.py `my_inbox`).
             params["untriaged"] = True
+            # Deferred New work counts in the New chip, so the list shows it.
+            params["include_deferred"] = True
+        else:
+            # D170 (INB-1, 2026-11-03): the inbox is the captures, the rows
+            # of INBOX disposition. The app's list reads the same filter.
+            params["disposition"] = "INBOX"
         payload = await get("/projects/my/inbox", params)
-        title = "Landed on my plate, not triaged yet" if untriaged else "My task inbox"
+        title = "New in My tasks: assigned to me, not planned yet. A ready agent task (D170 amendment) is not here. It shows under Next or Someday." if untriaged else "My task inbox"
         # The personal project is where a private task lives (D53). Named
         # here so "add this to my own list" has an id to land on later.
         # 404 until the member captures their first private task. That is

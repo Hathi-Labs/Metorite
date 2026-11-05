@@ -1514,9 +1514,9 @@ def test_the_crm_pack_is_last_in_the_order_so_the_cap_drops_it_first() -> None:
     email pack leaves first -> red."""
     # OA-8b: the four Projects packs follow it, so the order ends with them.
     # STU-G1: the studio pack is last of all.
-    assert list(tp.PACKS)[-8:] == [
+    assert list(tp.PACKS)[-9:] == [
         "crm-records", "projects", "projects-plan", "projects-structure", "projects-bulk",
-        "projects-reminders", "projects-authority", "studio"]
+        "projects-reminders", "projects-reports", "projects-authority", "studio"]
     assert list(tp.PACKS).index("crm-records") > list(tp.PACKS).index("email-setup")
     # Email 31 and CRM 9 beside a base of 75 is over 110: the CRM pack leaves,
     # and the email pack stays.
@@ -1539,6 +1539,30 @@ async def test_the_three_packs_are_over_the_cap_at_the_measured_base(orchestrato
     n = {slug: len(sf.SKILL_FAMILIES[slug]["tools"]) for slug in sf.pack_slugs()}
     assert base + n["email"] + n["crm-records"] <= tp.MAX_REQUEST_TOOLS
     assert base + sum(n.values()) > tp.MAX_REQUEST_TOOLS
+
+
+@pytest.mark.parametrize("words", [
+    "What changed in the CRM last Tuesday?",
+    "Who changed the CRM setup this week?",
+])
+async def test_a_crm_history_question_loads_the_pack_that_holds_the_read(
+    words: str, store, orchestrator,
+) -> None:
+    """WS-CRM CRM-M1 (crm_conversational.md §8). The chat reaches the read of
+    the CRM Change history only through ``crm-records``: the orchestrator's
+    base does not hold ``crm_change_history``, because the base was at the
+    110-tool cap (``test_projects_packs.py``). A CRM history question loads
+    the pack in the real run, and then the run holds the tool. Mutation: drop
+    the tool from the family → the run lacks it → red. Mutation: put it back
+    in the orchestrator ``tool_scope`` → the base holds it → red."""
+    assert "crm_change_history" not in CONFIG["tool_scope"]
+    assert "crm_change_history" not in _names(orchestrator), "the base must not hold it"
+    with _tenant():
+        applied = await _apply(orchestrator, words, allowed=CRM_ONLY)
+    assert applied is not None and applied.record.slugs == ("crm-records",), applied
+    assert "crm_change_history" in _names(orchestrator)
+    assert "Use crm_change_history" in tp.PACKS["crm-records"].rules
+    assert "CRM change history" in tp.PACKS["crm-records"].when
 
 
 def test_the_crm_persona_swaps_nothing_and_adds_the_rules() -> None:

@@ -20,6 +20,22 @@ Everything durable goes in git — the board, the spec headers, the branch. Noth
 that matters may live only in this conversation, because the next cycle is a
 fresh context that can only see the repo.
 
+## The task board
+
+The owner watches the cycle on the Metorite task, not in this chat. Root
+`CLAUDE.md` §4 (D135) holds the rule. This table binds it to the steps.
+Sub-agents have no Metorite tools, so you post for them.
+
+| Step | Call |
+|---|---|
+| 1 Select | `my_work`. For a waiting run, `get_agent_run` first. Then `claim_task`, and post one `post_agent_activity` thought: the slice, the tier and the plan |
+| Every dispatch and report | A `post_agent_activity` thought on each open run: who runs, on what, and how long you expect to wait. A run with no line for 5 minutes shows idle |
+| 3 Branch | Push the branch at its first commit. `add_task_reference` with the branch URL |
+| 4b Preview | `post_agent_activity` as a `response`, then `ask_on_task`. Read the answer with `get_agent_run` and `after` set to the question's seq. Do not report `AWAITING-OWNER` before that read. If the owner answers in chat and not on the task, record the answer with `record_outside_decision` before you go on |
+| 7 Land | The task URL goes in the PR body. `add_task_reference` with the PR URL. `set_task_status` to review if the project has a review status. After the merge, `set_task_status` to done, then `finish_agent_run` with what shipped and what is left |
+| Stop early | `release_task`, after a comment that says what is done, what is left and the next step |
+| A new spec slice | `create_task` for each new slice row, in Backlog, under the epic. Write the number in the row |
+
 ## The cycle
 
 **1 — Select.**
@@ -162,11 +178,12 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   to go green. Then run `bash scripts/premerge.sh` in the worktree, in the
   same command as the merge:
   `bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n> --squash`. It tests
-  the merge with today's main (migration numbers, H-ids, D-numbers, files both
-  sides changed). From LD-10 it also refuses a head commit with no
+  the merge with today's main. It runs the collision fences only: migration
+  numbers, H-ids and D-numbers. It names the files both sides changed. Add
+  `--with-tests` to run the affected tests too, on this PC (D176). From LD-10 it also refuses a head commit with no
   `local-staging` pass. Exit 1 means merge `origin/main` into the branch, fix,
-  push, and run the gate and `pr-check` again. Then watch the `deploy` run to
-  green.
+  push, and run the gate and `pr-check` again. Then find the batch that holds
+  your merge, as the steps below say.
 - **Production moves at 21:30 UTC (D145).** Do not dispatch `deploy.yml` after
   a merge. Dispatch only for a hotfix that the owner asks for in this session,
   or when production is down. Then follow D144 point 3: the unit-test job on
@@ -183,6 +200,15 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   pass alone and fail together can land on `main`. A red `main` also blocks
   that night's release. If the job is red, fix forward or revert at once, and
   say so in the report. (No merge queue. Owner decision, 2026-10-16.)
+  - If that job shows as cancelled and never started, another run took your
+    merge into its batch. That run can be older or newer than yours. Find the
+    push run whose `test` job started after your merge, and check that its
+    summary names your PR. Watch that job to its end. If it is red, fix forward
+    or revert at once.
+  - A cancelled job that ran for 90 minutes, or that has the annotation "The
+    job has exceeded the maximum execution time", is a hung batch. GitHub
+    gives a timeout the same `cancelled` result as a fold. Treat a hung batch
+    as red.
 - Deploy auto-applies migrations and you cannot undo a bad one (R6). Before a
   migration reaches production, confirm the pre-migration backup completed.
 
@@ -216,7 +242,7 @@ TIER:     HIGH | STANDARD | LOW — <one line why>
 REVIEW:   APPROVE | n findings | skipped (LOW)
 GATE:     local-staging PASS | FAIL at <step> | ci_local.sh only (before LD-9)
 PR:       <url, or why none>
-BOARD:    <how the WS row now reads>
+BOARD:    <the task's status and run state (finished | awaiting | released), and the WS row>
 OWNER NEEDS TO: <gated actions, or "nothing">
 NEXT:     <the ticket the next cycle should take, and why>
 ```

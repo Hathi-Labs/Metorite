@@ -55,7 +55,8 @@ is the backstop. Each writes its ``app_audit`` row in the same transaction.
 approval is J2. The install is WS-PKG, and ``apps.live_version`` is only the
 pointer of the author.
 
-**Not here.** No route and no UI. Install is WS-PKG.
+**Not here.** No UI. Install is WS-PKG. The routes are
+``routes/studio/packages.py`` (A5), which runs no SQL of its own.
 """
 
 from __future__ import annotations
@@ -70,7 +71,7 @@ from datetime import datetime
 from typing import Any
 
 from acb_common.secret_shapes import looks_like_secret
-from acb_common.studio_manifest import ManifestError, validate_manifest
+from acb_common.studio_manifest import ManifestError, manifest_hash, validate_manifest
 from sqlalchemy import text
 
 #: The value of ``apps.format`` for a Studio package.
@@ -116,6 +117,15 @@ _LIST_SQL = (
     "AND owner_email = :m ORDER BY updated_at DESC, id"
 )
 
+#: The summary of A5: no manifest, so a list of 100 packages never loads 100
+#: manifests. ``manifest_id`` is the id inside the manifest.
+_SUMMARY_SQL = (
+    "SELECT id::text, slug, name, description, status, live_version, created_at, "
+    "updated_at, manifest->>'id' FROM apps "
+    f"WHERE organization_id = {_BOUND_ORG} AND format = 'manifest' "
+    "AND owner_email = :m ORDER BY updated_at DESC, id"
+)
+
 #: The catalog read of B1c. One statement for all packages of the member. It
 #: reads the object names and the action ids and targets with jsonb path
 #: reads, so it never loads a whole manifest. ``:app`` is NULL for no filter.
@@ -154,12 +164,15 @@ _VERSION_INSERT_SQL = (
     f"RETURNING app_id::text, {_VERSION_FIELDS}"
 )
 
+#: One page of versions, newest first (STU-A5): at most ``:limit``, each older
+#: than the cursor ``:before``.
 _VERSION_LIST_SQL = (
     "SELECT v.app_id::text, v.version, NULL, v.bundle_sha256, v.release_notes, "
     "v.published_by, v.published_at, v.review_status "
     "FROM app_versions v JOIN apps a ON a.id = v.app_id "
     f"WHERE a.organization_id = {_BOUND_ORG} AND a.format = 'manifest' "
-    "AND a.owner_email = :m AND a.id = CAST(:id AS uuid) ORDER BY v.version DESC"
+    "AND a.owner_email = :m AND a.id = CAST(:id AS uuid) "
+    "AND v.version < CAST(:before AS bigint) ORDER BY v.version DESC LIMIT :limit"
 )
 
 _VERSION_GET_SQL = (
@@ -194,8 +207,14 @@ _AUDIT_SQL = (
 MAX_NOTES_CHARS = 2000
 #: The version column is an INT4.
 MAX_VERSION = 2**31 - 1
+#: The most versions in one page of :func:`list_versions`.
+MAX_VERSIONS_PAGE = 100
 #: The refusal of a rollback to the live version.
 ROLLBACK_LIVE = "That version is already the live version."
+#: The refusal of a write whose expected hash is not the hash of the stored
+#: draft (STU-G1c review round 1).
+DRAFT_CHANGED_TEXT = ("The draft changed after the read that this request names. Nothing was "
+                      "written. Read the package again.")
 
 
 class PackageStoreError(ValueError):
@@ -215,6 +234,20 @@ class PackageStoreError(ValueError):
         return [e.path for e in self.errors]
 
 
+class DraftChanged(Exception):
+    """The stored draft is not the draft that the caller read. Nothing was
+    written. A write that names ``expected_hash`` raises it under the row lock
+    (STU-G1c review round 1). The route answers 409 ``draft_changed``."""
+
+
+def _expect(manifest: dict[str, Any], expected_hash: str | None) -> None:
+    """Raise :class:`DraftChanged` when *expected_hash* is given and is not
+    the canonical hash of *manifest* (``studio_manifest.manifest_hash``, the
+    one hash of a draft). The caller holds the row lock."""
+    if expected_hash is not None and manifest_hash(manifest) != expected_hash:
+        raise DraftChanged(DRAFT_CHANGED_TEXT)
+
+
 @dataclass(frozen=True)
 class Package:
     """One Studio package: a row of ``apps`` with ``format = 'manifest'``."""
@@ -230,6 +263,21 @@ class Package:
     live_version: int | None
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True)
+class PackageSummary:
+    """One package with no manifest (STU-A5): what a list and a limit need."""
+
+    id: str
+    slug: str
+    name: str
+    description: str
+    status: str
+    live_version: int | None
+    created_at: datetime
+    updated_at: datetime
+    manifest_id: str
 
 
 @dataclass(frozen=True)
@@ -414,6 +462,17 @@ async def list_packages(db: Any, member: str) -> list[Package]:
     return [_package(r) for r in rows]
 
 
+async def list_summaries(db: Any, member: str) -> list[PackageSummary]:
+    """The packages that *member* owns in the bound org, newest change first,
+    with no manifest. One statement. A5 counts them for the limit and finds the
+    manifest id of a repeat create from them."""
+    rows = (await db.execute(text(_SUMMARY_SQL), {"m": _member(member)})).all()
+    return [PackageSummary(
+        id=str(r[0]), slug=str(r[1]), name=str(r[2]), description=str(r[3] or ""),
+        status=str(r[4]), live_version=None if r[5] is None else int(r[5]),
+        created_at=r[6], updated_at=r[7], manifest_id=str(r[8] or "")) for r in rows]
+
+
 def _jsonb(value: Any) -> Any:
     return json.loads(value) if isinstance(value, str | bytes) else value
 
@@ -438,7 +497,8 @@ async def list_package_actions(db: Any, member: str, *,
 
 
 async def update_manifest(db: Any, member: str, package_id: str,
-                          manifest: dict[str, Any]) -> Package | None:
+                          manifest: dict[str, Any], *,
+                          expected_hash: str | None = None) -> Package | None:
     """Replace the manifest of the package *package_id* of *member*.
 
     The name and the description follow the new manifest. The slug, the
@@ -449,6 +509,10 @@ async def update_manifest(db: Any, member: str, package_id: str,
     The manifest ``id`` cannot change, because the slug holds it. A new id
     raises :class:`PackageStoreError` (:data:`ID_FIXED`) and writes nothing.
     The read locks the row first, so a second writer reads the kept id.
+
+    With *expected_hash*, the stored draft must hash to it under the row lock,
+    or :class:`DraftChanged` raises and nothing is written. So of two saves
+    that read one draft, one writes and the other gets the refusal.
     """
     m = _member(member)
     pid = _package_id(package_id)
@@ -456,6 +520,7 @@ async def update_manifest(db: Any, member: str, package_id: str,
     current = await get_package(db, m, pid, for_update=True)
     if current is None:
         return None
+    _expect(current.manifest, expected_hash)
     if current.manifest.get("id") != manifest["id"]:
         raise PackageStoreError(ID_FIXED, [ManifestError(path="$.id", message=ID_FIXED)])
     row = (await db.execute(text(_UPDATE_SQL), {
@@ -552,7 +617,8 @@ async def _audit(db: Any, m: str, pid: str, version: int, kind: str,
 
 
 async def publish_version(db: Any, member: str, package_id: str, notes: str, *,
-                          catalog: Mapping[str, str]) -> PackageVersion | None:
+                          catalog: Mapping[str, str],
+                          expected_hash: str | None = None) -> PackageVersion | None:
     """Publish the draft of the package *package_id* of *member* as version N+1.
 
     Answers None when no package of the member has the id. The call locks the
@@ -571,6 +637,11 @@ async def publish_version(db: Any, member: str, package_id: str, notes: str, *,
     ``apps.status = 'live'`` and ``apps.live_version = N+1``, and writes the
     ``app_audit`` row (kind ``publish``). ``apps.manifest`` stays as it is.
     No review step runs here: J2 owns the organization approval.
+
+    With *expected_hash*, the stored draft must hash to it under the row lock,
+    or :class:`DraftChanged` raises and nothing is written (STU-G1c review
+    round 1). A chat publish names the draft that its approved plan names, so
+    a save that lands after its read cannot go live in its place.
     """
     m = _member(member)
     pid = _package_id(package_id)
@@ -579,6 +650,7 @@ async def publish_version(db: Any, member: str, package_id: str, notes: str, *,
     current = await get_package(db, m, pid, for_update=True)
     if current is None:
         return None
+    _expect(current.manifest, expected_hash)
     encoded = _check_publishable(current.manifest, known)
     version = await _append_version(db, m, pid, encoded, note)
     await db.execute(text(_PUBLISH_POINT_SQL), {"m": m, "id": pid, "v": version.version})
@@ -629,11 +701,19 @@ async def rollback(db: Any, member: str, package_id: str, version: int, *,
     return new
 
 
-async def list_versions(db: Any, member: str, package_id: str) -> list[PackageVersion]:
-    """The versions of a package of *member*, newest first, with no manifest.
-    A package of another member or org answers an empty list."""
+async def list_versions(db: Any, member: str, package_id: str, *,
+                        limit: int = MAX_VERSIONS_PAGE,
+                        before: int | None = None) -> list[PackageVersion]:
+    """One page of the versions of a package of *member*, newest first, with
+    no manifest: at most *limit* (1 to :data:`MAX_VERSIONS_PAGE`), and only
+    the versions older than *before* when it is given. A package of another
+    member or org answers an empty list."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_VERSIONS_PAGE:
+        raise PackageStoreError(f"limit must be an integer from 1 to {MAX_VERSIONS_PAGE}")
+    cursor = MAX_VERSION + 1 if before is None else _version_number(before)
     rows = (await db.execute(text(_VERSION_LIST_SQL), {
-        "m": _member(member), "id": _package_id(package_id)})).all()
+        "m": _member(member), "id": _package_id(package_id), "before": cursor,
+        "limit": limit})).all()
     return [_version(r) for r in rows]
 
 

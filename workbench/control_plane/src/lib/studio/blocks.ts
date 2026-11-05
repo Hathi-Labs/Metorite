@@ -146,13 +146,21 @@ export function tableBlock(
   fields: readonly FieldSpec[],
   source: { action: string; args?: Record<string, unknown> },
   title?: string,
+  /**
+   * `editable` turns on the inline edit of a cell (STU-D2b). `computed` names
+   * the fields that a formula or a roll-up fills, and these never edit.
+   */
+  opts?: { editable?: boolean; computed?: readonly string[] },
 ): { type: "template"; props: Record<string, unknown> } {
   return {
     type: "template",
     props: {
       name: "dataGrid",
       source,
-      data: { title, fields, filterable: true },
+      data: {
+        title, fields, filterable: true,
+        ...(opts?.editable ? { editable: true, computed: [...(opts.computed ?? [])] } : {}),
+      },
     },
   };
 }

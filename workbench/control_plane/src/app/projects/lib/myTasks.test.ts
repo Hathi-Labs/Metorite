@@ -32,10 +32,16 @@ import {
   inChip,
   mineStatuses,
   myTasksHref,
+  applyMyTasksUpdate,
+  myTasksMode,
+  readPickedMode,
+  writePickedMode,
+  myTasksTrulyEmpty,
   myTasksQuery,
   openCount,
   MY_TASKS_MAX_PAGES,
   MY_TASKS_MAX_ROWS,
+  MY_TASKS_EMPTY_TEXT,
   MY_TASKS_PAGE,
   STATUS_READ_FAILED,
   phoneMyTasksTap,
@@ -83,8 +89,8 @@ describe("the old ids open My tasks with a chip", () => {
     expect(asChip(" Next ")).toBe("next");
   });
 
-  it("the chips are All, Today, Next, Waiting, Someday and Done", () => {
-    expect(MY_TASKS_CHIPS.map((c) => c.label)).toEqual(["All", "Today", "Next", "Waiting", "Someday", "Done"]);
+  it("the chips are All, New, Today, Next, Waiting, Someday and Done", () => {
+    expect(MY_TASKS_CHIPS.map((c) => c.label)).toEqual(["All", "New", "Today", "Next", "Waiting", "Someday", "Done"]);
   });
 });
 
@@ -121,6 +127,9 @@ const RULES: [string, ChipRow, MyTasksChip[]][] = [
   ["SOMEDAY", row({ disposition: "SOMEDAY" }), ["all", "someday"]],
   ["DONE, due today", row({ disposition: "DONE", due_at: "2026-10-27", completed_at: "2026-10-26T10:00:00Z" }), ["all", "done"]],
   ["INBOX", row({ disposition: "INBOX", is_mine: false }), ["all"]],
+  // D170 (INB-1): assigned, untriaged work shows as New. The server's `is_new` decides.
+  ["NEXT and mine, New (no disposition of mine yet)", row({ is_new: true }), ["all", "new", "next"]],
+  ["SOMEDAY by derivation, New", row({ disposition: "SOMEDAY", is_new: true }), ["all", "new", "someday"]],
   ["TRASH", row({ disposition: "TRASH" }), []],
 ];
 
@@ -145,7 +154,10 @@ describe("each chip is the server's rule", () => {
       path.join(ROOT, "..", "..", "..", "..", "..", "apps", "services", "gateway", "gateway", "routes", "projects", "mine.py"),
       "utf8",
     );
-    expect(mine).toContain('DISPOSITION_KEYS: tuple[str, ...] = ("inbox", "today", "next", "waiting", "someday", "done")');
+    expect(mine).toMatch(
+      /DISPOSITION_KEYS: tuple\[str, \.\.\.\] = \(\s*"inbox", "today", "next", "waiting", "someday", "done", "new",?\s*\)/,
+    );
+    expect(mine).toContain("counts[\"new\"] += 1");
     expect(mine).toContain('elif effective == "NEXT" and mine:');
     expect(mine).toContain('elif effective == "WAITING":');
     expect(mine).toContain('elif effective == "SOMEDAY":');
@@ -515,5 +527,133 @@ describe("errors of My tasks (items 6 and 7)", () => {
   it("the Overview offers Retry when the summary read failed", () => {
     expect(space).toContain("!summary.data && summary.error");
     expect(space).toContain("onClick: summary.refresh");
+  });
+});
+
+describe("PJP-13 — the tab My tasks opens on", () => {
+  it("a desktop opens the Board and a phone opens the List", () => {
+    expect(myTasksMode(null, false)).toBe("board");
+    expect(myTasksMode(null, true)).toBe("list");
+  });
+
+  it("a picked tab wins on both, so it survives a resize", () => {
+    expect(myTasksMode("calendar", false)).toBe("calendar");
+    expect(myTasksMode("calendar", true)).toBe("calendar");
+    expect(myTasksMode("list", false)).toBe("list");
+    expect(myTasksMode("board", true)).toBe("board");
+  });
+
+  it("the page waits for the viewport and sends every update through applyMyTasksUpdate", () => {
+    const page = code("page.tsx");
+    expect(page).toMatch(/myTasksMode\(myTasksRaw\.chosen, isMobile \|\| !viewMounted\)/);
+    expect(page).toMatch(/applyMyTasksUpdate\(raw, isMobile \|\| !viewMounted, update, pick\)/);
+  });
+
+  // The page REMOUNTS when the viewport crosses the phone line (the shell
+  // returns another tree), so its state is lost. A pick survives in
+  // sessionStorage. The vitest setup has no DOM, so this plays the page's
+  // own steps against the same pure functions and a fake store.
+  function session() {
+    const data = new Map<string, string>();
+    return { getItem: (k: string) => data.get(k) ?? null, setItem: (k: string, v: string) => void data.set(k, v) };
+  }
+  type Raw = ReturnType<typeof applyMyTasksUpdate>;
+  /** A page life: mount from the store, apply updates, write the pick, and shown mode. */
+  function page(store: ReturnType<typeof session>, isMobile: boolean) {
+    let raw: Raw = { attention: false, chip: "all", chosen: readPickedMode(store) };
+    const shown = () => myTasksMode(raw.chosen, isMobile);
+    const update = (u: Parameters<typeof applyMyTasksUpdate>[2], pick: boolean) => {
+      raw = applyMyTasksUpdate(raw, isMobile, u, pick);
+      if (raw.chosen) writePickedMode(store, raw.chosen);
+    };
+    return { shown, update, view: () => ({ mode: shown(), attention: raw.attention, chip: raw.chip }) };
+  }
+
+  it("a picked tab survives a resize and the remount it causes", () => {
+    for (const picked of ["table", "list", "calendar"] as const) {
+      const store = session();
+      let p = page(store, false);
+      expect(p.shown()).toBe("board");
+      p.update({ ...p.view(), mode: picked }, true);
+      expect(p.shown()).toBe(picked);
+      p = page(store, true); // 390 px: the page remounts
+      expect(p.shown()).toBe(picked);
+      p = page(store, false); // back to 1440 px
+      expect(p.shown()).toBe(picked);
+    }
+  });
+
+  it("a pick equal to the default still counts (List on a phone, then wide)", () => {
+    const store = session();
+    let p = page(store, true);
+    p.update({ ...p.view(), mode: "list" }, true);
+    p = page(store, false);
+    expect(p.shown()).toBe("list");
+  });
+
+  it("a chip change or an echo of the shown view never records a pick", () => {
+    const store = session();
+    let p = page(store, false);
+    p.update({ ...p.view(), chip: "today" }, false);
+    p.update((v) => ({ ...v }), false);
+    expect(readPickedMode(store)).toBeNull();
+    p = page(store, true);
+    expect(p.shown()).toBe("list");
+    p = page(store, false);
+    expect(p.shown()).toBe("board");
+  });
+
+  it("a broken store never throws", () => {
+    const broken = {
+      getItem: () => {
+        throw new Error("off");
+      },
+      setItem: () => {
+        throw new Error("off");
+      },
+    };
+    expect(readPickedMode(broken)).toBeNull();
+    expect(() => writePickedMode(broken, "table")).not.toThrow();
+    expect(readPickedMode(null)).toBeNull();
+    expect(readPickedMode({ getItem: () => "nonsense", setItem: () => {} })).toBeNull();
+  });
+
+  it("each explicit tab path passes pick true", () => {
+    const space = code("components/MyTasksSpace.tsx");
+    expect(space).toMatch(/onPick=\{\(mode\) => onView\(\{ \.\.\.view, mode, attention: false \}, true\)\}/);
+    expect(space).toMatch(/onMode=\{\(next\) => onView\(\{ \.\.\.view, mode: next as MyTasksMode \}, true\)\}/);
+    const page = code("page.tsx");
+    expect(page).toMatch(/mode: tab, attention: false \}\), true\)/);
+    expect(page).toMatch(/mode: "list", attention: false \}\), true\)/);
+    expect(page).toMatch(/legacy,\s*\);/);
+  });
+
+  it("the old ?app=my-today link still opens the List", () => {
+    expect(code("page.tsx")).toMatch(/legacy \? \{ \.\.\.v, chip, mode: "list", attention: false \}/);
+  });
+});
+
+describe("PJP-12a — an empty My tasks", () => {
+  const base = { chip: "all", loaded: true, total: 0, filtered: false } as const;
+
+  it("says so only on chip All, after the read, with no row and no filter", () => {
+    expect(myTasksTrulyEmpty(base)).toBe(true);
+    expect(myTasksTrulyEmpty({ ...base, chip: "today" })).toBe(false);
+    expect(myTasksTrulyEmpty({ ...base, loaded: false })).toBe(false);
+    expect(myTasksTrulyEmpty({ ...base, total: 3 })).toBe(false);
+    expect(myTasksTrulyEmpty({ ...base, filtered: true })).toBe(false);
+  });
+
+  it("uses the owner's words", () => {
+    expect(MY_TASKS_EMPTY_TEXT).toBe("It's empty. Go to Projects and pick up tasks.");
+  });
+
+  it("draws the shared EmptyState for every tab, and its action opens the project tree", () => {
+    const space = code("components/MyTasksSpace.tsx");
+    expect(space).toMatch(/message=\{MY_TASKS_EMPTY_TEXT\}/);
+    expect(space).toMatch(/onClick: onOpenProjects/);
+    // One branch before the tab switch, so List, Board and Table all show it.
+    expect(space.indexOf(") : emptyChip ? (")).toBeLessThan(space.indexOf(': mode === "table" ? ('));
+    expect(code("page.tsx")).toMatch(/if \(isMobile\) setSheet\("tree"\);\s*else setRailOpen\(true\);\s*\}\}\s*phone=/);
   });
 });

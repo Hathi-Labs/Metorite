@@ -45,6 +45,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import CardFieldValue from "@/components/CardFieldValue";
 import { splitCardEmailText } from "@/lib/cardEmailText";
 import FencedText from "@/components/FencedText";
+import NewMailCardForm from "@/components/NewMailCardForm";
 import ReplyCardForm from "@/components/ReplyCardForm";
 import RollupCard, { RollupBody, RollupHeader } from "@/components/RollupCard";
 import Badge from "@/components/ui/Badge";
@@ -52,10 +53,10 @@ import Button from "@/components/ui/Button";
 import { CARD_FRAME_CLASS } from "@/components/ui/Collapsible";
 import { Checkbox } from "@/components/ui/Checkbox";
 import Icon from "@/components/Icon";
-import { cardKey, fieldSpec, repeatsLine } from "@/lib/cardFields";
+import { cardKey, fieldSpec, parseFieldValue, repeatsLine, valueIsLong } from "@/lib/cardFields";
 import { canApprove, rowsSummary, type ConfirmationRow } from "@/lib/confirmationQueue";
 import { unfenced } from "@/lib/fencedText";
-import type { ReplyApproval, ReplyForm } from "@/lib/replyCard";
+import { isNewMail, type ReplyApproval, type ReplyForm } from "@/lib/replyCard";
 import { noRecipientHint, rowMark } from "@/lib/sendCard";
 
 /**
@@ -75,6 +76,8 @@ export const CONFIRM_TITLE = "Approval";
 export const CONFIRM_HINT = "The assistant waits for your decision.";
 /** The title row of a reply card (EM-CR). Its summary names the sender. */
 export const REPLY_TITLE = "Reply";
+/** The title row of the card of a new mail (§18.10). */
+export const NEW_MAIL_TITLE = "New email";
 
 export interface CardField {
   /** The key as the tool printed it (`due_at`, `task 1`). */
@@ -270,6 +273,11 @@ interface ConfirmationCardProps {
   reply?: ReplyForm | null;
   /** Send or Save to Drafts on a reply card: the whole answer. */
   onReply?: (answer: ReplyApproval) => void;
+  /**
+   * Put words in the chat box and focus it, and send nothing (§18.10). The
+   * nudge chips of a new-mail card call it. `AgentChat` passes it.
+   */
+  onSuggest?: (text: string) => void;
   /** The tab row of the queue (owner, 2026-11-03, D173), drawn inside the
    *  card frame above its header, when two cards or more wait. */
   tabs?: ReactNode;
@@ -296,6 +304,7 @@ export default function ConfirmationCard({
   id,
   reply,
   onReply,
+  onSuggest,
   error,
   tabs,
   tabPanel,
@@ -331,11 +340,12 @@ export default function ConfirmationCard({
     if (armed && approvable) onApprove();
   };
   const isReply = reply !== undefined;
+  const newMail = isNewMail(reply);
   return (
     <RollupCard
       id={id ?? "confirm"}
-      title={isReply ? REPLY_TITLE : CONFIRM_TITLE}
-      icon={isReply ? "Reply" : "ShieldCheck"}
+      title={newMail ? NEW_MAIL_TITLE : isReply ? REPLY_TITLE : CONFIRM_TITLE}
+      icon={newMail ? "Mail" : isReply ? "Reply" : "ShieldCheck"}
       header="own"
       pending
     >
@@ -392,7 +402,18 @@ export default function ConfirmationCard({
           )}
         </div>
         )}
-      {isReply && (
+      {newMail && reply && (
+        <NewMailCardForm
+          form={reply}
+          detail={detail}
+          armed={armed}
+          disabled={disabled}
+          onAnswer={(answer) => onReply?.(answer)}
+          onDiscard={onReject}
+          onSuggest={onSuggest}
+        />
+      )}
+      {isReply && !newMail && (
         <ReplyCardForm
           form={reply}
           detail={detail}
@@ -462,12 +483,24 @@ export default function ConfirmationCard({
             </p>
           ))}
           {body.fields.length > 0 && (
-            <dl className="space-y-1">
+            <dl className="@container space-y-1">
               {body.fields.map((f, i) => {
                 const spec = fieldSpec(f.key);
+                // A long value stacks at any width. A short one stacks only in
+                // a narrow card (container query, below 24rem).
+                const long = [f.value, ...(f.values ?? [])].some(
+                  (v) => typeof v === "string" && valueIsLong(parseFieldValue(v, spec.many)),
+                );
                 return (
-                  <div key={`${f.key}-${i}`} className="flex gap-3 text-xs" data-card-field={cardKey(f.key)}>
-                    <dt className="w-24 shrink-0 pt-px text-muted-foreground">{f.label}</dt>
+                  <div
+                    key={`${f.key}-${i}`}
+                    className={`flex flex-col gap-0.5 text-xs ${long ? "" : "@sm:flex-row @sm:gap-3"}`}
+                    data-card-field={cardKey(f.key)}
+                    data-stacked={long ? "" : undefined}
+                  >
+                    <dt className={`text-[11px] text-muted-foreground ${long ? "" : "@sm:w-24 @sm:shrink-0 @sm:pt-px @sm:text-xs"}`}>
+                      {f.label}
+                    </dt>
                     <dd className="min-w-0 flex-1 whitespace-pre-wrap break-words text-foreground">
                       {f.values ? (
                         <ul className="space-y-1">

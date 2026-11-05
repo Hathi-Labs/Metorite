@@ -1565,3 +1565,17 @@ DROP POLICY IF EXISTS pm_decisions_tenant_isolation ON pm_decisions;
 CREATE POLICY pm_decisions_tenant_isolation ON pm_decisions
     USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE pm_agent_guidance ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pm_agent_guidance FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS pm_agent_guidance_tenant_isolation ON pm_agent_guidance;
+CREATE POLICY pm_agent_guidance_tenant_isolation ON pm_agent_guidance
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
+
+ALTER TABLE crm_change_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE crm_change_log FORCE  ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS crm_change_log_tenant_isolation ON crm_change_log;
+CREATE POLICY crm_change_log_tenant_isolation ON crm_change_log
+    USING      (organization_id = current_setting('app.tenant_id', true)::uuid)
+    WITH CHECK (organization_id = current_setting('app.tenant_id', true)::uuid);
