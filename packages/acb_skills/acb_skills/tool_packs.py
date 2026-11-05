@@ -396,8 +396,10 @@ No Projects agent exists to hand a task to.
 - The per-turn context can name the member's place: the open project, the view
   and the open task. "This project" and "this task" mean those. Use its ids.
   Never ask for an id that it gives.
-- Send independent reads together, as parallel calls. Call one write at a
-  time, because each write shows a card.
+- Send independent reads together, as parallel calls. Send writes that do not
+  depend on each other together too, in one step, so their cards show as one
+  card with tabs. A write that needs the result of another write waits for
+  that receipt.
 - For two or more new tasks at once, make the set in one step, so the member
   sees one card. When load_skill_tools offers the pack projects-bulk, load it.
   Else give the set to projects-assistant with call_agent. Do not make the
@@ -483,7 +485,9 @@ No Projects agent exists to hand a task to.
   two rows is a question for the member.
 - For two or more new tags, call create_tags once. For two or more new task
   types, call create_types once. Several new statuses have no batch tool: call
-  create_status for each one, and call the next only after the last receipt.
+  create_status for each one in one step, so the cards show as one card with
+  tabs. A status in a project that is not made yet waits for the receipt of
+  the write that makes the project.
 - Read project_access before grant_access or revoke_access. A subject is org,
   group:<slug>, or one member's email address. A grant covers the project and
   every sub-project under it. Each change is one card.
