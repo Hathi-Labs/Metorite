@@ -129,9 +129,10 @@ async def task_models(db: Any, user_id: str) -> dict[str, str]:
     out = dict(DEFAULT_TASK_MODELS)
     try:
         row = (await db.execute(text(
-            """SELECT chat_model, clarify_model, atomize_model,
+            f"""SELECT chat_model, clarify_model, atomize_model,
                       email_capture_model
-               FROM user_settings WHERE user_id = :uid"""),
+               FROM user_settings
+               WHERE user_id = :uid AND organization_id = {_BOUND_ORG}"""),
             {"uid": user_id})).fetchone()
         if row:
             out["chat"] = row.chat_model or out["chat"]
@@ -152,8 +153,9 @@ async def task_toggles(db: Any, user_id: str) -> dict[str, bool]:
            "mirror_done_tasks": False}
     try:
         row = (await db.execute(text(
-            """SELECT clarify_use_llm, background_sync, mirror_done_tasks
-               FROM user_settings WHERE user_id = :uid"""),
+            f"""SELECT clarify_use_llm, background_sync, mirror_done_tasks
+               FROM user_settings
+               WHERE user_id = :uid AND organization_id = {_BOUND_ORG}"""),
             {"uid": user_id})).fetchone()
         if row:
             out["clarify_use_llm"] = bool(row.clarify_use_llm)

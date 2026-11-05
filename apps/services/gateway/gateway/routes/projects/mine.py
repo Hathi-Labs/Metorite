@@ -31,6 +31,7 @@ from typing import Any
 from acb_auth import UserContext, get_current_user
 from fastapi import Depends, HTTPException
 from gateway.routes.projects.core import (
+    AGENT_TASK_SOURCE,
     CLOSING_CATEGORIES,
     Visibility,
     _tenant_session,
@@ -87,6 +88,40 @@ async def mine_scope(db: Any, vis: Visibility) -> tuple[str, dict[str, Any]]:
     return mine_clause("t"), await mine_binds(db, vis.email)
 
 
+#: The two facts of a ready agent task that live on the task row. Aliases
+#: ``t`` and ``s`` are the task and its status.
+_HAS_DESCRIPTION_SQL = "(t.description IS NOT NULL AND btrim(t.description) <> '')"
+_HAS_TYPE_SQL = "(t.type_id IS NOT NULL)"
+
+#: Who gave me the task (D170.2). My assignee row was written by the task's
+#: creator, so an agent's own hand-off is ready, and a person's hand-off, or
+#: a legacy row with no ``assigned_by``, still shows New. Binds ``:who``.
+_MY_ASSIGNMENT_BY_CREATOR_SQL = (
+    "EXISTS (SELECT 1 FROM pm_task_assignees ra WHERE ra.task_id = t.id"
+    " AND lower(ra.assignee) = :who"
+    " AND lower(ra.assigned_by) = lower(t.created_by))"
+)
+
+#: What :func:`is_ready_agent_task` reads from a row, as select items.
+AGENT_FACTS_SQL = (
+    f"t.source AS t_source, {_HAS_DESCRIPTION_SQL} AS has_description,"
+    f" {_HAS_TYPE_SQL} AS has_type,"
+    f" {_MY_ASSIGNMENT_BY_CREATOR_SQL} AS assigned_by_creator"
+)
+
+#: The SQL twin of :func:`is_ready_agent_task` (D170 amendment, PJP-14). ONE
+#: spelling: ``personal.UNTRIAGED_CLAUSE`` composes it, and a test holds the
+#: Python and SQL answers equal. Aliases ``t`` and ``s``.
+READY_AGENT_SQL = (
+    f"(COALESCE(t.source = '{AGENT_TASK_SOURCE}', false)"
+    f" AND {_HAS_DESCRIPTION_SQL} AND {_HAS_TYPE_SQL}"
+    f" AND {_MY_ASSIGNMENT_BY_CREATOR_SQL}"
+    " AND s.category <> 'triage'"
+    " AND EXISTS (SELECT 1 FROM pm_task_assignees ra WHERE ra.task_id = t.id)"
+    " AND NOT EXISTS (SELECT 1 FROM pm_projects rpj"
+    " WHERE rpj.id = t.project_id AND rpj.personal_owner IS NOT NULL))"
+)
+
 #: The caller's overlay and the facts the derived disposition reads, for the
 #: rows of one page. LEFT, so a task with no overlay row still answers. The
 #: tenant is on the read beside RLS (R5), as on ``MY_TASKS_FROM``.
@@ -99,7 +134,8 @@ _OVERLAY_SQL = (
     "                WHERE a2.task_id = t.id) AS has_assignee,"
     "       NOT EXISTS (SELECT 1 FROM pm_projects pj"
     "                    WHERE pj.id = t.project_id"
-    "                      AND pj.personal_owner IS NOT NULL) AS on_board"
+    "                      AND pj.personal_owner IS NOT NULL) AS on_board,"
+    f"       {AGENT_FACTS_SQL}"
     "  FROM pm_tasks t"
     "  JOIN pm_task_statuses s ON s.id = t.status_id"
     "  LEFT JOIN pm_task_personal p"
@@ -165,6 +201,7 @@ async def attach_my_overlay(
             "is_new": new_work(
                 hit.disposition, on_board=bool(getattr(hit, "on_board", True)),
                 is_mine=bool(hit.is_mine), effective=effective,
+                ready_agent=_ready_from_row(hit),
             ),
         })
     return rows
@@ -201,6 +238,7 @@ def _summary_sql(where: str) -> str:
         "       NOT EXISTS (SELECT 1 FROM pm_projects pj"
         "                    WHERE pj.id = t.project_id"
         "                      AND pj.personal_owner IS NOT NULL)  AS on_board,"
+        f"       {AGENT_FACTS_SQL},"
         f"       (t.due_at IS NOT NULL AND {overdue_sql()}"
         "        AND s.category <> ALL(CAST(:closed AS text[])))  AS is_overdue,"
         f"       (t.due_at IS NOT NULL AND {not_overdue_sql()}"
@@ -271,16 +309,56 @@ def in_today(
     return bool((start is not None and start <= today) or (due is not None and due <= today))
 
 
+def is_ready_agent_task(
+    *, on_board: bool, source: Any, has_assignee: bool, has_description: bool,
+    has_type: bool, status_category: Any, assigned_by_creator: bool,
+) -> bool:
+    """An agent-made task that is set up in full (D170 amendment, PJP-14).
+
+    On a company board, ``source`` is ``mcp``, at least one assignee, a
+    description, a type, and a status that is not in the ``triage`` stage.
+    My assignment was made by the task's creator, so a person's hand-off
+    still shows New.
+    A date or an estimate is not required. The SQL twin is
+    :data:`READY_AGENT_SQL`, and a test holds the two to one answer. The
+    rule reads the row and writes nothing, so an edit that breaks a
+    condition makes the task New again.
+    """
+    return bool(
+        on_board and source == AGENT_TASK_SOURCE and has_assignee and has_description
+        and has_type and status_category != "triage" and assigned_by_creator
+    )
+
+
+def _ready_from_row(row: Any) -> bool:
+    """:func:`is_ready_agent_task` on a row that carries ``AGENT_FACTS_SQL``."""
+    return is_ready_agent_task(
+        on_board=bool(getattr(row, "on_board", True)),
+        source=getattr(row, "t_source", None),
+        has_assignee=bool(getattr(row, "has_assignee", False)),
+        has_description=bool(getattr(row, "has_description", False)),
+        has_type=bool(getattr(row, "has_type", False)),
+        assigned_by_creator=bool(getattr(row, "assigned_by_creator", False)),
+        status_category=getattr(row, "status_category", None)
+        or getattr(row, "category", None),
+    )
+
+
 def new_work(
     stated: Any, *, on_board: bool, is_mine: bool, effective: str,
+    ready_agent: bool = False,
 ) -> bool:
     """"New" on My tasks: ``personal.UNTRIAGED_CLAUSE`` on one row (D170).
 
     No stated disposition of mine, a company board (not a personal project),
     assigned to me, and open (``/my/inbox?untriaged=true`` drops DONE and
-    TRASH). Any disposition write clears it.
+    TRASH). Any disposition write clears it. A ready agent task is never
+    New (:func:`is_ready_agent_task`). It keeps its derived disposition.
     """
-    return stated is None and on_board and is_mine and effective not in ("DONE", "TRASH")
+    return (
+        stated is None and on_board and is_mine
+        and effective not in ("DONE", "TRASH") and not ready_agent
+    )
 
 
 def fold_dispositions(
@@ -320,6 +398,7 @@ def fold_dispositions(
         if new_work(
             row.p_disposition, on_board=bool(getattr(row, "on_board", True)),
             is_mine=mine, effective=effective,
+            ready_agent=_ready_from_row(row),
         ):
             counts["new"] += 1
         if in_today(

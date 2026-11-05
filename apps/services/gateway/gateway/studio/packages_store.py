@@ -71,7 +71,7 @@ from datetime import datetime
 from typing import Any
 
 from acb_common.secret_shapes import looks_like_secret
-from acb_common.studio_manifest import ManifestError, validate_manifest
+from acb_common.studio_manifest import ManifestError, manifest_hash, validate_manifest
 from sqlalchemy import text
 
 #: The value of ``apps.format`` for a Studio package.
@@ -211,6 +211,10 @@ MAX_VERSION = 2**31 - 1
 MAX_VERSIONS_PAGE = 100
 #: The refusal of a rollback to the live version.
 ROLLBACK_LIVE = "That version is already the live version."
+#: The refusal of a write whose expected hash is not the hash of the stored
+#: draft (STU-G1c review round 1).
+DRAFT_CHANGED_TEXT = ("The draft changed after the read that this request names. Nothing was "
+                      "written. Read the package again.")
 
 
 class PackageStoreError(ValueError):
@@ -228,6 +232,20 @@ class PackageStoreError(ValueError):
     def paths(self) -> list[str]:
         """The JSON path of each refusal."""
         return [e.path for e in self.errors]
+
+
+class DraftChanged(Exception):
+    """The stored draft is not the draft that the caller read. Nothing was
+    written. A write that names ``expected_hash`` raises it under the row lock
+    (STU-G1c review round 1). The route answers 409 ``draft_changed``."""
+
+
+def _expect(manifest: dict[str, Any], expected_hash: str | None) -> None:
+    """Raise :class:`DraftChanged` when *expected_hash* is given and is not
+    the canonical hash of *manifest* (``studio_manifest.manifest_hash``, the
+    one hash of a draft). The caller holds the row lock."""
+    if expected_hash is not None and manifest_hash(manifest) != expected_hash:
+        raise DraftChanged(DRAFT_CHANGED_TEXT)
 
 
 @dataclass(frozen=True)
@@ -479,7 +497,8 @@ async def list_package_actions(db: Any, member: str, *,
 
 
 async def update_manifest(db: Any, member: str, package_id: str,
-                          manifest: dict[str, Any]) -> Package | None:
+                          manifest: dict[str, Any], *,
+                          expected_hash: str | None = None) -> Package | None:
     """Replace the manifest of the package *package_id* of *member*.
 
     The name and the description follow the new manifest. The slug, the
@@ -490,6 +509,10 @@ async def update_manifest(db: Any, member: str, package_id: str,
     The manifest ``id`` cannot change, because the slug holds it. A new id
     raises :class:`PackageStoreError` (:data:`ID_FIXED`) and writes nothing.
     The read locks the row first, so a second writer reads the kept id.
+
+    With *expected_hash*, the stored draft must hash to it under the row lock,
+    or :class:`DraftChanged` raises and nothing is written. So of two saves
+    that read one draft, one writes and the other gets the refusal.
     """
     m = _member(member)
     pid = _package_id(package_id)
@@ -497,6 +520,7 @@ async def update_manifest(db: Any, member: str, package_id: str,
     current = await get_package(db, m, pid, for_update=True)
     if current is None:
         return None
+    _expect(current.manifest, expected_hash)
     if current.manifest.get("id") != manifest["id"]:
         raise PackageStoreError(ID_FIXED, [ManifestError(path="$.id", message=ID_FIXED)])
     row = (await db.execute(text(_UPDATE_SQL), {
@@ -593,7 +617,8 @@ async def _audit(db: Any, m: str, pid: str, version: int, kind: str,
 
 
 async def publish_version(db: Any, member: str, package_id: str, notes: str, *,
-                          catalog: Mapping[str, str]) -> PackageVersion | None:
+                          catalog: Mapping[str, str],
+                          expected_hash: str | None = None) -> PackageVersion | None:
     """Publish the draft of the package *package_id* of *member* as version N+1.
 
     Answers None when no package of the member has the id. The call locks the
@@ -612,6 +637,11 @@ async def publish_version(db: Any, member: str, package_id: str, notes: str, *,
     ``apps.status = 'live'`` and ``apps.live_version = N+1``, and writes the
     ``app_audit`` row (kind ``publish``). ``apps.manifest`` stays as it is.
     No review step runs here: J2 owns the organization approval.
+
+    With *expected_hash*, the stored draft must hash to it under the row lock,
+    or :class:`DraftChanged` raises and nothing is written (STU-G1c review
+    round 1). A chat publish names the draft that its approved plan names, so
+    a save that lands after its read cannot go live in its place.
     """
     m = _member(member)
     pid = _package_id(package_id)
@@ -620,6 +650,7 @@ async def publish_version(db: Any, member: str, package_id: str, notes: str, *,
     current = await get_package(db, m, pid, for_update=True)
     if current is None:
         return None
+    _expect(current.manifest, expected_hash)
     encoded = _check_publishable(current.manifest, known)
     version = await _append_version(db, m, pid, encoded, note)
     await db.execute(text(_PUBLISH_POINT_SQL), {"m": m, "id": pid, "v": version.version})

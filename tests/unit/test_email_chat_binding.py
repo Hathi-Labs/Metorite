@@ -229,6 +229,10 @@ def gw(monkeypatch: pytest.MonkeyPatch) -> Gateway:
     # channel (EM-G11c1 answers that one with the Chat-app text).
     monkeypatch.setattr("acb_skills.ask_tools.confirmation_channel_open",
                         lambda: True)
+    # §18.10: these tests read the plain send card. A run that cannot draw the
+    # card to edit keeps it (WhatsApp, no channel). test_email_new_mail_card.py
+    # holds the edit card of a new mail.
+    monkeypatch.setattr(agents, "_edit_card_open", lambda: False)
     return g
 
 

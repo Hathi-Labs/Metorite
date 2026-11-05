@@ -30,6 +30,7 @@
 > ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
 > 🔨 **AI-call attribution is BUILT on branch `ai-call-attribution` (2026-10-10).** Each email model call now names its feature on the usage report, as `email.rule_match`. A mailbox job names `email.automation`. Before, 97% of the email calls showed as "not attributed". It has no flag, because it changes metadata only. `customer_console.md` §4.3a owns the rule and lists the names.
 > 🔨 **§18.5.1 (H-374) is BUILT on branch `h374-send-draft`, not merged (2026-10-22).** The owner chose "Drafts, with a card" and "Schedule a send". A held chat now sends or schedules a saved draft behind a card. A forward, a new mail, a file, an unsubscribe and a settings change stay held.
+> 🔨 **§18.10 is BUILT on branch `mt-5f606b3e-email-edit-card`, not merged (2026-11-03).** A new mail from the chat shows ONE card. The member edits the subject and the text, ticks the people, and presses Send, Save draft or Discard. No migration. Dark behind `EMAIL_EDIT_CARD_ORGS` (default empty, off), with fix round 1.
 > 🔨 **§18.9 is BUILT on branch `chat-draft-upsert`, not merged (2026-10-22), with fix round 1.** A chat reply draft lands in Drafts, it never writes over a draft of the member, and the Email app continues it.
 > 🔨 **§18.9.1 is BUILT on branch `mt-0f55cd43-reply-card-sent`, not merged (2026-11-03, task 1526), with fix round 1.** A reply card whose draft left Drafts sends and saves nothing. The act answers 409 `draft_gone` or `already_replied`, and the card collapses to its title and Close. No migration, and no flag.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
@@ -20926,6 +20927,80 @@ Save made an orphan draft.
 
 **Fences.** `tests/unit/test_reply_card_left_drafts.py`, its R8 half
 `tests/unit/test_reply_card_left_drafts_r8.py`, and `src/lib/replyCardLeft.test.ts`.
+
+### 18.10 One email card for a new mail (2026-11-03, owner)
+
+**Status:** 🔨 BUILT on branch `mt-5f606b3e-email-edit-card`, not merged, with fix round 1.
+No migration. Metorite task 1533, slice 2 of 4.
+
+**Dark.** `EMAIL_EDIT_CARD_ORGS` lists the organization ids that get the card, or `*` for
+each one, and it is empty (off) by default. Off, a new mail shows the cards of before,
+exactly, and the two routes of the card answer 404. `reply_card.edit_card_on` is the one reader,
+and it fails closed. To turn the card on for one org, set `EMAIL_EDIT_CARD_ORGS=<org id>`
+on the box and send SIGHUP to the gateway. A value on a box is an `enforcement-flip`.
+
+**Fix round 1.** After an edit, the chips hide, and the nudge line says that a request in
+the chat starts again from the assistant's draft. A subject takes the character rule of
+the text, so an emoji goes, and the act refuses each line break. A held form gives each file a
+tick and its hint, and the act sends only the ticked files.
+
+**Origin.** The owner asked on 2026-11-03 to edit a draft in the chat, and to ask the chat
+to improve it. The owner approved panel 2 of the design.
+
+Every email that the assistant writes uses ONE card. The member can edit the subject and
+the text. The buttons are Send, Save draft and Discard. This slice is the card of a NEW
+mail. Slice 3 redrafts the card in place through the chat.
+
+**The protocol.** The new-mail card is the reply card of §18.4 with `kind: "new"`. No
+second card mechanism exists.
+
+1. The tool posts the mail to the gateway first. `POST /email/new-card` checks the
+   mailbox, each address, the subject and the text. It records the people, the files and
+   the text in tenant Redis. The key is a card id that it mints for the member. A held chat
+   posts `POST /email/held-card` with kind `new`, as before. That route also gives the
+   form now.
+2. The card shows each person of the server with a tick box. It shows the subject and
+   the text to edit. The plain card shows the files as fixed rows. The held card gives
+   each file a tick box and its source, as §21.1 item 3 says. One line under the text
+   says "Want it changed? Tell me in the chat below." Two example chips put their words
+   in the chat box. A chip sends nothing.
+3. Send and Save draft answer `APPROVE {"reply": {...}}` with the keys `kind`, `action`,
+   `subject`, `body`, `to`, `cc` and `bcc`. A held answer may also give `files`, the ids
+   of the ticked files. The parser refuses any other key. A reply answer and a new-mail answer
+   never parse as each other. Discard answers `REJECT` and writes nothing.
+4. `POST /agent/respond-input` records the digest of the answer, as for a reply. The act
+   route takes the answer once and the record once.
+
+**The rules of the act.** `POST /email/new-card/act`, and `POST /email/held-card/act` for a
+held record of kind `new`, do these steps. Each refusal sends and saves nothing.
+
+1. The act takes the people from the record, never from the answer. A ticked person must
+   be on the record (`ticked_subset`). The act needs a ticked To.
+2. The act refuses hidden text in the answered text (`reply_body_refusal`). It then cleans
+   the text (`clean_reply_body`).
+3. The act refuses a subject with a line break or a hidden character, or one over 200
+   characters (`held_card._clean_subject`).
+4. A held record also refuses a look-alike word (`refuse_lookalike`), a Bcc to a new
+   address, and a text over `HELD_TEXT_MAX`. A new address starts unticked, as §21 says.
+5. The files come from the record. The plain act sends every recorded file. The held act
+   sends only the ticked files, and a file id that is not on the record refuses the
+   answer. The member cannot add a file.
+6. Send sends the answered subject and text. Save draft writes a NEW draft with them, and
+   sends nothing.
+
+**Where no card can take an edit.** A WhatsApp run and a run with no card channel keep the
+cards of before: the plain send card, and the rows card of §21. Neither of them sends
+without a card. A reply through `send_email` keeps the plain card. `compose_reply` is the
+reply card.
+
+**The model's side.** The tool answers the subject that went, and says when the member
+changed the text on the card. It then gives the text that went, so the chat does not claim
+that the first text went.
+
+**Fences.** `tests/unit/test_email_new_mail_card.py` holds the act, the parse and the held
+path. `src/components/newMailCard.test.ts` holds the answer of the client, the card, the
+chips and a chip that sends nothing. `tests/unit/test_email_chat_reply.py` holds the keys of the client and the server
+in step.
 
 ## 19. Send later (2026-10-21)
 
