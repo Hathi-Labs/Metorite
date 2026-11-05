@@ -139,7 +139,98 @@ async def test_another_organization_never_reads_the_layout(db) -> None:
         b = await _get(db.org_b, user)
     # Org B never asked this member, so the shell asks there too.
     assert b == {"preset": None, "answered": None, "pins": None, "known": None,
-                 "cardOrder": None, "newOrder": None, "chat_first_message_at": None}
+                 "cardOrder": None, "newOrder": None, "chat_first_message_at": None,
+                 "tour_seen_at": None, "guide": False}
+
+
+async def test_the_tour_mark_merges_with_the_server_s_time_and_each_save_keeps_it(db) -> None:
+    """WS-OB GD-5a: ``tour_seen_at`` is a key-only stamp, as the nudge mark
+    is. Postgres runs the real merge and the two nested keeps here. The
+    server writes its own time. A layout save keeps both marks. A save that
+    names the nudge mark keeps the tour mark only."""
+    from datetime import UTC, datetime
+
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    nudge = "2026-10-21T09:00:00.000Z"
+    async with tenant_engine_scope(_app_dsn(db)):
+        await _put(db.org_a, user, {"preset": "engineer", "answered": "answered",
+                                    "pins": ["/tasks"], "chat_first_message_at": nudge})
+        before = datetime.now(UTC)
+        first = await _put(db.org_a, user, {"tour_seen_at": "2001-01-01T00:00:00.000Z"})
+        seen = first["tour_seen_at"]
+        # The server's time, and the stars and the nudge mark survive the merge.
+        assert seen is not None and seen != "2001-01-01T00:00:00.000Z"
+        assert datetime.fromisoformat(seen.replace("Z", "+00:00")) >= before.replace(microsecond=0)
+        assert (first["pins"], first["chat_first_message_at"]) == (["/tasks"], nudge)
+        # A star save omits both marks and keeps both, in one statement.
+        second = await _put(db.org_a, user, {"preset": "engineer", "answered": "answered",
+                                             "pins": ["/tasks", "/email"]})
+        assert (second["pins"], second["chat_first_message_at"], second["tour_seen_at"]) == (
+            ["/tasks", "/email"], nudge, seen)
+        # A save that clears the nudge mark on purpose keeps the tour mark.
+        third = await _put(db.org_a, user, {"answered": "skipped", "chat_first_message_at": None})
+        assert (third["chat_first_message_at"], third["tour_seen_at"]) == (None, seen)
+        read = await _get(db.org_a, user)
+        other = await _get(db.org_b, user)
+    assert read["tour_seen_at"] == seen
+    # The mark is per organization, as the layout is.
+    assert other["tour_seen_at"] is None
+    [(_, raw)] = _stored(db, email)
+    assert raw["tour_seen_at"] == seen
+
+
+async def test_the_first_tour_start_stays_and_the_nudge_mark_still_takes_the_new_time(db) -> None:
+    """WS-OB GD-5a: a second stamp of ``tour_seen_at`` keeps the stored time
+    (COALESCE in SQL). The nudge mark is not changed by this: a second stamp
+    of it still overwrites. A stored JSON null does not count as a time."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        # A stored null (a layout save that never named the mark) takes the first start.
+        await _put(db.org_a, user, {"answered": "skipped"})
+        first = (await _put(db.org_a, user, {"tour_seen_at": "2001-01-01T00:00:00.000Z"}))["tour_seen_at"]
+        assert first is not None
+        second = await _put(db.org_a, user, {"tour_seen_at": "2002-02-02T00:00:00.000Z"})
+        assert second["tour_seen_at"] == first
+        # Both marks in one stamp: the tour mark stays, the nudge mark is written.
+        a = await _put(db.org_a, user, {"chat_first_message_at": "2026-10-21T09:00:00.000Z"})
+        b = await _put(db.org_a, user, {"chat_first_message_at": "2026-10-22T09:00:00.000Z",
+                                        "tour_seen_at": "2003-03-03T00:00:00.000Z"})
+        assert a["tour_seen_at"] == first
+        assert (b["chat_first_message_at"], b["tour_seen_at"]) == ("2026-10-22T09:00:00.000Z", first)
+        # An old tab's save carries the answer's `guide` and still saves.
+        c = await _put(db.org_a, user, {"preset": "engineer", "answered": "answered",
+                                        "pins": ["/tasks"], "guide": True})
+        assert (c["pins"], c["tour_seen_at"]) == (["/tasks"], first)
+    [(_, raw)] = _stored(db, email)
+    assert "guide" not in raw
+
+
+async def test_an_old_tab_s_layout_save_never_writes_the_tour_mark(db) -> None:
+    """WS-OB GD-5a repair 2: an old tab copies the whole answer back, so its
+    star save names ``tour_seen_at`` (null, or a time). A layout save never
+    writes the mark. Only the key-only stamp does."""
+    email = _address()
+    db.made.append(email)
+    user = _member(email)
+    async with tenant_engine_scope(_app_dsn(db)):
+        # No stamp yet: an old tab's null and an old tab's time both leave none.
+        a = await _put(db.org_a, user, {"answered": "skipped", "tour_seen_at": None})
+        assert a["tour_seen_at"] is None
+        b = await _put(db.org_a, user, {"answered": "skipped", "tour_seen_at": "2001-01-01T00:00:00.000Z"})
+        assert b["tour_seen_at"] is None
+        # The first start stamps. An old tab's save after it keeps the stamp.
+        first = (await _put(db.org_a, user, {"tour_seen_at": "2002-02-02T00:00:00.000Z"}))["tour_seen_at"]
+        assert first is not None
+        c = await _put(db.org_a, user, {"answered": "skipped", "pins": ["/tasks"], "tour_seen_at": None})
+        assert (c["pins"], c["tour_seen_at"]) == (["/tasks"], first)
+        d = await _put(db.org_a, user, {"answered": "skipped", "tour_seen_at": "2003-03-03T00:00:00.000Z"})
+        assert d["tour_seen_at"] == first
+    [(_, raw)] = _stored(db, email)
+    assert raw["tour_seen_at"] == first
 
 
 async def test_the_nudge_mark_round_trips_and_a_layout_save_keeps_it(db) -> None:

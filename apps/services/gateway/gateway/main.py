@@ -2147,6 +2147,18 @@ except Exception:  # pragma: no cover
     pass
 
 try:
+    # WS-MCP MCP-P1b-1 — the routes of an app request
+    # (external_agent_access.md §19.5): the ask of an agent, the member's list,
+    # one read and the member's decision. The store is
+    # `gateway/app_requests.py`. Ships dark: 404 while `agent_access_enabled`
+    # is off. No pair is in `MCP_ROUTES` yet (MCP-P1b-2).
+    from gateway.routes.agent_requests import router as _agent_requests_router
+
+    app.include_router(_agent_requests_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
     # WS-MCP SW-31a — the org's written rules for agents
     # (agent_coordination.md SW-31): the save, the history, the blocks that
     # apply to a task, and the refs for `my_work`. Ships dark: 404 while
@@ -2154,6 +2166,17 @@ try:
     from gateway.routes.agent_guidance import router as _agent_guidance_router
 
     app.include_router(_agent_guidance_router)
+except Exception:  # pragma: no cover
+    pass
+
+try:
+    # WS-ALN ALN-5a — the rules of a project (project_alignment.md §4.2), on
+    # the one guidance store: create, accept, edit, retire, the level, the
+    # list and the history. Ships dark: 404 while `PROJECT_RULES_ORGS` does
+    # not hold the caller's org.
+    from gateway.routes.project_rules import router as _project_rules_router
+
+    app.include_router(_project_rules_router)
 except Exception:  # pragma: no cover
     pass
 

@@ -57,7 +57,7 @@ CRM_AGENT = REPO / "apps" / "agents" / "agent-crm" / "agents.py"
 PA = "projects-assistant"
 CRM = "crm-assistant"
 PROJECT_PACKS = ("projects", "projects-plan", "projects-structure", "projects-bulk",
-                 "projects-reminders", "projects-authority")
+                 "projects-reminders", "projects-reports", "projects-authority")
 
 # ── 1. The table ────────────────────────────────────────────────────────────
 

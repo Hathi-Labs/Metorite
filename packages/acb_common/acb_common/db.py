@@ -33,7 +33,10 @@ Two rules worth keeping:
 
 from __future__ import annotations
 
+import contextlib
 import os
+import sys
+import weakref
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar, Token
@@ -246,6 +249,7 @@ def get_engine() -> Any:
             pool_recycle=1800,
             connect_args=engine_connect_args(),
         )
+        _mark_statement_errors(_ENGINE.sync_engine)
     return _ENGINE
 
 
@@ -290,6 +294,179 @@ class TenantUnbound(RuntimeError):
     alternative — picking "the usual one" — is how a background job writes one
     customer's data into another customer's account.
     """
+
+
+class TenantTransactionAborted(RuntimeError):
+    """The block of a ``tenant_session`` ended with an aborted transaction.
+
+    A caller caught the error of a failed statement and went on. Postgres then
+    refuses every later statement (SQLSTATE 25P02), and the commit rolls back.
+    So every write of the block is lost. ``tenant_session`` rolls back and
+    raises this only when ``TENANT_SESSION_ABORT_MODE`` is ``raise`` (H-249).
+    The fix is in the caller: a savepoint around the statement that may fail.
+    """
+
+
+# ── The aborted transaction (H-249) ────────────────────────────────────────
+#
+# A block that catches the error of a failed statement and goes on leaves the
+# transaction aborted. The commit then commits nothing, and Postgres says no
+# error. The detection costs no round trip on a clean block: a ``handle_error``
+# listener marks the connection when a statement fails, and only a marked
+# session sends the ``SELECT 1`` probe at its end. A savepoint that recovered
+# also marks, and its probe then succeeds. ``tenant_session`` clears the mark at
+# its start, so a pooled connection never carries a mark to its next borrower.
+
+#: The key of the mark in the ``info`` dict of the pooled connection.
+_STMT_ERROR = "acb_stmt_error"
+#: SQLSTATE ``in_failed_sql_transaction``.
+_IN_FAILED_SQL_TRANSACTION = "25P02"
+#: The engines that carry the listener, so a second listen never happens.
+_MARKED_ENGINES: weakref.WeakSet[Any] = weakref.WeakSet()
+
+
+def _on_statement_error(ctx: Any) -> None:
+    """``handle_error`` listener: mark the connection of the failed statement.
+
+    It never raises. An exception from this listener would replace the error of
+    the caller.
+    """
+    try:
+        conn = ctx.connection
+        if conn is not None:
+            conn.info[_STMT_ERROR] = True
+    except Exception:  # an invalidated connection has no info to mark
+        pass
+
+
+def _mark_statement_errors(sync_engine: Any) -> None:
+    """Attach :func:`_on_statement_error` to *sync_engine*, one time only."""
+    if sync_engine in _MARKED_ENGINES:
+        return
+    from sqlalchemy import event
+
+    event.listen(sync_engine, "handle_error", _on_statement_error)
+    _MARKED_ENGINES.add(sync_engine)
+
+
+def _caller_site() -> str:
+    """The ``file:line`` of the code that holds the ``tenant_session``.
+
+    Only the abort path calls it. It skips this module, ``contextlib`` and any
+    wrapper whose name holds ``tenant_session``, so that a helper such as
+    ``_tenant_session`` names the code that called it.
+    """
+    try:
+        frame: Any = sys._getframe(1)
+        here = __file__
+        for _ in range(16):
+            if frame is None:
+                break
+            code = frame.f_code
+            if (
+                code.co_filename != here
+                and not code.co_filename.endswith("contextlib.py")
+                and "tenant_session" not in code.co_name
+            ):
+                return f"{code.co_filename}:{frame.f_lineno}"
+            frame = frame.f_back
+    except Exception:  # the label is a help, never a failure
+        pass
+    return "unknown"
+
+
+def _is_in_failed_transaction(exc: BaseException) -> bool:
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return code == _IN_FAILED_SQL_TRANSACTION
+
+
+async def _watch(session: Any) -> tuple[Any, Any]:
+    """Clear the mark of the connection of a new session. Return what to watch.
+
+    It returns the ``AsyncConnection`` and the root transaction of the session,
+    or ``(None, None)`` for a session that is not a real ``AsyncSession``. The
+    connection is already bound by ``set_config``, so this costs no round trip.
+    """
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    if not isinstance(session, AsyncSession):
+        return None, None
+    conn: Any = await session.connection()
+    _mark_statement_errors(conn.sync_engine)
+    conn.sync_connection.info.pop(_STMT_ERROR, None)
+    return conn, session.sync_session.get_transaction()
+
+
+def _marked(session: Any, conn: Any, root: Any) -> bool:
+    """True when a statement of this transaction failed.
+
+    A block that ended the first transaction itself (a commit or a rollback in
+    the block) is not watched. Its connection can belong to another borrower
+    now, and the mark of that borrower is not ours to read or clear.
+    """
+    if session.sync_session.get_transaction() is not root:
+        return False
+    try:
+        return bool(conn.sync_connection.info.get(_STMT_ERROR))
+    except Exception:  # an invalidated connection: the commit reports it
+        return False
+
+
+async def _end_aborted(session: Any, conn: Any, tenant: str) -> None:
+    """Probe a marked session. Report when it is aborted.
+
+    The probe goes through the connection and not through the session, so it
+    does not flush the pending objects of the session.
+
+    In ``log`` mode this only logs. It does not roll back. The commit that
+    follows then runs as it did before H-249. A flush with work raises the
+    25P02 error. A commit with no work becomes a rollback in Postgres. The
+    session keeps its loaded objects, because ``expire_on_commit`` is off.
+    In ``raise`` mode it rolls back and raises.
+
+    Raises:
+        TenantTransactionAborted: the transaction is aborted and the mode is
+            ``raise``.
+    """
+    from sqlalchemy.exc import DBAPIError
+
+    try:
+        await conn.exec_driver_sql("SELECT 1")
+    except DBAPIError as exc:
+        if not _is_in_failed_transaction(exc):
+            raise
+        aborted = exc
+    else:
+        # A savepoint recovered the failed statement. The commit is safe.
+        conn.sync_connection.info.pop(_STMT_ERROR, None)
+        return
+
+    from acb_common._log import get_logger
+    from acb_common.settings import tenant_session_abort_mode
+
+    # The probe marked the connection again. Clear it before the connection
+    # goes back to the pool.
+    with contextlib.suppress(Exception):
+        conn.sync_connection.info.pop(_STMT_ERROR, None)
+    mode = tenant_session_abort_mode()
+    caller = _caller_site()
+    get_logger("acb_common.db").warning(
+        "db.tenant_session_aborted",
+        tenant=str(tenant),
+        caller=caller,
+        mode=mode,
+    )
+    if mode != "raise":
+        # Log mode: change nothing. A rollback here would expire the loaded
+        # objects, and the close would then detach them.
+        return
+    await session.rollback()
+    raise TenantTransactionAborted(
+        f"the transaction of a tenant_session at {caller} was aborted "
+        "by a failed statement that the block caught, so the block wrote "
+        "nothing (H-249). Put a savepoint around that statement."
+    ) from aborted
 
 
 def bind_tenant(organization_id: str) -> Token[str | None]:
@@ -354,8 +531,15 @@ async def tenant_session(organization_id: str | None = None) -> AsyncIterator[An
         async with tenant_session(org_id) as db:    # explicit, e.g. a job
             ...
 
+    ⚠️ **A caught statement error aborts the transaction** (H-249). The block
+    goes on, and the commit then writes nothing. At the clean end of the block
+    the session finds that and logs ``db.tenant_session_aborted``.
+    Put a savepoint (``begin_nested``) around a statement that may fail.
+
     Raises:
         TenantUnbound: nothing bound and nothing supplied.
+        TenantTransactionAborted: the transaction is aborted at the end of the
+            block, and ``TENANT_SESSION_ABORT_MODE`` is ``raise``.
     """
     from sqlalchemy import text
 
@@ -384,7 +568,12 @@ async def tenant_session(organization_id: str | None = None) -> AsyncIterator[An
                 text("SELECT set_config('app.tenant_id', :tenant, true)"),
                 {"tenant": str(tenant)},
             )
+            # H-249: watch for an aborted transaction. Only a real session has
+            # one. A hermetic test double runs as before.
+            conn, root = await _watch(session)
             yield session
+            if conn is not None and _marked(session, conn, root):
+                await _end_aborted(session, conn, tenant)
             await session.commit()
         except Exception:
             await session.rollback()
