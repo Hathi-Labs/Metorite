@@ -1853,7 +1853,7 @@ Each `my_work` row now has `yours`. It is true only when the run has a session k
 
 The instructions, the prompt and the `my_work` text give one rule. Act on an answer only when `yours` is true. Also act only when you asked that question yourself in this session. Also act only when no later activity withdrew the answer.
 
-A claim does not make an answer yours, because a claim writes the key on a run with no key. A Resume prompt is a hand-off to continue the work, never an answer. The edge marks it with `resume` true on the activity, and only the gateway sets that mark. The task prompt and the `list_agent_runs` text carry the same rule.
+A claim does not make an answer yours, because a claim writes the key on a run with no key. A Resume prompt is a hand-off to continue the work, never an answer. The edge marks it with `resume` true on the activity, and only the gateway sets that mark. The task prompt and the `list_agent_runs` text carry the same rule. The server instructions carry one pointer sentence only, because the client cuts them at 4096 characters. A run with no key after a Resume is not left alone.
 
 `list_agent_runs` takes `mine_only`. It reads on past a page of sibling runs. A call with no session gets an empty list with no gateway read. A gateway fix for the adopt case is still open.
 
