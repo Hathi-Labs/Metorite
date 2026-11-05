@@ -1716,6 +1716,38 @@ async def test_a_read_of_an_old_row_leaves_out_each_hidden_character(gw, card) -
     assert out["based_on"] == gw.versions[sid][-1]["content_hash"]
 
 
+async def test_the_notes_of_an_old_row_name_a_step_that_works(gw, card) -> None:
+    """Review round 1, P3-3. No editor mark exists before F1b-2 (task 1681),
+    and each chat save sends the stored hidden text back, so the store
+    refuses each save of this skill. The notes say so, and name the step
+    that works: replace the whole text in Studio. A cut read with no hidden
+    character keeps its true sentence, and its save of another field works.
+    Mutation: put back "which shows each one" or "A save of the other fields
+    still works here." for such a row -> red."""
+    sid = _old_row(gw, instructions="Write five bullets." + SMUGGLED)
+    read = await st.studio_skill_list(sid)
+    step = ("Each save from chat sends the stored instructions back, and the store refuses "
+            "its hidden characters. So no save of this skill works from chat until you "
+            "replace the whole instructions in Studio.")
+    assert step in read["note"] and "shows each one" not in read["note"]
+    refused = await st.studio_skill_save(skill_id=sid, instructions="New.",
+                                         based_on=read["based_on"])
+    assert refused["ok"] is False and _msg(refused) == (
+        "A read in chat does not show the stored instructions whole. Nothing was saved. "
+        "The stored instructions holds hidden characters. Each save from chat sends that "
+        "text back, and the store refuses it. Replace the whole instructions in Studio first.")
+    assert "still works" not in _msg(refused)
+    # The longest form fits in one error, so no cut hides the step.
+    both = "description and instructions"
+    assert len(st._NOT_WHOLE_HIDDEN.format(what=both, held=both)) <= st.MAX_ERROR_MESSAGE_CHARS
+    other = gw.seed("Other", body={**BODY, "instructions": "x" * 13_000})
+    based = await _based_on(other)
+    cut = await st.studio_skill_save(skill_id=other, instructions="New.", based_on=based)
+    assert "A save of the other fields still works here." in _msg(cut)
+    works = await st.studio_skill_save(skill_id=other, description="New words.", based_on=based)
+    assert works["ok"], works
+
+
 async def test_a_clean_read_has_no_hidden_key(gw, card) -> None:
     sid = gw.seed(body={**BODY, "instructions": "Mark it done " + chr(0x2714) + chr(0xFE0F)})
     out = await st.studio_skill_list(sid)

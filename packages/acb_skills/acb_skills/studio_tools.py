@@ -907,7 +907,17 @@ _NOT_OPEN = "AI Studio is not open for this organization."
 _NOT_YOURS = "No skill of yours has this id, or AI Studio is not open for this organization."
 _NOT_WHOLE = ("A read in chat does not show the stored {what} whole, so a save from chat could "
               "lose text. Nothing was saved. Change that text in Studio, which shows the "
-              "whole text. A save of the other fields still works here.")
+              "whole text.")
+#: The last sentence of :data:`_NOT_WHOLE` when no stored text holds a hidden
+#: character. With one it is false, because a save of another field sends
+#: that text back and the store refuses it: :data:`_NOT_WHOLE_HIDDEN` holds.
+_OTHERS_WORK = "A save of the other fields still works here."
+#: The refusal when a stored text holds a hidden character (review round 1,
+#: P3-3). It fits in :data:`MAX_ERROR_MESSAGE_CHARS`, so no cut hides the step.
+_NOT_WHOLE_HIDDEN = ("A read in chat does not show the stored {what} whole. Nothing was saved. "
+                     "The stored {held} holds hidden characters. Each save from chat sends "
+                     "that text back, and the store refuses it. Replace the whole {held} in "
+                     "Studio first.")
 _STALE = ("A save that changes the description or the instructions needs the based_on of a "
           "full read. This save has none, or an old one. Nothing was saved. Read the skill "
           "with studio_skill_list, then save again with its based_on.")
@@ -1181,9 +1191,13 @@ def _framed_read(skill: dict[str, Any], version: dict[str, Any] | None) -> dict[
 #: The note of a read that left a hidden character out (WS-STU F1b).
 _HIDDEN_READ = ("This read leaves out each character that no person sees. The hidden "
                 "key gives the count for each field.")
-#: The second sentence, for a text that a save from chat sends whole.
-_HIDDEN_SAVE = ("A save of the {what} from chat refuses. Remove those characters in "
-                "Studio, which shows each one.")
+#: The step that works for a stored text with a hidden character. Each save
+#: from chat copies the stored body (:func:`_merged_body`), so the store
+#: refuses each one. The editor has no mark for such a character before
+#: F1b-2 (task 1681), so the step is to replace the whole text.
+_HIDDEN_SAVE = ("Each save from chat sends the stored {what} back, and the store refuses its "
+                "hidden characters. So no save of this skill works from chat until you "
+                "replace the whole {what} in Studio.")
 
 
 def _shown_texts(body: dict[str, Any]) -> tuple[str, str, list[str], dict[str, int]]:
@@ -1355,10 +1369,16 @@ def _based_on_problem(current: _Reply, based_on: str, sent: dict[str, str]) -> s
     version = _version_of(current)
     if version is None:
         return None
-    _read, partial = _read_and_cuts(_skill_of(current), version)
+    read, partial = _read_and_cuts(_skill_of(current), version)
     shown_in_part = sorted(field for field in sent if field in partial)
     if shown_in_part:
-        return _NOT_WHOLE.format(what=" and ".join(shown_in_part))
+        # A stored text with a hidden character goes back with each save, so
+        # "the other fields still work" would be false (review round 1, P3-3).
+        held = [f for f in ("description", "instructions") if f in (read.get("hidden") or {})]
+        what = " and ".join(shown_in_part)
+        if held:
+            return _NOT_WHOLE_HIDDEN.format(what=what, held=" and ".join(held))
+        return _NOT_WHOLE.format(what=what) + " " + _OTHERS_WORK
     body = _body_of(version)
     copies = sorted(field for field, value in sent.items()
                     if _looks_like_a_card(value, str(body.get(field) or "")))
