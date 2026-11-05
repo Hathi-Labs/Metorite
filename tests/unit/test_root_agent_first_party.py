@@ -13,8 +13,11 @@ batch delegation) and ``_run_sub_agent_streaming`` (the streamed delegation).
 The member and the org come from the run binding. "Admin" is the established
 admin-act gate, ``admin:members:manage``.
 
-No database. The first-party read and the access resolver are stubbed where
-the gate imports them. The loader raises a sentinel the moment the gate lets a
+The gate also compares the member's org (``resolve_identity``) with the run's
+org (H-232). An admin of one org must not act on a run of another org.
+
+No database. The first-party read, the identity read and the access resolver
+are stubbed where the gate imports them. The loader raises a sentinel the moment the gate lets a
 run through, so a test sees "refused" or "loaded" and nothing else runs.
 """
 from __future__ import annotations
@@ -26,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import acb_auth
+import acb_auth.access as acb_auth_access
 import orchestrator._tool_injection as ti
 import orchestrator.executor as executor
 import orchestrator.mutation as mutation
@@ -39,6 +43,7 @@ CUST_ORG = "bbbbbbbb-0000-4000-8000-000000000002"   # a customer
 FP_ADMIN = "admin@fracktal.example"
 FP_MANAGER = "manager@fracktal.example"             # holds admin:members:read
 CUST_OWNER = "owner@customer.example"               # '*' in its OWN org
+CUST_ADMIN = "admin@customer.example"               # admin:members:manage in CUST_ORG
 
 _ACCESS: dict[str, EffectiveAccess] = {
     FP_ADMIN: build_access(
@@ -46,6 +51,17 @@ _ACCESS: dict[str, EffectiveAccess] = {
     ),
     FP_MANAGER: build_access(["admin:members:read", "agents:run:*"], roles=["manager"]),
     CUST_OWNER: build_access(["*"], roles=["owner"]),
+    CUST_ADMIN: build_access(
+        ["admin:members:read", "admin:members:manage", "agents:run:*"], roles=["admin"],
+    ),
+}
+
+#: The org of each member, as ``acb_auth.access.resolve_identity`` reads it.
+_ORG_OF: dict[str, str] = {
+    FP_ADMIN: FP_ORG,
+    FP_MANAGER: FP_ORG,
+    CUST_OWNER: CUST_ORG,
+    CUST_ADMIN: CUST_ORG,
 }
 
 LOADED = "LOADED: the gate let this run through"
@@ -55,15 +71,25 @@ class _Calls:
     def __init__(self) -> None:
         self.loads = 0
         self.mutations = 0
+        self.identity: dict[str, tuple[str | None, str | None]] = {
+            email: (f"u-{email}", org) for email, org in _ORG_OF.items()
+        }
+        self.identity_raises: Exception | None = None
+        self.identity_read_failed = False
 
 
 @pytest.fixture()
 def calls(monkeypatch) -> _Calls:
-    """Stub the two seams the gate reads, the registry and the loader."""
+    """Stub the seams the gate reads, the registry and the loader."""
     seen = _Calls()
 
     async def _first_party(org: str | None) -> bool | None:
         return org == FP_ORG
+
+    async def _identity(email: str | None) -> tuple[str | None, str | None]:
+        if seen.identity_raises is not None:
+            raise seen.identity_raises
+        return seen.identity.get(str(email or "").lower(), (None, None))
 
     async def _resolve(email: str | None, **_kw: Any) -> EffectiveAccess:
         return _ACCESS.get(str(email or "").lower(), EffectiveAccess(is_active=False))
@@ -84,6 +110,9 @@ def calls(monkeypatch) -> _Calls:
     monkeypatch.setattr(mutation, "_read_first_party", _first_party)
     monkeypatch.setattr(mutation, "attempt_self_mutation", _no_mutation)
     monkeypatch.setattr(acb_auth, "resolve_access", _resolve)
+    monkeypatch.setattr(acb_auth_access, "resolve_identity", _identity)
+    monkeypatch.setattr(acb_auth_access, "identity_read_failed",
+                        lambda: seen.identity_read_failed)
     monkeypatch.setattr(executor, "load_agent", lambda *a, **k: _Ctx())
     monkeypatch.setattr(agent_routes, "_load_dynamic_agents", lambda: [
         {"name": "metorite", "description": "root", "agent_runtime": "github-copilot",
@@ -153,6 +182,72 @@ def test_an_alias_of_the_name_is_refused_too(calls: _Calls, alias: str) -> None:
 
 def test_every_other_agent_is_untouched(calls: _Calls) -> None:
     assert _run_error(_stream("crm-assistant", member=CUST_OWNER, org=CUST_ORG)) == LOADED
+
+
+# ── 1b. The member's org must be the run's org (H-232) ─────────────────────
+
+def test_an_admin_of_another_org_cannot_act_on_a_first_party_run(calls: _Calls) -> None:
+    """``resolve_access`` reads roles by email alone. A customer admin holds
+    ``admin:members:manage`` in its OWN org, so only the org compare stops it."""
+    assert _ACCESS[CUST_ADMIN].has(executor._FIRST_PARTY_ADMIN_PERMISSION)
+    message = _run_error(_stream("metorite", member=CUST_ADMIN, org=FP_ORG))
+    assert message == "Agent 'metorite' not found.", message
+    assert calls.loads == 0
+
+
+@pytest.mark.parametrize("member", [CUST_ADMIN, CUST_OWNER])
+def test_the_gate_says_why_an_org_mismatch_is_refused(calls: _Calls, member: str) -> None:
+    allowed, why = _gate(member, FP_ORG)
+    assert (allowed, why) == (False, "the member is not of the run's organization")
+
+
+def test_an_identity_with_no_org_is_refused(calls: _Calls) -> None:
+    calls.identity[FP_ADMIN] = (None, None)
+    allowed, why = _gate(FP_ADMIN, FP_ORG)
+    assert not allowed and why == "the member is not of the run's organization"
+    message = _run_error(_stream("metorite", member=FP_ADMIN, org=FP_ORG))
+    assert message == "Agent 'metorite' not found.", message
+    assert calls.loads == 0
+
+
+def test_an_identity_read_that_raises_is_refused(calls: _Calls) -> None:
+    calls.identity_raises = acb_auth_access.IdentityUnavailable("pool timeout")
+    allowed, why = _gate(FP_ADMIN, FP_ORG)
+    assert not allowed and why.startswith("the identity check failed"), why
+    message = _run_error(_stream("metorite", member=FP_ADMIN, org=FP_ORG))
+    assert message == "Agent 'metorite' not found.", message
+    assert calls.loads == 0
+
+
+def test_an_identity_read_that_failed_quietly_is_refused(calls: _Calls) -> None:
+    """``resolve_identity`` swallows most failures and sets a flag."""
+    calls.identity_read_failed = True
+    assert _gate(FP_ADMIN, FP_ORG) == (False, "the identity check failed")
+
+
+def test_a_first_party_admin_of_the_run_org_passes(calls: _Calls) -> None:
+    """The happy path. The compare ignores the case of the UUID."""
+    calls.identity[FP_ADMIN] = ("u-admin", FP_ORG.upper())
+    assert _gate(FP_ADMIN, FP_ORG) == (True, "")
+    assert _run_error(_stream("metorite", member=FP_ADMIN, org=FP_ORG)) == LOADED
+    assert calls.loads == 1
+
+
+def _gate(member: str, org: str) -> tuple[bool, str]:
+    """Ask ``_first_party_admin_runs`` for a verified member and a bound org."""
+    from acb_common import bind_run_context, run_context_scope
+    from acb_common.db import bind_tenant, release_tenant
+
+    async def _go() -> tuple[bool, str]:
+        with run_context_scope():
+            bind_run_context(user=member, member_verified=True)
+            token = bind_tenant(org)
+            try:
+                return await executor._first_party_admin_runs()
+            finally:
+                release_tenant(token)
+
+    return asyncio.run(_go())
 
 
 # ── 2. The gateway run API (POST /agent/run) ───────────────────────────────

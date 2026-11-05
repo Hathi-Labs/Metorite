@@ -22,6 +22,10 @@ the chat save to memory on unmount only the default agent's turns. H-227
 WS-43t2 (the session store, migration 228) is built and dark
 (2026-10-08). D86 paused it and D92 restarted it. Every other slice is
 spec only.**
+
+**H-232 (WS-29, task 616) is built (2026-11-05, in review).** The gate of the
+root agent also compares the member's org with the run's org (§15.4).
+
 Owner decisions, 2026-10-03. The owner kept delegation in a covered run on
 2026-10-03, so §16.3 no longer says that no data leaves the platform. The
 network control that WS-43w waited on is built (H-236, §16.3), and it fails
@@ -4530,6 +4534,12 @@ first-party admin may run it.
 - The name match takes no case and no `agent-` prefix, so an alias is refused
   too. The registry lists still name the agent, and hiding it there is not
   part of this rule.
+- The gate also compares the member's org (`acb_auth.access.resolve_identity`)
+  with the run's org (H-232, 2026-11-05). It refuses a mismatch, an empty org
+  and a failed read. So an admin of one org cannot run it on a run of another
+  org. Fence: `tests/unit/test_root_agent_first_party.py`, section 1b.
+  Known limit: with `IDENTITY_CUTOVER` on, a person with two active
+  memberships resolves to no org, and the gate refuses them.
 - Fence: `tests/unit/test_root_agent_first_party.py` (the access clause of
   WS43-F17). Eleven mutations turn it red.
 
