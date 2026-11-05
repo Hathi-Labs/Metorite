@@ -125,3 +125,149 @@ def test_each_next_app_gets_its_own_vitest_command() -> None:
         "cd workbench/control_plane && npx tsc --noEmit && npx vitest related --run src/a.ts",
         "cd workbench/operator_console && npx tsc --noEmit && npx vitest related --run src/app/page.tsx",
     ]
+
+
+# ── --gate: the PR tier's selection, fail open (CIV-2) ─────────────────────
+
+
+def _gate_repo(tmp_path: Path) -> Path:
+    root = _repo(tmp_path)
+    _write(root, "tests/fences.json", '{"python": {"safety": ["tests/unit/test_other.py"], "process": []}}')
+    _write(root, "tests/unit/test_db.py", "pytestmark = _DB_GATE\n")
+    _write(root, "tests/unit/test_migration_prefixes.py", "import os\n")
+    _write(root, "tests/unit/test_nav.py", 'read("workbench/control_plane/src/lib/nav.ts")\n')
+    return root
+
+
+def test_gate_full_on_any_conftest_basename(tmp_path: Path) -> None:
+    root = _gate_repo(tmp_path)
+    for path in ("tests/e2e/conftest.py", "apps/gateway/conftest.py", "tests/unit/sub/conftest.py"):
+        out = sel.gate([path], root)
+        assert out["full"] is True, path
+        assert out["reasons"], path
+
+
+def test_gate_full_on_underscore_helper_under_tests(tmp_path: Path) -> None:
+    root = _gate_repo(tmp_path)
+    assert sel.gate(["tests/unit/_helpers.py"], root)["full"] is True
+    assert sel.gate(["tests/_shared/x.py"], root)["full"] is False  # dir, not name
+
+
+def test_gate_full_on_shared_config_and_timings(tmp_path: Path) -> None:
+    root = _gate_repo(tmp_path)
+    for path in ("pyproject.toml", "uv.lock", ".test_durations"):
+        assert sel.gate([path], root)["full"] is True, path
+
+
+def test_gate_full_on_ci_and_selector_paths(tmp_path: Path) -> None:
+    root = _gate_repo(tmp_path)
+    for path in (
+        ".github/workflows/pr-check.yml",
+        "scripts/affected_tests.py",
+        "scripts/fences.py",
+        "scripts/ci_unit_guard.py",
+        "scripts/ci_local.sh",
+        "scripts/ci_pc/doctor.sh",
+        "packages/acb_common/acb_common/db.py",
+    ):
+        assert sel.gate([path], root)["full"] is True, path
+
+
+def test_gate_full_when_a_hub_module_has_too_many_test_importers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = _gate_repo(tmp_path)
+    monkeypatch.setattr(sel, "HUB_LIMIT", 1)  # test_leaf and test_patch import leaf
+    out = sel.gate(["packages/pkg/pkg/leaf.py"], root)
+    assert out["full"] is True
+    assert any("leaf" in r for r in out["reasons"])
+
+
+def test_gate_not_full_for_a_module_under_the_hub_limit(tmp_path: Path) -> None:
+    out = sel.gate(["packages/pkg/pkg/leaf.py"], _gate_repo(tmp_path))
+    assert out["full"] is False
+    assert "tests/unit/test_leaf.py" in out["files"]
+    assert "tests/unit/test_user.py" in out["files"]
+
+
+def test_gate_postgres_change_selects_every_db_gate_file(tmp_path: Path) -> None:
+    out = sel.gate(["infra/postgres/300_new.sql"], _gate_repo(tmp_path))
+    assert out["full"] is False
+    assert "tests/unit/test_db.py" in out["files"]
+    assert "tests/unit/test_migration_prefixes.py" in out["files"]
+
+
+def test_gate_frontend_file_is_matched_by_name_without_import_tracing(tmp_path: Path) -> None:
+    out = sel.gate(["workbench/control_plane/src/lib/nav.ts"], _gate_repo(tmp_path))
+    assert out["full"] is False
+    assert "tests/unit/test_nav.py" in out["files"]
+    assert "tests/unit/test_leaf.py" not in out["files"]
+
+
+def test_gate_docs_change_selects_the_naming_test(tmp_path: Path) -> None:
+    out = sel.gate(["docs/guide_to_things.md"], _gate_repo(tmp_path))
+    assert "tests/unit/test_doc.py" in out["files"]
+    assert out["full"] is False
+
+
+def test_gate_always_lists_the_safety_fences(tmp_path: Path) -> None:
+    out = sel.gate(["docs/unrelated.md"], _gate_repo(tmp_path))
+    assert "tests/unit/test_other.py" in out["files"]
+
+
+def test_gate_fails_open_on_an_error(tmp_path: Path) -> None:
+    # No tests/fences.json in this root: the selector cannot finish.
+    out = sel.gate(["docs/x.md"], _repo(tmp_path))
+    assert out["full"] is True
+    assert any("error" in r.lower() for r in out["reasons"])
+
+
+def test_gate_json_cli_reads_the_three_dot_diff(tmp_path: Path, capsys, monkeypatch) -> None:
+    seen: list[str] = []
+
+    def fake(base: str, root: Path = sel.ROOT) -> list[str]:
+        seen.append(base)
+        return ["pyproject.toml"]
+
+    monkeypatch.setattr(sel, "gate_changed_files", fake)
+    assert sel.main(["--gate", "--base", "abc123"]) == 0
+    import json
+
+    out = json.loads(capsys.readouterr().out)
+    assert seen == ["abc123"]
+    assert set(out) == {"full", "files", "reasons"}
+    assert out["full"] is True
+
+
+def test_selector_imports_only_the_standard_library() -> None:
+    import ast
+
+    tree = ast.parse((_ROOT / "scripts" / "affected_tests.py").read_text(encoding="utf-8"))
+    mods = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            mods |= {a.name.split(".")[0] for a in n.names}
+        elif isinstance(n, ast.ImportFrom) and n.module and not n.level:
+            mods.add(n.module.split(".")[0])
+    allowed = set(sys.stdlib_module_names) | {"fences"}  # fences.py is stdlib-only too
+    assert mods <= allowed, mods - allowed
+
+
+def test_gate_diff_lists_both_paths_of_a_rename(tmp_path: Path) -> None:
+    # With rename detection, git lists only the new path, and the tests that
+    # import the old module are missed. `--no-renames` lists both.
+    import subprocess
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    _write(tmp_path, "apps/x/old.py", "VALUE = 1\n" * 20)
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+    git("mv", "apps/x/old.py", "apps/x/new.py")
+    git("commit", "-qm", "rename")
+    assert sel.gate_changed_files(base, root=tmp_path) == ["apps/x/new.py", "apps/x/old.py"]

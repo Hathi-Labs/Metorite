@@ -38,7 +38,11 @@ MEMBER = "jane@acme.test"
 REMIND = "remind me to call Rajendra at 5"
 #: The class C tool of the reminders pack (WS-ALN). A held chat drops it,
 #: as every class C tool but ``promote_reminder``. The reminder writes all stay.
-_REMINDERS_PACK_OFF = frozenset({"answer_decision"})
+#: PJP-2 (project_planning.md §3.3) moved the area tools into this pack.
+#: ``delete_area`` and ``rename_area`` are class C (``OFF_PROJECTS`` in
+#: ``tests/unit/test_held_card_writes.py``), so a held chat dropped them from
+#: ``projects-structure`` before, and it drops them from this pack now.
+_REMINDERS_PACK_OFF = frozenset({"answer_decision", "delete_area", "rename_area"})
 
 
 def _ctx() -> dict[str, Any]:
