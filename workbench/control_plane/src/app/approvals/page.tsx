@@ -214,8 +214,8 @@ export default function ApprovalsPage() {
             Waiting for you ({waiting.length})
           </h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Questions that agents asked you, oldest first. Each stays here until
-            you answer it.
+            Questions that agents asked you, oldest first. Each agent waits for
+            your answer, and the question stays here until you answer it.
           </p>
           <div className="mt-3 flex flex-col gap-3">
             {waiting.map((run) => {
@@ -229,7 +229,7 @@ export default function ApprovalsPage() {
                   <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
                     <a
                       href={taskHref(run)}
-                      className="min-w-0 flex-1 truncate text-sm font-medium text-foreground hover:underline"
+                      className="min-w-0 flex-1 basis-48 line-clamp-2 text-sm font-medium text-foreground hover:underline"
                     >
                       {rowTitle(run)}
                     </a>
@@ -250,7 +250,6 @@ export default function ApprovalsPage() {
                         questions={[cardQuestion(question)]}
                         onSubmit={(answers) => void answerWaiting(run, answers)}
                         disabled={!!waitingBusy[run.id]}
-                        hint="The agent waits for your answer."
                       />
                     ) : (
                       <p className="whitespace-pre-wrap break-words text-foreground">
@@ -263,7 +262,7 @@ export default function ApprovalsPage() {
                   </div>
                   {waitingErrors[run.id] && (
                     <p className="mt-1.5 text-destructive" role="alert">
-                      {waitingErrors[run.id]}
+                      {waitingErrors[run.id]} Try again, or open the task.
                     </p>
                   )}
                 </div>
@@ -273,7 +272,10 @@ export default function ApprovalsPage() {
         </section>
       )}
 
-      <p className="text-xs text-muted-foreground">
+      {waiting !== null && waiting.length > 0 && (
+        <h2 className="text-sm font-semibold text-foreground">Proposed writes</h2>
+      )}
+      <p className="mt-1 text-xs text-muted-foreground">
         Outward writes an agent proposed through the Action Broker. Approving
         runs the write; rejecting refuses it. Empty unless
         <code className="mx-1 rounded bg-secondary/50 px-1 py-0.5 font-mono text-[11px]">
