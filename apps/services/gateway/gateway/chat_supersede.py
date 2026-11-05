@@ -17,7 +17,8 @@ The contract, in four rules:
    cancelled through ``stream_relay.cancel_run``, and the edit waits for it to
    settle. Somebody else's run refuses the edit (409 ``run_in_progress``).
 3. **The superseded turn and every reply after it are deleted**, by id, in
-   one tenant-bound transaction (R5 ``tenant_session``).
+   one tenant-bound transaction (R5 ``tenant_session``). The cards of that
+   answer that still wait close in the same transaction (task 1653).
 4. **The new run reads a server-composed note** that names the earlier text
    and the steps the earlier reply already completed that changed something.
    A runtime with its own session memory (the Copilot SDK session, a MAF
@@ -437,6 +438,23 @@ def _row_dict(r: Any) -> dict[str, Any]:
     }
 
 
+def _close_waiting_cards(s: Any, session_id: str, actor: str) -> int:
+    """Close the cards of the replaced answer that still wait (task 1653).
+
+    A run that waits on a card dies with the stop that comes before the edit,
+    and its own ``finally`` closes the card. A PARKED card (WS-51 S2) has no
+    run, so it stays open for a late answer, and an Approve on it would do the
+    write of an answer that is gone. This is the same close as a chat delete
+    (``pending_ask.close_thread_asks``), in the SAME transaction as the delete
+    of the rows, limited to the member who edits. Behind the same flag.
+    """
+    from orchestrator import pending_ask  # noqa: PLC0415
+
+    if not pending_ask.durable_asks_enabled():
+        return 0
+    return pending_ask.close_thread_asks(s, session_id, actor_email=actor)
+
+
 def supersede_rows(
     session_id: str,
     superseded_id: str,
@@ -464,6 +482,7 @@ def supersede_rows(
             rows, superseded_id, actor=actor, keep_ids=keep_ids, shared=shared,
         )
         s.execute(text(_DELETE_SQL), {"sid": session_id, "ids": plan.removed_ids})
+        _close_waiting_cards(s, session_id, actor)
     return plan
 
 
