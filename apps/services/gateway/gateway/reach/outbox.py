@@ -189,6 +189,22 @@ async def logged_pairs(org: str, member: str) -> set[tuple[str, str]]:
     return {(str(r[0]), str(r[1])) for r in rows}
 
 
+async def muted_rules(org: str, member: str) -> frozenset[str]:
+    """The exception rules that *member* muted in ``my_day_prefs`` (BR-5).
+    The session opens here, the one site of Reach. A read error is logged and
+    counts as no mutes, so a fault never silences the loop."""
+    from acb_common import get_logger
+
+    from gateway.routes.shell.prefs import muted_rules as read
+
+    try:
+        async with tenant_session(org) as db:
+            return await read(db, member)
+    except Exception as exc:
+        get_logger(__name__).warning("reach.mutes_failed", error_class=type(exc).__name__)
+        return frozenset()
+
+
 async def has_log(org: str, member: str) -> bool:
     """True when Reach logged any card for *member*. False is the first run."""
     async with tenant_session(org) as db:

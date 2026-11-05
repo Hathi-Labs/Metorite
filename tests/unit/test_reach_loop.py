@@ -1321,3 +1321,35 @@ class TestWebPushRowsStayOffWhatsApp:
                     mods = {str(node.module), *(f"{node.module}.{a.name}" for a in node.names)}
                     assert not any("push" in m.split(".")[-1] for m in mods
                                    if m.startswith("gateway.")), (name, mods)
+
+
+class TestTheMutedRules:
+    """BR-5 slice 2a: the loop passes the member's muted rules to the plan."""
+
+    async def _run(self, world, monkeypatch, muted: set[str], on: bool = True) -> str:
+        from gateway.brief import flags as brief_flags
+
+        calls: list[tuple[str, str]] = []
+
+        async def muted_rules(org, member):
+            calls.append((org, member))
+            return frozenset(muted)
+
+        monkeypatch.setattr(brief_flags, "exceptions", lambda org: on)
+        monkeypatch.setattr(outbox, "muted_rules", muted_rules)
+        world.calls = calls
+        assert await loop.member_pass(ORG, ME) == "baseline"
+        world.cards = [card("agent_asks:1", "agent_asks")]
+        return await loop.member_pass(ORG, ME)
+
+    async def test_a_rule_that_is_not_muted_interrupts(self, world, monkeypatch):
+        assert await self._run(world, monkeypatch, set()) == "interrupt:sent"
+        assert world.calls
+
+    async def test_a_muted_rule_matches_nothing(self, world, monkeypatch):
+        assert await self._run(world, monkeypatch, {"agent_asks"}) == "nothing"
+        assert world.sent.calls == []
+
+    async def test_dark_reads_no_mutes(self, world, monkeypatch):
+        await self._run(world, monkeypatch, {"agent_asks"}, on=False)
+        assert world.calls == []
