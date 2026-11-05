@@ -611,13 +611,16 @@ class TestMigration224OnARealDatabase:
 # ── R8: the real handlers on the private database ───────────────────────────
 
 
-def _real_session(engine):
+def _real_session(engine, org: str):
     """A ``_tenant_session`` double over a REAL asyncpg connection.
 
     It opens one transaction and commits it on a clean exit, as the seam does.
-    The role is the ladder owner, so this proves the SQL and the account filter,
-    not RLS. ``test_email_tenant_bind_rls.py`` owns RLS.
+    It binds ``org`` as ``app.tenant_id``, as the seam does: the owner check
+    names the bound tenant (WS-29 H-334). The role is the ladder owner, so
+    this proves the SQL and the account filter, not RLS.
+    ``test_email_tenant_bind_rls.py`` owns RLS.
     """
+    from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
 
     url = engine.url.set(drivername="postgresql+asyncpg")
@@ -627,6 +630,8 @@ def _real_session(engine):
         aeng = create_async_engine(url)
         try:
             async with aeng.connect() as conn, conn.begin():
+                await conn.execute(text("SELECT set_config('app.tenant_id', :o, true)"),
+                                   {"o": org})
                 yield conn
         finally:
             await aeng.dispose()
@@ -683,8 +688,8 @@ def _seed(engine):
     return _Seed()
 
 
-async def _real_get(engine, aid: str, email: str) -> dict:
-    with patch.object(assistant_mod, "_tenant_session", _real_session(engine)):
+async def _real_get(engine, aid: str, email: str, org: str) -> dict:
+    with patch.object(assistant_mod, "_tenant_session", _real_session(engine, org)):
         return await assistant_mod.get_assistant_settings(
             account_id=aid, user=SimpleNamespace(email=email))
 
@@ -697,13 +702,13 @@ class TestTheSwitchOnARealDatabase:
     async def test_no_row_and_no_rules_reads_off(self, upgraded) -> None:
         s = _seed(upgraded.engine)
         aid, me = s.mailbox()
-        assert (await _real_get(upgraded.engine, aid, me))["draft_replies"] is False
+        assert (await _real_get(upgraded.engine, aid, me, s.org))["draft_replies"] is False
 
     async def test_no_row_and_a_needs_reply_rule_that_drafts_reads_on(self, upgraded) -> None:
         s = _seed(upgraded.engine)
         aid, me = s.mailbox()
         s.rule(aid, "Needs Reply", ["LABEL", "DRAFT_EMAIL"])
-        assert (await _real_get(upgraded.engine, aid, me))["draft_replies"] is True
+        assert (await _real_get(upgraded.engine, aid, me, s.org))["draft_replies"] is True
 
     async def test_no_row_and_a_needs_reply_rule_that_labels_only_reads_off(
         self, upgraded,
@@ -711,13 +716,13 @@ class TestTheSwitchOnARealDatabase:
         s = _seed(upgraded.engine)
         aid, me = s.mailbox()
         s.rule(aid, "Needs Reply", ["LABEL"])
-        assert (await _real_get(upgraded.engine, aid, me))["draft_replies"] is False
+        assert (await _real_get(upgraded.engine, aid, me, s.org))["draft_replies"] is False
 
     async def test_a_reply_system_type_counts_under_any_name(self, upgraded) -> None:
         s = _seed(upgraded.engine)
         aid, me = s.mailbox()
         s.rule(aid, "Answer these", ["DRAFT_EMAIL"], system_type="TO_REPLY")
-        assert (await _real_get(upgraded.engine, aid, me))["draft_replies"] is True
+        assert (await _real_get(upgraded.engine, aid, me, s.org))["draft_replies"] is True
 
     async def test_a_draft_on_another_rule_does_not_count(self, upgraded) -> None:
         """Only the reply rule is the switch. A custom rule can draft too, and
@@ -725,20 +730,20 @@ class TestTheSwitchOnARealDatabase:
         s = _seed(upgraded.engine)
         aid, me = s.mailbox()
         s.rule(aid, "Newsletter", ["LABEL", "DRAFT_EMAIL"])
-        assert (await _real_get(upgraded.engine, aid, me))["draft_replies"] is False
+        assert (await _real_get(upgraded.engine, aid, me, s.org))["draft_replies"] is False
 
     async def test_a_stored_false_wins_over_a_rule_that_drafts(self, upgraded) -> None:
         s = _seed(upgraded.engine)
         aid, me = s.mailbox()
         s.rule(aid, "Needs Reply", ["LABEL", "DRAFT_EMAIL"])
         s.store(aid, draft_replies=False)
-        assert (await _real_get(upgraded.engine, aid, me))["draft_replies"] is False
+        assert (await _real_get(upgraded.engine, aid, me, s.org))["draft_replies"] is False
 
     async def test_a_stored_true_wins_with_no_rules(self, upgraded) -> None:
         s = _seed(upgraded.engine)
         aid, me = s.mailbox()
         s.store(aid, draft_replies=True)
-        assert (await _real_get(upgraded.engine, aid, me))["draft_replies"] is True
+        assert (await _real_get(upgraded.engine, aid, me, s.org))["draft_replies"] is True
 
     async def test_the_rule_read_is_per_mailbox(self, upgraded) -> None:
         """Two mailboxes in one tenant. Only the second has a drafting rule."""
@@ -746,8 +751,8 @@ class TestTheSwitchOnARealDatabase:
         plain, me_plain = s.mailbox()
         legacy, me_legacy = s.mailbox()
         s.rule(legacy, "Needs Reply", ["LABEL", "DRAFT_EMAIL"])
-        assert (await _real_get(upgraded.engine, plain, me_plain))["draft_replies"] is False
-        assert (await _real_get(upgraded.engine, legacy, me_legacy))["draft_replies"] is True
+        assert (await _real_get(upgraded.engine, plain, me_plain, s.org))["draft_replies"] is False
+        assert (await _real_get(upgraded.engine, legacy, me_legacy, s.org))["draft_replies"] is True
 
     async def test_stored_draft_replies_reads_each_mailbox_alone(self, upgraded) -> None:
         """Two mailboxes in one tenant: one stored true, one with no row. The
@@ -757,7 +762,7 @@ class TestTheSwitchOnARealDatabase:
         on, _ = s.mailbox()
         none, _ = s.mailbox()
         s.store(on, draft_replies=True)
-        async with _real_session(upgraded.engine)() as conn:
+        async with _real_session(upgraded.engine, s.org)() as conn:
             assert await rules_mod.stored_draft_replies(conn, on) is True
             assert await rules_mod.stored_draft_replies(conn, none) is False
 
@@ -768,17 +773,17 @@ class TestTheSwitchOnARealDatabase:
         aid, me = s.mailbox()
         s.store(aid, learned_writing_style="Drops pleasantries.",
                 morning_brief_enabled=False)
-        get_body = await _real_get(upgraded.engine, aid, me)
+        get_body = await _real_get(upgraded.engine, aid, me, s.org)
         req = AssistantSettingsModel.model_validate(
             {**get_body, "morning_brief_enabled": True})
         with patch.object(assistant_mod, "_tenant_session",
-                          _real_session(upgraded.engine)):
+                          _real_session(upgraded.engine, s.org)):
             put_body = await assistant_mod.put_assistant_settings(
                 req=req, user=SimpleNamespace(email=me))
         assert set(put_body) == set(get_body)
         assert put_body["morning_brief_enabled"] is True
         assert put_body["learned_writing_style"] == "Drops pleasantries."
-        again = await _real_get(upgraded.engine, aid, me)
+        again = await _real_get(upgraded.engine, aid, me, s.org)
         assert again["morning_brief_enabled"] is True
 
     @pytest.mark.parametrize(("legacy", "stored", "expected"), [
@@ -798,13 +803,13 @@ class TestTheSwitchOnARealDatabase:
         s.sent(aid, "Thanks, will do.")
         memory = SimpleNamespace(add_memories_background=AsyncMock())
         with patch.object(assistant_mod, "_tenant_session",
-                          _real_session(upgraded.engine)), \
+                          _real_session(upgraded.engine, s.org)), \
                 patch.object(assistant_mod, "_llm_writing_style",
                              AsyncMock(return_value="Short and direct.")), \
                 patch.dict(sys.modules, {"acb_memory": memory}):
             await assistant_mod.generate_writing_style(
                 account_id=aid, user=SimpleNamespace(email=me))
         assert _settings(upgraded.engine)[aid][0] is expected
-        body = await _real_get(upgraded.engine, aid, me)
+        body = await _real_get(upgraded.engine, aid, me, s.org)
         assert body["draft_replies"] is expected
         assert body["writing_style"] == "Short and direct."
