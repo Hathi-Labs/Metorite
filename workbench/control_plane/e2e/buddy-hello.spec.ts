@@ -343,3 +343,17 @@ test.describe("the chips", () => {
     await expect(page.locator("[data-chat-nudge]")).toHaveCount(0);
   });
 });
+
+test.describe("the visual review rig", () => {
+  test.skip(!process.env.HELLO_SHOTS, "set HELLO_SHOTS=<dir> to capture");
+  test.use({ viewport: { width: Number(process.env.HELLO_WIDTH ?? 1440), height: Number(process.env.HELLO_HEIGHT ?? 900) } });
+
+  test("capture the hello", async ({ page }) => {
+    const server = makeServer();
+    await stub(page, server);
+    await page.goto("/");
+    await expectHello(page);
+    await page.waitForTimeout(900);
+    await shot(page, process.env.HELLO_NAME ?? "hello");
+  });
+});
