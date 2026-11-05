@@ -288,3 +288,10 @@ def test_searxng_url_is_off_by_default_and_owner_only() -> None:
 def test_searxng_url_takes_only_http(monkeypatch, value, want) -> None:
     monkeypatch.setattr(get_settings(), "searxng_url", value)
     assert wsp.searxng_url() == want
+
+
+def test_a_bad_port_never_raises_and_ref_does_not_merge_branches() -> None:
+    assert wsp.normal_url("https://a.com:99999/x") == "https://a.com:99999/x"
+    assert wsp._hit("ddgs", "t", "https://a.com:99999/x", "s") is None
+    one = wsp.normal_url("https://github.com/o/r?ref=main")
+    assert one != wsp.normal_url("https://github.com/o/r?ref=dev")

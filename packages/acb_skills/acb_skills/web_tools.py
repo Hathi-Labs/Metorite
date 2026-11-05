@@ -6,7 +6,7 @@ MAF agents and GitHub Copilot SDK agents identically.
 
 Tools
 -----
-web_search(query, max_results=5) -> str
+web_search(query, max_results=5, source="web") -> str
     Provider chain, best-first: SerpAPI (Google results, when
     SERPAPI_API_KEY / settings.serpapi_api_key is configured) → the free
     ddgs engines (DuckDuckGo/Bing/Brave/…, zero-credential rotation).

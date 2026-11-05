@@ -61,7 +61,7 @@ _TAG_RE = re.compile(r"<[^<>]+>")
 _SPACE_RE = re.compile(r"\s+")
 _DATE_RE = re.compile(r"^\d{4}(-\d{2}(-\d{2})?)?")
 #: Query parameters that name a visit, never a page. The merge drops them.
-_TRACKING = frozenset({"fbclid", "gclid", "mc_cid", "mc_eid", "ref", "ref_src"})
+_TRACKING = frozenset({"fbclid", "gclid", "mc_cid", "mc_eid", "ref_src"})
 
 
 @dataclass
@@ -133,13 +133,13 @@ def normal_url(url: str) -> str:
     own key."""
     try:
         parts = urlsplit(url.strip())
-    except ValueError:
+        port = parts.port
+    except ValueError:  # a bad port or bracket: the URL is its own key
         return url.strip()
     host = (parts.hostname or "").lower()
     if host.startswith("www."):
         host = host[4:]
     scheme = parts.scheme.lower()
-    port = parts.port
     if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
         host = f"{host}:{port}"
     query = [
@@ -251,6 +251,10 @@ def _client() -> httpx.AsyncClient:
 def _hit(provider: str, title: object, url: object, snippet: object, date: object = "") -> Hit | None:
     link = str(url or "").strip()
     if not link.lower().startswith(("http://", "https://")) or len(link) > URL_CHARS:
+        return None
+    try:
+        urlsplit(link).port  # noqa: B018 - a bad port drops the hit
+    except ValueError:
         return None
     return Hit(clean(title, TITLE_CHARS), link, clean(snippet, SNIPPET_CHARS), provider, _day(date))
 
