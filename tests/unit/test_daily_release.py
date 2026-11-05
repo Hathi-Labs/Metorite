@@ -391,7 +391,10 @@ def _eval(expr: str, ctx: dict) -> object:
 
 
 def _ctx(event: str, *, nightly: bool | None = None, skip_tests: bool | None = None,
-         hold: str = "", test: str = "success", window_open: str = "") -> dict:
+         hold: str = "", test: str = "success", window_open: str = "",
+         r8: str | None = None) -> dict:
+    # CIV-4b: `r8-gate` runs on the same release events as `test`, and a
+    # `skip_tests` dispatch skips both. So its result follows `test` here.
     return {
         "github.event_name": event,
         "github.ref": "refs/heads/main",
@@ -400,6 +403,7 @@ def _ctx(event: str, *, nightly: bool | None = None, skip_tests: bool | None = N
         "vars.RELEASE_HOLD": hold,
         "needs.lint.result": "success",
         "needs.test.result": test,
+        "needs.r8-gate.result": test if r8 is None else r8,
         "needs.release-window.outputs.open": window_open,
     }
 
@@ -432,6 +436,11 @@ def test_a_nightly_dispatch_obeys_the_window(deploy: dict) -> None:
     for shut in ("", "false"):
         assert not _runs(deploy, "publish-release", {**ctx, "needs.release-window.outputs.open": shut})
     assert _runs(deploy, "publish-release", {**ctx, "needs.release-window.outputs.open": "true"})
+    # CIV-4b: a red R8 gate holds a nightly release, even in an open window.
+    for r8 in ("failure", "cancelled", "skipped"):
+        held = {**_ctx("workflow_dispatch", nightly=True, r8=r8),
+                "needs.release-window.outputs.open": "true"}
+        assert not _runs(deploy, "publish-release", held), r8
 
 
 def test_a_nightly_dispatch_cannot_skip_the_tests(deploy: dict) -> None:
