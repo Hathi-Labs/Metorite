@@ -1437,12 +1437,6 @@ line — never reclaim a number by deleting the other entry.
   → no row means the name is free, and an `agents:manage` holder could register another agent under it.
 - **Added:** 2026-10-04 · fix round 2 of PR #598
 
-### H-232 · Compare the member's organization with the run's in `_first_party_admin_runs` · [AGENT]
-- **Metorite:** #616. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** `grep -n "member_org\|membership" apps/services/orchestrator/orchestrator/executor.py`
-  → no hit means the gate does not compare the two organizations.
-- **Added:** 2026-10-04 · fix round 2 of PR #598
-
 ### H-233 · Make the refused root agent look absent everywhere · [AGENT]
 - **Metorite:** #768. The task holds the full entry (moved 2026-10-28, D118).
 - **Check:** `grep -n '"code": type(exc).__name__' apps/services/orchestrator/orchestrator/executor.py`
