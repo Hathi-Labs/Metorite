@@ -834,8 +834,10 @@ class TestYoursAndMineOnly:
 
     async def test_mine_only_with_no_session_keeps_no_run(self, board):
         self._plant(board)
+        before = len(board.requests)
         out = _structured(await _tool("list_agent_runs", {"mine_only": True}))
-        assert out["runs"] == []
+        assert out == {"runs": [], "nextCursor": None}
+        assert len(board.requests) == before, "no gateway read for a call with no session"
 
 
 def _session_id(session: str) -> str:

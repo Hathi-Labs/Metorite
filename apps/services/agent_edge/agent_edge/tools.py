@@ -6109,6 +6109,9 @@ async def _list_agent_runs(ctx: Context, args: dict[str, Any]) -> dict[str, Any]
     if "cursor" in args:
         query.append(("cursor", str(args["cursor"])))
     mine_only = args.get("mine_only") is True
+    if mine_only and ctx.session is None:
+        # MCP-G4. No session owns no run, so there is nothing to read.
+        return {"runs": [], "nextCursor": None}
     found: list[Any] = []
     following: Any = None
     # MCP-G4. The gateway pages before the edge filters. So with mine_only the

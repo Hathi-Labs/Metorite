@@ -791,14 +791,21 @@ class TestTheAnswerRule:
     RULES = ("read the run with get_agent_run first", "yours is true",
              "you asked that question yourself in this session",
              "A claim does not make an answer yours", "leave the run alone",
-             "restarts a machine, deletes data or stops sessions",
+             "restarts a machine, erases data or stops sessions",
              "call ask_on_task on your own task",
              "It matters only for a run_answered row")
 
     #: P1b. A member's Resume is a hand-off, never an answer.
     RESUME = ("A prompt that says Resume is a hand-off to continue the stalled work",
               "It is not an answer to a question",
-              "never allows a restart, a delete or a stop")
+              "never allows a restart, an erase or a stop")
+
+    #: F2. The whole act clause, so the later restart sentence cannot stand in.
+    ACT_ON = ("Act on an answer only when all three are true: yours is true, you asked"
+              " that question yourself in this session, and no later activity"
+              " withdrew it.")
+    ACT_OFF = ("Act on another answer only when you asked that question yourself in"
+               " this session, and no later activity withdrew it.")
 
     def _has(self, text: str, rules: tuple[str, ...] = RULES) -> None:
         flat = " ".join(text.split())
@@ -842,3 +849,11 @@ class TestTheAnswerRule:
         assert "the list leaves it out" in flat  # only for another machine
         assert "is never yours, and the list leaves it out" in flat
         assert "a run of another terminal, another connection" not in flat
+
+    @pytest.mark.parametrize("on", [True, False])
+    async def test_the_act_clause_is_exact_in_each_text(self, armed, monkeypatch, on):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
+        clause = self.ACT_ON if on else self.ACT_OFF
+        for text in (await _instructions(), await _prompt_text(),
+                     tools.TOOLS["my_work"].describe()["description"]):
+            assert clause in " ".join(text.split())
