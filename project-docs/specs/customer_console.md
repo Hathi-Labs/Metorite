@@ -9900,8 +9900,8 @@ names the route and its fences.
 `DECIDE_ENABLED`. The "As built" note under CP-13c names the fences.
 
 ✅ **CP-13d is BUILT and on main (#444).** The `decide` tool is in
-the core floor of every MAF agent. It sends no member, and the "As built" note
-under CP-13d says why.
+the core floor of every MAF agent. Since H-165 (2026-11-05) it sends the
+session-proven member only, and the "As built" note under CP-13d says why.
 
 **CP-13e to CP-13g are not built.** Owner directive, 2026-09-23:
 
@@ -10494,7 +10494,7 @@ not an agent.**
   no member field. The core family holds 20 tools, so
   `test_skills_registry.py` and `test_integrations_skills_route.py` count 20.
   The addendum has a full "Fast decisions" section and a compact line.
-- 🔴 **The R11 finding: the tool sends NO member.** Each run's member comes
+- 🔴 **The R11 finding: the tool sends the PROVEN member only.** Each run's member comes
   from `event_payload["user_email"]` or `["user_id"]`. `executor._payload_user`
   reads it, and `_bind_run_identity` binds it for the run.
   - Server-bound paths. The email chat (`email/automation/chat.py`) and email
@@ -10512,12 +10512,17 @@ not an agent.**
     body, and any holder of the internal token or the webhook secret can name
     a member.
   - In a shared room the run's member is the room compartment, not an email.
-  - A tool cannot tell a server-bound member from a claimed one. On the
-    deployment arm `X-CC-Member` selects the tenant. So the tool sends no
-    member on every path.
+  - On the deployment arm `X-CC-Member` selects the tenant. So the tool sends
+    a member only when the run binding proves it (H-165, 2026-11-05). The
+    route binds `member_verified="1"` only from a signed-in session (H-73).
+    `decide_tools._proven_member` reads it through
+    `write_artifact._verified_member`. It also needs an "@" in the user. Every
+    other path sends `member=None, member_proven=False`. The tool never reads
+    the memory user id, which can be a `room:` id or a claim.
   - The result: an org-key box serves, because its key names the organization.
-    A deployment-key box refuses in the client with no request, and the tool
-    gives the unavailable text. `agent` and `run_id` still come from
+    A deployment-key box serves a proven member. With no proven member it
+    refuses in the client with no request, and the tool gives the unavailable
+    text. `agent` and `run_id` still come from
     `get_run_context()`, because they only attribute a call.
   - ⚠️ `member=None` on this tool does not close the gap alone. The executor
     also binds the payload's member as the run-context `user` (`_corr_user`
@@ -10528,8 +10533,9 @@ not an agent.**
     holder of the internal bearer or the webhook HMAC secret can reach it.
     Both can already assert any identity (`acb_auth/deps.py`, branch 1b). The
     browser path, the Control Plane chat proxy, cannot name a member.
-  - The tool can send a member again only when the gateway doors stop taking
-    one from the body. HANDOFF H-165 holds that work.
+  - H-337 closed the three `/agent/run*` doors, and H-165 Slice A made the
+    tool send the proven member. The webhook door still spreads the sender's
+    payload. HANDOFF H-165 holds that work (Slice B, an owner decision).
 - Fences: `tests/unit/test_decide_tool.py` (hermetic, because no SQL runs on
   this path), `test_core_tool_floor.py::test_floor_includes_decide` and
   `test_tool_schema_diet.py`.

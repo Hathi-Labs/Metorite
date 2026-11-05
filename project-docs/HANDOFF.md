@@ -627,13 +627,19 @@ line — never reclaim a number by deleting the other entry.
   open.
 - **Added:** 2026-09-23 · the CP-13a deploy check
 
-### H-165 · CP-13 is built through CP-13d. Stop the gateway taking the member from the body, so `decide` serves a shared box · [AGENT]
+### H-165 · The webhook door names the run's member from the sender's payload. Drop that claim · [OWNER]
 - **Metorite:** #559. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n 'member=None' packages/acb_skills/acb_skills/decide_tools.py`
-  → a hit means the `decide` tool still sends no member, and this is open.
-  CP-13a to CP-13d are BUILT (2026-09-23 and 2026-09-24).
-- **Added:** 2026-09-23 · the Jev planning session · **rewritten 2026-09-24**
-  when CP-13d was built
+- **What is left:** Slice B only. `receive_webhook`
+  (`apps/services/gateway/gateway/routes/agent.py` ~:5394) spreads
+  `event.payload`, so a sender's `user_email` names the run's member
+  unverified. Drop it, pending owner OK.
+- **Done:** H-337 fixed the three `/agent/run*` doors (commit dbb046e04).
+  Slice A (2026-11-05): the `decide` tool sends the session-proven member
+  only (`decide_tools._proven_member`). Fence: `tests/unit/test_decide_tool.py`.
+- **Check:** `rg -n '\*\*event\.payload' apps/services/gateway/gateway/routes/agent.py`
+  → a hit means the webhook door still spreads the payload, and this is open.
+- **Added:** 2026-09-23 · the Jev planning session · **rewritten 2026-11-05**
+  when Slice A was built
 
 ### H-163 · My Tasks: a signed-in member checks capture into Projects · [OWNER]
 - **Metorite:** #549. The task holds the full entry (moved 2026-10-27, D118).
