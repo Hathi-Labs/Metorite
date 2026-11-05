@@ -985,6 +985,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   // control (`chat_first_surface.md` §4.8).
   const phoneChrome = phone && chatFirst;
   const phoneTap = phoneChrome ? "h-11 w-11 glass:h-11 glass:w-11 glass:pointer-coarse:h-11 glass:pointer-coarse:w-11" : "";
+  // The switcher shows a title, so it keeps the 44 px height and lets the width follow the title (task 1717).
+  const phoneTapTall = phoneChrome ? "h-11 glass:h-11 glass:pointer-coarse:h-11" : "";
   const moreActs = useMemo(
     () =>
       phoneChrome && chat.activeId
@@ -1081,7 +1083,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         {columnForm ? (
           <ChatTitle session={active} />
         ) : (
-          <ChatSwitcher session={active} open={pickerShown} onToggle={() => setPickerOpen((o) => !o)} className={phoneTap} />
+          <ChatSwitcher session={active} open={pickerShown} onToggle={() => setPickerOpen((o) => !o)} className={phoneTapTall} />
         )}
         <Button
           variant="secondary"
