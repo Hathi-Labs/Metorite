@@ -161,20 +161,33 @@ test.describe("the table grips (KB-2i)", () => {
     const body = await edit(page);
 
     const drag = async (gripName: string, from: string, to: string) => {
-      await body.locator("td, th", { hasText: from }).first().hover();
-      const grip = page.getByRole("button", { name: gripName });
-      await expect(grip).toBeVisible();
-      // Rest on the grip first. The pointer's arrival re-renders the grips,
-      // and a press in that same frame lands on the old one.
-      await grip.hover();
-      await expect(grip).toBeVisible();
-      const g = (await grip.boundingBox())!;
-      const target = (await body.locator("td, th", { hasText: to }).first().boundingBox())!;
-      await page.mouse.move(g.x + g.width / 2, g.y + g.height / 2);
-      await page.mouse.down();
-      await page.mouse.move(g.x + g.width / 2 + 2, g.y + g.height / 2 + 2, { steps: 2 });
-      await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 8 });
-      await expect(page.locator(".kb-table-drop-line")).toBeVisible();
+      // The grips re-render as the pointer arrives and as the editor's own
+      // selection update lands, so a press can start before the handles hold
+      // their cell (a flake on 1 run in 3, CIV-8a). A press that starts no
+      // drag is released and made again. A drag that starts is never retried.
+      await expect(async () => {
+        await body.locator("td, th", { hasText: from }).first().hover();
+        const grip = page.getByRole("button", { name: gripName });
+        await expect(grip).toBeVisible();
+        // Rest on the grip first. The pointer's arrival re-renders the grips,
+        // and a press in that same frame lands on the old one.
+        await grip.hover();
+        await expect(grip).toBeVisible();
+        const g = (await grip.boundingBox())!;
+        const target = (await body.locator("td, th", { hasText: to }).first().boundingBox())!;
+        await page.mouse.move(g.x + g.width / 2, g.y + g.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(g.x + g.width / 2 + 2, g.y + g.height / 2 + 2, { steps: 2 });
+        await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 8 });
+        try {
+          await expect(page.locator(".kb-table-drop-line")).toBeVisible({ timeout: 2_000 });
+        } catch (error) {
+          // No drag began. The release is a click and opens the grip's menu, so close it.
+          await page.mouse.up();
+          await page.keyboard.press("Escape");
+          throw error;
+        }
+      }).toPass({ timeout: 30_000 });
       await page.mouse.up();
       await expect(page.locator(".kb-table-drop-line")).toHaveCount(0);
     };
@@ -203,12 +216,22 @@ test.describe("footnotes (KB-2i)", () => {
     // The editor draws its node views just after it mounts, so a click in
     // that moment can miss. Click again until the caret is in the note.
     const note = page.locator(".kb-footnote-body p", { hasText: "See the sales terms." });
+    // ⚠️ Read the caret from the editor's own state, not from the DOM
+    // selection. The two differ for a moment after a click. When the keys
+    // came in that moment, "Ask first" went to the top of the page (CI,
+    // 2026-11-04, CIV-8a). The caret must also still hold after a pause.
+    const caretInNote = () =>
+      page.locator(".ProseMirror[contenteditable='true']").evaluate(
+        (el) =>
+          (el as unknown as { editor: { state: { selection: { $head: { parent: { textContent: string } } } } } }).editor
+            .state.selection.$head.parent.textContent,
+      );
     await expect(async () => {
       await note.click();
-      expect(await page.evaluate(() => window.getSelection()?.anchorNode?.textContent ?? "")).toContain(
-        "See the sales terms.",
-      );
-    }).toPass({ timeout: 10_000 });
+      expect(await caretInNote()).toContain("See the sales terms.");
+      await page.waitForTimeout(400);
+      expect(await caretInNote()).toContain("See the sales terms.");
+    }).toPass({ timeout: 20_000 });
     await page.keyboard.press("End");
     await page.keyboard.press("Enter");
     await page.keyboard.press("Enter");

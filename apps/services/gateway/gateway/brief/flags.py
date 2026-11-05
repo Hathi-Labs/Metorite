@@ -1,12 +1,16 @@
 """The switches of the core brief (WS-BRIEF BR-2a-1, ``core_brief.md`` §10).
 
-This module is the ONE reader of the three ``BRIEF_*`` settings.
+This module is the ONE reader of the ``BRIEF_*`` settings.
 
 * ``BRIEF_ENABLED`` — the switch of the planner and the runs, default OFF.
 * ``BRIEF_ORGS`` — the organization ids that get a brief. Empty allows none,
   and there is no ``*``.
 * ``BRIEF_IN_APP`` — the switch of the in-app delivery (BR-2c-1), default
   OFF: ``GET /brief/today`` and the stored lines in the chat's first turn.
+* ``BRIEF_EXCEPTIONS`` — the switch of the exception rules (BR-5), default
+  OFF.
+* ``BRIEF_COMPOSE`` — the switch of the phrase step (BR-2a-2), default OFF.
+  On, a run with 4 claims or more makes one model call for the lead.
 
 An org gets a brief only when the switch is on AND the org is on the list.
 The org always comes from the worker's own discovery read, never from a
@@ -49,6 +53,15 @@ def exceptions(organization_id: str | None) -> bool:
     ``BRIEF_EXCEPTIONS`` is on (BR-5). Default OFF. Off, Reach decides what
     may interrupt by the class table, as before."""
     if getattr(get_settings(), "brief_exceptions", False) is not True:
+        return False
+    return org_allowed(organization_id)
+
+
+def compose(organization_id: str | None) -> bool:
+    """True when the org gets a brief (:func:`org_allowed`) AND
+    ``BRIEF_COMPOSE`` is on (BR-2a-2). Default OFF. Off, the run makes no
+    model call, and the lead is the template lead."""
+    if getattr(get_settings(), "brief_compose", False) is not True:
         return False
     return org_allowed(organization_id)
 

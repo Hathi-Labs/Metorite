@@ -123,7 +123,8 @@ reference tied to code. Do not put product specs in `docs/`.
    whatever SQL they get. Five live bugs shipped green that way.
 7. **R1 — migration numbers are taken at build time and re-checked at merge.**
    Three collisions in two weeks. `bash scripts/premerge.sh` does the re-check,
-   right before `gh pr merge`.
+   right before `gh pr merge`. It runs the collision fences only. Add
+   `--with-tests` to run the affected tests too (D176).
 8. **Verify delivery by evidence, never by a green job.** Migration ledger
    lines, the deployed SHA, the log line. Four deploys once reported success
    while shipping nothing.
