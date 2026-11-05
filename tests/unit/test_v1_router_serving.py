@@ -409,7 +409,9 @@ async def test_spec_violating_messages_are_repaired_before_routing(monkeypatch, 
     }
     await v1_compat._handle_chat_completions(FakeRequest(body))
     payload, _ = spy.router_calls[0]
-    assert payload["messages"][0]["content"] == ""
+    # Task 1787: None, not "". litellm turns "" into a visible placeholder
+    # sentence for Anthropic, and the model copies it into its replies.
+    assert payload["messages"][0]["content"] is None
     assert payload["messages"][1]["content"] == "[tool result]"
 
 
