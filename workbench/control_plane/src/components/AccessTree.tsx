@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/Input";
 import {
   NO_SELECTION,
   SEARCH_THRESHOLD,
+  TOO_LONG_NOTICE,
   analyzeTree,
   parentIds,
   searchMatches,
@@ -59,6 +60,13 @@ export default function AccessTree({ tree, selection, onChange, disabled }: Acce
       return next;
     });
 
+  if (total === 0 && tree.truncated) {
+    return (
+      <p className="rounded-md border border-border p-3 text-xs text-warning" role="status" data-testid="access-tree-cut">
+        {TOO_LONG_NOTICE}
+      </p>
+    );
+  }
   if (total === 0) {
     return <p className="rounded-md border border-border p-3 text-xs text-muted-foreground">You see no team projects.</p>;
   }

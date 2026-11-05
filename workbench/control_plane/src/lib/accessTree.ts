@@ -26,12 +26,22 @@ export const MAX_TREE_NODES = 500;
 /** The gateway caps each list at 50 ids (`_MAX_PINS`). */
 export const MAX_MARKS = 50;
 
+/** What the member reads when the list is too long to show even one root. */
+export const TOO_LONG_NOTICE =
+  "Your project list is too long to pick from here. Choose All my projects.";
+
 export interface ProjectNode {
   id: string;
   name: string;
   depth: number;
   parent: string | null;
   children: string[];
+  /**
+   * The `parent_project_id` of the row, as the gateway sends it. A team root
+   * can hold the id of a PERSONAL project here (migration 297 leaves a team
+   * node under a personal root). It is null or absent for a plain root.
+   */
+  parentProject: string | null;
   /** The project is archived. The gateway reach has no archive filter, so it still counts. */
   archived: boolean;
 }
@@ -54,12 +64,15 @@ export interface ProjectTree {
    * approval pins these when the personal switch is on.
    */
   personalRoots: string[];
+  /** The ids of EVERY node of the personal tree, at any depth. */
+  personalIds: string[];
 }
 
 interface RawNode {
   id?: unknown;
   name?: unknown;
   archived_at?: unknown;
+  parent_project_id?: unknown;
   children?: unknown;
 }
 
@@ -89,6 +102,7 @@ export function buildProjectTree(raw: unknown, limit = MAX_TREE_NODES): ProjectT
         parent: parent ? parent.id : null,
         children: [],
         archived: !!item.archived_at,
+        parentProject: typeof item.parent_project_id === "string" ? item.parent_project_id : null,
       };
       const start = all.length;
       all.push(node);
@@ -114,7 +128,17 @@ export function buildProjectTree(raw: unknown, limit = MAX_TREE_NODES): ProjectT
   const personalRoots = Array.isArray(top?.personal)
     ? (top!.personal as RawNode[]).filter((n) => n && typeof n.id === "string").map((n) => n.id as string)
     : [];
-  return { nodes, byId, truncated, totalSeen: all.length, personalRoots };
+  const personalIds: string[] = [];
+  const collect = (list: unknown) => {
+    if (!Array.isArray(list)) return;
+    for (const n of list as RawNode[]) {
+      if (!n || typeof n.id !== "string") continue;
+      personalIds.push(n.id);
+      collect(n.children);
+    }
+  };
+  collect(top?.personal);
+  return { nodes, byId, truncated, totalSeen: all.length, personalRoots, personalIds };
 }
 
 export interface Selection {
@@ -259,21 +283,42 @@ export function cleanSelection(tree: ProjectTree, sel: Selection): Selection {
 export type ProjectMode = "all" | "pick";
 
 /**
+ * The team roots that a personal pin would reach by accident.
+ *
+ * Migration 297 can leave a team project T under a personal project P. The
+ * tree lists T as a team root, so the member sees it unticked. But the
+ * gateway walks from the pin on P down to T. So each such root that the
+ * member did not tick goes on the left-out list. A root that the member
+ * ticked stays off it.
+ */
+export function personalSpillover(tree: ProjectTree, sel: Selection): string[] {
+  const personal = new Set(tree.personalIds);
+  if (personal.size === 0) return [];
+  const facts = analyzeTree(tree, sel);
+  return tree.nodes
+    .filter((n) => n.parent === null && n.parentProject !== null && personal.has(n.parentProject))
+    .filter((n) => !facts[n.id].reached && !sel.leftOut.includes(n.id))
+    .map((n) => n.id);
+}
+
+/**
  * The two lists the approval sends. "All my projects" sends none.
  *
  * ⚠️ A pinned connection reaches a personal project only through a pin
  * (`_narrow_for_agent` starts the walk at the pins). So in "pick" mode the
  * caller passes the member's own personal roots when the personal switch is
  * on, and they go on the pin list after the picks. A personal root made
- * after the connect is not pinned.
+ * after the connect is not pinned. `spillover` (see `personalSpillover`) goes
+ * on the left-out list after the member's own marks.
  */
 export function projectLists(
   mode: ProjectMode,
   sel: Selection,
   personalRoots: readonly string[] = [],
+  spillover: readonly string[] = [],
 ): Selection {
   if (mode === "all") return NO_SELECTION;
-  return { pins: [...sel.pins, ...personalRoots], leftOut: [...sel.leftOut] };
+  return { pins: [...sel.pins, ...personalRoots], leftOut: [...sel.leftOut, ...spillover] };
 }
 
 /**
@@ -281,21 +326,23 @@ export function projectLists(
  *
  * "Only the ones I pick" with nothing ticked would send no pin, and the
  * gateway reads no pin as every project. So the page refuses it.
- * `personalPins` is how many personal roots the approval adds to the pins.
+ * `personalPins` is how many personal roots the approval adds to the pins,
+ * and `extraLeftOut` is how many spillover roots it adds to the left-out list.
  */
 export function projectsProblem(
   mode: ProjectMode,
   tree: ProjectTree | null,
   sel: Selection,
   personalPins = 0,
+  extraLeftOut = 0,
 ): string | null {
   if (mode === "all") return null;
   if (!tree) return "Metorite has not listed your projects yet.";
   if (tree.nodes.length === 0 && tree.truncated) {
-    return "Your project list is too long to pick from here. Choose All my projects.";
+    return TOO_LONG_NOTICE;
   }
   if (selectedCount(tree, sel) === 0) return "Pick one project or more, or choose All my projects.";
-  if (sel.pins.length + personalPins > MAX_MARKS || sel.leftOut.length > MAX_MARKS) {
+  if (sel.pins.length + personalPins > MAX_MARKS || sel.leftOut.length + extraLeftOut > MAX_MARKS) {
     return `Metorite takes at most ${MAX_MARKS} picks and ${MAX_MARKS} left-out projects. Your personal projects count as picks. Tick a parent to cover more.`;
   }
   return null;

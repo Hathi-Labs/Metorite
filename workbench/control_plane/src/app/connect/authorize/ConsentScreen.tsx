@@ -43,6 +43,8 @@ import {
   buildProjectTree,
   cleanSelection,
   grantSummary,
+  TOO_LONG_NOTICE,
+  personalSpillover,
   projectLists,
   projectsProblem,
   selectedCount,
@@ -321,8 +323,11 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
   // A pinned connection reaches a personal project only through a pin, so in
   // "pick" mode the personal switch pins the member's own personal roots.
   const personalPins = mode === "pick" && includePersonal && tree ? tree.personalRoots : [];
-  const lists = projectLists(mode, tree ? cleanSelection(tree, selection) : NO_SELECTION, personalPins);
-  const projectIssue = projectsProblem(mode, tree, selection, personalPins.length);
+  const cleaned = tree ? cleanSelection(tree, selection) : NO_SELECTION;
+  // A team root under a personal project would join through the personal pin.
+  const spillover = tree && personalPins.length > 0 ? personalSpillover(tree, cleaned) : [];
+  const lists = projectLists(mode, cleaned, personalPins, spillover);
+  const projectIssue = projectsProblem(mode, tree, selection, personalPins.length, spillover.length);
   const summary = grantSummary({
     who: view.client.host,
     scopes: grantedScopes(view, chosen),
@@ -510,7 +515,7 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
               </p>
             )}
             {tree !== null && <AccessTree tree={tree} selection={selection} onChange={setSelection} />}
-            {projectIssue && tree !== null && (
+            {projectIssue && tree !== null && projectIssue !== TOO_LONG_NOTICE && (
               <p className="mt-2 text-xs text-warning" data-testid="consent-project-issue">
                 {projectIssue}
               </p>
@@ -556,7 +561,7 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          Change or remove this access any time in <strong className="font-semibold">Integrations → AI agents</strong>.
+          Remove this access any time in <strong className="font-semibold">Integrations → AI agents</strong>.
         </p>
       </div>
     </Frame>

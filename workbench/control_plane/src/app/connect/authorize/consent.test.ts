@@ -12,6 +12,8 @@ import {
   cleanSelection,
   grantSummary,
   parentIds,
+  personalSpillover,
+  TOO_LONG_NOTICE,
   projectLists,
   projectsProblem,
   searchMatches,
@@ -413,6 +415,48 @@ describe("personal projects need a pin (a pinned connection reaches no other)", 
   });
 });
 
+describe("a team root under a personal project (migration 297)", () => {
+  // `t` is a team root whose parent_project_id is the personal project `me`.
+  const raw = {
+    rows: [
+      { id: "a", name: "A" },
+      { id: "t", name: "T", parent_project_id: "me" },
+      { id: "u", name: "U", parent_project_id: "me" },
+      { id: "plain", name: "Plain", parent_project_id: null },
+    ],
+    personal: [{ id: "me", name: "Mine", children: [{ id: "me-kid", name: "Kid" }] }],
+  };
+  const tree = buildProjectTree(raw);
+
+  it("leaves out each such root that the member did not tick", () => {
+    const sel = tickProject(tree, NO_SELECTION, "a");
+    expect(personalSpillover(tree, sel)).toEqual(["t", "u"]);
+  });
+
+  it("keeps a root off the list when the member ticked it", () => {
+    const sel = tickProject(tree, tickProject(tree, NO_SELECTION, "a"), "t");
+    expect(personalSpillover(tree, sel)).toEqual(["u"]);
+  });
+
+  it("sends the spillover on the left-out list after the pin on the personal root", () => {
+    const sel = tickProject(tree, NO_SELECTION, "a");
+    const lists = projectLists("pick", sel, tree.personalRoots, personalSpillover(tree, sel));
+    expect(lists).toEqual({ pins: ["a", "me"], leftOut: ["t", "u"] });
+  });
+
+  it("sends none when the switch is off, and none for a plain root", () => {
+    const sel = tickProject(tree, NO_SELECTION, "a");
+    expect(projectLists("pick", sel, [], []).leftOut).toEqual([]);
+    expect(personalSpillover(buildProjectTree({ rows: [{ id: "p", name: "P" }], personal: [] }), NO_SELECTION)).toEqual([]);
+  });
+
+  it("counts the extra marks toward the 50", () => {
+    const sel = tickProject(tree, NO_SELECTION, "a");
+    expect(projectsProblem("pick", tree, sel, 1, 50)).toBeNull();
+    expect(projectsProblem("pick", tree, sel, 1, 51)).toMatch(/at most 50/);
+  });
+});
+
 describe("a long list is cut at a root, and says so", () => {
   const kids = (r: string, n: number) => Array.from({ length: n }, (_, i) => ({ id: `${r}${i}`, name: `${r} ${i}` }));
 
@@ -441,6 +485,9 @@ describe("a long list is cut at a root, and says so", () => {
     const big = buildProjectTree({ rows: [{ id: "A", name: "A", children: kids("a", 600) }] });
     expect(big.nodes).toEqual([]);
     expect(projectsProblem("pick", big, NO_SELECTION)).toMatch(/too long/);
+    // The words the member reads are the cut notice, never "You see no team projects".
+    expect(projectsProblem("pick", big, NO_SELECTION)).toBe(TOO_LONG_NOTICE);
+    expect(big.truncated && big.nodes.length === 0).toBe(true);
   });
 });
 

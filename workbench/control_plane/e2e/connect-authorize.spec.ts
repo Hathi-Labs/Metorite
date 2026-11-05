@@ -320,6 +320,51 @@ test.describe("the consent page of an outside agent", () => {
     await expect(page.getByTestId("tree-row-Root B")).toHaveCount(0);
   });
 
+  test("a lone root over the cap says the list is too long, not that there are no projects", async ({ page }) => {
+    await stub(page);
+    const tree = {
+      rows: [{ id: "r-big", name: "Big", children: Array.from({ length: 520 }, (_, i) => ({ id: `b-${i}`, name: `B ${i}`, children: [] })) }],
+      personal: [],
+    };
+    await page.route("**/api/projects/tree", (r) =>
+      r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(tree) }),
+    );
+    await page.goto(PAGE);
+    await pickMode(page);
+    await expect(page.getByTestId("access-tree-cut")).toContainText("too long to pick from here");
+    await expect(page.getByText("You see no team projects.")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Approve" })).toBeDisabled();
+  });
+
+  test("a team root under a personal project is left out when the personal pin is sent", async ({ page }) => {
+    const approvals = await stub(page);
+    const tree = {
+      rows: [
+        { id: "p-a", name: "Alpha", children: [] },
+        { id: "p-t", name: "Spill", parent_project_id: "p-me", children: [] },
+      ],
+      personal: [{ id: "p-me", name: "My space", children: [] }],
+    };
+    await page.route("**/api/projects/tree", (r) =>
+      r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(tree) }),
+    );
+    await page.goto(PAGE);
+    await pickMode(page);
+    await page.getByRole("checkbox", { name: "Alpha" }).check();
+    await page.getByRole("button", { name: "Approve" }).click();
+    await page.waitForURL(APPROVED);
+    const body = approvals[0].postDataJSON();
+    expect(body.pinned_projects).toEqual(["p-a", "p-me"]);
+    expect(body.left_out_projects).toEqual(["p-t"]);
+  });
+
+  test("the footer says Remove, until Change access exists (EA-17c)", async ({ page }) => {
+    await stub(page);
+    await page.goto(PAGE);
+    await expect(page.getByText("Remove this access any time in")).toBeVisible();
+    await expect(page.getByText("Change or remove")).toHaveCount(0);
+  });
+
   test("unticking personal access sends it as false", async ({ page }) => {
     const approvals = await stub(page);
     await page.goto(PAGE);
