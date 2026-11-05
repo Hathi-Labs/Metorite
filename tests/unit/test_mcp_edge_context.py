@@ -821,6 +821,17 @@ class TestYoursAndMineOnly:
         mine = await self._call_in(self.MINE, "list_agent_runs", {"mine_only": True})
         assert [r["id"] for r in mine["runs"]] == [_uuid(6601)]
 
+    async def test_mine_only_reads_on_past_a_page_of_sibling_runs(self, board, monkeypatch):
+        """P2a. The gateway pages 50 rows. Page 1 holds only sibling runs, page 2
+        holds the own run, and the edge must read on to find it."""
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        board.runs = [_run(_uuid(7000 + n), _uuid(8700 + n), state="answered",
+                           session=self.SIBLING) for n in range(50)]
+        board.runs.append(_run(_uuid(7100), _uuid(8800), state="answered", session=self.MINE))
+        out = await self._call_in(self.MINE, "list_agent_runs", {"mine_only": True})
+        assert [r["id"] for r in out["runs"]] == [_uuid(7100)]
+        assert out["nextCursor"] is None
+
     async def test_mine_only_with_no_session_keeps_no_run(self, board):
         self._plant(board)
         out = _structured(await _tool("list_agent_runs", {"mine_only": True}))

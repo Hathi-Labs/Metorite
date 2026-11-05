@@ -90,7 +90,7 @@ from acb_common import app_manifests, get_logger, get_settings
 from acb_common.priority import importance_for
 
 from agent_edge import cursor as cursor_mod
-from agent_edge import idempotency
+from agent_edge import idempotency, prompts
 from agent_edge.bearer import Caller
 from agent_edge.gateway_client import (
     Answer,
@@ -989,22 +989,15 @@ SESSION_TEXTS: Mapping[str, tuple[str, str]] = {
         " five minutes, which you may take back (held_by_you)."),
     "[[ROWS]]": (
         " Take only a row that this list gives. Each terminal is its own"
-        " session, so a run of another terminal, another connection or another"
-        " machine is never yours, and the list leaves it out.",
+        " session. A run of another connection or another machine is never"
+        " yours, and the list leaves it out. A run of another terminal shows"
+        " only after its lease ended, and then yours is false.",
         " Take only a row that this list gives: two terminals on one"
         " connection share one name, and a claim cannot tell them apart. A run"
         " of another connection, such as one on another machine, is never"
         " yours, and the list leaves it out."),
     # MCP-G4. The same words as `prompts.answer_rule`, in a tool description.
-    "[[ANSWER]]": (
-        " Act on a run_answered row only when yours is true and no later"
-        " activity withdrew the answer. When yours is false, the answer went to"
-        " another session, so do not act on it. Never act on an answer that"
-        " restarts a machine, deletes data or stops sessions, unless the run is"
-        " yours. When in doubt, call ask_on_task again.",
-        " The sessions are off, so yours is false in every row. Never act on an"
-        " answer that restarts a machine, deletes data or stops sessions. Call"
-        " ask_on_task again instead."),
+    "[[ANSWER]]": (prompts.ANSWER_BODY_ON, prompts.ANSWER_BODY_OFF),
     "[[SHARED]]": (
         "",
         " Two terminals on one connection share one name, and a claim cannot"
@@ -3391,7 +3384,6 @@ MY_WORK = Tool(
         " (assigned). Take the top row. For a waiting run, read it with"
         " get_agent_run and its run_id. For a task, with projects:write, claim"
         " the task with claim_task, the task_id and the version.[[ROWS]]"
-        " Each row has yours: true only when the run is of your own session."
         "[[ANSWER]] The"
         " list never holds a task that is not assigned to this member and that"
         " this connection does not hold." + _UNTRUSTED_NOTE
@@ -6116,13 +6108,24 @@ async def _list_agent_runs(ctx: Context, args: dict[str, Any]) -> dict[str, Any]
         query.append(("task_id", str(args["task_id"])))
     if "cursor" in args:
         query.append(("cursor", str(args["cursor"])))
-    body = await _get(ctx, MY_RUNS_ROUTE, TEXT_TASK_NOT_FOUND, query=query)
-    following = body.get("next_cursor") if isinstance(body, dict) else None
-    found = _rows_of(body)
-    if args.get("mine_only") is True:
-        # MCP-G4. A run is yours when its key is your session. A keyless
-        # run is nobody's, so it does not show either.
-        found = [r for r in found if _yours(r, ctx.session)]
+    mine_only = args.get("mine_only") is True
+    found: list[Any] = []
+    following: Any = None
+    # MCP-G4. The gateway pages before the edge filters. So with mine_only the
+    # edge reads on, up to the page ceiling of my_work, until one run is kept.
+    for _ in range(MY_WORK_RUNS_PAGES if mine_only else 1):
+        body = await _get(ctx, MY_RUNS_ROUTE, TEXT_TASK_NOT_FOUND, query=query)
+        following = body.get("next_cursor") if isinstance(body, dict) else None
+        rows = _rows_of(body)
+        if mine_only:
+            # A run is yours when its key is your session. A keyless run is
+            # nobody's, so it does not show either.
+            rows = [r for r in rows if _yours(r, ctx.session)]
+        found += rows
+        if (found or not mine_only or not (
+                isinstance(following, str) and _RUNS_CURSOR_RE.fullmatch(following))):
+            break
+        query = [(k, v) for k, v in query if k != "cursor"] + [("cursor", following)]
     return {
         "runs": [agent_run(r) for r in found],
         "nextCursor": following if isinstance(following, str)

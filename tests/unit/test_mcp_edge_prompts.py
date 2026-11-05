@@ -789,8 +789,16 @@ class TestTheAnswerRule:
     drops ``{answer}`` (``test_the_instructions_carry_the_rule``)."""
 
     RULES = ("read the run with get_agent_run first", "yours is true",
-             "do not act on it", "restarts a machine, deletes data or stops sessions",
-             "call ask_on_task again")
+             "you asked that question yourself in this session",
+             "A claim does not make an answer yours", "leave the run alone",
+             "restarts a machine, deletes data or stops sessions",
+             "call ask_on_task on your own task",
+             "It matters only for a run_answered row")
+
+    #: P1b. A member's Resume is a hand-off, never an answer.
+    RESUME = ("A prompt that says Resume is a hand-off to continue the stalled work",
+              "It is not an answer to a question",
+              "never allows a restart, a delete or a stop")
 
     def _has(self, text: str, rules: tuple[str, ...] = RULES) -> None:
         flat = " ".join(text.split())
@@ -818,3 +826,19 @@ class TestTheAnswerRule:
     def test_the_list_runs_tool_names_mine_only(self):
         assert "mine_only" in tools.TOOLS["list_agent_runs"].input_schema["properties"]
         assert "mine_only" in tools.TOOLS["list_agent_runs"].description
+
+    @pytest.mark.parametrize("on", [True, False])
+    async def test_the_resume_sentence_shows_in_each_text(self, armed, monkeypatch, on):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
+        for text in (await _instructions(), await _prompt_text(),
+                     tools.TOOLS["my_work"].describe()["description"]):
+            self._has(text, self.RESUME)
+
+    def test_the_rows_text_agrees_with_the_list(self, monkeypatch):
+        """P2b. A sibling run shows after its lease ended, with yours false."""
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        flat = " ".join(tools.TOOLS["my_work"].describe()["description"].split())
+        assert "only after its lease ended, and then yours is false" in flat
+        assert "the list leaves it out" in flat  # only for another machine
+        assert "is never yours, and the list leaves it out" in flat
+        assert "a run of another terminal, another connection" not in flat
