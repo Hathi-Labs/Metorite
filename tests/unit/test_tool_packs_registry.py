@@ -8,7 +8,8 @@ catches. What is locked:
    ``own_tool_scope``, no tool is in both, and the split is 31 and 28.
 2. A pack holds at most 35 tools.
 3. ``packs_on`` is the one reader of the flag, it fails closed, and no
-   caller reads it yet.
+   caller reads it yet. A pack of ``FOLLOWS`` is on wherever its parent
+   is on (PJP-2).
 4. A pack is not an injected family: a toggle of it narrows no injected
    scope, and the skill index and the per-agent matrix never list it.
 5. ``build_catalog`` prices a pack from its owner's tools and its rules, and
@@ -102,7 +103,7 @@ def test_both_email_families_name_the_email_assistant_as_owner() -> None:
     assert sf.pack_slugs() == (
         "email", "email-setup", "crm-records",
         "projects", "projects-plan", "projects-structure", "projects-bulk",
-        "projects-reminders", "projects-authority", "studio",
+        "projects-reminders", "projects-reports", "projects-authority", "studio",
     )
     for slug in ("email", "email-setup"):
         assert sf.SKILL_FAMILIES[slug]["owner"] == EA
@@ -265,6 +266,75 @@ def test_packs_on_keeps_only_real_pack_slugs(_flag) -> None:
     """Mutation: an unknown slug, or a family that is no pack, comes back."""
     _flag("email, bogus, memory", ORG_A)
     assert tp.packs_on(ORG_A) == frozenset({"email"})
+
+
+#: Production's ``TOOL_PACKS`` on 2026-11-04, as the owner gave it (task 1479).
+PRODUCTION_TOOL_PACKS = (
+    "email,email-setup,crm-records,projects,projects-plan,projects-structure,"
+    "projects-bulk,projects-reminders")
+#: The packs of ``tool_packs.FOLLOWS``: each is on wherever its parent is on.
+FOLLOWERS = frozenset({"projects-reports", "projects-authority"})
+
+
+def test_a_following_pack_is_on_wherever_its_parent_is_on(_flag) -> None:
+    """Owner decisions "Inherit" (2026-11-04, task 1479). Production's list
+    names neither ``projects-reports`` (PJP-2) nor ``projects-authority``
+    (ALN-4), and both packs are on there: the reports pack follows
+    ``projects-plan``, and the authority pack follows the core ``projects``
+    pack. So the loader reaches the Projects owner in a turn with no Projects
+    pack held (current 57). Mutation: drop the ``FOLLOWS`` union from
+    ``packs_on``, or drop one entry of ``FOLLOWS`` -> a pack of the owner is
+    off and the owner is not reached -> red."""
+    _flag(PRODUCTION_TOOL_PACKS, ORG_A)
+    on = tp.packs_on(ORG_A)
+    assert on == frozenset(PRODUCTION_TOOL_PACKS.split(",")) | FOLLOWERS
+    plan = tp.plan_loader(on, (), current=57, removable={PROJECTS: 1})
+    assert PROJECTS in plan.via_loader
+    assert set(plan.offered) >= FOLLOWERS
+
+
+def test_a_following_pack_is_off_without_its_parent(_flag) -> None:
+    """A pack follows its parent and nothing else. Mutation: turn each pack of
+    ``FOLLOWS`` on always -> red. Mutation: drop the named slugs from the
+    result -> a list that names a following pack alone gives nothing -> red."""
+    names = PRODUCTION_TOOL_PACKS.split(",")
+    _flag(",".join(s for s in names if s != "projects-plan"), ORG_A)
+    on = tp.packs_on(ORG_A)
+    assert "projects-reports" not in on and "projects-authority" in on
+    _flag(",".join(s for s in names if s != "projects"), ORG_A)
+    on = tp.packs_on(ORG_A)
+    assert "projects-authority" not in on and "projects-reports" in on
+    for alone in sorted(FOLLOWERS):
+        _flag(alone, ORG_A)
+        assert tp.packs_on(ORG_A) == frozenset({alone})
+    _flag("*", ORG_A)
+    assert tp.packs_on(ORG_A) == frozenset(sf.pack_slugs())
+
+
+def test_each_following_pack_has_a_parent_of_its_own_owner() -> None:
+    """``FOLLOWS`` is data beside ``PACKS``. Each key and each value is a
+    registered pack, the two share one owner, and no pack is its own parent.
+    Mutation: name a slug that is no pack, or a pack of another owner -> red."""
+    assert tp.FOLLOWS == {"projects-reports": "projects-plan",
+                          "projects-authority": "projects"}
+    assert set(tp.FOLLOWS) == FOLLOWERS
+    for follower, parent in tp.FOLLOWS.items():
+        assert tp.pack(follower) is not None and tp.pack(parent) is not None
+        assert follower != parent and parent not in tp.FOLLOWS
+        assert sf.SKILL_FAMILIES[follower]["owner"] == sf.SKILL_FAMILIES[parent]["owner"]
+
+
+def test_with_followers_adds_each_following_pack_of_a_parent_and_nothing_else() -> None:
+    """PJP-2 fix round 3 (P3-1). ``with_followers`` is the one reader of
+    ``FOLLOWS``: ``packs_on`` widens the allow list with it, and the run
+    widens the families that an admin turned off with it. Mutation: return
+    the slugs as they are -> a disabled parent leaves its following pack on
+    -> red."""
+    assert tp.with_followers({"projects-plan"}) == {"projects-plan", "projects-reports"}
+    assert tp.with_followers({"projects"}) == {"projects", "projects-authority"}
+    assert tp.with_followers({"projects-reports"}) == {"projects-reports"}
+    assert tp.with_followers({"email", "memory"}) == {"email", "memory"}
+    assert tp.with_followers(()) == frozenset()
 
 
 def test_packs_on_fails_closed_on_a_settings_fault(monkeypatch) -> None:
@@ -576,11 +646,13 @@ def test_no_crm_pack_tool_takes_an_organization_or_a_member_argument() -> None:
 
 STUDIO = "studio-builder"
 STUDIO_DIR = "apps/agents/agent-studio-builder"
-#: The eight read-only tools, then the three skill tools (STU-F2d).
+#: The eight read-only tools, the three skill tools (STU-F2d), the two
+#: package tools (STU-G1c), then the two record tools (STU-D2b).
 STUDIO_TOOLS = ("studio_describe", "studio_draft", "studio_interview",
                 "studio_list_actions", "studio_outline", "studio_patch", "studio_plan",
                 "studio_validate", "studio_skill_list", "studio_skill_save",
-                "studio_skill_state", "studio_package_get", "studio_record_list")
+                "studio_skill_state", "studio_save", "studio_publish",
+                "studio_package_get", "studio_record_list")
 
 
 def _studio_scope() -> set[str]:
@@ -594,7 +666,7 @@ def test_the_studio_family_equals_the_owners_own_tool_scope_and_fits_the_cap() -
     assert family["owner"] == STUDIO and sf.is_pack("studio") and family["core"] is False
     assert tuple(family["tools"]) == STUDIO_TOOLS
     assert set(family["tools"]) == _studio_scope()
-    assert len(family["tools"]) == 13 <= tp.MAX_PACK_TOOLS == 35
+    assert len(family["tools"]) == 15 <= tp.MAX_PACK_TOOLS == 35
 
 
 def test_the_studio_owner_is_in_no_registry_list() -> None:
@@ -643,7 +715,7 @@ def test_the_pack_loader_finds_the_owner_in_the_owner_list() -> None:
     assert tuple(tool_name(fn) for fn in tp.owner_tools("studio", module)) == STUDIO_TOOLS
 
 
-def test_the_built_studio_pack_is_the_thirteen_tools_as_coroutines() -> None:
+def test_the_built_studio_pack_is_the_fifteen_tools_as_coroutines() -> None:
     import inspect
 
     tools = tp.owner_tools("studio", load_agent_module(STUDIO_DIR))
