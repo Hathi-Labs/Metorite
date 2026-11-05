@@ -797,6 +797,7 @@ class AgentConnectionOut(BaseModel):
     client_origin: str
     scopes: list[str]
     pinned_projects: list[str]
+    left_out_projects: list[str]
     include_personal: bool
     created_at: str
     last_used_at: str | None
@@ -816,6 +817,7 @@ def connection_out(row: agent_tokens.ConnectionRow) -> AgentConnectionOut:
         client_origin=row.client_origin,
         scopes=list(row.scopes),
         pinned_projects=list(row.pinned_projects),
+        left_out_projects=list(row.left_out_projects),
         include_personal=row.include_personal,
         created_at=row.created_at.isoformat(),
         last_used_at=row.last_used_at.isoformat() if row.last_used_at else None,
