@@ -169,7 +169,7 @@ _PROTOCOL_RUNS_ON = (
     " it again. Take the next row. A run of another connection, such as one"
     " on another machine, is never yours, and my_work does not list it."
     "{terminals}"
-    " Take only a row that my_work lists."
+    " Take only a row that my_work lists.{answer}"
     " 4. Call get_task_context, then call start_agent_run when the claim"
     " opened no run."
     " 5. Post a thought with post_agent_activity at least once a minute."
@@ -258,7 +258,8 @@ def instructions(scopes: Iterable[str] = ()) -> str:
     if not prompts.offered(held):
         return text
     runs = agent_oauth.runs_enabled()
-    protocol = _PROTOCOL_RUNS_ON.replace("{terminals}", _terminals()) if runs \
+    protocol = _PROTOCOL_RUNS_ON.replace("{terminals}", _terminals()).replace(
+        "{answer}", prompts.answer_rule()) if runs \
         else _PROTOCOL_RUNS_OFF
     text += protocol + _ASKED_WORK + _ROUTINE_INSTRUCTIONS + prompts.PR_RULE
     if runs:

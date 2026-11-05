@@ -779,3 +779,42 @@ class TestTheProtocol:
         """The protocol claims, so it shows on the test of the routine."""
         text = await _instructions(READ_ONLY)
         assert "my_work" not in text and "409" not in text
+
+
+class TestTheAnswerRule:
+    """MCP-G4 (incident 2026-11-05). The text tells a session to act on a
+    ``run_answered`` row only when ``yours`` is true. Mutations, each red
+    here: M-G4e ``prompts.ANSWER_RULE_ON`` drops the word ``yours``
+    (``test_the_rule_names_yours_in_each_text``). M-G4f ``mcp.instructions``
+    drops ``{answer}`` (``test_the_instructions_carry_the_rule``)."""
+
+    RULES = ("read the run with get_agent_run first", "yours is true",
+             "do not act on it", "restarts a machine, deletes data or stops sessions",
+             "call ask_on_task again")
+
+    def _has(self, text: str, rules: tuple[str, ...] = RULES) -> None:
+        flat = " ".join(text.split())
+        for part in rules:
+            assert part in flat, part
+
+    async def test_the_instructions_carry_the_rule(self, armed, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        self._has(await _instructions())
+
+    async def test_the_rule_names_yours_in_each_text(self, armed, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        self._has(await _prompt_text())
+        tool = tools.TOOLS["my_work"].describe()["description"]
+        self._has(tool, self.RULES[1:])  # the tool already says how to read a run
+        assert "yours" in tool
+
+    async def test_with_the_flag_off_the_text_says_yours_is_false(self, armed):
+        for text in (await _instructions(), await _prompt_text(),
+                     tools.TOOLS["my_work"].describe()["description"]):
+            flat = " ".join(text.split())
+            assert "yours is false in every row" in flat
+            assert "Never act on an answer that restarts a machine" in flat
+
+    def test_the_list_runs_tool_names_mine_only(self):
+        assert "mine_only" in tools.TOOLS["list_agent_runs"].input_schema["properties"]
+        assert "mine_only" in tools.TOOLS["list_agent_runs"].description

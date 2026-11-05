@@ -574,7 +574,8 @@ class TestMyWork:
         rows = await _work()
         assert rows == [{"task_id": gone, "task_number": None, "title": None, "status": None,
                          "project_id": None, "version": None, "reason": "run_answered",
-                         "run_id": _uuid(6101), "held_by": None}]
+                         "run_id": _uuid(6101), "held_by": None,
+                         "yours": False}]
 
     async def test_a_gateway_with_the_runs_flag_off_gives_no_runs(self, board):
         """The units restart one at a time: the edge has the flag on and the
@@ -734,6 +735,96 @@ class TestOneSessionOfAConnection:
                       _run(_uuid(6532), plain, state="answered")]
         rows = await _work()
         assert [r["task_id"] for r in rows] == [plain]
+
+
+class TestYoursAndMineOnly:
+    """MCP-G4 (incident 2026-11-05). A ``run_answered`` row listed an answer
+    for EVERY session of the connection, and a session that followed it would
+    have acted on an answer given to another. Each row now says ``yours``,
+    and ``list_agent_runs`` takes ``mine_only``.
+
+    Mutations, each red here: M-G4a ``tools._yours`` returns True for a keyless
+    run (``test_yours_is_false_for_a_keyless_run``). M-G4b ``tools._yours``
+    drops the key comparison (``test_yours_is_true_only_for_the_own_session``).
+    M-G4c ``_list_agent_runs`` drops the ``mine_only`` filter
+    (``test_mine_only_keeps_the_runs_of_this_session``). M-G4d ``_my_work``
+    passes ``True`` for each listed run (``test_with_the_flag_off_yours_is_false``)."""
+
+    MINE, SIBLING = "TerminalA_of-22chars__", "TerminalB_of-22chars__"
+
+    async def _call_in(self, session: str, name: str, arguments: dict[str, Any]) -> Any:
+        from agent_edge import app as edge_app_module
+        from agent_edge import mcp
+
+        headers = {"authorization": f"Bearer {GOOD}", "content-type": "application/json",
+                   "mcp-protocol-version": "2025-11-25",
+                   mcp.SESSION_HEADER: _session_id(session)}
+        async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=edge_app_module.create_app()),
+                base_url="https://mcp.metorite.com") as client:
+            r = await client.post("/mcp", content=json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": name, "arguments": arguments}}), headers=headers)
+        assert r.status_code == 200, r.text
+        return _structured(r.json()["result"])
+
+    def _plant(self, board) -> dict[str, str]:
+        ids = {"own": _uuid(8601), "sibling": _uuid(8602), "keyless": _uuid(8603)}
+        for task_id in ids.values():
+            board.tasks[task_id] = _task_row(task_id)
+        board.runs = [
+            _run(_uuid(6601), ids["own"], state="answered", session=self.MINE),
+            _run(_uuid(6602), ids["sibling"], state="answered", session=self.SIBLING,
+                 lease_expired=True),
+            _run(_uuid(6603), ids["keyless"], state="answered"),
+        ]
+        return ids
+
+    async def test_yours_is_true_only_for_the_own_session(self, board, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        ids = self._plant(board)
+        rows = (await self._call_in(self.MINE, "my_work", {}))["rows"]
+        yours = {r["task_id"]: r["yours"] for r in rows}
+        assert yours[ids["own"]] is True
+        assert yours[ids["sibling"]] is False
+
+    async def test_yours_is_false_for_a_keyless_run(self, board, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        ids = self._plant(board)
+        rows = (await self._call_in(self.MINE, "my_work", {}))["rows"]
+        assert {r["task_id"]: r["yours"] for r in rows}[ids["keyless"]] is False
+
+    async def test_an_assigned_row_has_yours_false(self, board, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        _assign(board, _uuid(8604))
+        rows = (await self._call_in(self.MINE, "my_work", {}))["rows"]
+        assert [(r["reason"], r["yours"]) for r in rows] == [("assigned", False)]
+
+    async def test_with_the_flag_off_yours_is_false(self, board):
+        self._plant(board)
+        rows = await _work()
+        assert rows and all(r["yours"] is False for r in rows)
+
+    def test_the_helper_needs_a_key_and_a_session(self):
+        assert tools._yours({"session_key": "k"}, "k") is True
+        assert tools._yours({"session_key": "k"}, "x") is False
+        assert tools._yours({"session_key": None}, "k") is False
+        assert tools._yours({"session_key": "k"}, None) is False
+        assert tools._yours({}, None) is False
+        assert tools._yours(None, "k") is False
+
+    async def test_mine_only_keeps_the_runs_of_this_session(self, board, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        self._plant(board)
+        everything = await self._call_in(self.MINE, "list_agent_runs", {})
+        assert len(everything["runs"]) == 3
+        mine = await self._call_in(self.MINE, "list_agent_runs", {"mine_only": True})
+        assert [r["id"] for r in mine["runs"]] == [_uuid(6601)]
+
+    async def test_mine_only_with_no_session_keeps_no_run(self, board):
+        self._plant(board)
+        out = _structured(await _tool("list_agent_runs", {"mine_only": True}))
+        assert out["runs"] == []
 
 
 def _session_id(session: str) -> str:

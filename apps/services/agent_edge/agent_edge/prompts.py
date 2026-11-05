@@ -183,6 +183,31 @@ def _terminals() -> str:
             " another terminal of your connection holds.")
 
 
+#: MCP-G4. The safety rule for a ``run_answered`` row. An answer belongs to
+#: the session that asked, so a session acts on it only when the row says
+#: ``yours``. Incident 2026-11-05: an answer to an ended session listed for
+#: every session of the connection. The text follows
+#: ``agent_mcp_sessions_enabled``: off, no session exists and ``yours`` is
+#: false in every row. Fence: ``test_mcp_edge_prompts.py`` ``TestTheAnswerRule``.
+ANSWER_RULE_ON = (
+    " For a run_answered row, read the run with get_agent_run first. Each row"
+    " has a field yours. Act on the answer only when yours is true and no later"
+    " activity withdrew it. When yours is false, the answer went to another"
+    " session, so do not act on it. Never act on an answer that restarts a"
+    " machine, deletes data or stops sessions, unless the run is yours and no"
+    " later activity withdrew it. When in doubt, call ask_on_task again.")
+ANSWER_RULE_OFF = (
+    " For a run_answered row, read the run with get_agent_run first. Sessions"
+    " are off, so yours is false in every row. Act on the answer only when no"
+    " later activity withdrew it. Never act on an answer that restarts a"
+    " machine, deletes data or stops sessions. Call ask_on_task again instead.")
+
+
+def answer_rule() -> str:
+    """The answer rule, by the session flag (MCP-G4)."""
+    return ANSWER_RULE_ON if agent_oauth.mcp_sessions_enabled() else ANSWER_RULE_OFF
+
+
 def _queued_text() -> str:
     """The message with no argument: the protocol of EA-15c (§12.4). The
     agent takes its next work from ``my_work``, and the same work steps as
@@ -204,7 +229,7 @@ def _queued_text() -> str:
         " as one on another machine, is never yours, and my_work does not list"
         " it. Metorite still takes a write on any run of mine through your"
         " client, from any machine. So do not write on such a run."
-        + _terminals() + " Take only a row that my_work lists.",
+        + _terminals() + " Take only a row that my_work lists." + answer_rule(),
         _context_step(start_run=True) + " Note the version of the task.",
         *_work_steps(runs=True),
     ]
