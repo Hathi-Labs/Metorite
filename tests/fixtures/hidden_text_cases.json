@@ -121,6 +121,26 @@
       "id": "devanagari_halant_zwnj_word_end",
       "text": "\u0915\u094d\u200c \u0916",
       "why": "Devanagari: an explicit halant, a virama and a ZWNJ at a word end"
+    },
+    {
+      "id": "info_vs16",
+      "text": "\u2139\ufe0f Note",
+      "why": "U+2139 is Ll, and it is an emoji base"
+    },
+    {
+      "id": "wavy_dash_vs16",
+      "text": "\u3030\ufe0f",
+      "why": "U+3030 is Pd, and it is an emoji base"
+    },
+    {
+      "id": "interrobang_vs16",
+      "text": "\u2049\ufe0f",
+      "why": "U+2049 is Po, and it is an emoji base"
+    },
+    {
+      "id": "part_alternation_mark_vs16",
+      "text": "\u303d\ufe0f",
+      "why": "U+303D is Po, and it is an emoji base"
     }
   ],
   "refused": [
@@ -683,6 +703,90 @@
       ],
       "stripped": " a",
       "why": "a joiner at the start is never legal"
+    },
+    {
+      "id": "period_vs16",
+      "text": "Hello.\ufe0f world",
+      "hits": [
+        [
+          7,
+          "U+FE0F"
+        ]
+      ],
+      "stripped": "Hello. world",
+      "why": "a period is no emoji base"
+    },
+    {
+      "id": "comma_vs15",
+      "text": "a,\ufe0e b",
+      "hits": [
+        [
+          3,
+          "U+FE0E"
+        ]
+      ],
+      "stripped": "a, b",
+      "why": "a comma is no emoji base"
+    },
+    {
+      "id": "period_vs16_zwj",
+      "text": "a.\ufe0f\u200db",
+      "hits": [
+        [
+          3,
+          "U+FE0F"
+        ],
+        [
+          4,
+          "U+200D"
+        ]
+      ],
+      "stripped": "a.b",
+      "why": "a refused selector does not make a joiner legal"
+    },
+    {
+      "id": "hash_vs16_no_keycap",
+      "text": "#\ufe0f",
+      "hits": [
+        [
+          2,
+          "U+FE0F"
+        ]
+      ],
+      "stripped": "#",
+      "why": "a keycap base takes a selector only in a keycap"
+    },
+    {
+      "id": "england_flag",
+      "text": "\ud83c\udff4\udb40\udc67\udb40\udc62\udb40\udc65\udb40\udc6e\udb40\udc67\udb40\udc7f",
+      "hits": [
+        [
+          2,
+          "U+E0067"
+        ],
+        [
+          3,
+          "U+E0062"
+        ],
+        [
+          4,
+          "U+E0065"
+        ],
+        [
+          5,
+          "U+E006E"
+        ],
+        [
+          6,
+          "U+E0067"
+        ],
+        [
+          7,
+          "U+E007F"
+        ]
+      ],
+      "stripped": "\ud83c\udff4",
+      "why": "an accepted cost: a tag flag uses the TAG block"
     }
   ]
 }

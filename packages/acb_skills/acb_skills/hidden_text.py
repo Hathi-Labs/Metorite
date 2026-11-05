@@ -32,8 +32,17 @@ category C. These exceptions apply:
   before a space after a Persian letter is hidden too. The space already
   breaks the join, so that ZWNJ changes no shape and carries only data.
 * U+FE0E and U+FE0F are legal only directly after ONE visible symbol: a
-  character of category S or Po, or a keycap base (0 to 9, ``#`` or ``*``)
-  with U+20E3 directly after the selector. Two in a row are hidden.
+  character of category S, one of the five emoji bases outside category S
+  (U+203C, U+2049, U+2139, U+3030, U+303D), or a keycap base (0 to 9, ``#``
+  or ``*``) with U+20E3 directly after the selector. Two in a row are hidden,
+  and so is a selector after other punctuation, such as a period.
+
+**Accepted costs.** The rule refuses the LRM and RLM marks, the Arabic marks
+U+0600 to U+0605 and U+06DD, the ideographic variation sequences (U+E0100
+and up), and the tag flags (England, Scotland, Wales), because those use the
+TAG block. It also refuses a character that is newer than the Unicode of the
+runtime (Python 3.12 has Unicode 15.0), because the runtime reads it as an
+unassigned code point (category Cn). An example is the emoji U+1FAE9.
 
 ``reply_card.clean_reply_body`` is a different job. It cleans a mail body in
 silence, and it keeps a joiner only between two pictographs, so it breaks
@@ -70,6 +79,11 @@ _SELECTORS = frozenset((chr(0xFE0E), chr(0xFE0F)))
 #: U+20E3 COMBINING ENCLOSING KEYCAP, the end of a keycap emoji.
 _KEYCAP = chr(0x20E3)
 _KEYCAP_BASES = frozenset("0123456789#*")
+#: The emoji bases of the Unicode emoji variation sequences that are not of
+#: category S: U+203C and U+2049 (Po), U+2139 (Ll), U+3030 (Pd) and U+303D
+#: (Po). A selector after other punctuation, such as a period, is hidden.
+_EMOJI_BASES_NOT_S = frozenset((chr(0x203C), chr(0x2049), chr(0x2139), chr(0x3030),
+                                chr(0x303D)))
 
 #: A character that may be hidden: anything but printable ASCII and the
 #: legal controls. A text with no such character holds no hidden character,
@@ -98,15 +112,15 @@ def _visible(ch: str) -> bool:
 
 
 def _selector_legal(text: str, i: int) -> bool:
-    """True when the selector at *text[i]* follows ONE visible symbol, or a
-    keycap base with U+20E3 next. A selector before it is not a symbol, so
-    two in a row fail."""
+    """True when the selector at *text[i]* follows ONE visible symbol of
+    category S, one of :data:`_EMOJI_BASES_NOT_S`, or a keycap base with
+    U+20E3 next. A selector before it is not a symbol, so two in a row fail."""
     if i == 0:
         return False
     prev = text[i - 1]
     if _visible(prev) and unicodedata.category(prev)[0] == "S":
         return True
-    if _visible(prev) and unicodedata.category(prev) == "Po":
+    if prev in _EMOJI_BASES_NOT_S:
         return True
     return prev in _KEYCAP_BASES and i + 1 < len(text) and text[i + 1] == _KEYCAP
 

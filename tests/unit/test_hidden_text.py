@@ -44,9 +44,12 @@ This file proves:
   ``persian_zwnj_before_space`` go red.
 * M4. ``_joiner_legal``: drop the selector clause of the left side. The kept
   case ``rainbow_flag`` goes red.
-* M5. ``_selector_legal``: drop the Po branch, and ``bangbang_vs16`` goes
-  red. Drop the keycap branch, and ``keycap_one`` goes red. Take any visible
-  character on the left, and ``letter_vs16`` goes red.
+* M5. ``_selector_legal``: drop the ``_EMOJI_BASES_NOT_S`` branch, and
+  ``bangbang_vs16``, ``info_vs16`` and ``wavy_dash_vs16`` go red. Take any
+  character of category Po in its place, and ``period_vs16`` and
+  ``period_vs16_zwj`` go red. Drop the keycap branch, and ``keycap_one``
+  goes red. Take any visible character on the left, and ``letter_vs16`` goes
+  red.
 * M6. ``strip_hidden``: return the text unchanged. Each refused case goes red
   on its ``stripped`` value.
 * M7. ``hidden_problem``: put the value in the sentence.
