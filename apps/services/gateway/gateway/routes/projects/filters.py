@@ -1190,7 +1190,7 @@ def unheld_clause() -> str:
     open_list = ", ".join(f"'{s}'" for s in AGENT_RUN_OPEN_STATUSES)
     return (
         "NOT EXISTS (SELECT 1 FROM pm_agent_runs h"
-        " WHERE h.task_id = t.id"
+        " WHERE h.task_id = t.id AND h.task_id IS NOT NULL"
         f"   AND h.status IN ({open_list})"
         f"   AND {lease_held_sql('h')}"
         f"   AND NOT {connection_gone_sql('h')})"
@@ -1226,6 +1226,7 @@ SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
          WHERE lower(u.email) = lower(r.member_email) LIMIT 1) AS member_name
   FROM pm_agent_runs r
  WHERE {task_filter}
+   AND r.task_id IS NOT NULL
    AND (r.status IN ({_OPEN_LIST})
         OR (r.status = 'failed'
             AND NOT EXISTS (SELECT 1 FROM pm_agent_runs n
