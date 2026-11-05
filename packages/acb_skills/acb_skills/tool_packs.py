@@ -396,10 +396,8 @@ No Projects agent exists to hand a task to.
 - The per-turn context can name the member's place: the open project, the view
   and the open task. "This project" and "this task" mean those. Use its ids.
   Never ask for an id that it gives.
-- Send independent reads together, as parallel calls. Send writes that do not
-  depend on each other together too, in one step, so their cards show as one
-  card with tabs. A write that needs the result of another write waits for
-  that receipt.
+- Send independent reads and writes together, in one step. Their cards show
+  as one card with tabs. A write that needs a result waits for it.
 - For two or more new tasks at once, make the set in one step, so the member
   sees one card. When load_skill_tools offers the pack projects-bulk, load it.
   Else give the set to projects-assistant with call_agent. Do not make the
