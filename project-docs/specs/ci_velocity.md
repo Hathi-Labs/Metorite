@@ -150,8 +150,8 @@ did not select would run nowhere before production.
   Test both cases.
 - `scripts/ci_unit_guard.py` gets `--only-selected <file list>`. With it,
   `--must-run` checks only the listed R8 files that are in the selection.
-  The literal `--must-run` list stays in pr-check.yml, because 35 test files
-  assert their own name in that text (40 matches, counted 2026-11-05). A new
+  The literal `--must-run` list stays in pr-check.yml, because 36 test files
+  assert their own name in that text (counted 2026-11-05). A new
   case in `tests/unit/test_ci_unit_guard.py` covers the filter.
   deploy.yml's R8 gate keeps the full list, with no `--only-selected`.
   `test_deploy_pipeline.py` fails when the two lists differ.
@@ -245,8 +245,8 @@ AGENT-SAFE. **HIGH tier.** Opus builds it, with an adversarial review.
 
 ### CIV-4b · A release runs every R8 suite against real databases (HIGH: deploy path)
 
-**Status: BUILT (2026-11-05).** Branch `civ4b-r8-main`, stacked on
-`civ4-batch`. Task 1711. Verification and review come next.
+**Status: BUILT (2026-11-05).** Branch `civ4b-r8-main`. Task 1711. CIV-4
+merged first.
 
 **Why.** pr-check is the only workflow that sets the two R8 variables and
 starts the two Postgres services. The `test` job of deploy.yml has no
@@ -276,7 +276,7 @@ nowhere before production.
 - It copies pr-check's two services exactly: `postgres:16` on port 5433 and
   `pgvector/pgvector:pg16` on port 5434. It also copies the two variables
   and the two assert steps.
-- Each shard runs the output of `affected_tests.py --r8` (476 files today),
+- Each shard runs the output of `affected_tests.py --r8` (480 files on 2026-11-05),
   plus the guard's 4 files that need no database (`GUARD_ALSO`). It uses
   pr-check's split by duration, `--reruns 1`, no `-x`, and a JUnit report.
 - A list of fewer than 100 files stops the shard before pytest starts.

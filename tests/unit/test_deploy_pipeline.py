@@ -896,7 +896,8 @@ def test_each_r8_shard_runs_the_r8_files_in_pr_checks_split(parsed: dict, pr_che
 
 def test_a_hung_r8_shard_cannot_hold_the_release_for_hours(parsed: dict) -> None:
     """A shard took about 20 min in the measurement. 60 min is three times
-    that, and it still ends before a late schedule run loses its window."""
+    that. A hung shard ends red in one hour, and a re-run gets the
+    release out the same night."""
     assert parsed["jobs"][R8_SUITE].get("timeout-minutes") == 60
 
 
