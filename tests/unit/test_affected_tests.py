@@ -271,3 +271,33 @@ def test_gate_diff_lists_both_paths_of_a_rename(tmp_path: Path) -> None:
     git("mv", "apps/x/old.py", "apps/x/new.py")
     git("commit", "-qm", "rename")
     assert sel.gate_changed_files(base, root=tmp_path) == ["apps/x/new.py", "apps/x/old.py"]
+
+
+def test_picked_list_drops_known_local_hangers(capsys):
+    """CIV-15: a picked list never runs a known local hanger, and says so."""
+    picked = ["tests/unit/test_leaf.py", "tests/unit/test_memory_integration.py",
+              "tests/unit/test_calendar_plan_decide.py"]
+    assert sel.drop_local_hangs(picked) == ["tests/unit/test_leaf.py"]
+    out = capsys.readouterr().out
+    assert "test_memory_integration.py" in out and "test_calendar_plan_decide.py" in out
+
+
+def test_hung_test_fails_within_timeout_and_names_itself(tmp_path):
+    """CIV-15: a test that sleeps forever fails fast with its own name."""
+    import subprocess
+    t = tmp_path / "test_hang_probe.py"
+    t.write_text("import time\n\ndef test_sleeps_forever():\n    time.sleep(3600)\n",
+                 encoding="utf-8")
+    r = subprocess.run(
+        [sys.executable, "-m", "pytest", str(t), "-q", "-p", "no:cacheprovider",
+         "--timeout=2", "-c", str(_ROOT / "pyproject.toml"), "--rootdir", str(tmp_path)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert r.returncode != 0
+    assert "Timeout" in r.stdout and "test_sleeps_forever" in r.stdout
+
+
+def test_pyproject_sets_a_default_per_test_timeout():
+    import tomllib
+    cfg = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert cfg["tool"]["pytest"]["ini_options"]["timeout"] <= 600

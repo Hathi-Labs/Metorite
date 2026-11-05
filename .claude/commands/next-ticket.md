@@ -33,6 +33,7 @@ Sub-agents have no Metorite tools, so you post for them.
 | 3 Branch | Push the branch at its first commit. `add_task_reference` with the branch URL |
 | 4b Preview | `post_agent_activity` as a `response`, then `ask_on_task`. Read the answer with `get_agent_run` and `after` set to the question's seq. Do not report `AWAITING-OWNER` before that read. If the owner answers in chat and not on the task, record the answer with `record_outside_decision` before you go on |
 | 7 Land | The task URL goes in the PR body. `add_task_reference` with the PR URL. `set_task_status` to review if the project has a review status. After the merge, `set_task_status` to done, then `finish_agent_run` with what shipped and what is left |
+| A test run in the background | Cap it. Run `affected_tests.py --run`, which drops the known hangers and sets a 600 s timeout for each test. A wait of more than 45 minutes with no new output is a stall. Stop the wait, report it with `post_agent_activity` as an `error`, and find the hung test (CIV-15) |
 | Stop early | `release_task`, after a comment that says what is done, what is left and the next step |
 | A new spec slice | `create_task` for each new slice row, in Backlog, under the epic. Write the number in the row |
 

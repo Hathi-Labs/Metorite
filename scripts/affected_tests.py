@@ -51,8 +51,16 @@ FULL_SUITE = {"pyproject.toml", "uv.lock", "tests/conftest.py", "tests/unit/conf
 # hub. Expanding through it would pick most of the suite for any route change.
 HUB_LIMIT = 40
 FRONTEND_APPS = ("workbench/control_plane/", "workbench/operator_console/")
-# CLAUDE.md section 6: this suite hangs on a local run. CI runs it.
-LOCAL_HANG = "tests/unit/test_memory_integration.py"
+# CLAUDE.md section 6: these suites hang on a local run (WS-9, WS-21). CI runs
+# them. A picked list and a full run both drop every entry (CIV-15).
+LOCAL_HANGS = (
+    "tests/unit/test_memory_integration.py",
+    "tests/unit/test_calendar_entries_r8.py",
+    "tests/unit/test_calendar_plan_decide.py",
+    "tests/unit/test_calendar_task_source.py",
+)
+# Seconds. A test that runs longer fails with a stack trace (pytest-timeout).
+TEST_TIMEOUT = 600
 
 
 def changed_files(base: str, root: Path = ROOT) -> list[str]:
@@ -326,6 +334,17 @@ def frontend_commands(frontend: list[str]) -> list[str]:
     return out
 
 
+def drop_local_hangs(picked: list[str]) -> list[str]:
+    """Remove the known local hangers from a picked list, and print each one."""
+    kept = []
+    for t in picked:
+        if t.replace("\\", "/") in LOCAL_HANGS:
+            print(f"skipped (known local hang, CI runs it): {t}")
+        else:
+            kept.append(t)
+    return kept
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--base", default="origin/main")
@@ -356,11 +375,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.run:
         return 0
-    target = [str(TESTS), f"--ignore={LOCAL_HANG}"] if full else picked
+    if full:
+        target = [str(TESTS), *(f"--ignore={h}" for h in LOCAL_HANGS)]
+    else:
+        target = drop_local_hangs(picked)
     if not target:
         print("nothing to run")
         return 0
-    return subprocess.call([sys.executable, "-m", "pytest", *target, "-q", *extra], cwd=ROOT)
+    timeout = [] if any(a.startswith("--timeout") for a in extra) else [f"--timeout={TEST_TIMEOUT}"]
+    return subprocess.call(
+        [sys.executable, "-m", "pytest", *target, "-q", *timeout, *extra], cwd=ROOT
+    )
 
 
 if __name__ == "__main__":
