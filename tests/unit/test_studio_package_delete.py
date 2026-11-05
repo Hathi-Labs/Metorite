@@ -115,6 +115,37 @@ Each was run alone against both halves, and its R8 failure was read.
   ``test_r8_a_purge_after_a_bulk_load_reads_a_bounded_number_of_rows``
   (10,035,297 buffers for one purge of 500 records, against a bound of
   30,000).
+
+**Fix round 2 (2026-11-05).** Each mutation below takes one fix out again.
+Each was run alone, and its R8 failure was read.
+
+* M18 (item 1). A busy final count of a later step raises. Red here:
+  ``test_a_busy_final_count_of_a_later_step_ends_the_call_with_a_partial_row``.
+  Red in R8:
+  ``test_r8_a_busy_final_count_of_a_later_step_keeps_the_partial_row`` (5
+  records left, not 0: the step rolled back).
+* M19 (item 1). A later step that finds the package gone writes no row.
+  Red here: ``test_a_later_step_that_finds_the_package_gone_writes_the_partial_row``.
+  Red in R8:
+  ``test_r8_a_call_whose_package_another_call_deletes_writes_its_partial_row``
+  (no partial row).
+* M20 (item 1). The route writes no partial row after a busy row wait. Red
+  here: ``test_a_busy_row_wait_of_a_later_step_is_503_and_writes_the_partial_row``.
+* M21 (item 2). The 409 of a later step keeps "Nothing was deleted" and no
+  count. Red here:
+  ``test_a_new_object_between_two_steps_is_409_with_the_new_preview``. Red
+  in R8: ``test_r8_a_publish_between_two_steps_that_adds_an_object_ends_the_call_with_409``
+  (no ``records_removed``).
+* M22 (item 3). No bound on the wait for the ``apps`` row. Red here:
+  ``test_each_step_waits_for_the_apps_row_with_a_bound`` and
+  ``test_the_lock_order_is_in_the_source``. Red in R8:
+  ``test_r8_a_held_apps_row_gives_store_busy_in_about_one_second`` (200
+  after the holder let go, not 503).
+* M23 (item 3). The step bound leaves the row wait out. Red here:
+  ``test_the_worst_call_ends_before_the_chat_tool_gives_up``.
+* M24 (the bulk fence). The test binds org B in place of org A. Red in R8:
+  ``test_r8_a_purge_after_a_bulk_load_reads_a_bounded_number_of_rows`` (the
+  purge found 0 rows, not 500).
 """
 
 from __future__ import annotations
