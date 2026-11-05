@@ -113,3 +113,12 @@ describe("the nudge gives way to the hello", () => {
     expect(nudgeShows({ ...base, fresh: { ...NEW, buddy_hello_at: "2026-11-05T09:00:00.000Z" } })).toBe(false);
   });
 });
+
+describe("the hello row", () => {
+  it("is known by its id, so it gets no follow-ups and no feedback row", async () => {
+    const { isHelloRow } = await import("./buddyHello");
+    expect(isHelloRow("buddy-hello")).toBe(true);
+    expect(isHelloRow("brief-2026-11-05")).toBe(false);
+    expect(isHelloRow(undefined)).toBe(false);
+  });
+});

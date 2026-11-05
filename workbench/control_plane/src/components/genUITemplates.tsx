@@ -1338,7 +1338,8 @@ export const OWN_HEAD_TEMPLATES: ReadonlySet<string> = new Set([
   "report",
   // A reminder that a tap opened (WS-66 RM-4).
   "reminderCard",
-  // The hello of a new member (WS-BUD BUD-1).
+  // The hello (WS-BUD BUD-1) draws no head at all: the chat's title says Welcome.
+  // It is here so the frame adds no generic "Card" header over its chips.
   "buddyHello",
 ]);
 
@@ -2041,10 +2042,9 @@ function BuddyHello({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
     .map((c) => (c ?? {}) as Data)
     .map((c) => ({ label: str(c.label).trim(), message: str(c.id).trim() }))
     .filter((c) => c.label && c.message);
-  const fold = useCardFold();
   return (
-    <div className={fold ? `${G_FRAME} ${T_INDIGO}` : undefined} style={fold ? CARD_BOX : undefined} data-buddy-hello="">
-      <TemplateHead icon="sparkles" title="Welcome" />
+    <div data-buddy-hello="">
+      {/* No header, icon or chevron: the chat's title already says Welcome. */}
       <TemplateBody>
         {ctx?.onAction && chips.length > 0 ? (
           <SuggestionPills

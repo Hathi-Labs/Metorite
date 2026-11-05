@@ -28,6 +28,14 @@ export function helloPath(sessionId: string): string {
 /** The chip that sends this question as the member's message. */
 export const HELLO_QUESTION = "What can you do here?";
 
+/** The row id of the hello (`HELLO_MESSAGE_ID` in `gateway/routes/chat_brief.py`). */
+export const HELLO_ROW_ID = "buddy-hello";
+
+/** Whether a message is the hello. It gets no follow-up pills and no feedback row. */
+export function isHelloRow(id: unknown): boolean {
+  return id === HELLO_ROW_ID;
+}
+
 export interface HelloPosted {
   preview: string;
   title: string;
