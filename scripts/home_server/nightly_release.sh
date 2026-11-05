@@ -20,6 +20,9 @@
 # and the window closes at 02:00. A late start of the timer (Persistent=true
 # after the box was down) must not ship a release in working hours.
 #
+# ⚠️ `install` copies this file to ~/.local/lib/metorite. After a change to
+# this file, run `install` again, or the timer runs the old copy.
+#
 # ⚠️ It never prints a token. `gh auth status` writes to /dev/null only.
 # Fence: tests/unit/test_nightly_release_box.py.
 set -Eeuo pipefail

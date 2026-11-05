@@ -76,7 +76,7 @@ VOICE_SITES: dict[str, tuple[tuple[str, ...], str | None]] = {
         ("summary", "title"), GW + "notes/templates.py::build_system_prompt"),
     GW + "notes/summaries.py::_map_reduce": (
         ("summary", "title"), GW + "notes/templates.py::build_system_prompt"),
-    GW + "tasks/ai.py::_llm_propose": (("title", "description"), None),
+    GW + "tasks/ai.py::_ask_clarify_model": (("title", "description"), None),
     GW + "tasks/ai.py::_llm_suggest_title": (("title",), None),
     GW + "tasks/calendar.py::_llm_rank_day": (("summary",), None),
     GW + "tasks/capture_email.py::_llm_capture": (("title", "description"), None),

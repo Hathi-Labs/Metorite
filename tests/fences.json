@@ -96,6 +96,7 @@
       "tests/unit/test_chat_placement_classes.py",
       "tests/unit/test_chat_placement_instructions.py",
       "tests/unit/test_ci_pc.py",
+      "tests/unit/test_clarify_eval.py",
       "tests/unit/test_crm_field_type_change_parity.py",
       "tests/unit/test_crm_stage_discipline_parity.py",
       "tests/unit/test_decision_ids.py",
