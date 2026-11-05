@@ -428,8 +428,11 @@ function MessageBubble({
   const handleEditSubmit = async () => {
     if (editPending) return;
     const trimmed = editText.trim();
-    // An unchanged text is no edit: close the composer and keep the reply.
-    if (!trimmed || !onEditLast || trimmed === message.content.trim()) {
+    // An unchanged text is a RESEND (owner, task 1653): it takes the same
+    // supersede path as a changed one, so the old answer is replaced and the
+    // model reads the note of the writes that already ran. Retry cannot do
+    // that: it sends a new turn with no note and keeps the old rows.
+    if (!trimmed || !onEditLast) {
       setEditing(false);
       return;
     }

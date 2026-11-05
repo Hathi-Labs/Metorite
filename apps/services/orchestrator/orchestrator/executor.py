@@ -3642,6 +3642,11 @@ async def _first_party_admin_runs() -> tuple[bool, str]:
     delegated run keeps its parent's member, because a run that binds no user
     leaves the parent's ``user`` and ``member_verified`` in place. Every
     failure answers no.
+
+    The member's org (``acb_auth.access.resolve_identity``) must equal the
+    run's org. A failed read or a mismatch answers no. Known limit: with
+    ``IDENTITY_CUTOVER`` on, a person with more than one active membership
+    resolves to no org, so the gate refuses them.
     """
     from acb_common import get_run_context
 
@@ -3658,6 +3663,18 @@ async def _first_party_admin_runs() -> tuple[bool, str]:
             return False, "not the first-party organization"
     except Exception as exc:
         return False, f"the first-party check failed: {str(exc)[:120]}"
+    # H-232: the member must belong to the run's org. ``resolve_access`` reads
+    # roles by email alone, so an admin of another org passed this gate.
+    # Fence: ``tests/unit/test_root_agent_first_party.py``.
+    try:
+        from acb_auth.access import identity_read_failed, resolve_identity
+        _user_id, member_org = await resolve_identity(member)
+    except Exception as exc:
+        return False, f"the identity check failed: {str(exc)[:120]}"
+    if identity_read_failed():
+        return False, "the identity check failed"
+    if not member_org or str(member_org).lower() != str(org).lower():
+        return False, "the member is not of the run's organization"
     try:
         from acb_auth import resolve_access
         access = await resolve_access(member)

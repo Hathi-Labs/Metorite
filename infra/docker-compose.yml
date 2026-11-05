@@ -271,6 +271,47 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # --- The web worker (WEB-6, web_research.md section 5.1). Profile: "webworker".
+  # Playwright Chromium renders a page and Crawl4AI writes its Markdown. Only
+  # the orchestrator calls it, with WEB_WORKER_TOKEN. The worker refuses to
+  # start when that token is empty, so with no token this service stays down.
+  # No profile starts it on a deploy, and no caller exists until WEB-7.
+  #
+  # The build context is the repo root, because the image installs
+  # acb_common. The root copy of the box does not hold the repo, so this block
+  # names an image and no build. Build the image from a checkout:
+  #
+  #   docker build -f apps/services/web_worker/Dockerfile -t acb-web-worker:latest .
+  #   docker compose --profile webworker up -d web-worker
+  #
+  # The worker fetches each request of a page itself, pinned to an address
+  # that passed the one address rule (acb_common.public_address). The block
+  # adds no host-gateway, and web_worker_net holds no other service, so no
+  # compose name of postgres or redis resolves here. The root file system is
+  # read-only, and /tmp (the job root too) is a tmpfs. The limits are in
+  # apps/services/web_worker/web_worker/limits.py.
+  web-worker:
+    image: acb-web-worker:latest
+    container_name: acb-web-worker
+    profiles: ["webworker"]
+    <<: *restart
+    user: "1000:1000"
+    environment:
+      WEB_WORKER_TOKEN: ${WEB_WORKER_TOKEN:-}
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 1024
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    networks: [web_worker_net]
+    ports:
+      # Host 8096. Loopback only: nothing outside the box may send a job.
+      - "127.0.0.1:8096:8080"
+
 volumes:
   acb-postgres-data:
   acb-redis-data:
@@ -278,3 +319,8 @@ volumes:
   acb-meeting-bot-profile:
   acb-neo4j-data:
   acb-neo4j-logs:
+
+networks:
+  # WEB-6: the web worker alone. No other service joins this network.
+  web_worker_net:
+    driver: bridge
