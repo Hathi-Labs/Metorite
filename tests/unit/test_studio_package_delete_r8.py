@@ -57,7 +57,8 @@ import asyncio
 import json
 import time
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 
@@ -255,6 +256,16 @@ def _deletes(world: Any, pid: str) -> list[dict[str, Any]]:
     return [a[3] for a in _audits(world, pid) if a[3].get("op") == "package.delete"]
 
 
+def _partials(world: Any, pid: str) -> list[dict[str, Any]]:
+    return [a[3] for a in _audits(world, pid) if a[3].get("op") == "package.delete.partial"]
+
+
+def _every_step_ends_its_call(monkeypatch: Any) -> None:
+    """A step bound past the budget: each step that leaves records is the
+    last of its call, so a call answers 202 after one step."""
+    monkeypatch.setattr(packages_store, "STEP_SECONDS", 1000.0)
+
+
 def _org_objects(world: Any) -> int:
     return int(_scalar(world, "SELECT count(*) FROM studio_objects "
                        "WHERE organization_id = CAST(:o AS uuid)", o=world.a))
@@ -449,7 +460,8 @@ def test_r8_every_row_of_the_package_goes_and_the_audit_rows_stay(world) -> None
     org, who, kind, detail = audits[-1]
     assert (org, who, kind) == (world.a, ANA, "action")
     assert detail == {"op": "package.delete", "by": "owner", "owner": ANA, "name": "Shop",
-                      "slug": slug, "objects": 2, "fields": 3, "records": 3,
+                      "slug": slug, "objects": 2, "fields": 3, "records_this_call": 3,
+                      "records_total": 3,
                       "versions": 2, "installs": 2, "other_member_installs": 2}
     assert "Track orders" not in json.dumps(detail)
     # Another package of the same member keeps its rows.
@@ -467,7 +479,7 @@ def test_r8_a_draft_with_no_version_and_no_object_is_deleted(world) -> None:
     assert seen == [200]
     assert _scalar(world, "SELECT count(*) FROM apps WHERE id = CAST(:p AS uuid)", p=pid) == 0
     [detail] = _deletes(world, pid)
-    assert (detail["objects"], detail["records"], detail["versions"]) == (0, 0, 0)
+    assert (detail["objects"], detail["records_this_call"], detail["versions"]) == (0, 0, 0)
 
 
 def test_r8_the_preview_counts_up_to_the_cap(world) -> None:
@@ -517,10 +529,11 @@ def test_r8_1300_records_with_a_chunk_of_100_give_202_and_then_200(world, monkey
         await _fill(world.a, ANA, pid, 1300)
         status, got = await _preview(world.a, ANA, pid)
         assert status == 200 and got["totals"]["records"] == 1300
-        monkeypatch.setattr(packages, "DELETE_BUDGET_SECONDS", 0.0)
+        real = packages_store.STEP_SECONDS
+        _every_step_ends_its_call(monkeypatch)
         first = await _delete(world.a, ANA, pid, got["confirm"])
-        between = (_records(world, pid), len(_deletes(world, pid)))
-        monkeypatch.setattr(packages, "DELETE_BUDGET_SECONDS", 20.0)
+        between = (_records(world, pid), len(_deletes(world, pid)), len(_partials(world, pid)))
+        monkeypatch.setattr(packages_store, "STEP_SECONDS", real)
         second = await _delete(world.a, ANA, pid, first[1]["confirm"])
         return pid, first, between, second
 
@@ -528,14 +541,15 @@ def test_r8_1300_records_with_a_chunk_of_100_give_202_and_then_200(world, monkey
     assert first[0] == 202, first
     assert first[1]["deleted"] is False and first[1]["remaining"] == 1200
     assert first[1]["records_removed"] == 100
-    # The 202 holds: 1,200 records are left, and no audit row is written yet.
-    assert between == (1200, 0)
+    # The 202 holds: 1,200 records are left, and one partial row names the 100.
+    assert between == (1200, 0, 1)
+    assert _partials(world, pid)[0]["records_this_call"] == 100
     assert second[0] == 200, second
     assert second[1] == {"deleted": True, "package_id": pid, "records_removed": 1200}
     assert _scalar(world, "SELECT count(*) FROM apps WHERE id = CAST(:p AS uuid)", p=pid) == 0
-    # One audit row, written by the last step only.
+    # One final row. It names the records of its call and the total.
     [detail] = _deletes(world, pid)
-    assert detail["records"] == 1200
+    assert (detail["records_this_call"], detail["records_total"]) == (1200, 1300)
 
 
 def test_r8_a_stale_token_is_409_and_deletes_nothing(world) -> None:
@@ -637,9 +651,13 @@ def test_r8_the_org_lock_is_free_between_two_steps(world, monkeypatch) -> None:
     real = objects_store.purge_records
     marks: list[float] = []
 
-    async def slow(db: Any, package_id: str, *, limit: int = 500) -> int:
+    # A small step bound, so the steps of the slow purge stay in one call.
+    monkeypatch.setattr(packages_store, "STEP_SECONDS", 0.5)
+
+    async def slow(db: Any, package_id: str, *, limit: int = 500,
+                   deadline: float | None = None) -> int:
         marks.append(time.monotonic())
-        got = await real(db, package_id, limit=limit)
+        got = await real(db, package_id, limit=limit, deadline=deadline)
         await asyncio.sleep(0.2)
         return got
 
@@ -670,7 +688,7 @@ def test_r8_the_org_lock_is_free_between_two_steps(world, monkeypatch) -> None:
 
 def test_r8_after_a_202_the_org_lock_is_free(world, monkeypatch) -> None:
     monkeypatch.setattr(packages_store, "DELETE_CHUNK", 10)
-    monkeypatch.setattr(packages, "DELETE_BUDGET_SECONDS", 0.0)
+    _every_step_ends_its_call(monkeypatch)
 
     async def go() -> tuple[tuple[int, Any, Any], float]:
         pid = await _live(world.a, ANA, _manifest(_mid("pause")))
@@ -896,3 +914,150 @@ def test_r8_a_second_delete_after_200_is_404_and_writes_no_second_row(world) -> 
     pid, (status, detail, _h) = _run(world, go)
     assert (status, detail) == (404, NOT_FOUND)
     assert len(_deletes(world, pid)) == 1
+
+
+# ── Fix round 1: the partial row, a publish between steps, the share rule ──
+
+
+def test_r8_a_202_call_writes_one_partial_row_in_the_step_of_its_purge(
+        world, monkeypatch) -> None:
+    """P2-1. Each call that ends with records left writes one partial row,
+    with the records of that call. The final row names the records of its
+    call and the total of all calls."""
+    monkeypatch.setattr(packages_store, "DELETE_CHUNK", 10)
+    real = packages_store.STEP_SECONDS
+
+    async def go() -> tuple[str, list[Any], list[list[dict[str, Any]]]]:
+        pid = await _live(world.a, ANA, _manifest(_mid("partial")))
+        await _fill(world.a, ANA, pid, 25)
+        _status, got = await _preview(world.a, ANA, pid)
+        _every_step_ends_its_call(monkeypatch)
+        answers, rows = [], []
+        token = got["confirm"]
+        for _ in range(2):
+            answers.append(await _delete(world.a, ANA, pid, token))
+            token = answers[-1][1]["confirm"]
+            rows.append(_partials(world, pid))
+        monkeypatch.setattr(packages_store, "STEP_SECONDS", real)
+        answers.append(await _delete(world.a, ANA, pid, token))
+        return pid, answers, rows
+
+    pid, answers, rows = _run(world, go)
+    assert [a[0] for a in answers] == [202, 202, 200], answers
+    assert [a[1]["remaining"] for a in answers[:2]] == [15, 5]
+    assert [[r["records_this_call"] for r in found] for found in rows] == [[10], [10, 10]]
+    assert {r["reason"] for r in rows[-1]} == {"budget"}
+    [detail] = _deletes(world, pid)
+    assert (detail["records_this_call"], detail["records_total"]) == (5, 25)
+
+
+def test_r8_a_failed_partial_audit_rolls_back_the_purge_of_its_step(world, monkeypatch) -> None:
+    """P2-1. The partial row is in the transaction of the purge of the last
+    step, so a failed insert keeps each record of that step."""
+    monkeypatch.setattr(packages_store, "DELETE_CHUNK", 10)
+
+    async def setup() -> str:
+        pid = await _live(world.a, ANA, _manifest(_mid("partfail")))
+        await _fill(world.a, ANA, pid, 25)
+        return pid
+
+    pid = _run(world, setup)
+    broken = packages_store._AUDIT_SQL.replace(":kind", "'gone-' || :kind")
+
+    async def go() -> Any:
+        _status, got = await _preview(world.a, ANA, pid)
+        _every_step_ends_its_call(monkeypatch)
+        monkeypatch.setattr(packages_store, "_AUDIT_SQL", broken)
+        try:
+            return await _delete(world.a, ANA, pid, got["confirm"])
+        except DBAPIError as exc:
+            return exc
+
+    got = _run(world, go)
+    assert isinstance(got, DBAPIError), got
+    assert _records(world, pid) == 25
+    assert _partials(world, pid) == []
+
+
+def test_r8_a_publish_between_two_steps_that_adds_an_object_ends_the_call_with_409(
+        world, monkeypatch) -> None:
+    """P3-1. The member confirmed a package with one object. A publish
+    between the first and the second step adds ``invoices``. The second step
+    finds the new name, deletes nothing, and the call answers 409 with the
+    new preview. The first step holds, and its partial row names it."""
+    monkeypatch.setattr(packages_store, "DELETE_CHUNK", 10)
+    two = [{"name": "visit", "fields": _FIELDS},
+           {"name": "invoices", "fields": [{"key": "no", "type": "text"}]}]
+    real_session = packages._tenant_session
+    state = {"armed": False, "inside": False, "opened": 0}
+    published: list[tuple[int, Any]] = []
+    holder: dict[str, str] = {}
+
+    @asynccontextmanager
+    async def spy(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+        if state["armed"] and not state["inside"]:
+            state["opened"] += 1
+            # 1: the owner read, 2: the first step, 3: the second step.
+            if state["opened"] == 3:
+                state["inside"] = True
+                try:
+                    published.append(await _publish(world.a, ANA, holder["pid"]))
+                finally:
+                    state["inside"] = False
+        async with real_session(*args, **kwargs) as db:
+            yield db
+
+    async def go() -> tuple[str, tuple[int, Any, Any]]:
+        mid = _mid("between")
+        pid = await _live(world.a, ANA, _manifest(mid))
+        holder["pid"] = pid
+        await _fill(world.a, ANA, pid, 30)
+        status, saved = await _call("save_draft", world.a, ANA, pid, payload=_manifest(mid, two))
+        assert status == 200, saved
+        _status, got = await _preview(world.a, ANA, pid)
+        assert [o["name"] for o in got["objects"]] == ["visit"]
+        monkeypatch.setattr(packages, "_tenant_session", spy)
+        state["armed"] = True
+        return pid, await _delete(world.a, ANA, pid, got["confirm"])
+
+    pid, (status, detail, _h) = _run(world, go)
+    assert [p[0] for p in published] == [200], published
+    assert status == 409, detail
+    assert detail["code"] == "counts_changed"
+    assert [o["name"] for o in detail["preview"]["objects"]] == ["invoices", "visit"]
+    assert _records(world, pid) == 20
+    assert sorted(_scalar(world, "SELECT array_agg(name) FROM studio_objects "
+                          "WHERE package_id = CAST(:p AS uuid)", p=pid)) == ["invoices", "visit"]
+    [row] = _partials(world, pid)
+    assert (row["records_this_call"], row["reason"]) == (10, "changed")
+    assert _deletes(world, pid) == []
+
+
+def test_r8_a_private_install_that_the_owner_shared_counts_as_another_members(world) -> None:
+    """P3-2. The count of the installs of other members reads the one share
+    rule of ``package_host/sharing.py``. A private install of the owner
+    counts once the owner shares it with a person, and a grant to an agent
+    shares nothing."""
+    pid = _run(world, lambda: _live(world.a, ANA, _manifest(_mid("shared"))))
+    org = {"o": world.a, "p": pid}
+    with world.p.admin_engine.begin() as c:
+        c.execute(text(
+            "INSERT INTO package_install (organization_id, app_id, version, scope_kind, "
+            "scope_subject, installed_by) VALUES (CAST(:o AS uuid), CAST(:p AS uuid), 1, "
+            "'private', :m, :m)"), {**org, "m": ANA})
+        c.execute(text("INSERT INTO app_grants (organization_id, app_id, subject, role, "
+                       "granted_by) VALUES (CAST(:o AS uuid), CAST(:p AS uuid), 'agent:x', "
+                       "'use', :m)"), {**org, "m": ANA})
+
+    def others() -> int:
+        status, got = _run(world, lambda: _preview(world.a, ANA, pid))
+        assert status == 200, got
+        assert got["totals"]["installs"] == 1
+        return int(got["totals"]["other_member_installs"])
+
+    alone = others()
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("INSERT INTO app_grants (organization_id, app_id, subject, role, "
+                       "granted_by) VALUES (CAST(:o AS uuid), CAST(:p AS uuid), :s, 'use', :m)"),
+                  {**org, "s": BEN, "m": ANA})
+    assert (alone, others()) == (0, 1)

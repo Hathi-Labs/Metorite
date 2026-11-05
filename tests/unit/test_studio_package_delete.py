@@ -154,21 +154,27 @@ class _Res:
 
 
 class _StoreDb:
-    """The session of a store step. It answers the three statements of
-    ``packages_store`` and writes each one to *log*."""
+    """The session of a store step. It answers the four statements of
+    ``packages_store`` and writes each one to *log*. ``counts`` of None
+    plays a row that a concurrent delete removed."""
 
-    def __init__(self, log: list[str], *, counts: tuple[int, int, int] = (2, 1, 0),
-                 audit_fails: bool = False) -> None:
+    def __init__(self, log: list[str], *, counts: tuple[int, int, int] | None = (2, 1, 0),
+                 audit_fails: bool = False, earlier: int = 0) -> None:
         self.log = log
         self.counts = counts
         self.audit_fails = audit_fails
+        self.earlier = earlier
         self.audits: list[dict[str, Any]] = []
 
     async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Res:
         sql, p = str(stmt), dict(params or {})
         if sql == store._DELETE_COUNTS_SQL:
             self.log.append("counts")
-            return _Res([self.counts])
+            return _Res([] if self.counts is None else [self.counts])
+        if sql == store._PARTIAL_TOTAL_SQL:
+            self.log.append("earlier")
+            assert p["op"] == store.PARTIAL_OP
+            return _Res([(self.earlier,)])
         if sql == store._DELETE_SQL:
             self.log.append("delete")
             return _Res([(p["id"],)])
@@ -181,11 +187,17 @@ class _StoreDb:
         raise AssertionError(f"an unexpected statement: {sql[:60]}")
 
 
+_NAMES = ("site", "visit")
+
+
 @pytest.fixture
 def step(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
-    """The package of Ana, with records, behind fakes of the object store."""
+    """The package of Ana, with records, behind fakes of the object store.
+    The object store clock reads ``w.now``."""
     pid = str(uuid.uuid4())
-    w = SimpleNamespace(pid=pid, log=[], records={"visit": 700, "site": 300}, busy=False)
+    w = SimpleNamespace(pid=pid, log=[], records={"visit": 700, "site": 300}, busy=False,
+                        busy_purge=False, busy_counts=False, extra=[], now=100.0,
+                        deadlines=[])
 
     async def get_package(db: Any, member: str, package_id: str, *,
                           for_update: bool = False) -> store.Package | None:
@@ -199,10 +211,20 @@ def step(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
 
     async def package_counts(db: Any, package_id: str, *, cap: int = 100_000) -> Any:
         w.log.append("package_counts")
-        return _counts(w.records)
+        if w.busy_counts:
+            raise objects_store.StoreBusy("This app is busy. Try again in a moment.")
+        return _counts({**w.records, **dict.fromkeys(w.extra, 0)})
 
-    async def purge_records(db: Any, package_id: str, *, limit: int = 500) -> int:
+    async def object_names(db: Any, package_id: str) -> list[str]:
+        w.log.append("object_names")
+        return sorted([*w.records, *w.extra])
+
+    async def purge_records(db: Any, package_id: str, *, limit: int = 500,
+                            deadline: float | None = None) -> int:
         w.log.append(f"purge({limit})")
+        w.deadlines.append(deadline)
+        if w.busy_purge:
+            raise objects_store.StoreBusy("This app is busy. Try again in a moment.")
         gone = 0
         for name in sorted(w.records):
             take = min(limit - gone, w.records[name])
@@ -213,7 +235,9 @@ def step(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     monkeypatch.setattr(store, "get_package", get_package)
     monkeypatch.setattr(objects_store, "lock_org", lock_org)
     monkeypatch.setattr(objects_store, "package_counts", package_counts)
+    monkeypatch.setattr(objects_store, "object_names", object_names)
     monkeypatch.setattr(objects_store, "purge_records", purge_records)
+    monkeypatch.setattr(objects_store, "_clock", lambda: w.now)
     return w
 
 
@@ -224,30 +248,122 @@ def _token(w: SimpleNamespace, counts: tuple[int, int, int] = (2, 1, 0)) -> str:
 def test_a_step_locks_the_apps_row_then_the_org_then_purges(step: SimpleNamespace) -> None:
     db = _StoreDb(step.log)
     got = _run(store.delete_package(db, ANA, step.pid, confirm=_token(step)))
-    assert got == store.DeleteStep(deleted=False, removed=500)
+    assert got == store.DeleteStep(deleted=False, removed=500, names=_NAMES)
     assert step.log == ["get(for_update=True)", "lock_org", "package_counts", "counts",
                         "purge(500)"]
 
 
+def test_a_later_step_checks_the_names_and_not_the_token(step: SimpleNamespace) -> None:
+    got = _run(store.delete_package(_StoreDb(step.log), ANA, step.pid, names=_NAMES,
+                                    removed=500))
+    assert got == store.DeleteStep(deleted=False, removed=500, names=_NAMES)
+    assert step.log == ["get(for_update=True)", "lock_org", "object_names", "purge(500)"]
+
+
 def test_a_full_chunk_answers_not_deleted_and_writes_nothing_else(step: SimpleNamespace) -> None:
     db = _StoreDb(step.log)
-    got = _run(store.delete_package(db, ANA, step.pid, chunk=1000))
-    assert got == store.DeleteStep(deleted=False, removed=1000)
+    got = _run(store.delete_package(db, ANA, step.pid, names=_NAMES, chunk=1000,
+                                    end_at=step.now + 100))
+    assert got == store.DeleteStep(deleted=False, removed=1000, names=_NAMES)
     assert "delete" not in step.log and "audit" not in step.log and db.audits == []
+
+
+def test_a_full_chunk_past_the_budget_ends_the_call_with_a_partial_row(
+        step: SimpleNamespace) -> None:
+    """P2-1. No more step fits before the end of the call, so this step is
+    the last. It writes the partial row, then the preview of the 202, in its
+    own session."""
+    db = _StoreDb(step.log)
+    end = step.now + store.STEP_SECONDS - 0.1
+    got = _run(store.delete_package(db, ANA, step.pid, names=_NAMES, removed=1500, end_at=end))
+    assert (got.deleted, got.removed, got.changed, got.busy) == (False, 500, False, False)
+    assert got.left is not None and got.left.records == 500
+    assert got.left.confirm == _token(step)
+    assert step.log[-4:] == ["purge(500)", "audit", "package_counts", "counts"]
+    assert step.deadlines == [end]
+    [audit] = db.audits
+    assert audit["detail"] == {
+        "op": "package.delete.partial", "by": "owner", "owner": ANA, "name": "Visits",
+        "slug": f"visits-{step.pid[:8]}", "records_this_call": 2000, "reason": "budget"}
+    assert "delete" not in step.log
+
+
+def test_a_failed_partial_audit_raises_in_the_step_of_its_purge(step: SimpleNamespace) -> None:
+    """P2-1. The partial row is in the session of the purge, so a failed
+    insert rolls that purge back with the session (R8 proves the rollback)."""
+    with pytest.raises(RuntimeError):
+        _run(store.delete_package(_StoreDb(step.log, audit_fails=True), ANA, step.pid,
+                                  names=_NAMES, end_at=step.now))
+    assert step.log[-2:] == ["purge(500)", "audit"]
+
+
+def test_a_later_step_that_finds_a_new_object_ends_the_call_with_changed(
+        step: SimpleNamespace) -> None:
+    """P3-1. A publish between two steps added ``invoices``. The step purges
+    nothing, writes the partial row of the earlier steps, and answers the
+    preview of now."""
+    step.extra = ["invoices"]
+    db = _StoreDb(step.log)
+    got = _run(store.delete_package(db, ANA, step.pid, names=_NAMES, removed=500))
+    assert (got.deleted, got.removed, got.changed) == (False, 0, True)
+    assert [o.name for o in got.left.objects] == ["invoices", "site", "visit"]
+    assert not any(e.startswith("purge") for e in step.log)
+    assert db.audits[0]["detail"]["records_this_call"] == 500
+    assert db.audits[0]["detail"]["reason"] == "changed"
+
+
+def test_a_name_that_went_is_not_a_change(step: SimpleNamespace) -> None:
+    """No publish removes an object, and a smaller set takes nothing that the
+    member did not see."""
+    got = _run(store.delete_package(_StoreDb(step.log), ANA, step.pid,
+                                    names=("old", *_NAMES), removed=1))
+    assert got.changed is False and got.removed == 500
+
+
+@pytest.mark.parametrize("where", ["lock", "purge"])
+def test_store_busy_on_a_later_step_ends_the_call_with_a_partial_row(
+        step: SimpleNamespace, where: str) -> None:
+    if where == "lock":
+        step.busy = True
+    else:
+        step.busy_purge = True
+    db = _StoreDb(step.log)
+    got = _run(store.delete_package(db, ANA, step.pid, names=_NAMES, removed=700))
+    assert (got.deleted, got.removed, got.busy, got.changed) == (False, 0, True, False)
+    assert got.left is not None
+    assert db.audits[0]["detail"]["records_this_call"] == 700
+    assert db.audits[0]["detail"]["reason"] == "busy"
+
+
+def test_a_busy_preview_at_the_end_keeps_the_partial_row_and_gives_no_token(
+        step: SimpleNamespace) -> None:
+    step.busy_counts = True
+    db = _StoreDb(step.log)
+    got = _run(store.delete_package(db, ANA, step.pid, names=_NAMES, end_at=step.now))
+    assert got.left is None and got.busy is True and got.removed == 500
+    assert db.audits[0]["detail"]["op"] == store.PARTIAL_OP
+
+
+def test_store_busy_on_the_first_step_raises(step: SimpleNamespace) -> None:
+    """The first step removed nothing, so the call has nothing to audit."""
+    step.busy_purge = True
+    with pytest.raises(objects_store.StoreBusy):
+        _run(store.delete_package(_StoreDb(step.log), ANA, step.pid, confirm=_token(step)))
 
 
 def test_the_last_step_deletes_the_row_and_writes_one_audit_row(step: SimpleNamespace) -> None:
     step.records = {"visit": 120}
-    db = _StoreDb(step.log, counts=(4, 2, 1))
-    got = _run(store.delete_package(db, ANA, step.pid, removed=1500))
-    assert got == store.DeleteStep(deleted=True, removed=120)
-    assert step.log[-4:] == ["package_counts", "counts", "delete", "audit"]
+    db = _StoreDb(step.log, counts=(4, 2, 1), earlier=300)
+    got = _run(store.delete_package(db, ANA, step.pid, names=("visit",), removed=1500))
+    assert got == store.DeleteStep(deleted=True, removed=120, names=("visit",))
+    assert step.log[-5:] == ["package_counts", "counts", "earlier", "delete", "audit"]
     [audit] = db.audits
     assert (audit["id"], audit["m"], audit["kind"], audit["v"]) == (step.pid, ANA, "action", 2)
     detail = audit["detail"]
     assert detail == {
         "op": "package.delete", "by": "owner", "owner": ANA, "name": "Visits",
-        "slug": f"visits-{step.pid[:8]}", "objects": 1, "fields": 3, "records": 1620,
+        "slug": f"visits-{step.pid[:8]}", "objects": 1, "fields": 3,
+        "records_this_call": 1620, "records_total": 1920,
         "versions": 4, "installs": 2, "other_member_installs": 1}
     assert "Secret purpose" not in json.dumps(detail)
 
@@ -265,13 +381,16 @@ def test_a_step_with_a_stale_token_raises_before_the_purge(step: SimpleNamespace
 
 def test_another_member_or_a_bad_token_reads_nothing_and_locks_nothing(
         step: SimpleNamespace) -> None:
-    assert _run(store.delete_package(_StoreDb(step.log), BEN, step.pid)) is None
+    assert _run(store.delete_package(_StoreDb(step.log), BEN, step.pid,
+                                     confirm=_token(step))) is None
     assert step.log == ["get(for_update=True)"]
     step.log.clear()
     for bad in ("A" * 64, "a" * 63, "g" * 64, 7, "a" * 65):
         with pytest.raises(store.PackageStoreError):
             _run(store.delete_package(_StoreDb(step.log), ANA, step.pid, confirm=bad))
-    for kw in ({"chunk": 0}, {"chunk": True}, {"removed": -1}, {"removed": 1.5}):
+    for kw in ({"chunk": 0}, {"chunk": True}, {"removed": -1}, {"removed": 1.5},
+               {"names": "visit"}, {"names": [1]}, {}, {"names": (), "confirm": "a" * 64}):
+        kw = {"names": _NAMES, **kw} if "names" not in kw and kw else kw
         with pytest.raises(store.PackageStoreError):
             _run(store.delete_package(_StoreDb(step.log), ANA, step.pid, **kw))
     assert step.log == []
@@ -289,7 +408,8 @@ def test_a_failed_audit_raises_after_the_delete_in_the_same_session(step: Simple
     delete back with the session (the R8 half proves the rollback)."""
     step.records = {"visit": 3}
     with pytest.raises(RuntimeError):
-        _run(store.delete_package(_StoreDb(step.log, audit_fails=True), ANA, step.pid))
+        _run(store.delete_package(_StoreDb(step.log, audit_fails=True), ANA, step.pid,
+                                  names=("visit",)))
     assert step.log[-2:] == ["delete", "audit"]
 
 
@@ -300,6 +420,25 @@ def test_the_preview_is_a_read_with_no_lock(step: SimpleNamespace) -> None:
             found.other_member_installs, found.capped) == (1000, 6, 3, 2, 1, False)
     assert found.confirm == _token(step, (3, 2, 1))
     assert _run(store.delete_preview(_StoreDb(step.log), BEN, step.pid)) is None
+
+
+def test_a_preview_of_a_package_that_a_concurrent_delete_removed_is_none(
+        step: SimpleNamespace) -> None:
+    """The noted fix. The row went between the read of the package and the
+    count, so the count gives no row. That is a 404, not a 500."""
+    assert _run(store.delete_preview(_StoreDb(step.log, counts=None), ANA, step.pid)) is None
+
+
+def test_the_other_member_installs_use_the_one_share_rule() -> None:
+    """P3-2. A private install of the owner that the owner shared counts. The
+    rule is the one of ``package_host/sharing.py``, and it names
+    ``package_install`` with no alias."""
+    from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL
+    sql = store._DELETE_COUNTS_SQL
+    assert sql.count(OTHERS_SEE_THE_INSTALL) == 1
+    third = sql[sql.index("(SELECT count(*) FROM package_install WHERE"):]
+    assert f"AND NOT {OTHERS_SEE_THE_INSTALL}" in third
+    assert "package_install.scope_subject = a.owner_email" in third
 
 
 def test_the_token_is_the_hash_of_the_id_the_names_and_the_counts() -> None:
@@ -323,7 +462,7 @@ def test_the_store_signatures_hold_no_admin_switch() -> None:
     """A5c-1 has no admin path: no store function takes a flag that drops the
     owner filter, and the route passes only the member of the session."""
     assert list(inspect.signature(store.delete_package).parameters) == [
-        "db", "member", "package_id", "confirm", "chunk", "removed"]
+        "db", "member", "package_id", "confirm", "names", "chunk", "removed", "end_at"]
     assert list(inspect.signature(store.delete_preview).parameters) == [
         "db", "member", "package_id"]
 
@@ -354,6 +493,7 @@ class _ObjDb:
         self.counts = counts or []
         self.purges: list[tuple[str, int]] = []
         self.timeouts: list[str] = []
+        self.names: list[str] = []
 
     async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Res:
         sql, p = str(stmt), dict(params or {})
@@ -366,6 +506,8 @@ class _ObjDb:
             raise DBAPIError(sql, p, _Orig())
         if sql == objects_store._PACKAGE_OBJECT_IDS_SQL:
             return _Res([(o,) for o in sorted(self.records)])
+        if sql == objects_store._PACKAGE_OBJECT_NAMES_SQL:
+            return _Res([(n,) for n in self.names])
         if sql == objects_store._PURGE_SQL:
             take = min(int(p["n"]), self.records[p["oid"]])
             self.records[p["oid"]] -= take
@@ -402,6 +544,28 @@ def test_each_purge_statement_runs_under_the_deadline() -> None:
     assert all(0 < int(ms) <= 5000 for ms in db.timeouts[:-1])
 
 
+def test_the_purge_stops_at_the_end_of_the_call() -> None:
+    """P2-2. A *deadline* in the past leaves the purge no time: it runs no
+    delete statement and raises ``StoreBusy``. A later one ends the LOCAL
+    timeout at it, before the 5 s of the purge."""
+    db = _ObjDb({_O1: 10})
+    now = objects_store._clock()
+    with pytest.raises(objects_store.StoreBusy):
+        _run(objects_store.purge_records(db, _PID, deadline=now - 1))
+    assert db.purges == [] and db.records == {_O1: 10}
+    db = _ObjDb({_O1: 10})
+    _run(objects_store.purge_records(db, _PID, deadline=objects_store._clock() + 1.0))
+    assert db.purges and all(int(ms) <= 1000 for ms in db.timeouts[:-1])
+
+
+def test_object_names_reads_the_names_under_the_deadline() -> None:
+    db = _ObjDb({})
+    db.names = ["site", "visit"]
+    assert _run(objects_store.object_names(db, _PID)) == ["site", "visit"]
+    with pytest.raises(objects_store.StoreBusy):
+        _run(objects_store.object_names(_ObjDb({}, cancel=True), _PID))
+
+
 def test_a_timeout_of_the_purge_or_the_counts_is_store_busy() -> None:
     with pytest.raises(objects_store.StoreBusy):
         _run(objects_store.purge_records(_ObjDb({_O1: 10}, cancel=True), _PID))
@@ -435,7 +599,8 @@ def test_the_new_statements_bind_the_org_in_each_select() -> None:
     for sql, binds in ((objects_store._PACKAGE_COUNTS_SQL, 3),
                        (objects_store._PACKAGE_OBJECT_IDS_SQL, 1),
                        (objects_store._PURGE_SQL, 2), (store._DELETE_COUNTS_SQL, 1),
-                       (store._DELETE_SQL, 1)):
+                       (store._DELETE_SQL, 1), (objects_store._PACKAGE_OBJECT_NAMES_SQL, 1),
+                       (store._PARTIAL_TOTAL_SQL, 1)):
         assert sql.count(bound) == binds, sql[:60]
     assert "format = 'manifest'" in store._DELETE_SQL and "owner_email = :m" in store._DELETE_SQL
     assert "LIMIT :n" in objects_store._PURGE_SQL and "LIMIT :cap" in (
@@ -452,7 +617,7 @@ class _DB:
 
 
 @pytest.fixture
-def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:  # noqa: C901 - one fake world
     """A fake store of packages with records. Each step removes at most
     ``chunk`` records, and a session rolls the world back on an error."""
     w = SimpleNamespace(packages={}, org=None, sessions=0, steps=[], busy_steps=set(),
@@ -472,7 +637,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         return None
 
     def preview(pid: str, row: dict[str, Any]) -> store.DeletePreview:
-        objs = tuple(_counts({"visit": row["records"]}))
+        objs = tuple(_counts({"visit": row["records"], **dict.fromkeys(row.get("extra", []), 0)}))
         return store.DeletePreview(
             id=pid, name="Visits", slug=f"visits-{pid[:8]}", objects=objs, versions=2,
             installs=1, other_member_installs=0,
@@ -501,27 +666,50 @@ def world(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         return None if row is None else preview(pid, row)
 
     async def delete_package(db: _DB, member: str, pid: str, *, confirm: str | None = None,
-                             chunk: int | None = None, removed: int = 0) -> Any:
-        w.steps.append({"member": member, "confirm": confirm, "removed": removed,
-                        "session": w.sessions})
+                             names: Any = None, chunk: int | None = None, removed: int = 0,
+                             end_at: float | None = None) -> Any:
+        """The contract of ``store.delete_package``, on the fake world."""
+        w.steps.append({"member": member, "confirm": confirm, "names": names,
+                        "removed": removed, "session": w.sessions, "end_at": end_at})
+        assert (confirm is None) != (names is None)
         row = mine(db, member, pid)
         if row is None:
             return None
-        if confirm is not None and confirm != preview(pid, row).confirm:
-            raise store.CountsChanged(preview(pid, row))
-        if len(w.steps) in w.busy_steps:
-            raise objects_store.StoreBusy("This app is busy. Try again in a moment.")
+        now = preview(pid, row)
+        seen = tuple(sorted(o.name for o in now.objects)) if names is None else tuple(names)
+
+        def end(this_call: int, reason: str, gone: int = 0) -> store.DeleteStep:
+            w.audits.append({"op": store.PARTIAL_OP, "member": member,
+                             "records_this_call": this_call, "reason": reason})
+            left = None if w.preview_busy else preview(pid, row)
+            return store.DeleteStep(deleted=False, removed=gone, names=seen, left=left,
+                                    changed=reason == "changed",
+                                    busy=reason == "busy" or left is None)
+
+        if confirm is not None:
+            if confirm != now.confirm:
+                raise store.CountsChanged(now)
+            if len(w.steps) in w.busy_steps:
+                raise objects_store.StoreBusy("This app is busy. Try again in a moment.")
+        else:
+            if set(row.get("extra", [])) - set(names):
+                return end(removed, "changed")
+            if len(w.steps) in w.busy_steps:
+                return end(removed, "busy")
         gone = min(w.chunk, row["records"])
         row["records"] -= gone
         w.clock += w.tick
         if gone >= w.chunk:
-            return store.DeleteStep(deleted=False, removed=gone)
+            if end_at is not None and objects_store._clock() + store.STEP_SECONDS > end_at:
+                return end(removed + gone, "budget", gone)
+            return store.DeleteStep(deleted=False, removed=gone, names=seen)
         del w.packages[pid]
-        w.audits.append({"member": member, "records": removed + gone})
-        return store.DeleteStep(deleted=True, removed=gone)
+        w.audits.append({"op": store.DELETE_OP, "member": member,
+                         "records_this_call": removed + gone})
+        return store.DeleteStep(deleted=True, removed=gone, names=seen)
 
     monkeypatch.setattr(packages, "_tenant_session", _session)
-    monkeypatch.setattr(packages, "_clock", lambda: w.clock)
+    monkeypatch.setattr(objects_store, "_clock", lambda: w.clock)
     monkeypatch.setattr(store, "get_package", get_package)
     monkeypatch.setattr(store, "delete_preview", delete_preview)
     monkeypatch.setattr(store, "delete_package", delete_package)
@@ -676,8 +864,9 @@ def test_one_call_deletes_a_package_in_three_steps(world: SimpleNamespace) -> No
     assert r.json() == {"deleted": True, "package_id": pid, "records_removed": 1200}
     assert pid not in world.packages
     assert [s["confirm"] is not None for s in world.steps] == [True, False, False]
+    assert [s["names"] for s in world.steps] == [None, ("visit",), ("visit",)]
     assert [s["removed"] for s in world.steps] == [0, 500, 1000]
-    assert world.audits == [{"member": ANA, "records": 1200}]
+    assert world.audits == [{"op": "package.delete", "member": ANA, "records_this_call": 1200}]
 
 
 def test_each_step_runs_in_its_own_session(world: SimpleNamespace) -> None:
@@ -728,6 +917,69 @@ def test_store_busy_on_a_later_step_answers_202_because_the_earlier_steps_hold(
     r = _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
     assert r.status_code == 202, r.text
     assert (r.json()["remaining"], r.json()["records_removed"]) == (700, 500)
+    assert world.packages[pid]["records"] == 700
+
+
+def test_the_route_passes_the_end_of_its_budget_to_the_store(world: SimpleNamespace) -> None:
+    """P2-2. Each step gets the same end: the start of the call plus the
+    budget, on the clock of the object store."""
+    pid = world.add(records=1200)
+    world.clock = 50.0
+    _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
+    assert {s["end_at"] for s in world.steps} == {50.0 + packages.DELETE_BUDGET_SECONDS}
+    assert packages.DELETE_BUDGET_SECONDS == 8.0
+
+
+def test_a_call_that_ends_with_records_left_writes_one_partial_row_and_logs_it(
+        world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    """P2-1. A 202 call writes one partial row (in its last step) and one
+    log line, with the records of this call."""
+    lines: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(packages, "_log", SimpleNamespace(
+        info=lambda event, **kw: lines.append((event, kw)),
+        warning=lambda event, **kw: lines.append((event, kw))))
+    pid = world.add(records=1200)
+    world.tick = packages.DELETE_BUDGET_SECONDS
+    r = _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
+    assert r.status_code == 202
+    assert world.audits == [{"op": store.PARTIAL_OP, "member": ANA, "records_this_call": 500,
+                             "reason": "budget"}]
+    assert lines == [("studio.packages.delete_partial",
+                      {"package_id": pid, "records": 500, "changed": False, "busy": False})]
+
+
+def test_a_new_object_between_two_steps_is_409_with_the_new_preview(
+        world: SimpleNamespace, monkeypatch: pytest.MonkeyPatch) -> None:
+    """P3-1. A publish between the first and the second step added
+    ``invoices``. The call stops with 409, and the earlier step holds."""
+    pid = world.add(records=1200)
+    real = store.delete_package
+
+    async def publish_after_one(db: Any, member: str, p: str, **kw: Any) -> Any:
+        got = await real(db, member, p, **kw)
+        world.packages[p].setdefault("extra", ["invoices"])
+        return got
+
+    monkeypatch.setattr(store, "delete_package", publish_after_one)
+    r = _delete(_client(world), pid, {"confirm": world.preview(pid).confirm})
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "counts_changed"
+    assert [o["name"] for o in detail["preview"]["objects"]] == ["invoices", "visit"]
+    assert world.packages[pid]["records"] == 700
+    assert world.audits[-1]["reason"] == "changed"
+    assert world.audits[-1]["records_this_call"] == 500
+
+
+def test_a_busy_preview_at_the_end_of_a_call_is_503_and_the_partial_row_stays(
+        world: SimpleNamespace) -> None:
+    pid = world.add(records=1200)
+    token = world.preview(pid).confirm
+    world.tick = packages.DELETE_BUDGET_SECONDS
+    world.preview_busy = True
+    r = _delete(_client(world), pid, {"confirm": token})
+    assert r.status_code == 503 and r.json()["detail"]["code"] == "store_busy"
+    assert world.audits[0]["op"] == store.PARTIAL_OP
     assert world.packages[pid]["records"] == 700
 
 
@@ -870,6 +1122,38 @@ def test_the_route_runs_one_session_for_each_step() -> None:
     calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
              and ast.unparse(n.func) == "store.delete_package"]
     assert len(calls) == 1
+
+
+def _client_timeout() -> float:
+    """The timeout of the gateway client of the chat tools, read from the
+    source of ``studio_tools._send``: the ``timeout`` of its
+    ``httpx.AsyncClient``."""
+    import acb_skills.studio_tools as tools
+    tree = ast.parse(inspect.getsource(tools))
+    [send] = [n for n in ast.walk(tree)
+              if isinstance(n, ast.AsyncFunctionDef) and n.name == "_send"]
+    [call] = [n for n in ast.walk(send) if isinstance(n, ast.Call)
+              and ast.unparse(n.func) == "httpx.AsyncClient"]
+    [kw] = [k for k in call.keywords if k.arg == "timeout"]
+    return float(ast.literal_eval(kw.value))
+
+
+def test_the_worst_call_ends_before_the_chat_tool_gives_up() -> None:
+    """P2-2. The next caller of the DELETE is the chat tool of A5c-2, and its
+    client gives up at the timeout of ``studio_tools._send``.
+
+    No step starts unless one more step fits before the end of the budget,
+    and each purge stops at that end. So only the last step runs past the
+    budget, with one count: the preview of a 202, or the counts of the final
+    audit row. The first step also counts (the token check) before its
+    purge, so the wait for the org lock and that count fit in the budget."""
+    budget = packages.DELETE_BUDGET_SECONDS
+    count = objects_store.COUNT_TIMEOUT_MS / 1000
+    lock = objects_store.ORG_LOCK_WAIT_MS / 1000
+    assert budget + count < _client_timeout()
+    assert lock + objects_store.PURGE_TIMEOUT_MS / 1000 == store.STEP_SECONDS
+    assert budget > store.STEP_SECONDS
+    assert lock + count < budget
 
 
 def test_the_route_module_still_runs_no_sql() -> None:

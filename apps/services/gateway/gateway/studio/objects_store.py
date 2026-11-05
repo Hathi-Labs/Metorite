@@ -1463,6 +1463,12 @@ PURGE_CHUNK = 500
 #: A count of the records of one object stops past this number. The preview
 #: of a delete shows "100,000 or more" for a larger object.
 COUNT_CAP = 100_000
+#: The longest run of the counts of one preview, in milliseconds: the deadline
+#: of C1b. The route of a delete adds it once past its budget (A5c-1).
+COUNT_TIMEOUT_MS = studio_query.TIMEOUT_MS
+#: The longest run of one purge, in milliseconds. A caller can make it end
+#: earlier with ``deadline``, and never later.
+PURGE_TIMEOUT_MS = studio_query.TIMEOUT_MS
 
 #: The objects of one package by name, with their field count and their record
 #: count up to one past the cap (``:cap``). One statement for the package.
@@ -1474,6 +1480,12 @@ _PACKAGE_COUNTS_SQL = (
     f"WHERE r.organization_id = {_BOUND_ORG} AND r.object_id = o.id LIMIT :cap) c) "
     f"FROM studio_objects o WHERE o.organization_id = {_BOUND_ORG} "
     "AND o.package_id = CAST(:pid AS uuid) ORDER BY o.name"
+)
+
+#: The object names of one package, for the check of a later step (A5c-1).
+_PACKAGE_OBJECT_NAMES_SQL = (
+    "SELECT name FROM studio_objects "
+    f"WHERE organization_id = {_BOUND_ORG} AND package_id = CAST(:pid AS uuid) ORDER BY name"
 )
 
 #: The object ids of one package, in id order, for the purge.
@@ -1515,9 +1527,26 @@ async def lock_org(db: Any) -> None:
     await _lock_org(db)
 
 
-def _deadline() -> float:
-    """One deadline of :data:`~acb_common.studio_query.TIMEOUT_MS` from now."""
-    return float(_clock() + studio_query.TIMEOUT_MS / 1000)
+def _deadline(ms: int = studio_query.TIMEOUT_MS, cap: float | None = None) -> float:
+    """A deadline of *ms* from now, and never later than *cap* (a time of
+    ``_clock``)."""
+    end = float(_clock() + ms / 1000)
+    return end if cap is None else min(end, float(cap))
+
+
+async def object_names(db: Any, package_id: str) -> list[str]:
+    """The names of the objects of the package *package_id* in the bound org,
+    in name order (A5c-1). A later step of a delete compares them with the
+    names of the preview that the member confirmed. One statement on the
+    unique key of a name, under the 5 s deadline. A timeout raises
+    :class:`StoreBusy`."""
+    pid = _uuid(package_id, "package_id")
+    try:
+        async with _time_limit(db, _deadline(), _BUSY_MESSAGE) as timed:
+            rows = (await timed.execute(text(_PACKAGE_OBJECT_NAMES_SQL), {"pid": pid})).all()
+    except QueryError:
+        raise StoreBusy(_BUSY_MESSAGE) from None
+    return [str(r[0]) for r in rows]
 
 
 async def package_counts(db: Any, package_id: str, *,
@@ -1532,7 +1561,7 @@ async def package_counts(db: Any, package_id: str, *,
     if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
         raise ObjectStoreError("cap must be a whole number from 1")
     try:
-        async with _time_limit(db, _deadline(), _BUSY_MESSAGE) as timed:
+        async with _time_limit(db, _deadline(COUNT_TIMEOUT_MS), _BUSY_MESSAGE) as timed:
             rows = (await timed.execute(
                 text(_PACKAGE_COUNTS_SQL), {"pid": pid, "cap": cap + 1})).all()
     except QueryError:
@@ -1541,7 +1570,8 @@ async def package_counts(db: Any, package_id: str, *,
                         capped=int(r[2]) > cap) for r in rows]
 
 
-async def purge_records(db: Any, package_id: str, *, limit: int = PURGE_CHUNK) -> int:
+async def purge_records(db: Any, package_id: str, *, limit: int = PURGE_CHUNK,
+                        deadline: float | None = None) -> int:
     """Delete at most *limit* records of the package *package_id*, and their
     hot rows by cascade (A5c-1). Answers the number of records deleted.
 
@@ -1550,8 +1580,10 @@ async def purge_records(db: Any, package_id: str, *, limit: int = PURGE_CHUNK) -
     so no record of the package comes in while the caller holds it. So an
     answer below *limit* means that the package holds no record now.
 
-    The statements run under one deadline of 5 s (:func:`_time_limit`). A
-    timeout rolls back this call only, deletes nothing, and raises
+    The statements run under one deadline of :data:`PURGE_TIMEOUT_MS`
+    (:func:`_time_limit`), or under *deadline* (a time of ``_clock``) when it
+    comes first. So the route of a delete keeps each purge inside its budget.
+    A timeout rolls back this call only, deletes nothing, and raises
     :class:`StoreBusy`. A retry continues: nothing is lost. The purge runs no
     rule of an object, because each record of the package goes."""
     pid = _uuid(package_id, "package_id")
@@ -1559,7 +1591,8 @@ async def purge_records(db: Any, package_id: str, *, limit: int = PURGE_CHUNK) -
         raise ObjectStoreError("limit must be a whole number from 1")
     left = limit
     try:
-        async with _time_limit(db, _deadline(), _BUSY_MESSAGE) as timed:
+        async with _time_limit(db, _deadline(PURGE_TIMEOUT_MS, deadline),
+                               _BUSY_MESSAGE) as timed:
             found = (await timed.execute(text(_PACKAGE_OBJECT_IDS_SQL), {"pid": pid})).all()
             for (oid,) in found:
                 if left <= 0:

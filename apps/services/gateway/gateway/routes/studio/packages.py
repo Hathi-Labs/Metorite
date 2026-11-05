@@ -98,13 +98,23 @@ has an admin path, and no body key changes the member.
 Each step runs in its own ``tenant_session``: the ``apps`` row ``FOR
 UPDATE``, the org lock, then a chunk of records (``store.delete_package``).
 No lock stays between two steps, so the other writes of the org run. The
-last step deletes the ``apps`` row and writes the audit row in the store,
-in one transaction. A call runs steps for at most
-:data:`DELETE_BUDGET_SECONDS`. Then it answers 202 ``{deleted: false,
-remaining, confirm}``, and the caller sends the DELETE again with the new
-``confirm``. A 503 ``store_busy`` on a later step also answers 202, because
-the earlier steps hold. The answer of the last step is 200 ``{deleted:
-true}``. Then each route answers 404 for the id.
+last step of a delete deletes the ``apps`` row and writes the audit row in
+the store, in one transaction. The answer is 200 ``{deleted: true}``, and
+then each route answers 404 for the id.
+
+A call ends at :data:`DELETE_BUDGET_SECONDS`. Each purge stops at that end,
+and a step goes on only while one more step fits. Else the step is the last
+of the call. In its own transaction it writes a partial audit row (op
+``package.delete.partial``, the records of this call) and builds the
+preview of now. The answer is 202 ``{deleted: false, remaining, confirm}``,
+and the caller sends the DELETE again with the new ``confirm``. Each call
+that ends with records left logs ``studio.packages.delete_partial``.
+
+A later step checks the object names of the preview that the member
+confirmed. A name that a publish added between two steps ends the call with
+409 ``counts_changed`` and the new preview. A ``store_busy`` on a later step
+ends the call with 202, because the earlier steps hold, or with 503 when the
+preview is busy too. Both write the partial audit row.
 """
 
 from __future__ import annotations
@@ -113,7 +123,6 @@ import contextlib
 import hashlib
 import json
 import re
-import time
 import uuid
 from collections.abc import Iterator
 from typing import Any
@@ -148,13 +157,16 @@ RETRY_AFTER = "2"
 VERSIONS_PAGE = store.MAX_VERSIONS_PAGE
 #: The most bytes of the body of a delete (4 KiB). It holds the token only.
 MAX_DELETE_BODY_BYTES = 4 * 1024
-#: The longest run of the steps of one delete call, in seconds. Past it the
-#: call answers 202, and the caller sends the DELETE again.
-DELETE_BUDGET_SECONDS = 20.0
+#: The longest run of the steps of one delete call, in seconds. Each purge
+#: stops at the end of the budget, and a step goes on only while one more step
+#: (``store.STEP_SECONDS``) fits. Past it, the last step builds the token of a
+#: 202, so one count of ``objects_store.COUNT_TIMEOUT_MS`` can run after the
+#: budget. The sum stays below the client timeout of the chat tool
+#: (``acb_skills.studio_tools._send``). Fence:
+#: ``test_the_worst_call_ends_before_the_chat_tool_gives_up``.
+DELETE_BUDGET_SECONDS = 8.0
 _DIGITS = re.compile(r"[0-9]{1,10}", re.ASCII)
 _HASH = re.compile(r"[0-9a-f]{64}", re.ASCII)
-#: The clock of the delete budget. A test replaces it.
-_clock = time.monotonic
 
 PACKAGE_EXISTS = "package_exists"
 PACKAGE_LIMIT = "package_limit"
@@ -592,38 +604,42 @@ async def delete_package(
     raw = await _raw_body(request, MAX_DELETE_BODY_BYTES)
     await _require_owned(user.email, pid)
     token = _confirm(_parse_json(raw, empty_ok=True))
-    start = _clock()
+    end_at = objects_store._clock() + DELETE_BUDGET_SECONDS
     removed = 0
-    first = True
+    names: tuple[str, ...] | None = None
     while True:
         try:
             async with _tenant_session() as db:
                 step = await store.delete_package(
-                    db, user.email, pid, confirm=token if first else None, removed=removed)
+                    db, user.email, pid, confirm=token if names is None else None,
+                    names=names, removed=removed, end_at=end_at)
         except store.CountsChanged as exc:
             raise HTTPException(status_code=409, detail={
                 "code": COUNTS_CHANGED, "message": str(exc),
                 "preview": _preview_out(exc.preview)}) from None
         except objects_store.StoreBusy as exc:
-            if first:
-                raise _busy(exc) from None
-            # The earlier steps hold, so the call answers what is left.
-            break
+            # Only the first step raises it, and the call removed nothing yet.
+            raise _busy(exc) from None
         if step is None:
             raise _not_found()
         removed += step.removed
         if step.deleted:
             _log.info("studio.packages.deleted", package_id=pid, records=removed)
             return {"deleted": True, "package_id": pid, "records_removed": removed}
-        first = False
-        if _clock() - start >= DELETE_BUDGET_SECONDS:
-            break
-    async with _tenant_session() as db:
-        with _store_errors():
-            left = await store.delete_preview(db, user.email, pid)
-        if left is None:
-            raise _not_found()
-    response.status_code = 202
-    return {"deleted": False, "package_id": pid, "remaining": left.records,
-            "remaining_capped": left.capped, "records_removed": removed,
-            "confirm": left.confirm}
+        names = step.names
+        if step.left is None and not step.busy:
+            continue
+        # The call ends with records left. The last step wrote the partial
+        # audit row in its own transaction.
+        _log.info("studio.packages.delete_partial", package_id=pid, records=removed,
+                  changed=step.changed, busy=step.busy)
+        if step.left is None:
+            raise _busy(objects_store.StoreBusy(objects_store._BUSY_MESSAGE))
+        if step.changed:
+            raise HTTPException(status_code=409, detail={
+                "code": COUNTS_CHANGED, "message": store.COUNTS_CHANGED_TEXT,
+                "preview": _preview_out(step.left)})
+        response.status_code = 202
+        return {"deleted": False, "package_id": pid, "remaining": step.left.records,
+                "remaining_capped": step.left.capped, "records_removed": removed,
+                "confirm": step.left.confirm}
