@@ -21004,8 +21004,16 @@ in step.
 
 ### 18.11 A redraft through the chat keeps the member's edits (2026-11-05, owner)
 
-**Status:** 📝 SPEC, not built. Verified against the code of main `a221ab972` on 2026-11-05.
-AGENT-SAFE. HIGH tier: the send path. No migration and no SQL.
+**Status:** 🔨 BUILT on branch `mt-5f606b3e-redraft-in-place`, not merged, dark behind
+`EMAIL_EDIT_CARD_ORGS`. No migration and no SQL. HIGH tier: the send path. Metorite task
+1533, slice 3 of 4 (task 1650).
+
+**Build notes.** The stream door keeps the snapshot in the STEER branch, before the steer
+goes out, because `_route_incoming_turn` only reads the world. The record of a card keeps
+the run's chat thread, which the tool sends from its run context (`_run_thread`), and its
+draft number. A record with no thread (a WhatsApp run) takes no snapshot and no revise.
+The draft label shows from "Draft 2" on, and a first draft shows none. The nudge line of
+§18.10 now says that the edits go with a chat request, and its chips stay after an edit.
 
 The owner approved this design on 2026-11-03 and asked for the build on 2026-11-04
 (Metorite task 1533, slice task 1650). It ships dark behind `EMAIL_EDIT_CARD_ORGS`, the
