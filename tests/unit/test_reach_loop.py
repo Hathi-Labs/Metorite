@@ -1353,3 +1353,29 @@ class TestTheMutedRules:
     async def test_dark_reads_no_mutes(self, world, monkeypatch):
         await self._run(world, monkeypatch, {"agent_asks"}, on=False)
         assert world.calls == []
+
+
+class TestTheMuteReadFailsOpen:
+    """BR-5: a failed read of the mutes counts as no mutes, and is logged.
+    This is on purpose, so a database fault never silences the loop."""
+
+    async def test_a_failed_read_is_no_mutes_and_is_logged(self, monkeypatch):
+        import contextlib
+
+        logged: list[tuple[str, dict]] = []
+
+        class _Log:
+            def warning(self, event, **kw):
+                logged.append((event, kw))
+
+        @contextlib.asynccontextmanager
+        async def broken(org):
+            raise RuntimeError("db down")
+            yield  # pragma: no cover
+
+        import acb_common
+
+        monkeypatch.setattr(outbox, "tenant_session", broken)
+        monkeypatch.setattr(acb_common, "get_logger", lambda name: _Log())
+        assert await outbox.muted_rules(ORG, ME) == frozenset()
+        assert logged == [("reach.mutes_failed", {"error_class": "RuntimeError"})]
