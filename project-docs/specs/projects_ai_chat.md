@@ -4076,7 +4076,7 @@ policy on each table below.
 | `routes/integrations.py` `GET /plugins`, `DELETE /plugins/{id}` | `plugins` | a request | `current_tenant()` | bound 2026-11-05 |
 
 With no tenant, each 2026-11-05 reader gives an empty answer, and a debug get
-or flag gives 404. An avatar write gives 403. `agent_avatars` keeps the key
+or flag gives 404. An avatar write gives 403, and a plugin delete gives 404. `agent_avatars` keeps the key
 `agent_name` alone, so org B cannot save a name that org A holds. Task 1719
 owns that key.
 
