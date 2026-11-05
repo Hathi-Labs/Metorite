@@ -239,6 +239,7 @@ The owner retired staging (D144), and this PC does its job now.
 3. **Production moves once a day, at 21:30 UTC.** Do not dispatch `deploy.yml`
    after a merge. Dispatch only for a hotfix the owner asks for, or when
    production is down.
+   The home box starts the release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
 
 A slice with nothing to see skips step 1. Until LD-8 to LD-10 land, the gate is
 `scripts/ci_local.sh` and then `premerge.sh`. `engineering_practice.md` §1.3

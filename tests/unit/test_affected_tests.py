@@ -197,6 +197,61 @@ def test_gate_postgres_change_selects_every_db_gate_file(tmp_path: Path) -> None
     assert "tests/unit/test_migration_prefixes.py" in out["files"]
 
 
+# ── --r8: the one rule for an R8 file (CIV-4b) ──────────────────────────────
+
+
+def _r8_repo(tmp_path: Path) -> Path:
+    root = _gate_repo(tmp_path)
+    _write(root, "tests/fences.json", (
+        '{"python": {"safety": ["tests/unit/test_other.py"],'
+        ' "process": ["tests/unit/test_process_fence.py"]}}'
+    ))
+    # The helper holds the gate. Its users name no variable.
+    _write(root, "tests/unit/_tenant_ladder.py", 'URL = os.environ.get("TENANT_LADDER_DATABASE_URL")\n')
+    _write(root, "tests/unit/_plain_fakes.py", "X = 1\n")
+    _write(root, "tests/unit/test_via_helper.py", "from tests.unit._tenant_ladder import URL\n")
+    _write(root, "tests/unit/test_via_module.py", "from tests.unit import _tenant_ladder\n")
+    _write(root, "tests/unit/test_names_var.py", 'os.environ["CUSTOMER_CONSOLE_DATABASE_URL"]\n')
+    _write(root, "tests/unit/test_plain_helper.py", "from tests.unit._plain_fakes import X\n")
+    # A longer name that holds the helper's name is not the helper.
+    _write(root, "tests/unit/test_lookalike.py", "my_tenant_ladder_notes = 1\n")
+    _write(root, "tests/unit/test_process_fence.py", 'read("TENANT_LADDER_DATABASE_URL")\n')
+    return root
+
+
+def test_r8_files_finds_the_gate_the_variables_and_the_helper_users(tmp_path: Path) -> None:
+    """Measured 2026-11-05: `_DB_GATE` alone found 348 of the 454 files that
+    skip without a database. The helper users were most of the rest."""
+    got = sel.r8_files(_r8_repo(tmp_path))
+    assert got == [
+        "tests/unit/test_db.py",
+        "tests/unit/test_names_var.py",
+        "tests/unit/test_process_fence.py",
+        "tests/unit/test_via_helper.py",
+        "tests/unit/test_via_module.py",
+    ]
+
+
+def test_r8_gate_files_leave_out_the_process_fences(tmp_path: Path) -> None:
+    # pytest's --ignore does not drop a file named on the command line, so
+    # the list itself must leave an advisory fence out of a release gate.
+    got = sel.r8_gate_files(_r8_repo(tmp_path))
+    assert "tests/unit/test_process_fence.py" not in got
+    assert "tests/unit/test_via_helper.py" in got
+
+
+def test_gate_postgres_change_selects_every_r8_file(tmp_path: Path) -> None:
+    out = sel.gate(["infra/postgres/300_new.sql"], _r8_repo(tmp_path))
+    assert set(sel.r8_files(_r8_repo(tmp_path))) <= set(out["files"])
+    assert "tests/unit/test_plain_helper.py" not in out["files"]
+
+
+def test_r8_cli_prints_one_file_a_line(capsys, monkeypatch) -> None:
+    monkeypatch.setattr(sel, "r8_gate_files", lambda root=sel.ROOT: ["tests/unit/a.py", "tests/unit/b.py"])
+    assert sel.main(["--r8"]) == 0
+    assert capsys.readouterr().out == "tests/unit/a.py\ntests/unit/b.py\n"
+
+
 def test_gate_frontend_file_is_matched_by_name_without_import_tracing(tmp_path: Path) -> None:
     out = sel.gate(["workbench/control_plane/src/lib/nav.ts"], _gate_repo(tmp_path))
     assert out["full"] is False

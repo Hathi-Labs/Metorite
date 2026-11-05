@@ -117,6 +117,10 @@ def _case_problems(c: Case, reg: dict[str, dict[str, Any]], tools: frozenset[str
             out.append(f"{c.id}: a case that opens a page names no specialist and asks nothing")
         if "show_in_app" not in tools:
             out.append(f"{c.id}: the orchestrator holds no tool 'show_in_app'")
+    if c.finds:
+        out.extend(_guide_case_problems(c, tools))
+    elif c.guide is not None or c.shows:
+        out.append(f"{c.id}: a case that names a guide must set finds")
     if c.app is not None and c.app not in shell.live_panes():
         where = "a preview pane" if c.app in {p.href for p in shell.panes()} else "no pane of nav.ts"
         out.append(f"{c.id}: the app {c.app!r} is {where}, not a live pane")
@@ -132,6 +136,27 @@ def _case_problems(c: Case, reg: dict[str, dict[str, Any]], tools: frozenset[str
         out.append(f"{c.id}: {c.expected!r} has no in-repo factory at {path}")
     if specialist_tool(c.expected) not in tools:
         out.append(f"{c.id}: the orchestrator holds no tool {specialist_tool(c.expected)!r}")
+    return out
+
+
+def _guide_case_problems(c: Case, tools: frozenset[str]) -> list[str]:
+    """WS-OB GD-7: the case's guide is the one that ``find_guide`` ranks first."""
+    from orchestrator import guide_tools as gt
+    from orchestrator import in_app_path
+
+    out: list[str] = []
+    if c.expected is not None or c.asks or c.opens is not None:
+        out.append(f"{c.id}: a guide case names no specialist, asks nothing and opens no page")
+    for tool in ("find_guide", *(("show_guide",) if c.shows else ())):
+        if tool not in tools:
+            out.append(f"{c.id}: the orchestrator holds no tool {tool!r}")
+    if c.shows and c.guide is None:
+        out.append(f"{c.id}: a case that shows a guide names it")
+    held = frozenset(p.feature for p in in_app_path.PANES if p.feature)
+    top = [g.id for g in gt.rank(c.words, tuple(g for g in gt.all_guides()
+                                                if gt.may_run(g, held, False)))]
+    if (top[0] if top else None) != c.guide:
+        out.append(f"{c.id}: find_guide ranks {top[:1] or 'nothing'} first, and the case expects {c.guide!r}")
     return out
 
 
@@ -161,7 +186,8 @@ def _coverage_problems(cases: list[Case], reg: dict[str, dict[str, Any]],
         live = shell.live_panes()
         out.extend(f"ALSO_SERVES sends {href} to {agent!r}, and no case asks it there"
                    for href in hrefs if href in live and (href, agent) not in pairs)
-    if not any(c.expected is None and not c.asks and c.opens is None for c in cases):
+    if not any(c.expected is None and not c.asks and c.opens is None and not c.finds
+               for c in cases):
         out.append("no case expects the orchestrator to answer itself")
     if not any(c.opens for c in cases):
         out.append("no case expects the orchestrator to open a page (show_in_app)")
@@ -201,9 +227,9 @@ def drivable(case: Case) -> bool:
 def representative(cases: Iterable[Case]) -> list[Case]:
     """The first drivable case of each expected answer, in set order."""
     out: list[Case] = []
-    keys: set[tuple[str | None, bool, bool]] = set()
+    keys: set[tuple[str | None, bool, bool, bool, bool]] = set()
     for c in cases:
-        key = (c.expected, c.asks, c.opens is not None)
+        key = (c.expected, c.asks, c.opens is not None, c.finds, c.shows)
         if key not in keys and drivable(c):
             keys.add(key)
             out.append(c)
@@ -222,6 +248,13 @@ def script_for(case: Case, form: str) -> dict[str, ReplyModel]:
         return {ORCHESTRATOR: ReplyModel([tool_turn("ask_questions",
                                                     {"questions": json.dumps(question)}),
                                           text_turn("Tell me which one, and I will do it.")])}
+    if case.finds:
+        # WS-OB GD-7: the orchestrator asks for the guide, then answers from it.
+        turns = [tool_turn("find_guide", {"question": case.words}, "call_1")]
+        if case.shows:
+            turns.append(tool_turn("show_guide", {"guide_id": case.guide}, "call_2"))
+        turns.append(text_turn("Here are the steps. I can show you on the page."))
+        return {ORCHESTRATOR: ReplyModel(turns)}
     if case.opens is not None:
         # WS-62 CF-3: the orchestrator opens the page, then says what the
         # member will see, in one sentence.
@@ -265,6 +298,7 @@ def check_scripted(case: Case, record: RunRecord, models: dict[str, ReplyModel],
     out.extend(_offer_problems(case, orch))
     out.extend(_delegate_problems(case, record, models, harness.loaded[loaded_before:]))
     out.extend(_open_problems(case, record))
+    out.extend(_guide_problems(case, record))
     if case.asks and not any(a.get("answered") for a in record.asked):
         out.append("expected a question card for the member, and none was answered")
     if not case.asks and record.asked:
@@ -284,6 +318,10 @@ def _offer_problems(case: Case, orch: ReplyModel) -> list[str]:
         want.add(specialist_tool(case.expected))
     if case.opens is not None:
         want.add("show_in_app")
+    if case.finds:
+        want.add("find_guide")
+        if case.shows:
+            want.add("show_guide")
     missing = sorted(want - offered)
     if missing:
         out.append(f"the orchestrator was not offered {', '.join(missing)}")
@@ -293,6 +331,9 @@ def _offer_problems(case: Case, orch: ReplyModel) -> list[str]:
                        ("the member's words", case.words)):
         if not orch.saw(text):
             out.append(f"the orchestrator's model did not see {what}")
+    # WS-OB GD-7: the guide tools come with the guide line, as from the dock.
+    if case.finds and not orch.saw(shell.guide_line()[:80]):
+        out.append("the orchestrator's model did not see the guide line")
     return out
 
 
@@ -311,6 +352,22 @@ def _open_problems(case: Case, record: RunRecord) -> list[str]:
         return [f"expected no page to open, and it opened {paths}"] if paths else []
     if paths != [case.opens]:
         return [f"expected one navigate event for {case.opens!r}, and it sent {paths}"]
+    return []
+
+
+def _guide_problems(case: Case, record: RunRecord) -> list[str]:
+    """The ``guide`` events of the run, against ``case.shows`` (WS-OB GD-7).
+
+    A case that shows a guide sends exactly ONE ``CUSTOM`` event ``guide`` with
+    its id. Every other case sends none, and a guide never rides with a
+    ``navigate`` event (they share the one page move of the turn).
+    """
+    ids = [str((e.get("value") or {}).get("guide_id"))
+           for e in record.events
+           if e.get("type") == "CUSTOM" and e.get("name") == "guide"]
+    want = [case.guide] if case.shows else []
+    if ids != want:
+        return [f"expected the guide events {want}, and it sent {ids}"]
     return []
 
 
@@ -345,7 +402,7 @@ async def _run_cases(harness: RoutingHarness, chosen: list[Case],
         harness.models = models
         loaded, sent = len(harness.loaded), len(harness.sent)
         record = await harness.drive(
-            case.words, shell.system_context(case.app, case.facts),
+            case.words, shell.system_context(case.app, case.facts, guide=harness.guide),
             member=ds.MEMBER, org=ds.ORG,
             # The member typed the words, as the chat route binds them (WS-67).
             typed=case.words,
@@ -392,7 +449,8 @@ def _print_scripted(problems: list[str], results: list[Result], cases: list[Case
         status = "pass" if r.passed else "FAIL"
         got = ", ".join(r.record.routed) if r.record and r.record.routed else "-"
         want = r.case.expected or ("ask" if r.case.asks else
-                                   f"opens {r.case.opens}" if r.case.opens else "itself")
+                                   f"opens {r.case.opens}" if r.case.opens else
+                                   "a guide" if r.case.finds else "itself")
         print(f"  {status}  {r.case.id:<3} {r.form:<10} expected {want:<20} routed {got}")
         for p in r.problems:
             print(f"        {p}")
@@ -415,9 +473,21 @@ def first_routed(record: RunRecord, stand_ins: list[tuple[str, str]]) -> str | N
     return stand_ins[0][0] if stand_ins else None
 
 
-def score_live(case: Case, got: str | None, asked: bool) -> bool:
+def score_live(case: Case, got: str | None, asked: bool,
+               tools: Iterable[str] = ()) -> bool:
+    """True when the live run did what *case* expects.
+
+    *tools* names the orchestrator's own tool calls. WS-OB GD-7: a ``finds``
+    case passes only when the run called ``find_guide``, and a ``shows`` case
+    only when it called ``show_guide`` too. No specialist is not enough.
+    """
     if case.asks:
         return got is None and asked
+    called = set(tools)
+    if case.finds and "find_guide" not in called:
+        return False
+    if case.shows and "show_guide" not in called:
+        return False
     return got == case.expected
 
 
@@ -428,19 +498,20 @@ async def _live_cases(harness: RoutingHarness, cases: list[Case], tier: str,
         for n in range(repeat):
             mark = len(harness.delegated)
             record = await harness.drive(
-                case.words, shell.system_context(case.app, case.facts),
+                case.words, shell.system_context(case.app, case.facts, guide=harness.guide),
                 member=ds.MEMBER, org=ds.ORG, tier=tier, timeout=300.0,
                 typed=case.words,
             )
             stand_ins = harness.delegated[mark:]
             got = first_routed(record, stand_ins)
             asked = bool(record.asked) or any(n == "ask_questions" for n, _ in record.tool_calls)
+            tool_calls = [name for name, _ in record.tool_calls]
             rows.append({
                 "id": case.id, "run": n + 1, "app": case.app, "words": case.words,
                 "expected": case.expected, "asks": case.asks, "got": got,
                 "routed": record.routed, "asked": asked,
-                "passed": score_live(case, got, asked),
-                "tool_calls": [name for name, _ in record.tool_calls],
+                "passed": score_live(case, got, asked, tool_calls),
+                "tool_calls": tool_calls,
                 "answer": record.answer[:1500], "error": record.error,
             })
     return rows

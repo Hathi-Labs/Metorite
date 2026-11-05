@@ -477,6 +477,9 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     # EA-15b (§12.4). The edge cuts its merged rows to this length. No route
     # of `my_work` takes it.
     ("my_work", "limit"),
+    # MCP-G4. The edge keeps the runs whose session key is the caller's. The
+    # runs route takes no such parameter.
+    ("list_agent_runs", "mine_only"),
     # MCP-G1. The edge checks the level against the parent, and the node
     # route takes no level. The key uses the slot of `create_task`.
     ("create_project", "level"),

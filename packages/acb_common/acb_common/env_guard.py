@@ -171,6 +171,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-67 RX-1: the orgs where a chat that read outside mail keeps the writes
     # that a card shows. It moves a guard, so only the operator writes it.
     "HELD_CARD_WRITES_ORGS",
+    # one_assistant_context.md §9 WT-1: the orgs where a member may continue
+    # a held chat in a fresh chat. It opens a way around a hold, so only the
+    # owner writes it (work_plan.md §6 D4).
+    "CHAT_CONTINUE_ORGS",
     # §18.10: the orgs whose chat shows a new mail on the card that the member
     # edits. It changes the card of a send, so only the operator writes it.
     "EMAIL_EDIT_CARD_ORGS",
@@ -352,7 +356,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # a third party. A tenant that set either would change it for every org
     # on the box, so only the owner writes them.
     # WEB-4: SEARXNG_URL names the search host of every org on the box.
-    "WEB_RESEARCH_", "WEB_READER_", "SEARXNG_",
+    # WEB-6: WEB_WORKER_TOKEN is the bearer of the web worker. A tenant that
+    # set it could send a render job for any org.
+    "WEB_RESEARCH_", "WEB_READER_", "SEARXNG_", "WEB_WORKER_",
     # WS-66 RM-1: reminders. CALENDAR_REMINDERS is the switch of the reminder
     # routes, so a tenant that set it could turn them on for every org.
     "CALENDAR_REMINDERS",

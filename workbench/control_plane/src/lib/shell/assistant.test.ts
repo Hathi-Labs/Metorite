@@ -20,6 +20,7 @@ import {
   ASSISTANT_AGENT,
   ASSISTANT_PERSONA,
   CHAT_FIRST_PERSONA_LINE,
+  GUIDE_PERSONA_LINE,
   CHAT_LANDED_KEY,
   DOCK_DEFAULT,
   DOCK_MAX,
@@ -508,8 +509,17 @@ describe("the chat opens a page: show_in_app (WS-62 CF-3)", () => {
     expect(CHAT_FIRST_PERSONA_LINE).toContain("call show_in_app with its path");
     expect(CHAT_FIRST_PERSONA_LINE).toContain("Then say what they will see, in one sentence.");
     const dock = read("lib/shell/AssistantDock.tsx");
-    expect(dock).toContain("const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;");
+    expect(dock).toContain("const basePersona = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;");
     expect(dock).toMatch(/onNavigate: \(\{ path, threadId \}\) => \{\s*\/\/[^\n]*\n\s*if \(!chatFirstOn\(\)\) return;/);
+  });
+
+  it("the guide line is dark: it is not in ASSISTANT_PERSONA, and the dock joins it behind the guide flag", () => {
+    expect(ASSISTANT_PERSONA).not.toContain("find_guide");
+    expect(GUIDE_PERSONA_LINE).toContain("call find_guide");
+    expect(GUIDE_PERSONA_LINE).toContain("Never invent a button.");
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain("const personaText = guideOn ? `${basePersona} ${GUIDE_PERSONA_LINE}` : basePersona;");
+    expect(dock).toContain("const guideOn = useGuideAllowed();");
   });
 
   it("beside the side panel, the page moves with the chat", () => {
@@ -1024,7 +1034,10 @@ describe("the chat's chrome on a phone (CF-8, chat_first_surface.md §4.8)", () 
   it("the header keeps five controls on the phone, and Files moves into the \"…\" control", () => {
     const src = dock();
     expect(src).toContain('const phoneTap = phoneChrome ? "h-11 w-11 glass:h-11 glass:w-11 glass:pointer-coarse:h-11 glass:pointer-coarse:w-11" : "";');
-    expect((src.match(/className=\{phoneTap\}/g) ?? []).length).toBe(4);
+    expect((src.match(/className=\{phoneTap\}/g) ?? []).length).toBe(3);
+    // Task 1717: the chat switcher shows a title, so it is 44 px tall and never 44 px wide.
+    expect(src).toContain("className={phoneTapTall}");
+    expect(src).toContain('const phoneTapTall = phoneChrome ? "h-11 glass:h-11 glass:pointer-coarse:h-11" : "";');
     expect(src).toContain(") : chat.activeId && !phoneChrome ? (");
     expect(src).toMatch(/label: "This chat's files"/);
     expect(src).toContain("moreActs={moreActs}");
