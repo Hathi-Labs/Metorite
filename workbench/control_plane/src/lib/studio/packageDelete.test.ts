@@ -50,7 +50,7 @@ describe("the preview", () => {
     expect(c.subject).toBe("Visits");
     expect(c.body).toContain("1 object, 12 records, 3 versions");
     expect(c.body).toContain("cannot undo");
-    expect(c.note).toContain("1 install reach other members");
+    expect(c.note).toContain("1 of them reaches another member, who loses the app");
   });
 
   it("reads the preview from the delete-preview route", async () => {

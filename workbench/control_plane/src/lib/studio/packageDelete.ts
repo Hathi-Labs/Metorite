@@ -69,8 +69,9 @@ export function previewCopy(p: DeletePreview): { heading: string; subject: strin
   ];
   let note: string | null = null;
   if (p.installs > 0) {
-    note = p.otherMemberInstalls > 0
-      ? `${plural(p.installs, "install")} of this app go too, and ${plural(p.otherMemberInstalls, "install")} reach other members. They lose the app.`
+    const o = p.otherMemberInstalls;
+    note = o > 0
+      ? `${plural(p.installs, "install")} of this app go too. ${o === 1 ? "1 of them reaches another member, who loses" : `${o.toLocaleString("en-US")} of them reach other members, who lose`} the app.`
       : `${plural(p.installs, "install")} of this app go too.`;
   }
   return { heading: "Delete this app?", subject: p.name, body: lines.join("\n"), note };
