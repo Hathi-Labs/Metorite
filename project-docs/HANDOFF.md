@@ -627,14 +627,6 @@ line — never reclaim a number by deleting the other entry.
   open.
 - **Added:** 2026-09-23 · the CP-13a deploy check
 
-### H-165 · CP-13 is built through CP-13d. Stop the gateway taking the member from the body, so `decide` serves a shared box · [AGENT]
-- **Metorite:** #559. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n 'member=None' packages/acb_skills/acb_skills/decide_tools.py`
-  → a hit means the `decide` tool still sends no member, and this is open.
-  CP-13a to CP-13d are BUILT (2026-09-23 and 2026-09-24).
-- **Added:** 2026-09-23 · the Jev planning session · **rewritten 2026-09-24**
-  when CP-13d was built
-
 ### H-163 · My Tasks: a signed-in member checks capture into Projects · [OWNER]
 - **Metorite:** #549. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** a signed-in member opens My Tasks on app.metorite.com. The
@@ -1435,12 +1427,6 @@ line — never reclaim a number by deleting the other entry.
 - **Metorite:** #686. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** read-only, on the box: `SELECT name FROM dynamic_agents WHERE lower(name)='metorite';`
   → no row means the name is free, and an `agents:manage` holder could register another agent under it.
-- **Added:** 2026-10-04 · fix round 2 of PR #598
-
-### H-232 · Compare the member's organization with the run's in `_first_party_admin_runs` · [AGENT]
-- **Metorite:** #616. The task holds the full entry (moved 2026-10-28, D118).
-- **Check:** `grep -n "member_org\|membership" apps/services/orchestrator/orchestrator/executor.py`
-  → no hit means the gate does not compare the two organizations.
 - **Added:** 2026-10-04 · fix round 2 of PR #598
 
 ### H-233 · Make the refused root agent look absent everywhere · [AGENT]
