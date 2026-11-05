@@ -1083,3 +1083,19 @@ export function archiveWaitingText(
   const who = firstName(run.member_email, labels);
   return who ? `Waiting for ${who}` : "Waiting for the member of this run";
 }
+
+/**
+ * SW-43. What the panel shows under an answer: the Withdraw button, the held
+ * line, or nothing. Only the run's member sees either, because no other
+ * member may withdraw. The held line shows only when a reply box shows too,
+ * since it says "Reply below".
+ */
+export function withdrawShown(
+  run: AgentRun,
+  answer: AgentActivity | null | undefined,
+  isMember: boolean,
+  canReply: boolean,
+): boolean {
+  if (!answer || !run.answer || !isMember) return false;
+  return run.answer.changeable || canReply;
+}

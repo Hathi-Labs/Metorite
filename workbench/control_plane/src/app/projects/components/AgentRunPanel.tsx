@@ -88,6 +88,7 @@ import {
   runToShow,
   stopPayload,
   withdrawPayload,
+  withdrawShown,
   writeFailure,
 } from "../lib/agentRuns";
 import { ASK_COPY, hasOpenRunOf } from "../lib/askAgent";
@@ -618,8 +619,8 @@ export function AgentRunPanel({ task, personLabels, onTaskChanged, onActivity }:
         </p>
       ) : null}
 
-      {elicitation && answer && run.answer ? (
-        run.answer.changeable ? (
+      {withdrawShown(run, answer, archiveMine, canReply) ? (
+        run.answer?.changeable ? (
           <div className="flex items-center" data-agent-withdraw="">
             <Button
               size="sm"

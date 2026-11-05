@@ -1871,12 +1871,52 @@ async def list_my_agent_runs(
     return {"rows": out, "next_cursor": str(offset + limit) if more else None}
 
 
+#: SW-43. Stamp ``read_at`` once on the live answer. The window of a withdraw
+#: closes at the first agent read.
+_STAMP_READ_SQL = (
+    "UPDATE pm_agent_run_activities SET content = content || CAST(:mark AS jsonb)"
+    " WHERE id = CAST(:aid AS uuid) AND NOT (content ? 'read_at')"
+)
+
+
+async def _stamp_answer_read(db: Any, run_id: str) -> None:
+    """SW-43. An AGENT read of a run closes the window of its live answer.
+
+    Only with the flag on and a live answer that no agent has read. The
+    plain read takes no lock. The stamp takes the lock of the run, the one
+    that the withdraw route takes, then looks again, so a read and a withdraw
+    serialize: one wins.
+    """
+    if not answer_change_enabled():
+        return
+    probe = text(live_answer_sql("p.run_id = CAST(:rid AS uuid)"))
+    live = (await db.execute(probe, {"rid": run_id})).fetchone()
+    if live is None or not await _unread(db, str(live.id)):
+        return
+    await _lock_run(db, run_id)
+    live = (await db.execute(probe, {"rid": run_id})).fetchone()
+    if live is None:
+        return
+    await db.execute(text(_STAMP_READ_SQL), {
+        "aid": str(live.id), "mark": _jsonb({"read_at": (await _clock(db)).isoformat()}),
+    })
+
+
+async def _unread(db: Any, answer_id: str) -> bool:
+    return not (await db.execute(
+        text("SELECT content ? 'read_at' FROM pm_agent_run_activities"
+             " WHERE id = CAST(:aid AS uuid)"), {"aid": answer_id},
+    )).scalar()
+
+
 async def _read_run(user: UserContext, run_id: str, after: int | None) -> tuple[dict, list]:
     """One read of the long poll. It opens and closes its own session, and it
     checks the task again each time, so a revoke takes effect at the next
     read (EA12-4)."""
     async with _tenant_session() as db:
         run = await _load_visible_run(db, user, run_id)
+        if _agent_via(user) is not None:
+            await _stamp_answer_read(db, run_id)
         rows = (await db.execute(
             text(
                 "SELECT * FROM pm_agent_run_activities "
@@ -2213,6 +2253,7 @@ async def resume_agent_run(
 
 
 _ANSWER_STALE = "The agent already has your answer. Send a comment instead."
+_ANSWER_GONE = "This answer is no longer the live answer. The question may be open again."
 
 #: SW-43. The live answer of ONE run, with ``changeable``, read under the lock.
 _LIVE_ANSWER_ONE_SQL = live_answer_sql("p.run_id = CAST(:rid AS uuid)")
@@ -2238,8 +2279,10 @@ def _is_withdraw(row: Any) -> bool:
 async def withdraw_agent_answer(
     run_id: str, payload: WithdrawIn, user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Take back the answer of a member while no agent has read it (SW-43,
-    spec ``agent_coordination.md`` §3.9).
+    """Take back the answer of a member until an agent reads it or posts,
+    whichever is first (SW-43, spec ``agent_coordination.md`` §3.9). An agent
+    read (``get_agent_run``, a claim that finds the run) stamps
+    ``content.read_at`` on the answer, under the lock of the run.
 
     * Only the run's member, and never an agent caller (403). The task must
       be visible (404).
@@ -2266,7 +2309,9 @@ async def withdraw_agent_answer(
             raise HTTPException(status_code=409, detail=_KEY_USED)
         if replay is None:
             live = (await db.execute(text(_LIVE_ANSWER_ONE_SQL), {"rid": run_id})).fetchone()
-            if live is None or not live.changeable or str(live.id) != answer_id:
+            if live is None or str(live.id) != answer_id:
+                raise HTTPException(status_code=409, detail=_ANSWER_GONE)
+            if not live.changeable:
                 raise HTTPException(status_code=409, detail=_ANSWER_STALE)
             ts = await _clock(db)
             await db.execute(text(_WITHDRAW_MARK_SQL), {
@@ -2510,7 +2555,10 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext) -> str | 
     """
     if getattr(user, "agent", None) is None or not agent_runs_enabled():
         return None
-    run_id, _ = await _agent_open_run(db, user, task_id, _member(user), _agent_via(user) or "")
+    run_id, made = await _agent_open_run(db, user, task_id, _member(user), _agent_via(user) or "")
+    if run_id is not None and not made:
+        # SW-43. The claim finds the run of the agent: that is a read.
+        await _stamp_answer_read(db, run_id)
     return run_id
 
 

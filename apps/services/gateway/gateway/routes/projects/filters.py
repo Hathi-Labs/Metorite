@@ -1254,11 +1254,13 @@ def answer_changeable_sql(r: str, p: str) -> str:
     """SW-43. The ONE text of "the member may still take this answer back",
     over the run alias *r* and the answer alias *p*. The route and the runs
     wire both read it. All of these hold: the run works (``in_progress``),
-    the answer is not withdrawn, and no agent activity of the run follows
-    the answer (an agent write carries ``actor_via``)."""
+    the answer is not withdrawn, no agent has read it (``content.read_at``),
+    and no agent activity of the run follows it (an agent write carries
+    ``actor_via``). The window closes at the first read or post."""
     return (
         f"({r}.status = 'in_progress'"
         f" AND NOT ({p}.type = 'prompt' AND {p}.content ? 'withdrawn')"
+        f" AND NOT ({p}.content ? 'read_at')"
         " AND NOT EXISTS (SELECT 1 FROM pm_agent_run_activities x"
         f"                 WHERE x.run_id = {p}.run_id AND x.seq > {p}.seq"
         "                   AND x.actor_via IS NOT NULL))"
@@ -1267,14 +1269,16 @@ def answer_changeable_sql(r: str, p: str) -> str:
 
 def live_answer_sql(where: str) -> str:
     """SW-43. The newest answer of each run that *where* picks (a member
-    ``prompt`` with ``in_reply_to`` set), with ``changeable``. The marker row
+    ``prompt`` with ``in_reply_to`` set, written by the run's own member),
+    with ``changeable``. The marker row
     of a withdraw has no ``in_reply_to``, so it is never an answer."""
     return (
         "SELECT DISTINCT ON (p.run_id) p.id, p.seq, p.run_id, p.in_reply_to,"
         f" {answer_changeable_sql('r', 'p')} AS changeable"
         " FROM pm_agent_run_activities p"
         " JOIN pm_agent_runs r ON r.id = p.run_id"
-        f" WHERE p.type = 'prompt' AND p.in_reply_to IS NOT NULL AND {where}"
+        " WHERE p.type = 'prompt' AND p.in_reply_to IS NOT NULL"
+        f" AND lower(p.actor) = lower(r.member_email) AND {where}"
         " ORDER BY p.run_id, p.seq DESC"
     )
 

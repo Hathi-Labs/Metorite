@@ -68,6 +68,7 @@ import {
   stopPayload,
   writeFailure,
   withdrawPayload,
+  withdrawShown,
 } from "./agentRuns";
 
 const ELICIT: AgentActivity = {
@@ -593,5 +594,33 @@ describe("SW-43 withdraw an answer", () => {
     expect(answerHeldLine("Claude Code")).toBe(
       "Claude Code has your answer. Reply below to change it.",
     );
+  });
+});
+
+describe("SW-43 who sees the withdraw line", () => {
+  const run = {
+    id: "r1",
+    status: "in_progress",
+    answer: { id: "p9", seq: 6, changeable: true },
+  } as unknown as AgentRun;
+  const answer = { id: "p9", seq: 6, type: "prompt", content: {} } as AgentActivity;
+
+  it("hides it from a member who is not the run's member", () => {
+    // Mutation: drop the isMember test, and every viewer gets a button that 403s.
+    expect(withdrawShown(run, answer, false, true)).toBe(false);
+    expect(withdrawShown(run, answer, true, true)).toBe(true);
+  });
+
+  it("shows the held line only when a reply box shows", () => {
+    // Mutation: drop the canReply test, and a stopped run says "Reply below".
+    const held = { ...run, answer: { id: "p9", seq: 6, changeable: false } } as AgentRun;
+    expect(withdrawShown(held, answer, true, true)).toBe(true);
+    expect(withdrawShown(held, answer, true, false)).toBe(false);
+    expect(withdrawShown(run, answer, true, false)).toBe(true);
+  });
+
+  it("shows nothing with no live answer", () => {
+    expect(withdrawShown({ ...run, answer: null } as AgentRun, answer, true, true)).toBe(false);
+    expect(withdrawShown(run, null, true, true)).toBe(false);
   });
 });

@@ -1280,3 +1280,59 @@ class TestWithdrawAnAnswer:
             live = _rows(w.p, "SELECT in_reply_to FROM pm_agent_run_activities "
                               "WHERE id = CAST(:i AS uuid)", i=aid)[0]
             assert live.in_reply_to is not None
+
+    # ── SW-43a review round: the read closes the window ─────────────────
+
+    async def test_an_agent_read_closes_the_window_and_a_member_read_does_not(self, wd):
+        """Mutation: remove the stamp in ``_read_run`` and the 409 is a 200.
+        Mutation: remove ``NOT (p.content ? 'read_at')`` from
+        ``answer_changeable_sql`` and ``changeable`` stays true."""
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            mine = await call(w.a, "GET", f"/projects/agent-runs/{rid}")
+            assert mine.json()["run"]["answer"]["changeable"] is True
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities "
+                               "WHERE id = CAST(:i AS uuid) AND content ? 'read_at'", i=aid) == 0
+            read = await call(w.agent_a, "GET", f"/projects/agent-runs/{rid}")
+            assert read.status_code == 200
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities "
+                               "WHERE id = CAST(:i AS uuid) AND content ? 'read_at'", i=aid) == 1
+            after = await call(w.a, "GET", f"/projects/agent-runs/{rid}")
+            assert after.json()["run"]["answer"]["changeable"] is False
+            late = await _withdraw(call, w.a, rid, aid)
+            assert late.status_code == 409
+            assert "already has your answer" in late.json()["detail"]
+
+    async def test_a_claim_that_finds_the_open_run_closes_the_window(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            with w.p.admin_engine.begin() as c:
+                c.execute(text(
+                    "INSERT INTO pm_task_statuses (id, organization_id, project_id, name,"
+                    " category, position) SELECT gen_random_uuid(), t.organization_id,"
+                    " t.project_id, 'Doing', 'in_progress', 20 FROM pm_tasks t"
+                    " WHERE t.id = CAST(:t AS uuid) AND NOT EXISTS (SELECT 1 FROM"
+                    " pm_task_statuses s WHERE s.project_id = t.project_id"
+                    " AND s.category = 'in_progress')"), {"t": w.task_a})
+            claimed = await call(w.agent_a, "POST", f"/projects/tasks/{w.task_a}/claim", None)
+            assert claimed.status_code == 200, claimed.text
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities "
+                               "WHERE id = CAST(:i AS uuid) AND content ? 'read_at'", i=aid) == 1
+            assert (await _withdraw(call, w.a, rid, aid)).status_code == 409
+
+    async def test_only_the_run_members_own_answer_is_live(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            run = await _start(w, call)
+            rid = run["id"]
+            await _act(call, w.agent_a, rid, **_select())
+            theirs = await _act(call, w.c, rid, type="prompt", selected=["pg"])
+            assert theirs.status_code == 201, theirs.text
+            aid = theirs.json()["activity"]["id"]
+            got = await call(w.a, "GET", f"/projects/agent-runs/{rid}")
+            assert got.json()["run"]["answer"] is None
+            gone = await _withdraw(call, w.a, rid, aid)
+            assert gone.status_code == 409
+            assert "no longer the live answer" in gone.json()["detail"]
