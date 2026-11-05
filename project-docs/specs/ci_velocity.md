@@ -1,8 +1,9 @@
 # CI velocity: the relevant tests per PR, the full suite once per batch (WS-CIV)
 
 **Status:** ACTIVE (owner directive, 2026-11-04). Verified against code on
-2026-11-04 (branch base `fb26ada52`, after a spec audit). CIV-1 is done.
-CIV-2 to CIV-9 are AGENT-SAFE. CIV-4 is HIGH tier, because it changes the
+2026-11-04 (branch base `fb26ada52`, after a spec audit). CIV-1 and CIV-2 are
+done. CIV-3 and CIV-7 are built on branch `civ3-pr-tier` (2026-11-05), and
+they are done at merge. CIV-4 to CIV-6, CIV-8 and CIV-9 are AGENT-SAFE. CIV-4 is HIGH tier, because it changes the
 deploy path.
 
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
@@ -122,9 +123,13 @@ first.
 **Verify:** `uv run pytest tests/unit/test_affected_tests.py -q`.
 AGENT-SAFE. STANDARD tier.
 
-### CIV-3 · pr-check runs the selection
+### CIV-3 · pr-check runs the selection (BUILT 2026-11-05, done at merge)
 
-Starts after CIV-2 merges.
+Starts after CIV-2 merges. **Built choices:** the file list travels as one
+space-separated line in a job output (a typical list is 2-20 KB against a 1 MB
+limit, and no shard downloads anything). `ci_unit_guard.py gate-output` sends a
+list over 200 KB, or a path outside `tests/*.py`, to a full run. The shard
+step `Pick this shard's tests` sets `mode` to `full`, `selection` or `empty`.
 
 **Done when:**
 - The `changes` job runs CIV-2. It exports `full` and the file list through
@@ -233,7 +238,7 @@ AGENT-SAFE. STANDARD tier.
 once on the box, both green.
 AGENT-SAFE. STANDARD tier.
 
-### CIV-7 · The harness says it
+### CIV-7 · The harness says it (BUILT 2026-11-05 with CIV-3, done at merge)
 
 **Done when:**
 - CLAUDE.md §6 no longer says "pr-check runs every test on each PR". It names

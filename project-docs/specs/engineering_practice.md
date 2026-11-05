@@ -193,7 +193,9 @@ message, in chat and on the task. It holds these four items:
 
 Then call `ask_on_task` with two options, **Approve** and **Change it**. In
 the same step, push the branch and open the PR as a draft. GitHub's
-`pr-check` then runs while the owner looks.
+`pr-check` then runs while the owner looks. It runs the tests that the diff can
+affect (tier 1 of `specs/ci_velocity.md` §4, D176). The full suite runs on
+`main` after the merge (tier 2).
 
 A slice with nothing to see skips the preview. Docs, tests, a script and a
 refactor with no change in behaviour go straight to step 4.
@@ -483,7 +485,9 @@ not LOW) → open a PR → merge, watch the deploy and the `main` unit job, and
 test on staging.
 `.claude/commands/next-ticket.md` owns the steps and the tiers (owner decision,
 2026-10-16). Locally, run `scripts/affected_tests.py`. pr-check runs the
-whole suite. Two properties make it work:
+tests that the diff can affect (`affected_tests.py --gate`), and the full
+suite when the diff is FULL. `main` runs the full suite after the merge. The
+tiers are in `specs/ci_velocity.md` §4 (D176). Two properties make it work:
 
 1. **The verifier must not be the implementer**, and re-derives its facts from
    the code rather than trusting the write-up.
@@ -605,6 +609,10 @@ them. A real bug in the PR caused 9. Each red run cost about 30 minutes.
   The full adversarial review still follows the tier of the slice
   (`/next-ticket` step 1b). `workbench/control_plane/DESIGN_SYSTEM.md` §11
   holds the gate. The other process fences stay advisory.
+- **The CI tiers (D176).** A PR runs lint, the SAFETY fences and the unit
+  tests that its diff can affect. A FULL diff runs all of them. `main` runs
+  the full suite in batches, and a red batch is fixed forward at once.
+  `specs/ci_velocity.md` §4 owns the tiers.
 
 **2. Harden.** One PR when the feature works, labelled `harden`.
 

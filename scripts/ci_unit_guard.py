@@ -17,6 +17,11 @@ their skip reasons. The reports already hold those reasons.
 ``durations`` merges the reports into the ``.test_durations`` format, so the
 timings file can be refreshed from a real CI run without a 50-minute local run.
 
+``--only-selected`` (CIV-3) limits ``--must-run`` to the files that the PR tier
+selected. ``gate-output``, ``select`` and ``empty-report`` carry that selection
+between the ``changes`` job, the shards and this guard. A selection run is a
+subset, so the shards and this guard never treat an absent file as lost.
+
 Stdlib only: the ``Unit tests`` job runs it without ``uv sync``.
 Fence: tests/unit/test_ci_unit_guard.py.
 """
@@ -25,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -32,6 +38,11 @@ from pathlib import Path
 # The reason must START with the variable. A test elsewhere skips with
 # "AGENT_WRITES_REDIS_URL or TENANT_LADDER_DATABASE_URL unset" when CI has no
 # Redis, and that skip is expected. The workflow passes these with --disarmed.
+# A job output has a 1 MB limit. A selection longer than this runs the full
+# suite instead, and a path outside this shape does the same.
+MAX_SELECTION_CHARS = 200_000
+_SAFE_PATH = re.compile(r"^tests/[A-Za-z0-9_][A-Za-z0-9_./-]*\.py$")
+
 DISARMED = ("CUSTOMER_CONSOLE_DATABASE_URL unset", "TENANT_LADDER_DATABASE_URL unset")
 
 
@@ -77,7 +88,13 @@ def check(
     must_run: list[str],
     never_skip: list[str],
     disarmed: tuple[str, ...] | list[str] = DISARMED,
+    only_selected: list[str] | None = None,
 ) -> list[str]:
+    """``only_selected`` None is a full run. A list (even empty) is a selection
+    run, and then only the must-run files in that list have to run."""
+    if only_selected is not None:
+        chosen = {p.replace("\\", "/") for p in only_selected}
+        must_run = [p for p in must_run if p in chosen]
     cases = _cases(junit_dir)
     problems: list[str] = []
     ran: set[str] = set()
@@ -115,6 +132,54 @@ def durations(junit_dir: Path) -> dict[str, float]:
     return dict(sorted(out.items()))
 
 
+def gate_output(gate_json: Path) -> list[str]:
+    """``full=`` and ``files=`` lines for $GITHUB_OUTPUT. Fails open to full."""
+    try:
+        data = json.loads(gate_json.read_text(encoding="utf-8"))
+        full = bool(data["full"])
+        files = [str(f) for f in data["files"]]
+        if not full and not all(_SAFE_PATH.match(f) for f in files):
+            return ["full=true", "files="]
+        text = " ".join(files)
+        if len(text) > MAX_SELECTION_CHARS:
+            return ["full=true", "files="]
+    except Exception:  # unreadable or malformed: run everything
+        return ["full=true", "files="]
+    return [f"full={'true' if full else 'false'}", f"files={'' if full else text}"]
+
+
+def select_shard(full: str, files: str, ignored: str = "") -> tuple[str, list[str]]:
+    """What a shard runs: ``full``, ``selection`` or ``empty``.
+
+    Only the exact string ``false`` selects. An empty or unknown ``full`` (the
+    ``changes`` job failed) runs the whole suite. A selection never reaches
+    pytest as an empty list, because pytest then collects the whole tree."""
+    if full != "false":
+        return "full", []
+    paths = files.split()
+    if not all(_SAFE_PATH.match(p) for p in paths):
+        return "full", []
+    skip = {t.removeprefix("--ignore=") for t in ignored.split()}
+    paths = [p for p in paths if p not in skip]
+    return ("selection", paths) if paths else ("empty", [])
+
+
+_EMPTY_REPORT = (
+    '<?xml version="1.0" encoding="utf-8"?>'
+    '<testsuites><testsuite name="pytest" errors="0" failures="0" skipped="0" '
+    'tests="0" time="0.0"></testsuite></testsuites>'
+)
+
+
+def empty_report(out: Path) -> bool:
+    """Write a zero-test JUnit report unless pytest already wrote one."""
+    if out.exists():
+        return False
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(_EMPTY_REPORT, encoding="utf-8")
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -123,6 +188,12 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--must-run", nargs="*", default=[])
     c.add_argument("--never-skip", nargs="*", default=[])
     c.add_argument(
+        "--only-selected",
+        nargs="*",
+        default=None,
+        help="a selection run: check only the must-run files in this list",
+    )
+    c.add_argument(
         "--disarmed",
         action="append",
         help="a skip reason that means an R8 gate is disarmed (repeatable)",
@@ -130,7 +201,27 @@ def main(argv: list[str] | None = None) -> int:
     d = sub.add_parser("durations")
     d.add_argument("--junit", type=Path, required=True)
     d.add_argument("--out", type=Path, required=True)
+    g = sub.add_parser("gate-output", help="turn affected_tests.py --gate JSON into step outputs")
+    g.add_argument("--json", type=Path, required=True)
+    sel = sub.add_parser("select", help="what this shard runs, as step outputs")
+    sel.add_argument("--full", default="")
+    sel.add_argument("--files", default="")
+    sel.add_argument("--ignored", default="", help="the output of fences.py pytest-ignore")
+    e = sub.add_parser("empty-report", help="write a zero-test JUnit report if none exists")
+    e.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
+
+    if args.cmd == "gate-output":
+        print(chr(10).join(gate_output(args.json)))
+        return 0
+    if args.cmd == "select":
+        mode, paths = select_shard(args.full, args.files, args.ignored)
+        print(f"mode={mode}")
+        print(f"paths={' '.join(paths)}")
+        return 0
+    if args.cmd == "empty-report":
+        print("wrote an empty report" if empty_report(args.out) else "report exists")
+        return 0
 
     if args.cmd == "durations":
         data = durations(args.junit)
@@ -138,7 +229,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {len(data)} timings to {args.out}")
         return 0
 
-    problems = check(args.junit, args.must_run, args.never_skip, args.disarmed or DISARMED)
+    problems = check(
+        args.junit, args.must_run, args.never_skip, args.disarmed or DISARMED, args.only_selected
+    )
     for p in problems:
         print(f"::error::{p}")
     return 1 if problems else 0

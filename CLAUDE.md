@@ -387,7 +387,9 @@ Rules that make it work:
 - **Do not run all of `tests/unit/` locally.** It takes about 50 minutes.
   Run `uv run python scripts/affected_tests.py --run`. It picks the tests your
   diff can affect, and it prints the `vitest related` command for frontend
-  files. pr-check runs every test on each PR.
+  files. pr-check runs the tests that the diff can affect, and the full suite
+  when the diff is FULL. `main` runs the full suite after each merge, in
+  batches. The four tiers are in `specs/ci_velocity.md` §4 (D176).
 - **R8 needs a database. Without one, 843 tests SKIP while the run reads
   green.** Run `bash scripts/dev_db.sh` first, then
   `eval "$(bash scripts/dev_db.sh --export)"`. `engineering_practice.md` §1.1
