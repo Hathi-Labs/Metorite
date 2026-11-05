@@ -1496,12 +1496,18 @@ _PACKAGE_OBJECT_IDS_SQL = (
 
 #: At most ``:n`` records of one object, and their hot rows by cascade. The
 #: unique key ``(organization_id, object_id, id)`` serves the subselect.
+#: ⚠️ The ids come from an ARRAY of a subselect that names no outer column, so
+#: Postgres runs it once (an InitPlan) and reads each record by its key. With
+#: ``id IN (subselect)``, stale statistics after a bulk load made the planner
+#: run the LIMIT again for each record of the object: 21.5 s for 500 of 60,000
+#: records on the dev stack (2026-11-05). Fence:
+#: ``test_r8_a_purge_after_a_bulk_load_reads_a_bounded_number_of_rows``.
 _PURGE_SQL = (
     "DELETE FROM studio_records "
     f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
-    "AND id IN (SELECT id FROM studio_records "
+    "AND id = ANY(ARRAY(SELECT id FROM studio_records "
     f"WHERE organization_id = {_BOUND_ORG} AND object_id = CAST(:oid AS uuid) "
-    "ORDER BY id LIMIT :n)"
+    "ORDER BY id LIMIT :n))"
 )
 
 

@@ -1075,3 +1075,34 @@ def test_r8_a_private_install_that_the_owner_shared_counts_as_another_members(wo
                        "granted_by) VALUES (CAST(:o AS uuid), CAST(:p AS uuid), :s, 'use', :m)"),
                   {**org, "s": BEN, "m": ANA})
     assert (alone, others()) == (0, 1)
+
+
+def test_r8_a_purge_after_a_bulk_load_reads_a_bounded_number_of_rows(world, app_engine) -> None:  # noqa: F811
+    """The live 202 check of 2026-11-05 found it. ANALYZE sees the object with
+    no record, and then a bulk load adds 20,000. With ``id IN (subselect)``
+    the planner ran the LIMIT again for each record, so one purge of 500 read
+    millions of buffers and passed its 5 s deadline on each step. The ARRAY
+    form runs the subselect once and reads each record by its key."""
+    pid = _run(world, lambda: _live(world.a, ANA, _manifest(_mid("bulk"))))
+    [oid] = _object_ids(world, pid)
+    with world.p.admin_engine.begin() as c:
+        c.execute(text("ALTER TABLE studio_records SET (autovacuum_enabled = false)"))
+        c.execute(text("ANALYZE studio_records"))
+        c.execute(text(
+            "INSERT INTO studio_records (organization_id, object_id, data, created_by, updated_by) "
+            "SELECT CAST(:o AS uuid), CAST(:i AS uuid), jsonb_build_object('site', 's' || g), "
+            ":m, :m FROM generate_series(1, 20000) g"), {"o": world.a, "i": oid, "m": ANA})
+    try:
+        with app_engine.connect() as c:
+            trans = c.begin()
+            c.execute(text("SELECT set_config('app.tenant_id', :o, true)"), {"o": world.a})
+            plan = c.execute(text("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) "
+                                  + objects_store._PURGE_SQL), {"oid": oid, "n": 500}).scalar_one()
+            trans.rollback()
+    finally:
+        with world.p.admin_engine.begin() as c:
+            c.execute(text("ALTER TABLE studio_records RESET (autovacuum_enabled)"))
+    top = (plan if isinstance(plan, list) else json.loads(plan))[0]["Plan"]
+    blocks = int(top["Shared Hit Blocks"]) + int(top["Shared Read Blocks"])
+    assert blocks < 30_000, blocks
+    assert _records(world, pid) == 20_000
