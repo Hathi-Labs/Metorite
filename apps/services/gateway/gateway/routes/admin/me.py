@@ -375,6 +375,7 @@ class ShellPrefs(BaseModel):
         default=None, alias="newOrder", max_length=MAX_JOBS)
     chat_first_message_at: str | None = Field(default=None, max_length=MAX_STAMP)
     tour_seen_at: str | None = Field(default=None, max_length=MAX_STAMP)
+    buddy_hello_at: str | None = Field(default=None, max_length=MAX_STAMP)
 
     @field_validator("preset")
     @classmethod
@@ -383,7 +384,7 @@ class ShellPrefs(BaseModel):
             raise ValueError(f"unknown preset: {v[:40]}")
         return v
 
-    @field_validator("chat_first_message_at", "tour_seen_at")
+    @field_validator("chat_first_message_at", "tour_seen_at", "buddy_hello_at")
     @classmethod
     def _a_mark(cls, v: str | None, info: ValidationInfo) -> str | None:
         if v is not None and _stamp(v) is None:
@@ -412,11 +413,11 @@ class ShellPrefs(BaseModel):
 EMPTY_SHELL: dict[str, Any] = {
     "preset": None, "answered": None, "pins": None, "known": None,
     "cardOrder": None, "newOrder": None, "chat_first_message_at": None,
-    "tour_seen_at": None,
+    "tour_seen_at": None, "buddy_hello_at": None,
 }
 
 #: The marks of the layout. A save keeps each one that the body omits.
-KEPT_KEYS: tuple[str, ...] = ("chat_first_message_at", "tour_seen_at")
+KEPT_KEYS: tuple[str, ...] = ("chat_first_message_at", "tour_seen_at", "buddy_hello_at")
 
 #: How a write changes an existing row's ``shell_prefs`` (WS-62 CF-2). Each
 #: is ONE statement, so two writes never race through a read-then-write
@@ -450,15 +451,23 @@ _SET_STAMP = (
     "CASE WHEN jsonb_typeof(user_settings.shell_prefs) = 'object' "
     "THEN user_settings.shell_prefs ELSE CAST('{}' AS jsonb) END || EXCLUDED.shell_prefs"
 )
-#: ``stamp-first``: a ``stamp`` that also keeps a stored ``tour_seen_at``. The
-#: first start of the tour stays on the server (WS-OB GD-5a). Only the tour
-#: mark keeps its first value. The nudge mark still takes the new one.
-#: ``NULLIF`` turns a stored JSON null into "none", so the new time lands then.
-_SET_STAMP_FIRST = (
-    f"jsonb_set({_SET_STAMP}, ARRAY['tour_seen_at'], "
-    "COALESCE(NULLIF(user_settings.shell_prefs->'tour_seen_at', CAST('null' AS jsonb)), "
-    "EXCLUDED.shell_prefs->'tour_seen_at'), true)"
-)
+#: ``stamp-first``: a ``stamp`` that also keeps a stored ``tour_seen_at`` and
+#: a stored ``buddy_hello_at``. The first start of the tour stays on the
+#: server (WS-OB GD-5a), and so does the first hello (WS-BUD BUD-1, D177).
+#: Only these two marks keep their first value. The nudge mark still takes
+#: the new one. ``NULLIF`` turns a stored JSON null into "none", so the new
+#: time lands then. A body that does not name a mark leaves it alone: the
+#: merge keeps the stored value, and ``EXCLUDED`` holds no such key.
+_FIRST_MARKS = ("tour_seen_at", "buddy_hello_at")
+_SET_STAMP_FIRST = _SET_STAMP
+for _k in _FIRST_MARKS:
+    # The last COALESCE arm keeps a body that omits the mark from writing a
+    # SQL NULL, which would void the whole value.
+    _SET_STAMP_FIRST = (
+        f"jsonb_set({_SET_STAMP_FIRST}, ARRAY['{_k}'], "
+        f"COALESCE(NULLIF(user_settings.shell_prefs->'{_k}', CAST('null' AS jsonb)), "
+        f"EXCLUDED.shell_prefs->'{_k}', CAST('null' AS jsonb)), true)"
+    )
 _SET_BY_MODE = {
     "layout": _SET_LAYOUT,
     "layout-keep": _SET_LAYOUT_KEEP,
@@ -509,6 +518,7 @@ def stored_shell(raw: Any) -> dict[str, Any]:
         "newOrder": _list("newOrder", _job_ids(), MAX_JOBS),
         "chat_first_message_at": _stamp(raw.get("chat_first_message_at")),
         "tour_seen_at": _stamp(raw.get("tour_seen_at")),
+        "buddy_hello_at": _stamp(raw.get("buddy_hello_at")),
     }
 
 
@@ -648,15 +658,19 @@ async def put_my_shell(
             # ``tour_seen_at`` is kept even when named: an old tab copies the
             # whole answer back, so a layout save never writes the tour mark.
             # Only the key-only stamp sets it (WS-OB GD-5a).
-            keep = tuple(k for k in KEPT_KEYS if k not in named or k == "tour_seen_at")
-            prefs["tour_seen_at"] = None
+            keep = tuple(k for k in KEPT_KEYS if k not in named or k in _FIRST_MARKS)
+            for k in _FIRST_MARKS:
+                prefs[k] = None
             mode = "layout-keep"
-        # GD-5a: the tour mark is the SERVER's time, never the device's.
-        if prefs.get("tour_seen_at") is not None:
-            prefs["tour_seen_at"] = _server_stamp()
-            # The first start stays: a stored time wins over this one.
-            if mode == "stamp":
-                mode = "stamp-first"
+        # GD-5a: a first mark is the SERVER's time, never the device's.
+        stamped = False
+        for k in _FIRST_MARKS:
+            if prefs.get(k) is not None:
+                prefs[k] = _server_stamp()
+                stamped = True
+        # The first time stays: a stored time wins over this one.
+        if stamped and mode == "stamp":
+            mode = "stamp-first"
     try:
         async with _tenant_session() as db:
             stored = await _write_shell(db, uid, prefs, mode, keep)

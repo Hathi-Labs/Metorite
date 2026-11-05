@@ -66,6 +66,7 @@ import { DeclinedNote, NotNowButton, NotNowClose } from "@/components/NotNow";
 import { Checkbox } from "@/components/ui/Checkbox";
 import GenUiText from "@/components/GenUiText";
 import SuggestionPills from "@/components/SuggestionPills";
+import { runHelloChip } from "@/lib/shell/buddyHello";
 import { clipWords, plainTitle } from "@/lib/fencedText";
 import { type CardFamily, templateTitle } from "@/lib/chatPlacement";
 import { fieldSpec, formatCardDate } from "@/lib/cardFields";
@@ -294,6 +295,13 @@ export const TEMPLATE_CATALOG: TemplateSpec[] = [
     name: "reminderCard",
     summary: "A reminder that a tap opened in the chat, with its chips: Done, Not yet, Later, Drop, Make it a task. The server writes it as the chat's first row. An agent does not emit it.",
     data: "{ reminderId, title, when?, zone?, state('scheduled'|'due'|'unconfirmed'|'done'|'dropped'|'cancelled'), resolution?, kind?('action'|'notice'), link? }",
+    family: "result",
+  },
+  // ── The hello of a new member (WS-BUD BUD-1) ────────────────────────────
+  {
+    name: "buddyHello",
+    summary: "The hello a new member sees in the assistant, with three chips: Show me around, What can you do here?, I'll look around. The server writes it as the chat's first row. An agent does not emit it.",
+    data: "{ chips:[{ id('tour'|'ask'|'look'), label }] }",
     family: "result",
   },
 ];
@@ -1326,6 +1334,8 @@ export const OWN_HEAD_TEMPLATES: ReadonlySet<string> = new Set([
   "report",
   // A reminder that a tap opened (WS-66 RM-4).
   "reminderCard",
+  // The hello of a new member (WS-BUD BUD-1).
+  "buddyHello",
 ]);
 
 /**
@@ -1971,6 +1981,40 @@ function ReminderCard({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
   );
 }
 
+// ── The hello of a new member (WS-BUD BUD-1, D177) ──────────────────────────
+//
+// The server writes the row and its words (`routes/chat_brief.py`). This card
+// draws the three chips under the text. A tap runs on the client
+// (`lib/shell/buddyHello.ts`): the tour starts, the question goes out as the
+// member's message, or the panel closes. With no `onAction` (the side panel)
+// the card draws read-only, with no chips.
+
+/** The words over the chips. */
+const HELLO_CHIPS_LABEL = "Where to start";
+
+function BuddyHello({ data, ctx }: { data: Data; ctx?: TemplateCtx }) {
+  const chips = arr(data.chips)
+    .map((c) => (c ?? {}) as Data)
+    .map((c) => ({ label: str(c.label).trim(), message: str(c.id).trim() }))
+    .filter((c) => c.label && c.message);
+  const fold = useCardFold();
+  return (
+    <div className={fold ? `${G_FRAME} ${T_INDIGO}` : undefined} style={fold ? CARD_BOX : undefined} data-buddy-hello="">
+      <TemplateHead icon="sparkles" title="Welcome" />
+      <TemplateBody>
+        {ctx?.onAction && chips.length > 0 ? (
+          <SuggestionPills
+            suggestions={chips}
+            onPick={(id) => runHelloChip(id, ctx.onAction)}
+            label={HELLO_CHIPS_LABEL}
+            align="start"
+          />
+        ) : null}
+      </TemplateBody>
+    </div>
+  );
+}
+
 // ── A report the agent makes (owner directive, 2026-10-16) ──────────────────
 //
 // `make_report` writes a report as data and its PDF beside it. ONE component
@@ -2393,6 +2437,7 @@ export const TEMPLATE_REGISTRY: Record<string, TemplateRenderer> = {
   chart: (data) => <ChartCard spec={data} />,
   report: (data) => <ReportTemplate data={data} />,
   reminderCard: (data, ctx) => <ReminderCard data={data} ctx={ctx} />,
+  buddyHello: (data, ctx) => <BuddyHello data={data} ctx={ctx} />,
 };
 
 /** Render a template node, or an inert fallback if the name is unknown. */

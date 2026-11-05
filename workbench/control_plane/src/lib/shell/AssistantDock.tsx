@@ -100,6 +100,7 @@ import {
 } from "@/lib/sessions";
 
 import { requestBrief } from "./briefTurn";
+import { claimHello, opensHello, requestHello } from "./buddyHello";
 import GuideOffer from "./GuideOffer";
 import { offerGuide, startGuide } from "./guide";
 import { chatFirstOn } from "./chatFlag";
@@ -114,7 +115,7 @@ import {
   requestReminderOpen,
   useKnownReminder,
 } from "./reminderOpen";
-import { markChatFirstMessage } from "./shellPrefs";
+import { markBuddyHello, markChatFirstMessage, setHelloPending } from "./shellPrefs";
 import {
   dockFloats,
   dockFoldsNav,
@@ -131,6 +132,7 @@ import {
   holdsForBrief,
   consumeAsk,
   consumeDraft,
+  consumeHello,
   consumeReminder,
   effectiveMode,
   focusAssistant,
@@ -356,6 +358,44 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
       });
   }, [scope, open, st.reminder, st.freshSeq, activeIdForBrief, activeCount, refresh]);
 
+  // The hello (WS-BUD BUD-1, D177). The landing asked for a fresh chat AND
+  // the hello, so the open waits until that chat exists: the two fresh counts
+  // agree. Then it asks the server once (`claimHello`). The server claims the
+  // stamp first and writes the row only when it won, so a second tab gets a
+  // 204 and an ordinary empty chat. The hold works as for the reminder, so
+  // the chat's first load reads the row. This effect comes before the
+  // brief's: the brief never lands in the hello's chat.
+  useLayoutEffect(() => {
+    if (!scope || !open || !st.hello || !activeIdForBrief || activeCount === undefined) return;
+    if (handledFresh.current !== st.freshSeq) return;
+    const id = activeIdForBrief;
+    consumeHello();
+    if (!claimHello(id)) {
+      setHelloPending(false);
+      return;
+    }
+    setBriefHold(id);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      setBriefHold((held) => (held === id ? null : held));
+      refresh();
+    };
+    const timer = setTimeout(release, REMINDER_HOLD_MS);
+    void requestHello(id)
+      .then((posted) => {
+        if (!posted) return;
+        markBuddyHello();
+        enrichSession(id, { title: posted.title, messageCount: 1, lastPreview: posted.preview });
+      })
+      .finally(() => {
+        clearTimeout(timer);
+        setHelloPending(false);
+        release();
+      });
+  }, [scope, open, st.hello, st.freshSeq, activeIdForBrief, activeCount, refresh]);
+
   // The brief as the first turn (CF-5). Asked once per page per day, and
   // only through the rule. The server decides whether a brief exists and
   // writes the row (D-PM-39); a 204 or a fault opens the chat empty.
@@ -367,6 +407,8 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
   useLayoutEffect(() => {
     if (!scope || !open || !activeIdForBrief || activeCount === undefined) return;
     if (st.reminder || opensReminder(activeIdForBrief)) return;
+    // The hello takes the brief's place on its visit (BUD-1).
+    if (st.hello || opensHello(activeIdForBrief)) return;
     if (!wantsBrief({
       chatFirst: surface.chatFirst, phone: surface.phone,
       messageCount: activeCount, askedFor: briefAskedToday(),
@@ -398,7 +440,7 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
         clearTimeout(timer);
         release();
       });
-  }, [scope, open, st.reminder, activeIdForBrief, activeCount, surface.chatFirst, surface.phone, refresh]);
+  }, [scope, open, st.reminder, st.hello, activeIdForBrief, activeCount, surface.chatFirst, surface.phone, refresh]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // The reminder's context block (RM-4, §5.7 item 4). While its chat is on

@@ -226,6 +226,11 @@ export interface StoredShell {
    * GD-14, and no gate. A layout save never sends it, and the server keeps it.
    */
   tour_seen_at: string | null;
+  /**
+   * When the server first posted the hello (WS-BUD BUD-1, D177). ISO 8601,
+   * the server's time, first write wins. A layout save never sends it.
+   */
+  buddy_hello_at: string | null;
 }
 
 export const EMPTY_SHELL: StoredShell = {
@@ -237,6 +242,7 @@ export const EMPTY_SHELL: StoredShell = {
   newOrder: null,
   chat_first_message_at: null,
   tour_seen_at: null,
+  buddy_hello_at: null,
 };
 
 export interface ShellLayout {
