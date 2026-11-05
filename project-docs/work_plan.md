@@ -182,7 +182,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-DOC | **Docs and repo cleanup** | 🟢 active · M1 | none yet | Metorite: epic 522 (Developer Workflow) · next DOC-1, DOC-2 |
 | WS-BRIEF | **Core brief**: brief tasks with no earlier plan line | 🟢 active · M1 | `specs/core_brief.md` (PROPOSED) | Metorite: epics 479 (Proactive Intelligence) and 480 (Secrets & Security), connectors in epic 481, automations in sub-epic AUTO of epic 479 · gate AUTO-3 (the trust ladder) · BR-1a built, dark (`JOB_QUEUE`, `docs/job_queue.md`) · AUTO-2 built, dark (`UNATTENDED_LEDGER`, `docs/job_queue.md` §9) · BR-4 slice 1 built: migration 315 and `gateway/brief/store.py`, with no producer · BR-2a-2 slice 1 built, dark (`BRIEF_COMPOSE`) · next BR-2b, BR-5 slice 2 |
 | WS-IR | **Issue Reporting** | 🟢 active · M0 | none yet | Metorite: epic 475 (Observability & Alerts) · D126 · next IR-0, IR-1, IR-2 |
-| WS-OB | **Onboarding and Help** | 🟢 active · M1 | `specs/onboarding.md` (D150, D153). OB-8: `specs/calendar_events_reminders.md` §10.4 | Metorite: Onboarding project, epic 669 · OB-0 (the founder's welcome closes at once) and OB-0b (a new founder lands with no apps, HIGH) MERGED 2026-11-02 · next OB-0c, OB-0d, OB-1a, OB-1b, OB-4, OB-10, OB-24 · AI-led layer: epic 1351, `specs/onboarding.md` §12, D153 · The guide (tour, Show me, practice): `specs/assistant_guide.md`, D167, epic 1451, next GD-1 to GD-5 · HLP-1, ADM-1. OB-8 (the chat push prompt) BUILT 2026-10-30, dark |
+| WS-OB | **Onboarding and Help** | 🟢 active · M1 | `specs/onboarding.md` (D150, D153). OB-8: `specs/calendar_events_reminders.md` §10.4 | Metorite: Onboarding project, epic 669 · OB-0 (the founder's welcome closes at once) and OB-0b (a new founder lands with no apps, HIGH) MERGED 2026-11-02 · next OB-0c, OB-0d, OB-1a, OB-1b, OB-4, OB-10, OB-24 · AI-led layer: epic 1351, `specs/onboarding.md` §12, D153 · The guide (tour, Show me, practice): `specs/assistant_guide.md`, D167, epic 1451, next GD-1 to GD-5 · The buddy (the hello, then Reach's chat channel, mark, pop and pause): D177, epic 1693, `specs/onboarding.md` §13 and `specs/proactive_reach.md` §19, next BUD-1 · HLP-1, ADM-1. OB-8 (the chat push prompt) BUILT 2026-10-30, dark |
 
 ### 2.2 Earlier rows (WS-0 to WS-67)
 
@@ -5351,6 +5351,40 @@ The owner then chose "After merge, keep D-10-16" over a merge queue.
 5. **Outside contributors need approval** before Actions runs any of their code (CIV-1, done 2026-11-04). While the repo is public, the home box is not a GitHub runner.
 
 Fence: `tests/unit/test_affected_tests.py` (CIV-2) and `tests/unit/test_ci_unit_guard.py` (CIV-3). CIV-1 is advisory, because it is a GitHub setting.
+
+### D177 — The buddy: the chat greets each new member once, speaks first through Reach, marks a waiting message, and the member can pause it (2026-11-05)
+
+Owner directive, 2026-11-05, in chat. Board: **WS-OB**. Epic: Metorite 1693 (`mt-f62070b1`). Owning specs: `specs/onboarding.md` §13 (the hello) and `specs/proactive_reach.md` §19 (the chat channel, the mark, the pop, the pause and the new kinds).
+
+```text
+"when a person comes on board for the first time ... telling the user: 'Hey,
+things might look a little intimidating ... Don't worry, the Metorite chat is
+here whenever you need it. If you're confused about it, just ask the chat, and
+it will show you all the aspects of the UI/UX' ... The chat should proactively
+show itself like a buddy ... not just being a passive listener ... but also
+pings the user with text when needed. It shows up as a chat waiting on the
+left-hand sidebar and pops up the sidebar when needed. Possibly, there needs to
+be a mechanism to silence the chat for some amount of time if some work is
+being done ... This should be done tastefully."
+```
+
+1. **The hello.** On each member's first visit, the assistant opens once and greets the member. Code builds the one message, with no model. It offers the tour, a question and a way out. A server stamp keeps it to one time on every device. This amends D-CF-2, and P2 and §12.2 of `specs/onboarding.md`, for that one open. D-GD-1 stands: the tour starts only on the member's tap.
+2. **The chat is a Reach channel.** D103 stands: Reach is the one way Metorite speaks first. D114.7 already named the chat as a channel. Reach posts one turn per batch in the member's "Needs you" chat, with Reach's own budget, quiet hours, batch window and ledger. No second budget exists.
+3. **The Chat row marks a waiting message.** The sidebar's Chat row shows a mark while that chat holds a turn that the member has not opened. D171.1 stands: My Day keeps the full list of what waits.
+4. **The panel may open itself for an interrupt batch.** It opens only on a computer, only when the member is idle, and never during a pause, quiet hours or a busy calendar event. It opens at most twice a day, inside Reach's interrupt budget. Three closes with no reply in 7 days turn it off, and the chat says so. A phone gets the web push instead.
+5. **A member can pause the buddy.** The lengths are 30 minutes, 1 hour, 2 hours, and until 09:00 tomorrow. Reach holds every message that it would start, on every channel, and sends them as one batch after the pause. The member's own reminders and `notify_me` rules still come.
+6. **New kinds join the class registry:** urgent email, agent questions, a project off track and a broken connection. The CRM kinds are interrupts already.
+
+**The defaults.** The agent proposed them, and the owner accepted all five on 2026-11-05 (Metorite task 1694). Each one is one constant.
+- (a) The hello opens the panel on a computer: [yes, once].
+- (b) The most pops in a day: [2].
+- (c) The pause lengths: [30 minutes, 1 hour, 2 hours, until 09:00 tomorrow].
+- (d) A pause lets the member's own reminders through: [yes].
+- (e) The hello names the assistant "Metorite", the value of `ASSISTANT_NAME`. D125 named it Mira, and no screen uses that name yet.
+
+**Why.** A new member meets the whole app at once. A helper that speaks first lowers that fear. A tour on offer is not enough when the member does not know what to ask. A buddy that interrupts too often is worse than none, so every message after the hello goes through Reach's budget, and the member holds a pause.
+
+**Fence.** Advisory until each slice builds its test: `e2e/buddy-hello.spec.ts` (BUD-1, item 1), `tests/unit/test_reach_chat_channel_r8.py` (BUD-2, item 2), the Chat row vitest (BUD-3, item 3), the pop rules vitest (BUD-4, item 4), `tests/unit/test_reach_pause_r8.py` (BUD-5, item 5), and `tests/unit/test_reach_plan.py`, which checks the class of each kind (item 6).
 
 ## 4. Single-owner registry (who owns duplicated work)
 

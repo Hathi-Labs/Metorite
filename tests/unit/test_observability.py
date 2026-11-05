@@ -293,6 +293,21 @@ from fastapi import HTTPException  # noqa: E402
 
 from gateway.routes import observability as _obs  # noqa: E402
 
+# H-201: the readers take the viewer's tenant. Any non-empty id serves here,
+# because these tests stub the database out.
+_ORG = "00000000-0000-0000-0000-0000000000a1"
+
+
+def _viewer_user():
+    from acb_auth import UserContext
+    from acb_auth.roles import UserRole
+
+    return UserContext(email="op@obs.test", role=UserRole.EMPLOYEE,
+                       organization_id=_ORG)
+
+
+_VIEWER_USER = _viewer_user()
+
 
 def test_agent_name_regex_accepts_valid_and_rejects_junk():
     ok = ["orchestrator", "email-assistant", "task_manager", "a", "apis.config"]
@@ -309,8 +324,20 @@ def test_load_avatars_degrades_to_empty_when_db_unavailable(monkeypatch):
     def _boom(*_a, **_k):
         raise RuntimeError("no db")
 
+    monkeypatch.setattr(acb_graph, "tenant_session", _boom)
+    assert _obs._load_avatars(_ORG) == {}
+
+
+def test_load_avatars_with_no_tenant_skips_db_entirely(monkeypatch):
+    # H-201: no tenant reads nothing, and no session of any kind opens.
+    import acb_graph
+
+    def _boom(*_a, **_k):
+        raise AssertionError("must not open a session with no tenant")
+
+    monkeypatch.setattr(acb_graph, "tenant_session", _boom)
     monkeypatch.setattr(acb_graph, "get_session", _boom)
-    assert _obs._load_avatars() == {}
+    assert _obs._load_avatars(None) == {}
 
 
 @pytest.mark.asyncio
@@ -343,8 +370,8 @@ def test_load_app_details_degrades_to_empty_when_db_unavailable(monkeypatch):
     def _boom(*_a, **_k):
         raise RuntimeError("no db")
 
-    monkeypatch.setattr(acb_graph, "get_session", _boom)
-    assert _obs._load_app_details(["filament-tracker"]) == {}
+    monkeypatch.setattr(acb_graph, "tenant_session", _boom)
+    assert _obs._load_app_details(["filament-tracker"], _ORG) == {}
 
 
 def test_load_app_details_empty_slugs_skips_db_entirely(monkeypatch):
@@ -353,8 +380,11 @@ def test_load_app_details_empty_slugs_skips_db_entirely(monkeypatch):
     def _boom(*_a, **_k):
         raise AssertionError("must not touch the DB for an empty slug list")
 
+    monkeypatch.setattr(acb_graph, "tenant_session", _boom)
     monkeypatch.setattr(acb_graph, "get_session", _boom)
-    assert _obs._load_app_details([]) == {}
+    assert _obs._load_app_details([], _ORG) == {}
+    # H-201: no tenant reads nothing either.
+    assert _obs._load_app_details(["filament-tracker"], None) == {}
 
 
 @pytest.mark.asyncio
@@ -372,13 +402,13 @@ async def test_roster_includes_a_live_app_as_a_distinct_kind(monkeypatch):
         ]
 
     monkeypatch.setattr(_obs, "active_runs", _fake_active_runs)
-    monkeypatch.setattr(_obs, "_load_avatars", lambda: {})
+    monkeypatch.setattr(_obs, "_load_avatars", lambda _org: {})
     monkeypatch.setattr(
         _obs, "_load_app_details",
-        lambda slugs: {"filament-tracker": {"name": "Filament Tracker", "icon": "🧵"}},
+        lambda slugs, _org: {"filament-tracker": {"name": "Filament Tracker", "icon": "🧵"}},
     )
 
-    out = await _obs.roster()
+    out = await _obs.roster(viewer=_VIEWER_USER)
     apps = [a for a in out["agents"] if a["kind"] == "app"]
     assert len(apps) == 1
     entry = apps[0]
@@ -407,14 +437,14 @@ async def test_roster_has_no_idle_app_rows(monkeypatch):
     async def _fake_active_runs():
         return []
 
-    def _unreachable(_slugs):
+    def _unreachable(_slugs, _org):
         raise AssertionError("must not query app details with no live apps")
 
     monkeypatch.setattr(_obs, "active_runs", _fake_active_runs)
-    monkeypatch.setattr(_obs, "_load_avatars", lambda: {})
+    monkeypatch.setattr(_obs, "_load_avatars", lambda _org: {})
     monkeypatch.setattr(_obs, "_load_app_details", _unreachable)
 
-    out = await _obs.roster()
+    out = await _obs.roster(viewer=_VIEWER_USER)
     assert not any(a["kind"] == "app" for a in out["agents"])
 
 
@@ -431,9 +461,9 @@ async def test_roster_agent_entries_are_tagged_kind_agent(monkeypatch):
         return []
 
     monkeypatch.setattr(_obs, "active_runs", _fake_active_runs)
-    monkeypatch.setattr(_obs, "_load_avatars", lambda: {})
+    monkeypatch.setattr(_obs, "_load_avatars", lambda _org: {})
 
-    out = await _obs.roster()
+    out = await _obs.roster(viewer=_VIEWER_USER)
     assert all(a["kind"] in ("agent", "app") for a in out["agents"])
     assert any(a["kind"] == "agent" and a["name"] == "email-assistant"
                for a in out["agents"])
