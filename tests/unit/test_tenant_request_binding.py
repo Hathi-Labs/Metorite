@@ -1747,3 +1747,33 @@ async def test_a_non_http_scope_is_passed_through_untouched(identity):
     assert called == ["lifespan"]
     # a lifespan passthrough neither opens nor closes a scope
     assert current_tenant() == ORG
+
+
+#: MCP-P1b-1. Names that would let a request body or a query steer the
+#: tenant, the member or the connection of an app request (R5, R11).
+_TENANT_LIKE = ("organization", "org", "tenant", "member", "email", "connection", "user",
+                "via", "binding", "cls", "class")
+
+
+def test_the_app_request_routes_take_no_tenant_from_input():
+    """MCP-P1b-1 (§19.8). The four routes of an app request take the org from
+    the bound session and the member from ``user.email``. Each body model
+    forbids extra keys and holds no field that names an org, a member, a
+    connection or a class. No route takes such a parameter. Mutation M13
+    (read ``organization_id`` from the body) turns this red."""
+    import inspect
+
+    from fastapi.routing import APIRoute
+    from gateway.routes import agent_requests
+
+    for model in (agent_requests.AppRequestIn, agent_requests.DecisionIn):
+        assert model.model_config.get("extra") == "forbid", model.__name__
+        for name in model.model_fields:
+            assert not any(word in name.lower() for word in _TENANT_LIKE), (model.__name__, name)
+    routes = [r for r in agent_requests.router.routes if isinstance(r, APIRoute)]
+    assert len(routes) == 4
+    for route in routes:
+        for name in inspect.signature(route.endpoint).parameters:
+            if name in ("user", "payload", "response"):
+                continue
+            assert not any(word in name.lower() for word in _TENANT_LIKE), (route.path, name)
