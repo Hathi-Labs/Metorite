@@ -1717,10 +1717,15 @@ async def _publish_after_card(sid: str, first: _Reply) -> dict[str, Any]:
         return _route_says(409, _NO_VERSION)
     try:
         classes = _skill_classes(await _read_catalog())
-        problem = _actions_problem(_actions_in(_body_of(version)), classes)
+        stored = _body_of(version)
+        # The checks of the route, in its order: the actions, then a hidden
+        # character in the body, the name and the description (WS-STU F1b).
+        problem = (_actions_problem(_actions_in(stored), classes)
+                   or body_hidden_problem(stored)
+                   or hidden_problem(skill.get("name"), "name")
+                   or hidden_problem(skill.get("description"), "description"))
         if problem:
             return _route_says(422, problem)  # no card for a publish that the route refuses
-        stored = _body_of(version)
         refused = await _smuggle_refusal([("name", skill.get("name")),
                                           ("description", stored.get("description")),
                                           ("instructions", stored.get("instructions"))])
