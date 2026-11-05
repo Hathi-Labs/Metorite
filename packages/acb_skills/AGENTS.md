@@ -141,6 +141,7 @@ not write a second copy of that seam. A bare test file name is under
 5m. untrusted.py -- the ONE frame for text that a stranger wrote (spec `email_app_master_plan.md` §12.3.13.8).
    - Make one `UntrustedFrame` for each model call. Do not add a tag regex or an exemption to `defang_trusted`.
    - Do not build a `<<<` marker anywhere else. Fences: `test_untrusted_frame.py`, `evals/email_injection/`.
+   - `is_invisible` is the ONE rule of a character with no glyph. The gateway's approval store (`gateway/app_requests.py`, MCP-P1b-1) refuses each one in a request, less ZWJ and ZWNJ. Do not write a second set.
 5n. company_search_tools.py -- `search_company`, the assistant's one read over every app (D105, spec `knowledge_base.md` §20.5).
    - It reads as the run's member through `core_tools` only, behind `COMPANY_SEARCH_ENABLED`. Fence: `test_company_search_tool.py`.
 5n-a. handoff.py + chat_constraints.py -- what crosses a handoff, and the member's limits of one chat (D116, spec `one_assistant_context.md` §4).
