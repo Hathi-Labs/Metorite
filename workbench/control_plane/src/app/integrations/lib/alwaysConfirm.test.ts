@@ -443,7 +443,7 @@ describe("the pair after a save (review of MCP-C2, P3)", () => {
     expect(html.indexOf('checked=""')).toBeGreaterThan(html.indexOf(ALWAYS_CONFIRM_LABEL));
   });
 
-  it("answers the pair that the gateway saved", async () => {
+  it("answers the pair that the gateway saved, and that pair wins over the one sent", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(
@@ -453,7 +453,7 @@ describe("the pair after a save (review of MCP-C2, P3)", () => {
           }),
       ),
     );
-    await expect(api.setMcpSwitches("x", { always_confirm: false, read_only_key: true })).resolves.toEqual(
+    await expect(api.setMcpSwitches("x", { always_confirm: true, read_only_key: false })).resolves.toEqual(
       savedPair,
     );
     // An answer with no boolean keys falls back to the pair that was sent.
