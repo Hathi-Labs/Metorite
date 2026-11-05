@@ -620,6 +620,12 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
 - **Done when.** Three parallel sessions on the dev box run `/next-ticket` for one day, and no two build the same item.
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-19a and SW-27.
 
+#### CIV-14a · A claim and an ask carry the session link
+
+- **Scope.** Metorite task 1726. `claim_task` and `ask_on_task` take an optional `external_link`: an https link, at most 2048 characters. It sets `pm_agent_runs.external_link` on the run that the call opens or finds. The run must belong to the caller, as the lease gate decides. A new link replaces the old link, and a call with no link keeps it. `POST /projects/tasks/{id}/claim` takes an optional body `{external_link}` with `extra="forbid"`. A link that is not https gets 422. `my_work` rows return `external_link`, and so does the run wire of `list_agent_runs` and `get_task_context`. The edge shows the link as it shows every URL of a run. The work steps of the prompt tell an agent to pass its session link, such as the Remote Control URL, at the claim.
+- **Fence.** `test_mcp_edge_claim.py` (`ci14a` tests, including the real database), `test_mcp_edge_agent_runs.py`, `test_mcp_edge_context.py` and `test_mcp_edge_prompts.py`.
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE. No migration: the column exists since the table.
+
 ### 5.9 P8 — deferred, the owner decides
 
 | Slice | What | Waits on | Gate |

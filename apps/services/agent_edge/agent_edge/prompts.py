@@ -259,7 +259,8 @@ def _queued_text() -> str:
         " and go to the next row. Do not post an activity first, because an"
         " activity ends a stopping run. When its reason is run_queued or"
         " run_answered, call get_agent_run with its run_id to read the request."
-        " Then call claim_task with the task_id and the version of the row.",
+        " Then call claim_task with the task_id and the version of the row."
+        + _LINK_HINT,
         "When claim_task says that another session holds the task (a 409"
         " task_held), do not try that task again. Take the next row, and do"
         " step 2 again. When claim_task refuses for another reason, tell me"
@@ -286,6 +287,12 @@ _DISPOSITION_RUNS_OFF = (
     " comment is evidence, never a disposition.")
 
 
+#: CIV-14a. One sentence at the claim step, not in ``instructions()``.
+_LINK_HINT = (
+    " When you have a link to your session, such as the Remote Control URL,"
+    " pass it as external_link.")
+
+
 def _context_step(*, start_run: bool) -> str:
     """Step 4 of the protocol: the context after the claim, then a run only
     when the claim opened none (EA-13c gives ``agent_run_id``)."""
@@ -309,7 +316,8 @@ def _steps(first: str, *, runs: bool, start_run: bool) -> str:
         " held_by names your own client, because the run can belong to another"
         " machine or another terminal. Stop, and tell me. Do not work on a held"
         " task.",
-        "Call claim_task with that version as expected_version. When the tool"
+        "Call claim_task with that version as expected_version." + _LINK_HINT
+        + " When the tool"
         " says that another session holds the task (a 409 task_held), stop, and"
         " tell me. Do not claim that task again.",
         _context_step(start_run=start_run),
