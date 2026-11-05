@@ -30,6 +30,9 @@ Mutations this suite catches (R7). Each was run, and each turned it red:
 * M2: the ``active_runs`` SCAN on a raw ``cc:*:activity:live:*`` pattern;
 * M3: no no-org guard, so a write with no tenant goes to a global key;
 * M4: the readers take the ambient (writer's) tenant, not the viewer's org.
+* M5: the early ``if not org: return`` in ``publish_activity``, so a priced
+  call with no tenant no longer folds into the global ``cc:cost:{day}``;
+* M6: no sleep after a failed ``XREAD``, so the SSE loop spins on a full pool.
 
 Run::
 
@@ -110,7 +113,7 @@ class _FakeRedis:
         self.streams.setdefault(key, []).append((eid, dict(fields)))
         return eid
 
-    async def xrevrange(self, key, max="+", min="-", count=None):  # noqa: A002
+    async def xrevrange(self, key, max="+", min="-", count=None):
         entries = list(reversed(self.streams.get(key, [])))
         return entries[:count] if count else entries
 
@@ -433,3 +436,123 @@ def test_the_stream_read_uses_the_blocking_pool(fake_redis, monkeypatch):
     monkeypatch.setattr(activity, "get_tenant_redis", _spy)
     asyncio.run(activity.read_activity_since("$", organization_id=_ORG_A, block_ms=1))
     assert seen == [True]
+
+
+# ---------------------------------------------------------------------------
+# The cost rollup stays global: a priced call with no tenant still counts.
+# ---------------------------------------------------------------------------
+
+def _cost_keys(r: _FakeRedis) -> set[str]:
+    return {k for k in r.hashes if k.startswith("cc:cost:")}
+
+
+def test_an_untenanted_priced_call_counts_and_writes_no_feed_key(fake_redis):
+    """The deployment-key ``/v1/chat/completions`` binds no tenant. Its cost
+    still folds into ``cc:cost:{day}``, and it writes no stream or presence
+    key. M5: the early ``if not org: return`` in ``publish_activity`` turns
+    this red."""
+    from acb_common import publish_activity
+
+    async def _go() -> None:
+        publish_activity(kind="model", model="m", run_id="run-cost-none",
+                         cost_usd=0.25, tokens=100)
+        await _drain()
+
+    asyncio.run(_go())
+    written = fake_redis.keys_written()
+    assert len(_cost_keys(fake_redis)) == 1
+    assert written == _cost_keys(fake_redis), written
+    assert fake_redis.streams == {} and fake_redis.store == {}
+    assert not any(k.startswith("cc:activity") for k in written)
+
+
+def test_a_tenanted_priced_call_writes_the_feed_and_the_cost(fake_redis):
+    from acb_common import publish_activity
+    from acb_common.db import bind_tenant, release_tenant
+
+    async def _go() -> None:
+        token = bind_tenant(_ORG_A)
+        try:
+            publish_activity(kind="model", model="m", run_id="run-cost-a",
+                             cost_usd=0.25, tokens=100)
+        finally:
+            release_tenant(token)
+        await _drain()
+
+    asyncio.run(_go())
+    assert set(fake_redis.streams) == {f"cc:{_ORG_A}:activity"}
+    assert len(_cost_keys(fake_redis)) == 1
+
+
+# ---------------------------------------------------------------------------
+# A failed read waits, so the SSE loop cannot spin (a full blocking pool).
+# ---------------------------------------------------------------------------
+
+def _xread_fails(monkeypatch, r: _FakeRedis) -> list[int]:
+    import redis.exceptions
+
+    calls: list[int] = []
+
+    async def _boom(*_a: Any, **_kw: Any):
+        calls.append(1)
+        raise redis.exceptions.ConnectionError("Too many connections")
+
+    monkeypatch.setattr(r, "xread", _boom)
+    return calls
+
+
+def test_a_failed_read_waits_before_it_returns(fake_redis, monkeypatch):
+    """M6: removing the sleep in ``read_activity_since`` turns this red."""
+    import time
+
+    from acb_common import activity
+
+    _xread_fails(monkeypatch, fake_redis)
+    monkeypatch.setattr(activity, "READ_ERROR_BACKOFF_SECONDS", 0.05)
+    start = time.monotonic()
+    out = asyncio.run(activity.read_activity_since("$", organization_id=_ORG_A))
+    assert out == ([], "$")
+    assert time.monotonic() - start >= 0.04
+
+
+def test_the_empty_answer_after_block_does_not_wait(fake_redis, monkeypatch):
+    """The normal empty answer already waited in BLOCK. It gets no backoff."""
+    import time
+
+    from acb_common import activity
+
+    monkeypatch.setattr(activity, "READ_ERROR_BACKOFF_SECONDS", 5.0)
+    start = time.monotonic()
+    out = asyncio.run(activity.read_activity_since("$", organization_id=_ORG_A))
+    assert out == ([], "$")
+    assert time.monotonic() - start < 1.0
+
+
+def test_the_sse_feed_does_not_spin_when_the_pool_is_full(fake_redis, monkeypatch):
+    """With every read failed at once, the feed sends about one heartbeat for
+    each backoff, not a flood. M6 turns this red too."""
+    import time
+
+    from acb_common import activity
+    from gateway.routes.observability import _sse_activity
+
+    calls = _xread_fails(monkeypatch, fake_redis)
+    monkeypatch.setattr(activity, "READ_ERROR_BACKOFF_SECONDS", 0.02)
+
+    async def _go() -> int:
+        gen = _sse_activity(_ORG_A)
+        frames = 0
+        deadline = time.monotonic() + 0.2
+        try:
+            async for _frame in gen:
+                frames += 1
+                if time.monotonic() >= deadline or frames >= 500:
+                    break
+        finally:
+            await gen.aclose()
+        return frames
+
+    frames = asyncio.run(_go())
+    # 0.2 s / 0.02 s is about 10 reads. A spin makes hundreds.
+    assert frames < 50, frames
+    assert 1 <= len(calls) < 50, len(calls)

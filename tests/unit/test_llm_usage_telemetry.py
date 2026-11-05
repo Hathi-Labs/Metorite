@@ -146,7 +146,6 @@ def _emit_and_capture(monkeypatch, *, bind: dict | None = None, **emit_kw):
     import asyncio
 
     from acb_common import activity, bind_run_context, clear_run_context
-
     from acb_common.db import bind_tenant, release_tenant
 
     recorded: list[dict] = []
@@ -244,7 +243,6 @@ def test_unpriced_model_publishes_unknown_cost_never_zero(monkeypatch):
     import asyncio
 
     from acb_common import activity
-
     from acb_common.db import bind_tenant, release_tenant
 
     recorded: list[dict] = []

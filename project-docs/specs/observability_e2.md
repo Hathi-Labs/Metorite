@@ -23,8 +23,11 @@
 > keyed for each tenant. The stream is `cc:<org>:activity`, and the presence
 > keys are `cc:<org>:activity:live:{run_id}`. The four readers take the
 > viewer's org from the session. A member of one org sees no entry of
-> another. The daily cost rollup `cc:cost:{day}` is still global. A follow-up
-> task converts it. Fence: `tests/unit/test_activity_feed_tenant.py`.
+> another. The daily cost rollup `cc:cost:{day}` is still global, and task
+> 1748 converts it. A priced model call with no tenant writes no feed key.
+> It still adds to `cc:cost:{day}`, so `/observability/cost` counts the
+> deployment-key `/v1/chat/completions` calls.
+> Fence: `tests/unit/test_activity_feed_tenant.py`.
 > **Verified against code on 2026-08-01** (paths, `agent_run` token columns,
 > uv.lock telemetry deps); `bind_run_context` key set re-verified 2026-08-02.
 > **Module:** E2 (core_module_map.md).

@@ -123,10 +123,10 @@ def _capture_org(organization_id: str | None) -> str | None:
     if organization_id:
         return organization_id
     try:
-        from acb_common.db import current_tenant  # noqa: PLC0415
+        from acb_common.db import current_tenant
 
         return current_tenant() or None
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
 
@@ -207,33 +207,46 @@ def _build_event(fields: dict[str, Any]) -> dict[str, Any]:
     return evt
 
 
-async def _axadd(evt: dict[str, Any], organization_id: str) -> None:
-    """Append one event to the tenant's stream + maintain the presence key."""
-    with organization_scope(organization_id):
-        r = get_tenant_redis()
-        await r.xadd(
-            _stream_key(),
-            {"event": json.dumps(evt, default=str)},
-            maxlen=STREAM_MAXLEN,
-            approximate=True,
-        )
-        # Presence: an agent run — or an app AI call, RFC
-        # docs/app-workshop/README.md §4.6 — is "live" between its start and
-        # end events. Apps publish through ``publish_app_activity``
-        # (kind="app") with the same phase/run_id contract as an agent run, so
-        # this one gate covers both actor kinds identically — the office view
-        # and /active treat a working app exactly like a working agent, no
-        # separate presence mechanism needed.
-        run_id = evt.get("run_id")
-        if evt.get("kind") in ("agent", "app") and run_id:
-            if evt.get("phase") == "start":
-                await r.set(_live_key(str(run_id)), json.dumps(evt, default=str),
-                            ex=LIVE_TTL_SECONDS)
-            elif evt.get("phase") == "end":
-                await r.delete(_live_key(str(run_id)))
+def _is_cost_event(evt: dict[str, Any]) -> bool:
+    """A priced model call: the only event that folds into ``cc:cost:{day}``."""
+    return evt.get("kind") == "model" and evt.get("cost_usd") is not None
+
+
+async def _axadd(evt: dict[str, Any], organization_id: str | None) -> None:
+    """Append one event to the tenant's stream + maintain the presence key.
+
+    With no org, the stream and the presence writes are skipped, and only the
+    cost rollup runs. The rollup is deployment-global (``cc:cost:{day}``), so
+    a priced call with no bound tenant (the gateway's deployment-key
+    ``/v1/chat/completions``) still counts, exactly as before H-201c.
+    """
+    if organization_id:
+        with organization_scope(organization_id):
+            r = get_tenant_redis()
+            await r.xadd(
+                _stream_key(),
+                {"event": json.dumps(evt, default=str)},
+                maxlen=STREAM_MAXLEN,
+                approximate=True,
+            )
+            # Presence: an agent run — or an app AI call, RFC
+            # docs/app-workshop/README.md §4.6 — is "live" between its start
+            # and end events. Apps publish through ``publish_app_activity``
+            # (kind="app") with the same phase/run_id contract as an agent
+            # run, so this one gate covers both actor kinds identically — the
+            # office view and /active treat a working app exactly like a
+            # working agent, no separate presence mechanism needed.
+            run_id = evt.get("run_id")
+            if evt.get("kind") in ("agent", "app") and run_id:
+                if evt.get("phase") == "start":
+                    await r.set(_live_key(str(run_id)), json.dumps(evt, default=str),
+                                ex=LIVE_TTL_SECONDS)
+                elif evt.get("phase") == "end":
+                    await r.delete(_live_key(str(run_id)))
     # Cost rollup: fold priced model calls into today's daily hash. It stays
-    # on the raw client (cc:cost:{day}) until its own follow-up converts it.
-    if evt.get("kind") == "model" and evt.get("cost_usd") is not None:
+    # on the raw client (cc:cost:{day}) until its own follow-up (task 1748)
+    # converts it. It runs with or without an org.
+    if _is_cost_event(evt):
         try:
             await _record_cost(_get_client(), evt)
         except Exception:  # noqa: BLE001 — cost rollup is best-effort
@@ -253,19 +266,21 @@ def publish_activity(*, organization_id: str | None = None, **fields: Any) -> No
 
     ``organization_id`` names the tenant. Without it, the bound tenant
     (``acb_common.db.current_tenant()``) is captured NOW, in the caller's
-    context, and handed to the scheduled write. With neither, nothing is
-    written (H-201c): an event with no tenant has no key to go to.
+    context, and handed to the scheduled write. With neither, no stream or
+    presence key is written (H-201c): an event with no tenant has no key to
+    go to. A priced model call with no tenant still folds into the global
+    ``cc:cost:{day}`` rollup, as it did before H-201c.
 
     Never raises and never blocks the caller: the Redis write is scheduled onto
     the running event loop (or a throwaway loop if none is running). A drop is
     acceptable — the durable record lives in ``agent_run`` and the logs.
     """
     org = _capture_org(organization_id)
-    if not org:
-        return
     try:
         evt = _build_event(fields)
     except Exception:  # noqa: BLE001
+        return
+    if not org and not _is_cost_event(evt):
         return
     try:
         loop = asyncio.get_running_loop()
@@ -280,7 +295,7 @@ def publish_activity(*, organization_id: str | None = None, **fields: Any) -> No
             )
         except Exception:  # noqa: BLE001
             pass
-    else:
+    elif org:
         # No running loop (rare — e.g. a sync worker). Fire a one-shot loop
         # with its own short-lived client so we don't touch the shared one.
         async def _one_shot() -> None:
@@ -435,6 +450,11 @@ async def recent_activity(
     return out
 
 
+#: Seconds that :func:`read_activity_since` waits after a failed read, so a
+#: caller loop cannot spin. Module-level, so a test can patch it.
+READ_ERROR_BACKOFF_SECONDS = 1.0
+
+
 async def read_activity_since(
     since_id: str = "$",
     *,
@@ -446,7 +466,9 @@ async def read_activity_since(
 
     Returns ``(events, new_cursor)``. On timeout returns ``([], since_id)`` so
     the caller can emit a heartbeat and loop. Never raises. A falsy
-    ``organization_id`` returns ``([], since_id)`` at once.
+    ``organization_id`` returns ``([], since_id)`` at once. A failed read
+    waits :data:`READ_ERROR_BACKOFF_SECONDS` and then returns
+    ``([], since_id)``, so the loop of the caller cannot spin.
 
     The blocking ``XREAD`` holds its connection for up to *block_ms*, so it
     runs on the stream pool (``get_tenant_redis(blocking=True)``). On the
@@ -461,6 +483,11 @@ async def read_activity_since(
                 {_stream_key(): cursor}, count=count, block=block_ms,
             )
     except Exception:  # noqa: BLE001 — stream missing / transient
+        # A failed read returns at once: a full blocking pool raises
+        # "Too many connections" with no wait. Sleep here, so a caller that
+        # loops (the SSE feed) does not spin. The normal empty answer after
+        # BLOCK already waited, so it does not sleep.
+        await asyncio.sleep(READ_ERROR_BACKOFF_SECONDS)
         return [], cursor
     events: list[dict[str, Any]] = []
     for _name, entries in raw or []:
