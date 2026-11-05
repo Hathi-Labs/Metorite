@@ -596,6 +596,12 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
 
 ### 5.8 P7 — dogfood (decided yes, D135)
 
+#### CIV-14c · `get_task_context` reads every comment
+
+- **Scope.** As task 1728. The input `comments` takes `recent` (default, the newest 20) or `all`. With `all`, the edge pages the timeline route, 100 rows a page, up to 500 comments, and returns them oldest first. The result then has `comments_truncated`, true when older comments did not fit. That mode makes at most `CONTEXT_ALL_CALL_CEILING` gateway calls (the 13 of EA-15a and four more pages). The answer of a run is already a comment, because `agent_runs.py::_comment` writes one for each non-ephemeral activity.
+- **Fence.** `uv run pytest tests/unit/test_mcp_edge_context.py -k civ14c`.
+- **Status.** Built. **Risk.** STANDARD. **Gate.** AGENT-SAFE.
+
 #### SW-19c · Repo hooks keep each session on its task
 
 - **Scope.** As task 871. The session-start hook prints the six steps of CLAUDE.md "Work under a Metorite task", and the tasks that this member's sessions hold. A PreToolUse hook on `gh pr create` reminds an agent when the body has no task URL. It warns in build and blocks in a `harden` pull request.
