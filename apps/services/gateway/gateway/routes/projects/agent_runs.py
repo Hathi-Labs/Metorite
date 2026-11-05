@@ -1879,27 +1879,45 @@ _STAMP_READ_SQL = (
 )
 
 
-async def _stamp_answer_read(db: Any, run_id: str) -> None:
-    """SW-43. An AGENT read of a run closes the window of its live answer.
+def _reads_for_member(run: Any, user: UserContext) -> bool:
+    """SW-43. True when the caller is the AGENT of the run's own member and
+    the flag is on. The agent of another member who sees the task reads the
+    run and closes no window."""
+    return (
+        answer_change_enabled()
+        and _agent_via(user) is not None
+        and str(run.member_email).strip().lower() == _member(user)
+    )
 
-    Only with the flag on and a live answer that no agent has read. The
-    plain read takes no lock. The stamp takes the lock of the run, the one
-    that the withdraw route takes, then looks again, so a read and a withdraw
-    serialize: one wins.
-    """
-    if not answer_change_enabled():
-        return
-    probe = text(live_answer_sql("p.run_id = CAST(:rid AS uuid)"))
-    live = (await db.execute(probe, {"rid": run_id})).fetchone()
+
+_LIVE_PROBE = live_answer_sql("p.run_id = CAST(:rid AS uuid)")
+
+
+async def _live_unread(db: Any, run_id: str) -> Any | None:
+    """The live answer of the run when no agent has read it, else None."""
+    live = (await db.execute(text(_LIVE_PROBE), {"rid": run_id})).fetchone()
     if live is None or not await _unread(db, str(live.id)):
-        return
-    await _lock_run(db, run_id)
-    live = (await db.execute(probe, {"rid": run_id})).fetchone()
-    if live is None:
-        return
+        return None
+    return live
+
+
+async def _stamp(db: Any, answer_id: str) -> None:
     await db.execute(text(_STAMP_READ_SQL), {
-        "aid": str(live.id), "mark": _jsonb({"read_at": (await _clock(db)).isoformat()}),
+        "aid": answer_id, "mark": _jsonb({"read_at": (await _clock(db)).isoformat()}),
     })
+
+
+async def _stamp_answer_read(db: Any, run: Any, user: UserContext) -> None:
+    """SW-43. A read by the run's own agent closes the window of its live
+    answer (the claim path). The plain probe takes no lock. The stamp takes
+    the lock of the run, the one that the withdraw route takes, then looks
+    again, so a read and a withdraw serialize: one wins."""
+    if not _reads_for_member(run, user) or await _live_unread(db, str(run.id)) is None:
+        return
+    await _lock_run(db, str(run.id))
+    live = await _live_unread(db, str(run.id))
+    if live is not None:
+        await _stamp(db, str(live.id))
 
 
 async def _unread(db: Any, answer_id: str) -> bool:
@@ -1909,15 +1927,38 @@ async def _unread(db: Any, answer_id: str) -> bool:
     )).scalar()
 
 
+async def _stamp_returned(db: Any, run_id: str, rows: list[Any], locked: bool) -> list[Any]:
+    """SW-43. Stamp the live answer when the rows just read hold it, so an
+    answer that an agent received is never unstamped. When the answer
+    committed after the first probe, the lock is taken now and the probe runs
+    again. An answer that a withdraw took back meanwhile is dropped from the
+    rows."""
+    live = await _live_unread(db, run_id)
+    if live is None or str(live.id) not in {str(r.id) for r in rows}:
+        return rows
+    if not locked:
+        await _lock_run(db, run_id)
+        again = await _live_unread(db, run_id)
+        if again is None or str(again.id) != str(live.id):
+            return [r for r in rows if str(r.id) != str(live.id)]
+    await _stamp(db, str(live.id))
+    return rows
+
+
 async def _read_run(user: UserContext, run_id: str, after: int | None) -> tuple[dict, list]:
     """One read of the long poll. It opens and closes its own session, and it
     checks the task again each time, so a revoke takes effect at the next
     read (EA12-4)."""
     async with _tenant_session() as db:
         run = await _load_visible_run(db, user, run_id)
-        if _agent_via(user) is not None:
-            await _stamp_answer_read(db, run_id)
-        rows = (await db.execute(
+        own = _reads_for_member(run, user)
+        locked = False
+        if own and await _live_unread(db, run_id) is not None:
+            # A live answer waits: lock first, so a withdraw cannot slip in
+            # between this read and the stamp.
+            await _lock_run(db, run_id)
+            locked = True
+        rows = list((await db.execute(
             text(
                 "SELECT * FROM pm_agent_run_activities "
                 " WHERE run_id = CAST(:rid AS uuid) AND seq > :after "
@@ -1926,7 +1967,9 @@ async def _read_run(user: UserContext, run_id: str, after: int | None) -> tuple[
                 " ORDER BY seq LIMIT :limit"
             ),
             {"rid": run_id, "after": -1 if after is None else after, "limit": MAX_ACTIVITIES},
-        )).fetchall()
+        )).fetchall())
+        if own:
+            rows = await _stamp_returned(db, run_id, rows, locked)
         return (await _runs_out(db, [run]))[0], [_activity_out(r) for r in rows]
 
 
@@ -2558,7 +2601,7 @@ async def open_run_for_claim(db: Any, task_id: str, user: UserContext) -> str | 
     run_id, made = await _agent_open_run(db, user, task_id, _member(user), _agent_via(user) or "")
     if run_id is not None and not made:
         # SW-43. The claim finds the run of the agent: that is a read.
-        await _stamp_answer_read(db, run_id)
+        await _stamp_answer_read(db, await _load_run(db, run_id), user)
     return run_id
 
 

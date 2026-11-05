@@ -1432,3 +1432,47 @@ class TestWithdrawAnAnswer:
             assert note.json()["run"]["answer"]["changeable"] is True
             done = await _withdraw(call, w.a, rid, aid)
             assert done.status_code == 200, done.text
+
+    # ── SW-43a second review ────────────────────────────────────────────
+
+    async def test_an_answer_that_commits_after_the_probe_is_stamped_when_returned(
+            self, wd, monkeypatch):
+        """Mutation: drop the ``_stamp_returned`` call in ``_read_run`` and the
+        agent receives an answer with no ``read_at``."""
+        w = wd
+        async with _session(w.p) as call:
+            run = await _start(w, call)
+            rid = run["id"]
+            await _act(call, w.agent_a, rid, **_select())
+            state = {"n": 0, "aid": None}
+            orig = agent_runs._live_unread
+
+            async def spy(db: Any, run_id: str) -> Any:
+                found = await orig(db, run_id)
+                if state["n"] == 0:
+                    state["n"] = 1
+                    got = await _act(call, w.a, rid, type="prompt", selected=["pg"])
+                    state["aid"] = got.json()["activity"]["id"]
+                return found
+
+            monkeypatch.setattr(agent_runs, "_live_unread", spy)
+            read = await call(w.agent_a, "GET", f"/projects/agent-runs/{rid}")
+            assert read.status_code == 200
+            assert state["aid"] in [a["id"] for a in read.json()["activities"]]
+            assert self._read_at(w, state["aid"]) is not None
+            late = await _withdraw(call, w.a, rid, state["aid"])
+            assert late.status_code == 409
+
+    async def test_the_agent_of_another_member_stamps_nothing(self, wd):
+        """Mutation: drop the member test in ``_reads_for_member`` and C's
+        agent closes the window of A's answer."""
+        w = wd
+        conn_c = _seed_connection(w.p, w.p.org_a, w.c_email)
+        agent_c = _principal(w.c_email, w.p.org_a, agent_connection=conn_c)
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            seen = await call(agent_c, "GET", f"/projects/agent-runs/{rid}")
+            assert seen.status_code == 200, seen.text
+            assert self._read_at(w, aid) is None
+            assert seen.json()["run"]["answer"]["changeable"] is True
+            assert (await _withdraw(call, w.a, rid, aid)).status_code == 200
