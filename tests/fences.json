@@ -61,6 +61,7 @@
       "tests/unit/test_member_seal.py",
       "tests/unit/test_migration_prefixes.py",
       "tests/unit/test_narrowing_one_seam.py",
+      "tests/unit/test_nightly_release_box.py",
       "tests/unit/test_no_copilot_sdk.py",
       "tests/unit/test_no_direct_ai_vendor_calls.py",
       "tests/unit/test_no_tenant_name_in_prompts.py",

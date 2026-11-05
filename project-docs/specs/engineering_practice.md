@@ -60,6 +60,7 @@ enforces it, or be labelled advisory. "We should always…" is not a rule.
    drift.
 4. **Production** runs on its own box. It applies the `release` ref. A daily run
    moves that ref at 21:30 UTC. A manual dispatch moves it for a hotfix.
+   The home box's timer starts the daily run with a nightly dispatch (D178).
 
 `specs/staging_and_daily_release.md` owns staging and the daily release. Root
 `CLAUDE.md` §4 says what to do after a merge. Test on staging before
@@ -233,7 +234,8 @@ its fence.
 `main` (§2 and `specs/staging_and_daily_release.md` §4). An agent dispatches
 `deploy.yml` only for a hotfix that the owner asks for, or when production is
 down. Report a merge as "reaches production at tonight's release". After the
-release, confirm `/version` `applied_sha`.
+release, confirm `/version` `applied_sha`. The home box's timer starts the
+release (D178). An agent never sets `nightly=true` by hand.
 
 **Until LD-8 to LD-10 land.** The preview runs on the demo seed. The gate is
 `bash scripts/ci_local.sh`, and then `premerge.sh`. Name the steps that ran in
@@ -270,7 +272,7 @@ no sudo.
   passes.** The owner approved a copy with its credentials blanked.
 
 **LD-8c: AGENT-SAFE to build, HIGH to land (deploy path).** It ships at the
-21:30 UTC release.
+21:30 UTC release, which the home box starts (D178).
 
 - `scripts/backup_db.sh` starts the verify container with
   `-c maintenance_work_mem=256MB`. Fence: `tests/unit/test_backup_deploy_wiring.py`.
@@ -384,7 +386,7 @@ a non-event.
   as the only version-skew mechanism we support (one codebase, one schema, always
   latest).
 - **The ring order matters more than the clock.** The clock is 21:30 UTC each
-  day. The order is "us first, then one, then all".
+  day, and the home box's timer starts it (D178). The order is "us first, then one, then all".
 
 ## 3. Migrations — the sharpest edge we have
 
