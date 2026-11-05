@@ -108,6 +108,8 @@ _SHELL_SPECIAL = frozenset(" $`\\'\";&|<>()")
 PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # Database, cache and graph.
     "DATABASE_URL", "REDIS_URL", "CC_DSN", "APP_DB", "DBS",
+    # What `tenant_session` does with an aborted transaction (H-249).
+    "TENANT_SESSION_ABORT_MODE",
     # Sign-in and access. EXECUTIVE_EMAILS grants the EXECUTIVE role, and
     # ALLOWED_EMAIL_DOMAIN decides who may sign in at all.
     "ALLOWED_EMAIL_DOMAIN", "EXECUTIVE_EMAILS", "ACCESS_LEGACY_FALLBACK",
