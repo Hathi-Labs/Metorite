@@ -49,6 +49,17 @@ _HOLD_PREFIX = "[System:"
 _HOLD_MAX = 200
 
 
+def is_anthropic_shaped(name: str | None) -> bool:
+    """True when *name* (a provider or model) is Anthropic-shaped.
+
+    Only these requests pass through litellm's placeholder rewrite, so only
+    they need ``content=None`` for a tool-call turn. DeepSeek, Groq and
+    Together refuse null content. An unknown name is NOT Anthropic-shaped.
+    """
+    lowered = (name or "").lower()
+    return "anthropic" in lowered or "claude" in lowered
+
+
 def is_placeholder_line(line: str) -> bool:
     """True when *line* (no newline) holds only the placeholder."""
     return bool(_PLACEHOLDER_LINE_RE.match(line))
@@ -185,7 +196,7 @@ def clean_model_messages(
         elif isinstance(content, list):
             blocks = _clean_blocks(content, str(role))
             if len(blocks) != len(content) or any(
-                a is not b for a, b in zip(blocks, content)
+                a is not b for a, b in zip(blocks, content, strict=True)
             ):
                 msg = {**msg, "content": blocks}
             content = blocks
@@ -205,7 +216,8 @@ def clean_model_messages(
             # else: nothing to say and nothing to call. Drop the turn.
             continue
 
-        # An empty user turn.
+        # An empty user turn. The last one stays as the caller sent it, and is
+        # never rewritten to an empty block list.
         if idx == last:
-            out.append(msg)
+            out.append(original)
     return out

@@ -395,11 +395,6 @@ def _resolve_model(requested: str) -> str:
     return requested
 
 
-# Providers that reject ``content: null`` next to ``tool_calls``. They get "".
-# The Anthropic path, where litellm rewrites "" to a placeholder, is not here.
-_NULL_CONTENT_REFUSED_BY: tuple[str, ...] = ("deepseek", "groq", "together")
-
-
 def _sanitize_messages_for_provider(
     messages: list[dict[str, Any]],
     provider: str,
@@ -419,17 +414,21 @@ def _sanitize_messages_for_provider(
     1. Assistant messages with *neither* valid content nor valid tool_calls
        → dropped.
     2. Assistant messages with tool_calls but null/empty content → content
-       set to None. "" only for a provider in ``_NULL_CONTENT_REFUSED_BY``,
-       because litellm turns "" into a visible placeholder (task 1787).
+       set to None for an Anthropic-shaped provider, where litellm turns ""
+       into a visible placeholder (task 1787). Any other provider, and the
+       Router hop with no provider, keeps "".
     3. Tool messages with null/empty content → content set to "[tool result]".
     4. Malformed tool-call items (missing ``function`` / ``name``) → stripped.
     """
     if not messages:
         return messages
 
-    null_ok = not any(
-        name in (provider or "").lower() for name in _NULL_CONTENT_REFUSED_BY
-    )
+    # None only for a provider we KNOW is Anthropic-shaped. An unknown or empty
+    # provider (the Router hop) keeps "": DeepSeek, Groq and Together refuse
+    # null beside tool_calls, and the Router re-applies the rule per step.
+    from acb_llm.message_hygiene import is_anthropic_shaped
+
+    null_ok = is_anthropic_shaped(provider)
     cleaned: list[dict[str, Any]] = []
     for m in messages:
         role = m.get("role", "")
@@ -487,8 +486,8 @@ def _sanitize_messages_for_provider(
                 if not isinstance(m, dict):
                     m = dict(m)
                 # litellm turns "" into the sentence "[System: Empty message
-                # content sanitised ...]" for Anthropic. A provider that
-                # refuses null content gets "" and the rest get None.
+                # content sanitised ...]" for Anthropic, so only an
+                # Anthropic-shaped provider gets None.
                 m["content"] = None if null_ok else ""
 
         elif role == "tool":

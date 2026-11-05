@@ -262,6 +262,12 @@ def translate_update(
                     })
                 continue
             update_msg_id = getattr(update, "message_id", None)
+            # Message-id-native segmentation (Phase 3a): runtimes mint a new
+            # message id per assistant segment (text between tool rounds).
+            # A changed id is a REAL message boundary — close the open
+            # segment (and flush the placeholder filter) BEFORE this delta is
+            # filtered, so the start of the next segment is not held back
+            # behind the end of the last one.
             if (
                 state.text_started
                 and update_msg_id
@@ -271,17 +277,6 @@ def translate_update(
             delta = state.placeholder_filter.feed(delta)
             if not delta:
                 continue
-            # Message-id-native segmentation (Phase 3a): runtimes mint a new
-            # message id per assistant segment (text between tool rounds).
-            # A changed id is a REAL message boundary — close the open
-            # segment and start the next, so downstream never has to infer
-            # narration-vs-answer from tool positions.
-            if (
-                state.text_started
-                and update_msg_id
-                and update_msg_id != state.message_id
-            ):
-                events.extend(close_text_message(state))
             if not state.text_started:
                 state.text_started = True
                 # Pick the segment id: prefer the runtime's, but if it's absent

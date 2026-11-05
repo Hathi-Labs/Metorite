@@ -163,6 +163,7 @@ from customer_console.lifecycle import (
     capabilities_of,
 )
 from customer_console.reasoning import (
+    content_for_step,
     publish_reasoning_alias,
     reasoning_for_vendor,
     reasoning_params_for,
@@ -9070,6 +9071,10 @@ def chat_completions(req: CompletionRequest, caller: ServingCaller) -> Any:
         # vendors and each step builds its own body. `messages` is a required
         # field, so no guard: a guard here was pure complexity (C901).
         passthrough["messages"] = reasoning_for_vendor(passthrough["messages"])
+        # Task 1787: the empty content this step's vendor accepts, per step.
+        passthrough["messages"] = content_for_step(
+            passthrough["messages"], step.model,
+        )
         # Task 1128: a thinking parameter reaches only a step whose model
         # takes it. litellm here runs with no `drop_params`, so a step that
         # refuses `thinking` would answer 400 for the whole request.

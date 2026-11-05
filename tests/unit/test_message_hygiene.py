@@ -68,10 +68,81 @@ def test_the_gateway_seam_sends_none_not_empty_string():
         {"role": "tool", "tool_call_id": "c1", "content": "ok"},
         {"role": "user", "content": "next"},
     ]
-    for provider in ("", "anthropic", "claude-sonnet-4"):
+    for provider in ("anthropic", "claude-sonnet-4", "bedrock/anthropic.claude"):
         sent = _sanitize_messages_for_provider(history, provider)
         assert sent[1]["content"] is None, provider
         assert not any(c == "" for c in _all_contents(sent))
+
+
+def test_an_unknown_or_empty_provider_keeps_empty_string():
+    """The Router hop passes provider "". DeepSeek refuses null beside
+    tool_calls, so the gateway must not guess None there."""
+    from gateway.routes.v1_compat import (
+        _router_outbound,
+        _sanitize_messages_for_provider,
+    )
+
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": None, "tool_calls": [TOOL_CALL]},
+    ]
+    for provider in ("", "openai", "mystery"):
+        assert _sanitize_messages_for_provider(history, provider)[1][
+            "content"] == "", provider
+    body = _router_outbound({"model": "tier-fast", "messages": history})
+    assert body["messages"][1]["content"] == ""
+
+
+def test_the_router_gives_each_step_the_empty_content_its_vendor_accepts():
+    from customer_console.reasoning import content_for_step
+    from litellm.litellm_core_utils.prompt_templates.factory import (
+        _sanitize_empty_text_content,
+    )
+
+    wire = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "tool_calls": [TOOL_CALL]},
+        {"role": "assistant", "content": None, "tool_calls": [TOOL_CALL]},
+    ]
+    for model in ("deepseek/deepseek-chat", "groq/llama", "together_ai/x"):
+        sent = content_for_step(wire, model)
+        assert sent[1]["content"] == "" and sent[2]["content"] == "", model
+    for model in ("anthropic/claude-sonnet-4", "bedrock/anthropic.claude-3"):
+        sent = content_for_step(wire, model)
+        assert sent[1]["content"] is None and sent[2]["content"] is None
+        for m in sent:
+            assert _sanitize_empty_text_content(m) == m
+    # An unrelated vendor and a plain text turn are left as they are.
+    assert content_for_step(wire, "openai/gpt-4o") is wire
+    # The input is not changed.
+    assert wire[1]["content"] == ""
+
+
+def test_a_failover_chain_applies_the_rule_for_the_model_it_really_calls():
+    """main._kwargs_for runs content_for_step once per step."""
+    import inspect
+
+    from customer_console import main
+    from customer_console.reasoning import content_for_step
+
+    assert "content_for_step(" in inspect.getsource(main)
+    wire = [{"role": "assistant", "content": None, "tool_calls": [TOOL_CALL]}]
+    first = content_for_step(wire, "deepseek/deepseek-chat")
+    second = content_for_step(wire, "anthropic/claude-haiku")
+    assert first[0]["content"] == ""
+    assert second[0]["content"] is None
+    # A step must never see the edit that the step before it made.
+    assert wire[0]["content"] is None
+
+
+def test_a_last_user_turn_of_empty_blocks_is_never_sent_as_empty_list():
+    src = [
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": [{"type": "text", "text": ""}]},
+    ]
+    sent = clean_model_messages(src)
+    assert sent[-1] is src[-1]
+    assert sent[-1]["content"] != []
 
 
 def test_a_provider_that_refuses_null_content_still_gets_empty_string():
