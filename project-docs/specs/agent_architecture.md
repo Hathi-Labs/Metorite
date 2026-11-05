@@ -1177,8 +1177,11 @@ Item 32 is the switch. Metorite task 1584.
     - **Two switches, one answer.** The two switches cannot both be on. The gateway checks the
       row as it would be AFTER the change, not the body alone. So a `POST` or a `PATCH` that
       would leave both true gets 422. That includes `PATCH {"read_only_key": true}` on a row
-      whose `always_confirm` is true. The console sends both keys in one PATCH. A stored row
-      with both true reads as always confirm, so a damaged row fails closed.
+      whose `always_confirm` is true. `PATCH {"always_confirm": true}` on a row whose
+      `read_only_key` is true gets 422 too. The console sends both keys in one PATCH. A stored
+      row with both true reads as always confirm, so a damaged row fails closed. A `PATCH`
+      that names one switch writes the other as the parser reads it now. So a damaged row
+      keeps the key off when `always_confirm` turns off.
     - **Defaults.** A new server gets `false`. A row with no key reads as `false`. Any value
       but a real `true` reads as `false`.
     - **The re-register.** A `POST` of a name that exists is a full register. A body with no
@@ -1212,7 +1215,10 @@ Item 32 is the switch. Metorite task 1584.
       the shared `Checkbox`: "This key can only read". Its help line says: "Every tool of this
       server runs without asking. Turn this on only when the key cannot change data at the
       source." A tick of one switch clears the other. A member without
-      `integrations:manage` sees it disabled.
+      `integrations:manage` sees it disabled. On a row that acts as an admin through OAuth
+      (`acts_as` is set), the tick is disabled, and one more line says that the switch does
+      not apply there. Until the list shows a saved pair, the panel draws the pair that the
+      gateway saved. After a failed save, the ticks wait for the next read.
     - **The log.** Each attach logs `mcp.attached` with `read_only_key`, the names of the
       servers that have the switch on.
 
@@ -1275,7 +1281,7 @@ The client refuses a 3xx answer and a request to another origin. The default cli
 | A34 | `GET /integrations/mcp` and the read model return the flag, and no header value reaches a response or a log line. The console toggle is on for a new server, and it sends `always_confirm`. | `test_mcp_always_confirm_r8.py`, `alwaysConfirm.test.ts` |
 | A35 | With `read_only_key` true, a tool with `destructiveHint` true runs with no card, on the gate and on the real `run_agent_stream` with a FastMCP server. It runs in a run with no member too. Each attach logs `mcp.attached` with `read_only_key`. With the switch off, A12 to A14 hold. | `test_maf_mcp_confirm.py` |
 | A36 | With both switches true on a row, every tool waits for the card. After an untrusted answer, a tool of a read-only-key server still waits for the card. The list loader shows `read_only` true for each tool of a read-only-key server. | `test_maf_mcp_confirm.py`, `test_maf_mcp_budget.py` |
-| A37 | `PATCH` sets the switch, keeps the headers, and writes one audit event. A body with both switches true gets 422, and so does a string value. `PATCH {"read_only_key": true}` on a row with `always_confirm` true gets 422, and so does a PATCH on an OAuth row. A body with only `always_confirm` behaves as A33. A re-POST with no `read_only_key` turns it off, and its audit event records both flags. A member without `integrations:manage` gets 403. Another org's name is 404. A new server reads as false. R8, two orgs, the app role. | `test_mcp_read_only_key_r8.py` |
+| A37 | `PATCH` sets the switch, keeps the headers, and writes one audit event. A body with both switches true gets 422, and so does a string value. `PATCH {"read_only_key": true}` on a row with `always_confirm` true gets 422, and so does a PATCH on an OAuth row. `PATCH {"always_confirm": true}` on a row with `read_only_key` true gets 422. On a row with both stored true, `PATCH {"always_confirm": false}` leaves the key off. A body with only `always_confirm` behaves as A33. A re-POST with no `read_only_key` turns it off, and its audit event records both flags. A member without `integrations:manage` gets 403. Another org's name is 404. A new server reads as false. R8, two orgs, the app role. | `test_mcp_read_only_key_r8.py` |
 | A38 | `GET /integrations/mcp` and the read model return the flag. The console tick sends `read_only_key`, and a tick of one switch clears the other. | `test_mcp_read_only_key_r8.py`, `alwaysConfirm.test.ts` |
 
 This ticket inverts the flag-OFF test of `test_mcp_servers_org_scope.py`. With `ACB_GRAPH_TENANT_BIND`
