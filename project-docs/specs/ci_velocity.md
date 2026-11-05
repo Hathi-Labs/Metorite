@@ -123,7 +123,7 @@ first.
 **Verify:** `uv run pytest tests/unit/test_affected_tests.py -q`.
 AGENT-SAFE. STANDARD tier.
 
-### CIV-3 · pr-check runs the selection (BUILT 2026-11-05, done at merge)
+### CIV-3 · pr-check runs the selection (BUILT 2026-11-05, merges only after CIV-4b)
 
 Starts after CIV-2 merges. **Built choices:** the file list travels as one
 space-separated line in a job output (a typical list is 2-20 KB against a 1 MB
@@ -278,7 +278,10 @@ AGENT-SAFE. STANDARD tier.
 ## 6. Order
 
 CIV-2 and CIV-4 start now, beside each other. CIV-3 starts after CIV-2
-merges. CIV-7 lands with CIV-3. CIV-5, CIV-6, CIV-8 and CIV-9 follow, in any
+merges. CIV-4b (task 1711) is a sharded R8 gate. It runs on the 21:30 release
+and on a dispatch, beside `test`, and `publish-release` needs it green.
+CIV-3 merges only after CIV-4b, because the PR gate then skips R8 suites that
+CIV-4b still covers. CIV-7 lands with CIV-3. CIV-5, CIV-6, CIV-8 and CIV-9 follow, in any
 order.
 
 ## 7. Tasks

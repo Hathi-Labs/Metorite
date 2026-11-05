@@ -93,6 +93,35 @@ def module_name(path: str, root: Path = ROOT) -> str | None:
     return ".".join(parts) if parts else None
 
 
+def module_names(path: str, root: Path = ROOT) -> set[str]:
+    """Every dotted name a test could import this file by.
+
+    A file outside any pyproject root also has its repo-root-relative name:
+    `evals/x/y.py` is `evals.x.y` when `evals` has no `__init__.py` (CIV-3
+    review round 2, P1). The short name stays, so no match is lost.
+    """
+    names: set[str] = set()
+    first = module_name(path, root)
+    if first:
+        names.add(first)
+    p = root / path
+    if p.suffix == ".py":
+        anc = p.parent
+        held = False
+        while anc != root and anc != anc.parent:
+            if (anc / "pyproject.toml").is_file():
+                held = True
+                break
+            anc = anc.parent
+        if not held:
+            rel = list(Path(path).with_suffix("").parts)
+            if rel and rel[-1] == "__init__":
+                rel.pop()
+            if rel:
+                names.add(".".join(rel))
+    return names
+
+
 # `patch("gateway.routes.crm.fn")`, `import_module("x.y")` and the like.
 _DOTTED_STRING = re.compile(r"""["']([A-Za-z_]\w*(?:\.\w+)+)["']""")
 # Only for a file `ast` cannot parse. Statement by statement, so one import
@@ -206,7 +235,7 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
     frontend = [c for c in changed if c.startswith(FRONTEND_APPS)]
     picked: set[str] = {c for c in changed if c in tests}
 
-    changed_mods = {m for m in (module_name(c, root) for c in changed) if m}
+    changed_mods = {m for c in changed for m in module_names(c, root)}
     src_users, test_users = _import_index(changed_mods, sources, tests, root)
 
     for path in changed:
@@ -219,15 +248,13 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
             needles.append(name)
         picked |= {t for t, body in tests.items() if any(n in body for n in needles)}
 
-        dotted = module_name(path, root)
-        if not dotted:
-            continue
-        picked |= test_users.get(dotted, set())
-        # One level up: source modules that import the changed module.
-        for upstream in src_users.get(dotted, set()) - {dotted}:
-            users = test_users.get(upstream, set())
-            if len(users) <= HUB_LIMIT:
-                picked |= users
+        for dotted in module_names(path, root):
+            picked |= test_users.get(dotted, set())
+            # One level up: source modules that import the changed module.
+            for upstream in src_users.get(dotted, set()) - {dotted}:
+                users = test_users.get(upstream, set())
+                if len(users) <= HUB_LIMIT:
+                    picked |= users
 
     if any(c.startswith("infra/postgres/") and c.endswith(".sql") for c in changed):
         picked.add("tests/unit/test_migration_prefixes.py")
@@ -316,7 +343,7 @@ def _gate(changed: list[str], root: Path) -> dict:
             ],
             root,
         )
-        mods = {m for m in (module_name(c, root) for c in py) if m}
+        mods = {m for c in py for m in module_names(c, root)}
         _, test_users = _import_index(mods, sources, tests, root)
         for m in sorted(mods):
             n = len(test_users.get(m, set()))

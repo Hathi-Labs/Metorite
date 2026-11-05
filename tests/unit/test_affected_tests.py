@@ -339,3 +339,26 @@ def test_a_console_change_selects_every_console_r8_suite(tmp_path: Path) -> None
     for t in ("test_customer_console_sql", "test_cc_ladder", "test_console_url"):
         assert f"tests/unit/{t}.py" in out["files"], t
     assert "tests/unit/test_user.py" not in out["files"]
+
+
+# ── CIV-3 review round 2 ───────────────────────────────────────────────────
+
+
+def test_a_module_outside_a_pyproject_root_is_found_by_its_root_relative_name(
+    tmp_path: Path,
+) -> None:
+    root = _gate_repo(tmp_path)
+    _write(root, "evals/coding_engine/checkers.py", "X = 1\n")  # no __init__.py
+    _write(
+        root,
+        "tests/unit/test_coding_eval_checkers.py",
+        "from evals.coding_engine.checkers import X\n",
+    )
+    out = sel.gate(["evals/coding_engine/checkers.py"], root)
+    assert out["full"] is False
+    assert "tests/unit/test_coding_eval_checkers.py" in out["files"]
+
+
+def test_the_real_evals_checkers_reach_their_tests() -> None:
+    out = sel.gate(["evals/coding_engine/checkers.py"])
+    assert "tests/unit/test_coding_eval_checkers.py" in out["files"]
