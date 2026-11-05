@@ -44,6 +44,15 @@ def org_allowed(organization_id: str | None) -> bool:
     return str(organization_id).strip().lower() in orgs()
 
 
+def exceptions(organization_id: str | None) -> bool:
+    """True when the org gets a brief (:func:`org_allowed`) AND
+    ``BRIEF_EXCEPTIONS`` is on (BR-5). Default OFF. Off, Reach decides what
+    may interrupt by the class table, as before."""
+    if getattr(get_settings(), "brief_exceptions", False) is not True:
+        return False
+    return org_allowed(organization_id)
+
+
 def in_app(organization_id: str | None) -> bool:
     """True when the org gets a brief (:func:`org_allowed`) AND
     ``BRIEF_IN_APP`` is on (BR-2c-1). Default OFF. Off, ``GET /brief/today``

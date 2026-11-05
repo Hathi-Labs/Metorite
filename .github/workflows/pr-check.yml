@@ -525,6 +525,7 @@ jobs:
               tests/unit/test_studio_package_routes_r8.py \
               tests/unit/test_package_host_store_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
+              tests/unit/test_crm_change_history.py \
               tests/unit/test_auto_park.py \
               tests/unit/test_staging_export.py
 

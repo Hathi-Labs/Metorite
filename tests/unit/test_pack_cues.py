@@ -34,8 +34,10 @@ from acb_skills import tool_packs as tp
 WHEN = {
     "email": "Load for mail: read, search, summarise, reply, send, forward, send later, drafts, follow-ups, my inbox.",
     "email-setup": "Load to set up mail: rules, settings, knowledge, writing style, senders and categories.",
+    # WS-CRM CRM-M1: the pack holds the read of the CRM Change history, so
+    # its line names it. "A record's" left the line to stay under 130.
     "crm-records": (
-        "Load to change deals, leads and contacts, or to read a record's timeline. "
+        "Load to change deals, leads and contacts, or to read a timeline or CRM change history. "
         "Plain reads of the pipeline need no load."),
     "projects": (
         "Load for tasks, projects and my work: find, create, update, assign and complete. "
@@ -49,8 +51,8 @@ WHEN = {
     "projects-authority": "Load for the authority page of a project: to read it, pin a page as the authority, or remove a pin.",
     # STU-G1: the Studio builder pack.
     "studio": (
-        "Load for AI Studio: build an app (manifest, actions), or save, publish, "
-        "pause and list your skills."),
+        "Load for AI Studio: build an app (manifest, actions), manage your skills, "
+        "or read the records of a package."),
 }
 
 
