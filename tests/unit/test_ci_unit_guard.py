@@ -175,17 +175,17 @@ def test_only_selected_checks_the_must_run_files_in_the_selection(tmp_path: Path
 def test_only_selected_reaches_the_cli(tmp_path: Path) -> None:
     junit = _report(tmp_path)
     base = [sys.executable, str(_ROOT / "scripts/ci_unit_guard.py"), "check", "--junit", str(junit)]
-    args = base + ["--disarmed", "NEVER_MATCHES unset"]
-    full = subprocess.run(args + ["--must-run", "test_missing.py"], capture_output=True, text=True)
+    args = [*base, "--disarmed", "NEVER_MATCHES unset"]
+    full = subprocess.run([*args, "--must-run", "test_missing.py"], capture_output=True, text=True)
     assert full.returncode == 1 and "no shard ran test_missing.py" in full.stdout
     sel = subprocess.run(
-        args + ["--only-selected", "test_sample.py", "--must-run", "test_missing.py"],
+        [*args, "--only-selected", "test_sample.py", "--must-run", "test_missing.py"],
         capture_output=True,
         text=True,
     )
     assert sel.returncode == 0, sel.stdout
     empty = subprocess.run(
-        args + ["--only-selected", "--must-run", "test_missing.py"], capture_output=True, text=True
+        [*args, "--only-selected", "--must-run", "test_missing.py"], capture_output=True, text=True
     )
     assert empty.returncode == 0, empty.stdout
 
