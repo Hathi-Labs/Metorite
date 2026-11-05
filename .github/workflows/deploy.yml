@@ -142,9 +142,9 @@ jobs:
   # when the job starts. A batch then tests every merge up to that moment.
   #
   # ⚠️ A CANCELLED `test` JOB ON A PUSH THAT NEVER STARTED IS THE DESIGN, not
-  # a fault. A later run folded it in, and that run's summary names it, from
-  # the step "Name the tested range". A FAILED job is a red batch: fix
-  # forward or revert at once.
+  # a fault. Another run took it into its batch. That run can be OLDER or
+  # newer, and its summary (the step "Name the tested range") names the PR.
+  # A FAILED job is a red batch: fix forward or revert at once.
   #
   # ⚠️ A schedule run or a dispatch NEVER joins the push group. If it did, the
   # next merge would cancel the release's pending `test` job, `publish-release`
