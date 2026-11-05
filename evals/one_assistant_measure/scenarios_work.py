@@ -206,10 +206,10 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
              Plan((("find_tasks", {"query": "login crash"}),),
                   "#23 Fix the login crash is In review, with Ananya.")),
     ), surface="tasks"),
-    # projects-plan, loaded by the model (no word): the capacity question.
-    # On a Projects page the core pack (23 tools) is loaded, and the plan pack
-    # (35) does not fit beside it under the cap of 110. The loader does not
-    # offer it, so the specialist stays and the route goes to it (OA-8e finding).
+    # projects-plan on a Projects page: the capacity question. "overloaded"
+    # names the plan pack (OA-8g), so it loads at layer (a). Before PJP-2 the
+    # plan pack (35 tools) did not fit beside the core pack, and the route went
+    # to the specialist (OA-8e finding). PJP-2: it is 24 tools and fits.
     _pm("pm_capacity", "Plan pack on the Projects page: the model loads it (the base trim leaves room)", (
         Turn("Who is overloaded right now?",
              (Check("ran_tool", ("analytics_load",), "read_the_load"),
@@ -245,8 +245,8 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
               Check("no_unasked_write", 0)),
              Plan((("analytics_load", {}),), "Ananya, with 2 open tasks and both overdue.")),
     )),
-    # projects-structure on a Projects page: no room beside the core pack, so
-    # the route goes to the owner, as for the plan pack.
+    # projects-structure on a Projects page. PJP-2: it is 24 tools now, so it fits
+    # beside the core pack and the owner is reached through the loader.
     _pm("pm_status", "Structure pack on the Projects page: the model loads it (the base trim leaves room)", (
         Turn("Rename the In review status to QA",
              (Check("work_write", ("PATCH", r"^/projects/statuses/", "QA"), "status_renamed"),
@@ -256,8 +256,8 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
                                       "name": "QA"}),),
                   "Updated status QA in Website Relaunch.")),
     )),
-    # projects-structure by a word ("task tags"): choose() lets it replace the
-    # core pack, so the pack loads at layer (a).
+    # projects-structure by a word ("task tags"): it loads at layer (a). PJP-2: the
+    # core pack stays beside it.
     _pm("pm_tags", "Structure pack by a word: two new tags in one card", (
         Turn("Add the task tags design and legal to Website Relaunch",
              (Check("work_write", ("POST", r"^/projects/nodes/[^/]+/tags$"), "tags_made"),
@@ -297,6 +297,13 @@ PROJECTS_SCENARIOS: tuple[Scenario, ...] = (
              (Check("ran_tool", ("list_reminders",), "read_the_reminders"),
               Check("right_pack", "projects-reminders"), Check("no_unasked_write", 0)),
              Plan((("list_reminders", {}),), "You have no open reminders.")),
+    )),
+    # projects-reports (PJP-2): a read of the saved reports.
+    _pm("pm_reports", "Reports pack: what reports are saved", (
+        Turn("Which reports are saved?",
+             (Check("ran_tool", ("report_list",), "read_the_reports"),
+              Check("right_pack", "projects-reports"), Check("no_unasked_write", 0)),
+             Plan((("report_list", {}),), "No report is saved yet.")),
     )),
     # projects-authority: a read of the authority page of a project (WS-ALN ALN-4).
     _pm("pm_authority", "Authority pack: the authority page of a project", (

@@ -45,6 +45,8 @@ Postgres entity graph (SQLAlchemy sessions).
 Shared settings, logging, the activity and cost feed, and utilities.
 - **`db.py` is the ONE async engine and pool of a process** (`get_db()`, `get_session_factory()`, `get_engine()`). It imports SQLAlchemy inside the functions, and `acb_common/__init__.py` does not import it.
 - Every gateway route package and `gateway/db.py` re-export it. The engine is never disposed. A second `create_async_engine` under `apps/` or `packages/` fails `tests/unit/test_db_engine_seam.py`.
+- `tenant_session` finds an aborted transaction at the clean end of a block (H-249). A `handle_error` listener marks the connection, and only a marked session sends one `SELECT 1`. It logs `db.tenant_session_aborted`. In `log` mode it changes nothing else, so the commit runs as before.
+- `settings.tenant_session_abort_mode` is the one reader of `TENANT_SESSION_ABORT_MODE` (`log` by default, or `raise`). In `raise` mode the session raises `TenantTransactionAborted`. Fence: `tests/unit/test_tenant_session_aborted_r8.py` (R8).
 - `_log.py::_RUN_CONTEXT_KEYS` and `activity.py::_INHERIT` hold the same keys: `(run_id, thread_id, agent, user, source, instance)`. Extend those two tuples together or attribution silently half-lands.
 - That pair is drift-checked by `tests/unit/test_observability.py::test_inherit_and_run_context_keys_match`. Binds are additive and non-empty-only. Spec: `project-docs/specs/observability_e2.md` §7.
 - `provisioning.py` is the ONE caller-side wrapper over migration 179's `provision_organization` (`provision_local_organization`). It acquires through `get_session_factory()`, NOT `tenant_session()` and NOT `get_db()`, because it creates the tenant.

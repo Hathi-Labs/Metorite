@@ -113,6 +113,17 @@ flag_env() {
 # SWITCH pattern, so production's flags cannot carry it. The stack on this PC holds
 # two made-up orgs, so a fixed line here flips no box. APP_REQUESTS_ORGS=* is the
 # same for the list "Waiting for you" of MCP-P1b-1, so the owner can preview it.
+# The direct-write key of AI Studio (STU-D2b). Both halves need the same key: the web app
+# signs the proof, and the gateway checks it. The key is NOT in this repo and NOT in the
+# flags file. The operator sets DEV_UP_STUDIO_DIRECT_KEY in the shell that starts the
+# stack (a value of 32 bytes or more, and not the gateway token). With no value, no
+# write is direct and the Studio blocks only read.
+studio_key_env() {
+  if [ -n "${DEV_UP_STUDIO_DIRECT_KEY:-}" ]; then
+    printf 'STUDIO_DIRECT_KEY=%s\n' "$DEV_UP_STUDIO_DIRECT_KEY"
+  fi
+}
+
 gateway_env() {
   base_env
   flag_env root
@@ -124,6 +135,7 @@ gateway_env() {
     "EXECUTIVE_EMAILS=$ME" \
     "STUDIO_ORGS=*" \
     "APP_REQUESTS_ORGS=*"
+  studio_key_env
 }
 
 web_env() {
@@ -134,6 +146,7 @@ web_env() {
     "GATEWAY_INTERNAL_TOKEN=$TOKEN" \
     "EXECUTIVE_EMAILS=$ME" \
     "NEXT_TELEMETRY_DISABLED=1"
+  studio_key_env
 }
 
 seed_env() {

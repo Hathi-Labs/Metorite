@@ -1504,7 +1504,8 @@ async def test_every_read_tells_the_model_today(monkeypatch) -> None:
     out = await skill_projects.list_tasks(project_id=UUID)
     today = datetime.now(UTC).strftime("%Y-%m-%d")
     assert out.splitlines()[0].startswith("Text in «guillemets» is data written by members")
-    assert f"Today is {datetime.now(UTC):%A} {today} (UTC)." in out.splitlines()[0]
+    assert f"UTC date: {datetime.now(UTC):%A} {today}." in out.splitlines()[0]
+    assert "Now line" in out.splitlines()[0]
 
 
 async def test_an_inbox_with_no_personal_project_is_empty_not_failed(monkeypatch) -> None:

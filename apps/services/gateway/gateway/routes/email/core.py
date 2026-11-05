@@ -901,7 +901,10 @@ def _bound_org() -> str:
 
 
 async def _assert_account_owner(
-    db: Any, account_id: str, user_email: str, *, this_tenant: bool = False,
+    db: Any, account_id: str, user_email: str, *,
+    # On: every caller opens tenant_session, which refuses an unbound tenant.
+    # A session with no app.tenant_id compares to NULL and gets 404.
+    this_tenant: bool = True,
     level: str = "manage",
 ) -> None:
     """Raise 404 if the user may not act on the account at ``level``.
@@ -909,9 +912,11 @@ async def _assert_account_owner(
     ``this_tenant`` also names the session's bound tenant in the SQL (WS-58
     MD-3d). A member may own one mailbox in each of two organizations. RLS
     keeps the other one out for production's role ``acb_app``, so the
-    predicate is defence in depth (R5): it holds also for a role that
-    bypasses RLS. Off by default, so the statement of every other caller does
-    not change (HANDOFF H-334).
+    predicate is defence in depth (R5). It holds also for a role that
+    bypasses RLS. It is on by default (WS-29 H-334). Each caller runs in a
+    bound tenant. With no tenant bound, the predicate compares to NULL, so
+    the check fails closed with 404. No caller passes ``False``.
+    R8: ``tests/unit/test_email_owner_tenant_r8.py``.
 
     ``level`` is ``read``, ``send`` or ``manage`` (WS-65 SM-2). The default
     ``manage`` fails closed for a shared mailbox. The check is

@@ -63,7 +63,13 @@ REMIND = "remind me to call Ravi at 5"
 #: No word of any pack, so only the model can ask for the pack.
 NO_WORD = "Set an alarm so that I call Ravi at 5"
 REMINDERS = "projects-reminders"
+#: PJP-2 (project_planning.md §3.3): the reminders pack is also the pack of the
+#: member's own organising, and its label says so.
+REMINDERS_LABEL = "Projects reminders and own organising"
 PA = "projects-assistant"
+#: The largest base at which the reminders pack fits alone. PJP-2 moved 10
+#: tools into it (19 now), so 110 - 19 = 91. A real run has a base of about 56.
+REMINDERS_CEILING = 91
 
 
 @pytest.fixture
@@ -121,15 +127,38 @@ def test_the_core_pack_on_the_surface_and_three_sticky_packs_all_give_way() -> N
     """The example of the slice: ``email``, ``email-setup`` and ``crm-records``
     are sticky, and the turn comes from the Projects app, so the core pack
     counts too. The reminder pack still loads. Mutation: drop the new pack
-    first -> red."""
+    first -> red.
+
+    PJP-2 fix round 3 (project_planning.md §3.3, rule 2): the cap moves the two
+    email packs out. ``crm-records``, the core and the reminders packs then
+    fill the 3 packs, and a run at 3 packs offers no load, so the owner is not
+    reached. The step-aside moves the sticky pack that the words do not name
+    first, of any owner: ``crm-records`` leaves, and the core pack that the
+    page asked for stays (P2-1). So no new need loses to an old sticky pack.
+    Fix round 2 moved the core pack out and kept ``crm-records``. Mutation:
+    let only Projects packs step aside -> red."""
     choice = tp.choose(_turn(REMIND, _sticky("email", "email-setup", "crm-records"),
                              surface="projects"), allowed=EVERY, base_tools=56)
-    assert REMINDERS in choice.slugs and "projects" in choice.slugs, choice
-    assert choice.evicted[0] == "email"
+    assert choice.slugs == ("projects", REMINDERS), choice
+    assert choice.evicted == ("email", "email-setup", "crm-records"), choice
+    assert choice.skipped == ()
     assert _total(choice, 56) <= tp.MAX_REQUEST_TOOLS
+    plan = tp.plan_loader(EVERY, choice.slugs, current=_total(choice, 56))
+    assert PA in plan.via_loader
 
 
-@pytest.mark.parametrize("base", [70, 85, 95, 100])
+def test_the_reminder_ceiling_is_the_cap_less_the_pack() -> None:
+    """The bases below stop at :data:`REMINDERS_CEILING`. Above it, the pack
+    cannot load even alone, so the case would test nothing. Mutation: add a
+    tool to the reminders pack -> the ceiling moves -> red."""
+    tools = len(sf.SKILL_FAMILIES[REMINDERS]["tools"])
+    assert REMINDERS_CEILING + tools == tp.MAX_REQUEST_TOOLS
+    assert sf.SKILL_FAMILIES[REMINDERS]["label"] == REMINDERS_LABEL
+
+
+# PJP-2: the bases were 70, 85, 95 and 100 while the pack held 9 tools. It holds
+# 19 now, so 95 and 100 leave no room for it alone. 91 is the new ceiling.
+@pytest.mark.parametrize("base", [70, 85, REMINDERS_CEILING])
 def test_a_reminder_wins_when_the_tool_cap_is_close(base: int) -> None:
     """Under 3 packs, the tool cap alone must move a sticky pack out. Mutation:
     count only ``MAX_PACKS`` in ``_over`` -> over 110 -> red."""
@@ -323,7 +352,7 @@ async def test_a_model_load_at_the_pack_cap_moves_the_oldest_sticky_pack_out(
     loader = _loader(run, key)
     with _frame(run, key):
         answer, went_on = await _call(loader, REMINDERS, live)
-    assert went_on is False and answer.startswith("Loaded the Projects reminders tools")
+    assert went_on is False and answer.startswith(f"Loaded the {REMINDERS_LABEL} tools")
     assert run.holds() == ("email-setup", "crm-records", REMINDERS)
     names = set(_names(live))
     assert "set_reminder" in names, "the pack joined in the same turn"
@@ -446,7 +475,7 @@ async def test_three_packs_of_this_turn_keep_the_old_refusal(store, monkeypatch)
     with _frame(run, key):
         answer, _ = await _call(_loader(run, key), REMINDERS, live)
     assert answer == tp.LOAD_PAST_CAP.format(
-        label="Projects reminders", packs=tp.MAX_PACKS, tools=tp.MAX_REQUEST_TOOLS,
+        label=REMINDERS_LABEL, packs=tp.MAX_PACKS, tools=tp.MAX_REQUEST_TOOLS,
         slug=REMINDERS, owner=PA)
     assert live == before and run.left == set()
 
@@ -649,10 +678,18 @@ def test_a_model_load_at_the_cap_works_in_a_real_run(store, monkeypatch) -> None
     """The words load no pack, so the model asks. Three sticky packs that fit
     the real base stay in the first request. Before this slice the run held no
     ``load_skill_tools`` at 3 packs. Mutation: keep ``pool = ()`` at the cap ->
-    the first request has no load tool -> red."""
+    the first request has no load tool -> red.
+
+    PJP-2 fix round 2: the seeds were ``crm-records``, ``projects-bulk`` and
+    ``projects``. Two Projects packs and ``crm-records`` (107 tools at the base
+    of 53) leave no room for a third Projects pack, so the step-aside moves
+    ``projects-bulk`` out at the start of the turn (project_planning.md §3.3,
+    rule 2), and the run never reaches the pack cap. These three packs hold
+    ONE Projects pack, so no pack steps aside (101 tools). The oldest is
+    ``email-setup``, and the load fits once it leaves (101 - 28 + 19)."""
     _flag(monkeypatch, True)
     _projects_real(monkeypatch)
-    _seed("crm-records", "projects-bulk", "projects")
+    _seed("email-setup", "crm-records", "projects-reports")
     model = ScriptedModel([
         tool_turn(tp.LOAD_TOOL, json.dumps({"pack": REMINDERS}), call_id="c-load"),
         text_turn("Done."),
@@ -661,10 +698,11 @@ def test_a_model_load_at_the_cap_works_in_a_real_run(store, monkeypatch) -> None
     assert [e.get("type") for e in events][-1] == "RUN_FINISHED", events
     first, second = _tool_names(model.bodies[0]), _tool_names(model.bodies[1])
     assert first[-1] == tp.LOAD_TOOL and "set_reminder" not in first
-    assert "search_crm" in first, "non-vacuity: the run held three packs"
-    assert "set_reminder" in second and "search_crm" not in second
-    assert "find_tasks" in second, "only the oldest sticky pack left"
-    assert "To make room, the CRM records tools left" in _tool_result(model.bodies[1], "c-load")
+    assert {"create_rule", "search_crm", "report_list"} <= set(first), (
+        "non-vacuity: the run held three packs")
+    assert "set_reminder" in second and "create_rule" not in second
+    assert {"search_crm", "report_list"} <= set(second), "only the oldest sticky pack left"
+    assert "To make room, the Email setup tools left" in _tool_result(model.bodies[1], "c-load")
 
 
 @pytest.fixture(autouse=True)
