@@ -26,6 +26,7 @@ not write a second copy of that seam. A bare test file name is under
    - Jina Reader gets the URL of the call only after the walk ends. Each hop that the walk reached passes the guard first. For an org off `WEB_RESEARCH_ORGS`, Jina's text wins, and the direct read is the fallback.
    - `frame_page` wraps the output in a `WEB PAGE` block of `UntrustedFrame`. The URL, the title, the date and the type sit inside it. A refusal is one line that names the host of the URL of the call. It never names the path or the host of a redirect.
    - Fence: `test_web_fetch_guard.py`.
+   - WEB-4: with `WEB_RESEARCH_ORGS` on, `web_search` calls `web_search_providers.search` (SearXNG, SerpAPI, ddgs; `papers` and `wiki` sources). It skips a provider that failed in the last 5 minutes. Off, the old chain runs. Do not add a provider outside that module. Fence: `test_web_search_providers.py`.
    - WEB-2: `web_research_on(org)` is the ONE reader of `WEB_RESEARCH_ORGS`. `fetch_page` reads it on each call, with the org of the run binding. Off, the output is the WEB-1 output, byte for byte.
    - On, Trafilatura reads an HTML type. Only `web_reader_worker._extract_markdown` imports it, as `from trafilatura import extract`, with no `url=`. It gets text, never bytes, of at most `MAX_LOCAL_HTML_BYTES`.
    - Trafilatura work runs in a child process, because a regex holds the GIL, so a thread cannot bound it. `web_tools.py` never imports it. WEB-3 and each later parser must run the same way.

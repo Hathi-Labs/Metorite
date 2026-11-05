@@ -145,6 +145,16 @@ The guard picks the reader by the content type.
 
 **A provider is offered only when it is ready.** The list skips a provider whose health check failed in the last 5 minutes. The result names the provider that answered. Results from two providers are merged by URL.
 
+**As built, WEB-4 (2026-11-05).** `web_search` asks the provider list when `WEB_RESEARCH_ORGS` holds the org of the run. Off, the SerpAPI and ddgs chain runs as before, byte for byte.
+
+- **One module.** `acb_skills/web_search_providers.py` holds the list. `web_tools.web_search` gains `source` (`web`, `papers`, `wiki`). Another value means `web`.
+- **Order.** A web call asks SearXNG, SerpAPI and ddgs in that order. It stops when the merged hits fill `max_results`. A fault or an empty answer passes to the next provider. `papers` asks OpenAlex and arXiv together. `wiki` asks Wikipedia.
+- **Ready.** SearXNG needs `SEARXNG_URL` and a `200` from `/healthz`. SerpAPI needs its key. A provider that faults, or fails its check, is skipped for `HEALTH_TTL_S` (300 s). A success clears the mark.
+- **Stamp and merge.** A hit shows `Provider:` and `Date:`. The date is the one the source states. With none, it reads `retrieved <day>`. Two hits merge when their URLs match after the host is lower-cased, `www.`, the fragment, the default port, `utm_*` and the trailing slash are removed. The first provider keeps the hit and the others join `also`.
+- **Safety.** `SEARXNG_URL` is an operator value (`env_guard` prefix `SEARXNG_`). Each answer has a 2 MB cap. arXiv XML with a DTD is refused. Hit text is one plain line with a cap.
+- **Left for later.** Hit text has no `UntrustedFrame` mark yet. SearXNG itself is WEB-5.
+- Fence: `tests/unit/test_web_search_providers.py`.
+
 ---
 
 ## 4. The tools Mira sees
