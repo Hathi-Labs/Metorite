@@ -57,7 +57,8 @@ These are the rules of the design. Each slice in §8 obeys them.
 - **P2. One interruption at most.** A dialog asks only a question whose answer
   changes what the member sees. All other guidance stays in the page and never
   blocks. A tour of coach marks teaches a layout that the member has not yet
-  needed, so this spec has none.
+  needed, so this spec has none. The hello of §13 (D177) is not a second
+  interruption. It sits beside the page, blocks nothing, and closes in one tap.
 - **P3. A way out works at once and stays.** Every overlay closes in the same
   frame, with no server round trip. The server holds the dismissal, so a reload
   or a second device does not bring it back.
@@ -291,7 +292,8 @@ OB-12 and OB-13 are a bet. OB-25 closes what it can.
 
 The welcome question already exists. OB-10 uses its answer. My Day and the empty
 chat show three clickable asks for that answer. An empty box never greets a new
-member.
+member. The hello of §13 (D177) is the one greeting, and it carries its own
+three asks.
 
 ### 12.3 The new organization: company context
 
@@ -432,3 +434,69 @@ The owner accepted each default on 2026-11-02, recorded as **D153**.
    it reveals that an org exists, and only the org should choose that.
 4. **D-OB-8. The AI layer ships behind `SETUP_ASSISTANT_ORGS`, and we read the
    first 20 orgs by hand.** *Why:* it is a bet with no outside evidence.
+
+## 13. The buddy's hello (D177)
+
+**Owner, 2026-11-05.** A new member must feel supported from the first minute.
+The chat says that it is here, and it offers to show the way. D177 records the
+directive. The messages that the chat starts later belong to
+`proactive_reach.md` §19.
+
+### 13.1 What the member sees
+
+1. The member signs in for the first time. The welcome dialog asks its one
+   question and closes.
+2. The assistant opens beside the page: the dock on a computer, the full sheet
+   on a phone. It opens a new chat named "Welcome".
+3. One message waits there. It names the member, and it reads like this:
+
+   > Hi Asha, welcome to Metorite. There's a lot here, so the first look can
+   > feel like much. You don't have to learn it all today. I'm here whenever
+   > you need me. Ask me anything, and I'll show you where it is.
+
+4. Three chips sit under the message:
+   - **Show me around** starts the tour `home.tour` (`assistant_guide.md`
+     §4.1).
+   - **What can you do here?** sends that question.
+   - **I'll look around** closes the panel. The chat stays in the history.
+
+The page stays usable the whole time. Nothing blocks it.
+
+### 13.2 The rules
+
+- **Once per member.** A key-only stamp `buddy_hello_at` in `shell_prefs`
+  keeps the hello to one time on every device. The stamp joins `KEPT_KEYS` on
+  the path of `tour_seen_at`. A layout save never writes it.
+- **After the dialog.** The hello waits while the welcome dialog is open
+  (`welcomeOpen`). A joiner with no dialog meets it at once.
+- **Never on a deep link, and never during the tour.** A member on a deep link
+  came for one thing. The hello waits for the next visit to `/`.
+- **No model and no cost.** Code builds the message from one constant and the
+  member's first name. It is a sealed assistant row through
+  `chat_brief._post_row`, on the precedent of the CF-5 brief and RM-4. So the
+  model sees the hello when the member replies.
+- **It replaces the desktop nudge** of CF-2 (`ChatNudge`) on that visit. A new
+  member has no brief, so the phone shows the hello in its place.
+- **One switch.** `GUIDE_ORGS`, the guide's switch, holds it. It is off in
+  every org.
+- **The words.** The copy is plain, warm, and in the second person. It never
+  names a model or an inner service.
+
+### 13.3 What it amends
+
+D177.1 amends three rules for this one open:
+
+- **D-CF-2** in `chat_first_surface.md`: a computer may open the assistant
+  once, for the hello.
+- **P2** (§3): the hello is not a second interruption.
+- **§12.2**: the hello is the one greeting, and it carries three asks.
+
+D-GD-1 stands. The tour starts only when the member taps "Show me around".
+
+### 13.4 The slice
+
+| Slice | What | Task |
+|---|---|---|
+| **BUD-1** | The hello: the stamp, the route that posts the sealed row, the open after the welcome dialog, the three chips, and the e2e test at 1280 px and 390 px | Metorite 1695 |
+
+The other BUD slices are in `proactive_reach.md` §19.6.

@@ -89,6 +89,10 @@ exclude = [
     # headless Chrome); it pins its own deps in requirements.txt and is not part
     # of the uv workspace (kept off the main app's dependency graph).
     "apps/services/meeting_bot",
+    # The web worker (WEB-6, web_research.md section 5.1) is a standalone
+    # Dockerized service. It pins its own closure in requirements.lock.txt, so
+    # Crawl4AI and its closure stay off the main app's dependency graph.
+    "apps/services/web_worker",
 ]
 
 [tool.uv.sources]
