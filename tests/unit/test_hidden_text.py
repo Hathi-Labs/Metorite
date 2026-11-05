@@ -59,6 +59,10 @@ This file proves:
   ``test_the_body_walk_reads_nested_lists_and_objects`` goes red.
 * M9. Add ``_X = 0x200B`` to ``skills_store.py``.
   ``test_the_store_and_the_tools_hold_no_code_point_list_of_their_own`` goes red.
+  So does ``from unicodedata import category``, ``_B = 8203``, a call of
+  ``str.isprintable`` or ``_CARD_HIDDEN |= {1}`` in ``studio_tools.py``.
+* M9b. Add ``0x2800`` to the list of ``_CARD_HIDDEN``.
+  ``test_the_grandfathered_sets_never_grow`` goes red.
 """
 
 from __future__ import annotations
@@ -362,48 +366,105 @@ SCANNED = (
 )
 
 
-def _own_rules(source: str) -> tuple[list[str], set[str]]:
-    """The places in *source* that hold a rule of a hidden character of their
-    own, outside the grandfathered assignments, and the grandfathered names
-    that the source still assigns.
+def _in_table(value: int) -> bool:
+    """True when *value* is a code point of ``reply_card.INVISIBLE_CODE_POINTS``."""
+    return any(lo <= value <= hi for lo, hi in reply_card.INVISIBLE_CODE_POINTS)
 
-    A place is a hex number that is a hidden code point (``0xE0000``), a
-    string that holds a hidden character (a ``\\u200b`` escape or the
-    character, but not the NUL of a Postgres check), or a call of
-    ``unicodedata.category``."""
-    tree = ast.parse(source)
-    skip: set[int] = set()
-    found_names: set[str] = set()
+
+def _grandfathered_writes(tree: ast.AST) -> list[tuple[int, str, ast.AST]]:
+    """Each write of a grandfathered name, in line order: (line, kind, node)."""
+    writes: list[tuple[int, str, ast.AST]] = []
     for node in ast.walk(tree):
+        if isinstance(node, ast.AugAssign):
+            if isinstance(node.target, ast.Name) and node.target.id in GRANDFATHERED:
+                writes.append((node.lineno, "augmented", node))
+            continue
         targets: list[ast.expr] = []
         if isinstance(node, ast.Assign):
             targets = list(node.targets)
         elif isinstance(node, ast.AnnAssign):
             targets = [node.target]
-        names = {t.id for t in targets if isinstance(t, ast.Name)}
-        if names & GRANDFATHERED:
-            found_names |= names & GRANDFATHERED
-            skip |= {id(n) for n in ast.walk(node)}
-    places: list[str] = []
+        if any(isinstance(t, ast.Name) and t.id in GRANDFATHERED for t in targets):
+            writes.append((node.lineno, "assigned", node))
+    return sorted(writes, key=lambda w: w[0])
+
+
+def _own_rules(source: str) -> tuple[list[str], set[str]]:
+    """The places in *source* that hold a rule of a hidden character of their
+    own, outside the first assignment of each grandfathered name, and the
+    grandfathered names that the source still assigns.
+
+    A place is any of these (review round 1, P3-6):
+
+    * a hex number that is a hidden code point (``0xE0000``), or a number of
+      any base in ``reply_card.INVISIBLE_CODE_POINTS`` (``917504``, ``8203``);
+    * a ``range`` whose first bound is a hidden code point of 0x80 or more;
+    * a string that holds a hidden character (a ``\\u200b`` escape or the
+      character, but not the NUL of a Postgres check);
+    * a read of ``category`` through any name of the ``unicodedata`` module,
+      or ``from unicodedata import category``;
+    * a call of ``str.isprintable``;
+    * a second write of a grandfathered name, or any ``|=`` of one. The first
+      assignment is skipped, and ``test_the_grandfathered_sets_never_grow``
+      watches its content."""
+    tree = ast.parse(source)
+    modules = {"unicodedata"}
     for node in ast.walk(tree):
-        if id(node) in skip:
-            continue
-        if isinstance(node, ast.Constant) and isinstance(node.value, int) \
-                and not isinstance(node.value, bool):
-            text = ast.get_source_segment(source, node) or ""
-            if text.lower().startswith("0x") and 0 <= node.value <= 0x10FFFF \
-                    and ht.find_hidden(chr(node.value)):
-                places.append(f"line {node.lineno}: the code point {text}")
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            # U+0000 is the rule of Postgres, which refuses a NUL. It is not
-            # a rule of a hidden character, so the NUL checks stay.
-            if any(ch != chr(0) for _at, ch in ht.find_hidden(node.value)):
-                places.append(f"line {node.lineno}: a string with a hidden character")
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
-                and node.func.attr == "category" and isinstance(node.func.value, ast.Name) \
-                and node.func.value.id == "unicodedata":
-            places.append(f"line {node.lineno}: a call of unicodedata.category")
+        if isinstance(node, ast.Import):
+            modules |= {a.asname or a.name for a in node.names if a.name == "unicodedata"}
+    skip: set[int] = set()
+    found_names: set[str] = set()
+    places: list[str] = []
+    first: set[str] = set()
+    for line, kind, node in _grandfathered_writes(tree):
+        if isinstance(node, ast.AugAssign):
+            name = node.target.id  # type: ignore[union-attr]
+        else:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]  # type: ignore[attr-defined]
+            name = next(t.id for t in targets if isinstance(t, ast.Name) and t.id in GRANDFATHERED)
+        found_names.add(name)
+        if kind == "assigned" and name not in first:
+            first.add(name)
+            skip |= {id(n) for n in ast.walk(node)}
+        else:
+            places.append(f"line {line}: a second write of {name}")
+    for node in ast.walk(tree):
+        if id(node) not in skip:
+            place = _place_of(node, source, modules)
+            if place is not None:
+                places.append(f"line {getattr(node, 'lineno', 0)}: {place}")
     return places, found_names
+
+
+def _place_of(node: ast.AST, source: str, modules: set[str]) -> str | None:
+    """What one node holds of a rule of its own, or None (see :func:`_own_rules`)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) \
+            and not isinstance(node.value, bool):
+        text = ast.get_source_segment(source, node) or ""
+        hidden_hex = (text.lower().startswith("0x") and 0 <= node.value <= 0x10FFFF
+                      and ht.find_hidden(chr(node.value)))
+        return f"the code point {text}" if hidden_hex or _in_table(node.value) else None
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        # U+0000 is the rule of Postgres, which refuses a NUL. It is not a
+        # rule of a hidden character, so the NUL checks stay.
+        if any(ch != chr(0) for _at, ch in ht.find_hidden(node.value)):
+            return "a string with a hidden character"
+        return None
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+            and node.func.id == "range" and len(node.args) >= 2 \
+            and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, int) \
+            and 0x80 <= node.args[0].value <= 0x10FFFF \
+            and ht.find_hidden(chr(node.args[0].value)):
+        return "a range of hidden code points"
+    if isinstance(node, ast.Attribute) and node.attr == "category" \
+            and isinstance(node.value, ast.Name) and node.value.id in modules:
+        return f"a read of {node.value.id}.category"
+    if isinstance(node, ast.ImportFrom) and node.module == "unicodedata" \
+            and any(a.name in ("category", "*") for a in node.names):
+        return "an import of unicodedata.category"
+    if isinstance(node, ast.Attribute) and node.attr == "isprintable":
+        return "a read of str.isprintable"
+    return None
 
 
 @pytest.mark.parametrize("path", SCANNED, ids=[p.name for p in SCANNED])
@@ -423,20 +484,54 @@ def test_each_grandfathered_name_still_exists() -> None:
 
 
 def test_the_scan_finds_each_kind_of_own_rule() -> None:
-    """The scan itself bites: a hex code point, an escape in a string and a
-    category call each show."""
+    """The scan itself bites. Each of these shows: a hex code point, an
+    escape in a string, a read of ``category`` through any name of the
+    module, ``from unicodedata import category``, ``str.isprintable``, a
+    decimal code point of the invisible table, a ``range`` whose bound is a
+    hidden code point, and a second assignment of a grandfathered name, also
+    as ``|=`` (review round 1, P3-6). A NUL check, a small number and a
+    ``range`` of counts do not show."""
+    nl = chr(10)
     escape = chr(92) + "u200b"
     nul = chr(92) + "x00"
-    source = (
-        "import unicodedata\n"
-        "_X = 0x200B\n"
-        f"_Y = '{escape}'\n"
-        "def f(ch):\n"
-        "    return unicodedata.category(ch)\n"
-        "_CARD_HIDDEN = frozenset([0xFE0F])\n"
-        f"_NUL_CHECK = 'a{nul}'" + chr(10) +
-        "_OK = 0x41\n"
-    )
-    places, names = _own_rules(source)
-    assert [p.split(":")[0] for p in places] == ["line 2", "line 3", "line 5"]
+    lines = [
+        "import unicodedata",                                                  # 1
+        "import unicodedata as ud",                                            # 2
+        "from unicodedata import category",                                    # 3
+        "_X = 0x200B",                                                         # 4
+        f"_Y = '{escape}'",                                                    # 5
+        "def f(ch):",                                                          # 6
+        "    return unicodedata.category(ch) or ud.category(ch) or ch.isprintable()",  # 7
+        "_A = frozenset(range(917504, 917632))",                               # 8
+        "_B = 8203",                                                           # 9
+        "_C = range(128, 160)",                                                # 10
+        "_CARD_HIDDEN = frozenset([0xFE0F])",                                  # 11
+        "_CARD_HIDDEN = _CARD_HIDDEN | {1}",                                   # 12
+        "_CARD_HIDDEN |= {1}",                                                 # 13
+        f"_NUL_CHECK = 'a{nul}'",                                              # 14
+        "_OK = 0x41",                                                          # 15
+        "_LIMIT = 262144",                                                     # 16
+        "_COUNTS = range(0, 30)",                                              # 17
+    ]
+    places, names = _own_rules(nl.join(lines) + nl)
+    flagged = sorted({int(p.split(":")[0].split()[1]) for p in places})
+    assert flagged == [3, 4, 5, 7, 8, 9, 10, 12, 13], places
+    assert len([p for p in places if p.startswith("line 7:")]) == 3, places
     assert names == {"_CARD_HIDDEN"}
+
+
+#: The grandfathered sets at F1b-1. F1b-3 removes them. Until then they may
+#: shrink, but never grow.
+_CARD_HIDDEN_AT_F1B = frozenset([*range(0xFE00, 0xFE10), *range(0xE0100, 0xE01F0),
+                                 *range(0x80, 0xA0), 0x115F, 0x1160, 0x3164, 0xFFA0])
+_SMUGGLE_AT_F1B = frozenset([*range(0xE0000, 0xE0080), *range(0xE0100, 0xE01F0)])
+
+
+def test_the_grandfathered_sets_never_grow() -> None:
+    """The scan skips the first assignment of a grandfathered name, so it
+    cannot see a new code point inside it. This test does.
+    Mutation: add 0x2800 to ``_CARD_HIDDEN`` -> red."""
+    from acb_skills import studio_tools
+
+    assert studio_tools._CARD_HIDDEN <= _CARD_HIDDEN_AT_F1B
+    assert {cp for block in studio_tools._SMUGGLE_BLOCKS for cp in block} <= _SMUGGLE_AT_F1B
