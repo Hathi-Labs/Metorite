@@ -1847,7 +1847,9 @@ Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `version
 
 **BUILT 2026-10-25 on `sw7-session-key-mt-5eab8fde`, not merged (Metorite task #338, which takes in the SW-6 design #337 and MCP-G4).**
 
-**MCP-G4 step 2 is BUILT 2026-11-05 on branch `l6s-mine-only`, not merged (Metorite task 358).** Incident of 2026-11-05: an answer to an ended session showed as `run_answered` for every session of the connection. Each `my_work` row now has `yours`. It is true only when the run has a session key and the key is the caller's session. The instructions, the prompt and the `my_work` text say: act on an answer only when `yours` is true and no later activity withdrew it. `list_agent_runs` takes `mine_only`. While the flag is off, `yours` is false in every row. Fences: `test_mcp_edge_context.py` `TestYoursAndMineOnly` and `test_mcp_edge_prompts.py` `TestTheAnswerRule`.
+**MCP-G4 step 2 is BUILT 2026-11-05 on branch `l6s-mine-only`, not merged (Metorite task 358).** Incident of 2026-11-05: an answer to an ended session showed as `run_answered` for every session of the connection.
+
+Each `my_work` row now has `yours`. It is true only when the run has a session key and the key is the caller's session. The instructions, the prompt and the `my_work` text say: act on an answer only when `yours` is true and no later activity withdrew it. `list_agent_runs` takes `mine_only`. While the flag is off, `yours` is false in every row. Fences: `test_mcp_edge_context.py` `TestYoursAndMineOnly` and `test_mcp_edge_prompts.py` `TestTheAnswerRule`.
 
 **Ships dark behind `agent_mcp_sessions_enabled` (default off).** Turn it on on staging, and check it with a real Claude Code: two terminals, a resume, and a 404 after a key change. Then turn it on in production.
 
