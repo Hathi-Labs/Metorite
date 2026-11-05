@@ -5,7 +5,7 @@ OA-1 and OA-2 are BUILT (PR #1341, 2026-10-25, "As built" below). OA-4 is
 built, dark behind `CHAT_CONSTRAINTS` (2026-10-25, "As built" below). OA-5
 is BUILT (2026-10-25): the report is `docs/one_assistant_measure_2026-10-25.md`.
 
-§9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. Nothing in §9 is built.
+§9 (task 1648, 2026-11-04) is a design for a way through a held chat: slices WT-1 to WT-6. WT-1 is BUILT, dark behind `CHAT_CONTINUE_ORGS` (2026-11-05, task 1684, migration 345). WT-1b to WT-6 are not built.
 
 OA-8a is BUILT, dark behind `TOOL_PACKS` (2026-10-27, "As built, OA-8a" in §4.3.2). The flag flip is OWNER-GATE.
 
@@ -2439,7 +2439,8 @@ must stay green with `test_crm_answer_check.py`,
 
 ## 9. A way through a held chat (task 1648, owner brief 2026-11-05)
 
-**Status:** design (2026-11-04). Task 1648. The review below is checked against
+**Status:** WT-1 BUILT, dark (2026-11-05, task 1684). The rest is design
+(2026-11-04). Task 1648. The review below is checked against
 the code on 2026-11-04 at `origin/main` `7ad8dc559`. It changes no guard. The slices
 in §9.4 build it, and the first one is dark. Owner of `chat_session.continued_from`:
 this section. `chat_organization.md` §7.1 reads it and writes it never.
@@ -2524,7 +2525,7 @@ separate HIGH design, and it is out of scope here.
 
 | Slice | What | Tier | Gate |
 |---|---|---|---|
-| WT-1 | Migration (next free number at build. It was 344 on 2026-11-04) for `continued_from`. Route `POST /chat/sessions/{id}/continue` in `routes/chat.py` by §9.3. Flag `CHAT_CONTINUE_ORGS` in `settings.py` and `env_guard.py`, default empty. | HIGH | AGENT-SAFE, dark |
+| WT-1 | 🔨 **BUILT, dark (2026-11-05, task 1684).** Migration 345 (`345_chat_session_continued_from.sql`) adds `continued_from`, with its foreign key NOT VALID. A later release validates it. Route `continue_session`, flag reader `continue_allowed`. Fences: `test_continue_carry.py` (R8), `test_continued_from_readers.py`. Migration (next free number at build. It was 344 on 2026-11-04) for `continued_from`. Route `POST /chat/sessions/{id}/continue` in `routes/chat.py` by §9.3. Flag `CHAT_CONTINUE_ORGS` in `settings.py` and `env_guard.py`, default empty. | HIGH | AGENT-SAFE, dark |
 | WT-1b | The stranger-text frame for a typed row that matches a stored mail body: the match rule, the store, the cost, the test. | HIGH | AGENT-SAFE, dark |
 | WT-2 | The tap. A `Continue in a fresh chat` pill on the refusal and the hold note. The web shell opens the new chat and fills the composer. | STANDARD | AGENT-SAFE, dark |
 | WT-3 | Copy: the two `NO_WRITES` texts offer the tap, and no copy says "open a new chat". Update the pinned tests. | HIGH | AGENT-SAFE |
