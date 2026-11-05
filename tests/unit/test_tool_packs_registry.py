@@ -542,7 +542,7 @@ async def test_the_catalog_route_prices_a_pack_from_its_owner(monkeypatch) -> No
     monkeypatch.setattr(sk, "_count_tokens", len)
     monkeypatch.setattr(sk, "_core_tool_names",
                         lambda: frozenset(sf.SKILL_FAMILIES["core"]["tools"]))
-    monkeypatch.setattr(sk, "_disabled_families_by_agent", lambda: {})
+    monkeypatch.setattr(sk, "_disabled_families_by_agent", lambda _org: {})
     monkeypatch.setattr(sk, "_list_agents", lambda: [])
     out = await sk.skills_catalog(
         user=UserContext(email="admin@acme.test", role=UserRole.EXECUTIVE))

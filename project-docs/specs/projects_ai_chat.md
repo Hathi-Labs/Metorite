@@ -4054,7 +4054,8 @@ The first production run PASSED on 2026-09-29, all four steps, on
 
 ### 21.13 H-201 — the other readers bind the tenant
 
-**Status: BUILT 2026-09-30, part 1 of H-201, with fix rounds 1 and 2.** This part binds the readers
+**Status: BUILT 2026-09-30, part 1 of H-201, with fix rounds 1 and 2. The
+observability, debug, skills and plugin rows BUILT 2026-11-05 (task 612).** This part binds the readers
 that are nearest to chat. It also adds the room check on the answer path.
 H-201 in `HANDOFF.md` lists the work that is still open.
 
@@ -4069,6 +4070,15 @@ policy on each table below.
 | `acb_skills/history_tools.py` `query_history` | `chat_message`, `chat_session` | an agent run | the executor opener `_graph_session_opener_current()` | bound |
 | `routes/agent.py`, the mutation routes | `pending_commit`, `audit_event` | a request | `user.organization_id` | bound |
 | `routes/agent.py` `_load_dynamic_agents` and its writers | `dynamic_agents` | a request, the lifespan and the executor | not decided | open |
+| `routes/observability.py` `/runs`, `_load_app_details`, `_load_avatars`, `_save_avatar`, `_delete_avatar` | `agent_run`, `apps`, `agent_avatars` | a request | `user.organization_id` | bound 2026-11-05 |
+| `routes/debug.py` list, get and flag | `agent_run` | a request | `user.organization_id` | bound 2026-11-05 |
+| `routes/integrations_skills.py` `_disabled_families_by_agent` | `agent_skill_setting` | a request | `user.organization_id` | bound 2026-11-05 |
+| `routes/integrations.py` `GET /plugins`, `DELETE /plugins/{id}` | `plugins` | a request | `current_tenant()` | bound 2026-11-05 |
+
+With no tenant, each 2026-11-05 reader gives an empty answer, and a debug get
+or flag gives 404. An avatar write gives 403. `agent_avatars` keeps the key
+`agent_name` alone, so org B cannot save a name that org A holds. Task 1719
+owns that key.
 
 **The rules.**
 
