@@ -395,6 +395,11 @@ def _resolve_model(requested: str) -> str:
     return requested
 
 
+# Providers that reject ``content: null`` next to ``tool_calls``. They get "".
+# The Anthropic path, where litellm rewrites "" to a placeholder, is not here.
+_NULL_CONTENT_REFUSED_BY: tuple[str, ...] = ("deepseek", "groq", "together")
+
+
 def _sanitize_messages_for_provider(
     messages: list[dict[str, Any]],
     provider: str,
@@ -414,13 +419,17 @@ def _sanitize_messages_for_provider(
     1. Assistant messages with *neither* valid content nor valid tool_calls
        → dropped.
     2. Assistant messages with tool_calls but null/empty content → content
-       set to "" (all providers — null content violates the OpenAI spec).
+       set to None. "" only for a provider in ``_NULL_CONTENT_REFUSED_BY``,
+       because litellm turns "" into a visible placeholder (task 1787).
     3. Tool messages with null/empty content → content set to "[tool result]".
     4. Malformed tool-call items (missing ``function`` / ``name``) → stripped.
     """
     if not messages:
         return messages
 
+    null_ok = not any(
+        name in (provider or "").lower() for name in _NULL_CONTENT_REFUSED_BY
+    )
     cleaned: list[dict[str, Any]] = []
     for m in messages:
         role = m.get("role", "")
@@ -477,7 +486,10 @@ def _sanitize_messages_for_provider(
             ):
                 if not isinstance(m, dict):
                     m = dict(m)
-                m["content"] = ""
+                # litellm turns "" into the sentence "[System: Empty message
+                # content sanitised ...]" for Anthropic. A provider that
+                # refuses null content gets "" and the rest get None.
+                m["content"] = None if null_ok else ""
 
         elif role == "tool":
             # Tool messages must have non-empty string content.
@@ -487,7 +499,11 @@ def _sanitize_messages_for_provider(
 
         cleaned.append(m)
 
-    return cleaned
+    # ONE shared pass (task 1787): no "" content, no empty text block, and no
+    # litellm placeholder line in a stored turn. See acb_llm.message_hygiene.
+    from acb_llm.message_hygiene import clean_model_messages
+
+    return clean_model_messages(cleaned, null_content_ok=null_ok)
 
 
 # ── Secret-stripping patterns for upstream error surfacing ─────────────────

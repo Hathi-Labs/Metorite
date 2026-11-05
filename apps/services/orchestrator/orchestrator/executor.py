@@ -3325,6 +3325,14 @@ async def _run_sub_agent_streaming(
                                 text_parts.append(_sev["delta"])
                             _note_sub_call(_sub_calls, _sev)
                             await _emit_sub_event(_sev)
+                    # Release a line that the placeholder filter still holds.
+                    for _sev in _wrap_sub_agent_events(
+                        _close_text_message(_sub_t_state),
+                        agent_name=agent_name, run_id=run_id,
+                    ):
+                        if _sev["type"] == "SUB_AGENT_TEXT_DELTA":
+                            text_parts.append(_sev["delta"])
+                        await _emit_sub_event(_sev)
             else:
                 # MAF or unknown runtime: batch run, emit one result delta.
                 # Forward the parent's resolved tier so native MAF sub-agents
@@ -3353,6 +3361,9 @@ async def _run_sub_agent_streaming(
                 if isinstance(text, dict):
                     text = text.get("content", str(text))
                 final_text = str(text) if text else ""
+                if final_text:
+                    from acb_llm.message_hygiene import strip_placeholder_lines
+                    final_text = strip_placeholder_lines(final_text)
                 if final_text:
                     text_parts.append(final_text)
                     await _emit_sub_event({
@@ -10563,6 +10574,8 @@ def _render_history_block(
     drop first (mirroring assemble_run_context's whole-turn eviction); a single
     oversized message is trimmed rather than allowed to eat the whole budget.
     """
+    from acb_llm.message_hygiene import strip_placeholder_lines
+
     budget = _history_char_budget(model)
     # Cap any ONE message so a single giant turn can't crowd out all the others.
     per_msg_cap = max(_HISTORY_MIN_CHARS // 2, budget // 4)
@@ -10575,7 +10588,11 @@ def _render_history_block(
     for idx in range(total - 1, max(-1, total - _HISTORY_MAX_MESSAGES - 1), -1):
         m = history[idx]
         role = m.get("role", "user")
-        content = (m.get("content") or "").strip()
+        content = (m.get("content") or "")
+        if role == "assistant":
+            # A stored turn may hold litellm's placeholder line (task 1787).
+            content = strip_placeholder_lines(content)
+        content = content.strip()
         if not content:
             continue
         # Skip the current turn if the caller also included it in history.
