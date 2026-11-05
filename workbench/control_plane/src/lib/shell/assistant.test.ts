@@ -1020,7 +1020,10 @@ describe("the chat's chrome on a phone (CF-8, chat_first_surface.md §4.8)", () 
   it("the header keeps five controls on the phone, and Files moves into the \"…\" control", () => {
     const src = dock();
     expect(src).toContain('const phoneTap = phoneChrome ? "h-11 w-11 glass:h-11 glass:w-11 glass:pointer-coarse:h-11 glass:pointer-coarse:w-11" : "";');
-    expect((src.match(/className=\{phoneTap\}/g) ?? []).length).toBe(4);
+    expect((src.match(/className=\{phoneTap\}/g) ?? []).length).toBe(3);
+    // Task 1717: the chat switcher shows a title, so it is 44 px tall and never 44 px wide.
+    expect(src).toContain("className={phoneTapTall}");
+    expect(src).toContain('const phoneTapTall = phoneChrome ? "h-11 glass:h-11 glass:pointer-coarse:h-11" : "";');
     expect(src).toContain(") : chat.activeId && !phoneChrome ? (");
     expect(src).toMatch(/label: "This chat's files"/);
     expect(src).toContain("moreActs={moreActs}");
