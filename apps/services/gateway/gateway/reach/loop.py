@@ -406,7 +406,8 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
     # WhatsApp only: a reminder never interrupts there, whatever its class
     # (D114.7, RM-9 lifts it).
     candidates = plan.interrupt_candidates(plan.on_whatsapp(snap.cards), logged, snap.now,
-                                           rules=brief_flags.exceptions(org))
+                                           rules=brief_flags.exceptions(org),
+                                           muted=await muted_rules(org, member))
 
     brief, how = await _brief_step(org, member, snap, reach)
     if brief is not None:
@@ -428,6 +429,13 @@ async def member_pass(org: str, member: str, now: datetime | None = None) -> str
         asks = []
     await _message_step(org, member, snap, reach, candidates, asks, did)
     return ",".join(did) or "nothing"
+
+
+async def muted_rules(org: str, member: str) -> frozenset[str]:
+    """The rules that the member muted. Dark, it reads nothing (BR-5)."""
+    if not brief_flags.exceptions(org):
+        return frozenset()
+    return await outbox.muted_rules(org, member)
 
 
 class _Budget:

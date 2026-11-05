@@ -207,6 +207,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # project for an org. A pin changes what a finding quotes, so only the
     # owner writes it.
     "AUTHORITY_PINS_ORGS",
+    # WS-ALN ALN-5a: PROJECT_RULES_ORGS opens the rules of a project for an
+    # org. A rule reaches each agent and each check of the project, so a
+    # tenant must not open it for another org.
+    "PROJECT_RULES_ORGS",
     # WS-MCP MCP-P1b-1: APP_REQUESTS_ORGS opens the approval store of the app
     # door for an org. A request waits for a member and can then run, so only
     # the owner writes it.
@@ -343,7 +347,8 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # page reader, and WEB_READER_REMOTE=jina sends each URL of those orgs to
     # a third party. A tenant that set either would change it for every org
     # on the box, so only the owner writes them.
-    "WEB_RESEARCH_", "WEB_READER_",
+    # WEB-4: SEARXNG_URL names the search host of every org on the box.
+    "WEB_RESEARCH_", "WEB_READER_", "SEARXNG_",
     # WS-66 RM-1: reminders. CALENDAR_REMINDERS is the switch of the reminder
     # routes, so a tenant that set it could turn them on for every org.
     "CALENDAR_REMINDERS",
@@ -368,6 +373,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     "DUE_PUSH_",
     # STU-B1: STUDIO_ORGS opens the AI Studio catalog for an org.
     "STUDIO_",
+    # WS-OB GD-5a: GUIDE_ORGS opens the tour's entries for an org, so a
+    # tenant that set it could open them for every org on the box.
+    "GUIDE_",
     # WS-PKG PKG-5b: PACKAGE_HOST_ORGS opens the resolved shell manifest for
     # an org, so a tenant that set it could open it for every org.
     "PACKAGE_HOST_",

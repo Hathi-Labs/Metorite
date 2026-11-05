@@ -90,6 +90,37 @@ def test_a_muted_rule_holds() -> None:
         card("source_sync_failed"), NOW, muted=frozenset({"agent_asks"}))
 
 
+def test_a_muted_rule_leaves_the_candidates() -> None:
+    cards = [card("agent_asks", cid="2"), card("source_sync_failed", cid="3")]
+    got = plan.interrupt_candidates(cards, set(), NOW, rules=True,
+                                    muted=frozenset({"agent_asks"}))
+    assert [c["signal_id"] for c in got] == ["source_sync_failed:3"]
+    # Rules off, the mute has no effect: the class table decides as before.
+    off = plan.interrupt_candidates(cards, set(), NOW, muted=frozenset({"agent_asks"}))
+    assert off == plan.interrupt_candidates(cards, set(), NOW)
+
+
+def test_the_mute_is_a_pref_of_the_rule_ids() -> None:
+    from gateway.routes.shell import prefs
+
+    assert prefs.rule_ids() == {r.id for r in exceptions.RULES}
+    assert prefs._CLEAN["rule_mutes"](["agent_asks", "agent_asks"]) == ["agent_asks"]
+    for bad in (["nope"], "agent_asks", [1], [r.id for r in exceptions.RULES] + ["x"], None):
+        with pytest.raises(ValueError):
+            prefs._CLEAN["rule_mutes"](bad)
+
+
+async def test_dark_reads_no_mutes(monkeypatch) -> None:
+    from gateway.reach import loop, outbox
+
+    async def boom(org, member):
+        raise AssertionError("read while dark")
+
+    monkeypatch.setattr(outbox, "muted_rules", boom)
+    _settings(monkeypatch, brief_exceptions=False)
+    assert await loop.muted_rules(ORG, "a@b.test") == frozenset()
+
+
 def test_a_rule_refuses_a_bad_operator_or_action() -> None:
     with pytest.raises(ValueError):
         exceptions.Rule(id="r", kind="k", when={"a": ("!=", 1)})

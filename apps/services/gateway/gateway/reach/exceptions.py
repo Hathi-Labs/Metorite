@@ -32,8 +32,12 @@ feed shows it, and the brief carries it.
 **The switch** is ``BRIEF_EXCEPTIONS`` (``brief.flags.exceptions``), default
 OFF. Off, ``plan.interrupt_candidates`` decides by the class table.
 
-**Not in this slice.** A member's mute of a rule (a new ``my_day_prefs`` key),
-and the useful or not-useful rating of an alert. Both are BR-5 slice 2.
+**The mute** (BR-5 slice 2a, built). A member mutes a rule with the
+``my_day_prefs`` key ``rule_mutes`` (``routes/shell/prefs.py``). The loop and
+the preview read it through ``loop.muted_rules`` and pass it as *muted*.
+
+**Not in this slice.** The useful or not-useful rating of an alert, and the
+``notify_me`` setting that rule 3 needs. Both stay open.
 
 Fence: ``tests/unit/test_reach_exceptions.py``.
 """
