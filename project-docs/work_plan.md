@@ -5352,7 +5352,7 @@ The owner then chose "After merge, keep D-10-16" over a merge queue.
 
 Fence: `tests/unit/test_affected_tests.py` (CIV-2) and `tests/unit/test_ci_unit_guard.py` (CIV-3). CIV-1 is advisory, because it is a GitHub setting.
 
-### D178 — Every member builds and publishes private Studio apps, and `studio:publish` gates the share to others (2026-11-05)
+### D180 — Every member builds and publishes private Studio apps, and `studio:publish` gates the share to others (2026-11-05)
 
 Owner answers in a Metorite run on task 1199 (STU-J1): STU-Q4 on 2026-11-04 and STU-Q4b on 2026-11-05. Owner spec: `specs/ai_studio.md` §9, §12 and §14 J1. Board: **WS-STU**.
 
