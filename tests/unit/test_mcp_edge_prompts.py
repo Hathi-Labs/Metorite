@@ -814,7 +814,9 @@ class TestTheAnswerRule:
 
     async def test_the_instructions_carry_the_rule(self, armed, monkeypatch):
         monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
-        self._has(await _instructions())
+        text = " ".join((await _instructions()).split())
+        assert prompts.ANSWER_POINTER.strip() in text
+        assert "yours is true, you asked it yourself in this session" in text
 
     async def test_the_rule_names_yours_in_each_text(self, armed, monkeypatch):
         monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
@@ -824,7 +826,7 @@ class TestTheAnswerRule:
         assert "yours" in tool
 
     async def test_with_the_flag_off_the_text_says_yours_is_false(self, armed):
-        for text in (await _instructions(), await _prompt_text(),
+        for text in (await _prompt_text(),
                      tools.TOOLS["my_work"].describe()["description"]):
             flat = " ".join(text.split())
             assert "yours is false in every row" in flat
@@ -837,7 +839,7 @@ class TestTheAnswerRule:
     @pytest.mark.parametrize("on", [True, False])
     async def test_the_resume_sentence_shows_in_each_text(self, armed, monkeypatch, on):
         monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
-        for text in (await _instructions(), await _prompt_text(),
+        for text in (await _prompt_text(),
                      await _prompt_text({"task": TASK}),
                      tools.TOOLS["my_work"].describe()["description"],
                      tools.TOOLS["list_agent_runs"].describe()["description"]):
@@ -856,7 +858,7 @@ class TestTheAnswerRule:
     async def test_the_act_clause_is_exact_in_each_text(self, armed, monkeypatch, on):
         monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
         clause = self.ACT_ON if on else self.ACT_OFF
-        for text in (await _instructions(), await _prompt_text(),
+        for text in (await _prompt_text(),
                      await _prompt_text({"task": TASK}),
                      tools.TOOLS["my_work"].describe()["description"],
                      tools.TOOLS["list_agent_runs"].describe()["description"]):
@@ -882,3 +884,41 @@ class TestTheAnswerRule:
         assert row({"body": "x", "resume": "yes"})["resume"] is False
         assert row({"body": "x", "resume": True}, kind="response")["resume"] is False
         assert "resume" in tools.RUN_ACTIVITY_KEYS
+
+    #: P2a. A keyless run after a Resume is a hand-off, so the leave-alone
+    #: rule has the Resume exception. The pointer of the instructions omits it.
+    LEAVE = ("When yours is false and the newest prompt is not a resume"
+             " (resume true), leave the run alone.")
+
+    @pytest.mark.parametrize("on", [True, False])
+    async def test_the_leave_alone_rule_has_the_resume_exception(
+            self, armed, monkeypatch, on):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
+        texts = [await _prompt_text(), await _prompt_text({"task": TASK}),
+                 tools.TOOLS["my_work"].describe()["description"],
+                 tools.TOOLS["list_agent_runs"].describe()["description"]]
+        for text in texts:
+            flat = " ".join(text.split())
+            if on:
+                assert self.LEAVE in flat
+            assert "hand-off to continue the stalled work" in flat
+        # The wire marks the hand-off that the rule names.
+        assert tools.run_activity({"id": "a", "type": "prompt",
+                                   "content": {"body": "Resume", "resume": True}})["resume"]
+
+    #: P1. Claude Code cuts the instructions at 4096 characters. Main is already
+    #: past it, and the branch must not move the cut by more than the pointer.
+    MAIN_LENGTH = {False: 4597, True: 4612}
+    CUT = 4096
+
+    @pytest.mark.parametrize("on", [False, True])
+    async def test_the_instructions_stay_near_their_length_on_main(
+            self, armed, monkeypatch, on):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
+        text = await _instructions()
+        assert len(text) <= self.MAIN_LENGTH[on] + 200, len(text)
+        pointer = prompts.ANSWER_POINTER.strip()
+        assert text.find(pointer) != -1 and text.find(pointer) < self.CUT
+        rule = "do not write on such a run"
+        assert text.find(rule) != -1 and text.find(rule) + len(rule) < self.CUT
+        assert "never yours" in text[:self.CUT]

@@ -200,7 +200,8 @@ ANSWER_BODY_ON = (
     " that question yourself in this session, and no later activity withdrew"
     " it. A claim does not make an answer yours. A new or resumed session has"
     " no memory of asking, so then do not act on the answer. When yours is"
-    " false, leave the run alone."
+    " false and the newest prompt is not a resume (resume true), leave the run"
+    " alone."
     " A prompt with resume true is a hand-off to continue the stalled work."
     " It is not an answer to a question. You may continue that work, and it"
     " never allows a restart, an erase or a stop."
@@ -219,6 +220,14 @@ ANSWER_BODY_OFF = (
     " When in doubt, call ask_on_task on your own task.")
 ANSWER_RULE_ON = _READ_FIRST + ANSWER_BODY_ON
 ANSWER_RULE_OFF = _READ_FIRST + ANSWER_BODY_OFF
+
+
+#: The server instructions hold a short pointer, not the body. Claude Code cuts
+#: the instructions at 4096 characters, and the body would push the rules at
+#: the end (MCP-G15, stopping, record_outside_decision) past the cut.
+ANSWER_POINTER = (
+    " Act on an answer only when yours is true, you asked it yourself in this"
+    " session, and nothing later withdrew it. The my_work text has the full rule.")
 
 
 def answer_rule() -> str:

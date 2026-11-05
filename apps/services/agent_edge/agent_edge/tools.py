@@ -5707,8 +5707,9 @@ ASK_ON_TASK = Tool(
         " text. The member gets a notification on the task. Then call"
         " get_agent_run with the run id, after set to the seq of the question,"
         " and wait_seconds 20. Call it again and again until an activity of"
-        " type prompt arrives. If you cannot wait, end the session. A later"
-        " session finds the answer with list_agent_runs and needs_agent true."
+        " type prompt arrives. The answer goes to your own session. If you end the"
+        " session, a later session must ask again, unless the run is yours."
+        " The my_work text holds the rule."
         " When the member answers in another place, such as your chat, call"
         " record_outside_decision at once." + _UNTRUSTED_NOTE
     ),
@@ -5771,9 +5772,10 @@ REQUEST_TASK_ARCHIVE = Tool(
         " notification. Then call get_agent_run with the run id, after set to"
         " the seq of the request, and wait_seconds 20. Call it again and again"
         " until an activity of type prompt arrives. Its selected holds approve"
-        " or decline, and archived is true after an approve. If you cannot"
-        " wait, end the session. A later session finds the answer with"
-        " list_agent_runs and needs_agent true. The request expires after 24"
+        " or decline, and archived is true after an approve. The answer goes to"
+        " your own session. If you end the session, a later session must ask"
+        " again, unless the run is yours. The my_work text holds the rule."
+        " The request expires after 24"
         " hours. An archive moves the task off the boards, and a person can"
         " restore it. The subtasks are not archived. Send a new"
         " idempotency_key for each request. The same key"
@@ -6092,7 +6094,7 @@ _LIST_RUNS_INPUT: dict[str, Any] = {
                    "description": "The nextCursor of the page before."},
         "mine_only": {"type": "boolean",
                       "description": "True for only the runs of your own session."
-                      " With no session, no run that has a key shows."},
+                      " With no session, it returns no run."},
     },
     "additionalProperties": False,
 }
