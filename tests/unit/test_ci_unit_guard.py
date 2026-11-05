@@ -293,7 +293,7 @@ def test_an_empty_selection_skips_pytest_and_exit_five_passes_only_on_a_selectio
     by_name = {s.get("name", ""): s for s in _steps("test")}
     run = by_name["Run unit tests (this shard)"]
     assert run["if"] == "steps.pick.outputs.mode != 'empty'"
-    assert "-eq 5" in run["run"] and '"$MODE" = "selection"' in run["run"]
+    assert "-eq 5" in run["run"] and '"$SHARD_MODE" = "selection"' in run["run"]
     assert "tests/unit/" in run["run"]  # the full run still collects the tree
     empty = by_name["Write an empty report when no test ran"]
     assert "empty-report" in empty["run"]
@@ -343,3 +343,15 @@ def test_the_workflow_requires_a_successful_changes_job_for_a_selection() -> Non
     guard_step = next(s for s in _steps("unit-tests") if s.get("name", "").startswith("The R8"))
     assert guard_step["env"]["CHANGES"] == "${{ needs.changes.result }}"
     assert '[ "$CHANGES" = "success" ]' in guard_step["run"]
+
+
+def test_the_shard_step_env_names_cannot_leak_into_a_script_under_test() -> None:
+    """The tests start scripts with the shard's environment. `MODE=full`
+    reached scripts/vps_pull.sh, which reads $MODE, and it exited 2 ("unknown
+    MODE: full") in test_deploy_serialize.py on PR 1749. Every env name of
+    the step carries the SHARD_ prefix, which no script reads."""
+    by_name = {s.get("name", ""): s for s in _steps("test")}
+    env = by_name["Run unit tests (this shard)"].get("env", {})
+    assert env, "the step passes its selection through env"
+    bad = sorted(k for k in env if not k.startswith("SHARD_"))
+    assert not bad, f"generic env names leak into the scripts under test: {bad}"
