@@ -48,6 +48,7 @@ from gateway.routes.projects.cascade import (
     subtree_privacy_refusals,
 )
 from gateway.routes.projects.core import (
+    AGENT_TASK_SOURCE,
     CLIENT_TASK_SOURCES,
     CLOSING_CATEGORIES,
     COMPLETED_CATEGORY,
@@ -179,9 +180,6 @@ AGENT_PATCH_FIELDS: frozenset[str] = frozenset({
 #: project stays a person's step in the app, so `project_id`,
 #: `custom_fields`, `assignees` and `include_subtasks` are refused.
 AGENT_MOVE_FIELDS: frozenset[str] = frozenset({"parent_task_id"})
-#: The `pm_tasks.source` that the server stamps on a task an agent makes.
-AGENT_TASK_SOURCE = "mcp"
-
 #: WS-55 MCP-G2 (D78). The `importance` values that an agent may write: the
 #: two that the app writes for Important and for not Important
 #: (`acb_common.priority.importance_for`). A stored 1 or 3 is from before

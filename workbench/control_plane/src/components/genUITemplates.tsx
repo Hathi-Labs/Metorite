@@ -1646,13 +1646,29 @@ function rootRemPx(): number {
 const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 /**
+ * The cell editing of a Studio Table (STU-D2b). A grid with no `edit` draws as
+ * it always did. `components/studio/StudioTable.tsx` supplies one, and the
+ * store behind it is `lib/studio/inlineEdit.ts`. A row with no `id` never edits.
+ */
+export interface GridEdit {
+  /** Can the cells of column `index` edit? */
+  can(index: number): boolean;
+  /** The editor that replaces the cell, or null to draw the cell with an edit button. */
+  editor(rowId: string, index: number): React.ReactNode | null;
+  /** The member asked to edit this cell. */
+  open(rowId: string, index: number): void;
+  /** Is a save of this cell in flight? */
+  pending(rowId: string, index: number): boolean;
+}
+
+/**
  * The `dataGrid` template. It draws a table where the box is wide enough,
  * and stacked rows where it is not (`lib/dataGridLayout.ts`). `layout` fixes
  * one of the two, for a test. The data may also carry `kinds`, one card kind
  * per column (`task_dataset` sends them). Without them, each column takes
  * the kind of its card label.
  */
-export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) {
+export function DataGrid({ data, layout, edit }: { data: Data; layout?: GridLayout; edit?: GridEdit }) {
   const kinds = Array.isArray(data.kinds)
     ? data.kinds.map((k) => (typeof k === "string" ? k : undefined))
     : undefined;
@@ -1709,18 +1725,42 @@ export function DataGrid({ data, layout }: { data: Data; layout?: GridLayout }) 
       return cellText(av).localeCompare(cellText(bv)) * sort.dir;
     })
     : kept;
-  const cellOf = (r: Data, c: GridColumn) => (
+  // A cell that edits shows its editor, or a button that opens it (STU-D2b).
+  const withEdit = (r: Data, c: GridColumn, plain: React.ReactNode): React.ReactNode => {
+    const id = str(r.id);
+    if (!edit || !id || !edit.can(c.index)) return plain;
+    const editor = edit.editor(id, c.index);
+    if (editor !== null) return editor;
+    const busy = edit.pending(id, c.index);
+    return (
+      <Button type="button" variant="text" size="none" radius="keep" layout="block" data-cell-edit=""
+        aria-label={`Edit ${c.label}`} aria-busy={busy || undefined} disabled={busy}
+        onClick={() => edit.open(id, c.index)} style={{ color: "inherit" }}
+        className="min-h-5 w-full min-w-8 cursor-text text-left">
+        {isEmptyCell(arr(r.cells)[c.index]) ? <span style={{ color: "var(--muted-foreground)" }}>—</span> : plain}
+        {/* A quiet pencil says the cell edits. It needs no hover, so touch sees it too. */}
+        <span data-edit-mark="" aria-hidden="true"
+          style={{ display: "inline-block", marginLeft: 4, verticalAlign: "middle", opacity: 0.45 }}>
+          <Icon name="Pencil" size={10} />
+        </span>
+      </Button>
+    );
+  };
+  const cellOf = (r: Data, c: GridColumn) => withEdit(r, c, (
     <GridCell kind={c.kind} cell={arr(r.cells)[c.index]}
       category={categoryAt >= 0 ? arr(r.cells)[categoryAt] : undefined} />
-  );
+  ));
   const titleOf = (r: Data) => {
-    const href = taskHref(r.id, base);
+    // An empty `openBase` means "no link": a Studio record id is a UUID, and `base + id` would be a bad relative link.
+    const href = base ? taskHref(r.id, base) : null;
     // The title draws by its column's kind: a groups table by stage puts the
     // stage first, and it reads as its label, never the key (review round 1).
     const kind = shown.find((c) => c.index === primaryAt)?.kind ?? "text";
     const cell = <GridCell kind={kind} cell={arr(r.cells)[primaryAt]}
       category={categoryAt >= 0 ? arr(r.cells)[categoryAt] : undefined} />;
-    return href ? <a href={href} style={{ color: "var(--primary)", textDecoration: "none" }}>{cell}</a> : cell;
+    const plain = href ? <a href={href} style={{ color: "var(--primary)", textDecoration: "none" }}>{cell}</a> : cell;
+    const primary = shown.find((c) => c.index === primaryAt);
+    return primary ? withEdit(r, primary, plain) : plain;
   };
   const lead = shown.find((c) => c.role === "lead");
   return (

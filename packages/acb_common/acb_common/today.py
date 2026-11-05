@@ -29,19 +29,53 @@ DEFAULT_ZONE = "Asia/Kolkata"
 def _zone(name: str | None) -> ZoneInfo:
     try:
         return ZoneInfo(name or DEFAULT_ZONE)
-    except (ZoneInfoNotFoundError, ValueError):
+    except (ZoneInfoNotFoundError, ValueError, OSError):
         return ZoneInfo(DEFAULT_ZONE)
 
 
-def today_line(now: datetime | None = None, zone: str | None = None) -> str:
+def _valid(name: str | None) -> str | None:
+    try:
+        return ZoneInfo(name).key if name and name.strip() else None
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return None
+
+
+def resolve_zone(*names: str | None) -> str:
+    """The member's zone from candidates in order of trust (task 1649).
+
+    The caller passes ``user_settings.timezone`` first, then
+    ``people.timezone``. The first valid IANA name wins. ``UTC`` is the column
+    default of ``user_settings.timezone``, so it only wins when no later
+    candidate names a real zone. With no valid name the result is
+    :data:`DEFAULT_ZONE`. The last fallback is Asia/Kolkata and not UTC on
+    purpose: the owner directive of 2026-10-19 (see :data:`DEFAULT_ZONE`)
+    sets it, and task 1649 keeps it. Fence: ``tests/unit/test_chat_now_line.py``."""
+    found = [v for v in (_valid(n) for n in names) if v]
+    for name in found:
+        if name != "UTC":
+            return name
+    return found[0] if found else DEFAULT_ZONE
+
+
+def today_line(
+    now: datetime | None = None, zone: str | None = None, *, with_time: bool = False,
+) -> str:
     """"Today is Sunday, 19 October 2026 (Asia/Kolkata)." One short line.
 
-    *now* is for a test. A naive *now* reads as UTC."""
+    *now* is for a test. A naive *now* reads as UTC. With *with_time* the line
+    is the "now" line of every chat turn (task 1649): date, time and zone,
+    and the rule that the chat never asks the member for the time."""
     tz = _zone(zone)
     moment = now or datetime.now(tz)
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=ZoneInfo("UTC"))
     local = moment.astimezone(tz)
+    if with_time:
+        return (
+            f"Now: {local:%A %Y-%m-%d %H:%M} {local.tzname()} ({tz.key}). "
+            "This is the member's own clock. Use it for \"now\", \"the next hour\" "
+            "and \"this evening\". Never ask the member what time it is."
+        )
     return f"Today is {local:%A}, {local.day} {local:%B %Y} ({tz.key})."
 
 
@@ -73,4 +107,4 @@ def part_of_day_line(zone: str | None, now: datetime | None = None) -> str:
     return f"Part of the day for the member: {part_of_day(zone, now)}."
 
 
-__all__ = ["DEFAULT_ZONE", "part_of_day", "part_of_day_line", "today_line"]
+__all__ = ["DEFAULT_ZONE", "part_of_day", "part_of_day_line", "resolve_zone", "today_line"]

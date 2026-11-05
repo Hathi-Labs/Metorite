@@ -125,6 +125,16 @@ class Settings(BaseSettings):
     # hold several sessions. Fence: tests/unit/test_db_background_lane.py.
     db_background_max: int = 4
 
+    # H-249 (WS-29): what `tenant_session` does when its transaction is
+    # aborted at the clean end of a block. That happens when a caller swallows
+    # a failed statement. The commit then commits nothing. `log` (the default)
+    # only logs `db.tenant_session_aborted`, and the commit runs as before.
+    # `raise` logs, rolls back and raises `TenantTransactionAborted`. Any other value reads as
+    # `log`. The one reader is `tenant_session_abort_mode` below. The flag
+    # needs a restart (`docs/flag_reload.md`). A value on a box is the grant
+    # `enforcement-flip`. Fence: tests/unit/test_tenant_session_aborted_r8.py.
+    tenant_session_abort_mode: str = "log"
+
     # The pool of the sync `acb_graph` engine. It counts against the SAME
     # pooler budget as the async pool above (see the note there).
     db_sync_pool_size: int = 2
@@ -602,6 +612,24 @@ class Settings(BaseSettings):
     # `enforcement-flip`. Spec: core_brief.md §5 and §10 row 5. Fence:
     # tests/unit/test_brief_today.py.
     brief_in_app: bool = False
+    # `brief_exceptions` (WS-BRIEF BR-5, 2026-11-04) is the switch of the
+    # exception engine, default OFF. On, only the four rules of
+    # `core_brief.md` §6 let a card interrupt in Reach (WhatsApp and the
+    # preview), and a card with no rule waits. Off, the class table of
+    # `reach/classes.py` decides, as before. It holds for an org only when
+    # `BRIEF_ENABLED` and `BRIEF_ORGS` hold too. The one reader is
+    # `gateway.brief.flags.exceptions`. A flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_reach_exceptions.py.
+    brief_exceptions: bool = False
+    # `brief_compose` (WS-BRIEF BR-2a-2, 2026-11-05) is the switch of the
+    # phrase step, default OFF. On, a run with 4 claims or more makes ONE
+    # `tier-fast` call through the Console Router, and the model writes the
+    # lead. Off, or with the Router off, the lead is the template lead, as
+    # before. It holds for an org only when `BRIEF_ENABLED` and `BRIEF_ORGS`
+    # hold too. The one reader is `gateway.brief.flags.compose`. The call
+    # spends credits, so a flip on production is OWNER-GATE (core_brief.md
+    # §10 row 4). Fence: tests/unit/test_brief_phrase.py.
+    brief_compose: bool = False
 
     # ── Web push (WS-66 PN-1, 2026-10-25) ───────────────────────────────────
     #
@@ -641,6 +669,12 @@ class Settings(BaseSettings):
     # guide_allowed`, returned as `guide` from GET /auth/me/shell. Spec:
     # assistant_guide.md section 7.
     guide_orgs: str = ""
+    # WS-PKG PKG-5b: PACKAGE_HOST_ORGS lists the org ids that may read the
+    # resolved shell manifest (GET /shell/manifest). `*` opens every org.
+    # Empty opens none. Reader:
+    # `gateway.package_host.flags.package_host_allowed`. Spec:
+    # package_host.md section 10.
+    package_host_orgs: str = ""
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_subject: str = ""
@@ -993,6 +1027,20 @@ class Settings(BaseSettings):
     # mail may write, so name the flag and the box in the same message.
     # Fence: tests/unit/test_held_card_writes.py.
     held_card_writes_orgs: str = ""
+
+    # ── The one email card of a new mail (email_app_master_plan.md §18.10) ──
+    #
+    # `email_edit_card_orgs` lists the organization ids whose chat shows a new
+    # mail on the ONE email card that the member edits, or `*` for each one.
+    # Empty means off, and a new mail shows the cards of before: the plain send
+    # card, and the rows card of a held chat. The one reader is
+    # `acb_skills.reply_card.edit_card_on`, and it fails closed. The name ends
+    # in `_orgs`, so a SIGHUP applies a change with no restart.
+    #
+    # A value on a box is an `enforcement-flip`: it changes the card of a send.
+    # Name the flag and the box in the same message.
+    # Fence: tests/unit/test_email_new_mail_card.py.
+    email_edit_card_orgs: str = ""
 
     # ── Web research (WS-WEB, D148, `web_research.md` §3.2 and §11) ─────────
     #
@@ -2106,6 +2154,25 @@ def crm_answer_check_mode() -> str:
         return "off"
     mode = raw.strip().lower()
     return mode if mode in CRM_ANSWER_CHECK_MODES else "off"
+
+
+#: The modes of ``TENANT_SESSION_ABORT_MODE`` (H-249).
+TENANT_SESSION_ABORT_MODES: tuple[str, ...] = ("log", "raise")
+
+
+def tenant_session_abort_mode() -> str:
+    """The ONE reader of ``TENANT_SESSION_ABORT_MODE``: ``log`` or ``raise``.
+
+    Any other value, and a settings load that fails, read as ``log``.
+    ``acb_common.db.tenant_session`` reads it only when a transaction is
+    aborted, so a clean block never pays for the read.
+    """
+    try:
+        raw = str(getattr(get_settings(), "tenant_session_abort_mode", "log") or "log")
+    except Exception:  # a broken settings load never turns the raise on
+        return "log"
+    mode = raw.strip().lower()
+    return mode if mode in TENANT_SESSION_ABORT_MODES else "log"
 
 
 #: The modes of ``TOOL_RESULT_SPILL`` (CTX-1).

@@ -1339,7 +1339,8 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "unarchive_task": _pin("task_id"),
     "update_tasks": _pin("changes"),
     "watch": _pin("target_id kind stop"),
-    # The class B tools of projects-plan.
+    # The class B tools of projects-plan, and report_save of projects-reports
+    # (PJP-2 moved the report tools out of projects-plan).
     "add_task_ref": _pin("task_id url title"),
     "create_project": _pin("name parent_project_id kind description lead"),
     "edit_project": _pin("project_id"),
@@ -1355,7 +1356,9 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "update_project": _pin(
         "project_id name description status lead icon icon_slot "
         "archive_after_months close_after_months timezone clear"),
-    # The class B tools of projects-structure.
+    # The class B tools of projects-structure, and capture_intake, create_area,
+    # mark_notifications_read and triage_intake of projects-reminders (PJP-2
+    # moved the inbox, area and notification tools there).
     "capture_intake": _pin(
         "title project_id description due priority important leveraged importance "
         "source source_ref"),

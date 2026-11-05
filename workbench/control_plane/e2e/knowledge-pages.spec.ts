@@ -1348,8 +1348,14 @@ test.describe("the tree (KB-2e)", () => {
     await expect(label("kp-r")).toBeFocused();
     await page.keyboard.press("ArrowDown");
     await expect(label("kp-t")).toBeFocused();
-    // The end holds.
+    // KB-2s: "My notes" always shows after the last space, so Down from the last
+    // page reaches its row, and the end holds there.
+    const nav = page.getByRole("navigation", { name: "Knowledge spaces" });
     await page.keyboard.press("ArrowDown");
+    await expect(nav.getByRole("button", { name: /^My notes/ }).first()).toBeFocused();
+    await page.keyboard.press("ArrowDown");
+    await expect(nav.getByRole("button", { name: /^My notes/ }).first()).toBeFocused();
+    await page.keyboard.press("ArrowUp");
     await expect(label("kp-t")).toBeFocused();
     await page.keyboard.press("ArrowUp");
     await page.keyboard.press("ArrowUp");

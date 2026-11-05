@@ -108,6 +108,8 @@ _SHELL_SPECIAL = frozenset(" $`\\'\";&|<>()")
 PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # Database, cache and graph.
     "DATABASE_URL", "REDIS_URL", "CC_DSN", "APP_DB", "DBS",
+    # What `tenant_session` does with an aborted transaction (H-249).
+    "TENANT_SESSION_ABORT_MODE",
     # Sign-in and access. EXECUTIVE_EMAILS grants the EXECUTIVE role, and
     # ALLOWED_EMAIL_DOMAIN decides who may sign in at all.
     "ALLOWED_EMAIL_DOMAIN", "EXECUTIVE_EMAILS", "ACCESS_LEGACY_FALLBACK",
@@ -169,6 +171,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-67 RX-1: the orgs where a chat that read outside mail keeps the writes
     # that a card shows. It moves a guard, so only the operator writes it.
     "HELD_CARD_WRITES_ORGS",
+    # §18.10: the orgs whose chat shows a new mail on the card that the member
+    # edits. It changes the card of a send, so only the operator writes it.
+    "EMAIL_EDIT_CARD_ORGS",
     # WS-63 PZ-33: the orgs that get a summary of each private chat. The job
     # spends the org's AI credits with no request of the member, so only the
     # owner writes it (D-PZ-35). The `ASSISTANT_PROFILE_` prefix below does
@@ -246,6 +251,9 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # Do not name that key in this file: only the proof module and the
     # settings may name it (test_studio_direct_proof.py).
     "DIRECT_KEY",
+    # STU-D2b-1: scripts/dev_seed_studio.py reads the gateway token of a local
+    # dev_up.sh stack. It never runs on a box.
+    "DEV_UP_GATEWAY_TOKEN",
     # WS-49 BH-6: the scripts of the root copy (root_lib_files.txt) are in
     # the scan now. These are their own variables and the BH-6 deploy steps.
     "ACK", "DROPIN", "EXPIRES", "EXPIRY_WHY", "HEALTH_TRIES", "NAME",
@@ -359,6 +367,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     # WS-OB GD-5a: GUIDE_ORGS opens the tour's entries for an org, so a
     # tenant that set it could open them for every org on the box.
     "GUIDE_",
+    # WS-PKG PKG-5b: PACKAGE_HOST_ORGS opens the resolved shell manifest for
+    # an org, so a tenant that set it could open it for every org.
+    "PACKAGE_HOST_",
     # Agent runtime, sandbox and models.
     "MUTATION_", "SANDBOX_", "COPILOT_", "MAF_", "AGENT_", "CUSTOM_APPS_",
     "OPENHANDS_", "GITHUB_APP_", "NOTES_", "OAUTH_", "NEXT_",

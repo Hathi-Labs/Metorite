@@ -90,6 +90,7 @@ def run(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(ex, "_read_member_display_name", lambda org, m: "Ana Rao")
     monkeypatch.setattr(ex, "_read_number_system", lambda org, m: "indian")
     monkeypatch.setattr(ex, "_run_org_display_name", lambda: "Acme Tools")
+    monkeypatch.setattr(ex, "_member_zones", lambda: ("", ""))
     ex._PROFILE_CACHE.clear()
     ex._MEMBER_NAME_CACHE.clear()
     ns.forget()
@@ -989,14 +990,14 @@ def test_the_part_of_day_line_follows_today_only_when_the_block_greets(
     run.update(zone="Europe/Berlin")
     parts = _parts()
     assert parts[-1] == "Part of the day: X."
-    assert parts[-2].startswith("Today is ")
+    assert parts[-2].startswith("Now: ")
     assert seen == ["Europe/Berlin"]
 
     for raw in ({"address": {"name": "VJ", "greeting": "none"}},):
         ex._PROFILE_CACHE.clear()
         run["raw"] = raw
         parts = _parts()
-        assert _blocks(parts) and parts[-1].startswith("Today is ")
+        assert _blocks(parts) and parts[-1].startswith("Now: ")
     ex._PROFILE_CACHE.clear()
     run.update(raw={"address": {"name": "VJ", "greeting": "warm"}}, zone="")
     assert _parts()[-1] == "Part of the day: X."
@@ -1031,7 +1032,7 @@ def test_a_failed_read_gives_no_part_of_day(run) -> None:
     run["fail"] = True
     parts = _parts()
     assert _blocks(parts) == []
-    assert parts[-1].startswith("Today is ")
+    assert parts[-1].startswith("Now: ")
 
 
 def test_the_address_sql_names_the_org_on_both_sides() -> None:

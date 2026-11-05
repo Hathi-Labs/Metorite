@@ -135,6 +135,21 @@ class TestStudioSwitch:
     def test_the_web_app_does_not_get_it(self, tmp_path):
         assert "STUDIO_ORGS" not in _print_env(tmp_path)["web"]
 
+    @needs_bash
+    def test_a_direct_key_comes_only_from_the_operator_shell(self, tmp_path):
+        """STU-D2b: the gateway and the web app get one `STUDIO_DIRECT_KEY`, and only when
+        the operator sets `DEV_UP_STUDIO_DIRECT_KEY`. The repo holds no key."""
+        key = "k" * 48
+        env = {**os.environ, "DEV_UP_REPO": tmp_path.as_posix(), "DEV_UP_STUDIO_DIRECT_KEY": key}
+        res = subprocess.run(
+            [_BASH, SCRIPT.as_posix(), "--print-env"],
+            capture_output=True, text=True, encoding="utf-8", timeout=60, env=env,
+        )
+        assert res.returncode == 0, res.stderr
+        assert res.stdout.count(f"STUDIO_DIRECT_KEY={key}") == 2
+        assert "STUDIO_DIRECT_KEY" not in FLAGS.read_text(encoding="utf-8")
+        assert "STUDIO_DIRECT_KEY=" not in BODY.replace("STUDIO_DIRECT_KEY=%s", "")
+
     def test_the_line_is_fixed_in_the_gateway_function_only(self):
         assert BODY.count("STUDIO_ORGS") >= 1
         gateway = BODY.split("gateway_env() {", 1)[1].split("\n}\n", 1)[0]
