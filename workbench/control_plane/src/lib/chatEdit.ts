@@ -71,6 +71,8 @@ export const EDIT_NOT_LAST = "Someone replied after your message, so it can no l
 export const EDIT_NOT_YOURS = "You can only edit your own message.";
 export const EDIT_RUN_BUSY = "The assistant is still working. Stop it first.";
 export const EDIT_UNSENT = "Your edit was not sent. Try again.";
+/** The thread is still loading, so the last message is not known yet. */
+export const EDIT_LOADING = "This chat is still loading. Save the edit again in a moment.";
 /** WS-51 D-3: the member has the most live runs the cap allows. */
 export const EDIT_TOO_MANY_RUNS =
   "You have too many assistants running. Wait for one to finish or stop one, then save the edit again.";

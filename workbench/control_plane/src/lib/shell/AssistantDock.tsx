@@ -101,7 +101,7 @@ import {
 
 import { requestBrief } from "./briefTurn";
 import GuideOffer from "./GuideOffer";
-import { offerGuide, startGuide } from "./guide";
+import { offerGuide, startGuide, useGuideAllowed } from "./guide";
 import { chatFirstOn } from "./chatFlag";
 import {
   REMINDER_HOLD_MS,
@@ -122,6 +122,7 @@ import {
   ASSISTANT_NAME,
   ASSISTANT_PERSONA,
   CHAT_FIRST_PERSONA_LINE,
+  GUIDE_PERSONA_LINE,
   BRIEF_HOLD_MS,
   DOCK_MAX,
   DOCK_MIN,
@@ -780,7 +781,10 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   // WS-67 OA-7d: the app slug of the pane, sent as `surface` (a hint for the tool packs).
   const surface = surfaceOfPane(here);
   // WS-62 CF-3: the page line joins only with the chat-first flag on.
-  const personaText = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;
+  // WS-OB GD-7: the guide line joins only when `guide` of the shell prefs is on.
+  const guideOn = useGuideAllowed();
+  const basePersona = chatFirstOn() ? `${ASSISTANT_PERSONA} ${CHAT_FIRST_PERSONA_LINE}` : ASSISTANT_PERSONA;
+  const personaText = guideOn ? `${basePersona} ${GUIDE_PERSONA_LINE}` : basePersona;
   const persona = agent === ASSISTANT_AGENT ? `${personaText}\n\n${context}` : context;
 
   // A new chat's files start empty.
@@ -985,6 +989,8 @@ function AssistantSurface({ phone }: { phone: boolean }) {
   // control (`chat_first_surface.md` §4.8).
   const phoneChrome = phone && chatFirst;
   const phoneTap = phoneChrome ? "h-11 w-11 glass:h-11 glass:w-11 glass:pointer-coarse:h-11 glass:pointer-coarse:w-11" : "";
+  // The switcher shows a title, so it keeps the 44 px height and lets the width follow the title (task 1717).
+  const phoneTapTall = phoneChrome ? "h-11 glass:h-11 glass:pointer-coarse:h-11" : "";
   const moreActs = useMemo(
     () =>
       phoneChrome && chat.activeId
@@ -1081,7 +1087,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
         {columnForm ? (
           <ChatTitle session={active} />
         ) : (
-          <ChatSwitcher session={active} open={pickerShown} onToggle={() => setPickerOpen((o) => !o)} className={phoneTap} />
+          <ChatSwitcher session={active} open={pickerShown} onToggle={() => setPickerOpen((o) => !o)} className={phoneTapTall} />
         )}
         <Button
           variant="secondary"

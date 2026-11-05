@@ -3,8 +3,9 @@
 Where ``/debug`` (routes/debug.py) is the *post-hoc* view over the durable
 ``agent_run`` trace store, this is the *live* view: a real-time feed of every
 agent run and model call as it happens, across chat AND every app, plus a
-"running right now" snapshot. Backed by the global ``cc:activity`` Redis stream
-(``acb_common.activity``), not Postgres — this is the ephemeral signal layer.
+"running right now" snapshot. Backed by the tenant's ``cc:<org>:activity`` Redis
+stream (``acb_common.activity``), not Postgres — this is the ephemeral signal
+layer.
 
     GET /observability/activity/recent?limit=   → recent activations (backfill)
     GET /observability/activity/stream          → SSE live feed (new events)
@@ -19,7 +20,15 @@ Open to any AUTHENTICATED caller (this is the operator's own dashboard). It
 returns operational *metadata* — agent/model/tier/user/duration/tokens/cost and
 error messages — but NEVER the full message-content trace, which stays
 EXECUTIVE-gated behind ``/debug/runs/{id}``. The Redis feed (recent/stream) is
-ephemeral (~2000 events, latest-first); ``/runs`` is the durable timeline.
+ephemeral (~2000 events for each tenant, latest-first); ``/runs`` is the
+durable timeline.
+
+Tenancy (H-201c). The feed, the stream and the presence set are keyed for each
+tenant. Each route takes the org from the authenticated session
+(``viewer.organization_id``), never from the request, and passes it to the
+reader. A viewer with no org gets an empty answer. The cost view
+(``/cost``) still reads the deployment-global ``cc:cost:{day}`` rollup. Its
+conversion is a separate follow-up task.
 """
 from __future__ import annotations
 
@@ -62,32 +71,32 @@ router = APIRouter(prefix="/observability", tags=["observability"])
 @router.get("/activity/recent")
 async def activity_recent(
     limit: int = 100,
-    _viewer: UserContext = _VIEWER,
+    viewer: UserContext = _VIEWER,
 ) -> dict[str, Any]:
-    """Recent activations, oldest-first — used to backfill the feed on load.
+    """Recent activations of the viewer's tenant, oldest-first — the backfill.
 
     ``limit`` is clamped to [1, 500].
     """
-    events = await recent_activity(limit=limit)
+    events = await recent_activity(limit=limit, organization_id=viewer.organization_id)
     return {"events": events, "count": len(events)}
 
 
 @router.get("/active")
 async def active(
-    _viewer: UserContext = _VIEWER,
+    viewer: UserContext = _VIEWER,
 ) -> dict[str, Any]:
     """Agent runs currently in flight (the "running right now" panel).
 
     Self-healing: a run whose end event was lost ages out of the presence set
     after ``acb_common.activity.LIVE_TTL_SECONDS``.
     """
-    runs = await active_runs()
+    runs = await active_runs(organization_id=viewer.organization_id)
     return {"runs": runs, "count": len(runs)}
 
 
 @router.get("/roster")
 async def roster(
-    _viewer: UserContext = _VIEWER,
+    viewer: UserContext = _VIEWER,
 ) -> dict[str, Any]:
     """Every registered agent + its live status — the office view's cast list.
 
@@ -122,14 +131,16 @@ async def roster(
         "agent_runtime": "maf",
     }] + registry
 
-    runs = await active_runs()
+    # The tenant of the session (H-201c): the presence set and the avatars.
+    org = viewer.organization_id
+    runs = await active_runs(organization_id=org)
     live_by_agent: dict[str, list[dict[str, Any]]] = {}
     for r in runs:
         live_by_agent.setdefault(str(r.get("agent") or ""), []).append(r)
 
     # Avatar overrides (Avatar Studio) — merged so every viewer sees the pinned
     # look/sprite. Best-effort; the office falls back to deriveAvatar() without it.
-    avatars = _load_avatars()
+    avatars = _load_avatars(org)
 
     seen: set[str] = set()
     agents: list[dict[str, Any]] = []
@@ -183,7 +194,7 @@ async def roster(
         name[len("app:"):] for name in live_by_agent if name.startswith("app:")
     ]
     if app_slugs:
-        app_details = _load_app_details(app_slugs)
+        app_details = _load_app_details(app_slugs, org)
         for slug in app_slugs:
             live = live_by_agent[f"app:{slug}"]
             details = app_details.get(slug, {})
@@ -206,20 +217,25 @@ async def roster(
     return {"agents": agents, "count": len(agents)}
 
 
-def _load_app_details(slugs: list[str]) -> dict[str, dict[str, Any]]:
+def _load_app_details(
+    slugs: list[str], organization_id: str | None,
+) -> dict[str, dict[str, Any]]:
     """``{slug: {name, icon}}`` for the given Custom App slugs.
 
     Best-effort → ``{}`` on any error, same contract as ``_load_avatars`` —
     a lookup failure must degrade to showing the bare slug, never break the
     roster for every other agent/app.
+
+    H-201: the read binds the viewer's tenant. With no tenant it reads
+    nothing, so another org's app name never shows.
     """
-    if not slugs:
+    if not slugs or not organization_id:
         return {}
     try:
-        from acb_graph import get_session  # noqa: PLC0415
+        from acb_graph import tenant_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
-        with get_session() as s:
+        with tenant_session(organization_id) as s:
             rows = s.execute(
                 text("SELECT slug, name, icon FROM apps WHERE slug = ANY(:slugs)"),
                 {"slugs": slugs},
@@ -252,7 +268,7 @@ async def runs(
     status: str | None = None,
     since_hours: int | None = None,
     limit: int = 50,
-    _viewer: UserContext = _VIEWER,
+    viewer: UserContext = _VIEWER,
 ) -> dict[str, Any]:
     """DURABLE activity history from the ``agent_run`` trace store.
 
@@ -262,7 +278,13 @@ async def runs(
     message, NEVER the full trace blob (that stays EXECUTIVE-gated at
     ``/debug/runs/{id}``). Powers the History tab + the per-agent drawer.
     Newest-first; ``limit`` clamped to [1, 200].
+
+    H-201: the read binds the viewer's tenant. With no tenant the answer is
+    empty, and no unbound session opens.
     """
+    org = viewer.organization_id
+    if not org:
+        return {"runs": [], "count": 0}
     limit = max(1, min(limit, 200))
     where: list[str] = []
     params: dict[str, Any] = {"limit": limit}
@@ -278,10 +300,10 @@ async def runs(
     clause = (" WHERE " + " AND ".join(where)) if where else ""
 
     try:
-        from acb_graph import get_session  # noqa: PLC0415
+        from acb_graph import tenant_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
-        with get_session() as s:
+        with tenant_session(org) as s:
             rows = s.execute(
                 text(
                     "SELECT run_id, thread_id, agent_name, user_id, model, "
@@ -313,20 +335,28 @@ async def runs(
     return {"runs": out, "count": len(out)}
 
 
-async def _sse_activity() -> AsyncIterator[bytes]:
-    """Yield SSE frames for each new activation; heartbeat on idle.
+async def _sse_activity(organization_id: str | None) -> AsyncIterator[bytes]:
+    """Yield SSE frames for each new activation of one tenant; heartbeat on idle.
 
     Starts from ``$`` (new events only) — the client backfills history via
     ``/activity/recent`` first, then opens this for the live tail. A heartbeat
     comment on each idle cycle keeps proxies from closing the connection.
+
+    *organization_id* is an argument, taken from the session by the route.
+    The body of this generator runs after the middleware released the tenant,
+    so it must never read the ambient value. With no org, the stream sends
+    the opening comment and ends: no event, and no busy loop.
     """
     cursor = "$"
     # Prime the client so EventSource fires ``onopen`` promptly.
     yield b": connected\n\n"
+    if not organization_id:
+        return
     while True:
         try:
             events, cursor = await read_activity_since(
-                cursor, block_ms=15_000, count=200,
+                cursor, organization_id=organization_id,
+                block_ms=15_000, count=200,
             )
         except asyncio.CancelledError:  # client disconnected
             raise
@@ -345,11 +375,11 @@ async def _sse_activity() -> AsyncIterator[bytes]:
 
 @router.get("/activity/stream")
 async def activity_stream(
-    _viewer: UserContext = _VIEWER,
+    viewer: UserContext = _VIEWER,
 ) -> StreamingResponse:
-    """Server-Sent Events stream of live activations (agent + model)."""
+    """Server-Sent Events stream of the tenant's live activations (agent + model)."""
     return StreamingResponse(
-        _sse_activity(),
+        _sse_activity(viewer.organization_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
@@ -371,13 +401,19 @@ _AGENT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 _MAX_SPRITE_CHARS = 600_000
 
 
-def _load_avatars() -> dict[str, dict[str, Any]]:
-    """All avatar overrides keyed by agent name. Best-effort → {} on any error."""
+def _load_avatars(organization_id: str | None) -> dict[str, dict[str, Any]]:
+    """All avatar overrides of the tenant, keyed by agent name.
+
+    Best-effort → {} on any error. H-201: the read binds the tenant, and with
+    no tenant it reads nothing.
+    """
+    if not organization_id:
+        return {}
     try:
-        from acb_graph import get_session  # noqa: PLC0415
+        from acb_graph import tenant_session  # noqa: PLC0415
         from sqlalchemy import text  # noqa: PLC0415
 
-        with get_session() as s:
+        with tenant_session(organization_id) as s:
             rows = s.execute(
                 text("SELECT agent_name, config, sprite FROM agent_avatars")
             ).fetchall()
@@ -391,12 +427,22 @@ def _load_avatars() -> dict[str, dict[str, Any]]:
         return {}
 
 
-def _save_avatar(name: str, config: dict[str, Any], sprite: str | None) -> None:
-    """Upsert one agent's avatar override (raises on DB failure)."""
-    from acb_graph import get_session  # noqa: PLC0415
+def _save_avatar(
+    name: str, config: dict[str, Any], sprite: str | None,
+    organization_id: str | None,
+) -> None:
+    """Upsert one agent's avatar override (raises on DB failure).
+
+    H-201: the write binds the tenant, and the column default stamps the row
+    with it. ``tenant_session`` commits on exit and refuses no tenant.
+
+    ⚠️ The conflict key is still ``agent_name`` alone. Under FORCE RLS, an
+    upsert of a name that another org holds fails. Task 1719 owns that key.
+    """
+    from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         s.execute(
             text(
                 "INSERT INTO agent_avatars (agent_name, config, sprite, updated_at) "
@@ -406,18 +452,17 @@ def _save_avatar(name: str, config: dict[str, Any], sprite: str | None) -> None:
             ),
             {"n": name, "c": json.dumps(config or {}), "s": sprite},
         )
-        s.commit()
 
 
-def _delete_avatar(name: str) -> None:
-    from acb_graph import get_session  # noqa: PLC0415
+def _delete_avatar(name: str, organization_id: str | None) -> None:
+    """Remove one avatar override of the tenant. H-201: the write binds it."""
+    from acb_graph import tenant_session  # noqa: PLC0415
     from sqlalchemy import text  # noqa: PLC0415
 
-    with get_session() as s:
+    with tenant_session(organization_id) as s:
         s.execute(
             text("DELETE FROM agent_avatars WHERE agent_name = :n"), {"n": name}
         )
-        s.commit()
 
 
 class AvatarPut(BaseModel):
@@ -431,14 +476,24 @@ class AvatarGenerate(BaseModel):
 
 
 @router.get("/avatars")
-async def avatars(_viewer: UserContext = _VIEWER) -> dict[str, Any]:
+async def avatars(viewer: UserContext = _VIEWER) -> dict[str, Any]:
     """Every stored avatar override (config + custom sprite), keyed by agent."""
-    return {"avatars": _load_avatars()}
+    return {"avatars": _load_avatars(viewer.organization_id)}
+
+
+def _writer_org(writer: UserContext) -> str:
+    """The tenant of an avatar write. 403 with no tenant, so nothing is written."""
+    org = writer.organization_id
+    if not org:
+        raise HTTPException(
+            status_code=403, detail="No organization is bound to this session.",
+        )
+    return str(org)
 
 
 @router.put("/avatars/{name}")
 async def put_avatar(
-    name: str, body: AvatarPut, _writer: UserContext = _WRITER,
+    name: str, body: AvatarPut, writer: UserContext = _WRITER,
 ) -> dict[str, Any]:
     """Pin an agent's avatar override (partial config + optional custom sprite)."""
     name = name.strip().lower()
@@ -448,8 +503,9 @@ async def put_avatar(
         raise HTTPException(status_code=413, detail="sprite too large")
     if body.sprite and not body.sprite.startswith("data:image/"):
         raise HTTPException(status_code=400, detail="sprite must be an image data-URI")
+    org = _writer_org(writer)
     try:
-        _save_avatar(name, body.config or {}, body.sprite)
+        _save_avatar(name, body.config or {}, body.sprite, org)
     except Exception as exc:  # noqa: BLE001
         _log.warning("observability.avatar_save_failed", agent=name, error=str(exc))
         raise HTTPException(status_code=500, detail="failed to save avatar") from exc
@@ -458,14 +514,15 @@ async def put_avatar(
 
 @router.delete("/avatars/{name}")
 async def delete_avatar(
-    name: str, _writer: UserContext = _WRITER,
+    name: str, writer: UserContext = _WRITER,
 ) -> dict[str, Any]:
     """Remove an agent's override → it reverts to the derived/role look."""
     name = name.strip().lower()
     if not _AGENT_NAME_RE.match(name):
         raise HTTPException(status_code=400, detail="invalid agent name")
+    org = _writer_org(writer)
     try:
-        _delete_avatar(name)
+        _delete_avatar(name, org)
     except Exception as exc:  # noqa: BLE001
         _log.warning("observability.avatar_delete_failed", agent=name, error=str(exc))
         raise HTTPException(status_code=500, detail="failed to delete avatar") from exc

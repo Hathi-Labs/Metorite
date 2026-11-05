@@ -523,6 +523,7 @@ jobs:
               tests/unit/test_studio_catalog_r8.py \
               tests/unit/test_studio_packages_versions_r8.py \
               tests/unit/test_studio_package_routes_r8.py \
+              tests/unit/test_studio_package_delete_r8.py \
               tests/unit/test_studio_chat_build_r8.py \
               tests/unit/test_studio_route_gate_r8.py \
               tests/unit/test_package_host_store_r8.py \

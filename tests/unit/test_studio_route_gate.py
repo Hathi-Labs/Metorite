@@ -78,10 +78,7 @@ ANA = "ana@example.test"
 #: Every route of the Studio router, as ``(method, path template)``.
 #: ⚠️ A route that you add to the router fails
 #: ``test_expected_routes_are_the_routes_of_the_router`` until you add it
-#: here. The parametrized 403 tests then cover it. The two A5c routes
-#: (``GET /studio/packages/{package_id}/delete-preview`` and
-#: ``DELETE /studio/packages/{package_id}``) are on another branch. The
-#: branch that merges second adds them here.
+#: here. The parametrized 403 tests then cover it.
 EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     # B1, the action catalog.
     ("GET", "/studio/actions"),
@@ -99,6 +96,9 @@ EXPECTED_ROUTES: tuple[tuple[str, str], ...] = (
     ("PUT", "/studio/packages/{package_id}/draft"),
     ("POST", "/studio/packages/{package_id}/versions"),
     ("GET", "/studio/packages/{package_id}/versions"),
+    # A5c-1, the package delete.
+    ("GET", "/studio/packages/{package_id}/delete-preview"),
+    ("DELETE", "/studio/packages/{package_id}"),
     # B2a to B2c, the action door.
     ("POST", "/studio/apps/{app_id}/actions/{action}"),
 )
