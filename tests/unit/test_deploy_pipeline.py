@@ -18,7 +18,14 @@ until the deploy it was supposed to catch.
 """
 from __future__ import annotations
 
+import ast
 import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -89,6 +96,9 @@ def test_the_group_is_on_the_JOB_and_not_the_workflow(parsed: dict) -> None:
 
     The serialisation meant to protect delivery had silently stopped it, and
     "cancelled" reads like tidy supersession rather than like a fault.
+
+    CIV-4 gives `test` a group of its own, and only that one group. The next
+    section pins it. `lint` and `publish-release` still have none.
     """
     assert parsed.get("concurrency") is None, (
         "deploy.yml declares concurrency at WORKFLOW level. That queues — and "
@@ -97,7 +107,7 @@ def test_the_group_is_on_the_JOB_and_not_the_workflow(parsed: dict) -> None:
         "reached inbound still learns what to converge on. Put the group on the "
         "`deploy` job."
     )
-    for job in ("lint", "test", "publish-release"):
+    for job in ("lint", "publish-release"):
         assert "concurrency" not in parsed["jobs"][job], (
             f"`{job}` must not be serialised behind a deploy — it never touches "
             "the box"
@@ -138,6 +148,549 @@ def test_the_deploy_job_is_bounded(parsed: dict) -> None:
     assert timeout <= 180, (
         f"timeout-minutes={timeout} is so high it is not a backstop"
     )
+
+
+# ── CIV-4: main runs the full suite in batches ──────────────────────────────
+#
+# `project-docs/specs/ci_velocity.md` §5, CIV-4. A push run of `test` joins
+# ONE group, so one full suite runs at a time. GitHub keeps one running job
+# and one pending job in a group. A newer pending job cancels the older one.
+# So the merges that wait fold into the next run, and a folded run shows as
+# a cancelled `test` job. That is the design.
+#
+# ⚠️ THE TRAP. If the daily release shared the push group, the next merge
+# would cancel its pending `test` job. `publish-release` would then read
+# `cancelled` and skip, and that day's release would be lost. So a schedule
+# run or a dispatch gets a group of its own, named by its run id. It never
+# queues, and nothing cancels it.
+#
+# A person's rerun of an old push run (attempt 2 or more) also gets a group
+# of its own. In the push group, its pending job would cancel a newer
+# pending batch, and that batch holds the newer merges.
+#
+# ⚠️ GitHub does not promise the order of pending jobs: "ordering is not
+# guaranteed" (docs, `actions-group-concurrency`). So the pending job that
+# survives can hold an OLDER merge than the tip. A batch job therefore tests
+# the tip of main when it starts, not its own GITHUB_SHA. The release, a
+# dispatch and a rerun test GITHUB_SHA, because that is what they ship or
+# check again.
+
+#: The ONE concurrency group that `test` may have, character for character.
+SUITE_GROUP = (
+    "${{ github.event_name == 'push' && github.run_attempt == 1 "
+    "&& 'main-full-suite' || format('release-{0}', github.run_id) }}"
+)
+
+#: The step that names the tested range of a push batch.
+RANGE_STEP = "Name the tested range"
+
+#: The step that moves a push batch to the tip of main, and its condition.
+TIP_STEP = "Test the tip of main"
+TIP_IF = "${{ github.event_name == 'push' && github.run_attempt == 1 }}"
+#: The one fetch that the tip step makes. It keeps `origin/main` equal to HEAD.
+TIP_FETCH = "git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main"
+#: The state that actions/checkout leaves on a push: local `main` at origin/main.
+TIP_CHECKOUT = "git checkout -q -B main refs/remotes/origin/main"
+
+
+def _steps(parsed: dict, job: str) -> list[dict]:
+    return parsed["jobs"][job]["steps"]
+
+
+def _named_step(parsed: dict, name: str) -> dict:
+    found = [s for s in _steps(parsed, "test") if s.get("name") == name]
+    assert len(found) == 1, f"the `test` job needs exactly one step named {name!r}"
+    return found[0]
+
+
+def _range_step(parsed: dict) -> dict:
+    return _named_step(parsed, RANGE_STEP)
+
+
+def _tip_step(parsed: dict) -> dict:
+    return _named_step(parsed, TIP_STEP)
+
+
+def test_a_push_batch_shares_one_group_and_a_release_gets_its_own(parsed: dict) -> None:
+    """Only this expression. A plain `main-full-suite` loses the release."""
+    concurrency = parsed["jobs"]["test"].get("concurrency")
+    assert concurrency == {"group": SUITE_GROUP, "cancel-in-progress": False}, (
+        "the `test` job's group must be EXACTLY the CIV-4 expression, with "
+        "cancel-in-progress false. A group that a schedule or a dispatch "
+        "shares with a push lets the next merge cancel the release's tests. "
+        "cancel-in-progress true would kill a running batch at every merge, "
+        "and then no batch would ever finish."
+    )
+
+
+def _gh_eval(expr: str, github: dict[str, object]) -> object:
+    """Evaluate a GitHub Actions expression of the shape the group uses.
+
+    It models the GitHub rules that the group depends on:
+    - `&&` and `||` return an operand, not a boolean. `&&` returns the first
+      falsy operand, or the last one. `||` returns the first truthy operand,
+      or the last one.
+    - `==` on two strings ignores case. On other types, GitHub casts both
+      sides to a number.
+    - `format()` puts each argument in its `{N}` place.
+    Any other node fails the test, so a new shape cannot pass by accident.
+    """
+    body = expr.strip()
+    assert body.startswith("${{") and body.endswith("}}"), body
+    inner = body[3:-2].replace("&&", " and ").replace("||", " or ").strip()
+    return _gh_node(ast.parse(inner, mode="eval"), github)
+
+
+def _gh_number(value: object) -> float:
+    # GitHub casts null, false and the empty string to 0, and true to 1.
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return 0.0
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _gh_equal(left: object, right: object) -> bool:
+    if isinstance(left, str) and isinstance(right, str):
+        return left.lower() == right.lower()
+    return _gh_number(left) == _gh_number(right)
+
+
+def _gh_bool_op(node: ast.BoolOp, github: dict[str, object]) -> object:
+    # `&&` stops at the first falsy operand, `||` at the first truthy one.
+    value: object = None
+    for part in node.values:
+        value = _gh_node(part, github)
+        if (not value) if isinstance(node.op, ast.And) else bool(value):
+            return value
+    return value
+
+
+def _gh_node(node: ast.AST, github: dict[str, object]) -> object:
+    if isinstance(node, ast.Expression):
+        return _gh_node(node.body, github)
+    if isinstance(node, ast.BoolOp):
+        return _gh_bool_op(node, github)
+    if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq):
+        return _gh_equal(_gh_node(node.left, github), _gh_node(node.comparators[0], github))
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "github":
+        return github[node.attr]
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "format":
+        template, *args = (_gh_node(a, github) for a in node.args)
+        return str(template).format(*args)
+    raise AssertionError(f"the group uses a shape this model does not know: {ast.dump(node)}")
+
+
+_RUN_ID = "41884338138"
+
+
+@pytest.mark.parametrize(("event", "attempt", "group"), [
+    # The first attempt of a push joins the batch.
+    ("push", "1", "main-full-suite"),
+    # A person's rerun of an old push run tests its old commit at once. In
+    # the push group it would cancel a newer pending batch.
+    ("push", "2", f"release-{_RUN_ID}"),
+    ("push", "3", f"release-{_RUN_ID}"),
+    # The release and a dispatch never queue behind a push.
+    ("schedule", "1", f"release-{_RUN_ID}"),
+    ("schedule", "2", f"release-{_RUN_ID}"),
+    ("workflow_dispatch", "1", f"release-{_RUN_ID}"),
+    ("workflow_dispatch", "2", f"release-{_RUN_ID}"),
+])
+@pytest.mark.parametrize("as_number", [False, True], ids=["attempt-string", "attempt-number"])
+def test_each_trigger_and_attempt_gets_the_planned_group(
+    parsed: dict, event: str, attempt: str, group: str, as_number: bool,
+) -> None:
+    """The context gives `run_attempt` and `run_id` as strings. `== 1` casts
+    the string to a number. Both forms must give a string group, never a
+    boolean, because a boolean group would put every run in one group."""
+    expr = parsed["jobs"]["test"]["concurrency"]["group"]
+    github = {
+        "event_name": event,
+        "run_attempt": int(attempt) if as_number else attempt,
+        "run_id": int(_RUN_ID) if as_number else _RUN_ID,
+    }
+    got = _gh_eval(expr, github)
+    assert isinstance(got, str) and got, f"the group evaluated to {got!r}, not a name"
+    assert got == group, f"{event} attempt {attempt}: group {got!r}, want {group!r}"
+
+
+@pytest.mark.parametrize(("event", "attempt"), [
+    ("push", "1"), ("push", "2"), ("schedule", "1"), ("schedule", "2"),
+    ("workflow_dispatch", "1"), ("workflow_dispatch", "2"),
+])
+def test_a_job_tests_the_tip_exactly_when_it_is_in_the_batch_group(
+    parsed: dict, event: str, attempt: str,
+) -> None:
+    """A batch job tests the tip, so a fold cannot leave the tip untested.
+
+    Every job outside the batch group tests GITHUB_SHA. The release ships
+    GITHUB_SHA, so its gate must test that commit and no other.
+    """
+    github = {"event_name": event, "run_attempt": attempt, "run_id": _RUN_ID}
+    in_batch = _gh_eval(parsed["jobs"]["test"]["concurrency"]["group"], github) == "main-full-suite"
+    moves_to_tip = bool(_gh_eval(_tip_step(parsed)["if"], github))
+    assert moves_to_tip == in_batch, f"{event} attempt {attempt}: tip={moves_to_tip}, batch={in_batch}"
+
+
+def test_a_push_batch_tests_the_tip_and_a_release_tests_its_own_commit(parsed: dict) -> None:
+    steps = _steps(parsed, "test")
+    names = [s.get("name") for s in steps]
+    tip = _tip_step(parsed)
+    assert tip.get("id") == "tip"
+    assert tip.get("if") == TIP_IF
+    assert TIP_IF.removeprefix("${{ ").removesuffix(" }}") in SUITE_GROUP, (
+        "the tip step and the batch group must read the same condition"
+    )
+    # A half-moved tree must fail the job, never test in silence.
+    assert "continue-on-error" not in tip
+    assert TIP_FETCH in tip["run"] and TIP_CHECKOUT in tip["run"]
+    # The checkout itself takes GITHUB_SHA. That is the release path.
+    assert steps[0]["uses"].startswith("actions/checkout@") and not steps[0].get("with"), (
+        "the checkout must take GITHUB_SHA, with no `ref:`. The release ships that commit."
+    )
+    assert names[1] == TIP_STEP, "the tip step comes straight after the checkout"
+    assert names.index(TIP_STEP) < names.index(RANGE_STEP) < names.index("Sync deps") < names.index(
+        "Run unit tests"), "move the tree first, then name it, then install and test it"
+    movers = [
+        s.get("name") or s.get("uses") for s in steps
+        if s is not tip and re.search(r"\bgit\s+(fetch|checkout|switch|reset|pull)\b", s.get("run", ""))
+    ]
+    assert not movers, f"only the tip step may move the tree: {movers}"
+    assert _range_step(parsed)["env"]["TESTED_SHA"] == "${{ steps.tip.outputs.sha || github.sha }}", (
+        "the range must end at the commit that the job tested"
+    )
+
+
+def _run_tip(parsed: dict, tmp_path: Path, fetch_ok: bool) -> tuple[str, str, list[str]]:
+    """Run the tip step in bash. A shell function stands in for `git`."""
+    step = _tip_step(parsed)
+    log, out = tmp_path / "git.log", tmp_path / "output"
+    shims = (
+        "git() {\n"
+        '  printf \'%s\\n\' "git $*" >> "$GIT_LOG"\n'
+        '  case "$1" in\n'
+        '    fetch) [ "$FETCH_OK" = 1 ] ;;\n'
+        "    rev-parse) printf '%s\\n' \"$TIP\" ;;\n"
+        "    *) return 0 ;;\n"
+        "  esac\n"
+        "}\n"
+    )
+    env = {
+        **os.environ, "GIT_LOG": log.as_posix(), "FETCH_OK": "1" if fetch_ok else "0",
+        "TIP": _TIP, "GITHUB_SHA": _SHA[_OWN], "GITHUB_OUTPUT": str(out),
+    }
+    done = subprocess.run(
+        [_BASH, "--noprofile", "--norc", "-eo", "pipefail", "-c", shims + step["run"]],
+        env=env, capture_output=True, text=True, timeout=120, cwd=tmp_path,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return out.read_text(encoding="utf-8"), done.stdout, calls
+
+
+def test_the_suite_job_token_reads_and_never_writes(parsed: dict) -> None:
+    """The range step reads the Actions API and the check-run annotations.
+
+    It needs `actions: read` and `checks: read`, and no write. A job-level
+    block REPLACES the workflow's `contents: read`, so the job names
+    `contents: read` again for its checkout.
+    """
+    assert parsed["jobs"]["test"].get("permissions") == {
+        "contents": "read", "actions": "read", "checks": "read",
+    }
+
+
+def test_a_hung_batch_cannot_hold_the_group_for_six_hours(parsed: dict) -> None:
+    """Without a limit, GitHub stops a job after 360 minutes.
+
+    A hung push batch would hold `main-full-suite` that long, and every later
+    merge would wait. The last four batches took 35 to 37 minutes (measured
+    2026-11-04). 90 minutes is about 2.4 times that. On a release, the same
+    limit ends a hung gate, and a red gate holds that day's release. A lower
+    limit can stop a slow but sound release, so change it only after a new
+    measurement.
+    """
+    assert parsed["jobs"]["test"].get("timeout-minutes") == 90, (
+        "the `test` job needs `timeout-minutes: 90`. Read this test's "
+        "docstring before you change the number."
+    )
+
+
+def test_no_other_group_in_any_workflow_can_meet_the_suite_group() -> None:
+    """A group name is repository-wide, so it spans every workflow file."""
+    groups: list[str] = []
+    for path in sorted(WORKFLOW.parent.glob("*.yml")):
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        holders = [doc, *(doc.get("jobs") or {}).values()]
+        for holder in holders:
+            conc = holder.get("concurrency")
+            if isinstance(conc, dict):
+                groups.append(str(conc.get("group", "")))
+            elif conc:
+                groups.append(str(conc))
+    assert groups.count(SUITE_GROUP) == 1, "the suite group is the `test` job's alone"
+    others = [g for g in groups if g != SUITE_GROUP]
+    clash = [g for g in others if "main-full-suite" in g or "release-" in g]
+    assert not clash, f"these groups can meet the suite group: {clash}"
+
+
+def test_the_range_step_runs_on_a_push_and_cannot_fail_the_suite(parsed: dict) -> None:
+    step = _range_step(parsed)
+    assert step.get("if") == "${{ github.event_name == 'push' }}", (
+        "a push only. A release run tests the tip, and needs no range."
+    )
+    assert step.get("continue-on-error") is True, (
+        "a failure of the range step must never fail `test`. On a release, "
+        "`test` is the gate."
+    )
+    assert 0 < int(step.get("timeout-minutes", 0)) <= 5, "a hung API call must not hold the batch group"
+    assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
+    # The jobs API names a job by its `name:`. A rename that forgets this
+    # value would find no green run, and every range would read "unknown".
+    assert step["env"]["SUITE_JOB"] == parsed["jobs"]["test"]["name"]
+    # GitHub runs the step under `bash -e`. A failed API call must reach the
+    # summary line, so the script turns -e off.
+    assert step["run"].lstrip().startswith("set +e")
+    names = [s.get("name") for s in _steps(parsed, "test")]
+    assert names.index(RANGE_STEP) < names.index("Run unit tests"), (
+        "the range goes first, so a red batch still names its PRs"
+    )
+
+
+# The range step, run for real in bash. Shell functions shadow `gh` and
+# `python3`, so the step's own text runs unchanged, as in
+# test_daily_release.py. `gh api <path>` prints the fixture file for <path>.
+
+def _bash() -> str | None:
+    if os.name == "nt":
+        # Git's bash, not WSL's bash.exe, as in test_daily_release.py.
+        git_bash = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Git/bin/bash.exe"
+        return str(git_bash) if git_bash.is_file() else None
+    return shutil.which("bash")
+
+
+_BASH = _bash()
+
+_REPO = "Hathi-Labs/Metorite"
+_RUNS = f"repos/{_REPO}/actions/workflows/deploy.yml/runs?branch=main&event=push&per_page=40"
+_OWN, _FOLDED, _GREEN, _OLDER = 300, 299, 298, 297
+_SHA = {_OWN: "c" * 40, _FOLDED: "b" * 40, _GREEN: "a" * 40, _OLDER: "9" * 40}
+#: The tip of main when this run's job started. It holds this run's push.
+_TIP = "e" * 40
+#: What the green batch really tested: the tip at ITS start, per its notice.
+_GREEN_TESTED = "d" * 40
+
+
+def _job_id(run_id: int) -> int:
+    return run_id * 10
+
+
+def _jobs_path(run_id: int) -> str:
+    return f"repos/{_REPO}/actions/runs/{run_id}/jobs?per_page=100"
+
+
+def _notes_path(run_id: int) -> str:
+    return f"repos/{_REPO}/check-runs/{_job_id(run_id)}/annotations?per_page=100"
+
+
+def _notes(tested: str) -> list[dict]:
+    # The shape GitHub gives a `::notice title=...::` line (read 2026-11-05).
+    return [
+        {"annotation_level": "notice", "path": ".github", "title": "", "message": '"The ubuntu-latest label moves."'},
+        {"annotation_level": "notice", "path": ".github", "title": "Tested commit", "message": tested},
+    ]
+
+
+def _compare_path(base: str, head: str = _TIP) -> str:
+    return f"repos/{_REPO}/compare/{base}...{head}"
+
+
+def _runs(conclusions: dict[int, str | None]) -> dict:
+    # Newest first, as the API lists them. This run is in the list too.
+    return {"workflow_runs": [
+        {"id": rid, "head_sha": _SHA[rid], "conclusion": c}
+        for rid, c in sorted(conclusions.items(), reverse=True)
+    ]}
+
+
+def _jobs(run_id: int, suite_conclusion: str | None, name: str) -> dict:
+    return {"jobs": [
+        {"id": _job_id(run_id) + 1, "name": "Lint & type-check", "conclusion": "success"},
+        {"id": _job_id(run_id), "name": name, "conclusion": suite_conclusion},
+    ]}
+
+
+def _compare(status: str, *subjects: str) -> dict:
+    commits = [
+        {"sha": f"{i:x}" * 40, "commit": {"message": f"{s}\n\nThe body text (#999)."}}
+        for i, s in enumerate(subjects, start=1)
+    ]
+    return {"status": status, "total_commits": len(commits), "commits": commits}
+
+
+def _run_range(
+    parsed: dict, tmp_path: Path, fixtures: dict[str, object], clock: int = -600,
+    tested: str = _TIP,
+) -> tuple[str, list[str]]:
+    step = _range_step(parsed)
+    fix = tmp_path / "fix"
+    fix.mkdir()
+    for api_path, body in fixtures.items():
+        (fix / re.sub(r"[^A-Za-z0-9]", "_", api_path)).write_text(json.dumps(body), encoding="utf-8")
+    summary = tmp_path / "summary.md"
+    # The fake `gh` uses bash builtins only. On a Windows PC each process
+    # start costs seconds. `SECONDS=<clock>` sets the bash clock that the
+    # step's 90 s budget reads, so a slow PC does not trip it by accident.
+    # Python on Windows prints CRLF, and the Linux runner prints LF. So the
+    # `python3` shim removes each CR, and keeps the exit code.
+    shims = (
+        f"SECONDS={clock}\n"
+        "python3() {\n"
+        f'  local out rc; out="$("{Path(sys.executable).as_posix()}" "$@")"; rc=$?\n'
+        "  out=${out//$'\\r'/}\n"
+        '  [ -z "$out" ] || printf \'%s\\n\' "$out"\n'
+        "  return $rc\n"
+        "}\n"
+        "gh() {\n"
+        '  [ "$1" = api ] || return 9\n'
+        '  printf \'%s\\n\' "$2" >> "$FIX/calls"\n'
+        '  local f="$FIX/${2//[!A-Za-z0-9]/_}" line\n'
+        '  [ -f "$f" ] || return 1\n'
+        '  while IFS= read -r line || [ -n "$line" ]; do printf \'%s\\n\' "$line"; done < "$f"\n'
+        "}\n"
+    )
+    env = {
+        **os.environ, **step["env"], "FIX": fix.as_posix(),
+        "GITHUB_REPOSITORY": _REPO, "GITHUB_RUN_ID": str(_OWN),
+        "GITHUB_SHA": _SHA[_OWN], "GITHUB_SERVER_URL": "https://github.com",
+        "GITHUB_STEP_SUMMARY": str(summary), "TESTED_SHA": tested,
+    }
+    # The flags GitHub gives a `run:` step: bash --noprofile --norc -eo pipefail.
+    done = subprocess.run(
+        [_BASH, "--noprofile", "--norc", "-eo", "pipefail", "-c", shims + step["run"]],
+        env=env, capture_output=True, text=True, timeout=300, cwd=tmp_path,
+    )
+    calls_file = fix / "calls"
+    calls = calls_file.read_text(encoding="utf-8").split() if calls_file.exists() else []
+    text = summary.read_text(encoding="utf-8") if summary.exists() else ""
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "### Tested range" in text, done.stdout + done.stderr
+    assert f"- To: `{tested[:12]}`, the commit that this job tested." in text, text
+    if tested != _SHA[_OWN]:
+        assert f"This run's push was `{_SHA[_OWN][:12]}`" in text, text
+    return text, calls
+
+
+needs_bash = pytest.mark.skipif(_BASH is None, reason="no bash on this machine")
+
+
+@needs_bash
+def test_the_tip_step_moves_the_tree_to_the_tip_and_names_it(parsed: dict, tmp_path: Path) -> None:
+    out, stdout, calls = _run_tip(parsed, tmp_path, fetch_ok=True)
+    assert out.strip() == f"sha={_TIP}"
+    assert f"::notice title=Tested commit::{_TIP}" in stdout
+    assert calls[0] == TIP_FETCH and TIP_CHECKOUT in calls, calls
+
+
+@needs_bash
+def test_a_failed_fetch_tests_the_run_commit_and_says_so(parsed: dict, tmp_path: Path) -> None:
+    out, stdout, calls = _run_tip(parsed, tmp_path, fetch_ok=False)
+    assert out.strip() == f"sha={_SHA[_OWN]}"
+    assert "::warning title=Tip of main unknown::" in stdout
+    assert f"::notice title=Tested commit::{_SHA[_OWN]}" in stdout
+    assert not any(c.startswith("git checkout") for c in calls), "no fetch, so the tree stays"
+
+
+@needs_bash
+def test_the_range_starts_at_what_the_last_green_batch_tested(parsed: dict, tmp_path: Path) -> None:
+    """The green batch tested the tip at ITS start. Its notice names it."""
+    name = parsed["jobs"]["test"]["name"]
+    text, calls = _run_range(parsed, tmp_path, {
+        _RUNS: _runs({_OWN: None, _FOLDED: "cancelled", _GREEN: "success", _OLDER: "success"}),
+        # A folded run: its suite never started.
+        _jobs_path(_FOLDED): _jobs(_FOLDED, "cancelled", name),
+        _jobs_path(_GREEN): _jobs(_GREEN, "success", name),
+        _notes_path(_GREEN): _notes(_GREEN_TESTED),
+        _compare_path(_GREEN_TESTED): _compare(
+            "ahead", "Chat: one fix (#11)", "Merge pull request #12 from Hathi-Labs/x"),
+    })
+    assert f"- From: `{_GREEN_TESTED[:12]}`" in text, text
+    assert f"actions/runs/{_GREEN}" in text
+    assert "2 new commit(s)" in text
+    assert "PRs: #11, #12." in text, "the subject names the PR, and the body does not"
+    assert "#999" not in text
+    assert _compare_path(_GREEN_TESTED) in calls, "the range ends at the tested tip"
+    assert _jobs_path(_OWN) not in calls, "this run is not its own last green run"
+    assert _jobs_path(_OLDER) not in calls, "the search stops at the newest green run"
+    assert calls[0] == _RUNS, "push runs on main only"
+
+
+@needs_bash
+def test_a_green_batch_with_no_notice_starts_at_its_own_commit(parsed: dict, tmp_path: Path) -> None:
+    """An older batch, or a failed notice read. Its push commit is an ancestor
+    of what it tested, so the range can hold more commits, never fewer.
+    It reads the JOB: a run is red when only `publish-staging` failed."""
+    name = parsed["jobs"]["test"]["name"]
+    text, _ = _run_range(parsed, tmp_path, {
+        _RUNS: _runs({_OWN: None, _FOLDED: "failure", _GREEN: "success"}),
+        _jobs_path(_FOLDED): _jobs(_FOLDED, "success", name),
+        _compare_path(_SHA[_FOLDED]): _compare("ahead", "Docs: a line (#13)"),
+    })
+    assert f"- From: `{_SHA[_FOLDED][:12]}`" in text, text
+    assert f"actions/runs/{_FOLDED}" in text
+    assert "PRs: #13." in text
+
+
+@needs_bash
+def test_a_rerun_names_its_own_commit(parsed: dict, tmp_path: Path) -> None:
+    """A rerun skips the tip step, so it tests and names GITHUB_SHA."""
+    name = parsed["jobs"]["test"]["name"]
+    text, _ = _run_range(parsed, tmp_path, {
+        _RUNS: _runs({_OWN: None, _GREEN: "success"}),
+        _jobs_path(_GREEN): _jobs(_GREEN, "success", name),
+        _compare_path(_SHA[_GREEN], _SHA[_OWN]): _compare("ahead", "Fix (#15)"),
+    }, tested=_SHA[_OWN])
+    assert "This run's push was" not in text
+    assert "PRs: #15." in text
+
+
+@needs_bash
+@pytest.mark.parametrize(("case", "why"), [
+    ("api-down", "the Actions API gave no list of runs"),
+    ("no-green-run", "no push run of this job passed in the last 40 runs"),
+    ("base-newer", f"the last green batch tested `{_SHA[_GREEN][:12]}`, which is newer than this commit"),
+    ("diverged", f"`{_SHA[_GREEN][:12]}` and this commit have diverged"),
+    ("compare-down", "the compare API gave no answer"),
+    ("slow-api", "the search for a green run took over 90 s"),
+])
+def test_the_range_reads_unknown_and_the_step_still_ends_clean(
+    parsed: dict, tmp_path: Path, case: str, why: str,
+) -> None:
+    name = parsed["jobs"]["test"]["name"]
+    fixtures: dict[str, object] = {}
+    if case != "api-down":
+        fixtures[_RUNS] = _runs({_OWN: None, _FOLDED: "cancelled", _GREEN: "success"})
+        fixtures[_jobs_path(_FOLDED)] = _jobs(_FOLDED, "cancelled", name)
+        fixtures[_jobs_path(_GREEN)] = _jobs(
+            _GREEN, "failure" if case == "no-green-run" else "success", name)
+    if case == "base-newer":
+        fixtures[_compare_path(_SHA[_GREEN])] = _compare("behind")
+    if case == "diverged":
+        fixtures[_compare_path(_SHA[_GREEN])] = _compare("diverged", "Other (#14)")
+    # 1000 s on the bash clock: the budget is spent before the first call.
+    text, calls = _run_range(parsed, tmp_path, fixtures, clock=1000 if case == "slow-api" else -600)
+    assert "- From: unknown (" in text, text
+    assert why in text, text
+    assert "PRs:" not in text
+    assert "is not an ancestor" not in text
+    if case == "slow-api":
+        assert not any("/jobs" in c for c in calls), "a spent budget makes no more calls"
 
 
 # ── Verify by evidence, never by a green tick ───────────────────────────────

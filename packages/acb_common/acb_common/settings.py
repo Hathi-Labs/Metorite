@@ -921,6 +921,18 @@ class Settings(BaseSettings):
     # (ALN-4b). Fence: tests/unit/test_project_authorities_r8.py.
     authority_pins_orgs: str = ""
 
+    # ── The app requests of agents (WS-MCP MCP-P1b-1) ──────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, the four request routes of `/agent-access` answer 404,
+    # and Integrations, AI agents shows no list "Waiting for you". It is the
+    # dark switch of the approval store, because `AGENT_ACCESS_ENABLED` is on in
+    # production. The one reader is `gateway.app_requests.requests_allowed`.
+    # A SIGHUP reload applies a change. Only the owner flips it, under a dated
+    # `enforcement-flip` grant, after MCP-P1b-2 or STU-B2c-2 can ask. Fence:
+    # tests/unit/test_app_requests_r8.py.
+    app_requests_orgs: str = ""
+
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
     # ON makes `GET /search/company` rank newer records first inside each app,

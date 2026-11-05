@@ -314,6 +314,7 @@ def _ended_runs(past_where: str) -> str:
         f"FROM pm_agent_runs r"
         f"  JOIN pm_tasks t ON t.id = r.task_id"
         f" WHERE ({past_where})"
+        f"   AND r.task_id IS NOT NULL"
         f"   AND r.status = ANY(CAST(:outcomes AS text[]))"
         f"   AND r.ended_at IS NOT NULL"
     )
@@ -375,6 +376,7 @@ def silent_runs_sql(open_where: str) -> str:
         f"  JOIN pm_task_statuses s ON s.id = t.status_id"
         f"  JOIN pm_projects p ON p.id = t.project_id"
         f" WHERE ({open_where})"
+        f"   AND r.task_id IS NOT NULL"
         f"   AND {silent_run_sql('r')}"
         f" ORDER BY quiet_since ASC, r.id ASC"
         f" LIMIT :max_named"
@@ -405,6 +407,7 @@ def _sized_runs_sql(past_where: str) -> str:
         f"  JOIN pm_tasks t ON t.id = r.task_id"
         f" {run_time_joins_sql()}"
         f" WHERE ({past_where})"
+        f"   AND r.task_id IS NOT NULL"
         f"   AND r.status = '{OUTCOME_SUCCESS}'"
         f"   AND NOT {SERVER_CLOSED_SQL}"
         f"   AND r.ended_at >= {window_start_sql()}"
