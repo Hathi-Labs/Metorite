@@ -178,8 +178,9 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   to go green. Then run `bash scripts/premerge.sh` in the worktree, in the
   same command as the merge:
   `bash scripts/premerge.sh > <log> 2>&1 && gh pr merge <n> --squash`. It tests
-  the merge with today's main (migration numbers, H-ids, D-numbers, files both
-  sides changed). From LD-10 it also refuses a head commit with no
+  the merge with today's main. It runs the collision fences only: migration
+  numbers, H-ids and D-numbers. It names the files both sides changed. Add
+  `--with-tests` to run the affected tests too, on this PC (D176). From LD-10 it also refuses a head commit with no
   `local-staging` pass. Exit 1 means merge `origin/main` into the branch, fix,
   push, and run the gate and `pr-check` again. Then watch the `deploy` run to
   green.
