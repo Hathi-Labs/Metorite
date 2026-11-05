@@ -621,6 +621,15 @@ class Settings(BaseSettings):
     # `gateway.brief.flags.exceptions`. A flip on a box is gate
     # `enforcement-flip`. Fence: tests/unit/test_reach_exceptions.py.
     brief_exceptions: bool = False
+    # `brief_compose` (WS-BRIEF BR-2a-2, 2026-11-05) is the switch of the
+    # phrase step, default OFF. On, a run with 4 claims or more makes ONE
+    # `tier-fast` call through the Console Router, and the model writes the
+    # lead. Off, or with the Router off, the lead is the template lead, as
+    # before. It holds for an org only when `BRIEF_ENABLED` and `BRIEF_ORGS`
+    # hold too. The one reader is `gateway.brief.flags.compose`. The call
+    # spends credits, so a flip on production is OWNER-GATE (core_brief.md
+    # §10 row 4). Fence: tests/unit/test_brief_phrase.py.
+    brief_compose: bool = False
 
     # ── Web push (WS-66 PN-1, 2026-10-25) ───────────────────────────────────
     #
