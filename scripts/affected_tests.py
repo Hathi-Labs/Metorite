@@ -15,7 +15,9 @@ A test file is picked when it:
 2. names a changed file by its path (many tests read docs, workflows, SQL),
 3. imports a changed module (``import a.b``, ``from a import b``, an alias,
    or a dotted string such as ``patch("a.b.fn")``), or
-4. imports a module that imports a changed module (one level, see HUB_LIMIT).
+4. imports a module that imports a changed module (one level, see HUB_LIMIT),
+5. lists a folder of the changed file (``glob``, ``rglob``, ``iterdir``), or
+6. scans the whole tree, when a Python file outside tests/ changed.
 
 Imports are read with ``ast``, not a regex: a regex lost 38% of the real
 import pairs to multi-line imports and ``as`` aliases (measured 2026-10-16).
@@ -234,11 +236,64 @@ def _composed_path_readers(path: str, tests: dict[str, str]) -> set[str]:
     parent, grand = p.parent.name, p.parent.parent.name
     quoted = (f'"{name}"', f"'{name}'")
     ctx = re.compile(rf"""["'/]{re.escape(parent)}["'/]""")
+    # A name written as part of a path, as in "google_drive/auth.py" (round 4).
+    slashed = re.compile(rf"""["'/]{re.escape(name)}["']""")
     return {
         t
         for t, body in tests.items()
-        if any(q in body for q in quoted) and (ctx.search(body) or grand in body)
+        if (any(q in body for q in quoted) or slashed.search(body))
+        and (ctx.search(body) or grand in body)
     }
+
+
+# A call that lists a folder. A test with one reads files it never names.
+_SCAN_CALL = re.compile(r"\.r?glob\(|\.iterdir\(|os\.walk\(|os\.listdir\(|scandir\(")
+# Folder names too wide to point at one test: every scanner holds them.
+_BROAD_DIRS = {"apps", "packages", "services", "skills"}
+
+
+def _folder_scanners(path: str, tests: dict[str, str], root: Path = ROOT) -> set[str]:
+    """Tests that list a folder of the changed file and never name the file.
+
+    A test with ``.glob(``, ``.rglob(``, ``iterdir(``, ``os.walk(`` or
+    ``os.listdir(`` is picked when it names the parent or grandparent folder of
+    the path in a path context, or imports the package of the module.
+    A false hit costs only time (CIV-3 review round 4, P1-b).
+    """
+    p = Path(path)
+    if p.suffix != ".py" or len(p.parts) < 3:
+        return set()
+    names = [n for n in p.parent.parts if n not in _BROAD_DIRS][-2:]
+    if not names:
+        return set()
+    alt = "|".join(re.escape(n) for n in names)
+    ctx = re.compile(rf"""["'/](?:{alt})["'/]""")
+    mod = module_name(path, root)
+    pkg = re.compile(rf"\b{re.escape(mod.rsplit('.', 1)[0])}\b") if mod and "." in mod else None
+    return {
+        t
+        for t, body in tests.items()
+        if _SCAN_CALL.search(body) and (ctx.search(body) or (pkg and pkg.search(body)))
+    }
+
+
+# A test that lists a whole tree (apps, packages, scripts or the repo root).
+# A changed test file does not trigger them: it would select them for every test PR.
+_TREE_SCAN = re.compile(r"\.rglob\(|\.glob\(\s*[\"']\*\*|os\.walk\(")
+_TREE_ROOT = re.compile(
+    r"""[\(\[,]\s*["'](?:apps|packages|scripts)["']\s*[,\)\]/]|/\s*["'](?:apps|packages|scripts)["']"""
+    r"""|\b_?(?:REPO_ROOT|REPO|ROOT|PROJECT_ROOT)\s*\)?\s*\.\s*r?glob\("""
+    r"""|os\.walk\(\s*_?(?:REPO_ROOT|REPO|ROOT)\b"""
+)
+
+
+def tree_scanners(tests: dict[str, str]) -> set[str]:
+    """Tests that scan all of apps/, packages/, scripts/ or the repo root (CIV-3 round 4).
+
+    No folder rule reaches them. Any change to a Python file outside tests/
+    selects every one, and a docs-only change selects none (P1-c).
+    """
+    return {t for t, body in tests.items() if _TREE_SCAN.search(body) and _TREE_ROOT.search(body)}
 
 
 def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str], list[str]]:
@@ -270,6 +325,9 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
             needles.append(name)
         picked |= {t for t, body in tests.items() if any(n in body for n in needles)}
         picked |= _composed_path_readers(path, tests)
+        picked |= _folder_scanners(path, tests, root)
+        if path.endswith(".py") and not path.startswith("tests/"):
+            picked |= tree_scanners(tests)
 
         for dotted in module_names(path, root):
             picked |= test_users.get(dotted, set())

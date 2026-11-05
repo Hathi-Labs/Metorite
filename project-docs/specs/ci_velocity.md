@@ -130,6 +130,11 @@ space-separated line in a job output (a typical list is 2-20 KB against a 1 MB
 limit, and no shard downloads anything). `ci_unit_guard.py gate-output` sends a
 list over 200 KB, or a path outside `tests/*.py`, to a full run. The shard
 step `Pick this shard's tests` sets `mode` to `full`, `selection` or `empty`.
+Two rules in `affected_tests.py` cover a test that reads files it never names.
+The folder rule picks a test with a `glob`, `rglob` or `iterdir` call. The test
+must name the parent or grandparent folder of the changed file. The tree rule
+picks every test that scans `apps`, `packages`, `scripts` or the repo root.
+It runs when the PR changes a Python file outside `tests/`. A docs-only PR picks none.
 
 **Done when:**
 - The `changes` job runs CIV-2. It exports `full` and the file list through

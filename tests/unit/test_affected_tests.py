@@ -366,19 +366,20 @@ def test_the_real_evals_checkers_reach_their_tests() -> None:
 
 def test_a_test_that_composes_the_path_from_quoted_parts_is_picked(tmp_path: Path) -> None:
     _gate_repo(tmp_path)
-    _write(tmp_path, "apps/svc/box/pkg_x/guarded.py", "X = 1\n")
-    _write(tmp_path, "apps/svc/other/app/main.py", "X = 1\n")
+    # Hyphenated names parse as no module, so only the new rule can pick them.
+    _write(tmp_path, "apps/svc/box/pkg-x/a-guard.py", "X = 1\n")
+    _write(tmp_path, "apps/svc/other/app-y/run-it.py", "X = 1\n")
     _write(
         tmp_path,
         "tests/unit/test_composed.py",
-        'D = ROOT / "box" / "pkg_x"\nsrc = (D / "guarded.py").read_text()\n',
+        'D = ROOT / "box" / "pkg-x"\nsrc = (D / "a-guard.py").read_text()\n',
     )
-    _write(tmp_path, "tests/unit/test_ctx.py", 'A = ROOT / "other/app"\nA.joinpath("main.py")\n')
-    assert "tests/unit/test_composed.py" in sel.gate(["apps/svc/box/pkg_x/guarded.py"], tmp_path)["files"]
-    out = sel.gate(["apps/svc/other/app/main.py"], tmp_path)["files"]
+    _write(tmp_path, "tests/unit/test_ctx.py", 'A = ROOT / "other/app-y"\nA.joinpath("run-it.py")\n')
+    assert "tests/unit/test_composed.py" in sel.gate(["apps/svc/box/pkg-x/a-guard.py"], tmp_path)["files"]
+    out = sel.gate(["apps/svc/other/app-y/run-it.py"], tmp_path)["files"]
     assert "tests/unit/test_ctx.py" in out
-    wrong = {"tests/unit/test_wrong_folder.py": 'x = "main.py"\ny = "elsewhere"\n'}
-    assert sel._composed_path_readers("apps/svc/other/app/main.py", wrong) == set()
+    wrong = {"tests/unit/test_wrong_folder.py": 'x = "run-it.py"\ny = "elsewhere"\n'}
+    assert sel._composed_path_readers("apps/svc/other/app-y/run-it.py", wrong) == set()
 
 
 def test_the_real_composed_path_readers_are_picked() -> None:
@@ -394,3 +395,98 @@ def test_the_real_composed_path_readers_are_picked() -> None:
     for path, test in cases.items():
         out = sel.gate([path])
         assert out["full"] or f"tests/unit/{test}" in out["files"], path
+
+
+# ── CIV-3 review round 4 ───────────────────────────────────────────────────
+
+
+def test_a_name_written_after_a_slash_is_a_composed_path_reader(tmp_path: Path) -> None:
+    _gate_repo(tmp_path)
+    _write(tmp_path, "apps/svc/g-drive/au-th.py", "X = 1\n")
+    _write(tmp_path, "tests/unit/test_slash.py", 'FILES = ["g-drive/au-th.py"]\n')
+    assert "tests/unit/test_slash.py" in sel.gate(["apps/svc/g-drive/au-th.py"], tmp_path)["files"]
+
+
+def test_a_test_that_lists_a_folder_is_picked_without_naming_the_file(tmp_path: Path) -> None:
+    _gate_repo(tmp_path)
+    _write(tmp_path, "apps/svc/gw/routes/my-dir/sub-mod.py", "X = 1\n")
+    _write(tmp_path, "apps/svc/zz/lone-dir/sub-mod.py", "X = 1\n")
+    _write(tmp_path, "tests/unit/test_lists.py", 'D = ROOT / "gw/routes/my-dir"\nD.glob("*.py")\n')
+    _write(tmp_path, "tests/unit/test_up.py", 'D = ROOT / "gw/routes"\nD.rglob("*.py")\n')
+    _write(tmp_path, "tests/unit/test_names.py", 'D = ROOT / "gw/routes/my-dir"\nread(D)\n')
+    out = sel.gate(["apps/svc/gw/routes/my-dir/sub-mod.py"], tmp_path)["files"]
+    assert "tests/unit/test_lists.py" in out
+    assert "tests/unit/test_up.py" in out  # an ancestor folder is scanned
+    assert "tests/unit/test_names.py" not in out  # no scan call
+    far = sel.gate(["apps/svc/zz/lone-dir/sub-mod.py"], tmp_path)["files"]
+    assert "tests/unit/test_lists.py" not in far
+
+
+def test_a_test_that_lists_the_package_of_the_module_is_picked(tmp_path: Path) -> None:
+    _gate_repo(tmp_path)
+    _write(tmp_path, "packages/pk/pk/__init__.py")
+    _write(tmp_path, "packages/pk/pk/leafy.py", "X = 1\n")
+    _write(
+        tmp_path,
+        "tests/unit/test_pkg_dir.py",
+        "import pk as package\nfrom pathlib import Path\n"
+        "Path(package.__file__).parent.glob('*.py')\n",
+    )
+    assert "tests/unit/test_pkg_dir.py" in sel.gate(["packages/pk/pk/leafy.py"], tmp_path)["files"]
+
+
+def test_the_real_folder_scanners_are_picked() -> None:
+    cases = {
+        "apps/skills/skill-projects/skill_projects/guarded.py": "test_projects_agent_grants.py",
+        "apps/services/gateway/gateway/routes/tasks/ai.py": "test_tasks_ai_no_thinking.py",
+        "apps/services/gateway/gateway/routes/crm/auto_lead.py": "test_crm_mirror_readonly.py",
+        "apps/services/gateway/gateway/routes/crm/reports.py": "test_crm_mirror_readonly.py",
+        "apps/services/gateway/gateway/routes/crm/terms.py": "test_crm_mirror_readonly.py",
+        "apps/services/gateway/gateway/routes/email/automation/held_card.py": (
+            "test_email_automation_tenancy.py"
+        ),
+        "apps/services/gateway/gateway/routes/projects/analytics.py": "test_projects_routes.py",
+        "apps/services/gateway/gateway/kb_sources/google_drive/auth.py": (
+            "test_kb_sources_no_global_creds.py"
+        ),
+        "apps/services/gateway/gateway/kb_sources/google_drive/client.py": (
+            "test_kb_sources_no_global_creds.py"
+        ),
+    }
+    for path, test in cases.items():
+        assert f"tests/unit/{test}" in sel.gate([path])["files"], path
+
+
+def test_a_python_change_under_apps_selects_every_tree_scanner(tmp_path: Path) -> None:
+    _gate_repo(tmp_path)
+    _write(tmp_path, "apps/svc/zz-mod/x-y.py", "X = 1\n")
+    _write(tmp_path, "docs/note.md", "text\n")
+    _write(
+        tmp_path,
+        "tests/unit/test_tree.py",
+        'for p in (ROOT / "apps").rglob("*.py"):\n    pass\n',
+    )
+    _write(tmp_path, "tests/unit/test_tmp_scan.py", "for p in tmp_path.rglob('*.csv'):\n    pass\n")
+    out = sel.gate(["apps/svc/zz-mod/x-y.py"], tmp_path)["files"]
+    assert "tests/unit/test_tree.py" in out
+    assert "tests/unit/test_tmp_scan.py" not in out
+    assert "tests/unit/test_tree.py" not in sel.gate(["docs/note.md"], tmp_path)["files"]
+
+
+def test_the_real_tree_scanners_follow_a_python_change_and_not_a_doc() -> None:
+    scanners = (
+        "test_customer_child_env_no_github_token.py",
+        "test_crm_kill_switch.py",
+        "test_email_owner_predicate_seam.py",
+        "test_signin_requests.py",
+        "test_artifact_registry.py",
+    )
+    out = sel.gate(["apps/services/gateway/gateway/routes/crm/auto_lead.py"])
+    for t in scanners:
+        assert out["full"] or f"tests/unit/{t}" in out["files"], t
+    for other in ("scripts/gen_artifact_kit.py", "evals/_runner.py"):
+        out = sel.gate([other])
+        assert out["full"] or "tests/unit/test_signin_requests.py" in out["files"], other
+    docs = sel.gate(["project-docs/specs/ci_velocity.md"])
+    for t in scanners:
+        assert f"tests/unit/{t}" not in docs["files"], t
