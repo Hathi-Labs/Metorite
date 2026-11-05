@@ -147,6 +147,15 @@ export function pressAction(
   onAction?.(action.sentence);
 }
 
+/**
+ * Can the member try the read again? The door words a wait or a network fault with
+ * "Try again", and nothing else can change by a retry (a 404, a 403, a sign-in). A
+ * generic fault with no sentence can be tried again.
+ */
+export function canRetryRead(error: string | null | undefined): boolean {
+  return !error || /try again/i.test(error);
+}
+
 /** What a bound block draws. */
 export type BoundView = "loading" | "error" | "empty" | "rows";
 

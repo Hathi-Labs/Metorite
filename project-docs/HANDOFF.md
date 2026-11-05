@@ -1542,11 +1542,11 @@ line — never reclaim a number by deleting the other entry.
   A hit means this is open.
 - **Added:** 2026-10-15 · branch `wa-calendar-blocks`
 
-### H-312 · Five reads of a member's settings name no tenant · [AGENT]
-- **Metorite:** #562. The task holds the full entry (moved 2026-10-28, D118).
+### H-312 · Ten statements in the task routes name no tenant (seven reads, three writes), and their tables have no org column · [AGENT]
+- **Metorite:** #1646. It waits on H-104 (#608). The five `user_settings` reads of the first entry closed on 2026-11-04 (#562).
 - **Check:** `git grep -n -A2 "WHERE user_id = :uid" -- apps/services/gateway/gateway/routes/tasks`.
   A statement that names no `organization_id` means this entry stays.
-- **Added:** 2026-10-15 · MD-3c review
+- **Added:** 2026-10-15 · MD-3c review · narrowed 2026-11-04
 
 ### H-313 · An operator viewer can reach the tenant org purge · [AGENT]
 - **Metorite:** #523. The task holds the full entry (moved 2026-10-28, D118).
