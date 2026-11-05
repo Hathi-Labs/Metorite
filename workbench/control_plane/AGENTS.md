@@ -291,7 +291,10 @@ Twelve rules on top of the three above. Each one exists because somebody broke i
    one line: number, title, status pill and open icon. Fence:
    `src/lib/cardDenseLayout.test.ts`.
    **A card key has one label,** in `CARD_FIELDS` in `src/lib/cardFields.ts`,
-   and its kind draws its value. The Python fakes read that map and fail a
+   and its kind draws its value. ⚠️ Read the map through `ownSpec`
+   (`Object.hasOwn`) only. A key comes from tool and agent data, and
+   `constructor` or `__proto__` read the prototype chain and broke a card
+   (MCP-P1b-1 re-review P1). The Python fakes read that map and fail a
    card test that prints a key with no label (`tests/unit/_card_words.py`).
    A read result draws through `components/Readout.tsx`, with no
    id and no `[key]`. That includes the email and CRM reads. Fences:
