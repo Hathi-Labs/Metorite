@@ -1130,9 +1130,15 @@ def test_the_runtime_identity_check_turns_red(monkeypatch):
 #: has a connection for its row. Step 3b keeps the writes of
 #: ``MCP_WRITE_ROUTES``. Nothing new is read from the request. The pins
 #: before it were 3.12 ``8b11f0fe…0a5d6d71`` and 3.13 ``78ffade4…d0d8cdf7``.
+#:
+#: EA-17a (2026-11-04, external_agent_access.md §10.8, D-EA-12): step 7
+#: copies ``connection.left_out_projects`` into ``AgentScope``. The value
+#: comes from the connection row, as the pins do. Nothing new is read from
+#: the request: the scan and the tripwire are as before. The pins before it
+#: were 3.12 ``8eff3015…1f25d2bc9`` and 3.13 ``340a6d01…d2bd756a``.
 _BRANCH_ZERO_DIGESTS: dict[tuple[int, int], str] = {
-    (3, 12): "8eff3015f10c979d7196a647ead3cb1d6d2dc82465e663b7179c9b51f25d2bc9",
-    (3, 13): "340a6d01171301493d9906d103a883db37ea42b509abda376c9d0fe0d2bd756a",
+    (3, 12): "c737e1f19f504f87f62fea3f76428c02c0a4861b23299dad137501ed0ae25127",
+    (3, 13): "034c2925beaec3fae77ed31ae84a05ad7917a2a32269fd8337164b209155f094",
 }
 
 #: EA-6a: two helpers of ``deps.py`` that branch 0 calls and that never see
