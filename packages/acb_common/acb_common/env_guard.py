@@ -248,6 +248,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # WS-43y1a: the fault hook of the data engine (exit, kill, sleep, grow).
     # Only its tests set it. A tenant that set it would break each verb.
     "DATA_ENGINE_FAULT",
+    # WS-BUD BUD-1: the capture rig of e2e/buddy-hello.spec.ts. Only a local
+    # capture run sets them. They choose the look and the size of a capture.
+    "HELLO_ACCENT", "HELLO_DENSITY", "HELLO_HEIGHT", "HELLO_NAME",
+    "HELLO_SHOTS", "HELLO_THEME", "HELLO_WIDTH",
     # Server: uvicorn reads these from the env of acb-gateway.service.
     "FORWARDED_ALLOW_IPS", "WEB_CONCURRENCY",
     # Deploy, backup and watchdog scripts (variables they read).
