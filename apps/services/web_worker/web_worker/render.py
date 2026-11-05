@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
@@ -63,75 +63,113 @@ READ_WORLD = "web-worker-read"
 #: the string in a global of that world, and Python reads it in slices. The
 #: title is cut here, so a huge title never leaves the renderer.
 SNAPSHOT_JS = """(() => {
+  const well = (t) => (typeof t.toWellFormed === 'function')
+    ? t.toWellFormed() : t.replace(/[\\uD800-\\uDFFF]/g, '\\uFFFD');
   const d = document;
-  const html = (d.doctype ? '<!DOCTYPE ' + d.doctype.name + '>' : '')
-    + (d.documentElement ? d.documentElement.outerHTML : '');
+  const html = well((d.doctype ? '<!DOCTYPE ' + d.doctype.name + '>' : '')
+    + (d.documentElement ? d.documentElement.outerHTML : ''));
   globalThis.__webWorkerDoc = html;
-  return {length: html.length, title: String(d.title || '').slice(0, 1000)};
+  return {length: html.length, title: well(well(String(d.title || '')).slice(0, 1000))};
 })()"""
 
 #: UTF-16 units of one slice. A slice is at most 3 times this in UTF-8.
 READ_SLICE = 256 * 1024
+
+#: One slice of the snapshot, from unit ``{start}`` to at most ``{end}``.
+#: When the unit before the end is a high surrogate, the slice ends one unit
+#: earlier, so it never cuts a surrogate pair. It answers ``[end, text]``.
+SLICE_JS = """(() => {{
+  const d = globalThis.__webWorkerDoc;
+  let e = Math.min({end}, d.length);
+  if (e < d.length && e > {start} + 1) {{
+    const c = d.charCodeAt(e - 1);
+    if (c >= 0xD800 && c <= 0xDBFF) e -= 1;
+  }}
+  return [e, d.slice({start}, e)];
+}})()"""
 
 DROP_JS = "delete globalThis.__webWorkerDoc"
 
 Evaluate = Callable[[str], Awaitable[Any]]
 
 
+def _utf8_size(text: str) -> int:
+    """The UTF-8 size of ``text``. A lone surrogate is ``bad text``."""
+    try:
+        return len(text.encode("utf-8"))
+    except UnicodeError:
+        raise PageRefused("bad text") from None
+
+
 async def read_document(evaluate: Evaluate, cap: int = MAX_DOCUMENT_BYTES) -> tuple[str, str]:
     """The HTML and the title of the page, read in the isolated world.
 
-    The snapshot gives the length in UTF-16 units. A UTF-8 byte count is at
-    least that, so a longer snapshot gets ``too large`` and no slice is read.
-    Else Python reads slices of READ_SLICE units, and it stops when the UTF-8
-    bytes pass ``cap``. So Python never holds more than ``cap`` and one slice.
+    The snapshot makes the HTML and the title well formed (``toWellFormed``),
+    so a lone surrogate becomes U+FFFD. It gives the length in UTF-16 units.
+    A UTF-8 byte count is at least that, so a longer snapshot gets ``too
+    large`` and no slice is read. Else Python reads slices of READ_SLICE
+    units, and no slice cuts a surrogate pair. It stops when the UTF-8 bytes
+    pass ``cap``. So Python never holds more than ``cap`` and one slice. A
+    lone surrogate that still arrives is ``bad text``, never a fault.
+
     It never asks the main world for the HTML, because the page controls
     that world and can make its answer unbounded."""
     try:
         snap = await evaluate(SNAPSHOT_JS)
         length = int(snap["length"])
         title = str(snap.get("title", ""))[:1000]
+        _utf8_size(title)
         if length > cap:
             raise PageRefused("too large")
         parts: list[str] = []
         size = 0
-        for start in range(0, length, READ_SLICE):
-            part = await evaluate(
-                f"globalThis.__webWorkerDoc.slice({start}, {min(start + READ_SLICE, length)})")
-            if not isinstance(part, str) or len(part) > READ_SLICE:
+        start = 0
+        while start < length:
+            answer = await evaluate(SLICE_JS.format(start=start, end=start + READ_SLICE))
+            if not isinstance(answer, list) or len(answer) != 2:
                 raise PageRefused("unreadable")
-            size += len(part.encode("utf-8"))
+            end, part = int(answer[0]), answer[1]
+            if not isinstance(part, str) or not start < end <= start + READ_SLICE:
+                raise PageRefused("unreadable")
+            size += _utf8_size(part)
             if size > cap:
                 raise PageRefused("too large")
             parts.append(part)
+            start = end
         return "".join(parts), title
     finally:
         with contextlib.suppress(Exception):
             await evaluate(DROP_JS)
 
 
-async def isolated_evaluator(context: Any, page: Any) -> Evaluate:
-    """An evaluate in a new isolated world of the main frame, over CDP."""
+@contextlib.asynccontextmanager
+async def isolated_world(context: Any, page: Any) -> AsyncIterator[Evaluate]:
+    """An evaluate in a new isolated world of the main frame, over CDP. The
+    CDP session detaches when the block ends."""
     session = await context.new_cdp_session(page)
-    tree = await session.send("Page.getFrameTree")
-    world = await session.send("Page.createIsolatedWorld", {
-        "frameId": tree["frameTree"]["frame"]["id"],
-        "worldName": READ_WORLD,
-        "grantUniveralAccess": False,
-    })
-    context_id = world["executionContextId"]
-
-    async def evaluate(expression: str) -> Any:
-        answer = await session.send("Runtime.evaluate", {
-            "expression": expression,
-            "contextId": context_id,
-            "returnByValue": True,
+    try:
+        tree = await session.send("Page.getFrameTree")
+        world = await session.send("Page.createIsolatedWorld", {
+            "frameId": tree["frameTree"]["frame"]["id"],
+            "worldName": READ_WORLD,
+            "grantUniveralAccess": False,
         })
-        if "exceptionDetails" in answer:
-            raise PageRefused("unreadable")
-        return answer["result"].get("value")
+        context_id = world["executionContextId"]
 
-    return evaluate
+        async def evaluate(expression: str) -> Any:
+            answer = await session.send("Runtime.evaluate", {
+                "expression": expression,
+                "contextId": context_id,
+                "returnByValue": True,
+            })
+            if "exceptionDetails" in answer:
+                raise PageRefused("unreadable")
+            return answer["result"].get("value")
+
+        yield evaluate
+    finally:
+        with contextlib.suppress(Exception):
+            await session.detach()
 
 #: Every URL, for ``context.route`` and ``context.route_web_socket``.
 ALL = re.compile(r".*")
@@ -240,5 +278,6 @@ class ChromiumRenderer:
         # A script can grow the DOM past the cap of the answer, and it can
         # patch what the main world sees. So the read runs in an isolated
         # world, in slices, and never through the main world.
-        html, title = await read_document(await isolated_evaluator(context, page))
+        async with isolated_world(context, page) as evaluate:
+            html, title = await read_document(evaluate)
         return html, record.top_url or page.url, title

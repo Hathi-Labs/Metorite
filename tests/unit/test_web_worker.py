@@ -1054,26 +1054,67 @@ def test_a_job_runs_at_most_its_fetches_at_once() -> None:
     assert 1 <= live["most"] <= limits.FETCHES_PER_JOB
 
 
-class FakeWorld:
-    """An isolated world over a fake document. It records each expression,
-    so a test can show which slices Python asked for."""
+def _units(text: str) -> list[int]:
+    """``text`` as UTF-16 code units, as a JavaScript string holds it."""
+    raw = text.encode("utf-16-le", "surrogatepass")
+    return [int.from_bytes(raw[i:i + 2], "little") for i in range(0, len(raw), 2)]
 
-    def __init__(self, html: str, title: str = "T") -> None:
-        self.html, self.title = html, title
+
+def _text(units: list[int]) -> str:
+    """UTF-16 units as CDP gives them to Python: a lone surrogate stays."""
+    return b"".join(u.to_bytes(2, "little") for u in units).decode("utf-16-le", "surrogatepass")
+
+
+def _well(units: list[int]) -> list[int]:
+    """``String.prototype.toWellFormed``: each lone surrogate is U+FFFD."""
+    out: list[int] = []
+    i = 0
+    while i < len(units):
+        u = units[i]
+        if 0xD800 <= u <= 0xDBFF and i + 1 < len(units) and 0xDC00 <= units[i + 1] <= 0xDFFF:
+            out += units[i:i + 2]
+            i += 2
+            continue
+        out.append(0xFFFD if 0xD800 <= u <= 0xDFFF else u)
+        i += 1
+    return out
+
+
+_SLICE = re.compile(r"Math\.min\((\d+), d\.length\).*e > (\d+) \+ 1", re.S)
+
+
+class FakeWorld:
+    """An isolated world over a fake document. It works in UTF-16 units, as
+    JavaScript does, and it runs the rules of SNAPSHOT_JS and SLICE_JS. It
+    records each expression, so a test can show which slices Python asked
+    for. ``well=False`` is a world with no ``toWellFormed``."""
+
+    def __init__(self, html: str, title: str = "T", well: bool = True) -> None:
+        self.html, self.title, self.well = html, title, well
         self.asked: list[str] = []
-        self.doc: str | None = None
+        self.doc: list[int] | None = None
+
+    def slices(self) -> list[str]:
+        return [e for e in self.asked if "const d = globalThis.__webWorkerDoc;" in e]
 
     async def evaluate(self, expression: str) -> Any:
         self.asked.append(expression)
+        fix = _well if self.well else (lambda u: u)
         if expression == render.SNAPSHOT_JS:
-            self.doc = self.html
-            return {"length": len(self.html), "title": self.title[:1000]}
+            self.doc = fix(_units(self.html))
+            title = fix(fix(_units(self.title))[:1000])
+            return {"length": len(self.doc), "title": _text(title)}
         if expression == render.DROP_JS:
             self.doc = None
             return True
-        m = re.fullmatch(r"globalThis.__webWorkerDoc.slice\((\d+), (\d+)\)", expression)
+        m = _SLICE.search(expression)
         assert m and self.doc is not None, expression
-        return self.doc[int(m.group(1)):int(m.group(2))]
+        end, start = int(m.group(1)), int(m.group(2))
+        assert expression == render.SLICE_JS.format(start=start, end=end)
+        e = min(end, len(self.doc))
+        if e < len(self.doc) and e > start + 1 and 0xD800 <= self.doc[e - 1] <= 0xDBFF:
+            e -= 1
+        return [e, _text(self.doc[start:e])]
 
 
 def test_the_document_is_read_in_slices_and_dropped() -> None:
@@ -1081,7 +1122,7 @@ def test_the_document_is_read_in_slices_and_dropped() -> None:
     world = FakeWorld(html, "Title")
     got, title = asyncio.run(render.read_document(world.evaluate))
     assert got == html and title == "Title"
-    slices = [e for e in world.asked if e.startswith("globalThis.__webWorkerDoc.slice(")]
+    slices = world.slices()
     assert len(slices) == 4
     assert world.asked[-1] == render.DROP_JS and world.doc is None
 
@@ -1090,7 +1131,7 @@ def test_a_document_past_the_cap_is_never_read() -> None:
     world = FakeWorld("A" * (limits.MAX_DOCUMENT_BYTES + 1))
     with pytest.raises(render.PageRefused, match="too large"):
         asyncio.run(render.read_document(world.evaluate))
-    assert not [e for e in world.asked if e.startswith("globalThis.__webWorkerDoc.slice(")], "a slice was read"
+    assert not world.slices(), "a slice was read"
     assert world.asked[-1] == render.DROP_JS
 
 
@@ -1101,7 +1142,7 @@ def test_a_document_of_wide_letters_stops_at_the_byte_cap() -> None:
     world = FakeWorld("€" * (cap - 1))
     with pytest.raises(render.PageRefused, match="too large"):
         asyncio.run(render.read_document(world.evaluate, cap))
-    slices = [e for e in world.asked if e.startswith("globalThis.__webWorkerDoc.slice(")]
+    slices = world.slices()
     assert len(slices) == 2, slices
 
 
@@ -1109,6 +1150,91 @@ def test_a_huge_title_stays_in_the_renderer() -> None:
     world = FakeWorld("<p>x</p>", "t" * 10_000_000)
     _, title = asyncio.run(render.read_document(world.evaluate))
     assert len(title) == 1000
+
+
+def test_an_astral_letter_across_a_slice_edge_is_read_whole() -> None:
+    """The emoji starts at unit READ_SLICE - 1, so a plain slice would cut it."""
+    html = "a" * (render.READ_SLICE - 1) + "\U0001F600" + "b" * 10 + "\U00020000"
+    assert _units(html)[render.READ_SLICE - 1] == 0xD83D
+    world = FakeWorld(html)
+    got, _ = asyncio.run(render.read_document(world.evaluate))
+    assert got == html
+    assert got.encode("utf-8")
+    assert len(world.slices()) == 2
+
+
+@pytest.mark.parametrize("edge", [1, 2, 3])
+def test_no_slice_edge_cuts_a_pair(edge: int) -> None:
+    html = "x" * (render.READ_SLICE - edge) + "\U0001F600" * 8
+    got, _ = asyncio.run(render.read_document(FakeWorld(html).evaluate))
+    assert got == html
+
+
+def test_a_lone_surrogate_in_the_body_and_the_title_is_made_well_formed() -> None:
+    world = FakeWorld("<p>a\ud800b\udc00c</p>", title="t\udbffx")
+    got, title = asyncio.run(render.read_document(world.evaluate))
+    assert got == "<p>a\ufffdb\ufffdc</p>"
+    assert title == "t\ufffdx"
+    got.encode("utf-8")
+    title.encode("utf-8")
+
+
+def test_a_title_cut_inside_a_pair_is_well_formed() -> None:
+    title = "t" * 999 + "\U0001F600"
+    _, got = asyncio.run(render.read_document(FakeWorld("<p>x</p>", title=title).evaluate))
+    assert got == "t" * 999 + "\ufffd"
+
+
+@pytest.mark.parametrize(("html", "title"), [("<p>\ud800</p>", "T"), ("<p>x</p>", "\udc00")])
+def test_a_lone_surrogate_that_still_arrives_is_bad_text(html: str, title: str) -> None:
+    """A world with no toWellFormed: the answer is ``bad text``, never a
+    UnicodeEncodeError that the API turns into 502."""
+    with pytest.raises(render.PageRefused, match="bad text"):
+        asyncio.run(render.read_document(FakeWorld(html, title, well=False).evaluate))
+
+
+def test_the_render_api_answers_422_for_bad_text(tmp_path: Path) -> None:
+    async def renderer(url: str, job: jobs.Job) -> _Rendered:
+        await render.read_document(FakeWorld("<p>\ud800</p>", well=False).evaluate)
+        return _Rendered()
+
+    r = _client(tmp_path, renderer).post(
+        "/render", json={"url": "https://public.example/", "org_id": "org-a", "job_id": "j1"},
+        headers=AUTH)
+    assert r.status_code == 422 and r.json()["reason"] == "bad text"
+
+
+def test_the_cdp_session_detaches() -> None:
+    events: list[str] = []
+
+    class Session:
+        async def send(self, method: str, params: dict[str, Any] | None = None) -> Any:
+            events.append(method)
+            if method == "Page.getFrameTree":
+                return {"frameTree": {"frame": {"id": "F"}}}
+            if method == "Page.createIsolatedWorld":
+                assert params["grantUniveralAccess"] is False
+                return {"executionContextId": 7}
+            assert params["contextId"] == 7
+            return {"result": {"value": 1}}
+
+        async def detach(self) -> None:
+            events.append("detach")
+
+    class Context:
+        async def new_cdp_session(self, page: Any) -> Session:
+            return Session()
+
+    async def go(fail: bool) -> None:
+        async with render.isolated_world(Context(), object()) as evaluate:
+            await evaluate("1")
+            if fail:
+                raise RuntimeError("read fault")
+
+    asyncio.run(go(False))
+    with pytest.raises(RuntimeError):
+        asyncio.run(go(True))
+    assert events.count("detach") == 2 and events[-1] == "detach"
 
 
 def test_the_renderer_never_reads_the_page_in_the_main_world() -> None:
@@ -1119,7 +1245,8 @@ def test_the_renderer_never_reads_the_page_in_the_main_world() -> None:
     assert "page.content(" not in code and "page.evaluate(" not in code
     assert "page.title(" not in code
     assert '"Page.createIsolatedWorld"' in code and '"contextId": context_id' in code
-    assert "await read_document(await isolated_evaluator(context, page))" in code
+    assert "async with isolated_world(context, page) as evaluate:" in code
+    assert "toWellFormed" in render.SNAPSHOT_JS
     assert "scope.close()" in code
     assert f"--js-flags=--max-old-space-size={render.RENDERER_HEAP_MB}" in render.CHROMIUM_ARGS
 
