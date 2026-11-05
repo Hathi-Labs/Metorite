@@ -3228,6 +3228,21 @@ export const agentRunsApi = {
   },
 
   /**
+   * CIV-14k. Every open question of the caller, oldest first, with the task
+   * number, title and project name on each row. `null` means the routes are
+   * OFF (404), and then the Approvals page draws no list.
+   */
+  waiting: async (): Promise<AgentRun[] | null> => {
+    try {
+      const raw = await call<unknown>("agent-runs?status=awaiting&order=oldest&with_task=true&limit=100");
+      return agentRunRows<AgentRun>(raw);
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
+
+  /**
    * EA-13e (EA3-43). The five counts of the strip above the board, over the
    * tasks of the project and its subprojects that the caller may see.
    */

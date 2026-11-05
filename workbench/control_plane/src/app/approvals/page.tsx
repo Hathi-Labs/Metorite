@@ -22,6 +22,11 @@
 
 import { AppTopBar } from "@/components/AppTopBar";
 import Button from "@/components/ui/Button";
+import ElicitationCard from "@/components/ElicitationCard";
+import { agentRunsApi } from "@/app/projects/lib/api";
+import { answerPayload, cardQuestion } from "@/app/projects/lib/agentRuns";
+import { relativeTime } from "@/lib/taskCard";
+import type { ElicitationAnswers } from "@/lib/elicitationAnswer";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
@@ -35,6 +40,16 @@ import {
   type LoadResult,
   type QueueState,
 } from "./lib/approvalLink";
+import {
+  answersInPlace,
+  openQuestion,
+  rowAgent,
+  rowTitle,
+  taskHref,
+  waitingCount,
+  waitingRuns,
+  type WaitingRun,
+} from "./lib/waitingForYou";
 
 /**
  * The reader of `?action=<id>`. `useSearchParams` needs a Suspense boundary,
@@ -57,6 +72,11 @@ export default function ApprovalsPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<Record<string, "approve" | "reject">>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // CIV-14k. The open agent questions of the member, oldest first. `null`
+  // means the agent-run routes are off, and then no list draws.
+  const [waiting, setWaiting] = useState<WaitingRun[] | null>(null);
+  const [waitingBusy, setWaitingBusy] = useState<Record<string, boolean>>({});
+  const [waitingErrors, setWaitingErrors] = useState<Record<string, string>>({});
   // The proposal a link names (MD-3a), and the row it marks.
   const [actionId, setActionId] = useState<string | null>(null);
   const { marked, gone } = markedRow(rows, actionId, queue.load);
@@ -83,11 +103,50 @@ export default function ApprovalsPage() {
     setLoading(false);
   }, []);
 
+  const loadWaiting = useCallback(async () => {
+    try {
+      const runs = await agentRunsApi.waiting();
+      setWaiting(runs === null ? null : waitingRuns(runs));
+    } catch {
+      // A failed read keeps the list the member sees. The next poll retries.
+    }
+  }, []);
+
   useEffect(() => {
     void load();
-    const t = setInterval(() => void load(), 15_000);
+    void loadWaiting();
+    const t = setInterval(() => {
+      void load();
+      void loadWaiting();
+    }, 15_000);
     return () => clearInterval(t);
-  }, [load]);
+  }, [load, loadWaiting]);
+
+  const answerWaiting = async (run: WaitingRun, answers: ElicitationAnswers) => {
+    const question = openQuestion(run);
+    if (!question) return;
+    setWaitingBusy((b) => ({ ...b, [run.id]: true }));
+    setWaitingErrors((e) => {
+      const n = { ...e };
+      delete n[run.id];
+      return n;
+    });
+    try {
+      await agentRunsApi.post(run.id, answerPayload(question, answers));
+      setWaiting((rows) => (rows ? rows.filter((r) => r.id !== run.id) : rows));
+    } catch (err) {
+      setWaitingErrors((e) => ({
+        ...e,
+        [run.id]: err instanceof Error ? err.message : "Could not send this answer.",
+      }));
+    } finally {
+      setWaitingBusy((b) => {
+        const n = { ...b };
+        delete n[run.id];
+        return n;
+      });
+    }
+  };
 
   const act = async (id: string, action: "approve" | "reject") => {
     setBusy((b) => ({ ...b, [id]: action }));
@@ -130,7 +189,11 @@ export default function ApprovalsPage() {
           and Refresh at the right end. */}
       <AppTopBar
         title="Approvals"
-        subtitle={rows.length > 0 ? `${rows.length} waiting` : undefined}
+        subtitle={
+          waitingCount(waiting?.length ?? 0, rows.length) > 0
+            ? `${waitingCount(waiting?.length ?? 0, rows.length)} waiting`
+            : undefined
+        }
         tools={
           <Button
             variant="ghost"
@@ -145,6 +208,71 @@ export default function ApprovalsPage() {
       />
       <div className="min-h-0 flex-1 overflow-auto">
     <div className="mx-auto max-w-3xl px-4 py-6">
+      {waiting !== null && waiting.length > 0 && (
+        <section aria-label="Waiting for you" className="mb-8">
+          <h2 className="text-sm font-semibold text-foreground">
+            Waiting for you ({waiting.length})
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Questions that agents asked you, oldest first. Each stays here until
+            you answer it.
+          </p>
+          <div className="mt-3 flex flex-col gap-3">
+            {waiting.map((run) => {
+              const question = openQuestion(run);
+              if (!question) return null;
+              return (
+                <div
+                  key={run.id}
+                  className="rounded-lg border border-border bg-card/50 p-3 text-xs"
+                >
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                    <a
+                      href={taskHref(run)}
+                      className="min-w-0 flex-1 truncate text-sm font-medium text-foreground hover:underline"
+                    >
+                      {rowTitle(run)}
+                    </a>
+                    <span className="text-muted-foreground">
+                      {rowAgent(run)}
+                      {question.created_at
+                        ? ` \u00b7 ${relativeTime(question.created_at)}`
+                        : ""}
+                    </span>
+                  </div>
+                  {run.task?.project_name && (
+                    <p className="mt-0.5 text-muted-foreground">{run.task.project_name}</p>
+                  )}
+                  <div className="mt-2">
+                    {answersInPlace(run) ? (
+                      <ElicitationCard
+                        id={`waiting:${question.id}`}
+                        questions={[cardQuestion(question)]}
+                        onSubmit={(answers) => void answerWaiting(run, answers)}
+                        disabled={!!waitingBusy[run.id]}
+                        hint="The agent waits for your answer."
+                      />
+                    ) : (
+                      <p className="whitespace-pre-wrap break-words text-foreground">
+                        {question.content.body?.trim() || "The agent makes a request."}
+                        <span className="ml-1 text-muted-foreground">
+                          Open the task to answer it.
+                        </span>
+                      </p>
+                    )}
+                  </div>
+                  {waitingErrors[run.id] && (
+                    <p className="mt-1.5 text-destructive" role="alert">
+                      {waitingErrors[run.id]}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       <p className="text-xs text-muted-foreground">
         Outward writes an agent proposed through the Action Broker. Approving
         runs the write; rejecting refuses it. Empty unless
@@ -170,7 +298,7 @@ export default function ApprovalsPage() {
       </div>
 
       <div className="mt-4 flex flex-col gap-2">
-        {queue.load === "ok" && rows.length === 0 && (
+        {queue.load === "ok" && rows.length === 0 && (waiting?.length ?? 0) === 0 && (
           <div className="rounded-lg border border-border bg-card/50 px-4 py-8 text-center">
             <p className="text-sm text-muted-foreground">
               Nothing awaiting approval.

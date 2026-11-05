@@ -1762,12 +1762,16 @@ async def list_my_agent_runs(
     client_via: str | None = None,
     limit: int = Query(50, ge=1, le=100),
     cursor: str | None = None,
+    order: str = Query("newest", pattern="^(newest|oldest)$"),
+    with_task: bool = False,
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """The caller member's runs across the tasks they can see, newest first.
 
     ``cursor`` is the opaque ``next_cursor`` of the page before. A new agent
-    session calls this with ``needs_agent=true`` first.
+    session calls this with ``needs_agent=true`` first. ``order=oldest`` lists
+    the oldest run first (the "Waiting for you" list). ``with_task=true`` adds
+    ``task: {number, title, project_name}`` to each row, from one more query.
     """
     if status is not None and status not in RUN_STATUSES:
         raise HTTPException(
@@ -1801,15 +1805,34 @@ async def list_my_agent_runs(
         if client_via:
             clauses.append("r.client_via = :via")
             params["via"] = client_via.strip().lower()
+        direction = "r.created_at ASC" if order == "oldest" else "r.created_at DESC"
         rows = (await db.execute(
             text(
                 f"{_RUN_SELECT} WHERE r.task_id IS NOT NULL AND {' AND '.join(clauses)} "
-                " ORDER BY r.created_at DESC, r.id DESC LIMIT :limit OFFSET :offset"
+                f" ORDER BY {direction}, r.id {'ASC' if order == 'oldest' else 'DESC'}"
+                " LIMIT :limit OFFSET :offset"
             ),
             {**params, "limit": limit + 1, "offset": offset},
         )).fetchall()
         more = len(rows) > limit
         out = await _runs_out(db, list(rows[:limit]))
+        if with_task and out:
+            # One query for the page. The runs passed the visibility clause
+            # above, so their tasks are the member's to read.
+            facts = {
+                str(t.id): {"number": t.task_number, "title": t.title,
+                            "project_name": t.project_name}
+                for t in (await db.execute(
+                    text(
+                        "SELECT t.id, t.task_number, t.title, p.name AS project_name"
+                        "  FROM pm_tasks t LEFT JOIN pm_projects p ON p.id = t.project_id"
+                        " WHERE t.id = ANY(CAST(:ids AS uuid[]))"
+                    ),
+                    {"ids": [r["task_id"] for r in out]},
+                )).fetchall()
+            }
+            for item in out:
+                item["task"] = facts.get(item["task_id"])
     return {"rows": out, "next_cursor": str(offset + limit) if more else None}
 
 
