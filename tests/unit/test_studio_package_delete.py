@@ -25,43 +25,55 @@ This file proves:
   versions go by the cascade, the audit is in the store, and the R8 suite is
   in the ``--must-run`` list.
 
-**The mutations (R7).** Each was run on 2026-11-05 against both halves. The
-red tests are listed for each. The R8 half holds the ones that need a
-database.
+**The mutations (R7).** Each was run on 2026-11-05 against both halves, one
+at a time, and each turned the tests below red. The R8 half holds the ones
+that need a database. The R8 failure of each was read, and each failed for
+the reason of its mutation.
 
-* M1. Drop ``for_update=True`` from ``delete_package``.
-  ``test_a_step_locks_the_apps_row_then_the_org_then_purges`` and
-  ``test_the_lock_order_is_in_the_source`` go red here, and
-  ``test_r8_a_delete_waits_for_a_publish_that_holds_the_apps_row`` in R8.
-* M2. Swap the lock order (``lock_org`` before ``get_package``).
-  ``test_a_step_locks_the_apps_row_then_the_org_then_purges`` and
-  ``test_the_lock_order_is_in_the_source`` go red here, and
+* M1. Drop ``for_update=True`` from ``delete_package``. Red here:
+  ``test_a_step_locks_the_apps_row_then_the_org_then_purges``,
+  ``test_another_member_or_a_bad_token_reads_nothing_and_locks_nothing``,
+  ``test_a_busy_org_lock_raises_store_busy_and_purges_nothing`` and
+  ``test_the_lock_order_is_in_the_source``. Red in R8:
+  ``test_r8_a_delete_waits_for_a_publish_that_holds_the_apps_row`` (the
+  delete purged 20 of 25 records under the holder of the row).
+* M2. Swap the lock order (``lock_org`` before ``get_package``). Red here:
+  the same four tests as M1. Red in R8:
   ``test_r8_a_holder_of_the_apps_row_takes_the_org_lock_while_a_delete_waits``
-  in R8.
-* M3. Drop the switch check from ``delete_package`` (the route).
-  ``test_with_the_switch_off_both_routes_are_404_and_read_no_byte`` and
-  ``test_each_delete_handler_checks_the_switch_first`` go red.
-* M4. Take the owner from the body (``body.get("owner_email")``).
-  ``test_a_body_that_names_another_owner_or_org_changes_nothing`` goes red
-  here, and ``test_r8_a_body_that_names_the_owner_does_not_let_another_member_delete``
-  in R8.
+  (Postgres reports 40P01, a deadlock between the row and the org lock).
+* M3. Drop the switch check from the route ``delete_package``. Red here:
+  ``test_with_the_switch_off_both_routes_are_404_and_read_no_byte`` (three
+  cases) and ``test_each_delete_handler_checks_the_switch_first``. Red in
+  R8: ``test_r8_with_the_switch_off_both_routes_are_404_and_write_nothing``.
+* M4. Take the owner from the body (``body.get("owner_email")``). Red here:
+  ``test_a_stranger_with_a_bad_body_gets_404_and_not_422`` and
+  ``test_a_body_that_names_another_owner_or_org_changes_nothing``. Red in
+  R8: ``test_r8_a_body_that_names_the_owner_does_not_let_another_member_delete``.
 * M5. Write the audit through ``record_app_audit_bound`` after the session,
-  in place of ``_audit`` in the store.
-  ``test_the_audit_is_written_in_the_store_and_not_by_the_route`` goes red
-  here, and ``test_r8_a_failed_audit_keeps_the_package_and_its_rows`` in R8.
-* M6. Write the audit in a second session after the delete session.
-  ``test_r8_a_failed_audit_keeps_the_package_and_its_rows`` goes red in R8.
-* M7. Drop the token check of the first step.
-  ``test_a_stale_token_is_409_with_the_new_preview_and_deletes_nothing``
-  and ``test_a_step_with_a_stale_token_raises_before_the_purge`` go red here,
-  and ``test_r8_a_stale_token_is_409_and_deletes_nothing`` in R8.
-* M8. Run every step in one session (no commit between steps).
-  ``test_each_step_runs_in_its_own_session`` goes red here, and
-  ``test_r8_the_org_lock_is_free_between_two_steps`` in R8.
-* M9. Delete the ``apps`` row on the first step, with no purge loop.
-  ``test_a_full_chunk_answers_not_deleted_and_writes_nothing_else`` goes red
-  here, and ``test_r8_1300_records_with_a_chunk_of_100_give_202_and_then_200``
-  in R8.
+  in place of ``_audit`` in the store. Red here:
+  ``test_the_last_step_deletes_the_row_and_writes_one_audit_row``,
+  ``test_a_failed_audit_raises_after_the_delete_in_the_same_session``,
+  ``test_the_lock_order_is_in_the_source`` and
+  ``test_the_audit_is_written_in_the_store_and_not_by_the_route``. Red in
+  R8: ``test_r8_a_failed_audit_keeps_the_package_and_its_rows``.
+* M6. Write the audit in a second session after the delete session. Red
+  here: the four tests of M5, and the route tests that reach a last step.
+  Red in R8: ``test_r8_a_failed_audit_keeps_the_package_and_its_rows`` (the
+  ``apps`` row was gone when the audit failed).
+* M7. Drop the token check of the first step. Red here:
+  ``test_a_step_with_a_stale_token_raises_before_the_purge``. The route
+  tests run on a fake store, so they stay green. Red in R8:
+  ``test_r8_a_stale_token_is_409_and_deletes_nothing``.
+* M8. Run every step in one session (no commit between steps). Red here:
+  ``test_each_step_runs_in_its_own_session`` and
+  ``test_the_route_runs_one_session_for_each_step``. Red in R8:
+  ``test_r8_the_org_lock_is_free_between_two_steps`` (no write of the org
+  came in during the delete).
+* M9. Delete the ``apps`` row on the first step, with no purge loop. Red
+  here: ``test_a_step_locks_the_apps_row_then_the_org_then_purges`` and
+  ``test_a_full_chunk_answers_not_deleted_and_writes_nothing_else``. Red in
+  R8: ``test_r8_1300_records_with_a_chunk_of_100_give_202_and_then_200``
+  (the first call answered 200, not 202).
 """
 
 from __future__ import annotations
