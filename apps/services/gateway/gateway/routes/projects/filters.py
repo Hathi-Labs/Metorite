@@ -1276,7 +1276,7 @@ def live_answer_sql(where: str) -> str:
         "SELECT DISTINCT ON (p.run_id) p.id, p.seq, p.run_id, p.in_reply_to,"
         f" {answer_changeable_sql('r', 'p')} AS changeable"
         " FROM pm_agent_run_activities p"
-        " JOIN pm_agent_runs r ON r.id = p.run_id"
+        " JOIN pm_agent_runs r ON r.id = p.run_id AND r.task_id IS NOT NULL"
         " WHERE p.type = 'prompt' AND p.in_reply_to IS NOT NULL"
         f" AND lower(p.actor) = lower(r.member_email) AND {where}"
         " ORDER BY p.run_id, p.seq DESC"
