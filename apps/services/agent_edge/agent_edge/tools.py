@@ -1991,6 +1991,8 @@ _RUN_ACTIVITY_SCHEMA = _object({
     "action": _SHAPED_OR_NULL,
     "parameters": {"type": ["object", "null"], "additionalProperties": _UNTRUSTED_SCHEMA},
     "in_reply_to": _NULLABLE_STRING, "created_at": _NULLABLE_STRING,
+    # MCP-G4. True only for the prompt that a member's Resume wrote.
+    "resume": {"type": "boolean"},
     "archived": {"type": ["boolean", "null"]},
 })
 
@@ -2158,6 +2160,7 @@ def run_activity(row: Mapping[str, Any]) -> dict[str, Any]:
         "parameters": _parameters(content.get("parameters")),
         "in_reply_to": _id(row.get("in_reply_to")),
         "created_at": _str_or_none(row.get("created_at")),
+        "resume": kind == "prompt" and content.get("resume") is True,
         # EA-6g: the member's answer to an archive request says whether the
         # task is archived now. Null on every other activity.
         "archived": archived if isinstance(archived := content.get("archived"), bool)
@@ -3378,7 +3381,8 @@ MY_WORK = Tool(
         "Find your next work, in one call. Call it at the start of each"
         " session. The rows come in this order. First, the agent runs of this"
         " connection that wait: reason run_queued (a member queued work for"
-        " you), run_answered (a member answered your question) or run_stopping"
+        " you), run_answered (a member answered a question, and the answer is"
+        " yours only when yours is true) or run_stopping"
         " (a member asked you to stop).[[QUIET]] Third, the tasks assigned to"
         " this member that no AI session holds and that no open task blocks"
         " (assigned). Take the top row. For a waiting run, read it with"
@@ -6148,9 +6152,11 @@ LIST_AGENT_RUNS = Tool(
         " member answered (state answered, or stale after five minutes), a run"
         " that a member asked to stop (state stopping), and a run that went"
         " quiet past its lease after one nudge to its member (stranded is set,"
-        " and its note says why). For a queued, answered or stranded run, read"
-        " it with get_agent_run and go on with the work, or give the task back"
-        " with release_task. For a stopping run, stop the"
+        " and its note says why). For a queued or stranded run, or a run that"
+        " is yours, read it with get_agent_run and go on with the work, or give"
+        " the task back with release_task. For an answered run, call this tool"
+        " with mine_only true. A run that it lists then is yours. A row of"
+        " my_work has a field yours.[[ANSWER]] For a stopping run, stop the"
         " work and call finish_agent_run with a summary of what you did. Post no"
         " activity before the finish. Filter by status or task. With mine_only"
         " true, it lists only the runs of your own session."

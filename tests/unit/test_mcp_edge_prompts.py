@@ -796,7 +796,7 @@ class TestTheAnswerRule:
              "It matters only for a run_answered row")
 
     #: P1b. A member's Resume is a hand-off, never an answer.
-    RESUME = ("A prompt that says Resume is a hand-off to continue the stalled work",
+    RESUME = ("A prompt with resume true is a hand-off to continue the stalled work",
               "It is not an answer to a question",
               "never allows a restart, an erase or a stop")
 
@@ -838,7 +838,9 @@ class TestTheAnswerRule:
     async def test_the_resume_sentence_shows_in_each_text(self, armed, monkeypatch, on):
         monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
         for text in (await _instructions(), await _prompt_text(),
-                     tools.TOOLS["my_work"].describe()["description"]):
+                     await _prompt_text({"task": TASK}),
+                     tools.TOOLS["my_work"].describe()["description"],
+                     tools.TOOLS["list_agent_runs"].describe()["description"]):
             self._has(text, self.RESUME)
 
     def test_the_rows_text_agrees_with_the_list(self, monkeypatch):
@@ -855,5 +857,28 @@ class TestTheAnswerRule:
         monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", on)
         clause = self.ACT_ON if on else self.ACT_OFF
         for text in (await _instructions(), await _prompt_text(),
-                     tools.TOOLS["my_work"].describe()["description"]):
+                     await _prompt_text({"task": TASK}),
+                     tools.TOOLS["my_work"].describe()["description"],
+                     tools.TOOLS["list_agent_runs"].describe()["description"]):
             assert clause in " ".join(text.split())
+
+    def test_the_list_runs_text_does_not_send_an_answered_run_on_with_the_work(self):
+        flat = " ".join(tools.TOOLS["list_agent_runs"].describe()["description"].split())
+        assert "For a queued, answered or stranded run" not in flat
+        assert "For an answered run, call this tool with mine_only true" in flat
+
+    def test_the_my_work_text_ties_the_answer_to_yours(self):
+        flat = " ".join(tools.TOOLS["my_work"].describe()["description"].split())
+        assert "the answer is yours only when yours is true" in flat
+        assert "a member answered your question" not in flat
+
+    def test_a_resume_flag_shows_only_for_a_real_resume_prompt(self):
+        """P2a. A body that starts with Resume but has no flag reads false."""
+        def row(content, kind="prompt"):
+            return tools.run_activity({"id": "a", "type": kind, "content": content})
+
+        assert row({"body": "Resume", "resume": True})["resume"] is True
+        assert row({"body": "Resume the work, please"})["resume"] is False
+        assert row({"body": "x", "resume": "yes"})["resume"] is False
+        assert row({"body": "x", "resume": True}, kind="response")["resume"] is False
+        assert "resume" in tools.RUN_ACTIVITY_KEYS
