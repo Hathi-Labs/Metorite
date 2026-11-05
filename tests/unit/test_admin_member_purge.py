@@ -990,9 +990,11 @@ def test_the_two_halves_of_package_install_do_not_overlap() -> None:
     # granted to herself, and the delete would then disagree with the count,
     # because her grants go first. A test that counted a grant that she did
     # not make would keep an install for a colleague's consent row.
-    from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL
+    from gateway.package_host.sharing import OTHERS_SEE_THE_INSTALL, SHARE_ROW
 
     assert _OTHERS_SEE_THE_APP is OTHERS_SEE_THE_INSTALL
+    # The purge and the resolve of PKG-5b part 2 read one share rule.
+    assert f"WHERE {SHARE_ROW})" in _OTHERS_SEE_THE_APP
     assert _OTHERS_SEE_THE_APP == (
         "EXISTS (SELECT 1 FROM app_grants AS g"
         " WHERE g.app_id = package_install.app_id"

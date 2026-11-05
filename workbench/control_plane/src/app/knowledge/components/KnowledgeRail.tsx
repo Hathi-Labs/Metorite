@@ -61,7 +61,7 @@ import { ADD_LABEL } from "../lib/entityForm";
 import { KNOWLEDGE_GAPS } from "../lib/gaps";
 import { KNOWLEDGE_MAINTENANCE } from "../lib/maintenance";
 import { KNOWLEDGE_SOURCES } from "../lib/sources";
-import { spaceIcon } from "../lib/labels";
+import { isPendingMe, spaceIcon } from "../lib/labels";
 import { KNOWLEDGE_HOME, KNOWLEDGE_REVIEW, KNOWLEDGE_SEARCH, pageHref, spaceHref } from "../lib/links";
 import { ancestorIds, buildTree, type TreeNode } from "../lib/tree";
 import { applyMove, dropZoneAt, planDrop, targetFor, type PageDropTarget } from "../lib/treeDrop";
@@ -360,7 +360,9 @@ function SpaceBranch({
   }
 
   const key = pagesKey(space.id);
-  const pages = useCachedResource<PageSummary[]>(open ? key : null, () => listPages(space.id));
+  const pages = useCachedResource<PageSummary[]>(open && !isPendingMe(space.id) ? key : null, () =>
+    listPages(space.id),
+  );
   const list = useMemo(() => pages.data ?? [], [pages.data]);
   const tree = useMemo(() => buildTree(list), [list]);
 

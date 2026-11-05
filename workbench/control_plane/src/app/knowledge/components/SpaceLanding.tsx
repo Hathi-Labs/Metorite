@@ -21,7 +21,7 @@ import { relativeTime } from "@/lib/taskCard";
 import { useCachedResource } from "@/lib/useCachedResource";
 
 import { listPages, pagesKey } from "../lib/api";
-import { LEVEL_LABELS, canWriteIn, pageCount, pageIcon, spaceIcon, stateLabel, stateTone } from "../lib/labels";
+import { LEVEL_LABELS, canWriteIn, isPendingMe, pageCount, pageIcon, spaceIcon, stateLabel, stateTone } from "../lib/labels";
 import { KNOWLEDGE_HOME, archivedHref, pageHref } from "../lib/links";
 import { buildTree } from "../lib/tree";
 import type { PageSummary } from "../lib/types";
@@ -32,7 +32,7 @@ export default function SpaceLanding({ spaceId }: { spaceId: string }) {
   const { spaces, openNewPage } = useKnowledge();
   const router = useRouter();
   const space = spaces.find((s) => s.id === spaceId) ?? null;
-  const pages = useCachedResource<PageSummary[]>(space ? pagesKey(space.id) : null, () =>
+  const pages = useCachedResource<PageSummary[]>(space && !isPendingMe(space.id) ? pagesKey(space.id) : null, () =>
     listPages(spaceId),
   );
 
@@ -71,7 +71,7 @@ export default function SpaceLanding({ spaceId }: { spaceId: string }) {
               Archived pages
             </Button>
           ) : null}
-          <SpaceMenu space={space} />
+          {isPendingMe(space.id) ? null : <SpaceMenu space={space} />}
         </header>
 
         <section className="mt-5" aria-label={`Pages in ${space.name}`}>
