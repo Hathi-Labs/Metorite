@@ -1242,6 +1242,43 @@ SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
 _AGENT_STATE_SQL = agent_state_sql("r.task_id = ANY(CAST(:ids AS uuid[]))")
 
 
+def answer_change_enabled() -> bool:
+    """The flag ``agent_answer_change_enabled`` (default OFF, SW-43). The
+    gateway side of the one reader in ``acb_auth.agent_oauth``."""
+    from acb_auth import agent_oauth
+
+    return agent_oauth.answer_change_enabled()
+
+
+def answer_changeable_sql(r: str, p: str) -> str:
+    """SW-43. The ONE text of "the member may still take this answer back",
+    over the run alias *r* and the answer alias *p*. The route and the runs
+    wire both read it. All of these hold: the run works (``in_progress``),
+    the answer is not withdrawn, and no agent activity of the run follows
+    the answer (an agent write carries ``actor_via``)."""
+    return (
+        f"({r}.status = 'in_progress'"
+        f" AND NOT ({p}.type = 'prompt' AND {p}.content ? 'withdrawn')"
+        " AND NOT EXISTS (SELECT 1 FROM pm_agent_run_activities x"
+        f"                 WHERE x.run_id = {p}.run_id AND x.seq > {p}.seq"
+        "                   AND x.actor_via IS NOT NULL))"
+    )
+
+
+def live_answer_sql(where: str) -> str:
+    """SW-43. The newest answer of each run that *where* picks (a member
+    ``prompt`` with ``in_reply_to`` set), with ``changeable``. The marker row
+    of a withdraw has no ``in_reply_to``, so it is never an answer."""
+    return (
+        "SELECT DISTINCT ON (p.run_id) p.id, p.seq, p.run_id, p.in_reply_to,"
+        f" {answer_changeable_sql('r', 'p')} AS changeable"
+        " FROM pm_agent_run_activities p"
+        " JOIN pm_agent_runs r ON r.id = p.run_id"
+        f" WHERE p.type = 'prompt' AND p.in_reply_to IS NOT NULL AND {where}"
+        " ORDER BY p.run_id, p.seq DESC"
+    )
+
+
 def agent_runs_enabled() -> bool:
     """The flag ``agent_runs_enabled`` (default OFF). The gateway side of the
     one reader, ``acb_auth.agent_oauth.runs_enabled``, which the edge reads

@@ -101,6 +101,8 @@ EXPECTED: dict[str, dict[str, str]] = {
     # WS-55 MCP-G15: the agent records a decision that its member made
     # outside Metorite. It ends the wait, and nothing else.
     "agent_outside_decision": {"awaiting": "in_progress"},
+    # SW-43: the member takes back an answer that no agent has read.
+    "member_withdraw": {"in_progress": "awaiting", "stale": "awaiting"},
 }
 
 
@@ -128,6 +130,7 @@ def test_the_routes_are_mounted() -> None:
         ("GET", "/projects/agent-runs/{run_id}"),
         ("POST", "/projects/agent-runs/{run_id}/activities"),
         ("POST", "/projects/agent-runs/{run_id}/finish"),
+        ("POST", "/projects/agent-runs/{run_id}/answer/withdraw"),
     ):
         assert pair in mounted, pair
 
@@ -1128,3 +1131,152 @@ class TestAgentRunsOnARealDatabase:
                     c.execute(text("UPDATE agent_connection SET revoked_at = NULL "
                                    "WHERE id = CAST(:c AS uuid)"), {"c": w.conn_a})
         assert _count(w.p, "SELECT count(*) FROM pm_agent_runs") == 0
+
+
+# ── SW-43a: withdraw an answer (spec agent_coordination.md §3.9) ────────────
+
+
+@pytest.fixture
+def wd(w, monkeypatch):
+    """``w`` with the flag of SW-43 on."""
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "agent_answer_change_enabled", True)
+    return w
+
+
+async def _answered(w: Any, call: Any) -> tuple[str, str, str]:
+    """A run whose member answered the agent's question.
+    Returns ``(run_id, question_id, answer_id)``."""
+    run = await _start(w, call)
+    rid = run["id"]
+    asked = await _act(call, w.agent_a, rid, **_select())
+    qid = asked.json()["activity"]["id"]
+    got = await _act(call, w.a, rid, type="prompt", selected=["pg"])
+    assert got.status_code == 201, got.text
+    return rid, qid, got.json()["activity"]["id"]
+
+
+def _withdraw(call: Any, user: Any, rid: str, answer: str, key: str | None = None) -> Any:
+    return call(user, "POST", f"/projects/agent-runs/{rid}/answer/withdraw",
+                {"answer_id": answer, "idempotency_key": key or _key()})
+
+
+@_DB_GATE
+class TestWithdrawAnAnswer:
+    async def test_the_flag_off_gives_404_and_no_answer_field(self, w):
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            assert (await _withdraw(call, w.a, rid, aid)).status_code == 404
+            got = await call(w.a, "GET", f"/projects/agent-runs/{rid}")
+            assert "answer" not in got.json()["run"]
+
+    async def test_a_withdraw_opens_the_question_and_the_run_waits_for_a_person(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, qid, aid = await _answered(w, call)
+            before = await call(w.a, "GET", f"/projects/agent-runs/{rid}")
+            assert before.json()["run"]["answer"]["id"] == aid
+            assert before.json()["run"]["answer"]["changeable"] is True
+            assert before.json()["run"]["needs_agent"] == "answered"
+            done = await _withdraw(call, w.a, rid, aid)
+            assert done.status_code == 200, done.text
+            run = done.json()["run"]
+            assert (run["status"], run["state"]) == ("awaiting", "awaiting")
+            assert run["needs_agent"] is None
+            assert run["open_elicitation"]["id"] == qid
+            assert run["answer"] is None
+            needs = await call(w.a, "GET", "/projects/agent-runs?needs_agent=true")
+            assert rid not in [r["id"] for r in needs.json()["rows"]]
+            # The agent read hides the withdrawn answer and shows the marker.
+            read = await call(w.agent_a, "GET", f"/projects/agent-runs/{rid}")
+            rows = read.json()["activities"]
+            assert aid not in [a["id"] for a in rows]
+            marker = rows[-1]
+            assert marker["type"] == "prompt" and marker["content"]["withdraws"] == aid
+            assert marker["in_reply_to"] is None
+            row = _rows(w.p, "SELECT in_reply_to, content, content_metadata "
+                             "FROM pm_agent_run_activities WHERE id = CAST(:i AS uuid)", i=aid)[0]
+            assert row.in_reply_to is None
+            assert row.content["withdrawn"]["by"] == w.a_email
+            assert row.content_metadata["question_id"] == qid
+            # The member answers again with the normal card.
+            again = await _act(call, w.a, rid, type="prompt", selected=["my"])
+            assert again.status_code == 201, again.text
+            assert again.json()["run"]["answer"]["changeable"] is True
+            assert again.json()["run"]["answer"]["id"] != aid
+
+    async def test_an_agent_activity_after_the_answer_gives_409(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            seen = await _act(call, w.agent_a, rid, type="thought", body="Got it")
+            assert seen.json()["run"]["answer"]["changeable"] is False
+            late = await _withdraw(call, w.a, rid, aid)
+            assert late.status_code == 409
+            assert "already has your answer" in late.json()["detail"]
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities "
+                               "WHERE run_id = CAST(:r AS uuid) AND content ? 'withdraws'",
+                          r=rid) == 0
+
+    async def test_only_the_runs_member_and_never_an_agent(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            assert (await _withdraw(call, w.c, rid, aid)).status_code == 403
+            assert (await _withdraw(call, w.agent_a, rid, aid)).status_code == 403
+            assert (await _withdraw(call, w.b, rid, aid)).status_code == 404
+            other = await _withdraw(call, w.a, rid, str(uuid.uuid4()))
+            assert other.status_code == 409
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities "
+                               "WHERE run_id = CAST(:r AS uuid) AND content ? 'withdrawn'",
+                          r=rid) == 0
+
+    async def test_a_replay_of_the_key_writes_once(self, wd):
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            key = _key()
+            first = await _withdraw(call, w.a, rid, aid, key)
+            second = await _withdraw(call, w.a, rid, aid, key)
+            assert (first.status_code, second.status_code) == (200, 200)
+            assert second.json()["created"] is False
+            assert first.json()["activity"]["id"] == second.json()["activity"]["id"]
+            assert _count(w.p, "SELECT count(*) FROM pm_agent_run_activities "
+                               "WHERE run_id = CAST(:r AS uuid) AND content ? 'withdraws'",
+                          r=rid) == 1
+
+    async def test_a_withdraw_and_an_agent_post_serialize_on_the_lock(self, wd):
+        """Mutation: take no lock in the route and the withdraw does not wait,
+        so the first assert fails. Mutation: drop the ``actor_via`` test from
+        ``answer_changeable_sql`` and the withdraw wins over the late post."""
+        w = wd
+        async with _session(w.p) as call:
+            rid, _q, aid = await _answered(w, call)
+            holder = w.p.admin_engine.connect()
+            tx = holder.begin()
+            try:
+                holder.execute(text("SELECT id FROM pm_agent_runs "
+                                    "WHERE id = CAST(:r AS uuid) FOR UPDATE"), {"r": rid})
+                racing = asyncio.create_task(_withdraw(call, w.a, rid, aid))
+                await asyncio.sleep(1.0)
+                assert not racing.done(), "the withdraw did not wait for the lock"
+                # The agent's post commits first, as the holder of the lock.
+                task_id = w.task_a
+                holder.execute(text(
+                    "INSERT INTO pm_agent_run_activities (organization_id, run_id, task_id,"
+                    " type, content, actor, actor_via, ephemeral) VALUES (CAST(:o AS uuid),"
+                    " CAST(:r AS uuid), CAST(:t AS uuid), 'thought',"
+                    " CAST('{\"body\": \"read\"}' AS jsonb), :m, :v, true)"),
+                    {"o": w.p.org_a, "r": rid, "t": task_id, "m": w.a_email, "v": VIA})
+                tx.commit()
+            except BaseException:
+                tx.rollback()
+                raise
+            finally:
+                holder.close()
+            lost = await asyncio.wait_for(racing, timeout=30)
+            assert lost.status_code == 409, lost.text
+            live = _rows(w.p, "SELECT in_reply_to FROM pm_agent_run_activities "
+                              "WHERE id = CAST(:i AS uuid)", i=aid)[0]
+            assert live.in_reply_to is not None

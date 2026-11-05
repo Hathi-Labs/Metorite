@@ -263,6 +263,8 @@ def instructions(scopes: Iterable[str] = ()) -> str:
     text += protocol + _ASKED_WORK + _ROUTINE_INSTRUCTIONS + prompts.PR_RULE
     if runs:
         text += _RUN_INSTRUCTIONS
+        if agent_oauth.answer_change_enabled():
+            text += prompts.ANSWER_RULE
     return text
 
 #: The methods the route accepts, so that check 3 answers and not the router.

@@ -116,6 +116,10 @@ export interface AgentActivity {
     parameters?: Record<string, string> | null;
     /** EA-6g: the member's answer to an archive request archived the task. */
     archived?: boolean | null;
+    /** SW-43. The member took this answer back. The server hides such a row. */
+    withdrawn?: { at?: string | null; by?: string | null } | null;
+    /** SW-43. On the marker prompt of a withdraw: the id of the answer it took back. */
+    withdraws?: string | null;
   };
   /**
    * The server's own facts. EA-6g: an archive request carries `request`.
@@ -171,6 +175,11 @@ export interface AgentRun {
    */
   open_elicitation?: AgentActivity | null;
   elicitation?: AgentActivity | null;
+  /**
+   * SW-43. The live answer of the member, and whether the member may still
+   * take it back. The key is there only while the gateway flag is on.
+   */
+  answer?: { id: string; seq: number; changeable: boolean } | null;
 }
 
 /** What `GET /projects/agent-runs/{run_id}` gives, after `normalizeRunDetail`. */
@@ -554,13 +563,44 @@ export function answerTo(
   activities: readonly AgentActivity[],
   elicitation: AgentActivity,
 ): AgentActivity | null {
+  // SW-43. An answer that a marker prompt took back is no answer.
+  const taken = new Set(
+    activities.map((a) => a.content.withdraws).filter((id): id is string => Boolean(id)),
+  );
   for (let i = activities.length - 1; i >= 0; i -= 1) {
     const a = activities[i];
-    if (a.type === "prompt" && a.in_reply_to === elicitation.id && a.signal !== "stop") {
+    if (
+      a.type === "prompt" &&
+      a.in_reply_to === elicitation.id &&
+      a.signal !== "stop" &&
+      !a.content.withdrawn &&
+      !taken.has(a.id)
+    ) {
       return a;
     }
   }
   return null;
+}
+
+/** SW-43. The body of a withdraw: the answer to take back, and a fresh key. */
+export interface WithdrawBody {
+  answer_id: string;
+  idempotency_key: string;
+}
+
+export function withdrawPayload(
+  answerId: string,
+  idempotencyKey: string = newIdempotencyKey(),
+): WithdrawBody {
+  return { answer_id: answerId, idempotency_key: idempotencyKey };
+}
+
+/**
+ * SW-43. The line when the answer can no longer be taken back, because the
+ * agent has read it. The member sends a comment to change the course.
+ */
+export function answerHeldLine(clientLabel: string): string {
+  return `${clientLabel} has your answer. Reply below to change it.`;
 }
 
 /** The elicitation as the chat's question card reads it. */

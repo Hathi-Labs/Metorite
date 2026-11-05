@@ -45,6 +45,7 @@ import {
   type AgentRun,
   agentKindLabel,
   agentPillText,
+  answerHeldLine,
   answerPayload,
   answerTo,
   answeredLine,
@@ -66,6 +67,7 @@ import {
   runToShow,
   stopPayload,
   writeFailure,
+  withdrawPayload,
 } from "./agentRuns";
 
 const ELICIT: AgentActivity = {
@@ -544,6 +546,52 @@ describe("the honest timeline (EA-13b)", () => {
     expect(githubMergeReason({ github: { repo: "", number: 12 } })).toBeNull();
     expect(githubMergeReason({ to: "Shipped", github: { repo: "o/r", number: 3 } })).toBe(
       "GitHub moved this to Shipped after o/r#3 merged",
+    );
+  });
+});
+
+describe("SW-43 withdraw an answer", () => {
+  const answer: AgentActivity = {
+    id: "p9",
+    seq: 6,
+    type: "prompt",
+    content: { selected: ["pg"] },
+    actor: "vj@example.com",
+    in_reply_to: "a1",
+  };
+
+  it("does not read a withdrawn answer as an answer", () => {
+    // Mutation: answerTo ignores `withdrawn`, and the card stays collapsed.
+    const marked: AgentActivity = {
+      ...answer,
+      content: { selected: ["pg"], withdrawn: { by: "vj@example.com" } },
+    };
+    expect(answerTo([ELICIT, marked], ELICIT)).toBeNull();
+  });
+
+  it("does not read an answer that a later marker took back", () => {
+    // Mutation: answerTo ignores `withdraws`, and a client that loaded the
+    // answer before the withdraw still shows it as live.
+    const marker: AgentActivity = {
+      id: "p10",
+      seq: 7,
+      type: "prompt",
+      content: { body: "Withdrew the answer", withdraws: "p9" },
+      signal: "continue",
+      in_reply_to: null,
+    };
+    expect(answerTo([ELICIT, answer], ELICIT)).toBe(answer);
+    expect(answerTo([ELICIT, answer, marker], ELICIT)).toBeNull();
+  });
+
+  it("sends the answer id and a fresh key", () => {
+    expect(withdrawPayload("p9", "k1")).toEqual({ answer_id: "p9", idempotency_key: "k1" });
+    expect(withdrawPayload("p9").idempotency_key).not.toBe(withdrawPayload("p9").idempotency_key);
+  });
+
+  it("names the client that holds the answer", () => {
+    expect(answerHeldLine("Claude Code")).toBe(
+      "Claude Code has your answer. Reply below to change it.",
     );
   });
 });
