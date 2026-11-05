@@ -90,7 +90,7 @@ from acb_common import app_manifests, get_logger, get_settings
 from acb_common.priority import importance_for
 
 from agent_edge import cursor as cursor_mod
-from agent_edge import idempotency
+from agent_edge import idempotency, prompts
 from agent_edge.bearer import Caller
 from agent_edge.gateway_client import (
     Answer,
@@ -989,12 +989,15 @@ SESSION_TEXTS: Mapping[str, tuple[str, str]] = {
         " five minutes, which you may take back (held_by_you)."),
     "[[ROWS]]": (
         " Take only a row that this list gives. Each terminal is its own"
-        " session, so a run of another terminal, another connection or another"
-        " machine is never yours, and the list leaves it out.",
+        " session. A run of another connection or another machine is never"
+        " yours, and the list leaves it out. A run of another terminal shows"
+        " only after its lease ended, and then yours is false.",
         " Take only a row that this list gives: two terminals on one"
         " connection share one name, and a claim cannot tell them apart. A run"
         " of another connection, such as one on another machine, is never"
         " yours, and the list leaves it out."),
+    # MCP-G4. The same words as `prompts.answer_rule`, in a tool description.
+    "[[ANSWER]]": (prompts.ANSWER_BODY_ON, prompts.ANSWER_BODY_OFF),
     "[[SHARED]]": (
         "",
         " Two terminals on one connection share one name, and a claim cannot"
@@ -1988,6 +1991,8 @@ _RUN_ACTIVITY_SCHEMA = _object({
     "action": _SHAPED_OR_NULL,
     "parameters": {"type": ["object", "null"], "additionalProperties": _UNTRUSTED_SCHEMA},
     "in_reply_to": _NULLABLE_STRING, "created_at": _NULLABLE_STRING,
+    # MCP-G4. True only for the prompt that a member's Resume wrote.
+    "resume": {"type": "boolean"},
     "archived": {"type": ["boolean", "null"]},
 })
 
@@ -2155,6 +2160,7 @@ def run_activity(row: Mapping[str, Any]) -> dict[str, Any]:
         "parameters": _parameters(content.get("parameters")),
         "in_reply_to": _id(row.get("in_reply_to")),
         "created_at": _str_or_none(row.get("created_at")),
+        "resume": kind == "prompt" and content.get("resume") is True,
         # EA-6g: the member's answer to an archive request says whether the
         # task is archived now. Null on every other activity.
         "archived": archived if isinstance(archived := content.get("archived"), bool)
@@ -3113,7 +3119,7 @@ MY_WORK_REASONS: tuple[str, ...] = (*WAITING_REASONS.values(), REASON_HELD, REAS
 #: ``claim_task`` sends back as ``expected_version``.
 MY_WORK_ROW_KEYS: tuple[str, ...] = (
     "task_id", "task_number", "title", "status", "project_id", "version", "reason",
-    "run_id", "held_by",
+    "run_id", "held_by", "yours",
 )
 
 _MY_WORK_INPUT: dict[str, Any] = {
@@ -3132,6 +3138,7 @@ _MY_WORK_ROW_SCHEMA = _optional(_object({
     "project_id": _NULLABLE_STRING, "version": _NULLABLE_STRING,
     "reason": {"type": "string", "enum": list(MY_WORK_REASONS)},
     "run_id": _NULLABLE_STRING, "held_by": _HELD_BY_SCHEMA,
+    "yours": {"type": "boolean"},
 }), GUIDANCE_REF_KEY, _GUIDANCE_REF_SCHEMA)
 _MY_WORK_OUTPUT: dict[str, Any] = _object({
     "rows": {"type": "array", "items": _MY_WORK_ROW_SCHEMA},
@@ -3190,6 +3197,16 @@ def _run_connection(run: Mapping[str, Any]) -> str | None:
     return found.lower() if found is not None else None
 
 
+def _yours(run: Mapping[str, Any] | None, session: str | None) -> bool:
+    """True only when *run* has a session key and it equals the caller's
+    session (MCP-G4). A keyless run, a run of a sibling session, a row with
+    no run and a call outside a session (the flag is off) are all false."""
+    if run is None or session is None:
+        return False
+    key = run.get("session_key")
+    return isinstance(key, str) and key == session
+
+
 def _this_session(run: Mapping[str, Any], session: str | None) -> bool:
     """True when *run* is of this MCP session, or of no session yet (SW-7,
     spec §12.5). A call outside a session owns only runs with no key."""
@@ -3244,13 +3261,14 @@ async def _tasks_by_id(ctx: Context, ids: list[str]) -> dict[str, dict[str, Any]
 
 def _work_row(task_id: str, row: Mapping[str, Any] | None, reason: str,
               run_id: str | None,
-              names_by_project: Mapping[str, Mapping[str, str]]) -> dict[str, Any]:
+              names_by_project: Mapping[str, Mapping[str, str]],
+              yours: bool = False) -> dict[str, Any]:
     """One row of ``my_work`` (§12.4). With no task row, the task fields are
     null and the row still names the run."""
     if row is None:
         return {"task_id": task_id, "task_number": None, "title": None, "status": None,
                 "project_id": None, "version": None, "reason": reason, "run_id": run_id,
-                "held_by": None}
+                "held_by": None, "yours": yours}
     status_id = row.get("status_id")
     names = names_by_project.get(str(row.get("project_id")), {})
     return {
@@ -3266,6 +3284,7 @@ def _work_row(task_id: str, row: Mapping[str, Any] | None, reason: str,
         "reason": reason,
         "run_id": run_id,
         "held_by": _held_by(row.get("held_by")),
+        "yours": yours,
     }
 
 
@@ -3316,7 +3335,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         ("page", "1"), ("page_size", str(MY_WORK_TASK_PAGE))])
     assigned = _rows_of(body)
 
-    listed: list[tuple[str, str, str | None]] = []
+    listed: list[tuple[str, str, str | None, bool]] = []
     seen: set[str] = set()
     for run, reason in [*((r, WAITING_REASONS[_waiting_reason(r)]) for r in waiting),
                         *((r, REASON_HELD) for r in holding)]:
@@ -3324,7 +3343,8 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         if task_id is None or task_id in seen:
             continue
         seen.add(task_id)
-        listed.append((task_id, reason, _id(run.get("id"))))
+        listed.append((task_id, reason, _id(run.get("id")),
+                       _yours(run, ctx.session)))
 
     for row in assigned:
         task_id = _id(row.get("id"))
@@ -3332,16 +3352,17 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
                 or _blocked(row)):
             continue
         seen.add(task_id)
-        listed.append((task_id, REASON_ASSIGNED, None))
+        listed.append((task_id, REASON_ASSIGNED, None, False))
     # P3c: every read below runs on the rows that are shown, after the cut.
     listed = listed[:limit]
 
     rows = {str(r.get("id")): r for r in assigned}
-    missing = [task_id for task_id, _, _ in listed if task_id not in rows]
+    missing = [task_id for task_id, _, _, _ in listed if task_id not in rows]
     rows.update(await _tasks_by_id(ctx, missing))
-    shown = [rows[t] for t, _, _ in listed if t in rows]
+    shown = [rows[t] for t, _, _, _ in listed if t in rows]
     names = await _status_names(ctx, _distinct_projects(shown))
-    out = [_work_row(t, rows.get(t), reason, run_id, names) for t, reason, run_id in listed]
+    out = [_work_row(t, rows.get(t), reason, run_id, names, mine)
+           for t, reason, run_id, mine in listed]
     # SW-31a: one read of the refs for all rows. No body: the agent reads the
     # blocks with get_task_context.
     refs = await _guidance_refs(
@@ -3360,12 +3381,14 @@ MY_WORK = Tool(
         "Find your next work, in one call. Call it at the start of each"
         " session. The rows come in this order. First, the agent runs of this"
         " connection that wait: reason run_queued (a member queued work for"
-        " you), run_answered (a member answered your question) or run_stopping"
+        " you), run_answered (a member answered a question, and the answer is"
+        " yours only when yours is true) or run_stopping"
         " (a member asked you to stop).[[QUIET]] Third, the tasks assigned to"
         " this member that no AI session holds and that no open task blocks"
         " (assigned). Take the top row. For a waiting run, read it with"
         " get_agent_run and its run_id. For a task, with projects:write, claim"
-        " the task with claim_task, the task_id and the version.[[ROWS]] The"
+        " the task with claim_task, the task_id and the version.[[ROWS]]"
+        "[[ANSWER]] The"
         " list never holds a task that is not assigned to this member and that"
         " this connection does not hold." + _UNTRUSTED_NOTE
     ),
@@ -5684,8 +5707,9 @@ ASK_ON_TASK = Tool(
         " text. The member gets a notification on the task. Then call"
         " get_agent_run with the run id, after set to the seq of the question,"
         " and wait_seconds 20. Call it again and again until an activity of"
-        " type prompt arrives. If you cannot wait, end the session. A later"
-        " session finds the answer with list_agent_runs and needs_agent true."
+        " type prompt arrives. The answer goes to your own session. If you end the"
+        " session, a later session must ask again, unless the run is yours."
+        " The my_work text holds the rule."
         " When the member answers in another place, such as your chat, call"
         " record_outside_decision at once." + _UNTRUSTED_NOTE
     ),
@@ -5748,9 +5772,10 @@ REQUEST_TASK_ARCHIVE = Tool(
         " notification. Then call get_agent_run with the run id, after set to"
         " the seq of the request, and wait_seconds 20. Call it again and again"
         " until an activity of type prompt arrives. Its selected holds approve"
-        " or decline, and archived is true after an approve. If you cannot"
-        " wait, end the session. A later session finds the answer with"
-        " list_agent_runs and needs_agent true. The request expires after 24"
+        " or decline, and archived is true after an approve. The answer goes to"
+        " your own session. If you end the session, a later session must ask"
+        " again, unless the run is yours. The my_work text holds the rule."
+        " The request expires after 24"
         " hours. An archive moves the task off the boards, and a person can"
         " restore it. The subtasks are not archived. Send a new"
         " idempotency_key for each request. The same key"
@@ -6067,6 +6092,9 @@ _LIST_RUNS_INPUT: dict[str, Any] = {
         "task_id": {**_TASK_INPUT, "description": "Only the runs of this task."},
         "cursor": {"type": "string", "pattern": _RUNS_CURSOR_PATTERN,
                    "description": "The nextCursor of the page before."},
+        "mine_only": {"type": "boolean",
+                      "description": "True for only the runs of your own session."
+                      " With no session, it returns no run."},
     },
     "additionalProperties": False,
 }
@@ -6086,10 +6114,29 @@ async def _list_agent_runs(ctx: Context, args: dict[str, Any]) -> dict[str, Any]
         query.append(("task_id", str(args["task_id"])))
     if "cursor" in args:
         query.append(("cursor", str(args["cursor"])))
-    body = await _get(ctx, MY_RUNS_ROUTE, TEXT_TASK_NOT_FOUND, query=query)
-    following = body.get("next_cursor") if isinstance(body, dict) else None
+    mine_only = args.get("mine_only") is True
+    if mine_only and ctx.session is None:
+        # MCP-G4. No session owns no run, so there is nothing to read.
+        return {"runs": [], "nextCursor": None}
+    found: list[Any] = []
+    following: Any = None
+    # MCP-G4. The gateway pages before the edge filters. So with mine_only the
+    # edge reads on, up to the page ceiling of my_work, until one run is kept.
+    for _ in range(MY_WORK_RUNS_PAGES if mine_only else 1):
+        body = await _get(ctx, MY_RUNS_ROUTE, TEXT_TASK_NOT_FOUND, query=query)
+        following = body.get("next_cursor") if isinstance(body, dict) else None
+        rows = _rows_of(body)
+        if mine_only:
+            # A run is yours when its key is your session. A keyless run is
+            # nobody's, so it does not show either.
+            rows = [r for r in rows if _yours(r, ctx.session)]
+        found += rows
+        if (found or not mine_only or not (
+                isinstance(following, str) and _RUNS_CURSOR_RE.fullmatch(following))):
+            break
+        query = [(k, v) for k, v in query if k != "cursor"] + [("cursor", following)]
     return {
-        "runs": [agent_run(r) for r in _rows_of(body)],
+        "runs": [agent_run(r) for r in found],
         "nextCursor": following if isinstance(following, str)
         and _RUNS_CURSOR_RE.fullmatch(following) else None,
     }
@@ -6107,11 +6154,14 @@ LIST_AGENT_RUNS = Tool(
         " member answered (state answered, or stale after five minutes), a run"
         " that a member asked to stop (state stopping), and a run that went"
         " quiet past its lease after one nudge to its member (stranded is set,"
-        " and its note says why). For a queued, answered or stranded run, read"
-        " it with get_agent_run and go on with the work, or give the task back"
-        " with release_task. For a stopping run, stop the"
+        " and its note says why). For a queued or stranded run, or a run that"
+        " is yours, read it with get_agent_run and go on with the work, or give"
+        " the task back with release_task. For an answered run, call this tool"
+        " with mine_only true. A run that it lists then is yours. A row of"
+        " my_work has a field yours.[[ANSWER]] For a stopping run, stop the"
         " work and call finish_agent_run with a summary of what you did. Post no"
-        " activity before the finish. Filter by status or task."
+        " activity before the finish. Filter by status or task. With mine_only"
+        " true, it lists only the runs of your own session."
         " Send nextCursor back as cursor to read the next page." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
@@ -6124,6 +6174,7 @@ LIST_AGENT_RUNS = Tool(
     run=_list_agent_runs,
     routes=(MY_RUNS_ROUTE,),
     runs=True,
+    edge_inputs=frozenset({"mine_only"}),
 )
 
 
