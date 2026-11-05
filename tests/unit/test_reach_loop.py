@@ -1321,3 +1321,61 @@ class TestWebPushRowsStayOffWhatsApp:
                     mods = {str(node.module), *(f"{node.module}.{a.name}" for a in node.names)}
                     assert not any("push" in m.split(".")[-1] for m in mods
                                    if m.startswith("gateway.")), (name, mods)
+
+
+class TestTheMutedRules:
+    """BR-5 slice 2a: the loop passes the member's muted rules to the plan."""
+
+    async def _run(self, world, monkeypatch, muted: set[str], on: bool = True) -> str:
+        from gateway.brief import flags as brief_flags
+
+        calls: list[tuple[str, str]] = []
+
+        async def muted_rules(org, member):
+            calls.append((org, member))
+            return frozenset(muted)
+
+        monkeypatch.setattr(brief_flags, "exceptions", lambda org: on)
+        monkeypatch.setattr(outbox, "muted_rules", muted_rules)
+        world.calls = calls
+        assert await loop.member_pass(ORG, ME) == "baseline"
+        world.cards = [card("agent_asks:1", "agent_asks")]
+        return await loop.member_pass(ORG, ME)
+
+    async def test_a_rule_that_is_not_muted_interrupts(self, world, monkeypatch):
+        assert await self._run(world, monkeypatch, set()) == "interrupt:sent"
+        assert world.calls
+
+    async def test_a_muted_rule_matches_nothing(self, world, monkeypatch):
+        assert await self._run(world, monkeypatch, {"agent_asks"}) == "nothing"
+        assert world.sent.calls == []
+
+    async def test_dark_reads_no_mutes(self, world, monkeypatch):
+        await self._run(world, monkeypatch, {"agent_asks"}, on=False)
+        assert world.calls == []
+
+
+class TestTheMuteReadFailsOpen:
+    """BR-5: a failed read of the mutes counts as no mutes, and is logged.
+    This is on purpose, so a database fault never silences the loop."""
+
+    async def test_a_failed_read_is_no_mutes_and_is_logged(self, monkeypatch):
+        import contextlib
+
+        logged: list[tuple[str, dict]] = []
+
+        class _Log:
+            def warning(self, event, **kw):
+                logged.append((event, kw))
+
+        @contextlib.asynccontextmanager
+        async def broken(org):
+            raise RuntimeError("db down")
+            yield  # pragma: no cover
+
+        import acb_common
+
+        monkeypatch.setattr(outbox, "tenant_session", broken)
+        monkeypatch.setattr(acb_common, "get_logger", lambda name: _Log())
+        assert await outbox.muted_rules(ORG, ME) == frozenset()
+        assert logged == [("reach.mutes_failed", {"error_class": "RuntimeError"})]

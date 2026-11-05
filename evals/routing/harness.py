@@ -495,8 +495,12 @@ def _finish(record: RunRecord, calls: dict[str, dict[str, str]], agents: frozens
 class RoutingHarness:
     """One sweep: the patches, the state root, and the models of this run."""
 
-    def __init__(self, *, live: bool = False, real_specialists: bool = False) -> None:
+    def __init__(self, *, live: bool = False, real_specialists: bool = False,
+                 guide: bool = True) -> None:
         self.live = live
+        #: WS-OB GD-7: the guide tools are on (``GUIDE_ORGS`` open). The runner
+        #: sends the guide line with them (``shell.system_context(guide=...)``).
+        self.guide = guide
         #: Live: each specialist runs for real, and no stand-in answers.
         self.real_specialists = real_specialists
         #: Live with real specialists: the URL prefixes that a host HTTP send
@@ -563,6 +567,20 @@ class RoutingHarness:
             return held
 
         mp.setattr(in_app_path, "member_features", _member_features)
+        # WS-OB GD-7: the guide tools, with GUIDE_ORGS open for the run's org and
+        # the member no admin. Production ships them dark (settings.guide_orgs).
+        # With guide=False they stay off, as in a build with the flag off.
+        from orchestrator import guide_tools
+
+        from evals.routing.dataset import ORG as _ORG
+
+        mp.setattr(settings, "guide_orgs", "*" if self.guide else "", raising=False)
+        mp.setattr(guide_tools, "run_org", lambda: _ORG)
+
+        async def _no_admin() -> bool:
+            return False
+
+        mp.setattr(guide_tools, "member_is_admin", _no_admin)
         ti._build_registry_block.cache_clear()
         ti._build_injected_tools_addendum.cache_clear()
         self._registry = registry()

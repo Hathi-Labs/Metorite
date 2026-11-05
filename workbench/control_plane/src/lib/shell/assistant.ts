@@ -76,6 +76,14 @@ export const ASSISTANT_PERSONA = [
 export const CHAT_FIRST_PERSONA_LINE =
   "When the member asks to see a page, a list or a record, call show_in_app with its path. Then say what they will see, in one sentence.";
 
+/**
+ * The line that joins the persona when the guide is on for the org (WS-OB GD-7,
+ * `assistant_guide.md` §5.4, `guide` of `GET /auth/me/shell`). The dock joins it,
+ * so `ASSISTANT_PERSONA` stays what every other build sends.
+ */
+export const GUIDE_PERSONA_LINE =
+  "When the member asks how to do something in Metorite, call find_guide. Answer in at most three short steps from its result, then offer Show me (show_guide) or Open. Never invent a button.";
+
 // ── The forms ────────────────────────────────────────────────────────────────
 
 /**
@@ -276,6 +284,25 @@ export function navigateAct(a: {
     if (pathname === "/settings" || pathname.startsWith("/settings/")) return none;
   }
   return { push: runMovesPage(a), pane };
+}
+
+/**
+ * What the assistant does when the live run names a guide (WS-OB GD-4,
+ * `assistant_guide.md` §3 G1). The same page-move rule as `navigateAct`: only
+ * while the member watches that chat, and a tour starts at once only beside
+ * the side panel (`runMovesPage`). Elsewhere (a phone, the full view) the run
+ * leaves a "Show me" chip and the member taps it.
+ */
+export function guideAct(a: {
+  open: boolean;
+  threadId: string | undefined;
+  activeId: string | null | undefined;
+  guideId: string | undefined;
+  phone: boolean;
+  form: AssistantMode;
+}): "start" | "offer" | "none" {
+  if (!a.open || !a.threadId || a.threadId !== a.activeId || !a.guideId) return "none";
+  return runMovesPage(a) ? "start" : "offer";
 }
 
 /**

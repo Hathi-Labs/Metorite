@@ -106,7 +106,8 @@ def _reply_fresh(card: dict[str, Any], now: datetime) -> bool:
 
 
 def interrupt_candidates(cards: list[dict[str, Any]], logged: set[Pair],
-                         now: datetime, *, rules: bool = False) -> list[dict[str, Any]]:
+                         now: datetime, *, rules: bool = False,
+                         muted: frozenset[str] = frozenset()) -> list[dict[str, Any]]:
     """The cards that may interrupt now, in the feed's order.
 
     A card qualifies when its class is ``interrupt`` or ``urgent``, its pair
@@ -117,11 +118,13 @@ def interrupt_candidates(cards: list[dict[str, Any]], logged: set[Pair],
     decides instead of the class: only a card that matches an interrupt rule,
     or an explicit "tell me" request, qualifies. Every other card waits for
     the brief. The pair, open and fresh-reply tests above still apply.
+    *muted* holds the rules that the member muted. A muted rule matches
+    nothing. It has no effect with *rules* off.
     """
     out = []
     for card in cards:
         if rules:
-            if not exceptions.may_interrupt(card, now):
+            if not exceptions.may_interrupt(card, now, muted=muted):
                 continue
         elif reach_class(card) not in REACHING:
             continue
