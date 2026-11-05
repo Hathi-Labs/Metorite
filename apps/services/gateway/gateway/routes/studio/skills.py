@@ -3,7 +3,7 @@
 Six routes over the F1 store, ``gateway/studio/skills_store.py``. They
 register on the router of ``actions.py``, as ``workflows/copilot.py`` does on
 the router of ``workflows/core.py``. So ``main.py`` mounts no second router,
-and the gate ``require_feature_router("workflows")`` and the prefix
+and the gate ``require_feature_router("studio")`` (J1) and the prefix
 ``/studio`` hold here too.
 
 **The switch.** The first line of each route reads ``STUDIO_ORGS``. An org

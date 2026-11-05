@@ -18,6 +18,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { JOBS } from "@/lib/shell/registry";
+import { featureForPath } from "./access";
 import {
   CHROMELESS_ROUTES,
   isChromeless,
@@ -373,5 +374,12 @@ describe("the Studio library pane (ai_studio.md §14 A1)", () => {
     for (const old of ["/workflows", "/build/apps", "/build/agents"]) {
       expect(PANES.some((p) => p.href === old), `${old} is a redirect now`).toBe(false);
     }
+  });
+
+  it("the /studio item needs feature:studio, the gate of every /studio route (§14 J1)", () => {
+    const studio = PANES.find((p) => p.href === "/studio");
+    expect(studio?.feature).toBe("studio");
+    expect(featureForPath("/studio")).toBe("studio");
+    expect(featureForPath("/studio/skills/new")).toBe("studio");
   });
 });

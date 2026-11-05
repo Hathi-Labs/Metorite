@@ -4,7 +4,7 @@ Six routes over the package store (A3 and A4, ``studio/packages_store.py``)
 and the object store (C1, ``studio/objects_store.py``). They register on the
 router of ``actions.py``, as ``skills.py`` and ``invoke.py`` do, so
 ``main.py`` mounts no second router. The gate ``require_feature_router
-("workflows")`` and the prefix ``/studio`` hold here too.
+("studio")`` and the prefix ``/studio`` hold here too (J1).
 
 ====================================  =========================================
 ``POST /packages``                    create a package from a manifest (201)

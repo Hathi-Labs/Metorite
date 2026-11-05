@@ -5,7 +5,7 @@
 > **Verified against code on 2026-11-01 at `82157e5fd`.** Each path in §16 was read on that commit.
 > **Board:** WS-STU in `work_plan.md` §2. **Decisions:** D127 (one app, three kinds), D139 (one coding harness), **D141** (Studio starts now, and a skill creator replaces the agent creator), **D146** (the owner's answers of 2026-10-31: layered apps, a typed object store, first-party templates). D124, D130, D131 and D136 bind it too.
 > **Metorite:** project "AI Studio", umbrella epic #491, this spec task #1135. Each group of §14 has its own epic under #491.
-> **Gate summary:** every slice is AGENT-SAFE unless §14 says otherwise. The owner answered STU-Q1, Q2, Q3, Q5 and Q6 and the template question on 2026-10-31 (D146). Four questions stay open: Q4, Q7, Q8 and Q9 (§12).
+> **Gate summary:** every slice is AGENT-SAFE unless §14 says otherwise. The owner answered STU-Q1, Q2, Q3, Q5 and Q6 and the template question on 2026-10-31 (D146). The owner answered STU-Q4 on 2026-11-04 and STU-Q4b on 2026-11-05 (D178). Three questions stay open: Q7, Q8 and Q9 (§12).
 
 ---
 
@@ -435,10 +435,10 @@ The skill creator replaces the Agent Workshop (D141). A member does not build a 
 
 ## 9. Governance
 
-1. **Who builds.** A member with `feature:studio` builds private packages. STU-Q4 sets the default roles.
+1. **Who builds.** A member with `feature:studio` builds private packages and skills. A member, a manager and an admin hold it through `feature:*`, and the owner holds it through `*`. A guest does not hold it. An admin can deny it to one person with an override (STU-Q4, D178).
 2. **Run as the viewer.** Every action runs with the viewer's `UserContext`. A view never shows more than the viewer can read in the owning app.
-3. **Share.** Private → named people or a group (`group:<slug>`, D12) → the organization. A share to the organization needs a holder of `studio:publish`, who reads the manifest diff and approves one version (the pattern of D130.3).
-4. **Versions.** Publishing snapshots an immutable version (`app_versions`, `workflow_versions`). An open workflow run keeps its version. Rollback copies an older version into a new one, and history stays append-only. The install of a version is WS-PKG (`package_host.md`).
+3. **Share.** Private → named people or a group (`group:<slug>`, D12) → the organization. A share to the organization needs a holder of `studio:publish`, who reads the manifest diff and approves one version (the pattern of D130.3). Owners and admins publish and can grant `studio:publish` (D178). A grant goes to one person (an override) or to a custom role, because a group carries no permission grant. A share of an app to a group is the object grant `group:<slug>` of J2.
+4. **Versions.** Version publish by the owner of a private package or skill needs `feature:studio` and ownership only. `studio:publish` gates the share to other people and the review of a manifest diff (STU-Q4b, J2). Publishing snapshots an immutable version (`app_versions`, `workflow_versions`). An open workflow run keeps its version. Rollback copies an older version into a new one, and history stays append-only. The install of a version is WS-PKG (`package_host.md`).
 5. **Trust ladder.** An S1 workflow starts at "ask each run" and climbs by D131. Five acts always ask: money, a member or role write, a delete, a bulk change, and a send to an outside person whom the scope does not name.
 6. **Cost.** Each build and each run has a credit cap. Every model call writes a `usage_event` row (the lesson of H-287).
 7. **Kill switch.** An admin pauses a package, a workflow or a skill in one step. New actions stop within 10 seconds.
@@ -514,7 +514,8 @@ Each question has one recommendation. A slice that waits on a question says so i
 | **STU-Q1** | Is an app a declarative manifest drawn by one renderer, with code only as one sandboxed block? Or is it code first, as the App Workshop RFC planned? | Manifest first | ✅ **Layered** (D146.1): manifest, rules, logic modules, custom UI block, all through one door (§3.7). The owner asked for full integrated apps such as inventory, procurement and manufacturing |
 | **STU-Q2** | Does the library show three kinds, Apps, Workflows and Skills, with "skill" as the member's name for a D127 tool pack? | Yes | ✅ **Yes** (D146.2) |
 | **STU-Q3** | Where do installed company apps show in the sidebar? | Under Apps, after the built-in apps, with a small "Company" label. Never a Center (D49) | ✅ **Under Apps, after the built-in apps** (D146.3) |
-| **STU-Q4** | Who may build? | **Every member builds private packages.** Owners and admins hold `studio:publish` and may grant it to a role | Open |
+| **STU-Q4** | Who may build? | **Every member builds private packages.** Owners and admins hold `studio:publish` and may grant it to a person or to a custom role. A group carries no permission grant | ✅ **Answered 2026-11-04** (D178): "Every member builds private apps. Owners and admins publish and can grant publish." Source: the owner, in a Metorite run on task 1199 |
+| **STU-Q4b** | May a member without `studio:publish` publish a version of their own private app or skill, for themselves only? | **Yes.** `studio:publish` gates the share to other people, and the review of a manifest diff (J2) | ✅ **Yes** (D178, 2026-11-05): "A member publishes their own private app for themselves. `studio:publish` gates sharing to others." Source: the owner, in the same run on task 1199 |
 | **STU-Q5** | Where do app records live? | `app_data`, typed by C1, with a cap per app | ✅ **A typed object store now** (D146.4): launch plan E10 inside Studio (§3.1) |
 | **STU-Q6** | Which milestone? | Stage 1 dark in M1, Stage 2 to the pilots in M2 | ✅ **As recommended** (D146.5). Neither moves an M0 item |
 | **STU-Q7** | How is Studio priced? | **Inside the ₹500 seat.** Builds and runs spend AI credits through `usage_event`. No fee per app | Open |
@@ -697,7 +698,7 @@ This is the manifest of the Studio pane itself, in the shape of `navigation_shel
 
 | Id | What | Done when | Tier | Gate |
 |---|---|---|---|---|
-| **J1** | `feature:studio` and `studio:publish` through the one entitlement seam | A member without `feature:studio` gets 403 on each Studio route | HIGH | AGENT-SAFE. Waits on STU-Q4 |
+| **J1** | 🔨 **J1-1 BUILT, dark (2026-11-05).** `feature:studio` and `studio:publish` through the one entitlement seam. **The owner's answers:** STU-Q4 (2026-11-04) and STU-Q4b (2026-11-05), from the owner in a Metorite run on task 1199, recorded as D178. Every member builds private apps. A member publishes their own private app for themselves. Owners and admins publish to others and can grant publish. **J1-1 (task 1199):** the one router of `routes/studio/actions.py` checks `require_feature_router("studio")`, so each Studio route has the gate by construction. Before J1 it checked `workflows` (the interim gate of B1). `studio` joins `FEATURES`, and migration `346_studio_feature.sql` adds its `feature_catalog` row (`apps`, 96, `is_default` true). `studio:publish` joins `CAPABILITIES`, and no route reads it. The nav item, `studio.json` and `gates.generated.ts` say `studio`. **Who holds `feature:studio`:** a member, a manager and an admin through `feature:*`, and the owner through `*`, with no new row. A guest and a person with a deny override do not. **Version publish** of a member's own private package or skill needs `feature:studio` and ownership only. **J1-2 (task 1707, OWNER-GATE):** the seed of `studio:publish` on `admin` in every org and in `provision_org_roles`, and the grant UI. Because of STU-Q4b, J1-2 adds no gate on the A5 publish, the F2a publish, a rollback or a delete. The A5c routes (`GET .../delete-preview`, `DELETE /studio/packages/{id}`) are on another branch. The branch that merges second adds them to `EXPECTED_ROUTES` | J1-1: a member without `feature:studio` gets 403 on each Studio route. The 403 comes before the 404 of `STUDIO_ORGS`. A member with only `feature:workflows` gets 403. `test_studio_route_gate.py` (`EXPECTED_ROUTES`, one gate, the chat refusal) and `test_studio_route_gate_r8.py` (`pytestmark = _DB_GATE`, real roles through `resolve_access`). J1-2: an admin holds `studio:publish` by default in every org. A person gets it by an override or a custom role | HIGH | J1-1 AGENT-SAFE. J1-2 OWNER-GATE: the seed writes a role row in each live org |
 | **J2** | Share: private → people or a group → the organization, with an approval for the organization | A share to the organization without approval stays pending. Approval publishes one version only | HIGH | AGENT-SAFE |
 | **J3** | The kill switch, the credit caps and a `usage_event` row for each model call | A paused package runs no new action within 10 seconds. A build stops at its cap | HIGH | AGENT-SAFE |
 | **J4** | The admin view: every package, owner, version, runs, last error and use. It joins AUTO-4 (task #817) | An admin sees every package of the org. A member sees only their own | STD | AGENT-SAFE |
@@ -1126,7 +1127,7 @@ An app is a package (WS-PKG, D147). It joins each system through the seam that t
 | Concern | The seam | Slice |
 |---|---|---|
 | Sign-in and seats | The one member session. A Studio app has no login of its own | None |
-| Who may build and publish | `feature:studio` and `studio:publish` through the one entitlement seam | J1 (STU-Q4) |
+| Who may build and publish | `feature:studio` and `studio:publish` through the one entitlement seam. Answered (STU-Q4 and STU-Q4b, D178): each member builds and publishes for themselves, and `studio:publish` gates the share to others | J1 (J1-1 built, J1-2 task 1707) |
 | Who may use an app, and which records | App roles bind to members and groups through the one grant grammar (`org`, `group:<slug>`, an email). Admins manage people and groups in Settings, as today. Row rules such as `owner = $me` | C8, J2 |
 | Sensitive fields | Restricted fields are encrypted, never embedded, and never sent to a model | C9 |
 | The sidebar, ⌘K, the bell, Home and settings | The WS-PKG contribution points `nav`, `jobs`, `needs`, `cards` and `settings`, read from one run-time registry | PKG-6, PKG-8 |

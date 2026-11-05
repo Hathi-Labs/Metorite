@@ -111,6 +111,13 @@ FEATURES: tuple[str, ...] = (
     "approvals",
     "integrations",
     "workflows",
+    # AI Studio, the one library pane. Its `feature_catalog` row is in the
+    # migration named `*_studio_feature.sql` (category `apps`, sort_order 96,
+    # after Workflows). The router of `/studio` checks it (WS-STU J1,
+    # specs/ai_studio.md §9). `is_default true`, and migration 207's
+    # `feature:*` reaches every role except `guest`, so this slug grants
+    # nothing new.
+    "studio",
     "build.agents",
     "build.apps",
     # Departmental Centers (140_center_features.sql, category `centers`). Order
@@ -178,6 +185,13 @@ CAPABILITIES: tuple[str, ...] = (
     # its seed) grants it to `admin` in every organization and in
     # provision_org_roles.
     "email:shared:manage",
+    # AI Studio's share verb (WS-STU J1, specs/ai_studio.md §9). It is the
+    # right to share a package or a skill with other people, and to approve
+    # the manifest diff of that share (J2). A member builds and publishes a
+    # private app for themselves with `feature:studio` and ownership only
+    # (STU-Q4b), so no route checks this verb before J2. The owner holds it
+    # through `*`. Its seed on `admin` is J1-2 (Metorite task 1707).
+    "studio:publish",
 )
 
 #: System role slugs seeded by migration 128. `agent_service` is never

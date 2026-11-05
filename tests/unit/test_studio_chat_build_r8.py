@@ -139,7 +139,7 @@ def _gateway(org: str, seen: list[tuple[str, str]]) -> FastAPI:
     async def as_member(request: Request) -> UserContext:
         seen.append((request.method, request.url.path))
         return UserContext(email=request.headers.get("X-User-Email", ""), role=UserRole.EMPLOYEE,
-                           access=build_access(["feature:workflows"]), organization_id=org)
+                           access=build_access(["feature:studio"]), organization_id=org)
 
     app.dependency_overrides[get_current_user] = as_member
     return app

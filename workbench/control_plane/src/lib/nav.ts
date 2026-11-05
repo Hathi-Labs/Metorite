@@ -447,7 +447,7 @@ export const NAV_SECTIONS: NavSection[] = [
         label: "Studio",
         icon: "Hammer",
         note: "Apps · workflows · skills in one library",
-        feature: "workflows",
+        feature: "studio", // ai_studio.md §14 J1: the gate of every /studio route
         launch: "preview", // ai_studio.md §14 A1: the one library pane
         agent: "app-builder", // until G3 gives the dock `studio-builder`
       },
