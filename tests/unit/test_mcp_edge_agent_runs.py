@@ -290,7 +290,9 @@ class TestTheDescriptions:
         assert "my_work" in text
         assert "every run of the member" in text
         assert "needs_agent true" in text
-        assert "needs_agent true" in tools.ASK_ON_TASK.description
+        # MCP-G4: the answer goes to the asking session, so ask_on_task no
+        # longer sends a later session to the list for the answer.
+        assert "must ask again, unless the run is yours" in tools.ASK_ON_TASK.description
         assert "start of each session" in tools.MY_WORK.description
 
     def test_a_stop_stops_the_work_at_once(self):
