@@ -32,12 +32,28 @@ export interface ProjectNode {
   depth: number;
   parent: string | null;
   children: string[];
+  /** The project is archived. The gateway reach has no archive filter, so it still counts. */
+  archived: boolean;
 }
 
 export interface ProjectTree {
   /** Every node in tree order: a parent comes before its children. */
   nodes: ProjectNode[];
   byId: Record<string, ProjectNode>;
+  /**
+   * The list was cut at `MAX_TREE_NODES`. The cut is at a whole-root boundary,
+   * so a parent never shows without every child. A root that does not fit is
+   * not listed at all.
+   */
+  truncated: boolean;
+  /** How many projects the member sees, cut or not. */
+  totalSeen: number;
+  /**
+   * The ids of the member's OWN personal root projects (the `personal` key).
+   * A pinned connection reaches a personal project only through a pin, so the
+   * approval pins these when the personal switch is on.
+   */
+  personalRoots: string[];
 }
 
 interface RawNode {
@@ -50,33 +66,55 @@ interface RawNode {
 /**
  * The team projects of `GET /projects/tree`, in tree order.
  *
- * That route never holds a personal project, so every row is a team project.
- * An archived node and its subtree stay out. An unknown shape is no projects.
+ * The `rows` key never holds a personal project. An archived node stays in
+ * the tree, with `archived` set, because a pin covers its subtree at the
+ * gateway and the member must be able to leave it out. A list over `limit`
+ * is cut at a whole-root boundary and says so in `truncated`. An unknown
+ * shape is no projects.
  */
 export function buildProjectTree(raw: unknown, limit = MAX_TREE_NODES): ProjectTree {
-  const nodes: ProjectNode[] = [];
-  const byId: Record<string, ProjectNode> = {};
+  const all: ProjectNode[] = [];
+  const seen = new Set<string>();
+  const roots: { start: number; end: number }[] = [];
   const walk = (list: unknown, depth: number, parent: ProjectNode | null) => {
     if (!Array.isArray(list)) return;
     for (const item of list as RawNode[]) {
-      if (nodes.length >= limit) return;
       if (!item || typeof item.id !== "string" || typeof item.name !== "string") continue;
-      if (item.archived_at || byId[item.id]) continue;
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
       const node: ProjectNode = {
         id: item.id,
         name: item.name,
         depth,
         parent: parent ? parent.id : null,
         children: [],
+        archived: !!item.archived_at,
       };
-      nodes.push(node);
-      byId[node.id] = node;
+      const start = all.length;
+      all.push(node);
       if (parent) parent.children.push(node.id);
       walk(item.children, depth + 1, node);
+      if (!parent) roots.push({ start, end: all.length });
     }
   };
-  walk((raw as { rows?: unknown } | null)?.rows, 0, null);
-  return { nodes, byId };
+  const top = raw as { rows?: unknown; personal?: unknown } | null;
+  walk(top?.rows, 0, null);
+
+  const nodes: ProjectNode[] = [];
+  let truncated = false;
+  for (const r of roots) {
+    if (nodes.length + (r.end - r.start) > limit) {
+      truncated = true;
+      continue;
+    }
+    nodes.push(...all.slice(r.start, r.end));
+  }
+  const byId: Record<string, ProjectNode> = {};
+  for (const n of nodes) byId[n.id] = n;
+  const personalRoots = Array.isArray(top?.personal)
+    ? (top!.personal as RawNode[]).filter((n) => n && typeof n.id === "string").map((n) => n.id as string)
+    : [];
+  return { nodes, byId, truncated, totalSeen: all.length, personalRoots };
 }
 
 export interface Selection {
@@ -220,9 +258,22 @@ export function cleanSelection(tree: ProjectTree, sel: Selection): Selection {
 
 export type ProjectMode = "all" | "pick";
 
-/** The two lists the approval sends. "All my projects" sends none. */
-export function projectLists(mode: ProjectMode, sel: Selection): Selection {
-  return mode === "all" ? NO_SELECTION : { pins: [...sel.pins], leftOut: [...sel.leftOut] };
+/**
+ * The two lists the approval sends. "All my projects" sends none.
+ *
+ * ⚠️ A pinned connection reaches a personal project only through a pin
+ * (`_narrow_for_agent` starts the walk at the pins). So in "pick" mode the
+ * caller passes the member's own personal roots when the personal switch is
+ * on, and they go on the pin list after the picks. A personal root made
+ * after the connect is not pinned.
+ */
+export function projectLists(
+  mode: ProjectMode,
+  sel: Selection,
+  personalRoots: readonly string[] = [],
+): Selection {
+  if (mode === "all") return NO_SELECTION;
+  return { pins: [...sel.pins, ...personalRoots], leftOut: [...sel.leftOut] };
 }
 
 /**
@@ -230,13 +281,22 @@ export function projectLists(mode: ProjectMode, sel: Selection): Selection {
  *
  * "Only the ones I pick" with nothing ticked would send no pin, and the
  * gateway reads no pin as every project. So the page refuses it.
+ * `personalPins` is how many personal roots the approval adds to the pins.
  */
-export function projectsProblem(mode: ProjectMode, tree: ProjectTree | null, sel: Selection): string | null {
+export function projectsProblem(
+  mode: ProjectMode,
+  tree: ProjectTree | null,
+  sel: Selection,
+  personalPins = 0,
+): string | null {
   if (mode === "all") return null;
   if (!tree) return "Metorite has not listed your projects yet.";
+  if (tree.nodes.length === 0 && tree.truncated) {
+    return "Your project list is too long to pick from here. Choose All my projects.";
+  }
   if (selectedCount(tree, sel) === 0) return "Pick one project or more, or choose All my projects.";
-  if (sel.pins.length > MAX_MARKS || sel.leftOut.length > MAX_MARKS) {
-    return `Metorite takes at most ${MAX_MARKS} picks and ${MAX_MARKS} left-out projects. Tick a parent to cover more.`;
+  if (sel.pins.length + personalPins > MAX_MARKS || sel.leftOut.length > MAX_MARKS) {
+    return `Metorite takes at most ${MAX_MARKS} picks and ${MAX_MARKS} left-out projects. Your personal projects count as picks. Tick a parent to cover more.`;
   }
   return null;
 }
@@ -302,6 +362,8 @@ export interface GrantFacts {
   /** The projects that the agent reaches in "Only the ones I pick". */
   picked: number;
   includePersonal: boolean;
+  /** In "pick" mode, how many personal roots the approval pins. */
+  personalPinned?: number;
   offline: boolean;
 }
 
@@ -324,7 +386,12 @@ export function grantSummary(f: GrantFacts): SummaryPart[] {
     } else {
       parts.push({ text: `${f.picked} ${f.picked === 1 ? "project" : "projects"}`, strong: true });
     }
-    if (f.includePersonal) parts.push({ text: " and your " }, { text: "personal", strong: true }, { text: " projects" });
+    if (f.includePersonal && f.mode === "all") {
+      parts.push({ text: " and your " }, { text: "personal", strong: true }, { text: " projects" });
+    } else if (f.includePersonal && (f.personalPinned ?? 0) > 0) {
+      // A pinned connection reaches only the personal projects that exist now.
+      parts.push({ text: " and the " }, { text: "personal", strong: true }, { text: " projects you have now" });
+    }
     if (context) parts.push({ text: ". It can also read company context" });
   }
   parts.push({ text: "." });

@@ -171,7 +171,6 @@ describe("toggleScope (read is needed for the rest)", () => {
 //       ui            UI
 //     data          Data
 //   sales         Sales
-//   old           Old (archived, with a hidden child)
 const RAW_TREE = {
   rows: [
     {
@@ -190,7 +189,6 @@ const RAW_TREE = {
       ],
     },
     { id: "sales", name: "Sales" },
-    { id: "old", name: "Old", archived_at: "2026-01-01", children: [{ id: "hidden", name: "Hidden" }] },
     { id: 7, name: "Bad id" },
   ],
 };
@@ -201,7 +199,7 @@ const states = (sel: Selection) => {
 };
 
 describe("buildProjectTree", () => {
-  it("lists team projects in tree order with depth, and drops an archived subtree", () => {
+  it("lists team projects in tree order with depth", () => {
     expect(TREE.nodes.map((n) => [n.id, n.depth, n.parent])).toEqual([
       ["eng", 0, null],
       ["plat", 1, "eng"],
@@ -356,21 +354,112 @@ describe("the summary line", () => {
     mode: "pick" as const,
     picked: 7,
     includePersonal: true,
+    personalPinned: 2,
     offline: true,
   };
 
   it("says what the agent can do, from the verified host", () => {
     expect(summaryText(grantSummary(facts))).toBe(
-      "claude.ai will read and change tasks in 7 projects and your personal projects. It stays connected until you remove it.",
+      "claude.ai will read and change tasks in 7 projects and the personal projects you have now. It stays connected until you remove it.",
     );
   });
 
   it("follows each choice", () => {
     const read = { ...facts, scopes: ["projects:read"], picked: 1, includePersonal: false, offline: false };
     expect(summaryText(grantSummary(read))).toBe("claude.ai will only read tasks in 1 project.");
+    // A pick with no personal root pinned makes no claim about personal projects.
+    expect(summaryText(grantSummary({ ...facts, personalPinned: 0 }))).not.toContain("personal");
     expect(summaryText(grantSummary({ ...facts, mode: "all" }))).toContain(
       "in all your team projects and your personal projects",
     );
+  });
+});
+
+describe("personal projects need a pin (a pinned connection reaches no other)", () => {
+  const sel: Selection = { pins: ["eng"], leftOut: [] };
+  const roots = ["me1", "me2"];
+
+  it("pick + switch on adds the personal roots to the pins, after the picks", () => {
+    expect(projectLists("pick", sel, roots).pins).toEqual(["eng", "me1", "me2"]);
+  });
+
+  it("pick + switch off adds none, and All my projects sends no list", () => {
+    expect(projectLists("pick", sel, []).pins).toEqual(["eng"]);
+    expect(projectLists("all", sel, roots)).toEqual(NO_SELECTION);
+  });
+
+  it("the approval body carries the personal roots", () => {
+    const lists = projectLists("pick", sel, roots);
+    const body = approveBody(REQUEST, VIEW, {
+      scopes: new Set(["projects:read"]),
+      pins: lists.pins,
+      leftOut: lists.leftOut,
+      includePersonal: true,
+    });
+    expect(body.pinned_projects).toEqual(["eng", "me1", "me2"]);
+  });
+
+  it("buildProjectTree reads the personal roots from the personal key", () => {
+    const t = buildProjectTree({ rows: [], personal: [{ id: "me1", name: "Mine", children: [{ id: "x", name: "X" }] }, { id: 5 }] });
+    expect(t.personalRoots).toEqual(["me1"]);
+    expect(buildProjectTree({ rows: [] }).personalRoots).toEqual([]);
+  });
+
+  it("the personal roots count toward the 50 marks", () => {
+    const tree = buildProjectTree({ rows: [{ id: "a", name: "A" }] });
+    const picked = tickProject(tree, NO_SELECTION, "a");
+    expect(projectsProblem("pick", tree, picked, 49)).toBeNull();
+    expect(projectsProblem("pick", tree, picked, 50)).toMatch(/at most 50/);
+  });
+});
+
+describe("a long list is cut at a root, and says so", () => {
+  const kids = (r: string, n: number) => Array.from({ length: n }, (_, i) => ({ id: `${r}${i}`, name: `${r} ${i}` }));
+
+  it("600 flat projects: 500 shown, truncated, the true total kept", () => {
+    const t = buildProjectTree({ rows: Array.from({ length: 600 }, (_, i) => ({ id: `p${i}`, name: `P${i}` })) });
+    expect(t.nodes).toHaveLength(500);
+    expect(t.truncated).toBe(true);
+    expect(t.totalSeen).toBe(600);
+  });
+
+  it("never shows a parent with its children cut", () => {
+    const t = buildProjectTree({
+      rows: [
+        { id: "A", name: "A", children: kids("a", 300) },
+        { id: "B", name: "B", children: kids("b", 300) },
+      ],
+    });
+    expect(t.truncated).toBe(true);
+    expect(t.nodes).toHaveLength(301);
+    expect(t.byId.B).toBeUndefined();
+    expect(t.byId.A.children).toHaveLength(300);
+  });
+
+  it("a short list is not truncated, and a lone root over the cap blocks the pick", () => {
+    expect(buildProjectTree({ rows: [{ id: "a", name: "A" }] }).truncated).toBe(false);
+    const big = buildProjectTree({ rows: [{ id: "A", name: "A", children: kids("a", 600) }] });
+    expect(big.nodes).toEqual([]);
+    expect(projectsProblem("pick", big, NO_SELECTION)).toMatch(/too long/);
+  });
+});
+
+describe("an archived subproject is drawn, counted and can be left out", () => {
+  const tree = buildProjectTree({
+    rows: [{ id: "e", name: "E", children: [{ id: "old", name: "Old", archived_at: "2026-01-01", children: [{ id: "older", name: "Older" }] }, { id: "live", name: "Live" }] }],
+  });
+
+  it("keeps the archived row, marked, with its subtree", () => {
+    expect(tree.nodes.map((n) => [n.id, n.archived])).toEqual([["e", false], ["old", true], ["older", false], ["live", false]]);
+  });
+
+  it("a tick on the parent covers it, and an untick leaves it out", () => {
+    const on = tickProject(tree, NO_SELECTION, "e");
+    expect(selectedCount(tree, on)).toBe(4);
+    const off = untickProject(tree, on, "old");
+    expect(off.leftOut).toEqual(["old"]);
+    expect(selectedCount(tree, off)).toBe(2);
+    expect(analyzeTree(tree, off).e.state).toBe("partial");
   });
 });
 

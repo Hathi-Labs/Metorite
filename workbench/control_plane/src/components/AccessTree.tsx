@@ -91,6 +91,11 @@ export default function AccessTree({ tree, selection, onChange, disabled }: Acce
         </span>
       </div>
 
+      {tree.truncated && (
+        <p className="text-xs text-warning" role="status" data-testid="access-tree-cut">
+          The list shows {total} of your {tree.totalSeen} projects. Choose All my projects to cover the rest.
+        </p>
+      )}
       <div className="rounded-md border border-border py-1" role="group" aria-label="Projects">
         {rows.length === 0 && <p className="px-3 py-2 text-xs text-muted-foreground">No project matches.</p>}
         <ul>
@@ -125,8 +130,13 @@ export default function AccessTree({ tree, selection, onChange, disabled }: Acce
                     disabled={disabled}
                     onChange={() => onChange(toggleProject(tree, selection, node.id))}
                   />
-                  <span className={`truncate ${f.reached ? "text-foreground" : "text-muted-foreground"}`}>{node.name}</span>
+                  <span className={`truncate ${f.reached && !node.archived ? "text-foreground" : "text-muted-foreground"}`}>{node.name}</span>
                 </label>
+                {node.archived && (
+                  <Badge tone="neutral" size="sm">
+                    archived
+                  </Badge>
+                )}
                 {f.leftOutMark && (
                   <Badge tone="warning" size="sm">
                     left out
@@ -144,7 +154,7 @@ export default function AccessTree({ tree, selection, onChange, disabled }: Acce
       </div>
 
       <p className="border-l-2 border-primary/60 pl-3 text-xs text-muted-foreground">
-        Ticking a project ticks everything under it. A subproject added later joins on its own, unless you left it out.
+        Ticking a project ticks everything under it, archived subprojects too. A subproject added later joins on its own, unless you left it out.
       </p>
     </div>
   );

@@ -318,14 +318,18 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
   }, []);
 
   const toggle = (scope: string) => setChosen((prev) => toggleScope(view, prev, scope));
-  const lists = projectLists(mode, tree ? cleanSelection(tree, selection) : NO_SELECTION);
-  const projectIssue = projectsProblem(mode, tree, selection);
+  // A pinned connection reaches a personal project only through a pin, so in
+  // "pick" mode the personal switch pins the member's own personal roots.
+  const personalPins = mode === "pick" && includePersonal && tree ? tree.personalRoots : [];
+  const lists = projectLists(mode, tree ? cleanSelection(tree, selection) : NO_SELECTION, personalPins);
+  const projectIssue = projectsProblem(mode, tree, selection, personalPins.length);
   const summary = grantSummary({
     who: view.client.host,
     scopes: grantedScopes(view, chosen),
     mode,
     picked: tree ? selectedCount(tree, selection) : 0,
     includePersonal,
+    personalPinned: personalPins.length,
     offline: view.scopes.includes(OFFLINE_ACCESS),
   });
 
@@ -410,11 +414,8 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
     <Frame>
       <div className="border-b border-border p-6">
         <div className="flex items-start gap-3">
-          <span
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-base font-semibold uppercase text-primary"
-            aria-hidden="true"
-          >
-            {view.client.host.charAt(0)}
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <Icon name="Bot" size={20} />
           </span>
           <div className="min-w-0">
             {/* The headline names the VERIFIED host. The document's own name is
@@ -440,8 +441,9 @@ function ConsentForm({ request, view, onLeave, onRefused }: {
             </span>
           </Badge>
           <Badge tone="neutral" size="md" title={view.redirect_uri}>
-            <span data-testid="consent-redirect" className="break-all">
-              Returns to {view.redirect_app ? "an app on this computer" : view.redirect_display}
+            <span data-testid="consent-redirect" className="whitespace-normal break-words">
+              Returns to {view.redirect_display}
+              {view.redirect_app && <> {"·"} an app on this computer</>}
             </span>
           </Badge>
           <Badge tone="neutral" size="md">
