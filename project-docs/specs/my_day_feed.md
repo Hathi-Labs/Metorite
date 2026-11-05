@@ -2996,6 +2996,7 @@ time), `PUT /shell/feed/prefs`, and `test_my_day_prefs.py` (§13.3).
   - `mutes`: a list of kinds, 20 at most.
   - `open_in_app`: a list of kinds, for §11.2 rule 4.
   - `corrections`: 10 lines at most, 300 characters each, 1,500 in all.
+  - `rule_mutes` (BR-5, `core_brief.md` §6): a list of exception rule ids. Reach reads it. The feed does not.
 
   Any other key gets 422.
 - **The body.** `{key, value}`. The server merges one key with `jsonb_set`,

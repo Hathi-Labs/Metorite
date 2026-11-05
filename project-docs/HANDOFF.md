@@ -627,14 +627,6 @@ line — never reclaim a number by deleting the other entry.
   open.
 - **Added:** 2026-09-23 · the CP-13a deploy check
 
-### H-165 · CP-13 is built through CP-13d. Stop the gateway taking the member from the body, so `decide` serves a shared box · [AGENT]
-- **Metorite:** #559. The task holds the full entry (moved 2026-10-27, D118).
-- **Check:** `rg -n 'member=None' packages/acb_skills/acb_skills/decide_tools.py`
-  → a hit means the `decide` tool still sends no member, and this is open.
-  CP-13a to CP-13d are BUILT (2026-09-23 and 2026-09-24).
-- **Added:** 2026-09-23 · the Jev planning session · **rewritten 2026-09-24**
-  when CP-13d was built
-
 ### H-163 · My Tasks: a signed-in member checks capture into Projects · [OWNER]
 - **Metorite:** #549. The task holds the full entry (moved 2026-10-27, D118).
 - **Check:** a signed-in member opens My Tasks on app.metorite.com. The
