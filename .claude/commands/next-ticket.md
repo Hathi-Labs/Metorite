@@ -129,7 +129,8 @@ with nothing to see: docs, tests, a script, or a refactor with no change in
 behaviour.
 - Push the branch and open the PR as a draft, so `pr-check` runs now. It runs
   the tests that the diff can affect. A green `pr-check` does not mean the full
-  suite ran. `main` runs the full suite after the merge, and the CI tiers are
+  suite ran. `main` runs the full suite after the merge (the R8 suites only
+  after CIV-4b), and the CI tiers are
   in `project-docs/specs/ci_velocity.md` §4 (D176).
 - Send the owner one message, in chat and with `post_agent_activity` as a
   `response`. It holds the local URL, what changed in three lines or fewer,

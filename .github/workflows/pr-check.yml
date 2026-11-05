@@ -25,9 +25,11 @@ on:
     # wedges the merge. So filter inside the workflow if you must, never at the
     # trigger.
     #
-    # The cost is stated rather than hidden: a docs-only PR now runs the full
-    # ~5 minute suite. That is the price of the checks meaning something at the
-    # merge button, and it is cheaper than one un-mergeable PR.
+    # The cost is stated rather than hidden: the workflow starts for every PR,
+    # and (CIV-3) the unit shards run only the tests that the diff can affect.
+    # A docs-only PR still reports every required check. That is the price of
+    # the checks meaning something at the merge button, and it is cheaper than
+    # one un-mergeable PR.
   # ── NO `push` trigger, on purpose (2026-10-16) ──────────────────────────
   #
   # A push run created a SKIPPED twin of the required check "Unit tests" on
@@ -271,9 +273,9 @@ jobs:
   # as `.test_durations`.
   #
   # CIV-3: a PR runs only the tests its diff can affect. The `changes` job
-  # exports `needs.changes.outputs.full` and `.files`. When `full` is not the
-  # text `false` (it is `true`, or empty because `changes` failed), the shard
-  # runs the whole tree as before. `!cancelled()` starts the shards even when
+  # exports `needs.changes.outputs.full` and `.files`. The shard selects only
+  # when `changes` succeeded AND `full` is the text `false`. Any other state
+  # (`true`, empty, or a failed `changes` job) runs the whole tree as before. `!cancelled()` starts the shards even when
   # `changes` failed. Without it a failed `changes` would skip them, and
   # `unit-tests` would then read a skipped dependency. A selection NEVER
   # reaches pytest as an empty list, because pytest then collects everything.
@@ -336,7 +338,8 @@ jobs:
     env:
       CUSTOMER_CONSOLE_DATABASE_URL: postgresql+psycopg://cc:cc@127.0.0.1:5433/cc_platform
       # ⚠️⚠️ THIS IS NOT `DATABASE_URL`, AND THE TWO MUST NOT BE MERGED.
-      # This step runs the WHOLE tests/unit/ directory. Setting DATABASE_URL
+      # A full run of this job covers the WHOLE tests/unit/ directory, and a
+      # selection run covers part of it. Setting DATABASE_URL
       # here would arm test_tenant_coverage.py's two DB-gated tests, which fail
       # BY CONSTRUCTION against a freshly-replayed ladder:
       #   * test_live_catalog_has_column_force_and_policy wants FORCE-RLS
@@ -414,14 +417,16 @@ jobs:
       #   * The process fences run in the Lint job. They are skipped here, or
       #     they would still block.
       # CIV-3. `mode` is `full`, `selection` or `empty`. Only the exact text
-      # `false` in `full` selects, and the process fences leave the list.
+      # `false` in `full` selects, and only after a successful `changes` job.
+      # The process fences leave the list.
       - name: Pick this shard's tests
         id: pick
         env:
           FULL: ${{ needs.changes.outputs.full }}
           FILES: ${{ needs.changes.outputs.files }}
+          CHANGES: ${{ needs.changes.result }}
         run: |
-          python3 scripts/ci_unit_guard.py select --full "$FULL" --files "$FILES" \
+          python3 scripts/ci_unit_guard.py select --full "$FULL" --files "$FILES"             --changes-result "$CHANGES" \
             "--ignored=$(python3 scripts/fences.py pytest-ignore)" | tee -a "$GITHUB_OUTPUT"
 
       # An `empty` selection skips this step, because pytest with no paths
@@ -504,16 +509,18 @@ jobs:
 
       # CIV-3. On a selection run only the must-run files in the selection
       # have to run. `--only-selected` takes the selected paths, and an empty
-      # list checks none. A failed `changes` job leaves `full` empty, and the
-      # check then covers the whole list.
+      # list checks none. Anything but a successful `changes` job with
+      # `full` equal to `false` checks the whole list. Every must-run path has
+      # to exist in the tree on any run.
       - name: The R8 suites ran, and no fence skipped
         env:
           FULL: ${{ needs.changes.outputs.full }}
           FILES: ${{ needs.changes.outputs.files }}
+          CHANGES: ${{ needs.changes.result }}
         run: |
           set -f
           ONLY=""
-          if [ "$FULL" = "false" ]; then ONLY="--only-selected $FILES"; fi
+          if [ "$FULL" = "false" ] && [ "$CHANGES" = "success" ]; then ONLY="--only-selected $FILES"; fi
           python3 scripts/ci_unit_guard.py check --junit junit $ONLY \
             --disarmed "CUSTOMER_CONSOLE_DATABASE_URL unset" \
             --disarmed "TENANT_LADDER_DATABASE_URL unset" \

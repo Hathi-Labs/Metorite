@@ -175,7 +175,8 @@ def test_only_selected_checks_the_must_run_files_in_the_selection(tmp_path: Path
 def test_only_selected_reaches_the_cli(tmp_path: Path) -> None:
     junit = _report(tmp_path)
     base = [sys.executable, str(_ROOT / "scripts/ci_unit_guard.py"), "check", "--junit", str(junit)]
-    args = [*base, "--disarmed", "NEVER_MATCHES unset"]
+    (tmp_path / "test_missing.py").write_text("", encoding="utf-8")
+    args = [*base, "--tree-root", str(tmp_path), "--disarmed", "NEVER_MATCHES unset"]
     full = subprocess.run([*args, "--must-run", "test_missing.py"], capture_output=True, text=True)
     assert full.returncode == 1 and "no shard ran test_missing.py" in full.stdout
     sel = subprocess.run(
@@ -314,3 +315,31 @@ def test_the_guard_step_passes_only_selected_on_a_selection_run() -> None:
     assert "--only-selected $FILES" in step["run"]
     # The literal list stays in the YAML: 40+ suites assert their own name there.
     assert "--must-run" in step["run"] and "tests/unit/test_auto_park.py" in step["run"]
+
+
+def test_a_must_run_path_missing_from_the_tree_always_fails(tmp_path: Path) -> None:
+    """A PR that deletes an R8 suite but keeps its line must go red at once."""
+    junit = _report(tmp_path)
+    tree = tmp_path / "tree"
+    (tree / "tests/unit").mkdir(parents=True)
+    (tree / "tests/unit/test_alive.py").write_text("", encoding="utf-8")
+    must = ["tests/unit/test_alive.py", "tests/unit/test_deleted.py"]
+    for only in (None, [], ["tests/unit/test_alive.py"]):
+        problems = guard.check(junit, must, [], only_selected=only, tree_root=tree)
+        assert any("not in the tree: tests/unit/test_deleted.py" in p for p in problems), only
+        assert not any("test_alive.py" in p and "tree" in p for p in problems), only
+
+
+def test_a_failed_changes_job_means_a_full_run() -> None:
+    assert guard.select_shard("false", SEL[0], "", "success") == ("selection", [SEL[0]])
+    for result in ("failure", "skipped", "cancelled", ""):
+        assert guard.select_shard("false", SEL[0], "", result) == ("full", []), result
+
+
+def test_the_workflow_requires_a_successful_changes_job_for_a_selection() -> None:
+    pick = next(s for s in _steps("test") if s.get("id") == "pick")
+    assert pick["env"]["CHANGES"] == "${{ needs.changes.result }}"
+    assert '--changes-result "$CHANGES"' in pick["run"]
+    guard_step = next(s for s in _steps("unit-tests") if s.get("name", "").startswith("The R8"))
+    assert guard_step["env"]["CHANGES"] == "${{ needs.changes.result }}"
+    assert '[ "$CHANGES" = "success" ]' in guard_step["run"]

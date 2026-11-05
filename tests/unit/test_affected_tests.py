@@ -271,3 +271,71 @@ def test_gate_diff_lists_both_paths_of_a_rename(tmp_path: Path) -> None:
     git("mv", "apps/x/old.py", "apps/x/new.py")
     git("commit", "-qm", "rename")
     assert sel.gate_changed_files(base, root=tmp_path) == ["apps/x/new.py", "apps/x/old.py"]
+
+
+# ── CIV-3 review round 1 ───────────────────────────────────────────────────
+
+
+def _namespace_repo(tmp_path: Path) -> Path:
+    root = _gate_repo(tmp_path)
+    _write(root, "apps/services/gw/pyproject.toml", "[project]\nname='gw'\n")
+    _write(root, "apps/services/gw/gw/__init__.py")
+    _write(root, "apps/services/gw/gw/routes/actions.py", "X = 1\n")  # no __init__.py
+    _write(root, "apps/services/gw/gw/routes/chan/__init__.py")
+    _write(root, "apps/services/gw/gw/routes/chan/inbound.py", "X = 1\n")
+    _write(root, "tests/unit/test_actions_routes.py", "from gw.routes import actions\n")
+    _write(root, "tests/unit/test_inbound.py", "import gw.routes.chan.inbound\n")
+    return root
+
+
+def test_a_module_under_a_namespace_package_gets_its_full_dotted_name(tmp_path: Path) -> None:
+    root = _namespace_repo(tmp_path)
+    assert sel.module_name("apps/services/gw/gw/routes/actions.py", root) == "gw.routes.actions"
+    assert sel.module_name("apps/services/gw/gw/routes/chan/inbound.py", root) == (
+        "gw.routes.chan.inbound"
+    )
+    assert sel.module_name("apps/services/gw/gw/__init__.py", root) == "gw"
+
+
+def test_gate_selects_the_importers_of_a_namespace_module(tmp_path: Path) -> None:
+    root = _namespace_repo(tmp_path)
+    out = sel.gate(["apps/services/gw/gw/routes/actions.py"], root)
+    assert out["full"] is False
+    assert "tests/unit/test_actions_routes.py" in out["files"]
+    out = sel.gate(["apps/services/gw/gw/routes/chan/inbound.py"], root)
+    assert "tests/unit/test_inbound.py" in out["files"]
+
+
+def test_the_real_gateway_routes_resolve_to_the_names_the_tests_import() -> None:
+    assert sel.module_name("apps/services/gateway/gateway/routes/actions.py") == (
+        "gateway.routes.actions"
+    )
+    assert sel.module_name(
+        "apps/services/gateway/gateway/routes/whatsapp_channel/inbound.py"
+    ) == "gateway.routes.whatsapp_channel.inbound"
+    out = sel.gate(["apps/services/gateway/gateway/routes/actions.py"])
+    for t in ("test_actions_routes.py", "test_org_access_enforcement.py", "test_shell_needs.py"):
+        assert f"tests/unit/{t}" in out["files"], t
+
+
+def test_a_migration_selects_every_r8_suite_not_only_those_with_db_gate(tmp_path: Path) -> None:
+    root = _gate_repo(tmp_path)
+    _write(root, "tests/unit/test_ladder_only.py", "from _tenant_ladder import build\n")
+    _write(root, "tests/unit/test_url_only.py", "os.environ['TENANT_LADDER_DATABASE_URL']\n")
+    _write(root, "tests/unit/test_console_url.py", "os.environ['CUSTOMER_CONSOLE_DATABASE_URL']\n")
+    _write(root, "tests/unit/test_cc_ladder.py", "import _customer_console_ladder\n")
+    out = sel.gate(["infra/postgres/999_x.sql"], root)
+    for t in ("test_db", "test_ladder_only", "test_url_only", "test_console_url", "test_cc_ladder"):
+        assert f"tests/unit/{t}.py" in out["files"], t
+    assert "tests/unit/test_user.py" not in out["files"]
+
+
+def test_a_console_change_selects_every_console_r8_suite(tmp_path: Path) -> None:
+    root = _gate_repo(tmp_path)
+    _write(root, "tests/unit/test_customer_console_sql.py", "import os\n")
+    _write(root, "tests/unit/test_cc_ladder.py", "import _customer_console_ladder\n")
+    _write(root, "tests/unit/test_console_url.py", "os.environ['CUSTOMER_CONSOLE_DATABASE_URL']\n")
+    out = sel.gate(["infra/customer_console/0005_x.sql"], root)
+    for t in ("test_customer_console_sql", "test_cc_ladder", "test_console_url"):
+        assert f"tests/unit/{t}.py" in out["files"], t
+    assert "tests/unit/test_user.py" not in out["files"]

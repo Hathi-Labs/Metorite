@@ -4,9 +4,10 @@
     uv run python scripts/affected_tests.py --run      # run them with pytest
     uv run python scripts/affected_tests.py --base origin/main --run
 
-This is NOT the merge gate. pr-check runs the WHOLE suite on every PR. This
-script exists so that an agent, or a person, does not run all 27,000 tests
-locally to check a 3-file change.
+``--gate`` is the merge gate's selection: pr-check runs these tests, and the
+full suite when the diff is FULL (specs/ci_velocity.md, D176). The plain list
+and ``--run`` are for the inner loop, so that an agent, or a person, does not
+run all 27,000 tests locally to check a 3-file change.
 
 A test file is picked when it:
 
@@ -71,6 +72,19 @@ def module_name(path: str, root: Path = ROOT) -> str | None:
     p = root / path
     if p.suffix != ".py":
         return None
+    # The import root is the folder of the nearest pyproject.toml below the
+    # repo root (apps/services/gateway, packages/acb_common). A folder with no
+    # __init__.py inside a package (gateway/routes) is a namespace package. An
+    # __init__ chain stops there and gives a short name that no test imports
+    # (CIV-3 review, P0).
+    anc = p.parent
+    while anc != root and anc != anc.parent:
+        if (anc / "pyproject.toml").is_file():
+            rel = list(p.relative_to(anc).with_suffix("").parts)
+            if rel and rel[-1] == "__init__":
+                rel.pop()
+            return ".".join(rel) if rel else None
+        anc = anc.parent
     parts = [p.stem] if p.name != "__init__.py" else []
     d = p.parent
     while (d / "__init__.py").is_file():
@@ -233,6 +247,19 @@ GATE_FULL_NAMES = {
 }
 GATE_FULL_PREFIXES = (".github/", "scripts/ci_pc/", "packages/acb_common/")
 GATE_DB_MARK = "_DB_GATE"
+# An R8 suite is a test file that builds a real database from a ladder, or
+# names a database URL variable. 109 of 339 ladder suites carry no _DB_GATE.
+CONSOLE_R8_MARKS = ("_customer_console_ladder", "CUSTOMER_CONSOLE_DATABASE_URL")
+R8_MARKS = (
+    GATE_DB_MARK,
+    "_tenant_ladder",
+    "TENANT_LADDER_DATABASE_URL",
+    *CONSOLE_R8_MARKS,
+)
+
+
+def _is_r8(body: str) -> bool:
+    return any(m in body for m in R8_MARKS)
 
 
 def gate_changed_files(base: str, root: Path = ROOT) -> list[str]:
@@ -299,8 +326,15 @@ def _gate(changed: list[str], root: Path) -> dict:
     for path in other:
         picked |= {t for t, body in tests.items() if path in body}
     if any(c.startswith("infra/postgres/") for c in changed):
-        picked |= {t for t, body in tests.items() if GATE_DB_MARK in body}
+        picked |= {t for t, body in tests.items() if _is_r8(body)}
         picked.add("tests/unit/test_migration_prefixes.py")
+    if any(c.startswith("infra/customer_console/") for c in changed):
+        picked |= {
+            t
+            for t, body in tests.items()
+            if t.rsplit("/", 1)[-1].startswith("test_customer_console_")
+            or any(m in body for m in CONSOLE_R8_MARKS)
+        }
     files = sorted(p for p in picked if (root / p).is_file())
     return {"full": bool(reasons), "files": files, "reasons": reasons}
 

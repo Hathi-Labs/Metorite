@@ -89,14 +89,24 @@ def check(
     never_skip: list[str],
     disarmed: tuple[str, ...] | list[str] = DISARMED,
     only_selected: list[str] | None = None,
+    tree_root: Path | None = None,
 ) -> list[str]:
     """``only_selected`` None is a full run. A list (even empty) is a selection
-    run, and then only the must-run files in that list have to run."""
+    run, and then only the must-run files in that list have to run.
+
+    ``tree_root`` set: EVERY must-run path has to exist there, selection or
+    not. A PR that deletes an R8 suite but keeps its line would otherwise pass
+    here and turn the next full run red."""
+    missing = [
+        f"a --must-run file is not in the tree: {p}. Delete its line in pr-check.yml too."
+        for p in must_run
+        if tree_root is not None and not (tree_root / p).is_file()
+    ]
     if only_selected is not None:
         chosen = {p.replace("\\", "/") for p in only_selected}
         must_run = [p for p in must_run if p in chosen]
     cases = _cases(junit_dir)
-    problems: list[str] = []
+    problems: list[str] = list(missing)
     ran: set[str] = set()
     for case in cases:
         path = _file(case)
@@ -148,13 +158,15 @@ def gate_output(gate_json: Path) -> list[str]:
     return [f"full={'true' if full else 'false'}", f"files={'' if full else text}"]
 
 
-def select_shard(full: str, files: str, ignored: str = "") -> tuple[str, list[str]]:
+def select_shard(
+    full: str, files: str, ignored: str = "", changes_result: str = "success"
+) -> tuple[str, list[str]]:
     """What a shard runs: ``full``, ``selection`` or ``empty``.
 
     Only the exact string ``false`` selects. An empty or unknown ``full`` (the
     ``changes`` job failed) runs the whole suite. A selection never reaches
     pytest as an empty list, because pytest then collects the whole tree."""
-    if full != "false":
+    if full != "false" or changes_result != "success":
         return "full", []
     paths = files.split()
     if not all(_SAFE_PATH.match(p) for p in paths):
@@ -194,6 +206,12 @@ def main(argv: list[str] | None = None) -> int:
         help="a selection run: check only the must-run files in this list",
     )
     c.add_argument(
+        "--tree-root",
+        type=Path,
+        default=Path("."),
+        help="the checkout: every --must-run path has to exist under it",
+    )
+    c.add_argument(
         "--disarmed",
         action="append",
         help="a skip reason that means an R8 gate is disarmed (repeatable)",
@@ -206,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
     sel = sub.add_parser("select", help="what this shard runs, as step outputs")
     sel.add_argument("--full", default="")
     sel.add_argument("--files", default="")
+    sel.add_argument("--changes-result", default="", help="needs.changes.result")
     sel.add_argument("--ignored", default="", help="the output of fences.py pytest-ignore")
     e = sub.add_parser("empty-report", help="write a zero-test JUnit report if none exists")
     e.add_argument("--out", type=Path, required=True)
@@ -215,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
         print(chr(10).join(gate_output(args.json)))
         return 0
     if args.cmd == "select":
-        mode, paths = select_shard(args.full, args.files, args.ignored)
+        mode, paths = select_shard(args.full, args.files, args.ignored, args.changes_result)
         print(f"mode={mode}")
         print(f"paths={' '.join(paths)}")
         return 0
@@ -230,7 +249,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     problems = check(
-        args.junit, args.must_run, args.never_skip, args.disarmed or DISARMED, args.only_selected
+        args.junit,
+        args.must_run,
+        args.never_skip,
+        args.disarmed or DISARMED,
+        args.only_selected,
+        args.tree_root,
     )
     for p in problems:
         print(f"::error::{p}")
