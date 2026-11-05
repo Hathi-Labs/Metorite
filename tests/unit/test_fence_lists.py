@@ -145,7 +145,7 @@ def test_the_unit_shards_follow_the_changes_job_and_the_aggregate_is_never_skipp
     assert "needs.changes.outputs.full" not in cond, "the shards decide inside, not by an if"
     assert jobs["unit-tests"]["if"] == "always()"
     assert jobs["unit-tests"]["name"] == "Unit tests"
-    assert "paths" not in yaml.safe_load(_PR_CHECK.read_text(encoding="utf-8"))[True]["pull_request"]
+    assert "paths" not in (yaml.safe_load(_PR_CHECK.read_text(encoding="utf-8"))[True]["pull_request"] or {})
 
 
 def test_the_frontend_unit_job_is_never_skipped_by_path():
