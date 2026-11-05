@@ -7,6 +7,7 @@
  */
 import type { FieldSpec } from "./fieldCheck";
 import { FIELD_TYPE_LIST } from "./blocks";
+import { boardBlock, MAX_CARD_FIELDS } from "./boardModel";
 import type { FieldType } from "./manifest";
 import type { ObjectRow } from "./realDoor";
 
@@ -50,6 +51,40 @@ export function tableFields(fields: readonly FieldSpec[]): FieldSpec[] {
  */
 export function formFields(fields: readonly FieldSpec[], computed: ReadonlySet<string>): FieldSpec[] {
   return fields.filter((f) => !computed.has(f.key));
+}
+
+/**
+ * The select field that makes the lanes of a Board: the first select field of one value
+ * that carries options and that no `formula` or `rollup` rule fills. The store refuses a
+ * write to a computed key, so a drop on such a field would always fail.
+ */
+export function boardGroupKey(fields: readonly FieldSpec[], computed: ReadonlySet<string>): string | null {
+  const f = fields.find((x) => x.type === "select" && x.many !== true && !computed.has(x.key)
+    && (x.options?.length ?? 0) > 0);
+  return f?.key ?? null;
+}
+
+/**
+ * The Board node of an object (`ai_studio.md` §14 D3b): lanes by the select field, a card per
+ * record, and a drop that runs `object:<name>.update`. It is `boardBlock` from D3 with the
+ * object's own fields. It returns null when the object has no select field to group by.
+ */
+export function objectBoardBlock(
+  object: { name: string; label?: string | null },
+  fields: readonly FieldSpec[],
+  computed: ReadonlySet<string>,
+  source: { action: string; args?: Record<string, unknown> },
+): ReturnType<typeof boardBlock> | null {
+  const groupBy = boardGroupKey(fields, computed);
+  if (!groupBy) return null;
+  const titleKey = titleKeyOf(fields.filter((f) => f.key !== groupBy));
+  const cardFields = fields
+    .filter((f) => f.key !== groupBy && f.key !== titleKey && f.type !== "longText" && f.many !== true)
+    .slice(0, MAX_CARD_FIELDS).map((f) => f.key);
+  return boardBlock({
+    fields, groupBy, ...(titleKey ? { titleField: titleKey } : {}), cardFields,
+    update: `object:${object.name}.update`, title: object.label ?? object.name,
+  }, source);
 }
 
 /** The sentence for a query that names no object, or null. The page then shows the first object. */

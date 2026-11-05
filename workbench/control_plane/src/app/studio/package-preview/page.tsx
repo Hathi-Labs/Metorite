@@ -2,14 +2,15 @@
 
 /**
  * /studio/package-preview — the Table, Form and Detail on the real records of a
- * package (`specs/ai_studio.md` §14 D2b-1, slice STU-D2b).
+ * package (`specs/ai_studio.md` §14 D2b-1, slice STU-D2b), and the Board (D3b).
  *
  * `?pkg=<id>&object=<name>` picks the package and the object. The page reads
  * the packages of the member (`GET /api/studio/packages`), then the object rows
  * of the package, and draws the three blocks on the real door
  * (`lib/studio/realDoor.ts`). The Table lists the records and edits a cell in
  * place. The Form creates a record, and edits the one picked in the Detail
- * sheet. The Detail sheet holds the Delete button, which asks first.
+ * sheet. The Detail sheet holds the Delete button, which asks first. The Board groups the records by the first
+ * select field of the object, and a drop runs one `object:<name>.update` on the same door.
  *
  * It builds no view-to-node mapper and reads no page of the manifest: PKG-8
  * owns that. It is no pane, so `nav.ts` does not list it, and the access gate of
@@ -34,7 +35,7 @@ import { StudioDataContext } from "@/lib/studio/dataContext";
 import { type Row, sourceKey } from "@/lib/studio/dataDoor";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import {
-  fieldSpecs, formFields, missingObjectNote, pickObject, previewHref, recordTitle, tableFields,
+  fieldSpecs, formFields, missingObjectNote, objectBoardBlock, pickObject, previewHref, recordTitle, tableFields,
 } from "@/lib/studio/packagePreview";
 import { STUDIO_OFF, createDoorKeeper, getPackage, listPackages } from "@/lib/studio/realDoor";
 import { useCachedResource } from "@/lib/useCachedResource";
@@ -84,6 +85,8 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
       { editable: true, computed: [...computed] }),
     [fields, list, object?.label, object?.name, computed],
   );
+  const board = useMemo(() => objectBoardBlock(object ?? { name: "none" }, fields, computed, list),
+    [object, fields, computed, list]);
   const rows = useCachedResource<Row[]>(
     door && object ? sourceKey(door, list) : null,
     () => (door as NonNullable<typeof door>).read(list),
@@ -131,6 +134,23 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
           <p className="mt-3 text-xs text-muted-foreground">
             Click a cell to edit it. A text cell saves on Enter. Escape cancels. A refused edit puts the old value back.
           </p>
+        </section>
+
+        <section aria-label="Board" className={PANEL}>
+          <h2 className="mb-2 text-sm font-semibold text-foreground">Board</h2>
+          {board ? (
+            <>
+              <GenerativeUINode spec={board} />
+              <p className="mt-3 text-xs text-muted-foreground">
+                Drag a card to another lane, or press Space on a card, then the arrow keys, then Space.
+                A drop saves at once. A refused move puts the card back.
+              </p>
+            </>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              This object has no select field, so it has no lanes. Add one to see a Board.
+            </p>
+          )}
         </section>
 
         <div className="grid grid-cols-1 gap-3 sm:gap-4 xl:grid-cols-2">
