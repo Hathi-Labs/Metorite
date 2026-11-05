@@ -55,8 +55,25 @@ is the backstop. Each writes its ``app_audit`` row in the same transaction.
 approval is J2. The install is WS-PKG, and ``apps.live_version`` is only the
 pointer of the author.
 
+**The delete (A5c-1).** :func:`delete_preview` counts what a delete takes
+and gives :func:`confirm_token` of the counts. :func:`delete_package` is one
+step in the caller's transaction: the package row ``FOR UPDATE`` first, then
+the org lock of the object store (``objects_store.lock_org``), the one lock
+order of a publish. With a token, the step checks it under both locks and
+raises :class:`CountsChanged` for a stale one. Then it purges at most one
+chunk of records (``objects_store.purge_records``). A full chunk ends the
+step, and the caller commits, so no lock stays between two steps. A step
+that finds fewer records than the chunk deletes the ``apps`` row (the one
+``DELETE FROM apps`` of a package) and writes the ``app_audit`` row through
+:func:`_audit` in the same transaction. The foreign keys cascade to the
+versions, the objects, the fields, the hot rows, the installs, the
+contributions, the grants, the files, the pins and the data. So the store
+still holds no statement that updates or deletes a version row.
+``app_audit`` has no foreign key, so its rows stay.
+
 **Not here.** No UI. Install is WS-PKG. The routes are
-``routes/studio/packages.py`` (A5), which runs no SQL of its own.
+``routes/studio/packages.py`` (A5 and A5c-1), which runs no SQL of its own.
+The admin path of a delete and its chat tool are A5c-2.
 """
 
 from __future__ import annotations
