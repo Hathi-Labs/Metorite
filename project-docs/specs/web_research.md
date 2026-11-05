@@ -193,6 +193,10 @@ One container, `web_worker`, in the pattern of `apps/services/meeting_bot/`:
   | Sessions per organization at once | 2 |
   | Sessions in the container at once | 4 |
   | Timeout of one job | 60 s |
+  | Requests per job | 200 |
+  | Bytes of one document | 10 MiB |
+  | Bytes of one subresource | 5 MiB |
+  | Time of one address check | 5 s |
 
   The container drops all capabilities (`cap_drop: [ALL]`) and sets `no-new-privileges`. It binds `127.0.0.1` only (`test_compose_ports_local.py`).
 - **The API.** `POST /render` takes a URL, an organization id and a job id. It answers with Markdown. The bearer token is the internal token. The worker refuses to start with an empty token. Docling joins in WEB-7 and Playwright MCP in WEB-9.
@@ -201,13 +205,22 @@ One container, `web_worker`, in the pattern of `apps/services/meeting_bot/`:
 
 **As built, WEB-6 (2026-11-05).** The worker is `apps/services/web_worker/`. No caller exists, and WEB-7 adds the orchestrator call.
 
-- **Redirects.** Playwright does not route the next hop of a redirect. Chromium follows that hop with no check. So the route follows each redirect itself, up to 5, and checks each hop first. The browser never sees a `3xx`.
-- **Sockets and workers.** Each browser context blocks the service worker of a page. A route closes each WebSocket, and no socket reaches a server. WebRTC gets no UDP.
-- **The files.** `GET /jobs/{job_id}/files` lists the files of a running job, and `GET /jobs/{job_id}/files/{name}` reads one. A job of another organization gets the same `404` as a job that does not exist.
+- **The pinned fetch.** Chromium fetches nothing itself. The route gives each request to `fetch.pinned_fetch` and fulfills it with the answer. The fetch resolves each host once, checks the address with `acb_common.public_address`, and connects to that address. `Host` and the TLS name stay the name of the URL. So a DNS answer that changes later (DNS rebinding) never reaches a socket.
+- **Each hop.** A hop URL with a backslash, a control character, a space or userinfo gets a refusal before a parser reads it. Two parsers can read such a URL as two hosts. A hop to another origin gets no `Cookie`, `Authorization` or `Proxy-Authorization`.
+- **Redirects.** Playwright does not route the next hop of a redirect. So the fetch follows each redirect itself, up to 5, and checks each hop first. Chromium never sees a `3xx`. A refused hop of the top document answers `422 refused`.
+- **Caps.** The fetch reads at most 10 MiB of a document and 5 MiB of a subresource, decoded. It asks only for gzip and deflate, and it decodes them with a bound. A job makes at most 200 requests. Each cap aborts the request.
+- **The checks.** One pool of 8 threads runs the address checks. A job runs 2 checks at once, and a hung check keeps its slot until its thread ends. A resolve has 5 s. A job checks each host once.
+- **The Markdown pool.** It has 4 threads, one for each job slot. A job that times out stops waiting, and its thread stays inside this pool.
+- **Sockets and workers.** Each browser context blocks the service worker of a page. A route closes each WebSocket, and no socket reaches a server.
+- **No network for Chromium.** Chromium gets a proxy address where nothing listens, also for loopback. So a preconnect, a favicon or a DNS prefetch goes nowhere. WebRTC gets no UDP.
+- **The sandbox.** Chromium runs with the default `--no-sandbox` of Playwright. So the container is the only sandbox: uid 1000, no capabilities, `no-new-privileges`, a read-only root, a tmpfs `/tmp` and a pids limit of 1024.
+- **The files.** No HTTP route reads a job file. The store keys each job by organization and job id, so a job id of org A never gives org B a `409`.
 - **The closure.** `requirements.lock.txt` pins the full closure with hashes. `licences.json` holds the licence of each package. The AGPL fence fails when the two do not name the same packages.
-- **The compose block.** The block names the image `acb-web-worker:latest` and no build, because the root copy of the box does not hold the repo root. Build the image from a checkout. The block is in the profile `webworker` and binds `127.0.0.1:8096`. With no `WEB_WORKER_TOKEN`, the worker does not start.
-- **The check in the image.** A real Chromium run refused a private target as a top URL and as a later hop of a redirect chain. It also refused a private script, image, frame, fetch and socket. The private server got no request. A real render of a public page returned Markdown, and an `http` to `https` redirect worked. The image runs as uid 1000 with no capabilities.
-- **Open risk.** Chromium resolves a host again after the check. A DNS answer that changes between the two (DNS rebinding) can reach a private address. The compose network is the second layer. A pinned resolver for Chromium is open work.
+- **The compose block.** The block names the image `acb-web-worker:latest` and no build, because the root copy of the box does not hold the repo root. Build the image from a checkout. The block is in the profile `webworker` and binds `127.0.0.1:8096`. The network `web_worker_net` holds no other service. With no `WEB_WORKER_TOKEN`, the worker does not start.
+- **The check in the image.** A Chromium probe used a fake public server and a fake private server. The probe refused a backslash redirect, a private hop late in a chain and a 12 MiB page. It also refused a private script, image, frame, fetch and socket.
+- **Rebinding in the image.** In the same probe, Chromium's own DNS gave the private address for the page host. The worker connected to the checked address. The private server got no TCP connection, also from a preconnect and a favicon.
+- **Public pages.** Under the compose flags, `https://example.com/` returned Markdown, and an `http` to `https` redirect worked.
+- **Open work.** The network layer does not block the metadata address. Only the worker check refuses it. A rule on the box for `169.254.169.254` is open work.
 
 ### 5.2 SearXNG
 

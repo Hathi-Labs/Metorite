@@ -7,8 +7,7 @@ Only the orchestrator calls it, with the internal token. Start it with
   The meeting bot skips its check with no token. This worker never does.
 * Each route but ``/health`` compares the bearer in constant time.
 * ``POST /render`` takes ``{url, org_id, job_id}`` and answers with Markdown.
-* ``GET /jobs/{job_id}/files`` and ``GET /jobs/{job_id}/files/{name}`` read
-  the files of a running job. A job of another organization gives ``404``.
+* No route reads a job file. The job directory goes when the job ends.
 
 Fence: ``tests/unit/test_web_worker.py``.
 """
@@ -23,11 +22,11 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from web_worker.egress import host_of
-from web_worker.jobs import BadId, Job, JobExists, JobNotFound, JobStore, NoSlot
+from web_worker.fetch import host_of
+from web_worker.jobs import BadId, Job, JobExists, JobStore, NoSlot
 from web_worker.limits import JOB_TIMEOUT_S
 from web_worker.render import PageRefused
 
@@ -126,21 +125,6 @@ def create_app(
     @app.post("/render", dependencies=[Depends(auth)])
     async def render(body: RenderRequest) -> Any:
         return await _render(jobs, renderer, body)
-
-    @app.get("/jobs/{job_id}/files", dependencies=[Depends(auth)])
-    async def list_files(job_id: str, org_id: str) -> dict[str, list[str]]:
-        try:
-            return {"files": jobs.files(org_id, job_id)}
-        except JobNotFound:
-            raise HTTPException(status_code=404, detail="not found") from None
-
-    @app.get("/jobs/{job_id}/files/{name}", dependencies=[Depends(auth)])
-    async def read_file(job_id: str, name: str, org_id: str) -> Response:
-        try:
-            data = jobs.read(org_id, job_id, name)
-        except JobNotFound:
-            raise HTTPException(status_code=404, detail="not found") from None
-        return Response(data, media_type="application/octet-stream")
 
     @app.exception_handler(HTTPException)
     async def _plain(_request: Request, exc: HTTPException) -> JSONResponse:

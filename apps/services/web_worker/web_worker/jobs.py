@@ -6,10 +6,12 @@ call, and the worker trusts it only behind the token (``main.py``).
 * Each job gets a directory that ``tempfile.mkdtemp`` makes with mode
   ``0700``, under a root keyed by job id. The worker deletes it when the job
   ends, also when the job fails.
-* :meth:`JobStore.lookup` finds a job only for the organization that started
-  it. A job of another organization and a job that does not exist give the
-  same :class:`JobNotFound`, so a caller cannot learn that a job of org A
-  exists.
+* The store keys each job by organization and job id. So a job id of org A
+  never gives org B a ``409``, and :meth:`JobStore.lookup` finds a job only
+  for the organization that started it. A job of another organization and a
+  job that does not exist give the same :class:`JobNotFound`.
+* No HTTP route reads a job file. ``files`` and ``read`` serve a later
+  slice that reads a job while it runs (WEB-8).
 * A job takes a slot of its organization and a slot of the container before
   it starts. With no slot it does not wait.
 
@@ -74,7 +76,7 @@ class JobStore:
     def __init__(self, root: str | os.PathLike[str]) -> None:
         self.root = Path(root)
         self._lock = threading.Lock()
-        self._jobs: dict[str, Job] = {}
+        self._jobs: dict[tuple[str, str], Job] = {}
 
     def _make_root(self) -> None:
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -89,7 +91,8 @@ class JobStore:
         """Start a job, and end it when the block exits."""
         org_id, job_id = valid_id(org_id), valid_id(job_id)
         with self._lock:
-            if job_id in self._jobs:
+            key = (org_id, job_id)
+            if key in self._jobs:
                 raise JobExists("job exists")
             if len(self._jobs) >= MAX_SESSIONS:
                 raise NoSlot("container")
@@ -97,12 +100,12 @@ class JobStore:
                 raise NoSlot("organization")
             self._make_root()
             job = Job(org_id, job_id, Path(tempfile.mkdtemp(prefix=f"{job_id}.", dir=self.root)))
-            self._jobs[job_id] = job
+            self._jobs[key] = job
         try:
             yield job
         finally:
             with self._lock:
-                self._jobs.pop(job_id, None)
+                self._jobs.pop(key, None)
             shutil.rmtree(job.dir, ignore_errors=True)
 
     def lookup(self, org_id: str, job_id: str) -> Job:
@@ -112,8 +115,8 @@ class JobStore:
         except BadId:
             raise JobNotFound("not found") from None
         with self._lock:
-            job = self._jobs.get(job_id)
-        if job is None or job.org_id != org_id:
+            job = self._jobs.get((org_id, job_id))
+        if job is None:
             raise JobNotFound("not found")
         return job
 

@@ -34,3 +34,23 @@ MAX_MARKDOWN_BYTES = 2 * 1024 * 1024
 #: Redirects that the route follows for one request, each one checked. This
 #: is the number of the fetch guard (section 3.1). Past it, the route aborts.
 MAX_REDIRECTS = 5
+
+#: Requests that one job can make: each request of the page and each hop of
+#: a redirect. The route aborts each request past this count.
+MAX_REQUESTS_PER_JOB = 200
+
+#: Decoded bytes of one document answer. A bigger answer gets an abort.
+MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
+
+#: Decoded bytes of one subresource answer. A bigger answer gets an abort.
+MAX_SUBRESOURCE_BYTES = 5 * 1024 * 1024
+
+#: Seconds that one address check can take. A slower check refuses the host.
+CHECK_TIMEOUT_S = 5
+
+#: Address checks of one job at once. A check that hangs keeps its thread
+#: until it ends, so one job holds at most this many threads of the pool.
+CHECKS_PER_JOB = 2
+
+#: Seconds that one HTTP hop can take, to connect and to read.
+HTTP_TIMEOUT_S = 20
