@@ -49,9 +49,30 @@ never opens the app still has ``delivered_at``. BR-2d compares
 ``delivered_at`` with ``slot_at``. A "seen" signal is a separate
 ``seen_at``, which only an explicit POST from the card writes.
 
-This slice calls no model and sends nothing. The phrase step is BR-2a-2.
-The two kinds register at import, and :func:`register_jobs` adds the seed
-hook and the prune hook.
+**The phrase step** (BR-2a-2, ``core_brief.md`` §4.4). It runs only when
+``flags.compose(org)`` is on, the run has ``phrase.MIN_CLAIMS`` claims or
+more, and ``acb_llm.routed.routing_is_on()``. Else step 7 is as above, byte
+for byte, and no call runs. On:
+
+7a. ONE session commits the claims, ``gathered``, the template lead, and
+    ``phrasing`` with ``model_request_id`` (``store.mark_phrasing``, the
+    intent mark). The job stays claimed, and the session closes.
+7b. ``phrase.phrase`` makes the ONE call, with NO session open.
+7c. A new session holds the job claim, moves ``phrasing`` to ``ready``,
+    writes the model lead with its claim ids, delivers when
+    ``flags.in_app`` is on, and completes the job. A fence refusal
+    (``brief.phrase_refused``), a ``RoutedRefusal``, a timeout or any other
+    fault keeps the template lead (``brief.phrase_failed``), and the run
+    still reaches ``ready``.
+
+A cancel during the call gives the ledger slot back, as above. The retry
+finds the run in ``phrasing`` (:func:`_finish_stuck`). It makes no call,
+keeps the template lead, or writes it from the stored claims, and reaches
+``ready``. So one run makes at most one call.
+
+``phrase.py`` is the one model site of the package. This module sends
+nothing. The two kinds register at import, and :func:`register_jobs` adds
+the seed hook and the prune hook.
 """
 
 from __future__ import annotations
@@ -63,7 +84,7 @@ from typing import Any
 from acb_common import assistant_profile, get_logger
 from acb_common.db import tenant_session
 
-from gateway.brief import flags, gather, planner, store
+from gateway.brief import flags, gather, phrase, planner, store
 from gateway.jobs import queue, unattended, worker
 from gateway.reach import plan
 
@@ -154,8 +175,8 @@ def _why_not(prefs: dict[str, Any], slot_at: datetime) -> str | None:
 
 async def _gather(org: str, member: str, user: Any, run: store.Run, claim: queue.Claim,
                   now: datetime) -> str:
-    """Steps 6 and 7. Answers ``ready``, ``delivered``, ``empty``, or
-    ``lost``."""
+    """Steps 6 and 7. Answers ``ready``, ``delivered``, ``empty``,
+    ``exists`` or ``lost``."""
     from gateway.reach import loop
 
     snap = await loop.snapshot(org, user, now)
@@ -163,6 +184,8 @@ async def _gather(org: str, member: str, user: Any, run: store.Run, claim: queue
         raise SnapshotIncomplete(member)
     claims = gather.claims(snap.cards, now)
     parts = plan.brief_parts(snap.cards, run.local_date, now=now)
+    if claims and parts is not None and _composes(org, len(claims)):
+        return await _gather_and_phrase(org, member, run, claim, claims, parts, now)
     async with tenant_session(org) as db:
         if not await queue.hold(db, claim):
             return "lost"
@@ -177,13 +200,126 @@ async def _gather(org: str, member: str, user: Any, run: store.Run, claim: queue
             await store.set_state(db, member, run.id, "ready", now=now, from_state="gathered")
             state = "ready"
             # BR-2c-1: on an in-app surface now, so the system delivers it.
-            # The stamp is the clock of this moment, not of the run's start,
-            # so BR-2d reads the true lag behind ``slot_at``.
-            if flags.in_app(org) and await store.set_state(
-                    db, member, run.id, "delivered", now=_now(), from_state="ready"):
-                state = "delivered"
+            state = await _deliver(db, org, member, run.id)
         await queue.complete(db, claim, now=now)
     _log.info("brief.run_done", state=state, claims=len(claims))
+    return state
+
+
+async def _deliver(db: Any, org: str, member: str, run_id: str) -> str:
+    """``delivered`` when the in-app surface is on and the guarded move of a
+    ``ready`` run wins, else ``ready``. The stamp is the clock of this
+    moment, not of the run's start, so BR-2d reads the true lag behind
+    ``slot_at``."""
+    if flags.in_app(org) and await store.set_state(
+            db, member, run_id, "delivered", now=_now(), from_state="ready"):
+        return "delivered"
+    return "ready"
+
+
+def _composes(org: str, count: int) -> bool:
+    """True when the run phrases its lead (BR-2a-2): ``BRIEF_COMPOSE`` is
+    on for the org, the run has :data:`phrase.MIN_CLAIMS` claims or more,
+    and the Router is on. A call off the Router writes no usage row, so
+    with the Router off the run makes no call (``core_brief.md`` §4.5)."""
+    from acb_llm import routed
+
+    return count >= phrase.MIN_CLAIMS and flags.compose(org) and routed.routing_is_on()
+
+
+async def _block(db: Any, org: str, member: str) -> str:
+    """The member's block for the prompt, read under a SAVEPOINT, so a
+    failed read costs the block and never the claims. Empty on a fault."""
+    try:
+        async with db.begin_nested():
+            return await phrase.member_block(db, org, member)
+    except Exception as exc:
+        _log.warning("brief.phrase_block_failed", error=type(exc).__name__)
+        return ""
+
+
+async def _gather_and_phrase(org: str, member: str, run: store.Run, claim: queue.Claim,
+                             claims: list[store.ClaimIn], parts: plan.BriefParts,
+                             now: datetime) -> str:
+    """Steps 7a to 7c. Answers ``ready``, ``delivered``, ``exists`` or
+    ``lost``."""
+    from acb_llm import routed
+
+    ref = phrase.new_ref()
+    async with tenant_session(org) as db:
+        if not await queue.hold(db, claim):
+            return "lost"
+        await store.add_claims(db, member, run.id, claims)
+        await store.set_state(db, member, run.id, "gathered", now=now, from_state="planned")
+        await store.set_lead(db, member, run.id, plan.brief_lead(parts), source="template")
+        if not await store.mark_phrasing(db, member, run.id, ref=ref):
+            # Another try moved the run on. It owns the run, and no call runs.
+            _log.info("brief.phrase_skipped", reason="not_gathered")
+            await queue.complete(db, claim, now=now)
+            return "exists"
+        stored = await store.read_claims(db, member, run.id)
+        block = await _block(db, org, member)
+    # The session is closed: the call holds no connection and no lock.
+    phrased: phrase.Phrased | None = None
+    try:
+        phrased = await phrase.phrase(member, stored, ref=ref, block=block)
+    except routed.RoutedRefusal as exc:
+        _log.warning("brief.phrase_failed", error="RoutedRefusal", router_status=exc.status)
+    except Exception as exc:
+        _log.warning("brief.phrase_failed", error=type(exc).__name__)
+    async with tenant_session(org) as db:
+        if not await queue.hold(db, claim):
+            return "lost"
+        state = await _ready(db, org, member, run.id, now, phrased)
+        await queue.complete(db, claim, now=now)
+    _log.info("brief.run_done", state=state, claims=len(stored),
+              lead_source="model" if phrased is not None else "template")
+    return state
+
+
+async def _ready(db: Any, org: str, member: str, run_id: str, now: datetime,
+                 phrased: phrase.Phrased | None) -> str:
+    """Move ``phrasing`` to ``ready`` with a guard, write the model lead
+    when there is one, and deliver. The template lead is in the row
+    already. ``exists`` when another try moved the run on: its lead
+    stays."""
+    if not await store.set_state(db, member, run_id, "ready", now=now,
+                                 from_state="phrasing"):
+        return "exists"
+    if phrased is not None:
+        await store.set_lead(db, member, run_id, phrased.lead, source="model",
+                             claim_ids=phrased.claim_ids)
+    return await _deliver(db, org, member, run_id)
+
+
+def _stored_lead(run: store.Run, claims: list[store.Claim]) -> str | None:
+    """The template lead of a run from its stored claims, as
+    ``chat_brief.stored_parts`` reads a stored run: the date title, one
+    line for each claim, and no "more" count. None with no claim."""
+    lines = [c.text for c in sorted(claims, key=lambda c: c.position)]
+    if not lines:
+        return None
+    title = f"Your day, {plan._date_words(run.local_date)}"
+    return plan.brief_lead(plan.BriefParts(title, lines, 0))
+
+
+async def _finish_stuck(org: str, member: str, run: store.Run, claim: queue.Claim,
+                        now: datetime) -> str:
+    """A run that a try left in ``phrasing``: a cancel, or a crash during
+    the call. The retry makes NO call (``core_brief.md`` §4.2 step 6). It
+    keeps the template lead of the row, or writes one from the stored
+    claims, moves ``phrasing`` to ``ready``, and delivers. Answers
+    ``ready``, ``delivered``, ``exists`` or ``lost``."""
+    async with tenant_session(org) as db:
+        if not await queue.hold(db, claim):
+            return "lost"
+        if not (run.lead or "").strip():
+            lead = _stored_lead(run, await store.read_claims(db, member, run.id))
+            if lead is not None:
+                await store.set_lead(db, member, run.id, lead, source="template")
+        state = await _ready(db, org, member, run.id, now, None)
+        await queue.complete(db, claim, now=now)
+    _log.info("brief.phrase_recovered", state=state)
     return state
 
 
@@ -208,6 +344,8 @@ async def _run_slot(org: str, member: str, local_date: date, slot_at: datetime,
                 await store.link_run(db, member, created.run.id, ledger.id)
     if why is not None:
         return await _skip(org, member, local_date, claim, now, why)
+    if created.run.state == "phrasing":
+        return await _finish_stuck(org, member, created.run, claim, now)
     if created.run.state != "planned":
         _log.info("brief.run_exists", state=created.run.state)
         await _settle_done(org, claim, now)
@@ -235,7 +373,8 @@ async def run(org: str, payload: dict[str, Any], claim: queue.Claim) -> None:
         # A cancel is a BaseException: the worker's HANDLER_TIMEOUT cancels
         # the handler, and so does a stop. The slot goes back in each case,
         # under a shield, so a second cancel cannot cut the release. The
-        # ``brief_runs`` row stays ``planned``, so the retry gathers it.
+        # ``brief_runs`` row stays ``planned``, so the retry gathers it, or
+        # ``phrasing``, so the retry takes the template lead with no call.
         await _give_back(org, ledger)
         raise
     if outcome in _FINISHED:
