@@ -134,6 +134,32 @@ def _sentences(raw: Any) -> Any:
     return parsed.get("sentences") if isinstance(parsed, dict) else None
 
 
+#: The number words that the fence cannot bind to a claim (it reads digits
+#: only). A lead with one is refused, so the lead states no count that no
+#: claim holds (review of BR-2a-2, P2).
+NUMBER_WORDS: frozenset[str] = frozenset({
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty",
+    "sixty", "seventy", "eighty", "ninety", "hundred", "thousand", "dozen", "dozens",
+    "hundreds", "thousands", "half"})
+#: The marks of a link or markup. A card title can come from a stranger's mail,
+#: and the chat draws a Markdown link as a live link.
+LINK_MARKS: tuple[str, ...] = ("](", "http", "www.", "<", ">", "`", "mailto:", "@")
+
+
+def unsafe_reason(sentence: str) -> str | None:
+    """Why the lead sentence may not stand: ``number_word`` or ``link``, or
+    None. Pure."""
+    low = sentence.lower()
+    if any(mark in low for mark in LINK_MARKS):
+        return "link"
+    words = {w.strip(".,;:!?()\"'-") for w in low.split()}
+    if words & NUMBER_WORDS:
+        return "number_word"
+    return None
+
+
 def judge(raw: Any, claims: Sequence[store.Claim]) -> Phrased | None:
     """The lead of the answer *raw*, or None when the fence refuses it. A
     refusal logs ``brief.phrase_refused`` with the reason, and no word of
@@ -144,6 +170,11 @@ def judge(raw: Any, claims: Sequence[store.Claim]) -> Phrased | None:
     if not verdict.ok:
         _log.warning("brief.phrase_refused", reason=verdict.reason)
         return None
+    for item in sentences:
+        bad = unsafe_reason(str(item["text"]))
+        if bad is not None:
+            _log.warning("brief.phrase_refused", reason=bad)
+            return None
     ids: list[str] = []
     for item in sentences:
         for label in item["claims"]:

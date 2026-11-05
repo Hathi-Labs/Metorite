@@ -251,12 +251,13 @@ async def _gather_and_phrase(org: str, member: str, run: store.Run, claim: queue
             return "lost"
         await store.add_claims(db, member, run.id, claims)
         await store.set_state(db, member, run.id, "gathered", now=now, from_state="planned")
-        await store.set_lead(db, member, run.id, plan.brief_lead(parts), source="template")
         if not await store.mark_phrasing(db, member, run.id, ref=ref):
             # Another try moved the run on. It owns the run, and no call runs.
+            # This try writes no lead, so it cannot overwrite a model lead.
             _log.info("brief.phrase_skipped", reason="not_gathered")
             await queue.complete(db, claim, now=now)
             return "exists"
+        await store.set_lead(db, member, run.id, plan.brief_lead(parts), source="template")
         stored = await store.read_claims(db, member, run.id)
         block = await _block(db, org, member)
     # The session is closed: the call holds no connection and no lock.

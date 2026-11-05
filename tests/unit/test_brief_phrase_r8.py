@@ -141,7 +141,7 @@ def test_r8_four_claims_make_one_call_and_a_model_lead(world, monkeypatch, in_ap
     _compose(monkeypatch, world, in_app=in_app)
     cards = _cards()
     world.cards[ANA] = cards
-    calls = _model(monkeypatch, _answer(("Priya waits on you in four threads.", ["c1", "c3"])))
+    calls = _model(monkeypatch, _answer(("Priya waits on you in several threads.", ["c1", "c3"])))
     _seed_and_run(world)
     (call,) = calls
     assert call["source"] == "brief" and call["model"] == "tier-fast"
@@ -150,7 +150,7 @@ def test_r8_four_claims_make_one_call_and_a_model_lead(world, monkeypatch, in_ap
     run = _ana(world)
     assert run.model_request_id and call["client_ref"] == run.model_request_id
     assert run.state == ("delivered" if in_app else "ready") and run.ready_at == T1
-    assert run.lead == "Priya waits on you in four threads." and run.lead_source == "model"
+    assert run.lead == "Priya waits on you in several threads." and run.lead_source == "model"
     got = _claims(world, str(run.id))
     assert run.lead_claim_ids and {str(i) for i in run.lead_claim_ids} <= {
         str(c.id) for c in got}
