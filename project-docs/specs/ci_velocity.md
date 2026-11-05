@@ -168,7 +168,34 @@ AGENT-SAFE. STANDARD tier, with an adversarial review (it changes the merge gate
 
 ### CIV-4 · `main` runs the full suite in batches (HIGH: deploy path)
 
-**Today (verified 2026-11-04).** The `test` job (deploy.yml line 131) has
+**Status: BUILT (2026-11-05).** Branch `civ4-batch`, task 1632. The verifier
+gave PASS. The Opus review asked for one change in round 1, then gave APPROVE.
+The live evidence comes after the merge. Two review rounds added the three
+"Built" points below.
+
+**Built beyond the first text (review rounds, 2026-11-05):**
+- **A rerun is not batched.** The group is
+  `${{ github.event_name == 'push' && github.run_attempt == 1 && 'main-full-suite' || format('release-{0}', github.run_id) }}`.
+  A person's rerun of an old push run gets its own group, so it cannot cancel
+  a newer batch. `test` has `timeout-minutes: 90`.
+- **A batch tests the tip of `main`.** GitHub does not keep pending jobs in
+  order ("ordering is not guaranteed"), so the job that survives can belong to
+  an OLDER merge. On a first-attempt push, the step "Test the tip of main"
+  fetches `main` and checks out its tip when the job starts. It prints a
+  "Tested commit" notice. A release, a dispatch and a rerun still test exactly
+  `GITHUB_SHA`, the commit they ship.
+- **The range** runs from the commit that the last green batch tested (its
+  "Tested commit" notice, through check-run annotations, so the job has
+  `checks: read`) to the tested tip. CIV-5's bisect reads that notice, not
+  `head_sha`.
+- **A timeout also shows as `cancelled`.** A fold is "cancelled and never
+  started". A hung batch ran 90 minutes and carries the annotation "The job
+  has exceeded the maximum execution time". Treat a hung batch as red.
+  next-ticket.md and AGENTS.md say so, and they tell a session to find the
+  push run whose `test` job started after its merge and whose summary names
+  its PR.
+
+**Before (verified 2026-11-04).** The `test` job (deploy.yml line 131) has
 `needs: lint` and `if: !inputs.skip_tests`. The triggers are push, the 21:30
 schedule and dispatch. `publish-release` (line 271) needs `[lint, test,
 release-window]` and demands `needs.test.result == 'success'`.
