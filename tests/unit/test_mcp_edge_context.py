@@ -832,6 +832,21 @@ class TestYoursAndMineOnly:
         assert [r["id"] for r in out["runs"]] == [_uuid(7100)]
         assert out["nextCursor"] is None
 
+    async def test_mine_only_stops_at_the_page_ceiling_and_keeps_the_cursor(
+            self, board, monkeypatch):
+        """Every page holds only sibling runs. The edge reads MY_WORK_RUNS_PAGES
+        pages, then stops, and returns the cursor of the last page read."""
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        pages = tools.MY_WORK_RUNS_PAGES
+        board.runs = [_run(_uuid(7200 + n), _uuid(8900 + n), state="answered",
+                           session=self.SIBLING) for n in range((pages + 2) * 50)]
+        before = len([r for r in board.requests if r.path == "/projects/agent-runs"])
+        out = await self._call_in(self.MINE, "list_agent_runs", {"mine_only": True})
+        reads = len([r for r in board.requests if r.path == "/projects/agent-runs"]) - before
+        assert reads == pages
+        assert out["runs"] == []
+        assert out["nextCursor"] == str(pages * 50)
+
     async def test_mine_only_with_no_session_keeps_no_run(self, board):
         self._plant(board)
         before = len(board.requests)
