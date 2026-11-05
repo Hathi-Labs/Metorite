@@ -283,9 +283,14 @@ describe("one reopen rule, the gateway's (D79)", () => {
     expect(reopenLane(noTodo)?.id).toBe("doing");
   });
 
-  it("answers null when that first status closes too", () => {
+  it("answers null when every status closes (task 1792)", () => {
+    const closedOnly = [lane("done", "done", 1), lane("gone", "cancelled", 5)];
+    expect(reopenLane(closedOnly)).toBeNull();
+  });
+
+  it("skips a Done lane with the lowest position for the open lane (task 1792)", () => {
     const closedFirst = [lane("done", "done", 1), lane("doing", "in_progress", 5)];
-    expect(reopenLane(closedFirst)).toBeNull();
+    expect(reopenLane(closedFirst)?.id).toBe("doing");
   });
 
   it("matches the shape of the gateway's reopen", () => {
