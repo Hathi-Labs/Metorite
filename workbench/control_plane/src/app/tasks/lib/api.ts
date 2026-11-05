@@ -1007,6 +1007,11 @@ export async function apiClarifyPropose(
           title: String((r.parent_suggestion as Raw).title ?? ""),
         }
       : undefined,
+    clarifiedBy:
+      r.clarified_by === "llm" || r.clarified_by === "heuristic"
+        ? r.clarified_by
+        : undefined,
+    fallbackReason: r.fallback_reason ? String(r.fallback_reason) : undefined,
   };
 }
 

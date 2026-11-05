@@ -31,7 +31,7 @@
  *
  * Pure of React, so a test drives it in the node environment.
  */
-import type { ActionResult, Row, StudioDataDoor, StudioSource } from "./dataDoor";
+import { type ActionResult, type Row, type StudioDataDoor, type StudioSource, withMeta } from "./dataDoor";
 import { ACTION_FAILED } from "./TypedActionButton";
 
 /** The one shape of a source that a read may name. */
@@ -236,7 +236,11 @@ export function createRealDoor(opts: RealDoorOptions): StudioDataDoor {
       }
       const rows = flattenRecords(out.body);
       if (!rows) throw new DoorReadError(ACTION_FAILED, 502);
-      return rows;
+      const b = isObject(out.body) ? out.body : {};
+      return withMeta(rows, {
+        ...(typeof b.total === "number" ? { total: b.total } : {}),
+        ...(typeof b.total_at_least === "number" ? { atLeast: b.total_at_least } : {}),
+      });
     },
 
     async run(action: string, args?: Record<string, unknown>): Promise<ActionResult> {

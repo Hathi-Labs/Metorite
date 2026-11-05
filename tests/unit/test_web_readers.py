@@ -270,6 +270,16 @@ async def test_the_flags_are_read_on_each_call(monkeypatch) -> None:
     assert len(net.to_jina) == 2 and "J" * 400 in out
 
 
+async def test_a_jina_win_names_the_markdown_type(monkeypatch) -> None:
+    """With the local reader on, Jina's longer text wins. The header names
+    Markdown, not the type of the page that the local reader found short."""
+    _on(monkeypatch, "jina")
+    _serve(monkeypatch, _fixture("empty_result.html"), jina=_jina_page("J" * 400))
+    out = await web_tools.fetch_page(URL)
+    assert "J" * 400 in out and "Type: text/markdown" in out
+    assert "Type: text/html" not in out
+
+
 # ── 2. The flag off is the WEB-1 output ─────────────────────────────────────
 
 
@@ -682,7 +692,7 @@ async def test_jina_is_asked_last_when_the_local_text_is_short(monkeypatch) -> N
     assert [str(r.url) for r in net.to_jina] == [f"https://r.jina.ai/{URL}"]
     assert [r.url.host for r in net.requests] == [PUBLIC_IP, "r.jina.ai"], "Jina was not last"
     _note, inside, _token = _block(out)
-    assert inside[:2] == [f"URL: {URL}", "Type: text/html; charset=utf-8"]
+    assert inside[:2] == [f"URL: {URL}", "Type: text/markdown"]
     assert "J" * 400 in "\n".join(inside)
 
 

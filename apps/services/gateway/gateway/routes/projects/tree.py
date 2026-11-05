@@ -121,7 +121,9 @@ def _refuse_pinned_space(user: UserContext, parent_id: object) -> None:
 
     A node under a parent passes here: the parent must be visible, and the
     visibility seam narrows it to the pins (``core._narrow_for_agent``). A
-    no-op for a member and for a connection with no pins.
+    no-op for a member and for a connection with no pins. The test reads the
+    pins alone on purpose (D-EA-12, spec §10.8): a connection with only a
+    left-out list reaches wide, and a new space is under no left-out mark.
     """
     agent = getattr(user, "agent", None)
     if agent is None or parent_id or not agent.pinned_projects:

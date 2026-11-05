@@ -2272,10 +2272,17 @@ _PLUGIN_INSTALL_SQL = (
 async def list_plugins(
     user: UserContext = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
-    """Return all installed plugins."""
+    """Return the plugins of the caller's organization.
+
+    H-201: ``plugins`` has FORCE RLS, so the read binds the tenant. With no
+    tenant the list is empty, and no unbound session opens.
+    """
+    org = current_tenant()
+    if not org:
+        return []
     try:
-        from acb_graph import get_session  # noqa: PLC0415
-        with get_session() as s:
+        from acb_graph import tenant_session as _graph_tenant_session  # noqa: PLC0415
+        with _graph_tenant_session(str(org)) as s:
             rows = s.execute(
                 text("SELECT id, name, label, description, manifest_url, openapi_url, "
                 "logo_url, auth_type, auth_config, manifest, openapi_spec, "
@@ -2439,11 +2446,15 @@ async def remove_plugin(
         pid = _uuid.UUID(plugin_id)
     except ValueError:
         raise HTTPException(422, "Invalid plugin ID format.") from None
+    # H-201: the delete binds the tenant. Another org's plugin is not visible,
+    # so it is 404. With no tenant it is 404 too, and nothing is deleted.
+    org = current_tenant()
+    if not org:
+        raise HTTPException(404, f"Plugin '{plugin_id}' not found.")
     try:
-        from acb_graph import get_session  # noqa: PLC0415
-        with get_session() as s:
+        from acb_graph import tenant_session as _graph_tenant_session  # noqa: PLC0415
+        with _graph_tenant_session(str(org)) as s:
             result = s.execute(text("DELETE FROM plugins WHERE id = :id"), {"id": pid})
-            s.commit()
             if result.rowcount == 0:
                 raise HTTPException(404, f"Plugin '{plugin_id}' not found.")
         _log.info("plugin.removed", id=plugin_id, actor=user.email)

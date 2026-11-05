@@ -33,6 +33,10 @@ for ``git diff BASE...HEAD``. It fails open: any error gives ``full: true``.
 It uses the standard library only, because the CI ``changes`` job has plain
 ``python3`` and no ``uv``.
 
+``--r8`` prints the R8 files, one a line, without the process fences
+(CIV-4b). deploy.yml's R8 gate runs them on each release. ``r8_files()`` is
+the one rule for an R8 file, and ``--gate`` uses it for a migration change.
+
 Fence: tests/unit/test_affected_tests.py.
 """
 
@@ -337,8 +341,49 @@ R8_MARKS = (
 )
 
 
-def _is_r8(body: str) -> bool:
-    return any(m in body for m in R8_MARKS)
+# ── --r8: the R8 files (CIV-2 and CIV-4b) ──────────────────────────────────
+# A test file that names one of these variables, or imports a test helper
+# that names one, skips when the variable is unset. CI sets both.
+R8_VARS = ("CUSTOMER_CONSOLE_DATABASE_URL", "TENANT_LADDER_DATABASE_URL")
+
+
+def r8_files(root: Path = ROOT) -> list[str]:
+    """The unit test files that need a real database (R8).
+
+    A file is an R8 file when its text holds ``_DB_GATE``, names an R8
+    variable, or names a ``tests/unit/_*.py`` helper that names one.
+
+    Measured 2026-11-05 on a deploy.yml run with no database: 454 files
+    skipped because an R8 variable was unset. ``_DB_GATE`` alone found 348
+    of them. This rule found all 454. The helper today is ``_tenant_ladder``,
+    which holds the gate for about 290 files that name no variable.
+    """
+    helpers = [
+        p.stem
+        for p in sorted((root / TESTS).glob("_*.py"))
+        if any(v in p.read_text(encoding="utf-8", errors="replace") for v in R8_VARS)
+    ]
+    marks = [re.escape(GATE_DB_MARK), *(re.escape(v) for v in R8_VARS)]
+    marks += [rf"(?<!\w){re.escape(h)}(?!\w)" for h in helpers]
+    found = re.compile("|".join(marks))
+    tests = _texts(sorted((root / TESTS).glob("test_*.py")), root)
+    return sorted(t for t, body in tests.items() if found.search(body))
+
+
+def r8_gate_files(root: Path = ROOT) -> list[str]:
+    """The R8 files that deploy.yml's R8 gate runs: no PROCESS fence.
+
+    A process fence is advisory, so it must not hold a release. pytest's
+    ``--ignore`` does not drop a file that is named on the command line
+    (pytest 9.1, measured 2026-11-05), so the list leaves them out.
+    """
+    import fences  # scripts/fences.py, standard library only
+
+    data = fences.load() if root == ROOT else json.loads(
+        (root / "tests" / "fences.json").read_text(encoding="utf-8")
+    )
+    process = set(data["python"]["process"])
+    return [p for p in r8_files(root) if p not in process]
 
 
 def gate_changed_files(base: str, root: Path = ROOT) -> list[str]:
@@ -408,7 +453,10 @@ def _gate(changed: list[str], root: Path) -> dict:
     for path in other:
         picked |= {t for t, body in tests.items() if path in body}
     if any(c.startswith("infra/postgres/") for c in changed):
-        picked |= {t for t, body in tests.items() if _is_r8(body)}
+        # The release gate's R8 list (CIV-4b), and CIV-3's marks: a suite
+        # that names a ladder helper counts too. The union keeps both.
+        picked |= set(r8_files(root))
+        picked |= {t for t, body in tests.items() if any(m in body for m in R8_MARKS)}
         picked.add("tests/unit/test_migration_prefixes.py")
     if any(c.startswith("infra/customer_console/") for c in changed):
         picked |= {
@@ -447,8 +495,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--base", default="origin/main")
     ap.add_argument("--run", action="store_true", help="run pytest on the selection")
     ap.add_argument("--gate", action="store_true", help="print the PR tier selection as JSON")
+    ap.add_argument(
+        "--r8", action="store_true", help="print the R8 files of the release gate, one a line"
+    )
     ap.add_argument("files", nargs="*", help="changed files (default: the diff against --base)")
     args, extra = ap.parse_known_args(argv)
+
+    if args.r8:
+        # No fail-open here. deploy.yml stops on an error or an empty list,
+        # because pytest with no path runs the whole tree.
+        print("\n".join(r8_gate_files()))
+        return 0
 
     if args.gate:
         try:

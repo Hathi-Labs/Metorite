@@ -1012,6 +1012,10 @@ DEBT: dict[str, str] = {
     "DELETE /api/integrations/github": "P-8",
     "DELETE /api/integrations/plugins/{}": "P-8",
     "GET /api/agent-access/connections": "P-8",
+    # MCP-P1b-1: the list "Waiting for you" and Approve or Decline on
+    # AppRequestCard. The chat tool and card are MCP-P1b-4 (task 1703).
+    "GET /api/agent-access/requests": "P-8",
+    "POST /api/agent-access/requests/{}/decision": "P-8",
     "GET /api/integrations/agent-connections": "P-8",
     "GET /api/integrations/connections": "P-8",
     "GET /api/integrations/github/account": "P-8",
@@ -1048,7 +1052,7 @@ DEBT_CEILING: dict[str, int] = {
     "shell": 15,
     "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
     "admin": 36,
-    "integrations": 19,
+    "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
     "studio": 0,
 }
 

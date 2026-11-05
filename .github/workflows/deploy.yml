@@ -1,9 +1,10 @@
 # Metorite — CI/CD pipeline for Hostinger VPS deployment.
 #
-# Trigger: push to main, the DAILY RELEASE schedule, or manual dispatch.
+# Trigger: push to main, the DAILY RELEASE, or manual dispatch.
 # Flow on a push:     lint → test (a signal) → publish `staging`. NO deploy.
-# Flow on a release:  lint → test (a GATE) → publish `release` → SSH to VPS →
-#                     apply that exact commit → verify by the serving SHA.
+# Flow on a release:  lint → test + r8-gate (GATES) → publish `release` →
+#                     SSH to VPS → apply that exact commit → verify by the
+#                     serving SHA. `r8-gate` runs only on a release (CIV-4b).
 #
 # ⚠️ WS-38 (project-docs/specs/staging_and_daily_release.md), 2026-10-16.
 # Until then every merge deployed to production: 36 gateway starts in one
@@ -11,6 +12,15 @@
 # at 21:30 UTC (03:00 IST), and a hotfix is a manual dispatch of this file.
 # `staging` takes every merge. No box polls it yet (spec §5.6, phase 4).
 # Fence: tests/unit/test_daily_release.py.
+#
+# ⚠️ CIV-13 (D178), 2026-11-05: the HOME BOX starts the daily release. Its
+# user timer dispatches this file with `nightly=true` at 21:30 UTC
+# (scripts/home_server/nightly_release.sh). GitHub started the cron below
+# 3.5 to 5.5 h late, so the window often closed before it ran. The cron
+# stays as a backup. A NIGHTLY run is a schedule run or a nightly dispatch.
+# Both obey RELEASE_HOLD and the window, and neither can skip the tests. A
+# night ships once: `release-window` holds a nightly run when another one
+# already published since 21:00 UTC. A PLAIN dispatch is unchanged.
 #
 # Required GitHub Secrets (set in repo Settings → Secrets and variables → Actions):
 #   HOSTINGER_HOST       — VPS IP or hostname (e.g. 123.45.67.89)
@@ -34,6 +44,12 @@
 # signed-in member.
 
 name: deploy
+
+# CIV-13: the runs API does not return the inputs, so a nightly dispatch
+# says "nightly" in its run name. `release-window` and the box script read
+# it. A push keeps its commit message, and every other run keeps "deploy".
+# Fence: tests/unit/test_daily_release.py.
+run-name: ${{ inputs.nightly && 'deploy (nightly)' || github.event_name == 'push' && github.event.head_commit.message || 'deploy' }}
 
 on:
   push:
@@ -61,11 +77,15 @@ on:
   # day lands there. GitHub starts a scheduled run late, by hours (see the
   # `release-window` job). A run that is too late waits a day (spec §4.1a).
   # Set the repository variable RELEASE_HOLD=1 to skip a day (spec §4.3).
+  # ⚠️ CIV-13: the home box's dispatch with `nightly=true` is the main
+  # trigger now. This cron is the backup, and it ships only when the box
+  # did not ship that night.
   schedule:
     - cron: "30 21 * * *"
   # A hotfix, or a release outside the clock: run this workflow on `main`.
   # It ships the tip of main, as the schedule does. There is no second lane
-  # and no cherry-pick (D55.4). RELEASE_HOLD does not stop a dispatch.
+  # and no cherry-pick (D55.4). RELEASE_HOLD does not stop a PLAIN dispatch.
+  # `nightly=true` is for the home box's timer only (CIV-13).
   workflow_dispatch:
     inputs:
       reason:
@@ -82,6 +102,13 @@ on:
         default: false
       reinstall:
         description: "Also run npm ci for the Next apps (costs ~38 s of 500 on the live app; H-60)"
+        type: boolean
+        default: false
+      # CIV-13 (D178). A nightly dispatch is a nightly run, as the schedule
+      # is: RELEASE_HOLD and the window hold it, it cannot skip the tests,
+      # and it does not publish when another nightly run shipped tonight.
+      nightly:
+        description: "The daily release from the home box timer. Do not set it by hand."
         type: boolean
         default: false
 
@@ -128,13 +155,228 @@ jobs:
   #
   # ⚠️ WS-38, 2026-10-16: on the DAILY RELEASE and on a dispatch this job is a
   # gate again. `publish-release` needs it green. See the note on that job.
+  #
+  # ── CIV-4: a push runs the full suite in BATCHES (spec ci_velocity.md §5) ──
+  # The first attempt of a push run joins the group `main-full-suite`, so one
+  # full suite runs at a time. GitHub keeps one running and one pending job in
+  # a group, and a newer pending job CANCELS the older one. So the merges that
+  # land during a run wait, and the next run tests them together.
+  #
+  # ⚠️ GitHub does not promise the ORDER of pending jobs. Its docs say they
+  # wait in FIFO order of the time each one started to wait, and "ordering is
+  # not guaranteed". So the pending job that survives can be an OLDER merge
+  # than the tip. The step "Test the tip of main" moves a batch job to the tip
+  # when the job starts. A batch then tests every merge up to that moment.
+  #
+  # ⚠️ A CANCELLED `test` JOB ON A PUSH THAT NEVER STARTED IS THE DESIGN, not
+  # a fault. Another run took it into its batch. That run can be OLDER or
+  # newer, and its summary (the step "Name the tested range") names the PR.
+  # A FAILED job is a red batch: fix forward or revert at once.
+  #
+  # ⚠️ A schedule run or a dispatch NEVER joins the push group. If it did, the
+  # next merge would cancel the release's pending `test` job, `publish-release`
+  # would read `cancelled` and skip, and that day's release would be lost. The
+  # `deploy` job's note records the same trap for a workflow-level group. So
+  # each such run gets a group of its own, named by its run id. It never
+  # queues, and nothing cancels it.
+  #
+  # ⚠️ A person's RERUN of an old push run (attempt 2 or more) gets a group of
+  # its own too. It tests its old commit at once. In the push group, its
+  # pending job would cancel a newer pending batch, which holds the newer
+  # merges. `run_attempt` is a string in the `github` context, and `== 1`
+  # casts it to a number. Both branches of `&& ||` give a non-empty string.
+  #
+  # `cancel-in-progress: false`: a merge must not kill a RUNNING batch. With
+  # `true`, a busy day would start a batch at each merge and finish none.
+  #
+  # `timeout-minutes: 90`: without it, GitHub stops a hung job after 360 min,
+  # and a hung batch holds the push group that long. The last four batches
+  # took 35 to 37 min (2026-11-04).
+  # ⚠️ GitHub gives a job that it stops at the timeout the conclusion
+  # `cancelled`, the same as a fold. The job ran for 90 min, and it carries
+  # the annotation "The job has exceeded the maximum execution time". That is
+  # a HUNG batch, and it is red. On a release, `publish-release` then reads
+  # `cancelled` and skips, so production stays on its current release.
+  # Fence: tests/unit/test_deploy_pipeline.py.
   test:
     name: "Unit tests (a signal on a push, a gate on a release)"
     runs-on: ubuntu-latest
     needs: lint
     if: ${{ !inputs.skip_tests }}
+    timeout-minutes: 90
+    concurrency:
+      group: ${{ github.event_name == 'push' && github.run_attempt == 1 && 'main-full-suite' || format('release-{0}', github.run_id) }}
+      cancel-in-progress: false
+    # Read only. The range step reads the Actions API (`actions: read`) and
+    # the notice of the last green batch (`checks: read`). A job-level block
+    # replaces the workflow's, so `contents` comes again.
+    permissions:
+      contents: read
+      actions: read
+      checks: read
     steps:
+      # GITHUB_SHA. The release, a dispatch and a rerun test this commit.
       - uses: actions/checkout@v5
+
+      # ── A push batch tests the TIP of main (CIV-4) ─────────────────────
+      # The condition is the push term of the group, so only a job in the
+      # batch group moves. The release, a dispatch and a rerun keep
+      # GITHUB_SHA, because they ship it or check it again. The step leaves
+      # the state that actions/checkout leaves on a push: local `main` at
+      # `origin/main`, both at the tested commit. Its notice names that
+      # commit, and the next batch reads it as the start of its range. If the
+      # fetch fails, the job tests GITHUB_SHA and says so. A failed checkout
+      # fails the job, because a half-moved tree must not run the suite.
+      - name: Test the tip of main
+        id: tip
+        if: ${{ github.event_name == 'push' && github.run_attempt == 1 }}
+        run: |
+          set -euo pipefail
+          tested="$GITHUB_SHA"
+          if git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main; then
+            tested="$(git rev-parse refs/remotes/origin/main)"
+            git checkout -q -B main refs/remotes/origin/main
+          else
+            echo "::warning title=Tip of main unknown::The fetch of main failed, so this batch tests its own commit ${GITHUB_SHA:0:12}."
+          fi
+          echo "sha=${tested}" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Tested commit::${tested}"
+
+      # ── The tested range of a push batch (CIV-4) ──────────────────────
+      # From what the last green push batch of THIS job tested, to what this
+      # job tests, with the PR of each commit between them. A batch names its
+      # tested commit in its "Tested commit" notice. An older batch has no
+      # notice, and the step then takes its push commit: an ancestor of what
+      # it tested, so the range can hold more commits, never fewer. It reads
+      # the JOB, not the run: a run is red when only `publish-staging` failed.
+      # With no answer, it writes "unknown". It writes nothing but the
+      # summary, and it runs before the suite, so a red batch still names its
+      # PRs. A failure here never fails `test` (`continue-on-error`).
+      - name: Name the tested range
+        if: ${{ github.event_name == 'push' }}
+        continue-on-error: true
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The job's own `name:`. The jobs API names a job by it.
+          SUITE_JOB: "Unit tests (a signal on a push, a gate on a release)"
+          # The tip on a batch. GITHUB_SHA on a rerun, which skips the tip step.
+          TESTED_SHA: ${{ steps.tip.outputs.sha || github.sha }}
+        run: |
+          set +e
+          set -uo pipefail
+          tmp="$(mktemp -d)"
+          api="repos/${GITHUB_REPOSITORY}"
+          cat > "$tmp/range.py" <<'PY'
+          import json, re, sys
+
+          def load(path):
+              try:
+                  with open(path, encoding="utf-8") as fh:
+                      return json.load(fh)
+              except (OSError, ValueError):
+                  return None
+
+          mode = sys.argv[1]
+          if mode == "runs":
+              # Newest first. This run is in the list too, so skip it.
+              runs = (load(sys.argv[2]) or {}).get("workflow_runs")
+              if not isinstance(runs, list):
+                  sys.exit(1)
+              for run in runs:
+                  if str(run.get("id")) != sys.argv[3]:
+                      print(run.get("id"), run.get("head_sha"))
+          elif mode == "green":
+              # Print the id of the suite job when it passed. The id is also
+              # the id of its check run, which holds its notices.
+              jobs = (load(sys.argv[2]) or {}).get("jobs") or []
+              ids = [j.get("id") for j in jobs
+                     if j.get("name") == sys.argv[3] and j.get("conclusion") == "success"]
+              if not ids:
+                  sys.exit(1)
+              print(ids[0])
+          elif mode == "tested":
+              notes = load(sys.argv[2])
+              shas = [str(n.get("message", "")).strip()
+                      for n in (notes if isinstance(notes, list) else [])
+                      if isinstance(n, dict) and n.get("title") == "Tested commit"]
+              shas = [s for s in shas if re.fullmatch(r"[0-9a-f]{40}", s)]
+              if not shas:
+                  sys.exit(1)
+              print(shas[0])
+          elif mode == "summary":
+              path, head, own, base, run_url, why = sys.argv[2:8]
+              out = ["### Tested range", "",
+                     "- To: `" + head[:12] + "`, the commit that this job tested."]
+              if head != own:
+                  out.append("- This run's push was `" + own[:12] + "`. The job tested the"
+                             " tip of main when it started, which holds that push.")
+              doc = load(path) if base else None
+              doc = doc if isinstance(doc, dict) else None
+              status = doc.get("status") if doc else None
+              if base and doc is None:
+                  why = "the compare API gave no answer"
+              elif status == "behind":
+                  why = ("the last green batch tested `" + base[:12]
+                         + "`, which is newer than this commit")
+              elif status == "diverged":
+                  why = "`" + base[:12] + "` and this commit have diverged"
+              elif doc is not None and status not in ("ahead", "identical"):
+                  why = "the compare API gave the status " + str(status)
+              if doc is None or status not in ("ahead", "identical"):
+                  out.append("- From: unknown (" + why + ").")
+              else:
+                  commits = doc.get("commits") or []
+                  total = doc.get("total_commits", len(commits))
+                  out.append("- From: `" + base[:12] + "`, what the last green batch tested: " + run_url)
+                  prs, rows = [], []
+                  for c in commits:
+                      msg = (c.get("commit") or {}).get("message") or ""
+                      subject = msg.partition("\n")[0].strip()
+                      m = (re.search(r"\(#(\d+)\)$", subject)
+                           or re.match(r"Merge pull request #(\d+)", subject))
+                      if m:
+                          prs.append("#" + m.group(1))
+                      rows.append("  - `" + str(c.get("sha", ""))[:12] + "` " + subject)
+                  out.append("- " + str(total) + " new commit(s). PRs: "
+                             + (", ".join(prs) or "none named") + ".")
+                  out += rows
+                  if total > len(commits):
+                      out.append("- The API listed " + str(len(commits)) + " of " + str(total) + " commits.")
+              print("\n".join(out))
+          PY
+          from=""
+          from_run=""
+          why="no push run of this job passed in the last 40 runs"
+          if gh api "${api}/actions/workflows/deploy.yml/runs?branch=main&event=push&per_page=40" > "$tmp/runs.json" \
+             && python3 "$tmp/range.py" runs "$tmp/runs.json" "$GITHUB_RUN_ID" > "$tmp/ids.txt"; then
+            while read -r id sha; do
+              if [ "$SECONDS" -ge 90 ]; then
+                why="the search for a green run took over 90 s"
+                break
+              fi
+              # stdin from /dev/null, so no call can eat the list of runs.
+              if gh api "${api}/actions/runs/${id}/jobs?per_page=100" > "$tmp/jobs.json" < /dev/null \
+                 && job="$(python3 "$tmp/range.py" green "$tmp/jobs.json" "$SUITE_JOB" < /dev/null)"; then
+                from="$sha"
+                from_run="$id"
+                if gh api "${api}/check-runs/${job}/annotations?per_page=100" > "$tmp/notes.json" < /dev/null \
+                   && noted="$(python3 "$tmp/range.py" tested "$tmp/notes.json" < /dev/null)"; then
+                  from="$noted"
+                fi
+                break
+              fi
+            done < "$tmp/ids.txt"
+          else
+            why="the Actions API gave no list of runs"
+          fi
+          # `gh api` prints an error body on stdout. A failed call leaves no file.
+          if [ -n "$from" ]; then
+            gh api "${api}/compare/${from}...${TESTED_SHA}" > "$tmp/compare.json" || rm -f "$tmp/compare.json"
+          fi
+          python3 "$tmp/range.py" summary "$tmp/compare.json" "$TESTED_SHA" "$GITHUB_SHA" "$from" \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${from_run}" "$why" \
+            >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.3.0
@@ -152,6 +394,290 @@ jobs:
       # timing flake gets one rerun. The safety fences still gate here.
       - name: Run unit tests
         run: uv run python -m pytest tests/unit/ -x -v --reruns 1 $(python3 scripts/fences.py pytest-ignore)
+
+  # ── The R8 gate of a release (CIV-4b, spec ci_velocity.md §5) ──────────
+  #
+  # The `test` job above has no database, so every R8 suite skips there. A
+  # skip is not a pass. So a release also runs the R8 files against two
+  # real Postgres servers, with the design of pr-check's unit shards, and
+  # `publish-release` needs `r8-gate` green.
+  #
+  # Why a job of its own, and not two services on `test`: with both
+  # databases set, the full suite takes 128 to 132 min of test time on one
+  # runner (two pr-check runs, 2026-11-05). `test` stops at 90 min. The R8
+  # files take about 103 min of that, so six shards take about 20 min each,
+  # beside `test`. CIV-9 makes the R8 files fast. Then R8 moves into the
+  # push batch.
+  #
+  # ⚠️ The schedule, and EVERY dispatch without `skip_tests`, whatever other
+  # input it has (a `nightly` dispatch too, CIV-13). The condition names the
+  # two events, so a trigger that someone adds later does not run it. A push
+  # batch does not run it. A dispatch with `skip_tests` skips it, as it
+  # skips `test`. No group: a release run has its own jobs, so nothing can
+  # fold or cancel them.
+  #
+  # ⚠️ The services, the env and the two assert steps are copies of
+  # pr-check's `test` job. Fence: tests/unit/test_deploy_pipeline.py fails
+  # when they differ.
+  r8-suite:
+    name: "R8 suites (release gate, shard ${{ matrix.shard }}/6)"
+    runs-on: ubuntu-24.04
+    needs: lint
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.skip_tests) }}
+    timeout-minutes: 60
+    # One run reports the failures of every shard.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    services:
+      platform-postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: cc
+          POSTGRES_PASSWORD: cc
+          POSTGRES_DB: cc_platform
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U cc"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      # ⚠️ pgvector/pgvector:pg16, NOT postgres:16. infra/postgres/01_schema.sql
+      # runs CREATE EXTENSION vector, and the stock image has no pgvector.
+      tenant-postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: acb
+          POSTGRES_PASSWORD: acb
+          POSTGRES_DB: acb_tenant
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U acb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CUSTOMER_CONSOLE_DATABASE_URL: postgresql+psycopg://cc:cc@127.0.0.1:5433/cc_platform
+      # ⚠️⚠️ THIS IS NOT `DATABASE_URL`, AND THE TWO MUST NOT BE MERGED.
+      # DATABASE_URL would arm the two DB-gated tests of
+      # test_tenant_coverage.py. They fail by design against a fresh ladder:
+      # the FORCE-RLS policies live only in 04_policies.sql, which the ladder
+      # never replays, and a service container's user is the superuser.
+      # They are WS-29 MT-1b/MT-1c's gates. pr-check.yml says the same, and
+      # customer_console.md §6(i)(2) has the full reason. Set no DATABASE_URL
+      # in this workflow.
+      TENANT_LADDER_DATABASE_URL: postgresql+psycopg://acb:acb@127.0.0.1:5434/acb_tenant
+    steps:
+      # GITHUB_SHA, the commit that the release ships.
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.3.0
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Sync deps
+        run: uv sync
+
+      # A service that did not come up would put the gate back to silent
+      # skips. These two steps fail the shard first.
+      - name: Assert the Customer Console database is reachable
+        run: |
+          uv run python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+          url = os.environ["CUSTOMER_CONSOLE_DATABASE_URL"]
+          with create_engine(url).begin() as c:
+              print("customer console db:", c.execute(text("select version()")).scalar_one())
+          PY
+
+      # It also checks for pgvector, because that is how the wrong image fails.
+      - name: Assert the tenant ladder database is reachable and has pgvector
+        run: |
+          uv run python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+          url = os.environ["TENANT_LADDER_DATABASE_URL"]
+          with create_engine(url).begin() as c:
+              print("tenant ladder db:", c.execute(text("select version()")).scalar_one())
+              names = [r[0] for r in c.execute(text(
+                  "select name from pg_available_extensions "
+                  "where name in ('vector', 'uuid-ossp')"))]
+              assert "vector" in names, (
+                  "no pgvector on the tenant service container — "
+                  "infra/postgres/01_schema.sql cannot build. Use "
+                  "pgvector/pgvector:pg16, not postgres:16.")
+              print("extensions available:", sorted(names))
+          PY
+
+      # `affected_tests.py --r8` lists the R8 files: each file that holds
+      # `_DB_GATE`, names an R8 variable, or uses a helper that names one.
+      # It leaves out the process fences, because pytest's `--ignore` does
+      # not drop a file that is named on the command line. An empty list
+      # must never reach pytest, because pytest then runs the whole tree.
+      #
+      # GUARD_ALSO: the files in the guard's lists that need no database.
+      # The guard needs each one in a report. The fence keeps it short.
+      #
+      # No `-x`: one run reports every failure. `--reruns 1`: a timing
+      # flake gets a second try. The split is pr-check's, by duration.
+      - name: Run the R8 suites (this shard)
+        env:
+          GUARD_ALSO: >-
+            tests/unit/test_billing_proxy_route.py
+            tests/unit/test_invite_console_mirror.py
+            tests/unit/test_seat_admin_proxy_route.py
+            tests/unit/test_studio_expr.py
+        run: |
+          set -euo pipefail
+          python3 scripts/affected_tests.py --r8 > r8_files.txt
+          count="$(wc -l < r8_files.txt)"
+          if [ "$count" -lt 100 ]; then
+            echo "::error title=R8 list too short::affected_tests.py --r8 found ${count} files, and the gate expects over 400. This shard stops."
+            exit 1
+          fi
+          echo "R8 files: ${count}"
+          uv run python -m pytest $(cat r8_files.txt) $GUARD_ALSO -v -rs --reruns 1 \
+            --splits 6 --group ${{ matrix.shard }} \
+            --splitting-algorithm duration_based_chunks \
+            -o junit_family=xunit1 --junitxml=junit/r8-shard-${{ matrix.shard }}.xml
+
+      - name: Keep this shard's report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r8-junit-shard-${{ matrix.shard }}
+          path: junit/
+          retention-days: 7
+
+  # ── The R8 gate: every shard passed, and the guard holds ──────────────
+  # The guard of pr-check's "Unit tests" job, over the six R8 reports. It
+  # fails when an R8 variable was unset, when a `--must-run` file has no test
+  # in a report, or when a `--never-skip` file skipped a test.
+  #
+  # ⚠️ The lists are COPIES of pr-check.yml's. Each R8 suite checks for its
+  # own name in pr-check.yml only. Fence: test_deploy_pipeline.py fails when
+  # the two lists differ. Add a new R8 suite to both files.
+  #
+  # `always()`, so a failed shard turns this job red. `publish-release`
+  # reads this job's result, and a skip passes only on a `skip_tests`
+  # dispatch.
+  r8-gate:
+    name: "R8 gate (a release needs it)"
+    runs-on: ubuntu-24.04
+    needs: r8-suite
+    if: ${{ always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && !inputs.skip_tests)) }}
+    steps:
+      - name: Every R8 shard passed
+        run: |
+          echo "R8 shards: ${{ needs.r8-suite.result }}"
+          [ "${{ needs.r8-suite.result }}" = "success" ] || exit 1
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: r8-junit-shard-*
+          path: junit
+          merge-multiple: true
+
+      - name: The R8 suites ran, and no fence skipped
+        run: |
+          python3 scripts/ci_unit_guard.py check --junit junit \
+            --disarmed "CUSTOMER_CONSOLE_DATABASE_URL unset" \
+            --disarmed "TENANT_LADDER_DATABASE_URL unset" \
+            --never-skip \
+              tests/unit/test_console_dependency_boundary.py \
+              tests/unit/test_signin_resolve_route.py \
+              tests/unit/test_seat_admin_proxy_route.py \
+              tests/unit/test_billing_proxy_route.py \
+            --must-run \
+              tests/unit/test_customer_console_sql.py \
+              tests/unit/test_customer_console_key_auth.py \
+              tests/unit/test_customer_console_api.py \
+              tests/unit/test_customer_console_router.py \
+              tests/unit/test_customer_console_lifecycle.py \
+              tests/unit/test_customer_console_resolve.py \
+              tests/unit/test_customer_console_payments.py \
+              tests/unit/test_customer_console_operator_list.py \
+              tests/unit/test_customer_console_member_write.py \
+              tests/unit/test_customer_console_org_rename.py \
+              tests/unit/test_customer_console_seat_overview.py \
+              tests/unit/test_customer_console_billing_reads.py \
+              tests/unit/test_customer_console_billing_checkout.py \
+              tests/unit/test_customer_console_tasks.py \
+              tests/unit/test_customer_console_catalog.py \
+              tests/unit/test_customer_console_decide.py \
+              tests/unit/test_customer_console_embed.py \
+              tests/unit/test_customer_console_aroh_app.py \
+              tests/unit/test_operator_identity.py \
+              tests/unit/test_operator_session.py \
+              tests/unit/test_operator_roles.py \
+              tests/unit/test_operator_admin.py \
+              tests/unit/test_operator_elevation.py \
+              tests/unit/test_operator_activity.py \
+              tests/unit/test_provider_keys.py \
+              tests/unit/test_operator_signin.py \
+              tests/unit/test_deployment_resolve_cache.py \
+              tests/unit/test_console_dependency_boundary.py \
+              tests/unit/test_signin_resolve_route.py \
+              tests/unit/test_seat_admin_proxy_route.py \
+              tests/unit/test_billing_proxy_route.py \
+              tests/unit/test_invite_console_mirror.py \
+              tests/unit/test_signup_provision_route.py \
+              tests/unit/test_signup_reconciler.py \
+              tests/unit/test_console_bootstrap.py \
+              tests/unit/test_billing_purchase_capability.py \
+              tests/unit/test_app_user_upserts.py \
+              tests/unit/test_org_provisioning.py \
+              tests/unit/test_org_provisioning_tenancy.py \
+              tests/unit/test_owner_bootstrap.py \
+              tests/unit/test_credential_tenant_threading.py \
+              tests/unit/test_h3_rls_promotion_rehearsal.py \
+              tests/unit/test_action_broker_tenancy_r8.py \
+              tests/unit/test_org_settings_tenancy_r8.py \
+              tests/unit/test_user_settings_per_org_r8.py \
+              tests/unit/test_auth_me_shell_r8.py \
+              tests/unit/test_h6_identity_shadow.py \
+              tests/unit/test_h6_rbac_rekey.py \
+              tests/unit/test_email_otp_token.py \
+              tests/unit/test_invited_member_promotion.py \
+              tests/unit/test_org_purge_console.py \
+              tests/unit/test_org_purge_tenant.py \
+              tests/unit/test_operator_door.py \
+              tests/unit/test_shell_needs_r8.py \
+              tests/unit/test_my_day_loop_r8.py \
+              tests/unit/test_chat_session_archive_r8.py \
+              tests/unit/test_projects_search_description_r8.py \
+              tests/unit/test_staging_minimise_r8.py \
+              tests/unit/test_studio_objects_r8.py \
+              tests/unit/test_studio_query_r8.py \
+              tests/unit/test_goal_record_r8.py \
+              tests/unit/test_studio_objects_batch_r8.py \
+              tests/unit/test_studio_state_machine_r8.py \
+              tests/unit/test_studio_expr.py \
+              tests/unit/test_studio_formula_r8.py \
+              tests/unit/test_studio_rollup_r8.py \
+              tests/unit/test_no_person_present_r8.py \
+              tests/unit/test_studio_packages_r8.py \
+              tests/unit/test_studio_action_door_r8.py \
+              tests/unit/test_studio_catalog_r8.py \
+              tests/unit/test_studio_packages_versions_r8.py \
+              tests/unit/test_studio_package_routes_r8.py \
+              tests/unit/test_studio_chat_build_r8.py \
+              tests/unit/test_package_host_store_r8.py \
+              tests/unit/test_app_requests_r8.py \
+              tests/unit/test_workflows_lifecycle_rls_r8.py \
+              tests/unit/test_project_rules.py \
+              tests/unit/test_crm_change_history.py \
+              tests/unit/test_auto_park.py \
+              tests/unit/test_staging_export.py
 
   # ── Publish the ref the STAGING box will poll (WS-38) ─────────────────
   # Every green merge fast-forwards `staging`. A push only: a scheduled run
@@ -178,10 +704,11 @@ jobs:
           git push origin "${GITHUB_SHA}:refs/heads/staging"
 
   # ── A held day says so (WS-38, spec §4.3) ──────────────────────────────
+  # A nightly run is a schedule run or a nightly dispatch (CIV-13).
   release-hold:
     name: "Release held"
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'schedule' && vars.RELEASE_HOLD == '1' }}
+    if: ${{ (github.event_name == 'schedule' || inputs.nightly) && vars.RELEASE_HOLD == '1' }}
     steps:
       - name: Report the hold
         run: |
@@ -204,20 +731,45 @@ jobs:
   # day is a safe result (spec §4.2). After 30 h, `vps-health.yml` reports
   # it as "The daily release did not run".
   #
-  # A dispatch is never held. It is a person's deliberate act, as with
-  # RELEASE_HOLD. A rerun of a schedule run (run_attempt 2 or more) is a
+  # A PLAIN dispatch is never held. It is a person's deliberate act, as with
+  # RELEASE_HOLD. A rerun of a nightly run (run_attempt 2 or more) is a
   # person's act too, so it is not held either. The runbooks at the top of
   # this file and in `pull-delivery` say "re-run this workflow".
-  # A step that fails here holds the release: `open` is then empty, and
+  # A NIGHTLY dispatch (CIV-13) is the home box's timer, not a person. It is
+  # held as a schedule run is.
+  # A clock step that fails holds the release: `open` is then empty, and
   # `publish-release` reads empty as closed.
+  #
+  # ── A night ships once (CIV-13, D178) ──────────────────────────────────
+  # The box dispatches at 21:30 UTC, and GitHub's cron can start a second
+  # nightly run hours later, inside the window. The step `once` holds a
+  # nightly run when another nightly run's `publish-release` passed since
+  # the window opened (21:00 UTC, on the day before after midnight). A
+  # plain dispatch never counts: its run name is "deploy", not "nightly".
+  # A rerun skips the check, as it skips the clock.
+  # ⚠️ FAIL OPEN, on purpose. When the API gives no answer, the run ships
+  # and warns. A second ship of one night is one more apply. A lost night
+  # is a day of merges held back. A crash of `once` before it writes falls
+  # back to the clock, so it ships too.
+  # ⚠️ A race is possible and benign. Two nightly runs can both pass this
+  # step before either publishes. The second push of the same sha is a
+  # no-op, and `deploy-production` serialises the two deploys. Do NOT put a
+  # concurrency group on `publish-release` (test_deploy_pipeline.py).
+  #
+  # It also waits for `r8-gate` (CIV-4b), so it reads the clock after the
+  # last gate, and not before a slow R8 shard.
   # Fence: tests/unit/test_daily_release.py.
   release-window:
     name: "Release window"
     runs-on: ubuntu-latest
-    needs: [lint, test]
-    if: ${{ always() && github.event_name == 'schedule' && vars.RELEASE_HOLD != '1' }}
+    needs: [lint, test, r8-gate]
+    if: ${{ always() && (github.event_name == 'schedule' || inputs.nightly) && vars.RELEASE_HOLD != '1' }}
+    # Read only, for the step `once`. A job-level block replaces the
+    # workflow's. This job checks out nothing, so it needs no `contents`.
+    permissions:
+      actions: read
     outputs:
-      open: ${{ steps.clock.outputs.open }}
+      open: ${{ steps.once.outputs.open || steps.clock.outputs.open }}
     steps:
       - name: Read the clock
         id: clock
@@ -242,13 +794,118 @@ jobs:
             echo "Release WAITS: the run reached the window at ${hm} UTC, outside 21:00 to 02:00 UTC. Production did not move." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Ship once a night
+        id: once
+        if: ${{ steps.clock.outputs.open == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The job's own `name:`. The jobs API names a job by it.
+          PUBLISH_JOB: "Publish release ref"
+        run: |
+          set +e
+          set -uo pipefail
+          if [ "${GITHUB_RUN_ATTEMPT:-1}" != "1" ]; then
+            echo "open=true" >> "$GITHUB_OUTPUT"
+            echo "Attempt ${GITHUB_RUN_ATTEMPT} is a person's rerun, so it does not look for a release of tonight."
+            exit 0
+          fi
+          tmp="$(mktemp -d)"
+          cat > "$tmp/once.py" <<'PY'
+          import datetime, json, sys
+
+          def load(path):
+              try:
+                  with open(path, encoding="utf-8") as fh:
+                      doc = json.load(fh)
+              except (OSError, ValueError):
+                  return {}
+              return doc if isinstance(doc, dict) else {}
+
+          mode = sys.argv[1]
+          if mode == "since":
+              # The window opens at 21:00 UTC. Before 21:00, the window of
+              # this night opened at 21:00 on the day before.
+              now = datetime.datetime.strptime(sys.argv[2], "%Y-%m-%dT%H:%M:%SZ")
+              start = now.replace(hour=21, minute=0, second=0)
+              if now.hour < 21:
+                  start -= datetime.timedelta(days=1)
+              print(start.strftime("%Y-%m-%dT%H:%M:%SZ"))
+          elif mode == "runs":
+              # The OTHER nightly runs: a schedule run, or a dispatch whose
+              # run name says "nightly". A plain dispatch never counts.
+              runs = load(sys.argv[2]).get("workflow_runs")
+              if not isinstance(runs, list):
+                  sys.exit(2)
+              for run in runs:
+                  if str(run.get("id")) == sys.argv[3]:
+                      continue
+                  event = run.get("event")
+                  title = str(run.get("display_title") or "")
+                  if event == "schedule" or (event == "workflow_dispatch" and "nightly" in title):
+                      print(run.get("id"))
+          elif mode == "shipped":
+              # 0: its publish job passed. 3: it did not. Else: no answer.
+              jobs = load(sys.argv[2]).get("jobs")
+              if not isinstance(jobs, list):
+                  sys.exit(2)
+              ok = any(isinstance(j, dict) and j.get("name") == sys.argv[3]
+                       and j.get("conclusion") == "success" for j in jobs)
+              sys.exit(0 if ok else 3)
+          PY
+          now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          since="$(python3 "$tmp/once.py" since "$now")"
+          api="repos/${GITHUB_REPOSITORY}/actions"
+          trouble=""
+          shipped=""
+          : > "$tmp/ids.txt"
+          if [ -z "$since" ]; then
+            trouble="the step could not read the clock"
+          else
+            for event in schedule workflow_dispatch; do
+              if ! gh api "${api}/workflows/deploy.yml/runs?event=${event}&created=>=${since}&per_page=100" > "$tmp/runs.json" \
+                 || ! python3 "$tmp/once.py" runs "$tmp/runs.json" "$GITHUB_RUN_ID" >> "$tmp/ids.txt"; then
+                trouble="the Actions API gave no list of ${event} runs"
+              fi
+            done
+          fi
+          while read -r id; do
+            [ -n "$id" ] || continue
+            rc=1
+            # stdin from /dev/null, so no call can eat the list of runs.
+            # filter=all: a publish job that passed on any attempt counts.
+            if gh api "${api}/runs/${id}/jobs?filter=all&per_page=100" > "$tmp/jobs.json" < /dev/null; then
+              python3 "$tmp/once.py" shipped "$tmp/jobs.json" "$PUBLISH_JOB" < /dev/null
+              rc=$?
+            fi
+            case "$rc" in
+              0) shipped="$id"; break ;;
+              3) ;;
+              *) trouble="the Actions API gave no jobs of run ${id}" ;;
+            esac
+          done < "$tmp/ids.txt"
+          if [ -n "$shipped" ]; then
+            echo "open=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Release shipped tonight::Nightly run ${shipped} published release after ${since}, so this run does not publish again."
+            echo "Release SKIPPED: nightly run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${shipped} published release after ${since}. Production did not move again." >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$trouble" ]; then
+            echo "open=true" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Release may ship twice::${trouble}, so this run cannot see if another nightly run shipped after ${since}. It publishes. One more ship of a night is one more apply."
+          else
+            echo "open=true" >> "$GITHUB_OUTPUT"
+            echo "No other nightly run published release after ${since}."
+          fi
+
   # ── Publish the ref the PRODUCTION box polls (WS-25) ──────────────────
   # ⚠️ WS-38: this runs on the daily schedule and on a manual dispatch, never
   # on a push. On those runs the unit tests GATE it again. On a push they are
   # a signal (see the `test` job), because the deploy waited 19 minutes for
   # them on every merge. Once a day, at 03:00 IST, 19 minutes costs nothing,
-  # and this is the last check before customers. A dispatch with
-  # `skip_tests` is the one way past it, for an emergency.
+  # and this is the last check before customers. A PLAIN dispatch with
+  # `skip_tests` is the one way past it, for an emergency. A nightly
+  # dispatch with `skip_tests` does not publish (CIV-13).
+  # CIV-4b: the R8 gate (`r8-gate`) gates it the same way, with the same one
+  # way past. `test` has no database, so without `r8-gate` no R8 suite would
+  # run before production once a PR runs only its affected tests (CIV-3).
   # `scripts/vps_pull.sh` on the box applies `origin/release`, never `main`,
   # so the box installs only a commit that reached `main`. pr-check tested it
   # as a PR before the merge.
@@ -271,16 +928,18 @@ jobs:
   publish-release:
     name: "Publish release ref"
     runs-on: ubuntu-latest
-    needs: [lint, test, release-window]
+    needs: [lint, test, r8-gate, release-window]
     if: >-
       ${{ always()
       && github.ref == 'refs/heads/main'
       && github.event_name != 'push'
-      && !(github.event_name == 'schedule' && vars.RELEASE_HOLD == '1')
-      && (github.event_name != 'schedule' || needs.release-window.outputs.open == 'true')
+      && !((github.event_name == 'schedule' || inputs.nightly) && vars.RELEASE_HOLD == '1')
+      && (!(github.event_name == 'schedule' || inputs.nightly) || needs.release-window.outputs.open == 'true')
       && needs.lint.result == 'success'
       && (needs.test.result == 'success'
-          || (github.event_name == 'workflow_dispatch' && inputs.skip_tests && needs.test.result == 'skipped')) }}
+          || (github.event_name == 'workflow_dispatch' && inputs.skip_tests && !inputs.nightly && needs.test.result == 'skipped'))
+      && (needs.r8-gate.result == 'success'
+          || (github.event_name == 'workflow_dispatch' && inputs.skip_tests && !inputs.nightly && needs.r8-gate.result == 'skipped')) }}
     permissions:
       contents: write
     steps:
