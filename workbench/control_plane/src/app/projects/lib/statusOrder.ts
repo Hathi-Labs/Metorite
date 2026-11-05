@@ -1,8 +1,8 @@
 /**
  * Projects · where a status SITS — the position arithmetic for the editor.
  *
- * `pm_task_statuses.position` is a plain integer, root-scoped, and every read
- * orders by `position, name`. It decides board column order, list section order
+ * `pm_task_statuses.position` is a plain integer, root-scoped. Every read
+ * orders by stage, then `position`, then `name` (task 1792). It decides board column order, list section order
  * and the order of the status picker, so it is not decoration.
  *
  * Two things made this a module with a test rather than inline arithmetic.
@@ -20,7 +20,11 @@
  * as is the category control's job, not the arrow's.
  */
 
-import { EDITABLE_CATEGORIES, STATUS_CATEGORIES } from "@/lib/statusCategory";
+import {
+  EDITABLE_CATEGORIES,
+  categoryRank,
+  orderedLanes,
+} from "@/lib/statusCategory";
 
 /** The minimum a row needs for this module to place it. */
 export interface Placeable {
@@ -41,9 +45,9 @@ export interface Placeable {
  * the first lane, so it is still on the board.
  */
 export function statusLaneOf(
-  lanes: readonly Pick<Placeable, "id" | "category" | "position">[],
+  lanes: readonly (Pick<Placeable, "id" | "category" | "position"> & { name?: string })[],
 ): (t: { status_id?: string | null; status_category?: string | null }) => string | undefined {
-  const ordered = [...lanes].sort((a, b) => a.position - b.position);
+  const ordered = orderedLanes(lanes.map((l) => ({ ...l, name: l.name ?? "" })));
   const own = new Set(ordered.map((s) => s.id));
   const firstOfStage = new Map<string, string>();
   for (const s of ordered) if (!firstOfStage.has(s.category)) firstOfStage.set(s.category, s.id);
@@ -64,19 +68,6 @@ export interface PositionPatch {
  *  renumber. Matches the 10/20/30/40 the seed writes. */
 export const POSITION_STEP = 10;
 
-/**
- * Lifecycle rank for ordering categories against each other.
- *
- * `STATUS_CATEGORIES` is the lifecycle order and holds every value the server
- * accepts. An unknown category sorts last rather than first: a value this
- * client has not heard of is more likely a later addition than a new front
- * door, and putting it at the head would reorder a board on deploy.
- */
-function categoryRank(category: string): number {
-  const index = (STATUS_CATEGORIES as readonly string[]).indexOf(category);
-  return index === -1 ? STATUS_CATEGORIES.length : index;
-}
-
 /** Rows of one category, in the order every read draws them. */
 export function siblings<T extends Placeable>(
   rows: readonly T[],
@@ -89,12 +80,7 @@ export function siblings<T extends Placeable>(
 
 /** Every row in the order the BOARD draws its columns. */
 function boardOrder<T extends Placeable>(rows: readonly T[]): T[] {
-  return [...rows].sort(
-    (a, b) =>
-      a.position - b.position ||
-      categoryRank(a.category) - categoryRank(b.category) ||
-      a.name.localeCompare(b.name)
-  );
+  return orderedLanes(rows);
 }
 
 /** Where a new status goes, and what has to move first to make room. */

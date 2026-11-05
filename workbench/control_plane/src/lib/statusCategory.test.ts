@@ -307,7 +307,7 @@ describe("one reopen rule, the gateway's (D79)", () => {
     expect(body).toMatch(/in CLOSING_CATEGORIES:\s*\n\s*return None/);
     const core = readFileSync(CORE_PY, "utf8");
     const pick = core.slice(core.indexOf("async def load_default_status"));
-    expect(pick).toContain('clauses.append("category <> :triage")');
-    expect(pick).toContain('" ORDER BY position, name LIMIT 1"');
+    expect(pick).toContain("category <> :triage AND category NOT IN");
+    expect(pick).toContain("ORDER BY {status_order_sql()} LIMIT 1");
   });
 });

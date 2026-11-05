@@ -603,6 +603,26 @@ export function StatusManager({
                             stated its category twice and the name, which is the
                             thing this screen exists to edit, was squeezed to
                             fit. The group IS the stage. */}
+                        {/* Task 1792. The order is editable in plain sight:
+                            one arrow up and one down, inside the stage group.
+                            The same `reorder()` the row menu calls, so a move
+                            can never leave its stage. */}
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          icon="ChevronUp"
+                          aria-label={`Move ${status.name} up`}
+                          disabled={busy || index === 0}
+                          onClick={() => move(status, "up")}
+                        />
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          icon="ChevronDown"
+                          aria-label={`Move ${status.name} down`}
+                          disabled={busy || index === group.rows.length - 1}
+                          onClick={() => move(status, "down")}
+                        />
                         <Button
                           variant="ghost"
                           size="icon-sm"

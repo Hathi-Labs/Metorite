@@ -12,6 +12,7 @@
  */
 
 import { STATUS_CATEGORIES, categoryLabel } from "@/lib/statusCategory";
+import { orderedLanes } from "@/lib/statusCategory";
 import { statusLaneOf } from "./statusOrder";
 import { personDisplayName } from "@/lib/personName";
 
@@ -661,7 +662,7 @@ export function groupTasks(
   }
 
   if (by === "status") {
-    const ordered = [...ctx.statuses].sort((a, b) => a.position - b.position);
+    const ordered = orderedLanes(ctx.statuses);
     const lane = statusLaneOf(ordered);
     return ordered.map((status) => ({
       key: status.id,
