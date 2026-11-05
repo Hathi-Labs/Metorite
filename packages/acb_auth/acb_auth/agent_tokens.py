@@ -164,6 +164,8 @@ class TokenLookup:
     scopes: tuple[str, ...] = ()
     pinned_projects: tuple[str, ...] = ()
     include_personal: bool = False
+    #: The left-out list of the connection (D-EA-12, spec §10.8, EA-17a).
+    left_out_projects: tuple[str, ...] = ()
     client_origin: str = ""
     #: The CONNECTION's ``client_id`` (EA-13a). The edge stamps
     #: ``agent_oauth.actor_via_for(client_origin, client_id=...)`` with it,
@@ -187,6 +189,9 @@ class LiveConnection:
     scopes: tuple[str, ...]
     pinned_projects: tuple[str, ...]
     include_personal: bool
+    #: The left-out list (D-EA-12, spec §10.8, EA-17a). Branch 0 copies it
+    #: into ``AgentScope``.
+    left_out_projects: tuple[str, ...] = ()
     #: ``agent_connection.client_id`` (EA-13a). Branch 0 stamps
     #: ``agent_oauth.actor_via_for(client_origin, client_id=...)`` with it.
     client_id: str = ""
@@ -280,7 +285,8 @@ _BIND_SQL = "SELECT set_config('app.tenant_id', :tenant, true)"
 _INSERT_CONNECTION_SQL = """
 INSERT INTO agent_connection
        (organization_id, member_email, client_id, client_name, client_origin,
-        scopes, pinned_projects, include_personal, expires_at)
+        scopes, pinned_projects, include_personal, left_out_projects,
+        requested_scopes, expires_at)
 VALUES (CAST(:org AS UUID),
         CAST(:member AS TEXT),
         CAST(:client_id AS TEXT),
@@ -289,6 +295,8 @@ VALUES (CAST(:org AS UUID),
         CAST(:scopes AS TEXT[]),
         CAST(:pins AS UUID[]),
         CAST(:personal AS BOOLEAN),
+        CAST(:left_out AS UUID[]),
+        CAST(:requested AS TEXT[]),
         now() + make_interval(secs => CAST(:idle_s AS DOUBLE PRECISION)))
 RETURNING id
 """
@@ -425,14 +433,16 @@ SELECT connection_id, organization_id, kind, client_id, resource, scope,
 #: FORCE RLS the bind alone hides a connection of another tenant. The
 #: predicate keeps that answer for a role that bypasses RLS too.
 #:
-#: ``pinned_projects`` comes back as ``text[]``, so a pin is a plain string
-#: and never an asyncpg ``UUID`` object. ``organization_id`` comes back too:
-#: :func:`read_live_connection` reports the ROW's organization, never the
-#: one it was asked for, so branch 0 can compare the two.
+#: ``pinned_projects`` and ``left_out_projects`` come back as ``text[]``, so
+#: an id is a plain string and never an asyncpg ``UUID`` object.
+#: ``organization_id`` comes back too: :func:`read_live_connection` reports
+#: the ROW's organization, never the one it was asked for, so branch 0 can
+#: compare the two.
 _CONNECTION_LIVE_SQL = """
 SELECT CAST(organization_id AS TEXT) AS organization_id,
        member_email, client_origin, client_id, scopes,
-       CAST(pinned_projects AS TEXT[]) AS pinned_projects, include_personal
+       CAST(pinned_projects AS TEXT[]) AS pinned_projects, include_personal,
+       CAST(left_out_projects AS TEXT[]) AS left_out_projects
   FROM agent_connection
  WHERE id = CAST(:connection_id AS UUID)
    AND organization_id = CAST(:org AS UUID)
@@ -598,6 +608,8 @@ async def create_connection(
     scopes: Sequence[str] = (),
     pinned_projects: Sequence[str] = (),
     include_personal: bool = False,
+    left_out_projects: Sequence[str] = (),
+    requested_scopes: Sequence[str] | None = None,
     replace_same_client: bool = False,
 ) -> str:
     """Create a connection in the BOUND tenant and return its id.
@@ -605,6 +617,11 @@ async def create_connection(
     The organization is the tenant the request already bound. It is never a
     parameter, so no caller can pass one from a request (R11). With nothing
     bound, ``tenant_session`` raises ``TenantUnbound``.
+
+    ``left_out_projects`` is the left-out list of D-EA-12 (spec §10.8). It
+    can only narrow the reach. ``requested_scopes`` is what the agent asked
+    for before the member cleared a box, the ceiling of Change access
+    (D-EA-13). ``None`` stores NULL, as a connection from before EA-17a has.
 
     ⚠️ ``replace_same_client`` (D-EA-11, spec §10.7). True only for a
     first-party client. In the SAME transaction as the insert, the store
@@ -650,6 +667,11 @@ async def create_connection(
                     "scopes": list(scopes),
                     "pins": [str(p) for p in pinned_projects],
                     "personal": bool(include_personal),
+                    "left_out": [str(p) for p in left_out_projects],
+                    "requested": (
+                        None if requested_scopes is None
+                        else [str(s) for s in requested_scopes]
+                    ),
                     "idle_s": float(get_settings().agent_connection_idle_ttl_s),
                 },
             )
@@ -1435,6 +1457,7 @@ async def lookup_token(raw: str, *, kind: str = ACCESS) -> TokenLookup | None:
         scopes=tuple(live.scopes or ()),
         pinned_projects=tuple(str(p) for p in live.pinned_projects or ()),
         include_personal=bool(live.include_personal),
+        left_out_projects=tuple(str(p) for p in live.left_out_projects or ()),
         client_origin=live.client_origin or "",
         connection_client_id=live.client_id or "",
     )
@@ -1500,5 +1523,6 @@ async def read_live_connection(
         scopes=tuple(row.scopes or ()),
         pinned_projects=tuple(str(p) for p in row.pinned_projects or ()),
         include_personal=bool(row.include_personal),
+        left_out_projects=tuple(str(p) for p in row.left_out_projects or ()),
         client_id=row.client_id or "",
     )
