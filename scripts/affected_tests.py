@@ -17,7 +17,7 @@ A test file is picked when it:
    or a dotted string such as ``patch("a.b.fn")``), or
 4. imports a module that imports a changed module (one level, see HUB_LIMIT),
 5. lists a folder of the changed file (``glob``, ``rglob``, ``iterdir``), or
-6. scans the whole tree, when a Python file outside tests/ changed.
+6. scans the whole tree, when any Python file changed (tests/ and workbench/ too).
 
 Imports are read with ``ast``, not a regex: a regex lost 38% of the real
 import pairs to multi-line imports and ``as`` aliases (measured 2026-10-16).
@@ -247,7 +247,7 @@ def _composed_path_readers(path: str, tests: dict[str, str]) -> set[str]:
 
 
 # Every way a unit test lists files it never names (CIV-3 round 5, owner option A).
-# A test with one reads the source tree, so a Python change outside tests/ selects it.
+# A test with one reads the source tree, so any Python change selects it.
 _SCAN_IDIOM = re.compile(
     r"\.r?glob\(|\bi?glob\(|\.iterdir\(|\bos\.walk\(|(?<!ast)(?<!os)\.walk\(\s*\)"
     r"|\blistdir\(|\bscandir\(|\bls-files\b|\bls-tree\b|\bgit\W+grep\b|\bfnmatch"
@@ -259,8 +259,8 @@ _SCAN_IDIOM = re.compile(
 def scanning_tests(tests: dict[str, str]) -> set[str]:
     """Every test that lists files by a scan idiom (CIV-3 round 5).
 
-    No text rule can say which file such a test reads. A change to a Python
-    file outside tests/ selects all of them. A docs-only change selects none.
+    No text rule can say which file such a test reads. A change to any Python
+    file selects all of them. A docs-only change selects none.
     A false hit costs only time. Helpers under tests/unit/_*.py scan only SQL,
     TypeScript and JSON, so an import of one does not make a test a scanner.
     """
@@ -286,6 +286,9 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
     changed_mods = {m for c in changed for m in module_names(c, root)}
     src_users, test_users = _import_index(changed_mods, sources, tests, root)
 
+    if any(c.endswith(".py") for c in changed):
+        picked |= scanning_tests(tests)
+
     for path in changed:
         if path.startswith(FRONTEND_APPS) and not path.endswith(".md"):
             continue
@@ -296,8 +299,6 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
             needles.append(name)
         picked |= {t for t, body in tests.items() if any(n in body for n in needles)}
         picked |= _composed_path_readers(path, tests)
-        if path.endswith(".py") and not path.startswith("tests/"):
-            picked |= scanning_tests(tests)
 
         for dotted in module_names(path, root):
             picked |= test_users.get(dotted, set())
@@ -382,6 +383,9 @@ def _gate(changed: list[str], root: Path) -> dict:
 
     py = [c for c in changed if c.endswith(".py") and not c.startswith(FRONTEND_APPS)]
     other = [c for c in changed if c not in py]
+    # A Python file in a Next app skips `select`, but a scanner still reads it.
+    if any(c.endswith(".py") for c in changed):
+        picked |= scanning_tests(tests)
     if py:
         picked |= set(select(py, root)[0])
         # A hub: a changed module that more than HUB_LIMIT test files import.

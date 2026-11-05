@@ -447,6 +447,10 @@ _IDIOMS = {
     "fnmatch": "import fnmatch\nfnmatch.fnmatch(n, '*.py')\n",
     "iter_modules": "pkgutil.iter_modules(path)\n",
     "walk_packages": "pkgutil.walk_packages(path)\n",
+    "ls-tree": 'run(["git", "ls-tree", "-r", "HEAD"])\n',
+    "Path.walk": "for r, d, f in D.walk():\n    pass\n",
+    "iglob": "import glob\nglob.iglob('a/*.py')\n",
+    "importlib.resources": "importlib.resources.files('pkg')\n",
 }
 
 
@@ -478,12 +482,39 @@ def test_a_git_ls_files_scanner_is_picked_by_a_python_change(tmp_path: Path) -> 
     assert "tests/unit/test_tracked.py" in sel.gate(["apps/svc/zz-mod/x-y.py"], tmp_path)["files"]
 
 
-def test_a_change_inside_tests_does_not_select_the_scanners(tmp_path: Path) -> None:
+def test_a_change_inside_tests_selects_the_scanners(tmp_path: Path) -> None:
     _gate_repo(tmp_path)
     _write(tmp_path, "tests/unit/test_scan.py", "D.rglob('*.py')\n")
     _write(tmp_path, "tests/unit/test_edit.py", "assert 1\n")
     out = sel.gate(["tests/unit/test_edit.py"], tmp_path)["files"]
-    assert "tests/unit/test_scan.py" not in out
+    assert "tests/unit/test_scan.py" in out
+
+
+def test_a_python_change_in_a_workbench_app_selects_the_scanners(tmp_path: Path) -> None:
+    _gate_repo(tmp_path)
+    _write(tmp_path, "tests/unit/test_scan.py", "D.rglob('*.py')\n")
+    _write(tmp_path, "workbench/control_plane/scripts/x.py", "X = 1\n")
+    out = sel.gate(["workbench/control_plane/scripts/x.py"], tmp_path)["files"]
+    assert "tests/unit/test_scan.py" in out
+
+
+def test_the_real_tests_and_workbench_python_changes_select_the_scanners() -> None:
+    cases = {
+        "tests/unit/test_email_triage.py": (
+            "test_no_sales_assistant.py",
+            "test_customer_console_credits.py",
+        ),
+        "workbench/control_plane/scripts/characters/mcp.py": (
+            "test_object_store.py",
+            "test_gmail_one_scope_set.py",
+        ),
+    }
+    for path, tests in cases.items():
+        assert (_ROOT / path).exists(), path
+        out = sel.gate([path])
+        for t in tests:
+            assert (_ROOT / "tests/unit" / t).exists(), t
+            assert f"tests/unit/{t}" in out["files"], (path, t)
 
 
 def test_the_real_missed_scanners_follow_a_python_change() -> None:

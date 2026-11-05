@@ -132,11 +132,13 @@ list over 200 KB, or a path outside `tests/*.py`, to a full run. The shard
 step `Pick this shard's tests` sets `mode` to `full`, `selection` or `empty`.
 One rule in `affected_tests.py` covers a test that reads files it never names.
 `scanning_tests` picks every unit test with a scan idiom. The idioms are `glob`,
-`rglob`, `iterdir`, `os.walk`, `listdir`, `scandir`, `git ls-files`, `git grep`,
-a `grep` or `rg` argument, `fnmatch`, `iter_modules` and `walk_packages`.
-The rule runs when the PR changes a Python file outside `tests/`. A docs-only PR
-picks only the tests that name the doc. The owner chose this rule on 2026-11-05
-(option A, on task 1631). Four rounds of folder and tree heuristics had missed
+`rglob`, `iglob`, `iterdir`, `os.walk`, `Path.walk()`, `listdir`, `scandir`,
+`git ls-files`, `git ls-tree`, `git grep`, a `grep` or `rg` argument, `fnmatch`,
+`iter_modules`, `walk_packages` and `importlib.resources`.
+The rule runs when the PR changes any Python file, in `tests/` or `workbench/` too.
+A docs-only PR picks only the tests that name the doc. The owner chose this rule
+on 2026-11-05 (option A, on task 1631). Round 6 extends the trigger to `tests/`
+and `workbench/`, so no selection shrinks against round 4. Four rounds of folder and tree heuristics had missed
 scanners, so the heuristics are gone.
 
 **Done when:**
