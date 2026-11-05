@@ -6,6 +6,8 @@
 
 **D-EA-12 and D-EA-13 are DECIDED 2026-11-04 (owner, Metorite task 1585).** A connection gains a left-out list, so the member can untick a subproject of a ticked parent. The member can change an agent's grant after the connect, up to the scopes that the agent asked for (§10.8). **EA-17a is BUILT 2026-11-04 and not merged (branch `mt-ca4768ee-mcp-access-tree`, migration 344, Metorite task 1586). It ships dark:** no client sends the list until EA-17b. EA-17b and EA-17c are not built.
 
+**D-EA-14 and slices EA-18a to EA-18c (section 12.8, "Questions for me") are PROPOSED 2026-11-06 (Metorite task 1788) and wait on the owner's approval.** One list of the agent questions that wait on a person, in Projects, My Day and Approvals. The task creator and a reader with the role owner, admin or manager may answer. Nothing is built.
+
 **MCP-G1 is BUILT 2026-10-29 and not merged (branch `mt-003e8384-mcp-projects`, Metorite task 355).** Four tools join the edge: `create_project`, `update_project`, `preview_move_tasks` and `move_tasks` (§9.2, EA3-53). Each tool calls the route that the Projects app uses, so the app decides who sees a new node and who may move a task. No tool writes a grant.
 
 **MCP-G1, the rules in short.** A connection with pins makes no space. A move commits only with the `preview_id` of a preview of the same selection. An agent never widens who sees a task: a move that shows a task to a new member gets 403 `audience_widens` (fix round 1). The four pairs join `MCP_WRITE_ROUTES`, and `PATCH /projects/nodes/{project_id}` takes `If-Match`, with no migration. The fence is `tests/unit/test_mcp_edge_projects.py`, and the mutations P1 to P5 are each red.
@@ -319,8 +321,9 @@ The owner accepted every default below in chat on 2026-10-10, with the words "go
 | D-EA-7 | Price | No charge. The agent uses the member's seat | CLAUDE.md says pricing and commercial calls need owner input first. The tool calls cost no AI credits |
 | D-EA-8 | Who may connect | An organization admin switches the feature on. Then any member may connect, unless the admin restricts clients to an allow list | Default OFF keeps a new tenant safe |
 | D-EA-9 | Where members and admins manage connections | **Decided: owner, 2026-10-14, in chat.** Integrations opens to all members. Each member sees an AI agents view. `integrations:manage` sees all agent connections. The two stores stay apart. §5.4 | The owner suggested it on 2026-10-11. One place to see and revoke every connection |
-| D-EA-10 | Agent runs on a task, and the question an agent asks a member | **Decided: owner, 2026-10-14, in chat.** Take Plane's run, activity and signal model (§12.1). (1) Any member who can see the task may answer, and the pill names the run's member. (2) The waiting state is a marker beside the task status, not a new status. (3) The bell and a "Waiting on me" filter tell the member. Browser push waits for WS-51 S7 | The owner asked that people and outside coding agents work together inside Metorite. The owner said "learn from Plane as much as possible" |
+| D-EA-10 | Agent runs on a task, and the question an agent asks a member | **Decided: owner, 2026-10-14, in chat.** Take Plane's run, activity and signal model (§12.1). (1) Any member who can see the task may answer, and the pill names the run's member. (2) The waiting state is a marker beside the task status, not a new status. (3) The bell and a "Waiting on me" filter tell the member. Browser push waits for WS-51 S7. **Amended by D-EA-14 (proposed):** point (1) narrows to the task creator, the assignees, the run's member, and the roles owner, admin and manager | The owner asked that people and outside coding agents work together inside Metorite. The owner said "learn from Plane as much as possible" |
 | D-EA-11 | May a first-party client sign a member in again with no consent click | **Decided: owner, 2026-10-30 (Metorite task 1109).** Yes, for a client that an operator names in `agent_first_party_client_ids`, and only when the member already holds a live connection of that client whose scopes cover the request. A new approval of such a client replaces the member's older connection of it. The list is empty by default. §10.7 holds the rules and the threat analysis. Every other client keeps the consent page and its approve gate | The owner asked for a sign-in to Aroh with no hiccups. A member who already approved Aroh should not click Approve again on each device, and the list of connected agents should show one Aroh. The list is an operator setting and not the admin allow list of D-EA-8: it widens trust, so only the operator of the box sets it |
+| D-EA-14 | Who sees an agent question, and who may answer it | **PROPOSED 2026-11-06, and it waits on the owner (Metorite task 1788).** (1) "For me" lists an open question when the reader created the task, is an assignee, or is the run's member. (2) Those people, and a reader with the role owner, admin or manager, may answer. This amends D-EA-10 point (1). (3) The "Everyone" tab shows only to owner, admin and manager. (4) The task creator also gets the `agent_question` notification. (5) Each answer names who gave it. §12.8 holds the design | The owner asked for one surface for all the questions that wait on a person, with the project path. He asked that the task creator answer, and that a person higher up may answer too |
 
 ### 6.1 The engineering decisions of the EA-3 audit (EA3-1 to EA3-8, 2026-10-11)
 
@@ -2071,6 +2074,149 @@ A clear also needs a change to the CHECK of `cleared_reason` and a second writer
 - The fix of H-409 item 2.
 - The lens chip in the compact chrome (`ViewSheet.tsx`). The header badge opens the lens there.
 
+### 12.8 Questions for me (EA-18, D-EA-14)
+
+**PROPOSED 2026-11-06 (Metorite task 1788). It waits on the owner's approval.** No code and no migration exist. The mock is `questions-mock.png`, attached to the task. Verified against code on origin/main `4f625a5a1`.
+
+**The owner's ask (2026-11-05).** "In the projects app, I need to open an individual project or the main project to see what the agent questions waiting on me are. Wouldn't it be nice to have one surface where I can see all the questions that are waiting for me? It might be nice if, along with settings and reports, I also have that section for questions waiting for me. I have a nice UI where all the questions waiting for me show up, and I know which projects or subprojects they belong to so that I can easily see what I need to answer. Ideally, the person who created the task should be able to answer, but depending on admin privileges, anybody higher up also should be able to answer that particular question of the AI. And we can also access this from multiple places, from approvals or my day, so that we are all clear and it is easy."
+
+**What is wrong today.**
+
+1. A question shows only inside its own project. A member opens each project to find it.
+2. `GET /projects/agent-runs` (`list_my_agent_runs`) lists the caller's own runs only (`r.member_email = :me`). Its `needs_agent` filter is the AGENT's queue, and not "a person must answer".
+3. `filters.agent_focus_clause("waiting")` reads "awaiting, and the run's member or an assignee is me". It never reads the creator of the task. `pm_tasks.created_by` exists (`146_projects.sql`, set in `routes/projects/tasks.py`), and no agent-run rule reads it.
+4. `analytics_waiting.py` `questions_sql` feeds a capped report panel, "Waiting on people" (`projects_reports.md` §6.8 C). It counts and explains. It cannot answer.
+5. `GET /projects/needs-attention` never lists an `awaiting` run (§12.7).
+6. The only answer UI is the run panel (`AgentRunPanel.tsx`), inside one task.
+7. A question notifies `run.member_email` and `task_audience()` as kind `agent_question` (`_write_activity` in `agent_runs.py`). The creator hears of it only when the creator is also an assignee.
+8. The answer route lets any member who sees the task answer (D-EA-10 point 1). So more people may answer than the people who get the bell, and "higher up" has no named rule.
+
+**The design: one list, three doors.** The list is one read (see "The route"). Each door shows it. No door keeps a copy, and no door builds a second list (D87 to D89, D52 and D53).
+
+1. **Projects.** A "Questions for me" item joins the workspace section of the sidebar, beside Reports and Settings. It has a count badge. `?app=questions` opens it.
+2. **My Day.** A card, "AI agents wait on you · N", shows the top questions. The member answers in place (D100, D101). "See all N questions" opens door 1.
+3. **Approvals.** An "Agent questions · N" tab sits beside "Actions · N". It shows the same list. "Open the full list in Projects" opens door 1.
+
+**The row.** Rows group under the project path, from space to subproject, as "Metorite › Metorite Application › AI Studio · 2 questions". Each name in the path links to its project. A row holds:
+
+- The task title, with "Open task".
+- The agent name and the age ("asked 3 h ago"). A second line reads the run: "Run started 3 h ago · waiting 2 h 41 m".
+- A tag that says why the reader sees it: "You created this task", "Assigned to you" or "Your agent asked". A reader with two reasons sees the first in this order: created, assigned, own agent.
+- The question text. Then one button for each option, in the order that the agent sent. A "recommended" mark shows when the agent set one. A question with `allow_multiple` shows check boxes and one Send button.
+- A free-text field, "Or write an answer...", with Send. A question with no options shows the field only.
+- After Send, the row shows "Answered by <name>" for a moment and then leaves the list. The agent goes on at once.
+
+**The answer card is shared.** The answer part of `AgentRunPanel.tsx` moves into one component, `AgentQuestionCard`. The run panel and the list both render it. EA-18b must not copy it. The chat's own questions (`lib/pendingAsks.ts`, `askPin.ts`, WS-51) are a different thing, so do not reuse them.
+
+**Tabs, filters, sort and count.**
+
+- Tabs: "For me · N" and "Everyone · M". The "Everyone" tab shows only to a reader in the review set (D-EA-14 point 3). Other readers see no tab.
+- Filter: a project picker, "All projects" by default. A pick keeps that project and its subprojects (`analytics.scope_clause`).
+- Sort: "Oldest first" by default. "Newest first" is the other choice.
+- The count is exact. The "For me" count feeds the sidebar badge, the My Day card and the Approvals tab. A page holds at most 200 rows. `capped` is true when more exist, and the page says "Showing the oldest 200".
+- Empty state: "No question waits on you. When an agent asks, it shows here." The "Everyone" tab says "No agent waits on anyone."
+- The list reads again after each answer, and every 60 seconds while the page is open.
+
+**D-EA-14: who sees a question and who may answer. PROPOSED. It waits on the owner (Metorite task 1788).**
+
+1. **"For me" lists an open question** in three cases. The reader created the task (`pm_tasks.created_by`). Or the reader is an assignee. Or the reader is the member of the run, so the reader's own agent asked.
+2. **Who may answer** is the same three groups, plus a reader who holds the organization role `owner`, `admin` or `manager`. This AMENDS D-EA-10 point (1). The role test reads `UserContext.roles` (`roles.py`, with `SYSTEM_ROLES` in `permissions.py`). The reader must also see the task (`task_visibility_clause`, D87 rule 4). Any other member sees the question in the run panel as read-only, with "<name> or an admin can answer this".
+3. **The "Everyone" tab shows only to a reader with the role `owner`, `admin` or `manager`.** It lists every open question that the reader can see. So the reader can free an agent whose person is away. A reader without the role gets 403 on `scope=everyone`.
+4. **The task creator also gets the `agent_question` notification**, once. The audience is the run's member, `task_audience()` and the creator. Two roles in one person give one notification.
+5. **Each answer names who gave it.** `pm_agent_run_activities.actor` already holds the member email of a `prompt` (`267_pm_agent_runs.sql`). The answer comment in the task timeline has the same author. The list and the run panel show "Answered by <name>". EA-18b adds that name to the answered state of the card. No migration is needed.
+
+**Amendment of D-EA-10.** Point (1) of D-EA-10 read "Any member who can see the task may answer". D-EA-14 point 2 narrows it, and the §6 row says so. The typed archive approval (§12.1) stays narrower still: only the run's member answers it. D-EA-14 does not touch it.
+
+**The role mapping.** "Higher up" means an organization role, and not a permission. The role slugs are `owner`, `admin` and `manager`. `data:org:read` and `admin:members:read` are read permissions. The owner has not decided if a read permission may act on the run of another member (HANDOFF H-409 item 2). A role test avoids that open item.
+
+The role test adds no third rule to `may_end_run`. Open question 1 asks if "Manager" should mean the manager of the project's space.
+
+**The route.** `GET /projects/agent-questions`, in a new file `routes/projects/agent_questions.py`, beside `needs_attention.py`.
+
+- Query: `scope=mine|everyone` (default `mine`), `project=<id>` (optional), `sort=oldest|newest`, `offset` and `limit` (0 to 200, default 100).
+- The answer holds `rows`, `counts` (`mine` and `everyone`, the second null for a reader outside the review set), `total`, `offset`, `limit` and `capped`.
+- A row holds `run_id`, `activity_id` (the open elicitation), `task_id`, `task_number`, `task_title`, `agent_name`, `client_via`, `asked_at` and `run_started_at`. It also holds `project_path`, a list of `{id, name}` from the root to the leaf. It holds `question` (`body`, `options`, `allow_multiple`) and `can_answer`. It holds `why`: `created`, `assigned` or `my_agent`. On the "Everyone" tab, `why` is null for a reader with none of the three.
+- `scope=everyone` gives 403 to a reader without the role. The text is "Only an owner, an admin or a manager can see every question. Open For me to see yours."
+- A `project` that the reader cannot see gives 404, as `needs-attention` does.
+- The route reads the open elicitation with the SQL that the run list uses (`open_elicitation` in `agent_runs.py`, and the awaiting rule of `filters.agent_focus_clause`). It reads the path with the project parent walk. It adds `task_visibility_clause`. It writes nothing.
+- With `agent_runs_enabled` off, the list is empty. With the new flag off, the route answers 404.
+
+**ONE text for "who may answer".** A function `person_may_answer_sql(run)` sits in `agent_runs.py` beside `person_may_end_sql`. It holds the created, assigned and run-member tests. A second function, `may_answer_run(db, run, user)`, adds the role test from the context. The list calls the SQL for `why` and `can_answer`. `POST /projects/agent-runs/{id}/activities` calls `may_answer_run`.
+
+So the list never offers a button that the route refuses. `person_may_end_sql` set this rule for Release. The fence of EA-18a holds it.
+
+**The write rule.** `POST /projects/agent-runs/{run_id}/activities` with `type: prompt` from a person runs `may_answer_run` after `_load_visible_run`. A person outside the set gets 403. The message reads: "Only <member name>, the creator of the task, its assignees, or an owner, admin or manager can answer this question. Ask one of them, or open the task and add a comment."
+
+A comment through the task route stays open to every member who sees the task. A comment does not answer a question.
+
+The agent paths do not change. The "no person present" 403 (`_refuse_a_marked_prompt`) and the archive approval rule stay as they are. This rule is a behaviour change, so it sits behind the same flag (see Flag).
+
+**The notification.** `_write_activity` builds the audience of `agent_question` as the run's member, `task_audience()` and the `created_by` of the task, with no duplicate. A task with no creator address adds nobody. The notification stays prospective: no backfill, and no bell for a question that is already open when the flag turns on. My Day reads `ASKING_NOTIFICATIONS` (`gateway/routes/shell/needs.py`), which already holds `agent_question`.
+
+**My Day (EA-18c).** A new card kind, `agent_questions`, joins the catalogue of `my_day_feed.md`. A provider in the feed route (`gateway/routes/shell/feed.py`) and a type in `lib/shell/feed.ts` carry it. It reads the "mine" list, the 3 oldest. It shows the project path, the question and the options. An answer runs the same write as the list (D100, D101).
+
+The card gets a row in the old-path table of `my_day_feed.md`, group "Needs you". It gets a weight in `feed_rank.BASE`. A member with no open question sees no card. `lib/shell/AiWaitingCard.tsx` is the chat's card, and it is not this one.
+
+**Approvals (EA-18c).** `src/app/approvals/page.tsx` gains two tabs: "Actions" (the Action Broker queue, unchanged) and "Agent questions". The second tab renders the list component with `scope=mine`. The tab needs no new feature grant. The route reads the Projects visibility of the reader, so a reader sees nothing that they could not open (D87 rule 4).
+
+**The app and the shell (R9).** The Projects item is a destination inside one app. So it joins `projectApps.ts` (`ProjectAppId`, `PROJECT_APP_SECTIONS`, `resolveAppLink`), and not `PANES` in `nav.ts`.
+
+The app plugs into the shell. It builds no palette, bell or assistant rail, and it adds nothing to `SEAM_DEBT`. The Projects manifest declares the My Day provider. That manifest edit is a part of EA-18c.
+
+**Flag.** `AGENT_QUESTIONS_ORGS`, an `*_ORGS` setting. It reloads by SIGHUP (`docs/flag_reload.md`), and it is empty by default, so it ships dark.
+
+While it is off for an organization, these stay as today. The route answers 404. The sidebar item, the card and the tab are absent. The audience of `agent_question` has no creator. The write rule is D-EA-10 point (1).
+
+While it is on, all five points of D-EA-14 apply. The write narrowing sits behind the same flag on purpose. A second flag could let the list offer a button that the route refuses. The flip is OWNER-GATE (`enforcement-flip`).
+
+**Tenancy (R5).** The route takes its session from `get_db()` under FORCE RLS. It adds no connection site and no Redis key. The address and the roles of the reader come from the session, and never from the request. A question of another organization never shows. The route has no parameter that names an organization.
+
+**Scope and non-goals.**
+
+- It does not change how an agent asks (`ask_on_task`), the run state machine or the lease rules.
+- It adds no table and no column.
+- It adds no browser push. The bell stays the alert (WS-51 S7).
+- It does not list the pending actions of the Action Broker. They stay in "Actions".
+- It does not change the typed archive request.
+- It adds no chat tool. A read tool for "what questions wait on me" is a later slice (chat first, D109). EA-18a records this gap on the board.
+
+**Acceptance (done when).**
+
+1. With the flag on, the creator of a task sees its open question in "For me". `why` is `created`, and the project path shows.
+2. A member who is none of the groups, and holds no role of the review set, sees `can_answer` false. The same member gets 403 on a `prompt`.
+3. An `owner`, `admin` or `manager` sees the "Everyone" tab, and answers any question that they can see.
+4. A reader without the role gets 403 on `scope=everyone`, and sees no tab.
+5. The creator gets one `agent_question` notification, and not two when the creator is an assignee too.
+6. An answer names its author in the list, the run panel and the task timeline.
+7. With the flag off, nothing changes: the route answers 404, and any member who sees the task may still answer.
+8. The same question shows in Projects, My Day and Approvals, with the same count.
+
+**Fences.**
+
+- EA-18a: `tests/unit/test_agent_questions_r8.py`, on R8, each class marked `@_DB_GATE`. Named mutations, each one turning a test red: (M1) a reader outside the set sees `can_answer` true. (M2) the write route accepts a `prompt` from a viewer who is not in the set. (M3) `scope=everyone` answers a reader without the role. (M4) a question of another organization shows. (M5) the creator is notified twice when the creator is also an assignee. (M6) the list and the route use two different texts for the answer set. The same file holds "a read writes nothing" and the flag-off cases (404 and the old audience).
+- EA-18a also edits `test_agent_runs_r8.py`. The old "any viewer may answer" case becomes a flag-off case. If the digest of `test_tenant_request_binding.py` changes, the §10.1 review applies.
+- EA-18b: `app/projects/lib/agentQuestions.test.ts`, `projectApps.test.ts` (the new id and its link), `compactChrome.test.ts`, and a component test of `AgentQuestionCard`. An e2e, `e2e/agent-questions.spec.ts`.
+- EA-18c: `lib/shell/feed.test.ts` for the card kind, a test of the approvals page, and `e2e/agent-questions-doors.spec.ts`. `src/lib/shell/seams.test.ts` stays green.
+
+**Verify.** Run these with the dev database exported (`bash scripts/dev_db.sh`, then `eval "$(bash scripts/dev_db.sh --export)"`), and confirm that no R8 test skips.
+
+```
+uv run pytest tests/unit/test_agent_questions_r8.py tests/unit/test_agent_runs_r8.py tests/unit/test_needs_attention_r8.py tests/unit/test_tenant_request_binding.py
+uv run ruff check
+uv run python scripts/affected_tests.py --run
+cd workbench/control_plane && npx tsc --noEmit
+cd workbench/control_plane && npx vitest run src/app/projects/lib/agentQuestions.test.ts src/app/projects/lib/projectApps.test.ts src/app/projects/compactChrome.test.ts src/lib/shell/seams.test.ts
+cd workbench/control_plane && npx playwright test e2e/agent-questions.spec.ts e2e/agent-questions-doors.spec.ts
+```
+
+**UI check (UI-1).** EA-18b and EA-18c capture the list in light mode, dark mode, compact density, a changed accent and 390 px. They also capture it beside the Reports pane. The owner previews it on `bash scripts/dev_up.sh` before the merge.
+
+**Open questions for the owner.**
+
+1. Does "Manager" mean the organization role `manager`, or the manager of the project's space? This design takes the role, because the space has no manager field that a role test can read. The other reading needs a new rule.
+2. May a member who is in none of the groups still write a comment on the task? This design says yes. A comment does not answer the question, and the agent reads it as a note.
+3. Should "Answered by" show the name only, or the name and the role? This design shows the name only.
+
 ## 13. The landing-page scenario
 
 The member connects Claude with `context:read` only. Claude calls `get_company_context` and reads the resource `metorite://company/context`. Claude writes the page in its own window. Metorite stores nothing and holds no Claude key. A second connection with `projects:read` is needed to let Claude read the product backlog. The consent page makes that second grant a separate choice.
@@ -2146,6 +2292,9 @@ Each slice is **AGENT-SAFE** unless it says **OWNER-GATE**. An agent builds the 
 | EA-17a | **BUILT 2026-11-04, dark, not merged (branch `mt-ca4768ee-mcp-access-tree`, migration 344).** The R8 file passes, and the named mutations M1 to M4 each turn it red. `whoami` returns `left_out_projects` too (§9.1). A tree with a cycle or a parent in another organization narrows the reach of a connection with marks, and never widens it. **The left-out list (§10.8, D-EA-12, Metorite task 1586).** One expand-only migration adds `left_out_projects` and `requested_scopes` to `agent_connection`. `approve` stores the requested scopes and takes `left_out_projects`. The store, `TokenLookup`, `AgentScope`, branch 0 and the edge carry the list. `_AGENT_PINS_SQL` and `_narrow_for_agent` follow the nearest mark (D-EA-12 rules 1 to 8). It ships dark: no client sends the list until EA-17b | `tests/unit/test_agent_left_out_projects.py` passes on R8, with a case for each rule of D-EA-12 and a foreign-organization id. Named mutations turn it red: the list ignored, a left-out mark that wins over a pin beneath it, a walk with no organization filter, and a guard that still runs only for pins. Run `uv run pytest tests/unit/test_agent_left_out_projects.py tests/unit/test_agent_oauth_server.py tests/unit/test_agent_connection_tokens.py tests/unit/test_agent_first_party.py tests/unit/test_mcp_edge_authority.py tests/unit/test_agent_connections_r8.py` with the dev database exported, and confirm that no R8 test skips. Then `uv run ruff check` and `uv run python scripts/affected_tests.py --run`. The migration number is re-checked at merge (R1) | AGENT-SAFE. HIGH tier: a migration and the reach of an agent token. Full review loop |
 | EA-17b | **The consent page (§10.8, Metorite task 1587).** The design of §10.8: the switches, the two project choices, the tree that ticks down with a dash and a count, the search, the summary line and the new footer. One tree component, which EA-17c reuses. Needs EA-17a | `consent.test.ts` holds the tree state: a tick cascades, an untick adds to the left-out list, a pin under a left-out parent wins, and the counts. `e2e/connect-authorize.spec.ts` holds the cascade, the dash, the summary and the approve gate. Captures in light, dark, compact, violet and 390 px | AGENT-SAFE. The approve gate of §10.5 must not change |
 | EA-17c | **Change access (§10.8, D-EA-13, Metorite task 1588).** `PATCH /agent-access/connections/{id}`, its BFF route, and "Change access" in the AI agents view with the panel of EA-17b. Needs EA-17a and EA-17b | `tests/unit/test_agent_change_access.py` on R8, with the named mutations of §10.8. A vitest of the view. An e2e that changes a grant and reads it back | AGENT-SAFE. HIGH tier: a write to an agent grant. Full review loop |
+| EA-18a | **PROPOSED 2026-11-06 (Metorite task TBD), waits on the owner.** **The read route, the answer rule and the notification (§12.8, D-EA-14).** `GET /projects/agent-questions` with `scope`, `project`, `sort` and paging. `person_may_answer_sql` and `may_answer_run`, one text that the list and `POST /projects/agent-runs/{id}/activities` both read. The creator joins the audience of `agent_question`, once. The flag `AGENT_QUESTIONS_ORGS`, default empty. No migration | `tests/unit/test_agent_questions_r8.py` on R8, with six named mutations (M1 to M6 of §12.8) that each turn it red. `test_agent_runs_r8.py` and `test_needs_attention_r8.py` stay green, and no R8 test skips. Run `uv run pytest` on those files with the dev database exported, then `uv run ruff check` and `uv run python scripts/affected_tests.py --run` | AGENT-SAFE. HIGH tier: it changes who may answer, which is an authorization change. Full review loop. The flag flip is OWNER-GATE (`enforcement-flip`) |
+| EA-18b | **PROPOSED 2026-11-06 (Metorite task TBD), waits on the owner.** **The Projects section (§12.8).** "Questions for me" in `projectApps.ts` (`?app=questions`), the count badge, the list with tabs, the project filter and the sort, `AgentQuestionCard` extracted from `AgentRunPanel.tsx`, and "Answered by" on the card. Needs EA-18a | `agentQuestions.test.ts`, `projectApps.test.ts`, `compactChrome.test.ts` and the card test pass with `npx vitest run`. `e2e/agent-questions.spec.ts` answers a question in place. Captures in light, dark, compact, a changed accent and 390 px | AGENT-SAFE. UI-1 applies: state the interaction, then look at each state |
+| EA-18c | **PROPOSED 2026-11-06 (Metorite task TBD), waits on the owner.** **The My Day card and the Approvals tab (§12.8).** The `agent_questions` card kind, its provider and `feed_rank.BASE` weight, a row in `my_day_feed.md`, the "Agent questions" tab of `approvals/page.tsx`, and the Projects manifest provider. Needs EA-18a and EA-18b | `feed.test.ts` holds the card kind. A test of the approvals page holds the tab. `e2e/agent-questions-doors.spec.ts` shows one question in all three doors with one count. `seams.test.ts` stays green, with no `SEAM_DEBT` change (R9) | AGENT-SAFE |
 | MCP-G15 | **BUILT 2026-11-04, not merged (branch `mt-c4fee5e7-decided-elsewhere`, Metorite task 1567). It goes live at the merge under `agent_runs_enabled`, which is ON.** **A decision made outside Metorite (§12.1).** An agent records a decision that its member made in another place, on its own awaiting run. The gateway writes an agent `response` that closes the open question, and the run moves `awaiting` to `in_progress`. **Files:** `routes/projects/agent_runs.py`, `acb_auth/agent_oauth.py`, `skill_projects/manifest.py`, `agent_edge/tools.py`, `agent_edge/mcp.py`, `agent_edge/prompts.py`, root `CLAUDE.md` and `.claude/commands/next-ticket.md`. No migration. Branch 0 does not change | `tests/unit/test_mcp_edge_outside_decision.py`: 33 database-free tests and 15 R8 tests through the real gateway app. **D1** the act writes an agent response whose `in_reply_to` is the question, with the marker, and no prompt. **D2** the task leaves each waiting list: the pill, Waiting on me, `status=awaiting`, the open question, `needs_agent`, the bell and the My Day reason. **D2b** (fix round 1) the act reads the member's bell row and no other, and My Day moves once. **D3** the member's own answer works as before. **D4** a run that does not wait. **D5** a run with no open question. **D6** a typed archive request. **D7** another member's run. **D8** a person. **D9** an option id that the question does not hold. **D10** a replay, and a key of another activity. `test_agent_runs_r8.py` R1 holds the new move. `test_mcp_edge_coverage.py` holds the new pair. `test_task_routine.py` holds the rule of an answer in chat | AGENT-SAFE |
 
 Order: EA-0, then EA-1 and EA-2, then EA-3a, then EA-3b-1 and EA-3b-2, then EA-2c, then EA-4a and EA-5, then EA-6 to EA-9, then EA-10 and EA-11. EA-4b and EA-4c come later, and neither gates a pilot (EA3-25). EA-2c touches no file of EA-3b, so it can run in parallel with EA-3b. It must merge before EA-4. EA-6 and EA-5 can run in parallel after EA-3b-2. EA-3c runs when a copy of the 2026-07-28 text is in the tree. EA-6e and EA-6g build in parallel, because EA-6e touches `mcp.py` and not `tools.py`, and EA-6g touches `tools.py` and not `mcp.py`.
@@ -2837,6 +2986,10 @@ The connect card of EA-4b and `docs/external_agents_connect.md` show this table.
   4. Branch 0 copies the list into `AgentScope`, so the digest of `test_tenant_request_binding.py` changes. The change needs the review of §10.1 before the merge.
 - 2026-11-04 — MCP-G15 is built on `mt-c4fee5e7-decided-elsewhere`, and it is not merged (Metorite task 1567). The owner reported that a decision made in the Claude Code chat left the task waiting. An agent now records such a decision with `record_outside_decision`, as an agent `response` that closes the open question (§12.1).
 - 2026-11-04 — MCP-G15 fix round 1, after the review (SHIP-WITH-FIXES). The act marks the member's bell row of the question read, through the one writer of `read_at`, and My Day moves. The approval-route scan of `test_no_person_present.py` names the route. The instructions and §12.4 say that the gateway takes a write of the same member and the same client from any connection.
+- 2026-11-06 — §12.8, D-EA-14 and slices EA-18a to EA-18c, PROPOSED (Metorite task 1788). The owner asked for one surface for the agent questions that wait on him, in Projects, My Day and Approvals, with the project path of each. No code.
+  1. The design holds one read route, one shared answer rule and one flag, `AGENT_QUESTIONS_ORGS`.
+  2. D-EA-14 amends D-EA-10 point (1). The task creator and a reader with the role owner, admin or manager may answer. The creator also gets the bell.
+  3. The spec waits on the owner's approval and on three open questions.
 
 ## 19. One manifest, two doors: every app over the MCP (MCP-P0, D136)
 
