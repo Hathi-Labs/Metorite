@@ -24,6 +24,12 @@ A change to a file that every test depends on (``pyproject.toml``, a
 suite. Frontend files are not Python's business: the script prints the
 ``vitest related`` command for each Next app, which does the same job there.
 
+``--gate`` is the PR tier's selection (CIV-2, docs/specs: ci_velocity.md). It
+prints one JSON object, ``{"full": bool, "files": [...], "reasons": [...]}``,
+for ``git diff BASE...HEAD``. It fails open: any error gives ``full: true``.
+It uses the standard library only, because the CI ``changes`` job has plain
+``python3`` and no ``uv``.
+
 Fence: tests/unit/test_affected_tests.py.
 """
 
@@ -31,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 import re
 import subprocess
 import sys
@@ -213,6 +220,99 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
     return sorted(picked), full, frontend
 
 
+# ── --gate: the PR tier (CIV-2) ────────────────────────────────────────────
+# A change to one of these can affect any test, so the PR runs the full suite.
+GATE_FULL_NAMES = {
+    "pyproject.toml",
+    "uv.lock",
+    ".test_durations",
+    "scripts/affected_tests.py",
+    "scripts/fences.py",
+    "scripts/ci_unit_guard.py",
+    "scripts/ci_local.sh",
+}
+GATE_FULL_PREFIXES = (".github/", "scripts/ci_pc/", "packages/acb_common/")
+GATE_DB_MARK = "_DB_GATE"
+
+
+def gate_changed_files(base: str, root: Path = ROOT) -> list[str]:
+    """The files of ``git diff BASE...HEAD``. CI has no untracked files.
+
+    ``--no-renames``: a rename then lists the old path too, so the tests that
+    import the old module are still selected."""
+    out = subprocess.run(
+        ["git", "diff", "--name-only", "--no-renames", f"{base}...HEAD"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return sorted(n.strip().replace("\\", "/") for n in out.stdout.splitlines() if n.strip())
+
+
+def _full_reason(path: str) -> str | None:
+    name = path.rsplit("/", 1)[-1]
+    if name == "conftest.py":
+        return f"{path}: a conftest.py can change every test"
+    if path.startswith("tests/") and name.startswith("_"):
+        return f"{path}: a shared test helper"
+    if path in GATE_FULL_NAMES or path.startswith(GATE_FULL_PREFIXES):
+        return f"{path}: shared config, CI or the DB seam"
+    return None
+
+
+def _safety_fences(root: Path) -> list[str]:
+    import fences  # scripts/fences.py, standard library only
+
+    data = fences.load() if root == ROOT else json.loads(
+        (root / "tests" / "fences.json").read_text(encoding="utf-8")
+    )
+    return [p for p in data["python"]["safety"] if (root / p).is_file()]
+
+
+def _gate(changed: list[str], root: Path) -> dict:
+    reasons = [r for r in (_full_reason(c) for c in changed) if r]
+    tests = _texts(sorted((root / TESTS).glob("test_*.py")), root)
+    picked: set[str] = set(_safety_fences(root))
+
+    py = [c for c in changed if c.endswith(".py") and not c.startswith(FRONTEND_APPS)]
+    other = [c for c in changed if c not in py]
+    if py:
+        picked |= set(select(py, root)[0])
+        # A hub: a changed module that more than HUB_LIMIT test files import.
+        sources = _texts(
+            [
+                p
+                for top in ("apps", "packages")
+                for p in (root / top).rglob("*.py")
+                if "node_modules" not in p.parts and ".venv" not in p.parts
+            ],
+            root,
+        )
+        mods = {m for m in (module_name(c, root) for c in py) if m}
+        _, test_users = _import_index(mods, sources, tests, root)
+        for m in sorted(mods):
+            n = len(test_users.get(m, set()))
+            if n > HUB_LIMIT:
+                reasons.append(f"{m}: {n} test files import it, more than {HUB_LIMIT}")
+    # A file that is not Python: tests that name its path. No import tracing.
+    for path in other:
+        picked |= {t for t, body in tests.items() if path in body}
+    if any(c.startswith("infra/postgres/") for c in changed):
+        picked |= {t for t, body in tests.items() if GATE_DB_MARK in body}
+        picked.add("tests/unit/test_migration_prefixes.py")
+    files = sorted(p for p in picked if (root / p).is_file())
+    return {"full": bool(reasons), "files": files, "reasons": reasons}
+
+
+def gate(changed: list[str], root: Path = ROOT) -> dict:
+    """The PR tier's selection. Any error inside the selector gives full."""
+    try:
+        return _gate(changed, root)
+    except Exception as exc:  # fail open on purpose
+        return {"full": True, "files": [], "reasons": [f"selector error: {exc!r}"]}
+
+
 def frontend_commands(frontend: list[str]) -> list[str]:
     """One `vitest related` command per Next app, with that app's files."""
     out = []
@@ -230,8 +330,18 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--base", default="origin/main")
     ap.add_argument("--run", action="store_true", help="run pytest on the selection")
+    ap.add_argument("--gate", action="store_true", help="print the PR tier selection as JSON")
     ap.add_argument("files", nargs="*", help="changed files (default: the diff against --base)")
     args, extra = ap.parse_known_args(argv)
+
+    if args.gate:
+        try:
+            changed = [f.replace("\\", "/") for f in args.files] or gate_changed_files(args.base)
+            out = gate(changed)
+        except Exception as exc:  # fail open on purpose
+            out = {"full": True, "files": [], "reasons": [f"selector error: {exc!r}"]}
+        print(json.dumps(out))
+        return 0
 
     changed = [f.replace("\\", "/") for f in args.files] or changed_files(args.base)
     picked, full, frontend = select(changed)
