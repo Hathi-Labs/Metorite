@@ -23,6 +23,8 @@ import {
   connectDialogCopy,
   EMPTY_MCP_FORM,
   detailRows,
+  heldSwitches,
+  mcpActsThroughOAuth,
   mcpAlwaysConfirm,
   mcpBody,
   mcpReadOnlyKey,
@@ -30,9 +32,11 @@ import {
   panelPlan,
   READ_ONLY_KEY_HELP,
   READ_ONLY_KEY_LABEL,
+  READ_ONLY_KEY_OAUTH_NOTE,
   switchesSavedText,
   tickFormSwitch,
   tickSwitch,
+  type HeldSwitches,
   type McpForm,
   type McpSwitches,
 } from "./connections";
@@ -313,6 +317,151 @@ describe("the read-only key in the side panel (MCP-C2)", () => {
     expect(keyed.note).toContain(`The switch "${READ_ONLY_KEY_LABEL}" does not apply`);
     const plain = connectDialogCopy(mcp("false", "false"), "dana@x.test", "connect");
     expect(plain.note).not.toContain(READ_ONLY_KEY_LABEL);
+  });
+});
+
+describe("the read-only key on an OAuth row (review of MCP-C2, P2)", () => {
+  // The gateway names the admin of an OAuth row in `acts_as`, and it refuses
+  // the read-only key there with 422.
+  const oauth = (readOnlyKey = "false") => ({ ...mcp("false", readOnlyKey), acts_as: "dana@x.test" });
+
+  it("knows an OAuth row by its acts_as", () => {
+    expect(mcpActsThroughOAuth(oauth())).toBe(true);
+    expect(mcpActsThroughOAuth(mcp("false", "false"))).toBe(false);
+    expect(mcpActsThroughOAuth({ ...mcp("false"), acts_as: "  " })).toBe(false);
+    expect(mcpActsThroughOAuth({ ...row(), acts_as: "dana@x.test" })).toBe(false);
+  });
+
+  it("plans the tick as view only, with the line that says why", () => {
+    expect(READ_ONLY_KEY_OAUTH_NOTE).toBe(
+      "This switch does not apply to a connection that acts as an admin through OAuth.",
+    );
+    const plan = panelPlan(oauth(), true);
+    expect(plan.readOnlyKey).toBe("view");
+    expect(plan.readOnlyKeyNote).toBe(READ_ONLY_KEY_OAUTH_NOTE);
+    // Always confirm still applies to an OAuth row, so a manager edits it.
+    expect(plan.alwaysConfirm).toBe("edit");
+    const header = panelPlan(mcp("false", "false"), true);
+    expect(header.readOnlyKey).toBe("edit");
+    expect(header.readOnlyKeyNote).toBeNull();
+  });
+
+  it("draws the read-only tick disabled with the line, and the other tick live", () => {
+    const html = renderToStaticMarkup(
+      createElement(SheetBody, {
+        row: oauth(),
+        canManage: true,
+        onNavigate: noop,
+        onDisconnect: noop,
+        onTest: noop,
+        onSwitches: noop,
+      }),
+    );
+    expect(html).toContain(READ_ONLY_KEY_LABEL);
+    expect(html).toContain(READ_ONLY_KEY_OAUTH_NOTE);
+    expect(html.match(/disabled=""/g)?.length).toBe(1);
+    const plain = renderToStaticMarkup(
+      createElement(SheetBody, {
+        row: mcp("false", "false"),
+        canManage: true,
+        onNavigate: noop,
+        onDisconnect: noop,
+        onTest: noop,
+        onSwitches: noop,
+      }),
+    );
+    expect(plain).not.toContain(READ_ONLY_KEY_OAUTH_NOTE);
+  });
+});
+
+describe("the pair after a save (review of MCP-C2, P3)", () => {
+  const before = mcp("true", "false"); // the row as the cached list holds it
+  const savedPair: McpSwitches = { always_confirm: false, read_only_key: true };
+  const listA = [before];
+  const listB = [mcp("false", "true")];
+
+  it("draws the row when no save is held", () => {
+    expect(heldSwitches(before, null, listA)).toEqual({
+      switches: { always_confirm: true, read_only_key: false },
+      wait: false,
+      done: false,
+    });
+  });
+
+  it("draws the saved pair until the row shows it", () => {
+    const held: HeldSwitches = { id: before.id, pair: savedPair, list: listA };
+    // The list read again, and it still holds the old row.
+    expect(heldSwitches(before, held, [before])).toEqual({ switches: savedPair, wait: false, done: false });
+    // The row shows the saved pair: the hold is done.
+    expect(heldSwitches(listB[0], held, listB)).toEqual({ switches: savedPair, wait: false, done: true });
+  });
+
+  it("makes the ticks wait after a failed save, until a newer list", () => {
+    const held: HeldSwitches = { id: before.id, pair: null, list: listA };
+    expect(heldSwitches(before, held, listA)).toEqual({
+      switches: { always_confirm: true, read_only_key: false },
+      wait: true,
+      done: false,
+    });
+    expect(heldSwitches(listB[0], held, listB)).toEqual({ switches: savedPair, wait: false, done: true });
+  });
+
+  it("drops a hold of another row", () => {
+    const held: HeldSwitches = { id: "mcp:other", pair: savedPair, list: listA };
+    expect(heldSwitches(before, held, listA).done).toBe(true);
+    expect(heldSwitches(before, held, listA).switches).toEqual({ always_confirm: true, read_only_key: false });
+  });
+
+  it("builds the next tick from the held pair, not from the old row", () => {
+    const sent: McpSwitches[] = [];
+    const tree = SheetBody({
+      row: before,
+      canManage: true,
+      onNavigate: noop,
+      onDisconnect: noop,
+      onTest: noop,
+      onSwitches: (s) => sent.push(s),
+      switches: savedPair,
+    });
+    // The member unticks the key. From the old row this sent always confirm
+    // true, a switch the member did not touch.
+    tick(tree, ReadOnlyKeyField, false);
+    expect(sent.at(-1)).toEqual({ always_confirm: false, read_only_key: false });
+    const html = renderToStaticMarkup(
+      createElement(SheetBody, {
+        row: before,
+        canManage: true,
+        onNavigate: noop,
+        onDisconnect: noop,
+        onTest: noop,
+        onSwitches: noop,
+        switches: savedPair,
+      }),
+    );
+    // The saved pair shows: only the read-only key is ticked.
+    expect(html.match(/checked=""/g)?.length).toBe(1);
+    expect(html.indexOf('checked=""')).toBeGreaterThan(html.indexOf(ALWAYS_CONFIRM_LABEL));
+  });
+
+  it("answers the pair that the gateway saved", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ ok: true, name: "x", always_confirm: false, read_only_key: true }), {
+            status: 200,
+          }),
+      ),
+    );
+    await expect(api.setMcpSwitches("x", { always_confirm: false, read_only_key: true })).resolves.toEqual(
+      savedPair,
+    );
+    // An answer with no boolean keys falls back to the pair that was sent.
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })));
+    await expect(api.setMcpSwitches("x", { always_confirm: true, read_only_key: false })).resolves.toEqual({
+      always_confirm: true,
+      read_only_key: false,
+    });
   });
 });
 

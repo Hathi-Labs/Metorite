@@ -64,8 +64,12 @@ export async function testMcp(name: string): Promise<McpTestResult> {
  * Set the two switches of one MCP server: "always confirm" (H-300) and the
  * read-only key (MCP-C2). Both keys go in one PATCH, so the gateway checks
  * the pair that the admin sees, and never a half of it.
+ *
+ * It answers the pair that the gateway saved. The gateway answers each key
+ * that the body named, so an answer that names neither key as a boolean
+ * falls back to the pair that was sent.
  */
-export async function setMcpSwitches(name: string, switches: McpSwitches): Promise<void> {
+export async function setMcpSwitches(name: string, switches: McpSwitches): Promise<McpSwitches> {
   const res = await fetch(`/api/integrations/mcp/${encodeURIComponent(name)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -75,6 +79,12 @@ export async function setMcpSwitches(name: string, switches: McpSwitches): Promi
     }),
   });
   if (!res.ok) return fail(res);
+  const body = (await res.json().catch(() => ({}))) as Partial<Record<keyof McpSwitches, unknown>>;
+  return {
+    always_confirm:
+      typeof body.always_confirm === "boolean" ? body.always_confirm : switches.always_confirm,
+    read_only_key: typeof body.read_only_key === "boolean" ? body.read_only_key : switches.read_only_key,
+  };
 }
 
 /**

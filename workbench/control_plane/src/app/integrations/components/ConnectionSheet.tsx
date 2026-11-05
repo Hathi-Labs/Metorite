@@ -53,8 +53,13 @@ export interface SheetBodyProps {
    * other switch cleared when the tick turned one on.
    */
   onSwitches?: (next: McpSwitches) => void;
-  /** True while that change is on its way. */
+  /** True while that change is on its way, or while the ticks wait for a read. */
   savingSwitches?: boolean;
+  /**
+   * The pair to draw while the list does not show a save yet
+   * (`heldSwitches`). A tick builds from it. Absent, the row's own pair.
+   */
+  switches?: McpSwitches | null;
   /** IN-8c: the admin asks to connect or reconnect an OAuth MCP server. */
   onConnect?: () => void;
   /** True while the consent starts, before the browser leaves. */
@@ -72,11 +77,12 @@ export function SheetBody({
   onTest,
   onSwitches,
   savingSwitches,
+  switches: heldPair,
   onConnect,
   connecting,
 }: SheetBodyProps) {
   const plan = panelPlan(row, canManage);
-  const switches = mcpSwitches(row);
+  const switches = row.kind === "mcp" && heldPair ? heldPair : mcpSwitches(row);
   const switchLocked = !onSwitches || savingSwitches;
   const error = errorMessage(row.last_error);
   const fields = [
@@ -122,6 +128,7 @@ export function SheetBody({
           checked={switches.read_only_key}
           disabled={plan.readOnlyKey !== "edit" || switchLocked}
           onChange={(next) => onSwitches?.(tickSwitch(switches, "read_only_key", next))}
+          note={plan.readOnlyKeyNote}
         />
       ) : null}
       {plan.memberNote ? (

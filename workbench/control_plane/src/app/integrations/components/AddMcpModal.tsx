@@ -34,13 +34,22 @@ interface SwitchFieldProps {
   checked: boolean;
   disabled?: boolean;
   onChange: (next: boolean) => void;
+  /** One more line under the help line, such as why the tick is disabled. */
+  note?: string | null;
 }
 
 /**
  * One labelled tick on the shared Checkbox, with the help line under it.
  * The two switches of an MCP server draw this one control.
  */
-function SwitchField({ label, help, checked, disabled, onChange }: SwitchFieldProps & { label: string; help: string }) {
+function SwitchField({
+  label,
+  help,
+  checked,
+  disabled,
+  onChange,
+  note,
+}: SwitchFieldProps & { label: string; help: string }) {
   const id = useId();
   const helpId = `${id}-help`;
   return (
@@ -59,6 +68,12 @@ function SwitchField({ label, help, checked, disabled, onChange }: SwitchFieldPr
         </label>
         <span id={helpId} className="text-[11px] text-muted-foreground">
           {help}
+          {/* Inside the described span, so a screen reader reads it with the help. */}
+          {note ? (
+            <span className="block" data-switch-note="">
+              {note}
+            </span>
+          ) : null}
         </span>
       </div>
     </div>
