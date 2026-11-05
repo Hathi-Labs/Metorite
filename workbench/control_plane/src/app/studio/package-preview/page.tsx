@@ -11,6 +11,9 @@
  * place. The Form creates a record, and edits the one picked in the Detail
  * sheet. The Detail sheet holds the Delete button, which asks first.
  *
+ * The Board (D3b) groups the records by the first select field of the object. A drop runs one
+ * `object:<name>.update` on the same door.
+ *
  * It builds no view-to-node mapper and reads no page of the manifest: PKG-8
  * owns that. It is no pane, so `nav.ts` does not list it, and the access gate of
  * `/studio` covers it (`page.test.ts` holds both). An org outside `STUDIO_ORGS`
@@ -31,14 +34,15 @@ import Button from "@/components/ui/Button";
 import SelectButton from "@/components/ui/SelectButton";
 import { tableBlock } from "@/lib/studio/blocks";
 import { StudioDataContext } from "@/lib/studio/dataContext";
-import { type Row, sourceKey } from "@/lib/studio/dataDoor";
+import { type Row, moreLine, sourceKey } from "@/lib/studio/dataDoor";
 import { computedKeys } from "@/lib/studio/inlineEdit";
 import {
-  fieldSpecs, formFields, missingObjectNote, pickObject, previewHref, recordTitle, tableFields,
+  fieldSpecs, formFields, missingObjectNote, noBoardReason, objectBoardBlock, pickObject, previewHref, recordTitle, tableFields,
 } from "@/lib/studio/packagePreview";
-import { STUDIO_OFF, createDoorKeeper, getPackage, listPackages } from "@/lib/studio/realDoor";
+import { STUDIO_OFF, createDoorKeeper, getPackage, listPackages, verbMap } from "@/lib/studio/realDoor";
 import { useCachedResource } from "@/lib/useCachedResource";
 
+const PAGE_LIMIT = 100;
 const PANEL = "rounded-xl border border-border bg-card p-3 sm:p-4";
 
 function Shell({ children, note }: { children: React.ReactNode; note?: React.ReactNode }) {
@@ -78,12 +82,16 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
   const object = detail.data ? pickObject(detail.data.objects, objectName) : undefined;
   const fields = useMemo(() => (object ? fieldSpecs(object) : []), [object]);
   const computed = useMemo(() => computedKeys(object?.rules), [object?.rules]);
-  const list = useMemo(() => ({ action: `object:${object?.name ?? "none"}.list` }), [object?.name]);
+  // One page holds at most 100 records, the most that the store gives. The Table and the Board read it.
+  const list = useMemo(() => ({ action: `object:${object?.name ?? "none"}.list`, args: { limit: PAGE_LIMIT } }), [object?.name]);
+  const canUpdate = !!object && verbMap(detail.data?.actions)[`object:${object.name}.update`] !== undefined;
   const node = useMemo(
     () => tableBlock(tableFields(fields), list, object?.label ?? object?.name,
-      { editable: true, computed: [...computed] }),
-    [fields, list, object?.label, object?.name, computed],
+      { editable: canUpdate, computed: [...computed] }),
+    [fields, list, object?.label, object?.name, computed, canUpdate],
   );
+  const board = useMemo(() => objectBoardBlock(object ?? { name: "none" }, fields, computed, list, canUpdate),
+    [object, fields, computed, list, canUpdate]);
   const rows = useCachedResource<Row[]>(
     door && object ? sourceKey(door, list) : null,
     () => (door as NonNullable<typeof door>).read(list),
@@ -128,9 +136,29 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
             <RecordsStatus loading={rows.loading} error={null} onRetry={rows.refresh} />
           </div>
           <GenerativeUINode spec={node} />
+          {moreLine(rows.data) ? <p role="status" className="mt-2 text-xs text-muted-foreground">{moreLine(rows.data)}</p> : null}
           <p className="mt-3 text-xs text-muted-foreground">
             Click a cell to edit it. A text cell saves on Enter. Escape cancels. A refused edit puts the old value back.
           </p>
+        </section>
+
+        <section aria-label="Board" className={PANEL}>
+          <h2 className="mb-2 text-sm font-semibold text-foreground">Board</h2>
+          {board ? (
+            <>
+              {rows.error && rows.data === undefined ? (
+                <p className="text-xs text-muted-foreground">The Table above says why the records did not load.</p>
+              ) : <GenerativeUINode spec={board} />}
+              <p className="mt-3 text-xs text-muted-foreground">
+                Drag a card to another lane, or press Space on a card, then the arrow keys, then Space.
+                A drop saves at once. A refused move puts the card back.
+              </p>
+            </>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {noBoardReason(fields)} Add one to see a Board.
+            </p>
+          )}
         </section>
 
         <div className="grid grid-cols-1 gap-3 sm:gap-4 xl:grid-cols-2">
