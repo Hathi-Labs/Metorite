@@ -5314,7 +5314,7 @@ def _webhook_run_payload(
     is memberless (H-152). Fence: ``tests/unit/test_webhook_run_memberless.py``.
     """
     clean = {k: v for k, v in payload.items() if k not in _IDENTITY_CLAIMS}
-    return {"source": source, "event_type": event_type, **clean}
+    return {**clean, "source": source, "event_type": event_type}
 
 
 @router.post("/webhook/{source}", status_code=status.HTTP_202_ACCEPTED)

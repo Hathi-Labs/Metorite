@@ -10542,8 +10542,9 @@ not an agent.**
     Both can already assert any identity (`acb_auth/deps.py`, branch 1b). The
     browser path, the Control Plane chat proxy, cannot name a member.
   - H-337 closed the three `/agent/run*` doors, and H-165 Slice A made the
-    tool send the proven member. The webhook door still spreads the sender's
-    payload. HANDOFF H-165 holds that work (Slice B, an owner decision).
+    tool send the proven member. H-165 Slice B (2026-11-05) closed the
+    webhook door: `_webhook_run_payload` removes `user_email` and `user_id`,
+    so a webhook run has no member. Fence: `test_webhook_run_memberless.py`.
 - Fences: `tests/unit/test_decide_tool.py` (hermetic, because no SQL runs on
   this path), `test_core_tool_floor.py::test_floor_includes_decide` and
   `test_tool_schema_diet.py`.

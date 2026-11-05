@@ -8,7 +8,6 @@ from __future__ import annotations
 import inspect
 
 import pytest
-
 from gateway.routes import agent as agent_routes
 
 
