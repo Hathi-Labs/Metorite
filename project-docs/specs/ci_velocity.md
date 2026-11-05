@@ -130,11 +130,14 @@ space-separated line in a job output (a typical list is 2-20 KB against a 1 MB
 limit, and no shard downloads anything). `ci_unit_guard.py gate-output` sends a
 list over 200 KB, or a path outside `tests/*.py`, to a full run. The shard
 step `Pick this shard's tests` sets `mode` to `full`, `selection` or `empty`.
-Two rules in `affected_tests.py` cover a test that reads files it never names.
-The folder rule picks a test with a `glob`, `rglob` or `iterdir` call. The test
-must name the parent or grandparent folder of the changed file. The tree rule
-picks every test that scans `apps`, `packages`, `scripts` or the repo root.
-It runs when the PR changes a Python file outside `tests/`. A docs-only PR picks none.
+One rule in `affected_tests.py` covers a test that reads files it never names.
+`scanning_tests` picks every unit test with a scan idiom. The idioms are `glob`,
+`rglob`, `iterdir`, `os.walk`, `listdir`, `scandir`, `git ls-files`, `git grep`,
+a `grep` or `rg` argument, `fnmatch`, `iter_modules` and `walk_packages`.
+The rule runs when the PR changes a Python file outside `tests/`. A docs-only PR
+picks only the tests that name the doc. The owner chose this rule on 2026-11-05
+(option A, on task 1631). Four rounds of folder and tree heuristics had missed
+scanners, so the heuristics are gone.
 
 **Done when:**
 - The `changes` job runs CIV-2. It exports `full` and the file list through

@@ -246,54 +246,25 @@ def _composed_path_readers(path: str, tests: dict[str, str]) -> set[str]:
     }
 
 
-# A call that lists a folder. A test with one reads files it never names.
-_SCAN_CALL = re.compile(r"\.r?glob\(|\.iterdir\(|os\.walk\(|os\.listdir\(|scandir\(")
-# Folder names too wide to point at one test: every scanner holds them.
-_BROAD_DIRS = {"apps", "packages", "services", "skills"}
-
-
-def _folder_scanners(path: str, tests: dict[str, str], root: Path = ROOT) -> set[str]:
-    """Tests that list a folder of the changed file and never name the file.
-
-    A test with ``.glob(``, ``.rglob(``, ``iterdir(``, ``os.walk(`` or
-    ``os.listdir(`` is picked when it names the parent or grandparent folder of
-    the path in a path context, or imports the package of the module.
-    A false hit costs only time (CIV-3 review round 4, P1-b).
-    """
-    p = Path(path)
-    if p.suffix != ".py" or len(p.parts) < 3:
-        return set()
-    names = [n for n in p.parent.parts if n not in _BROAD_DIRS][-2:]
-    if not names:
-        return set()
-    alt = "|".join(re.escape(n) for n in names)
-    ctx = re.compile(rf"""["'/](?:{alt})["'/]""")
-    mod = module_name(path, root)
-    pkg = re.compile(rf"\b{re.escape(mod.rsplit('.', 1)[0])}\b") if mod and "." in mod else None
-    return {
-        t
-        for t, body in tests.items()
-        if _SCAN_CALL.search(body) and (ctx.search(body) or (pkg and pkg.search(body)))
-    }
-
-
-# A test that lists a whole tree (apps, packages, scripts or the repo root).
-# A changed test file does not trigger them: it would select them for every test PR.
-_TREE_SCAN = re.compile(r"\.rglob\(|\.glob\(\s*[\"']\*\*|os\.walk\(")
-_TREE_ROOT = re.compile(
-    r"""[\(\[,]\s*["'](?:apps|packages|scripts)["']\s*[,\)\]/]|/\s*["'](?:apps|packages|scripts)["']"""
-    r"""|\b_?(?:REPO_ROOT|REPO|ROOT|PROJECT_ROOT)\s*\)?\s*\.\s*r?glob\("""
-    r"""|os\.walk\(\s*_?(?:REPO_ROOT|REPO|ROOT)\b"""
+# Every way a unit test lists files it never names (CIV-3 round 5, owner option A).
+# A test with one reads the source tree, so a Python change outside tests/ selects it.
+_SCAN_IDIOM = re.compile(
+    r"\.r?glob\(|\bi?glob\(|\.iterdir\(|\bos\.walk\(|(?<!ast)(?<!os)\.walk\(\s*\)"
+    r"|\blistdir\(|\bscandir\(|\bls-files\b|\bls-tree\b|\bgit\W+grep\b|\bfnmatch"
+    r"|\biter_modules\(|\bwalk_packages\(|\bimportlib\.resources\b"
+    r"""|["'](?:grep|rg)["']\s*[,\]]"""
 )
 
 
-def tree_scanners(tests: dict[str, str]) -> set[str]:
-    """Tests that scan all of apps/, packages/, scripts/ or the repo root (CIV-3 round 4).
+def scanning_tests(tests: dict[str, str]) -> set[str]:
+    """Every test that lists files by a scan idiom (CIV-3 round 5).
 
-    No folder rule reaches them. Any change to a Python file outside tests/
-    selects every one, and a docs-only change selects none (P1-c).
+    No text rule can say which file such a test reads. A change to a Python
+    file outside tests/ selects all of them. A docs-only change selects none.
+    A false hit costs only time. Helpers under tests/unit/_*.py scan only SQL,
+    TypeScript and JSON, so an import of one does not make a test a scanner.
     """
-    return {t for t, body in tests.items() if _TREE_SCAN.search(body) and _TREE_ROOT.search(body)}
+    return {t for t, body in tests.items() if _SCAN_IDIOM.search(body)}
 
 
 def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str], list[str]]:
@@ -325,9 +296,8 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
             needles.append(name)
         picked |= {t for t, body in tests.items() if any(n in body for n in needles)}
         picked |= _composed_path_readers(path, tests)
-        picked |= _folder_scanners(path, tests, root)
         if path.endswith(".py") and not path.startswith("tests/"):
-            picked |= tree_scanners(tests)
+            picked |= scanning_tests(tests)
 
         for dotted in module_names(path, root):
             picked |= test_users.get(dotted, set())
