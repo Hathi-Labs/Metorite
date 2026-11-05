@@ -35,6 +35,13 @@ This file proves:
   ``zwj_double``, ``zwj_after_space`` and ``zwnj_at_line_end`` go red. Return False: the kept
   cases ``persian_zwnj``, ``hindi_zwj``, ``bengali_zwj`` and
   ``family_emoji`` go red.
+* M3c. ``_joiner_legal``: return False at a word end (drop the virama
+  clause). The kept cases ``malayalam_chillu_zwj_word_end``,
+  ``bengali_khanda_ta_word_end`` and ``devanagari_halant_zwnj_word_end`` go
+  red.
+* M3d. ``_joiner_legal``: take any visible character before a joiner at a
+  word end. The refused cases ``letter_zwj_word_end`` and
+  ``persian_zwnj_before_space`` go red.
 * M4. ``_joiner_legal``: drop the selector clause of the left side. The kept
   case ``rainbow_flag`` goes red.
 * M5. ``_selector_legal``: drop the Po branch, and ``bangbang_vs16`` goes
@@ -55,6 +62,7 @@ from __future__ import annotations
 
 import ast
 import json
+import random
 import unicodedata
 from pathlib import Path
 from typing import Any
@@ -106,10 +114,12 @@ def test_the_fixture_holds_the_cases_of_the_acceptance() -> None:
     kept = {c["id"] for c in KEPT}
     refused = {c["id"] for c in REFUSED}
     assert {"persian_zwnj", "hindi_zwj", "bengali_zwj", "family_emoji", "heart_vs16",
-            "keycap_one"} <= kept
+            "keycap_one", "malayalam_chillu_zwj_word_end", "malayalam_locative_zwj_word_end",
+            "bengali_khanda_ta_word_end", "devanagari_halant_zwnj_word_end"} <= kept
     assert {"tag_letter", "vs17", "zwsp", "rlo", "bom", "soft_hyphen", "hangul_filler",
             "braille_blank", "c1_next_line", "zwj_at_start", "zwj_double",
-            "letter_vs16"} <= refused
+            "letter_vs16", "persian_zwnj_before_space", "virama_two_joiners_word_end",
+            "letter_zwj_word_end"} <= refused
     assert len(kept) == len(KEPT) and len(refused) == len(REFUSED)
 
 
@@ -180,6 +190,21 @@ def test_a_strip_leaves_no_hit_and_changes_no_clean_text() -> None:
     stripped = ht.strip_hidden(dirty)
     assert ht.find_hidden(stripped) == [] and ht.strip_hidden(stripped) == stripped
     assert len(stripped) == len(dirty) - len(ht.find_hidden(dirty))
+
+
+def test_a_strip_never_leaves_a_hit_on_random_mixes() -> None:
+    """A seeded sweep over the characters that the context rules read: the
+    joiners, the selectors, a virama, the emoji bases, white space and hidden
+    characters. A legal joiner or selector never sits next to a hit, so no
+    strip changes the context of a character that stays."""
+    rng = random.Random(1555)
+    alphabet = ["a", " ", chr(10), chr(13), chr(0x85), ZWNJ, ZWJ, VS15, VS16, ".", "1", "#",
+                chr(0x20E3), chr(0x200B), chr(0xE0041), chr(0x0301), chr(0x2764),
+                chr(0x1F468), chr(0x0D28), chr(0x0D4D), chr(0x2139), chr(0x3030), chr(0xA0)]
+    for _ in range(20_000):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 8)))
+        stripped = ht.strip_hidden(text)
+        assert ht.find_hidden(stripped) == [], [f"U+{ord(c):04X}" for c in text]
 
 
 def test_a_value_that_is_not_text_has_no_hit() -> None:

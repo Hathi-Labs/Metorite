@@ -621,11 +621,15 @@ def test_check_body_refuses_a_hidden_character_with_its_path(
 def test_r8_the_kept_scripts_round_trip_byte_equal(world) -> None:
     """jsonb and the text columns keep a legal ZWNJ, ZWJ, U+FE0F and keycap
     byte for byte: Persian, Hindi, Bengali, a family emoji, a heart and a
-    keycap. The superuser reads the stored text to compare."""
+    keycap. A joiner after a virama at a word end (a Malayalam chillu, a
+    Bengali khanda ta, a Devanagari explicit halant) is kept too, in a column
+    and in the body. The superuser reads the stored text to compare."""
     a = world.p.org_a
     kept = {case["id"]: case["text"] for case in _KEPT}
-    name = "Plan " + kept["persian_zwnj"] + " " + kept["heart_vs16"]
-    desc = kept["hindi_zwj"] + " " + kept["bengali_zwj"]
+    name = ("Plan " + kept["persian_zwnj"] + " " + kept["heart_vs16"] + " "
+            + kept["malayalam_chillu_zwj_word_end"])
+    desc = (kept["hindi_zwj"] + " " + kept["bengali_zwj"] + " "
+            + kept["bengali_khanda_ta_word_end"] + " " + kept["malayalam_chillu_zwj_text_end"])
     body = {"description": desc, "instructions": "\n".join(kept.values()),
             "actions": [], "cards": [{"title": kept["family_emoji"] + kept["keycap_one"]}]}
 

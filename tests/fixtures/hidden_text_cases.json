@@ -91,6 +91,36 @@
       "id": "zwnj_before_mark",
       "text": "\u0645\u200c\u064e",
       "why": "a ZWNJ before a combining mark: both sides are visible"
+    },
+    {
+      "id": "malayalam_chillu_zwj_word_end",
+      "text": "\u0d05\u0d35\u0d28\u0d4d\u200d \u0d35\u0d28\u0d4d\u0d28\u0d41",
+      "why": "Malayalam: the chillu n of a legacy input, a virama and a ZWJ at a word end"
+    },
+    {
+      "id": "malayalam_locative_zwj_word_end",
+      "text": "\u0d35\u0d40\u0d1f\u0d4d\u0d1f\u0d3f\u0d32\u0d4d\u200d \u0d07\u0d30\u0d41",
+      "why": "Malayalam: the locative ending, a chillu l at a word end"
+    },
+    {
+      "id": "malayalam_chillu_zwj_text_end",
+      "text": "\u0d05\u0d35\u0d28\u0d4d\u200d",
+      "why": "Malayalam: a chillu at the end of the text"
+    },
+    {
+      "id": "malayalam_chillu_zwj_line_end",
+      "text": "\u0d05\u0d35\u0d28\u0d4d\u200d\n\u0d35\u0d28\u0d4d\u0d28\u0d41",
+      "why": "Malayalam: a chillu at the end of a line"
+    },
+    {
+      "id": "bengali_khanda_ta_word_end",
+      "text": "\u09b9\u09a0\u09be\u09a4\u09cd\u200d \u098f\u09b2",
+      "why": "Bengali: the khanda ta of a legacy input, a virama and a ZWJ at a word end"
+    },
+    {
+      "id": "devanagari_halant_zwnj_word_end",
+      "text": "\u0915\u094d\u200c \u0916",
+      "why": "Devanagari: an explicit halant, a virama and a ZWNJ at a word end"
     }
   ],
   "refused": [
@@ -569,6 +599,90 @@
       ],
       "stripped": " b",
       "why": "a hidden selector does not make a joiner legal"
+    },
+    {
+      "id": "persian_zwnj_before_space",
+      "text": "\u0647\u0627\u200c \u0645\u0646",
+      "hits": [
+        [
+          3,
+          "U+200C"
+        ]
+      ],
+      "stripped": "\u0647\u0627 \u0645\u0646",
+      "why": "a ZWNJ before a space changes no shape, because the space breaks the join"
+    },
+    {
+      "id": "virama_two_joiners_word_end",
+      "text": "\u0d28\u0d4d\u200d\u200d ",
+      "hits": [
+        [
+          3,
+          "U+200D"
+        ],
+        [
+          4,
+          "U+200D"
+        ]
+      ],
+      "stripped": "\u0d28\u0d4d ",
+      "why": "never two joiners after a virama"
+    },
+    {
+      "id": "virama_zwnj_zwj_text_end",
+      "text": "\u0915\u094d\u200c\u200d",
+      "hits": [
+        [
+          3,
+          "U+200C"
+        ],
+        [
+          4,
+          "U+200D"
+        ]
+      ],
+      "stripped": "\u0915\u094d",
+      "why": "never two joiners after a virama, also of two kinds"
+    },
+    {
+      "id": "letter_zwj_word_end",
+      "text": "ab\u200d c",
+      "hits": [
+        [
+          3,
+          "U+200D"
+        ]
+      ],
+      "stripped": "ab c",
+      "why": "a joiner at a word end is legal only after a virama"
+    },
+    {
+      "id": "virama_joiner_before_nel",
+      "text": "\u0d28\u0d4d\u200d\u0085\u0d35",
+      "hits": [
+        [
+          3,
+          "U+200D"
+        ],
+        [
+          4,
+          "U+0085"
+        ]
+      ],
+      "stripped": "\u0d28\u0d4d\u0d35",
+      "why": "a hidden control is no word end"
+    },
+    {
+      "id": "zwj_at_start_before_space",
+      "text": "\u200d a",
+      "hits": [
+        [
+          1,
+          "U+200D"
+        ]
+      ],
+      "stripped": " a",
+      "why": "a joiner at the start is never legal"
     }
   ]
 }

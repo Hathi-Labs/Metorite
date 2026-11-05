@@ -18,11 +18,19 @@ each such character out (:func:`strip_hidden`).
 category C. These exceptions apply:
 
 * A new line, a tab and a carriage return are legal.
-* U+200C (ZWNJ) and U+200D (ZWJ) are legal only between two visible
+* U+200C (ZWNJ) and U+200D (ZWJ) are legal between two visible
   characters. A visible character is not white space and not hidden. A
-  legal U+FE0E or U+FE0F counts as visible on the left. So a joiner at an
-  edge of the text or of a line, next to white space or next to a second
-  joiner is hidden. Persian, Hindi, Bengali and emoji sequences keep theirs.
+  legal U+FE0E or U+FE0F counts as visible on the left. Persian, Hindi,
+  Bengali and emoji sequences keep theirs.
+* At a word end (the end of the text, or before a space, a new line or
+  other white space that a person sees), ONE joiner is legal directly after
+  a virama (canonical combining class 9). A legacy input writes a Malayalam
+  chillu and a Bengali khanda ta as a virama and a ZWJ, and an explicit
+  halant as a virama and a ZWNJ.
+* Each other joiner is hidden: at the start, next to white space, next to a
+  second joiner, or at a word end after any character but a virama. A ZWNJ
+  before a space after a Persian letter is hidden too. The space already
+  breaks the join, so that ZWNJ changes no shape and carries only data.
 * U+FE0E and U+FE0F are legal only directly after ONE visible symbol: a
   character of category S or Po, or a keycap base (0 to 9, ``#`` or ``*``)
   with U+20E3 directly after the selector. Two in a row are hidden.
@@ -103,13 +111,33 @@ def _selector_legal(text: str, i: int) -> bool:
     return prev in _KEYCAP_BASES and i + 1 < len(text) and text[i + 1] == _KEYCAP
 
 
+def _word_end(text: str, i: int) -> bool:
+    """True when *text[i]* is the last character, or the next one is white
+    space that a person sees (a space, a new line, a tab, NBSP). A hidden
+    control such as U+0085 is no word end."""
+    if i + 1 >= len(text):
+        return True
+    nxt = text[i + 1]
+    return nxt.isspace() and not _invisible(nxt)
+
+
 def _joiner_legal(text: str, i: int) -> bool:
-    """True when the joiner at *text[i]* sits between two visible characters.
+    """True when the joiner at *text[i]* sits between two visible characters,
+    or directly after a virama at a word end.
+
     A legal selector counts as visible on the left. The right side cannot be
-    a legal selector, because a selector after a joiner is never legal."""
-    if i == 0 or i + 1 >= len(text):
+    a legal selector, because a selector after a joiner is never legal.
+
+    The word end: Malayalam writes a chillu as a virama and a ZWJ, Bengali
+    writes the khanda ta the same way, and Devanagari writes an explicit
+    halant as a virama and a ZWNJ. Each of these can end a word, so ONE
+    joiner directly after a virama (canonical combining class 9) is legal
+    there. A second joiner follows a joiner, not a virama, so it fails."""
+    if i == 0:
         return False
     prev = text[i - 1]
+    if _word_end(text, i):
+        return _visible(prev) and unicodedata.combining(prev) == 9
     left = _visible(prev) or (prev in _SELECTORS and _selector_legal(text, i - 1))
     return left and _visible(text[i + 1])
 
