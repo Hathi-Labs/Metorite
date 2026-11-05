@@ -49,6 +49,20 @@ is not a pass.
 plays the publish between its two locks against a waiting delete. Under the
 other order (the org lock first) it deadlocks, so it proves the order of the
 A5 row and of the ``_lock_org`` docstring.
+
+**Fix round 1 (2026-11-05).** Four cases more:
+
+10. A call that ends with records left writes one partial row (op
+    ``package.delete.partial``) with the records of that call, and the
+    final row names ``records_this_call`` and ``records_total``.
+11. A failed partial row rolls back the purge of its step.
+12. A publish between two steps that adds an object ends the call with 409
+    and deletes nothing more.
+13. A private install of the owner that the owner shared with a person
+    counts as an install of another member, by the one share rule.
+
+``_every_step_ends_its_call`` sets the step bound past the budget, so a call
+answers 202 after one step. A budget of 0 would leave the purge no time.
 """
 
 from __future__ import annotations

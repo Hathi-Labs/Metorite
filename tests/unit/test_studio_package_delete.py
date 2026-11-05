@@ -74,6 +74,42 @@ the reason of its mutation.
   ``test_a_full_chunk_answers_not_deleted_and_writes_nothing_else``. Red in
   R8: ``test_r8_1300_records_with_a_chunk_of_100_give_202_and_then_200``
   (the first call answered 200, not 202).
+
+**Fix round 1 (2026-11-05).** Each mutation below takes one fix out again.
+Each was run alone against both halves, and its R8 failure was read.
+
+* M10 (P2-1). Write no partial row in ``_end_call``. Red here:
+  ``test_a_full_chunk_past_the_budget_ends_the_call_with_a_partial_row``,
+  ``test_a_failed_partial_audit_raises_in_the_step_of_its_purge``,
+  ``test_a_later_step_that_finds_a_new_object_ends_the_call_with_changed``,
+  ``test_store_busy_on_a_later_step_ends_the_call_with_a_partial_row`` (two
+  cases) and
+  ``test_a_busy_preview_at_the_end_keeps_the_partial_row_and_gives_no_token``.
+  Red in R8:
+  ``test_r8_a_202_call_writes_one_partial_row_in_the_step_of_its_purge``
+  (no partial row) and
+  ``test_r8_a_failed_partial_audit_rolls_back_the_purge_of_its_step``.
+* M11 (P2-1). Write the partial row in a second session after the step.
+  Red here: the six tests of M10 and five route tests that end a call with
+  records left. Red in R8:
+  ``test_r8_a_failed_partial_audit_rolls_back_the_purge_of_its_step`` (15
+  records left, not 25: the purge had committed).
+* M12 (P2-2). Set the budget back to 20 s. Red here:
+  ``test_the_worst_call_ends_before_the_chat_tool_gives_up`` and
+  ``test_the_route_passes_the_end_of_its_budget_to_the_store``.
+* M13 (P2-2). Let the purge ignore the end of the call. Red here:
+  ``test_the_purge_stops_at_the_end_of_the_call``.
+* M14 (P3-1). Drop the name check of a later step. Red here:
+  ``test_a_later_step_that_finds_a_new_object_ends_the_call_with_changed``.
+  The route tests run on a fake store, so they stay green. Red in R8:
+  ``test_r8_a_publish_between_two_steps_that_adds_an_object_ends_the_call_with_409``
+  (200: the call deleted ``invoices`` too).
+* M15 (P3-2). Count the installs with the old rule of a private install.
+  Red here: ``test_the_other_member_installs_use_the_one_share_rule``. Red in
+  R8: ``test_r8_a_private_install_that_the_owner_shared_counts_as_another_members``
+  (a shared install counted 0, not 1).
+* M16 (the noted 404). Read the counts with ``.one()``. Red here:
+  ``test_a_preview_of_a_package_that_a_concurrent_delete_removed_is_none``.
 """
 
 from __future__ import annotations
