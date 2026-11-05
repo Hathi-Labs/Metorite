@@ -144,6 +144,13 @@ SeedHook = Callable[[str, datetime], Awaitable[None]]
 
 #: The modes of :func:`register`.
 MODES: tuple[str, ...] = ("session", "detached")
+#: What a kind may do (BR-7a, ``core_brief.md`` §8). ``read`` reads only.
+#: ``own_rows`` writes the queue, the ledger and the kind's own tables.
+#: ``send`` reaches a person or a third party. ``write`` changes a row of
+#: another app. A ``send`` or ``write`` kind also names its policy.
+EFFECTS: tuple[str, ...] = ("read", "own_rows", "send", "write")
+#: The effects that need a policy.
+POLICY_EFFECTS: frozenset[str] = frozenset({"send", "write"})
 
 
 @dataclass(frozen=True)
@@ -154,6 +161,8 @@ class _Entry:
     handler: Any
     mode: str
     idempotent: bool = False
+    effect: str | None = None
+    policy: str | None = None
 
 
 _HANDLERS: dict[str, _Entry] = {}
@@ -182,7 +191,8 @@ async def _orgs() -> list[str]:
 
 
 def register(kind: str, handler: Handler | DetachedHandler, *, mode: str = "session",
-             idempotent: bool = False, replace: bool = False) -> None:
+             idempotent: bool = False, replace: bool = False,
+             effect: str | None = None, policy: str | None = None) -> None:
     """Run *handler* for each job of *kind*, in *mode* (``session`` or
     ``detached``). A second handler of one kind is an error, unless *replace*
     is True.
@@ -191,20 +201,37 @@ def register(kind: str, handler: Handler | DetachedHandler, *, mode: str = "sess
     it is False, the worker gives up a claim of a second or later try before
     the handler runs (:data:`NOT_IDEMPOTENT`). Set it True only when a second
     try is safe, for example when the handler reads an intent mark first. A
-    ``session`` handler needs no flag: a failed try rolls back its writes."""
+    ``session`` handler needs no flag: a failed try rolls back its writes.
+
+    *effect* states what the kind may do (:data:`EFFECTS`, BR-7a). A ``send``
+    or ``write`` kind also names its *policy*, for example the D131 level and
+    scope. The fence ``tests/unit/test_job_effects_fence.py`` fails on a
+    registered kind with no effect, and on a ``send`` or ``write`` kind with no
+    policy."""
     queue.check_kind(kind)
+    if effect is not None and effect not in EFFECTS:
+        raise ValueError(f"effect must be one of {EFFECTS}")
+    if policy is not None and not (isinstance(policy, str) and policy.strip()):
+        raise ValueError("policy must be a non-empty string")
+    if effect in POLICY_EFFECTS and policy is None:
+        raise ValueError(f"a {effect!r} kind names its policy")
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
     if not isinstance(idempotent, bool):
         raise ValueError("idempotent must be a bool")
     if kind in _HANDLERS and not replace:
         raise ValueError(f"a handler of kind {kind!r} is already registered")
-    _HANDLERS[kind] = _Entry(handler, mode, idempotent)
+    _HANDLERS[kind] = _Entry(handler, mode, idempotent, effect, policy)
 
 
 def unregister(kind: str) -> None:
     """Forget the handler of *kind*. Safe when none is registered."""
     _HANDLERS.pop(kind, None)
+
+
+def effects() -> dict[str, tuple[str | None, str | None]]:
+    """The ``(effect, policy)`` of each registered kind (BR-7a)."""
+    return {k: (e.effect, e.policy) for k, e in sorted(_HANDLERS.items())}
 
 
 def kinds() -> list[str]:
@@ -582,4 +609,4 @@ async def stop_job_worker() -> None:
             await still
 
 
-register(PRUNE_KIND, prune_job)
+register(PRUNE_KIND, prune_job, effect="own_rows")

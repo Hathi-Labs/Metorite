@@ -304,6 +304,35 @@ def preview(text: str, ref: str, limit: int) -> str:
     return body + _footer(ref, len(text), text, end, stored)
 
 
+def spill_result(text: str, tool: str, limit: int) -> tuple[str, str] | None:
+    """``(preview, ref)`` for a tool that holds its own long result, or None.
+
+    WEB-3 (``fetch_page`` with a long file) uses it: the tool knows that its
+    text is long before the middleware sees it. It keeps *text* in the SAME
+    store, so ``read_tool_result`` reads the rest, and the footer is the
+    locator. The text counts as untrusted. It spills only with
+    ``TOOL_RESULT_SPILL`` ``on``, for a run that has an org, a member and a
+    thread, and for a text that fits the store. Else None, and the tool cuts
+    its text as before. The preview is at most *limit* characters, and never
+    more than the spill size less a margin, so the middleware does not spill
+    the preview again."""
+    from acb_common.settings import tool_result_spill_chars, tool_result_spill_mode
+
+    if tool_result_spill_mode() != "on":
+        return None
+    owner = _owner_key()
+    if owner is None:
+        _log.warning("tool_result.spill_unkeyed", tool=tool)
+        return None
+    ref = _keep(owner, text, True, tool)
+    if ref is None:
+        return None
+    head = max(PREVIEW_FLOOR, min(limit, tool_result_spill_chars() - 1024))
+    _log.info("tool_result.size", tool=tool, chars=len(text), tokens=len(text) // 4,
+              source="core", untrusted=True, would_spill=True, oversize=False, mode="on")
+    return preview(text, ref, head), ref
+
+
 # ── The middleware ───────────────────────────────────────────────────────────
 
 class SpillToolResults(FunctionMiddleware):
@@ -448,4 +477,5 @@ __all__ = [
     "clear_store",
     "preview",
     "read_tool_result",
+    "spill_result",
 ]

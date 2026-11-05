@@ -27,7 +27,8 @@ async def check(db: Any, payload: dict[str, Any]) -> None:
 
 def register_jobs(*, replace: bool = False) -> None:
     """Register the stub. *replace* serves a test that empties the registry."""
-    worker.register(KIND, check, mode="session", idempotent=True, replace=replace)
+    worker.register(KIND, check, mode="session", idempotent=True, replace=replace,
+                    effect="read")
 
 
 register_jobs()

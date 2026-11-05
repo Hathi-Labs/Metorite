@@ -86,7 +86,9 @@ interface ReplyCardFormProps {
   disabled?: boolean;
 }
 
-function AddressRow({
+/** One row of people with a tick box each. The new-mail card (§18.10) draws
+ *  its people with it too, so both cards show a person the same way. */
+export function AddressRow({
   label,
   list,
   form,

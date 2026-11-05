@@ -251,6 +251,31 @@ TEXT_ARCHIVE_CONFLICT = (
     "Your agent run on this task cannot take an archive request now. Call"
     " list_agent_runs with this task_id, then read the run with get_agent_run.")
 
+#: The texts of ``record_outside_decision`` (WS-55 MCP-G15), one for each code
+#: of the gateway (``agent_runs.OUTSIDE_CODES``). The gateway text never
+#: reaches the agent (§9.6 rule 13). A pin test holds the codes.
+OUTSIDE_TEXTS: dict[str, str] = {
+    "run_not_yours": (
+        "This agent run is not yours. It belongs to another member or another"
+        " agent client. Record a decision only on your own run."),
+    "run_not_awaiting": (
+        "This agent run does not wait for an answer, so no question is open."
+        " Read the run with get_agent_run."),
+    "no_open_question": (
+        "This agent run has no open question to close. Read the run with"
+        " get_agent_run."),
+    "typed_request": (
+        "Only the member can answer this request, on the task in Metorite. Do"
+        " not record it. Wait for the answer with get_agent_run."),
+    "selected_refused": (
+        "selected must name option ids of the open question, one id unless it"
+        " takes more than one. Read the options with get_agent_run."),
+}
+#: A 409 of ``record_outside_decision`` with no code: the key wrote another
+#: activity of the run.
+TEXT_OUTSIDE_KEY_USED = (
+    "This idempotency_key wrote another activity of this run. Send a new key.")
+
 #: A 409 ``task_held`` of a claim or a start (EA-14a): another AI session holds
 #: the task. The agent picks another task, and never tries this one again.
 TEXT_TASK_HELD = (
@@ -1879,6 +1904,9 @@ RUN_RELEASE_ROUTE = "/projects/agent-runs/{run_id}/release"
 #: EA-6g (EA3-40). The agent ASKS to archive here. The approval route of the
 #: member is not in ``MCP_ROUTES``, and the edge never names it.
 ARCHIVE_REQUEST_ROUTE = "/projects/tasks/{task_id}/archive-request"
+#: WS-55 MCP-G15. The agent records a decision that its member made outside
+#: Metorite, on its own awaiting run. The gateway writes an agent response.
+OUTSIDE_DECISION_ROUTE = "/projects/agent-runs/{run_id}/outside-decision"
 
 #: The statuses of a run (§12.1), and `abandoned` and `released` of EA-14a.
 #: The gateway's CHECK holds the same.
@@ -5658,7 +5686,8 @@ ASK_ON_TASK = Tool(
         " and wait_seconds 20. Call it again and again until an activity of"
         " type prompt arrives. If you cannot wait, end the session. A later"
         " session finds the answer with list_agent_runs and needs_agent true."
-        + _UNTRUSTED_NOTE
+        " When the member answers in another place, such as your chat, call"
+        " record_outside_decision at once." + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_WRITE,
     input_schema=_ASK_INPUT,
@@ -5734,6 +5763,81 @@ REQUEST_TASK_ARCHIVE = Tool(
     params={"task_id": "task_id", "idempotency_key": "idempotency_key"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_request_task_archive,
+    method="POST",
+    annotations=dict(WRITE_ANNOTATIONS),
+    runs=True,
+)
+
+
+# ── record_outside_decision (WS-55 MCP-G15, task 1567) ──────────────────────
+
+#: The longest ``decision`` and ``where`` (``agent_runs.MAX_DECISION`` and
+#: ``agent_runs.MAX_WHERE`` of the gateway). A pin test holds the copies.
+MAX_OUTSIDE_DECISION = 2000
+MAX_OUTSIDE_WHERE = 80
+
+_OUTSIDE_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "run_id": {**_RUN_ID_INPUT,
+                   "description": "Your run that waits on the question. An id from"
+                                  " ask_on_task or list_agent_runs."},
+        "decision": {"type": "string", "minLength": 1, "maxLength": MAX_OUTSIDE_DECISION,
+                     "description": "The decision, in the words of the member."},
+        "where": {"type": "string", "minLength": 1, "maxLength": MAX_OUTSIDE_WHERE,
+                  "description": "Where the member decided, such as Claude Code chat."},
+        "selected": {"type": "array", "minItems": 1, "maxItems": 10,
+                     "items": {"type": "string", "pattern": _OPTION_ID_PATTERN},
+                     "description": "The option ids that the member chose, when the"
+                                    " question has options."},
+        "idempotency_key": _KEY_INPUT,
+    },
+    "required": ["run_id", "decision", "where", "idempotency_key"],
+    "additionalProperties": False,
+}
+
+#: The body keys of the POST, and no other (agent edge rule 18).
+OUTSIDE_BODY_KEYS: tuple[str, ...] = ("decision", "where", "selected", "idempotency_key")
+
+
+async def _record_outside_decision(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
+    """POST the decision. The gateway closes the open question with an agent
+    response and moves the run from ``awaiting`` to ``in_progress``. Each code
+    of a refusal maps to a fixed text of :data:`OUTSIDE_TEXTS`."""
+    _refuse_nul(args, ("decision", "where"))
+    payload = {name: args[name] for name in OUTSIDE_BODY_KEYS if name in args}
+    status, body = await _write(
+        ctx, "POST", OUTSIDE_DECISION_ROUTE, TEXT_RUN_NOT_FOUND,
+        path_params={"run_id": str(args["run_id"])}, json_body=payload,
+        coded=OUTSIDE_TEXTS, coded_statuses=(403, 409, 422),
+        texts={409: TEXT_OUTSIDE_KEY_USED})
+    return _activity_result(status, body)
+
+
+RECORD_OUTSIDE_DECISION = Tool(
+    name="record_outside_decision",
+    title="Record a decision made outside Metorite",
+    description=(
+        "Record the answer to your open question when the member gave it"
+        " outside Metorite, such as in your chat. Call it at once, before you"
+        " go on. Use it only on your own run that waits on a question from"
+        " ask_on_task. Put the decision in the words of the member, and say"
+        " where the member decided. When the question has options, put the"
+        " ids that the member chose in selected. The question then closes,"
+        " the run works again, and the task stops waiting on the member. The"
+        " task shows a comment that says the member decided outside"
+        " Metorite. Never use it for a decision that you made yourself. It"
+        " cannot answer an archive request: only the member answers that, in"
+        " Metorite. Send a new idempotency_key for each decision." + _UNTRUSTED_NOTE
+    ),
+    required_scope=agent_oauth.PROJECTS_WRITE,
+    input_schema=_OUTSIDE_INPUT,
+    output_schema=_ACTIVITY_OUTPUT,
+    route=OUTSIDE_DECISION_ROUTE,
+    params={"run_id": "run_id", "decision": "decision", "where": "where",
+            "selected": "selected", "idempotency_key": "idempotency_key"},
+    not_found=TEXT_RUN_NOT_FOUND,
+    run=_record_outside_decision,
     method="POST",
     annotations=dict(WRITE_ANNOTATIONS),
     runs=True,
@@ -6908,7 +7012,8 @@ def scope_of(tool: Tool, arguments: Any) -> str | None:
 #: ``create_project``, ``update_project``, ``preview_move_tasks`` and
 #: ``move_tasks``. The six agent-run
 #: tools of EA-12b come last, then ``request_task_archive`` of EA-6g, which
-#: shows only while the runs flag is on too. ``delete_task`` of EA-6h is last.
+#: shows only while the runs flag is on too. ``record_outside_decision`` of
+#: MCP-G15 follows it, on the same flag. ``delete_task`` of EA-6h is last.
 #: It shows only while the member's switch is on (:func:`listed_for`).
 #: MCP-P1a: the four tools of the app door come last. They show only while
 #: ``agent_door_apps`` names an app, and ``app_write`` needs the writes flag.
@@ -6919,8 +7024,8 @@ TOOLS: Mapping[str, Tool] = {t.name: t for t in (
     ADD_COMMENT, CLAIM_TASK, SET_ASSIGNEES,
     CREATE_PROJECT, UPDATE_PROJECT, PREVIEW_MOVE_TASKS, MOVE_TASKS,
     LIST_AGENT_RUNS, GET_AGENT_RUN, START_AGENT_RUN, POST_AGENT_ACTIVITY,
-    ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RELEASE_TASK,
-    DELETE_TASK,
+    ASK_ON_TASK, FINISH_AGENT_RUN, REQUEST_TASK_ARCHIVE, RECORD_OUTSIDE_DECISION,
+    RELEASE_TASK, DELETE_TASK,
     LIST_APPS, DESCRIBE_APP, APP_READ, APP_WRITE,
 )}
 
@@ -7125,6 +7230,9 @@ __all__ = [
     "MY_WORK_RUNS_PAGES",
     "NODES_ROUTE",
     "OPEN_RUN_STATUSES",
+    "OUTSIDE_BODY_KEYS",
+    "OUTSIDE_DECISION_ROUTE",
+    "OUTSIDE_TEXTS",
     "POST_AGENT_ACTIVITY",
     "PREVIEW_KEYS",
     "PREVIEW_LABEL",
@@ -7134,6 +7242,7 @@ __all__ = [
     "PROJECT_ROW_KEYS",
     "PROJECT_UPDATE_BODY_KEYS",
     "READ_ANNOTATIONS",
+    "RECORD_OUTSIDE_DECISION",
     "REF_KEYS",
     "RELEASE_TASK",
     "REQUEST_TASK_ARCHIVE",
@@ -7212,6 +7321,7 @@ __all__ = [
     "TEXT_NO_PAGES",
     "TEXT_NO_REQUEST",
     "TEXT_NO_RUN_STATE",
+    "TEXT_OUTSIDE_KEY_USED",
     "TEXT_PAGE_ARGS",
     "TEXT_PARENT_ARCHIVED",
     "TEXT_PARENT_COMMENT_NOT_FOUND",

@@ -379,7 +379,9 @@ TASK_SOURCES: tuple[str, ...] = (
 #: WS-55 EA-6d. The sources that only the server stamps. `mcp` marks a task
 #: that an outside agent made through the MCP edge, and `tasks.create_task`
 #: sets it from `UserContext.agent`, never from a request body.
-SERVER_TASK_SOURCES: tuple[str, ...] = ("mcp",)
+#: The one spelling of the agent stamp (``pm_tasks.source``, migration 265).
+AGENT_TASK_SOURCE = "mcp"
+SERVER_TASK_SOURCES: tuple[str, ...] = (AGENT_TASK_SOURCE,)
 #: The sources that a request body may name. A body that names `mcp` gets 422.
 #: Each route that reads a source from a request checks it against THIS tuple.
 CLIENT_TASK_SOURCES: tuple[str, ...] = tuple(
@@ -923,6 +925,18 @@ class TaskIn(BaseModel):
     tags: list[str] | None = None
     custom_fields: dict | None = None
     source: str | None = None
+
+
+class TaskPatchIn(TaskIn):
+    """The body of ``PATCH /tasks/{id}``: :class:`TaskIn`, and a done date.
+
+    ``completed_at`` is a PATCH-only key (UNDO-1 round 2). Undo of a Reopen
+    sends the task back to its done lane with the date it held. The server
+    honours it ONLY when the same write moves the task INTO a closing
+    category (``apply_status_transition``). ``POST /tasks`` does not take it.
+    """
+
+    completed_at: str | None = None
 
 
 class StatusModel(BaseModel):
@@ -3386,9 +3400,48 @@ async def require_status_in_project(db: Any, root_id: str, status_id: str) -> An
     return row
 
 
+def parse_completed_at(raw: str | None) -> datetime | None:
+    """A ``completed_at`` the client sent → an aware datetime, or 422.
+
+    A bad stamp is refused whatever the status does, so a typo never hides
+    behind a write that happens not to close the task.
+    """
+    if raw is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail="The done date is not a valid date and time. "
+                   "Send it as an ISO 8601 stamp, or leave it out.",
+        ) from None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _checked_completed_at(task: Any, when: datetime) -> datetime:
+    """Refuse a done date in the future or before the task existed."""
+    if when > now():
+        raise HTTPException(
+            status_code=422,
+            detail="The done date is in the future. Leave it out to use the "
+                   "current time, or send a date that has passed.",
+        )
+    created = getattr(task, "created_at", None)
+    if isinstance(created, datetime):
+        created = created if created.tzinfo else created.replace(tzinfo=UTC)
+        if when < created:
+            raise HTTPException(
+                status_code=422,
+                detail="The done date is before the task was created. Leave "
+                       "it out to use the current time, or send a later date.",
+            )
+    return when
+
+
 async def apply_status_transition(
     db: Any, task: Any, new_status_id: str, *, created_by: str,
-    automation: bool = False,
+    automation: bool = False, completed_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Move a task to a new status. **Three effects, one helper.**
 
@@ -3402,6 +3455,11 @@ async def apply_status_transition(
     Every mutator that can move a status calls this — the PATCH route today, the
     sync and the automation action later — because a write that sets only the
     column looks right in the UI and silently empties the timeline.
+
+    ``completed_at`` (UNDO-1 round 2) is honoured ONLY on the crossing INTO a
+    closing category: Undo of a Reopen passes the date the task held. It may
+    not be in the future or before ``task.created_at`` (422). Every other
+    caller leaves it ``None`` and gets the stamp ``now()``.
     """
     old_status = await require_row(
         db, "pm_task_statuses", str(task.status_id), "Status",
@@ -3418,7 +3476,10 @@ async def apply_status_transition(
     was_closed = old_status.category in CLOSING_CATEGORIES
     is_closed = new_status.category in CLOSING_CATEGORIES
     if is_closed and not was_closed:
-        values["completed_at"] = now()
+        values["completed_at"] = (
+            _checked_completed_at(task, completed_at)
+            if completed_at is not None else now()
+        )
     elif was_closed and not is_closed:
         values["completed_at"] = None
 

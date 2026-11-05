@@ -30,6 +30,7 @@
 > ✅ **§15 is MERGED (#766, 2026-10-09).** The assistant forwards an email with its original files (`POST /email/forward`, `forward_email`), and it cites each email as an in-app link. No migration, and no flag. 🔨 **§15.5, the follow-ups of #766, is BUILT on branch `email-chat-followups`, not merged.** The reading-pane Forward keeps the files.
 > 🔨 **AI-call attribution is BUILT on branch `ai-call-attribution` (2026-10-10).** Each email model call now names its feature on the usage report, as `email.rule_match`. A mailbox job names `email.automation`. Before, 97% of the email calls showed as "not attributed". It has no flag, because it changes metadata only. `customer_console.md` §4.3a owns the rule and lists the names.
 > 🔨 **§18.5.1 (H-374) is BUILT on branch `h374-send-draft`, not merged (2026-10-22).** The owner chose "Drafts, with a card" and "Schedule a send". A held chat now sends or schedules a saved draft behind a card. A forward, a new mail, a file, an unsubscribe and a settings change stay held.
+> 🔨 **§18.10 is BUILT on branch `mt-5f606b3e-email-edit-card`, not merged (2026-11-03).** A new mail from the chat shows ONE card. The member edits the subject and the text, ticks the people, and presses Send, Save draft or Discard. No migration. Dark behind `EMAIL_EDIT_CARD_ORGS` (default empty, off), with fix round 1.
 > 🔨 **§18.9 is BUILT on branch `chat-draft-upsert`, not merged (2026-10-22), with fix round 1.** A chat reply draft lands in Drafts, it never writes over a draft of the member, and the Email app continues it.
 > 🔨 **§18.9.1 is BUILT on branch `mt-0f55cd43-reply-card-sent`, not merged (2026-11-03, task 1526), with fix round 1.** A reply card whose draft left Drafts sends and saves nothing. The act answers 409 `draft_gone` or `already_replied`, and the card collapses to its title and Close. No migration, and no flag.
 > 🔨 **§16 is BUILT on branch `email-message-actions-dark`, not merged (2026-10-10).** Each message has one action row, and the body adapts to dark mode. It also fixes a "Loading message…" that never ended. Review fix rounds 1 to 3 are in.
@@ -563,7 +564,7 @@ or API client to create a pattern by hand.
 | **D-EM-11** | **The member chooses the import range at the first connect.** The choices are 0 to 6 months, and the default is 1 month. A choice of 0 imports no old mail, only the mail that arrives after the connect. (Owner, 2026-10-02.) **Amended by D-EM-54 and D-EM-55 (2026-10-07).** The choices are 1, 3, 6 or 12 months or a custom start date, and the default is 3 (§14.4.5). |
 | **D-EM-12** | **The import goes from the newest mail to the oldest, across all folders.** When the storage limit stops it, the newest mail is present and the gap is at the old end. (Owner, 2026-10-02.) |
 | **D-EM-13** | **A sync after a pause continues from the last sync point.** A pause is sync turned off, a token that failed, or a reconnect. The next sync gets the mail since the last sync point. It does not import the range again. (Owner, 2026-10-02.) |
-| **D-EM-14** | **Each mailbox has a storage limit of 500 MB.** The meter measures the copy that Metorite keeps: message rows, bodies, attachment records and embeddings. At the limit, the import stops going back, and Metorite asks the member to remove older mail from Metorite. A removal deletes the copy in Metorite only. Metorite never deletes or changes mail in the Outlook mailbox of the member. (Owner, 2026-10-02. The answers to three checks follow this table.) |
+| **D-EM-14** | **Each mailbox has a storage limit of 500 MB.** The meter measures the copy that Metorite keeps: message rows, bodies, attachment records and embeddings. At the limit, the import stops going back, and Metorite asks the member to remove older mail from Metorite. A removal deletes the copy in Metorite only. Metorite never deletes or changes mail in the Outlook mailbox of the member. (Owner, 2026-10-02. The answers to three checks follow this table.) **Amended 2026-11-04 (owner): the limit is 2 GB (2,048 MB) for each mailbox.** |
 | **D-EM-15** | **After the import, Metorite asks the member to set up AI rules.** The rules then run over the imported mail and give insights. The step offers no model choice, because EM-T5b moves the rules to the `decide` tier. Reply drafting is a separate step that the member turns on (D-EM-6). (Owner, 2026-10-02.) |
 | **D-EM-16** | **A short guided setup takes the member through each stage.** The stages are connect, the range, the import, the storage notice when it applies, AI rules, and done. The import shows real progress: the count of messages, an estimate of the total and the phase. A spinner alone is not progress. (Owner, 2026-10-02.) |
 | **D-EM-62** | **Build the cheaper triage decisions of EM-T16, dark, in the order PR-0 to PR-D** (owner, 2026-10-09). After PR-C merges, `email.cold_check` and `email.sender_pin` go to `on`. Two questions stay open for the owner. The record follows this table, and §10.4.17 holds the build. |
@@ -572,6 +573,7 @@ or API client to create a pattern by hand.
 **The owner answers to the three checks of EM-T6c (2026-10-02).** Each answer adds to D-EM-14. §10.4.7 gives the reason for each check.
 
 - **Q1 (owner, 2026-10-02).** The limit of 500 MB is for each mailbox, not for each member.
+- **Q1 amended (owner, 2026-11-04).** The limit is 2 GB (2,048 MB) for each mailbox. It is still for each mailbox, not for each member. A mailbox that stopped at 500 MB continues its import of older mail at a loop cycle after the release (EM-T6f, §10.4.7). The gateway resumes one such mailbox in each 5 minutes, so the mailboxes do not all start at once.
 - **Q2 (owner, 2026-10-02).** New mail continues to sync at the limit. Only the import of older mail stops.
 - **Q3 (owner, 2026-10-02).** At the limit, the body backfill and the embeddings stop. A message that the member opens still loads its body live from the provider.
 - **Q4 (owner, 2026-10-02).** At the limit, an open shows the body and stores nothing. So an open never takes a mailbox past the limit.
@@ -2941,13 +2943,13 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 
 #### 10.4.7 EM-T6 in full
 
-**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c MERGED (#615, 2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed. EM-T6e ✅ MERGED (#619, 2026-10-04), with review round 1 closed. Anchors re-verified at `3d11922c2` on 2026-10-04.
+**Status.** EM-T6a and EM-T6b MERGED (#577, #580). EM-T6d parts 1 and 2 MERGED (#579, #581). EM-T6c MERGED (#615, 2026-10-04), a port of `8b4cb4dfc` with the gaps G1 to G5 and review round 1 closed. EM-T6e ✅ MERGED (#619, 2026-10-04), with review round 1 closed. Anchors re-verified at `3d11922c2` on 2026-10-04. **EM-T6f BUILT 2026-11-04** (task 1572, branch `mt-d1e16ddc-mailbox-2gb`, not merged yet), with review round 1 (P1, P2, P3a and P3b) repaired the same day. The record is under EM-T6e, open points.
 
 **EM-T6d, part 1 (range step and progress).** ✅ MERGED (#579, 2026-10-02). The narrowing is under EM-T6d below.
 
 **EM-T6d, part 2 (rules step, drafting step and Done).** ✅ MERGED (#581, 2026-10-03). The notes are under EM-T6d below.
 
-**Gate.** AGENT-SAFE: all five parts. No part flips a flag. The limit is the setting `EMAIL_MAILBOX_STORAGE_LIMIT_MB`, with a default of 500. A change of it on a box is gate `env-write`. The owner answered the three checks of EM-T6c on 2026-10-02 (§10.2). An agent must not run the removal route of EM-T6c on a production mailbox, because that is a production one-off.
+**Gate.** AGENT-SAFE: all five parts. No part flips a flag. The limit is the setting `EMAIL_MAILBOX_STORAGE_LIMIT_MB`, with a default of 2048 since 2026-11-04 (500 before). A change of it on a box is gate `env-write`. The owner answered the three checks of EM-T6c on 2026-10-02 (§10.2). An agent must not run the removal route of EM-T6c on a production mailbox, because that is a production one-off.
 
 **Order.**
 
@@ -2957,7 +2959,7 @@ cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/app/email s
 4. EM-T6e waits for EM-T6c and EM-T6d.
 5. EM-T4d waits for EM-T6b, because both change `sync_messages` in `providers/outlook.py`.
 6. EM-T4e and EM-T6a both change `transport/accounts.py`, and each takes a migration number. The second to merge rebases and takes its number again (R1).
-7. EM-T6f waits for EM-T6e. EM-T6f is a path that resumes the import of a mailbox in the phase `limit` under the limit. This spec records it and does not specify it (EM-T6e, open points).
+7. EM-T6f waits for EM-T6e. EM-T6f is a path that resumes the import of a mailbox in the phase `limit` under the limit. It is BUILT (2026-11-04), and its record is under EM-T6e, open points.
 
 **Owner checks (answered, 2026-10-02).** §10.2 records each answer as a dated line. The reason for each check stays here.
 
@@ -3173,7 +3175,7 @@ The R8 tests must show PASSED, not SKIPPED.
 
 - `email_ingestion/storage.py` owns the limit, the meter, the preview and the steps of the removal. Each step takes a session, opens none and never commits.
 - The meter is one statement. It sums `pg_column_size` of 16 message columns, 5 attachment columns and 3 embedding columns. An R8 test compares the three lists with `pg_attribute`, so a new column of variable length fails until the meter names it.
-- The meter runs in the block of each import batch and in the block of phase (d). A first import at the limit writes `import_phase = 'limit'`. `_cycle_result` takes a keyword `limit`, and each import at the limit returns `limit: true`.
+- The meter runs in the block of each import batch and in the block of phase (d). EM-T6f review P1 bounds the full meters of an import (see the EM-T6f record). A first import at the limit writes `import_phase = 'limit'`. `_cycle_result` takes a keyword `limit`, and each import at the limit returns `limit: true`.
 - A deep sync that stops at the limit runs no import reconcile, and it logs `sync.import_reconcile_skipped reason=limit`. A page that the import did not read can hold mail of the same second as its last message.
 - Phases (e) and (f) moved into `_backfill_and_embed`. At the limit, neither phase runs, and the cycle logs `sync.storage_limit`. The write of refreshed credentials still runs between the two phases.
 - The two routes live in `transport/storage.py`. The preview answers `before`, `messages` and `bytes`. The removal answers `before`, `removed`, `stored_bytes` and `storage_limit_bytes`. `EmailAccountModel` carries `stored_bytes` and `storage_limit_bytes` for EM-T6e.
@@ -3210,7 +3212,7 @@ The R8 tests must show PASSED, not SKIPPED.
 - R-4 still holds: measure the time of the meter on the box after the deploy.
 - Before merge, the orchestrator reads the meter of each production mailbox (R-8). The read is the SELECT form only.
 - EM-T6e draws the notice and the dialog.
-- **(Review round 1, item 3) Nothing closes the gap of a `limit` phase.** A loop cycle runs no import, because `initial_sync_done` is true. A Resync (`deep=True`) imports from now down to `import_since`, so it can fill the gap up to the limit. It writes no progress column, so the phase stays `limit` and `import_reached_at` does not move. Only a removal with `before` at or after `import_reached_at` ends the phase. EM-T6e must decide a resume path, for example a deep import that ends the phase when it reaches the floor under the limit. **Closed for EM-T6e (2026-10-04):** EM-T6e draws the gap as one line with no action (D2). EM-T6f owns the resume path (Order, item 7).
+- **(Review round 1, item 3) Nothing closes the gap of a `limit` phase.** A loop cycle runs no import, because `initial_sync_done` is true. A Resync (`deep=True`) imports from now down to `import_since`, so it can fill the gap up to the limit. It writes no progress column, so the phase stays `limit` and `import_reached_at` does not move. Only a removal with `before` at or after `import_reached_at` ends the phase. EM-T6e must decide a resume path, for example a deep import that ends the phase when it reaches the floor under the limit. **Closed for EM-T6e (2026-10-04):** EM-T6e draws the gap as one line with no action (D2). EM-T6f owns the resume path (Order, item 7). **EM-T6f (2026-11-04):** a loop cycle now resumes the import under the limit, from `import_reached_at`.
 - **(Review round 1, item 6) A draft in a non-English Outlook mailbox is not kept.** `email_messages` has no draft flag, and the Outlook provider does not read `isDraft`. `providers/outlook.py:419-422` does not request `wellKnownName`, because a consumer account answers 400 to it. So a Drafts folder with a local name (`Entwürfe`, `Brouillons`) is a user folder, and its rows get `folder = 'entwürfe'`. G1 does not keep them, and `body_backfill.py:120` has the same rule.
 - **(Item 6, the provider follow-up)** Classify the Drafts folder by the alias `/me/mailFolders/drafts`, or store `isDraft` for each message. Then `KEPT_FOLDERS_SQL` reads it. The branch `email-delta-shadow` changes `outlook.py` now, so this round did not.
 - **(Review round 1, item 9) A large removal can take longer than 30 seconds.** The chunk loop runs inside the request, and the Control Plane proxy gives a POST 30 seconds. EM-T6e must plan for a long removal. For example, the dialog reads the meter again after a timeout of the proxy. **Closed by EM-T6e (2026-10-04):** the BFF gives the removal 120 seconds, and the dialog follows a removal that outlives the proxy through the preview (D1).
@@ -3253,7 +3255,7 @@ Item 6 of review round 1 changed no code, so it has no mutation.
 1. **The setting.** Add `email_mailbox_storage_limit_mb: int = 500` to `acb_common/settings.py`. The limit in bytes is that value times 1,048,576.
 2. **The meter.** Add `measure_stored_bytes(db, account_id)` to a new `email_ingestion/storage.py`. One SELECT sums `pg_column_size` of each column of variable length in the `email_messages` rows of the mailbox. It adds the `email_attachments` rows and the `email_embeddings` rows of the mailbox. It writes `stored_bytes` and `stored_bytes_at`.
 3. **The meter reads no body.** `pg_column_size` of a stored value reads its size from the stored header, so the meter does not fetch the bodies. Do not use `octet_length`, and do not take the size of a whole row.
-4. **When the meter runs.** After each import batch, and at the end of each sync in phase (d).
+4. **When the meter runs.** After each import batch, and at the end of each sync in phase (d). **Changed by EM-T6f review P1 (2026-11-04):** the full meter runs after the first batch of a run and near the limit only. Each other batch adds the growth of its own rows (`storage.ImportMeter`).
 5. **The limit stops the import.** After a batch, when `stored_bytes` is at or over the limit, the import fetches no next batch. A first import then writes `import_phase = 'limit'` and `initial_sync_done = true`. A deep sync of a member act stops in the same way, and `_sync_account` returns `limit: true` in its result.
 6. **(Q3) Phases (e) and (f) stop at the limit.** At or over the limit, the body backfill makes no provider call, and the embeddings make no model call. A message that the member opens still loads its body live.
 7. **(Q2) New mail still syncs at the limit.** The recurring sweep writes new mail at any meter value. Only the import of older mail stops.
@@ -3526,7 +3528,7 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 
 - **D1. A long removal.** The BFF gives `accounts/<id>/storage/remove-older` a budget of 120 seconds. A pattern match in a small module makes that choice, and the module has its own test. After a 502, a 504 or a network error from the removal, the dialog says "The removal continues". It reads the preview again every 5 seconds, with the same `before`. At 0 messages, it reads the accounts again and shows the new meter.
 - **D1, the end.** After 3 minutes, the dialog says that Metorite cannot confirm the removal. It never reports a failure that it cannot prove. It does not read the meter alone, because the meter does not tell a removal in progress from a removal that stopped. The gateway does not change, and it gets no 202.
-- **D2. The gap.** A mailbox in the phase `limit` under the limit shows one line with no action. For example: "Metorite imported this mailbox back to 14 Sep. It stopped there at the storage limit." EM-T6f owns a path that resumes the import (Order, item 7).
+- **D2. The gap.** A mailbox in the phase `limit` under the limit shows one line with no action. For example: "Metorite imported this mailbox back to 14 Sep. It stopped there at the storage limit." Since EM-T6f (2026-11-04), a loop cycle resumes that import, and the phase moves to `importing`. So the line shows only until that cycle. It also shows while the meter is under the limit by less than the margin of a resume (20 MB at 2 GB), or while the import has no `import_reached_at` to go on from.
 - **D3, which notice.** With one mailbox in view, Email shows the notice of that mailbox only. In All inboxes, Email shows one notice, for the first pooled mailbox at the limit in the order of the list. `storageMailbox` in `lib/mailbox.ts` decides it, beside `attentionMailbox`. A separate mailbox shows its notice in its own view only.
 - **D3, the switcher.** The switcher marks each mailbox at the limit, a separate one too. EM-T6e owns this mark of UC-12 (§11.5). The mark is a `Badge` or an icon with an `aria-label`, in the `warning` tone.
 - **D3, the name.** With two or more mailboxes, the notice and the dialog draw `MailboxChip` and the address, and the copy names the label. With one mailbox, the copy says "This mailbox". The dialog calls both routes with the id of the mailbox that it names, never the selected mailbox or `poolHome`.
@@ -3603,7 +3605,21 @@ node ../../.claude/hooks/ste-lint.mjs --staged
 - **(Visual review) The compact switcher cuts a label short.** At compact density, a separate mailbox at the limit shows "Cl…" beside the "Separate" badge and the mark.
 - **(Visual review) No capture beside Calendar.** The done-when of EM-T6d named a view beside Calendar. This review did not capture one.
 - **(Review round 1) Cmd+K opens over a dialog.** The command palette opens above any dialog of the page, and it offers "Delete" for the open mail. This is older than EM-T6e. A follow-up for the page shortcuts owns it.
-- **EM-T6f, a resume path (backend, recorded).** Nothing resumes the import of a mailbox in the phase `limit` under the limit (EM-T6c, review round 1, item 3). The candidate of the auditor: a route sets `initial_sync_done = false` and `import_phase = 'importing'` for such a mailbox, so `_run_import` resumes at `import_reached_at`. It needs R8 and its own audit.
+- **EM-T6f, a resume path (backend). BUILT 2026-11-04** (task 1572, branch `mt-d1e16ddc-mailbox-2gb`, not merged yet). Before it, nothing resumed the import of a mailbox in the phase `limit` under the limit (EM-T6c, review round 1, item 3). The owner raised the limit to 2 GB on 2026-11-04 and wants no manual step. So the resume is automatic, in the sync loop, and no route or button starts it.
+  - **The rule.** `storage.import_resumes` is the one rule, beside `at_limit` and `end_limit_phase`. The import goes on when four tests hold. The phase is `limit`. The meter ran (`stored_bytes` is not null). The meter is under the limit by at least `storage.resume_margin_bytes()`. `import_reached_at` is set. A mailbox in any other phase is never touched.
+  - **The margin (review P3a).** The margin is the larger of 20 MB and 1% of the limit, so 20.48 MB at 2 GB. It is never more than a tenth of the limit, so a small limit can still resume. A mailbox that stopped a few KB over the limit then does not resume when a deleted draft takes it just under.
+  - **The columns.** `storage.resume_import` writes `initial_sync_done = false` and `import_phase = 'importing'`, and nothing else. `_run_import` already resumes a first import while `initial_sync_done` is false. It asks for `until = import_reached_at` and keeps `import_count`. So the import goes on from that point down to the floor, and it does not read newer mail again. It ends `done`, or `limit` at the limit as before.
+  - **The write.** The UPDATE is conditional: `WHERE id = :aid AND import_phase = 'limit' AND stored_bytes = :stored`. A second write finds no row. A write after a change of the meter finds no row.
+  - **The lock.** Phase (a) of a loop cycle runs the write, in its own `tenant_session(org)` block. `_sync_account` holds the mailbox lock there, and the removal takes the same lock through `hold_mailbox`. So a removal, a webhook sync and a rerun cannot run at the same time. Phase (a) then reads the row again, and the cycle runs the import. Only the loop resumes (`from_loop`, `deep=None`). A manual sync, a webhook sync and a deep sync do not.
+  - **The load.** `scheduler.STORAGE_RESUME_GAP_SECS` (300 s) lets one mailbox of a gateway process resume in each gap. The others ask again at their next cycle. A write that finds no row gives the turn back. The import keeps its batch of 100 and the background lane of the pool (`db_background_max`).
+  - **The meter of an import (review P1).** The full meter reads every row of the mailbox, and it used to run after each batch. So the I/O of one resume grew with the square of the size of the mailbox. `storage.ImportMeter` now runs the full meter after the first batch of a run. Each later batch reads the sums of its own rows, by provider id, before and after its write. One UPDATE adds the difference to `stored_bytes`. When that sum reaches the limit, the full meter runs again and decides. A run makes at most `storage.IMPORT_FULL_METERS` (3) full meters, and after that the sum decides. With phase (d), a cycle makes at most 4 full meters, whatever the size of the gap. The import still stops after the batch that takes the meter to the limit. So a mailbox goes over the limit by at most one batch of 100 messages, as before, plus what a member stores by an open during the cycle. The same code serves the first import, the resume and the deep sync of a member act.
+  - **The cap of a cycle (review P2).** An import that goes on from `import_reached_at` reads at most `scheduler.RESUME_CYCLE_MAILS` (1,000) mails in a cycle, for each provider. A smaller cap of the provider wins, so Gmail keeps 400. The cycle then pauses, the recurring sweep runs, and the loop comes back after `SYNC_RESUME_SECS` (60 s). So new mail lands between the shares of a resume (owner answer Q2). A first import from now keeps the cap of its provider, which is none for Outlook and IMAP. A first import in its second cycle or later goes on from a point, so it takes the cap too.
+  - **The log.** `sync.storage_resume account=<id> stored=<bytes> limit=<bytes>`. A mailbox that waits for its turn logs `sync.storage_resume_waits`.
+  - **The UI.** `GET /email/accounts` sends `import_phase`, and `storageNoticeKind` draws the D2 gap line only for the phase `limit`. After the resume, the phase is `importing` and `initial_sync_done` is false. So the gap line goes, and the sync banner shows "Importing mail" until the import ends. A comment in `lib/storage.ts` now names EM-T6f.
+  - **The admin tile (review P3b).** `first_sync_pending` counts each mailbox whose import has not ended, and a resumed mailbox is one of them. So its tile in Settings, Organization, Email now says "Importing mail", not "Waiting for first sync". The count does not change.
+  - **IMAP.** The IMAP import is the default of `BaseEmailProvider`. It reads the newest 100 messages of INBOX only (`imap.py`, the UID SEARCH of `sync_messages`), and it keeps those at or older than `import_reached_at`. So an IMAP resume reads those 100 once, fills no gap, and ends `done`.
+  - **The fences.** `tests/unit/test_email_storage_limit.py`: `email-storage-t6f-rule`, `-resume`, `-stays`, `-once`, `-no-flap`, `-pace`, `-meter-bound`, `-cap` and `-margin`. `emailConnections.test.ts` holds the words of the admin tile. The R8 half ran on a private pgvector database with the full ladder. Ten mutants each turn a fence red: no phase test (rule and SQL), no meter test, no null test, a resume from now, no gap, a resume outside the loop, no bound of the full meters, no cap and no margin.
+  - **Open points.** A mailbox whose guided setup is still open shows the stage `importing` again until the import ends. Each share of a resume counts the mail below its point again (the estimate of the provider), and the banner shows `counting` for a moment. Measure the full meter on the box (R-4).
 
 ##### Recorded risks (EM-T6)
 
@@ -20911,6 +20927,80 @@ Save made an orphan draft.
 
 **Fences.** `tests/unit/test_reply_card_left_drafts.py`, its R8 half
 `tests/unit/test_reply_card_left_drafts_r8.py`, and `src/lib/replyCardLeft.test.ts`.
+
+### 18.10 One email card for a new mail (2026-11-03, owner)
+
+**Status:** 🔨 BUILT on branch `mt-5f606b3e-email-edit-card`, not merged, with fix round 1.
+No migration. Metorite task 1533, slice 2 of 4.
+
+**Dark.** `EMAIL_EDIT_CARD_ORGS` lists the organization ids that get the card, or `*` for
+each one, and it is empty (off) by default. Off, a new mail shows the cards of before,
+exactly, and the two routes of the card answer 404. `reply_card.edit_card_on` is the one reader,
+and it fails closed. To turn the card on for one org, set `EMAIL_EDIT_CARD_ORGS=<org id>`
+on the box and send SIGHUP to the gateway. A value on a box is an `enforcement-flip`.
+
+**Fix round 1.** After an edit, the chips hide, and the nudge line says that a request in
+the chat starts again from the assistant's draft. A subject takes the character rule of
+the text, so an emoji goes, and the act refuses each line break. A held form gives each file a
+tick and its hint, and the act sends only the ticked files.
+
+**Origin.** The owner asked on 2026-11-03 to edit a draft in the chat, and to ask the chat
+to improve it. The owner approved panel 2 of the design.
+
+Every email that the assistant writes uses ONE card. The member can edit the subject and
+the text. The buttons are Send, Save draft and Discard. This slice is the card of a NEW
+mail. Slice 3 redrafts the card in place through the chat.
+
+**The protocol.** The new-mail card is the reply card of §18.4 with `kind: "new"`. No
+second card mechanism exists.
+
+1. The tool posts the mail to the gateway first. `POST /email/new-card` checks the
+   mailbox, each address, the subject and the text. It records the people, the files and
+   the text in tenant Redis. The key is a card id that it mints for the member. A held chat
+   posts `POST /email/held-card` with kind `new`, as before. That route also gives the
+   form now.
+2. The card shows each person of the server with a tick box. It shows the subject and
+   the text to edit. The plain card shows the files as fixed rows. The held card gives
+   each file a tick box and its source, as §21.1 item 3 says. One line under the text
+   says "Want it changed? Tell me in the chat below." Two example chips put their words
+   in the chat box. A chip sends nothing.
+3. Send and Save draft answer `APPROVE {"reply": {...}}` with the keys `kind`, `action`,
+   `subject`, `body`, `to`, `cc` and `bcc`. A held answer may also give `files`, the ids
+   of the ticked files. The parser refuses any other key. A reply answer and a new-mail answer
+   never parse as each other. Discard answers `REJECT` and writes nothing.
+4. `POST /agent/respond-input` records the digest of the answer, as for a reply. The act
+   route takes the answer once and the record once.
+
+**The rules of the act.** `POST /email/new-card/act`, and `POST /email/held-card/act` for a
+held record of kind `new`, do these steps. Each refusal sends and saves nothing.
+
+1. The act takes the people from the record, never from the answer. A ticked person must
+   be on the record (`ticked_subset`). The act needs a ticked To.
+2. The act refuses hidden text in the answered text (`reply_body_refusal`). It then cleans
+   the text (`clean_reply_body`).
+3. The act refuses a subject with a line break or a hidden character, or one over 200
+   characters (`held_card._clean_subject`).
+4. A held record also refuses a look-alike word (`refuse_lookalike`), a Bcc to a new
+   address, and a text over `HELD_TEXT_MAX`. A new address starts unticked, as §21 says.
+5. The files come from the record. The plain act sends every recorded file. The held act
+   sends only the ticked files, and a file id that is not on the record refuses the
+   answer. The member cannot add a file.
+6. Send sends the answered subject and text. Save draft writes a NEW draft with them, and
+   sends nothing.
+
+**Where no card can take an edit.** A WhatsApp run and a run with no card channel keep the
+cards of before: the plain send card, and the rows card of §21. Neither of them sends
+without a card. A reply through `send_email` keeps the plain card. `compose_reply` is the
+reply card.
+
+**The model's side.** The tool answers the subject that went, and says when the member
+changed the text on the card. It then gives the text that went, so the chat does not claim
+that the first text went.
+
+**Fences.** `tests/unit/test_email_new_mail_card.py` holds the act, the parse and the held
+path. `src/components/newMailCard.test.ts` holds the answer of the client, the card, the
+chips and a chip that sends nothing. `tests/unit/test_email_chat_reply.py` holds the keys of the client and the server
+in step.
 
 ## 19. Send later (2026-10-21)
 
