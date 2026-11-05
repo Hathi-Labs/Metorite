@@ -768,7 +768,7 @@ class TestTheProtocol:
         # agent knows that the rule above is its own to keep.
         flat = " ".join(text.split())
         assert ("Metorite still takes a write on any run of your member and your client,"
-                " from any machine. So do not write on such a run.") in flat
+                " from any machine. So do not write on a run of another session.") in flat
         queued = await _prompt_text()
         _in_order(queued, ("A waiting run of another connection", "is never yours",
                            "Metorite still takes a write on any run of mine through your client",
@@ -911,8 +911,8 @@ class TestTheAnswerRule:
     MAIN_LENGTH: ClassVar[dict[bool, int]] = {False: 4597, True: 4612}
     CUT = 4096
     #: The sentences of main that end before the cut, in either state.
-    KEPT = ("never yours", "So do not write on such a run.",
-            "the heartbeat of your hold.", "If you stop and will not finish, call release_task.")
+    KEPT = ("never yours", "So do not write on a run of another session.",
+            "the heartbeat of your hold.", "See prompt work_on_task.", "If you stop and will not finish, call release_task.")
 
     @pytest.mark.parametrize("on", [False, True])
     async def test_the_instructions_keep_each_sentence_before_the_cut(
