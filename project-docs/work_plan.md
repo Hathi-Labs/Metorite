@@ -132,7 +132,7 @@ The core function brief sets the phases (D119). Customer zero comes first inside
 1. **Customer zero safe and working** (M0, P0): H-259, BO-23b, M0.4, the chat flag, H-163, H-373, H-120, H-326 and CZ-DEWIN-1.
 2. **The shared job queue**: BR-1a. Every brief task runs on it, so build it first and small.
 3. **Issue reporting and the Get started checklist** before the pilots: IR-0 to IR-3 and OB-1. Help follows in M1: HLP-1 to HLP-3.
-4. **The cheap isolation fixes** (M1, P0): H-249, H-334, H-201 and AX-0. H-312 closed its five reads on 2026-11-04. AX-0 withholds the host shell tools from personal agents, and the owner confirms it.
+4. **The cheap isolation fixes** (M1, P0): H-249, H-201 and AX-0. H-312 closed its five reads on 2026-11-04. H-334 closed the owner check on 2026-11-04, and its list reads wait on task 1692. AX-0 withholds the host shell tools from personal agents, and the owner confirms it.
 5. **The isolation spine**: H2, then H3.2 (D120), then H3 in a maintenance window. H4, H5 and H6 run beside it.
 6. **The owner answers**: WS-40-Q (D121) and H3.2 (D120). Both gate P0 work.
 7. **Branch protection**: WS-38a, then WS-5a and WS-38b.
@@ -170,6 +170,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-STU | **AI Studio**: skills, workflows and apps that a company builds | 🟢 active · started 2026-10-31 (D141) · Stage 1 in M1, Stage 2 in M2 (D146) | `specs/ai_studio.md` | Metorite: project "AI Studio", epic 491 · D127, D139, D141, D146 · Stage 1 merged except A1 and E1 (this PR), F2b and F2c · Stage 2 in build: A3, A4, B2a, C1, G1b and G2 merged, C2a in the gates · next C1b, C6, C7, B1c and B2b, then D2, D3, D11, G3 and F2b · epic 491 holds the plan · finish line of Stage 2: K3 |
 | WS-PKG | **Package host**: every app is a package, and Metorite reshapes itself around the organization and the person | 🟢 active · started 2026-11-01 (D147) · M1 | `specs/package_host.md` | Metorite: project "Package Host", epic 1234 · D89, D127, D136, D141, D146, D147 · Studio H1, H2, J2, J3 and M1 run on this registry · next PKG-1 (one manifest source for the ⌘K jobs, no behaviour change), then PKG-2, PKG-3 and PKG-4 |
 | WS-WEB | **Web research**: search, read any page or file, crawl, browse and research jobs for Mira, on open-source parts | 🟢 active · started 2026-11-01 (D148) · M1 | `specs/web_research.md` | Metorite: project "Agent Tooling", epic 1235 · D85, D117, D139, D148 · WS-43 CA-4 (task 1032) calls this service · gates WEB-Q1 (SearXNG) for WEB-5 · 2026-11-01: WEB-1 built (the fetch guard). WEB-10 built (the goal record, `goal_records`, no caller yet). WEB-2 built dark behind `WEB_RESEARCH_ORGS` (the local HTML reader). 2026-11-04: WEB-3 built dark (the file readers, the type refusal and the CTX-1 spill). Next WEB-4 |
+| WS-CIV | **CI velocity**: each PR runs the tests its diff can affect, and `main` runs the full suite in batches after the merge. No merge queue (D-2026-10-16 stays) | 🟢 active · started 2026-11-04 (D176) | `specs/ci_velocity.md` | Metorite: project "Developer Workflow", epic 1628, slices CIV-1 to CIV-9 = tasks 1629 to 1637 · CIV-1 (outside contributors need approval) done 2026-11-04 · CIV-4 is HIGH (deploy path) |
 | WS-ALN | **Project alignment**: Metorite knows the project of each task, checks work against the project's accepted rules, and asks a person and the lead when work deviates | 🟢 active · started 2026-11-02 (D160) · M2 | `specs/project_alignment.md` | Metorite: project "Projects/Tasks App", epic 1368 · reports to WS-PT · D75, D100, D104, D140, D160 and workflows G5 · ALN-Q1 to ALN-Q5 run on working defaults, which are not owner decisions (`project_alignment.md` §14) · ALN-0 is this spec · ALN-1 (the durable trigger) is built dark: `ALIGN_JOBS_ORGS` is empty and the handler is a stub · ALN-2a built (migration 332, backend and chat tools, dark behind `DECISIONS_ORGS`) · ALN-4 (the pin: migration 339, routes and chat tools, no UI) is built dark behind `AUTHORITY_PINS_ORGS` · next ALN-2b, ALN-4b and AUTO-7b, then ALN-5, ALN-6, ALN-7 · ALN-5 needs the rule store of SW-31 (task 1048) |
 | WS-AUTO | **Proactive agent**: Mira acts for each person without being asked, within limits that the person sees | 🟢 active · started 2026-11-02 (D161) · M2 | `specs/proactive_agent.md` | Metorite: project "Automations", epic 807 · D103, D124, D131, D161 and workflows G5 · AUTO-2 first slice, AUTO-3 (D131) and AUTO-7a are merged · AUTO-7b is built, dark behind `AUTO_PARK_ORGS`, in review (task 1411) · AUTO-Q1 runs on a working default, which is not an owner decision (`proactive_agent.md` §12) · H-328 parts (a) and (b) are merged, and part (c) is open · next AUTO-8 and AUTO-6, then AUTO-1, AUTO-4, AUTO-5, AUTO-9, AUTO-10 |
 | WS-PJP | **Plan with Metorite**: the AI plans projects with the member. It finds the critical path, the critical chain and its buffer, the constraint and the risks, proposes the stages that fit the work, and shows three or more changes on one card | 🟢 active · started 2026-11-02 (D168) · M2 | `specs/project_planning.md` | Metorite: project "Projects/Tasks App", epic 1476 · reports to WS-PT · D99, D145, D168 · PJP-0 is this spec · next PJP-1 (pills and swatches), PJP-2 (no hand-off to projects-assistant) and PJP-4 in parallel · PJP-2 needs the owner's `TOOL_PACKS` line before its release |
@@ -5332,6 +5333,24 @@ Owner decision, 2026-11-04, in chat: "go ahead with your recommendations for all
 **Why.** The owner asked for event forms with a link, an iframe and email (2026-11-02). A person who types their address and submits expects one reply. Each other mail needs consent, as DPDP asks.
 
 **Fence.** Advisory until each slice builds its test: `tests/unit/test_crm_public_form.py` (CRM-M10, item 1), `tests/unit/test_crm_thank_you_queue.py` (CRM-M12, items 2 and 3), the consent tests of CRM-M11 (item 4), and the member purge R8 suite (Metorite 1570, item 5).
+
+### D176 — Each PR runs the tests its diff can affect, and main runs the full suite in batches (2026-11-04)
+
+Owner directive, 2026-11-04, in chat. Owner spec: `specs/ci_velocity.md` (WS-CIV).
+
+```text
+"only do tests that are relevant to what I have built, and do batched work wherever possible"
+```
+
+The owner then chose "After merge, keep D-10-16" over a merge queue.
+
+1. **A PR runs only what its diff can affect.** Lint, the secret scan, the type checks and the SAFETY fences always run. `scripts/affected_tests.py --gate` picks the unit tests, and it fails open to the full set. This replaces "pr-check runs every test on each PR".
+2. **`main` runs the full suite in batches, after the merge.** One run at a time. Merges that land during a run fold into the next one. On a red batch, the session that broke it fixes forward or reverts at once. The home box names that PR (CIV-5).
+3. **The 2026-10-16 decision stays.** No merge queue.
+4. **The release does not change.** Production moves at 21:30 UTC only, and only from a `main` whose full suite passes (D145).
+5. **Outside contributors need approval** before Actions runs any of their code (CIV-1, done 2026-11-04). While the repo is public, the home box is not a GitHub runner.
+
+Fence: `tests/unit/test_affected_tests.py` (CIV-2) and `tests/unit/test_ci_unit_guard.py` (CIV-3). CIV-1 is advisory, because it is a GitHub setting.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
