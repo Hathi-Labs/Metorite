@@ -221,8 +221,9 @@ class ApproveRequest(AuthorizeRequest):
     #: D-EA-12 (spec §10.8, EA-17a): project ids that the reach stops at.
     #: Each id and every project beneath it stay out, unless a pin beneath
     #: it starts again. The cap is the cap of the pins. An id that the
-    #: member cannot see is stored as a bad pin is, and changes nothing,
-    #: because the member's live access still bounds the reach (§7.1).
+    #: member cannot see is stored as a bad pin is. It can only narrow the
+    #: reach: a hidden parent left out also removes the projects beneath
+    #: it, and the member's live access still bounds the rest (§7.1).
     left_out_projects: list[UUID] = Field(default_factory=list, max_length=_MAX_PINS)
     #: D-EA-4 (amended 2026-10-30): the consent page ticks it by default and
     #: always sends it. A body that leaves it out reads as false.

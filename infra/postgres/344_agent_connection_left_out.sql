@@ -53,10 +53,9 @@
 
 SET lock_timeout = '5s';
 
+-- One statement, so the table takes its ACCESS EXCLUSIVE lock once (review P3).
 ALTER TABLE agent_connection
-    ADD COLUMN IF NOT EXISTS left_out_projects UUID[] NOT NULL DEFAULT '{}';
-
-ALTER TABLE agent_connection
+    ADD COLUMN IF NOT EXISTS left_out_projects UUID[] NOT NULL DEFAULT '{}',
     ADD COLUMN IF NOT EXISTS requested_scopes TEXT[];
 
 COMMENT ON COLUMN agent_connection.left_out_projects IS

@@ -1377,7 +1377,7 @@ When one condition fails, the answer is the consent screen as before, never an e
 
 **D-EA-12: the left-out list.** A connection gains `left_out_projects`, a list of project ids. The reach of a connection follows the nearest mark.
 
-1. With no pin, the reach starts from every project that the member sees. With pins, it starts from each pin.
+1. With no pin, the reach starts from each root project of the organization. With pins, it starts from each pin. The member's live access then bounds the result.
 2. The reach goes down from each start, project by project. It stops at a project on the left-out list. That project and every project beneath it stay out.
 3. A pin beneath a left-out project starts its own reach. So the nearest mark wins: a pin under a left-out parent is in.
 4. A left-out id that no start reaches changes nothing. An id outside the organization of the connection changes nothing.
