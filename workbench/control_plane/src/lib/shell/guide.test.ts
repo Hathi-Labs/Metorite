@@ -97,6 +97,8 @@ describe("F4: a guide starts only on a member act", () => {
     // The welcome dialog arms on `/` only (`SignUpForm`), where stop 4 lives.
     // The account menu and the phone drawer do NOT start in place. They go to
     // `/?guide=home.tour`, which the host reads (stop 4 lives on `/` only).
+    // WS-BUD BUD-1: the hello's "Show me around" chip goes to `TOUR_HREF`
+    // too, so `buddyHello.ts` never calls `startGuide` (D-GD-1).
     expect(callers.sort()).toEqual([
       "components/WelcomeDialog.tsx",
       "lib/shell/AssistantDock.tsx",
