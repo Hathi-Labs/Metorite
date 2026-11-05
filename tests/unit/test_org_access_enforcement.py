@@ -311,9 +311,10 @@ def test_an_ungated_router_still_resolves_an_identity(module: str) -> None:
 DELEGATED_ROUTERS: dict[str, dict[str, str]] = {
     "gateway.routes.shell": {
         "/shell/manifest": (
-            "PKG-5b part 2. The resolve keeps a claim only when "
-            "`user.can_use_feature(payload.feature)` holds, so a member without "
-            "the app's feature gets no claim of it "
+            "PKG-5b part 2. The resolve keeps a claim that names a feature only "
+            "when `user.can_use_feature(payload.feature)` holds, so a member "
+            "without the app's feature gets no claim of it. A claim with no "
+            "feature is open to every member (spec §5.2 step 3) "
             "(`test_package_host_resolve.py::test_a_feature_the_viewer_lacks_hides_the_entry`, "
             "`test_package_host_resolve_r8.py` case 5). The tenant is the bound "
             "session under FORCE RLS and the viewer is `user.email`. The route "
