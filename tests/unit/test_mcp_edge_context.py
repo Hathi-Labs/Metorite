@@ -381,6 +381,12 @@ class TestTheContext:
         assert body["agent_runs"] == []
         assert not [p for p in board.paths() if p.endswith("/agent-runs")]
 
+    async def test_ci14a_the_context_shows_the_link_of_an_open_run(self, board):
+        board.task_runs = [{**_run(_uuid(5003), TASK),
+                            "external_link": "https://claude.ai/code/session_6"}]
+        body = await _context()
+        assert body["agent_runs"][0]["external_link"] == "https://claude.ai/code/session_6"
+
     async def test_the_open_runs_and_the_subtasks_show(self, board):
         board.task_runs = [_run(_uuid(5001), TASK), _run(_uuid(5002), TASK, status="completed",
                                                          state="completed")]
@@ -539,6 +545,22 @@ class TestMyWork:
         assert tools.MY_WORK.edge_inputs == frozenset({"limit"})
         assert (tools.MY_WORK_LIMIT_DEFAULT, tools.MY_WORK_LIMIT_MAX) == (10, 25)
 
+    async def test_ci14a_the_row_shows_the_link_of_its_run(self, board):
+        task = _uuid(8201)
+        board.tasks[task] = _task_row(task)
+        board.runs = [{**_run(_uuid(5951), task, state="answered"),
+                       "external_link": "https://claude.ai/code/session_5"}]
+        [row] = await _work()
+        assert row["external_link"] == "https://claude.ai/code/session_5"
+
+    async def test_ci14a_a_link_that_is_not_https_is_shaped_away(self, board):
+        task = _uuid(8202)
+        board.tasks[task] = _task_row(task)
+        board.runs = [{**_run(_uuid(5952), task, state="answered"),
+                       "external_link": "javascript:alert(1)"}]
+        [row] = await _work()
+        assert row["external_link"] == {"untrusted_text": "javascript:alert(1)"}
+
     async def test_y9_a_finished_run_holds_no_task(self, board):
         done = _uuid(7801)
         board.tasks[done] = _task_row(done)
@@ -575,7 +597,7 @@ class TestMyWork:
         assert rows == [{"task_id": gone, "task_number": None, "title": None, "status": None,
                          "project_id": None, "version": None, "reason": "run_answered",
                          "run_id": _uuid(6101), "held_by": None,
-                         "yours": False}]
+                         "yours": False, "external_link": None}]
 
     async def test_a_gateway_with_the_runs_flag_off_gives_no_runs(self, board):
         """The units restart one at a time: the edge has the flag on and the
