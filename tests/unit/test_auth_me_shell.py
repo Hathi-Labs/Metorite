@@ -339,7 +339,7 @@ class TestTheTourMark:
         res = _client(_user()).put(
             "/auth/me/shell", json={"tour_seen_at": STAMP, "buddy_hello_at": STAMP})
         assert res.status_code == 200, res.text
-        [(sql, params)] = _writes(fake)
+        [(_, params)] = _writes(fake)
         assert list(json.loads(params["shell_prefs"])) == ["tour_seen_at"]
 
     def test_the_read_carries_the_mark_and_drops_a_bad_one(self, fake: _FakeDB) -> None:
