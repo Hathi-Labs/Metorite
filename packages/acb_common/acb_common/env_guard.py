@@ -207,6 +207,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # project for an org. A pin changes what a finding quotes, so only the
     # owner writes it.
     "AUTHORITY_PINS_ORGS",
+    # WS-ALN ALN-5a: PROJECT_RULES_ORGS opens the rules of a project for an
+    # org. A rule reaches each agent and each check of the project, so a
+    # tenant must not open it for another org.
+    "PROJECT_RULES_ORGS",
     # WS-MCP MCP-P1b-1: APP_REQUESTS_ORGS opens the approval store of the app
     # door for an org. A request waits for a member and can then run, so only
     # the owner writes it.

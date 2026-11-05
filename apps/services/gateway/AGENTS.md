@@ -95,7 +95,16 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - ⚠️ The org save needs `core.ORG_VOCABULARY_WRITE` (`admin:settings:manage`). A manager holds `projects:settings:write` and gets 403. A project save uses `authority.assert_may_write_guidance`.
    - ⚠️ The refs read each id through `_visible_ids`, the one visibility seam. A hidden or an unknown project gets null.
    - A save takes `pg_advisory_xact_lock` on its scope, and the unique index and the retry stay as the backstop.
+   - ⚠️ Each statement names `kind = 'guidance'`, so a rule row of item 0r never reaches a block, the history or the next version. Fences: `test_agent_guidance_r8.py` (case 9), `test_project_rules_static.py`.
    - Fences: `test_agent_guidance_r8.py`, `test_agent_guidance.py`.
+0r. routes/project_rules.py -- **The rules of a project** (WS-ALN ALN-5a, `project_alignment.md` §4.2). It is the one writer of a rule row: `kind = 'rule'` on `pm_agent_guidance`. No third store.
+   - The router checks `PROJECT_RULES_ORGS` first, so a dark route answers 404. Then it checks `feature:projects`. The prefix is `/project-rules`, and the chat tools are a follow-up slice.
+   - ⚠️ Append only. A create, an accept, an edit, a retire and a change of level each add a version row of one `rule_key`. Only the accept route moves `proposed` to `active`. The trigger refuses an UPDATE.
+   - Every write asks `authority.guidance_write_refusal`, the one rule, and answers its two refusals with the words of a rule. An agent connection gets 403. The tenant and the actor come from the session, and the wire models forbid extra keys.
+   - ⚠️ The quote check calls `knowledge.core.load_page`, `page_version_text` and `quote_occurs`. The module holds no Knowledge SQL. A reader who cannot read the page AND the quoted version gets `quote_hidden` and no quote, through `readable_page_versions` (the page clause, then the history floor).
+   - Each write takes one advisory lock for its project, so the cap of 40 active rules and the next version cannot race.
+   - No statement groups by `written_by` or `proposed_by` (ALN-Q5).
+   - Fences: `test_project_rules.py` (R8), `test_project_rules_static.py`.
 1. main.py -- **The app factory and the lifespan.** It also serves `/copilot/chat`, the AG-UI endpoint. ⚠️ **A loop's flag gate lives INSIDE its start function, never as an `if` in main.py.** So each flag has one reader. main.py starts and stops each loop UNCONDITIONALLY. Fences: `test_launch_defang_kill_switches.py`, `test_crm_zoho_sync.py`, `test_ingestion_consumer.py::test_gateway_lifespan_starts_the_consumer_and_stops_it_after_yield`.
 2. routes/agent.py -- **The agent run doors, the registry and the mutation inbox.**
    - **The endpoint check is the boundary of record.** The three run doors call `assert_can_run_agent`. The filtered `GET /agent` is UX only. Registry writes need `agents:manage`.
@@ -246,6 +255,7 @@ A fence name with no folder is a file in `tests/unit/`. A name that ends in
    - A hidden page answers 404, never 403. ⚠️ Take the tree locks BEFORE the page row lock. Fence: `test_kb_pages_r8.py`.
    - ⚠️ Accept and reject of a proposal refuse `chat`, `mcp` and every agent, so the agent never publishes. Fence: `test_kb_proposals_r8.py`.
    - ⚠️ A read of `kb_page_versions` calls `core.load_page` first. Fence: `test_kb_history_r8.py`.
+   - `core.page_version_text` is the one read of the text of a page version for a quote, under the history floor. `core.quote_occurs` is the one quote check: an exact substring after one form of line end. `core.readable_page_versions` is the one read of which page versions a member may see: the page clause, then `history_floor`. Fence: `test_project_rules.py` (R8).
    - ⚠️ A source disconnect deletes the blob and nodes first, then revokes only an unshared grant. Fence: `test_kc_sources_r8.py`.
 19a. retrieval/ -- **Company retrieval, the one seam** (D105). Each source checks `feature:<app>`, then calls its app's own search. So it writes no SQL and no visibility rule. The command bar's `PROVIDERS` is a projection of the same registry. The email source passes `with_total=False`, so it skips the COUNT that the Email app shows (KG-3a). Fences: `test_company_search_sources.py`, `test_company_search_r8.py`, `test_email_fts_column_r8.py`.
 19b. kb_index/ -- **The Knowledge index.** `embed.embed` is the ONE door that makes a vector. ⚠️ Each read of `kb_chunks` joins a published `kb_pages` row under `visible_pages_clause`. ⚠️ Never store a zero vector. Do not import `litellm` or `openai` here. Fences: `test_kb_one_index.py`, `test_kb_chunk.py`.
