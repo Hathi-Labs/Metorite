@@ -2,9 +2,10 @@
 
 **Status:** ACTIVE (owner directive, 2026-11-04). Verified against code on
 2026-11-04 (branch base `fb26ada52`, after a spec audit). CIV-1 is done.
-CIV-2 to CIV-9 are AGENT-SAFE. CIV-4 and CIV-4b are HIGH tier, because they
-change the deploy path. CIV-4b is BUILT (2026-11-05, branch `civ4b-r8-main`,
-task 1711). CIV-3 waits for it.
+CIV-2 to CIV-9 are AGENT-SAFE. CIV-4, CIV-4b and CIV-13 are HIGH tier, because
+they change the deploy path. CIV-4b is BUILT (2026-11-05, branch
+`civ4b-r8-main`, task 1711). CIV-3 waits for it. CIV-13 (D178) is BUILT on
+2026-11-05: the home box starts the 21:30 release. The owner installs its timer.
 
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
@@ -385,6 +386,66 @@ AGENT-SAFE. STANDARD tier.
 with the wall times.
 AGENT-SAFE. STANDARD tier.
 
+### CIV-13 · The home box starts the 21:30 release (HIGH: deploy path)
+
+Owner decision, 2026-11-05: "Box triggers 21:30" (D178). GitHub starts the
+`30 21 * * *` cron 3.5 to 5.5 h late. Run 41949347780 started at 01:33 UTC,
+so the window of 21:00 to 02:00 UTC often closed first.
+
+**What changes.**
+- A user timer of `dev` on the home box runs at 21:30 UTC. It runs
+  `scripts/home_server/nightly_release.sh run`. The script dispatches
+  `deploy.yml` on `main` with `nightly=true`, and logs the URL of the run.
+- A NIGHTLY run is a schedule run or a dispatch with `nightly=true`. A
+  nightly dispatch says "nightly" in its run name, because the runs API does
+  not return the inputs.
+- `RELEASE_HOLD` and the window hold a nightly dispatch, as they hold the
+  schedule. A nightly dispatch with `skip_tests` does not publish.
+- A night ships once. The step `once` of `release-window` holds a nightly
+  run when another nightly run's `publish-release` passed since 21:00 UTC.
+  After midnight, it looks back to 21:00 on the day before.
+- The cron stays as the backup.
+
+**What does not change.** A plain dispatch behaves as before: no hold, no
+window, and `skip_tests` still publishes. A push behaves as before. Its run
+name stays its commit message.
+
+**The choices.**
+- A rerun (`run_attempt` 2 or more) skips the check, as it skips the clock.
+- A plain dispatch never counts. The owner's dispatch of 2026-11-05, run
+  41969146897, does not hold a nightly run.
+- When the API gives no answer, the run SHIPS and warns. A second ship of
+  one night is one more apply. A lost night holds a day of merges back.
+- ⚠️ A race is possible and benign. Two nightly runs can both pass `once`
+  before either publishes. The push of the same sha is then a no-op, and
+  `deploy-production` serialises the two deploys. A newer sha makes one
+  more restart. No concurrency group goes on `publish-release`, because
+  `test_deploy_pipeline.py` bans it.
+- The script refuses outside 21:00 to 01:00 UTC. The tests take about
+  40 min, and a late `Persistent=true` start must not ship in working hours.
+
+**Acceptance.**
+1. A nightly dispatch is held by `RELEASE_HOLD`, and it obeys the 21:00 to
+   02:00 UTC window. It cannot skip the tests.
+2. A plain dispatch behaves as today, and the tests pin it.
+3. A nightly run does not publish when another nightly run's
+   `publish-release` passed since 21:00 UTC. A rerun is exempt.
+4. The timer, the service, the script and the install step exist, with the
+   clock guard and the log of the run URL.
+5. D178 and the doc lines are in place.
+
+**Files:** `.github/workflows/deploy.yml`,
+`scripts/home_server/nightly_release.sh`,
+`scripts/home_server/metorite-nightly-release.service`,
+`scripts/home_server/metorite-nightly-release.timer`.
+**Fence:** `tests/unit/test_daily_release.py` and
+`tests/unit/test_nightly_release_box.py`.
+**Install (owner, on the home box, as `dev`):**
+`bash ~/Metorite/scripts/home_server/nightly_release.sh install`. It turns
+on linger, copies the script, and enables the timer. In WSL, the Windows
+task "Metorite WSL keep-alive" keeps the distro up.
+HIGH tier.
+
 ## 6. Order
 
 CIV-2 and CIV-4 start now, beside each other. CIV-4b follows CIV-4. CIV-3
@@ -403,3 +464,4 @@ slice has one subtask:
 | CIV-3 | 1631 | CIV-8 | 1636 |
 | CIV-4 | 1632 | CIV-9 | 1637 |
 | CIV-5 | 1633 | CIV-4b | 1711 |
+| | | CIV-13 | 1721 |

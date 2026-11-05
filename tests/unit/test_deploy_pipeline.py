@@ -732,9 +732,11 @@ ASSERT_STEPS = (
     "Assert the tenant ladder database is reachable and has pgvector",
 )
 #: The one way past a release gate: a person's dispatch with `skip_tests`.
+# A PLAIN dispatch with `skip_tests` is the one way past a gate. A nightly
+# dispatch (CIV-13) never takes it.
 SKIP_PAST = (
     "(github.event_name == 'workflow_dispatch' && inputs.skip_tests "
-    "&& needs.{job}.result == 'skipped')"
+    "&& !inputs.nightly && needs.{job}.result == 'skipped')"
 )
 
 sys.path.insert(0, str(_ROOT / "scripts"))

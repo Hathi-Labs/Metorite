@@ -524,9 +524,9 @@ async def _tasks_handled(user: UserContext, since: datetime) -> list[Closed]:
 _VERB = {"assigned": "assigned you", "mention": "mentioned you on",
          "comment": "commented on", "nudge": "nudged you about",
          "agent_question": "asked you about",
-         # WS-ALN ALN-2a. A decision is not in KIND_ORDER yet: that registry
-         # is for the kinds that a needs provider gives, and its rank rows
-         # (`feed_rank.BASE`) go with the provider of ALN-2b.
+         # WS-ALN ALN-2a. A decision is not in KIND_ORDER: that registry is
+         # for the needs kinds. ALN-2b gives it to My Day as a feed-only kind
+         # (`_decisions` below), and the bell shows this verb for its row.
          "decision": "asked you to decide on"}
 
 
@@ -642,7 +642,9 @@ async def _projects(user: UserContext) -> Found:
 #: The notification kinds that ask the member for something. One of them
 #: sets the card's reason over a ``comment`` (§4.3, §14.1a).
 #: `agent_question` asks the member to answer an agent (EA-12a, §12.1).
-ASKING_NOTIFICATIONS = frozenset({"assigned", "mention", "nudge", "agent_question"})
+#: `decision` asks the member to decide (WS-ALN ALN-2b, project_alignment.md
+#: §3.2): the card needs an answer, so it is a "needs you" card.
+ASKING_NOTIFICATIONS = frozenset({"assigned", "mention", "nudge", "agent_question", "decision"})
 
 
 def _note_signals(notes: list[dict[str, Any]]) -> list[Signal]:
@@ -1107,6 +1109,64 @@ def register(provider: Provider) -> Provider:
     return provider
 
 
+# ── Decisions: one named person decides (WS-ALN ALN-2b) ─────────────────────
+#
+# project_alignment.md §3.2. The provider calls the decisions app's OWN list
+# (`decisions.list_decisions`, the decider's open decisions), so it writes no
+# SQL. It is feed-only: the bell already shows the decision as a notification
+# row (verb "asked you to decide on"), so a needs row would show it twice. The
+# card keys on the TASK (`tasks:<id>`), so it folds into the task's one card
+# with that notification (`my_day_feed.md` §4.1). Its one act is a link: the
+# task panel holds the answer, through the one answer route, until MD-8.
+# The flag `DECISIONS_ORGS` gates the source: off, it reads `absent`. The source
+# is gated too (`MY_DAY_PROVIDERS` must list `decisions`).
+# Fence: `tests/unit/test_decisions_my_day.py`.
+
+#: The one kind of the source.
+DECISION_KINDS = frozenset({"decision"})
+
+
+async def _decisions(user: UserContext) -> Found:
+    from gateway.routes.projects import decisions
+
+    if not decisions.decisions_allowed(getattr(user, "organization_id", None)):
+        raise SourceAbsent("DECISIONS_ORGS does not hold the org")
+    answer = await decisions.list_decisions(task_id=None, user=user)
+    rows = list(answer.get("decisions") or [])
+    # The decider's own list, newest first. One signal for each task: the
+    # decision that closes first, with the number that wait.
+    by_task: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_task.setdefault(str(row["subject_id"]), []).append(row)
+
+    def signals() -> list[Signal]:
+        out: list[Signal] = []
+        for task_id, group in by_task.items():
+            first = min(group, key=lambda r: str(r.get("expires_at") or ""))
+            entity = task_entity(task_id, first.get("task_title"))
+            out.append(Signal(
+                signal_id=f"tasks:{task_id}", app="projects", kind="decision",
+                entity=entity, title=entity["label"],
+                facts={"question": str(first.get("question") or ""),
+                       # The directory name, as the task panel shows it.
+                       "who": first.get("asked_by_name") or _who(first.get("asked_by")),
+                       # Not `waiting_since`: that is a state fact, and the
+                       # card's fingerprint must not move for a decision.
+                       "asked_at": _iso(first.get("created_at")),
+                       "expires_at": _iso(first.get("expires_at")),
+                       "open": len(group)},
+                href=task_href(task_id),
+                acts=(link("answer", "Answer", task_href(task_id)),),
+                at=_iso(first.get("created_at")),
+                expires_at=_iso(first.get("expires_at")),
+            ))
+        return out[:PER_APP]
+
+    edges = sorted(str(r["expires_at"]) for r in rows if r.get("expires_at"))
+    return Found([], len(by_task), capped=len(rows) >= decisions.LIST_LIMIT,
+                 signals=signals, next_edge=edges[0] if edges else None)
+
+
 # Approvals runs LAST of the needs providers (the module note). Three of them
 # also carry a Handled read (MD-2c). Projects has none: a closed task is
 # My Tasks' row, and a read notification closed nothing.
@@ -1121,6 +1181,14 @@ register(Provider("email", ("email",), _email, frozenset({"needs_reply"}),
 register(Provider("reminders", ("projects",), _reminders, REMINDER_KINDS, app="calendar"))
 register(Provider("approvals", ("approvals",), _approvals, frozenset({"approval"}),
                   admin=True, handled=_approvals_handled))
+# WS-ALN ALN-2b: feed-only, so it registers after every needs provider. The
+# gate is `feature:projects`, the gate of the decisions routes. It is gated
+# like the other feed-only sources (MD-3b): it runs only while MY_DAY_PROVIDERS
+# lists `decisions`, so an org with no decision costs no read on a poll. The
+# flag DECISIONS_ORGS still gates it inside (SourceAbsent), and gates every
+# route. Turn on both to show the card.
+register(Provider("decisions", ("projects",), _decisions, DECISION_KINDS,
+                  needs=False, gated=True, app="projects"))
 
 
 def needs_providers() -> list[Provider]:
