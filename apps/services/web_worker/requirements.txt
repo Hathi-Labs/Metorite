@@ -1,0 +1,8 @@
+# The direct dependencies of the web worker (WEB-6, web_research.md section 5.1).
+# The full closure, with hashes, is requirements.lock.txt. The Dockerfile
+# installs the lock, never this file. Each licence is in licences.json.
+# Playwright matches the tag of the base image, so the browsers in the image fit.
+playwright==1.64.1
+crawl4ai==0.9.5
+fastapi==0.162.0
+uvicorn==0.54.0
