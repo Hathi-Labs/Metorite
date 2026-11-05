@@ -88,14 +88,17 @@ import {
 } from "@/lib/railSessions";
 import { CHAT_GONE_NOTICE } from "@/lib/runActivity";
 import { IDLE_RUN, runViewText, type RunStatus } from "@/lib/runStatus";
+import type { ContinueOpened } from "@/lib/chatContinue";
 import {
   boundChatScope,
+  createSession,
   deleteSession,
   enrichSession,
   fetchAndMergeSessionsFromDb,
   getSessions,
   renameSession,
   setSessionArchived,
+  upsertSession,
   type ChatSession,
 } from "@/lib/sessions";
 
@@ -457,6 +460,19 @@ function useAssistantChat(open: boolean, surface: { phone: boolean; chatFirst: b
     notice: notice ? { text: notice, onDismiss: () => setNotice(null) } : null,
     recoveredInput,
     consumeRecoveredInput: () => setRecoveredInput(undefined),
+    /**
+     * WT-2: open the fresh chat that the pill made. The server made the chat
+     * and chose the words. They go into the composer through the same slot as
+     * a recovered message, so nothing is sent: the member presses Send.
+     */
+    openContinued: (opened: ContinueOpened) => {
+      upsertSession({ ...createSession(ASSISTANT_AGENT), id: opened.sessionId });
+      setRestoredId(null);
+      setNotice(null);
+      setRecoveredInput(opened.text);
+      setAssistantSession(opened.sessionId);
+      refresh();
+    },
     /** Open a chat the member chose: a refusal of it is an error they see. */
     select: (id: string) => {
       setRestoredId(null);
@@ -1237,6 +1253,7 @@ function AssistantSurface({ phone }: { phone: boolean }) {
                 onActivity={chat.activity}
                 onArtifact={onArtifact}
                 onSessionRefused={chat.onSessionRefused}
+                onContinueHeld={chat.openContinued}
                 notice={chat.notice}
                 pendingInput={chat.recoveredInput ?? st.draft?.text}
                 pendingInputTyped={!chat.recoveredInput && st.draft?.typed === true}
