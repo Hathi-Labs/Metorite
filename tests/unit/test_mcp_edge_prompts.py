@@ -58,7 +58,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -908,7 +908,7 @@ class TestTheAnswerRule:
 
     #: P1. Claude Code cuts the instructions at 4096 characters. Main is already
     #: past it, and the branch must not move the cut by more than the pointer.
-    MAIN_LENGTH = {False: 4597, True: 4612}
+    MAIN_LENGTH: ClassVar[dict[bool, int]] = {False: 4597, True: 4612}
     CUT = 4096
 
     @pytest.mark.parametrize("on", [False, True])
