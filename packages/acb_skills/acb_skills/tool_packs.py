@@ -740,6 +740,10 @@ No Studio agent exists to hand a task to.
   last valid manifest is unchanged.
 - Use only action ids that studio_list_actions gave. Never invent one.
   A class X action cannot be used.
+- The tools add the five record actions (list, get, create, update, delete) to
+  each object that has no record action, and name them in the diff and on the
+  plan card. Keep the manifest that the tool gives back. To have fewer for an
+  object, keep at least one of its record actions in the manifest.
 - Use studio_outline to tell the member what the app holds. Give names and
   counts as the tool gives them.
 - A manifest over 24000 characters is refused. Split the app into smaller parts.

@@ -474,6 +474,78 @@ def _skeleton(brief: str) -> dict[str, Any]:
     }
 
 
+# ── The record actions of each object (STU-BETA-2) ──────────────────────────
+
+#: The one rule: an object that declares NO record action gets the five. An
+#: object with one or more is left as its author wrote it. So a member keeps
+#: any one record action to opt out of the rest. A test holds this rule.
+RECORD_ACTIONS_LINE_MAX = 6
+_OBJECT_USES = r"object:([a-z][a-z0-9_]{0,47})\.(?:list|get|create|update|delete)"
+
+
+def with_record_actions(manifest: Any) -> tuple[Any, list[dict[str, str]]]:
+    """*manifest* with the five record actions of each object that has none,
+    and the list of the actions it added, each ``{id, uses}``.
+
+    Pure. It never raises, never changes its input, and adds no action to an
+    object that already declares one record action. A web page reads an
+    object through these actions, so an app with none opens to an empty
+    screen. An action id is ``<object>_<verb>``, cut to fit, and a number
+    follows it when the id is taken."""
+    objects = manifest.get("objects") if isinstance(manifest, dict) else None
+    actions = manifest.get("actions", []) if isinstance(manifest, dict) else None
+    if not isinstance(objects, list) or not isinstance(actions, list):
+        return manifest, []
+    have: set[str] = set()
+    taken: set[str] = set()
+    for a in actions:
+        if isinstance(a, dict):
+            taken.add(str(a.get("id")))
+            m = re.fullmatch(_OBJECT_USES, str(a.get("uses")))
+            if m:
+                have.add(m.group(1))
+    added: list[dict[str, str]] = []
+    for obj in objects:
+        name = obj.get("name") if isinstance(obj, dict) else None
+        if (not isinstance(name, str) or name in have
+                or not re.fullmatch(r"[a-z][a-z0-9_]{0,47}", name)):
+            continue
+        have.add(name)  # a second object of this name adds nothing twice
+        for verb in OBJECT_OPS:
+            tail = f"_{verb}"
+            base = name[: 48 - len(tail)] + tail
+            ident, n = base, 1
+            while ident in taken:
+                n += 1
+                ident = base[: 48 - len(str(n))] + str(n)
+            taken.add(ident)
+            added.append({"id": ident, "uses": f"object:{name}.{verb}"})
+    if not added:
+        return manifest, []
+    return {**manifest, "actions": [*actions, *added]}, added
+
+
+def _added_diff(added: list[dict[str, str]]) -> list[str]:
+    """One diff line for each object: the record actions that a check added."""
+    by_object: dict[str, list[str]] = {}
+    for a in added:
+        by_object.setdefault(a["uses"][len("object:"):].split(".")[0], []).append(a["id"])
+    return [f"add /actions (record actions of {obj}): {', '.join(ids)}"
+            for obj, ids in by_object.items()]
+
+
+def added_actions_line(added: list[dict[str, str]]) -> str:
+    """The plan card line that names the added record actions, or ""."""
+    objs = list(dict.fromkeys(a["uses"][len("object:"):].split(".")[0] for a in added))
+    if not objs:
+        return ""
+    shown = ", ".join(objs[:RECORD_ACTIONS_LINE_MAX])
+    more = len(objs) - RECORD_ACTIONS_LINE_MAX
+    tail = f" and {more} more" if more > 0 else ""
+    return (f"Record actions added: {len(added)} (list, get, create, update, delete) "
+            f"for {shown}{tail}.")
+
+
 # ── The tools ───────────────────────────────────────────────────────────────
 
 
@@ -482,7 +554,7 @@ async def studio_draft(brief: str) -> dict[str, Any]:
     """Make a minimal valid app manifest from a short brief. Fill it with studio_patch."""
     if not isinstance(brief, str) or not brief.strip():
         return _result(False, _sentence("Give a short brief of the app."), [])
-    manifest = _skeleton(brief)
+    manifest, _added = with_record_actions(_skeleton(brief))
     errors = validate_manifest(manifest)
     if errors:
         return _result(False, _errors(errors), [])
@@ -490,19 +562,30 @@ async def studio_draft(brief: str) -> dict[str, Any]:
 
 
 async def _checked(manifest: Any, diff: list[str]) -> dict[str, Any]:
-    """Validate *manifest* with the catalog, and shape the result."""
+    """Validate *manifest* with the catalog, and shape the result. First it
+    adds the record actions of an object that has none (STU-BETA-2), and the
+    diff and ``added_actions`` name them."""
     big = _too_big(manifest)
     if big is not None:
         return big
+    completed, added = with_record_actions(manifest)
+    if added and _too_big(completed) is not None:
+        # Adding them would pass the size limit. A manifest that passed before
+        # still passes, so the check adds nothing and says so.
+        completed, added = manifest, []
+        diff = [*diff, "no record actions added: the manifest would pass the size limit"]
+    manifest = completed
+    extra: dict[str, Any] = {"added_actions": added} if added else {}
+    diff = [*diff, *_added_diff(added)]
     try:
         catalog = _class_map(await _read_catalog())
     except _Refused as exc:
         # The catalog checks could not run, so the manifest is not called valid.
         structural = _errors(validate_manifest(manifest))
         notice = _sentence(f"{exc} The action checks did not run.")
-        return _result(False, [*notice, *structural], diff, catalog_checked=False)
+        return _result(False, [*notice, *structural], diff, catalog_checked=False, **extra)
     errors = validate_manifest(manifest, catalog=catalog)
-    return _result(not errors, _errors(errors), diff, manifest)
+    return _result(not errors, _errors(errors), diff, manifest, **extra)
 
 
 @annotate(read_only=True, idempotent=True, open_world=False)
@@ -724,7 +807,8 @@ def structure_line(manifest: Any) -> str:
     return f"Fields: {fields} ({hot} hot, {required} required). Rules: {rules}{tail}."
 
 
-def plan_card_text(manifest: Any, held: bool = False) -> str:
+def plan_card_text(manifest: Any, held: bool = False,
+                   added: list[dict[str, str]] | None = None) -> str:
     """The text of the plan card: the outline, the count of parts, the line of
     the tables, the cost line, and what approval does.
 
@@ -734,10 +818,12 @@ def plan_card_text(manifest: Any, held: bool = False) -> str:
     price and no turn count: no number stands next to "credit". With *held*
     (a chat that read outside mail), the last line says that a save and a
     publish each show one more card."""
+    note = added_actions_line(added or [])
     return "\n".join([
         outline_text(manifest, fence=True),
         f"Parts: {parts_count(manifest)}",
         structure_line(manifest),
+        *([note] if note else []),
         COST_LINE,
         PLAN_APPROVE_HELD if held else PLAN_APPROVE_CLEAR,
     ])
@@ -760,9 +846,11 @@ async def studio_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     checked = await _checked(doc, [])
     if not checked["ok"]:
         return _result(False, checked["errors"], [])  # no card for an invalid manifest
+    doc = checked["manifest"]  # with the record actions that the check added
+    added = checked.get("added_actions", [])
     title = f"Build {_name(doc.get('name', '?'), True)}?"
     detail = f"{parts_count(doc)} parts. {COST_LINE}"
-    context = plan_card_text(doc, held=await _must_ask())
+    context = plan_card_text(doc, held=await _must_ask(), added=added)
     from acb_skills import ask_tools
 
     # The run's own member may answer, and no other (PZ-32). The member is the
@@ -789,7 +877,10 @@ async def studio_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         # The member turned this plan down. An older approval of the same app
         # must not publish it (review round 1).
         extra["note"] = _PLAN_WITHDRAWN if await _withdraw_plan(doc) else _PLAN_NOT_WITHDRAWN
-    return _result(True, [], [], None, title=title, detail=detail, context=context,
+    if added:
+        extra["added_actions"] = added
+    # With added actions, the approval holds THIS manifest, so it comes back.
+    return _result(True, [], [], doc if added else None, title=title, detail=detail, context=context,
                    decision=decision, **extra)
 
 
