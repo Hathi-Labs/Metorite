@@ -64,6 +64,12 @@ export function boardGroupKey(fields: readonly FieldSpec[], computed: ReadonlySe
   return f?.key ?? null;
 }
 
+/** Why an object has no Board: one short sentence. */
+export function noBoardReason(fields: readonly FieldSpec[]): string {
+  if (!fields.some((f) => f.type === "select")) return "This object has no select field, so it has no lanes.";
+  return "This object has no select field that a Board can group by. The field must hold one value, have options, and not be filled by a formula.";
+}
+
 /**
  * The Board node of an object (`ai_studio.md` §14 D3b): lanes by the select field, a card per
  * record, and a drop that runs `object:<name>.update`. It is `boardBlock` from D3 with the
@@ -74,6 +80,8 @@ export function objectBoardBlock(
   fields: readonly FieldSpec[],
   computed: ReadonlySet<string>,
   source: { action: string; args?: Record<string, unknown> },
+  /** Does the manifest declare `object:<name>.update`? Without it the cards do not drag. */
+  canUpdate = true,
 ): ReturnType<typeof boardBlock> | null {
   const groupBy = boardGroupKey(fields, computed);
   if (!groupBy) return null;
@@ -83,7 +91,7 @@ export function objectBoardBlock(
     .slice(0, MAX_CARD_FIELDS).map((f) => f.key);
   return boardBlock({
     fields, groupBy, ...(titleKey ? { titleField: titleKey } : {}), cardFields,
-    update: `object:${object.name}.update`, title: object.label ?? object.name,
+    ...(canUpdate ? { update: `object:${object.name}.update` } : {}), title: object.label ?? object.name,
   }, source);
 }
 

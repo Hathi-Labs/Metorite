@@ -190,6 +190,99 @@ describe("the page source", () => {
     expect(page.match(/createDoorKeeper\(\)/g)).toHaveLength(1);
   });
   it("says so when the object has no select field", () => {
-    expect(page).toContain("has no select field");
+    expect(page).toContain("noBoardReason(fields)");
+  });
+});
+
+// --- D3b fix round 1 -----------------------------------------------------------------
+// Mutation A: `withMeta` drops the total, or `moreLine` returns null. "says that records are
+//   missing" and "the Board says so" turn red.
+// Mutation B: delete `if (had) answered.add(id)` in `boardMove.ts`. "a refusal after an
+//   unsettled accepted move does not pin the card" turns red.
+// Mutation C: send no `limit` in the page `list`. "asks for a page of 100" turns red.
+// Mutation D: set `update` always in `objectBoardBlock`. "omits update" turns red.
+// Mutation E: draw the Board without the read-error guard. "shows a read error once" turns red.
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import StudioBoard from "@/components/studio/StudioBoard";
+import { moreLine } from "@/lib/studio/dataDoor";
+import { noBoardReason } from "@/lib/studio/packagePreview";
+
+describe("a list with more records than one page", () => {
+  const many = Array.from({ length: 100 }, (_, i) => ({ id: `r${i}`, data: { title: `T${i}`, status: "Planned" } }));
+  it("says that records are missing, and the door carries the total", async () => {
+    const { door } = wire(() => json(200, { records: many, total: 140, total_at_least: null, offset: 0, limit: 100, line: "" }));
+    const rows = await door.read({ action: "object:visit.list", args: { limit: 100 } });
+    expect(rows).toHaveLength(100);
+    expect(moreLine(rows)).toBe("Showing the first 100 of 140 records.");
+  });
+  it("words a count that stopped", async () => {
+    const { door } = wire(() => json(200, { records: many, total: null, total_at_least: 1000 }));
+    expect(moreLine(await door.read({ action: "object:visit.list" }))).toBe("Showing the first 100 of at least 1000 records.");
+  });
+  it("says nothing when the rows are all of them", async () => {
+    const { door } = wire(() => json(200, { records: many.slice(0, 3), total: 3 }));
+    expect(moreLine(await door.read({ action: "object:visit.list" }))).toBeNull();
+  });
+  it("the Board says so, and calls its lane counts partial", async () => {
+    const { door } = wire(() => json(200, { records: many, total: 140 }));
+    const rows = await door.read({ action: "object:visit.list" });
+    const node = objectBoardBlock(OBJECT, fieldSpecs(OBJECT), computedKeys(OBJECT.rules), { action: "object:visit.list" });
+    const html = renderToStaticMarkup(createElement(StudioBoard, { data: node?.props.data, rows, door }));
+    expect(html).toContain("Showing the first 100 of 140 records.");
+    expect(html).toContain("The lane counts cover these records only.");
+  });
+  it("asks for a page of 100", () => {
+    const page = readFileSync(new URL("../../app/studio/package-preview/page.tsx", import.meta.url), "utf8");
+    expect(page).toMatch(/PAGE_LIMIT = 100/);
+    expect(page).toMatch(/args: \{ limit: PAGE_LIMIT \}/);
+  });
+});
+
+describe("a refusal after an unsettled accepted move does not pin the card", () => {
+  it("drops the restored lane at the next fresh rows", async () => {
+    const answers: Array<() => Response> = [
+      () => json(200, { record: { id: "a", data: {} } }),
+      () => json(422, { detail: { code: "rule_refused", rule: "sm", message: "Rule `sm` of object `visit`: no." } }),
+    ];
+    let open: () => void = () => {};
+    const fetchImpl = (async () => {
+      const a = answers.shift()!;
+      if (answers.length === 0) await new Promise<void>((r) => { open = r; });
+      return a();
+    }) as unknown as typeof fetch;
+    const door = createRealDoor({ packageId: PKG, actions: ACTIONS, fetchImpl });
+    const mover = createMover(door, "object:visit.update", "status");
+    await mover.move("a", "Planned", "On site", "On site");
+    const second = mover.move("a", "On site", "Closed", "Closed");
+    await Promise.resolve();
+    mover.settle();
+    open();
+    await second;
+    mover.settle();
+    expect(mover.getState().placed).toEqual({});
+    expect(mover.getState().alert).toContain("no.");
+  });
+});
+
+describe("the preview page and its Board", () => {
+  const page = readFileSync(new URL("../../app/studio/package-preview/page.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const specs = fieldSpecs(OBJECT);
+  it("omits update when the manifest does not declare it, so the cards do not drag", () => {
+    const node = objectBoardBlock(OBJECT, specs, computedKeys(OBJECT.rules), { action: "object:visit.list" }, false);
+    expect(node?.props.data).not.toHaveProperty("update");
+    expect(page).toContain("verbMap(detail.data?.actions)");
+    expect(page).toMatch(/editable: canUpdate/);
+  });
+  it("shows a read error once: the Board leaves it to the Table", () => {
+    const board = page.slice(page.indexOf('aria-label="Board"'), page.indexOf('aria-label="Form"'));
+    expect(board).toContain("rows.error && rows.data === undefined");
+  });
+  it("says why no select field serves a Board", () => {
+    expect(noBoardReason([{ key: "t", type: "text" }])).toBe("This object has no select field, so it has no lanes.");
+    const r = noBoardReason([{ key: "s", type: "select", many: true, options: ["a"] }]);
+    expect(r).toContain("a Board can group by");
+    expect(r).toMatch(/one value.*options.*formula/);
+    expect(page).toContain("noBoardReason(fields)");
   });
 });

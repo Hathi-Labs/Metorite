@@ -151,8 +151,11 @@ export function createMover(door: StudioDataDoor, update: string, groupBy: strin
           return;
         }
         const text = refusalText(res);
+        // A restored lane is an accepted one: the next fresh rows must drop it (D3b fix round 1).
+        if (had) answered.add(id);
         done({ placed: back(), alert: text, live: `Move refused: ${text}`, ...(focus !== null ? { focusId: focus } : {}) });
       } catch {
+        if (had) answered.add(id);
         done({ placed: back(), alert: ACTION_FAILED, live: `Move refused: ${ACTION_FAILED}`, ...(focus !== null ? { focusId: focus } : {}) });
       }
     },
