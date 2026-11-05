@@ -219,6 +219,28 @@ def _import_index(
     return src_users, test_users
 
 
+def _composed_path_readers(path: str, tests: dict[str, str]) -> set[str]:
+    """Tests that build the path from parts, as in ``DIR / "guarded.py"``.
+
+    The full path and a short basename are not in such a test. It holds the
+    QUOTED basename and a folder of the path. The folder is the parent in a
+    path context (``"app"``, ``/app/``) or the grandparent as plain text.
+    A false hit costs only time (CIV-3 review round 3, P1).
+    """
+    p = Path(path)
+    name = p.name
+    if p.suffix != ".py" or len(p.parts) < 3:
+        return set()
+    parent, grand = p.parent.name, p.parent.parent.name
+    quoted = (f'"{name}"', f"'{name}'")
+    ctx = re.compile(rf"""["'/]{re.escape(parent)}["'/]""")
+    return {
+        t
+        for t, body in tests.items()
+        if any(q in body for q in quoted) and (ctx.search(body) or grand in body)
+    }
+
+
 def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str], list[str]]:
     """Return (test files, reasons for a full run, frontend files)."""
     tests = _texts(sorted((root / TESTS).glob("test_*.py")), root)
@@ -247,6 +269,7 @@ def select(changed: list[str], root: Path = ROOT) -> tuple[list[str], list[str],
         if len(name) >= 12 and name not in {"__init__.py", "package.json", "README.md"}:
             needles.append(name)
         picked |= {t for t, body in tests.items() if any(n in body for n in needles)}
+        picked |= _composed_path_readers(path, tests)
 
         for dotted in module_names(path, root):
             picked |= test_users.get(dotted, set())

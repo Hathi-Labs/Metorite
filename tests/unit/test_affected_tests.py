@@ -362,3 +362,35 @@ def test_a_module_outside_a_pyproject_root_is_found_by_its_root_relative_name(
 def test_the_real_evals_checkers_reach_their_tests() -> None:
     out = sel.gate(["evals/coding_engine/checkers.py"])
     assert "tests/unit/test_coding_eval_checkers.py" in out["files"]
+
+
+def test_a_test_that_composes_the_path_from_quoted_parts_is_picked(tmp_path: Path) -> None:
+    _gate_repo(tmp_path)
+    _write(tmp_path, "apps/svc/box/pkg_x/guarded.py", "X = 1\n")
+    _write(tmp_path, "apps/svc/other/app/main.py", "X = 1\n")
+    _write(
+        tmp_path,
+        "tests/unit/test_composed.py",
+        'D = ROOT / "box" / "pkg_x"\nsrc = (D / "guarded.py").read_text()\n',
+    )
+    _write(tmp_path, "tests/unit/test_ctx.py", 'A = ROOT / "other/app"\nA.joinpath("main.py")\n')
+    assert "tests/unit/test_composed.py" in sel.gate(["apps/svc/box/pkg_x/guarded.py"], tmp_path)["files"]
+    out = sel.gate(["apps/svc/other/app/main.py"], tmp_path)["files"]
+    assert "tests/unit/test_ctx.py" in out
+    wrong = {"tests/unit/test_wrong_folder.py": 'x = "main.py"\ny = "elsewhere"\n'}
+    assert sel._composed_path_readers("apps/svc/other/app/main.py", wrong) == set()
+
+
+def test_the_real_composed_path_readers_are_picked() -> None:
+    cases = {
+        "apps/skills/skill-projects/skill_projects/guarded.py": "test_held_card_writes.py",
+        "apps/skills/skill-projects/skill_projects/writes.py": "test_held_card_writes.py",
+        "apps/skills/skill-projects/skill_projects/forms.py": "test_held_card_writes.py",
+        "apps/skills/skill-projects/skill_projects/inbox.py": "test_held_card_writes.py",
+        "apps/services/email_ingestion/email_ingestion/inbound.py": "test_recipient_intent.py",
+        "apps/services/meeting_bot/app/meet.py": "test_meeting_bot_call_end.py",
+        "apps/services/meeting_bot/app/main.py": "test_meeting_bot_concurrency.py",
+    }
+    for path, test in cases.items():
+        out = sel.gate([path])
+        assert out["full"] or f"tests/unit/{test}" in out["files"], path

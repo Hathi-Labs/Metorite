@@ -295,4 +295,4 @@ slice has one subtask:
 | CIV-2 | 1630 | CIV-7 | 1635 |
 | CIV-3 | 1631 | CIV-8 | 1636 |
 | CIV-4 | 1632 | CIV-9 | 1637 |
-| CIV-5 | 1633 | | |
+| CIV-5 | 1633 | CIV-4b | 1711 |
