@@ -1,6 +1,6 @@
 # Metorite — CI/CD pipeline for Hostinger VPS deployment.
 #
-# Trigger: push to main, the DAILY RELEASE schedule, or manual dispatch.
+# Trigger: push to main, the DAILY RELEASE, or manual dispatch.
 # Flow on a push:     lint → test (a signal) → publish `staging`. NO deploy.
 # Flow on a release:  lint → test (a GATE) → publish `release` → SSH to VPS →
 #                     apply that exact commit → verify by the serving SHA.
@@ -11,6 +11,15 @@
 # at 21:30 UTC (03:00 IST), and a hotfix is a manual dispatch of this file.
 # `staging` takes every merge. No box polls it yet (spec §5.6, phase 4).
 # Fence: tests/unit/test_daily_release.py.
+#
+# ⚠️ CIV-13 (D178), 2026-11-05: the HOME BOX starts the daily release. Its
+# user timer dispatches this file with `nightly=true` at 21:30 UTC
+# (scripts/home_server/nightly_release.sh). GitHub started the cron below
+# 3.5 to 5.5 h late, so the window often closed before it ran. The cron
+# stays as a backup. A NIGHTLY run is a schedule run or a nightly dispatch.
+# Both obey RELEASE_HOLD and the window, and neither can skip the tests. A
+# night ships once: `release-window` holds a nightly run when another one
+# already published since 21:00 UTC. A PLAIN dispatch is unchanged.
 #
 # Required GitHub Secrets (set in repo Settings → Secrets and variables → Actions):
 #   HOSTINGER_HOST       — VPS IP or hostname (e.g. 123.45.67.89)
@@ -34,6 +43,12 @@
 # signed-in member.
 
 name: deploy
+
+# CIV-13: the runs API does not return the inputs, so a nightly dispatch
+# says "nightly" in its run name. `release-window` and the box script read
+# it. A push keeps its commit message, and every other run keeps "deploy".
+# Fence: tests/unit/test_daily_release.py.
+run-name: ${{ inputs.nightly && 'deploy (nightly)' || github.event_name == 'push' && github.event.head_commit.message || 'deploy' }}
 
 on:
   push:
@@ -61,11 +76,15 @@ on:
   # day lands there. GitHub starts a scheduled run late, by hours (see the
   # `release-window` job). A run that is too late waits a day (spec §4.1a).
   # Set the repository variable RELEASE_HOLD=1 to skip a day (spec §4.3).
+  # ⚠️ CIV-13: the home box's dispatch with `nightly=true` is the main
+  # trigger now. This cron is the backup, and it ships only when the box
+  # did not ship that night.
   schedule:
     - cron: "30 21 * * *"
   # A hotfix, or a release outside the clock: run this workflow on `main`.
   # It ships the tip of main, as the schedule does. There is no second lane
-  # and no cherry-pick (D55.4). RELEASE_HOLD does not stop a dispatch.
+  # and no cherry-pick (D55.4). RELEASE_HOLD does not stop a PLAIN dispatch.
+  # `nightly=true` is for the home box's timer only (CIV-13).
   workflow_dispatch:
     inputs:
       reason:
@@ -82,6 +101,13 @@ on:
         default: false
       reinstall:
         description: "Also run npm ci for the Next apps (costs ~38 s of 500 on the live app; H-60)"
+        type: boolean
+        default: false
+      # CIV-13 (D178). A nightly dispatch is a nightly run, as the schedule
+      # is: RELEASE_HOLD and the window hold it, it cannot skip the tests,
+      # and it does not publish when another nightly run shipped tonight.
+      nightly:
+        description: "The daily release from the home box timer. Do not set it by hand."
         type: boolean
         default: false
 
@@ -393,10 +419,11 @@ jobs:
           git push origin "${GITHUB_SHA}:refs/heads/staging"
 
   # ── A held day says so (WS-38, spec §4.3) ──────────────────────────────
+  # A nightly run is a schedule run or a nightly dispatch (CIV-13).
   release-hold:
     name: "Release held"
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'schedule' && vars.RELEASE_HOLD == '1' }}
+    if: ${{ (github.event_name == 'schedule' || inputs.nightly) && vars.RELEASE_HOLD == '1' }}
     steps:
       - name: Report the hold
         run: |
@@ -419,20 +446,42 @@ jobs:
   # day is a safe result (spec §4.2). After 30 h, `vps-health.yml` reports
   # it as "The daily release did not run".
   #
-  # A dispatch is never held. It is a person's deliberate act, as with
-  # RELEASE_HOLD. A rerun of a schedule run (run_attempt 2 or more) is a
+  # A PLAIN dispatch is never held. It is a person's deliberate act, as with
+  # RELEASE_HOLD. A rerun of a nightly run (run_attempt 2 or more) is a
   # person's act too, so it is not held either. The runbooks at the top of
   # this file and in `pull-delivery` say "re-run this workflow".
-  # A step that fails here holds the release: `open` is then empty, and
+  # A NIGHTLY dispatch (CIV-13) is the home box's timer, not a person. It is
+  # held as a schedule run is.
+  # A clock step that fails holds the release: `open` is then empty, and
   # `publish-release` reads empty as closed.
+  #
+  # ── A night ships once (CIV-13, D178) ──────────────────────────────────
+  # The box dispatches at 21:30 UTC, and GitHub's cron can start a second
+  # nightly run hours later, inside the window. The step `once` holds a
+  # nightly run when another nightly run's `publish-release` passed since
+  # the window opened (21:00 UTC, on the day before after midnight). A
+  # plain dispatch never counts: its run name is "deploy", not "nightly".
+  # A rerun skips the check, as it skips the clock.
+  # ⚠️ FAIL OPEN, on purpose. When the API gives no answer, the run ships
+  # and warns. A second ship of one night is one more apply. A lost night
+  # is a day of merges held back. A crash of `once` before it writes falls
+  # back to the clock, so it ships too.
+  # ⚠️ A race is possible and benign. Two nightly runs can both pass this
+  # step before either publishes. The second push of the same sha is a
+  # no-op, and `deploy-production` serialises the two deploys. Do NOT put a
+  # concurrency group on `publish-release` (test_deploy_pipeline.py).
   # Fence: tests/unit/test_daily_release.py.
   release-window:
     name: "Release window"
     runs-on: ubuntu-latest
     needs: [lint, test]
-    if: ${{ always() && github.event_name == 'schedule' && vars.RELEASE_HOLD != '1' }}
+    if: ${{ always() && (github.event_name == 'schedule' || inputs.nightly) && vars.RELEASE_HOLD != '1' }}
+    # Read only, for the step `once`. A job-level block replaces the
+    # workflow's. This job checks out nothing, so it needs no `contents`.
+    permissions:
+      actions: read
     outputs:
-      open: ${{ steps.clock.outputs.open }}
+      open: ${{ steps.once.outputs.open || steps.clock.outputs.open }}
     steps:
       - name: Read the clock
         id: clock
@@ -457,13 +506,115 @@ jobs:
             echo "Release WAITS: the run reached the window at ${hm} UTC, outside 21:00 to 02:00 UTC. Production did not move." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Ship once a night
+        id: once
+        if: ${{ steps.clock.outputs.open == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The job's own `name:`. The jobs API names a job by it.
+          PUBLISH_JOB: "Publish release ref"
+        run: |
+          set +e
+          set -uo pipefail
+          if [ "${GITHUB_RUN_ATTEMPT:-1}" != "1" ]; then
+            echo "open=true" >> "$GITHUB_OUTPUT"
+            echo "Attempt ${GITHUB_RUN_ATTEMPT} is a person's rerun, so it does not look for a release of tonight."
+            exit 0
+          fi
+          tmp="$(mktemp -d)"
+          cat > "$tmp/once.py" <<'PY'
+          import datetime, json, sys
+
+          def load(path):
+              try:
+                  with open(path, encoding="utf-8") as fh:
+                      doc = json.load(fh)
+              except (OSError, ValueError):
+                  return {}
+              return doc if isinstance(doc, dict) else {}
+
+          mode = sys.argv[1]
+          if mode == "since":
+              # The window opens at 21:00 UTC. Before 21:00, the window of
+              # this night opened at 21:00 on the day before.
+              now = datetime.datetime.strptime(sys.argv[2], "%Y-%m-%dT%H:%M:%SZ")
+              start = now.replace(hour=21, minute=0, second=0)
+              if now.hour < 21:
+                  start -= datetime.timedelta(days=1)
+              print(start.strftime("%Y-%m-%dT%H:%M:%SZ"))
+          elif mode == "runs":
+              # The OTHER nightly runs: a schedule run, or a dispatch whose
+              # run name says "nightly". A plain dispatch never counts.
+              runs = load(sys.argv[2]).get("workflow_runs")
+              if not isinstance(runs, list):
+                  sys.exit(2)
+              for run in runs:
+                  if str(run.get("id")) == sys.argv[3]:
+                      continue
+                  event = run.get("event")
+                  title = str(run.get("display_title") or "")
+                  if event == "schedule" or (event == "workflow_dispatch" and "nightly" in title):
+                      print(run.get("id"))
+          elif mode == "shipped":
+              # 0: its publish job passed. 3: it did not. Else: no answer.
+              jobs = load(sys.argv[2]).get("jobs")
+              if not isinstance(jobs, list):
+                  sys.exit(2)
+              ok = any(isinstance(j, dict) and j.get("name") == sys.argv[3]
+                       and j.get("conclusion") == "success" for j in jobs)
+              sys.exit(0 if ok else 3)
+          PY
+          now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          since="$(python3 "$tmp/once.py" since "$now")"
+          api="repos/${GITHUB_REPOSITORY}/actions"
+          trouble=""
+          shipped=""
+          : > "$tmp/ids.txt"
+          if [ -z "$since" ]; then
+            trouble="the step could not read the clock"
+          else
+            for event in schedule workflow_dispatch; do
+              if ! gh api "${api}/workflows/deploy.yml/runs?event=${event}&created=>=${since}&per_page=100" > "$tmp/runs.json" \
+                 || ! python3 "$tmp/once.py" runs "$tmp/runs.json" "$GITHUB_RUN_ID" >> "$tmp/ids.txt"; then
+                trouble="the Actions API gave no list of ${event} runs"
+              fi
+            done
+          fi
+          while read -r id; do
+            [ -n "$id" ] || continue
+            rc=1
+            # stdin from /dev/null, so no call can eat the list of runs.
+            # filter=all: a publish job that passed on any attempt counts.
+            if gh api "${api}/runs/${id}/jobs?filter=all&per_page=100" > "$tmp/jobs.json" < /dev/null; then
+              python3 "$tmp/once.py" shipped "$tmp/jobs.json" "$PUBLISH_JOB" < /dev/null
+              rc=$?
+            fi
+            case "$rc" in
+              0) shipped="$id"; break ;;
+              3) ;;
+              *) trouble="the Actions API gave no jobs of run ${id}" ;;
+            esac
+          done < "$tmp/ids.txt"
+          if [ -n "$shipped" ]; then
+            echo "open=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Release shipped tonight::Nightly run ${shipped} published release after ${since}, so this run does not publish again."
+            echo "Release SKIPPED: nightly run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${shipped} published release after ${since}. Production did not move again." >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$trouble" ]; then
+            echo "open=true" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Release may ship twice::${trouble}, so this run cannot see if another nightly run shipped after ${since}. It publishes. One more ship of a night is one more apply."
+          else
+            echo "open=true" >> "$GITHUB_OUTPUT"
+            echo "No other nightly run published release after ${since}."
+          fi
+
   # ── Publish the ref the PRODUCTION box polls (WS-25) ──────────────────
   # ⚠️ WS-38: this runs on the daily schedule and on a manual dispatch, never
   # on a push. On those runs the unit tests GATE it again. On a push they are
   # a signal (see the `test` job), because the deploy waited 19 minutes for
   # them on every merge. Once a day, at 03:00 IST, 19 minutes costs nothing,
-  # and this is the last check before customers. A dispatch with
-  # `skip_tests` is the one way past it, for an emergency.
+  # and this is the last check before customers. A PLAIN dispatch with
+  # `skip_tests` is the one way past it, for an emergency. A nightly
+  # dispatch with `skip_tests` does not publish (CIV-13).
   # `scripts/vps_pull.sh` on the box applies `origin/release`, never `main`,
   # so the box installs only a commit that reached `main`. pr-check tested it
   # as a PR before the merge.
@@ -491,11 +642,11 @@ jobs:
       ${{ always()
       && github.ref == 'refs/heads/main'
       && github.event_name != 'push'
-      && !(github.event_name == 'schedule' && vars.RELEASE_HOLD == '1')
-      && (github.event_name != 'schedule' || needs.release-window.outputs.open == 'true')
+      && !((github.event_name == 'schedule' || inputs.nightly) && vars.RELEASE_HOLD == '1')
+      && (!(github.event_name == 'schedule' || inputs.nightly) || needs.release-window.outputs.open == 'true')
       && needs.lint.result == 'success'
       && (needs.test.result == 'success'
-          || (github.event_name == 'workflow_dispatch' && inputs.skip_tests && needs.test.result == 'skipped')) }}
+          || (github.event_name == 'workflow_dispatch' && inputs.skip_tests && !inputs.nightly && needs.test.result == 'skipped')) }}
     permissions:
       contents: write
     steps:

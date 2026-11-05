@@ -190,6 +190,7 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   the tip of `main` passes first, you name every merge in
   `git log <prod applied_sha>..origin/main`, and you confirm the pre-migration
   backup for a migration.
+  The home box starts the release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
 - Report "merged at `<sha>`, reaches production at tonight's release". After
   the release, confirm `/version` `applied_sha`. Do not call it live before you
   see that SHA.

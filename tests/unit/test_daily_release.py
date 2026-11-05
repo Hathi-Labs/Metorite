@@ -15,8 +15,12 @@ What this file fences, in ``.github/workflows/deploy.yml``:
    dispatch, which is a person's deliberate act.
 4. The deploy waits for ``release`` to move, and sends that exact commit.
 5. A schedule run that GitHub starts so late that it reaches the release
-   after 02:00 UTC waits a day, and says so (spec §4.1a). A dispatch never
-   waits.
+   after 02:00 UTC waits a day, and says so (spec §4.1a). A plain dispatch
+   never waits.
+6. CIV-13 (D178): the home box dispatches with ``nightly=true`` at 21:30 UTC.
+   A nightly dispatch is a nightly run: ``RELEASE_HOLD`` holds it, the window
+   holds it, and it cannot skip the tests. A night ships once. A nightly run
+   does not publish when another nightly run published since 21:00 UTC.
 
 And in ``.github/workflows/vps-health.yml``: the hourly delivery check
 compares the box with ``release``, not with ``main``. Under the daily clock a
@@ -118,7 +122,7 @@ def _after(jobs: dict, root: str) -> set[str]:
 
 def test_no_job_after_a_skipped_job_reads_a_bare_success(deploy: dict) -> None:
     """``success()`` is FALSE when any ancestor job SKIPPED. ``release-window``
-    skips on every dispatch, and ``test`` skips on a ``skip_tests`` dispatch.
+    skips on every plain dispatch, and ``test`` skips on a ``skip_tests`` dispatch.
     So each job after them starts its ``if`` with ``always()`` and tests the
     result that it needs. A bare ``success()`` skipped the smoke test on the
     dispatch of 2026-10-29 (run 40888027282)."""
@@ -147,7 +151,14 @@ def test_the_daily_schedule_exists(deploy: dict) -> None:
 
 def test_a_dispatch_can_release_outside_the_clock(deploy: dict) -> None:
     inputs = _on(deploy)["workflow_dispatch"]["inputs"]
-    assert {"reason", "skip_tests", "force", "reinstall"} <= set(inputs)
+    assert {"reason", "skip_tests", "force", "reinstall", "nightly"} <= set(inputs)
+
+
+def test_the_nightly_input_is_a_boolean_off_by_default(deploy: dict) -> None:
+    """CIV-13: a person's dispatch stays a plain dispatch unless it asks."""
+    nightly = _on(deploy)["workflow_dispatch"]["inputs"]["nightly"]
+    assert nightly["type"] == "boolean"
+    assert nightly["default"] is False
 
 
 def test_the_tests_gate_the_release(deploy: dict) -> None:
@@ -156,10 +167,11 @@ def test_the_tests_gate_the_release(deploy: dict) -> None:
     cond = _if(job)
     assert "needs.lint.result == 'success'" in cond
     assert "needs.test.result == 'success'" in cond
-    # The one way past: a person's dispatch with skip_tests.
+    # The one way past: a person's PLAIN dispatch with skip_tests. A nightly
+    # dispatch with skip_tests does not publish (CIV-13).
     assert (
         "(github.event_name == 'workflow_dispatch' && inputs.skip_tests "
-        "&& needs.test.result == 'skipped')"
+        "&& !inputs.nightly && needs.test.result == 'skipped')"
     ) in cond
     assert "github.ref == 'refs/heads/main'" in cond
 
@@ -173,14 +185,18 @@ def test_release_is_fast_forward_only(deploy: dict) -> None:
 # ── 3. The hold switch ───────────────────────────────────────────────────────
 
 
-def test_a_hold_stops_the_schedule_and_not_a_dispatch(deploy: dict) -> None:
+def test_a_hold_stops_a_nightly_run_and_not_a_plain_dispatch(deploy: dict) -> None:
     cond = _if(deploy["jobs"]["publish-release"])
-    assert "!(github.event_name == 'schedule' && vars.RELEASE_HOLD == '1')" in cond
+    assert (
+        "!((github.event_name == 'schedule' || inputs.nightly) && vars.RELEASE_HOLD == '1')"
+    ) in cond
 
 
 def test_a_held_day_says_so(deploy: dict) -> None:
     job = deploy["jobs"]["release-hold"]
-    assert _if(job) == "${{ github.event_name == 'schedule' && vars.RELEASE_HOLD == '1' }}"
+    assert _if(job) == (
+        "${{ (github.event_name == 'schedule' || inputs.nightly) && vars.RELEASE_HOLD == '1' }}"
+    )
     body = "\n".join(s.get("run", "") for s in job["steps"])
     assert "::warning" in body and "GITHUB_STEP_SUMMARY" in body
 
@@ -196,22 +212,47 @@ def test_the_deploy_sends_its_own_sha(deploy: dict) -> None:
 # ── 5. A late schedule run waits a day ──────────────────────────────────────
 
 
-def test_a_late_schedule_run_waits_a_day(deploy: dict) -> None:
+def test_a_late_nightly_run_waits_a_day(deploy: dict) -> None:
     job = deploy["jobs"]["release-window"]
     assert _if(job) == (
-        "${{ always() && github.event_name == 'schedule' && vars.RELEASE_HOLD != '1' }}"
-    ), "the schedule only, and not on a held day, which release-hold reports"
+        "${{ always() && (github.event_name == 'schedule' || inputs.nightly) "
+        "&& vars.RELEASE_HOLD != '1' }}"
+    ), "nightly runs only, and not on a held day, which release-hold reports"
     # After the tests, so the clock it reads is the clock of the restart.
     assert {"lint", "test"} <= set(_needs(job))
-    assert job["outputs"]["open"] == "${{ steps.clock.outputs.open }}"
+    # `once` writes `open` when the clock is open. A crash of `once` before
+    # it writes falls back to the clock: the release ships (fail open, CIV-13).
+    assert job["outputs"]["open"] == "${{ steps.once.outputs.open || steps.clock.outputs.open }}"
     # A renamed step id would leave `open` empty, and hold every night.
-    assert [s.get("id") for s in job["steps"]] == ["clock"]
+    assert [s.get("id") for s in job["steps"]] == ["clock", "once"]
     publish = deploy["jobs"]["publish-release"]
     assert "release-window" in _needs(publish)
-    # Empty reads as closed, so a failed window step holds the release.
+    # Empty reads as closed, so a failed clock step holds the release.
     assert (
-        "(github.event_name != 'schedule' || needs.release-window.outputs.open == 'true')"
-    ) in _if(publish), "a dispatch never waits, and a schedule run waits outside the window"
+        "(!(github.event_name == 'schedule' || inputs.nightly) "
+        "|| needs.release-window.outputs.open == 'true')"
+    ) in _if(publish), "a plain dispatch never waits, and a nightly run waits outside the window"
+
+
+def test_only_the_window_job_reads_the_actions_api_for_the_dedupe(deploy: dict) -> None:
+    job = deploy["jobs"]["release-window"]
+    assert job["permissions"] == {"actions": "read"}, "read only, and nothing else"
+    once = job["steps"][1]
+    assert once["if"] == "${{ steps.clock.outputs.open == 'true' }}"
+    assert once["env"]["GH_TOKEN"] == "${{ github.token }}"
+    # The jobs API names a job by its `name:`. A renamed job would never match.
+    assert once["env"]["PUBLISH_JOB"] == deploy["jobs"]["publish-release"]["name"]
+
+
+def test_the_run_name_marks_a_nightly_dispatch(deploy: dict) -> None:
+    """The runs API does not return the inputs. So a nightly dispatch says
+    "nightly" in its run name, and the dedupe and the box script read that.
+    A push keeps its commit message, and every other run keeps "deploy"."""
+    assert deploy["run-name"] == (
+        "${{ inputs.nightly && 'deploy (nightly)' "
+        "|| github.event_name == 'push' && github.event.head_commit.message "
+        "|| 'deploy' }}"
+    )
 
 
 def test_the_window_holds_the_planned_hour(deploy: dict) -> None:
@@ -267,6 +308,324 @@ def test_the_window_reads_the_clock(deploy: dict, tmp_path: pathlib.Path,
     else:
         assert "::warning title=Release waits a day::" in done.stdout
         assert "Release WAITS" in summary.read_text(encoding="utf-8")
+
+
+# ── 6. Each kind of run, through the release conditions (CIV-13) ─────────────
+#
+# A small evaluator for the three `if` lines. It reads only `&&`, `||`, `!`,
+# brackets, `==`, `!=`, names and quoted strings. That is all those lines use.
+# It follows GitHub's rules: `&&` and `||` give an operand, not a boolean,
+# and a missing input is null, which is falsy.
+
+_TOKEN = re.compile(r"\s*(\(|\)|&&|\|\||!=|==|!|'[^']*'|[A-Za-z_][\w.\-]*(?:\(\))?)")
+
+
+def _tokens(expr: str) -> list[str]:
+    out, pos = [], 0
+    expr = expr.strip()
+    while pos < len(expr):
+        m = _TOKEN.match(expr, pos)
+        assert m, f"cannot read {expr[pos:]!r}"
+        out.append(m.group(1))
+        pos = m.end()
+    return out
+
+
+def _eval(expr: str, ctx: dict) -> object:
+    expr = expr.strip()
+    assert expr.startswith("${{") and expr.endswith("}}")
+    toks = _tokens(expr[3:-2])
+    pos = 0
+
+    def peek() -> str | None:
+        return toks[pos] if pos < len(toks) else None
+
+    def take() -> str:
+        nonlocal pos
+        pos += 1
+        return toks[pos - 1]
+
+    def primary() -> object:
+        tok = take()
+        if tok == "(":
+            val = or_()
+            assert take() == ")"
+            return val
+        if tok == "!":
+            return not primary()
+        if tok.startswith("'"):
+            return tok[1:-1]
+        if tok in ("always()", "success()"):
+            return True
+        if tok in ("true", "false"):
+            return tok == "true"
+        return ctx.get(tok)
+
+    def cmp() -> object:
+        left = primary()
+        while peek() in ("==", "!="):
+            op = take()
+            right = primary()
+            left = (left == right) if op == "==" else (left != right)
+        return left
+
+    def and_() -> object:
+        left = cmp()
+        while peek() == "&&":
+            take()
+            right = cmp()
+            left = right if left else left
+        return left
+
+    def or_() -> object:
+        left = and_()
+        while peek() == "||":
+            take()
+            right = and_()
+            left = left if left else right
+        return left
+
+    val = or_()
+    assert pos == len(toks), f"unread tokens: {toks[pos:]}"
+    return val
+
+
+def _ctx(event: str, *, nightly: bool | None = None, skip_tests: bool | None = None,
+         hold: str = "", test: str = "success", window_open: str = "") -> dict:
+    return {
+        "github.event_name": event,
+        "github.ref": "refs/heads/main",
+        "inputs.nightly": nightly,
+        "inputs.skip_tests": skip_tests,
+        "vars.RELEASE_HOLD": hold,
+        "needs.lint.result": "success",
+        "needs.test.result": test,
+        "needs.release-window.outputs.open": window_open,
+    }
+
+
+def _runs(deploy: dict, job: str, ctx: dict) -> bool:
+    return bool(_eval(str(deploy["jobs"][job]["if"]), ctx))
+
+
+def test_a_plain_dispatch_is_not_held(deploy: dict) -> None:
+    """A plain dispatch behaves as before CIV-13: no hold, no window."""
+    ctx = _ctx("workflow_dispatch", nightly=False, skip_tests=False, hold="1")
+    assert not _runs(deploy, "release-hold", ctx)
+    assert not _runs(deploy, "release-window", ctx)
+    assert _runs(deploy, "publish-release", ctx), "RELEASE_HOLD does not stop a person"
+    # With skip_tests the test job skips, and a plain dispatch still publishes.
+    ctx = _ctx("workflow_dispatch", nightly=False, skip_tests=True, test="skipped")
+    assert _runs(deploy, "publish-release", ctx)
+
+
+def test_a_nightly_dispatch_is_held_by_release_hold(deploy: dict) -> None:
+    ctx = _ctx("workflow_dispatch", nightly=True, hold="1", window_open="true")
+    assert _runs(deploy, "release-hold", ctx)
+    assert not _runs(deploy, "release-window", ctx)
+    assert not _runs(deploy, "publish-release", ctx)
+
+
+def test_a_nightly_dispatch_obeys_the_window(deploy: dict) -> None:
+    ctx = _ctx("workflow_dispatch", nightly=True)
+    assert _runs(deploy, "release-window", ctx)
+    for shut in ("", "false"):
+        assert not _runs(deploy, "publish-release", {**ctx, "needs.release-window.outputs.open": shut})
+    assert _runs(deploy, "publish-release", {**ctx, "needs.release-window.outputs.open": "true"})
+
+
+def test_a_nightly_dispatch_cannot_skip_the_tests(deploy: dict) -> None:
+    ctx = _ctx("workflow_dispatch", nightly=True, skip_tests=True, test="skipped",
+               window_open="true")
+    assert not _runs(deploy, "publish-release", ctx)
+
+
+def test_the_schedule_still_releases_as_before(deploy: dict) -> None:
+    ctx = _ctx("schedule", window_open="true")
+    assert _runs(deploy, "release-window", ctx)
+    assert _runs(deploy, "publish-release", ctx)
+    assert not _runs(deploy, "publish-release", {**ctx, "needs.release-window.outputs.open": "false"})
+    held = _ctx("schedule", hold="1", window_open="true")
+    assert _runs(deploy, "release-hold", held)
+    assert not _runs(deploy, "publish-release", held)
+
+
+def test_a_push_never_releases_or_reads_the_window(deploy: dict) -> None:
+    ctx = _ctx("push", window_open="true")
+    for job in ("release-hold", "release-window", "publish-release"):
+        assert not _runs(deploy, job, ctx), job
+
+
+@pytest.mark.parametrize(("ctx", "title"), [
+    ({"inputs.nightly": True, "github.event_name": "workflow_dispatch"}, "deploy (nightly)"),
+    ({"inputs.nightly": False, "github.event_name": "workflow_dispatch"}, "deploy"),
+    ({"github.event_name": "schedule"}, "deploy"),
+    ({"github.event_name": "push", "github.event.head_commit.message": "WS-1: a fix (#9)"},
+     "WS-1: a fix (#9)"),
+])
+def test_the_run_name_of_each_kind_of_run(deploy: dict, ctx: dict, title: str) -> None:
+    assert _eval(deploy["run-name"], ctx) == title
+
+
+# ── 7. A night ships once (CIV-13) ──────────────────────────────────────────
+
+_REPO_ENV = {"GITHUB_REPOSITORY": "Hathi-Labs/Metorite", "GITHUB_RUN_ID": "500",
+             "GITHUB_SERVER_URL": "https://github.com"}
+
+# A fake `gh`. It writes each call to calls.log, and it answers from files in
+# FAKE_DIR. FAKE_FAIL=1 makes every call fail, as a down API does.
+_FAKE_GH = r"""#!/usr/bin/env bash
+echo "$*" >> "$FAKE_DIR/calls.log"
+[ "${FAKE_FAIL:-0}" = 1 ] && { echo '{"message":"Server Error"}'; exit 1; }
+url="$2"
+case "$url" in
+  *event=schedule*) f="$FAKE_DIR/schedule.json" ;;
+  *event=workflow_dispatch*) f="$FAKE_DIR/dispatch.json" ;;
+  */jobs*) id="${url#*/runs/}"; f="$FAKE_DIR/jobs_${id%%/*}.json" ;;
+  *) exit 1 ;;
+esac
+[ -f "$f" ] || { echo '{"message":"Not Found"}'; exit 1; }
+cat "$f"
+"""
+
+
+def _write_json(path: pathlib.Path, doc: object) -> None:
+    import json
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def _run_once(deploy: dict, tmp_path: pathlib.Path, *, now: str = "2026-11-05T22:40:00Z",
+              attempt: str = "1", schedule: list | None = None, dispatch: list | None = None,
+              jobs: dict | None = None, fail: bool = False) -> tuple[str, str, str, list[str]]:
+    step = deploy["jobs"]["release-window"]["steps"][1]
+    fake = tmp_path / "fake"
+    (fake / "bin").mkdir(parents=True)
+    gh = fake / "bin" / "gh"
+    gh.write_text(_FAKE_GH, encoding="utf-8")
+    gh.chmod(0o755)
+    _write_json(fake / "schedule.json", {"workflow_runs": schedule or []})
+    _write_json(fake / "dispatch.json", {"workflow_runs": dispatch or []})
+    for run_id, run_jobs in (jobs or {}).items():
+        _write_json(fake / f"jobs_{run_id}.json", {"jobs": run_jobs})
+    out, summary = tmp_path / "out", tmp_path / "summary"
+    script = f"date() {{ echo {now}; }}\n" + step["run"]
+    env = {**os.environ, **_REPO_ENV, "PUBLISH_JOB": step["env"]["PUBLISH_JOB"],
+           "GITHUB_RUN_ATTEMPT": attempt, "FAKE_DIR": str(fake),
+           "FAKE_FAIL": "1" if fail else "0",
+           "PATH": f"{fake / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}",
+           "GITHUB_OUTPUT": str(out), "GITHUB_STEP_SUMMARY": str(summary)}
+    done = subprocess.run([_BASH, "-c", script], env=env, capture_output=True,
+                          text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    log = fake / "calls.log"
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    text = summary.read_text(encoding="utf-8") if summary.exists() else ""
+    return out.read_text(encoding="utf-8").strip(), done.stdout, text, calls
+
+
+def _publish(conclusion: str | None) -> list[dict]:
+    return [{"name": "Lint & type-check", "conclusion": "success"},
+            {"name": "Publish release ref", "conclusion": conclusion}]
+
+
+_SCHEDULE_RUN = {"id": 401, "event": "schedule", "display_title": "deploy"}
+_NIGHTLY_RUN = {"id": 402, "event": "workflow_dispatch", "display_title": "deploy (nightly)"}
+# Run 41969146897: the owner's plain dispatch of 2026-11-05. It published,
+# and it must never count as a nightly release.
+_PLAIN_RUN = {"id": 41969146897, "event": "workflow_dispatch", "display_title": "deploy"}
+_SELF_RUN = {"id": 500, "event": "workflow_dispatch", "display_title": "deploy (nightly)"}
+
+needs_bash = pytest.mark.skipif(_BASH is None, reason="no bash on this machine")
+
+
+@needs_bash
+def test_once_ships_when_no_nightly_run_shipped(deploy: dict, tmp_path: pathlib.Path) -> None:
+    open_, stdout, summary, calls = _run_once(
+        deploy, tmp_path, schedule=[_SCHEDULE_RUN], dispatch=[_SELF_RUN],
+        jobs={"401": _publish("skipped")})
+    assert open_ == "open=true"
+    assert "::warning" not in stdout and not summary
+    # It reads the window of tonight, and never its own run.
+    assert any("created=>=2026-11-05T21:00:00Z" in c for c in calls)
+    assert not any("/runs/500/" in c for c in calls)
+
+
+@needs_bash
+def test_once_holds_when_a_nightly_dispatch_shipped(deploy: dict, tmp_path: pathlib.Path) -> None:
+    open_, stdout, summary, _ = _run_once(
+        deploy, tmp_path, dispatch=[_SELF_RUN, _NIGHTLY_RUN],
+        jobs={"402": _publish("success")})
+    assert open_ == "open=false"
+    assert "::notice title=Release shipped tonight::" in stdout
+    assert "Release SKIPPED" in summary and "/actions/runs/402" in summary
+
+
+@needs_bash
+def test_once_holds_when_the_schedule_run_shipped(deploy: dict, tmp_path: pathlib.Path) -> None:
+    open_, _, _, _ = _run_once(deploy, tmp_path, schedule=[_SCHEDULE_RUN],
+                               jobs={"401": _publish("success")})
+    assert open_ == "open=false"
+
+
+@needs_bash
+def test_once_ships_after_an_earlier_failure(deploy: dict, tmp_path: pathlib.Path) -> None:
+    open_, stdout, _, _ = _run_once(
+        deploy, tmp_path, schedule=[_SCHEDULE_RUN], dispatch=[_NIGHTLY_RUN],
+        jobs={"401": _publish("failure"), "402": _publish("cancelled")})
+    assert open_ == "open=true"
+    assert "::warning" not in stdout
+
+
+@needs_bash
+def test_a_plain_dispatch_never_counts(deploy: dict, tmp_path: pathlib.Path) -> None:
+    open_, _, _, calls = _run_once(deploy, tmp_path, dispatch=[_PLAIN_RUN],
+                                   jobs={"41969146897": _publish("success")})
+    assert open_ == "open=true"
+    assert not any("/runs/41969146897/" in c for c in calls), "it never reads its jobs"
+
+
+@needs_bash
+def test_once_ships_with_a_warning_when_the_api_fails(deploy: dict, tmp_path: pathlib.Path) -> None:
+    """FAIL OPEN, on purpose. A second ship of one night is one more apply of
+    the same or a newer commit. A missed night is a day of merges held back."""
+    open_, stdout, _, calls = _run_once(deploy, tmp_path, fail=True)
+    assert open_ == "open=true"
+    assert "::warning title=Release may ship twice::" in stdout
+    assert calls, "it tried the API"
+
+
+@needs_bash
+def test_once_ships_with_a_warning_when_the_jobs_api_fails(deploy: dict, tmp_path: pathlib.Path) -> None:
+    # No jobs file for run 402, so the fake answers 404.
+    open_, stdout, _, _ = _run_once(deploy, tmp_path, dispatch=[_NIGHTLY_RUN])
+    assert open_ == "open=true"
+    assert "::warning title=Release may ship twice::" in stdout
+
+
+@needs_bash
+def test_a_rerun_skips_the_check(deploy: dict, tmp_path: pathlib.Path) -> None:
+    open_, _, _, calls = _run_once(deploy, tmp_path, attempt="2", schedule=[_SCHEDULE_RUN],
+                                   jobs={"401": _publish("success")})
+    assert open_ == "open=true"
+    assert calls == [], "a person's rerun does not ask the API"
+
+
+@needs_bash
+@pytest.mark.parametrize(("now", "since"), [
+    ("2026-11-05T21:00:00Z", "2026-11-05T21:00:00Z"),
+    ("2026-11-05T23:59:59Z", "2026-11-05T21:00:00Z"),
+    # After midnight the window opened on the day before.
+    ("2026-11-06T00:00:00Z", "2026-11-05T21:00:00Z"),
+    ("2026-11-06T01:59:00Z", "2026-11-05T21:00:00Z"),
+    ("2026-12-01T01:30:00Z", "2026-11-30T21:00:00Z"),
+    ("2027-01-01T00:10:00Z", "2026-12-31T21:00:00Z"),
+])
+def test_once_looks_back_to_the_window_open(deploy: dict, tmp_path: pathlib.Path,
+                                            now: str, since: str) -> None:
+    _, _, _, calls = _run_once(deploy, tmp_path, now=now)
+    runs = [c for c in calls if "/workflows/deploy.yml/runs?" in c]
+    assert len(runs) == 2, "one list for the schedule, one for the dispatch"
+    assert all(f"created=>={since}&" in c for c in runs), runs
 
 
 # ── The hourly delivery check reads release ──────────────────────────────────
