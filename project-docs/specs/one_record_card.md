@@ -51,6 +51,7 @@ The rules of the frame:
 - **Escape closes the card.** `panelEscape` keeps its rule: Escape from a field with text blurs the field first. Escape does nothing while a dialog, a menu or a popup over the card is open, or while the focus is outside the page (the assistant).
 - **Close gives the focus back** to what opened the card.
 - **Never covers the pill.** D172.4 now holds for each record card.
+- **A docked card leaves the page usable.** When the row cannot hold the card and 20rem of page, the card stands over the page at the full stop, and the toggle hides. This happens with the assistant docked at 1440 px. The member's choice stays stored for a wider page. The rule measures the row, so it cannot flip the stop and flip back.
 
 **3.2 The header.** `TaskHeaderRow` (`components/TaskPanelHeader.tsx`), in one order: the place or the noun, the copy link, the app's chips, the app's actions, expand, close. The title is on the next line. A host passes its own words for close and copy.
 
@@ -67,7 +68,7 @@ The rules of the frame:
 
 | Slice | Task | Lane | What | Done when | Tier | Gate |
 |---|---|---|---|---|---|---|
-| ORC-1 | 1834 | L5 | The frame (§3.1), and the CRM record cards draw it, with the header (§3.2) and the mark (§3.4). `app/projects/lib/panelMode.ts` moves to `lib/panelMode.ts`, and the old path re-exports it | Each of the five record kinds opens at side, full and phone. Expand keeps the tab and a half-typed note. Escape follows §3.1. `j` and `k` still step. The open record shows as selected. The pill stays in reach at each stop. Four captures | STANDARD | AGENT-SAFE |
+| ORC-1 | 1834 | L5 | The frame (§3.1), and the CRM record cards draw it, with the header (§3.2) and the mark (§3.4). `app/projects/lib/panelMode.ts` moves to `lib/panelMode.ts`, and the old path re-exports it | Each of the five record kinds opens at side, full and phone. Expand keeps the tab and a half-typed note. Escape and the fit rule follow §3.1. `j` and `k` still step. The open record shows as selected. The pill stays in reach at each stop. Four captures | STANDARD | AGENT-SAFE |
 | ORC-2 | 1835 | L4 | `TaskPanel` and `projects/page.tsx` draw `CardPanel`, with one mount. The re-export goes | Side, full and phone look as they do today. A half-typed comment survives expand. A source scan finds no second overlay in `projects/page.tsx` | MEDIUM | AGENT-SAFE |
 | ORC-3 | 1836 | L4 | Tabs in `TaskBody` (§5). `RecordTabBar` moves to a shared component, and both cards draw it | Each section of today is on one tab, in Projects, My Tasks and Calendar. `?ttab=` keeps the tab. §3.3's last rule holds. Four captures, side and full. **The owner checks the tab names at the preview** | MEDIUM | AGENT-SAFE |
 
@@ -89,7 +90,7 @@ ORC-2 waits on ORC-1, and ORC-3 waits on ORC-2. ORC-2 and TC-3 (task 1547) touch
 
 ## 6. The fences
 
-- ORC-1: `components/CardPanel.test.ts` holds the three stops, the one mount and the Escape rule. `app/crm/components/crmCardPanel.test.ts` holds that both record sheets draw `CardPanel`, and that `RecordShell.tsx` does not draw `Modal`.
+- ORC-1: `components/CardPanel.test.ts` holds the three stops, the one mount, the fit rule and the Escape rule. `app/crm/components/crmCardPanel.test.ts` holds that both record sheets draw `CardPanel`, and that `RecordShell.tsx` does not draw `Modal`.
 - ORC-2: a source scan that `projects/page.tsx` draws no overlay of its own.
 - ORC-3: a test that each section of `TaskBody` belongs to one tab, and a source scan for one tab bar.
 
