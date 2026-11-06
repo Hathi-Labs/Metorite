@@ -56,13 +56,24 @@ import pytest
 
 pytest.importorskip("sqlalchemy")
 
+from acb_auth import (
+    AgentScope,
+    EffectiveAccess,
+    UserContext,
+    UserRole,
+    agent_oauth,
+    agent_tokens,
+    require_authenticated,
+)
 from acb_auth import access as access_module
-from acb_auth import agent_oauth, agent_tokens, require_authenticated
 from acb_auth.access import invalidate as invalidate_access
 from acb_common import get_settings
+from acb_common.db import bind_tenant, release_tenant
 from agent_edge import app as edge_app_module
 from agent_edge import gateway_client
+from fastapi import HTTPException
 from gateway.routes import agent_access
+from gateway.routes.projects import tree
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
@@ -483,6 +494,19 @@ class TestTheShapes:
         assert pair not in agent_oauth.MCP_ROUTES
         assert pair not in agent_oauth.MCP_WRITE_ROUTES
 
+    async def test_a_signed_agent_gets_404_before_the_body(self, monkeypatch):
+        """Only the member changes a grant (D-EA-13 rule 5). The route never
+        reads the body of a signed agent, so ``request`` can be ``None``."""
+        monkeypatch.setattr(agent_access, "current_tenant", lambda: str(uuid.uuid4()))
+        user = UserContext(
+            email=MEMBER, role=UserRole.EMPLOYEE, organization_id=str(uuid.uuid4()),
+            access=EffectiveAccess(is_active=True),
+            agent=AgentScope(connection_id=str(uuid.uuid4())),
+        )
+        with pytest.raises(HTTPException) as caught:
+            await agent_access.change_my_connection(uuid.uuid4(), None, user)
+        assert caught.value.status_code == 404
+
     def test_the_flag_reader(self, monkeypatch):
         org = str(uuid.uuid4())
         settings = get_settings()
@@ -714,6 +738,30 @@ class TestTheNextCall:
         row = live.a.row(cid)
         assert set(row["pins"]) == {live.p["team"], live.p["personal"]}
         assert row["personal"] is True
+
+    async def test_the_sight_is_the_members_and_never_the_agents(self, live):
+        """The audit's binding: an agent scope with one pin and no personal
+        switch does not shrink what its member may grant."""
+        user = UserContext(
+            email=MEMBER, role=UserRole.EMPLOYEE, organization_id=live.org_a,
+            access=EffectiveAccess(is_active=True),
+            agent=AgentScope(connection_id=str(uuid.uuid4()),
+                             pinned_projects=(live.p["other_team"],),
+                             include_personal=False),
+        )
+
+        async def go() -> frozenset[str]:
+            token = bind_tenant(live.org_a)
+            try:
+                return await tree.grantable_project_ids(user)
+            finally:
+                release_tenant(token)
+        seen = await _in_scope(live, go)
+        assert {live.p["team"], live.p["team_child"], live.p["other_team"],
+                live.p["personal"]} <= seen
+        assert live.p["personal_child"] not in seen, "a personal root only"
+        assert live.p["hidden"] not in seen
+        assert live.p["b_root"] not in seen
 
     async def test_offline_access_stays_when_the_body_keeps_it(self, live):
         cid, _ = live.a.connection(MEMBER, scopes=(READ, CONTEXT, OFFLINE),
