@@ -24,10 +24,11 @@ each was restored. ``R`` is ``routes/projects/today_rule.py``, ``P`` is
   ``test_a_mark_past_the_cap_answers_409_and_writes_nothing``.
 * C2. ``R`` ``focus_room_sql``: no first ``EXISTS``.
   ``test_a_lower_cap_keeps_the_marks_and_refuses_new_ones`` (the re-mark).
-* C3. ``R`` ``focus_count_sql``: no One Thing term.
+* C3. ``R`` ``focus_count_sql``: no ``ONE_THING_SQL`` (rerun in fix round 1).
   ``test_the_one_thing_counts_and_never_refuses``.
-* C4. ``R`` ``focus_count_sql``: no ``NOT EXISTS`` of a marked One Thing.
-  ``test_a_marked_one_thing_counts_once``.
+* C4. Since fix round 1 the count reads one row for each task, so a marked One
+  Thing counts once by construction. ``test_a_marked_one_thing_counts_once``
+  holds it, and no text of the first round is left to break.
 * C10 (fix round 1, item 2). ``R`` ``focus_count_sql``: the One Thing term
   outside ``live_where``. ``test_a_one_thing_on_an_unseen_task_counts_as_a_random_id``.
 * C11 (item 3). ``R`` ``focus_count_sql``: ``OPEN_SQL`` dropped.
@@ -43,8 +44,11 @@ each was restored. ``R`` is ``routes/projects/today_rule.py``, ``P`` is
 * C7. ``R`` ``clamp_focus_cap``: no clamp. ``test_the_cap_reads_null_as_3_and_clamps``.
 * C8. ``S`` ``write_member_settings``: no clamp.
   ``test_the_settings_write_clamps_the_cap``.
-* C9. ``R`` ``focus_count_sql``: no ``lower(f.member_email) = :focus_who``.
-  ``test_the_mark_is_the_members_own``.
+* C9. ``R`` ``focus_count_sql``: the overlay join with no member filter
+  (rerun in fix round 1). ``test_the_mark_is_the_members_own``.
+
+C1, C2, C5, C6 and C8 were run again on the tree of fix round 1, and each one
+turned its test red.
 """
 
 from __future__ import annotations
