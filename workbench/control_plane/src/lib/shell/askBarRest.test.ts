@@ -29,6 +29,8 @@ import {
   restBoxes,
   scrollClears,
   countsUnderBar,
+  overlaps,
+  samplePoints,
   writeFold,
 } from "./askBarRest";
 
@@ -102,16 +104,18 @@ describe("content that can scroll clear of the bar is not in the way", () => {
     expect(scrollClears(36 + ASK_LIFT_GAP, 870, 834)).toBe(true);
   });
 
-  it("counts a field that a scroll could lift, because the member types there (task 1816)", () => {
-    // The inline reply composer: 41 px of scroll left, a field 25 px under the bar's top.
-    const field = { height: 16, bottom: 859, field: true, scroll: 400 };
-    expect(countsUnderBar(field, 834)).toBe(true);
-    expect(countsUnderBar({ ...field, height: 120 }, 834)).toBe(true);
-    // The same box as a button stays out: a scroll lifts it clear.
-    expect(countsUnderBar({ ...field, field: false }, 834)).toBe(false);
-    // A large non-field target stays out, and a button near the end of its scroll counts.
-    expect(countsUnderBar({ ...field, field: false, height: 120, scroll: 0 }, 834)).toBe(false);
-    expect(countsUnderBar({ ...field, field: false, scroll: 0 }, 834)).toBe(true);
+  it("counts a control in a marked region at any scroll, and one outside it as before (task 1816)", () => {
+    // A button 25 px under the bar's top, with 400 px of scroll left.
+    const button = { height: 20, bottom: 859, field: false, scroll: 400 };
+    expect(countsUnderBar(button, 834)).toBe(false);
+    expect(countsUnderBar({ ...button, inRegion: true }, 834)).toBe(true);
+    // A large target that is not a field stays out, in a region or not. A field never does.
+    expect(countsUnderBar({ ...button, height: 120, inRegion: true }, 834)).toBe(false);
+    expect(countsUnderBar({ ...button, height: 120, field: true, inRegion: true }, 834)).toBe(true);
+    // A field outside a region keeps the scroll rule: the page scrolls it clear as before.
+    expect(countsUnderBar({ ...button, field: true }, 834)).toBe(false);
+    // The old cases do not change: a button near the end of its scroll counts.
+    expect(countsUnderBar({ ...button, scroll: 0 }, 834)).toBe(true);
   });
 
   it("counts a control near the end of its scroll", () => {
@@ -236,5 +240,76 @@ describe("a board lane adds from its header (source)", () => {
     const lane = read("components/board/BoardColumn.tsx");
     expect(lane).toMatch(/onAdd && header \? \(\s*<button[\s\S]{0,200}aria-label=\{addLabel\}/);
     expect(lane).toMatch(/onAdd && addAtTop \?[\s\S]{0,200}<QuickAdd label=\{addLabel\} onAdd=\{onAdd\} startOpen onClose=/);
+  });
+});
+
+describe("a region the bar never sits on (task 1816)", () => {
+  // The foot of a composer: the page's width from x 700, over the bar's foot.
+  const region = box(700, 700, 500, 100);
+
+  it("is in the way at any overlap, with no middle-or-a-tenth test", () => {
+    // A 3 px sliver over the full field's right end: no control would count.
+    const sliver = box(885, 700, 300, 100);
+    expect(overlaps(sliver, restBoxes(PAGE).full)).toBe(true);
+    expect(askRest([], PAGE, [sliver])).toBe("pill");
+    expect(overlaps(box(0, 0, 100, 100), restBoxes(PAGE).full)).toBe(false);
+    // Touching edges are not an overlap.
+    expect(overlaps(box(888, 734, 50, 46), restBoxes(PAGE).full)).toBe(false);
+  });
+
+  it("keeps the pill when the region is clear of the pill", () => {
+    expect(askRest([], PAGE, [region])).toBe("pill");
+    expect(askRest([], PAGE)).toBe("full");
+  });
+
+  it("takes the corner when the region is under the pill", () => {
+    expect(askRest([], PAGE, [box(500, 700, 300, 100)])).toBe("corner");
+    expect(askRest([], PAGE, [box(0, 700, 1200, 100)])).toBe("corner");
+  });
+
+  it("leaves the full field when the region leaves the bar's rows, and the form changes once each way", () => {
+    // A composer scrolls up past the bar: its visible foot goes from below the bar to above it.
+    const at = (top: number) => askRest([], PAGE, [box(300, top, 800, 300)]);
+    const forms = [800, 760, 700, 600, 500, 430, 300].map(at);
+    const changes = forms.filter((f, i) => i > 0 && f !== forms[i - 1]).length;
+    expect(forms[0]).toBe("full");
+    expect(forms.at(-1)).toBe("full");
+    expect(changes).toBe(2);
+  });
+
+  it("sits the corner above the controls of the region, at any scroll", () => {
+    const send = box(1100, 744, 60, 28);
+    const under = { height: 28, bottom: 772, field: false, scroll: 600, inRegion: true };
+    expect(countsUnderBar(under, 734)).toBe(true);
+    expect(cornerLift([send], PAGE)).toBe(800 - 744 + ASK_LIFT_GAP);
+  });
+
+  it("samples one pixel inside each edge, so a 3 px overlap is seen", () => {
+    const ys = samplePoints(834, 880, 10);
+    expect(ys[0]).toBe(835);
+    expect(ys.at(-1)).toBe(879);
+    // A field whose top is 3 px above the bar's bottom edge.
+    expect(ys.some((y) => y >= 877)).toBe(true);
+    // The old sampler stopped at 875.
+    expect(Math.max(...ys.filter((y) => y < 879))).toBeLessThanOrEqual(875 + 1);
+    expect(samplePoints(0, 2, 10)).toEqual([1]);
+    expect(samplePoints(0, 100, 12)[0]).toBe(1);
+  });
+});
+
+describe("each Email compose surface is a region the bar never sits on (task 1816)", () => {
+  const read = (rel: string) =>
+    readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf-8");
+
+  it("marks the inline composer, the draft card and the new-mail compose", () => {
+    expect(read("../../app/email/components/EmailDetail.tsx")).toMatch(/data-email-composer=""\s+data-ask-clear=""/);
+    expect(read("../../app/email/components/ConversationView.tsx")).toMatch(/data-email-composer=""\s+data-ask-clear=""/);
+    expect(read("../../app/email/components/ComposePanel.tsx")).toMatch(/<div data-ask-clear="" className="relative w-full max-w-2xl/);
+  });
+
+  it("the shell reads the attribute and names no app", () => {
+    const src = read("./askBarRest.ts");
+    expect(src).toContain('"[data-ask-clear]"');
+    expect(src).not.toMatch(/\/email|data-email/);
   });
 });

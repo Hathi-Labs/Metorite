@@ -15217,6 +15217,10 @@ with the request. The note is to those people. The note names the sender of the 
 unnamed reader. A reply and a new email keep their prompts. Fence:
 `tests/unit/test_email_forward_draft_prompt.py`.
 
+**The Ask bar and the composers (task 1816).** Each Email composer is a region that the Ask bar
+never sits on (`data-ask-clear`, `navigation_shell.md`). The bar takes the pill or the corner
+button, and it covers no field or control of the composer.
+
 **Open gaps, ranked for the Google review.** The first gap is the most likely to matter.
 
 1. **The list tools.** `search_emails`, `query_inbox` and the other list tools still print the

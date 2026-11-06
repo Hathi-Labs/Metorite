@@ -16,15 +16,24 @@
  * sheet) it holds its form. The fold button sends it to the corner on one app
  * until ⌘K, `/` or a click brings it back, and it remembers that per app.
  *
+ * A region that the bar never sits on (`data-ask-clear`, owner, 2026-11-06,
+ * task 1816: "if there are other interactable elements underneath the chat
+ * box, like a text input, then the chat box should also disappear to the
+ * right"). The Email composers are such regions: the member types there, and
+ * the bar over the foot of a composer hid a field. A page marks the region
+ * with the attribute. The bar takes the largest form that has NO overlap with
+ * it: any overlap counts, with no middle-or-a-tenth test. Inside the region
+ * each control counts at any scroll for the corner's lift, so the corner
+ * button sits above "Send" and the toolbar. A dialog over the region hides it,
+ * as it hides a control.
+ *
  * The rule for "in the way": the bar covers the control's middle or more than
  * a tenth of it. A tenth, because a button's label sits at one end: the
  * measured case was a board lane's "+ Add", whose label the pill hid while it
  * covered a fifth of the button. Two kinds of target never count:
  *
  * - **Content that can still scroll clear.** The member scrolls it up from
- *   under the bar, as under any glass bar. A field is not such content: the
- *   member types where it is and does not scroll it away (the reply
- *   composer of Email, owner report, 2026-11-06, task 1816). Near the end of its scroll, when
+ *   under the bar, as under any glass bar. Near the end of its scroll, when
  *   the scroll left is too short to lift it past the bar, it counts. The
  *   measured case: a lane's "+ Add" with 17 px of scroll left, under a bar
  *   it needed 60 px to clear.
@@ -89,6 +98,11 @@ export function restBoxes(area: Box): Record<AskRest, Box> {
 /** The share of a control the bar may cover before it is in the way. */
 export const ASK_COVER_SHARE = 0.1;
 
+/** The two boxes share any area. A region the bar never sits on counts at any overlap. */
+export function overlaps(a: Box, b: Box): boolean {
+  return Math.min(a.right, b.right) > Math.max(a.left, b.left) && Math.min(a.bottom, b.bottom) > Math.max(a.top, b.top);
+}
+
 /** The box covers the control's middle, or more than a tenth of it. */
 export function inTheWay(control: Box, box: Box): boolean {
   const w = control.right - control.left;
@@ -103,10 +117,12 @@ export function inTheWay(control: Box, box: Box): boolean {
 }
 
 /** The largest form that hides none of `controls`. The corner lifts instead. */
-export function askRest(controls: readonly Box[], area: Box): AskRest {
+export function askRest(controls: readonly Box[], area: Box, regions: readonly Box[] = []): AskRest {
   const boxes = restBoxes(area);
-  if (!controls.some((c) => inTheWay(c, boxes.full))) return "full";
-  if (!controls.some((c) => inTheWay(c, boxes.pill))) return "pill";
+  const clear = (form: Box) =>
+    !controls.some((c) => inTheWay(c, form)) && !regions.some((r) => overlaps(r, form));
+  if (clear(boxes.full)) return "full";
+  if (clear(boxes.pill)) return "pill";
   return "corner";
 }
 
@@ -171,6 +187,9 @@ const TARGET =
 /** A field the member types in. It counts at any size. */
 const FIELD = 'input,select,textarea,[contenteditable=""],[contenteditable="true"],[role="textbox"],[role="combobox"]';
 
+/** A region the bar never sits on. A page marks it, and the shell knows no app. */
+const CLEAR = "[data-ask-clear]";
+
 /** The sample step across a box, in pixels. A control is at least this big. */
 const STEP_X = 12;
 const STEP_Y = 10;
@@ -186,16 +205,30 @@ export function scrollClears(left: number, bottom: number, barTop: number): bool
 /**
  * Does a control under the bar count? A control taller than `ASK_LARGE_TARGET`
  * does not, unless it is a field. A control that a scroll lifts clear does not,
- * unless it is a field: the member types in a field and keeps it where it is.
- * `scroll` is the scroll left in the nearest scroller.
+ * unless it sits in a region the bar never sits on (`data-ask-clear`): the
+ * member works in that region and does not scroll it away. `scroll` is the
+ * scroll left in the nearest scroller.
  */
 export function countsUnderBar(
-  c: { height: number; bottom: number; field: boolean; scroll: number },
+  c: { height: number; bottom: number; field: boolean; scroll: number; inRegion?: boolean },
   barTop: number,
 ): boolean {
-  if (c.field) return true;
-  if (c.height > ASK_LARGE_TARGET) return false;
+  if (c.height > ASK_LARGE_TARGET && !c.field) return false;
+  if (c.inRegion) return true;
   return !scrollClears(c.scroll, c.bottom, barTop);
+}
+
+/**
+ * The points to ask the browser about, across `lo` to `hi`: every `step`, and
+ * one pixel inside each edge. The edge points see a control that only the
+ * last pixels of the box touch (a field 3 px under the bar).
+ */
+export function samplePoints(lo: number, hi: number, step: number): number[] {
+  if (hi - lo <= 2) return [(lo + hi) / 2];
+  const out: number[] = [lo + 1];
+  for (let v = lo + step / 2; v < hi - 1; v += step) if (v > lo + 1) out.push(v);
+  out.push(hi - 1);
+  return out;
 }
 
 /** How far the nearest scroller of `el`, or the page, can still scroll down. */
@@ -210,33 +243,63 @@ function scrollLeft(el: Element): number {
   return page ? page.scrollHeight - page.clientHeight - page.scrollTop : 0;
 }
 
+/** The visible part of an element: its box, cut by each ancestor that clips it. */
+function visibleBox(el: Element): Box {
+  const r = el.getBoundingClientRect();
+  const box: Box = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    const { overflowX, overflowY } = getComputedStyle(node);
+    if (overflowX === "visible" && overflowY === "visible") continue;
+    const c = node.getBoundingClientRect();
+    box.left = Math.max(box.left, c.left);
+    box.top = Math.max(box.top, c.top);
+    box.right = Math.min(box.right, c.right);
+    box.bottom = Math.min(box.bottom, c.bottom);
+  }
+  box.right = Math.min(box.right, window.innerWidth);
+  box.bottom = Math.min(box.bottom, window.innerHeight);
+  return box;
+}
+
+/** What is under the bar: the controls that count, and the regions it never sits on. */
+export interface Under {
+  controls: Box[];
+  regions: Box[];
+}
+
 /**
- * The controls under `boxes` that the member can see and cannot scroll clear.
- * It asks the browser what is at points across each box, so a card a column
- * clipped, or a control under a dialog, does not count. `skip` is the bar.
+ * The controls under `boxes` that the member can see and cannot scroll clear,
+ * and the marked regions (`data-ask-clear`) that show there. It asks the
+ * browser what is at points across each box, so a card a column clipped, or a
+ * control under a dialog, does not count. `skip` is the bar.
  */
-export function controlsUnder(boxes: readonly Box[], skip: readonly Element[]): Box[] {
-  if (typeof document === "undefined" || typeof document.elementsFromPoint !== "function") return [];
+export function controlsUnder(boxes: readonly Box[], skip: readonly Element[]): Under {
+  const none: Under = { controls: [], regions: [] };
+  if (typeof document === "undefined" || typeof document.elementsFromPoint !== "function") return none;
   const found = new Set<Element>();
+  const marked = new Set<Element>();
   const mine = (el: Element) => skip.some((s) => s.contains(el));
   for (const box of boxes) {
-    for (let y = box.top + STEP_Y / 2; y < box.bottom; y += STEP_Y) {
-      for (let x = box.left + STEP_X / 2; x < box.right; x += STEP_X) {
+    for (const y of samplePoints(box.top, box.bottom, STEP_Y)) {
+      for (const x of samplePoints(box.left, box.right, STEP_X)) {
         const under = document.elementsFromPoint(x, y).find((el) => !mine(el));
         const target = under?.closest(TARGET);
         if (target && !mine(target)) found.add(target);
+        const region = under?.closest(CLEAR);
+        if (region && !mine(region)) marked.add(region);
       }
     }
   }
   const barTop = Math.min(...boxes.map((b) => b.top));
-  const out: Box[] = [];
+  const controls: Box[] = [];
   for (const el of found) {
     const r = el.getBoundingClientRect();
     const field = el.matches(FIELD);
-    if (!countsUnderBar({ height: r.height, bottom: r.bottom, field, scroll: field ? 0 : scrollLeft(el) }, barTop)) continue;
-    out.push({ left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+    const inRegion = el.closest(CLEAR) !== null;
+    if (!countsUnderBar({ height: r.height, bottom: r.bottom, field, scroll: scrollLeft(el), inRegion }, barTop)) continue;
+    controls.push({ left: r.left, top: r.top, right: r.right, bottom: r.bottom });
   }
-  return out;
+  return { controls, regions: [...marked].map(visibleBox) };
 }
 
 /** A lift moves at most this many times in one look. */
@@ -263,11 +326,12 @@ export function useAskRest(
     const look = () => {
       const r = page.getBoundingClientRect();
       const area: Box = { left: r.left, top: r.top, right: r.right, bottom: Math.min(r.bottom, window.innerHeight) };
-      const rest = askRest(controlsUnder([restBoxes(area).full], [wrap]), area);
+      const under = controlsUnder([restBoxes(area).full], [wrap]);
+      const rest = askRest(under.controls, area, under.regions);
       let lift = ASK_GAP;
       if (rest === "corner") {
         for (let i = 0; i < LIFT_TRIES; i++) {
-          const next = cornerLift(controlsUnder([cornerBox(area, lift)], [wrap]), area, lift);
+          const next = cornerLift(controlsUnder([cornerBox(area, lift)], [wrap]).controls, area, lift);
           if (next === lift) break;
           lift = next;
         }

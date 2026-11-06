@@ -1626,6 +1626,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
           <div
             ref={composerRef}
             data-email-composer=""
+            data-ask-clear=""
             style={composerSize.rootStyle}
             className={`mt-8 border border-primary/30 rounded-lg bg-secondary/30 ${composerSize.rootClass || "overflow-hidden"}`}
           >
