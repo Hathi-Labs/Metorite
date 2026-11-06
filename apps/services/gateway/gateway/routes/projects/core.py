@@ -35,7 +35,7 @@ correct in the UI and silently empties the timeline — the CRM learned this in
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -267,6 +267,23 @@ def is_runnable(project: Any) -> bool:
     return get("status") in RUNNABLE_STATUSES and get("archived_at") is None
 
 
+def _ancestor_chain_sql(seed: str) -> str:
+    """The CTE ``chain``: each project that *seed* selects, and every project
+    above it. The verdict of :data:`_ANCESTOR_RUNNABLE_SQL` and the paths of
+    :func:`visible_project_paths` read this one text (§12.8 of
+    ``external_agent_access.md``, "it adds no third walk").
+    """
+    return f"""
+WITH RECURSIVE chain AS (
+    SELECT id, parent_project_id, status, archived_at
+      FROM pm_projects WHERE {seed}
+    UNION ALL
+    SELECT p.id, p.parent_project_id, p.status, p.archived_at
+      FROM pm_projects p JOIN chain c ON p.id = c.parent_project_id
+)
+"""
+
+
 #: One project's ancestor chain, itself included, reduced to a single verdict.
 #:
 #: `bool_and` over the chain: the whole chain must be runnable for the answer to
@@ -274,14 +291,7 @@ def is_runnable(project: Any) -> bool:
 #: NULL-safe — `bool_and` of an empty chain is NULL, which :func:`
 #: is_runnable_with_ancestors` reads as False, so a project id that resolves to
 #: nothing fails closed rather than running work in a project nobody can find.
-_ANCESTOR_RUNNABLE_SQL = """
-WITH RECURSIVE chain AS (
-    SELECT id, parent_project_id, status, archived_at
-      FROM pm_projects WHERE id = CAST(:pid AS uuid)
-    UNION ALL
-    SELECT p.id, p.parent_project_id, p.status, p.archived_at
-      FROM pm_projects p JOIN chain c ON p.id = c.parent_project_id
-)
+_ANCESTOR_RUNNABLE_SQL = _ancestor_chain_sql("id = CAST(:pid AS uuid)") + """\
 SELECT bool_and(status = 'active' AND archived_at IS NULL) FROM chain
 """
 
@@ -318,9 +328,45 @@ async def is_runnable_with_ancestors(db: Any, project_id: Any) -> bool:
 #: colour are the owner's; this is what completion, the personal mirror (§6.1)
 #: and automation gates (§6.3) key off. `triage` (WS-27u, migration 164) is the
 #: parked-at-the-front-door value that :func:`triage_exclusion_clause` keys off.
+#: Triage sits LAST here, which is what the list sort by Status shows
+#: (``_CATEGORY_RANK_ARRAY``).
+#:
+#: This is the ONE written list of stages (task 1792). ``_LIFECYCLE`` and
+#: ``STATUS_STAGE_ORDER`` derive from it. Keep it a literal:
+#: ``projectToolRows.test.ts`` reads this line and compares it with
+#: ``STATUS_CATEGORIES`` in ``statusCategory.ts``.
 STATUS_CATEGORIES: tuple[str, ...] = (
     "backlog", "todo", "in_progress", "done", "cancelled", "triage",
 )
+
+#: The five stages in lifecycle order: every category but triage.
+_LIFECYCLE: tuple[str, ...] = tuple(c for c in STATUS_CATEGORIES if c != "triage")
+
+#: The order a BOARD draws its lanes (task 1792): triage first, then the
+#: lifecycle. ONE rule orders status lanes everywhere: stage rank, then
+#: ``position``, then ``name``. Position orders lanes INSIDE a stage and never
+#: moves a lane into another stage, so a Done row with the lowest position
+#: still draws after In progress. Mirrors ``STATUS_CATEGORIES`` in
+#: ``workbench/control_plane/src/lib/statusCategory.ts``. An unknown stage
+#: sorts last.
+STATUS_STAGE_ORDER: tuple[str, ...] = ("triage", *_LIFECYCLE)
+
+
+def status_order_sql(alias: str = "") -> str:
+    """The ONE SQL ``ORDER BY`` body for status lanes: stage, position, name.
+
+    ``alias`` is the table alias with no dot (``"n"`` gives ``n.category``).
+    The stage names are constants, never request input.
+    """
+    a = f"{alias}." if alias else ""
+    whens = " ".join(
+        f"WHEN '{c}' THEN {i}" for i, c in enumerate(STATUS_STAGE_ORDER)
+    )
+    return (
+        f"CASE {a}category {whens} ELSE {len(STATUS_STAGE_ORDER)} END, "
+        f"{a}position, {a}name"
+    )
+
 
 #: The one category the default list reads exclude (WS-27u). A constant rather
 #: than a literal in the clause below so the vocabulary word and the predicate
@@ -1728,6 +1774,46 @@ async def load_visible_project(
     return row
 
 
+async def visible_project_paths(
+    db: Any, vis: Visibility, project_ids: Iterable[Any],
+) -> dict[str, list[dict[str, str]]]:
+    """For each project, ``[{id, name}, ...]`` from the root down to it, in
+    the projects the reader can see (WS-55 EA-18a, spec §12.8).
+
+    The walk is :func:`_ancestor_chain_sql`. The name of a project comes back
+    only when ``Visibility.project_clause`` keeps it. The climb then stops at
+    the first parent that is not there, so a hidden name never shows, and a
+    visible grandparent above a hidden parent does not show either. A project
+    that the reader cannot see itself, such as the project of a task they only
+    hold as its assignee, has an empty path.
+    """
+    wanted = sorted({str(p) for p in project_ids if p})
+    if not wanted:
+        return {}
+    rows = (await db.execute(
+        text(
+            _ancestor_chain_sql("id = ANY(CAST(:path_leaves AS uuid[]))")
+            + "SELECT DISTINCT c.id, c.parent_project_id, p.name"
+            "  FROM chain c JOIN pm_projects p ON p.id = c.id"
+            f" WHERE {vis.project_clause('c.id')}"
+        ),
+        {"path_leaves": wanted, **vis.params},
+    )).fetchall()
+    seen = {str(row.id): row for row in rows}
+    paths: dict[str, list[dict[str, str]]] = {}
+    for leaf in wanted:
+        path: list[dict[str, str]] = []
+        current: str | None = leaf
+        # MAX_DEPTH bounds the climb, as `root_project_id` bounds its own.
+        while current in seen and len(path) < MAX_DEPTH:
+            row = seen[current]
+            path.append({"id": current, "name": row.name})
+            current = str(row.parent_project_id) if row.parent_project_id else None
+        path.reverse()
+        paths[leaf] = path
+    return paths
+
+
 async def load_visible_task(db: Any, vis: Visibility, task_id: str) -> Any:
     """One task the caller may see, or 404.
 
@@ -2943,9 +3029,9 @@ COALESCE(
   (SELECT n.id FROM pm_task_statuses n
     WHERE n.project_id = CAST(:owner AS uuid)
       AND n.category <> :triage
-    ORDER BY n.position, n.name LIMIT 1)
+    ORDER BY __ORDER__ LIMIT 1)
 )
-"""
+""".replace("__ORDER__", status_order_sql("n"))
 
 
 async def remap_task_statuses(
@@ -3252,7 +3338,7 @@ async def reserve_task_numbers(db: Any, root_id: str, count: int) -> int:
 async def load_default_status(
     db: Any, root_id: str, category: str | None = None,
 ) -> Any:
-    """The status a task lands in: the FIRST lane, by position.
+    """The status a task lands in: the first OPEN lane in stage order.
 
     ⚠️ **There is no "default status" setting any more** (owner directive
     2026-09-06). ``is_default`` used to be consulted first and the position was
@@ -3266,8 +3352,9 @@ async def load_default_status(
     four category columns therefore had no flagged answer at all and fell
     through to the position anyway. The fallback was doing the work.
 
-    So position IS the rule, and position is a thing people already see and
-    already drag. The column stays on the table under R6 and goes in a later
+    So the lane order IS the rule: stage, then position, then name
+    (:func:`status_order_sql`, task 1792). Position is a thing people already
+    see and already drag, and it orders lanes inside a stage. The column stays on the table under R6 and goes in a later
     release; nothing reads it for a status any more. Task TYPES keep their own
     ``is_default`` — a type list has no order to read the answer out of.
 
@@ -3288,29 +3375,35 @@ async def load_default_status(
         clauses.append("category = :category")
         params["category"] = category
     else:
-        clauses.append("category <> :triage")
+        # Task 1792. A new task never starts in a closed lane. Stage rank
+        # orders the rest, so a Done row at position 1 cannot win.
+        closed = ", ".join(f"'{c}'" for c in sorted(CLOSING_CATEGORIES))
+        clauses.append(f"category <> :triage AND category NOT IN ({closed})")
         params["triage"] = TRIAGE_CATEGORY
     row = (await db.execute(
         text(
             "SELECT * FROM pm_task_statuses WHERE "
             + " AND ".join(clauses)
-            + " ORDER BY position, name LIMIT 1"
+            + f" ORDER BY {status_order_sql()} LIMIT 1"
         ),
         params,
     )).fetchone()
     if row is not None:
         return row
-    if category is not None:
+    if category is None:
         raise HTTPException(
             status_code=422,
             detail=(
-                f"This project has no {category.replace('_', ' ')} status; "
-                "add one first."
+                "This project has no open status for a new task. Add a "
+                "Backlog, To do or In progress status first."
             ),
         )
     raise HTTPException(
         status_code=422,
-        detail="No task statuses are configured for this project; create one first.",
+        detail=(
+            f"This project has no {category.replace('_', ' ')} status; "
+            "add one first."
+        ),
     )
 
 

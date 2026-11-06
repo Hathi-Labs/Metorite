@@ -75,6 +75,7 @@ from gateway.routes.projects.core import (
     resolve_visibility,
     router,
     row_to_dict,
+    status_order_sql,
     status_owner_id,
     task_visibility_clause,
     touch_task,
@@ -398,7 +399,12 @@ async def reopen_if_closed(
     try:
         lane = await load_default_status(db, owner, "todo")
     except HTTPException:
-        lane = await load_default_status(db, owner)
+        try:
+            lane = await load_default_status(db, owner)
+        except HTTPException:
+            # No open lane in the set (task 1792). The task stays closed and
+            # the overlay write still succeeds, as it did before.
+            return None
     if getattr(lane, "category", None) in CLOSING_CATEGORIES:
         return None
     moved = await apply_status_transition(db, task, str(lane.id), created_by=email)
@@ -2404,7 +2410,7 @@ async def my_task(
 MY_TASK_LANES_SQL = (
     "SELECT id, name, category, position, color, is_default "
     "  FROM pm_task_statuses WHERE project_id = CAST(:root AS uuid) "
-    " ORDER BY position, name"
+    " ORDER BY " + status_order_sql()
 )
 
 
