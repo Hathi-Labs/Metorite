@@ -37,6 +37,7 @@ import Icon from "@/components/Icon";
 import { useRunActivity } from "@/hooks/useActiveSessions";
 import { shouldPollWorkspace } from "@/lib/access";
 import { visibleSections } from "@/lib/nav";
+import { askBarHeight } from "@/lib/composerHeight";
 import { morphAskBox } from "@/lib/panelMotion";
 import { LAYER_CLASS } from "@/lib/layers";
 
@@ -365,7 +366,19 @@ export function AskField({
   // The highlighted result by its KEY, as the modal holds it: Find rows land
   // late and move the rows around them. Null is the field, where Enter asks.
   const [activeKey, setActiveKey] = useState<string | null>(null);
-  const fieldRef = useRef<HTMLInputElement>(null);
+  const fieldRef = useRef<HTMLInputElement & HTMLTextAreaElement>(null);
+
+  // At the foot the field is a textarea that grows with the words (task 1601),
+  // one line to six, then scrolls. It follows `text`, so a send resets it.
+  useEffect(() => {
+    const el = fieldRef.current;
+    if (!foot || !el) return;
+    el.style.height = "auto";
+    el.style.height = `${askBarHeight(el.scrollHeight)}px`;
+  }, [text, foot]);
+
+  // A textarea at the foot, a one-line input in the shell bar.
+  const Tag = (foot ? "textarea" : "input") as "input";
 
   const done = useCallback(() => {
     setShowing(false);
@@ -421,7 +434,7 @@ export function AskField({
     });
   };
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     if (e.key === "ArrowUp" || e.key === "ArrowDown") {
       if (!showing && e.key === "ArrowUp") return;
       e.preventDefault();
@@ -442,6 +455,11 @@ export function AskField({
     } else if (e.key === "Enter" && held >= 0) {
       e.preventDefault();
       rows[held].run();
+    } else if (e.key === "Enter" && foot && !e.shiftKey && !e.nativeEvent.isComposing) {
+      // A textarea does not submit its form. Enter asks, Shift+Enter is a new
+      // line, and a pasted block keeps its lines (task 1602).
+      e.preventDefault();
+      ask();
     }
   };
 
@@ -506,7 +524,7 @@ export function AskField({
         onBlurCapture={() => setFocused(false)}
         className={
           foot
-            ? "flex h-11 shrink-0 items-center gap-2 pl-4 pr-2"
+            ? "flex min-h-11 shrink-0 items-end gap-2 py-1.5 pl-4 pr-2 [&>button]:mb-0 [&>svg]:mb-1.5"
             : "flex h-8 items-center gap-2 rounded-lg border border-border bg-background px-3 tech-transition focus-within:border-primary/50 hover:border-primary/40 glass:relative glass:z-10 glass:rounded-full glass:border-transparent glass:bg-transparent glass:glass-chrome glass:focus-within:border-transparent glass:glass-spectrum-edge"
         }
       >
@@ -514,7 +532,7 @@ export function AskField({
         {/* A bare field inside the bar's own box: the box is the control's
             border and focus ring, so the field draws neither (as the old
             fake field did). */}
-        <input
+        <Tag
           ref={fieldRef}
           value={text}
           onChange={(e) => {
@@ -537,7 +555,8 @@ export function AskField({
           aria-label={`Ask ${ASSISTANT_NAME}, or search and open anything (${keyLabel})`}
           aria-keyshortcuts="Control+K Meta+K"
           autoComplete="off"
-          className="h-full min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
+          {...(foot ? { rows: 1 } : {})}
+          className={`${foot ? "max-h-[148px] resize-none py-1 leading-5" : "h-full"} min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground`}
         />
         {chip ? (
           <span
