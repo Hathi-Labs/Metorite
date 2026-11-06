@@ -3122,18 +3122,28 @@ the first name:
   Srimathi, Thirumathi and Tmt. They also include Kum., Kumari, Sushri, Thiru,
   Tiru, Selvi, Pandit and Pt. The list goes on with Janab, Mohtaram, Mohtarma,
   Haji, Maulana, Er., Adv., CA, CS and the military ranks.
-- A token is a title only when a name token follows it. A name that is only
-  "Shri" stays a name. "Sri Lakshmi" is ambiguous: Sri can be part of a given
-  name.
-- Kumari, Selvi and Selvan are also given names. They count as a title only
-  when first and followed by a name, or with a dot.
+- A title that takes a given name keeps the title the name already has. For
+  "Shri Ramesh Kumar" the drafter writes "Dear Shri Ramesh,". It never writes
+  "Dear Shri,". "Sri Lakshmi" gives "Dear Sri Lakshmi,", which is right
+  whether Sri is a title or part of the given name.
+- Dr, Prof, Mr, Mrs, Ms, Mx, Miss, the ranks and Hon'ble keep
+  "<title> <surname>", as before. Er takes the given name ("Er. Sunil").
+- Adv., CA and CS are professional titles, not forms of address. The drafter
+  greets the given name alone ("Dear Priya,").
+- A title with no name after it gives "Hello,". This holds for a lone "Dr."
+  too.
+- Kumari, Selvi, Selvan and a few more are also given names. They count as a
+  title only when a name follows them. A lone "Kumari" stays a name.
 - A surname token (Rao, Naidu, Reddy, Sharma, Gowda, Pillai, Nair, Iyer,
   Menon, Shetty, Singh, Kaur, Kumar, Devi) is never a title.
-- For "Shri Ramesh Kumar" the drafter writes "Dear Ramesh," or "Dear Shri
-  Ramesh Kumar,". It never writes "Dear Shri,".
-- The drafter does not choose "ji", "garu", "sir" or a kinship form from the
-  region or the surname. It takes a form from a setting or from observed
-  data only.
+- A suffix that the display name already has stays as written: "Ramesh Garu"
+  gives "Dear Ramesh Garu,". The drafter keeps a suffix only from a
+  catalogue row with the suffix placement.
+- The drafter never adds "ji", "garu", "sir" or a kinship form. It never
+  picks one from the region or the surname.
+- The titles come from `acb_common.honorifics`, the one catalogue. The
+  drafter keeps no list of its own (fence: `tests/unit/test_salutation_titles.py`).
+  PZ-40 extends the catalogue.
 
 Greeting a recipient as the member does stays in PZ-13 (task 307).
 
