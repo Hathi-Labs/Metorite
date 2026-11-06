@@ -1874,6 +1874,19 @@ export interface StatusRow {
   is_default: boolean;
 }
 
+/** A project below the owner that keeps its own set (PST-1, §9.4). */
+export interface StatusSetOverride {
+  id: string;
+  name: string;
+  /**
+   * The names from the space down to its parent. A run of names the caller
+   * cannot see is one "…", so no hidden name reaches the browser.
+   */
+  path: string[];
+  /** Projects that use ITS set, it left out. */
+  used_by: number;
+}
+
 /** Where a project's lanes come from — `projectsApi.statusSet`. */
 export interface StatusSetInfo {
   project_id: string;
@@ -1896,6 +1909,15 @@ export interface StatusSetInfo {
    */
   inherit_from_id: string | null;
   inherit_from_name: string | null;
+  /** The kind of the owner node. A space is a root (PST-1, §9.4). */
+  owner_kind: "space" | "project";
+  /**
+   * Projects that use the set, the owner left out. It counts every depth
+   * below the owner and stops at a node that owns a set. It counts projects
+   * the caller cannot see, because an edit changes them too. It is the N of
+   * "shared with N" (§9.4).
+   */
+  used_by: number;
   /**
    * Projects under the OWNER that keep their own lanes — an edit here does not
    * reach them.
@@ -1906,8 +1928,13 @@ export interface StatusSetInfo {
    * Immediate breakaways only. A project that overrode a project that overrode
    * this one was never getting these lanes, and listing it would grow this
    * list with the tree rather than with the decisions somebody took.
+   *
+   * Only the ones the caller can see (PST-1). `hidden_overrides` counts the
+   * rest, and no name of them reaches the browser.
    */
-  overrides: { id: string; name: string }[];
+  overrides: StatusSetOverride[];
+  /** Breakaways the caller cannot see. The UI counts them and names none. */
+  hidden_overrides: number;
   /** False on a space: there is nothing above it to inherit from. */
   can_inherit: boolean;
   /** A set it owned before, kept so switching back restores those lanes. */

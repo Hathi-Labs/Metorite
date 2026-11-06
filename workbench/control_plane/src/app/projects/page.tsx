@@ -3427,9 +3427,11 @@ function ProjectsWorkspace() {
         else if (what === "lifecycle") setManagingLifecycle(selected);
       },
       // Not while it is open: a re-seed remounts the pane and drops an edit.
-      openSettings: () => {
-        if (app === "settings") return;
-        openSettings(null, selected ? spaceOf(allRoots, selected).id : null);
+      // A named section (PST-1, "Space default statuses") is a request to go
+      // there, so it re-seeds even when the pane is open.
+      openSettings: (section) => {
+        if (app === "settings" && !section) return;
+        openSettings(section ?? null, selected ? spaceOf(allRoots, selected).id : null);
       },
       showShortcuts: () => setShowingShortcuts(true),
     }),
@@ -4778,6 +4780,14 @@ function ProjectsWorkspace() {
           setTreeKey((k) => k + 1);
         }}
         importsVersion={importsVersion}
+        // PST-1: a row of "projects that keep their own statuses" opens that
+        // project's Statuses editor. `manageSpace` leaves the pane, selects
+        // the project and opens the dialog, as the row menu does.
+        onOpenStatuses={(project) => {
+          const row = flatten(visibleRoots).find((e) => e.node.id === project.id);
+          if (row) manageSpace(setManagingStatuses)(row.node as ProjectRow);
+          else router.push(`/projects?project=${encodeURIComponent(project.id)}`);
+        }}
         // The pane edits ANY space, so it never writes the board's own lanes,
         // fields or tags. It re-reads them from the server instead: the tree
         // key drives fields and tags, and `loadProject` the lanes and tasks.

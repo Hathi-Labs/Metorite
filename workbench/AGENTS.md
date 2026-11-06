@@ -83,6 +83,7 @@ The Knowledge app (spec `knowledge_base.md` §11.1 and §21). Only the first `GE
 - `app/projects/` -- Projects (spec `project_management_app.md`), the canonical task surface (D-PM-6).
   - Single-source modules: `lib/grouping.ts` (`viewDivergence`), `lib/shownFields.ts`, `lib/commands.ts`, `lib/panelMode.ts`, `lib/taskMenu.ts`, `lib/rowState.ts`, `lib/pagedPicker.ts`.
   - `lib/taskMenu.ts` and `lib/commands.ts` stay disjoint in both directions (`taskMenu.test.ts`).
+  - `lib/statusSetCopy.ts` holds every sentence about a status set (WS-42 PST-1). No component builds one, and no sentence uses a possessive of a name. Fences: `statusSetCopy.test.ts`, `projectsSettings.test.ts`.
 
 ### Settings, identity and access
 - `app/settings/billing/` -- Settings → Billing (spec `subscription_console.md`). `Checkout.tsx` mounts only inside `data.purchaseEnabled`.
