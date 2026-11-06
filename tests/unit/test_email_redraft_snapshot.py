@@ -392,10 +392,11 @@ async def test_a_whatsapp_card_names_no_thread_so_it_takes_no_snapshot_and_no_re
 
 
 async def test_the_revise_keeps_every_safety_write_before_the_spend(env) -> None:
-    """§18.11 step 4, fix round 5. The record and the snapshot are READ first,
-    the unticks and the link are written, and only then is the record spent.
-    The snapshot goes last. Mutation: spend before the writes again, or take
-    the snapshot with ``GETDEL`` → red."""
+    """§18.11 step 4, fix rounds 5 and 6. The record and the snapshot are READ
+    first, the unticks are written, and only then is the record spent. The
+    link is a label, so it comes AFTER the spend (fix round 6). The snapshot
+    goes last. Mutation: spend before the unticks again, write the link before
+    the spend, or take the snapshot with ``GETDEL`` → red."""
     card = await _card(to=["Kim@Contoso.Test"])
     cid = card["card_id"]
     await _keep(cid, to=("Kim@Contoso.Test",), cc=())
@@ -409,8 +410,8 @@ async def test_the_revise_keeps_every_safety_write_before_the_spend(env) -> None
         ("get", record),
         ("get", snapshot),
         ("hset", f"cc:{F.ORG}:email:card_unticked:{THREAD}:{F.MEMBER}"),
-        ("set", f"cc:{F.ORG}:email:card_revised:{THREAD}"),
         ("getdel", record),
+        ("set", f"cc:{F.ORG}:email:card_revised:{THREAD}"),
         ("delete", snapshot),
     ]
     assert out["revised"] is True and out["draft"] == 2
@@ -448,20 +449,32 @@ async def test_an_answer_to_a_revised_held_card_sends_nothing(env) -> None:
     assert env["sends"].mails == [] and env["saves"] == []
 
 
-async def test_a_fault_after_the_spend_only_logs(env) -> None:
-    """Fix round 5. The one step after the spend is the delete of the
-    snapshot. A fault there only logs, because the TTL clears the snapshot:
-    the revise answers the member's version, and the card stays spent.
-    Mutation: let the fault escape → red."""
+@pytest.mark.parametrize(("fail_on", "fail_op", "labelled"), [
+    (":card_draft:", "delete", True),
+    (":card_revised:", "set", False),
+])
+async def test_a_fault_after_the_spend_only_logs(
+    env, fail_on: str, fail_op: str, labelled: bool,
+) -> None:
+    """Fix rounds 5 and 6. Two steps come after the spend: the link and the
+    delete of the snapshot. A fault at either only logs. The revise answers
+    the member's version, and the card stays spent. A fault at the link costs
+    only the label: the next card is "Draft 1", and it still starts Geo
+    unticked. Mutation: let either fault escape → red."""
     card = await _card()
     await _keep(card["card_id"], subject="Rates", body=TEXT, cc=())
-    env["redis"].fail_on, env["redis"].fail_op = ":card_draft:", "delete"
+    env["redis"].fail_on, env["redis"].fail_op = fail_on, fail_op
     out = await _revise(card["card_id"])
     assert out["revised"] is True and out["draft"] == 2 and TEXT.splitlines()[0] in out["snapshot"]
     assert f"cc:{F.ORG}:new-mail-card:{card['card_id']}" not in env["redis"].keys
     assert env["sends"].mails == []
     env["redis"].fail_on = env["redis"].fail_op = ""
-    assert (await _card())["unticked"] == [F.COLLEAGUE]
+    new = await _card()
+    assert new["unticked"] == [F.COLLEAGUE]
+    if labelled:
+        assert new["revises"] == card["card_id"] and new["draft"] == 2
+    else:
+        assert "revises" not in new and "draft" not in new
 
 
 def _spent(env: dict[str, Any], cid: str) -> bool:
@@ -471,7 +484,6 @@ def _spent(env: dict[str, Any], cid: str) -> bool:
 @pytest.mark.parametrize(("fail_on", "fail_op", "path"), [
     (":card_draft:", "get", "A: the read of the snapshot"),
     (":card_unticked:", "hset", "B: the write of the unticks"),
-    (":card_revised:", "set", "the write of the link"),
     (":new-mail-card:", "getdel", "C: the spend itself"),
 ])
 async def test_a_fault_before_or_at_the_spend_answers_503_and_loses_no_untick(
@@ -495,7 +507,7 @@ async def test_a_fault_before_or_at_the_spend_answers_503_and_loses_no_untick(
     out = await _revise(cid)
     assert out["revised"] is True and TEXT.splitlines()[0] in out["snapshot"]
     assert _spent(env, cid) and _snapshot_keys(env["redis"]) == []
-    # The second try writes the same link, never ``many``.
+    # The second try writes one link, never ``many``.
     link = json.loads(env["redis"].keys[f"cc:{F.ORG}:email:card_revised:{THREAD}"])
     assert link["card_id"] == cid and not link.get("many")
     new = await _card()
@@ -526,13 +538,13 @@ async def test_two_failed_revises_leave_the_card_whole_for_the_next_steer(env) -
     assert again["revises"] == cid and again["unticked"] == [F.COLLEAGUE]
 
 
-async def test_a_spend_that_finds_no_record_drops_its_link_and_keeps_the_unticks(
+async def test_a_spend_that_finds_no_record_writes_no_link_and_keeps_the_unticks(
     env, monkeypatch,
 ) -> None:
     """The act took the record between the read and the spend: 409. The unticks
-    stay (an extra untick is safe), and the link of this card goes, so no later
-    card reads "Draft 2" for a card that was answered. Mutation: keep the link
-    → red."""
+    stay (an extra untick is safe), and no link is written, because the link
+    comes after the spend (fix round 6). So no later card reads "Draft 2" for
+    a card that was answered. Mutation: write the link before the spend → red."""
     card = await _card()
     cid = card["card_id"]
     assert await _keep(cid, subject="Rates", body=TEXT, cc=()) is True
@@ -548,6 +560,33 @@ async def test_a_spend_that_finds_no_record_drops_its_link_and_keeps_the_unticks
     assert e.value.status_code == 409
     assert f"cc:{F.ORG}:email:card_revised:{THREAD}" not in env["redis"].keys
     assert env["redis"].hashes[_unticked_key()] == {"owner": F.MEMBER, f"p:{F.COLLEAGUE}": "1"}
+
+
+async def test_a_card_that_came_back_and_went_out_leaves_no_link(env) -> None:
+    """The review's third P3 of fix round 5. The spend fails twice, so the card
+    comes back, and the member presses Send on it. A later email to Kim in the
+    same chat is then "Draft 1", and it names no sent card. It still starts
+    Geo unticked, because the unticks were kept before the spend. Mutation:
+    write the link before the spend again → red."""
+    card = await _card()
+    cid = card["card_id"]
+    assert await _keep(cid, subject="Rates", body=TEXT, cc=()) is True
+    env["redis"].fail_on, env["redis"].fail_op = f":new-mail-card:{cid}", "getdel"
+    for _ in range(2):
+        with pytest.raises(HTTPException) as e:
+            await _revise(cid)
+        assert e.value.status_code == 503
+    env["redis"].fail_on = env["redis"].fail_op = ""
+    assert f"cc:{F.ORG}:email:card_revised:{THREAD}" not in env["redis"].keys
+    answer = _answer(cc=())
+    await F.record_answer(cid, answer, thread=THREAD)
+    await nm.new_mail_card_act(
+        nm.NewMailActRequest(card_id=cid, card_thread_id=THREAD, answer=answer),
+        BackgroundTasks(), F.user())
+    assert len(env["sends"].mails) == 1 and F.COLLEAGUE not in repr(env["sends"].mails[0])
+    later = await _card(subject="Minutes")
+    assert "revises" not in later and "draft" not in later
+    assert later["unticked"] == [F.COLLEAGUE]
 
 
 async def test_the_words_of_a_fault_at_the_draw_name_no_person(env) -> None:
@@ -1536,18 +1575,14 @@ def _cards(monkeypatch, *answers: Any) -> list[Any]:
     return seen
 
 
-@pytest.mark.parametrize("failure", ["two_503s", "a_409"])
-async def test_a_revise_that_did_not_run_shows_the_same_card_again(
-    monkeypatch, failure: str,
-) -> None:
-    """Fix round 5, the verifier's P2-1 and the review's first P2. The gateway
-    spent nothing, so the tool asks the SAME card again, with ``reopened`` on
-    its form. The model draws no new card that could start Geo ticked. When the
-    member then answers the card, the model reads that the edits did not
-    reach it. Mutation: answer the REVISED text, which asks for a new card,
-    after a failed revise → red."""
-    errors = [_busy(), _busy()] if failure == "two_503s" else [
-        agents.GatewayError("failed (409)", 409, detail="gone")]
+async def test_a_revise_that_did_not_run_shows_the_same_card_again(monkeypatch) -> None:
+    """Fix round 5, the verifier's P2-1 and the review's first P2. Two 503s:
+    the gateway spent nothing, so the tool asks the SAME card again, with
+    ``reopened`` on its form. The model draws no new card that could start Geo
+    ticked. When the member then answers the card, the model reads that the
+    edits did not reach it. Mutation: answer the REVISED text, which asks for
+    a new card, after a failed revise → red."""
+    errors = [_busy(), _busy()]
     tries = len(errors)
     gw = _Gw(errors)
     _tool(monkeypatch, gw)
@@ -1563,6 +1598,20 @@ async def test_a_revise_that_did_not_run_shows_the_same_card_again(
     assert out == f"{agents._REVISE_UNREAD}\n\n{unsent}"
     assert "did not reach you" in out and "stayed open" in out
     assert "Jev" not in agents._REVISE_UNREAD
+
+
+async def test_a_409_at_the_revise_asks_for_a_new_card(monkeypatch) -> None:
+    """The review's second P3 of fix round 5. A 409 means that the record is
+    gone, so a card that came back could not send. The tool answers the
+    REVISED text, and the model draws a new card. The unticks already wait in
+    the hash, so that card starts Geo unticked. Mutation: show the card again
+    on a 409 → red."""
+    gw = _Gw(agents.GatewayError("failed (409)", 409, detail="gone"))
+    _tool(monkeypatch, gw)
+    asks = _cards(monkeypatch, ask_tools.REVISED, False)
+    out = await agents.send_email(F.BOX, body=TEXT, to=[F.KNOWN], subject="Rates")
+    assert out == agents._NEW_MAIL_REVISED and len(asks) == 1
+    assert [p for p, _b in gw.posts].count("/email/new-card/revise") == 1
 
 
 async def test_a_second_steer_on_the_card_that_came_back_revises_it(monkeypatch) -> None:
@@ -1585,13 +1634,17 @@ async def test_a_card_comes_back_at_most_three_times(monkeypatch) -> None:
     its timeout turns it red."""
     import asyncio
 
-    gw = _Gw(agents.GatewayError("failed (409)", 409, detail="gone"))
+    gw = _Gw([_busy()] * 2 * (agents._MAX_COMEBACKS + 1))
     _tool(monkeypatch, gw)
+    monkeypatch.setattr(agents, "_GET_RETRY_DELAY_S", 0.0)
     asks = _cards(monkeypatch, *[ask_tools.REVISED] * 10)
     out = await asyncio.wait_for(
         agents.send_email(F.BOX, body=TEXT, to=[F.KNOWN], subject="Rates"), timeout=5)
     assert out == agents._REVISE_GAVE_UP and "Do not call send_email now" in out
     assert len(asks) == agents._MAX_COMEBACKS + 1 == 4
+    # Fix round 6: the member hears that the edits went, and checks the ticks.
+    assert "edits on the card were lost" in out and "check the people that are ticked" in out
+    assert "Jev" not in out
 
 
 async def test_a_held_card_comes_back_too(monkeypatch) -> None:

@@ -6314,8 +6314,8 @@ _START_FROM_THE_MEMBER = (
 #: (``chat_recovery.CARD_DRAFT_MAX``).
 _MEMBER_VERSION_MAX = 24_000
 #: §18.11 fix round 5: the words the model reads in front of the answer of a
-#: card that came back. The revise did not happen (a 409, or a 503 twice), so
-#: the gateway spent nothing, and the tool asked the SAME card again, with the
+#: card that came back. The revise did not happen (a 503 twice), so the
+#: gateway spent nothing, and the tool asked the SAME card again, with the
 #: member's edits still on it. The member then answered that card.
 _REVISE_UNREAD = (
     "The member wrote in the chat while this card was open, but the gateway "
@@ -6326,12 +6326,16 @@ _REVISE_UNREAD = (
 #: The most times that one card comes back in one call (fix round 5).
 _MAX_COMEBACKS = 3
 #: The answer when the card came back that many times and the revise still
-#: did not run. No card is drawn, so no card can start a person ticked.
+#: did not run. No card is drawn now. The member's edits went with the card,
+#: so the model tells the member to check the ticks of the next card (fix
+#: round 6).
 _REVISE_GAVE_UP = (
     "The member wrote in the chat while this card was open, but the gateway "
     "could not read the card again and again, so the card is closed. Nothing "
     "was sent. Do not call send_email now. Tell the member that the email was "
-    "not sent, and ask them to try again in a moment.")
+    "not sent, and that their edits on the card were lost. Ask them to try "
+    "again in a moment, and to check the people that are ticked on the next "
+    "card before they press Send.")
 #: The answer when the member pressed Discard, or the card closed with no answer.
 _NEW_MAIL_DISCARDED = "Send cancelled — the email was not sent."
 #: The notice of a held card with a new address (§21): it starts unticked.
@@ -6378,17 +6382,18 @@ async def _revised_text(lead: str, card_id: str, thread: str) -> str | None:
     answers their version as a neutral data block, and the answer adds it, so
     the model starts from it.
 
-    None when the revise did not happen (fix round 5): a 409, or a 503 after
-    the one more try of :func:`_revise_card`. The gateway then spent nothing,
-    so the caller asks the SAME card again (:func:`_ask_until_revised`). Any
-    other failure gives *lead* alone: nothing was sent, and the model asks
-    again."""
+    None when the revise did not happen (fix round 5): a 503 after the one
+    more try of :func:`_revise_card`. The gateway then spent nothing, so the
+    caller asks the SAME card again (:func:`_ask_until_revised`). Any other
+    failure gives *lead* alone: nothing was sent, and the model asks again.
+    A 409 gives *lead* too (fix round 6). The record is gone, so a card that
+    came back could not send, and the unticks already wait in the hash."""
     if not card_id or not thread:
         return lead
     try:
         res = await _revise_card(card_id, thread)
     except GatewayError as exc:  # the card is closed either way, and nothing went
-        return None if exc.status in (409, 503) else lead
+        return None if exc.status == 503 else lead
     except Exception:  # the card is closed either way, and nothing went
         return lead
     block = str(res.get("snapshot") or "") if isinstance(res, dict) else ""

@@ -440,23 +440,6 @@ async def _drop_snapshot(user: UserContext, thread: str, card_id: str) -> None:
         _log.warning("email.card_snapshot_drop_failed", error=type(exc).__name__)
 
 
-async def _drop_link(user: UserContext, thread: str, card_id: str) -> None:
-    """Delete the link that this revise wrote, when the spend found no record.
-    Only a link of the member that names *card_id* goes. A fault only logs."""
-    from acb_common.tenant_redis import organization_scope
-
-    try:
-        with organization_scope(hc._org_of(user)):
-            redis = hc._tenant_redis()
-            k = _key(LINK_PART, thread)
-            seen = _parse(await redis.get(k))
-            if (seen is not None and str(seen.get("owner") or "") == _member(user)
-                    and str(seen.get("card_id") or "") == card_id):
-                await redis.delete(k)
-    except Exception as exc:  # the class only: a value never reaches a log
-        _log.warning("email.card_link_drop_failed", error=type(exc).__name__)
-
-
 async def _write_link(
     user: UserContext, thread: str, card_id: str, draft: int, to: list[str],
 ) -> None:
@@ -468,8 +451,11 @@ async def _write_link(
     thread was revised before the next card. The link then names no card
     (``many``), and the next card is "Draft 1". A link of ANOTHER member
     stays as it is (P3 of fix round 3): this revise writes none, and its
-    next card is "Draft 1". A link that already names this card stays as it
-    is too (fix round 5): a retry of the same revise never writes ``many``."""
+    next card is "Draft 1".
+
+    The revise writes it only AFTER the spend (fix round 6). The link is a
+    label and no safety write. A card that came back and went out by Send
+    leaves no link, so a later email to the same people is "Draft 1"."""
     from acb_common.tenant_redis import organization_scope
 
     member = _member(user)
@@ -486,8 +472,6 @@ async def _write_link(
             return
         if str(seen.get("owner") or "") != member:
             _log.info("email.card_link_kept_for_owner")
-            return
-        if str(seen.get("card_id") or "") == card_id:
             return
         await redis.set(k, json.dumps({"owner": member, "many": True}), xx=True, ex=LINK_TTL_S)
 
@@ -661,22 +645,24 @@ async def revise_new_mail_card(
     2. Read the snapshot of that card with a plain ``GET``, if there is one.
     3. Keep the people that the member unticked on that card, for 900
        seconds (rule 7, :func:`member_unticked`).
-    4. Write the link of the thread, ``{card_id, draft, to}``, for 900
-       seconds. ``draft`` is the draft number of the old card plus one.
-    5. Spend the record (``take_record``, strict), so a late answer finds no
+    4. Spend the record (``take_record``, strict), so a late answer finds no
        record and sends nothing.
+    5. Write the link of the thread, ``{card_id, draft, to}``, for 900
+       seconds. ``draft`` is the draft number of the old card plus one. The
+       link is a label, so a fault here only logs (fix round 6).
     6. Delete the snapshot. A fault here only logs, because the TTL clears it.
     7. Answer the snapshot as a neutral data block, or "" for none. A
        snapshot whose text failed its check keeps only the ticks, so it
        answers "".
 
-    A fault in steps 1 to 5 answers 503 and spends nothing, so the unticks are
+    A fault in steps 1 to 4 answers 503 and spends nothing, so the unticks are
     never lost: the tool tries once more, and else the card comes back. Each
-    step is safe to run twice: the hash takes the same people again, and the
-    link already names this card. Nothing here sends or saves a mail. 404
-    while ``EMAIL_EDIT_CARD_ORGS`` leaves the org out, and for a record of
-    another member, of another thread, or of a run that draws no card to edit.
-    409 when the spend finds no record: the act took it first."""
+    step up to the spend is safe to run twice, because the hash takes the
+    same people again. Nothing here sends or saves a mail. 404 while
+    ``EMAIL_EDIT_CARD_ORGS`` leaves the org out, and for a record of another
+    member, of another thread, or of a run that draws no card to edit. 409
+    when the spend finds no record: the act took it first, and no link was
+    written."""
     from gateway.chat_recovery import compose_card_draft
 
     nm._off(user)
@@ -691,7 +677,6 @@ async def revise_new_mail_card(
     nxt = min(draft_of(rec) + 1, MAX_DRAFT)
     try:
         await _note_unticked(user, thread, off)
-        await _write_link(user, thread, req.card_id, nxt, _to_of(rec))
     except HTTPException:
         raise
     except Exception as exc:  # the class only: nothing is spent, so a retry is safe
@@ -700,10 +685,13 @@ async def revise_new_mail_card(
     spent = await hc.take_record(user, req.card_id, namespace=namespace, strict=True)
     if spent is None:
         # The act took the record first. The unticks stay (an extra untick is
-        # safe), and the link of this card goes.
+        # safe), and no link was written.
         _log.warning("email.card_revise_refused", reason="not_spent")
-        await _drop_link(user, thread, req.card_id)
         raise HTTPException(status_code=409, detail=nm.NO_CARD)
+    try:
+        await _write_link(user, thread, req.card_id, nxt, _to_of(rec))
+    except Exception as exc:  # the class only: the link is a label, so the next card is "Draft 1"
+        _log.warning("email.card_link_write_failed", error=type(exc).__name__)
     await _drop_snapshot(user, thread, req.card_id)
     block = ""
     if snap is not None and has_text(snap):
