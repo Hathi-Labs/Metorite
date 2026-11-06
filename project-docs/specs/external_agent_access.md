@@ -2185,6 +2185,8 @@ The card gets a row in the old-path table of `my_day_feed.md`, group "Needs you"
 
 **Approvals (EA-18c).** `src/app/approvals/page.tsx` gains two tabs: "Actions" (the Action Broker queue, unchanged) and "Agent questions". The second tab renders the list component with `scope=mine`. The tab needs no new feature grant. The route reads the Projects visibility of the reader, so a reader sees nothing that they could not open (D87 rule 4).
 
+**One list, not two (2026-11-06).** CIV-14k (Metorite task 1750, merged as `c4c17132f`) added a "Waiting for you" section to `approvals/page.tsx` and `approvals/lib/waitingForYou.ts`. It reads `GET /projects/agent-runs?order=oldest&with_task=true`, which lists only the runs whose member is the reader. That list is narrower than this route, because it leaves out the task creator and the assignees. EA-18c replaces that section with this route (`scope=mine`), so the product keeps one list of the questions that wait on a person. EA-18c must not add a second tab beside it.
+
 **The app and the shell (R9).** The Projects item is a destination inside one app. So it joins `projectApps.ts` (`ProjectAppId`, `PROJECT_APP_SECTIONS`, `resolveAppLink`), and not `PANES` in `nav.ts`.
 
 The app plugs into the shell. It builds no palette, bell or assistant rail, and it adds nothing to `SEAM_DEBT`. The Projects manifest declares the My Day provider. That manifest edit is a part of EA-18c.
