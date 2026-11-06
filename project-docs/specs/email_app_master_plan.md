@@ -7142,6 +7142,12 @@ round 2. Round 2 includes the 3 mutants that survived the verifier.
   and `resolve_self`. One read of `resolve_self` gives the address, the label and the set. The
   label comes from `mailbox_identity.display_labels`. The SQL also compares the organization of
   each row. Row level security does the same, so the copy guards a session with no bind.
+  **Corrected 2026-11-06, H-334c (task 1812):** that compare joins each row to the
+  organization of `:aid` only, and named no bound tenant. A role that bypasses RLS, given
+  an `:aid` of another organization, read the addresses of that organization. The FROM
+  clause now names `a.organization_id = app.tenant_id`, so `SELF_ADDRESSES_SQL`,
+  `SELF_MAILBOX_IDS_SQL` and `resolve_self` read one tenant. A session with no bind reads
+  an empty set. `tests/unit/test_email_mailbox_list_tenant_r8.py` is the fence.
 - **The callers.** The rule match payload, the thread status, the conversation check, the
   digest, the pin guard, the cleanup scope and the sender categories use the set. The recipient
   role uses it too, so a member in To under mailbox B is a direct recipient in mailbox A.
