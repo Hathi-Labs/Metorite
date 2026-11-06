@@ -92,6 +92,7 @@ ORC-2 waits on ORC-1. ORC-3 lands before ORC-2. `?ttab=` keeps the tab when expa
 **5.1 How ORC-3 builds it** (`TaskBody.tsx`, `components/useTaskTab.ts`, `lib/taskTabs.ts`)
 
 - **Above the bar, on each tab:** the host's strip (`above`), the agent run, an open decision, then the Add row. They scroll away with the card.
+- **An agent's question shows on the first tab.** Owner, 2026-11-06, at the preview: "the question card shows up in the first tab itself". The question card is part of the agent run, so it sits above the bar, and the card opens on Overview. Fence: `taskTabs.test.ts`, "nothing that waits on the member hides behind a tab".
 - **The bar sticks** to the top of the card's one scroll region, so the tabs stay in reach under a long Overview. A new tab opens at its top.
 - **Each tab stays mounted.** Only `hidden` changes. So the Related and Files counts stay true on each tab, and a half-typed subtask survives a look at another tab.
 - **The composer** shows on Discussion, under Comments. On another tab, it hides with the comments.
