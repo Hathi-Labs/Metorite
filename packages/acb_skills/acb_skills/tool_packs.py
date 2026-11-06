@@ -1337,7 +1337,7 @@ class PackRun:
     #: RX-1. The last member turn of each pack of this run that a load may
     #: move out: a sticky pack that the member did not name in this turn.
     used: Mapping[str, int] = field(default_factory=dict, compare=False, repr=False)
-    #: RX-1. The sticky packs that left this run for a load. Only
+    #: RX-1. The packs that left this run for a load (:meth:`spare`). Only
     #: :meth:`leaves` writes it.
     left: set[str] = field(default_factory=set, compare=False, repr=False)
     #: RX-1. The packs with a tool that started in this run, also one that
@@ -2566,7 +2566,7 @@ LOAD_REFUSED = "Not loaded. load_skill_tools acts only in the run that offered i
 #: The line before the old lines of :attr:`Pack.handoff_swap`, when a load
 #: completes the packs of an owner.
 LOAD_COMPLETES = "Each tool of {owner} is now yours."
-#: RX-1. The line after a load that moved a sticky pack out. The persona keeps
+#: RX-1. The line after a load that moved a spare pack out. The persona keeps
 #: the rules of that pack until the next turn, so the line says that its tools
 #: are gone, and the model does not call them.
 LOAD_MADE_ROOM = (

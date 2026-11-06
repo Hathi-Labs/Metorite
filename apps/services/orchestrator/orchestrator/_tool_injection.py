@@ -3971,8 +3971,9 @@ async def _plan_pack_loader(
     the owner's delegation text exactly once. The MCP rule reads the registry
     (:func:`_mcp_may_attach`) and only for a pack of an owner that reads
     stranger text, and only while the run holds none of them. *spare* names
-    the sticky packs that can give way to a load, each with its tool count
-    (RX-1)."""
+    the packs that can give way to a load, each with its tool count (RX-1,
+    ``PackRun.spare``). For the Projects owner the plan reaches through them
+    (task 1747)."""
     from acb_skills import tool_packs
 
     if not _loader_agent_ok(agent):
