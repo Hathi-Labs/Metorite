@@ -153,6 +153,23 @@ class _FakeDB:
         self.w = world
         self.org = org
 
+    def begin_nested(self) -> Any:
+        """A SAVEPOINT that logs its end (B2c-2a): a release, or a rollback
+        when the block raises."""
+        log = self.w.log
+
+        @asynccontextmanager
+        async def _savepoint() -> Any:
+            log.append("savepoint")
+            try:
+                yield None
+            except BaseException:
+                log.append("rollback_savepoint")
+                raise
+            log.append("release_savepoint")
+
+        return _savepoint()
+
     async def execute(self, stmt: Any, params: dict[str, Any] | None = None) -> _Result:
         sql, p, w = str(stmt), dict(params or {}), self.w
         w.statements.append((sql, p))
@@ -1032,10 +1049,14 @@ class TestTheTables:
 
     def test_each_refusal_is_one_short_sentence(self):
         assert set(invoke.REFUSALS) == {"not_declared", "class_x", "not_in_catalog",
-                                        "approval_required", "source_not_open"}
+                                        "approval_required", "source_not_open",
+                                        "no_person_present"}
         messages = {**invoke.REFUSALS, "catalog_unavailable": invoke.CATALOG_DOWN,
                     "object_missing": invoke.NO_OBJECT, "bad_input": invoke.BAD_RECORD_ID,
-                    "bad_list": invoke.BAD_LIST_INPUT, "body_too_large": invoke.BODY_OVER_CAP}
+                    "bad_list": invoke.BAD_LIST_INPUT, "body_too_large": invoke.BODY_OVER_CAP,
+                    "request_refused": invoke.ASK_AGAIN}
+        # B2c-2a: each refused spend has its own code and one sentence.
+        messages.update({code: text for _, code, text in invoke.SPEND_REFUSALS.values()})
         for code, message in messages.items():
             assert re.fullmatch(r"[a-z_]+", code)
             assert message.endswith(".") and message.count(". ") == 0, code
@@ -1555,3 +1576,178 @@ class TestTheWriterCap:
         assert (second[0], second[1]["code"], second[2]) == (
             503, "store_busy", {"Retry-After": "1"})
         assert busy == invoke._IN_FLIGHT
+
+
+# ── The delegated writes (STU-B2c-2a) ──────────────────────────────────────
+#
+# Here the store of MCP-P1b-1 is a fake that logs each call, so a test sees the
+# order and the session of each step. The R8 suite runs the real store.
+
+from acb_auth import app_requests as request_store  # noqa: E402
+from acb_common.no_person import no_person_scope  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+from gateway import app_requests  # noqa: E402
+
+RID = str(uuid.uuid4())
+
+
+@pytest.fixture
+def rw(dw, monkeypatch):
+    """The direct world with the request store on for each org, and a fake
+    store that logs ``open_request``, ``read_request``, ``spend`` and
+    ``classify_refusal`` into ``world.log``."""
+    monkeypatch.setattr(get_settings(), "app_requests_orgs", "*")
+    dw.opened, dw.spends, dw.stored_body, dw.spend_ok = [], [], None, True
+
+    async def _open(db: Any, **kw: Any) -> Any:
+        dw.log.append("open_request")
+        dw.opened.append((db, kw))
+        return app_requests.Opened(request_id=RID, run_id=str(uuid.uuid4()), state="awaiting",
+                                   expires_at="2026-11-07T00:00:00+00:00", created=True)
+
+    async def _read(db: Any, **kw: Any) -> Any:
+        dw.log.append("read_request")
+        return {"call": {"body": dw.stored_body}}
+
+    async def _spend(db: Any, **kw: Any) -> Any:
+        dw.log.append("spend")
+        dw.spends.append((db, kw))
+        if not dw.spend_ok:
+            return None
+        return request_store.Spent(
+            request_id=kw["request_id"], run_id="run", app="studio", op="op", cls="B",
+            source="studio", subject="", call={"body": dw.stored_body}, digest=kw["digest"])
+
+    async def _classify(db: Any, **kw: Any) -> str:
+        dw.log.append("classify")
+        return "declined"
+
+    monkeypatch.setattr(app_requests, "open_request", _open)
+    monkeypatch.setattr(app_requests, "read_request", _read)
+    monkeypatch.setattr(request_store, "spend", _spend)
+    monkeypatch.setattr(request_store, "classify_refusal", _classify)
+    return dw
+
+
+def _request(world: Any, payload: Any = None, request_id: str | None = None,
+             fails: bool = False) -> Any:
+    """A request of the handler with *payload* as its body and *request_id* in
+    its query. With *fails*, a read of the body raises."""
+    raw = b"" if payload is None else json.dumps(payload).encode()
+    body = _Body(world, raw, fails=fails)
+    body.query_params = {} if request_id is None else {"request_id": request_id}
+    return body
+
+
+def _delegated(world: Any, pid: str, action: str, request: Any) -> tuple[int, Any]:
+    """The handler with no proof. A 202 answers its status and its JSON."""
+    status, found = _direct(world, pid, action, request)
+    if isinstance(found, JSONResponse):
+        return found.status_code, json.loads(found.body)
+    return status, found
+
+
+_VERBS = {"add": "create", "change": "update", "remove": "delete"}
+
+
+class TestTheDelegatedWrites:
+    def test_the_delegated_set_is_the_three_object_writes(self):
+        assert set(invoke.DELEGATED_EXECUTORS) == {
+            ("object", "create"), ("object", "update"), ("object", "delete")}
+        assert not invoke.DELEGATED_EXECUTORS & invoke.OPEN_EXECUTORS
+
+    def test_with_the_org_flag_off_a_write_reads_no_byte_and_asks_nothing(self, rw, monkeypatch):
+        monkeypatch.setattr(get_settings(), "app_requests_orgs", "")
+        pid, _, _ = _setup(rw)
+        for request_id in (None, RID):
+            status, detail = _delegated(rw, pid, "add", _request(rw, request_id=request_id,
+                                                                 fails=True))
+            assert (status, detail["code"]) == (403, "approval_required")
+        assert not {"body", "open_request", "read_request", "spend"} & set(rw.log)
+
+    @pytest.mark.parametrize("action", ["add", "change", "remove"])
+    def test_an_ask_opens_one_card_in_the_session_of_the_check(self, rw, action):
+        pid, _, _ = _setup(rw)
+        status, got = _delegated(rw, pid, action, _request(rw, BODIES[action]))
+        assert (status, got) == (202, {"state": "awaiting", "request_id": RID,
+                                       "expires_at": "2026-11-07T00:00:00+00:00"})
+        assert rw.log == ["open", "close", "body", "open", "open_request", "audit_in", "close"]
+        (db, kw), (adb, akw) = rw.opened[0], rw.audits_in[0]
+        assert db is adb and rw.writes == []
+        verb = _VERBS[action]
+        assert (kw["org"], kw["member"], kw["source"], kw["app"], kw["subject"], kw["op"]) == (
+            ORG, ANA, "studio", "studio", pid, action)
+        assert kw["cls"] == OBJECT_OP_CLASSES[verb]
+        assert (kw["connection_id"], kw["via"]) == (None, "studio:door")
+        assert kw["call"] == {
+            "method": "POST", "template": "/studio/apps/{app_id}/actions/{action}",
+            "path": f"/studio/apps/{pid}/actions/{action}",
+            "query": [["uses", f"object:visit.{verb}"]], "body": BODIES[action],
+            "if_match": None}
+        binding = request_store.studio_binding(ANA, "studio", pid)
+        assert kw["idempotency_key"] == request_store.call_digest(kw["call"], binding)
+        assert akw["detail"]["outcome"] == "asked" and akw["detail"]["request_id"] == RID
+
+    def test_the_class_and_the_org_never_come_from_the_body(self, rw):
+        pid, _, _ = _setup(rw)
+        body = {"data": {"site": "x"}, "cls": "A", "organization_id": OTHER}
+        status, detail = _delegated(rw, pid, "add", _request(rw, body))
+        assert (status, detail["code"]) == (422, "bad_input")
+        assert "open_request" not in rw.log
+
+    @pytest.mark.parametrize("action", ["add", "change", "remove"])
+    def test_a_resend_reads_no_byte_and_spends_writes_and_audits_in_one_session(
+            self, rw, action):
+        pid, _, _ = _setup(rw)
+        rw.stored_body = BODIES[action]
+        status, _got = _delegated(rw, pid, action, _request(rw, request_id=RID, fails=True))
+        assert status == 200, _got
+        assert rw.log == ["open", "close", "open", "read_request", "savepoint", "spend",
+                          "write", "release_savepoint", "audit_in", "close"]
+        (sdb, kw), (wdb, _, _, writes), (adb, akw) = (
+            rw.spends[0], rw.writes[0], rw.audits_in[0])
+        assert sdb is wdb is adb
+        binding = request_store.studio_binding(ANA, "studio", pid)
+        assert (kw["org"], kw["member"], kw["app"], kw["binding"], kw["request_id"]) == (
+            ORG, ANA, "studio", binding, RID)
+        call = invoke._door_call(pid, action, f"object:visit.{_VERBS[action]}", BODIES[action])
+        assert kw["digest"] == request_store.call_digest(call, binding)
+        step = writes[0]
+        assert step.op == _VERBS[action]
+        assert (step.record_id, step.data) == (BODIES[action].get("id"),
+                                               BODIES[action].get("data"))
+        assert akw["detail"]["outcome"] == "ran" and akw["detail"]["request_id"] == RID
+
+    def test_a_refused_spend_writes_nothing_and_answers_its_reason(self, rw):
+        pid, _, _ = _setup(rw)
+        rw.stored_body, rw.spend_ok = BODIES["add"], False
+        status, detail = _delegated(rw, pid, "add", _request(rw, request_id=RID, fails=True))
+        assert (status, detail["code"]) == (403, "request_declined")
+        assert "write" not in rw.log and rw.writes == []
+        assert rw.audits_in[0][1]["detail"]["reason"] == "request_declined"
+
+    def test_a_write_that_does_not_run_rolls_the_spend_back(self, rw):
+        pid, _, _ = _setup(rw)
+        rw.stored_body = BODIES["add"]
+        rw.write_raises = _batch(FieldError("site", "Field `site` is too long."))
+        status, detail = _delegated(rw, pid, "add", _request(rw, request_id=RID, fails=True))
+        assert (status, detail["code"]) == (422, "field_invalid")
+        assert rw.log[-4:] == ["write", "rollback_savepoint", "audit_in", "close"]
+
+    @pytest.mark.parametrize("request_id", [None, RID])
+    def test_a_run_with_no_person_present_reads_no_byte_and_asks_nothing(self, rw, request_id):
+        pid, _, _ = _setup(rw)
+        with no_person_scope():
+            status, detail = _delegated(rw, pid, "add", _request(
+                rw, {"data": {"site": "x"}}, request_id=request_id, fails=True))
+        assert (status, detail["code"]) == (403, "no_person_present")
+        assert not {"body", "open_request", "read_request", "spend"} & set(rw.log)
+        assert rw.audits[0]["detail"]["reason"] == "no_person_present"
+
+    def test_a_direct_call_with_a_request_id_stays_direct(self, rw):
+        pid, _, _ = _setup(rw)
+        r = _client(rw).post(f"/studio/apps/{pid}/actions/add?request_id={RID}",
+                             json=BODIES["add"], headers=_proof(pid, "add"))
+        assert r.status_code == 200, r.text
+        assert not {"open_request", "read_request", "spend"} & set(rw.log)
+        assert rw.writes[0][3][0].data == BODIES["add"]["data"]

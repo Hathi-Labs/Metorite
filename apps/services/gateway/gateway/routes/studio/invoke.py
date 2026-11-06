@@ -1,4 +1,4 @@
-"""The action door of AI Studio (STU-B2a, B2b-1 and B2c-1, ``ai_studio.md`` §3.2).
+"""The action door of AI Studio (STU-B2a, B2b-1, B2c-1 and B2c-2a, ``ai_studio.md`` §3.2).
 
 ``POST /studio/apps/{app_id}/actions/{action}`` runs one action that a Studio
 package declares. The route registers on the router of ``actions.py``, as
@@ -24,15 +24,19 @@ package declares. The route registers on the router of ``actions.py``, as
    are the only sources of a class. Class X gets 403 ``class_x``, and an id
    that the catalog does not serve gets 403 ``not_in_catalog``. A catalog
    that fails gets 503 ``catalog_unavailable``.
-6. The approval. Class B and class C get 403 ``approval_required``. The one
-   exception is a DIRECT call of a member (B2c-1): it runs the create, the
-   update and the delete of an object (:data:`DIRECT_EXECUTORS`). No card
-   exists yet (B2c-2), so no other write runs.
-7. The body. Only a call that an open or a direct executor runs reads the body, so a
-   non-owner and a refused action read no byte. No session is open during the
-   read, because a wait on a slow client must not hold a pool connection. The
-   read stops past :data:`MAX_BODY_BYTES`, and the answer is 413
-   ``body_too_large``.
+6. The approval. Class B and class C get 403 ``approval_required``. Two
+   exceptions open the create, the update and the delete of an object
+   (:data:`DIRECT_EXECUTORS`). A DIRECT call of a member runs them at once
+   (B2c-1). Each other call is DELEGATED, and it waits for the member's card
+   (B2c-2a, below). It is delegated only while ``APP_REQUESTS_ORGS`` holds the
+   org, and else it gets ``approval_required`` as before. A delegated call of
+   a run with no person present gets 403 ``no_person_present`` (AUTO-7a).
+7. The body. Only a call that an open or a direct executor runs, or that
+   asks for a card, reads the body. So a non-owner and a refused action read
+   no byte. The resend of an approved request reads no byte either. No session
+   is open during the read, because a wait on a slow client must not hold a
+   pool connection. The read stops past :data:`MAX_BODY_BYTES`, and the
+   answer is 413 ``body_too_large``.
 8. The second check, in a new session. :func:`_check` runs again: it reads
    the package as this member, then checks the declaration and the class on
    that fresh manifest. A slow client can pass the first check and hold the
@@ -79,6 +83,29 @@ opens its own session after the read, and a failed audit logs and never
 fails the read. A read changes nothing, so a lost row loses no change. B2c
 must not copy this: it writes its audit row in the same transaction as the
 write, and a failed audit fails the write.
+
+**A delegated write (B2c-2a).** The approval store of MCP-P1b-1
+(``gateway/app_requests.py``) holds the card, and the door builds no second
+store.
+
+* The ask. A delegated call with no ``request_id`` in the query reads the
+  body, checks its keys, and calls ``open_request`` in the session of the
+  second check. The source and the app are ``studio``, the subject is the
+  package id, the op is the action id, and the class comes from
+  ``OBJECT_OP_CLASSES``. The call is :func:`_door_call`: the door path, the
+  ``uses`` of the action in the query, and the body. The key is the digest of
+  that call, so a retry gives the first request. The answer is 202 ``{state,
+  request_id, expires_at}``, and nothing runs.
+* The resend. A delegated call with ``request_id`` reads no byte of its body.
+  In ONE session it reads the stored call with ``read_request``, computes the
+  digest of :func:`_door_call` from it, calls ``spend``, runs the stored write
+  with :func:`_do_object_write`, then writes the audit row with
+  ``record_app_audit_in``. The spend and the write sit in one SAVEPOINT. A
+  write that does not run rolls the spend back, so the request stays
+  approved. A failed audit rolls the whole transaction back.
+* A refused spend answers the code of ``classify_refusal``
+  (:data:`SPEND_REFUSALS`). A refused write answers 422 ``{code, message,
+  rule, fieldErrors}``, as a direct write does.
 """
 
 from __future__ import annotations
@@ -92,21 +119,26 @@ from collections.abc import Iterator
 from typing import Any
 
 from acb_auth import UserContext, get_current_user
+from acb_auth import app_requests as store
 from acb_auth import direct_proof as _direct_proof
 from acb_common import get_logger, studio_query
 from acb_common.app_manifests.base import OP_PATTERN
+from acb_common.no_person import no_person_present
 from acb_common.studio_fields import FieldError, RecordError
 from acb_common.studio_manifest import OBJECT_OP_CLASSES, UsesRef, parse_uses
 from acb_common.studio_rules import COMPUTED_FIELD, FormulaError, RuleViolation
 from fastapi import Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
+from gateway import app_requests
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.apps._common import record_app_audit_bound, record_app_audit_in
 from gateway.routes.studio import actions, flags
 from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store, packages_store
 
-__all__ = ["DIRECT_EXECUTORS", "LIST_INPUT_KEYS", "MAX_AUDIT_TEXT", "MAX_BODY_BYTES",
-           "OPEN_EXECUTORS", "REFUSALS", "WRITERS_PER_ORG", "WRITERS_TOTAL", "router"]
+__all__ = ["DELEGATED_EXECUTORS", "DIRECT_EXECUTORS", "DOOR_TEMPLATE", "LIST_INPUT_KEYS",
+           "MAX_AUDIT_TEXT", "MAX_BODY_BYTES", "OPEN_EXECUTORS", "REFUSALS", "REQUEST_APP",
+           "REQUEST_VIA", "SPEND_REFUSALS", "WRITERS_PER_ORG", "WRITERS_TOTAL", "router"]
 
 _log = get_logger("gateway.studio.invoke")
 
@@ -121,6 +153,22 @@ OPEN_EXECUTORS: frozenset[tuple[str, str | None]] = frozenset(
 #: ``approval_required`` for these, as before.
 DIRECT_EXECUTORS: frozenset[tuple[str, str | None]] = frozenset(
     {("object", "create"), ("object", "update"), ("object", "delete")})
+
+#: The executors that a DELEGATED call runs, after the member's card
+#: (STU-B2c-2a): the same three writes of an object. A call that is not direct
+#: is delegated. It asks first, and it runs only the stored call of a request
+#: that the member approved.
+DELEGATED_EXECUTORS: frozenset[tuple[str, str | None]] = DIRECT_EXECUTORS
+
+#: The app, the client stamp and the path template of a Studio request
+#: (B2c-2a). The spend binds a request to ``session:<member>:studio:<package>``.
+REQUEST_APP = "studio"
+REQUEST_VIA = "studio:door"
+DOOR_TEMPLATE = "/studio/apps/{app_id}/actions/{action}"
+
+#: The modes of a delegated call: ``ask`` opens a card, and ``spend`` runs the
+#: stored call of an approved request.
+_DELEGATED_MODES = ("ask", "spend")
 
 #: The most writes in flight for one org, and in the process (B2c-1). The door
 #: counts them BEFORE it opens a session, so a call past the cap holds no
@@ -153,6 +201,8 @@ SOURCE_NOT_OPEN = "source_not_open"
 CATALOG_UNAVAILABLE = "catalog_unavailable"
 OBJECT_MISSING = "object_missing"
 BODY_TOO_LARGE = "body_too_large"
+#: AUTO-7a: the named error of a run with no person present.
+NO_PERSON = "no_person_present"
 
 #: The code of each 403 and one sentence that a model can act on.
 REFUSALS: dict[str, str] = {
@@ -165,6 +215,34 @@ REFUSALS: dict[str, str] = {
     SOURCE_NOT_OPEN: (
         "This door runs only the actions of an object: get and list, and create, update "
         "and delete from the member's own screen."),
+    NO_PERSON: "This run has no person present, so it cannot ask a member to approve a write.",
+}
+
+#: The answer of each refused spend (B2c-2a): the status, the code and one
+#: sentence that a model can act on. The key is the reason that
+#: ``acb_auth.app_requests.classify_refusal`` gives.
+SPEND_REFUSALS: dict[str, tuple[int, str, str]] = {
+    "not_found": (404, "request_not_found",
+                  "This door finds no request of yours with this id, so ask for the change again."),
+    "declined": (403, "request_declined", "The member declined this change, so it does not run."),
+    "awaiting": (409, "request_awaiting",
+                 "The member did not approve this change yet, so send it again after the approval."),
+    "spent": (409, "request_spent", "This approval ran once already, so ask for a new approval."),
+    "expired": (409, "request_expired", "This approval expired, so ask for the change again."),
+    "mismatch": (409, "request_mismatch",
+                 "This approval is for another change, so ask for this change again."),
+}
+
+#: The answer of a refusal of ``open_request`` that names no code of its own.
+ASK_REFUSED = "request_refused"
+ASK_AGAIN = "The door cannot open this request now, so send the change again."
+
+#: The title of the card of each delegated write. The server writes it from
+#: the object name, so the card shows no text that the caller chose.
+CARD_TITLES: dict[str, str] = {
+    "create": "Add a record to {object}.",
+    "update": "Change a record of {object}.",
+    "delete": "Delete a record of {object}.",
 }
 
 #: The 503 of a catalog that fails, and the 404 of an object that the package
@@ -234,6 +312,11 @@ class _Outcome:
     record_id: str | None = None
     #: The answer of a direct write that failed or was refused (B2c-1).
     fail: _Fail | None = None
+    #: The request that a delegated call opened or found again (B2c-2a).
+    asked: app_requests.Opened | None = None
+    #: The request of a delegated call, for its audit row: a canonical UUID,
+    #: or None.
+    request_id: str | None = None
     #: True when the call wrote its own audit row, in the session of the write,
     #: or wrote none because it held no connection.
     audited: bool = False
@@ -262,17 +345,22 @@ def _declared(manifest: dict[str, Any], action: str) -> dict[str, Any] | None:
     return None
 
 
-def refusal_for(ref: UsesRef, cls: str | None, direct: bool = False) -> str | None:
+def refusal_for(ref: UsesRef, cls: str | None, direct: bool = False,
+                delegated: bool = False) -> str | None:
     """The refusal code of an action of *ref* and class *cls*, or None when
-    an open executor runs it. *cls* is None when no source gives the action a
-    class. A class B or C object action runs only for a *direct* call, and only
-    when :data:`DIRECT_EXECUTORS` holds it (B2c-1)."""
+    an executor runs it. *cls* is None when no source gives the action a
+    class. A class B or C object action runs for a *direct* call when
+    :data:`DIRECT_EXECUTORS` holds it (B2c-1). For a *delegated* call it asks
+    the member first, when :data:`DELEGATED_EXECUTORS` holds it (B2c-2a)."""
     if cls is None:
         return NOT_IN_CATALOG
     if cls == "X":
         return CLASS_X
     if cls in ("B", "C"):
-        return None if direct and (ref.source, ref.op) in DIRECT_EXECUTORS else APPROVAL_REQUIRED
+        key = (ref.source, ref.op)
+        if (direct and key in DIRECT_EXECUTORS) or (delegated and key in DELEGATED_EXECUTORS):
+            return None
+        return APPROVAL_REQUIRED
     if cls != "A" or (ref.source, ref.op) not in OPEN_EXECUTORS:
         return SOURCE_NOT_OPEN
     return None
@@ -393,7 +481,8 @@ async def _run_object_list(db: Any, package: packages_store.Package, ref: UsesRe
 
 
 async def _check(db: Any, member: str, pid: str, action: str, out: _Outcome,
-                 direct: bool = False) -> tuple[packages_store.Package, UsesRef | None]:
+                 direct: bool = False,
+                 delegated: bool = False) -> tuple[packages_store.Package, UsesRef | None]:
     """One run of the checks on the session *db*: the package as *member*, the
     declaration, then the class of an object action. Each other source takes
     its class from the catalog, outside the session.
@@ -414,7 +503,7 @@ async def _check(db: Any, member: str, pid: str, action: str, out: _Outcome,
     out.uses = str(entry["uses"])
     if ref.source == "object":
         out.cls = OBJECT_OP_CLASSES.get(str(ref.op))
-        out.refusal = refusal_for(ref, out.cls, direct)
+        out.refusal = refusal_for(ref, out.cls, direct, delegated)
     return package, ref
 
 
@@ -577,28 +666,182 @@ async def _run_object_write(db: Any, member: str, package: packages_store.Packag
     out.audited = True
 
 
+# ── The delegated writes (B2c-2a) ─────────────────────────────────────────
+
+
+class _Undo(Exception):
+    """Roll the SAVEPOINT of a spend back, because the stored write did not
+    run. The request then stays approved."""
+
+
+def _door_call(pid: str, action: str, uses: str | None, body: Any) -> dict[str, Any]:
+    """The call of a delegated write, as the request stores it and as the
+    digest reads it. The query holds the ``uses`` of the action, so a request
+    spends only while the action names the same object and verb."""
+    return {
+        "method": "POST",
+        "template": DOOR_TEMPLATE,
+        "path": DOOR_TEMPLATE.format(app_id=pid, action=action),
+        "query": [["uses", str(uses or "")]],
+        "body": body,
+        "if_match": None,
+    }
+
+
+def _card_title(ref: UsesRef) -> str:
+    """The title of the card, from the verb and the object name."""
+    return CARD_TITLES[str(ref.op)].format(object=ref.object)
+
+
+def _ask_refused(exc: HTTPException) -> _Fail:
+    """A refusal of ``open_request`` in the shape of the door: ``code`` and
+    ``message``. A call over 32 KiB of JSON is 413 ``payload_too_large``."""
+    detail: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {}
+    code = str(detail.get("error") or ASK_REFUSED)
+    message = str(detail.get("message") or ASK_AGAIN)
+    return _Fail("refused", code, HTTPException(
+        status_code=exc.status_code, detail={"code": code, "message": message}))
+
+
+def _spend_refused(why: str) -> _Fail:
+    """The answer of a refused spend, by the reason of ``classify_refusal``."""
+    status, code, message = SPEND_REFUSALS.get(why, SPEND_REFUSALS["not_found"])
+    return _Fail("refused", code, HTTPException(
+        status_code=status, detail={"code": code, "message": message}))
+
+
+def _wrote(out: _Outcome) -> bool:
+    """True when the write of *out* ran: a record or a delete, and no refusal."""
+    if out.fail is not None or out.missing or out.object_missing:
+        return False
+    return out.record is not None or out.deleted is not None
+
+
+async def _run_ask(db: Any, org: str, member: str, package: packages_store.Package,
+                   ref: UsesRef, raw: bytes, out: _Outcome) -> None:
+    """Open the card of a delegated write, in the session of the second check,
+    and run nothing. A body of the wrong keys, or an object that the package
+    does not hold, opens no card. The audit row commits with the request."""
+    body = _write_input(str(ref.op), raw)
+    obj = None
+    if body is not None:
+        try:
+            obj = await objects_store.get_object_by_name(
+                db, str(ref.object), package_id=package.id)
+        except objects_store.ObjectStoreError:
+            obj = None
+    if body is None:
+        out.fail = _refused(BAD_INPUT, BAD_WRITE_INPUT)
+    elif obj is None:
+        out.object_missing = True
+    else:
+        call = _door_call(package.id, out.action, out.uses, body)
+        binding = store.studio_binding(member, REQUEST_APP, package.id)
+        try:
+            out.asked = await app_requests.open_request(
+                db, org=org, member=member, source="studio", app=REQUEST_APP,
+                subject=package.id, op=out.action, cls=str(out.cls), call=call,
+                idempotency_key=store.call_digest(call, binding), connection_id=None,
+                via=REQUEST_VIA, title=_card_title(ref), app_name=package.name)
+        except HTTPException as exc:
+            # Each refusal of the store comes before its first write.
+            out.fail = _ask_refused(exc)
+        else:
+            out.request_id = out.asked.request_id
+    await record_app_audit_in(db, app_id=package.id, user_email=member, kind="action",
+                              detail=_audit_detail(out))
+    out.audited = True
+
+
+async def _run_spend(db: Any, org: str, member: str, package: packages_store.Package,
+                     ref: UsesRef, request_id: str, out: _Outcome) -> None:
+    """Run the STORED call of an approved request, in ONE session *db*.
+
+    The order binds: read the stored call, compute its digest, spend, run the
+    write, then write the audit row. The spend and the write sit in one
+    SAVEPOINT. A write that does not run (a refusal, a missing record, a busy
+    store) rolls the spend back, so the request stays approved. A failed audit
+    raises, so ``tenant_session`` rolls back the spend and the write."""
+    out.request_id = _uuid_or_none(request_id)
+    binding = store.studio_binding(member, REQUEST_APP, package.id)
+    stored = await app_requests.read_request(db, org=org, member=member, request_id=request_id)
+    body = ((stored or {}).get("call") or {}).get("body")
+    digest = store.call_digest(_door_call(package.id, out.action, out.uses, body), binding)
+    spent: store.Spent | None = None
+    try:
+        async with db.begin_nested():
+            spent = await store.spend(db, org=org, request_id=request_id, app=REQUEST_APP,
+                                      member=member, binding=binding, digest=digest)
+            if spent is None:
+                raise _Undo
+            await _do_object_write(db, member, package, ref,
+                                   store.body_bytes(spent.call.get("body")), out)
+            if not _wrote(out):
+                raise _Undo
+    except _Undo:
+        pass
+    if spent is None:
+        why = await store.classify_refusal(db, org=org, request_id=request_id, app=REQUEST_APP,
+                                           member=member, binding=binding, digest=digest)
+        out.fail = _spend_refused(why)
+    await record_app_audit_in(db, app_id=package.id, user_email=member, kind="action",
+                              detail=_audit_detail(out))
+    out.audited = True
+
+
+def _mode(first: UsesRef | None, direct: bool, delegated: bool,
+          request_id: str | None) -> str:
+    """How the door runs the action of the first check: ``read``, ``direct``,
+    ``ask``, ``spend`` or ``none``. A write runs at once for a direct call
+    (B2c-1). Each other write is delegated (B2c-2a): with no *request_id* it
+    asks, and with one it spends."""
+    if first is None or (first.source, first.op) not in DIRECT_EXECUTORS:
+        return "read"
+    if direct:
+        return "direct"
+    if delegated:
+        return "ask" if request_id is None else "spend"
+    return "none"
+
+
+def _request_id(request: Request) -> str | None:
+    """The ``request_id`` of the query, or None. It names a request, never an
+    org or a member: the spend finds only a request of the session's member,
+    in the session's org, under the binding of this package."""
+    found = request.query_params.get("request_id")
+    return None if found is None else str(found)
+
+
 async def _run_executor(request: Request, user: UserContext, pid: str, action: str,
-                        out: _Outcome, direct: bool, first: UsesRef | None) -> None:
-    """Read the body, check again, then run the open executor. No session is
+                        out: _Outcome, direct: bool, delegated: bool, mode: str,
+                        request_id: str | None) -> None:
+    """Read the body, check again, then run the executor. No session is
     open during the read, so a slow client holds no pool connection. The read
     can last as long as the client wants, so the first check proves nothing
     after it. The check and the executor share one session.
 
     A direct write takes its writer slot BEFORE the session (B2c-1), and the
-    same session holds the write and its audit row."""
+    same session holds the write and its audit row. A spend does the same, and
+    it reads no byte of the body (B2c-2a). An ask opens its card in the
+    session of the check."""
     member = str(user.email)
-    raw = await _read_body(request)
+    org = str(user.organization_id or "")
+    if mode == "spend":
+        # The door runs the STORED call, so the body of a resend is not read.
+        raw: bytes | None = b""
+    else:
+        raw = await _read_body(request)
     if raw is None:
         out.too_large = True
         return
-    wants = direct and first is not None and (first.source, first.op) in DIRECT_EXECUTORS
-    with _writer_slot(str(user.organization_id or ""), wants) as admitted:
+    wants = mode in ("direct", "spend")
+    with _writer_slot(org, wants) as admitted:
         if wants and not admitted:
             # No session was opened, so no audit row can be written.
             out.fail, out.audited = _busy(), True
             return
         async with _tenant_session() as db:
-            package, ref = await _check(db, member, pid, action, out, direct)
+            package, ref = await _check(db, member, pid, action, out, direct, delegated)
             if out.refusal is not None or ref is None:
                 return
             if ref.source != "object":
@@ -607,11 +850,21 @@ async def _run_executor(request: Request, user: UserContext, pid: str, action: s
                 out.refusal = SOURCE_NOT_OPEN
                 return
             if (ref.source, ref.op) in DIRECT_EXECUTORS:
+                if mode == "ask":
+                    await _run_ask(db, org, member, package, ref, raw, out)
+                    return
+                if mode == "spend" and admitted:
+                    await _run_spend(db, org, member, package, ref, str(request_id), out)
+                    return
                 if not (direct and admitted):
                     # The manifest changed during the read to name a write.
                     out.refusal = SOURCE_NOT_OPEN
                     return
                 await _run_object_write(db, member, package, ref, raw, out)
+                return
+            if mode in _DELEGATED_MODES:
+                # The manifest changed during the read to name a read.
+                out.refusal = SOURCE_NOT_OPEN
                 return
             run = _run_object_list if ref.op == "list" else _run_object_get
             await run(db, package, ref, raw, out)
@@ -663,6 +916,8 @@ def _audit_detail(out: _Outcome) -> dict[str, Any]:
         outcome, reason = "not_found", OBJECT_MISSING
     elif out.missing:
         outcome, reason = "not_found", None
+    elif out.asked is not None:
+        outcome, reason = "asked", None
     else:
         outcome, reason = "ran", None
     detail: dict[str, Any] = {"action": _cap(out.action), "uses": _cap(out.uses),
@@ -671,11 +926,14 @@ def _audit_detail(out: _Outcome) -> dict[str, Any]:
         detail["reason"] = reason
     if out.record_id is not None:
         detail["record_id"] = out.record_id
+    if out.request_id is not None:
+        detail["request_id"] = out.request_id
     return detail
 
 
-def _answer(out: _Outcome) -> dict[str, Any]:
-    """The answer of the call *out*, or the refusal that it raises."""
+def _answer(out: _Outcome) -> dict[str, Any] | JSONResponse:
+    """The answer of the call *out*, or the refusal that it raises. A card
+    that a delegated call opened is 202 (B2c-2a)."""
     if out.catalog_down:
         raise HTTPException(status_code=503, detail={
             "code": CATALOG_UNAVAILABLE, "message": CATALOG_DOWN})
@@ -694,6 +952,11 @@ def _answer(out: _Outcome) -> dict[str, Any]:
     if out.object_missing:
         raise HTTPException(status_code=404, detail={
             "code": OBJECT_MISSING, "message": NO_OBJECT})
+    if out.asked is not None:
+        # The request in its state now: a retry of the ask gives the first one.
+        return JSONResponse(status_code=202, content={
+            "state": out.asked.state, "request_id": out.asked.request_id,
+            "expires_at": out.asked.expires_at})
     if out.page is not None:
         return dataclasses.asdict(out.page)
     if out.deleted is not None:
@@ -703,13 +966,13 @@ def _answer(out: _Outcome) -> dict[str, Any]:
     return {"record": dataclasses.asdict(out.record)}
 
 
-@router.post("/apps/{app_id}/actions/{action}")
+@router.post("/apps/{app_id}/actions/{action}", response_model=None)
 async def invoke_action(
     app_id: str,
     action: str,
     request: Request,
     user: UserContext = Depends(get_current_user),
-) -> dict[str, Any]:
+) -> dict[str, Any] | JSONResponse:
     """Run the action *action* of the caller's package *app_id*. See the
     module docstring for the order of the checks."""
     if not flags.studio_allowed(user.organization_id):
@@ -720,8 +983,12 @@ async def invoke_action(
     out = _Outcome(action=action)
     # The proof is read once, here, before any body read (B2c-1).
     direct = _is_direct(request, user)
+    # B2c-2a: each other call of a write is delegated, and asks the member
+    # first. While APP_REQUESTS_ORGS leaves the org out, it gets today's 403.
+    delegated = not direct and app_requests.requests_allowed(user.organization_id)
+    request_id = _request_id(request) if delegated else None
     async with _tenant_session() as db:
-        package, ref = await _check(db, user.email, pid, action, out, direct)
+        package, ref = await _check(db, user.email, pid, action, out, direct, delegated)
     if ref is not None and out.uses is not None and ref.source != "object":
         try:
             out.cls = await _catalog_class(out.uses)
@@ -731,7 +998,15 @@ async def invoke_action(
         else:
             out.refusal = refusal_for(ref, out.cls)
     elif ref is not None and out.refusal is None:
-        await _run_executor(request, user, pid, action, out, direct, ref)
+        mode = _mode(ref, direct, delegated, request_id)
+        if mode in _DELEGATED_MODES and no_person_present():
+            # AUTO-7a: nobody sees the card of a run with no person present,
+            # so it opens none and spends none. The mark is a ContextVar: it
+            # binds an in-process caller, and an HTTP call does not carry it.
+            out.refusal = NO_PERSON
+        else:
+            await _run_executor(request, user, pid, action, out, direct, delegated, mode,
+                                request_id)
     if not out.audited:
         await record_app_audit_bound(app_id=package.id, user_email=user.email, kind="action",
                                      detail=_audit_detail(out))

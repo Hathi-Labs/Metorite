@@ -887,6 +887,9 @@ _READERS = frozenset({
     "apps/skills/skill-projects/skill_projects/guarded.py",
     "apps/services/gateway/gateway/routes/workflows/service.py",
     "apps/services/orchestrator/orchestrator/executor.py",
+    # WS-STU B2c-2a: the Studio door refuses a delegated write of a marked run
+    # before it opens a card or spends a request. Nobody sees that card.
+    "apps/services/gateway/gateway/routes/studio/invoke.py",
 })
 
 
