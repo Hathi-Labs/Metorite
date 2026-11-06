@@ -68,7 +68,7 @@ Guidance comes in layers (D140.6, SW-31). P10 adds one at the bottom. The neares
 
 **An organization may switch the tips of the default layer off. It may not switch off a safety line.** The safety lines are the stopping rule, the one-disposition rule, `ask_on_task` for a question, and `record_outside_decision`.
 
-**The fence.** `tests/unit/test_playbook_org_neutral.py` (new, PB-1 creates it for the playbook files, PB-5 widens it) reads every file of the playbook, every default tip, the runtime strings `_ROUTINE_INSTRUCTIONS` and `_RUN_INSTRUCTIONS` of `agent_edge/mcp.py` (not its comments), the `work_on_task` text, the protocol block of SW-56 and the plugin package (SW-82). It fails on a match with an entry of `tests/fixtures/playbook_org_tokens.json` (new). An entry is a token or a regex. D numbers use a regex such as `\bD\d{2,3}(\.\d+)?\b`. A second test checks that each entry still matches text in `CLAUDE.md`, `work_plan.md` §1 or `docs/style_ste.md`, so the list cannot drift. The fence is a SAFETY fence and joins `tests/fences.json`. It blocks from the first merge, because D186.2 is an owner call.
+**The fence.** `tests/unit/test_playbook_org_neutral.py` (new, PB-1 creates it for the playbook files, PB-5 widens it) reads every file of the playbook, every default tip, the runtime strings `_ROUTINE_INSTRUCTIONS` and `_RUN_INSTRUCTIONS` of `agent_edge/mcp.py` (not its comments), the `work_on_task` text, the protocol block of SW-56 and the plugin package (SW-82). It fails on a match with an entry of `tests/fixtures/playbook_org_tokens.json` (new). An entry is a token or a regex. D numbers use a regex such as `\bD\d{2,3}(\.\d+)?\b`. A second test checks that each entry still matches text in `CLAUDE.md`, `work_plan.md` §1 or `docs/style_ste.md`, so the list cannot drift. The fence is a SAFETY fence and joins `tests/fences.json`. It blocks from the PB-1 merge, because D186.2 is an owner call. PB-1 adds the entry to `tests/fences.json`. The inputs also include the shipped policy defaults of SW-94, the default stage list of SW-71 and the seed data.
 
 **The HathiLabs layer in Metorite** (PB-10) is a pointer only: "Follow `CLAUDE.md` in the repository." It does not mirror the rules.
 
@@ -117,7 +117,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 #### PB-1 · The playbook content, v1
 
 - **Metorite task.** 1947.
-- **Scope.** The files of §6, the header schema, the loader, and a version for each file. It creates `test_playbook_org_neutral.py` and the token fixture for these files.
+- **Scope.** The files of §6, the header schema, the loader, and a version for each file. It creates `test_playbook_org_neutral.py`, the token fixture for these files, and the entry in `tests/fences.json`.
 - **Done when.** The loader lists every file with its version. A file with a bad header fails the test.
 - **Fence.** `tests/unit/test_playbook_content.py` (new), `test_playbook_org_neutral.py` (new).
 - **Risk.** LOW. **Gate.** AGENT-SAFE.
@@ -151,7 +151,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 - **Metorite task.** 1951.
 - **Scope.** The Metorite default level in guidance (SW-31): read-only, versioned, below the organization. The setting that switches tips off. It widens the neutral test to the product strings and defaults, adds the drift test of §4, and adds the fence to `tests/fences.json`.
 - **Done when.** `get_task_context` returns the default block last. A HathiLabs token in any playbook file fails the test. A token in the fixture that is gone from `CLAUDE.md` fails the second test.
-- **Fence.** `test_playbook_org_neutral.py` (new, SAFETY), `test_agent_guidance_r8.py`.
+- **Fence.** `test_playbook_org_neutral.py` (extended), `test_agent_guidance_r8.py`.
 - **Risk.** HIGH (a channel that reaches every agent, tenancy). **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-31.
 
 #### PB-6 · Setup tools and the starter kit
@@ -193,7 +193,7 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 - **Done when.** An agent that claims a HathiLabs task gets the pointer in its guidance.
 - **Fence.** A test that the organization guidance of the HathiLabs fixture organization holds the pointer and no copy of `CLAUDE.md`. Advisory for the live write (R7).
 - **Verify.** `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_guidance_r8.py` and a read of the live guidance after the write.
-- **Risk.** LOW. **Gate.** OWNER-GATE, because the write changes a live organization's guidance and the owner does it (CLAUDE.md §3a rule 3). **Depends on.** SW-31.
+- **Risk.** LOW. **Gate.** OWNER-GATE, because the write changes the guidance of a live organization, and the owner does it. **Depends on.** SW-31.
 
 ---
 

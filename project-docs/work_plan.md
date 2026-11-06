@@ -5521,7 +5521,7 @@ Fence: `statusSetCopy.test.ts` and `tests/unit/test_projects_status_set_read_r8.
 
 The owner asked on 2026-11-06, in chat, for two things. First, to list every capability that the Metorite MCP needs for multi-agent orchestration, for sessions and for the platform. Second, that Metorite "contains the know-how and understanding in the system prompt to help set up multi-org orchestration systems for whoever connects the Metorite MCP". Board: **WS-MCP**. Owning specs: `specs/agent_coordination.md` §3.11, §4.2 and §5.11, and `specs/orchestration_playbook.md`. Metorite: epic 321, plan task 1906.
 
-It extends D140 and D183. It amends five earlier rules, each in one point (items 10 to 14 below).
+It extends D140 and D183. It amends earlier rules in five points (items 10 to 14 below).
 
 **Owner calls (task 1906, comment of 2026-11-06 18:05 UTC).**
 
@@ -5540,7 +5540,7 @@ It extends D140 and D183. It amends five earlier rules, each in one point (items
 
 **What D186 amends.**
 
-10. **D140.2 and D-EA-14, by SW-75 only.** A policy may answer a reversible question on a LOW task that a person tiered. It ships only if Q16 says yes.
+10. **D140.2 and D-EA-14, by SW-75 only.** A policy may answer a reversible question on a LOW task that a person tiered. Q16 is decided: build it dark, off by default.
 11. **The non-goal "A status move other than to Done" of `github_integration.md` §2 and EA3-39 item 5, by SW-76.** An opened pull request may move its task to review, under a policy that is off by default.
 12. **D140.8 and D183, by SW-66.** A run may park past the lease on a merge, on another run or on a time, under the same cap (Q13).
 13. **EA3-39 items 1 and 8, by PB-2.** The edge serves more than one prompt, and playbook prompts list with `projects:read`.
@@ -5548,7 +5548,7 @@ It extends D140 and D183. It amends five earlier rules, each in one point (items
 
 **Re-check this number at merge.** The first merge wins a D-number. D187 and D188 were open on other branches when this record was written.
 
-Fence: `test_playbook_org_neutral.py` (PB-5) and the fences named per slice in `specs/agent_coordination.md` §7.1. Advisory until the slices build them.
+Fence: `test_playbook_org_neutral.py` (PB-1 creates it, PB-5 widens it, and it blocks from the PB-1 merge) and the fences named per slice in `specs/agent_coordination.md` §7.1. Advisory until the slices build them.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
