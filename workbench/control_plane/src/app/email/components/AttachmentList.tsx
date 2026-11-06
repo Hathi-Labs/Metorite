@@ -2,6 +2,7 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
+import { Skeleton } from "@/components/ui/Skeleton";
 import { useState } from "react";
 import { Attachment } from "../lib/types";
 import { getAttachmentDownloadUrl } from "../lib/api";
@@ -40,9 +41,14 @@ function toFileEntry(att: Attachment): FileEntry {
 
 export function AttachmentList({
   attachments,
+  pending = false,
   className = "",
 }: {
   attachments?: Attachment[];
+  /** The list of files can still arrive. The list sits above the body, so a
+   *  late list would push the body down while the member reads it. The shape
+   *  of one chip holds the space until then (owner, 2026-11-06). */
+  pending?: boolean;
   className?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -50,17 +56,25 @@ export function AttachmentList({
   // PDFs and documents all open in the same ArtifactViewerModal — never a new
   // browser tab or the side panel.
   const [viewing, setViewing] = useState<Attachment | null>(null);
-  if (!attachments || attachments.length === 0) return null;
+  if (!attachments || attachments.length === 0) {
+    if (!pending) return null;
+    return (
+      <div className={className} data-message-files-pending="" role="status" aria-label="Loading attachments">
+        <div className="w-fit overflow-hidden rounded-md border border-border">
+          <Skeleton className="h-14 w-52" />
+        </div>
+      </div>
+    );
+  }
 
   const total = attachments.length;
   const overflow = total - COLLAPSED_COUNT;
   const shown = expanded ? attachments : attachments.slice(0, COLLAPSED_COUNT);
 
   return (
-    <div className={className}>
-      <p className="text-xs text-muted-foreground mb-2">
-        Attachments ({total})
-      </p>
+    // The chips are part of the message, as in Outlook: no heading and no
+    // divider (owner, 2026-11-06). The name stays for a screen reader.
+    <div className={className} data-message-files="" role="group" aria-label={`Attachments (${total})`}>
       <div className="flex flex-wrap gap-2">
         {shown.map((att) => {
           // Always go through the authenticated Next proxy — the absolute

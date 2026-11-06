@@ -16,6 +16,9 @@
  * End move. Enter or Space picks. Escape closes it and gives focus back to
  * the button. Tab closes it.
  *
+ * `MessageReplyBar` draws the three replies again below the body, as Outlook
+ * does, so a member who read to the end finds them there (owner, 2026-11-06).
+ *
  * Fences: `lib/messageActions.test.ts` (the tiers, the groups and the keys)
  * and `e2e/email-message-actions.spec.ts` (the row on both views, the menu
  * by keyboard, and a thread item that acts on its own message).
@@ -29,13 +32,12 @@ import { useMode } from "@/lib/theme/surfaces";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { foldersInScope, isRealFolder, useEmailStore, withPatch } from "../lib/emailStore";
 import {
-  actionRowTier, lightToggle, lightToggleInRow, menuStep, messageMenuGroups,
-  type MenuItemId,
+  REPLY_ACTIONS, actionRowTier, lightToggle, lightToggleInRow, menuStep, messageMenuGroups,
+  type MenuItemId, type ReplyMode,
 } from "../lib/messageActions";
 import type { Email } from "../lib/types";
 import { LabelMenu } from "./LabelMenu";
 
-type ReplyMode = "reply" | "reply-all" | "forward";
 type Updates = Partial<Pick<Email, "isRead" | "isStarred" | "isFlagged" | "folder">>;
 
 export interface MessageActionsProps {
@@ -188,19 +190,6 @@ export function MessageActions({
   });
 
   const labelled = tier === "labels";
-  const replyButton = (mode: ReplyMode, label: string, icon: string) => (
-    <Button
-      variant="ghost"
-      size={labelled ? "sm" : "icon-sm"}
-      icon={icon}
-      type="button"
-      title={label}
-      aria-label={label}
-      onClick={() => onReply(mode)}
-    >
-      {labelled ? label : null}
-    </Button>
-  );
 
   const light = lightToggle(lightVersion);
 
@@ -213,9 +202,20 @@ export function MessageActions({
       // A thread card toggles on a click. A click in the row is not that click.
       onClick={(e) => e.stopPropagation()}
     >
-      {replyButton("reply", "Reply", "Reply")}
-      {tier !== "collapsed" && replyButton("reply-all", "Reply all", "ReplyAll")}
-      {tier !== "collapsed" && replyButton("forward", "Forward", "Forward")}
+      {REPLY_ACTIONS.filter((a) => a.mode === "reply" || tier !== "collapsed").map((a) => (
+        <Button
+          key={a.mode}
+          variant="ghost"
+          size={labelled ? "sm" : "icon-sm"}
+          icon={a.icon}
+          type="button"
+          title={a.label}
+          aria-label={a.label}
+          onClick={() => onReply(a.mode)}
+        >
+          {labelled ? a.label : null}
+        </Button>
+      ))}
       {lightToggleInRow({ tier, dark }) && (
         <Button
           variant="ghost"
@@ -313,6 +313,40 @@ export function MessageActions({
           {view === "label" && <LabelMenu email={live} embedded menu onApplied={onLabel} />}
         </div>
       </AnchoredPanel>
+    </div>
+  );
+}
+
+/**
+ * Reply, Reply all and Forward below the body of one message (owner,
+ * 2026-11-06). The row at the top stays. Each button acts on THIS message, and
+ * the row keeps its labels at each width, so a phone sees all three here.
+ */
+export function MessageReplyBar({
+  message, onReply,
+}: {
+  message: Email;
+  onReply: (mode: ReplyMode) => void;
+}) {
+  return (
+    <div
+      data-message-reply-bar={message.id}
+      role="group"
+      aria-label="Reply to this message"
+      className="mt-4 flex flex-wrap items-center gap-2"
+    >
+      {REPLY_ACTIONS.map((a) => (
+        <Button
+          key={a.mode}
+          variant="secondary"
+          size="md"
+          icon={a.icon}
+          type="button"
+          onClick={() => onReply(a.mode)}
+        >
+          {a.label}
+        </Button>
+      ))}
     </div>
   );
 }

@@ -103,6 +103,119 @@ test.describe("The action row of a message", () => {
   });
 });
 
+// Owner request, 2026-11-06, with Outlook as the reference. The buttons below a
+// message, and the files on top of its body.
+test.describe("The files and the buttons of a message", () => {
+  test.describe.configure({ timeout: 120_000 });
+
+  const bar = (page: Page, id: string) => page.locator(`[data-message-reply-bar="${id}"]`);
+  const top = async (el: Locator) => (await el.boundingBox())?.y ?? Number.NaN;
+
+  // Mutation caught: with `showsReplyBar` always true, the buttons stayed right
+  // above the open composer.
+  test("a single email has the three buttons below its body, and a press opens the reply", async ({ page }) => {
+    await installEmailMocks(page, [IDS.text]);
+    await open(page, IDS.text);
+    const below = bar(page, IDS.text);
+    for (const name of ["Reply", "Reply all", "Forward"]) {
+      await expect(below.getByRole("button", { name, exact: true })).toBeVisible();
+    }
+    // The row at the top stays.
+    await expect(row(page, IDS.text).getByRole("button", { name: "Reply", exact: true })).toBeVisible();
+    const body = page.getByText("This is a plain text mail.").first();
+    expect(await top(below)).toBeGreaterThan(await top(body));
+
+    await below.getByRole("button", { name: "Reply all", exact: true }).click();
+    const box = page.getByPlaceholder("Write your reply all…");
+    await expect(box).toBeVisible();
+    // The press hid its own button, so the focus must land in the reply.
+    await expect(box).toBeFocused();
+    await expect(below).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Close the reply" }).click();
+    await expect(below).toBeVisible();
+  });
+
+  // Mutation caught: with the files below the body again, the chip drew under
+  // the text, and with the old heading, "Attachments (1)" came back.
+  test("a thread card has its files on top of its body, and its buttons act on it", async ({ page }) => {
+    await installEmailMocks(page, [IDS.threadNew]);
+    await open(page, IDS.threadNew);
+    await page.getByText("Can we run the trial on Friday?").first().click();
+    const chip = page.getByRole("button", { name: /trial-plan\.pdf/ }).first();
+    await expect(chip).toBeVisible();
+    const body = page.getByText("The first message of the thread.").first();
+    const older = bar(page, IDS.threadOld);
+    expect(await top(row(page, IDS.threadOld))).toBeLessThan(await top(chip));
+    expect(await top(chip)).toBeLessThan(await top(body));
+    expect(await top(body)).toBeLessThan(await top(older));
+    await expect(page.getByText(/^Attachments \(/)).toHaveCount(0);
+    await expect(page.getByRole("group", { name: "Attachments (1)" })).toBeVisible();
+
+    // Each card has its own buttons. The older one answers the older sender.
+    await expect(bar(page, IDS.threadNew)).toBeVisible();
+    await older.getByRole("button", { name: "Reply", exact: true }).click();
+    await expect(page.locator("[data-email-composer]").getByText("Geo Mathew")).toBeVisible();
+    // Only the message that the composer answers hides its buttons.
+    await expect(older).toHaveCount(0);
+    await expect(bar(page, IDS.threadNew)).toBeVisible();
+  });
+
+  // Mutation caught: with no `pending`, the chip arrived above the text and the
+  // body jumped down while the member read it.
+  test("a file list that loads holds its space, so the body does not move", async ({ page }) => {
+    await installEmailMocks(page, [IDS.threadNew]);
+    let answer = () => {};
+    const held = new Promise<void>((done) => { answer = done; });
+    await page.route(`**/api/email/messages/${IDS.threadOld}*`, async (r) => {
+      await held;
+      await r.fallback();
+    });
+    await open(page, IDS.threadNew);
+    await page.getByText("Can we run the trial on Friday?").first().click();
+    await expect(page.locator("[data-message-files-pending]")).toBeVisible();
+    const body = page.getByText("The first message of the thread.").first();
+    await expect(body).toBeVisible();
+    const before = await top(body);
+
+    answer();
+    await expect(page.getByRole("button", { name: /trial-plan\.pdf/ }).first()).toBeVisible();
+    await expect(page.locator("[data-message-files-pending]")).toHaveCount(0);
+    expect(Math.abs((await top(body)) - before)).toBeLessThanOrEqual(1);
+  });
+
+  // A failed fetch must not leave the shape for good.
+  test("a failed file list gives the space back", async ({ page }) => {
+    await installEmailMocks(page, [IDS.threadNew]);
+    await page.route(`**/api/email/messages/${IDS.threadOld}*`, (r) =>
+      r.fulfill({ status: 500, contentType: "application/json", body: "{}" }),
+    );
+    await open(page, IDS.threadNew);
+    await page.getByText("Can we run the trial on Friday?").first().click();
+    await expect(page.getByText("The first message of the thread.").first()).toBeVisible();
+    await expect(page.locator("[data-message-files-pending]")).toHaveCount(0);
+    await expect(bar(page, IDS.threadOld)).toBeVisible();
+  });
+
+  // The top row of a phone moves Reply all and Forward into its menu. The
+  // bottom row keeps them, on one line, with their labels.
+  test("a phone sees all three labelled buttons on one line", async ({ page }) => {
+    await installEmailMocks(page, [IDS.text]);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/email?account=${ACCOUNT.id}`);
+    await page.locator(`[data-email-row="${IDS.text}"]`).click({ timeout: 60_000 });
+    const below = bar(page, IDS.text);
+    await expect(below).toBeVisible();
+    const tops = await below.getByRole("button").evaluateAll((els) =>
+      els.map((el) => Math.round(el.getBoundingClientRect().top)),
+    );
+    expect(tops).toHaveLength(3);
+    expect(new Set(tops).size).toBe(1);
+    const box = await below.boundingBox();
+    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(390);
+  });
+});
+
 test.describe("The body in dark mode", () => {
   test.describe.configure({ timeout: 120_000 });
 

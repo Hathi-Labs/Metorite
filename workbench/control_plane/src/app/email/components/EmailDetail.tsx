@@ -41,7 +41,8 @@ import { ContactTrigger, RecipientSummary } from "./ContactCard";
 import { LabelMenu } from "./LabelMenu";
 import { LabelChip } from "./LabelChip";
 import { MessageTimelineModal } from "./MessageTimelineModal";
-import { MessageActions } from "./MessageActions";
+import { MessageActions, MessageReplyBar } from "./MessageActions";
+import { showsReplyBar } from "../lib/messageActions";
 import { toggleLightVersion, useLightVersions } from "../lib/lightVersion";
 import { useViewMode } from "@/components/ViewModeProvider";
 import { revealWithin } from "@/lib/scrollWithin";
@@ -1225,6 +1226,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
       onToggleLight={() => toggleLightVersion(m.id)}
     />
   );
+  /** The Reply, Reply all and Forward buttons below the body of one message
+   *  (owner, 2026-11-06). The message that the composer answers has none. */
+  const replyBar = (m: Email) =>
+    showsReplyBar(m.id, replyMode, replyTargetId) ? (
+      <MessageReplyBar message={m} onReply={(mode) => startReply(mode, m)} />
+    ) : null;
   // Point the auto-draft ref at the current-render closure so the nonce effect
   // reads fresh reply state (recipients/mode startReply just set).
   runAiDraftRef.current = runAiDraft;
@@ -1487,6 +1494,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
             messages={shownThread}
             openedId={email.id}
             renderActions={messageActions}
+            renderReplyBar={replyBar}
             lightVersions={lightVersions}
             onSent={refreshThreadAfterSend}
           />
@@ -1539,6 +1547,17 @@ export function EmailDetail({ email }: EmailDetailProps) {
               is its first menu item (owner, 2026-10-10). */}
           {messageActions(email)}
         </div>
+
+        {/* The files of this mail, on top of its body as in Outlook (owner,
+            2026-11-06). The fetch sets `detail` when it ends, also on a failure,
+            so the space holds only while the list can still arrive. */}
+        {view.hasAttachments && (
+          <AttachmentList
+            attachments={view.attachments}
+            pending={detail?.id !== email.id}
+            className="mb-4"
+          />
+        )}
 
         {/* Body */}
         {loadingDetail ? (
@@ -1606,13 +1625,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
           </div>
         )}
 
-        {/* Attachments — same card UI the conversation view uses per message. */}
-        {view.hasAttachments && (
-          <AttachmentList
-            attachments={view.attachments}
-            className="mt-6 pt-4 border-t border-border"
-          />
-        )}
+        {/* While the body loads, the buttons wait, or they would jump down. */}
+        {!loadingDetail && replyBar(view)}
         </>
         )}
 
@@ -1666,6 +1680,8 @@ export function EmailDetail({ email }: EmailDetailProps) {
                   onToggle={() => composerSize.dispatch({ type: "toggleExpand" })}
                 />
                 <button
+                  type="button"
+                  aria-label="Close the reply"
                   className="text-muted-foreground hover:text-foreground transition-colors"
                   onClick={() => {
                     // The X keeps the draft, so the pending save runs at once
