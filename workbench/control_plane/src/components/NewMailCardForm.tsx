@@ -179,7 +179,7 @@ export function NudgeLine({
     >
       <Icon name="Sparkles" size={12} className="shrink-0 text-muted-foreground" />
       {edited ? (
-        <span className="text-foreground">{lost ? NUDGE_EDITED_AT_REST : NUDGE_EDITED}</span>
+        <span className={lost ? "min-w-0 flex-1 text-foreground" : "text-foreground"}>{lost ? NUDGE_EDITED_AT_REST : NUDGE_EDITED}</span>
       ) : (
         <span className="text-foreground">
           <span className="font-medium">{NUDGE_LEAD}</span>{" "}
