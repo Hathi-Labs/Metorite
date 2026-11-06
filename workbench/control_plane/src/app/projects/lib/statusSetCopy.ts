@@ -13,6 +13,10 @@
  * ⚠️ **No possessive.** "Client Projects's set" was the old text. A name
  * phrase never takes "'s" here: the owner comes after "the statuses of".
  * Fence: `statusSetCopy.test.ts`.
+ *
+ * ⚠️ **The release window.** For a few minutes in a release, an old gateway
+ * answers with none of the PST-1 fields. Each sentence then drops its count,
+ * and no function throws (`statusSetCopy.test.ts`, "an old gateway").
  */
 
 import type { StatusSetInfo, StatusSetOverride } from "./api";
@@ -24,8 +28,18 @@ export const SPACE_DEFAULT_STATUSES = "Space default statuses";
 /** The fields of the read that the sentences use. */
 export type StatusSetRead = Pick<
   StatusSetInfo,
-  "owns" | "owner_name" | "owner_kind" | "used_by" | "overrides" | "hidden_overrides"
+  "owns" | "owner_name" | "owner_kind" | "used_by" | "reach" | "overrides" | "hidden_overrides"
 >;
+
+/** The breakaways the member can see. An old gateway may send none. */
+function shownOverrides(info: Pick<StatusSetRead, "overrides">): readonly Partial<StatusSetOverride>[] {
+  return info.overrides ?? [];
+}
+
+/** A count that an old gateway does not send reads as unknown, never as 0. */
+function count(value: number | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
 
 /** "1 project" or "N projects". */
 function projects(n: number): string {
@@ -37,7 +51,11 @@ function projects(n: number): string {
  * The chip of PST-3 uses it as its tooltip.
  */
 export function scopeSentence(info: StatusSetRead): string {
-  const n = info.used_by;
+  const n = count(info.used_by);
+  // An old gateway: the same sentences, with no count.
+  if (n === null) {
+    return info.owns ? "Uses its own statuses." : `Uses the statuses of ${info.owner_name}.`;
+  }
   // Case 2 or 3: the set belongs to an ancestor.
   if (!info.owns) return `Uses the statuses of ${info.owner_name} (shared with ${n})`;
   if (info.owner_kind === "space") {
@@ -50,11 +68,16 @@ export function scopeSentence(info: StatusSetRead): string {
 }
 
 /**
- * The second sentence, when an edit here reaches other projects. For the
- * owner and for each project that uses the set, that number is `used_by`.
+ * The second sentence, when an edit here reaches other projects. Its number
+ * is `reach`: every board that the edit changes. That is `used_by`, plus the
+ * owner when its own board shows lanes. A team space shows none, and a
+ * project does (§9.5, the fix round of PST-1). The server decides it.
  */
 export function reachSentence(info: StatusSetRead): string {
-  return info.used_by > 0 ? `A change here changes the lanes of ${projects(info.used_by)}.` : "";
+  const users = count(info.used_by);
+  if (users === null || users <= 0) return "";
+  const boards = count(info.reach) ?? users;
+  return `A change here changes the lanes of ${projects(boards)}.`;
 }
 
 /** The scope line under the title of every Statuses screen (§9.5). */
@@ -67,7 +90,7 @@ export function scopeLine(info: StatusSetRead): string {
 
 /** The heading of the pane's list: every project that keeps its own set. */
 export function overridesHeading(info: StatusSetRead): string {
-  const total = info.overrides.length + info.hidden_overrides;
+  const total = shownOverrides(info).length + (count(info.hidden_overrides) ?? 0);
   if (total === 0) return "No project keeps its own statuses.";
   return total === 1
     ? "1 project keeps its own statuses"
@@ -76,21 +99,22 @@ export function overridesHeading(info: StatusSetRead): string {
 
 /** The line under the list for the ones the member cannot see. Empty at 0. */
 export function hiddenOverridesLine(info: StatusSetRead): string {
-  const n = info.hidden_overrides;
+  const n = count(info.hidden_overrides) ?? 0;
   if (n <= 0) return "";
   // With no row above it, "and N more" would count projects twice.
-  if (info.overrides.length === 0) return n === 1 ? "You cannot see it." : "You cannot see them.";
+  if (shownOverrides(info).length === 0) return n === 1 ? "You cannot see it." : "You cannot see them.";
   return `and ${n} more that you cannot see`;
 }
 
-/** The path of a row: the names from the space down, joined. */
-export function overridePath(row: Pick<StatusSetOverride, "path">): string {
-  return row.path.join(" / ");
+/** The path of a row, joined. It starts at the first name the member can see. */
+export function overridePath(row: Partial<Pick<StatusSetOverride, "path">>): string {
+  return (row.path ?? []).join(" / ");
 }
 
-/** How many projects use the set of a row. Empty when none do. */
-export function overrideShared(row: Pick<StatusSetOverride, "used_by">): string {
-  return row.used_by > 0 ? `Shared with ${projects(row.used_by)}` : "";
+/** How many projects use the set of a row. Empty when none do, or when unknown. */
+export function overrideShared(row: Partial<Pick<StatusSetOverride, "used_by">>): string {
+  const n = count(row.used_by) ?? 0;
+  return n > 0 ? `Shared with ${projects(n)}` : "";
 }
 
 /** The accessible name of the link that opens a row's own editor. */
@@ -104,8 +128,8 @@ export function openStatusesLabel(row: Pick<StatusSetOverride, "name">): string 
  * never named.
  */
 export function exceptionsNote(info: StatusSetRead): string {
-  const names = info.overrides.map((o) => o.name);
-  const hidden = info.hidden_overrides;
+  const names = shownOverrides(info).map((o) => String(o.name ?? ""));
+  const hidden = count(info.hidden_overrides) ?? 0;
   if (hidden <= 0) return overrideNote(names);
   const unseen =
     hidden === 1

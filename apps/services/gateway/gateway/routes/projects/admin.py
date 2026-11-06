@@ -40,6 +40,7 @@ from gateway.routes.projects.core import (
     can_manage_settings,
     clean_payload,
     count_where,
+    holds_lanes,
     hue_values,
     is_org_wide,
     load_visible_project,
@@ -648,12 +649,18 @@ SELECT c.leaf, c.depth, a.name, ({visible}) AS visible
 
 
 def visible_path(chain: list[tuple[str, bool]]) -> list[str]:
-    """The names from the space down, with no name the caller cannot see.
+    """The names above a breakaway, with no name the caller cannot see.
 
-    ``chain`` is ``(name, visible)`` from the top. Each run of hidden nodes
-    becomes one :data:`ELIDED`, so a hidden ancestor never shows its name
-    (PST-1, narrowing 1). A test of the flag, not of the text, keeps a project
-    that is named "…" apart from a hidden run.
+    ``chain`` is ``(name, visible)`` from the top, and the breakaway itself is
+    not in it. The path starts at the first node the caller can see (§9.4),
+    so a LEADING hidden run leaves no mark. A hidden run after a visible name
+    becomes one :data:`ELIDED`, so a hidden ancestor never shows its name. A
+    test of the flag, not of the text, keeps a project that is named "…"
+    apart from a hidden run.
+
+    ⚠️ Not ``core.visible_project_paths``. That climb stops at the first
+    hidden parent, so it drops a visible grandparent above it. §9.4 shows
+    that grandparent, with a mark for the hidden part.
     """
     path: list[str] = []
     hidden_run = False
@@ -661,7 +668,7 @@ def visible_path(chain: list[tuple[str, bool]]) -> list[str]:
         if visible:
             path.append(str(name))
             hidden_run = False
-        elif not hidden_run:
+        elif path and not hidden_run:
             path.append(ELIDED)
             hidden_run = True
     return path
@@ -672,6 +679,7 @@ async def _status_set_reach(db: Any, vis: Any, owner_id: str) -> dict:
 
     * ``used_by`` counts every project that uses the set, the owner left out.
       It counts a project the caller cannot see, because an edit changes it.
+      It leaves a folder out, because a folder holds no lanes.
     * ``overrides`` holds only the breakaways of :func:`_overrides_below`
       that the caller can see, each with its ``path`` and its own
       ``used_by``. A path holds no hidden name.
@@ -781,6 +789,10 @@ async def describe_status_set(
             ),
             # The number in "shared with N" for the owner and for each user.
             "used_by": reach["used_by"],
+            # Every board that an edit changes: the users, and the owner when
+            # its own board shows lanes (`core.holds_lanes`). A team space
+            # shows none. The N of "A change here changes the lanes of N".
+            "reach": reach["used_by"] + (1 if holds_lanes(owner_row) else 0),
             "inherit_from_id": inherit_from,
             "inherit_from_name": inherit_name,
             "overrides": reach["overrides"],

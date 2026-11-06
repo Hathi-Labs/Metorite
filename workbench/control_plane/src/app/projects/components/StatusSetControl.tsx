@@ -492,6 +492,9 @@ export function StatusSetControl({
  * editor in place, and a modified click opens the project in a new tab
  * (`ControlLink`). Only projects the member can see arrive from the server.
  * The rest are a count, and no name of them is drawn.
+ *
+ * ⚠️ An old gateway, for a few minutes in a release, sends no `path` and no
+ * `used_by`. The row then draws its name alone, and nothing throws.
  */
 function OverrideList({
   info,
@@ -501,13 +504,15 @@ function OverrideList({
   onOpen?: (project: { id: string; name: string }) => void;
 }) {
   const hidden = hiddenOverridesLine(info);
+  const rows = info.overrides ?? [];
   return (
     <div className="flex flex-col gap-1">
       <p className="text-[11px] font-medium text-muted-foreground">{overridesHeading(info)}</p>
-      {info.overrides.length > 0 ? (
+      {rows.length > 0 ? (
         <ul className="flex flex-col gap-1">
-          {info.overrides.map((row) => {
+          {rows.map((row) => {
             const shared = overrideShared(row);
+            const path = overridePath(row);
             return (
               <li key={row.id}>
                 <ControlLink
@@ -519,9 +524,9 @@ function OverrideList({
                   <Icon name="Columns3" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <span className="flex min-w-0 flex-1 flex-col">
                     <span className="truncate text-xs font-medium text-foreground">{row.name}</span>
-                    <span className="truncate text-[11px] text-muted-foreground">
-                      {overridePath(row)}
-                    </span>
+                    {path ? (
+                      <span className="truncate text-[11px] text-muted-foreground">{path}</span>
+                    ) : null}
                   </span>
                   {shared ? (
                     <span className="shrink-0 text-[11px] text-muted-foreground">{shared}</span>

@@ -3023,20 +3023,43 @@ async def status_scope_ids(db: Any, project_id: str) -> list[str]:
 #: count the children of a nested owner. Fence:
 #: ``tests/unit/test_projects_status_set_read_r8.py``.
 #:
+#: ⚠️ The walk goes THROUGH a folder, so a project under a folder counts. The
+#: count leaves the folder out, because a folder holds no lanes (the rule of
+#: :func:`node_kind`, and of ``hasStatusSet`` in the frontend ``tree.ts``). A
+#: NULL kind reads as a project (R6 expand).
+#:
 #: It counts every row that the tenant session reads, and Postgres RLS binds
 #: that session to one organization. A project that the caller cannot see
 #: still counts, because an edit changes its lanes too.
 _STATUS_USERS_SQL = """
 WITH RECURSIVE status_users AS (
-    SELECT id AS owner_id, id FROM pm_projects
+    SELECT id AS owner_id, id, kind FROM pm_projects
      WHERE id = ANY(CAST(:owners AS uuid[]))
     UNION ALL
-    SELECT u.owner_id, p.id FROM pm_projects p
+    SELECT u.owner_id, p.id, p.kind FROM pm_projects p
       JOIN status_users u ON p.parent_project_id = u.id
      WHERE NOT p.owns_statuses
 )
-SELECT owner_id, count(*) - 1 AS used_by FROM status_users GROUP BY owner_id
+SELECT owner_id,
+       count(*) FILTER (
+           WHERE id <> owner_id AND COALESCE(kind, 'project') <> 'folder'
+       ) AS used_by
+  FROM status_users GROUP BY owner_id
 """
+
+
+def holds_lanes(node: Any) -> bool:
+    """True when ``node``'s own board shows lanes, so a status edit reaches it.
+
+    A folder holds no lanes (:func:`node_kind`). A team space holds no task and
+    shows no board (:func:`is_team_space`, owner directive 2026-08-31). A
+    personal root holds the Inbox, so it counts. The reach of a status edit
+    (PST-1, §9.5) adds the owner only when this is true.
+    """
+    return (
+        node_kind(getattr(node, "kind", None)) != "folder"
+        and not is_team_space(node)
+    )
 
 
 async def status_users(db: Any, owner_ids: list[str]) -> dict[str, int]:

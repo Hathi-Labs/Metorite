@@ -1874,17 +1874,22 @@ export interface StatusRow {
   is_default: boolean;
 }
 
-/** A project below the owner that keeps its own set (PST-1, §9.4). */
+/**
+ * A project below the owner that keeps its own set (PST-1, §9.4).
+ *
+ * ⚠️ `path` and `used_by` are optional for the release window: an old gateway
+ * sends `{id, name}` only. The copy module reads them with a default.
+ */
 export interface StatusSetOverride {
   id: string;
   name: string;
   /**
-   * The names from the space down to its parent. A run of names the caller
-   * cannot see is one "…", so no hidden name reaches the browser.
+   * The names above it, from the first one the caller can see. A hidden
+   * run after a visible name is one "…", so no hidden name reaches the browser.
    */
-  path: string[];
+  path?: string[];
   /** Projects that use ITS set, it left out. */
-  used_by: number;
+  used_by?: number;
 }
 
 /** Where a project's lanes come from — `projectsApi.statusSet`. */
@@ -1909,15 +1914,27 @@ export interface StatusSetInfo {
    */
   inherit_from_id: string | null;
   inherit_from_name: string | null;
+  /*
+   * ⚠️ The PST-1 fields below are optional for the release window. For a few
+   * minutes an old gateway sends none of them, and the screen then draws the
+   * sentences with no count (`statusSetCopy.ts`).
+   */
   /** The kind of the owner node. A space is a root (PST-1, §9.4). */
-  owner_kind: "space" | "project";
+  owner_kind?: "space" | "project";
   /**
    * Projects that use the set, the owner left out. It counts every depth
-   * below the owner and stops at a node that owns a set. It counts projects
-   * the caller cannot see, because an edit changes them too. It is the N of
-   * "shared with N" (§9.4).
+   * below the owner and stops at a node that owns a set. It leaves a folder
+   * out, because a folder holds no lanes. It counts projects the caller
+   * cannot see, because an edit changes them too. It is the N of "shared
+   * with N" (§9.4).
    */
-  used_by: number;
+  used_by?: number;
+  /**
+   * Every board that an edit changes: `used_by`, plus the owner when its own
+   * board shows lanes. A team space shows none, and a project does. The N
+   * of "A change here changes the lanes of N projects".
+   */
+  reach?: number;
   /**
    * Projects under the OWNER that keep their own lanes — an edit here does not
    * reach them.
@@ -1934,7 +1951,7 @@ export interface StatusSetInfo {
    */
   overrides: StatusSetOverride[];
   /** Breakaways the caller cannot see. The UI counts them and names none. */
-  hidden_overrides: number;
+  hidden_overrides?: number;
   /** False on a space: there is nothing above it to inherit from. */
   can_inherit: boolean;
   /** A set it owned before, kept so switching back restores those lanes. */

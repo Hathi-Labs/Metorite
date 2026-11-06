@@ -33,6 +33,7 @@ function read(over: Partial<StatusSetRead> = {}): StatusSetRead {
     owner_name: "Metorite",
     owner_kind: "space",
     used_by: 0,
+    reach: 0,
     overrides: [],
     hidden_overrides: 0,
     ...over,
@@ -41,43 +42,101 @@ function read(over: Partial<StatusSetRead> = {}): StatusSetRead {
 
 describe("the scope line, case by case (§9.5)", () => {
   it("case 2: a project that uses the space's set", () => {
-    const info = read({ owns: false, used_by: 27 });
+    // A team space shows no board, so the server sends reach = used_by.
+    const info = read({ owns: false, used_by: 27, reach: 27 });
     expect(scopeSentence(info)).toBe("Uses the statuses of Metorite (shared with 27)");
     expect(scopeLine(info)).toBe(
       "Uses the statuses of Metorite (shared with 27). A change here changes the lanes of 27 projects.",
     );
   });
 
-  it("case 3: a project that uses an ancestor project's set", () => {
-    const info = read({ owns: false, owner_name: "Mobile App", owner_kind: "project", used_by: 1 });
+  it("case 3: a project that uses an ancestor project's set, and the owner's board counts", () => {
+    // Own one owns the set, and Own one a and Own one b use it. An edit from
+    // Own one a changes all three boards (the PST-1 fix round).
+    const info = read({ owns: false, owner_name: "Own one", owner_kind: "project", used_by: 2, reach: 3 });
     expect(scopeLine(info)).toBe(
-      "Uses the statuses of Mobile App (shared with 1). A change here changes the lanes of 1 project.",
+      "Uses the statuses of Own one (shared with 2). A change here changes the lanes of 3 projects.",
     );
   });
 
   it("case 1, a project, used by none", () => {
-    const info = read({ owner_kind: "project", owner_name: "Mobile App" });
+    // Only its own board changes, so there is no second sentence.
+    const info = read({ owner_kind: "project", owner_name: "Mobile App", reach: 1 });
     expect(scopeLine(info)).toBe("Uses its own statuses. No other project uses them.");
     expect(reachSentence(info)).toBe("");
   });
 
   it("case 1, a project, shared", () => {
-    const info = read({ owner_kind: "project", owner_name: "Mobile App", used_by: 3 });
+    const info = read({ owner_kind: "project", owner_name: "Mobile App", used_by: 3, reach: 4 });
     expect(scopeSentence(info)).toBe("Uses its own statuses (shared with 3)");
     expect(scopeLine(info)).toBe(
-      "Uses its own statuses (shared with 3). A change here changes the lanes of 3 projects.",
+      "Uses its own statuses (shared with 3). A change here changes the lanes of 4 projects.",
     );
   });
 
   it("case 1, a space, used by none, by one and by many", () => {
     expect(scopeLine(read())).toBe("No other project uses these statuses.");
-    expect(scopeLine(read({ used_by: 1 }))).toBe(
+    expect(scopeLine(read({ used_by: 1, reach: 1 }))).toBe(
       "1 project uses these statuses. A change here changes the lanes of 1 project.",
     );
-    expect(scopeSentence(read({ used_by: 27 }))).toBe("27 projects use these statuses.");
-    expect(scopeLine(read({ used_by: 27 }))).toBe(
+    expect(scopeSentence(read({ used_by: 27, reach: 27 }))).toBe("27 projects use these statuses.");
+    expect(scopeLine(read({ used_by: 27, reach: 27 }))).toBe(
       "27 projects use these statuses. A change here changes the lanes of 27 projects.",
     );
+  });
+});
+
+describe("the reach counts every board that changes (PST-1 fix round)", () => {
+  it("takes its number from the server's reach, never from used_by", () => {
+    // used_by leaves the owner out. A project owner's own board changes too.
+    expect(reachSentence(read({ owner_kind: "project", used_by: 2, reach: 3 }))).toBe(
+      "A change here changes the lanes of 3 projects.",
+    );
+    // A folder holds no lanes: the server leaves it out of both numbers.
+    expect(reachSentence(read({ used_by: 7, reach: 7 }))).toBe(
+      "A change here changes the lanes of 7 projects.",
+    );
+  });
+  it("keeps 'shared with N' at used_by", () => {
+    expect(scopeSentence(read({ owns: false, owner_kind: "project", used_by: 2, reach: 3 }))).toBe(
+      "Uses the statuses of Metorite (shared with 2)",
+    );
+  });
+  it("falls back to used_by when the server sends no reach", () => {
+    expect(reachSentence(read({ used_by: 4, reach: undefined }))).toBe(
+      "A change here changes the lanes of 4 projects.",
+    );
+  });
+});
+
+describe("an old gateway, for a few minutes in a release", () => {
+  // The read of a gateway before PST-1: no owner_kind, used_by, reach or
+  // hidden_overrides, and each override is `{id, name}` only.
+  const old = (over: Partial<StatusSetRead> = {}): StatusSetRead => ({
+    owns: false,
+    owner_name: "Metorite",
+    overrides: [{ id: "a", name: "Mobile App" }],
+    ...over,
+  });
+  it("draws each sentence with no count, and never 'undefined'", () => {
+    expect(scopeLine(old())).toBe("Uses the statuses of Metorite.");
+    expect(scopeLine(old({ owns: true }))).toBe("Uses its own statuses.");
+    expect(reachSentence(old())).toBe("");
+    expect(hiddenOverridesLine(old())).toBe("");
+    expect(overridesHeading(old())).toBe("1 project keeps its own statuses");
+    expect(exceptionsNote(old())).toBe("Mobile App keeps its own, so it will not change.");
+    const said = [scopeLine(old()), overridesHeading(old()), exceptionsNote(old())].join(" ");
+    expect(said).not.toMatch(/undefined|NaN|null/);
+  });
+  it("draws a row with no path and no count", () => {
+    expect(overridePath({})).toBe("");
+    expect(overrideShared({})).toBe("");
+  });
+  it("draws no list when the gateway sends no overrides at all", () => {
+    const bare = { owns: true, owner_name: "Metorite" } as unknown as StatusSetRead;
+    expect(() => overridesHeading(bare)).not.toThrow();
+    expect(overridesHeading(bare)).toBe("No project keeps its own statuses.");
+    expect(exceptionsNote(bare)).toBe("");
   });
 });
 

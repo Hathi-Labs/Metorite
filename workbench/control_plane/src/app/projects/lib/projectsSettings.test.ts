@@ -156,3 +156,27 @@ describe("Space default statuses (PST-1, D185, §9.5)", () => {
     expect(control).toMatch(/\{scopeLine\(info\)\}/);
   });
 });
+
+describe("each run of the palette entry opens the section (PST-1 fix round)", () => {
+  it("gives the same place a new key on each open", async () => {
+    const { nextSettingsSeed, plainSettingsSeed, settingsSeedKey } = await import("./settingsSeed");
+    // The member runs "Space default statuses": the pane opens at Statuses of A.
+    const first = nextSettingsSeed({}, "statuses", "space-a");
+    // The member clicks General or picks space B inside the pane. The seed does
+    // not change. The member runs the entry again.
+    const second = nextSettingsSeed(first, "statuses", "space-a");
+    expect(settingsSeedKey(second)).not.toBe(settingsSeedKey(first));
+    expect(second.section).toBe("statuses");
+    expect(second.spaceId).toBe("space-a");
+    // A plain open from the sidebar keeps the pane that is there.
+    const plain = plainSettingsSeed(second);
+    expect(settingsSeedKey(plainSettingsSeed(plain))).toBe(settingsSeedKey(plain));
+    expect(plain.section).toBeUndefined();
+  });
+  it("is how the page keys the pane and opens a place", () => {
+    const page = readFileSync(join(__dirname, "..", "page.tsx"), "utf-8");
+    expect(page).toContain("key={settingsSeedKey(settingsSeed)}");
+    expect(page).toContain("setSettingsSeed((prev) => nextSettingsSeed(prev, section, spaceId ?? null))");
+    expect(page).not.toMatch(/key=\{`\$\{settingsSeed\.section/);
+  });
+});
