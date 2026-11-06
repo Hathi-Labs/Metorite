@@ -299,10 +299,10 @@ async def test_the_rows_carry_the_contract_fields_and_sort(ns, app_engine) -> No
         "whatsapp", "connected", "Shop a", "/whatsapp")
     mcp = by_id[f"mcp:{a.mcp}"]
     # H-300: a server moved from mcp_servers keeps its behaviour, so the
-    # switch reads "false".
+    # switch reads "false". MCP-C2: so does the read-only key.
     assert mcp["detail"] == {
         "name": a.mcp, "transport": "http-sse", "agent_scope": "*", "host": "mcp.example.com",
-        "always_confirm": "false"}
+        "always_confirm": "false", "read_only_key": "false"}
     key = by_id["key:apollo"]
     assert (key["kind"], key["status"], key["scope"]) == ("api_key", "configured", "org")
 

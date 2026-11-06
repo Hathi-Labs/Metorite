@@ -41,6 +41,8 @@ import {
   currentAssistantFacts,
   dataText,
   dockFloats,
+  draftFor,
+  setAssistantSession,
   effectiveMode,
   navigateAct,
   modeOnOpen,
@@ -962,7 +964,11 @@ describe("the phone opens on the chat (WS-62 CF-2, §4.2, D-CF-2, D-CF-3)", () =
   it("the shell opens it once, from the rule, and marks the session", () => {
     const src = read("lib/shell/ChatNudge.tsx");
     expect(src).toContain("const settled = landingSettled({");
-    expect(src).toContain("if (!settled) return;\n    decided.current = true;");
+    // BUD-1: the hello waits on its own facts after `settled`, and both opens
+    // share the ONE decision (no second effect).
+    expect(src).toMatch(/if \(!settled\) return;[\s\S]*decided\.current = true;/);
+    expect(src).toContain("helloOpens({ guideAllowed, fresh, hasChats, guideActive })");
+    expect(src.match(/decided\.current = true;/g)?.length).toBe(1);
     expect(src).toContain('window.sessionStorage.setItem(CHAT_LANDED_KEY, "1");');
     expect(src).toContain('openAssistant({ mode: "full" });');
     expect(read("components/AppShell.tsx")).toContain("useChatFirstLanding(isMobile);");
@@ -1097,5 +1103,38 @@ describe("the starter pills come from the feed (WS-62 CF-4, chat_first_surface.m
     // The rule itself is pure: no fetch, no cache, no feed import.
     const rule = read("lib/starterPills.ts");
     expect(rule).not.toMatch(/\bfetch\(|useCachedResource|from "@\//);
+  });
+});
+
+describe("a draft that asks for a new chat (BETA-1 fix, owner report of the lost brief)", () => {
+  it("is held while the old chat is on screen, and goes to the new chat", () => {
+    setAssistantSession("old-chat");
+    openAssistant({ draft: "Build me an app: loans", fresh: true });
+    const draft = assistantState().draft;
+    expect(draft?.after).toBe("old-chat");
+    // The mounted chat reads the draft in its own effect. It gets none.
+    expect(draftFor(draft, "old-chat")).toBeNull();
+    // The fresh switch moves the dock to the new chat. That chat gets the brief.
+    expect(draftFor(draft, "new-chat")?.text).toBe("Build me an app: loans");
+  });
+
+  it("a draft with no fresh request goes to the chat on screen, as before", () => {
+    setAssistantSession("old-chat");
+    openAssistant({ draft: "find the BQ quote" });
+    expect(assistantState().draft?.after).toBeUndefined();
+    expect(draftFor(assistantState().draft, "old-chat")?.text).toBe("find the BQ quote");
+  });
+
+  it("holds the draft while no chat is chosen yet", () => {
+    setAssistantSession(null);
+    openAssistant({ draft: "x", fresh: true });
+    expect(draftFor(assistantState().draft, null)).toBeNull();
+    expect(draftFor(assistantState().draft, "first")?.text).toBe("x");
+  });
+
+  it("the dock reads the draft only through draftFor", () => {
+    const dock = read("lib/shell/AssistantDock.tsx");
+    expect(dock).toContain("draftFor(st.draft, active.id)?.text");
+    expect(dock).not.toContain("st.draft?.text");
   });
 });
