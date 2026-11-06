@@ -11,7 +11,7 @@ import { useEffect, useState } from "react";
 import type { MessageTimeline, MessageTimelineEvent } from "../lib/types";
 import { getMessageTimeline } from "../lib/api";
 import { fullDateLabel } from "../lib/utils";
-import { GONE_MAIL_LABEL, isGoneMailSkip } from "./automation/ai-settings/actionFormat";
+import { GONE_MAIL_LABEL, isGoneMailSkip, showActionErrors } from "./automation/ai-settings/actionFormat";
 
 export function MessageTimelineModal({
   messageId,
@@ -146,7 +146,7 @@ function TimelineRow({
             ))}
           </div>
         )}
-        {!isGoneMailSkip(ev) && ev.action_errors && ev.action_errors.length > 0 && (
+        {showActionErrors(isGoneMailSkip(ev), ev.action_errors?.length ?? 0) && ev.action_errors && (
           <div className="mt-1 space-y-0.5">
             {ev.action_errors.map((e, i) => (
               <div key={i} className="text-[10px] text-destructive">

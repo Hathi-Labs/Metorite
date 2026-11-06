@@ -173,23 +173,51 @@ export function matchSourceLabel(src?: string | null): string | null {
 export const GONE_MAIL_LABEL = "Mail moved or deleted";
 
 /**
- * A SKIPPED run that keeps its rule_id is a rule that was chosen but could not
- * run because the mail was gone. A plain SKIPPED run (no rule_id) means no rule
- * matched. One place decides, and History, its popover and the timeline call it.
+ * The server says which SKIPPED run is a gone-mail skip, with `mail_gone`.
+ * The UI never guesses it: a suppressed skip keeps its rule_id too. One place
+ * reads the flag, and History, its popover, the Fix dialog and the timeline
+ * call it.
  */
-export function isGoneMailSkip(row: {
+export function isGoneMailSkip(row: { mail_gone?: boolean | null }): boolean {
+  return row.mail_gone === true;
+}
+
+/** The "No match" filter of History: every SKIPPED row except a gone-mail one. */
+export function isNoMatchRow(row: {
   status?: string | null;
-  rule_id?: string | null;
+  mail_gone?: boolean | null;
 }): boolean {
-  return (row.status || "").toUpperCase() === "SKIPPED" && !!row.rule_id;
+  return row.status === "SKIPPED" && !isGoneMailSkip(row);
+}
+
+/** The "Matched:" chip of the Fix dialog: label and colour for the current run. */
+export function currentMatchChip(
+  matched: boolean,
+  ruleName: string | null,
+  gone: boolean,
+): { label: string; cls: string } {
+  if (gone) return { label: GONE_MAIL_LABEL, cls: accentForHue("gray").chip };
+  if (matched)
+    return { label: ruleName || "Matched", cls: "bg-emerald-500/15 text-emerald-400" };
+  return { label: "No match found", cls: "bg-red-500/15 text-red-400" };
+}
+
+/** The prefix of the reason line in the popover. */
+export function reasonPrefix(gone: boolean): string {
+  return gone ? "What happened:" : "Reason for choosing this rule:";
+}
+
+/** A gone-mail row hides its action errors: they repeat the reason in red. */
+export function showActionErrors(gone: boolean, errorCount: number): boolean {
+  return !gone && errorCount > 0;
 }
 
 /** Friendly label + tint for an executed-rule status (History popover). */
 export function statusMeta(
   status?: string,
-  ruleId?: string | null,
+  mailGone?: boolean | null,
 ): { label: string; cls: string } | null {
-  if (isGoneMailSkip({ status, rule_id: ruleId })) {
+  if ((status || "").toUpperCase() === "SKIPPED" && isGoneMailSkip({ mail_gone: mailGone })) {
     return { label: GONE_MAIL_LABEL, cls: accentForHue("gray").chip };
   }
   switch ((status || "").toUpperCase()) {

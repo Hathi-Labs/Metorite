@@ -21,6 +21,8 @@ import {
   statusMeta,
   GONE_MAIL_LABEL,
   isGoneMailSkip,
+  reasonPrefix,
+  showActionErrors,
 } from "./actionFormat";
 
 // Base field styling WITHOUT a width — compose with `w-full` (INPUT_CLS) or a
@@ -103,6 +105,7 @@ export function RuleResultPill({
   matchSource,
   actionErrors,
   draftPreview,
+  mailGone,
 }: {
   matched: boolean;
   ruleName: string | null;
@@ -116,13 +119,15 @@ export function RuleResultPill({
   matchSource?: string | null;
   actionErrors?: { type: string; error: string }[] | null;
   draftPreview?: string | null;
+  /** The server says this SKIPPED run is a gone-mail skip. */
+  mailGone?: boolean;
 }) {
   // A rule that matched but whose every action the mail server refused is not a
   // success, and showing it in the same green as a real one is how 138 no-op
   // runs stayed invisible for a month. It is not "No match" either — the
   // assistant decided correctly and the mailbox simply never received it.
   const failed = (status || "").toUpperCase() === "FAILED";
-  const gone = isGoneMailSkip({ status, rule_id: ruleId });
+  const gone = isGoneMailSkip({ mail_gone: mailGone });
   const pill = (
     <span
       className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md whitespace-nowrap ${
@@ -148,7 +153,7 @@ export function RuleResultPill({
   const specs = actionSpecs ?? [];
   const types = takenTypes ?? [];
   const typeSummary = conditionTypeSummary(conditions);
-  const sm = statusMeta(status, ruleId);
+  const sm = statusMeta(status, mailGone);
   const srcLabel = matchSourceLabel(matchSource);
   const errs = actionErrors ?? [];
   const draft = (draftPreview || "").trim();
@@ -215,12 +220,12 @@ export function RuleResultPill({
         {reason && (
           <div className="text-[10px] text-muted-foreground/80 bg-secondary/40 rounded-md px-2 py-1.5 italic">
             <span className="not-italic text-muted-foreground/60">
-              {gone ? "What happened:" : "Reason for choosing this rule:"}{" "}
+              {reasonPrefix(gone)}{" "}
             </span>
             {reason}
           </div>
         )}
-        {!gone && errs.length > 0 && (
+        {showActionErrors(gone, errs.length) && (
           <div className="text-[10px] text-destructive bg-destructive/10 rounded-md px-2 py-1.5">
             <div className="font-medium mb-0.5 flex items-center gap-1">
               <Icon name="AlertTriangle" size={10} /> Action issues

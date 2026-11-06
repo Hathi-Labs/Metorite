@@ -10,7 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getRulesHistory } from "../../../lib/api";
 import type { ExecutedRule, RuleAction } from "../../../lib/types";
 import { EmailPreviewModal } from "../../EmailPreviewModal";
-import { ActionChip, isGoneMailSkip } from "./actionFormat";
+import { ActionChip, isGoneMailSkip, isNoMatchRow } from "./actionFormat";
 import { INPUT_CLS, RuleResultPill, Spinner } from "./common";
 import { FixButton } from "./fixDialog";
 
@@ -71,7 +71,7 @@ export function HistoryTab({
     ruleFilter === "all"
       ? true
       : ruleFilter === "skipped"
-        ? h.status === "SKIPPED" && !isGoneMailSkip(h)
+        ? isNoMatchRow(h)
         : h.rule_name === ruleFilter
   );
   // Newest mail first (by the email's received date, falling back to when the
@@ -251,12 +251,18 @@ function HistoryRow({
           matchSource={h.match_source}
           actionErrors={h.action_errors}
           draftPreview={h.draft_preview}
+          mailGone={h.mail_gone}
         />
         {accountId && (
           <FixButton
             accountId={accountId}
             email={{ subject: h.subject || "", from: h.from || "" }}
-            current={{ matched, ruleName: h.rule_name, ruleId: h.rule_id ?? null }}
+            current={{
+              matched,
+              ruleName: h.rule_name,
+              ruleId: h.rule_id ?? null,
+              mailGone: isGoneMailSkip(h),
+            }}
             messageId={h.message_id ?? null}
             onReran={onReran}
           />
