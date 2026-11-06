@@ -930,7 +930,7 @@ A new `runtime` key names one of four kinds. No key means `none`. The builder pi
 |---|---|---|---|
 | **`none`** | The platform | Manifest, rules, workflows, first-party actions and modules (B4). No member code | The usual review |
 | **`browser`** | The viewer's browser, in the sandboxed frame: `allow-scripts`, `connect-src 'none'` | A custom screen, a scanner, a bespoke chart (L1). Each call goes through the door | `studio:publish` reads the code |
-| **`sandbox`** | A sandbox with no network, on the standard image | Member Python or Node (B5) | A holder of `tools:approve` reads the code and approves one version (D130.3). The author may run a private version on sample data first |
+| **`sandbox`** | A sandbox with no network, on the standard image | Member Python or Node (B5) | A holder of `studio:publish` reads the code and approves one version (D130.3, D187). The author may run a private version on sample data first |
 | **`packages`** | The same sandbox, plus one frozen package layer | Code that needs a package outside the image (B8) | The same, and the reviewer reads the package list. Approval comes before the first real run |
 
 ```json
@@ -994,7 +994,7 @@ A member installs nothing to use these. A change to this list is a Metorite PR w
 | **Count** | At most 20 direct packages and 150 with their dependencies |
 | **Size** | One download at most 50 MiB. One layer at most 300 MiB unpacked, the cap of T2 today (`install_t2_deps.mjs`). An org holds at most 2 GiB of layers. A layer that two orgs share by hash counts once for each |
 | **Time** | An install takes at most 180 s, the T2 limit |
-| **Who** | The builder proposes the list. A holder of `tools:approve` approves it |
+| **Who** | The builder proposes the list. A holder of `studio:publish` approves it (D187) |
 
 ### 19.6 Data: existing, new, outside and searchable
 

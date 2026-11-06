@@ -285,6 +285,8 @@ A package names what it needs: a connection, a feature, or another package. A mi
 | `group:<slug>` | The members of the group | A member of the group with `feature:studio` |
 | `private` | One member | Any member with `feature:studio` |
 
+**A package that holds code (D187).** A package with a member-authored logic module (`ai_studio.md` B5) runs code for each viewer. So each install for named people, a group or the org needs the `studio:publish` approval of one version first (`agent_sandbox.md` §8.1).
+
 ### 6.2 The lifecycle of an app made in chat (D147, PKG-Q2)
 
 1. **Made.** Mira builds the app in chat. It is private, and `ends_at` is 30 days later.
