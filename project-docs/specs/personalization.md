@@ -2836,10 +2836,12 @@ holds a copy of the same table. The server and My Day read the same hours:
 | 05:00 to 11:59 | "Good morning" |
 | 12:00 to 16:59 | "Good afternoon" |
 | 17:00 to 20:59 | "Good evening" |
-| 21:00 to 04:59 | "Hello" |
+| 21:00 to 04:59 | "Hello" (the line offers "Good evening" too from 21:00 to 23:59, in English only) |
 
 **The zone.** The part-of-day line uses the zone of the "now" line. The
-browser zone comes first, and `people.timezone` is the fallback (D2).
+code reads `resolve_zone(user_settings.timezone, people.timezone,
+profile_zone)` in `executor.py`. That is the member's saved setting (the
+browser zone) first, then the People row, then the profile (D2).
 
 **When the chat greets** (`executor._prime_greet_due` and `_greet_decision`):
 
@@ -2887,9 +2889,10 @@ needs. Section 16.4.3 gives the drafter fix.
    it. `[K]` means many people use the form, with no fetched citation.
    `[U]` means unverified.
 2. **What ships.** A `[V]` row ships as a fixed choice. A `[K]` row ships
-   only after one reviewer confirms it. A `[U]` row needs a check by a native
-   speaker first. The research file states the base rule. A row with no
-   `[V]` tag needs a human reviewer before it ships as a fixed rule.
+   after one reviewer confirms it. A `[U]` row needs a native-speaker check
+   first. A `[K]` row in a language that the reviewer does not speak needs the
+   same check. The research legend says only that a row with no `[V]` tag
+   needs a human reviewer. The finer rule is this spec's.
 3. **Nothing infers a form.** No code picks a form from the name, the region,
    the language guess or the community. Surnames such as Rao, Naidu, Singh
    and Sheth link to a caste or a community. Greetings with a religious
@@ -2898,7 +2901,8 @@ needs. Section 16.4.3 gives the drafter fix.
    chat calls the member by the name alone ("Vijay"). It uses "Vijay ji" or
    "Vijay garu" only after the member chooses it.
 5. **The name question offers "just my name" first.** The forms that fit the
-   member's language follow it. A kinship form is never a default (rule 7).
+   member's language follow it. The language comes from the profile
+   (`style.language`) or from the member's own answer, and never from a guess. A kinship form is never a default (rule 7).
 6. **The block uses the chosen form as written.** It does not respell, split
    or move the form.
 7. **Kinship forms imply age and rank.** Anna, akka, dada, didi, bhai, chechi,
@@ -2949,7 +2953,7 @@ name, as in "Vijaybhai".
 | Dada | suffix | kinship. Ambiguous: grandfather in Hindi, elder brother in Bengali and Marathi | [K] |
 | Pandit (Pt.) | prefix | title, linked to a community | [V] |
 
-Do not offer these. Sahiba and Memsahib are colonial. Uncle and Aunty carry
+Do not offer these. Memsahib is colonial. Uncle and Aunty carry
 an age. Sethji links to wealth and a community. Babu and Babuji sound like a
 clerk. Thakur and Chaudhary are clan names.
 
@@ -2963,8 +2967,8 @@ clerk. Thakur and Chaudhary are clan names.
 | Bhaji | suffix | kinship | [K] |
 
 Singh and Kaur are surname parts. Never strip them. "Sat Sri Akal" and
-"Waheguru ji ka Khalsa" are religious greetings. Use them only when the
-member asks.
+"Waheguru ji ka Khalsa" are religious greetings. Do not use "Waheguru ji
+ka Khalsa". Use "Sat Sri Akal" only when the member asks.
 
 **Gujarati**
 
@@ -2985,7 +2989,7 @@ Seth, Sheth and Shah are surnames. Do not strip them.
 | Shri | prefix | formal, male | [K] |
 | Sau. | prefix | formal, female, married | [K] |
 | Kum. | prefix | formal, female, unmarried | [K] |
-| -rao | attached | traditional, male | [V] |
+| -rao | attached | traditional, male | [K] |
 | Saheb | suffix | respectful | [V] |
 | Tai | suffix | kinship, elder sister | [K] |
 | Dada (Anna, Bhau) | suffix | kinship, elder brother | [K] |
@@ -3016,8 +3020,9 @@ Konkani uses the Marathi forms. The Konkani rows in the research file are
 | Sap (Mizo) | suffix | respectful, from "sahib" | [V] |
 | Kong, Bah (Khasi) | prefix | respectful | [K] |
 
-The research file has the least confidence here. Treat Mizo, Khasi,
-Manipuri, Naga and Bodo forms as `[U]`. The Khasi particles "U" and "Ka" are
+The research file has the least confidence here. The Mizo and Khasi rows
+keep their research tags, and they also need a native-speaker check before
+they ship. Treat Manipuri, Naga and Bodo forms as `[U]`. The Khasi particles "U" and "Ka" are
 name articles, not honorifics. Do not strip them.
 
 **Telugu**
@@ -3140,7 +3145,7 @@ from mail the member receives. It is a suggestion only.
 - **What it reads.** The first non-empty line of a received mail in the
   member's connected mailboxes: "Dear Vijay sir,", "Hi VJ,", "Vijay garu,".
   It excludes quoted replies and signatures.
-- **What it keeps.** Counts of each form, per sender group. It keeps no mail
+- **What it keeps.** Counts of each form, per sender group (a design detail, not an owner decision). It keeps no mail
   text, no subject and no sender address in the count.
 - **How it parses.** It drops the greeting word, then reads `[title] name
   [suffix]`. It splits an attached suffix ("Vijaybhai") only when the stem
@@ -3150,7 +3155,7 @@ from mail the member receives. It is a suggestion only.
 - **What it does with the counts.** When one form leads, it asks the
   member one card: "Most people write to you as 'Vijay sir'. Should I call
   you that, or something else?" Nothing changes without a yes. A no stops the
-  question.
+  question (a design detail, not an owner decision).
 - **Why a card.** What a team calls the member ("sir") is not always what the
   member wants from the assistant.
 - **§12.3 still holds.** A message from another person is never the member's
@@ -3185,7 +3190,7 @@ that does not exist yet is advisory until its slice builds (R7).
 | Slice | What | Done when | Fence (R7) | Gate · tier |
 |---|---|---|---|---|
 | **PZ-SAL-0** · task 1822 | This section, D184 and the INDEX sentence | The section, D184 and the INDEX sentence are in `main`. `test_decision_ids.py`, `test_index_completeness.py` and `test_doc_names_resolve.py` stay green | Advisory. Docs only | AGENT-SAFE · LOW |
-| **PZ-39** · task 1823 · **BUILT 2026-11-06** | The time-of-day table, the zone, the 4-hour gap, the late hello, the language hello and the buddy hello (§16.3) | At 02:00 My Day and the chat both say "Hello". At 17:30 both say "Good evening". The chat greets in the first reply after 4 hours or more of quiet, and never in the middle of a conversation. A regenerate, a retry and a fault give no greeting. No reply says "Good night" | `tests/unit/test_greeting_table.py` fails when `myDay.ts` and `GREETING_TABLE` differ. `test_executor_greet_due_r8.py` and `test_buddy_hello_r8.py` hold the gap rule on a real database | AGENT-SAFE · STANDARD |
+| **PZ-39** · task 1823 · **BUILT 2026-11-06** | The time-of-day table, the zone, the 4-hour gap, the late hello, the language hello and the buddy hello (§16.3) | At 02:00 My Day and the chat both say "Hello". At 17:30 both say "Good evening". The chat greets in the first reply after 4 hours or more of quiet, and never in the middle of a conversation. A regenerate, a retry and a fault give no greeting. No reply says "Good night" | `tests/unit/test_greeting_table.py` fails when `myDay.ts` and `GREETING_TABLE` differ. `test_executor_greet_due.py` and `test_executor_greet_due_r8.py` hold the gap rule, the second on a real database. `test_buddy_hello_r8.py` holds the hello zone and text on a real database | AGENT-SAFE · STANDARD |
 | **PZ-40** · task 1824 | `acb_common.honorifics`, the one catalogue (§16.4.2). The name question offers "just my name" first, then the forms for the member's language. The block uses the chosen form as written | A unit test: the catalogue holds the forms of §16.4.2 with their tags. A `[U]` row has no entry in the shipped choices. With no choice, the block holds the name only. A chosen form shows as written. No code reads the name, the region or the language to pick a form | Planned `tests/unit/test_honorifics.py`, advisory until PZ-40 builds. It also fails on a second list of forms outside the module | AGENT-SAFE · STANDARD |
 | **PZ-41** · task 1821 | The drafter strips an Indian title before it takes the first name (§16.4.3) | A unit test: "Shri Ramesh Kumar", "Smt. Priya Rao", "Thiru Kumar Raja", "Kum. Anita", "Pandit Mohan Lal" and "Er. Sunil Singh" each give the right first name and never a title. A name that is only "Shri" stays. Surname tokens never count as titles | Planned `tests/unit/test_salutation_titles.py`, advisory until PZ-41 builds | AGENT-SAFE · STANDARD |
 | **PZ-42** · task 1825 | The first-line reader of received mail, the counts, the suggestion card (§16.5) | An R8 test: counts form per member and per org, and a mail of another member never counts. The slice stores no mail text, subject or address. A quoted line and a signature do not count. A generic salutation does not count. Nothing changes in the profile without a yes on the card, and a no stops the question. A message from another person adds no voice sample (§12.3) | Planned `tests/unit/test_address_form_learner.py` and an R8 file, advisory until PZ-42 builds. It extends the §12.3 fence that keeps another person's message out of the voice | Q2 approved · **HIGH** (reads mail, writes the profile) |
@@ -3216,7 +3221,7 @@ numbers (R1).
 
 | # | Question | Decision |
 |---|---|---|
-| **D-PZ-39** | When does the chat greet? (Q1) | **Decided: owner, 2026-11-06 05:41 UTC, accepted as D184.** In the first reply of a chat, and in the first reply after 4 hours or more with no message in that chat. Never in the middle of a conversation. Late at night it says "Hello" or "Good evening", never "Good night". It greets in the member's language when the profile sets one |
+| **D-PZ-39** | When does the chat greet? (Q1) | **Decided: owner, 2026-11-06 05:41 UTC, accepted as D184.** In the first reply of a chat, and in the first reply after 4 hours or more with no message in that chat. Never in the middle of a conversation. Late at night it says "Hello" or "Good evening", never "Good night". It greets in the member's language when the profile sets one. **Source of "Hello":** Q1 said "Hi". The PZ-39 preview that the owner approved on 2026-11-06 at 09:43 UTC (task 1823) says "Hello". "Hello" stands |
 | **D-PZ-40** | May the assistant learn what other people call the member, from mail? (Q2) | **Decided: owner, 2026-11-06 05:41 UTC, accepted as D184.** Yes, as a suggestion only. It reads the first line of received mail, keeps counts of each form and no mail text, and asks once. Nothing changes without a yes |
 | **D-PZ-41** | How do celebrations work? (Q3) | **Decided: owner, 2026-11-06 05:41 UTC, accepted as D184.** Ask, never guess. The member gives a birthday (no year) and picks festivals from an all-India list. One greeting on the day. No guess of religion or community, and no suggestion from mail signals |
 | **D-PZ-42** | What does the chat call the member when no choice is made? (Q4) | **Decided: owner, 2026-11-06 05:41 UTC, accepted as D184.** The name only. A form such as "ji" or "garu" comes after the member chooses it. The setup question offers the forms that fit the member's language, from a sourced list |
@@ -3231,10 +3236,11 @@ person answers.
    "garu") are `[K]`. Default: PZ-40 ships the `[V]` rows and the name-only
    choice. It also ships the `[K]` rows that the owner confirms in the PZ-40
    preview.
-2. **A native-speaker check.** Eleven languages need one check each. They are
-   Telugu, Tamil, Kannada, Malayalam, Bengali, Gujarati, Marathi, Odia,
-   Assamese, Mizo and Khasi. Their `[K]` and `[U]` rows ship after the check.
-   Default: those rows stay out of the choices until then.
+2. **A native-speaker check.** A `[U]` row needs one (§16.4.1 rule 2). A
+   `[K]` row needs one when the reviewer does not speak its language. Eleven
+   languages are in question: Telugu, Tamil, Kannada, Malayalam, Bengali,
+   Gujarati, Marathi, Odia, Assamese, Mizo and Khasi. Default: those rows
+   stay out of the choices until the check is done.
 3. **The festival list (PZ-43).** The content of the all-India list needs an
    owner or native-speaker check. Default: PZ-43 builds the picker with an
    empty list, and the list fills after the check.
