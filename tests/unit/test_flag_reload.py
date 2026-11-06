@@ -63,7 +63,8 @@ def env(tmp_path, monkeypatch):
 def test_only_per_org_and_mode_flags_reload() -> None:
     assert len(fr.RELOADABLE) >= 20
     assert all(re.fullmatch(r"[A-Z0-9_]+_(ORGS|MODES)", k) for k in fr.RELOADABLE)
-    for key in ("CRM_ORGS", "TOOL_PACKS_ORGS", "DECIDE_FEATURE_MODES", "crm_orgs"):
+    for key in ("CRM_ORGS", "TOOL_PACKS_ORGS", "DECIDE_FEATURE_MODES", "crm_orgs",
+                "STATUS_SET_GUARD_ORGS", "status_set_guard_orgs"):
         assert fr.reloadable(key), key
     for key in ("DATABASE_URL", "PGPASSWORD", "PGSSLMODE", "CALENDAR_REMINDERS",
                 "JOB_QUEUE", "V1_ALLOW_CALLER_ENDPOINT_OVERRIDE", "DB_POOL_SIZE",

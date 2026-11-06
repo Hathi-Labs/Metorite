@@ -1365,7 +1365,7 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "create_area": _pin("name"),
     "create_field": _pin(
         "project_id name field_type options description required org_wide"),
-    "create_status": _pin("project_id name category color"),
+    "create_status": _pin("project_id name category color slot after change_shared_set"),
     "create_tag": _pin("project_id name color description org_wide"),
     "create_tags": _pin("project_id tags"),
     "create_type": _pin("project_id name icon color is_default is_epic org_wide"),
@@ -1375,7 +1375,8 @@ HELD_CARD_WRITE_TOOLS: Mapping[str, frozenset[str]] = {
     "triage_intake": _pin("task_id action status duplicate_of until"),
     "update_field": _pin(
         "project_id field name description options required field_type"),
-    "update_status": _pin("project_id status name category color position"),
+    "update_status": _pin(
+        "project_id status name category color position slot after change_shared_set"),
     "update_tag": _pin("project_id tag name color description"),
     "update_type": _pin("project_id type_name name icon color make_default epic"),
     # The reminders: the member's own private record.

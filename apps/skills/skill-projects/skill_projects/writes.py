@@ -4016,8 +4016,81 @@ DISPOSITIONS = ("INBOX", "NEXT", "WAITING", "SOMEDAY", "PROJECT", "REFERENCE", "
 ENERGIES = ("low", "medium", "high")
 
 
-def status_edit_refusal(status_set: dict[str, Any], node_name: Any) -> str:
+def status_guard_on(status_set: dict[str, Any]) -> bool:
+    """True when the status-set read says ``guard_on`` (PST-4).
+
+    The tool never reads the setting. The route is the ONE reader of
+    ``STATUS_SET_GUARD_ORGS`` and returns the answer. Only an explicit
+    ``True`` counts, so an older gateway means "off".
+    """
+    return status_set.get("guard_on") is True
+
+
+def _n_projects(n: int) -> str:
+    return f"{n} project{'' if n == 1 else 's'}"
+
+
+def shared_reach(status_set: dict[str, Any]) -> int:
+    """N of "changes the statuses of {owner} for {N} projects" (§9.4 ``reach``).
+
+    The read counts each board that an edit changes. An older read has
+    ``used_by`` only. A project that uses a set is always one of them.
+    """
+    n = int(status_set.get("reach") or status_set.get("used_by") or 0)
+    return max(n, 1) if status_set.get("owns") is False else n
+
+
+def shared_set_line(status_set: dict[str, Any]) -> str:
+    """The card words when an edit reaches other projects, or ``""``.
+
+    ``""`` with the flag off, so the card is as before this slice.
+    """
+    if not status_guard_on(status_set):
+        return ""
+    n = shared_reach(status_set)
+    if n < 2 and status_set.get("owns") is not False:
+        return ""
+    return (
+        f"Changes the statuses of {data(status_set.get('owner_name'))} "
+        f"for {_n_projects(n)}"
+    )
+
+
+def shared_set_refusal(status_set: dict[str, Any], node_name: Any) -> str:
+    """The refusal when a project that does not own its set asks for a change.
+
+    Said BEFORE any card (PST-4, task 1790). On 2026-11-05 the chat added and
+    renamed lanes of a set that 28 projects share, because the id it passed
+    was a subproject that used the space's set. The words name the owner and
+    N, and offer ``set_status_set`` mode=own first.
+    """
+    owner = data(status_set.get("owner_name"))
+    kind = "space" if status_set.get("owner_kind") == "space" else "project"
+    n = shared_reach(status_set)
+    return "\n".join([
+        f"{REFUSED} {data(node_name)} uses the statuses of the {kind} {owner}. "
+        f"{_n_projects(n)} share that set, so a change here changes all {n}. "
+        "Nothing was done.",
+        "Next: To change the statuses of this project only, call set_status_set "
+        "with mode=own first. That gives the project a copy, and then you change "
+        "the copy. To change the shared set on purpose, ask the member. Then call "
+        "this tool again with change_shared_set=true.",
+    ])
+
+
+def status_edit_refusal(
+    status_set: dict[str, Any],
+    node_name: Any,
+    *,
+    guard_shared: bool = False,
+    change_shared: bool = False,
+) -> str:
     """The server's "no" before a status card, or ``""`` to go on.
+
+    PST-4: with ``guard_shared`` and the read's ``guard_on``, a project that
+    does not own its set is also refused (:func:`shared_set_refusal`), unless
+    the member asked for the shared change (``change_shared``). The flag is
+    the route's (``guard_on``). With it off, nothing here changes.
 
     *status_set* is ``GET /projects/nodes/{id}/status-set``. Its ``may_edit``
     is ``core.can_manage_settings``, the predicate the status write checks,
@@ -4029,6 +4102,13 @@ def status_edit_refusal(status_set: dict[str, Any], node_name: Any) -> str:
     write then decides. Fence: ``tests/unit/test_projects_agent_grants.py``.
     """
     if status_set.get("may_edit") is not False:
+        if (
+            guard_shared
+            and not change_shared
+            and status_guard_on(status_set)
+            and status_set.get("owns") is False
+        ):
+            return shared_set_refusal(status_set, node_name)
         return ""
     said = str(status_set.get("edit_refusal") or "").strip()
     lines = [
@@ -4190,14 +4270,44 @@ def _next_position(rows: list[dict[str, Any]]) -> int:
     return (max(taken) + 10) if taken else 10
 
 
+_PLACE_OFF = (
+    "slot and after are not open here. Leave them out, and use position only for "
+    "update_status. Nothing was done."
+)
+
+
+def _place_args(slot: int, after: str) -> tuple[int, str]:
+    """``slot`` (1-based, 0 = not given) and ``after`` (a lane name, empty = not given)."""
+    return max(int(slot or 0), 0), str(after or "").strip()
+
+
+def _place_words(rows: list[dict[str, Any]], cat: str, self_id: str, slot: int, after: str) -> str:
+    """A place for the card: ``3 of 4 in its stage`` or ``after «Review»``."""
+    if after:
+        return f"after {data(after)}"
+    size = len([r for r in rows if r.get("category") == cat and str(r.get("id")) != self_id]) + 1
+    return f"{slot} of {size} in its stage"
+
+
 @_annotate(read_only=False, destructive=False, idempotent=False, open_world=False, card_write=True)
-async def create_status(project_id: str, name: str, category: str = "todo", color: str = "") -> str:
+async def create_status(
+    project_id: str,
+    name: str,
+    category: str = "todo",
+    color: str = "",
+    slot: int = 0,
+    after: str = "",
+    change_shared_set: bool = False,
+) -> str:
     """Add a status lane. category is backlog, todo, in_progress, done,
     cancelled or triage. color is one of six hues: gray, red, amber, green,
     blue or violet. Another colour maps to the nearest hue. The lane lands
-    LAST in the set the project uses. The card names the project that owns
-    that set, because a subproject may inherit its lanes from a parent.
-    Deleting a lane is a guarded act."""
+    LAST in its stage in the set the project uses. slot (1-based, inside the
+    stage) or after (a lane name of the same stage) places it elsewhere. The
+    card names the project that owns that set, because a subproject may
+    inherit its lanes from a parent. When the set is shared, the tool refuses
+    unless change_shared_set is true, which the member must ask for. Deleting
+    a lane is a guarded act."""
     pid, node = await _node(project_id)
     label = str(name or "").strip()
     if not label:
@@ -4206,27 +4316,56 @@ async def create_status(project_id: str, name: str, category: str = "todo", colo
     if cat not in STATUS_CATEGORIES:
         return f"category is one of {', '.join(STATUS_CATEGORIES)}."
     owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
-    refused = status_edit_refusal(owner, node.get("name"))
+    refused = status_edit_refusal(
+        owner, node.get("name"), guard_shared=True, change_shared=change_shared_set,
+    )
     if refused:
         return refused
+    guard = status_guard_on(owner)
+    place, behind = _place_args(slot, after)
+    if (place or behind) and not guard:
+        return _PLACE_OFF
     rows = await _vocab(pid, "statuses")
     if _matches_by_name(rows, label):
         return f"{data(label)} already exists here. The statuses are: {_names(rows)}."
-    payload: dict[str, Any] = {"name": label, "category": cat, "position": _next_position(rows)}
+    payload: dict[str, Any] = {"name": label, "category": cat}
+    shown: dict[str, Any] = {}
+    if guard:
+        # PST-4: the model never sends a sort key. A slot, or a lane to follow.
+        # No place means last in the stage: one past the lanes that are there.
+        if behind:
+            payload["after"] = behind
+        else:
+            payload["slot"] = place or len([r for r in rows if r.get("category") == cat]) + 1
+        shown["position"] = _place_words(rows, cat, "", payload.get("slot", 0), behind)
+    else:
+        payload["position"] = _next_position(rows)
     if color.strip():
         payload["color"] = hue_of(color)
     set_of = "this project" if owner.get("owns") else data(owner.get("owner_name"))
+    shared = shared_set_line(owner)
+    wire = {k: v for k, v in payload.items() if k not in ("slot", "after")}
     if not await _confirm(
         title="Add this status?",
-        detail=f"{data(label)} in {data(node.get('name'))}",
-        context=_fields_block({**payload, "project": data(node.get("name")), "status set": set_of}),
+        detail=(
+            f"{data(label)} in {data(node.get('name'))}"
+            + (f". {shared}" if shared else "")
+        ),
+        context=_fields_block(
+            {**wire, **shown, "project": data(node.get("name")), "status set": set_of}
+        ),
     ):
         return CANCELLED
     row = await post(f"/projects/nodes/{pid}/statuses", payload)
+    where = (
+        f"to the statuses of {data(owner.get('owner_name'))}, used by {data(node.get('name'))}"
+        if guard and owner.get("owns") is False
+        else f"to {data(node.get('name'))}"
+    )
     return (
         f"Added status {data(row.get('name') or label)} "
         f"(category: {_category_words(row.get('category') or cat)}) "
-        f"to {data(node.get('name'))}.\n  status_id: {row.get('id')}"
+        f"{where}.\n  status_id: {row.get('id')}"
     )
 
 
@@ -4238,17 +4377,35 @@ async def update_status(
     category: str = "",
     color: str = "",
     position: int = -1,
+    slot: int = 0,
+    after: str = "",
+    change_shared_set: bool = False,
 ) -> str:
     """Rename, recategorise, recolour or reorder one lane, found by NAME in
     the project's set. Only the arguments you pass change. A rename changes
     what every task in the lane reads. color is one of gray, red, amber,
-    green, blue or violet. The card shows before → after."""
+    green, blue or violet. To reorder, pass slot (1-based, inside the stage of
+    the lane) or after (a lane name of the same stage). A lane never leaves
+    its stage by a reorder. position is a raw sort key, so do not guess it.
+    When the set is shared, the tool refuses unless change_shared_set is
+    true, which the member must ask for. The card shows before → after."""
     pid, node = await _node(project_id)
+    owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
     refused = status_edit_refusal(
-        (await get(f"/projects/nodes/{pid}/status-set")) or {}, node.get("name")
+        owner, node.get("name"), guard_shared=True, change_shared=change_shared_set,
     )
     if refused:
         return refused
+    guard = status_guard_on(owner)
+    place, behind = _place_args(slot, after)
+    if (place or behind) and not guard:
+        return _PLACE_OFF
+    if guard and position >= 0:
+        return (
+            "position is a raw sort key, and the tool does not send it. Pass slot "
+            "(1-based, inside the stage of the lane) or after (a lane name of the "
+            "same stage). Nothing was done."
+        )
     row = await _resolve_status(pid, status)
     sid = uuid_of(str(row.get("id")), "status_id")
     payload: dict[str, Any] = {}
@@ -4268,15 +4425,31 @@ async def update_status(
     if position >= 0:
         payload["position"] = int(position)
         before["position"] = row.get("position")
+    send = dict(payload)
+    if place or behind:
+        if place and behind:
+            return "Pass slot or after, not both."
+        rows = await _vocab(pid, "statuses")
+        cat = str(payload.get("category") or row.get("category"))
+        here = [r for r in rows if r.get("category") == row.get("category")]
+        send["after" if behind else "slot"] = behind or place
+        payload["position"] = _place_words(rows, cat, str(row.get("id")), place, behind)
+        if row.get("category") == cat:
+            at = next((i for i, r in enumerate(here) if r.get("id") == row.get("id")), 0)
+            before["position"] = f"{at + 1} of {len(here)} in its stage"
     if not payload:
         return "Nothing to change. Pass at least one field."
+    shared = shared_set_line(owner)
     if not await _confirm(
         title="Change this status?",
-        detail=f"{data(row.get('name'))} in {data(node.get('name'))}",
+        detail=(
+            f"{data(row.get('name'))} in {data(node.get('name'))}"
+            + (f". {shared}" if shared else "")
+        ),
         context=_fields_block({**payload, "project": data(node.get("name"))}, before=before),
     ):
         return CANCELLED
-    updated = await patch(f"/projects/statuses/{sid}", payload)
+    updated = await patch(f"/projects/statuses/{sid}", send)
     return (
         f"Updated status {data(updated.get('name') or row.get('name'))} "
         f"(category: {_category_words(updated.get('category') or row.get('category'))}).\n"

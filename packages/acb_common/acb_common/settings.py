@@ -938,6 +938,19 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_agent_questions_r8.py.
     agent_questions_orgs: str = ""
 
+    # ── The status-set guard in chat (WS-42 PST-4, projects_settings.md §7.1) ──
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. On, the chat tools `create_status`, `update_status` and
+    # `delete_status` refuse to change a status set that the project shares,
+    # unless the member says so, and they send a `slot` and never a raw
+    # `position`. The one reader is `gateway.routes.projects.admin.
+    # status_set_guard_allowed`. It returns `guard_on` on the status-set read,
+    # and the tools read that. A SIGHUP reload applies a change. A flip is
+    # OWNER-GATE (`enforcement-flip`).
+    # Fence: tests/unit/test_projects_status_chat.py.
+    status_set_guard_orgs: str = ""
+
     # ── The rules of a project (WS-ALN ALN-5a) ──────────────────────────────
     #
     # A comma list of organization ids, or `*` for each one. Empty means off,

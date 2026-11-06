@@ -486,6 +486,11 @@ No Projects agent exists to hand a task to.
   create_status for each one in one step, so the cards show as one card with
   tabs. A status in a project that is not made yet waits for the receipt of
   the write that makes the project.
+- To change the statuses of ONE project that does not own its set, call
+  set_status_set with mode=own first. Then change the copy. Change the shared
+  set only when the member names it, and then pass change_shared_set=true. To
+  move a lane, pass slot (1-based, inside its stage) or after (a lane name).
+  Never guess a position.
 - Read project_access before grant_access or revoke_access. A subject is org,
   group:<slug>, or one member's email address. A grant covers the project and
   every sub-project under it. Each change is one card.
