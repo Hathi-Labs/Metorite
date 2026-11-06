@@ -71,6 +71,23 @@ def test_only_per_org_and_mode_flags_reload() -> None:
         assert not fr.reloadable(key), key
 
 
+def test_agent_questions_orgs_reloads_and_its_reader_follows(env, monkeypatch) -> None:
+    """WS-55 EA-18a, spec §12.8. The reload list holds the key, and the one
+    reader sees a change with no restart. So the list, the write rule, the
+    audience and the focus move together."""
+    from gateway.routes.projects.filters import agent_questions_allowed
+
+    assert fr.reloadable("AGENT_QUESTIONS_ORGS")
+    # `setenv` records the key, so the teardown takes out what the reload writes.
+    monkeypatch.setenv("AGENT_QUESTIONS_ORGS", "")
+    get_settings.cache_clear()
+    assert not agent_questions_allowed("acme")
+    env(**{**_START, "AGENT_QUESTIONS_ORGS": "acme"})
+    assert fr.reload_flags().applied == ("AGENT_QUESTIONS_ORGS",)
+    assert agent_questions_allowed("acme")
+    assert not agent_questions_allowed("globex")
+
+
 def test_each_reloadable_field_is_named_by_its_env_key() -> None:
     """The reload maps ``CRM_ORGS`` to the field ``crm_orgs``. An alias would
     break that map, and ``str`` keeps every value valid."""

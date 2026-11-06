@@ -275,7 +275,8 @@ services:
   # Playwright Chromium renders a page and Crawl4AI writes its Markdown. Only
   # the orchestrator calls it, with WEB_WORKER_TOKEN. The worker refuses to
   # start when that token is empty, so with no token this service stays down.
-  # No profile starts it on a deploy, and no caller exists until WEB-7.
+  # No profile starts it on a deploy. WEB-7 is the caller
+  # (acb_skills.web_render_client): it needs WEB_WORKER_URL and the same token.
   #
   # The build context is the repo root, because the image installs
   # acb_common. The root copy of the box does not hold the repo, so this block

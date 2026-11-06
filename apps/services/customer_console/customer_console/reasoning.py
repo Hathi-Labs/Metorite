@@ -310,3 +310,66 @@ def _field(obj: Any, name: str) -> Any:
     if isinstance(obj, dict):
         return obj.get(name)
     return getattr(obj, name, None)
+
+
+# ── Empty content beside tool calls (task 1787) ─────────────────────────────
+#
+# litellm turns ``content: ""`` into the visible sentence "[System: Empty
+# message content sanitised to satisfy protocol]" for an Anthropic-shaped step,
+# and the model then copies it into its replies. DeepSeek, Groq and Together
+# refuse ``content: null`` beside ``tool_calls``. So the right value depends on
+# the step that really runs, and only the Router knows it. A failover chain may
+# mix both, so ``main._kwargs_for`` calls this once per step.
+#
+# ⚠️ This package imports no ``acb_*`` package (the Console is the other side of
+# the tenant boundary), so ``acb_llm.message_hygiene`` is not reachable here.
+# This is the Router's half of the one rule. The gateway half, and the strip of
+# stored placeholder lines, stay in ``acb_llm.message_hygiene``.
+_NULL_CONTENT_REFUSED_BY = ("deepseek", "groq", "together", "together_ai")
+
+
+def content_for_step(
+    messages: list[dict[str, Any]], model: str,
+) -> list[dict[str, Any]]:
+    """Give each tool-call assistant turn the empty content *model* accepts.
+
+    The provider prefix of the model id decides, as the credential lookup
+    does. So ``anthropic/deepseek-x`` is Anthropic-shaped.
+
+    * An Anthropic-shaped step gets ``None`` for blank text. That is provider
+      ``anthropic``, or a Claude model on another provider such as Bedrock.
+    * A provider that refuses null content gets ``""``.
+    * Any other step, and any other message, is returned unchanged.
+    """
+    name = (model or "").lower()
+    provider = name.split("/", 1)[0]
+    want: str | None
+    if provider == "anthropic" or (
+        provider not in _NULL_CONTENT_REFUSED_BY and "claude" in name
+    ):
+        want = None
+    elif provider in _NULL_CONTENT_REFUSED_BY:
+        want = ""
+    else:
+        return messages
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        if (
+            isinstance(m, dict)
+            and m.get("role") == "assistant"
+            and m.get("tool_calls")
+            and (m.get("content") is None
+                 or (isinstance(m.get("content"), str)
+                     and not m["content"].strip()))
+            and m.get("content") != want
+        ):
+            m = {**m, "content": want}
+        out.append(m)
+    return out
+
+
+def messages_for_step(
+    messages: list[dict[str, Any]], model: str,
+) -> list[dict[str, Any]]:
+    """The messages to send to ONE step of a chain: reasoning, then content."""
+    return content_for_step(reasoning_for_vendor(messages), model)

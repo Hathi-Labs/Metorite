@@ -3,6 +3,7 @@ import { cacheKey, invalidate } from "@/lib/dataCache";
 import type { ParentFact, PullRequestFact } from "@/lib/taskCard";
 
 import {
+  type AgentActivity,
   type AgentPromptBody,
   type AgentRun,
   type AgentRunDetail,
@@ -12,6 +13,7 @@ import {
   type ArchiveApprovalBody,
   type ArchiveApprovalResult,
   type AgentSummary,
+  type WithdrawBody,
   agentRunRows,
   normalizeRunDetail,
 } from "./agentRuns";
@@ -3229,6 +3231,17 @@ export const agentRunsApi = {
     ),
 
   /**
+   * SW-43. The run's member takes back an answer that no agent has read.
+   * 404 while the gateway flag is off, 403 for any other caller, 409 when the
+   * agent already has the answer. A retry with the same key writes once.
+   */
+  withdrawAnswer: (runId: string, body: WithdrawBody) =>
+    call<{ run: AgentRun; activity: AgentActivity; withdrawn: boolean }>(
+      `agent-runs/${encodeURIComponent(runId)}/answer/withdraw`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  /**
    * EA-6g (EA3-40). The run's member approves or declines an agent's
    * archive request. An approve archives the task, never its subtasks. Any
    * other member gets 403, and a request past its expiry gets 409.
@@ -3249,6 +3262,21 @@ export const agentRunsApi = {
       return true;
     } catch {
       return false;
+    }
+  },
+
+  /**
+   * CIV-14k. Every open question of the caller, oldest first, with the task
+   * number, title and project name on each row. `null` means the routes are
+   * OFF (404), and then the Approvals page draws no list.
+   */
+  waiting: async (): Promise<AgentRun[] | null> => {
+    try {
+      const raw = await call<unknown>("agent-runs?status=awaiting&order=oldest&with_task=true&limit=100");
+      return agentRunRows<AgentRun>(raw);
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      throw err;
     }
   },
 

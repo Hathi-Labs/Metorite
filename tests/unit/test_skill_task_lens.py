@@ -614,13 +614,13 @@ BOARD_TASK: dict[str, Any] = {
     "created_by": "bob@fracktal.in", "status_id": "b1",
     "workflow_stage": "Building", "status_category": "in_progress",
 }
-#: Its set: TWO In progress statuses, and position order that differs from
-#: the order the route happens to answer in.
+#: Its set: TWO In progress statuses. The route answers in the one lane order
+#: (stage, position, name), and the skill keeps that order (task 1792).
 BOARD_LANES = {"rows": [
-    {"id": "b2", "name": "In review", "category": "in_progress", "position": 3},
     {"id": "b0", "name": "Backlog", "category": "backlog", "position": 0},
-    {"id": "b1", "name": "Building", "category": "in_progress", "position": 2},
     {"id": "bt", "name": "Ready", "category": "todo", "position": 1},
+    {"id": "b1", "name": "Building", "category": "in_progress", "position": 2},
+    {"id": "b2", "name": "In review", "category": "in_progress", "position": 3},
     {"id": "bd", "name": "Shipped", "category": "done", "position": 4},
 ]}
 

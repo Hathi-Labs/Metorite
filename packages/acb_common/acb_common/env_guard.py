@@ -219,6 +219,10 @@ PLATFORM_ENV_NAMES: frozenset[str] = frozenset({
     # door for an org. A request waits for a member and can then run, so only
     # the owner writes it.
     "APP_REQUESTS_ORGS",
+    # WS-55 EA-18a: AGENT_QUESTIONS_ORGS narrows who may answer an agent's
+    # question and opens the list of the questions, so only the owner writes
+    # it.
+    "AGENT_QUESTIONS_ORGS",
     # WS-48 N3 (D93): System 1 on the decision model. It sends chat content
     # to another sub-processor and moves spend, so only the operator writes it.
     "SYSTEM_ONE_ON_DECIDE",

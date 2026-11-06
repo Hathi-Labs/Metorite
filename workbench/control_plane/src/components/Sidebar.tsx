@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { forgetThisDevice } from "@/lib/push";
+import { installNavPanes, mergeInstallNav, usePackageManifest } from "@/lib/shell/packageManifest";
 import { NAV_SECTIONS, visibleSections, type NavPane, type NavSection } from "@/lib/nav";
 import { useAccess } from "@/components/AccessProvider";
 import { shouldPollWorkspace } from "@/lib/access";
@@ -142,9 +143,15 @@ export default function Sidebar() {
   // read that takes longer than the proxy's timeout, draws every held app.
   const shell = useShellPrefs();
   const shellPending = useShellPending(shellNav && shell.loading);
-  const railSections = shellNav
+  // PKG-6: the panes an install gives join "Apps" AFTER `visibleSections` and
+  // the stars. With the package host off the list is empty and the SAME
+  // array comes back, so the rail is as it was.
+  const manifest = usePackageManifest();
+  const installPanes = installNavPanes(manifest, access.features);
+  const railBase = shellNav
     ? shellSidebar(sections, shell.loading ? undefined : shell.layout)
     : sections;
+  const railSections = mergeInstallNav(railBase, installPanes);
   useEffect(() => {
     window.clearTimeout(peekTimer.current);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the peek ends when the fold or the page changes
