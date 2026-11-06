@@ -1981,7 +1981,7 @@ class Settings(BaseSettings):
     # on a box is gate `enforcement-flip`.
     agent_access_orgs: str = ""
     # EA-17c-1 (D-EA-13, spec §10.8): the organizations where a member may
-    # change the grant of an own agent connection, through
+    # change the grant of their own agent connection, through
     # `PATCH /agent-access/connections/{id}`. The same shape as
     # `agent_access_orgs`: ids with a comma between them, or `*`. Empty, the
     # default, keeps the route dark, so it answers 404. Only the gateway

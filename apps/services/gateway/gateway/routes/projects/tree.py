@@ -489,9 +489,9 @@ def _nest(nodes: dict[str, dict]) -> list[dict]:
 
 
 async def grantable_project_ids(user: UserContext) -> frozenset[str]:
-    """The project ids that the member of the session may mark on an own
-    agent connection (WS-55 EA-17c-1, D-EA-13, ``external_agent_access.md``
-    §10.8).
+    """The project ids that the member of the session may mark on one of
+    their own agent connections (WS-55 EA-17c-1, D-EA-13,
+    ``external_agent_access.md`` §10.8).
 
     Each team project that :func:`_visible_projects` returns, and each root
     of the member's own personal tree, as ``GET /projects/tree`` nests it in

@@ -69,9 +69,12 @@ from acb_auth import access as access_module
 from acb_auth.access import invalidate as invalidate_access
 from acb_common import get_settings
 from acb_common.db import bind_tenant, release_tenant
+from acb_common.env_guard import is_platform_env
+from acb_common.settings import Settings
 from agent_edge import app as edge_app_module
 from agent_edge import gateway_client
 from fastapi import HTTPException
+from gateway import flag_reload
 from gateway.routes import agent_access
 from gateway.routes.projects import tree
 from sqlalchemy import create_engine, text
@@ -506,6 +509,14 @@ class TestTheShapes:
         with pytest.raises(HTTPException) as caught:
             await agent_access.change_my_connection(uuid.uuid4(), None, user)
         assert caught.value.status_code == 404
+
+    def test_the_flag_ships_dark_and_only_the_operator_writes_it(self):
+        """The default is empty, a SIGHUP reload applies it
+        (``docs/flag_reload.md``), and a tenant cannot write it through
+        Integrations (the ``AGENT_`` prefix of ``env_guard``)."""
+        assert Settings.model_fields["agent_change_access_orgs"].default == ""
+        assert flag_reload.reloadable("AGENT_CHANGE_ACCESS_ORGS")
+        assert is_platform_env("AGENT_CHANGE_ACCESS_ORGS")
 
     def test_the_flag_reader(self, monkeypatch):
         org = str(uuid.uuid4())
