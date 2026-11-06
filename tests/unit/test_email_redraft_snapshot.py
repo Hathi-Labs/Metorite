@@ -52,6 +52,19 @@ clears one, and the link goes only to a card to the same people.
 18. a text failure that drops the ticks:
     ``test_a_text_that_fails_its_check_keeps_the_ticks``.
 
+Fix round 4.
+
+19. a subject that the scan reads before its length:
+    ``test_a_long_subject_is_never_scanned``;
+20. a fault of the hash that starts a card with no note:
+    ``test_a_fault_of_the_kept_unticks_answers_503_and_no_card_shows``;
+21. a fault at the revise that reads as "no card":
+    ``test_a_fault_at_the_revise_answers_503_and_spends_nothing``;
+22. a tool that draws a card after the revise failed twice:
+    ``test_two_503s_at_the_revise_tell_the_model_to_draw_no_card``;
+23. a re-tick that clears at the revise, in place of the door:
+    ``test_one_message_that_reticks_and_unticks_a_person_keeps_the_untick``.
+
 The database, Redis and the provider are fakes, and no test sends a mail.
 There is no SQL, so R8 does not apply. ``TestTheOrderOnARealRedis`` runs the
 order of step 4 on a PRIVATE real Redis when ``HELD_R8_REDIS_URL`` names one,
@@ -278,6 +291,39 @@ async def test_a_held_snapshot_takes_the_held_text_limit(env) -> None:
     [key] = _snapshot_keys(env["redis"])
     assert not rd.has_text(json.loads(env["redis"].keys[key]))
     assert await _keep(card["card_id"], body="x" * HELD_TEXT_MAX, **ok) is True
+    assert rd.has_text(json.loads(env["redis"].keys[key]))
+
+
+async def test_a_long_subject_is_never_scanned(env, monkeypatch) -> None:
+    """P1 of fix round 4. ``_clean_subject`` scans each character, on the event
+    loop, before its own length check, and the review measured 22 seconds for
+    5 MB. The length check comes first, so an oversized subject keeps the
+    ticks with no text and the scan never runs. A subject at the limit still
+    passes the rule. Mutation: drop the length check of ``checked_snapshot`` →
+    red."""
+    scans: list[int] = []
+    clean, hidden = hc._clean_subject, rcard.has_hidden_text
+
+    def spy_clean(subject: str) -> str:
+        scans.append(len(subject))
+        return clean(subject)
+
+    def spy_hidden(text: str) -> bool:
+        scans.append(len(text))
+        return hidden(text)
+
+    card = await _card()
+    monkeypatch.setattr(hc, "_clean_subject", spy_clean)
+    monkeypatch.setattr(rcard, "has_hidden_text", spy_hidden)
+    for size in (rcard.MAX_SUBJECT + 1, 5_000_000):
+        assert await _keep(card["card_id"], subject="x" * size, body=TEXT, cc=()) is True
+        assert scans == []
+        [key] = _snapshot_keys(env["redis"])
+        kept = json.loads(env["redis"].keys[key])
+        assert not rd.has_text(kept) and kept["cc"] == []
+        assert len(env["redis"].keys[key]) < 1000
+    assert await _keep(card["card_id"], subject="x" * rcard.MAX_SUBJECT, body=TEXT, cc=()) is True
+    assert scans == [rcard.MAX_SUBJECT, rcard.MAX_SUBJECT]
     assert rd.has_text(json.loads(env["redis"].keys[key]))
 
 
@@ -1004,14 +1050,85 @@ async def test_a_tick_that_started_ticked_never_clears_an_untick(env) -> None:
     assert (await _card())["unticked"] == [F.COLLEAGUE]
 
 
-async def test_a_fault_of_the_kept_unticks_never_stops_a_card(env) -> None:
-    """A Redis fault on the hash keeps nothing, and the card shows with the
-    tool's ticks. Mutation: let the fault escape → red."""
+@pytest.mark.parametrize("order", ["retick_first", "untick_first"])
+async def test_one_message_that_reticks_and_unticks_a_person_keeps_the_untick(
+    env, order: str,
+) -> None:
+    """P2 of fix round 4. Kim's Draft 2 and Carol's card both start Geo
+    unticked. The member ticks Geo on Kim's card, leaves Geo unticked on
+    Carol's, and one message closes both. The two tools run in one gather, so
+    either revise can come first. The re-tick clears at the door, before the
+    steer goes out, and the untick of the same message lands after it. So
+    Carol's next card starts Geo unticked in both orders. Mutation: clear at
+    the revise again → red for ``untick_first``."""
+    seed = await _card()
+    await _untick_geo_and_revise(seed)
+    kim2, carol = await _card(), await _card(to=[CAROL])
+    assert kim2["unticked"] == carol["unticked"] == [F.COLLEAGUE]
+    assert await rd.keep_card_draft(F.user(), THREAD, [
+        _draft(kim2["card_id"], subject="Rates", body=TEXT),
+        _draft(carol["card_id"], subject="Rates", body=TEXT, to=(CAROL,), cc=()),
+    ]) is True
+    # The door cleared Geo, before any tool ran.
+    assert f"p:{F.COLLEAGUE}" not in env["redis"].hashes[_unticked_key()]
+    ids = [kim2["card_id"], carol["card_id"]]
+    for cid in ids if order == "retick_first" else reversed(ids):
+        await _revise(cid)
+    assert f"p:{F.COLLEAGUE}" in env["redis"].hashes[_unticked_key()]
+    again = await _card(to=[CAROL])
+    assert again["ticked"]["cc"] == [] and again["unticked"] == [F.COLLEAGUE]
+
+
+async def test_a_fault_of_the_kept_unticks_answers_503_and_no_card_shows(env) -> None:
+    """P2 of fix round 4. A short fault of Redis must not start Geo ticked with
+    no note, one click from a mail to a person the member took out. The read
+    answers 503 on both new-card routes, as ``write_record`` does, and no card
+    shows. It comes before the link, so the retry still takes the link and
+    starts Geo unticked. A card with no thread reads no hash, so a fault does
+    not touch it. Mutation: give no people on a fault again, or read the hash
+    after the link → red."""
     old = await _card()
     await _untick_geo_and_revise(old)
+    records = {k for k in env["redis"].keys if ":new-mail-card:" in k or ":held-card:" in k}
     env["redis"].fail_on = ":card_unticked:"
+    for draw in (_card, lambda: _held(cc=[F.COLLEAGUE])):
+        with pytest.raises(HTTPException) as e:
+            await draw()
+        assert e.value.status_code == 503 and e.value.detail == rd.UNTICKS_UNREAD
+    assert {k for k in env["redis"].keys
+            if ":new-mail-card:" in k or ":held-card:" in k} == records
+    assert (await _card(thread=""))["card_id"]
+    env["redis"].fail_on = ""
+    retry = await _card()
+    assert retry["revises"] == old["card_id"] and retry["draft"] == 2
+    assert retry["ticked"]["cc"] == [] and retry["unticked"] == [F.COLLEAGUE]
+
+
+async def test_a_fault_at_the_revise_answers_503_and_spends_nothing(env) -> None:
+    """P2 of fix round 4. A fault on the first read of the revise is not "no
+    card". The route answers 503 and spends nothing, so the record, the
+    snapshot and the member's untick all wait for the tool's second try. A
+    card that truly is gone still answers 404. Mutation: read a fault as no
+    card (``peek_record`` gives None) again → red."""
+    card = await _card()
+    cid = card["card_id"]
+    assert await _keep(cid, subject="Rates", body=TEXT, cc=()) is True
+    env["redis"].fail_on = f":new-mail-card:{cid}"
+    with pytest.raises(HTTPException) as e:
+        await _revise(cid)
+    assert e.value.status_code == 503
+    # At the door, the same fault keeps nothing, and the steer goes on.
+    assert await _keep(cid, subject="Rates", body=TEXT, cc=()) is False
+    env["redis"].fail_on = ""
+    assert f"cc:{F.ORG}:new-mail-card:{cid}" in env["redis"].keys
+    assert len(_snapshot_keys(env["redis"])) == 1
+    assert _unticked_key() not in env["redis"].hashes
+    await _revise(cid)
     new = await _card()
-    assert new["card_id"] and "unticked" not in new
+    assert new["revises"] == cid and new["unticked"] == [F.COLLEAGUE]
+    with pytest.raises(HTTPException) as e:
+        await _revise(cid)
+    assert e.value.status_code == 404
 
 
 def test_the_card_gate_refuses_a_name_that_is_ticked_or_not_on_the_card() -> None:
@@ -1168,9 +1285,11 @@ class _Gw:
                     "body": TEXT, "to": [F.KNOWN], "cc": [], "bcc": [], "files": [],
                     "revises": "a" * 32, "draft": 2}
         if path == "/email/new-card/revise":
-            if isinstance(self.revise, Exception):
-                raise self.revise
-            return self.revise
+            # A list gives each try its own outcome.
+            out = self.revise.pop(0) if isinstance(self.revise, list) else self.revise
+            if isinstance(out, Exception):
+                raise out
+            return out
         if path == "/email/held-card":
             return {"card_id": "e" * 32, "title": "t", "detail": "d", "context": "c",
                     "rows": [], "form": {**_plain_form(), "revises": "b" * 32, "draft": 3}}
@@ -1275,6 +1394,65 @@ async def test_a_run_that_draws_no_card_to_edit_sends_no_thread_and_revises_noth
     assert out == agents._HELD_CARD_REVISED
 
 
+def _busy() -> Any:
+    return agents.GatewayError("failed (503)", 503, detail="The card could not be read.")
+
+
+async def test_a_503_at_the_revise_gets_one_more_try(monkeypatch) -> None:
+    """P2 of fix round 4. The route answers 503 before it spends the card, so
+    a second try is safe, and it keeps the member's version and unticks
+    through a short fault. Mutation: drop the second try → red."""
+    gw = _Gw([_busy(), {"revised": True, "draft": 2, "snapshot": BLOCK}])
+    _tool(monkeypatch, gw)
+    monkeypatch.setattr(agents, "_GET_RETRY_DELAY_S", 0.0)
+    out = await agents.send_email(F.BOX, body=TEXT, to=[F.KNOWN], subject="Rates")
+    assert [p for p, _b in gw.posts].count("/email/new-card/revise") == 2
+    assert BLOCK in out and out.startswith(agents._NEW_MAIL_REVISED)
+
+
+async def test_two_503s_at_the_revise_tell_the_model_to_draw_no_card(monkeypatch) -> None:
+    """P2 of fix round 4. The gateway kept no untick of this card, so a new card
+    now would start that person ticked with no note. The tool tells the model
+    to draw none and to say so. The slot then reads that the draft did not
+    change. Another failure keeps the old answer. Mutation: answer the REVISED
+    text, which asks for a new card, after two 503s → red."""
+    gw = _Gw([_busy(), _busy()])
+    _tool(monkeypatch, gw)
+    monkeypatch.setattr(agents, "_GET_RETRY_DELAY_S", 0.0)
+    out = await agents.send_email(F.BOX, body=TEXT, to=[F.KNOWN], subject="Rates")
+    assert out == agents._REVISE_UNREAD
+    assert "Do not call send_email now" in out and "Nothing was sent" in out
+    assert [p for p, _b in gw.posts].count("/email/new-card/revise") == 2
+    gone = _Gw(agents.GatewayError("failed (404)", 404))
+    _tool(monkeypatch, gone)
+    assert await agents.send_email(F.BOX, body=TEXT, to=[F.KNOWN], subject="Rates") == \
+        agents._NEW_MAIL_REVISED
+    assert [p for p, _b in gone.posts].count("/email/new-card/revise") == 1
+
+
+async def test_a_503_at_the_draw_gives_the_model_the_routes_words_and_shows_no_card(
+    monkeypatch,
+) -> None:
+    """What the member sees when ``kept_unticked`` answers 503. No card shows,
+    and nothing was sent. The tool lets the error go, so the model reads the
+    route's words (``_agent_tools``) and tells the member to ask again.
+    Mutation: catch the 503 and draw a card anyway → red."""
+    gw = _Gw({"revised": True, "draft": 2, "snapshot": ""})
+    seen = _tool(monkeypatch, gw)
+    real = gw.post
+
+    async def post(path: str, body: dict[str, Any] | None = None, **kw: Any) -> Any:
+        if path == "/email/new-card":
+            raise agents.GatewayError("failed (503)", 503, detail=rd.UNTICKS_UNREAD)
+        return await real(path, body, **kw)
+
+    monkeypatch.setattr(agents, "_post", post)
+    with pytest.raises(agents.GatewayError) as e:
+        await agents.send_email(F.BOX, body=TEXT, to=[F.KNOWN], subject="Rates")
+    assert e.value.status == 503 and e.value.detail == rd.UNTICKS_UNREAD
+    assert "Nothing was sent" in rd.UNTICKS_UNREAD and seen == []
+
+
 # ── The order of step 4 on a real Redis (R8 for Redis) ───────────────────────
 
 
@@ -1357,6 +1535,32 @@ class TestTheOrderOnARealRedis:
         await _revise(redraft["card_id"])
         assert client.hget(k, f"p:{F.COLLEAGUE}") is None
         assert "unticked" not in await _card()
+
+    @pytest.mark.parametrize("order", ["retick_first", "untick_first"])
+    async def test_a_retick_clears_at_the_door_so_the_untick_wins_in_both_orders(
+        self, real, order: str,
+    ) -> None:
+        """P2 of fix round 4 on a real server. The door clears Geo with one
+        ``HDEL`` before any tool runs. Each revise of the message lands after
+        it, so the untick wins in both orders. Mutation: clear at the revise
+        again → red for ``untick_first``."""
+        client, _sends = real
+        seed = await _card()
+        await _untick_geo_and_revise(seed)
+        kim2, carol = await _card(), await _card(to=[CAROL])
+        assert await rd.keep_card_draft(F.user(), THREAD, [
+            _draft(kim2["card_id"], subject="Rates", body=TEXT),
+            _draft(carol["card_id"], subject="Rates", body=TEXT, to=(CAROL,), cc=()),
+        ]) is True
+        k = _unticked_key()
+        assert client.hget(k, f"p:{F.COLLEAGUE}") is None
+        ids = [kim2["card_id"], carol["card_id"]]
+        for cid in ids if order == "retick_first" else reversed(ids):
+            await _revise(cid)
+        assert client.hget(k, f"p:{F.COLLEAGUE}") == "1"
+        assert 0 < client.ttl(k) <= rd.UNTICKED_TTL_S
+        again = await _card(to=[CAROL])
+        assert again["ticked"]["cc"] == [] and again["unticked"] == [F.COLLEAGUE]
 
     async def test_two_revises_at_once_both_keep_their_people(self, real) -> None:
         """Two tools revise at the same moment (one message closed two cards).

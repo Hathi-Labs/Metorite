@@ -6313,6 +6313,15 @@ _START_FROM_THE_MEMBER = (
 #: The longest data block of the member's version that the tool passes on
 #: (``chat_recovery.CARD_DRAFT_MAX``).
 _MEMBER_VERSION_MAX = 24_000
+#: §18.11 fix round 4: the answer when the revise route could not read the
+#: card, twice. The gateway then kept no untick of this card. A new card now
+#: would start that person ticked with no note, so the model draws none, and
+#: the slot of the card says that the draft did not change.
+_REVISE_UNREAD = (
+    "The member wrote in the chat while the card was open, so the card is "
+    "closed. Nothing was sent. The gateway could not read the card, so their "
+    "edits did not reach you. Do not call send_email now. Tell the member that "
+    "the draft did not change, and ask them to send their request again.")
 #: The answer when the member pressed Discard, or the card closed with no answer.
 _NEW_MAIL_DISCARDED = "Send cancelled — the email was not sent."
 #: The notice of a held card with a new address (§21): it starts unticked.
@@ -6357,19 +6366,39 @@ async def _revised_text(lead: str, card_id: str, thread: str) -> str:
     It spends the old card first (``POST /email/new-card/revise``), so a late
     answer to it sends nothing. When the member had edited the card, the
     gateway answers their version as a neutral data block, and the answer
-    adds it, so the model starts from it. Any failure of the route gives
-    *lead* alone: nothing was sent, and the model asks again."""
+    adds it, so the model starts from it. A failure of the route gives *lead*
+    alone: nothing was sent, and the model asks again. A 503 means that the
+    route could not read the card, so it tries once more, and a second 503
+    tells the model to draw no card (:data:`_REVISE_UNREAD`)."""
     if not card_id or not thread:
         return lead
     try:
-        res = await _post("/email/new-card/revise",
-                          {"card_id": card_id, "card_thread_id": thread}) or {}
+        res = await _revise_card(card_id, thread)
+    except GatewayError as exc:  # the card is closed either way, and nothing went
+        return _REVISE_UNREAD if exc.status == 503 else lead
     except Exception:  # the card is closed either way, and nothing went
         return lead
     block = str(res.get("snapshot") or "") if isinstance(res, dict) else ""
     if not block.strip():
         return lead
     return f"{lead}\n\n{block[:_MEMBER_VERSION_MAX]}\n{_START_FROM_THE_MEMBER}"
+
+
+async def _revise_card(card_id: str, thread: str) -> Any:
+    """``POST /email/new-card/revise``, and ONE more try after a 503 (§18.11).
+
+    The route answers 503 when Redis fails on its first read, before it spends
+    the card. So the second try is safe, and it keeps the member's unticks
+    through a short fault. A second try after a spend answers 409, and nothing
+    runs twice."""
+    body = {"card_id": card_id, "card_thread_id": thread}
+    try:
+        return await _post("/email/new-card/revise", body) or {}
+    except GatewayError as exc:
+        if exc.status != 503:
+            raise
+    await asyncio.sleep(_GET_RETRY_DELAY_S)
+    return await _post("/email/new-card/revise", body) or {}
 
 
 def _new_mail_title(form: dict[str, Any]) -> str:

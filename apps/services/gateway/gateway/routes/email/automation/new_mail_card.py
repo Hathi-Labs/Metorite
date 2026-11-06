@@ -200,17 +200,18 @@ async def new_mail_card(
               if req.metorite_files else [])
     artifacts = [a.model_dump(exclude_none=True) for a in req.artifacts]
     thread = req.card_thread_id.strip()
-    # §18.11 step 6: the gateway, never the tool, links this card to the card
-    # of the thread that a chat message revised ("Draft 2"). Only a card to
-    # the same people takes the link (fix round 3).
-    linked = await link_fields(user, thread, lists["to"])
     # §18.11 rule 7: a person that the member unticked on a card that a chat
     # message revised starts unticked here, even when the tool names that
     # person again (an always-copy colleague). Each card of the member in the
     # thread reads it, and none spends it. It only unticks. The record keeps
     # the names, so the next draft keeps them too. The act still sends only
-    # to the ticks of the member's answer.
+    # to the ticks of the member's answer. A fault answers 503 here, before
+    # the link below, so a retry still takes the link (fix round 4).
     start, unticked = start_unticked(lists, await kept_unticked(user, thread))
+    # §18.11 step 6: the gateway, never the tool, links this card to the card
+    # of the thread that a chat message revised ("Draft 2"). Only a card to
+    # the same people takes the link (fix round 3).
+    linked = await link_fields(user, thread, lists["to"])
     record = {
         "v": 1, "owner": owner.lower(), "kind": "new-mail", "account_id": req.account_id,
         "to": lists["to"], "cc": lists["cc"], "bcc": lists["bcc"],

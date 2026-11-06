@@ -685,9 +685,10 @@ async def peek_record(
     The record must belong to the session's member, and to the chat thread
     *thread_id* that the card shows in. A record that names no thread (a
     card of a run that draws no card to edit, such as WhatsApp) never
-    matches. None for no record, a fault, another member or another thread.
-    Nothing reads a record this way to act: the act takes it once with
-    :func:`take_record`."""
+    matches. None for no record, another member or another thread. A fault of
+    Redis answers 503, as :func:`write_record` does, so a fault never reads as
+    "no card" (§18.11, P2 of fix round 4). Nothing reads a record this way to
+    act: the act takes it once with :func:`take_record`."""
     from acb_common.tenant_redis import organization_scope
 
     want = str(thread_id or "").strip()
@@ -700,7 +701,7 @@ async def peek_record(
         raise
     except Exception as exc:
         _log.warning("email.held_card_peek_failed", error=type(exc).__name__)
-        return None
+        raise HTTPException(status_code=503, detail="The card could not be read.") from None
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8", errors="replace")
     if not isinstance(raw, str) or not raw:
@@ -1421,18 +1422,19 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
     from gateway.routes.email.automation.redraft import form_link, kept_unticked, link_fields
 
     edit = edit_card_on(_org_of(user))
+    # §18.11 rule 7: a person that the member unticked on a revised card
+    # starts unticked. Only a row that its class ticks can be one, so a new
+    # address stays as §21 starts it. Each card reads it, and none spends it.
+    # It changes the form's start only: the rows keep their classes, and the
+    # act sends only to the answer's ticks. A fault answers 503 here, before
+    # the link below, so a retry still takes the link (fix round 4).
+    off = await kept_unticked(user, req.card_thread_id) if edit else frozenset()
     # §18.11 step 6: the gateway, never the tool, links this card to the card
     # of the thread that a chat message revised. The classes and the ticks of
     # the rows above come from the server alone, as for any held card: a
     # snapshot of the revised card never ticks a new address (rule 4). Only a
     # card to the same people takes the link (fix round 3).
     linked = await link_fields(user, req.card_thread_id, lists["to"]) if edit else {}
-    # §18.11 rule 7: a person that the member unticked on a revised card
-    # starts unticked. Only a row that its class ticks can be one, so a new
-    # address stays as §21 starts it. Each card reads it, and none spends it.
-    # It changes the form's start only: the rows keep their classes, and the
-    # act sends only to the answer's ticks.
-    off = await kept_unticked(user, req.card_thread_id) if edit else frozenset()
     unticked = unticked_rows(rows, off)
     out = await _person_card(user, req, rows, context, {
         "kind": "new", "account_id": req.account_id, "subject": subject, "body": body,
