@@ -21035,9 +21035,18 @@ At rest, as after a Stop, the composer line goes and the nudge tells the truth. 
 tab keeps the member's edits. A fault of Redis shows no card, and it never starts a person
 ticked with no note. A re-tick clears at the door, so an untick of the same message wins.
 
+**Fix round 5 (2026-11-06, Opus review and verifier).** The revise writes the unticks and
+the link before it spends the card. So a fault of Redis at any step up to the spend answers
+503 and spends nothing. When the revise does not run, the old card comes back in place with
+the member's edits, and the next message is a steer again.
+
+The chat holds the kept form edits, so a new message no longer loses them. The view leaves a
+slot for the first live card. A rest that only the settle of 20 seconds made ends no slot.
+
 **CI gate (checked 2026-11-06).** `pr-check.yml` has no Redis service and does not set
 `HELD_R8_REDIS_URL`. So `TestTheOrderOnARealRedis` skips in pr-check, and only a local run
-holds it. A task must add the service.
+holds it. A task must add the service: Metorite task 1856
+(https://app.metorite.com/projects?task=e02afc52-0b75-4ff2-ac93-65ee2cea5454).
 
 **Build notes.** The stream door keeps the snapshot in the STEER branch, before the steer
 goes out, because `_route_incoming_turn` only reads the world. The record of a card keeps
@@ -21093,22 +21102,36 @@ The new card also arrives with no link to the old one.
    each kept person that the member ticked again (rule 7).
 3. **The card closes as REVISED,** as today (`_close_on_new_steer`, `_steer_target`).
 4. **The tool spends the old card.** On REVISED, `send_email` calls a new gateway route,
-   `POST /email/new-card/revise`, with the old card id. In this order, the route:
-   1. spends the record of the old card (`take_record`), so a late answer finds no record.
-   2. takes the snapshot of that card (`GETDEL`), if there is one.
+   `POST /email/new-card/revise`, with the old card id. Each safety write comes BEFORE the
+   spend (fix round 5). In this order, the route:
+   1. reads the record of the old card, and does not spend it (`peek_record`).
+   2. reads the snapshot of that card with a plain `GET`, if there is one.
    3. keeps the people that the member unticked on that card (rule 7), with a life of 900
       seconds, under `email:card_unticked:<thread>:<member>`.
    4. writes the link `email:card_revised:<thread>` = `{card_id, draft, to}` with a life of
       900 seconds. `draft` is the draft number of the old card plus one. `to` is the To of
       the old card, in lower case. A link of the same member that waits becomes `many`, which
       names no card. A link of another member stays as it is, and this revise writes no link.
-   5. answers the snapshot as neutral data. A snapshot that keeps only the ticks answers
+      A link that already names this card stays as it is.
+   5. spends the record (`take_record`), so a late answer finds no record.
+   6. deletes the snapshot.
+   7. answers the snapshot as neutral data. A snapshot that keeps only the ticks answers
       nothing.
 
-   A held record goes through the same route, with the same steps. A fault of Redis on the
-   first read answers 503, not 404, and spends nothing. So the tool tries once more. A second
-   503 tells the model to draw no card, because the gateway kept no untick of that card. The
-   model then says that the draft did not change.
+   A held record goes through the same route, with the same steps.
+   - A fault of Redis in steps 1 to 5 answers 503, and nothing is spent. Each of those steps
+     is safe to run twice, so the tool tries once more.
+   - A fault in step 6 only logs, because the TTL clears the snapshot.
+   - A spend that finds no record answers 409, because the act took it first. The route then
+     deletes the link of this card. The unticks stay, because an extra untick is safe.
+   - The tool reads a 409, and a 503 after its one more try, as "the revise did not run". It
+     asks the SAME card again, with `reopened` on its form, at most three times. The chat
+     puts that card back in its slot, with the member's edits and the line "Your request in
+     the chat did not reach the assistant." The next message is a steer that carries the
+     edits.
+   - When the member answers the card that came back, the model reads `_REVISE_UNREAD` before
+     the answer. It says that the card edits did not reach the model, and that the card stayed
+     open. After three times, the model draws no card.
 5. **The model reads it.** The REVISED text of `send_email` adds the snapshot, when there is
    one, as a data block. The block passes the neutralising pass of `compose_card_answer`
    (`gateway/chat_recovery.py`). It loses each fence string and each «mark». It is capped,
@@ -21136,8 +21159,12 @@ The new card also arrives with no link to the old one.
      request in the chat starts again from the assistant's draft. Save draft keeps your
      version." Its chips hide, so no chip leads the member to lose the edits. An untick is an
      edit here too.
-   - A change of tab keeps the member's edits. The tab unmounts the form, so the queue keeps
-     the subject, the text and the ticks of each card by its key (`formEditsReducer`).
+   - The member's edits stay on each open card: the subject, the text and the ticks. A change
+     of tab unmounts the form, and each new message mounts the queue again. So the CHAT keeps
+     the edits by card key, beside `cardDraftsRef` (fix round 5, `formEditsReducer`).
+   - The chat drops an entry when its card closes for good (`liveEdits`). That is an answer,
+     a slot that a draft took or that ended, and a change of chat. A slot and a card whose
+     answer is in flight keep their entry, so a card that comes back still has the edits.
    - The new card takes the slot of the card that its `revises` names, in the same tab
      (D173), with the label "Draft <n>".
    - It shows a "Changed:" line and marks the changed words. The client computes both
@@ -21160,8 +21187,11 @@ The new card also arrives with no link to the old one.
    - A slot that no card takes reads "Updating the draft…" until the run ends, by ANY end: a
      `done` on either stream, a Stop or a failed model call. The hook tells the chat when the
      run rests (`onRunRested`), and `runRested` moves only the slots. A blocking card stays.
-   - The member looks at a slot, and a live card arrives. The view goes to that card, because
-     the run waits on the member there. The member can go back to the slot by its tab.
+   - The member looks at a slot, and the queue changes. A card arrives, or the shown card
+     turns into a slot. The view then goes to the first live card, new or not, because the
+     run waits on the member there. The member can go back to the slot by its tab.
+   - A rest that only the settle of `FINISH_MAX_MS` made ends no slot (`restBlind`). The next
+     server list either names the run, which works again, or confirms the rest.
    - At the run's end, a slot closes with no line when a card to the same people arrived after
      it. Any other slot reads "The draft did not change.", so a card to other people never
      closes the member's card with no word.
@@ -21218,8 +21248,13 @@ The new card also arrives with no link to the old one.
      never undoes an untick on another card of that message.
    - A re-tick at Send always wins, because the act sends only to the ticks of the answer.
      It does not change the hash, so the note says "earlier in this chat".
-   - A fault of Redis on the read answers 503, and no card shows. The model reads the route's
-     words, and it tells the member that nothing was sent and to ask again.
+   - A re-tick on a card that the message does not close clears the person for the thread
+     too. The member can untick that person again on that card, but no revise puts the
+     person back in the hash. So a later card of the thread can start that person ticked.
+     The member ticked that person, so this sends no mail against the member's last choice.
+   - A fault of Redis on the read answers 503, and no card shows. The route says "The chat
+     could not check this email, so no card shows. Nothing was sent. Ask again in a moment."
+     It names no person, because the member may have taken nobody off.
    - Each compare of addresses ignores the case.
    - It only unticks. It never ticks a person, never adds one, and never removes one from
      the lists. The record keeps every person, and the act sends only to the ticks of the
@@ -21263,6 +21298,12 @@ The new card also arrives with no link to the old one.
   person stays unticked, Send does not go to that person, and a steer carries the version.
 - A fault (rule 7, step 4): a fault of the read answers 503 and shows no card. A fault at the
   revise answers 503, spends nothing and gets one more try.
+- A fault in each step of the revise (step 4): a fault before the spend or at it spends
+  nothing. A second try keeps Geo unticked on the next card.
+- The card comes back (step 4): after two 503s, the old card is back in place with the
+  member's edits and Geo unticked. The next message carries the edits.
+- The edits stay (step 7): a steer about another card, a failed Send, a refused steer and a
+  plain message at rest keep the edits. Send on Bob after a steer about Kim does not name Geo.
 - The race (rule 7): one message re-ticks a person on one card and leaves that person unticked
   on another. The person stays unticked in either order, on a real Redis too.
 
@@ -21296,6 +21337,9 @@ The new card also arrives with no link to the old one.
 - rule 7: a fault of the read that starts a card with no note, or a read after the link.
 - rule 7: a re-tick that clears at the revise, in place of the door.
 - §18.10: an act that sends to the whole record, and not to the ticks of the answer.
+- step 4: a spend before the safety writes, or a fault of the spend that reads as no record.
+- step 4: a tool that asks for a new card after a revise that did not run.
+- step 4: a tool that asks the same card again with no cap.
 
 `workbench/control_plane/src/components/redraftCard.test.ts` holds the snapshot of each open
 card on a steer, the slot and the label. It holds the "Changed:" line with its people, and
@@ -21316,6 +21360,10 @@ slots only, and the cap of a steer's list. Its named mutations:
 - a view that stays on a slot when a live card arrives.
 - a composer line with no run, or one that names only the newest card.
 - a form that starts from its own start after a change of tab.
+- the kept edits in the queue again, where a new message loses them.
+- a card that comes back and stays a slot, or a replay that reopens an answered card.
+- a view that moves only for a NEW live card.
+- a slot that ends on the settle of `FINISH_MAX_MS` alone.
 
 `workbench/control_plane/src/components/newMailCard.test.ts` holds the nudge at rest: its words,
 and no chips.
@@ -21325,6 +21373,9 @@ chat, and reads "Draft 2" in place. It also closes two cards with one message, a
 colleague still unticked on the new card. It also runs the mixed request of "Done when". Fix
 round 4 adds a Stop, a failed model call, the attach stream and a mail to Carol alone. It also
 runs a change of tab twice: one run ends at Send, and one ends at a steer.
+
+Fix round 5 adds the card that comes back, and a steer about Kim with Send on Bob.
+It also adds a failed Send, a refused steer and a plain message at rest.
 
 **Verify with.**
 
