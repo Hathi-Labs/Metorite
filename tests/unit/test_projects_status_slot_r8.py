@@ -99,7 +99,7 @@ def test_a_slot_outside_the_stage_is_refused_with_the_range() -> None:
         assert err.value.status_code == 422
         detail = str(err.value.detail)
         assert f"Slot {bad} is outside the stage" in detail
-        assert "slot from 1 to 4" in detail and "Shipped, Released, Closed" in detail
+        assert "slot from 1 to 4" in detail and "in order: Shipped, Released, Closed." in detail
 
 
 def test_after_names_a_lane_of_the_same_stage() -> None:

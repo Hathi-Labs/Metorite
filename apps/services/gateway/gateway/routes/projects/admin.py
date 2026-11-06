@@ -198,12 +198,12 @@ def _one_placement(values: dict[str, Any], slot: Any, after: Any) -> None:
 def _slot_refusal(stage: str, size: int, names: list[str], why: str) -> HTTPException:
     """The 422 for a bad ``slot`` or ``after``: what happened, the range, the
     lanes in order, and the next step."""
-    listed = ", ".join(names) if names else "no lane yet"
+    others = f" The other lanes of this stage, in order: {', '.join(names)}." if names else ""
     return HTTPException(
         status_code=422,
         detail=(
             f"{why} The {stage.replace('_', ' ')} stage has {size} place"
-            f"{'' if size == 1 else 's'} here, in this order: {listed}. "
+            f"{'' if size == 1 else 's'} for this lane.{others} "
             f"Use a slot from 1 to {size}, or name a lane of this stage in "
             "'after'."
         ),
