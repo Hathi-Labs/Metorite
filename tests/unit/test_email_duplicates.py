@@ -133,9 +133,10 @@ class TestThePairSet:
               "CAST(NULLIF(current_setting('app.tenant_id', true), '') AS uuid)")
 
     def test_it_is_the_self_set_less_this_mailbox_and_each_separate_one(self):
-        assert identity.PAIRED_MAILBOX_IDS_SQL == (
-            identity.SELF_MAILBOX_IDS_SQL.removesuffix(self._BOUND)
-            + " AND o.id <> a.id AND a.in_all_inboxes AND o.in_all_inboxes")
+        unbound_self = identity.SELF_MAILBOX_IDS_SQL.removesuffix(self._BOUND)
+        pair = identity.PAIRED_MAILBOX_IDS_SQL
+        assert pair == (
+            unbound_self + " AND o.id <> a.id AND a.in_all_inboxes AND o.in_all_inboxes")
 
     def test_the_self_text_did_not_change(self):
         """WS-65 SM-2 (D-SM-5): a shared mailbox is never "self". With no
