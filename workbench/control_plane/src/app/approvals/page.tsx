@@ -297,6 +297,11 @@ export default function ApprovalsPage() {
             Could not load the queue. Refresh to try again.
           </p>
         )}
+        {queue.load === "closed" && (waiting?.length ?? 0) === 0 && (
+          <p className="mt-4 rounded-lg border border-border bg-card/50 px-3 py-2 text-xs text-muted-foreground">
+            An admin or a manager reviews proposed writes. Ask one of them to approve yours.
+          </p>
+        )}
         {gone && (
           <p className="mt-4 rounded-lg border border-border bg-card/50 px-3 py-2 text-xs text-muted-foreground">
             That request is no longer waiting for you.

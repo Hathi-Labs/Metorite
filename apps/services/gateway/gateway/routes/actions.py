@@ -12,7 +12,7 @@ proposals the broker is holding for a human and lets an operator approve
 Every endpoint is gated on ``require_internal_auth`` (the queue payloads carry
 outward-write bodies — CRM/email content — so it is never anonymous-reachable).
 
-⚠️ **Only an org admin reaches this router** (AP-BUG-2, task 1896). The
+⚠️ **Only an admin or a manager reaches this router** (the `admin:members:read` holders) (AP-BUG-2, task 1896). The
 ``feature:approvals`` gate alone let every member read the whole queue of the
 tenant, with the payloads of other members: migration 207 grants ``feature:*``
 to ``member`` and ``manager`` in every org. ``pending_actions`` has no
