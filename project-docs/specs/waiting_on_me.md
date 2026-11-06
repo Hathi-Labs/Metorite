@@ -2,7 +2,7 @@
 
 **Product:** Metorite · **Feature:** one list of what waits on a member, and of what the member waits on · **Updated:** 2026-11-06 · **Owner:** vjvarada
 
-**Status:** 📋 **SPEC, ACCEPTED.** Nothing in this spec is built, except the parts that §2 names. On 2026-11-06 the owner accepted the recommended answers to AP-Q1 to AP-Q8 (§13). AP-Q9 has a working default. AP-16 waits on AP-Q10.
+**Status:** 📋 **SPEC, ACCEPTED.** Nothing in this spec is built, except the parts that §2 names. On 2026-11-06 the owner accepted the recommended answers to AP-Q1 to AP-Q8 (§13). AP-Q9 has a working default. AP-Q10 is answered, so AP-16 is open to build after AP-15.
 
 **Verified against code on 2026-11-06 at `97da742ae`.** Each path in §2 and §9 was read on that commit. The open branch `l6s-waiting-list` (task 1750) was read at its head on the same day.
 
@@ -555,7 +555,7 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 | **AP-13** | 1863 | A hand-off to a member can also send an ask "Tell me when it is done" | The delegate form shows the choice and the line "Priya will see that you wait". The ask closes when the task closes | STANDARD |
 | **AP-14** | 1864 | Forward an agent question to a person | The forward makes a person ask that quotes the question. The answer returns to the run as the member's answer | HIGH. Deferred: the owner answered AP-Q7 "not now" |
 | **AP-15** | 1875 | A wait that no person owns: the ladder, the circle, the open wait, the opening after 24 hours, and the Team lens filter "Open" (§4.5) | R8 tests hold V9, V10 and V2 for the circle. A typed archive request stays the member's. The group "Near you" draws no count. UI gate for the open row and "Near you" | HIGH (visibility). Needs AP-1 |
-| **AP-16** | 1876 | An agent names the person its question is for: the field `for` on `ask_on_task`, inside the circle only | An R8 test holds V11. The MCP schema, `agent_edge/tools.py` and the route take the field. The answer still reaches the run's session | HIGH (identity). Needs AP-15 and AP-Q10 |
+| **AP-16** | 1876 | An agent names the person its question is for: the field `for` on `ask_on_task`, inside the circle only | An R8 test holds V11. The MCP schema, `agent_edge/tools.py` and the route take the field. The answer still reaches the run's session | HIGH (identity). Needs AP-15. AP-Q10 is answered |
 | **AP-BUG-1** | 1857 | The Projects bell draws a person's `nudge` as "has gone quiet … Resume or release it" | A person's nudge reads "{A} nudged you about {task}". A stranded-run nudge keeps its text. A vitest holds both | LOW |
 
 **Build order.**
@@ -565,7 +565,7 @@ Each slice ships dark behind `WAITING_ORGS`, empty by default, unless the row sa
 3. AP-2, AP-4 and AP-9.
 4. AP-3, AP-10 and AP-11.
 5. AP-15, then AP-12, AP-5 and AP-6.
-6. AP-13. Then AP-16, after AP-Q10. AP-14 waits (AP-Q7).
+6. AP-13. Then AP-16, after AP-15 (AP-Q10 is answered). AP-14 waits (AP-Q7).
 
 **Task 1750 and PR 1741.** The PR fixes the bug that the owner hit on 2026-11-05. Merge it as it is. AP-2 then moves its section to `/waiting` (AP-Q8).
 
@@ -639,7 +639,7 @@ No palette, bell, assistant rail or ⌘K listener of its own.
 
 ## 13. Owner questions
 
-**Answered.** On 2026-11-06 at 09:43 UTC, the owner chose "Accept all 8 recommendations" on task 1855 (run `ce35d443`). So AP-Q1 to AP-Q8 hold their recommended answers below. AP-Q1 amends D171.1 (`work_plan.md` §3). Later the same day, in chat, the owner asked for §4.5. AP-Q9 and AP-Q10 come from it, and they are open.
+**Answered.** On 2026-11-06 at 09:43 UTC, the owner chose "Accept all 8 recommendations" on task 1855 (run `ce35d443`). So AP-Q1 to AP-Q8 hold their recommended answers below. AP-Q1 amends D171.1 (`work_plan.md` §3). Later the same day, in chat, the owner asked for §4.5. AP-Q9 and AP-Q10 come from it. At 10:33 UTC the owner answered AP-Q10: "Yes, a person of the circle only". AP-Q9 keeps its working default.
 
 Each open question has a recommended answer. The build uses it as a working default only where the row says so.
 
@@ -654,7 +654,7 @@ Each open question has a recommended answer. The build uses it as a working defa
 | **AP-Q7** | May a member forward an agent question to another person? | (a) Yes, AP-14. (b) Not now | **(b).** Forward needs the answer to go back to the run. Build it after AP-8 shows use | Yes |
 | **AP-Q8** | PR 1741 (task 1750)? | (a) Merge it now, and AP-2 moves its section. (b) Hold it for AP-2 | **(a).** It fixes the bug that the owner hit today | Yes |
 | **AP-Q9** | When does an owned wait with no answer open to its circle? | (a) After 24 hours. (b) Only when the member cannot act. (c) At once: the circle counts every wait | **(a).** The circle sees the wait at once in "Near you". The count and one bell come after a day, so the member gets the first chance | Yes |
-| **AP-Q10** | May an agent name the person its question is for? | (a) Yes, one person of the circle only (AP-16). (b) No. The question stays with the run's member | **(a).** The circle gets the bell of each question already, so the field reaches nobody new. It changes part of AP-Q4, so the owner decides | No |
+| **AP-Q10** | May an agent name the person its question is for? | (a) Yes, one person of the circle only (AP-16). (b) No. The question stays with the run's member | **(a).** The circle gets the bell of each question already, so the field reaches nobody new. It changes part of AP-Q4, so the owner decided. **ANSWERED 2026-11-06 10:33 UTC: "Yes, a person of the circle only" (a).** | No |
 
 ---
 
