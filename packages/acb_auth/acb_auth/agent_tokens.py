@@ -116,6 +116,13 @@ store that must work before a tenant is known.
     equals the row writes nothing. ``offline_access`` and
     ``requested_scopes`` never change here.
 
+11. ⚠️ **Each revoke stores its reason (EA-19a, spec §10.9).** Every writer
+    that revokes a connection takes a REQUIRED keyword ``reason``, one of
+    :data:`REVOKE_REASONS`, and writes it to ``revoked_reason``. An unknown
+    reason raises ``ValueError`` before any SQL runs. The column has no
+    CHECK, so a wrong string can never roll back a reuse revoke. Fence:
+    ``tests/unit/test_agent_revoke_reason.py`` (R8).
+
 Fence: ``tests/unit/test_agent_connection_tokens.py`` (R8, a phase-4-promoted
 catalog, as a NON-privileged role). D-EA-11:
 ``tests/unit/test_agent_first_party.py`` (R8). EA-17c-1:
@@ -158,6 +165,56 @@ def hash_token(raw: str) -> str:
     slow hash protects a guessable secret, and these are not guessable.
     """
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+# ── Why a connection was revoked (EA-19a, spec §10.9 question 6) ────────────
+#
+# Each revoke of a connection stores one of these in
+# ``agent_connection.revoked_reason`` (migration 348). The column has NO CHECK
+# on purpose: a CHECK would let one wrong string roll back a revoke, and a
+# reuse revoke must never fail. So :func:`_reason` refuses an unknown value in
+# Python, before any SQL runs. Fence: ``tests/unit/test_agent_revoke_reason.py``.
+
+#: The member revoked their own connection (``DELETE /agent-access/...``).
+REVOKE_MEMBER = "member"
+#: An admin revoked a connection (``DELETE /integrations/agent-connections``).
+REVOKE_ADMIN = "admin"
+#: A first-party approval replaced the older connection (D-EA-11).
+REVOKE_REPLACED = "replaced"
+#: A spent refresh token was presented again (rule 5, both reuse sites).
+REVOKE_REFRESH_REUSE = "refresh_reuse"
+#: A spent authorization code was presented again (:func:`revoke_replayed_code`).
+REVOKE_CODE_REPLAY = "code_replay"
+#: The client revoked its token at ``/oauth/revoke`` (RFC 7009).
+REVOKE_OAUTH_REVOKE = "oauth_revoke"
+#: ``mint_code`` failed after the approve made the connection.
+REVOKE_APPROVE_ROLLBACK = "approve_rollback"
+#: The bulk revoke of the box tokens of an organization. EA-19d writes it.
+#: No path writes it yet.
+REVOKE_FLAG_OFF = "flag_off"
+
+#: Every reason a revoke may store. A reason outside this set raises.
+REVOKE_REASONS: frozenset[str] = frozenset({
+    REVOKE_MEMBER,
+    REVOKE_ADMIN,
+    REVOKE_REPLACED,
+    REVOKE_REFRESH_REUSE,
+    REVOKE_CODE_REPLAY,
+    REVOKE_OAUTH_REVOKE,
+    REVOKE_APPROVE_ROLLBACK,
+    REVOKE_FLAG_OFF,
+})
+
+
+def _reason(reason: str) -> str:
+    """*reason* when it is in :data:`REVOKE_REASONS`, else ``ValueError``.
+
+    Each revoke calls this before it opens a session, so a caller bug fails
+    loud and never reaches the database.
+    """
+    if reason not in REVOKE_REASONS:
+        raise ValueError(f"unknown revoke reason: {reason!r}")
+    return reason
 
 
 # ── What the functions return ───────────────────────────────────────────────
@@ -467,7 +524,8 @@ SELECT CAST(organization_id AS TEXT) AS organization_id,
 
 _REVOKE_CONNECTION_SQL = """
 UPDATE agent_connection
-   SET revoked_at = now()
+   SET revoked_at = now(),
+       revoked_reason = CAST(:reason AS TEXT)
  WHERE id = CAST(:connection_id AS UUID)
    AND revoked_at IS NULL
 """
@@ -481,7 +539,8 @@ UPDATE agent_connection
 #: :data:`_REVOKE_TOKENS_OF_SQL` takes their tokens after it.
 _REPLACE_SAME_CLIENT_SQL = """
 UPDATE agent_connection
-   SET revoked_at = now()
+   SET revoked_at = now(),
+       revoked_reason = CAST(:reason AS TEXT)
  WHERE organization_id = CAST(:org AS UUID)
    AND member_email = CAST(:member AS TEXT)
    AND client_id = CAST(:client_id AS TEXT)
@@ -663,7 +722,12 @@ async def create_connection(
                 str(r.id) for r in (
                     await db.execute(
                         text(_REPLACE_SAME_CLIENT_SQL),
-                        {"org": org, "member": member, "client_id": client_id},
+                        {
+                            "org": org,
+                            "member": member,
+                            "client_id": client_id,
+                            "reason": REVOKE_REPLACED,
+                        },
                     )
                 ).all()
             ]
@@ -697,7 +761,7 @@ async def create_connection(
         _log.warning(
             "agent_tokens.connection_revoked",
             connection_id=old,
-            reason="replaced",
+            reason=REVOKE_REPLACED,
             replaced_by=str(row.id),
         )
     return str(row.id)
@@ -744,20 +808,27 @@ async def live_connections_of_client(
     return [ClientConnection(id=row.id, scopes=tuple(row.scopes or ())) for row in rows]
 
 
-async def _revoke_in(session: Any, organization_id: str, connection_id: str) -> None:
+async def _revoke_in(
+    session: Any, organization_id: str, connection_id: str, *, reason: str
+) -> None:
     """Revoke a connection and every token of it, on a BOUND *session*.
 
     The connection ``UPDATE`` comes first, so the row lock order is the same as
-    in an issue: the connection, then the tokens.
+    in an issue: the connection, then the tokens. *reason* is one of
+    :data:`REVOKE_REASONS`, and the row stores it (EA-19a).
     """
     from sqlalchemy import text
 
+    stored = _reason(reason)
     params = {"connection_id": connection_id, "org": organization_id}
-    await session.execute(text(_REVOKE_CONNECTION_SQL), params)
+    await session.execute(
+        text(_REVOKE_CONNECTION_SQL), {**params, "reason": stored})
     await session.execute(text(_REVOKE_TOKENS_SQL), params)
 
 
-async def revoke_connection(organization_id: str, connection_id: str) -> None:
+async def revoke_connection(
+    organization_id: str, connection_id: str, *, reason: str
+) -> None:
     """Revoke a connection and every token of it, in one transaction.
 
     The session is bound to *organization_id*, so the UPDATE of
@@ -765,12 +836,20 @@ async def revoke_connection(organization_id: str, connection_id: str) -> None:
     caller passes an organization it got from a token row or from the bound
     request, never from request input.
 
+    *reason* is one of :data:`REVOKE_REASONS` (EA-19a). An unknown one raises
+    ``ValueError`` before the session opens.
+
     The connection ``UPDATE`` waits for any issue that holds the connection
     lock. So the token ``UPDATE`` that follows sees the issued rows.
     """
+    _reason(reason)
     async with _tenant_session(organization_id) as db:
-        await _revoke_in(db, organization_id, connection_id)
-    _log.warning("agent_tokens.connection_revoked", connection_id=connection_id)
+        await _revoke_in(db, organization_id, connection_id, reason=reason)
+    _log.warning(
+        "agent_tokens.connection_revoked",
+        connection_id=connection_id,
+        reason=reason,
+    )
 
 
 # ── The list and the scoped revoke of the Integrations app (EA-4b) ──────────
@@ -894,7 +973,8 @@ def _connection_row(row: Any) -> ConnectionRow:
 #: :data:`_REVOKE_CONNECTION_SQL` does. The tokens come after it.
 _REVOKE_CONNECTION_SCOPED_SQL = """
 UPDATE agent_connection
-   SET revoked_at = now()
+   SET revoked_at = now(),
+       revoked_reason = CAST(:reason AS TEXT)
  WHERE id = CAST(:connection_id AS UUID)
    AND organization_id = CAST(:org AS UUID)
    AND revoked_at IS NULL
@@ -946,9 +1026,14 @@ async def revoke_connection_scoped(
     organization_id: str,
     connection_id: str,
     *,
+    reason: str,
     member_email: str | None = None,
 ) -> bool:
     """Revoke *connection_id* when the caller may, and say whether it did (EA-4b).
+
+    *reason* is one of :data:`REVOKE_REASONS` (EA-19a): ``member`` from the
+    member's route, ``admin`` from the admin's route. An unknown one raises
+    ``ValueError`` before any SQL runs.
 
     The row must be of *organization_id*, and of *member_email* when the
     caller names one. Then the store revokes the connection and every token
@@ -962,6 +1047,7 @@ async def revoke_connection_scoped(
     """
     from sqlalchemy import text
 
+    _reason(reason)
     member = _member_filter(member_email)
     org = _canonical_uuid(str(organization_id))
     connection = _canonical_uuid(str(connection_id).lower())
@@ -971,7 +1057,8 @@ async def revoke_connection_scoped(
     async with _tenant_session(org) as db:
         row = (
             await db.execute(
-                text(_REVOKE_CONNECTION_SCOPED_SQL), {**params, "member": member}
+                text(_REVOKE_CONNECTION_SCOPED_SQL),
+                {**params, "member": member, "reason": reason},
             )
         ).one_or_none()
         if row is None:
@@ -980,7 +1067,7 @@ async def revoke_connection_scoped(
     _log.warning(
         "agent_tokens.connection_revoked",
         connection_id=connection,
-        reason="admin" if member is None else "member",
+        reason=reason,
     )
     return True
 
@@ -1413,7 +1500,8 @@ async def revoke_replayed_code(
         organization_id = str(peek.organization_id)
         connection_id = str(peek.connection_id)
         await _bind(session, organization_id)
-        await _revoke_in(session, organization_id, connection_id)
+        await _revoke_in(
+            session, organization_id, connection_id, reason=REVOKE_CODE_REPLAY)
         return connection_id
 
     connection_id = await _run(_work)
@@ -1661,7 +1749,9 @@ async def _rotate_in(
             and state.used_at is not None
             and _same_presentation(state, client_id, resource)
         ):
-            await _revoke_in(session, organization_id, connection_id)
+            await _revoke_in(
+                session, organization_id, connection_id,
+                reason=REVOKE_REFRESH_REUSE)
             return Refused(REUSED, connection_id, organization_id)
         return Refused(ORG_NOT_ALLOWED, connection_id, organization_id)
 
@@ -1682,7 +1772,9 @@ async def _rotate_in(
         if state.used_at is not None:
             # We hold the connection lock, so this revoke needs no upgrade and
             # sees every pair a racing rotation committed before us.
-            await _revoke_in(session, organization_id, connection_id)
+            await _revoke_in(
+                session, organization_id, connection_id,
+                reason=REVOKE_REFRESH_REUSE)
             return Refused(REUSED, connection_id, organization_id)
         # Revoked or expired. Name nothing (see :class:`Refused`).
         return Refused(INVALID)
