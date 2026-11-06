@@ -287,6 +287,8 @@ export interface PackageSummary {
   name: string;
   status: string;
   live_version: number | null;
+  /** The last change, as the gateway writes it. Null when the answer has none. */
+  updated_at: string | null;
 }
 
 export interface ObjectRow {
@@ -326,6 +328,7 @@ export async function listPackages(fetchImpl: typeof fetch = fetch): Promise<Pac
   return raw.filter(isObject).map((p) => ({
     id: String(p.id), name: String(p.name ?? ""), status: String(p.status ?? ""),
     live_version: typeof p.live_version === "number" ? p.live_version : null,
+    updated_at: typeof p.updated_at === "string" ? p.updated_at : null,
   }));
 }
 

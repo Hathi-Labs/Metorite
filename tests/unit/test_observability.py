@@ -395,7 +395,7 @@ async def test_roster_includes_a_live_app_as_a_distinct_kind(monkeypatch):
     monkeypatch.setattr(_agent_routes, "_load_dynamic_agents", lambda: [])
     monkeypatch.setattr(_agent_routes, "_load_agent_aliases", lambda: {})
 
-    async def _fake_active_runs():
+    async def _fake_active_runs(*, organization_id):
         return [
             {"agent": "app:filament-tracker", "kind": "app", "phase": "start",
              "ts": "2026-07-26T00:00:00Z", "source": "apps"},
@@ -434,7 +434,7 @@ async def test_roster_has_no_idle_app_rows(monkeypatch):
     monkeypatch.setattr(_agent_routes, "_load_dynamic_agents", lambda: [])
     monkeypatch.setattr(_agent_routes, "_load_agent_aliases", lambda: {})
 
-    async def _fake_active_runs():
+    async def _fake_active_runs(*, organization_id):
         return []
 
     def _unreachable(_slugs, _org):
@@ -457,7 +457,7 @@ async def test_roster_agent_entries_are_tagged_kind_agent(monkeypatch):
     monkeypatch.setattr(_agent_routes, "_load_dynamic_agents", lambda: [])
     monkeypatch.setattr(_agent_routes, "_load_agent_aliases", lambda: {})
 
-    async def _fake_active_runs():
+    async def _fake_active_runs(*, organization_id):
         return []
 
     monkeypatch.setattr(_obs, "active_runs", _fake_active_runs)

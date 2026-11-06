@@ -473,6 +473,7 @@ async def scan_decided_pauses(org: str) -> int:
                 run_id=run_id,
                 status="cancelled",
                 reason=reason,
+                organization_id=org,
             )
     return settled
 
