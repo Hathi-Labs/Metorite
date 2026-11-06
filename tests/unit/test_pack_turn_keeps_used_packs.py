@@ -778,6 +778,24 @@ def test_the_answer_says_what_to_do_when_the_hand_off_stays_refused() -> None:
     assert "call_agent" not in line
 
 
+def test_a_pack_only_owner_that_leaves_names_no_hand_off() -> None:
+    """``studio-builder`` takes no hand-off (``PACK_ONLY_OWNERS``), and
+    ``call_agent`` refuses it with ``PACK_ONLY_REFUSED``. So when the words
+    pack ``studio`` leaves for a load, the text must not send the model there.
+    It says which part did not run instead. Mutation: ask only
+    ``run.refusal`` in ``made_room_line`` -> the text names the hand-off -> red."""
+    turn = _turn("update the studio app manifest and show the task dependencies")
+    choice = _choose(turn)
+    run = tp.PackRun.of(turn, choice, [(s, False) for s in choice.slugs])
+    assert "studio" in run.words, run.words
+    run.leaves("studio")
+    assert tp.pack_only_refusal("studio-builder") is not None
+    line = tp.made_room_line(run, ("studio",))
+    assert line == (tp.LOAD_MADE_ROOM_ASKED.format(labels=_label("studio"))
+                    + tp.LOAD_MADE_ROOM_TELL), line
+    assert "call_agent" not in line
+
+
 def test_an_old_sticky_pack_keeps_the_old_answer() -> None:
     """The member did not name an old sticky pack in this turn, so the old text
     stays. Mutation: answer ``LOAD_MADE_ROOM_ASKED`` for each pack -> red."""

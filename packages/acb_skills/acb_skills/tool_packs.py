@@ -2938,7 +2938,10 @@ def made_room_line(run: PackRun, leaving: Sequence[str]) -> str:
         owners = dict.fromkeys(found.owner for slug in asked if (found := pack(slug)) is not None)
         shut = False
         for owner in owners:
-            if run.refusal(owner, starts=True) is None:
+            # A pack-only owner (studio-builder) takes no hand-off at all, so
+            # ``call_agent`` would refuse it (``pack_only_refusal``). Ask that
+            # first: it records nothing, and ``run.refusal`` may.
+            if pack_only_refusal(owner) is None and run.refusal(owner, starts=True) is None:
                 line += LOAD_MADE_ROOM_HAND_OFF.format(owner=owner)
             else:
                 shut = True
