@@ -201,7 +201,7 @@ Each slice ships alone, dark where it changes behavior, through the preview, the
 | Slice | Task | What | Done when | Tier |
 |---|---|---|---|---|
 | **CC-0** | 1967 | This spec, D188, the amendment of `navigation_shell.md` §4.3, and one task for each slice | INDEX lists the spec, and each slice has a task | LOW |
-| **CC-1** | 1968 | The capture box and "Clarify" on My Day, by reuse of Quick Capture | A capture from My Day lands in the Inbox. A time makes a block with Undo | MEDIUM |
+| **CC-1** | 1968 | The capture box and "Clarify" on My Day, by reuse of Quick Capture | A capture from My Day lands in the Inbox. A time today also sets a reminder, with one Undo | MEDIUM |
 | **CC-2** | 1969 | One Today rule and the "today's focus" mark. Adds a migration | My Day, the Today chip and the Calendar tray list the same tasks | HIGH (migration) |
 | **CC-3** | 1970 | Today's plan on My Day, with ▶ and ✓ on each row, in place of the Today card | One tap starts focus or finishes a task from My Day | MEDIUM |
 | **CC-4** | 1971 | Start focus from anywhere: My Day, the Projects task panel and the Now card. Fix the dead capture button. The board moves to In progress | The dock runs the same session from each door | MEDIUM |
@@ -223,6 +223,65 @@ Each slice ships alone, dark where it changes behavior, through the preview, the
 6. CC-9 follows CC-3. CC-10 follows CC-4, CC-5 and CAL-1.
 7. **CC-11 waits on PR 1789.** That PR changes `FeedCard.tsx`. CC-11 starts after it merges.
 
+### 9.2 CC-2 in detail: one Today rule and the today's-focus mark
+
+The spec audit of 2026-11-07 asked for these choices before the build. Each is a technical choice inside D-MD-2 and D-MD-3.
+
+**What exists.** Three rules decide "Today" now:
+
+- `isInToday` in `src/app/tasks/lib/today.ts:35-45` (client).
+- Its server twin `in_today` in `routes/projects/mine.py:291`.
+- The time-block list that the Calendar and My Day read.
+
+None of them reads the One Thing, a focus mark or a block.
+
+**Storage (migration 349, expand only).**
+
+- `pm_task_personal.focus_on date NULL`. A mark is the member's date of the mark. It is "today's focus" only while it equals the member's today, so it expires by itself.
+- `user_settings.today_focus_cap smallint NULL`. Null reads as 3. A write clamps it to 1..10, and a read clamps it again.
+- Both columns ride tables that are already tenant-scoped with FORCE RLS. Identity comes from the session only (R5).
+- The build takes the number 349 (main is at 347, and 348 is on another branch). Re-check it at merge (R1).
+
+**The Today set.** One SQL predicate in the gateway decides it, for one member and one local day. The day is the member's local day, read from the zone that `in_today` uses now. A task is in the set when it is open, visible to the member, and one of these is true:
+
+1. It is the day's One Thing (`calendar_day_state.one_thing_id`).
+2. Its `focus_on` equals today.
+3. It has a block that starts today (`scheduled_start` in the local day).
+4. It is mine (`core.mine_clause`), not deferred, and due or starting on or before today. This is the rule of `in_today` now.
+
+**The read.** `GET /projects/my/today` answers the set. Each row carries the task, its block if any, and `why`: a list of `one_thing`, `focus`, `scheduled` and `due`. The response also carries `focus_cap` and `focus_count`.
+
+- My Day reads it. The Today chip of My work and its count read the same predicate.
+- The Calendar's "To fit" tray is the set minus the tasks with a block today.
+- `in_today` becomes a call of the one predicate. `isInToday` stays only as an optimistic local check. A shared fixture file holds the cases, and the pytest and the vitest both read it, so the two cannot disagree.
+
+**The write.** The existing per-member overlay route and `set_my_overlay` take `focus_on`. The only accepted values are the member's today and null. Another date answers 422.
+
+**The cap.** The server enforces it.
+
+- One statement counts the member's marks for today and writes the new mark, under a transaction lock on the organization, the member and the day.
+- The count is the tasks with `focus_on` equal to today, plus the One Thing when it has no mark.
+- A mark past the cap answers 409 `focus_cap_reached`, with words that say to unmark one first. The client also disables the control, and the server stays the rule.
+- Setting the One Thing never refuses. It counts toward the cap.
+- A lower cap keeps the marks that exist and refuses new ones until the count is under it.
+
+**The flag.** `TODAY_RULE_ORGS`, default empty. It reloads by SIGHUP (`docs/flag_reload.md`). With it off, the Today chip and its count keep the old rule, and nothing that a member sees changes. The new route and the mark exist with the flag off, and no UI calls them until CC-3 and CC-7. The flip is gate `enforcement-flip`.
+
+**Not in CC-2.** The phases, the focus log, the day rail, the chat tools (CC-10) and a control for the cap setting. The control ships with CC-7, which picks the top 3.
+
+**Verify with:**
+
+```bash
+bash scripts/dev_db.sh && eval "$(bash scripts/dev_db.sh --export)"
+uv run pytest tests/unit/test_today_rule_r8.py tests/unit/test_today_focus_cap_r8.py -q
+uv run ruff check apps/services/gateway/gateway/routes/projects/
+cd workbench/control_plane && npx tsc --noEmit && npx vitest run src/lib/shell/todayRule.test.ts
+```
+
+Run the R8 files with the dev database exported, and confirm that no R8 test skips.
+
+**Gate labels.** The migration, the route, the write and the predicate are AGENT-SAFE, HIGH tier. The flip of `TODAY_RULE_ORGS` is OWNER-GATE until a dated `enforcement-flip` grant covers it.
+
 ---
 
 ## 10. Fences (R7)
@@ -231,10 +290,11 @@ A fence below is a test to write in the slice named. Each is advisory until that
 
 | Rule | The test that fails when the rule breaks | Slice |
 |---|---|---|
-| One Today helper. No surface builds its own list | `src/lib/shell/todayRule.test.ts` | CC-2 |
-| The today's-focus cap holds, from 1 to 10 | `tests/unit/test_today_focus_cap_r8.py` | CC-2 |
+| One Today predicate. The set holds the One Thing, the marks, today's blocks and the due rule. The tray is the set minus the blocks. Each organization and member sees only its own rows | `tests/unit/test_today_rule_r8.py` | CC-2 |
+| The client check and the server predicate agree on every case of one shared fixture file | `src/lib/shell/todayRule.test.ts` | CC-2 |
+| The today's-focus cap holds, from 1 to 10. A mark past it answers 409, and a lower cap keeps the marks that exist | `tests/unit/test_today_focus_cap_r8.py` | CC-2 |
 | A focus-session row is tenant-scoped and private to the member | `tests/unit/test_focus_session_rls_r8.py` | CC-5 |
-| Capture from My Day lands in the Inbox | `src/app/my-day/captureBox.test.tsx` | CC-1 |
+| Capture from My Day lands in the Inbox. A time today also sets a reminder, and one Undo removes both | `src/lib/shell/captureTime.test.ts`, `e2e/my-day-capture.spec.ts` | CC-1 |
 | One focus session at a time, from any door | `src/lib/focus/singleSession.test.ts` | CC-4 |
 | Focus on a To do task moves it to In progress, with Undo | `tests/unit/test_focus_start_board_r8.py` | CC-4 |
 | The phase default follows the clock and the day state | `src/app/my-day/phase.test.ts` | CC-7 |
