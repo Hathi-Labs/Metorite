@@ -53,6 +53,7 @@ import {
 import {
   CARD_DRAFT_KEYS,
   MAX_CARD_DRAFTS,
+  REOPENED_CHECK_LINE,
   REOPENED_LINE,
   UNCHANGED_LINE,
   UPDATING_LINE,
@@ -749,10 +750,12 @@ describe("fix round 4: a slot ends with any end of a run", () => {
     expect(run([{ type: "runRested" }], rested)).toBe(rested);
   });
 
-  it("the closed card in the chat says that a new draft can follow", () => {
+  it("the closed card in the chat says that a new draft or the same card can follow", () => {
     // Mutation: promise a new draft again → red. The model may draw none.
+    // Fix round 6, the verifier's P3-2: the card that came back sits under
+    // this one. Mutation: drop "or the same card can come back" → red.
     const cards = read("components/email/EmailToolCards.tsx");
-    expect(cards).toContain("A new draft can follow.");
+    expect(cards).toContain("A new draft can follow, or the same card can come back.");
     expect(cards).not.toContain("A new draft follows.");
   });
 });
@@ -946,7 +949,8 @@ describe("fix round 5: the card comes back when the revise did not run", () => {
   });
 
   it("a replay of the first ask never reopens it, and an answered card stays closed", () => {
-    // Mutation: reopen without the flag, or reopen a card with no slot → red.
+    // Mutation: reopen without the flag → red. Fix round 6: show any card
+    // with no slot again, answered or not → red.
     expect(run([{ type: "requested", value: mailCard(OLD) }], slotted).cards[0].redraft).toBe("updating");
     const back = run([{ type: "requested", value: mailCard(OLD, again) }], slotted);
     const answered = run([{ type: "answering", key: OLD }, { type: "answered", key: OLD }], back);
@@ -964,12 +968,130 @@ describe("fix round 5: the card comes back when the revise did not run", () => {
       savedEdits: { subject: "Rates", body: "My text.", ticks: toggleTick(startTicks(replyFromEvent(FORM, OLD)!), true, GEO), fileTicks: [] },
     }));
     expect(html).toContain(REOPENED_LINE);
-    expect(html).toContain('data-redraft-reopened=""');
+    expect(html).toContain('data-redraft-reopened="kept"');
     expect(html).toContain("My text.");
     const box = html.split("<").find((t) => t.startsWith("input") && t.includes(`aria-label="Send to ${GEO}"`)) ?? "";
     expect(box).not.toBe("");
     expect(box).not.toContain('checked=""');
     expect(REOPENED_LINE).not.toContain("Jev");
+  });
+});
+
+describe("fix round 6: the card that came back says only what is true", () => {
+  const GEO = "geo@acme.test";
+  const again = { ...FORM, reopened: true };
+  const noop = () => {};
+  const edited = { subject: "Rates", body: "My text.", ticks: toggleTick(startTicks(replyFromEvent(FORM, OLD)!), true, GEO), fileTicks: [] };
+  const drawn = (state: ConfirmationQueueState, edits: ReturnType<typeof liveEdits>) => {
+    const card = state.cards.find((c) => c.key === OLD)!;
+    return renderToStaticMarkup(createElement(NewMailCardForm, {
+      form: card.reply!, onAnswer: noop, onDiscard: noop, armed: true,
+      savedEdits: edits.get(OLD),
+    }));
+  };
+
+  it("a new mount of the chat draws it with no kept edits, so it asks the member to check it", () => {
+    // The review's P2 of fix round 5, with its remount plan. The card log
+    // draws the card again in a fresh queue, and the chat keeps no edit.
+    // Mutation: show the kept line on each reopened form → red.
+    const log = [
+      { name: "confirmation_requested", value: mailCard(OLD) },
+      { name: CONFIRMATION_RESOLVED, value: { request_id: OLD, answer: REVISED_ANSWER } },
+      { name: "confirmation_requested", value: mailCard(OLD, again) },
+    ];
+    const plan = planCardRedraw(log);
+    expect(plan.map((c) => [c.requestId, c.waiting])).toEqual([[OLD, true]]);
+    const state = run(plan.map((c) => ({ type: "requested" as const, value: c.value })));
+    const edits = liveEdits(NO_EDITS, state);
+    expect(edits.size).toBe(0);
+    const html = drawn(state, edits);
+    expect(html).toContain(REOPENED_CHECK_LINE);
+    expect(html).not.toContain("Your edits are still on this card.");
+    expect(html).toContain('data-redraft-reopened="check"');
+    // A chat switch drops the edits too, so the card asks the same.
+    const open = run([{ type: "requested", value: mailCard(OLD) }]);
+    const switched = liveEdits(formEditsReducer(NO_EDITS, { key: OLD, value: edited }), run([{ type: "reset" }], open));
+    expect(drawn(run([{ type: "requested", value: mailCard(OLD, again) }]), switched)).toContain(REOPENED_CHECK_LINE);
+    expect(REOPENED_CHECK_LINE).not.toContain("Jev");
+  });
+
+  it("the same mount draws it with the kept edits, so it says they are on it", () => {
+    // Mutation: show the check line on each reopened form → red.
+    const back = run([
+      { type: "requested", value: mailCard(OLD) },
+      { type: "resolved", requestId: OLD, answer: REVISED_ANSWER },
+      { type: "requested", value: mailCard(OLD, again) },
+    ]);
+    const edits = liveEdits(formEditsReducer(NO_EDITS, { key: OLD, value: edited }), back);
+    expect(edits.get(OLD)).toBe(edited);
+    const html = drawn(back, edits);
+    expect(html).toContain(REOPENED_LINE);
+    expect(html).not.toContain(REOPENED_CHECK_LINE);
+    expect(html).toContain('data-redraft-reopened="kept"');
+    expect(html).toContain("My text.");
+    // The edits of a form that itself started bare keep the check line, as
+    // after a change of tab. Mutation: read only that edits exist → red.
+    const bare = liveEdits(formEditsReducer(NO_EDITS, { key: OLD, value: { ...edited, startedBare: true } }), back);
+    expect(drawn(back, bare)).toContain(REOPENED_CHECK_LINE);
+  });
+
+  it("a card that closed while its Send was in flight shows again as a new card", () => {
+    // The review's P3 of fix round 5 (`round5b.test.ts`). The steer won the
+    // race, so no slot waits, and the tool waits on the card. Mutation: drop
+    // the path of a card with no slot → red.
+    const sent = run([
+      { type: "requested", value: mailCard(OLD) },
+      { type: "answering", key: OLD, label: "Email to kim@contoso.test" },
+      { type: "resolved", requestId: OLD, answer: REVISED_ANSWER },
+      { type: "dropped", key: OLD },
+    ]);
+    expect(sent.cards).toEqual([]);
+    const back = run([{ type: "requested", value: mailCard(OLD, again) }], sent);
+    expect(back.cards.map((c) => [c.key, c.redraft, c.reply?.reopened])).toEqual([[OLD, undefined, true]]);
+    expect(back.resolved.has(OLD)).toBe(false);
+    // Its edits went with the Send, so it asks the member to check it.
+    expect(drawn(back, liveEdits(NO_EDITS, back))).toContain(REOPENED_CHECK_LINE);
+    // A replay of the same ask keeps one card, and an answer closes it for good.
+    expect(run([{ type: "requested", value: mailCard(OLD, again) }], back).cards).toHaveLength(1);
+    const answered = run([{ type: "answering", key: OLD }, { type: "answered", key: OLD }], back);
+    expect(run([{ type: "requested", value: mailCard(OLD, again) }], answered).cards).toEqual([]);
+  });
+
+  it("a card that the member answered never shows again, even after a close by a chat message", () => {
+    // The server took the Send, then a late REVISED close came. Mutation:
+    // keep the key after the answer → red.
+    const taken = run([
+      { type: "requested", value: mailCard(OLD) },
+      { type: "answering", key: OLD },
+      { type: "resolved", requestId: OLD, answer: REVISED_ANSWER },
+      { type: "answered", key: OLD },
+    ]);
+    expect(run([{ type: "requested", value: mailCard(OLD, again) }], taken).cards).toEqual([]);
+    // A card of another kind, or a first ask with no flag, never reopens.
+    const closedTask = run([{ type: "requested", value: taskCard }, { type: "resolved", requestId: TASK, answer: REVISED_ANSWER }]);
+    expect(run([{ type: "requested", value: taskCard }], closedTask).cards).toEqual([]);
+    const inFlight = run([{ type: "requested", value: mailCard(OLD) }, { type: "answering", key: OLD }, { type: "resolved", requestId: OLD, answer: REVISED_ANSWER }]);
+    expect(run([{ type: "requested", value: mailCard(OLD) }], inFlight).cards).toEqual([]);
+  });
+
+  it("only a slot takes the reopen path: a live card reads the ask as a replay and keeps its Changed line", () => {
+    // The verifier's P3-1 of fix round 5. Draft 2 is live, with the "Changed:"
+    // base from Draft 1, and a `reopened` ask of its key arrives (the close
+    // was lost in a cut stream). It is a replay: Draft 2 keeps its `before`.
+    // Mutation: drop `c.redraft !== undefined` from the slot check → red.
+    const DRAFT2 = { ...FORM, body: "Hi Kim,\n\nShorter.", revises: OLD, draft: 2 };
+    const live = run([
+      { type: "requested", value: mailCard(OLD) },
+      { type: "resolved", requestId: OLD, answer: REVISED_ANSWER },
+      { type: "requested", value: mailCard(NEW, DRAFT2) },
+    ]);
+    expect(live.cards.map((c) => [c.key, c.redraft])).toEqual([[NEW, undefined]]);
+    const before = live.cards[0].before;
+    expect(before).toBeTruthy();
+    const replayed = run([{ type: "requested", value: mailCard(NEW, { ...DRAFT2, reopened: true }) }], live);
+    expect(replayed.cards.map((c) => c.key)).toEqual([NEW]);
+    expect(replayed.cards[0].before).toBe(before);
+    expect(replayed.cards[0].reply?.reopened).toBe(true);
   });
 });
 

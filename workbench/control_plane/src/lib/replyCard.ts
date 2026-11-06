@@ -734,6 +734,12 @@ export interface NewMailEdits {
   body: string;
   ticks: ReplyTicks;
   fileTicks: string[];
+  /**
+   * §18.11 fix round 6: the form of a card that came back started with no
+   * kept edits. A later mount of it, as after a change of tab, still asks
+   * the member to check the people and the text.
+   */
+  startedBare?: true;
 }
 
 /** True when the people the member left ticked differ from the card's start. */

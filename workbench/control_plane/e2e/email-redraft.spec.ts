@@ -524,6 +524,9 @@ test.describe("a redraft through the chat keeps the member's edits", () => {
     // The card is back in place, with the member's text and Geo still unticked.
     await expect(page.locator("[data-redraft-slot]")).toHaveCount(0);
     await expect(page.locator("[data-redraft-reopened]")).toContainText("did not reach the assistant");
+    // Fix round 6: the form started from the kept edits, so it says so.
+    await expect(page.locator("[data-redraft-reopened]")).toHaveAttribute("data-redraft-reopened", "kept");
+    await expect(page.locator("[data-redraft-reopened]")).toContainText("Your edits are still on this card.");
     await expect(text).toHaveValue(EDITED);
     await expect(geoOf(page)).not.toBeChecked();
     // The next message is a steer again, and it carries the edits.
@@ -591,6 +594,29 @@ test.describe("a redraft through the chat keeps the member's edits", () => {
     await page.waitForTimeout(800);
     await expect(text).toHaveValue(EDITED);
     await expect(geoOf(page)).not.toBeChecked();
+  });
+
+  test("a card that came back with no kept edits asks the member to check it, after a tab flip too", async ({ page }) => {
+    // The review's P2 of fix round 5. A new mount of the chat keeps no edits,
+    // and its card log draws the card that came back from the server's form.
+    // Mutation: show the kept line on each reopened form, or drop
+    // `startedBare` from the form's report → red.
+    await openCard(page, [stubCard(OLD, `Email to ${KIM}`, form(FIRST, { reopened: true })), bobWithGeo()], []);
+    const line = page.locator("[data-redraft-reopened]");
+    await expect(line).toHaveAttribute("data-redraft-reopened", "check");
+    await expect(line).toContainText("Check the people and the text before you send.");
+    await expect(line).not.toContainText("Your edits are still on this card");
+    await expect(geoOf(page)).toBeChecked();
+    // The member edits, flips to Bob and back. The edits stay, and so does the line.
+    const text = page.getByRole("textbox", { name: "Email text" });
+    await text.fill(EDITED);
+    await geoOf(page).uncheck();
+    await page.getByRole("tab", { name: /Bob/ }).click();
+    await expect(text).toHaveValue(BOB_TEXT);
+    await page.getByRole("tab", { name: /Kim/ }).click();
+    await expect(text).toHaveValue(EDITED);
+    await expect(geoOf(page)).not.toBeChecked();
+    await expect(line).toHaveAttribute("data-redraft-reopened", "check");
   });
 
   test("a plain message at rest keeps the edits on the card", async ({ page }) => {

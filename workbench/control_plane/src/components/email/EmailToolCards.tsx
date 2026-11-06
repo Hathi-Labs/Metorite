@@ -2321,8 +2321,11 @@ const NO_ACTION_META: Record<NoAction, { icon: string; label: string }> = {
 };
 
 /** The words of a closed card that a chat message revised. The result itself
- *  is the model's instruction, so the member never reads it. */
-export const REVISED_NOTE = "You wrote in the chat, so this card closed. Nothing was sent. A new draft can follow.";
+ *  is the model's instruction, so the member never reads it. Fix round 6:
+ *  when the revise did not run, the same card comes back under it, so the
+ *  words name that case too. */
+export const REVISED_NOTE =
+  "You wrote in the chat, so this card closed. Nothing was sent. A new draft can follow, or the same card can come back.";
 
 function NoActionCard({ event: e, kind }: { event: ToolEvent; kind: NoAction }) {
   const meta = NO_ACTION_META[kind];

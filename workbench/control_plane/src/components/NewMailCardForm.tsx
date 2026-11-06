@@ -38,7 +38,7 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
-import { CHANGED_LEAD, REOPENED_LINE, cardDraftOf, changedText, changesOf, draftLabel, keptOutOf, keptOutText, linePieces, type CardDraft, type CardText, type Changes, type PeopleBefore } from "@/lib/redraftCard";
+import { CHANGED_LEAD, REOPENED_CHECK_LINE, REOPENED_LINE, cardDraftOf, changedText, changesOf, draftLabel, keptOutOf, keptOutText, linePieces, type CardDraft, type CardText, type Changes, type PeopleBefore } from "@/lib/redraftCard";
 import {
   leftOutText,
   lineCount,
@@ -226,11 +226,17 @@ export default function NewMailCardForm({
   const [ticks, setTicks] = useState<ReplyTicks>(() => savedEdits?.ticks ?? startTicks(form));
   // The file rows of a held new mail (fix round 1): a ticked file goes.
   const [fileTicks, setFileTicks] = useState<string[]>(() => savedEdits?.fileTicks ?? startFileTicks(form));
+  // Fix round 6: did this form start from the kept edits? Read once, at the
+  // mount: a later `savedEdits` is this form's own report. A chat switch or a
+  // new mount of the chat keeps no edits, so a card that came back then asks
+  // the member to check it. Its report says so, so a change of tab asks too.
+  const [fromKept] = useState(() => savedEdits !== undefined && !savedEdits.startedBare);
+  const bare = !!form.reopened && !fromKept;
   const keepEdits = useRef(onEdits);
   useEffect(() => { keepEdits.current = onEdits; }, [onEdits]);
   useEffect(() => {
-    keepEdits.current?.({ subject, body, ticks, fileTicks });
-  }, [subject, body, ticks, fileTicks]);
+    keepEdits.current?.({ subject, body, ticks, fileTicks, ...(bare ? { startedBare: true as const } : {}) });
+  }, [subject, body, ticks, fileTicks, bare]);
   const box = useRef<HTMLTextAreaElement>(null);
   // §18.11 step 1: the member's version after each edit, for the next chat
   // message. A ref holds the callback, so a new callback runs no report.
@@ -289,8 +295,8 @@ export default function NewMailCardForm({
         {detail && <p className="mt-0.5 break-words text-[11px] text-muted-foreground">{detail}</p>}
         {changes && <ChangedLine changes={changes} />}
         {form.reopened && (
-          <p className="break-words text-[11px] leading-relaxed text-foreground" data-redraft-reopened="" role="status">
-            {REOPENED_LINE}
+          <p className="break-words text-[11px] leading-relaxed text-foreground" data-redraft-reopened={fromKept ? "kept" : "check"} role="status">
+            {fromKept ? REOPENED_LINE : REOPENED_CHECK_LINE}
           </p>
         )}
         <KeptOutLine names={keptOutOf(form)} />

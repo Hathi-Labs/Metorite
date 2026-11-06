@@ -67,9 +67,17 @@ export const UPDATING_LINE = "Updating the draft…";
 /**
  * The line of a card that came back (fix round 5): the revise did not run,
  * so the member's request did not reach the assistant. The edits stay.
+ * Fix round 6: only a form that started from the kept edits says so.
  */
 export const REOPENED_LINE =
   "Your request in the chat did not reach the assistant. Your edits are still on this card. Ask again in the chat, or press Send.";
+/**
+ * The line of a card that came back with no kept edits (fix round 6), as
+ * after a chat switch or a new mount of the chat. The card starts from the
+ * server's form, so the member checks it before Send.
+ */
+export const REOPENED_CHECK_LINE =
+  "Your request in the chat did not reach the assistant. Check the people and the text before you send. Your earlier edits may not be on this card.";
 /** The words of the slot when the run ended with no new card. */
 export const UNCHANGED_LINE = "The draft did not change.";
 /** How long "The draft did not change." shows before the slot closes. */

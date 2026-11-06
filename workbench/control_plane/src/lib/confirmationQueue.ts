@@ -349,6 +349,13 @@ export interface ConfirmationQueueState {
   errors: ReadonlyMap<string, string>;
   /** One line for each answered card, oldest first (UXD-3). */
   receipts: readonly ConfirmationReceipt[];
+  /**
+   * §18.11 fix round 6: the new-mail cards that a chat message closed while
+   * they had no slot here, as when a Send was in flight. The member did not
+   * answer them in this tab. A `reopened` ask for one shows it again as a new
+   * card, so the tool never waits on a card that nobody sees.
+   */
+  reopenable?: ReadonlySet<string>;
 }
 
 export const EMPTY_CONFIRMATIONS: ConfirmationQueueState = {
@@ -357,6 +364,7 @@ export const EMPTY_CONFIRMATIONS: ConfirmationQueueState = {
   answering: new Set(),
   errors: new Map(),
   receipts: [],
+  reopenable: new Set(),
 };
 
 /** The line of a receipt, in plain words. */
@@ -531,14 +539,30 @@ export function confirmationReducer(
       if (!card) return state;
       // §18.11 fix round 5: the SAME card, shown again because the revise of a
       // chat message did not run. It takes its slot back, in place, and the
-      // chat keeps the member's edits by its key. Only a slot reopens: a
-      // replay of a card that was answered stays closed.
+      // chat keeps the member's edits by its key. Only a slot reopens. A live
+      // card of that key reads it as a replay, below, and keeps its `before`.
+      const reopened = !!(card.reply && isNewMail(card.reply) && card.reply.reopened);
       const was = state.cards.findIndex((c) => c.key === card.key && c.redraft !== undefined);
-      if (was >= 0 && card.reply && isNewMail(card.reply) && card.reply.reopened) {
+      if (was >= 0 && reopened) {
         const slot = state.cards[was];
         const cards = state.cards.slice();
         cards[was] = { ...card, ...(slot.sent ? { sent: slot.sent } : {}) };
         return { ...state, cards, resolved: withRemoved(state.resolved, card.key) };
+      }
+      // Fix round 6: no card of that key is here, because the card closed
+      // while a Send was in flight. The member did not answer it in this tab,
+      // so it shows again as a new card. A card that the member answered
+      // stays closed.
+      if (reopened && state.reopenable?.has(card.key) && !state.cards.some((c) => c.key === card.key)) {
+        return {
+          ...state,
+          cards: [...state.cards, card],
+          resolved: withRemoved(state.resolved, card.key),
+          answering: withRemoved(state.answering, card.key),
+          reopenable: withRemoved(state.reopenable, card.key),
+          receipts: settleReceipt(state.receipts, card.key, (r) =>
+            r.kind === "applying" || r.kind === "closed" ? null : r),
+        };
       }
       if (state.resolved.has(card.key) || state.answering.has(card.key)) return state;
       const at = state.cards.findIndex((c) => c.key === card.key);
@@ -602,6 +626,11 @@ export function confirmationReducer(
         errors: withoutError(state.errors, key),
         // The server closed it. An answer in flight keeps "Applying" until
         // its own POST says what became of it: the close can be a timeout.
+        // Fix round 6: a chat message closed a card with no slot here, so a
+        // `reopened` ask for it may follow.
+        ...(action.answer === REVISED_ANSWER && !shown
+          ? { reopenable: withAdded(state.reopenable ?? new Set(), key) }
+          : {}),
       };
     }
     case "answering": {
@@ -638,6 +667,8 @@ export function confirmationReducer(
         resolved: withAdded(state.resolved, action.key),
         answering: withRemoved(state.answering, action.key),
         receipts: settleReceipt(state.receipts, action.key, (r) => ({ ...r, kind: r.intent, undo: undefined })),
+        // The member answered it, so a `reopened` ask never shows it again.
+        ...(state.reopenable?.has(action.key) ? { reopenable: withRemoved(state.reopenable, action.key) } : {}),
       };
     case "dropped":
       return {
