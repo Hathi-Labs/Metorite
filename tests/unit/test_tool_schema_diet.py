@@ -135,7 +135,8 @@ CALL_CONTRACTS: dict[str, dict[str, object]] = {
                           'options': 'string', 'question': 'string'},
                'required': ['context', 'question']},
     'emit_generative_ui': {'params': {'ui': 'string'}, 'required': ['ui']},
-    'fetch_page': {'params': {'max_chars': 'integer', 'url': 'string'},
+    # WEB-7: + render (a boolean, optional), so no call breaks.
+    'fetch_page': {'params': {'max_chars': 'integer', 'render': 'boolean', 'url': 'string'},
                    'required': ['url']},
     'get_errors': {'params': {'filePaths': 'string'}, 'required': []},
     'get_workflow_run': {'params': {'run_id': 'string'},
@@ -250,7 +251,7 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
     # The tool returns them on demand (write_artifact.genui_guide), and the
     # docstring keeps the names. Measured 641.
     "emit_generative_ui": 700,
-    "fetch_page": 270,
+    "fetch_page": 310,  # WEB-7: + render (measured 233 -> 273, +40)
     "get_errors": 170,
     "list_integrations": 190,
     "load_artifact_kit": 430,
@@ -281,7 +282,8 @@ CORE_SCHEMA_CEILINGS: dict[str, int] = {
 #: 2026-10-15, agent reads page part 2: recall_notes gained an `offset`
 #: (193 -> 215, +22), and paid for it itself. Its worked example left the
 #: docstring, so it measured 180, and the floor 6,693 -> 6,680.
-CORE_SCHEMA_TOTAL_CEILING = 6_740  # WEB-4 added `source` to web_search (+28)
+#: WEB-4 added `source` to web_search (+28).
+CORE_SCHEMA_TOTAL_CEILING = 6_780  # WEB-7: + render on fetch_page (+40)
 
 
 def _tools_by_name() -> dict[str, object]:

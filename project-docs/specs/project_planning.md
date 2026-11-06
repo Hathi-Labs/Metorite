@@ -168,19 +168,25 @@ A delete stays a single guarded act (class C). No batch tool deletes.
 
 **The reach rule (fix round 1, 2026-11-03).** Two Projects packs fill the room of a request. The core and `projects-plan` make 103 tools, and no third pack fits. So the old rule, which needed EVERY other pack to fit, almost never reached the owner. Two rules replace it. They bind only an owner of `SPECIALIST_STAYS_UNTIL_REACHED`.
 
-1. **Reach.** The Projects owner is reached when each of its packs is allowed and ONE of them fits. Only a pack of `REACH_MIN_TOOLS` (4) tools or more counts (fix round 4). A smaller pack cannot carry a work request. Each pack stays on offer. A load that does not fit either frees a spare sticky pack (RX-1) or fails on the cap. That failure opens the hand-off (`via_failed`, `LOAD_NO_PATH`).
+1. **Reach.** The Projects owner is reached when each of its packs is allowed and ONE of them fits. Only a pack of `REACH_MIN_TOOLS` (4) tools or more counts (fix round 4). A smaller pack cannot carry a work request. Each pack stays on offer. A load that does not fit either frees a spare pack (RX-1) or fails on the cap. That failure opens the hand-off (`via_failed`, `LOAD_NO_PATH`).
+
+   **The reach counts a spare pack as free (task 1747, 2026-11-06).** A spare pack is one that a load can move out (`PackRun.spare`). So two Projects packs that fill the request still reach the owner, when a load can move one out. The trade: the specialist and the route line leave on a promise. When the promise breaks in the turn, the load refuses, and the hand-off opens (`via_failed`, `LOAD_NO_PATH`). This reverses the RX-1 note "spare widens the offer only", for this owner only.
 2. **Step aside.** The step-aside runs after the cap (fix round 2, 2026-11-04). While two or more Projects packs keep the owner unreached, packs step aside in this order (fix round 3):
    1. A sticky pack of any owner that the member's words in this turn do not name. They go in the order of the cap: the least recently used pack first.
    2. The core pack.
    3. A sticky pack that the words name, or a new pack, of the Projects owner. The last one goes first.
 
-   So a sticky pack that the member names again stays longer than the core pack. An old `crm-records` leaves before a Projects pack that the turn asked for.
+   **Task 1747 adds a second order.** With a spare pack, the plan reaches the owner. Then only a sticky pack that this turn does not name steps aside. The surface, a reference and the words each name a pack. So an old `crm-records` leaves. The core pack and a Projects pack that the turn asked for stay (D169 item 8). The order above applies only when no pack is spare.
 
    The steps stay only when the result reaches the owner within the caps. Else the turn keeps the packs that the cap left.
 
-   **The switch.** The cap reads the member's words only for an org that `HELD_CARD_WRITES_ORGS` names (RX-1). For any other org, the cap moves the least recently used sticky pack out first, also when the words name it. The step-aside reads the words for each org.
+   **A pack that the last turn used stays (task 1747, 2026-11-06).** A tool of such a pack ran, or the model loaded it, so the model's history shows its tools. In production the step-aside moved such packs out at 79 and 101 tools. The next tool call then answered 'Function not found'. A pack that was idle for longer can still step aside. The context of the turn names each pack that left (`tool_packs.left_line`). Fence: `tests/unit/test_pack_turn_keeps_used_packs.py`.
 
-   An example: the reminders pack (turn 13) and the plan pack (turn 19) are sticky, and the member says "remind me" on the Projects page. With the switch on, the cap moves the plan pack out, and the reminders and core packs stay (99 tools). With the switch off, the cap moves the reminders pack out. The plan and core packs then leave no room for a work pack. So the plan pack steps aside, and the core pack stays (80 tools).
+   **With no spare pack, the order of fix round 3 applies (task 1747, fix round 2).** It covers each org that `HELD_CARD_WRITES_ORGS` does not name. Such an org keeps its reach (D169 item 13). Production names every org (`*`), so this means a self-host or a new box. It also covers a turn in which no held pack is spare. Each one came by the surface or a reference, or is sticky and named again. The order keeps one guard: a pack that the last turn used never steps aside. When each Projects pack is such a pack, the owner stays unreached.
+
+   **The switch.** The cap reads the member's words only for an org that `HELD_CARD_WRITES_ORGS` names (RX-1). For any other org, the cap moves the least recently used sticky pack out first. It does so also when the words name it. The step-aside reads the surface and the words for each org.
+
+   An example: the reminders pack (turn 13) and the plan pack (turn 19) are sticky. In turn 20 the member says "remind me" on the Projects page. With the switch on, the cap moves the plan pack out, and the reminders and core packs stay (99 tools). With the switch off, the cap moves the reminders pack out. No pack is spare, so the order of fix round 3 applies. The plan pack ran in the last turn, so it stays, and the core pack steps aside (81 tools).
 
    **Since ALN-4.** `projects-authority` holds 3 tools, and it is on wherever the core pack is on. It does not count in the reach test, because it holds fewer than `REACH_MIN_TOOLS` tools (fix round 4). Before fix round 4 it kept the owner reached up to 107 tools while no work pack fitted. Then a bulk load beside the core and plan packs refused with `LOAD_NO_PATH`, and the chat handed off one round later.
 
@@ -193,6 +199,7 @@ These tests changed because their premise changed:
 - Fix round 2: `test_pack_room.py`. The reminders pack holds 19 tools, so the highest base of the tool-cap case is 91 (110 − 19). Two cases pin the new label. The core pack on the Projects page with three sticky packs stays, and `crm-records` steps aside (fix round 3). The real-run load at the pack cap seeds ONE Projects pack. Two Projects packs and `crm-records` leave no room for a work pack. So one Projects pack steps aside, and the run never reaches the pack cap.
 - Fix round 2: `evals/trajectories/test_held_card_write_trajectory.py`. In a held chat, the reminders pack drops `delete_area` and `rename_area` too. They are class C, and they moved here from `projects-structure`.
 - Fix rounds 3 and 4: `test_projects_packs.py`. Fix round 3 pinned the order of rule 2. It also moved the compound-word, capacity, burndown and case G pins, because the authority pack counted for reach. Fix round 4 restores their round-2 shapes at the real base.
+- Task 1747: `test_projects_packs.py` changed the compound-word, capacity, burndown, sprint and step-aside pins. Two named packs now stay, and a spare pack reaches the owner. `test_pack_room.py` changed the pin of "spare widens the offer only". `test_loader_replaces_handoff.py` changed the offer of `email-setup`.
 - Fix round 4: `test_projects_packs.py` has three new pins. The reach test ignores a pack under `REACH_MIN_TOOLS`. The trace "plan the sprint", then "now archive the done ones", keeps the chat in place with no `LOAD_NO_PATH`. A cleanup of finished tasks names the bulk pack.
 
 The rule text changes in `tool_packs.py`. The core rules (about :421 to :431) and `_PROJECTS_PLAN_RULES` (:440 to :460) change. The structure rules (:492 to :500), `_PROJECTS_STRUCTURE_WORDS` (:611 to :615) and the plan words (:583 to :588) change. The `when` lines of plan, structure and reminders change. The new pack needs a `Pack` and a `SKILL_FAMILIES` entry with its `owner` and `replaces_core`. The rules-length cap of the test is 3500 characters, and the core rules hold 3470.
@@ -454,3 +461,4 @@ The rule text of §3.1 is advisory until PJP-11's scripted turn passes.
 ## 12. Change log
 
 - 2026-11-02 — PJP-0. The owner reported four faults from a morning session and asked for planning methods. The agent read the production journal and the database, and wrote this spec. The owner answered four questions in chat, recorded as D168.
+- 2026-11-06 — Task 1747, in review. The step-aside of §3.3 rule 2 keeps a pack that this turn named and a pack that the last member turn used. The reach of §3.3 rule 1 counts a spare pack as free. `one_assistant_context.md` "As built, task 1747" holds the rest.

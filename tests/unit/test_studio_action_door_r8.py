@@ -1,6 +1,6 @@
-"""The action door of AI Studio on a real database (STU-B2a and STU-B2b-1, R8).
+"""The action door of AI Studio on a real database (STU-B2a, B2b-1, B2c-1 and B2c-2a, R8).
 
-Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a and B2b-1. Code:
+Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a, B2b-1, B2c-1 and B2c-2a. Code:
 ``gateway/routes/studio/invoke.py`` over ``gateway/studio/packages_store.py``
 (A3) and ``gateway/studio/objects_store.py`` (C1). The hermetic half is
 ``test_studio_action_door.py``.
@@ -269,7 +269,7 @@ def _manifest(mid: str, wf_a: str, wf_b: str) -> dict[str, Any]:
 
 def _user(org: str, email: str) -> UserContext:
     return UserContext(email=email, role=UserRole.EMPLOYEE,
-                       access=build_access(["feature:workflows"]), organization_id=org)
+                       access=build_access(["feature:studio"]), organization_id=org)
 
 
 class _Request:
@@ -279,11 +279,14 @@ class _Request:
 
     def __init__(self, payload: Any, on_read: Callable[[], Any] | None = None,
                  fails: bool = False, headers: dict[str, str] | None = None,
-                 path: str = "/studio/apps/x/actions/y") -> None:
+                 path: str = "/studio/apps/x/actions/y",
+                 query: dict[str, str] | None = None) -> None:
         self._raw = b"" if payload is None else json.dumps(payload).encode("utf-8")
         # The door reads the method, the path and the headers for the proof.
         self.method, self.headers = "POST", dict(headers or {})
         self.url = SimpleNamespace(path=path)
+        # A delegated call reads ``request_id`` from the query (B2c-2a).
+        self.query_params = dict(query or {})
         self._on_read = on_read
         self._fails = fails
         self.reads = 0
@@ -1144,7 +1147,7 @@ def test_r8_an_unset_key_makes_a_valid_looking_proof_403(dworld, monkeypatch) ->
 def test_r8_a_valid_proof_with_an_agent_scope_is_403(dworld) -> None:
     w = dworld
     user = UserContext(email=ANA, role=UserRole.EMPLOYEE, organization_id=w.a,
-                       access=build_access(["feature:workflows"]),
+                       access=build_access(["feature:studio"]),
                        agent=AgentScope(connection_id="c1"))
     count = _record_count(w, w.obj)
     status, (detail, _) = _run(
@@ -1363,3 +1366,607 @@ def test_r8_a_writer_after_the_busy_ones_is_admitted_again(dworld) -> None:
     w = dworld
     status, _got = _run(w, lambda: _dcall(w.a, ANA, w.pkg, "add", {"data": _DATA}))
     assert status == 200 and invoke._IN_FLIGHT == {}
+
+
+# ── ab. The delegated writes (STU-B2c-2a) ──────────────────────────────────
+#
+# Acceptance (spec row B2c-2a). A class B or C action of a delegated caller
+# runs only after the member's card. A refused card writes nothing. The card
+# is the approval store of MCP-P1b-1, and the door builds no second store.
+#
+# ab. A delegated create, update and delete (B, B, C) each answer 202 and
+#     write nothing. A resend before the approval is 409 and writes nothing.
+#     After the approval, the resend runs the STORED call and reads no byte of
+#     its own body. A second resend is 409 ``request_spent`` and writes nothing.
+# ac. A declined card writes nothing.
+# ad. A retry of the ask gives the first request. The stored call is the door
+#     path, the ``uses`` of the action and the body.
+# ae. A failed audit rolls the spend and the write back. The request stays
+#     approved, and a later resend runs once.
+# af. A refused write and a busy store roll the spend back.
+# ag. A call over 32 KiB is 413 ``payload_too_large`` and opens no card.
+# ah. A run with no person present gets 403 ``no_person_present``. It opens no
+#     card and spends no request. A read under the mark still runs.
+# ai. With ``APP_REQUESTS_ORGS`` off for the org, a delegated write is 403
+#     ``approval_required`` and opens no card.
+# aj. A request spends only on its own package, member and action, and only
+#     while the action names the same ``uses``.
+# ak. A wrong body, and an object that the package lacks, open no card.
+#
+# Fix round 1 (2026-11-06):
+#
+# al. A card opens only for a call that asks with ``ask=1``. A delegated write
+#     with no marker and no ``request_id`` gets 403 ``approval_required`` while
+#     the org flag is on. It opens no card and writes nothing. So an unsigned
+#     Save of the member's own screen never reads as saved.
+# am. An ask after a closed request (spent, declined or expired) opens a NEW
+#     request. A retry while the request is open gives the same one. Two asks
+#     at once after a close open one new request.
+# an. A resend of an expired request is 409 ``request_expired`` and writes
+#     nothing.
+#
+# **The mutations (R7).** Each was run on 2026-11-06 on a committed tree, and
+# restored with git. The two of the acceptance line:
+#
+# * D1. ``_run_spend``: skip the spend, and run the stored call of
+#   ``read_request``. 9 of the 15 tests below go red. Among them are each case
+#   of ``test_r8_a_delegated_write_runs_only_after_the_card_and_runs_the_stored_call``
+#   (add B, change B, remove C) and each case of
+#   ``test_r8_a_declined_card_writes_nothing`` (add B, remove C). In the
+#   hermetic half, the three cases of
+#   ``test_a_resend_reads_no_byte_and_spends_writes_and_audits_in_one_session``,
+#   ``test_a_refused_spend_writes_nothing_and_answers_its_reason`` and
+#   ``test_the_direct_path_is_the_only_door_write`` go red.
+# * D2. ``_run_spend``: spend in its own ``_tenant_session``, which commits
+#   before the write. 4 tests go red: each case of
+#   ``test_r8_a_failed_audit_rolls_the_spend_and_the_write_back`` (add B,
+#   remove C), ``test_r8_a_refused_write_rolls_the_spend_back`` (B) and
+#   ``test_r8_a_busy_store_rolls_the_spend_back_and_a_retry_runs`` (C). In the
+#   hermetic half, the three cases of
+#   ``test_a_resend_reads_no_byte_and_spends_writes_and_audits_in_one_session``
+#   go red.
+#
+# Fix round 1 ran both again on its head (2026-11-06), over the 22 delegated
+# tests of this file. D1: 11 go red, the cases above and also
+# ``test_r8_an_ask_after_a_run_opens_a_new_request`` and
+# ``test_r8_an_expired_request_is_409_writes_nothing_and_a_new_ask_opens_one``.
+# 5 hermetic tests go red. D2: the same 4 R8 tests and 3 hermetic tests go red.
+#
+# Fix round 2 ran both again on its head (2026-11-06), over the 24 delegated
+# tests of this file. D1: 12 go red, the 11 above and
+# ``test_r8_three_runs_of_one_change_each_open_a_new_request_at_a_constant_cost``.
+# D2: the same 4 tests go red. A typo in the ``_APPROVAL_ROUTES`` entry of the
+# decision route turns ``test_the_route_scan_reads_an_f_string`` red.
+
+from acb_common.no_person import no_person_scope  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+from gateway import app_requests  # noqa: E402
+
+
+@pytest.fixture
+def rworld(dworld, monkeypatch):
+    """The direct world, with the request store on for each org. The proof key
+    is set, and a call with no proof is delegated."""
+    monkeypatch.setattr(get_settings(), "app_requests_orgs", "*")
+    yield dworld
+    with dworld.p.admin_engine.begin() as c:
+        c.execute(text("DELETE FROM pm_agent_runs WHERE app = 'studio' "
+                       "AND member_email IN (:a, :b)"), {"a": ANA, "b": BEN})
+
+
+async def _delegated(org: str, email: str, pid: str, action: str, payload: Any,
+                     request_id: str | None = None, ask: bool = True) -> tuple[int, Any]:
+    """The real handler with NO proof, so the call is delegated. With no
+    *request_id*, the query holds the ask marker ``ask=1`` unless *ask* is
+    False (fix round 1). With *request_id*, the query names it, and the body
+    read FAILS: a resend that reads a byte of its body errors. Answers the
+    status and the answer, or the detail and the headers of a refusal."""
+    query = ({"ask": "1"} if ask else {}) if request_id is None else {"request_id": request_id}
+    request = _Request(payload, fails=request_id is not None,
+                       path=f"/studio/apps/{pid}/actions/{action}", query=query)
+    token = bind_tenant(org)
+    try:
+        found = await invoke.invoke_action(pid, action, request=request,
+                                           user=_user(org, email))
+    except HTTPException as exc:
+        return exc.status_code, (exc.detail, dict(exc.headers or {}))
+    finally:
+        release_tenant(token)
+    if isinstance(found, JSONResponse):
+        return found.status_code, json.loads(found.body)
+    return 200, found
+
+
+async def _decide(w: Any, rid: str, decision: str) -> None:
+    """Ana answers her card, through the one store of MCP-P1b-1."""
+    async with tenant_session(w.a) as db:
+        await app_requests.decide(db, org=w.a, member=ANA, request_id=rid,
+                                  decision=decision, idempotency_key=uuid.uuid4().hex)
+
+
+async def _request(w: Any, rid: str) -> dict[str, Any] | None:
+    async with tenant_session(w.a) as db:
+        return await app_requests.read_request(db, org=w.a, member=ANA, request_id=rid)
+
+
+async def _state(w: Any, rid: str) -> str | None:
+    found = await _request(w, rid)
+    return None if found is None else str(found["state"])
+
+
+def _studio_runs(w: Any) -> int:
+    with w.p.admin_engine.connect() as c:
+        return int(c.execute(text(
+            "SELECT count(*) FROM pm_agent_runs WHERE app = 'studio' "
+            "AND member_email IN (:a, :b)"), {"a": ANA, "b": BEN}).scalar_one())
+
+
+def _all_data(w: Any) -> str:
+    with w.p.admin_engine.connect() as c:
+        rows = c.execute(text(
+            "SELECT data FROM studio_records WHERE object_id = ANY(CAST(:o AS uuid[]))"),
+            {"o": [w.obj, w.obj2]}).all()
+    return json.dumps([r[0] for r in rows], default=str)
+
+
+def _bodies(w: Any) -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
+    """The body of the card, and a second body that the resend carries."""
+    return {
+        "add": ({"data": {**_DATA, "site": "Card site"}},
+                {"data": {**_DATA, "site": "Second body"}}),
+        "change": ({"id": w.rec, "data": {"notes": "Card note"}},
+                   {"id": w.rec, "data": {"notes": "Second body"}}),
+        "remove": ({"id": w.rec}, {"id": w.rec2}),
+    }
+
+
+@pytest.mark.parametrize("action,cls", [("add", "B"), ("change", "B"), ("remove", "C")])
+def test_r8_a_delegated_write_runs_only_after_the_card_and_runs_the_stored_call(
+        rworld, action, cls) -> None:
+    w = rworld
+    card, second = _bodies(w)[action]
+    count, before = _record_count(w, w.obj), _record_row(w, w.rec)
+
+    async def go() -> dict[str, Any]:
+        got: dict[str, Any] = {"asked": await _delegated(w.a, ANA, w.pkg, action, card)}
+        rid = got["asked"][1]["request_id"]
+        got["early"] = await _delegated(w.a, ANA, w.pkg, action, second, rid)
+        got["after_early"] = (_record_count(w, w.obj), _record_row(w, w.rec))
+        await _decide(w, rid, "approve")
+        got["approved"] = await _state(w, rid)
+        got["ran"] = await _delegated(w.a, ANA, w.pkg, action, second, rid)
+        got["after_ran"] = _record_count(w, w.obj)
+        got["again"] = await _delegated(w.a, ANA, w.pkg, action, second, rid)
+        got["final"] = await _state(w, rid)
+        return got
+
+    got = _run(w, go)
+    status, body = got["asked"]
+    assert status == 202 and set(body) == {"state", "request_id", "expires_at"}, got["asked"]
+    assert body["state"] == "awaiting"
+    rid = body["request_id"]
+    # Before the approval nothing changed.
+    assert got["early"][0] == 409 and got["early"][1][0]["code"] == "request_awaiting"
+    assert got["after_early"] == (count, before)
+    assert got["approved"] == "approved"
+    # After it, the STORED call ran, once.
+    status, ran = got["ran"]
+    assert status == 200, ran
+    if action == "add":
+        assert ran["record"]["data"]["site"] == "Card site"
+        assert got["after_ran"] == count + 1
+    elif action == "change":
+        assert ran["record"]["data"]["notes"] == "Card note"
+        assert _data_of(w, w.rec)["notes"] == "Card note"
+    else:
+        assert ran == {"deleted": True, "id": w.rec}
+        assert _record_row(w, w.rec) is None and _record_row(w, w.rec2) is not None
+    assert "Second body" not in _all_data(w)
+    assert got["again"][0] == 409 and got["again"][1][0]["code"] == "request_spent"
+    assert _record_count(w, w.obj) == got["after_ran"]
+    assert got["final"] == "done"
+    rows = _ran(w, w.pkg, action)
+    assert [(r["outcome"], r.get("reason"), r.get("request_id"), r["class"]) for r in rows] == [
+        ("asked", None, rid, cls), ("refused", "request_awaiting", rid, cls),
+        ("ran", None, rid, cls), ("refused", "request_spent", rid, cls)]
+    # Each row is of the bound org and of Ana, and holds no record data.
+    assert {(r[0], r[1]) for r in _audits(w, w.pkg)} == {(w.a, ANA)}
+    assert "Card" not in json.dumps(rows)
+
+
+@pytest.mark.parametrize("action", ["add", "remove"])
+def test_r8_a_declined_card_writes_nothing(rworld, action) -> None:
+    w = rworld
+    card, second = _bodies(w)[action]
+    count, before = _record_count(w, w.obj), _record_row(w, w.rec)
+
+    async def go() -> tuple[Any, Any]:
+        rid = (await _delegated(w.a, ANA, w.pkg, action, card))[1]["request_id"]
+        await _decide(w, rid, "decline")
+        return await _delegated(w.a, ANA, w.pkg, action, second, rid), await _state(w, rid)
+
+    (status, (detail, _)), state = _run(w, go)
+    assert (status, detail["code"], state) == (403, "request_declined", "declined")
+    assert (_record_count(w, w.obj), _record_row(w, w.rec)) == (count, before)
+    assert [r["outcome"] for r in _ran(w, w.pkg, action)] == ["asked", "refused"]
+
+
+def test_r8_a_retry_of_the_ask_gives_the_first_request(rworld) -> None:
+    w = rworld
+    card = {"id": w.rec, "data": {"notes": "Card note"}}
+
+    async def go() -> tuple[Any, Any, Any, Any]:
+        one = await _delegated(w.a, ANA, w.pkg, "change", card)
+        two = await _delegated(w.a, ANA, w.pkg, "change", card)
+        other = await _delegated(w.a, ANA, w.pkg, "change",
+                                 {"id": w.rec, "data": {"notes": "Another note"}})
+        return one, two, other, await _request(w, one[1]["request_id"])
+
+    one, two, other, stored = _run(w, go)
+    assert one[0] == two[0] == other[0] == 202
+    assert one[1]["request_id"] == two[1]["request_id"] != other[1]["request_id"]
+    assert _studio_runs(w) == 2
+    assert stored is not None
+    assert (stored["source"], stored["app"], stored["subject"], stored["op"], stored["class"]) == (
+        "studio", "studio", w.pkg, "change", "B")
+    assert stored["client_via"] == invoke.REQUEST_VIA
+    assert stored["call"] == {
+        "method": "POST", "template": invoke.DOOR_TEMPLATE,
+        "path": f"/studio/apps/{w.pkg}/actions/change",
+        "query": [["uses", "object:visit.update"]], "body": card, "if_match": None}
+    assert stored["card"]["title"] == "Change a record of visit."
+    assert stored["card"]["app_name"] == "Visits"
+    assert _record_row(w, w.rec) is not None and _data_of(w, w.rec) == _DATA
+
+
+@pytest.mark.parametrize("action", ["add", "remove"])
+def test_r8_a_failed_audit_rolls_the_spend_and_the_write_back(
+        rworld, monkeypatch, action) -> None:
+    """The audit statement fails for real after the write ran, so the one
+    transaction aborts. The spend goes with the write."""
+    w = rworld
+    card, _ = _bodies(w)[action]
+    count = _record_count(w, w.obj)
+    good = apps_common._APP_AUDIT_SQL
+
+    async def go() -> tuple[Any, Any, Any, Any]:
+        rid = (await _delegated(w.a, ANA, w.pkg, action, card))[1]["request_id"]
+        await _decide(w, rid, "approve")
+        monkeypatch.setattr(apps_common, "_APP_AUDIT_SQL",
+                            "INSERT INTO app_audit (no_such_column) VALUES (1)")
+        with pytest.raises(DBAPIError):
+            await _delegated(w.a, ANA, w.pkg, action, None, rid)
+        monkeypatch.setattr(apps_common, "_APP_AUDIT_SQL", good)
+        between = (await _state(w, rid), _record_count(w, w.obj), _record_row(w, w.rec))
+        ran = await _delegated(w.a, ANA, w.pkg, action, None, rid)
+        return between, ran, await _state(w, rid), _record_count(w, w.obj)
+
+    between, ran, final, after = _run(w, go)
+    assert between[0] == "approved", "the spend committed without its write"
+    assert between[1] == count and between[2] is not None
+    assert ran[0] == 200 and final == "done"
+    assert after == (count + 1 if action == "add" else count - 1)
+    assert [r["outcome"] for r in _ran(w, w.pkg, action)] == ["asked", "ran"]
+
+
+def test_r8_a_refused_write_rolls_the_spend_back(rworld) -> None:
+    """The store checks a field at the write, not at the ask. The refused write
+    keeps its audit row, and the request stays approved."""
+    w = rworld
+    count = _record_count(w, w.obj)
+
+    async def go() -> tuple[Any, Any]:
+        asked = await _delegated(w.a, ANA, w.pkg, "add", {"data": {"status": "no such option"}})
+        rid = asked[1]["request_id"]
+        await _decide(w, rid, "approve")
+        return await _delegated(w.a, ANA, w.pkg, "add", None, rid), await _state(w, rid)
+
+    (status, (detail, _)), state = _run(w, go)
+    assert (status, detail["code"]) == (422, "field_invalid")
+    assert detail["fieldErrors"][0]["field"] == "status"
+    assert state == "approved", "a write that did not run spent the request"
+    assert _record_count(w, w.obj) == count
+    rows = _ran(w, w.pkg, "add")
+    assert [(r["outcome"], r.get("reason")) for r in rows] == [
+        ("asked", None), ("refused", "field_invalid")]
+
+
+def test_r8_a_busy_store_rolls_the_spend_back_and_a_retry_runs(rworld) -> None:
+    w = rworld
+
+    async def ask() -> str:
+        rid = (await _delegated(w.a, ANA, w.pkg, "remove", {"id": w.rec}))[1]["request_id"]
+        await _decide(w, rid, "approve")
+        return str(rid)
+
+    rid = _run(w, ask)
+    lock = _hold_the_org_lock(w)
+    try:
+        busy = _run(w, lambda: _delegated(w.a, ANA, w.pkg, "remove", None, rid))
+    finally:
+        lock.rollback()
+        lock.close()
+    status, (detail, headers) = busy
+    assert (status, detail["code"], headers) == (503, "store_busy", {"Retry-After": "1"})
+    assert _run(w, lambda: _state(w, rid)) == "approved"
+    assert _record_row(w, w.rec) is not None
+    status, ran = _run(w, lambda: _delegated(w.a, ANA, w.pkg, "remove", None, rid))
+    assert (status, ran) == (200, {"deleted": True, "id": w.rec})
+    assert _run(w, lambda: _state(w, rid)) == "done" and invoke._IN_FLIGHT == {}
+
+
+def test_r8_a_call_over_32_kib_is_413_and_opens_no_card(rworld) -> None:
+    w = rworld
+    big = {"data": {**_DATA, "notes": "x" * (app_requests.MAX_CALL_BYTES + 1)}}
+    status, (detail, _) = _run(w, lambda: _delegated(w.a, ANA, w.pkg, "add", big))
+    assert (status, detail["code"]) == (413, "payload_too_large")
+    assert _studio_runs(w) == 0
+    assert [(r["outcome"], r["reason"]) for r in _ran(w, w.pkg, "add")] == [
+        ("refused", "payload_too_large")]
+
+
+def test_r8_a_run_with_no_person_present_opens_no_card_and_spends_none(rworld) -> None:
+    w = rworld
+
+    async def go() -> dict[str, Any]:
+        got: dict[str, Any] = {}
+        with no_person_scope():
+            got["ask"] = await _delegated(w.a, ANA, w.pkg, "add", {"data": _DATA})
+            got["read"] = await _delegated(w.a, ANA, w.pkg, "peek", {"id": w.rec})
+        got["runs"] = _studio_runs(w)
+        # A person asks and approves. A marked run then cannot spend it.
+        rid = (await _delegated(w.a, ANA, w.pkg, "remove", {"id": w.rec}))[1]["request_id"]
+        await _decide(w, rid, "approve")
+        with no_person_scope():
+            got["spend"] = await _delegated(w.a, ANA, w.pkg, "remove", None, rid)
+        got["state"] = await _state(w, rid)
+        return got
+
+    got = _run(w, go)
+    for key in ("ask", "spend"):
+        status, (detail, _) = got[key]
+        assert (status, detail["code"]) == (403, "no_person_present"), key
+    assert got["read"][0] == 200, "the mark binds the delegated writes only"
+    assert got["runs"] == 0 and got["state"] == "approved"
+    assert _record_row(w, w.rec) is not None
+    assert [r["reason"] for r in _ran(w, w.pkg, "add")] == ["no_person_present"]
+
+
+def test_r8_with_the_org_flag_off_a_delegated_write_is_403_and_opens_no_card(
+        rworld, monkeypatch) -> None:
+    w = rworld
+    monkeypatch.setattr(get_settings(), "app_requests_orgs", w.b)
+    before = _record_row(w, w.rec)
+
+    async def go() -> list[Any]:
+        bodies = _bodies(w)
+        out = [await _delegated(w.a, ANA, w.pkg, a, bodies[a][0])
+               for a in ("add", "change", "remove")]
+        # A request id in the query changes nothing while the org is dark.
+        out.append(await _delegated(w.a, ANA, w.pkg, "remove", {"id": w.rec},
+                                    str(uuid.uuid4())))
+        return out
+
+    for status, (detail, _) in _run(w, go):
+        assert (status, detail["code"]) == (403, "approval_required")
+    assert _studio_runs(w) == 0 and _record_row(w, w.rec) == before
+
+
+def test_r8_a_request_spends_only_on_its_own_package_member_and_action(rworld) -> None:
+    w = rworld
+    card = {"id": w.rec, "data": {"notes": "Card note"}}
+    before2, before_ben = _record_row(w, w.rec2), _record_row(w, w.rec_ben)
+
+    async def go() -> dict[str, Any]:
+        rid = (await _delegated(w.a, ANA, w.pkg, "change", card))[1]["request_id"]
+        await _decide(w, rid, "approve")
+        got: dict[str, Any] = {
+            "pkg2": await _delegated(w.a, ANA, w.pkg2, "change", None, rid),
+            "ben": await _delegated(w.a, BEN, w.pkg_ben, "change", None, rid),
+            "org_b": await _delegated(w.b, ANA, w.pkg_b, "change", None, rid),
+            "add": await _delegated(w.a, ANA, w.pkg, "add", None, rid),
+            "remove": await _delegated(w.a, ANA, w.pkg, "remove", None, rid),
+        }
+        # The owner points "change" at the delete of the object. The card
+        # named an update, so the request does not spend.
+        await _set_action(w, "change", "object:visit.delete")
+        got["uses"] = await _delegated(w.a, ANA, w.pkg, "change", None, rid)
+        got["between"] = await _state(w, rid)
+        await _set_action(w, "change", "object:visit.update")
+        got["ran"] = await _delegated(w.a, ANA, w.pkg, "change", None, rid)
+        return got
+
+    got = _run(w, go)
+    codes = {k: (got[k][0], got[k][1][0]["code"])
+             for k in ("pkg2", "ben", "org_b", "add", "remove", "uses")}
+    assert codes == {
+        "pkg2": (404, "request_not_found"), "ben": (404, "request_not_found"),
+        "org_b": (404, "request_not_found"), "add": (409, "request_mismatch"),
+        "remove": (409, "request_mismatch"), "uses": (409, "request_mismatch")}
+    assert got["between"] == "approved"
+    assert (_record_row(w, w.rec2), _record_row(w, w.rec_ben)) == (before2, before_ben)
+    assert got["ran"][0] == 200 and _data_of(w, w.rec)["notes"] == "Card note"
+
+
+def test_r8_a_wrong_body_or_a_missing_object_opens_no_card(rworld) -> None:
+    w = rworld
+
+    async def go() -> list[Any]:
+        return [await _delegated(w.a, ANA, w.pkg, "add", {"data": "not an object"}),
+                await _delegated(w.a, ANA, w.pkg, "remove", {"id": w.rec, "data": {}}),
+                await _delegated(w.a, ANA, w.pkg_empty, "add", {"data": _DATA})]
+
+    bad, extra, missing = _run(w, go)
+    assert (bad[0], bad[1][0]["code"]) == (422, "bad_input")
+    assert (extra[0], extra[1][0]["code"]) == (422, "bad_input")
+    assert (missing[0], missing[1][0]["code"]) == (404, "object_missing")
+    assert _studio_runs(w) == 0
+    assert _record_row(w, w.rec) is not None
+
+
+# ── al to an. Fix round 1 ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("action", ["add", "change", "remove"])
+def test_r8_a_write_with_no_ask_marker_opens_no_card_and_writes_nothing(rworld, action) -> None:
+    """The flag is on, and the call has no proof, no ``ask=1`` and no
+    ``request_id``: the unsigned Save of the member's own screen. It is 403
+    ``approval_required``, as before B2c-2a, and nothing changes."""
+    w = rworld
+    card, _ = _bodies(w)[action]
+    count, before = _record_count(w, w.obj), _record_row(w, w.rec)
+    status, (detail, _) = _run(w, lambda: _delegated(w.a, ANA, w.pkg, action, card, ask=False))
+    assert (status, detail["code"]) == (403, "approval_required")
+    assert _studio_runs(w) == 0
+    assert (_record_count(w, w.obj), _record_row(w, w.rec)) == (count, before)
+    # The same call with the marker asks.
+    status, body = _run(w, lambda: _delegated(w.a, ANA, w.pkg, action, card))
+    assert (status, body["state"]) == (202, "awaiting")
+    assert _studio_runs(w) == 1
+
+
+def test_r8_an_ask_after_a_run_opens_a_new_request(rworld) -> None:
+    w = rworld
+    card = {"id": w.rec, "data": {"notes": "Card note"}}
+
+    async def go() -> tuple[str, Any, str, Any]:
+        first = (await _delegated(w.a, ANA, w.pkg, "change", card))[1]["request_id"]
+        await _decide(w, first, "approve")
+        ran = await _delegated(w.a, ANA, w.pkg, "change", None, first)
+        again = await _delegated(w.a, ANA, w.pkg, "change", card)
+        retry = await _delegated(w.a, ANA, w.pkg, "change", card)
+        return first, ran, again[1]["request_id"], (again, retry)
+
+    first, ran, second, (again, retry) = _run(w, go)
+    assert ran[0] == 200
+    assert again[0] == 202 and again[1]["state"] == "awaiting"
+    assert second != first
+    # A retry while the new request waits gives that request again.
+    assert retry[0] == 202 and retry[1]["request_id"] == second
+    assert _studio_runs(w) == 2
+
+
+def test_r8_an_ask_after_a_decline_opens_a_new_request(rworld) -> None:
+    w = rworld
+    card = {"id": w.rec}
+
+    async def go() -> tuple[str, str, str]:
+        first = (await _delegated(w.a, ANA, w.pkg, "remove", card))[1]["request_id"]
+        same = (await _delegated(w.a, ANA, w.pkg, "remove", card))[1]["request_id"]
+        await _decide(w, first, "decline")
+        new = (await _delegated(w.a, ANA, w.pkg, "remove", card))[1]["request_id"]
+        return first, same, new
+
+    first, same, new = _run(w, go)
+    assert same == first, "a retry while the request waits gives the same request"
+    assert new != first
+    assert _studio_runs(w) == 2 and _record_row(w, w.rec) is not None
+
+
+def test_r8_two_asks_at_once_after_a_close_open_one_new_request(rworld) -> None:
+    w = rworld
+    card = {"id": w.rec}
+
+    async def go() -> tuple[str, list[Any]]:
+        first = (await _delegated(w.a, ANA, w.pkg, "remove", card))[1]["request_id"]
+        await _decide(w, first, "decline")
+        both = await asyncio.gather(_delegated(w.a, ANA, w.pkg, "remove", card),
+                                    _delegated(w.a, ANA, w.pkg, "remove", card))
+        return first, list(both)
+
+    first, both = _run(w, go)
+    assert [s for s, _ in both] == [202, 202]
+    ids = {b["request_id"] for _, b in both}
+    assert len(ids) == 1 and first not in ids
+    assert _studio_runs(w) == 2
+
+
+def test_r8_an_expired_request_is_409_writes_nothing_and_a_new_ask_opens_one(rworld) -> None:
+    w = rworld
+    card = {"id": w.rec}
+
+    async def go() -> tuple[str, Any, str]:
+        first = (await _delegated(w.a, ANA, w.pkg, "remove", card))[1]["request_id"]
+        await _decide(w, first, "approve")
+        with w.p.admin_engine.begin() as c:
+            c.execute(text(
+                "UPDATE pm_agent_run_activities SET content_metadata = jsonb_set("
+                " content_metadata, '{request,expires_at}',"
+                " to_jsonb(CAST(now() - interval '1 minute' AS text)))"
+                " WHERE id = CAST(:i AS uuid)"), {"i": first})
+        late = await _delegated(w.a, ANA, w.pkg, "remove", None, first)
+        new = (await _delegated(w.a, ANA, w.pkg, "remove", card))[1]["request_id"]
+        return first, late, new
+
+    first, late, new = _run(w, go)
+    status, (detail, _) = late
+    assert (status, detail["code"]) == (409, "request_expired")
+    assert _record_row(w, w.rec) is not None
+    assert new != first
+    reasons = [r.get("reason") for r in _ran(w, w.pkg, "remove")]
+    assert "request_expired" in reasons
+
+
+# ── ao. Fix round 2: one read, a constant cost ─────────────────────────────
+
+
+def test_r8_three_runs_of_one_change_each_open_a_new_request_at_a_constant_cost(
+        rworld) -> None:
+    """A checklist toggle, asked, approved and run three times in a row. Each
+    ask opens a new request with the same number of statements, so the cost
+    does not grow with the closed requests of the change."""
+    from acb_common.db import get_engine
+    from sqlalchemy import event
+
+    w = rworld
+    card = {"id": w.rec, "data": {"status": "done"}}
+    counts: list[int] = []
+    ids: list[str] = []
+
+    async def go() -> None:
+        engine = get_engine().sync_engine
+        seen: list[str] = []
+
+        def _count(conn: Any, cursor: Any, statement: str, *rest: Any) -> None:
+            seen.append(statement)
+
+        event.listen(engine, "before_cursor_execute", _count)
+        try:
+            for _ in range(3):
+                seen.clear()
+                status, body = await _delegated(w.a, ANA, w.pkg, "change", card)
+                assert status == 202 and body["state"] == "awaiting", body
+                counts.append(len(seen))
+                ids.append(body["request_id"])
+                await _decide(w, body["request_id"], "approve")
+                ran = await _delegated(w.a, ANA, w.pkg, "change", None, body["request_id"])
+                assert ran[0] == 200, ran
+        finally:
+            event.remove(engine, "before_cursor_execute", _count)
+
+    _run(w, go)
+    assert len(set(ids)) == 3
+    assert counts[0] == counts[1] == counts[2], counts
+    assert _studio_runs(w) == 3
+
+
+def test_r8_the_read_of_the_open_request_is_a_bounded_index_scan(rworld) -> None:
+    """With the plain scan off, the planner reads ``pm_agent_runs`` through
+    ``pm_agent_runs_app_member``, and the window of a live request on
+    ``created_at`` is part of the index condition. So the read never walks the
+    whole history of the member. ``clock_timestamp()`` is volatile and cannot
+    bound an index, so the window reads ``now()``."""
+    w = rworld
+    params = {"org": w.a, "me": ANA, "app": "studio",
+              "binding": f"session:{ANA}:studio:{w.pkg}", "digest": "0" * 64,
+              "window": app_requests.OPEN_WINDOW_SECONDS}
+    with w.p.admin_engine.begin() as c:
+        c.execute(text("SET LOCAL enable_seqscan = off"))
+        lines = [r[0] for r in c.execute(
+            text(f"EXPLAIN {app_requests._OPEN_OF_CHANGE_SQL}"), params)]
+    plan = "\n".join(lines)
+    assert "Seq Scan on pm_agent_runs" not in plan, plan
+    at = next(i for i, line in enumerate(lines) if "on pm_agent_runs r" in line)
+    assert "pm_agent_runs_app_member" in lines[at], plan
+    cond = lines[at + 1]
+    assert "Index Cond" in cond and "created_at >" in cond, plan

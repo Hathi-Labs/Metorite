@@ -150,7 +150,9 @@ def _visit(mid: str = "visits", fields: list[dict[str, Any]] | None = None,
         "studio": 1, "id": mid, "name": name, "purpose": "Log each install visit.",
         "objects": [{"name": "visit", "label": "Visit",
                      "fields": copy.deepcopy(FIELDS if fields is None else fields)}],
-        "actions": [{"id": "find", "uses": "object:visit.list"}],
+        "actions": [{"id": "find", "uses": "object:visit.list"},
+                    {"id": "peek", "uses": "object:visit.get"},
+                    {"id": "add", "uses": "object:visit.create"}],  # STU-BETA-2: complete
     }
 
 
