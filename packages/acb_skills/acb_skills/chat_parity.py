@@ -543,6 +543,11 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "chat",
         "Posts the hello once, on a member's first visit (BUD-1). The shell sends it, not the member.",
     ),
+    "POST /api/chat/sessions/{}/continue": (
+        "chat",
+        "The pill of a held chat carries the member's last typed words to a fresh chat (WT-2). "
+        "It is the chat's own move, and the member sends the text.",
+    ),
     "POST /api/chat/sessions/{}/compact": (
         "chat",
         "Folds the old turns of a thread into a summary. It is the chat's own context step.",
