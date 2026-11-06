@@ -1244,6 +1244,47 @@ SELECT DISTINCT ON (r.task_id) r.task_id, {AGENT_RUN_STATE_SQL} AS state,
 _AGENT_STATE_SQL = agent_state_sql("r.task_id = ANY(CAST(:ids AS uuid[]))")
 
 
+def answer_change_enabled() -> bool:
+    """The flag ``agent_answer_change_enabled`` (default OFF, SW-43). The
+    gateway side of the one reader in ``acb_auth.agent_oauth``."""
+    from acb_auth import agent_oauth
+
+    return agent_oauth.answer_change_enabled()
+
+
+def answer_changeable_sql(r: str, p: str) -> str:
+    """SW-43. The ONE text of "the member may still take this answer back",
+    over the run alias *r* and the answer alias *p*. The route and the runs
+    wire both read it. All of these hold: the run works (``in_progress``),
+    the answer is not withdrawn, no agent has read it (``content.read_at``),
+    and no agent activity of the run follows it (an agent write carries
+    ``actor_via``). The window closes at the first read or post."""
+    return (
+        f"({r}.status = 'in_progress'"
+        f" AND NOT ({p}.type = 'prompt' AND {p}.content ? 'withdrawn')"
+        f" AND NOT ({p}.content ? 'read_at')"
+        " AND NOT EXISTS (SELECT 1 FROM pm_agent_run_activities x"
+        f"                 WHERE x.run_id = {p}.run_id AND x.seq > {p}.seq"
+        "                   AND x.actor_via IS NOT NULL))"
+    )
+
+
+def live_answer_sql(where: str) -> str:
+    """SW-43. The newest answer of each run that *where* picks (a member
+    ``prompt`` with ``in_reply_to`` set, written by the run's own member),
+    with ``changeable``. The marker row
+    of a withdraw has no ``in_reply_to``, so it is never an answer."""
+    return (
+        "SELECT DISTINCT ON (p.run_id) p.id, p.seq, p.run_id, p.in_reply_to,"
+        f" {answer_changeable_sql('r', 'p')} AS changeable"
+        " FROM pm_agent_run_activities p"
+        " JOIN pm_agent_runs r ON r.id = p.run_id AND r.task_id IS NOT NULL"
+        " WHERE p.type = 'prompt' AND p.in_reply_to IS NOT NULL"
+        f" AND lower(p.actor) = lower(r.member_email) AND {where}"
+        " ORDER BY p.run_id, p.seq DESC"
+    )
+
+
 def agent_runs_enabled() -> bool:
     """The flag ``agent_runs_enabled`` (default OFF). The gateway side of the
     one reader, ``acb_auth.agent_oauth.runs_enabled``, which the edge reads

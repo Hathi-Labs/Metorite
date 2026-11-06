@@ -2421,13 +2421,16 @@ async def test_every_manifest_tool_is_now_built() -> None:
     # WS-55 MCP-G15: an outside agent records a decision that its member made
     # outside Metorite. The chat acts as the member, who answers on the task.
     mcp_g15 = {"record_outside_decision"}
+    # SW-43a: a member takes back an answer on the run card. The chat tool
+    # comes with slice SW-43c (spec agent_coordination.md §3.9).
+    sw_43 = {"withdraw_agent_answer"}
     # WS-55 EA-18a: the list of the questions that wait on a person. A read
     # tool for "what questions wait on me" is a later slice (spec §12.8, D109).
     ea_18a = {"agent_questions"}
     # WS-66 RM-3 built the seven reminder tools that RM-1 planned, so no
     # reminder tool is planned now.
     assert set(m.PLANNED) <= ({"my_areas"} | ea_12e | ea_6b | ea_6g | ea_13e
-                              | mcp_g15 | ea_18a), m.PLANNED
+                              | mcp_g15 | sw_43 | ea_18a), m.PLANNED
     assert not {t for t in m.PLANNED if "reminder" in t}, m.PLANNED
 
 

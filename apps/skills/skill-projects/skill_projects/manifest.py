@@ -482,6 +482,10 @@ MANIFEST: tuple[Route, ...] = (
     # one member prompt, with the rule of Release. The task does not change, so
     # class B. The chat gets the tool with the other run tools in EA-12e.
     Route("POST", "/projects/agent-runs/{run_id}/resume", "resume_agent_run", "B"),
+    # SW-43a (spec agent_coordination.md §3.9). The run's member takes back an
+    # answer that no agent has read. It writes one marker prompt and changes
+    # no task, so class B. The chat gets the tool with SW-43c.
+    Route("POST", "/projects/agent-runs/{run_id}/answer/withdraw", "withdraw_agent_answer", "B"),
     # WS-55 MCP-G15. An outside agent records a decision that its member made
     # outside Metorite, on its own awaiting run. It writes an agent response
     # and changes no task, so class B. The chat acts as the member, and the
@@ -557,6 +561,9 @@ PLANNED: dict[str, str] = {
     # WS-55 SW-11a. A person resumes a stalled run from Needs attention. The
     # chat gets the tool with the other run tools in EA-12e.
     "resume_agent_run": "WS-55 EA-12e, in-product chat parity",
+    # SW-43a. A member withdraws an answer on the run card. The chat gets the
+    # tool with the change tool in slice SW-43c (spec agent_coordination.md §3.9).
+    "withdraw_agent_answer": "SW-43c, in-product chat parity",
     # WS-55 EA-13e (2026-10-18) added the summary route for the board strip.
     "agent_summary": "WS-55, in-product chat parity, after EA-12e",
     # WS-55 EA-6b (2026-10-15) added the claim route for an outside agent.
@@ -1624,6 +1631,9 @@ UI_ACTIONS: dict[str, str] = {
     # WS-55 SW-11a: a person resumes a stalled run from Needs attention
     # (`resume_agent_run`, PLANNED for EA-12e), and the list itself.
     "agentRunsApi.resume": "resume_agent_run",
+    # SW-43a: a member takes back an answer on the run card
+    # (`withdraw_agent_answer`, PLANNED for SW-43c).
+    "agentRunsApi.withdrawAnswer": "withdraw_agent_answer",
     "attentionApi.list": "needs_attention",
     # EA-6g: the run's member approves or declines an archive request. It is in
     # UI_EXEMPT: the chat never answers one (D-OP-13).
