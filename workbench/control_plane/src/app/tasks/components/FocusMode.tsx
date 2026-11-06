@@ -25,9 +25,10 @@
 
 import Button from "@/components/ui/Button";
 import Icon, { themedIcon, type ThemedIcon } from "@/components/Icon";
-import { usePathname } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTaskStore } from "../lib/taskStore";
+import { clearFocusLive, publishFocus } from "../lib/focusLive";
+import { QuickCapture } from "./QuickCapture";
 import { MyTask } from "../lib/types";
 import { blocksForDay, startOfDay, type Block } from "../lib/scheduling";
 import { fmtClock } from "../lib/utils";
@@ -88,8 +89,14 @@ function Ring({
  *  minimize/expand keep the same mounted instance. */
 export function FocusSession() {
   const focusSessionId = useTaskStore((s) => s.focusSessionId);
-  if (!focusSessionId) return null;
-  return <FocusRoom key={focusSessionId} itemId={focusSessionId} />;
+  // The ONE Quick Capture mount of the control plane (CC-4). The room's
+  // capture button opens it on every route, so it cannot live on one page.
+  return (
+    <>
+      <QuickCapture />
+      {focusSessionId ? <FocusRoom key={focusSessionId} itemId={focusSessionId} /> : null}
+    </>
+  );
 }
 
 function FocusRoom({ itemId }: { itemId: string }) {
@@ -101,11 +108,6 @@ function FocusRoom({ itemId }: { itemId: string }) {
   const loadSubtasks = useTaskStore((s) => s.loadSubtasks);
   const quickCaptureOpen = useTaskStore((s) => s.quickCaptureOpen);
   const openQuickCapture = useTaskStore((s) => s.openQuickCapture);
-  // Quick Capture is mounted by the My Tasks page only, and this room runs on
-  // every route (AppShell). Off /tasks a click would set `quickCaptureOpen`
-  // with no panel to show it, and Escape would stop minimizing. So the
-  // capture button shows on /tasks only (review of #934).
-  const captureHere = usePathname()?.startsWith("/tasks") ?? false;
   const minimized = useTaskStore((s) => s.focusMinimized);
   const minimize = useTaskStore((s) => s.minimizeFocusSession);
   const expand = useTaskStore((s) => s.expandFocusSession);
@@ -141,6 +143,9 @@ function FocusRoom({ itemId }: { itemId: string }) {
     null,
   );
   const [subtasks, setSubtasks] = useState<MyTask[] | null>(null);
+  // "+10 min" on the running segment (the Now card and the room). It resets
+  // when a new segment starts.
+  const [extraSec, setExtraSec] = useState(0);
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -178,6 +183,7 @@ function FocusRoom({ itemId }: { itemId: string }) {
     saveFocusPrefs({ timerMode: m });
     setSeg(() => ({ kind: "work", startMs: Date.now() }));
     setPausedAt(null);
+    setExtraSec(0);
   };
 
   const togglePause = () => {
@@ -191,7 +197,8 @@ function FocusRoom({ itemId }: { itemId: string }) {
 
   const elapsedMs = (pausedAt ?? now) - seg.startMs;
   const elapsedMin = elapsedMs / 60000;
-  const workDone = seg.kind === "work" && timerCfg.work != null && elapsedMin >= timerCfg.work;
+  const workDone =
+    seg.kind === "work" && timerCfg.work != null && elapsedMin >= timerCfg.work + extraSec / 60;
   const breakLeftSec =
     seg.kind === "break" ? timerCfg.brk * 60 - elapsedMs / 1000 : 0;
 
@@ -200,11 +207,13 @@ function FocusRoom({ itemId }: { itemId: string }) {
     setCycles((c) => c + 1);
     setSeg(() => ({ kind: "break", startMs: Date.now() }));
     setPausedAt(null);
+    setExtraSec(0);
   };
   const startWork = useCallback((countCycle: boolean) => {
     if (countCycle) setCycles((c) => c + 1);
     setSeg(() => ({ kind: "work", startMs: Date.now() }));
     setPausedAt(null);
+    setExtraSec(0);
   }, []);
 
   // Break over → roll straight into the next work segment.
@@ -302,19 +311,75 @@ function FocusRoom({ itemId }: { itemId: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [minimized, minimize, quickCaptureOpen]);
 
-  if (!item) {
-    // deleted / filtered away underneath us — nothing to focus on
-    return null;
-  }
-
   const plannedMins =
-    item.scheduledStart && item.scheduledEnd
+    item?.scheduledStart && item?.scheduledEnd
       ? Math.round(
           (new Date(item.scheduledEnd).getTime() -
             new Date(item.scheduledStart).getTime()) /
             60000,
         )
-      : item.timeEstimateMins ?? 30;
+      : item?.timeEstimateMins ?? 30;
+  const workTargetSec =
+    (timerCfg.work != null ? timerCfg.work * 60 : plannedMins * 60) + extraSec;
+
+  // Publish the clock and the three commands for My Day's Now card (CC-4).
+  // The commands read the latest closures through a ref, so the card calls
+  // the room's own Pause, Done and +10 min and never a second timer.
+  const cmdRef = useRef({
+    togglePause: () => {},
+    complete: () => {},
+    extend10: () => {},
+  });
+  useEffect(() => {
+    cmdRef.current = {
+      togglePause,
+      complete: () => {
+        complete();
+        clearSession();
+      },
+      extend10: () => {
+        if (seg.kind === "work") setExtraSec((e) => e + 600);
+      },
+    };
+  });
+  const stableCmds = useMemo(
+    () => ({
+      togglePause: () => cmdRef.current.togglePause(),
+      complete: () => cmdRef.current.complete(),
+      extend10: () => cmdRef.current.extend10(),
+    }),
+    [],
+  );
+  const phase = finished ? "done" : seg.kind;
+  const elapsedSecNow = Math.floor(elapsedMs / 1000);
+  const targetNow = seg.kind === "break" ? timerCfg.brk * 60 : workTargetSec;
+  const flowNow = seg.kind === "work" && timerCfg.work == null;
+  const remainNow = flowNow ? null : Math.max(0, Math.round(targetNow - elapsedMs / 1000));
+  const paused = pausedAt != null;
+  useEffect(() => {
+    if (!item) return;
+    publishFocus(
+      {
+        itemId,
+        phase,
+        paused,
+        remainingSec: remainNow,
+        elapsedSec: elapsedSecNow,
+        targetSec: targetNow,
+        cycle: cycles + 1,
+        modeLabel: timerCfg.label,
+        flow: flowNow,
+      },
+      stableCmds,
+    );
+  }, [item, itemId, phase, paused, remainNow, elapsedSecNow, targetNow, cycles, timerCfg.label, flowNow, stableCmds]);
+  useEffect(() => () => clearFocusLive(itemId), [itemId]);
+
+  if (!item) {
+    // deleted / filtered away underneath us — nothing to focus on
+    return null;
+  }
+
   const blockLeftMin = item.scheduledEnd
     ? Math.max(0, Math.ceil((new Date(item.scheduledEnd).getTime() - now) / 60000))
     : null;
@@ -323,7 +388,6 @@ function FocusRoom({ itemId }: { itemId: string }) {
     : 0;
 
   // Ring numbers: pomo counts DOWN the segment; flow counts UP vs the block.
-  const workTargetSec = timerCfg.work != null ? timerCfg.work * 60 : plannedMins * 60;
   const workElapsedSec = elapsedMs / 1000;
   const ringProgress =
     seg.kind === "break"
@@ -651,6 +715,9 @@ function FocusRoom({ itemId }: { itemId: string }) {
                 <Icon name="Check" className="h-3.5 w-3.5" strokeWidth={3} />
                 Done
               </button>
+              <Button variant="secondary" size="sm" icon="Plus" type="button" onClick={() => stableCmds.extend10()}>
+                10 min
+              </Button>
               {item.scheduledStart && (
                 <button
                   type="button"
@@ -682,7 +749,6 @@ function FocusRoom({ itemId }: { itemId: string }) {
         {/* A button, not the `C` key it used to name: the Tasks letter
             shortcuts were removed (owner, 2026-10-13). Quick Capture opens
             above this room (z-[80] over z-[70]). */}
-        {captureHere ? (
         <Button
           variant="text"
           size="none"
@@ -694,7 +760,6 @@ function FocusRoom({ itemId }: { itemId: string }) {
         >
           Capture a thought
         </Button>
-        ) : null}
       </div>
     </div>
   );

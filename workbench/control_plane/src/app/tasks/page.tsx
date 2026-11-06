@@ -20,7 +20,6 @@ import { AssistantRail } from "./components/AssistantRail";
 import { InboxView } from "./components/InboxView";
 import { EngageView } from "./components/EngageView";
 import { LedProjectView } from "./components/LedProjectView";
-import { QuickCapture } from "./components/QuickCapture";
 // ⚠️ `WorkspacesModal` was deleted 2026-08-25 (D52, WS-39 S1 repair round 1).
 // It was the ClickUp connect flow — paste token → list workspaces → connect —
 // and every one of its calls ended in `build_provider` → 400 "Unknown
@@ -333,7 +332,6 @@ function TasksPageBody() {
         ) : (
           <ItemList />
         )}
-        <QuickCapture />
         <TaskSettingsModal />
         <TaskFocusModal />
         <ReclarifyModal />
@@ -466,7 +464,6 @@ function TasksPageBody() {
         )}
       </div>
 
-      <QuickCapture />
       <TaskSettingsModal />
       {/* Where a detail column is docked the overlay is CONTROLLED — it opens
           only from that pane's maximise. Everywhere else on desktop (Inbox,

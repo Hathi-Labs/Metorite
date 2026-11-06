@@ -57,6 +57,7 @@ import BriefCard from "./BriefCard";
 import { BRIEF_KEY, fetchBrief } from "./briefCard";
 import { briefCardOn, briefCardOnServer } from "./briefCardFlag";
 import { FeedColumn, useFeed } from "./FeedCard";
+import NowCard from "./NowCard";
 import NeedsYouCard, { useNeedsYou } from "./NeedsYouCard";
 import { cardOrderFor, cardsFor, dateLine, failedLines, seesApprovals, summaryLine } from "./myDay";
 import { myDayFeedOn, myDayFeedOnServer } from "./myDayFlag";
@@ -214,6 +215,9 @@ export default function MyDay() {
       {briefOn && !accessLoading && !briefPending ? (
         <BriefCard brief={brief.data} error={brief.error} now={now} className="mt-6 -mb-2" />
       ) : null}
+
+      {/* The Now card (CC-4): the running focus session, or one offer to start. */}
+      {!accessLoading ? <NowCard today={today} now={now} className="mt-6 -mb-2" /> : null}
 
       {/* The AI runs that wait on the member (owner, 2026-11-01: Needs you
           folds into My Day). The feed holds it in its column. The cards
