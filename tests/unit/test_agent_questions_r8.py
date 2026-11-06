@@ -36,6 +36,21 @@ restore with ``git checkout -- <file>``. ``Q`` is
   ``test_m7_a_stop_stays_open_to_a_viewer``.
 * M8. ``C`` ``visible_project_paths``: no ``Visibility.project_clause``.
   ``test_m8_the_path_stops_at_the_first_hidden_parent``.
+
+The cases that the spec names with no M number, each red under its own mutation:
+
+* ``Q``: the route writes a row. ``test_a_read_writes_nothing``.
+* ``Q``: no flag check. ``test_a7_with_the_flag_off_the_route_answers_404``.
+* ``R``: the rule reads no flag. ``test_a7_with_the_flag_off_any_viewer_may_answer``.
+* ``R``: the bell reads no flag. ``test_a7_with_the_flag_off_the_audience_has_no_creator``.
+* ``filters.py``: the focus reads no flag.
+  ``test_waiting_on_me_and_for_me_agree_with_the_flag_on``.
+* ``Q``: a typed request is listed. ``test_a4_a_typed_archive_request_does_not_show``.
+* ``Q``: a closed task is listed. ``test_a_question_on_a_closed_task_does_not_show``.
+* ``R``: the rule also binds a run that is not awaiting.
+  ``test_a_reply_to_a_finished_run_stays_open_with_its_question_open``.
+* ``R``: the rule also binds a typed request.
+  ``test_the_typed_archive_rule_does_not_change``.
 """
 
 from __future__ import annotations
@@ -794,6 +809,28 @@ class TestTheWriteRule:
             done = await call(w.agent, "POST", f"/projects/agent-runs/{rid}/finish", {})
             assert done.json()["run"]["status"] == "completed"
             got = await _act(call, w.viewer, rid, type="prompt", body="Please look again")
+            assert got.status_code == 201, got.text
+            assert got.json()["run"]["status"] == "in_progress"
+
+    async def test_a_reply_to_a_finished_run_stays_open_with_its_question_open(self, w):
+        """The one case that needs the status test of the rule. An agent may
+        finish from ``awaiting``, so the run is ``completed`` and its question
+        is still open. The run does not wait, so the reply stays open to a
+        viewer (D-EA-10 point 1). Narrowing it would be a new decision."""
+        async with _session(w.p) as call:
+            run, question = await _ask(w, call)
+            done = await call(w.agent, "POST", f"/projects/agent-runs/{run}/finish", {})
+            assert done.json()["run"]["status"] == "completed"
+            assert done.json()["run"]["open_elicitation"] is None
+            with w.p.admin_engine.connect() as c:
+                still_open = c.execute(text(
+                    "SELECT count(*) FROM pm_agent_run_activities a "
+                    "WHERE a.id = CAST(:q AS uuid) AND NOT EXISTS ("
+                    "SELECT 1 FROM pm_agent_run_activities p WHERE p.in_reply_to = a.id)"),
+                    {"q": question}).scalar()
+            assert still_open == 1
+            assert await _rows(call, w.creator) == []
+            got = await _act(call, w.viewer, run, type="prompt", body="Please look again")
             assert got.status_code == 201, got.text
             assert got.json()["run"]["status"] == "in_progress"
 
