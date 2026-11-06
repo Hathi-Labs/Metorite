@@ -1162,7 +1162,7 @@ On success, branch 0 attaches the `AgentScope` of §7.3. It does not call `_bind
 
 - an `mcp:*` request that carries a valid internal bearer and `X-User-Email`,
 - the same request with `GATEWAY_TRUST_UNVERIFIED_SSO_HEADERS=1`,
-- the same request on a box where the internal token falls back to the LLM key.
+- the same request with the LLM key as the bearer. Since WS-24b (2026-11-06) the internal token has no fallback to the LLM key.
 
 **Replay.** A replay inside the 60 second window repeats an identical GET, and it changes nothing. A write needs more, so EA-6a adds the nonce of EA3-28. The gateway keeps each nonce for 120 seconds, twice the skew of the timestamp. So a replay of a write inside its window always finds its nonce, and it gets 401.
 
