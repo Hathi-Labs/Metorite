@@ -67,19 +67,19 @@ describe("agentCardLook", () => {
         waiting: { on: "ci", until: "2026-11-06T10:25:00Z" },
         nowMs: now,
       }),
-    ).toEqual({ edge: "steady", line: "Claude Code · waiting on CI · about 25 min" });
+    ).toEqual({ edge: "steady", line: "Waiting on CI · about 25 min" });
     // Seconds round up, so the line never says "about 0 min".
     expect(
       agentCardLook("waiting", {
         waiting: { on: "subagents", until: "2026-11-06T10:00:20Z" },
         nowMs: now,
       }).line,
-    ).toBe("Agent · waiting on sub-agents · about 1 min");
+    ).toBe("Waiting on sub-agents · about 1 min");
     // A row with no wait, or an `on` the client does not know, still reads.
-    expect(agentCardLook("waiting", { clientVia: via }).line).toBe("Claude Code · waiting");
+    expect(agentCardLook("waiting", { clientVia: via }).line).toBe("Waiting");
     expect(
       agentCardLook("waiting", { clientVia: via, waiting: { on: "lunch" as never } }).line,
-    ).toBe("Claude Code · waiting");
+    ).toBe("Waiting");
     expect(agentCardLook("waiting").edge).not.toBe("live");
   });
 });

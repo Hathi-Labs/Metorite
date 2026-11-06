@@ -9,7 +9,7 @@
  *
  * | state            | edge        | line                              |
  * | working/answered | live        | "<client> · <agent_note>"         |
- * | waiting          | steady      | "<client> · waiting on CI · about 25 min" |
+ * | waiting          | steady      | "Waiting on CI · about 25 min"    |
  * | queued           | steady      | none (the pill says "Queued for") |
  * | awaiting         | warning     | "Needs you: <question>"           |
  * | stale (idle)     | breathing   | the agent's last note, else none  |
@@ -22,7 +22,8 @@
  *
  * Task 1045a: "waiting" is still too, because motion means working (EA-13g).
  * The agent said that it waits on sub-agents, CI, a review, a deploy or a
- * person, and for about how long.
+ * person, and for about how long. The pill already names the client, and a
+ * card at 1440 cuts a line that names it twice, so the line leaves it out.
  */
 
 import {
@@ -61,11 +62,10 @@ export function agentCardLook(
             ? `${client} working`
             : agentPillText(known, facts).text,
       };
-    case "waiting":
-      return {
-        edge: "steady",
-        line: `${client} · ${waitingText(facts.waiting, facts.nowMs)}`,
-      };
+    case "waiting": {
+      const wait = waitingText(facts.waiting, facts.nowMs);
+      return { edge: "steady", line: wait.charAt(0).toUpperCase() + wait.slice(1) };
+    }
     case "queued":
       return { edge: "steady", line: null };
     case "awaiting":
