@@ -1644,9 +1644,11 @@ async def _greet_decision(
 ) -> bool:
     """True when this turn opens a conversation. False on any fault.
 
-    *turn_ids* is ``(reply_id, prompt_id)``, set by the gateway route from its
-    own mint, never read from the payload. A payload field may SUPPRESS a
-    greeting and never cause one (R5). A turn with no new member message (no
+    *turn_ids* is ``(reply_id, prompt_id)``. The gateway route passes them, and
+    the request supplies both ids. The read skips those rows only. It stays
+    bound to the run's org, member and session (R5), so a client can change
+    only its own greeting: naming older rows of its chat can add one
+    greeting, and nothing else. A turn with no new member message (no
     prompt id, or a prompt row older than the gap: a regenerate or a retry)
     never greets (F2). The gap is measured on ``chat_message.created_at``,
     which the database sets for EVERY row (``DEFAULT now()``, and no writer

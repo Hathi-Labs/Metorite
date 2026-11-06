@@ -3391,7 +3391,10 @@ async def run_agent_stream_endpoint(
         # other members can read (visibility org or people) is not solo.
         solo_room=room_is_solo(room),
         # PZ-39: the ids of this turn's own rows, so the greeting gap leaves
-        # them out. From the route's own mint, never the body.
+        # them out. The request supplies both ids (`user_message_id` and
+        # `assistant_message_id`). A client can only skip rows of its own
+        # chat, so the worst case is one extra greeting for this member. The
+        # read stays bound to the run's org, member and session.
         turn_row_ids=(_persist_message_id, _new_user_id),
     )
 
