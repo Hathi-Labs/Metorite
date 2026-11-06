@@ -301,7 +301,9 @@ CC-5 ships in two parts. **CC-5a** is the server log. **CC-5b** is the check-in 
 
 A new table can have NOT NULL columns and defaults, because no old code reads it (R6). The build takes the number 350, after CC-2's 349. Re-check both at merge (R1).
 
-**CC-5a, privacy.** A session row belongs to its member. Every route reads and writes only the rows of the session's member. Identity comes from the session, never from the request (R5). A manager sees no other member's minutes (D-MD-5). The RLS of the table is tenant RLS only, as on `pm_task_personal`. The routes filter by the member. No repo policy keys on the member, so the table test proves the tenant, and the route test proves the member.
+**CC-5a, privacy.** A session row belongs to its member. Every route reads and writes only the rows of the session's member. Identity comes from the session, never from the request (R5). A manager sees no other member's minutes (D-MD-5).
+
+The RLS of the table is tenant RLS only, as on `pm_task_personal`. The routes filter by the member. No repo policy keys on the member, so the table test proves the tenant, and the route test proves the member.
 
 **CC-5a, routes.**
 
@@ -312,7 +314,12 @@ A new table can have NOT NULL columns and defaults, because no old code reads it
 - **The overlay pair.** The routes own the `actual_start` and `actual_end` stamps of a session: a start stamps `actual_start`, and an end stamps `actual_end`. A replaced session stamps the end of its own task. An auto-closed session stamps `planned_end`. Until CC-5b, no client calls these routes, so the room's own stamp stays the only writer. CC-5b removes the room's stamp in the same change that calls the routes. So the two never write the same pair.
 - Each new route gets a row in `skill_projects/manifest.py` as class X, with the reason "the tools come with CC-10", so `test_projects_chat_coverage.py` passes.
 
-**CC-5a, flag.** `FOCUS_LOG_ORGS`, default empty, reloaded by SIGHUP. Add it to `acb_common/settings.py` in the idiom of `studio_orgs`, add the prefix `FOCUS_LOG_` to `env_guard.py` (a tenant must not set it), read it through a small `flags.py` reader in the idiom of `routes/studio/flags.py`, and record it in `docs/flag_reload.md`. With it off, each route answers 404 before any database work, and nothing writes the overlay.
+**CC-5a, flag.** `FOCUS_LOG_ORGS`, default empty, reloaded by SIGHUP. With it off, each route answers 404 before any database work, and nothing writes the overlay. The flag work:
+
+1. Add `FOCUS_LOG_ORGS` to `acb_common/settings.py` in the idiom of `studio_orgs`.
+2. Add the prefix `FOCUS_LOG_` to `env_guard.py`. A tenant must not set it.
+3. Read it through a small `flags.py` reader in the idiom of `routes/studio/flags.py`.
+4. Record it in `docs/flag_reload.md`.
 
 **CC-5b, the check-in.** When the timer ends, the room and the Now card ask "Is it done?". The answers:
 
@@ -335,7 +342,7 @@ uv run pytest tests/unit/test_focus_session_rls_r8.py tests/unit/test_focus_sess
 uv run ruff check apps/services/gateway/gateway/routes/projects/ packages/acb_common
 ```
 
-The R8 files hold an `apply_ladder` fixture. They also prove two starts at once leave one open row, a flag-off POST writes nothing, and the auto close runs once. Run the env_guard and flag tests that `scripts/affected_tests.py` lists.
+The R8 files hold an `apply_ladder` fixture. They also prove three things: two starts at once leave one open row, a POST with the flag off writes nothing, and the close of a stale session runs once. Run the env_guard and flag tests that `scripts/affected_tests.py` lists.
 
 Run them with a database exported, and confirm that no R8 test skips.
 
