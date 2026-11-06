@@ -10,7 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getRulesHistory } from "../../../lib/api";
 import type { ExecutedRule, RuleAction } from "../../../lib/types";
 import { EmailPreviewModal } from "../../EmailPreviewModal";
-import { ActionChip } from "./actionFormat";
+import { ActionChip, isGoneMailSkip } from "./actionFormat";
 import { INPUT_CLS, RuleResultPill, Spinner } from "./common";
 import { FixButton } from "./fixDialog";
 
@@ -71,7 +71,7 @@ export function HistoryTab({
     ruleFilter === "all"
       ? true
       : ruleFilter === "skipped"
-        ? h.status === "SKIPPED"
+        ? h.status === "SKIPPED" && !isGoneMailSkip(h)
         : h.rule_name === ruleFilter
   );
   // Newest mail first (by the email's received date, falling back to when the
@@ -196,6 +196,8 @@ function HistoryRow({
   onPreview?: (messageId: string) => void;
   onReran?: () => void;
 }) {
+  // A gone-mail skip is not a "no match": its rule was chosen. The pill shows
+  // its own neutral label, so `matched` stays false only for a plain skip.
   const matched = h.status !== "SKIPPED";
   // Show ALL actions the rule applied (label, move to folder, draft, …), not
   // just the label — prefer the matched rule's specs (with args), fall back to

@@ -6,6 +6,7 @@
 // everywhere and there is a single place to change them.
 
 import Icon from "@/components/Icon";
+import { accentForHue } from "@/lib/statusAccent";
 import type { RuleAction, RuleConditions } from "../../../lib/types";
 import { HoverPopover } from "../ui";
 import {
@@ -18,6 +19,8 @@ import {
   matchSourceLabel,
   PrettyConditions,
   statusMeta,
+  GONE_MAIL_LABEL,
+  isGoneMailSkip,
 } from "./actionFormat";
 
 // Base field styling WITHOUT a width — compose with `w-full` (INPUT_CLS) or a
@@ -119,17 +122,22 @@ export function RuleResultPill({
   // runs stayed invisible for a month. It is not "No match" either — the
   // assistant decided correctly and the mailbox simply never received it.
   const failed = (status || "").toUpperCase() === "FAILED";
+  const gone = isGoneMailSkip({ status, rule_id: ruleId });
   const pill = (
     <span
       className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-md whitespace-nowrap ${
-        failed
+        gone
+          ? accentForHue("gray").chip
+          : failed
           ? "bg-rose-500/15 text-rose-400"
           : matched
             ? "bg-emerald-500/15 text-emerald-400"
             : "bg-red-500/15 text-red-400"
       }`}
     >
-      {failed
+      {gone
+        ? GONE_MAIL_LABEL
+        : failed
         ? `${ruleName || "Matched"} · didn't apply`
         : matched
           ? ruleName || "Matched"
@@ -140,7 +148,7 @@ export function RuleResultPill({
   const specs = actionSpecs ?? [];
   const types = takenTypes ?? [];
   const typeSummary = conditionTypeSummary(conditions);
-  const sm = statusMeta(status);
+  const sm = statusMeta(status, ruleId);
   const srcLabel = matchSourceLabel(matchSource);
   const errs = actionErrors ?? [];
   const draft = (draftPreview || "").trim();
@@ -149,7 +157,11 @@ export function RuleResultPill({
       <div className="space-y-2">
         <div className="flex items-center gap-1.5 flex-wrap">
           <span className="text-xs font-medium text-foreground">
-            {matched ? ruleName || "Matched rule" : "No rule matched"}
+            {gone
+              ? ruleName || GONE_MAIL_LABEL
+              : matched
+                ? ruleName || "Matched rule"
+                : "No rule matched"}
           </span>
           {typeSummary && (
             <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-secondary text-muted-foreground border border-border">

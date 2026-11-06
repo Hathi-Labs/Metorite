@@ -6,6 +6,7 @@
 // is defined ONCE and every surface renders actions identically.
 
 import AppIcon from "@/components/Icon";
+import { accentForHue } from "@/lib/statusAccent";
 import type { RuleAction, RuleActionType, RuleConditions } from "../../../lib/types";
 
 export const ACTION_TYPES: RuleActionType[] = [
@@ -168,8 +169,29 @@ export function matchSourceLabel(src?: string | null): string | null {
   }
 }
 
+/** Label for a rule run whose mail was moved or deleted before the rule ran. */
+export const GONE_MAIL_LABEL = "Mail moved or deleted";
+
+/**
+ * A SKIPPED run that keeps its rule_id is a rule that was chosen but could not
+ * run because the mail was gone. A plain SKIPPED run (no rule_id) means no rule
+ * matched. One place decides, and History, its popover and the timeline call it.
+ */
+export function isGoneMailSkip(row: {
+  status?: string | null;
+  rule_id?: string | null;
+}): boolean {
+  return (row.status || "").toUpperCase() === "SKIPPED" && !!row.rule_id;
+}
+
 /** Friendly label + tint for an executed-rule status (History popover). */
-export function statusMeta(status?: string): { label: string; cls: string } | null {
+export function statusMeta(
+  status?: string,
+  ruleId?: string | null,
+): { label: string; cls: string } | null {
+  if (isGoneMailSkip({ status, rule_id: ruleId })) {
+    return { label: GONE_MAIL_LABEL, cls: accentForHue("gray").chip };
+  }
   switch ((status || "").toUpperCase()) {
     case "APPLIED":
       return { label: "Applied", cls: "bg-emerald-500/15 text-emerald-400" };
