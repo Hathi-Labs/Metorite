@@ -1,10 +1,11 @@
 # CI velocity: the relevant tests per PR, the full suite once per batch (WS-CIV)
 
 **Status:** ACTIVE (owner directive, 2026-11-04). Verified against code on
-2026-11-04 (branch base `fb26ada52`, after a spec audit). CIV-1 is done.
-CIV-2 to CIV-9 are AGENT-SAFE. CIV-4, CIV-4b and CIV-13 are HIGH tier, because
-they change the deploy path. CIV-4b is BUILT (2026-11-05, branch
-`civ4b-r8-main`, task 1711). CIV-3 waits for it. CIV-13 (D178) is BUILT on
+2026-11-04 (branch base `fb26ada52`, after a spec audit). CIV-1 and CIV-2 are
+done. CIV-3 and CIV-7 are built on branch `civ3-pr-tier` (2026-11-05), and
+they are done at merge. CIV-4 to CIV-6, CIV-8 and CIV-9 are AGENT-SAFE.
+CIV-4, CIV-4b and CIV-13 are HIGH tier, because they change the deploy path.
+CIV-4b merged on 2026-11-05 (task 1711). CIV-13 (D178) is BUILT on
 2026-11-05: the home box starts the 21:30 release. The owner installs its timer.
 
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
@@ -130,10 +131,26 @@ first.
 **Verify:** `uv run pytest tests/unit/test_affected_tests.py -q`.
 AGENT-SAFE. STANDARD tier.
 
-### CIV-3 · pr-check runs the selection
+### CIV-3 · pr-check runs the selection (BUILT 2026-11-05, merges only after CIV-4b)
 
 Starts after CIV-2 and CIV-4b merge. Without CIV-4b, an R8 suite that a PR
 did not select would run nowhere before production.
+
+Starts after CIV-2 merges. **Built choices:** the file list travels as one
+space-separated line in a job output (a typical list is 2-20 KB against a 1 MB
+limit, and no shard downloads anything). `ci_unit_guard.py gate-output` sends a
+list over 200 KB, or a path outside `tests/*.py`, to a full run. The shard
+step `Pick this shard's tests` sets `mode` to `full`, `selection` or `empty`.
+One rule in `affected_tests.py` covers a test that reads files it never names.
+`scanning_tests` picks every unit test with a scan idiom. The idioms are `glob`,
+`rglob`, `iglob`, `iterdir`, `os.walk`, `Path.walk()`, `listdir`, `scandir`,
+`git ls-files`, `git ls-tree`, `git grep`, a `grep` or `rg` argument, `fnmatch`,
+`iter_modules`, `walk_packages` and `importlib.resources`.
+The rule runs when the PR changes any Python file, in `tests/` or `workbench/` too.
+A docs-only PR picks only the tests that name the doc. The owner chose this rule
+on 2026-11-05 (option A, on task 1631). Round 6 extends the trigger to `tests/`
+and `workbench/`, so no selection shrinks against round 4. Four rounds of folder and tree heuristics had missed
+scanners, so the heuristics are gone.
 
 **Done when:**
 - The `changes` job runs CIV-2. It exports `full` and the file list through
@@ -345,7 +362,7 @@ AGENT-SAFE. STANDARD tier.
 once on the box, both green.
 AGENT-SAFE. STANDARD tier.
 
-### CIV-7 · The harness says it
+### CIV-7 · The harness says it (BUILT 2026-11-05 with CIV-3, done at merge)
 
 **Done when:**
 - CLAUDE.md §6 no longer says "pr-check runs every test on each PR". It names
@@ -448,8 +465,11 @@ HIGH tier.
 
 ## 6. Order
 
-CIV-2 and CIV-4 start now, beside each other. CIV-4b follows CIV-4. CIV-3
-starts after CIV-2 and CIV-4b merge. CIV-7 lands with CIV-3. CIV-5, CIV-6, CIV-8 and CIV-9 follow, in any
+CIV-2 and CIV-4 start now, beside each other. CIV-4b follows CIV-4. It is a
+sharded R8 gate. It runs on the 21:30 release and on a dispatch, beside
+`test`, and `publish-release` needs it green. CIV-3 merges only after CIV-4b,
+because the PR gate then skips R8 suites that CIV-4b still covers. CIV-7
+lands with CIV-3. CIV-5, CIV-6, CIV-8 and CIV-9 follow, in any
 order.
 
 ## 7. Tasks
