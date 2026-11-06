@@ -964,7 +964,11 @@ describe("the phone opens on the chat (WS-62 CF-2, §4.2, D-CF-2, D-CF-3)", () =
   it("the shell opens it once, from the rule, and marks the session", () => {
     const src = read("lib/shell/ChatNudge.tsx");
     expect(src).toContain("const settled = landingSettled({");
-    expect(src).toContain("if (!settled) return;\n    decided.current = true;");
+    // BUD-1: the hello waits on its own facts after `settled`, and both opens
+    // share the ONE decision (no second effect).
+    expect(src).toMatch(/if \(!settled\) return;[\s\S]*decided\.current = true;/);
+    expect(src).toContain("helloOpens({ guideAllowed, fresh, hasChats, guideActive })");
+    expect(src.match(/decided\.current = true;/g)?.length).toBe(1);
     expect(src).toContain('window.sessionStorage.setItem(CHAT_LANDED_KEY, "1");');
     expect(src).toContain('openAssistant({ mode: "full" });');
     expect(read("components/AppShell.tsx")).toContain("useChatFirstLanding(isMobile);");

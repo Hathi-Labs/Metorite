@@ -265,6 +265,25 @@ class TestTheInputs:
         assert runs_on.gateway.requests == []
 
 
+class TestTheLinkOfAnAsk:
+    """CIV-14a. ``ask_on_task`` sends ``external_link`` to the start of the run."""
+
+    async def test_the_link_goes_to_the_start_and_http_is_refused(self, runs_on):
+        link = "https://claude.ai/code/session_9"
+        result = await _tool("ask_on_task", {
+            "task_id": TASK, "question": "Which?", "idempotency_key": "k-link",
+            "external_link": link})
+        starts = [r for r in runs_on.gateway.writes() if r.path.endswith("/agent-runs")]
+        assert starts and json.loads(starts[0].body)["external_link"] == link, result
+        before = len(runs_on.gateway.requests)
+        for bad in ("http://claude.ai/x", "https://" + "a" * 2041):
+            refused = await _tool("ask_on_task", {
+                "task_id": TASK, "question": "Which?", "idempotency_key": "k-bad",
+                "external_link": bad})
+            assert refused["isError"] is True
+        assert len(runs_on.gateway.requests) == before
+
+
 class TestTheDescriptions:
     """§12.1: the tool descriptions tell the agent three things, and the
     brief of EA-12b adds the stop and the finish. A test, so a rewrite that
