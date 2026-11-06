@@ -873,6 +873,9 @@ export function EmailDetail({ email }: EmailDetailProps) {
     setSendErr(null);
     const target = replyTargetRef.current ?? email;
     const toArr = replyTo.split(",").map((s) => s.trim()).filter(Boolean);
+    // A forward goes to the people in To and Cc, so the draft is a note to
+    // them and not an answer to the sender (task 1817). A reply sends no Cc.
+    const ccArr = replyMode === "forward" ? replyCc.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
     // A dashboard nudge seeds a follow-up instruction (consumed once); a
     // manual AI draft uses whatever the user typed in the AI box.
     const seeded = autoDraftInstructionRef.current;
@@ -887,6 +890,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
         // The drafter reads the thread only inside the mailbox of the mail.
         messageId: sameConversation ? target.id : undefined,
         to: toArr,
+        cc: ccArr,
         subject: replyTarget.subject,
       },
       { instruction },
