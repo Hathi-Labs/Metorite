@@ -83,3 +83,14 @@ describe("the thread card", () => {
     expect(isThreadRead("This thread_id is in 2 mailboxes.")).toBe(false);
   });
 });
+
+describe("a card that a chat message closed (§18.11)", () => {
+  it("is revised, and never reads as Email sent", () => {
+    // Mutation: drop the `revised` rule of `noActionOf` → red (the result
+    // falls to the generic card, which says "Email sent").
+    const text = "The member wrote in the chat while the card was open, so the card is closed. Nothing was sent.";
+    expect(noActionOf(text)).toBe("revised");
+    const src = readFileSync(AGENT, "utf8");
+    expect(src).toContain('"The member wrote in the chat while the card was open, so the card is "');
+  });
+});
