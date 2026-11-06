@@ -27,17 +27,22 @@ def row(name: str, *, org: str, transport: str = "http-sse",
         url: str = "https://mcp.example.com/mcp",
         headers: dict[str, str] | None = None,
         scope: list[str] | None = None,
-        always_confirm: bool | None = None) -> dict[str, Any]:
+        always_confirm: bool | None = None,
+        read_only_key: bool | None = None) -> dict[str, Any]:
     """One registered MCP server, with its org.
 
     *always_confirm* None stands for a row with no H-300 key, which reads as
-    false."""
+    false. *read_only_key* (MCP-C2) is the field as the registry parsed it,
+    and None leaves it at the default, false. The spy does not apply the
+    parse, so a test can hand the gate a server with both switches on."""
     out = {
         "org": org, "name": name, "transport": transport, "url": url,
         "headers": headers or {}, "agent_scope": scope or ["*"],
     }
     if always_confirm is not None:
         out["always_confirm"] = always_confirm
+    if read_only_key is not None:
+        out["read_only_key"] = read_only_key
     return out
 
 
@@ -75,6 +80,7 @@ class RegistrySpy:
                 agent_scope=tuple(r["agent_scope"]), enabled=True,
                 header_names=tuple(sorted(r["headers"])), headers=dict(r["headers"]),
                 **({"always_confirm": r["always_confirm"]} if "always_confirm" in r else {}),
+                **({"read_only_key": r["read_only_key"]} if "read_only_key" in r else {}),
             )
             for r in self.rows if r["org"] == org
         ]

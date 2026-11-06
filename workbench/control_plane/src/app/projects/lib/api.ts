@@ -15,6 +15,7 @@ import {
   agentRunRows,
   normalizeRunDetail,
 } from "./agentRuns";
+import { type TaskDecisions, answerBody, readTaskDecisions } from "./decisions";
 import {
   ATTENTION_LIMIT,
   type AttentionPage,
@@ -3133,6 +3134,30 @@ export const refsApi = {
 
   remove: (taskId: string, refId: string) =>
     call<{ deleted: string }>(`tasks/${taskId}/refs/${refId}`, { method: "DELETE" }),
+};
+
+/**
+ * WS-ALN ALN-2b — the decisions of a task (`project_alignment.md` §3.2). The
+ * pure rules are in `decisions.ts`. `forTask` gives `null` while the routes
+ * are OFF (`DECISIONS_ORGS`): every route answers 404, and the block draws
+ * nothing. `answer` is the ONE answer route, the one the chat tool calls.
+ */
+export const decisionsApi = {
+  forTask: async (taskId: string): Promise<TaskDecisions | null> => {
+    try {
+      const raw = await call<unknown>(`decisions?task_id=${encodeURIComponent(taskId)}`);
+      return readTaskDecisions(raw);
+    } catch (err) {
+      if (err instanceof ProjectsApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
+
+  answer: (decisionId: string, key: string, reason: string) =>
+    call<{ decision: unknown }>(`decisions/${encodeURIComponent(decisionId)}/answer`, {
+      method: "POST",
+      body: JSON.stringify(answerBody(key, reason)),
+    }),
 };
 
 /**

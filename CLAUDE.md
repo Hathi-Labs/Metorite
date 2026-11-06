@@ -239,6 +239,7 @@ The owner retired staging (D144), and this PC does its job now.
 3. **Production moves once a day, at 21:30 UTC.** Do not dispatch `deploy.yml`
    after a merge. Dispatch only for a hotfix the owner asks for, or when
    production is down.
+   The home box starts the release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
 
 A slice with nothing to see skips step 1. Until LD-8 to LD-10 land, the gate is
 `scripts/ci_local.sh` and then `premerge.sh`. `engineering_practice.md` §1.3
@@ -388,7 +389,10 @@ Rules that make it work:
 - **Do not run all of `tests/unit/` locally.** It takes about 50 minutes.
   Run `uv run python scripts/affected_tests.py --run`. It picks the tests your
   diff can affect, and it prints the `vitest related` command for frontend
-  files. pr-check runs every test on each PR.
+  files. pr-check runs the tests that the diff can affect, and the full suite
+  when the diff is FULL. The R8 suites run on `main` only after CIV-4b ("main's
+  batch and the 21:30 release gate run the R8 suites"). The four tiers are in
+  `specs/ci_velocity.md` §4 (D176).
 - **R8 needs a database. Without one, 843 tests SKIP while the run reads
   green.** Run `bash scripts/dev_db.sh` first, then
   `eval "$(bash scripts/dev_db.sh --export)"`. `engineering_practice.md` §1.1

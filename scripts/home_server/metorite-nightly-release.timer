@@ -1,0 +1,12 @@
+# The daily release starts here at 21:30 UTC, 03:00 IST (CIV-13, D178).
+# Persistent=true: when the box was down at 21:30, the timer fires at the
+# next start. The script then refuses outside 21:00 to 01:00 UTC.
+[Unit]
+Description=Metorite nightly release at 21:30 UTC (CIV-13)
+
+[Timer]
+OnCalendar=*-*-* 21:30:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

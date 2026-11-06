@@ -40,12 +40,16 @@ import {
   disconnectCopy,
   disconnectFailure,
   filterConnections,
+  heldSwitches,
   mcpConnect,
   mcpName,
   rowLabel,
   statusPills,
+  switchesSavedText,
   testMessage,
   type AppFilter,
+  type HeldSwitches,
+  type McpSwitches,
   type StatusFilter,
 } from "../lib/connections";
 import ApiKeysView from "./ApiKeysView";
@@ -71,6 +75,13 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [savingConfirm, setSavingConfirm] = useState(false);
+  // MCP-C2 review: a save of the switches that the list may not show yet.
+  const [held, setHeld] = useState<HeldSwitches | null>(null);
+  // The list on screen now, so a save that ends records the list it saw.
+  const listRef = useRef<unknown>(res.data);
+  useEffect(() => {
+    listRef.current = res.data;
+  }, [res.data]);
   // IN-8c: the dialog of a consent, and the start that it runs.
   const [askingConnect, setAskingConnect] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -102,6 +113,14 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
   const all = res.data ?? [];
   const rows = useMemo(() => filterConnections(all, app, status), [all, app, status]);
   const open = all.find((r) => r.id === openId) ?? null;
+  // The pair the panel draws while a save is not in the list yet. The hold
+  // ends when the row shows the saved pair, after a newer read of a failed
+  // save, or when the panel closes.
+  const heldView = open ? heldSwitches(open, held, res.data) : null;
+  const heldDone = held !== null && (heldView === null || heldView.done);
+  useEffect(() => {
+    if (heldDone) setHeld(null);
+  }, [heldDone]);
 
   // The read model is not built yet: show the keys, not a blank page.
   if (res.data === null) {
@@ -167,29 +186,35 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
     }
   }
 
-  async function setAlwaysConfirm(next: boolean) {
+  async function setSwitches(next: McpSwitches) {
     const name = open ? mcpName(open) : null;
     if (!open || !name) return;
+    const id = open.id;
     setSavingConfirm(true);
     try {
-      await api.setMcpAlwaysConfirm(name, next);
+      // H-300 and MCP-C2: both switches go in one PATCH. The panel draws the
+      // pair that the gateway saved until the list shows it.
+      const saved = await api.setMcpSwitches(name, next);
+      setHeld({ id, pair: saved, list: listRef.current });
       toast.show({
         key: "integrations-always-confirm",
         variant: "success",
-        // A live run keeps the flag it read at the attach, so the words
-        // speak of new chats only (H-300).
-        title: next
-          ? "New chats will ask before any tool runs."
-          : "New chats will ask only before tools that can change data.",
+        // A live run keeps the switches it read at the attach, so the words
+        // speak of new chats only.
+        title: switchesSavedText(saved),
       });
-      invalidateConnections();
     } catch (err) {
+      // The gateway can save before the answer fails (a BFF timeout), so the
+      // stored pair is not known. The ticks wait for the next read.
+      setHeld({ id, pair: null, list: listRef.current });
       toast.show({
         key: "integrations-always-confirm",
         variant: "error",
         title: err instanceof Error ? err.message : "The request failed.",
       });
     } finally {
+      // Both ways: read the list again, so the panel shows what is stored.
+      invalidateConnections();
       setSavingConfirm(false);
     }
   }
@@ -264,8 +289,9 @@ export default function ConnectionsView({ canManage }: { canManage: boolean }) {
           onNavigate={(href) => router.push(href)}
           onDisconnect={() => setConfirming(true)}
           onTest={test}
-          onAlwaysConfirm={setAlwaysConfirm}
-          savingAlwaysConfirm={savingConfirm}
+          onSwitches={setSwitches}
+          savingSwitches={savingConfirm || Boolean(heldView?.wait)}
+          switches={heldView?.switches ?? null}
           onConnect={() => {
             setConnectError(null);
             setAskingConnect(true);
