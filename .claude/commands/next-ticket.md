@@ -28,7 +28,7 @@ Sub-agents have no Metorite tools, so you post for them.
 
 | Step | Call |
 |---|---|
-| 1 Select | `my_work`. For a waiting run, `get_agent_run` first. Then `claim_task`, and post one `post_agent_activity` thought: the slice, the tier and the plan |
+| 1 Select | `my_work`. For a waiting run, `get_agent_run` first. Then `claim_task`, then `get_task_context`, and post one `post_agent_activity` thought: the slice, the tier and the plan |
 | Every dispatch and report | A `post_agent_activity` thought on each open run: who runs, on what, and how long you expect to wait. A run with no line for 5 minutes shows idle |
 | 3 Branch | Push the branch at its first commit. `add_task_reference` with the branch URL |
 | 4b Preview | `post_agent_activity` as a `response`, then `ask_on_task`. Read the answer with `get_agent_run` and `after` set to the question's seq. Do not report `AWAITING-OWNER` before that read. If the owner answers in chat and not on the task, record the answer with `record_outside_decision` before you go on |
@@ -46,6 +46,10 @@ use it. Run `uv run python scripts/board.py --row WS-n` to read the row of its
 workstream: the owning spec and the Metorite epic. If `my_work` is empty, pick
 the highest-priority open task in that epic that is not owner-gated end to
 end. Say which you picked and why, in one line.
+
+After the claim, call `get_task_context`. Read the description and every
+comment, because the owner's feedback is often in a comment. When the task has
+more than 20 comments, read the older ones with `get_task_timeline`.
 
 **1b — Set the risk tier.** The tier sets how much review the slice gets.
 Owner decision, 2026-10-16. Say the tier and the reason in one line.
