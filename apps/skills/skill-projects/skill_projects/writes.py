@@ -4074,7 +4074,7 @@ def shared_set_refusal(status_set: dict[str, Any], node_name: Any) -> str:
         "Next: To change the statuses of this project only, call set_status_set "
         "with mode=own first. That gives the project a copy, and then you change "
         "the copy. To change the shared set on purpose, ask the member. Then call "
-        "this tool again with change_shared_set=true.",
+        "this tool again with change_whole_set=true.",
     ])
 
 
@@ -4297,7 +4297,7 @@ async def create_status(
     color: str = "",
     slot: int = 0,
     after: str = "",
-    change_shared_set: bool = False,
+    change_whole_set: bool = False,
 ) -> str:
     """Add a status lane. category is backlog, todo, in_progress, done,
     cancelled or triage. color is one of six hues: gray, red, amber, green,
@@ -4306,7 +4306,7 @@ async def create_status(
     stage) or after (a lane name of the same stage) places it elsewhere. The
     card names the project that owns that set, because a subproject may
     inherit its lanes from a parent. When the set is shared, the tool refuses
-    unless change_shared_set is true, which the member must ask for. Deleting
+    unless change_whole_set is true, which the member must ask for. Deleting
     a lane is a guarded act."""
     pid, node = await _node(project_id)
     label = str(name or "").strip()
@@ -4317,7 +4317,7 @@ async def create_status(
         return f"category is one of {', '.join(STATUS_CATEGORIES)}."
     owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
     refused = status_edit_refusal(
-        owner, node.get("name"), guard_shared=True, change_shared=change_shared_set,
+        owner, node.get("name"), guard_shared=True, change_shared=change_whole_set,
     )
     if refused:
         return refused
@@ -4379,7 +4379,7 @@ async def update_status(
     position: int = -1,
     slot: int = 0,
     after: str = "",
-    change_shared_set: bool = False,
+    change_whole_set: bool = False,
 ) -> str:
     """Rename, recategorise, recolour or reorder one lane, found by NAME in
     the project's set. Only the arguments you pass change. A rename changes
@@ -4387,12 +4387,12 @@ async def update_status(
     green, blue or violet. To reorder, pass slot (1-based, inside the stage of
     the lane) or after (a lane name of the same stage). A lane never leaves
     its stage by a reorder. position is a raw sort key, so do not guess it.
-    When the set is shared, the tool refuses unless change_shared_set is
+    When the set is shared, the tool refuses unless change_whole_set is
     true, which the member must ask for. The card shows before → after."""
     pid, node = await _node(project_id)
     owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
     refused = status_edit_refusal(
-        owner, node.get("name"), guard_shared=True, change_shared=change_shared_set,
+        owner, node.get("name"), guard_shared=True, change_shared=change_whole_set,
     )
     if refused:
         return refused

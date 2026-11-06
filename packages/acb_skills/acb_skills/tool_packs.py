@@ -488,7 +488,7 @@ No Projects agent exists to hand a task to.
   the write that makes the project.
 - To change the statuses of ONE project that does not own its set, call
   set_status_set with mode=own first. Then change the copy. Change the shared
-  set only when the member names it, and then pass change_shared_set=true. To
+  set only when the member names it, and then pass change_whole_set=true. To
   move a lane, pass slot (1-based, inside its stage) or after (a lane name).
   Never guess a position.
 - Read project_access before grant_access or revoke_access. A subject is org,

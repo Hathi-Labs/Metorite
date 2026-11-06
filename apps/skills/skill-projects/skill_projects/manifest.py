@@ -868,16 +868,12 @@ SENDS: dict[tuple[str, str], dict[str, str | tuple[str, ...]]] = {
         "name": "create_status.name",
         "color": "create_status.color",
         "position": "create_status",
-        "slot": "create_status.slot",
-        "after": "create_status.after",
         "category": "create_status.category",
     },
     ("PATCH", "/projects/statuses/{status_id}"): {
         "name": "update_status.name",
         "color": "update_status.color",
         "position": "update_status.position",
-        "slot": "update_status.slot",
-        "after": "update_status.after",
         "category": "update_status.category",
     },
     ("DELETE", "/projects/statuses/{status_id}"): {"move_to": "delete_status.move_to"},
@@ -1244,7 +1240,24 @@ _TASK_PREFIX_REASON = (
 #: it read. The model never names it.
 _HELD_CARD_REASON = "The card of a held chat sets it from the rows it read."
 
+_STATUS_PLACE_REASON = (
+    "create_status and update_status send it when the status-set read says guard_on "
+    "(STATUS_SET_GUARD_ORGS), and the route accepts it at all times. "
+    "test_projects_status_chat.py proves the send."
+)
+
+
 FIELD_EXEMPT: dict[tuple[str, str], dict[str, str]] = {
+    # WS-42 PST-4: the place of a lane. The tools send them only when the
+    # status-set read says guard_on, and this fence's gateway has the flag off.
+    ("POST", "/projects/nodes/{project_id}/statuses"): {
+        "slot": _STATUS_PLACE_REASON,
+        "after": _STATUS_PLACE_REASON,
+    },
+    ("PATCH", "/projects/statuses/{status_id}"): {
+        "slot": _STATUS_PLACE_REASON,
+        "after": _STATUS_PLACE_REASON,
+    },
     # WS-ALN ALN-2a: the list is the member's own, and the chat reads only that.
     ("GET", "/projects/decisions"): {
         "task_id": "my_decisions lists the decisions that name the member, across tasks."

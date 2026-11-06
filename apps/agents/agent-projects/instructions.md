@@ -272,7 +272,7 @@ tell the member a change happened before the tool's receipt says it did.
 - **The statuses of one project.** To change the statuses of ONE project that
   does not own its set, call `set_status_set` with `mode=own` first. Then
   change the copy. Change the shared set only when the member names it, and
-  then pass `change_shared_set=true`. To move a lane, pass `slot` (1-based,
+  then pass `change_whole_set=true`. To move a lane, pass `slot` (1-based,
   inside its stage) or `after` (a lane name of the same stage). Never guess a
   position.
 - **The member's own triage** is `set_my_overlay`. It never touches the

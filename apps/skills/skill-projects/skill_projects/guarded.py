@@ -1432,14 +1432,14 @@ async def revert_activity(task_id: str, activity_id: str) -> str:
 
 @_annotate(read_only=False, destructive=True, idempotent=False, open_world=False)
 async def delete_status(
-    project_id: str, status: str, move_to: str = "", change_shared_set: bool = False,
+    project_id: str, status: str, move_to: str = "", change_whole_set: bool = False,
 ) -> str:
     """Delete a lane, moving the tasks in it to move_to (a status NAME in
     the same set) first. The card leads with how many tasks move: the count
     the statuses read returns per lane, which is the count the route acts
     on. The last lane, the last Done lane (D79) and the last lane that
     closes a task cannot be deleted, and the tool says so before any card.
-    When the set is shared, the tool refuses unless change_shared_set is
+    When the set is shared, the tool refuses unless change_whole_set is
     true, which the member must ask for."""
     if _many(status):
         return f"delete_status {ONE_ACT.replace('id', 'name')}"
@@ -1472,7 +1472,7 @@ async def delete_status(
         )
     owner = (await get(f"/projects/nodes/{pid}/status-set")) or {}
     refused = status_edit_refusal(
-        owner, node.get("name"), guard_shared=True, change_shared=change_shared_set,
+        owner, node.get("name"), guard_shared=True, change_shared=change_whole_set,
     )
     if refused:
         return refused

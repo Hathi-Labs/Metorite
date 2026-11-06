@@ -10,7 +10,7 @@ With the flag on (``guard_on`` on the status-set read, the route's answer):
 
 * a project that does not own its set gets a refusal that names the owner and
   N, and offers ``set_status_set`` mode=own first;
-* ``change_shared_set=true`` shows a card with "Changes the statuses of {owner}
+* ``change_whole_set=true`` shows a card with "Changes the statuses of {owner}
   for {N} projects";
 * the tool sends ``slot`` or ``after`` and never a raw ``position``.
 
@@ -125,7 +125,7 @@ async def test_the_refusal_names_the_owner_and_the_count(monkeypatch) -> None:
     assert "«Client Projects»" in out and "space" in out
     assert "28 projects share that set" in out
     assert "set_status_set with mode=own" in out
-    assert "change_shared_set=true" in out
+    assert "change_whole_set=true" in out
     assert "Nothing was done" in out
     # Failure copy explains, and never names the model.
     assert "Jev" not in out
@@ -154,7 +154,7 @@ async def test_a_project_that_owns_its_set_is_not_refused(monkeypatch) -> None:
 async def test_an_explicit_shared_change_shows_the_set_and_the_count(monkeypatch) -> None:
     asked = approve(monkeypatch)
     calls = fake_gateway(monkeypatch, _gateway(_read()))
-    out = await skill_projects.create_status(SUB, "Blocked", change_shared_set=True)
+    out = await skill_projects.create_status(SUB, "Blocked", change_whole_set=True)
     assert out.startswith("Added status"), out
     card = asked[0]
     assert "Changes the statuses of «Client Projects» for 28 projects" in card["detail"]
@@ -167,8 +167,8 @@ async def test_an_explicit_shared_change_shows_the_set_and_the_count(monkeypatch
 async def test_the_card_of_update_and_delete_carries_the_same_line(monkeypatch) -> None:
     asked = approve(monkeypatch)
     fake_gateway(monkeypatch, _gateway(_read()))
-    await skill_projects.update_status(SUB, "Done", name="Finished", change_shared_set=True)
-    await skill_projects.delete_status(SUB, "Done", move_to="Shipped", change_shared_set=True)
+    await skill_projects.update_status(SUB, "Done", name="Finished", change_whole_set=True)
+    await skill_projects.delete_status(SUB, "Done", move_to="Shipped", change_whole_set=True)
     assert len(asked) == 2
     for card in asked:
         assert "Changes the statuses of «Client Projects» for 28 projects" in card["detail"]
@@ -177,14 +177,14 @@ async def test_the_card_of_update_and_delete_carries_the_same_line(monkeypatch) 
 async def test_one_project_reads_in_the_singular(monkeypatch) -> None:
     asked = approve(monkeypatch)
     fake_gateway(monkeypatch, _gateway(_read(used_by=1, reach=1)))
-    await skill_projects.create_status(SUB, "Blocked", change_shared_set=True)
+    await skill_projects.create_status(SUB, "Blocked", change_whole_set=True)
     assert "for 1 project" in asked[0]["detail"] and "1 projects" not in asked[0]["detail"]
 
 
 async def test_a_denied_card_writes_nothing(monkeypatch) -> None:
     deny(monkeypatch)
     calls = fake_gateway(monkeypatch, _gateway(_read()))
-    out = await skill_projects.create_status(SUB, "Blocked", change_shared_set=True)
+    out = await skill_projects.create_status(SUB, "Blocked", change_whole_set=True)
     assert "Added" not in out and writes(calls) == []
 
 
@@ -195,11 +195,11 @@ async def test_the_flag_on_sends_a_slot_and_never_a_position(monkeypatch) -> Non
     """M-b. A create with no place goes LAST in its stage: one past the lanes."""
     approve(monkeypatch)
     calls = fake_gateway(monkeypatch, _gateway(_read()))
-    await skill_projects.create_status(SUB, "Blocked", category="done", change_shared_set=True)
+    await skill_projects.create_status(SUB, "Blocked", category="done", change_whole_set=True)
     await skill_projects.create_status(
-        SUB, "Early", category="done", slot=2, change_shared_set=True)
+        SUB, "Early", category="done", slot=2, change_whole_set=True)
     await skill_projects.create_status(
-        SUB, "Behind", category="done", after="Shipped", change_shared_set=True)
+        SUB, "Behind", category="done", after="Shipped", change_whole_set=True)
     posts = [c["json"] for c in _sent(calls, "POST")]
     assert posts == [
         {"name": "Blocked", "category": "done", "slot": 5},
@@ -338,7 +338,7 @@ def test_the_rule_text_gives_the_model_the_order() -> None:
 
     flat = " ".join(_PROJECTS_STRUCTURE_RULES.split())
     assert "set_status_set with mode=own first. Then change the copy" in flat
-    assert "only when the member names it" in flat and "change_shared_set=true" in flat
+    assert "only when the member names it" in flat and "change_whole_set=true" in flat
     agent = Path(__file__).resolve().parents[2] / "apps/agents/agent-projects/instructions.md"
     text = " ".join(agent.read_text(encoding="utf-8").split())
     assert re.search(r"`mode=own` first\. Then change the copy", text)
@@ -352,8 +352,10 @@ def test_the_tools_take_the_new_arguments_and_the_manifest_maps_them() -> None:
 
     for name in ("create_status", "update_status"):
         params = inspect.signature(getattr(skill_projects, name)).parameters
-        assert {"slot", "after", "change_shared_set"} <= set(params), name
-    assert "change_shared_set" in inspect.signature(skill_projects.delete_status).parameters
-    posts = manifest.SENDS[("POST", "/projects/nodes/{project_id}/statuses")]
-    patches = manifest.SENDS[("PATCH", "/projects/statuses/{status_id}")]
-    assert {"slot", "after"} <= set(posts) and {"slot", "after"} <= set(patches)
+        assert {"slot", "after", "change_whole_set"} <= set(params), name
+    assert "change_whole_set" in inspect.signature(skill_projects.delete_status).parameters
+    # The tools send them only with the flag on, so the fence's gateway cannot
+    # witness them. They are exempt with a reason, never silent.
+    for key in (("POST", "/projects/nodes/{project_id}/statuses"),
+                ("PATCH", "/projects/statuses/{status_id}")):
+        assert {"slot", "after"} <= set(manifest.FIELD_EXEMPT[key]), key
