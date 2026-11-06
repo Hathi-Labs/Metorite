@@ -95,8 +95,12 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
     () => (door as NonNullable<typeof door>).read(list),
   );
   const [picked, setPicked] = useState("");
+  // After a delete the page leaves. It says so, and never "not available", while it leaves.
+  const [deleted, setDeleted] = useState(false);
+  const onDeleted = () => { setDeleted(true); router.push("/studio"); };
   const [editing, setEditing] = useState(false);
 
+  if (deleted) return <Shell><EmptyState icon="PackageOpen" message="This app was deleted." /></Shell>;
   // A 404 over cached data is a package that is gone: never draw the old rows (BETA-1).
   if (detail.error === STUDIO_OFF || (detail.error && detail.data === undefined)) {
     if (detail.error === STUDIO_OFF) {
@@ -109,7 +113,7 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
   }
   if (!object) {
     return (
-      <Shell title={detail.data.name} actions={<DeletePackageButton id={pkg} onDeleted={() => router.push("/studio")} />}>
+      <Shell title={detail.data.name} actions={<DeletePackageButton id={pkg} onDeleted={onDeleted} />}>
         <EmptyState icon="PackageOpen" message="This app has no object yet. Ask Mira to add one, then publish it." />
       </Shell>
     );
@@ -120,7 +124,7 @@ function Records({ pkg, objectName }: { pkg: string; objectName: string | null }
   const note = missingObjectNote(detail.data.objects, objectName);
   const objectPicks = detail.data.objects.map((o) => ({ value: o.name, label: o.label ?? o.name }));
   const title = detail.data.name;
-  const deleteApp = <DeletePackageButton id={pkg} onDeleted={() => router.push("/studio")} />;
+  const deleteApp = <DeletePackageButton id={pkg} onDeleted={onDeleted} />;
 
   return (
     <Shell title={title} actions={deleteApp} note={

@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
-  GONE_LINE, PREVIEW_FAILED_LINE, changedText, classifyStep, deleteAndRefresh, forgetPackage, parsePreview, previewCopy, progressLine, readPreview, runDelete,
+  GONE_LINE, PREVIEW_FAILED_LINE, STALE_COUNTS_LINE, afterStall, changedText, classifyStep, deleteAndRefresh, forgetPackage, parsePreview, previewCopy, progressLine, readPreview, runDelete,
 } from "./packageDelete";
 
 const ID = "0f0f0f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f";
@@ -215,6 +215,32 @@ describe("after a busy end, the next Confirm sends the token of the new counts",
     const f = fakeFetch([{ status: 503, body: {} }, { status: 404, body: {} }]);
     const end = await deleteAndRefresh(ID, "t0", { fetchImpl: f.impl });
     expect(end.vanished).toBe(true);
+  });
+});
+
+describe("after a busy end whose second read failed too", () => {
+  it("keeps the last token and says the counts may be old", async () => {
+    const f = fakeFetch([{ status: 503, body: {} }, { status: 500, body: {} }]);
+    const end = await deleteAndRefresh(ID, "t0", { fetchImpl: f.impl });
+    expect(end.kind).toBe("busy");
+    expect(end.fresh).toBeUndefined();
+    const view = afterStall(end as never, parsePreview(wire("t-old"))!);
+    expect(view.preview.confirm).toBe("t0");
+    expect(view.problem).toContain(STALE_COUNTS_LINE);
+  });
+  it("with a new read, shows its counts and token", () => {
+    const view = afterStall({ message: "busy", confirm: "t0", fresh: parsePreview(wire("t9", 3))! }, parsePreview(wire("t-old"))!);
+    expect(view.preview.confirm).toBe("t9");
+    expect(view.problem).toBe("busy");
+  });
+});
+
+describe("a delete leaves the page first", () => {
+  it("navigates before it forgets the cache, and the page says the app was deleted", () => {
+    const btn = readFileSync(new URL("../../components/studio/DeletePackageButton.tsx", import.meta.url), "utf8");
+    expect(btn).toContain("const gone = () => { onDeleted(); forgetPackage(id); };");
+    const page = readFileSync(new URL("../../app/studio/package-preview/page.tsx", import.meta.url), "utf8");
+    expect(page).toContain("This app was deleted.");
   });
 });
 

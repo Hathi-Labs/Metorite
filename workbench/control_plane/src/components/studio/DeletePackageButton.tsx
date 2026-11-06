@@ -14,7 +14,7 @@ import { useEffect, useRef, useState } from "react";
 import Button from "@/components/ui/Button";
 import ConfirmDialog from "@/components/ui/ConfirmDialog";
 import {
-  DELETE_LABEL, type DeletePreview, deleteAndRefresh, forgetPackage, previewCopy, progressLine, readPreview,
+  DELETE_LABEL, type DeletePreview, afterStall, deleteAndRefresh, forgetPackage, previewCopy, progressLine, readPreview,
 } from "@/lib/studio/packageDelete";
 
 export interface DeletePackageButtonProps {
@@ -40,7 +40,9 @@ export default function DeletePackageButton({ id, onDeleted }: DeletePackageButt
     alive.current = true;
     return () => { alive.current = false; stop.current?.abort(); };
   }, []);
-  const gone = () => { forgetPackage(id); onDeleted(); };
+  // Navigate first. `forgetPackage` notifies the readers, and a page that is still on screen
+  // would read the deleted package again.
+  const gone = () => { onDeleted(); forgetPackage(id); };
 
   async function ask() {
     setReading(true);
@@ -80,10 +82,12 @@ export default function DeletePackageButton({ id, onDeleted }: DeletePackageButt
       if (end.preview) setPreview(end.preview);
       setProblem(end.message);
     } else {
-      // Busy or failed: the counts moved, so the old token no longer fits. Show the counts
-      // of now, with their token. Without them, keep the dialog and let a 409 say so.
-      if ("fresh" in end && end.fresh) setPreview(end.fresh);
-      setProblem(end.kind === "busy" || end.kind === "failed" ? end.message : null);
+      // Busy or failed: show the counts of now when the new read worked. Else keep the last token.
+      if (end.kind === "busy" || end.kind === "failed") {
+        const view = afterStall(end, preview);
+        setPreview(view.preview);
+        setProblem(view.problem);
+      }
     }
   }
 

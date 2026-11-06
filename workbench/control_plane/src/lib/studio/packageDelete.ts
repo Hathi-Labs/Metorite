@@ -221,3 +221,18 @@ export async function deleteAndRefresh(id: string, confirm: string, deps: Delete
   if (again.ok) return { ...end, fresh: again.preview };
   return again.gone ? { ...end, vanished: true } : end;
 }
+
+export const STALE_COUNTS_LINE = "The counts above may be out of date. Confirm to read them again.";
+
+/**
+ * What the dialog shows after a busy or failed end. With a new read, it shows the new counts and
+ * their token. When that read failed too, it keeps the token of the last 202 and tells the member
+ * that the counts may be old, so a 409 that follows is no surprise.
+ */
+export function afterStall(
+  end: { message: string; confirm: string; fresh?: DeletePreview },
+  current: DeletePreview,
+): { preview: DeletePreview; problem: string } {
+  if (end.fresh) return { preview: end.fresh, problem: end.message };
+  return { preview: { ...current, confirm: end.confirm }, problem: `${end.message} ${STALE_COUNTS_LINE}` };
+}
