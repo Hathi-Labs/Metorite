@@ -545,7 +545,7 @@ export function ComposePanel({
       {/* Compose window — height-capped (viewport minus the pt-12 offset and
           the safe-area inset) with the fields scrolling inside, so the footer
           with Send/Discard is always on screen, even on short phone viewports. */}
-      <div className="relative w-full max-w-2xl bg-card border border-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[calc(100dvh-5rem-env(safe-area-inset-bottom,0px))] sm:max-h-[85vh]">
+      <div data-ask-clear="" className="relative w-full max-w-2xl bg-card border border-border rounded-xl shadow-2xl overflow-hidden flex flex-col max-h-[calc(100dvh-5rem-env(safe-area-inset-bottom,0px))] sm:max-h-[85vh]">
         {/* Header */}
         <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border bg-secondary/50">
           <span className="text-sm font-medium text-foreground">New Message</span>
