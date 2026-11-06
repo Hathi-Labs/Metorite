@@ -62,6 +62,11 @@ interface Props {
   /** Bumped by the panel when it adds a subtask, so this reloads. */
   refreshKey?: number;
   onOpenTask: (taskId: string) => void;
+  /**
+   * ORC-3 — the number of other tasks this block lists: subtasks, links and
+   * the tasks that block this one. The Related tab and its section show it.
+   */
+  onCount?: (count: number) => void;
 }
 
 export function RelationsBlock({
@@ -69,6 +74,7 @@ export function RelationsBlock({
   task,
   refreshKey = 0,
   onOpenTask,
+  onCount,
 }: Props) {
   const [data, setData] = useState<Relations | null>(null);
   /**
@@ -115,6 +121,10 @@ export function RelationsBlock({
       ids: [...data.links, ...data.blocked_by].map((link) => link.link_id),
     });
   }, [data]);
+
+  useEffect(() => {
+    onCount?.(data ? data.subtasks.length + data.links.length + data.blocked_by.length : 0);
+  }, [data, onCount]);
 
   if (!data) return null;
 

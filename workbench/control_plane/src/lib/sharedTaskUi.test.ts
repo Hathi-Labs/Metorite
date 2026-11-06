@@ -422,7 +422,11 @@ describe("both apps reach the shared modules", () => {
     ["tasks", "components/TaskPanelHeader"],
     ["projects", "lib/statusCategory"],
     ["tasks", "lib/statusCategory"],
-    ["projects", "lib/taskPanel"],
+    // ORC-1 moved the panel rules to `@/lib/panelMode`, which reads
+    // `@/lib/taskPanel`. /projects reaches both through that one file now
+    // (the shim `app/projects/lib/panelMode.ts` until ORC-2), so this row
+    // names it. The row for `lib/taskPanel` was red on main from ORC-1.
+    ["projects", "lib/panelMode"],
     ["tasks", "lib/taskPanel"],
   ])("/%s consumes @/%s", (app, module) => {
     expect(
