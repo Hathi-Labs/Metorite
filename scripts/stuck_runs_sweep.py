@@ -21,11 +21,14 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 DEFAULT_MINUTES = 30
-OPEN_STATUSES = {"created", "in_progress", "awaiting", "working"}
+OPEN_STATUSES = {"created", "in_progress", "awaiting", "stopping"}  # the edge set
+NEGATED_RE = re.compile(r"\b(?:not|no longer|never|stopped)\s+(?:wait|await)", re.IGNORECASE)
 WAIT_RE = re.compile(
     r"AWAITING-OWNER"
     r"|\bwait(?:s|ing|ed)?\s+(?:on|for)\s+(?:the\s+)?(?:owner|your\s+(?:answer|approval|review|preview)|a\s+decision)"
-    r"|\bawait(?:s|ing)?\s+(?:the\s+)?owner"
+    r"|\bawait(?:s|ing)?\s+(?:the\s+)?(?:owner|your\s+(?:answer|approval|review|preview|decision)|approval)"
+    r"|\bwaiting\s+for\s+you\b"
+    r"|\bblocked\s+(?:on|by)\s+(?:the\s+)?owner"
     r"|\b(?:owner|your)\s+(?:preview|approval)\b.{0,40}\bwait",
     re.IGNORECASE,
 )
@@ -54,15 +57,20 @@ def find_stuck(runs: list[dict], now: datetime, minutes: int = DEFAULT_MINUTES) 
     limit = timedelta(minutes=minutes)
     stuck = []
     for run in runs:
-        if run.get("status") not in OPEN_STATUSES and run.get("state") not in OPEN_STATUSES:
+        # status is authoritative. state is only a fallback when status is missing.
+        status = run.get("status") or run.get("state")
+        if status not in OPEN_STATUSES:
             continue
         if run.get("open_question"):
             continue
         line = run.get("latest_line") or {}
         body = _text(line.get("body"))
-        if not WAIT_RE.search(body):
+        if not WAIT_RE.search(body) or NEGATED_RE.search(body):
             continue
-        since = _parse(line.get("created_at"))
+        try:
+            since = _parse(line.get("created_at"))
+        except ValueError:
+            continue  # one bad row must not abort the sweep
         if since is None or now - since < limit:
             continue
         stuck.append(

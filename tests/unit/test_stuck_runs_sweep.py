@@ -49,3 +49,23 @@ def test_cli_exit_code(tmp_path, capsys):
     f.write_text(json.dumps({"runs": [_run("Waiting on the owner's preview")]}), encoding="utf-8")
     assert sweep.main([str(f), "--now", "2026-11-05T17:00:00Z"]) == 1
     assert "stuck, no question" in capsys.readouterr().out
+
+
+def test_status_is_authoritative_over_state():
+    r = _run("waits on the owner", status="completed")
+    r["state"] = "in_progress"
+    assert sweep.find_stuck([r], NOW) == []
+
+
+def test_phrase_variants_and_negation():
+    yes = ["awaiting your approval", "Awaiting approval from the owner", "waiting for you", "blocked on the owner"]
+    for t in yes:
+        assert sweep.find_stuck([_run(t)], NOW), t
+    assert sweep.find_stuck([_run("I am not waiting on the owner")], NOW) == []
+
+
+def test_stopping_run_counts_and_bad_timestamp_does_not_abort():
+    bad = _run("waits on the owner", created="garbage")
+    good = _run("waits on the owner", status="stopping")
+    assert len(sweep.find_stuck([bad, good], NOW)) == 1
+    assert sweep.find_stuck([{"id": "r", "status": "in_progress", "latest_line": None}], NOW) == []
