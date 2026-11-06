@@ -265,6 +265,25 @@ class TestTheInputs:
         assert runs_on.gateway.requests == []
 
 
+class TestTheLinkOfAnAsk:
+    """CIV-14a. ``ask_on_task`` sends ``external_link`` to the start of the run."""
+
+    async def test_the_link_goes_to_the_start_and_http_is_refused(self, runs_on):
+        link = "https://claude.ai/code/session_9"
+        result = await _tool("ask_on_task", {
+            "task_id": TASK, "question": "Which?", "idempotency_key": "k-link",
+            "external_link": link})
+        starts = [r for r in runs_on.gateway.writes() if r.path.endswith("/agent-runs")]
+        assert starts and json.loads(starts[0].body)["external_link"] == link, result
+        before = len(runs_on.gateway.requests)
+        for bad in ("http://claude.ai/x", "https://" + "a" * 2041):
+            refused = await _tool("ask_on_task", {
+                "task_id": TASK, "question": "Which?", "idempotency_key": "k-bad",
+                "external_link": bad})
+            assert refused["isError"] is True
+        assert len(runs_on.gateway.requests) == before
+
+
 class TestTheDescriptions:
     """§12.1: the tool descriptions tell the agent three things, and the
     brief of EA-12b adds the stop and the finish. A test, so a rewrite that
@@ -290,7 +309,9 @@ class TestTheDescriptions:
         assert "my_work" in text
         assert "every run of the member" in text
         assert "needs_agent true" in text
-        assert "needs_agent true" in tools.ASK_ON_TASK.description
+        # MCP-G4: the answer goes to the asking session, so ask_on_task no
+        # longer sends a later session to the list for the answer.
+        assert "must ask again, unless the run is yours" in tools.ASK_ON_TASK.description
         assert "start of each session" in tools.MY_WORK.description
 
     def test_a_stop_stops_the_work_at_once(self):
@@ -692,3 +713,54 @@ class TestAgentRunsOverMcp:
         assert (went["run"]["status"], went["run"]["state"]) == ("in_progress", "working")
         again = await _ok(runs, "write", "list_agent_runs", needs_agent=True)
         assert run_id not in {r["id"] for r in again["runs"]}
+
+
+class TestTheAnswerChangeAtTheEdge:
+    """SW-43a. The agent sentence and the optional ``answer`` key. Mutations:
+    drop the flag test in ``mcp.instructions`` or in ``prompts._work_steps``
+    and the flag-off tests fail. Make ``agent_run`` always emit ``answer`` and
+    the key test fails."""
+
+    def _texts(self) -> tuple[str, str]:
+        from agent_edge import mcp, prompts
+
+        steps = "\n".join(prompts._work_steps(runs=True))
+        return mcp.instructions(("projects:read", "projects:write")), steps
+
+    def test_the_sentence_shows_only_with_both_flags_on(self, monkeypatch):
+        from agent_edge import prompts
+
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+        monkeypatch.setattr(get_settings(), "agent_access_writes_enabled", True)
+        monkeypatch.setattr(get_settings(), "agent_answer_change_enabled", False)
+        text, steps = self._texts()
+        assert prompts.ANSWER_RULE.strip() not in text
+        assert prompts.ANSWER_RULE.strip() not in steps
+        monkeypatch.setattr(get_settings(), "agent_answer_change_enabled", True)
+        text, steps = self._texts()
+        assert prompts.ANSWER_RULE.strip() in text
+        assert prompts.ANSWER_RULE.strip() in steps
+        assert "delet" not in prompts.ANSWER_RULE
+
+    def test_the_sentence_needs_the_runs_flag(self, monkeypatch):
+        from agent_edge import mcp, prompts
+
+        monkeypatch.setattr(get_settings(), "agent_runs_enabled", False)
+        monkeypatch.setattr(get_settings(), "agent_answer_change_enabled", True)
+        assert prompts.ANSWER_RULE.strip() not in mcp.instructions(
+            ("projects:read", "projects:write"))
+        assert prompts.ANSWER_RULE.strip() not in "\n".join(prompts._work_steps(runs=False))
+
+    def test_the_run_schema_takes_the_optional_answer_key(self):
+        schema = tools._RUN_SCHEMA
+        assert "answer" in schema["properties"]
+        assert "answer" not in schema["required"]
+        assert "answer" not in tools.RUN_KEYS
+        for ok in (None, {"id": "a1", "seq": 4, "changeable": True}):
+            assert tools.agent_run({**_run_row(), "answer": ok})["answer"] == ok
+
+    def test_agent_run_emits_answer_only_when_the_gateway_sends_it(self):
+        assert "answer" not in tools.agent_run(_run_row())
+        assert tuple(tools.agent_run(_run_row())) == tools.RUN_KEYS
+        sent = tools.agent_run(_run_row(answer={"id": "a1", "seq": 4, "changeable": False}))
+        assert sent["answer"] == {"id": "a1", "seq": 4, "changeable": False}

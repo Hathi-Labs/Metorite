@@ -1,10 +1,12 @@
 # CI velocity: the relevant tests per PR, the full suite once per batch (WS-CIV)
 
 **Status:** ACTIVE (owner directive, 2026-11-04). Verified against code on
-2026-11-04 (branch base `fb26ada52`, after a spec audit). CIV-1 is done.
-CIV-2 to CIV-9 are AGENT-SAFE. CIV-4 is HIGH tier, because it changes the
-deploy path. CIV-13 (D178, HIGH tier) is BUILT on 2026-11-05: the home box
-starts the 21:30 release. The owner installs its timer.
+2026-11-04 (branch base `fb26ada52`, after a spec audit). CIV-1 and CIV-2 are
+done. CIV-3 and CIV-7 are built on branch `civ3-pr-tier` (2026-11-05), and
+they are done at merge. CIV-4 to CIV-6, CIV-8 and CIV-9 are AGENT-SAFE.
+CIV-4, CIV-4b and CIV-13 are HIGH tier, because they change the deploy path.
+CIV-4b merged on 2026-11-05 (task 1711). CIV-13 (D178) is BUILT on
+2026-11-05: the home box starts the 21:30 release. The owner installs its timer.
 
 **Shell manifest:** none. This is CI, not an app, so R9 does not apply.
 
@@ -23,6 +25,10 @@ release. This spec links to them and adds nothing to them.
 - After the merge, `main` runs the full suite in batches. While one run goes,
   new merges wait, and the next run tests them together.
 - The 21:30 UTC release ships only a `main` whose full suite is green.
+- **R8 runs at the release.** The batch has no database, so its R8 suites
+  skip. Each release runs every R8 file against two real Postgres servers,
+  and a red R8 gate holds the release (CIV-4b). CIV-9 makes the R8 files
+  fast, and then R8 moves into the batch too.
 - The owner decision of 2026-10-16 stays: **no merge queue**. A red batch on
   `main` is fixed forward or reverted at once.
 
@@ -68,8 +74,8 @@ waited up to 22 minutes for a runner.
 |---|---|---|---|
 | 0. Local | Home box first, this PC second (`ci_local.sh`) | The affected tests, lint, the touched app's type check | Advice before a push |
 | 1. PR | GitHub (pr-check) | Lint, secret scan, type checks, SAFETY fences, the affected tests. The full set when the diff is FULL. | The 7 required checks |
-| 2. Batch | GitHub (deploy.yml on push to `main`) | The full unit suite. One run at a time. Pending merges fold into the next run. | Signal. Red means fix forward now. |
-| 3. Release | GitHub (deploy.yml at 21:30 UTC) | The full suite on the tip of `main` | Gate for the release |
+| 2. Batch | GitHub (deploy.yml on push to `main`) | The full unit suite with no database, so R8 skips until CIV-9. One run at a time. Pending merges fold into the next run. | Signal. Red means fix forward now. |
+| 3. Release | GitHub (deploy.yml at 21:30 UTC) | The full suite on the tip of `main`, and the R8 files in 6 shards with both databases (CIV-4b) | Gate for the release |
 
 ## 5. Slices
 
@@ -106,8 +112,10 @@ under `infra/postgres/` adds only `test_migration_prefixes.py`. The CLI has
     `scripts/ci_unit_guard.py`, `scripts/ci_local.sh`, `scripts/ci_pc/`.
   - `packages/acb_common/` (the DB seam and the shared settings).
   - a changed module that more than 40 test files import directly.
-- A change under `infra/postgres/` selects every file under `tests/unit/`
-  that contains `_DB_GATE`, plus `test_migration_prefixes.py`.
+- A change under `infra/postgres/` selects every R8 file, plus
+  `test_migration_prefixes.py`. CIV-4b widened the R8 rule to
+  `r8_files()`: `_DB_GATE`, an R8 variable, or a helper that names one.
+  `_DB_GATE` alone found 348 of the 454 R8 files.
 - A changed file that is not Python (frontend, docs, config) selects the
   tests whose text names its path. No import tracing for these files.
 - The Python SAFETY fences (`python.safety` in `tests/fences.json`, read
@@ -123,9 +131,26 @@ first.
 **Verify:** `uv run pytest tests/unit/test_affected_tests.py -q`.
 AGENT-SAFE. STANDARD tier.
 
-### CIV-3 · pr-check runs the selection
+### CIV-3 · pr-check runs the selection (BUILT 2026-11-05, merges only after CIV-4b)
 
-Starts after CIV-2 merges.
+Starts after CIV-2 and CIV-4b merge. Without CIV-4b, an R8 suite that a PR
+did not select would run nowhere before production.
+
+Starts after CIV-2 merges. **Built choices:** the file list travels as one
+space-separated line in a job output (a typical list is 2-20 KB against a 1 MB
+limit, and no shard downloads anything). `ci_unit_guard.py gate-output` sends a
+list over 200 KB, or a path outside `tests/*.py`, to a full run. The shard
+step `Pick this shard's tests` sets `mode` to `full`, `selection` or `empty`.
+One rule in `affected_tests.py` covers a test that reads files it never names.
+`scanning_tests` picks every unit test with a scan idiom. The idioms are `glob`,
+`rglob`, `iglob`, `iterdir`, `os.walk`, `Path.walk()`, `listdir`, `scandir`,
+`git ls-files`, `git ls-tree`, `git grep`, a `grep` or `rg` argument, `fnmatch`,
+`iter_modules`, `walk_packages` and `importlib.resources`.
+The rule runs when the PR changes any Python file, in `tests/` or `workbench/` too.
+A docs-only PR picks only the tests that name the doc. The owner chose this rule
+on 2026-11-05 (option A, on task 1631). Round 6 extends the trigger to `tests/`
+and `workbench/`, so no selection shrinks against round 4. Four rounds of folder and tree heuristics had missed
+scanners, so the heuristics are gone.
 
 **Done when:**
 - The `changes` job runs CIV-2. It exports `full` and the file list through
@@ -143,9 +168,11 @@ Starts after CIV-2 merges.
   Test both cases.
 - `scripts/ci_unit_guard.py` gets `--only-selected <file list>`. With it,
   `--must-run` checks only the listed R8 files that are in the selection.
-  The literal `--must-run` list stays in pr-check.yml, because 42 suites
-  assert their own name in that text. A new case in
-  `tests/unit/test_ci_unit_guard.py` covers the filter.
+  The literal `--must-run` list stays in pr-check.yml, because 36 test files
+  assert their own name in that text (counted 2026-11-05). A new
+  case in `tests/unit/test_ci_unit_guard.py` covers the filter.
+  deploy.yml's R8 gate keeps the full list, with no `--only-selected`.
+  `test_deploy_pipeline.py` fails when the two lists differ.
 - The guard still finds a JUnit report for each shard. A skipped pytest step
   must not leave it with none.
 - The step that writes the measured timings runs only on a FULL run. A
@@ -155,6 +182,9 @@ Starts after CIV-2 merges.
   do not change. No filter at the trigger (`test_pr_check_triggers`).
 - The shard step keeps `fences.py pytest-ignore`, `--reruns 1`, and no `-x`
   (`test_the_shards_skip_the_process_fences_and_report_every_failure`).
+  ⚠️ `--ignore` does not drop a file that the command line names (pytest
+  9.1, measured 2026-11-05). So a selection run must also remove the
+  process fences from its file list, as `affected_tests.py --r8` does.
 - The `frontend` job and its Visual review step stay unfiltered.
 
 **Advisory target (not a test):** a docs-only PR finishes in under 12
@@ -231,6 +261,77 @@ After the merge, the live evidence is two merges that land during one run:
 one green `test` run with both PRs in its summary, and one cancelled run.
 AGENT-SAFE. **HIGH tier.** Opus builds it, with an adversarial review.
 
+### CIV-4b · A release runs every R8 suite against real databases (HIGH: deploy path)
+
+**Status: BUILT (2026-11-05).** Branch `civ4b-r8-main`. Task 1711. CIV-4
+merged first.
+
+**Why.** pr-check is the only workflow that sets the two R8 variables and
+starts the two Postgres services. The `test` job of deploy.yml has no
+database, so every R8 suite skips there. Today each PR runs each R8 suite, and that
+hides the gap. After CIV-3, an R8 suite that a PR did not select would run
+nowhere before production.
+
+**The measurement (2026-11-05), and the decision.**
+- With both databases set, the full suite needs 127.7 and 131.7 min of test
+  time. These are the JUnit sums of two green pr-check runs. The R8 files
+  take 102.5 to 104.4 min of that.
+- The `test` job of deploy.yml stops at 90 minutes. With two services on
+  `test`, each batch and each release would end as `cancelled`. Then
+  `publish-release` would skip.
+- A higher `timeout-minutes` also fails. The schedule run starts 1.9 to 3.6
+  hours late, so a gate of 140 minutes would miss the release window on
+  most nights.
+- The decision (coordinator, 2026-11-05): a release runs the R8 files in 6
+  shards, beside `test`. CIV-9 makes the R8 files fast, and then R8 moves
+  into the push batch.
+
+**Built:**
+- `r8-suite` is a matrix of 6 shards. It runs on the schedule, and on each
+  dispatch without `skip_tests`. A `nightly` dispatch (CIV-13) runs it too.
+  The condition names the two events, so a new trigger does not start it.
+  A push does not run it. It joins no concurrency group.
+- It copies pr-check's two services exactly: `postgres:16` on port 5433 and
+  `pgvector/pgvector:pg16` on port 5434. It also copies the two variables
+  and the two assert steps.
+- Each shard runs the output of `affected_tests.py --r8` (480 files on 2026-11-05),
+  plus the guard's 4 files that need no database (`GUARD_ALSO`). It uses
+  pr-check's split by duration, `--reruns 1`, no `-x`, and a JUnit report.
+- A list of fewer than 100 files stops the shard before pytest starts.
+- `r8-gate` fails when a shard failed. Then it runs
+  `ci_unit_guard.py check` over the 6 reports. It uses pr-check's full
+  `--must-run`, `--never-skip` and `--disarmed` lists, and no
+  `--only-selected`.
+- `publish-release` needs `r8-gate` green. It accepts a skip only on a
+  `skip_tests` dispatch, the same rule as for `test`. `release-window` reads
+  the clock after `r8-gate`.
+- No job in deploy.yml sets `DATABASE_URL`. pr-check.yml gives the reason.
+- `r8_files()` in `affected_tests.py` is the one rule for an R8 file. The
+  file holds `_DB_GATE`, names an R8 variable, or names a
+  `tests/unit/_*.py` helper that names one.
+- That rule found all 454 files that skipped for an unset R8 variable in
+  deploy run 41951395371. `_DB_GATE` alone found 348.
+- `r8_gate_files()` leaves out the process fences. pytest's `--ignore` does
+  not drop a file that the command line names.
+- The `test` job, its group, its tip step and its timeout do not change. It
+  keeps `-x`.
+
+**The 35 files that check for their own name** read pr-check.yml only, so a
+second list does not break them. `test_deploy_pipeline.py` fails when the
+two lists differ. Add a new R8 suite to both files.
+
+**Fence:** `tests/unit/test_deploy_pipeline.py` covers the triggers, the
+needs chain, the `skip_tests` rule, the services, the variables, the assert
+steps, the split and the guard lists. `tests/unit/test_affected_tests.py`
+covers the R8 rule.
+**Files:** `.github/workflows/deploy.yml`, `scripts/affected_tests.py`,
+`tests/unit/test_deploy_pipeline.py`, `tests/unit/test_affected_tests.py`.
+**Verify:** `uv run pytest tests/unit/test_deploy_pipeline.py tests/unit/test_daily_release.py tests/unit/test_fence_lists.py tests/unit/test_ci_unit_guard.py tests/unit/test_affected_tests.py -q`.
+
+After the merge, the live evidence is the first 21:30 UTC run: six green R8
+shards, a green `r8-gate`, and a moved `release` ref.
+AGENT-SAFE. **HIGH tier.** Opus builds it, with an adversarial review.
+
 ### CIV-5 · A red batch names the PR that broke it
 
 **Done when:**
@@ -261,7 +362,7 @@ AGENT-SAFE. STANDARD tier.
 once on the box, both green.
 AGENT-SAFE. STANDARD tier.
 
-### CIV-7 · The harness says it
+### CIV-7 · The harness says it (BUILT 2026-11-05 with CIV-3, done at merge)
 
 **Done when:**
 - CLAUDE.md §6 no longer says "pr-check runs every test on each PR". It names
@@ -291,6 +392,10 @@ AGENT-SAFE. STANDARD tier.
   takes more than 180 s.
 - `.test_durations` is refreshed.
 - The full suite's wall time is under 15 minutes.
+- **R8 moves into the push batch** (the follow-up of CIV-4b). The R8 files
+  must fit in the 90 minutes of `test` on one runner, with a margin. Then
+  `test` gets pr-check's two services, the two variables and the guard. The
+  push batch then finds an R8 break within one run, not at the release.
 
 **Files:** `tests/unit/_tenant_ladder.py`, `tests/unit/_customer_console_ladder.py`,
 `tests/unit/test_crm_field_studio_r8.py`, `.test_durations`.
@@ -360,8 +465,11 @@ HIGH tier.
 
 ## 6. Order
 
-CIV-2 and CIV-4 start now, beside each other. CIV-3 starts after CIV-2
-merges. CIV-7 lands with CIV-3. CIV-5, CIV-6, CIV-8 and CIV-9 follow, in any
+CIV-2 and CIV-4 start now, beside each other. CIV-4b follows CIV-4. It is a
+sharded R8 gate. It runs on the 21:30 release and on a dispatch, beside
+`test`, and `publish-release` needs it green. CIV-3 merges only after CIV-4b,
+because the PR gate then skips R8 suites that CIV-4b still covers. CIV-7
+lands with CIV-3. CIV-5, CIV-6, CIV-8 and CIV-9 follow, in any
 order.
 
 ## 7. Tasks
@@ -375,4 +483,5 @@ slice has one subtask:
 | CIV-2 | 1630 | CIV-7 | 1635 |
 | CIV-3 | 1631 | CIV-8 | 1636 |
 | CIV-4 | 1632 | CIV-9 | 1637 |
-| CIV-5 | 1633 | CIV-13 | 1721 |
+| CIV-5 | 1633 | CIV-4b | 1711 |
+| | | CIV-13 | 1721 |

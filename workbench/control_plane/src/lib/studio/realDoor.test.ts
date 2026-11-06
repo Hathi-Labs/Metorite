@@ -226,7 +226,7 @@ describe("the package routes", () => {
   });
   it("lists the packages and reads one with its declared actions and objects", async () => {
     const list = fakeFetch(200, { packages: [{ id: PKG, name: "Visits", status: "published", live_version: 2 }] });
-    await expect(listPackages(list.impl)).resolves.toEqual([{ id: PKG, name: "Visits", status: "published", live_version: 2 }]);
+    await expect(listPackages(list.impl)).resolves.toEqual([{ id: PKG, name: "Visits", status: "published", live_version: 2, updated_at: null }]);
     expect(list.calls[0].url).toBe("/api/studio/packages");
     const one = fakeFetch(200, {
       package: { id: PKG, name: "Visits", manifest: { actions: ACTIONS } },
