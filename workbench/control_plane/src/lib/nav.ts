@@ -444,11 +444,12 @@ export const NAV_SECTIONS: NavSection[] = [
       {
         href: "/studio",
         team: "studio",
+        blurb: "Build apps, workflows and skills for your company",
         label: "Studio",
         icon: "Hammer",
         note: "Apps · workflows · skills in one library",
         feature: "studio", // ai_studio.md §14 J1: the gate of every /studio route
-        launch: "preview", // ai_studio.md §14 A1: the one library pane
+        launch: "live", // ai_studio.md §14 A1: the one library pane. Live for the beta (D179)
         agent: "app-builder", // until G3 gives the dock `studio-builder`
       },
     ],

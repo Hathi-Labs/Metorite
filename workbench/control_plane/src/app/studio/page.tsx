@@ -22,7 +22,7 @@
  *        modules    /api/workflows/modules* (ModuleStudio)
  */
 
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import { useAccess } from "@/components/AccessProvider";
@@ -30,6 +30,7 @@ import { AppTopBar } from "@/components/AppTopBar";
 import FilterPills from "@/components/FilterPills";
 import Tabs from "@/components/Tabs";
 import ModuleStudio from "@/app/workflows/components/ModuleStudio";
+import { useLiveRefresh } from "@/lib/liveRefresh";
 import { studioLibraryView, type StudioKind } from "@/lib/studio/library";
 import AppsGallery from "./components/AppsGallery";
 import SkillsGallery from "./components/SkillsGallery";
@@ -43,6 +44,10 @@ function StudioLibrary() {
   const pathname = usePathname();
   const params = useSearchParams();
   const { access } = useAccess();
+  // An app or skill that the assistant saves in chat shows with no reload: the
+  // bumped key remounts each gallery, and each one reads its list again.
+  const [librarySeq, setLibrarySeq] = useState(0);
+  useLiveRefresh(() => setLibrarySeq((n) => n + 1), "studio");
 
   const view = studioLibraryView(access, params.get("kind"), params.get("tab"));
 
@@ -78,9 +83,9 @@ function StudioLibrary() {
             onChange={(id) => go({ kind: id as StudioKind })}
           />
           <div className="flex-1 overflow-y-auto p-3 sm:p-4 flex flex-col gap-3 sm:gap-4">
-            {view.showApps && <div className={PANEL}><AppsGallery /></div>}
-            {view.showWorkflows && <div className={PANEL}><WorkflowsGallery /></div>}
-            {view.showSkills && <div className={PANEL}><SkillsGallery /></div>}
+            {view.showApps && <div key={`apps-${librarySeq}`} className={PANEL}><AppsGallery /></div>}
+            {view.showWorkflows && <div key={`workflows-${librarySeq}`} className={PANEL}><WorkflowsGallery /></div>}
+            {view.showSkills && <div key={`skills-${librarySeq}`} className={PANEL}><SkillsGallery /></div>}
           </div>
         </>
       )}

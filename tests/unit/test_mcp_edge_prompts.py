@@ -634,6 +634,11 @@ class TestTheChecks:
         assert served == {"initialize", "ping", "tools/list", "tools/call", "prompts/list",
                           "prompts/get"}
 
+    def test_ci14a_the_claim_step_tells_the_agent_to_pass_its_session_link(self):
+        for runs in (True, False):
+            assert "pass it as external_link" in prompts._task_text("42", runs=runs)
+        assert "pass it as external_link" in prompts._queued_text()
+
     def test_the_prompt_never_names_an_unknown_tool(self):
         """Each tool name in the message is a tool of the edge."""
         for runs in (True, False):
@@ -643,6 +648,7 @@ class TestTheChecks:
                                                  "expected_version", "in_progress", "short_id",
                                                  "untrusted_text", "held_by", "run_id",
                                                  "agent_run_id", "task_held",
+                                                 "external_link",
                                                  *tools.MY_WORK_REASONS}
             assert not unknown, unknown
 

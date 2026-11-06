@@ -2671,6 +2671,17 @@ CONTEXT_COMMENTS = 20
 #: ``get_task``, one for each parent, the project node and the timeline.
 #: SW-31a adds one, the read of the guidance (:func:`_guidance_of`), so 13.
 CONTEXT_CALL_CEILING = 13
+#: CIV-14c. With ``comments: "all"`` the timeline is read in pages of the
+#: route's cap, up to this many comments in total. The newest ones win.
+CONTEXT_ALL_COMMENTS = 500
+#: The page of the timeline route in that mode (the route's own cap).
+CONTEXT_ALL_PAGE = 100
+#: The extra timeline calls of that mode: page 1 rides in the 13 above.
+CONTEXT_ALL_EXTRA_CALLS = CONTEXT_ALL_COMMENTS // CONTEXT_ALL_PAGE - 1
+#: The most gateway calls of ``get_task_context`` with ``comments: "all"``.
+CONTEXT_ALL_CALL_CEILING = CONTEXT_CALL_CEILING + CONTEXT_ALL_EXTRA_CALLS
+#: The values of the ``comments`` input.
+CONTEXT_COMMENTS_MODES: tuple[str, ...] = ("recent", "all")
 
 #: The keys of one parent of ``ancestors`` (§12.4).
 ANCESTOR_KEYS: tuple[str, ...] = ("id", "task_number", "title", "status", "description")
@@ -2682,6 +2693,19 @@ CONTEXT_KEYS: tuple[str, ...] = (
 
 #: The one stub of a parent that the member cannot see. It has no title.
 _HIDDEN_ANCESTOR: Mapping[str, bool] = {"hidden": True}
+
+_CONTEXT_INPUT: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        **_TASK_ID_INPUT["properties"],
+        "comments": {
+            "type": "string", "enum": list(CONTEXT_COMMENTS_MODES), "default": "recent",
+            "description": "recent: the newest 20 comments. all: every comment,"
+                           " up to 500, with comments_truncated when more exist."},
+    },
+    "required": ["task_id"],
+    "additionalProperties": False,
+}
 
 _ANCESTOR_STATUS_SCHEMA = _object({
     "id": {"type": "string"}, "name": _UNTRUSTED_OR_NULL, "category": _NULLABLE_STRING,
@@ -2841,6 +2865,8 @@ _CONTEXT_PROJECT_SCHEMA: dict[str, Any] = {"anyOf": [
              "description": _UNTRUSTED_OR_NULL}),
     {"type": "null"},
 ]}
+#: Present only with ``comments: "all"`` (CIV-14c).
+COMMENTS_TRUNCATED_KEY = "comments_truncated"
 _CONTEXT_OUTPUT: dict[str, Any] = _optional(_object({
     "task": _TASK_SCHEMA,
     "ancestors": {"type": "array", "items": _ANCESTOR_SCHEMA},
@@ -2854,6 +2880,7 @@ _CONTEXT_OUTPUT: dict[str, Any] = _optional(_object({
     "recent_comments": {"type": "array", "items": _TIMELINE_OUTPUT["properties"][
         "activities"]["items"]},
 }), GUIDANCE_KEY, _GUIDANCE_SCHEMA)
+_CONTEXT_OUTPUT = _optional(_CONTEXT_OUTPUT, COMMENTS_TRUNCATED_KEY, {"type": "boolean"})
 
 
 async def _statuses_of(ctx: Context, project: str) -> dict[str, Mapping[str, Any]]:
@@ -2990,6 +3017,8 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
     most :data:`CONTEXT_CALL_CEILING` gateway calls.
     """
     where = {"task_id": str(args["task_id"])}
+    every = args.get("comments", CONTEXT_COMMENTS_MODES[0]) == "all"
+    size = CONTEXT_ALL_PAGE if every else CONTEXT_COMMENTS
     row = await _get(ctx, TASK_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where)
     if not isinstance(row, dict):
         raise ToolError(TEXT_BUSY)
@@ -3012,7 +3041,7 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
         _project_of(ctx, project) if valid else nothing(),
         _get(ctx, TIMELINE_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where,
              query=[("kind", "comments"), ("page", "1"),
-                    ("page_size", str(CONTEXT_COMMENTS))]),
+                    ("page_size", str(size))]),
         _walk_up(ctx, row),
         _guidance_of(ctx, where["task_id"]),
     )
@@ -3028,7 +3057,23 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
         for p in reversed(walk.parents)
     ]
     # The timeline answers newest first. The result reads oldest first.
-    comments = [_activity(r) for r in reversed(_rows_of(timeline))]
+    newest = _rows_of(timeline)
+    truncated = False
+    if every:
+        total = timeline.get("total") if isinstance(timeline, dict) else None
+        total = total if isinstance(total, int) else len(newest)
+        truncated = total > CONTEXT_ALL_COMMENTS
+        pages = -(-min(total, CONTEXT_ALL_COMMENTS) // CONTEXT_ALL_PAGE)
+        if pages > 1:
+            more = await _together(*(
+                _get(ctx, TIMELINE_ROUTE, TEXT_TASK_NOT_FOUND, path_params=where,
+                     query=[("kind", "comments"), ("page", str(n)),
+                            ("page_size", str(CONTEXT_ALL_PAGE))])
+                for n in range(2, pages + 1)))
+            for body in more:
+                newest = [*newest, *_rows_of(body)]
+        newest = newest[:CONTEXT_ALL_COMMENTS]
+    comments = [_activity(r) for r in reversed(newest)]
     result: dict[str, Any] = {
         "task": task,
         "ancestors": ancestors,
@@ -3044,6 +3089,8 @@ async def _get_task_context(ctx: Context, args: dict[str, Any]) -> dict[str, Any
     }
     if guidance is not None:
         result[GUIDANCE_KEY] = guidance
+    if every:
+        result[COMMENTS_TRUNCATED_KEY] = truncated
     return result
 
 
@@ -3057,7 +3104,9 @@ GET_TASK_CONTEXT = Tool(
         " project with the description, the tasks that block it (blocked_by)"
         " and the tasks it blocks (blocks), each with its status category, its"
         " subtasks, its open agent runs, held_by, its references and the"
-        " newest 20 comments, oldest first. A parent that this member cannot"
+        " comments, oldest first. By default these are the newest 20. Send"
+        " comments: \"all\" for every comment, up to 500. The result then has"
+        " comments_truncated, true when older comments did not fit. A parent that this member cannot"
         " see shows as {\"hidden\": true}, and the parents above it do not"
         " show. Each parent has the first 500 characters of its description."
         " A parent in another project shows its status category only."
@@ -3073,10 +3122,11 @@ GET_TASK_CONTEXT = Tool(
         + _UNTRUSTED_NOTE
     ),
     required_scope=agent_oauth.PROJECTS_READ,
-    input_schema=_TASK_ID_INPUT,
+    input_schema=_CONTEXT_INPUT,
     output_schema=_CONTEXT_OUTPUT,
     route=TASK_ROUTE,
     params={"task_id": "task_id"},
+    edge_inputs=frozenset({"comments"}),
     not_found=TEXT_TASK_NOT_FOUND,
     run=_get_task_context,
     routes=(TASK_ROUTE, RELATIONS_ROUTE, REFS_ROUTE, TASK_RUNS_ROUTE, STATUSES_ROUTE,
@@ -3119,7 +3169,7 @@ MY_WORK_REASONS: tuple[str, ...] = (*WAITING_REASONS.values(), REASON_HELD, REAS
 #: ``claim_task`` sends back as ``expected_version``.
 MY_WORK_ROW_KEYS: tuple[str, ...] = (
     "task_id", "task_number", "title", "status", "project_id", "version", "reason",
-    "run_id", "held_by", "yours",
+    "run_id", "held_by", "yours", "external_link",
 )
 
 _MY_WORK_INPUT: dict[str, Any] = {
@@ -3139,6 +3189,7 @@ _MY_WORK_ROW_SCHEMA = _optional(_object({
     "reason": {"type": "string", "enum": list(MY_WORK_REASONS)},
     "run_id": _NULLABLE_STRING, "held_by": _HELD_BY_SCHEMA,
     "yours": {"type": "boolean"},
+    "external_link": _SHAPED_OR_NULL,
 }), GUIDANCE_REF_KEY, _GUIDANCE_REF_SCHEMA)
 _MY_WORK_OUTPUT: dict[str, Any] = _object({
     "rows": {"type": "array", "items": _MY_WORK_ROW_SCHEMA},
@@ -3262,13 +3313,15 @@ async def _tasks_by_id(ctx: Context, ids: list[str]) -> dict[str, dict[str, Any]
 def _work_row(task_id: str, row: Mapping[str, Any] | None, reason: str,
               run_id: str | None,
               names_by_project: Mapping[str, Mapping[str, str]],
-              yours: bool = False) -> dict[str, Any]:
+              yours: bool = False, link: Any = None) -> dict[str, Any]:
     """One row of ``my_work`` (§12.4). With no task row, the task fields are
-    null and the row still names the run."""
+    null and the row still names the run. ``external_link`` is the link of
+    the run, shaped as on the run wire, or null (CIV-14a)."""
+    shown = _capped(link, _URL_RE, MAX_LINK_CHARS)
     if row is None:
         return {"task_id": task_id, "task_number": None, "title": None, "status": None,
                 "project_id": None, "version": None, "reason": reason, "run_id": run_id,
-                "held_by": None, "yours": yours}
+                "held_by": None, "yours": yours, "external_link": shown}
     status_id = row.get("status_id")
     names = names_by_project.get(str(row.get("project_id")), {})
     return {
@@ -3285,6 +3338,7 @@ def _work_row(task_id: str, row: Mapping[str, Any] | None, reason: str,
         "run_id": run_id,
         "held_by": _held_by(row.get("held_by")),
         "yours": yours,
+        "external_link": shown,
     }
 
 
@@ -3336,6 +3390,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     assigned = _rows_of(body)
 
     listed: list[tuple[str, str, str | None, bool]] = []
+    links: dict[str, Any] = {}
     seen: set[str] = set()
     for run, reason in [*((r, WAITING_REASONS[_waiting_reason(r)]) for r in waiting),
                         *((r, REASON_HELD) for r in holding)]:
@@ -3343,6 +3398,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
         if task_id is None or task_id in seen:
             continue
         seen.add(task_id)
+        links[task_id] = run.get("external_link")
         listed.append((task_id, reason, _id(run.get("id")),
                        _yours(run, ctx.session)))
 
@@ -3361,7 +3417,7 @@ async def _my_work(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     rows.update(await _tasks_by_id(ctx, missing))
     shown = [rows[t] for t, _, _, _ in listed if t in rows]
     names = await _status_names(ctx, _distinct_projects(shown))
-    out = [_work_row(t, rows.get(t), reason, run_id, names, mine)
+    out = [_work_row(t, rows.get(t), reason, run_id, names, mine, links.get(t))
            for t, reason, run_id, mine in listed]
     # SW-31a: one read of the refs for all rows. No body: the agent reads the
     # blocks with get_task_context.
@@ -4382,6 +4438,11 @@ ADD_COMMENT = Tool(
 
 CLAIM_ROUTE = "/projects/tasks/{task_id}/claim"
 
+#: CIV-14a. The optional link of a claim, a start and an ask: https only.
+_LINK_INPUT: dict[str, Any] = {
+    "type": "string", "minLength": 9, "maxLength": 2048, "pattern": r"^https://\S+$",
+    "description": "An https link to your session or its log."}
+
 #: The fixed text of each refused claim, by the code of the gateway's 422
 #: (``tasks.CLAIM_REFUSALS``). The edge never shows the gateway's message. A
 #: 422 with any other detail is the bad-request text. ``test_mcp_edge_claim``
@@ -4403,6 +4464,7 @@ _CLAIM_INPUT: dict[str, Any] = {
         "expected_version": {
             "type": "string", "pattern": _VERSION_PATTERN,
             "description": "The version that get_task returned for this task."},
+        "external_link": _LINK_INPUT,
     },
     "required": ["task_id", "expected_version"],
     "additionalProperties": False,
@@ -4427,9 +4489,11 @@ async def _claim_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     It needs no ``_refuse_nul`` (EA-6c): both inputs must match a pattern of
     the input schema, a UUID and a version, so no control character passes.
     """
+    link = _str_or_none(args.get("external_link"))
     _, after = await _write(
         ctx, "POST", CLAIM_ROUTE, TEXT_TASK_NOT_FOUND,
-        path_params={"task_id": str(args["task_id"])}, json_body={},
+        path_params={"task_id": str(args["task_id"])},
+        json_body={} if link is None else {"external_link": link},
         if_match=str(args["expected_version"]), coded=CLAIM_TEXTS)
     if not isinstance(after, dict) or _id(after.get("id")) is None:
         raise ToolError(TEXT_BUSY)
@@ -4469,7 +4533,9 @@ CLAIM_TASK = Tool(
         " [[OWN]] that it found, or null when agent"
         " runs are off. Only one AI session may hold a task. When another"
         " session holds it, the tool refuses: pick another task, and do not"
-        " claim this one again.[[SHARED]] A holder with no activity for 2 hours loses"
+        " claim this one again.[[SHARED]] Send external_link, an https link to"
+        " your session, when you have one. The run then shows it. A new link"
+        " replaces the old one. A holder with no activity for 2 hours loses"
         " the task to the next claim. When the organization turned on guidance,"
         " the result also has guidance: the organization's written rules for this"
         " task, nearest block first. The nearest block wins on a conflict. Its"
@@ -4481,7 +4547,8 @@ CLAIM_TASK = Tool(
     input_schema=_CLAIM_INPUT,
     output_schema=_CLAIM_OUTPUT,
     route=CLAIM_ROUTE,
-    params={"task_id": "task_id", "expected_version": "If-Match"},
+    params={"task_id": "task_id", "expected_version": "If-Match",
+            "external_link": "external_link"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_claim_task,
     routes=(TASK_ROUTE, STATUSES_ROUTE, GUIDANCE_ROUTE),
@@ -5529,9 +5596,7 @@ _START_INPUT: dict[str, Any] = {
     "type": "object",
     "properties": {
         "task_id": _TASK_INPUT,
-        "external_link": {"type": "string", "minLength": 9, "maxLength": 2048,
-                          "pattern": r"^https://\S+$",
-                          "description": "An https link to your session or its log."},
+        "external_link": _LINK_INPUT,
         "idempotency_key": _KEY_INPUT,
     },
     "required": ["task_id", "idempotency_key"],
@@ -5667,6 +5732,7 @@ _ASK_INPUT: dict[str, Any] = {
         "question": {**_BODY_INPUT, "description": "The question, in Markdown."},
         "options": _OPTIONS_INPUT,
         "allow_multiple": _ALLOW_MULTIPLE_INPUT,
+        "external_link": _LINK_INPUT,
         "idempotency_key": _KEY_INPUT,
     },
     "required": ["task_id", "question", "idempotency_key"],
@@ -5680,7 +5746,8 @@ async def _ask_on_task(ctx: Context, args: dict[str, Any]) -> dict[str, Any]:
     second call with the same key returns the same run and question."""
     _check_options(args.get("options"))
     key = str(args["idempotency_key"])
-    _, run = await _start(ctx, str(args["task_id"]), key)
+    _, run = await _start(ctx, str(args["task_id"]), key,
+                          _str_or_none(args.get("external_link")))
     run_id = _id(run.get("id"))
     if run_id is None:
         raise ToolError(TEXT_BUSY)
@@ -5710,6 +5777,7 @@ ASK_ON_TASK = Tool(
         " type prompt arrives. The answer goes to your own session. If you end the"
         " session, a later session must ask again, unless the run is yours."
         " The my_work text holds the rule."
+        " Send external_link, an https link to your session, when you have one."
         " When the member answers in another place, such as your chat, call"
         " record_outside_decision at once." + _UNTRUSTED_NOTE
     ),
@@ -5718,7 +5786,8 @@ ASK_ON_TASK = Tool(
     output_schema=_ACTIVITY_OUTPUT,
     route=RUN_ACTIVITIES_ROUTE,
     params={"task_id": "task_id", "question": "body", "options": "options",
-            "allow_multiple": "allow_multiple", "idempotency_key": "idempotency_key"},
+            "allow_multiple": "allow_multiple", "external_link": "external_link",
+            "idempotency_key": "idempotency_key"},
     not_found=TEXT_TASK_NOT_FOUND,
     run=_ask_on_task,
     method="POST",
@@ -7211,6 +7280,7 @@ __all__ = [
     "COMMENT_KEYS",
     "COMMENT_REPLAY_KEYS",
     "COMPLETED_CATEGORY",
+    "CONTEXT_ALL_CALL_CEILING",
     "CONTEXT_CALL_CEILING",
     "CONTEXT_COMMENTS",
     "CONTEXT_KEYS",

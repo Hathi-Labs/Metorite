@@ -132,7 +132,7 @@ The core function brief sets the phases (D119). Customer zero comes first inside
 1. **Customer zero safe and working** (M0, P0): H-259, BO-23b, M0.4, the chat flag, H-163, H-373, H-120, H-326 and CZ-DEWIN-1.
 2. **The shared job queue**: BR-1a. Every brief task runs on it, so build it first and small.
 3. **Issue reporting and the Get started checklist** before the pilots: IR-0 to IR-3 and OB-1. Help follows in M1: HLP-1 to HLP-3.
-4. **The cheap isolation fixes** (M1, P0): H-249, H-201 and AX-0. H-312 closed its five reads on 2026-11-04. H-334 closed the owner check on 2026-11-04, and its list reads wait on task 1692. AX-0 withholds the host shell tools from personal agents, and the owner confirms it.
+4. **The cheap isolation fixes** (M1, P0): H-249, H-201 and AX-0. H-312 closed its five reads on 2026-11-04. H-334 closed the owner check on 2026-11-04. H-334b closed its three list reads on 2026-11-05 (task 1692). AX-0 withholds the host shell tools from personal agents, and the owner confirms it.
 5. **The isolation spine**: H2, then H3.2 (D120), then H3 in a maintenance window. H4, H5 and H6 run beside it.
 6. **The owner answers**: WS-40-Q (D121) and H3.2 (D120). Both gate P0 work.
 7. **Branch protection**: WS-38a, then WS-5a and WS-38b.
@@ -3968,6 +3968,15 @@ on production. The switch is `provider_meta.always_confirm` on the registry row,
 read by `McpPermissionGate`. It came right after IN-4, and it is built as
 `specs/agent_architecture.md` §12.2 WS-8c, item 31.
 
+**Recorded 2026-11-04, not a decision of its own (MCP-C2).** The owner asked in
+chat for full read access to an outside MCP server, Shaurrya Console, with no
+card for each read. Its one tool, `call_operation`, says that it is destructive.
+The org's key has read scopes only. The answer is a second admin switch,
+`provider_meta.read_only_key`, built as `specs/agent_architecture.md` §12.2
+WS-8c, item 32. It narrows H-299 by the admin's statement about the key, not by
+trust in the server. Item 31 wins when both are set. H-236 and step 3a of
+`decide()` do not change. Metorite task 1584.
+
 **What it extends.** D96.4: an MCP server is a connection. D98 adds the
 connections that need an OAuth consent.
 
@@ -5403,6 +5412,24 @@ GitHub starts the `30 21 * * *` cron of `deploy.yml` 3.5 to 5.5 h late, each nig
 5. **The cron stays as the backup.** It ships only when the box did not ship that night.
 
 This amends D145 point 5. Fence: `tests/unit/test_daily_release.py` and `tests/unit/test_nightly_release_box.py`.
+
+### D179 — Studio opens to every beta org, the members bleed it out, and the build continues on top of it (2026-11-05)
+
+Owner directive, 2026-11-05, in chat. Metorite task 1795 (`mt-8bfa6cb4`). Owning spec: `specs/ai_studio.md` §14 A1.
+
+```text
+"You can build this for everybody. Let all my beta customers be able to try it
+out and bleed it out, and continue to build features onto it."
+```
+
+1. **The nav entry is live.** The `/studio` pane in `nav.ts` goes from `preview` to `live`. Every member who holds its feature sees Studio in the AI Studio section. `launch_surface.md` §2 lists it, and `nav.test.ts` fences the set.
+2. **The routes still wait for the switch-on.** The Studio routes answer only for an org on `STUDIO_ORGS`. An org outside the list sees a plain "not open for your organization yet" state. The supervisor turns it on after the gates of task 1795: `STUDIO_ORGS=*` and the `studio` pack in `TOOL_PACKS`. This decision does not flip either one.
+3. **The kill switch.** `STUDIO_ORGS` reloads with no restart (`docs/flag_reload.md`). An empty value closes the routes for every org at once. The nav entry stays, and the pane then shows the not-open state.
+4. **The build goes on.** Each later Studio slice lands on this live pane, behind its own flag where it needs one. D178 and the J1 slices keep their own gates.
+
+**Why.** The owner wants the beta customers to use Studio and find its faults, so the next slices come from real use.
+
+**Fence.** `src/lib/nav.test.ts` fails when `/studio` is `preview` and when the live count is wrong. It also holds the one allowed exception to the job rule (`NO_JOB_YET`).
 
 ### D180 — Every member builds and publishes private Studio apps, and `studio:publish` gates the share to others (2026-11-05)
 

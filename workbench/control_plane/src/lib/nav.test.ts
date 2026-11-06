@@ -78,6 +78,11 @@ const LIVE_SET: ReadonlyArray<[string, string]> = [
   // nav order.
   ["apps", "/knowledge"],
   ["ai-studio", "/chat"],
+  // Added 2026-11-05 by owner decision in chat (D179, task 1795), taking
+  // the live set from FOURTEEN to FIFTEEN. Studio sits after Chat, in nav
+  // order. The routes still need STUDIO_ORGS, so an org not listed sees the
+  // "not open yet" state.
+  ["ai-studio", "/studio"],
   ["admin", "/approvals"],
   ["admin", "/settings/organization"],
   ["admin", "/settings/appearance"],
@@ -133,7 +138,7 @@ describe("chromeless onboarding routes (CP-2c onboarding UX)", () => {
 });
 
 describe("the launch allowlist (LS-1)", () => {
-  it("ships exactly the fourteen panes launch_surface.md §2 names", () => {
+  it("ships exactly the fifteen panes launch_surface.md §2 names", () => {
     const live = panesWithSection()
       .filter(([, p]) => p.launch === "live")
       .map(([section, p]): [string, string] => [section, p.href]);
@@ -362,15 +367,32 @@ describe("every job opens a page that exists (NS-2 done-when 2)", () => {
 describe("every live app has a job (NS-2 done-when 1)", () => {
   // A live app with no job is invisible in the command bar's Do group, so a
   // member who types what they want to do there finds only "Open …".
-  it.each(LIVE_PANES.map((p) => [p.label, p.href] as const))("%s (%s) has one job or more", (_label, href) => {
-    expect(JOBS.some((j) => j.app === href), `${href} has no job in lib/shell/registry.ts`).toBe(true);
+  // Studio went live on 2026-11-05 (D179) with no job. A job adds a row to
+  // the shell manifest, to the pinned job tables of `test_shell_manifests.py`
+  // and to the coordinator's `intent.JOBS`, and slice J1-1 is moving the
+  // Studio gate at the same time. A later slice adds the job and drops this
+  // line. No other app belongs here.
+  const NO_JOB_YET = ["/studio"];
+
+  it.each(LIVE_PANES.filter((p) => !NO_JOB_YET.includes(p.href)).map((p) => [p.label, p.href] as const))(
+    "%s (%s) has one job or more",
+    (_label, href) => {
+      expect(JOBS.some((j) => j.app === href), `${href} has no job in lib/shell/registry.ts`).toBe(true);
+    },
+  );
+
+  it("the no-job list holds only Studio, and an app with a job leaves it", () => {
+    expect(NO_JOB_YET).toEqual(["/studio"]);
+    for (const href of NO_JOB_YET) {
+      expect(JOBS.some((j) => j.app === href), `${href} has a job now: drop it from NO_JOB_YET`).toBe(false);
+    }
   });
 });
 
 describe("the Studio library pane (ai_studio.md §14 A1)", () => {
-  it("PANES holds /studio as a preview pane, and none of the three old hrefs", () => {
+  it("PANES holds /studio as a live pane, and none of the three old hrefs", () => {
     const studio = PANES.find((p) => p.href === "/studio");
-    expect(studio?.launch).toBe("preview");
+    expect(studio?.launch).toBe("live");
     for (const old of ["/workflows", "/build/apps", "/build/agents"]) {
       expect(PANES.some((p) => p.href === old), `${old} is a redirect now`).toBe(false);
     }

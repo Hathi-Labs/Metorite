@@ -346,6 +346,8 @@ describe("every app the member holds, with nothing pinned", () => {
       "/crm",
       "/people",
       "/chat",
+      // Studio since 2026-11-05 (D179), gated on `workflows` until J1-1.
+      "/studio",
       "/approvals",
       "/settings/organization",
       "/settings/appearance",
