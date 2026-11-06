@@ -322,7 +322,7 @@ The Close phase (CC-8) and the Calendar read the minutes from `GET /projects/my/
 
 **Not in CC-5.** The phases, the day rail, the chat tools and any report for a manager.
 
-**Fences.** `tests/unit/test_focus_session_rls_r8.py` holds that organization A and member X see only their own rows, through the routes and through the table. `tests/unit/test_focus_sessions_r8.py` holds that a start ends the open session, that pauses do not count, that an end stamps the overlay pair, and that a stale session closes itself. CC-5b adds `src/app/tasks/lib/checkIn.test.ts` and `e2e/focus-check-in.spec.ts`.
+**Fences.** `tests/unit/test_focus_session_rls_r8.py` holds that organization A and member X see only their own rows, through the routes and through the table. `tests/unit/test_focus_sessions_r8.py` holds that a start ends the open session, and that pauses do not count. It also holds that an end stamps the overlay pair, and that a stale session closes itself. CC-5b adds `src/app/tasks/lib/checkIn.test.ts` and `e2e/focus-check-in.spec.ts`.
 
 **Verify with (CC-5a):**
 
