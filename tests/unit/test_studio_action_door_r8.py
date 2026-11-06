@@ -1,6 +1,6 @@
-"""The action door of AI Studio on a real database (STU-B2a and STU-B2b-1, R8).
+"""The action door of AI Studio on a real database (STU-B2a, B2b-1, B2c-1 and B2c-2a, R8).
 
-Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a and B2b-1. Code:
+Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a, B2b-1, B2c-1 and B2c-2a. Code:
 ``gateway/routes/studio/invoke.py`` over ``gateway/studio/packages_store.py``
 (A3) and ``gateway/studio/objects_store.py`` (C1). The hermetic half is
 ``test_studio_action_door.py``.
@@ -1397,9 +1397,22 @@ def test_r8_a_writer_after_the_busy_ones_is_admitted_again(dworld) -> None:
 # restored with git. The two of the acceptance line:
 #
 # * D1. ``_run_spend``: skip the spend, and run the stored call of
-#   ``read_request``. Red: MUTATION_D1_RESULT
+#   ``read_request``. 9 of the 15 tests below go red. Among them are each case
+#   of ``test_r8_a_delegated_write_runs_only_after_the_card_and_runs_the_stored_call``
+#   (add B, change B, remove C) and each case of
+#   ``test_r8_a_declined_card_writes_nothing`` (add B, remove C). In the
+#   hermetic half, the three cases of
+#   ``test_a_resend_reads_no_byte_and_spends_writes_and_audits_in_one_session``,
+#   ``test_a_refused_spend_writes_nothing_and_answers_its_reason`` and
+#   ``test_the_direct_path_is_the_only_door_write`` go red.
 # * D2. ``_run_spend``: spend in its own ``_tenant_session``, which commits
-#   before the write. Red: MUTATION_D2_RESULT
+#   before the write. 4 tests go red: each case of
+#   ``test_r8_a_failed_audit_rolls_the_spend_and_the_write_back`` (add B,
+#   remove C), ``test_r8_a_refused_write_rolls_the_spend_back`` (B) and
+#   ``test_r8_a_busy_store_rolls_the_spend_back_and_a_retry_runs`` (C). In the
+#   hermetic half, the three cases of
+#   ``test_a_resend_reads_no_byte_and_spends_writes_and_audits_in_one_session``
+#   go red.
 
 from acb_common.no_person import no_person_scope  # noqa: E402
 from fastapi.responses import JSONResponse  # noqa: E402

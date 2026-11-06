@@ -1,6 +1,6 @@
-"""The action door of AI Studio, the hermetic half (STU-B2a and STU-B2b-1).
+"""The action door of AI Studio, the hermetic half (STU-B2a, B2b-1, B2c-1 and B2c-2a).
 
-Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a and B2b-1. Code:
+Spec: ``project-docs/specs/ai_studio.md`` §3.2, and §14 B2a, B2b-1, B2c-1 and B2c-2a. Code:
 ``gateway/routes/studio/invoke.py``. The R8 half, on a real Postgres, is
 ``test_studio_action_door_r8.py``. It proves the walls of the org, of the
 member and of the package, and the audit row.
