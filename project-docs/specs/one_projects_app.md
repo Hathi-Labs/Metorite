@@ -1502,6 +1502,8 @@ Each fence is advisory until its slice builds.
 
 **Status:** 📋 SPEC. The design record is `project-docs/research/task_card_redesign_2026-11.md`. Its mockup put an Ask line on the card. D172.4 replaced that with the AI pill.
 
+**The frame and the tabs:** `one_record_card.md` (D181) owns them. ORC-2 and ORC-3 move this card onto them. This section keeps the card's content.
+
 ### 9c.1 What is wrong today
 
 - **The chat goes away.** The card covers it. The Calendar card is a `fixed inset-0 z-[80]` window (`TaskFocusModal.tsx:64`). The Projects full card is `fixed z-50` (`projects/page.tsx:5809`). The phone card is `z-[60]`, over the bottom bar and its Ask tab (`:5575`).
