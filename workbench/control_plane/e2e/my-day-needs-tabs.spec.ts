@@ -14,6 +14,8 @@ import { expect, test, type Page, type Route } from "@playwright/test";
  *     "a tab counts every row" fails on 20 and not 25.
  *   - Show the band heading under the Reminders tab (`tabbed` false): the
  *     Reminders tab test fails on the hidden heading.
+ *   - Paint a cap `bg-background` (not `bg-card`): "a cap paints the surface" fails in dark.
+ *   - Drop the scroll effect in NeedsTabBar: "scrolls clear of the left cap" fails.
  *   - Give All a count (needsTabs.ts): "All draws no count" fails.
  *   - Draw the chevron always (drop the `edge.right` test in NeedsTabBar):
  *     "a bar that fits draws no chevron" fails.
@@ -247,6 +249,73 @@ test.describe("My Day, the Needs you bar with many tabs (CC-11)", () => {
     // The right edge is reached: its chevron goes, the left one comes.
     await expect(next).toHaveCount(0);
     await expect(prev).toBeVisible();
+  });
+
+  test("a cap paints the surface behind the bar, in light and in dark", async ({ page }) => {
+    await setup(page, MANY);
+    await page.goto("/");
+    await expect(feedCard(page, "tasks:t1")).toBeVisible();
+    await expect(feed(page).locator("[data-feed-tabs-next]")).toBeVisible();
+    for (const light of [true, false]) {
+      await page.evaluate((l) => document.documentElement.classList.toggle("light", l), light);
+      const colours = await page.evaluate(() => {
+        const cap = document.querySelector<HTMLElement>("[data-feed-tabs-next]")!.parentElement!;
+        // The surface behind the bar: the first ancestor that paints a colour.
+        let el: HTMLElement | null = document.querySelector<HTMLElement>("[data-feed-filter]")!.parentElement;
+        while (el && getComputedStyle(el).backgroundColor === "rgba(0, 0, 0, 0)") el = el.parentElement;
+        return { cap: getComputedStyle(cap).backgroundColor, surface: el ? getComputedStyle(el).backgroundColor : "none" };
+      });
+      expect(colours.cap).not.toBe("rgba(0, 0, 0, 0)");
+      expect(colours.cap).toBe(colours.surface);
+    }
+  });
+
+  test("a selected tab scrolls clear of the left cap, after a click and after the keys", async ({ page }) => {
+    await setup(page, MANY);
+    await page.goto("/");
+    await expect(feedCard(page, "tasks:t1")).toBeVisible();
+    const next = feed(page).locator("[data-feed-tabs-next]");
+    const prevButton = feed(page).locator("[data-feed-tabs-prev]");
+    const leftCap = prevButton.locator("xpath=../..");
+    const clear = async (tab: ReturnType<typeof tabs>) => {
+      // The left cap is there while the bar is scrolled, and the tab must sit beside it.
+      await expect(prevButton).toBeVisible();
+      const t = (await tab.boundingBox())!;
+      const c = (await leftCap.boundingBox())!;
+      expect(t.x).toBeGreaterThanOrEqual(c.x + c.width - 1);
+    };
+    // Scroll to the end, then choose the third tab: it must not sit under the cap.
+    for (let i = 0; i < 4 && (await next.count()); i++) {
+      await next.click();
+      await page.waitForTimeout(400);
+    }
+    await expect(prevButton).toBeVisible();
+    const second = tabs(page).nth(2);
+    await second.click();
+    await page.waitForTimeout(300);
+    await expect(second).toHaveAttribute("aria-selected", "true");
+    await clear(second);
+    // End, then ArrowLeft: the tab before the last one is clear of the right cap as well.
+    await page.keyboard.press("End");
+    await page.waitForTimeout(300);
+    await page.keyboard.press("ArrowLeft");
+    await page.waitForTimeout(300);
+    const beforeLast = tabs(page).nth(7);
+    await expect(beforeLast).toHaveAttribute("aria-selected", "true");
+    const t = (await beforeLast.boundingBox())!;
+    const bar = (await feed(page).getByRole("tablist").boundingBox())!;
+    const rightCap = feed(page).locator("[data-feed-tabs-next]").locator("xpath=../..");
+    if (await rightCap.count()) {
+      const r = (await rightCap.boundingBox())!;
+      expect(t.x + t.width).toBeLessThanOrEqual(r.x + 1);
+    } else {
+      expect(t.x + t.width).toBeLessThanOrEqual(bar.x + bar.width + 1);
+    }
+    // ArrowLeft back down to the third tab.
+    for (let i = 0; i < 5; i++) await page.keyboard.press("ArrowLeft");
+    await page.waitForTimeout(300);
+    await expect(second).toHaveAttribute("aria-selected", "true");
+    await clear(second);
   });
 });
 

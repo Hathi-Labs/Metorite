@@ -12,6 +12,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Tabs, { type TabDef } from "@/components/Tabs";
 import Button from "@/components/ui/Button";
 
+/**
+ * The width of one cap and its fade, in px: `w-9` and `w-5`. A tab that the
+ * bar scrolls into view keeps this much clear of each cut edge.
+ */
+const CAP_PX = 36 + 20;
+
 export default function NeedsTabBar({
   tabs,
   active,
@@ -46,6 +52,21 @@ export default function NeedsTabBar({
     };
   }, [bar, measure, tabs.length]);
 
+  // The selected tab scrolls fully clear of both caps, whether a click, an
+  // arrow key, Home or End chose it. Below `sm` no cap draws, so no margin.
+  useEffect(() => {
+    const el = bar();
+    const tab = el?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
+    if (!el || !tab) return;
+    const pad = window.matchMedia("(min-width: 640px)").matches ? CAP_PX : 0;
+    const left = tab.offsetLeft - el.offsetLeft;
+    const right = left + tab.offsetWidth;
+    let to = el.scrollLeft;
+    if (left < to + pad) to = Math.max(0, left - pad);
+    else if (right > to + el.clientWidth - pad) to = Math.min(el.scrollWidth - el.clientWidth, right - el.clientWidth + pad);
+    if (Math.abs(to - el.scrollLeft) > 1) el.scrollTo({ left: to });
+  }, [active, bar]);
+
   const page = (dir: 1 | -1) => {
     const el = bar();
     el?.scrollBy({ left: dir * el.clientWidth * 0.8, behavior: "smooth" });
@@ -66,7 +87,7 @@ export default function NeedsTabBar({
         // An opaque cap holds the chevron, and the fade runs beyond it, so no
         // cut-off tab fragment shows beside the chevron.
         <div className="pointer-events-none absolute inset-y-0 left-0 hidden items-stretch sm:flex">
-          <div className="pointer-events-auto flex w-9 items-center justify-center bg-background">
+          <div className="pointer-events-auto flex w-9 items-center justify-center bg-card">
             <Button
               variant="ghost"
               size="icon-xs"
@@ -77,13 +98,13 @@ export default function NeedsTabBar({
               onClick={() => page(-1)}
             />
           </div>
-          <div className="w-5 bg-gradient-to-r from-background from-30% to-transparent" />
+          <div className="w-5 bg-gradient-to-r from-card from-30% to-transparent" />
         </div>
       ) : null}
       {edge.right ? (
         <div className="pointer-events-none absolute inset-y-0 right-0 hidden items-stretch sm:flex">
-          <div className="w-5 bg-gradient-to-l from-background from-30% to-transparent" />
-          <div className="pointer-events-auto flex w-9 items-center justify-center bg-background">
+          <div className="w-5 bg-gradient-to-l from-card from-30% to-transparent" />
+          <div className="pointer-events-auto flex w-9 items-center justify-center bg-card">
             <Button
               variant="ghost"
               size="icon-xs"

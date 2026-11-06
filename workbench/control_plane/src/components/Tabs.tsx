@@ -131,8 +131,8 @@ export default function Tabs({
       const bar = e.currentTarget;
       requestAnimationFrame(() => {
         const el = bar.querySelectorAll<HTMLElement>('[role="tab"]')[to];
-        el?.focus();
-        el?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+        // Focus without a scroll: the owner of the bar scrolls the tab into view.
+        el?.focus({ preventScroll: true });
       });
     };
     return (
