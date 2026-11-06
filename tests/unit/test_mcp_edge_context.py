@@ -170,7 +170,10 @@ class _Board(_Gateway):
             if leaf == "agent-runs":
                 return 200, {"rows": self.task_runs}
             if leaf == "timeline":
-                return 200, {"rows": self.timeline, "total": len(self.timeline)}
+                size = int(r.pairs.get("page_size") or len(self.timeline) or 1)
+                start = (int(r.pairs.get("page") or 1) - 1) * size
+                return 200, {"rows": self.timeline[start:start + size],
+                             "total": len(self.timeline)}
         if parts[:2] == ["projects", "nodes"] and len(parts) == 3:
             node = self.nodes.get(parts[2])
             return (200, node) if node is not None else (404, {"detail": "Not Found"})
@@ -349,6 +352,48 @@ class TestTheContext:
                                      "page_size": str(tools.CONTEXT_COMMENTS)}
         assert tools.CONTEXT_COMMENTS == 20
 
+    async def test_civ14c_all_returns_every_comment_and_the_default_the_newest_20(
+            self, board):
+        """CIV-14c. 30 comments: 30 with ``comments: "all"``, 20 by default.
+        One of them is the answer of a closed run (``Answered: ...``), which
+        the gateway writes as a timeline comment (``agent_runs.py::_comment``).
+        Mutation: send ``page_size`` 20 in the ``all`` mode, and this fails."""
+        board.timeline = [{"id": _uuid(7000 + n), "type": "comment", "body": f"c{n}"}
+                          for n in range(30)]  # newest first
+        board.timeline[25]["body"] = "Answered: Ship it"
+        board.timeline[25]["meta"] = {"agent_run_id": _uuid(7999), "agent_kind": "prompt"}
+        default = _structured(await _tool("get_task_context", {"task_id": TASK}))
+        assert len(default["recent_comments"]) == 20
+        assert "comments_truncated" not in default
+        board.requests.clear()
+        body = _structured(await _tool("get_task_context",
+                                       {"task_id": TASK, "comments": "all"}))
+        texts = [c["body"]["untrusted_text"] for c in body["recent_comments"]]
+        assert len(texts) == 30 and texts[0] == "c29" and texts[-1] == "c0"
+        assert "Answered: Ship it" in texts
+        assert body["comments_truncated"] is False
+
+    async def test_civ14c_all_stops_at_500_and_says_so_within_the_call_fence(
+            self, board):
+        """Mutation: drop the ``[:CONTEXT_ALL_COMMENTS]`` cut or the flag, and
+        this fails. The deepest chain is the worst case for the call count."""
+        _chain(board, 7, project=OTHER_PROJECT)
+        board.timeline = [{"id": _uuid(8000 + n), "type": "comment", "body": f"c{n}"}
+                          for n in range(620)]
+        board.requests.clear()
+        body = _structured(await _tool("get_task_context",
+                                       {"task_id": TASK, "comments": "all"}))
+        texts = [c["body"]["untrusted_text"] for c in body["recent_comments"]]
+        assert len(texts) == tools.CONTEXT_ALL_COMMENTS == 500
+        assert texts[-1] == "c0" and texts[0] == "c499"
+        assert body["comments_truncated"] is True
+        assert len(board.requests) <= tools.CONTEXT_ALL_CALL_CEILING
+        assert tools.CONTEXT_ALL_CALL_CEILING == tools.CONTEXT_CALL_CEILING + 4
+
+    async def test_civ14c_a_bad_mode_is_refused(self, board):
+        result = await _tool("get_task_context", {"task_id": TASK, "comments": "some"})
+        assert result["isError"] is True
+
     async def test_x11_every_value_that_a_person_wrote_is_untrusted(self, board):
         (near,) = _chain(board, 1)
         board.tasks[near].update(title=SENTINEL + " t", description=SENTINEL + " d")
@@ -380,6 +425,12 @@ class TestTheContext:
         body = await _context()
         assert body["agent_runs"] == []
         assert not [p for p in board.paths() if p.endswith("/agent-runs")]
+
+    async def test_ci14a_the_context_shows_the_link_of_an_open_run(self, board):
+        board.task_runs = [{**_run(_uuid(5003), TASK),
+                            "external_link": "https://claude.ai/code/session_6"}]
+        body = await _context()
+        assert body["agent_runs"][0]["external_link"] == "https://claude.ai/code/session_6"
 
     async def test_the_open_runs_and_the_subtasks_show(self, board):
         board.task_runs = [_run(_uuid(5001), TASK), _run(_uuid(5002), TASK, status="completed",
@@ -539,6 +590,22 @@ class TestMyWork:
         assert tools.MY_WORK.edge_inputs == frozenset({"limit"})
         assert (tools.MY_WORK_LIMIT_DEFAULT, tools.MY_WORK_LIMIT_MAX) == (10, 25)
 
+    async def test_ci14a_the_row_shows_the_link_of_its_run(self, board):
+        task = _uuid(8201)
+        board.tasks[task] = _task_row(task)
+        board.runs = [{**_run(_uuid(5951), task, state="answered"),
+                       "external_link": "https://claude.ai/code/session_5"}]
+        [row] = await _work()
+        assert row["external_link"] == "https://claude.ai/code/session_5"
+
+    async def test_ci14a_a_link_that_is_not_https_is_shaped_away(self, board):
+        task = _uuid(8202)
+        board.tasks[task] = _task_row(task)
+        board.runs = [{**_run(_uuid(5952), task, state="answered"),
+                       "external_link": "javascript:alert(1)"}]
+        [row] = await _work()
+        assert row["external_link"] == {"untrusted_text": "javascript:alert(1)"}
+
     async def test_y9_a_finished_run_holds_no_task(self, board):
         done = _uuid(7801)
         board.tasks[done] = _task_row(done)
@@ -574,7 +641,8 @@ class TestMyWork:
         rows = await _work()
         assert rows == [{"task_id": gone, "task_number": None, "title": None, "status": None,
                          "project_id": None, "version": None, "reason": "run_answered",
-                         "run_id": _uuid(6101), "held_by": None}]
+                         "run_id": _uuid(6101), "held_by": None,
+                         "yours": False, "external_link": None}]
 
     async def test_a_gateway_with_the_runs_flag_off_gives_no_runs(self, board):
         """The units restart one at a time: the edge has the flag on and the
@@ -734,6 +802,124 @@ class TestOneSessionOfAConnection:
                       _run(_uuid(6532), plain, state="answered")]
         rows = await _work()
         assert [r["task_id"] for r in rows] == [plain]
+
+
+class TestYoursAndMineOnly:
+    """MCP-G4 (incident 2026-11-05). A ``run_answered`` row listed an answer
+    for EVERY session of the connection, and a session that followed it would
+    have acted on an answer given to another. Each row now says ``yours``,
+    and ``list_agent_runs`` takes ``mine_only``.
+
+    Mutations, each red here: M-G4a ``tools._yours`` returns True for a keyless
+    run (``test_yours_is_false_for_a_keyless_run``). M-G4b ``tools._yours``
+    drops the key comparison (``test_yours_is_true_only_for_the_own_session``).
+    M-G4c ``_list_agent_runs`` drops the ``mine_only`` filter
+    (``test_mine_only_keeps_the_runs_of_this_session``). M-G4d ``_my_work``
+    passes ``True`` for each listed run (``test_with_the_flag_off_yours_is_false``)."""
+
+    MINE, SIBLING = "TerminalA_of-22chars__", "TerminalB_of-22chars__"
+
+    async def _call_in(self, session: str, name: str, arguments: dict[str, Any]) -> Any:
+        from agent_edge import app as edge_app_module
+        from agent_edge import mcp
+
+        headers = {"authorization": f"Bearer {GOOD}", "content-type": "application/json",
+                   "mcp-protocol-version": "2025-11-25",
+                   mcp.SESSION_HEADER: _session_id(session)}
+        async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=edge_app_module.create_app()),
+                base_url="https://mcp.metorite.com") as client:
+            r = await client.post("/mcp", content=json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": name, "arguments": arguments}}), headers=headers)
+        assert r.status_code == 200, r.text
+        return _structured(r.json()["result"])
+
+    def _plant(self, board) -> dict[str, str]:
+        ids = {"own": _uuid(8601), "sibling": _uuid(8602), "keyless": _uuid(8603)}
+        for task_id in ids.values():
+            board.tasks[task_id] = _task_row(task_id)
+        board.runs = [
+            _run(_uuid(6601), ids["own"], state="answered", session=self.MINE),
+            _run(_uuid(6602), ids["sibling"], state="answered", session=self.SIBLING,
+                 lease_expired=True),
+            _run(_uuid(6603), ids["keyless"], state="answered"),
+        ]
+        return ids
+
+    async def test_yours_is_true_only_for_the_own_session(self, board, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        ids = self._plant(board)
+        rows = (await self._call_in(self.MINE, "my_work", {}))["rows"]
+        yours = {r["task_id"]: r["yours"] for r in rows}
+        assert yours[ids["own"]] is True
+        assert yours[ids["sibling"]] is False
+
+    async def test_yours_is_false_for_a_keyless_run(self, board, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        ids = self._plant(board)
+        rows = (await self._call_in(self.MINE, "my_work", {}))["rows"]
+        assert {r["task_id"]: r["yours"] for r in rows}[ids["keyless"]] is False
+
+    async def test_an_assigned_row_has_yours_false(self, board, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        _assign(board, _uuid(8604))
+        rows = (await self._call_in(self.MINE, "my_work", {}))["rows"]
+        assert [(r["reason"], r["yours"]) for r in rows] == [("assigned", False)]
+
+    async def test_with_the_flag_off_yours_is_false(self, board):
+        self._plant(board)
+        rows = await _work()
+        assert rows and all(r["yours"] is False for r in rows)
+
+    def test_the_helper_needs_a_key_and_a_session(self):
+        assert tools._yours({"session_key": "k"}, "k") is True
+        assert tools._yours({"session_key": "k"}, "x") is False
+        assert tools._yours({"session_key": None}, "k") is False
+        assert tools._yours({"session_key": "k"}, None) is False
+        assert tools._yours({}, None) is False
+        assert tools._yours(None, "k") is False
+
+    async def test_mine_only_keeps_the_runs_of_this_session(self, board, monkeypatch):
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        self._plant(board)
+        everything = await self._call_in(self.MINE, "list_agent_runs", {})
+        assert len(everything["runs"]) == 3
+        mine = await self._call_in(self.MINE, "list_agent_runs", {"mine_only": True})
+        assert [r["id"] for r in mine["runs"]] == [_uuid(6601)]
+
+    async def test_mine_only_reads_on_past_a_page_of_sibling_runs(self, board, monkeypatch):
+        """P2a. The gateway pages 50 rows. Page 1 holds only sibling runs, page 2
+        holds the own run, and the edge must read on to find it."""
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        board.runs = [_run(_uuid(7000 + n), _uuid(8700 + n), state="answered",
+                           session=self.SIBLING) for n in range(50)]
+        board.runs.append(_run(_uuid(7100), _uuid(8800), state="answered", session=self.MINE))
+        out = await self._call_in(self.MINE, "list_agent_runs", {"mine_only": True})
+        assert [r["id"] for r in out["runs"]] == [_uuid(7100)]
+        assert out["nextCursor"] is None
+
+    async def test_mine_only_stops_at_the_page_ceiling_and_keeps_the_cursor(
+            self, board, monkeypatch):
+        """Every page holds only sibling runs. The edge reads MY_WORK_RUNS_PAGES
+        pages, then stops, and returns the cursor of the last page read."""
+        monkeypatch.setattr(get_settings(), "agent_mcp_sessions_enabled", True)
+        pages = tools.MY_WORK_RUNS_PAGES
+        board.runs = [_run(_uuid(7200 + n), _uuid(8900 + n), state="answered",
+                           session=self.SIBLING) for n in range((pages + 2) * 50)]
+        before = len([r for r in board.requests if r.path == "/projects/agent-runs"])
+        out = await self._call_in(self.MINE, "list_agent_runs", {"mine_only": True})
+        reads = len([r for r in board.requests if r.path == "/projects/agent-runs"]) - before
+        assert reads == pages
+        assert out["runs"] == []
+        assert out["nextCursor"] == str(pages * 50)
+
+    async def test_mine_only_with_no_session_keeps_no_run(self, board):
+        self._plant(board)
+        before = len(board.requests)
+        out = _structured(await _tool("list_agent_runs", {"mine_only": True}))
+        assert out == {"runs": [], "nextCursor": None}
+        assert len(board.requests) == before, "no gateway read for a call with no session"
 
 
 def _session_id(session: str) -> str:

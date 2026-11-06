@@ -52,6 +52,8 @@ runs found two survivors, M6 and M12, and the two tests were then fixed.
 | M15 | the index line escapes no character | ``test_the_index_line_escapes_control_characters_and_fits_80`` |
 | M16 | ``tool_json_schema`` prices a MAF function by its class docstring again | ``test_tool_json_schema_prices_a_maf_function_by_its_own_schema``, ``test_a_small_server_attaches_its_tools_directly`` |
 | M17 | the cap slices the candidates before the connect again (review of #922, P2) | ``test_a_server_that_does_not_attach_takes_no_slot`` (all 4 cases) |
+| M18 | the index ignores the MCP-C2 read-only key (item 32, A36) | ``test_read_only_in_the_index_is_true_on_a_read_only_key_server`` |
+| M19 | the index lets the read-only key win over always confirm | ``test_read_only_in_the_index_is_true_on_a_read_only_key_server`` |
 """
 from __future__ import annotations
 
@@ -209,17 +211,20 @@ class _Fleet:
         return {h for h, _m in self.requests}
 
 
-def _spec(name: str, *, always_confirm: bool = False) -> _maf_mcp.McpServer:
+def _spec(name: str, *, always_confirm: bool = False,
+          read_only_key: bool = False) -> _maf_mcp.McpServer:
     return _maf_mcp.McpServer(name=name, url=f"https://{name}.example.com/mcp",
-                              always_confirm=always_confirm)
+                              always_confirm=always_confirm, read_only_key=read_only_key)
 
 
 async def _attach(monkeypatch: pytest.MonkeyPatch, servers: dict[str, list[dict[str, Any]]],
                   *, agent: Any = None, member: bool = True,
                   always_confirm: frozenset[str] = frozenset(),
+                  read_only_key: frozenset[str] = frozenset(),
                   dead: frozenset[str] = frozenset()) -> tuple[Any, list, _Fleet, list]:
     """Attach *servers* (name to tools) to a real native agent, offline.
-    The servers in *dead* answer every request with HTTP 500."""
+    The servers in *dead* answer every request with HTTP 500. The servers in
+    *read_only_key* carry the MCP-C2 switch."""
     fleet = _Fleet({f"{n}.example.com": tools for n, tools in servers.items()},
                    dead=frozenset(f"{n}.example.com" for n in dead))
     fleet.install(monkeypatch)
@@ -227,7 +232,8 @@ async def _attach(monkeypatch: pytest.MonkeyPatch, servers: dict[str, list[dict[
     opened: list[Any] = []
     with structlog.testing.capture_logs() as logs:
         await _maf_mcp.attach_mcp_tools(
-            agent, [_spec(n, always_confirm=n in always_confirm) for n in servers], opened,
+            agent, [_spec(n, always_confirm=n in always_confirm,
+                          read_only_key=n in read_only_key) for n in servers], opened,
             member_present=member)
     return agent, opened, fleet, logs
 
@@ -425,6 +431,30 @@ async def test_read_only_in_the_index_is_false_on_an_always_confirm_server(monke
     try:
         listed = _by_name(agent)["ac"]._list_progressive_mcp_tools(SimpleNamespace(tools=[]))
         assert next(e for e in listed if e["name"] == "ac_reader")["read_only"] is False
+    finally:
+        await _maf_mcp.close_mcp_tools(opened)
+
+
+async def test_read_only_in_the_index_is_true_on_a_read_only_key_server(monkeypatch):
+    """MCP-C2, A36: the admin says the key can only read, so the index shows
+    ``read_only`` true for EACH tool of the server, a destructive one and one
+    with no hints too. A second server with both switches on stays false,
+    because always confirm wins."""
+    tools = [
+        _tool("wiper", hints={"readOnlyHint": False, "destructiveHint": True}),
+        _tool("quiet"),
+        _tool("reader", hints={"readOnlyHint": True}),
+        *_many(12, params=1),
+    ]
+    agent, opened, _fleet, _logs = await _attach(
+        monkeypatch, {"ro": tools, "both": tools},
+        read_only_key=frozenset({"ro", "both"}), always_confirm=frozenset({"both"}))
+    try:
+        listed = _by_name(agent)["ro"]._list_progressive_mcp_tools(SimpleNamespace(tools=[]))
+        assert len(listed) == 15
+        assert all(e["read_only"] is True for e in listed), listed
+        both = _by_name(agent)["both"]._list_progressive_mcp_tools(SimpleNamespace(tools=[]))
+        assert all(e["read_only"] is False for e in both), both
     finally:
         await _maf_mcp.close_mcp_tools(opened)
 

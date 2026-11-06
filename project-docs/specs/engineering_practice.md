@@ -60,6 +60,7 @@ enforces it, or be labelled advisory. "We should always…" is not a rule.
    drift.
 4. **Production** runs on its own box. It applies the `release` ref. A daily run
    moves that ref at 21:30 UTC. A manual dispatch moves it for a hotfix.
+   The home box's timer starts the daily run with a nightly dispatch (D178).
 
 `specs/staging_and_daily_release.md` owns staging and the daily release. Root
 `CLAUDE.md` §4 says what to do after a merge. Test on staging before
@@ -193,7 +194,9 @@ message, in chat and on the task. It holds these four items:
 
 Then call `ask_on_task` with two options, **Approve** and **Change it**. In
 the same step, push the branch and open the PR as a draft. GitHub's
-`pr-check` then runs while the owner looks.
+`pr-check` then runs while the owner looks. It runs the tests that the diff can
+affect (tier 1 of `specs/ci_velocity.md` §4, D176). The full suite runs on
+`main` after the merge (tier 2). The R8 suites run there only after CIV-4b.
 
 A slice with nothing to see skips the preview. Docs, tests, a script and a
 refactor with no change in behaviour go straight to step 4.
@@ -233,7 +236,8 @@ its fence.
 `main` (§2 and `specs/staging_and_daily_release.md` §4). An agent dispatches
 `deploy.yml` only for a hotfix that the owner asks for, or when production is
 down. Report a merge as "reaches production at tonight's release". After the
-release, confirm `/version` `applied_sha`.
+release, confirm `/version` `applied_sha`. The home box's timer starts the
+release (D178). An agent never sets `nightly=true` by hand.
 
 **Until LD-8 to LD-10 land.** The preview runs on the demo seed. The gate is
 `bash scripts/ci_local.sh`, and then `premerge.sh`. Name the steps that ran in
@@ -270,7 +274,7 @@ no sudo.
   passes.** The owner approved a copy with its credentials blanked.
 
 **LD-8c: AGENT-SAFE to build, HIGH to land (deploy path).** It ships at the
-21:30 UTC release.
+21:30 UTC release, which the home box starts (D178).
 
 - `scripts/backup_db.sh` starts the verify container with
   `-c maintenance_work_mem=256MB`. Fence: `tests/unit/test_backup_deploy_wiring.py`.
@@ -384,7 +388,7 @@ a non-event.
   as the only version-skew mechanism we support (one codebase, one schema, always
   latest).
 - **The ring order matters more than the clock.** The clock is 21:30 UTC each
-  day. The order is "us first, then one, then all".
+  day, and the home box's timer starts it (D178). The order is "us first, then one, then all".
 
 ## 3. Migrations — the sharpest edge we have
 
@@ -483,7 +487,9 @@ not LOW) → open a PR → merge, watch the deploy and the `main` unit job, and
 test on staging.
 `.claude/commands/next-ticket.md` owns the steps and the tiers (owner decision,
 2026-10-16). Locally, run `scripts/affected_tests.py`. pr-check runs the
-whole suite. Two properties make it work:
+tests that the diff can affect (`affected_tests.py --gate`), and the full
+suite when the diff is FULL. `main` runs the full suite after the merge. The
+tiers are in `specs/ci_velocity.md` §4 (D176). Two properties make it work:
 
 1. **The verifier must not be the implementer**, and re-derives its facts from
    the code rather than trusting the write-up.
@@ -605,6 +611,11 @@ them. A real bug in the PR caused 9. Each red run cost about 30 minutes.
   The full adversarial review still follows the tier of the slice
   (`/next-ticket` step 1b). `workbench/control_plane/DESIGN_SYSTEM.md` §11
   holds the gate. The other process fences stay advisory.
+- **The CI tiers (D176).** A PR runs lint, the SAFETY fences and the unit
+  tests that its diff can affect. A FULL diff runs all of them. `main` runs
+  the full suite in batches, and a red batch is fixed forward at once. The R8
+  suites join that batch with CIV-4b, and CIV-3 merges only after CIV-4b.
+  `specs/ci_velocity.md` §4 owns the tiers.
 
 **2. Harden.** One PR when the feature works, labelled `harden`.
 

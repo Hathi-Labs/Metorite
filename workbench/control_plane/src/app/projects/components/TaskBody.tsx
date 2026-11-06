@@ -56,6 +56,7 @@ import { useToast } from "@/components/ui/Toast";
 import { CollapsibleSection } from "@/components/ui/Collapsible";
 import { TaskLinks } from "./TaskLinks";
 import { AgentRunPanel } from "./AgentRunPanel";
+import { DecisionPanel } from "./DecisionPanel";
 import { activityAttribution, agentKindLabel, viaLabel } from "../lib/agentRuns";
 import { MarkdownBody } from "@/components/MarkdownMessage";
 import { taskRefResolverFor, type TaskRefResolver } from "@/lib/taskRefs";
@@ -1415,6 +1416,13 @@ export function TaskBody({
               task={task}
               personLabels={personLabels}
               onTaskChanged={onChanged}
+              onActivity={() => void reloadStreams()}
+            />
+            {/* WS-ALN ALN-2b — the decisions of the task. It draws nothing
+                while DECISIONS_ORGS does not hold the org. */}
+            <DecisionPanel
+              task={task}
+              personLabels={personLabels}
               onActivity={() => void reloadStreams()}
             />
             <Tabs

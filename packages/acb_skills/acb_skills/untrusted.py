@@ -204,8 +204,10 @@ def _break_runs(text: str) -> str:
 def is_invisible(ch: str) -> bool:
     """True when a reader cannot see *ch* and a model may still read it: an
     invisible format character (Cf), a character of :data:`_INVISIBLE_SET`,
-    or a character of the TAG block. THE one rule. :func:`defang_trusted` drops
-    each such character, and so does a card that shows member text."""
+    or a character of the TAG block. THE one rule of what a frame drops.
+    :func:`defang_trusted` drops each such character, and so does a card that
+    shows member text. The skill store refuses a wider set of owner text:
+    :mod:`acb_skills.hidden_text` (WS-STU F1b) is that rule."""
     return ch in _INVISIBLE_SET or ord(ch) in _TAG_BLOCK or unicodedata.category(ch) == "Cf"
 
 

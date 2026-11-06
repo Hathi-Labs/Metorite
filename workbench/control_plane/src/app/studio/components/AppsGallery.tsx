@@ -13,11 +13,19 @@
 
 import Button from "@/components/ui/Button";
 import Icon from "@/components/Icon";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import Badge from "@/components/ui/Badge";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import FilterPills from "@/components/FilterPills";
 import type { AppMeta } from "@/app/build/apps/lib/types";
+import { shellChatOn } from "@/lib/shell/chatFlag";
+import { openAssistant } from "@/lib/shell/assistant";
+import {
+  PACKAGES_FAILED_LINE, type LibraryFilter, appBrief, changedWords, libraryCounts, mergeLibrary,
+  packageShows, type PackageCard as PackageCardData,
+} from "@/lib/studio/packageLibrary";
+import { STUDIO_OFF, type PackageSummary, listPackages } from "@/lib/studio/realDoor";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -45,14 +53,6 @@ function formatCost(usd: number): string {
   return `$${usd.toFixed(usd < 10 ? 2 : 0)}`;
 }
 
-/** Derive a short app name from a free-form description (first ~5 words). */
-function deriveName(text: string): string {
-  const words = text.replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
-  const name = words.slice(0, 5).join(" ");
-  const clipped = name.length > 48 ? name.slice(0, 48).trimEnd() + "…" : name;
-  return clipped ? clipped[0].toUpperCase() + clipped.slice(1) : "Untitled app";
-}
-
 /** Token-only gradient tiles for app glyphs (mirrors the mockup's g1–g4). */
 const GLYPH_GRADIENTS = [
   "bg-gradient-to-br from-primary/20 to-accent/15",
@@ -74,7 +74,7 @@ const HINTS = [
   "Dashboard for open service tickets by printer model",
 ];
 
-type Filter = "all" | "mine" | "team" | "drafts" | "templates";
+type Filter = LibraryFilter;
 
 // ─── App card ─────────────────────────────────────────────────────────────
 
@@ -254,6 +254,39 @@ function AppCard({
   );
 }
 
+// ─── Package card ─────────────────────────────────────────────────────────
+
+/** A Studio package. The whole card is a link to the app page. */
+function PackageCard({ card, onOpen }: { card: PackageCardData; onOpen: () => void }) {
+  const live = card.state === "live";
+  return (
+    <button
+      type="button"
+      data-package-card={card.id}
+      onClick={onOpen}
+      className="group relative text-left w-full p-3 sm:p-4 rounded-xl border tech-transition flex flex-col gap-2.5 border-border bg-card hover:border-primary/40 hover:bg-secondary/30"
+    >
+      <div className="flex items-start gap-3">
+        <div
+          className={`w-9 h-9 rounded-lg border border-border flex items-center justify-center shrink-0 ${glyphGradient(card.id)}`}
+        >
+          <Icon name="Boxes" className="w-4 h-4 text-primary" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-semibold text-foreground truncate">{card.name}</h3>
+          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mt-0.5">
+            <Icon name="Clock" className="w-3 h-3 shrink-0" />
+            <span>{changedWords(card.changedAt)}</span>
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 mt-auto pt-1">
+        <Badge tone={live ? "success" : "warning"} size="xs">{live ? "Live" : "Draft"}</Badge>
+      </div>
+    </button>
+  );
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────
 
 export default function AppsGallery() {
@@ -263,11 +296,12 @@ export default function AppsGallery() {
 
   const [apps, setApps] = useState<AppMeta[]>([]);
   const [loading, setLoading] = useState(true);
+  const packagesSeq = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [describe, setDescribe] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
+  const [packages, setPackages] = useState<PackageSummary[]>([]);
+  const [packagesError, setPackagesError] = useState(false);
 
   // Fetch-on-mount wiring: same pattern (and lint carve-out) as
   // tasks/components/AssistantRail.tsx.
@@ -275,6 +309,21 @@ export default function AppsGallery() {
   const fetchApps = useCallback(async () => {
     setLoading(true);
     setError(null);
+    // The packages of the member sit beside the Workshop apps. A switch that is off
+    // answers 404 and shows no package and no error. Any other failure says so.
+    // An answer that arrives after a newer request is dropped, so a slow old list never wins.
+    const seq = ++packagesSeq.current;
+    const packagesRead = listPackages()
+      .then((found) => {
+        if (seq !== packagesSeq.current) return;
+        setPackages(found);
+        setPackagesError(false);
+      })
+      .catch((e: unknown) => {
+        if (seq !== packagesSeq.current) return;
+        setPackages([]);
+        setPackagesError(!(e instanceof Error && e.message === STUDIO_OFF));
+      });
     try {
       const res = await fetch("/api/apps");
       if (!res.ok) {
@@ -290,6 +339,9 @@ export default function AppsGallery() {
       setError(String(e));
       setApps([]);
     } finally {
+      // Hold the skeleton until both reads settle, so "No apps yet" never flashes
+      // while the packages are still on the way. A failure of one still shows the other.
+      await packagesRead;
       setLoading(false);
     }
   }, []);
@@ -299,43 +351,15 @@ export default function AppsGallery() {
   }, [fetchApps]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
+  // Chat first: Mira builds the app in the one assistant, from the brief. The words wait
+  // in the box for the member to read and send. With the shell chat off, `/chat?q=` does the same.
   const createApp = useCallback(
-    async (seed: string) => {
-      if (creating) return;
-      setCreating(true);
-      setCreateError(null);
-      try {
-        const text = seed.trim();
-        const res = await fetch("/api/apps", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: text ? deriveName(text) : "Untitled app",
-            description: text || undefined,
-          }),
-        });
-        // POST /apps returns a bare AppDetail on success (no {app: ...}
-        // envelope) or a FastAPI error body ({"detail": ...}) on failure.
-        const data = (await res.json().catch(() => ({}))) as {
-          slug?: string;
-          detail?: string;
-        };
-        if (!res.ok || !data.slug) {
-          setCreateError(
-            (typeof data.detail === "string" && data.detail) ||
-              `Create failed (HTTP ${res.status})`
-          );
-          return;
-        }
-        const qs = text ? `?seed=${encodeURIComponent(text)}` : "";
-        router.push(`/build/apps/${data.slug}/edit${qs}`);
-      } catch (e) {
-        setCreateError(String(e));
-      } finally {
-        setCreating(false);
-      }
+    (seed: string) => {
+      const brief = appBrief(seed);
+      if (shellChatOn()) openAssistant({ draft: brief, fresh: true });
+      else router.push(`/chat?q=${encodeURIComponent(brief)}`);
     },
-    [creating, router]
+    [router]
   );
 
   /** Optimistic — the button's own state must not lag a round-trip; a
@@ -416,32 +440,27 @@ export default function AppsGallery() {
     [forkingSlug, router]
   );
 
-  const counts = useMemo(() => {
-    const mine = apps.filter(
-      (a) => a.role === "own" || a.owner_email.toLowerCase() === myEmail
-    ).length;
-    const team = apps.filter((a) => a.visibility === "org").length;
-    const drafts = apps.filter((a) => !a.live_version).length;
-    const templates = apps.filter((a) => a.is_template).length;
-    return { all: apps.length, mine, team, drafts, templates };
-  }, [apps, myEmail]);
+  const counts = useMemo(() => libraryCounts(apps, packages, myEmail), [apps, packages, myEmail]);
 
   const visible = useMemo(() => {
-    switch (filter) {
-      case "mine":
-        return apps.filter(
-          (a) => a.role === "own" || a.owner_email.toLowerCase() === myEmail
-        );
-      case "team":
-        return apps.filter((a) => a.visibility === "org");
-      case "drafts":
-        return apps.filter((a) => !a.live_version);
-      case "templates":
-        return apps.filter((a) => a.is_template);
-      default:
-        return apps;
-    }
-  }, [apps, filter, myEmail]);
+    const keep = (a: AppMeta): boolean => {
+      switch (filter) {
+        case "mine":
+          return a.role === "own" || a.owner_email.toLowerCase() === myEmail;
+        case "team":
+          return a.visibility === "org";
+        case "drafts":
+          return !a.live_version;
+        case "templates":
+          return !!a.is_template;
+        default:
+          return true;
+      }
+    };
+    const shownPackages = packages.filter((p) => packageShows(filter, p));
+    return mergeLibrary(apps.filter(keep), shownPackages);
+  }, [apps, packages, filter, myEmail]);
+  const total = apps.length + packages.length;
 
   return (
     <section className="flex flex-col" aria-label="Apps">
@@ -461,12 +480,8 @@ export default function AppsGallery() {
           >
             <Icon name="RefreshCw" className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
           </button>
-          <Button size="lg" layout="flex items-center whitespace-nowrap shrink-0" onClick={() => createApp("")} disabled={creating}>
-            {creating ? (
-              <Icon name="Loader2" className="w-4 h-4 animate-spin" />
-            ) : (
-              <Icon name="Plus" className="w-4 h-4" />
-            )}
+          <Button size="lg" layout="flex items-center whitespace-nowrap shrink-0" onClick={() => createApp("")}>
+            <Icon name="Plus" className="w-4 h-4" />
             New app
           </Button>
         </div>
@@ -517,8 +532,8 @@ export default function AppsGallery() {
                 placeholder="Describe the tool you need… e.g. “A board that shows every printer's service history and next due date”"
                 className="flex-1 bg-transparent outline-none text-[13px] text-foreground placeholder:text-muted-foreground"
               />
-              <Button size="none" layout="" type="submit" disabled={creating || !describe.trim()} className="px-3 py-1.5 text-xs font-semibold shrink-0">
-                {creating ? "Creating…" : "Build it"}
+              <Button size="none" layout="" type="submit" disabled={!describe.trim()} className="px-3 py-1.5 text-xs font-semibold shrink-0">
+                Build it
               </Button>
             </form>
             <div className="flex items-center gap-2 flex-wrap">
@@ -533,9 +548,9 @@ export default function AppsGallery() {
                 </button>
               ))}
             </div>
-            {createError && (
-              <div className="flex items-center gap-1.5 text-xs text-destructive">
-                <Icon name="X" className="w-3.5 h-3.5" /> {createError}
+            {packagesError && (
+              <div role="alert" className="flex items-center gap-1.5 text-xs text-destructive">
+                <Icon name="X" className="w-3.5 h-3.5" /> {PACKAGES_FAILED_LINE}
               </div>
             )}
           </div>
@@ -548,7 +563,7 @@ export default function AppsGallery() {
             </div>
           )}
 
-          {error && !loading && (
+          {error && !loading && total === 0 && (
             <div className="flex flex-col items-center justify-center h-40 gap-3">
               <p className="text-sm text-destructive">{error}</p>
               <button
@@ -560,21 +575,21 @@ export default function AppsGallery() {
             </div>
           )}
 
-          {!loading && !error && visible.length === 0 && (
+          {!loading && !(error && total === 0) && visible.length === 0 && (
             <div className="flex flex-col items-center justify-center h-56 gap-3 text-center">
               <div className="w-11 h-11 rounded-xl bg-primary/10 flex items-center justify-center">
                 <Icon name="Hammer" className="w-5 h-5 text-primary" />
               </div>
               <p className="text-sm font-medium text-foreground">
-                {apps.length === 0 ? "No apps yet" : "Nothing matches this filter"}
+                {total === 0 ? "No apps yet" : "Nothing matches this filter"}
               </p>
               <p className="text-xs text-muted-foreground max-w-xs">
-                {apps.length === 0
-                  ? "Describe the tool you need in the bar above and the Workshop will build it with you."
+                {total === 0
+                  ? "Describe the tool you need in the bar above and Mira will build it with you in the chat."
                   : "Switch filters, or describe a new tool above."}
               </p>
-              {apps.length === 0 && (
-                <Button size="none" layout="" onClick={() => createApp("")} disabled={creating} className="px-4 py-2 text-sm">
+              {total === 0 && (
+                <Button size="none" layout="" onClick={() => createApp("")} className="px-4 py-2 text-sm">
                   Create an app
                 </Button>
               )}
@@ -582,21 +597,23 @@ export default function AppsGallery() {
           )}
 
           {/* App grid */}
-          {!loading && !error && visible.length > 0 && (
+          {!loading && !(error && total === 0) && visible.length > 0 && (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-              {visible.map((app) => (
+              {visible.map((item) => item.kind === "package" ? (
+                <PackageCard key={item.key} card={item} onOpen={() => router.push(item.href)} />
+              ) : (
                 <AppCard
-                  key={app.slug}
-                  app={app}
-                  onOpen={() => router.push(`/build/apps/${app.slug}`)}
+                  key={item.key}
+                  app={item.app}
+                  onOpen={() => router.push(`/build/apps/${item.app.slug}`)}
                   onWorkshop={() =>
-                    router.push(`/build/apps/${app.slug}/edit`)
+                    router.push(`/build/apps/${item.app.slug}/edit`)
                   }
-                  onTogglePin={() => togglePin(app.slug, !!app.pinned)}
+                  onTogglePin={() => togglePin(item.app.slug, !!item.app.pinned)}
                   onToggleTemplate={() =>
-                    toggleTemplate(app.slug, !!app.is_template)
+                    toggleTemplate(item.app.slug, !!item.app.is_template)
                   }
-                  onUseTemplate={() => startFromTemplate(app.slug)}
+                  onUseTemplate={() => startFromTemplate(item.app.slug)}
                 />
               ))}
             </div>
