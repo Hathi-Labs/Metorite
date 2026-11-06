@@ -31,6 +31,8 @@ export interface TabDef {
    * theme — see DESIGN_SYSTEM.md.
    */
   icon?: string;
+  /** Colour classes for the icon, e.g. an app's hue. */
+  iconClass?: string;
   /** Optional badge count shown next to label */
   count?: number;
   /** Optional tooltip / aria-description */
@@ -82,6 +84,15 @@ export interface TabsProps {
    * there, and inventing a second tab bar to escape it would be worse.
    */
   chrome?: "page" | "inline";
+  /**
+   * The id of the panel these tabs control. When set, the underline variant
+   * follows the ARIA tabs pattern: each tab gets `aria-controls`, only the
+   * selected tab is in the tab order, and the arrow keys, Home and End move
+   * the selection. Without it, the bar draws as before.
+   */
+  panelId?: string;
+  /** Underline variant: less padding and gap, for a bar with many tabs. */
+  dense?: boolean;
 }
 
 /**
@@ -95,30 +106,54 @@ export default function Tabs({
   variant = "segmented",
   className = "",
   chrome = "page",
+  panelId,
+  dense = false,
 }: TabsProps) {
   const CONTAINER =
     chrome === "inline"
       ? ""
       : "px-4 sm:px-6 pt-3 border-b border-border";
   if (variant === "underline") {
+    // Arrow keys, Home and End move the selection (panelId only).
+    const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+      if (!panelId) return;
+      const i = tabs.findIndex((t) => t.id === activeTab);
+      const last = tabs.length - 1;
+      const to =
+        e.key === "ArrowRight" ? (i + 1) % tabs.length
+        : e.key === "ArrowLeft" ? (i - 1 + tabs.length) % tabs.length
+        : e.key === "Home" ? 0
+        : e.key === "End" ? last
+        : -1;
+      if (to < 0 || tabs.length === 0) return;
+      e.preventDefault();
+      onTabChange(tabs[to].id);
+      const bar = e.currentTarget;
+      requestAnimationFrame(() => {
+        const el = bar.querySelectorAll<HTMLElement>('[role="tab"]')[to];
+        // Focus without a scroll: the owner of the bar scrolls the tab into view.
+        el?.focus({ preventScroll: true });
+      });
+    };
     return (
       <div
-        className={`flex items-center gap-1 pb-0 shrink-0 overflow-x-auto scrollbar-hide ${CONTAINER} ${className}`}
+        className={`flex items-center ${dense ? "gap-0" : "gap-1"} pb-0 shrink-0 overflow-x-auto scrollbar-hide ${CONTAINER} ${className}`}
         role="tablist"
+        onKeyDown={onKeyDown}
       >
         {tabs.map((t) => {
           const active = activeTab === t.id;
-          const cls = `flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-t-lg border-b-2 tech-transition whitespace-nowrap ${
+          const cls = `flex items-center gap-1.5 ${dense ? "px-2" : "px-3"} py-2 text-sm font-medium rounded-t-lg border-b-2 tech-transition whitespace-nowrap ${
             active
               ? "border-primary text-foreground bg-primary/5"
               : "border-transparent text-muted-foreground hover:text-foreground hover:bg-secondary/50"
           }`;
           const inner = (
             <>
-              {t.icon && <Icon name={t.icon} className="w-3.5 h-3.5" />}
+              {t.icon && <Icon name={t.icon} className={`w-3.5 h-3.5 ${t.iconClass ?? ""}`} />}
               {t.label}
               {t.count !== undefined && (
-                <span className="ml-1 text-[10px] opacity-60">{t.count}</span>
+                <span className="ml-1 text-[10px] tabular-nums opacity-60">{t.count}</span>
               )}
             </>
           );
@@ -153,7 +188,10 @@ export default function Tabs({
             <button
               key={t.id}
               role="tab"
+              id={panelId ? `${panelId}-tab-${t.id}` : undefined}
               aria-selected={active}
+              aria-controls={panelId}
+              tabIndex={panelId ? (active ? 0 : -1) : undefined}
               onClick={() => onTabChange(t.id)}
               title={t.note}
               className={cls}

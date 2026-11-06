@@ -56,8 +56,6 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import type { ActivityRow } from "@/lib/runActivity";
 
 import {
-  FEED_APP_NAMES,
-  type FeedApp,
   FEED_SHOWN,
   GROUP_LABELS,
   PENDING,
@@ -110,6 +108,8 @@ import {
 import { AiWaitingGroup } from "./AiWaitingCard";
 import { CardError, HomeCard, rowMover } from "./HomeCard";
 import { emptyNeedsLine } from "./myDay";
+import { AI_TAB, ALL_TAB, appRowCounts, REMINDERS_TAB, type NeedsTabId, activeNeedsTab, buildNeedsTabs, seeAllHref } from "./needsTabs";
+import NeedsTabBar from "./NeedsTabBar";
 import RemindersBand from "./RemindersBand";
 import { bandCount, bandRows } from "./reminderBand";
 import { isReminderKind } from "./reminderKinds";
@@ -618,55 +618,44 @@ export function FeedColumn({
   const { groups: allGroups, hidden } = view;
   const groups = allGroups.filter((g) => g.id !== "later");
   const later = allGroups.find((g) => g.id === "later");
-  // One kind at a time (owner, 2026-11-01: "not too cognitively loading").
-  // A chip per kind with its count. "All" is the default. A kind that empties
-  // falls back to All.
-  const [only, setOnly] = useState<string | null>(null);
-  const appCounts = new Map<string, number>();
-  for (const g of groups) for (const c of g.cards) appCounts.set(c.app, (appCounts.get(c.app) ?? 0) + 1);
-  const kinds = [...appCounts.entries()].sort((a, b) => b[1] - a[1]);
-  const active = only === "ai" ? (ai.length > 0 ? "ai" : null) : only !== null && appCounts.has(only) ? only : null;
-  const filtered = active !== null;
+  // One tab at a time (owner, 2026-11-01: "not too cognitively loading"; and
+  // 2026-11-07, CC-11: a tab for each app that can need the member). "All" is
+  // the default. A tab that empties falls back to All. The rules are in
+  // `needsTabs.ts`.
+  const [only, setOnly] = useState<NeedsTabId>(ALL_TAB);
+  // The cut (FEED_SHOWN) belongs to All. A tab counts every row of its app
+  // and shows every row it counts, so the number is a promise it keeps.
+  const full = columnView(feed.answer, visit, { shown: Number.MAX_SAFE_INTEGER, marked: feed.marked, hidden: apart });
+  const fullGroups = full.groups.filter((g) => g.id !== "later");
+  const appCounts = appRowCounts(fullGroups);
+  const bandTotal = bandRows(feed.answer, feed.marked, feed.hidden, now?.getTime() ?? 0).length;
+  const tabs = buildNeedsTabs({ apps: appCounts, ai: ai.length, reminders: bandTotal });
+  const active = activeNeedsTab(tabs, only);
+  const filtered = active !== ALL_TAB;
+  const activeApp = tabs.find((t) => t.id === active)?.app;
   const shownGroups =
-    active === null
-      ? groups
-      : active === "ai"
+    activeApp === undefined
+      ? filtered
         ? []
-        : groups.map((g) => ({ ...g, cards: g.cards.filter((c) => c.app === active) })).filter((g) => g.cards.length > 0);
-  const chips =
-    kinds.length + (ai.length > 0 ? 1 : 0) > 1 ? (
-      // One line on a phone (task 1898): the chips wrapped to three rows of
-      // 40 px pills above the first card. Below `sm` they scroll sideways,
-      // edge to edge, and from `sm` they wrap as before.
-      <div
-        role="toolbar"
-        aria-label="Show one kind"
-        data-feed-filter=""
-        className="scrollbar-hide -mx-4 flex items-center gap-1.5 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0"
-      >
-        <FilterChip active={active === null} label="All" onClick={() => setOnly(null)} />
-        {ai.length > 0 ? (
-          <FilterChip
-            active={active === "ai"}
-            icon="Sparkles"
-            iconClass={accentForHue("amber").text}
-            label="AI waiting"
-            count={ai.length}
-            onClick={() => setOnly("ai")}
-          />
-        ) : null}
-        {kinds.map(([app, n]) => (
-          <FilterChip
-            key={app}
-            active={active === app}
-            icon={feedAppIcon(app)}
-            iconClass={appHue(app).text}
-            label={FEED_APP_NAMES[app as FeedApp] ?? app}
-            count={n}
-            onClick={() => setOnly(app)}
-          />
-        ))}
-      </div>
+        : groups
+      : fullGroups.map((g) => ({ ...g, cards: g.cards.filter((c) => c.app === activeApp) })).filter((g) => g.cards.length > 0);
+  const seeAll = seeAllHref(active);
+  const tabBar =
+    tabs.length > 0 ? (
+      // One line on a phone (task 1898): the tabs scroll sideways inside the
+      // bar, edge to edge, and never wrap.
+      <NeedsTabBar
+        panelId="feed-needs-panel"
+        active={active}
+        onChange={setOnly}
+        tabs={tabs.map((t) => ({
+          id: t.id,
+          label: t.label,
+          icon: t.icon || undefined,
+          iconClass: t.ai ? accentForHue("amber").text : t.app ? appHue(t.app).text : t.id === REMINDERS_TAB ? accentForHue("amber").text : undefined,
+          count: t.count,
+        }))}
+      />
     ) : null;
   const sentinel = useRevealOnScroll(reveal, hidden > 0);
   const nowMs = now?.getTime() ?? null;
@@ -705,7 +694,7 @@ export function FeedColumn({
   } else {
     body = (
       <div className="flex flex-col gap-5">
-        {ai.length > 0 && (active === null || active === "ai") ? <AiWaitingGroup rows={ai} /> : null}
+        {ai.length > 0 && (active === ALL_TAB || active === AI_TAB) ? <AiWaitingGroup rows={ai} /> : null}
         {fresh > 0 ? (
           // §7 rule 4: a new card never moves the cards under the pointer.
           // It waits here, and enters on a click or on the next visit.
@@ -715,7 +704,7 @@ export function FeedColumn({
             </Button>
           </div>
         ) : null}
-        {groups.length === 0 ? (
+        {!filtered && groups.length === 0 ? (
           <div className="flex items-center gap-2.5 rounded-xl border border-border bg-card px-4 py-4 glass:rounded-[16px] glass:border-transparent glass:glass-raised">
             <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${accentForHue("green").soft}`}>
               <Icon name="Check" size={14} className={accentForHue("green").text} />
@@ -826,9 +815,23 @@ export function FeedColumn({
       </h2>
       {/* The Reminders band (RX-3) is the first thing of the column, above
           every group. The groups leave the reminder cards out. */}
-      <RemindersBand feed={feed} now={now} />
-      {chips}
-      {body}
+      {tabBar}
+      <div
+        id="feed-needs-panel"
+        role="tabpanel"
+        aria-labelledby={tabs.length > 0 ? `feed-needs-panel-tab-${active}` : undefined}
+        className="flex min-w-0 flex-col gap-3"
+      >
+        {active === ALL_TAB || active === REMINDERS_TAB ? <RemindersBand feed={feed} now={now} tabbed={active === REMINDERS_TAB} /> : null}
+        {active === REMINDERS_TAB ? null : body}
+        {seeAll ? (
+          <div className="flex justify-center">
+            <Button href={seeAll} variant="text" size="none" icon="ArrowRight" data-feed-see-all="" className="min-h-8 gap-1 text-xs font-medium">
+              See all
+            </Button>
+          </div>
+        ) : null}
+      </div>
       {failed.length > 0 || stale ? (
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-1">
           <div className="flex min-w-0 flex-col gap-0.5">
@@ -882,33 +885,6 @@ export function HandledRow({ entry, nowMs }: { entry: HandledEntry; nowMs: numbe
         </span>
       </Button>
     </li>
-  );
-}
-
-/** One chip of the column's filter: a kind, its icon and its count. */
-function FilterChip({
-  active,
-  icon,
-  iconClass = "",
-  label,
-  count,
-  onClick,
-}: {
-  active: boolean;
-  icon?: string;
-  /** The kind's hue on its icon (`appHue`). */
-  iconClass?: string;
-  label: string;
-  count?: number;
-  onClick: () => void;
-}) {
-  // `selected` is the pressed state: the theme's soft tint, and aria-pressed.
-  return (
-    <Button variant="secondary" size="sm" selected={active} data-feed-chip="" onClick={onClick} className="shrink-0">
-      {icon ? <Icon name={icon} size={13} className={`shrink-0 ${iconClass}`} /> : null}
-      {label}
-      {count !== undefined ? <span className="tabular-nums opacity-70">{count}</span> : null}
-    </Button>
   );
 }
 

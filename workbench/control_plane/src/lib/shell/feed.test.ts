@@ -1640,8 +1640,15 @@ describe("a feed row on a phone (task 1898)", () => {
     expect(acted).toEqual(["done"]);
   });
 
-  it("puts the filter chips on one line that scrolls below sm", () => {
+  it("draws the Needs you tabs as one line that scrolls sideways", () => {
     const src = code(read_("./FeedCard.tsx"));
-    expect(src).toMatch(/data-feed-filter=""\s+className="[^"]*overflow-x-auto[^"]*sm:flex-wrap/);
+    expect(src).toContain("<NeedsTabBar");
+    expect(src).not.toContain("sm:flex-wrap");
+    const bar = code(read_("./NeedsTabBar.tsx"));
+    expect(bar).toMatch(/data-feed-filter=""/);
+    expect(bar).toMatch(/<Tabs\s+variant="underline"/);
+    const tabs = code(read_("../../components/Tabs.tsx"));
+    expect(tabs).toMatch(/role="tablist"/);
+    expect(tabs).toMatch(/overflow-x-auto/);
   });
 });
