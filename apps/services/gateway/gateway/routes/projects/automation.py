@@ -55,6 +55,7 @@ from gateway.routes.projects.core import (
     record_activity,
     record_field_change,
     require_row,
+    status_order_sql,
     update_row,
 )
 from gateway.routes.projects.core import (
@@ -106,7 +107,7 @@ async def resolve_status(db: Any, root_project_id: str, wanted: str) -> Any:
     rows = (await db.execute(
         text(
             "SELECT * FROM pm_task_statuses WHERE project_id = CAST(:pid AS uuid) "
-            "ORDER BY position"
+            f"ORDER BY {status_order_sql()}"
         ),
         {"pid": root_project_id},
     )).fetchall()
@@ -411,7 +412,7 @@ async def run_lifecycle_sweep(
         statuses = (await db.execute(
             text(
                 "SELECT * FROM pm_task_statuses "
-                "WHERE project_id = CAST(:pid AS uuid) ORDER BY position, name"
+                f"WHERE project_id = CAST(:pid AS uuid) ORDER BY {status_order_sql()}"
             ),
             {"pid": str(project.id)},
         )).fetchall()

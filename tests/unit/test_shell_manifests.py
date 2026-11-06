@@ -380,7 +380,7 @@ FROZEN_HREF_FEATURES = {
     "/dashboard": "dashboard",
     "/observability": "observability",
     "/artifacts": "artifacts",
-    "/studio": "workflows",  # STU-A1 added this pair
+    "/studio": "studio",  # STU-A1 added this pair, and STU-J1 moved it off `workflows`
     "/workflows": "workflows",
     "/settings/models": "models",
     "/agents": "agents",

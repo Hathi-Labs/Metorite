@@ -66,6 +66,10 @@ type Rows = Record<string, unknown>[];
 
 /** The record whose related lists were asked for last. */
 let latestRelated = "";
+// The record the card asked for last. With a docked card the member can click
+// A and then B, and A's slow answer must not draw over B: an edit would then go
+// to the record on screen, not the one in the URL (ORC-1).
+let latestRecord = "";
 
 /**
  * The list read asked for last (CRM-X1). `loadList` counts up, and an answer
@@ -132,6 +136,8 @@ type CrmState = {
   contacts: Contact[];
   organizations: Organization[];
   record: Record<string, unknown> | null;
+  /** The read of the open record failed. The card says so, with a Retry. */
+  recordFailed: boolean;
   timeline: TimelineEntry[];
   dealContacts: DealContact[];
   /** The four WS-26g report blocks, or null before the tab has been opened. */
@@ -327,6 +333,7 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   contacts: [],
   organizations: [],
   record: null,
+  recordFailed: false,
   timeline: [],
   dealContacts: [],
   reports: null,
@@ -571,21 +578,30 @@ export const useCrmStore = create<CrmState>((set, get) => ({
   },
 
   async loadRecord(entity, id) {
-    set({ record: null, timeline: [], dealContacts: [], related: NO_RELATED });
+    const asked = `${entity}:${id}`;
+    latestRecord = asked;
+    set({ record: null, recordFailed: false, timeline: [], dealContacts: [], related: NO_RELATED });
     try {
       const [record, timeline] = await Promise.all([
         api.getRecord<Record<string, unknown>>(entity, id),
         api.getTimeline(entity, id),
       ]);
+      if (latestRecord !== asked) return;
       set({ record, timeline: timeline.entries, error: null });
       if (entity === "deals") {
         const people = await api.listDealContacts(id);
+        if (latestRecord !== asked) return;
         set({ dealContacts: people.rows });
       }
     } catch (err) {
-      set({ error: message(err) });
+      if (latestRecord !== asked) return;
+      // With no record on screen the card says so. At the full stop a banner
+      // on the page behind it would stay out of sight, and the card would say
+      // "Loading…" for ever. A later read that failed keeps the banner.
+      if (get().record === null) set({ recordFailed: true });
+      else set({ error: message(err) });
     }
-    await get().loadRelated(entity, id);
+    if (latestRecord === asked) await get().loadRelated(entity, id);
   },
 
   async loadRelated(entity, id) {
