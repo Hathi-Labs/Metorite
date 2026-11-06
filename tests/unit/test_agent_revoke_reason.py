@@ -1,7 +1,7 @@
-"""WS-55 EA-18a — each revoke of an agent connection stores its reason.
+"""WS-55 EA-19a — each revoke of an agent connection stores its reason.
 
 Spec: ``project-docs/specs/external_agent_access.md`` §10.9 question 6 and the
-EA-18a row of §15 · Metorite task 1838 · the migration that adds
+EA-19a row of §15 · Metorite task 1838 · the migration that adds
 ``agent_connection.revoked_reason`` (found by CONTENT, never by number, R1).
 
 **What this file proves.** Each writer that revokes a connection stores one
@@ -13,7 +13,7 @@ store runs as a NON-privileged role on a phase-4-promoted catalog, the
 
 * one case for each reason that a path writes;
 * ``REVOKE_REASONS`` equals the reasons that the code passes, plus
-  ``flag_off``, which EA-18d writes;
+  ``flag_off``, which EA-19d writes;
 * an unknown reason raises ``ValueError`` before any SQL runs;
 * a row that an old writer revoked keeps NULL, and the migration is
   idempotent.
@@ -195,7 +195,7 @@ class TestTheMigration:
 
     async def test_an_old_revoke_keeps_null_and_a_replay_changes_nothing(
             self, promoted, web):  # noqa: F811
-        """A revoke by the code of before EA-18a sets ``revoked_at`` only.
+        """A revoke by the code of before EA-19a sets ``revoked_at`` only.
         Its row keeps NULL, also after the file runs again."""
         async with tenant_engine_scope(promoted.app_dsn):
             cid, _ = await _issued(promoted)
@@ -453,7 +453,7 @@ class TestTheSetIsTheReasonsTheCodePasses:
     def test_the_set_is_the_reasons_the_code_passes(self):
         passed, defects = _passed_reasons()
         assert defects == []
-        # flag_off has no writer until EA-18d (spec §10.9 question 5).
+        # flag_off has no writer until EA-19d (spec §10.9 question 5).
         expected = set(agent_tokens.REVOKE_REASONS)
         assert passed | {agent_tokens.REVOKE_FLAG_OFF} == expected
         assert agent_tokens.REVOKE_FLAG_OFF not in passed

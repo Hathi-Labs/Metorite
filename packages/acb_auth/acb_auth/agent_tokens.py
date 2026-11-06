@@ -102,7 +102,7 @@ store that must work before a tenant is known.
    Both run in the bound tenant and take the member from the caller, who
    passes the session's member. No other caller passes ``True``.
 
-10. ⚠️ **Each revoke stores its reason (EA-18a, spec §10.9).** Every writer
+10. ⚠️ **Each revoke stores its reason (EA-19a, spec §10.9).** Every writer
     that revokes a connection takes a REQUIRED keyword ``reason``, one of
     :data:`REVOKE_REASONS`, and writes it to ``revoked_reason``. An unknown
     reason raises ``ValueError`` before any SQL runs. The column has no
@@ -152,7 +152,7 @@ def hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-# ── Why a connection was revoked (EA-18a, spec §10.9 question 6) ────────────
+# ── Why a connection was revoked (EA-19a, spec §10.9 question 6) ────────────
 #
 # Each revoke of a connection stores one of these in
 # ``agent_connection.revoked_reason`` (migration 348). The column has NO CHECK
@@ -174,7 +174,7 @@ REVOKE_CODE_REPLAY = "code_replay"
 REVOKE_OAUTH_REVOKE = "oauth_revoke"
 #: ``mint_code`` failed after the approve made the connection.
 REVOKE_APPROVE_ROLLBACK = "approve_rollback"
-#: The bulk revoke of the box tokens of an organization. EA-18d writes it.
+#: The bulk revoke of the box tokens of an organization. EA-19d writes it.
 #: No path writes it yet.
 REVOKE_FLAG_OFF = "flag_off"
 
@@ -800,7 +800,7 @@ async def _revoke_in(
 
     The connection ``UPDATE`` comes first, so the row lock order is the same as
     in an issue: the connection, then the tokens. *reason* is one of
-    :data:`REVOKE_REASONS`, and the row stores it (EA-18a).
+    :data:`REVOKE_REASONS`, and the row stores it (EA-19a).
     """
     from sqlalchemy import text
 
@@ -821,7 +821,7 @@ async def revoke_connection(
     caller passes an organization it got from a token row or from the bound
     request, never from request input.
 
-    *reason* is one of :data:`REVOKE_REASONS` (EA-18a). An unknown one raises
+    *reason* is one of :data:`REVOKE_REASONS` (EA-19a). An unknown one raises
     ``ValueError`` before the session opens.
 
     The connection ``UPDATE`` waits for any issue that holds the connection
@@ -964,7 +964,7 @@ async def revoke_connection_scoped(
 ) -> bool:
     """Revoke *connection_id* when the caller may, and say whether it did (EA-4b).
 
-    *reason* is one of :data:`REVOKE_REASONS` (EA-18a): ``member`` from the
+    *reason* is one of :data:`REVOKE_REASONS` (EA-19a): ``member`` from the
     member's route, ``admin`` from the admin's route. An unknown one raises
     ``ValueError`` before any SQL runs.
 
