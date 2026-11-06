@@ -342,7 +342,7 @@ uv run pytest tests/unit/test_focus_session_rls_r8.py tests/unit/test_focus_sess
 uv run ruff check apps/services/gateway/gateway/routes/projects/ packages/acb_common
 ```
 
-The R8 files hold an `apply_ladder` fixture. They also prove three things: two starts at once leave one open row, a POST with the flag off writes nothing, and the close of a stale session runs once. Run the env_guard and flag tests that `scripts/affected_tests.py` lists.
+The R8 files hold an `apply_ladder` fixture. They also prove three things. Two starts at once leave one open row. A POST with the flag off writes nothing. The close of a stale session runs once. Run the env_guard and flag tests that `scripts/affected_tests.py` lists.
 
 Run them with a database exported, and confirm that no R8 test skips.
 
