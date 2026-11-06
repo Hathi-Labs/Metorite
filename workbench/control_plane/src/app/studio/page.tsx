@@ -11,7 +11,9 @@
  * head themselves with an `<h2>`. The Apps section shows only to a member who
  * holds `build.apps`. The Workflows pill, the Workflows section and the Module
  * Studio tab show only to a member who holds `workflows`, because their API
- * keeps that feature (J1-1). `studioLibraryView` decides all of it. The Skills
+ * keeps that feature (J1-1). The Module Studio tab also needs the org's
+ * switch `MODULE_RUN_ORGS`, which the shell read says as `module_runs`
+ * (STU-Q15a). `studioLibraryView` decides all of it. The Skills
  * section reads the list of the skill creator
  * (STU-F2b). An org outside `STUDIO_ORGS` gets 404, and then that section
  * keeps a plain empty state, with no button and no error.
@@ -31,6 +33,7 @@ import FilterPills from "@/components/FilterPills";
 import Tabs from "@/components/Tabs";
 import ModuleStudio from "@/app/workflows/components/ModuleStudio";
 import { useLiveRefresh } from "@/lib/liveRefresh";
+import { useModuleRunsOn } from "@/lib/shell/shellPrefs";
 import { studioLibraryView, type StudioKind } from "@/lib/studio/library";
 import AppsGallery from "./components/AppsGallery";
 import SkillsGallery from "./components/SkillsGallery";
@@ -44,12 +47,13 @@ function StudioLibrary() {
   const pathname = usePathname();
   const params = useSearchParams();
   const { access } = useAccess();
+  const moduleRuns = useModuleRunsOn();
   // An app or skill that the assistant saves in chat shows with no reload: the
   // bumped key remounts each gallery, and each one reads its list again.
   const [librarySeq, setLibrarySeq] = useState(0);
   useLiveRefresh(() => setLibrarySeq((n) => n + 1), "studio");
 
-  const view = studioLibraryView(access, params.get("kind"), params.get("tab"));
+  const view = studioLibraryView(access, params.get("kind"), params.get("tab"), moduleRuns);
 
   function go(next: { kind?: StudioKind; tab?: string }) {
     const q = new URLSearchParams(params.toString());

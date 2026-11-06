@@ -35,6 +35,8 @@ import {
   markChatFirstMessage,
   markTourSeen,
   memberWrote,
+  moduleRunsAllowed,
+  moduleRunsOn,
   nudgeShows,
   readShellPrefs,
   saveShellPrefs,
@@ -250,7 +252,7 @@ describe("GD-5a: the tour mark and the guide's switch", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   /** A gateway that merges a key-only write and stamps the tour with ITS time, as `me.py` does. */
-  const server = (layout: StoredShell & { guide?: boolean }) =>
+  const server = (layout: StoredShell & { guide?: boolean; module_runs?: boolean }) =>
     vi.fn(async (_url: string, init?: RequestInit) => {
       const method = (init?.method ?? "GET").toUpperCase();
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
@@ -304,6 +306,31 @@ describe("GD-5a: the tour mark and the guide's switch", () => {
     expect(guideOn({ ...NEVER })).toBe(false);
     expect(guideOn({ ...NEVER, guide: "true" })).toBe(false);
     expect(guideOn(null)).toBe(false);
+  });
+
+  it("moduleRunsOn: only `module_runs: true` is on, and a missing field is off (STU-Q15a)", () => {
+    expect(moduleRunsOn({ ...NEVER, module_runs: true })).toBe(true);
+    expect(moduleRunsOn({ ...NEVER, module_runs: false })).toBe(false);
+    expect(moduleRunsOn({ ...NEVER })).toBe(false);
+    expect(moduleRunsOn({ ...NEVER, module_runs: "true" })).toBe(false);
+    expect(moduleRunsOn(null)).toBe(false);
+  });
+
+  it("the read sets the module runs switch, and a new member resets it to off", async () => {
+    vi.stubGlobal("fetch", server({ ...NEVER, module_runs: true }));
+    await readShellPrefs();
+    expect(moduleRunsAllowed()).toBe(true);
+    clearAll();
+    expect(moduleRunsAllowed()).toBe(false);
+    vi.stubGlobal("fetch", server({ ...NEVER, module_runs: true }));
+    await readShellPrefs();
+    vi.stubGlobal("fetch", server({ ...NEVER }));
+    await readShellPrefs();
+    expect(moduleRunsAllowed()).toBe(false);
+  });
+
+  it("the switch is never part of the stored layout", () => {
+    expect(asLayout({ ...NEVER, module_runs: true })).not.toHaveProperty("module_runs");
   });
 
   it("the read passes the switch to the guide, and a new member resets it", async () => {
