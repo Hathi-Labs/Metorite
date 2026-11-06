@@ -164,7 +164,7 @@ async function setup(page: Page, opts: { chatName?: string; memberName?: string 
 const PAGES: Array<[string, string]> = [
   ["My Day", "/"],
   ["My Tasks", "/tasks"],
-  // Preview pane (AI Studio A1). The census visits it with the live ones.
+  // Live pane since 2026-11-05 (AI Studio A1, D179).
   ["Studio", "/studio"],
   ["Calendar", "/calendar"],
   ["My Profile", "/people/me"],

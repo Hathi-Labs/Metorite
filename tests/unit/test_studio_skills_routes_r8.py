@@ -113,7 +113,7 @@ def world(promoted, monkeypatch):  # noqa: F811
 
 def _user(org: str, email: str) -> UserContext:
     return UserContext(email=email, role=UserRole.EMPLOYEE,
-                       access=build_access(["feature:workflows"]), organization_id=org)
+                       access=build_access(["feature:studio"]), organization_id=org)
 
 
 def _run(world: Any, fn: Callable[[], Awaitable[Any]]) -> Any:

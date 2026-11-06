@@ -362,6 +362,9 @@ def w(world, monkeypatch):
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "agent_runs_enabled", True)
+    # EA-18a. These cases read the rule of D-EA-10 point (1), the rule with the
+    # flag off. `test_agent_questions_r8.py` holds the rule with it on.
+    monkeypatch.setattr(get_settings(), "agent_questions_orgs", "")
     with world.p.admin_engine.begin() as c:
         c.execute(text("DELETE FROM pm_agent_runs"))
         c.execute(text("DELETE FROM pm_notifications"))
@@ -428,7 +431,8 @@ class TestAgentRunsOnARealDatabase:
             # A thought on awaiting keeps awaiting, and is not a 409.
             assert (await _act(call, w.agent_a, rid, type="action", action="read_file",
                                parameters={"path": "a.py"})).json()["run"]["status"] == "awaiting"
-            # Any member who can see the task answers: in_progress.
+            # With AGENT_QUESTIONS_ORGS off (the `w` fixture), any member who
+            # can see the task answers: in_progress (D-EA-10 point 1).
             answered = await _act(call, w.c, rid, type="prompt", selected=["pg"])
             assert answered.status_code == 201, answered.text
             assert answered.json()["run"]["status"] == "in_progress"

@@ -15211,6 +15211,16 @@ was withheld. Now a fault gives an UNKNOWN state, not a mark.
 gives. It can fill the form with facts from the knowledge base. The member reviews the draft
 before any send, because a model draft is never sent by itself.
 
+**"Draft with AI" on a forward (task 1817).** The composer sends the To and the Cc of the forward
+with the request. The note is to those people. The note names the sender of the forwarded email only as
+"forwarded from", and the model does not answer that email. With no To yet, the note is to an
+unnamed reader. A reply and a new email keep their prompts. Fence:
+`tests/unit/test_email_forward_draft_prompt.py`.
+
+**The Ask bar and the composers (task 1816).** Each Email composer is a region that the Ask bar
+never sits on (`data-ask-clear`, `navigation_shell.md`). The bar takes the pill or the corner
+button, and it covers no field or control of the composer.
+
 **Open gaps, ranked for the Google review.** The first gap is the most likely to matter.
 
 1. **The list tools.** `search_emails`, `query_inbox` and the other list tools still print the
