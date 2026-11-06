@@ -140,7 +140,7 @@ def test_an_owner_is_denied_nothing():
 FROZEN_FEATURES = (
     "chat", "email", "whatsapp", "memory", "tasks", "notes", "crm", "projects",
     "people", "knowledge", "dashboard", "observability", "artifacts", "models",
-    "agents", "approvals", "integrations", "workflows", "build.agents",
+    "agents", "approvals", "integrations", "workflows", "studio", "build.agents",
     "build.apps", "center.sales", "center.marketing", "center.finance",
     "center.operations", "center.people", "center.company",
 )
