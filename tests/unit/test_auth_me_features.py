@@ -25,6 +25,8 @@ Hermetic: pure function, real ``build_access``. No Postgres, no TestClient.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from acb_auth import build_access
 from acb_auth.permissions import FEATURES
@@ -125,3 +127,229 @@ def test_allowed_and_denied_are_disjoint_and_cover_everything():
 
 def test_an_owner_is_denied_nothing():
     assert resolve_features(OWNER, ["projects", "people"])["features_denied"] == []
+
+
+# ── WS-PKG PKG-7: the slugs that an install declares ────────────────────────
+#
+# `package_host.md` §10, the PKG-7 row. The R8 twin is
+# `test_auth_me_install_features_r8.py`.
+
+#: A frozen copy of `FEATURES`. PKG-7 adds a third source of slugs, and the
+#: code list must not grow with it. A change to `FEATURES` is a change of
+#: its own, and it changes this copy in the same PR.
+FROZEN_FEATURES = (
+    "chat", "email", "whatsapp", "memory", "tasks", "notes", "crm", "projects",
+    "people", "knowledge", "dashboard", "observability", "artifacts", "models",
+    "agents", "approvals", "integrations", "workflows", "build.agents",
+    "build.apps", "center.sales", "center.marketing", "center.finance",
+    "center.operations", "center.people", "center.company",
+)
+GUEST = build_access(["feature:chat"])
+
+
+def _body(*entries: dict) -> dict:
+    """A resolve answer with *entries* at the point `jobs`."""
+    return {"version": "0" * 16, "contributions": {"jobs": list(entries)}}
+
+
+def _claim(feature, key="k", source="org"):
+    return {"key": key, "source": source, "install_id": "i-1",
+            "needs_setup": False, "feature": feature}
+
+
+def test_pkg7_features_equals_a_frozen_copy():
+    assert FEATURES == FROZEN_FEATURES
+
+
+def test_pkg7_the_helper_gives_each_slug_once_in_order():
+    from gateway.package_host.resolve import install_feature_slugs
+
+    body = {"version": "0" * 16, "contributions": {
+        "jobs": [_claim("fieldvisits"), _claim("zeta", key="z"),
+                 _claim("fieldvisits", key="again")],
+        "nav": [_claim("alpha", key="/x"), _claim("zeta", key="/y")],
+    }}
+    assert install_feature_slugs(body) == ["fieldvisits", "zeta", "alpha"]
+
+
+def test_pkg7_the_helper_skips_a_system_entry_and_a_claim_with_no_feature():
+    from gateway.package_host.resolve import install_feature_slugs
+
+    system = {"key": "chat", "source": "system", "install_id": None,
+              "needs_setup": False, "feature": "sysonly", "package": "p"}
+    open_claim = {"key": "o", "source": "org", "install_id": "i-2", "needs_setup": False}
+    assert install_feature_slugs(_body(system, open_claim, _claim("ok"))) == ["ok"]
+
+
+@pytest.mark.parametrize("bad", [
+    None, 7, ["x"], {"a": 1}, "", "   ", "Field", "field visits", "*", "a:b",
+    "feature:x", "-lead", "x" * 200, "ä", "a/b", "a*",
+])
+def test_pkg7_a_bad_slug_is_dropped_by_the_helper(bad):
+    from gateway.package_host.resolve import install_feature_slugs
+
+    assert install_feature_slugs(_body(_claim(bad), _claim("ok", key="k2"))) == ["ok"]
+
+
+@pytest.mark.parametrize("body", [None, {}, {"contributions": None},
+                                  {"contributions": {"jobs": None}},
+                                  {"contributions": {"jobs": ["x", 3]}}])
+def test_pkg7_a_malformed_answer_gives_no_slug(body):
+    from gateway.package_host.resolve import install_feature_slugs
+
+    assert install_feature_slugs(body) == []
+
+
+def test_pkg7_an_installed_slug_follows_the_access_set():
+    """`*` and `feature:*` see it, a guest is told what it needs."""
+    for who in (OWNER, ADMIN):
+        assert "fieldvisits" in resolve_features(who, [], ["fieldvisits"])["features"]
+    got = resolve_features(GUEST, [], ["fieldvisits"])
+    assert "fieldvisits" not in got["features"]
+    assert {"slug": "fieldvisits", "permission": "feature:fieldvisits"} in got["features_denied"]
+
+
+def test_pkg7_an_installed_system_slug_shows_once():
+    got = resolve_features(OWNER, ["crm"], ["crm"])["features"]
+    assert got.count("crm") == 1
+
+
+def test_pkg7_no_installed_slug_is_the_old_answer():
+    assert resolve_features(MEMBER, ["projects"], []) == resolve_features(MEMBER, ["projects"])
+    assert resolve_features(MEMBER, ["projects"], None) == resolve_features(MEMBER, ["projects"])
+
+
+# ── PKG-7: the route, with the flag on and off ──────────────────────────────
+
+
+class _Rows:
+    def __init__(self, row=None):
+        self._row = row
+
+    def mappings(self):
+        return self
+
+    def first(self):
+        return self._row
+
+
+class _Savepoint:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeDB:
+    def __init__(self):
+        self.statements = []
+
+    async def execute(self, stmt, params=None):
+        self.statements.append(str(stmt))
+        return _Rows({"slug": "acme", "display_name": "Acme",
+                      "registry_status": None, "registry_trial_ends_at": None})
+
+    def begin_nested(self):
+        return _Savepoint()
+
+
+@pytest.fixture
+def route(monkeypatch):
+    """`get_me` with a fake session, a fixed org and a fixed catalog."""
+    from contextlib import asynccontextmanager
+
+    from acb_common import get_settings
+    from gateway.package_host import resolve as resolve_mod
+    from gateway.routes.admin import me
+
+    db = _FakeDB()
+    calls = []
+
+    @asynccontextmanager
+    async def _session(organization_id=None):
+        yield db
+
+    async def _org(_db, _user):
+        return ORG_ID
+
+    async def _catalog(_db):
+        return ["chat"]
+
+    async def _resolve_for(_db, *, viewer, can_use):
+        calls.append(viewer)
+        return _body(_claim("fieldvisits"))
+
+    monkeypatch.setattr(me, "_tenant_session", _session)
+    monkeypatch.setattr(me, "get_org_id", _org)
+    monkeypatch.setattr(me, "_catalog_slugs", _catalog)
+    monkeypatch.setattr(me, "_agent_names", lambda: [])
+    monkeypatch.setattr(resolve_mod, "resolve_for", _resolve_for)
+    monkeypatch.setattr(get_settings(), "package_host_orgs", "")
+    return SimpleNamespace(me=me, db=db, calls=calls, settings=get_settings(),
+                           resolve=resolve_mod, monkeypatch=monkeypatch)
+
+
+ORG_ID = "00000000-0000-0000-0000-00000000a001"
+
+
+def _user(access=OWNER):
+    from acb_auth import UserContext, UserRole
+
+    return UserContext(email="ana@acme.test", role=UserRole.EMPLOYEE, access=access,
+                       organization_id=ORG_ID)
+
+
+def _run(coro):
+    import asyncio
+
+    return asyncio.run(coro)
+
+
+def test_pkg7_flag_off_never_calls_the_resolve(route):
+    body = _run(route.me.get_me(user=_user()))
+    assert route.calls == []
+    assert "fieldvisits" not in body["features"]
+    assert not any("package_install" in s for s in route.db.statements)
+
+
+def test_pkg7_flag_on_adds_the_slug_for_the_session_member(route):
+    route.monkeypatch.setattr(route.settings, "package_host_orgs", ORG_ID)
+    body = _run(route.me.get_me(user=_user()))
+    assert route.calls == ["ana@acme.test"]
+    assert "fieldvisits" in body["features"]
+
+
+def test_pkg7_a_failed_resolve_still_answers_the_system_lists(route):
+    async def _boom(_db, *, viewer, can_use):
+        raise RuntimeError("relation does not exist")
+
+    route.monkeypatch.setattr(route.settings, "package_host_orgs", "*")
+    route.monkeypatch.setattr(route.resolve, "resolve_for", _boom)
+    body = _run(route.me.get_me(user=_user()))
+    off = resolve_features(OWNER, ["chat"])
+    assert body["features"] == off["features"]
+    assert body["features_denied"] == off["features_denied"]
+    assert body["organization"]["slug"] == "acme"
+
+
+def test_pkg7_the_resolve_keeps_each_claim_for_the_split():
+    """The resolve gets a `can_use` that keeps each claim. The access set
+    splits the slugs after, so a guest can see the slug in the denied list."""
+    from gateway.routes.admin.me import _every_feature
+
+    assert _every_feature("anything") is True
+
+
+@pytest.mark.parametrize("workflow", ["pr-check.yml", "deploy.yml"])
+def test_pkg7_the_r8_suite_is_named_in_the_must_run_list(workflow):
+    """A skip of the R8 twin must fail CI, so both lists name it."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    text = (root / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+    block = re.search(r"--must-run \\\n((?:[ \t]+tests/unit/\S+(?: \\)?\n)+)", text)
+    assert block, "the --must-run argument list is missing"
+    assert re.search(r"^[ \t]+tests/unit/test_auth_me_install_features_r8\.py(?: \\)?$",
+                     block.group(1), re.M)

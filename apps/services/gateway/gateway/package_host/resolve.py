@@ -56,6 +56,11 @@ route sends it as the ETag.
 Fences: ``tests/unit/test_package_host_resolve.py`` (the pure part, with no
 database) and ``tests/unit/test_package_host_resolve_r8.py`` (a real
 database, FORCE RLS, two orgs).
+
+**PKG-7.** :func:`install_feature_slugs` reads the feature slugs of the
+install claims, and ``/auth/me`` adds them to its lists. Fences:
+``tests/unit/test_auth_me_features.py`` and
+``tests/unit/test_auth_me_install_features_r8.py``.
 """
 
 from __future__ import annotations
@@ -246,6 +251,53 @@ def version_of(contributions: Mapping[str, Any]) -> str:
 def manifest_body(contributions: Mapping[str, Any]) -> dict[str, Any]:
     """The answer of ``GET /shell/manifest``: the version and the entries."""
     return {"version": version_of(contributions), "contributions": dict(contributions)}
+
+
+def install_feature_slugs(resolved: Mapping[str, Any]) -> list[str]:
+    """The ``payload.feature`` slugs of the install claims in *resolved*
+    (WS-PKG PKG-7, ``package_host.md`` §10).
+
+    *resolved* is the answer of :func:`resolve_for`. ``/auth/me`` adds these
+    slugs to the system slugs, and the access set of the member then puts
+    each slug in ``features`` or in ``features_denied``. So this list grants
+    nothing.
+
+    Each slug shows once, in the order of the points and their entries. A
+    system entry adds nothing, because its feature is a system slug. A slug
+    that is not text is dropped. A slug is also dropped when
+    ``feature:<slug>`` fails ``validate_permission``, when the check changes
+    it (upper case or a space), or when it is a wildcard or holds a colon.
+    So a claim cannot widen the vocabulary of permissions.
+    """
+    from acb_auth.permissions import (
+        InvalidPermission,
+        feature_permission,
+        validate_permission,
+    )
+
+    out: list[str] = []
+    points = resolved.get("contributions") if isinstance(resolved, Mapping) else None
+    if not isinstance(points, Mapping):
+        return out
+    for entries in points.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping) or entry.get("source") == "system":
+                continue
+            slug = entry.get("feature")
+            if not isinstance(slug, str) or not slug or slug in out:
+                continue
+            if "*" in slug or ":" in slug:
+                continue
+            perm = feature_permission(slug)
+            try:
+                if validate_permission(perm) != perm:
+                    continue
+            except InvalidPermission:
+                continue
+            out.append(slug)
+    return out
 
 
 def etag_matches(if_none_match: str | None, version: str) -> bool:

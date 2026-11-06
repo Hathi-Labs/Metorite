@@ -673,6 +673,7 @@ jobs:
               tests/unit/test_studio_package_delete_r8.py \
               tests/unit/test_studio_chat_build_r8.py \
               tests/unit/test_package_host_store_r8.py \
+              tests/unit/test_auth_me_install_features_r8.py \
               tests/unit/test_app_requests_r8.py \
               tests/unit/test_workflows_lifecycle_rls_r8.py \
               tests/unit/test_project_rules.py \
