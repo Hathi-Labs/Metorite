@@ -32,6 +32,12 @@ _CTX = {
     "runner.os": "Linux",
     "matrix.shard": "1",
     "needs.test.result": "success",
+    # CIV-3: run_suite.sh gives the `changes` job a FULL result.
+    "needs.changes.result": "success",
+    "needs.changes.outputs.full": "true",
+    "needs.changes.outputs.files": "",
+    "steps.pick.outputs.mode": "full",
+    "steps.pick.outputs.paths": "",
     "github.event.pull_request.base.sha": "abc",
 }
 
@@ -184,3 +190,18 @@ def test_the_distro_is_locked_down():
     conf = prov.split("cat > /etc/wsl.conf <<'CONF'")[1].split("CONF")[0]
     assert re.search(r"\[automount\]\s*\nenabled = false", conf)
     assert re.search(r"\[interop\]\s*\nenabled = false", conf)
+
+
+def test_the_local_run_is_full_for_the_selection_jobs() -> None:
+    """CIV-3: pr-check's `test` and `unit-tests` read the `changes` job.
+    The local CI tests the whole commit, so run_suite.sh passes a FULL
+    result to both jobs, and steps.py renders them with it."""
+    text = (_ROOT / "scripts" / "ci_pc" / "run_suite.sh").read_text(encoding="utf-8")
+    assert "--ctx needs.changes.outputs.full=true" in text
+    assert re.search(r'job "shard-\$i" .* test .*"\$\{FULL_RUN\[@\]\}"', text)
+    assert re.search(r'job unit-tests .*"\$\{FULL_RUN\[@\]\}"', text)
+    assert "--ctx steps.pick.outputs.mode=full" in text
+    for job in ("test", "unit-tests"):
+        out = steps.render(job, _CTX, {})
+        # The pick step appends to $GITHUB_OUTPUT. Unset, `tee -a ""` fails.
+        assert 'export GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"' in out
