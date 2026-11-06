@@ -786,9 +786,12 @@ export function EmailDetail({ email }: EmailDetailProps) {
     // The focus goes to the text box. A press below another message keeps the
     // composer mounted, so `autoFocus` does not run again, and the pressed
     // button is gone: the focus fell to the page (UI review, 2026-11-06).
+    // A focus already in the composer stays: the member may be in To.
     setTimeout(() => {
       revealWithin(threadRef.current, composerRef.current, "smooth");
-      replyBoxRef.current?.focus({ preventScroll: true });
+      if (!composerRef.current?.contains(document.activeElement)) {
+        replyBoxRef.current?.focus({ preventScroll: true });
+      }
     }, 60);
   };
 
