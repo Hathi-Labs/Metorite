@@ -26,7 +26,6 @@ import { EliminatePopup } from "@/app/tasks/components/EliminatePopup";
 import { InboxView } from "@/app/tasks/components/InboxView";
 import { PromoteHost } from "@/app/tasks/components/PromoteHost";
 import { PromoteToast } from "@/app/tasks/components/PromoteToast";
-import { QuickCapture } from "@/app/tasks/components/QuickCapture";
 import { ReclarifyModal } from "@/app/tasks/components/ReclarifyModal";
 import { SchedulePopup } from "@/app/tasks/components/SchedulePopup";
 import { StagePromptHost } from "@/app/tasks/components/StagePromptHost";
@@ -136,7 +135,6 @@ export default function MyWorkHost({
           <InboxView embedded />
         </div>
       ) : null}
-      <QuickCapture />
       <ReclarifyModal />
       <UndoToast />
       <StagePromptHost />
