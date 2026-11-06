@@ -124,6 +124,12 @@ export interface ReplyForm {
   /** §18.11, a new mail only: the draft number, 2 or more ("Draft 2"). */
   draft?: number;
   /**
+   * §18.11 fix round 5, a new mail only: the SAME card, shown again because
+   * the revise of a chat message did not run. It takes its slot back, with
+   * the member's edits, and says why.
+   */
+  reopened?: true;
+  /**
    * §18.11 rule 7, a new mail only: the people that start unticked because
    * the member unticked them on the draft before, by lower case. The gateway
    * starts them unticked (`ticked`) and names them, on every path: a slot, no
@@ -244,6 +250,7 @@ export function replyFromEvent(value: unknown, requestId?: string): ReplyForm | 
     ...marksOf(v.marks, replyAll),
     ...(requestId ? { requestId } : {}),
     ...(isNew ? linkOf(v) : {}),
+    ...(isNew && v.reopened === true ? { reopened: true as const } : {}),
     ...(isNew ? untickedNames(v.unticked, replyAll, ticked ?? undefined) : {}),
   };
 }

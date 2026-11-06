@@ -64,6 +64,12 @@ export const MAX_CARD_DRAFTS = 8;
 
 /** The words of the slot while the assistant writes the new draft. */
 export const UPDATING_LINE = "Updating the draft…";
+/**
+ * The line of a card that came back (fix round 5): the revise did not run,
+ * so the member's request did not reach the assistant. The edits stay.
+ */
+export const REOPENED_LINE =
+  "Your request in the chat did not reach the assistant. Your edits are still on this card. Ask again in the chat, or press Send.";
 /** The words of the slot when the run ended with no new card. */
 export const UNCHANGED_LINE = "The draft did not change.";
 /** How long "The draft did not change." shows before the slot closes. */

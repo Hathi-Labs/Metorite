@@ -279,6 +279,10 @@ describe("a chip puts its words in the chat box and sends nothing", () => {
     expect(html).not.toContain(NUDGE_EDITED);
     expect(NUDGE_EDITED_AT_REST).toContain("starts again from the assistant's draft.");
     expect(NUDGE_EDITED_AT_REST).toContain("Save draft keeps your version.");
+    // At 390 px the live edited words keep a width beside the icon (fix round
+    // 5), so the chips wrap below them. Mutation: drop the width → red.
+    const live = renderToStaticMarkup(createElement(NudgeLine, { onSuggest, edited: true, carriesEdits: true }));
+    expect(live).toContain('class="min-w-0 flex-[1_1_14rem] text-foreground"');
     // With no edit, nothing is lost, so the plain nudge and its chips stay.
     expect(elements(NudgeLine({ onSuggest })).filter((el) => el.type === Button)).toHaveLength(2);
     // An untick is an edit too, also when its order moved and came back.

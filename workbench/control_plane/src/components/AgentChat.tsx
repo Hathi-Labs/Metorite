@@ -59,12 +59,17 @@ import { segmentsForCache } from "@/lib/chatPlacement";
 import {
   CONFIRMATION_RESOLVED,
   EMPTY_CONFIRMATIONS,
+  NO_EDITS,
   confirmationReducer,
+  formEditsReducer,
   liveCards,
+  liveEdits,
   receiptLabel,
   settleAnswer,
+  type FormEdits,
   type PendingConfirmation,
 } from "@/lib/confirmationQueue";
+import type { NewMailEdits } from "@/lib/replyCard";
 import {
   UNCHANGED_CLOSE_MS,
   changingLine,
@@ -1088,6 +1093,18 @@ export default function AgentChat({
   }, []);
   // A new-mail card reports the member's version after each edit, or null
   // when it shows its own start again.
+  // Fix round 5: the member's edits of each new-mail form, by key. The CHAT
+  // holds them, and not the queue, because the queue mounts again on each new
+  // message and when its last card leaves. A ref: the form reads them once,
+  // when it mounts. `liveEdits` drops the entry of a card that closed for good.
+  const formEditsRef = useRef<FormEdits>(NO_EDITS);
+  const onFormEdits = useCallback((key: string, value: NewMailEdits) => {
+    formEditsRef.current = formEditsReducer(formEditsRef.current, { key, value });
+  }, []);
+  const savedFormEdits = useCallback((key: string) => formEditsRef.current.get(key), []);
+  useEffect(() => {
+    formEditsRef.current = liveEdits(formEditsRef.current, confirmations);
+  }, [confirmations]);
   const onCardDraft = useCallback((key: string, draft: CardDraft | null) => {
     if (draft) cardDraftsRef.current.set(key, { draft, seq: ++draftSeqRef.current });
     else cardDraftsRef.current.delete(key);
@@ -2223,6 +2240,8 @@ export default function AgentChat({
             onSuggest={suggestToComposer}
             onDraftChange={onCardDraft}
             carriesEdits={steerOpen}
+            savedEdits={savedFormEdits}
+            onEdits={onFormEdits}
           />
         )}
 

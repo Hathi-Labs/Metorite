@@ -45,6 +45,7 @@ import {
   REVISED_ANSWER,
   confirmationReducer,
   formEditsReducer,
+  liveEdits,
   liveCards,
   type ConfirmationAction,
   type ConfirmationQueueState,
@@ -52,6 +53,7 @@ import {
 import {
   CARD_DRAFT_KEYS,
   MAX_CARD_DRAFTS,
+  REOPENED_LINE,
   UNCHANGED_LINE,
   UPDATING_LINE,
   cardDraftOf,
@@ -68,7 +70,7 @@ import {
   type KeptDraft,
 } from "@/lib/redraftCard";
 import { replyFromEvent, startTicks, toggleTick } from "@/lib/replyCard";
-import { IDLE_RUN, isRestingPhase, reduceRun, type RunEvent } from "@/lib/runStatus";
+import { FINISH_MAX_MS, IDLE_RUN, isRestingPhase, reduceRun, restConfirmed, type RunEvent } from "@/lib/runStatus";
 
 const SRC = fileURLToPath(new URL("..", import.meta.url));
 const read = (rel: string) => readFileSync(`${SRC}/${rel}`, "utf8").replace(/\r\n/g, "\n");
@@ -725,7 +727,7 @@ describe("fix round 4: a slot ends with any end of a run", () => {
     // Mutation: drop the emit, or dispatch `runFinalized` there → red.
     const hook = read("hooks/useAgentChat.ts");
     expect(hook).toContain("const resting = isRestingPhase(runPhase);");
-    expect(hook).toContain('if (resting) emitAgentEvent("onRunRested", { threadId });');
+    expect(hook).toContain('if (restConfirmed({ phase: runPhase, restBlind })) emitAgentEvent("onRunRested", { threadId });');
     const chat = read("components/AgentChat.tsx");
     const at = chat.indexOf("onRunRested: ({ threadId }) => {");
     expect(at).toBeGreaterThan(0);
@@ -782,9 +784,27 @@ describe("fix round 4: the view leaves a slot when a live card arrives", () => {
     expect(reconcileShown([NEW], more.cards, shown).shown).toBe(shown);
   });
 
-  it("a member who goes back to the slot stays there until a new card comes", () => {
-    const shown = { key: OLD, index: 0 };
-    expect(reconcileShown([OLD, CAROL_ID], withCarol.cards, shown).shown).toBe(shown);
+  it("a member who goes back to the slot stays there until the queue changes", () => {
+    const first = reconcileShown([OLD], withCarol.cards, { key: OLD, index: 0 });
+    const back = { key: OLD, index: 0 };
+    expect(reconcileShown(first.keys, withCarol.cards, back).shown).toBe(back);
+  });
+
+  it("a card of the same turn that turns into a slot moves the view to the card that waits", () => {
+    // The review's second P2 of fix round 4. The model drew Kim and Carol in one
+    // turn. The member looks at Carol and writes "make the one to carol
+    // shorter". Only Carol closes, and the run waits on Kim. Mutation: move
+    // only for a NEW live card, or ignore a card that turns into a slot → red.
+    const kimList = { to: ["kim@contoso.test"], cc: [] as string[] };
+    const kim = { ...FORM, recipients: { reply: kimList, reply_all: kimList } };
+    const two = run([
+      { type: "requested", value: mailCard(NEW, kim) },
+      { type: "requested", value: mailCard(CAROL_ID, carol) },
+    ]);
+    const before = reconcileShown([], two.cards, { key: CAROL_ID, index: 1 });
+    const after = run([{ type: "resolved", requestId: CAROL_ID, answer: REVISED_ANSWER }], two);
+    const next = reconcileShown(before.keys, after.cards, { key: CAROL_ID, index: 1 });
+    expect(after.cards[pickShown(after.cards, next.shown)].key).toBe(NEW);
   });
 
   it("the redraft that takes the slot keeps its place in view", () => {
@@ -857,9 +877,138 @@ describe("fix round 4: a change of tab keeps the member's edits", () => {
     const two = formEditsReducer(one, { key: NEW, value: { ...saved, body: "Other." } });
     expect(two.get(OLD)).toBe(saved);
     expect(two.get(NEW)?.body).toBe("Other.");
+  });
+
+  it("the CHAT keeps the edits, because the queue mounts again on each new message", () => {
+    // The review's P1 of fix round 4. The queue draws under the last message,
+    // so each new bubble mounts a new queue. Mutation: keep the edits in the
+    // queue again → red.
     const queue = read("components/ConfirmationQueue.tsx");
-    expect(queue).toContain("savedEdits: edits.get(card.key)");
-    expect(queue).toContain("useReducer(formEditsReducer, NO_EDITS)");
+    expect(queue).not.toContain("formEditsReducer");
+    expect(queue).toContain("savedEdits: savedEdits?.(card.key)");
+    const chat = read("components/AgentChat.tsx");
+    expect(chat).toContain("const formEditsRef = useRef<FormEdits>(NO_EDITS);");
+    expect(chat).toContain("formEditsRef.current = liveEdits(formEditsRef.current, confirmations);");
+    expect(chat).toContain("savedEdits={savedFormEdits}");
+    expect(chat).toContain("onEdits={onFormEdits}");
+  });
+
+  it("an entry stays while its card waits, and goes when the card closes for good", () => {
+    // The four paths of the review keep the card in the queue, or in flight.
+    // Mutation: drop an entry of a card that waits, or keep one that closed → red.
+    const bobList = { to: ["bob@contoso.test"], cc: ["geo@acme.test"] };
+    const bob = { ...FORM, recipients: { reply: bobList, reply_all: bobList } };
+    const BOB_ID = "d".repeat(32);
+    const open = run([
+      { type: "requested", value: mailCard(OLD) },
+      { type: "requested", value: mailCard(BOB_ID, bob) },
+    ]);
+    const kept = formEditsReducer(formEditsReducer(NO_EDITS, { key: OLD, value: saved }), { key: BOB_ID, value: saved });
+    // 1. A steer about Kim: Kim turns into a slot, and Bob waits. Both stay.
+    const steered = run([{ type: "resolved", requestId: OLD, answer: REVISED_ANSWER }], open);
+    expect(liveEdits(kept, steered)).toBe(kept);
+    // 2. A Send in flight, then a restore after a 5xx: Bob stays all through.
+    const card = open.cards[1];
+    const sending = run([{ type: "answering", key: BOB_ID }], open);
+    expect(sending.cards.some((c) => c.key === BOB_ID)).toBe(false);
+    expect(liveEdits(kept, sending).get(BOB_ID)).toBe(saved);
+    expect(liveEdits(kept, run([{ type: "restore", card }], sending)).get(BOB_ID)).toBe(saved);
+    // 3 and 4. A refused steer and a plain message at rest change no card.
+    expect(liveEdits(kept, open)).toBe(kept);
+    // The card closes for good: an answer, a slot that a draft took, a reset.
+    const answered = run([{ type: "answering", key: BOB_ID }, { type: "answered", key: BOB_ID }], open);
+    expect(liveEdits(kept, answered).has(BOB_ID)).toBe(false);
+    const taken = run([{ type: "requested", value: mailCard(NEW, { ...FORM, revises: OLD, draft: 2 }) }], steered);
+    expect(liveEdits(kept, taken).has(OLD)).toBe(false);
+    expect(liveEdits(kept, run([{ type: "reset" }], open)).size).toBe(0);
+  });
+});
+
+describe("fix round 5: the card comes back when the revise did not run", () => {
+  const GEO = "geo@acme.test";
+  const slotted = run([
+    { type: "requested", value: mailCard(OLD) },
+    { type: "memberVersion", key: OLD, version: { subject: "Rates", body: "My text.", to: ["kim@contoso.test"], cc: [], bcc: [] } },
+    { type: "resolved", requestId: OLD, answer: REVISED_ANSWER },
+  ]);
+  const again = { ...FORM, reopened: true };
+
+  it("the same card takes its slot back, in place, and keeps what the steer carried", () => {
+    // Mutation: ignore the second ask, as a replay of a closed card → red.
+    const back = run([{ type: "requested", value: mailCard(OLD, again) }], slotted);
+    expect(back.cards.map((c) => [c.key, c.redraft])).toEqual([[OLD, undefined]]);
+    expect(back.cards[0].reply?.reopened).toBe(true);
+    expect(back.cards[0].sent?.body).toBe("My text.");
+    expect(back.resolved.has(OLD)).toBe(false);
+    // A next message closes it again as a slot, and a draft can take it.
+    const slot2 = run([{ type: "resolved", requestId: OLD, answer: REVISED_ANSWER }], back);
+    expect(slot2.cards[0].redraft).toBe("updating");
+  });
+
+  it("a replay of the first ask never reopens it, and an answered card stays closed", () => {
+    // Mutation: reopen without the flag, or reopen a card with no slot → red.
+    expect(run([{ type: "requested", value: mailCard(OLD) }], slotted).cards[0].redraft).toBe("updating");
+    const back = run([{ type: "requested", value: mailCard(OLD, again) }], slotted);
+    const answered = run([{ type: "answering", key: OLD }, { type: "answered", key: OLD }], back);
+    expect(run([{ type: "requested", value: mailCard(OLD, again) }], answered).cards).toEqual([]);
+  });
+
+  it("reads the flag only from a new-mail form, and the card says why it came back", () => {
+    // Mutation: drop the flag in `replyFromEvent`, or the line → red.
+    expect(replyFromEvent(again, OLD)?.reopened).toBe(true);
+    expect(replyFromEvent({ ...FORM, reopened: "yes" }, OLD)?.reopened).toBeUndefined();
+    expect(replyFromEvent({ ...again, kind: undefined, message_id: "m-1" }, OLD)?.reopened).toBeUndefined();
+    const noop = () => {};
+    const html = renderToStaticMarkup(createElement(NewMailCardForm, {
+      form: replyFromEvent(again, OLD)!, onAnswer: noop, onDiscard: noop, armed: true,
+      savedEdits: { subject: "Rates", body: "My text.", ticks: toggleTick(startTicks(replyFromEvent(FORM, OLD)!), true, GEO), fileTicks: [] },
+    }));
+    expect(html).toContain(REOPENED_LINE);
+    expect(html).toContain('data-redraft-reopened=""');
+    expect(html).toContain("My text.");
+    const box = html.split("<").find((t) => t.startsWith("input") && t.includes(`aria-label="Send to ${GEO}"`)) ?? "";
+    expect(box).not.toBe("");
+    expect(box).not.toContain('checked=""');
+    expect(REOPENED_LINE).not.toContain("Jev");
+  });
+});
+
+describe("fix round 5: a rest that the settle alone made ends no slot", () => {
+  // The review's P3 of fix round 4. A cut stream with no server answer for
+  // FINISH_MAX_MS can be a live run. Mutation: end a slot on that settle → red.
+  const start = [
+    { type: "send", at: 0, messageId: "m" },
+    { type: "event", at: 100, step: null },
+    { type: "stream_end", at: 1000, terminal: false },
+    { type: "tick", at: 1000 + FINISH_MAX_MS, streamOpen: false },
+  ] as RunEvent[];
+  const settled = start.reduce(reduceRun, IDLE_RUN);
+
+  it("the settle rests blind, and a blind rest is not a confirmed one", () => {
+    expect(isRestingPhase(settled.phase)).toBe(true);
+    expect(settled.restBlind).toBe(true);
+    expect(restConfirmed(settled)).toBe(false);
+  });
+
+  it("a list that names the run brings it back, and one that does not confirms the rest", () => {
+    const at = 1000 + FINISH_MAX_MS + 3000;
+    const back = reduceRun(settled, { type: "server", at, run: { state: "running", live: true, runId: "r-1" }, streamOpen: false });
+    expect(back.phase).toBe("working");
+    expect(back.restBlind).toBe(false);
+    const gone = reduceRun(settled, { type: "server", at, run: null, streamOpen: false });
+    expect(gone.restBlind).toBe(false);
+    expect(restConfirmed(gone)).toBe(true);
+  });
+
+  it("every other rest is confirmed at once", () => {
+    const T = [{ type: "send", at: 0, messageId: "m" }, { type: "event", at: 100, step: null }] as RunEvent[];
+    for (const last of [
+      { type: "stop", at: 200 }, { type: "failed", at: 200 }, { type: "stream_end", at: 200, terminal: true },
+    ] as RunEvent[]) {
+      expect(restConfirmed([...T, last].reduce(reduceRun, IDLE_RUN))).toBe(true);
+    }
+    const hook = read("hooks/useAgentChat.ts");
+    expect(hook).toContain('if (restConfirmed({ phase: runPhase, restBlind })) emitAgentEvent("onRunRested", { threadId });');
   });
 });
 

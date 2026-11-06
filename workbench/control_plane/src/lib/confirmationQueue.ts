@@ -204,6 +204,25 @@ export type FormEdits = ReadonlyMap<string, NewMailEdits>;
 
 export const NO_EDITS: FormEdits = new Map();
 
+/**
+ * The kept edits of the cards that the queue still holds: a card on screen,
+ * a slot, or a card whose answer is in flight. Any other entry goes: an
+ * answered card, a slot that a draft took or that ended, and each card of a
+ * chat that the member left (`reset`). The same map comes back when
+ * nothing goes. Fix round 5: the chat holds the map, because the queue
+ * mounts again on each new message.
+ */
+export function liveEdits(edits: FormEdits, state: Pick<ConfirmationQueueState, "cards" | "answering">): FormEdits {
+  const keep = new Set([...state.cards.map((c) => c.key), ...state.answering]);
+  let out: Map<string, NewMailEdits> | null = null;
+  for (const key of edits.keys()) {
+    if (keep.has(key)) continue;
+    out ??= new Map(edits);
+    out.delete(key);
+  }
+  return out ?? edits;
+}
+
 /** Keep the edits of one form. The same values change nothing. */
 export function formEditsReducer(edits: FormEdits, action: { key: string; value: NewMailEdits }): FormEdits {
   const was = edits.get(action.key);
@@ -510,6 +529,17 @@ export function confirmationReducer(
     case "requested": {
       const card = cardFromEvent(action.value);
       if (!card) return state;
+      // §18.11 fix round 5: the SAME card, shown again because the revise of a
+      // chat message did not run. It takes its slot back, in place, and the
+      // chat keeps the member's edits by its key. Only a slot reopens: a
+      // replay of a card that was answered stays closed.
+      const was = state.cards.findIndex((c) => c.key === card.key && c.redraft !== undefined);
+      if (was >= 0 && card.reply && isNewMail(card.reply) && card.reply.reopened) {
+        const slot = state.cards[was];
+        const cards = state.cards.slice();
+        cards[was] = { ...card, ...(slot.sent ? { sent: slot.sent } : {}) };
+        return { ...state, cards, resolved: withRemoved(state.resolved, card.key) };
+      }
       if (state.resolved.has(card.key) || state.answering.has(card.key)) return state;
       const at = state.cards.findIndex((c) => c.key === card.key);
       if (at >= 0) {

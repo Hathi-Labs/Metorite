@@ -52,6 +52,16 @@ export function isRestingPhase(p: RunPhase): boolean {
   return p === "done" || p === "stopped" || p === "failed" || p === "idle";
 }
 
+/**
+ * A rest that a slot of a redraft may end on (§18.11, fix round 5): any rest
+ * but one that the `FINISH_MAX_MS` settle alone made. A cut stream with no
+ * server answer can still be a live run, and its next draft would then come
+ * with no slot to take.
+ */
+export function restConfirmed(s: Pick<RunStatus, "phase" | "restBlind">): boolean {
+  return isRestingPhase(s.phase) && !s.restBlind;
+}
+
 /** Live, for the composer, the session dot and the nav badge. */
 export function isLivePhase(p: RunPhase): boolean {
   return LIVE.has(p);
@@ -159,6 +169,13 @@ export interface RunStatus {
   writesAsked: readonly string[];
   /** Ids of the write tools that ended with success: the changes made. */
   writesDone: readonly string[];
+  /**
+   * The run rests only because no word came for `FINISH_MAX_MS` (§18.11, fix
+   * round 5). The next server list either names the run, which works again,
+   * or not, which confirms the rest and clears this. A slot of a redraft
+   * ends only on a confirmed rest (`restConfirmed`).
+   */
+  restBlind: boolean;
 }
 
 export const IDLE_RUN: RunStatus = Object.freeze({
@@ -183,6 +200,7 @@ export const IDLE_RUN: RunStatus = Object.freeze({
   checking: false,
   writesAsked: [],
   writesDone: [],
+  restBlind: false,
 }) as RunStatus;
 
 /** One server row, as `lib/liveRuns.ts` reads it. */
@@ -234,6 +252,8 @@ export type RunEvent =
 
 function to(s: RunStatus, phase: RunPhase, at: number, extra: Partial<RunStatus> = {}): RunStatus {
   const next = { ...s, ...extra, phase, changedAt: phase === s.phase ? s.changedAt : at };
+  // A blind rest lasts only while the phase it marks lasts.
+  if (phase !== s.phase && !extra.restBlind) next.restBlind = false;
   // "Checking" lasts only while a remount waits in `finishing`.
   if (phase !== "finishing" && next.checking) next.checking = false;
   return next;
@@ -480,6 +500,8 @@ function reduceServer(
   }
 
   // The server does not name this thread: no run, and no question waits.
+  // A blind rest is now a known one (§18.11, fix round 5).
+  if (s.restBlind) return { ...s, restBlind: false };
   if (s.phase === "parked") return settled(s, at);
   if (!isLivePhase(s.phase)) return s;
   if (!streamOpen) {
@@ -508,7 +530,11 @@ function sameRun(a: RunStatus, b: RunStatus): boolean {
 }
 
 function reduceTick(s: RunStatus, at: number, streamOpen: boolean): RunStatus {
-  if (s.phase === "finishing" && at - s.changedAt >= FINISH_MAX_MS) return settled(s, at);
+  if (s.phase === "finishing" && at - s.changedAt >= FINISH_MAX_MS) {
+    // No word for this long: rest, but blind, until a server list says (§18.11).
+    const out = settled(s, at);
+    return out.phase === s.phase ? out : { ...out, restBlind: true };
+  }
   if ((s.phase === "working" || s.phase === "starting" || s.phase === "waiting_for_you") && !streamOpen) {
     const heard = Math.max(s.lastEventAt, s.serverSeenAt, s.changedAt);
     if (at - heard >= STALE_MS) return settled(s, at);

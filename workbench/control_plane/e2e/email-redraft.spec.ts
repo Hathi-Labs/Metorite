@@ -67,12 +67,18 @@ interface StubOptions {
   failAfterSteer?: boolean;
   /** The first stream is cut, and the run goes on, and ends, on the attach stream. */
   cutFirstStream?: boolean;
+  /** The server refuses the steer (202, not steered). */
+  refuseSteer?: boolean;
+  /** The first answer of a card gets a 503, so the card comes back. */
+  answerFailsOnce?: boolean;
+  /** A plain message at rest: its run replies and stays open. */
+  restMessage?: string;
 }
 
 const stubCard = (id: string, title: string, reply: unknown): StubCard => ({ request_id: id, title, reply });
 
 async function install(page: Page, firstCards: StubCard[], newCards: StubCard[], options: StubOptions = {}) {
-  await page.addInitScript(({ steer, firstCards, newCards, closes, failAfterSteer, cutFirstStream }) => {
+  await page.addInitScript(({ steer, firstCards, newCards, closes, failAfterSteer, cutFirstStream, refuseSteer, answerFailsOnce, restMessage }) => {
     window.localStorage.clear();
     const w = window as unknown as Record<string, unknown>;
     const steers: unknown[] = [];
@@ -100,6 +106,7 @@ async function install(page: Page, firstCards: StubCard[], newCards: StubCard[],
       if (url.includes("/api/agent/cancel")) return json({ cancelled: true });
       if (url.includes("/api/agent/respond-input")) {
         answers.push(JSON.parse(String(init?.body ?? "{}")));
+        if (answerFailsOnce && answers.length === 1) return json({ detail: "busy" }, 503);
         return json({ ok: true });
       }
       if (url.includes("/api/chat/active-sessions")) {
@@ -155,8 +162,19 @@ async function install(page: Page, firstCards: StubCard[], newCards: StubCard[],
         if (body.steerFollowUp) return json({ steered: false, followUp: false, reason: "nothing_pending" }, 202);
         if (body.message === steer) {
           steers.push(body);
+          if (refuseSteer) return json({ steered: false, delivered: false, reason: "nothing_live" }, 202);
           steered();
           return json({ steered: true, delivered: true, pendingReplay: false, reason: "folded_into_live_run" }, 202);
+        }
+        if (restMessage && body.message === restMessage) {
+          // A plain message at rest: a new run, which replies and stays open.
+          const rest = new ReadableStream<Uint8Array>({
+            start(ctl) {
+              ctl.enqueue(frame({ type: "message_start", messageId: "m-2" }));
+              ctl.enqueue(frame({ type: "delta", messageId: "m-2", content: "Noted." }));
+            },
+          });
+          return new Response(rest, { status: 200, headers: { "content-type": "text/event-stream" } });
         }
         const stream = new ReadableStream<Uint8Array>({
           async start(ctl) {
@@ -219,7 +237,8 @@ async function install(page: Page, firstCards: StubCard[], newCards: StubCard[],
   }, {
     steer: options.steer ?? STEER, firstCards, newCards,
     closes: options.closes ?? null, failAfterSteer: !!options.failAfterSteer,
-    cutFirstStream: !!options.cutFirstStream,
+    cutFirstStream: !!options.cutFirstStream, refuseSteer: !!options.refuseSteer,
+    answerFailsOnce: !!options.answerFailsOnce, restMessage: options.restMessage ?? null,
   });
   await page.route("**/api/agent/list", (r) => r.fulfill({ json: [] }));
   await page.route("**/api/models/all", (r) => r.fulfill({ json: { models: [], source: "mock" } }));
@@ -477,5 +496,115 @@ test.describe("a redraft through the chat keeps the member's edits", () => {
     const kim = sent.cardDraft?.find((d) => d.request_id === OLD);
     expect(kim?.cc).toEqual([]);
     expect(kim?.body).toBe(EDITED);
+  });
+  // Fix round 5.
+  const geoOf = (page: Page) => page.getByRole("checkbox", { name: `Send to ${GEO}` });
+  const bobWithGeo = () => stubCard(OLD_BOB, `Email to ${BOB}`, form(BOB_TEXT, {}, { to: [BOB], cc: [GEO] }));
+  const BOB_EDITED = "Hi Bob,\n\nThe spare parts ship on Monday. I will call you.";
+  const answersOf = (page: Page) => page.evaluate(() => (window as unknown as { __answers: unknown[] }).__answers);
+  const release = (page: Page) => page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+
+  test("a revise that did not run: the old card comes back in place with the edits, and the next message carries them", async ({ page }) => {
+    // The verifier's P2-1 and the review's first P2 of fix round 4. Two 503s at
+    // the revise: the tool asks the SAME card again, with `reopened`.
+    const box = await openCard(page, [stubCard(OLD, `Email to ${KIM}`, form(FIRST))],
+      [stubCard(OLD, `Email to ${KIM}`, form(FIRST, { reopened: true }))]);
+    const text = page.getByRole("textbox", { name: "Email text" });
+    await text.fill(EDITED);
+    await geoOf(page).uncheck();
+    await box.fill(STEER);
+    await page.locator('[data-chat-primary="send"]').click();
+    await steered(page);
+    await expect(page.locator("[data-redraft-slot]")).toHaveText("Updating the draft…");
+    await release(page);
+    // The card is back in place, with the member's text and Geo still unticked.
+    await expect(page.locator("[data-redraft-slot]")).toHaveCount(0);
+    await expect(page.locator("[data-redraft-reopened]")).toContainText("did not reach the assistant");
+    await expect(text).toHaveValue(EDITED);
+    await expect(geoOf(page)).not.toBeChecked();
+    // The next message is a steer again, and it carries the edits.
+    await box.fill(STEER);
+    await page.locator('[data-chat-primary="send"]').click();
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __steers: unknown[] }).__steers.length)).toBe(2);
+    const steers = await page.evaluate(() => (window as unknown as { __steers: { cardDraft?: { request_id: string; cc: string[]; body: string }[] }[] }).__steers);
+    const kim = steers[1].cardDraft?.find((d) => d.request_id === OLD);
+    expect(kim?.cc).toEqual([]);
+    expect(kim?.body).toBe(EDITED);
+  });
+
+  test("a steer about Kim keeps Bob's edits, and Send on Bob does not name Geo", async ({ page }) => {
+    // The review's P1 of fix round 4, path 1. The steer adds a bubble, and the
+    // queue mounts again under it.
+    const box = await openCard(page, [stubCard(OLD, `Email to ${KIM}`, form(FIRST)), bobWithGeo()], [],
+      { steer: ONLY_KIM, closes: [OLD] });
+    await page.getByRole("tab", { name: /Bob/ }).click();
+    const text = page.getByRole("textbox", { name: "Email text" });
+    await text.fill(BOB_EDITED);
+    await geoOf(page).uncheck();
+    await box.fill(ONLY_KIM);
+    await page.locator('[data-chat-primary="send"]').click();
+    await steered(page);
+    await expect(page.locator("[data-card-tabs-count]")).toHaveText("1 to approve");
+    await page.getByRole("tab", { name: /Bob/ }).click();
+    await expect(text).toHaveValue(BOB_EDITED);
+    await expect(geoOf(page)).not.toBeChecked();
+    await page.waitForTimeout(600);
+    await page.locator("[data-reply-send]").click();
+    await expect.poll(() => answersOf(page).then((a) => a.length)).toBe(1);
+    const [answer] = await answersOf(page);
+    expect(JSON.stringify(answer)).not.toContain(GEO);
+    expect(JSON.stringify(answer)).toContain("I will call you.");
+  });
+
+  test("a failed Send brings the card back with the edits, and the next Send does not name Geo", async ({ page }) => {
+    // Path 2: the answer gets a 503, and the card comes back (`restore`).
+    await openCard(page, [stubCard(OLD, `Email to ${KIM}`, form(FIRST))], [], { answerFailsOnce: true });
+    const text = page.getByRole("textbox", { name: "Email text" });
+    await text.fill(EDITED);
+    await geoOf(page).uncheck();
+    await page.waitForTimeout(600);
+    await page.locator("[data-reply-send]").click();
+    await expect.poll(() => answersOf(page).then((a) => a.length)).toBe(1);
+    await expect(text).toHaveValue(EDITED, { timeout: 15_000 });
+    await expect(geoOf(page)).not.toBeChecked();
+    await page.waitForTimeout(600);
+    await page.locator("[data-reply-send]").click();
+    await expect.poll(() => answersOf(page).then((a) => a.length)).toBe(2);
+    const answers = await answersOf(page);
+    expect(JSON.stringify(answers[1])).not.toContain(GEO);
+    expect(JSON.stringify(answers[1])).toContain("Call me on Friday");
+  });
+
+  test("a refused steer keeps the edits on the card", async ({ page }) => {
+    // Path 3: the bubble comes and goes, and the queue mounts again.
+    const box = await openCard(page, [stubCard(OLD, `Email to ${KIM}`, form(FIRST))], [], { refuseSteer: true });
+    const text = page.getByRole("textbox", { name: "Email text" });
+    await text.fill(EDITED);
+    await geoOf(page).uncheck();
+    await box.fill(STEER);
+    await page.locator('[data-chat-primary="send"]').click();
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __steers: unknown[] }).__steers.length)).toBe(1);
+    await page.waitForTimeout(800);
+    await expect(text).toHaveValue(EDITED);
+    await expect(geoOf(page)).not.toBeChecked();
+  });
+
+  test("a plain message at rest keeps the edits on the card", async ({ page }) => {
+    // Path 4: after a Stop, a message starts a new run, and its bubble mounts
+    // the queue again.
+    const box = await openCard(page, [stubCard(OLD, `Email to ${KIM}`, form(FIRST)), bobWithGeo()], [],
+      { steer: ONLY_KIM, closes: [OLD], restMessage: "thanks" });
+    await page.getByRole("tab", { name: /Bob/ }).click();
+    const text = page.getByRole("textbox", { name: "Email text" });
+    await text.fill(BOB_EDITED);
+    await geoOf(page).uncheck();
+    await page.locator('[data-chat-primary="stop"]').click();
+    await expect(page.locator('[data-new-mail-nudge="edited-at-rest"]')).toBeVisible();
+    await box.fill("thanks");
+    await page.locator('[data-chat-primary="send"]').click();
+    await expect(page.getByText("Noted.").first()).toBeVisible({ timeout: 15_000 });
+    await page.getByRole("tab", { name: /Bob/ }).click();
+    await expect(text).toHaveValue(BOB_EDITED);
+    await expect(geoOf(page)).not.toBeChecked();
   });
 });

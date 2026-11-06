@@ -38,7 +38,7 @@ import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import Checkbox from "@/components/ui/Checkbox";
 import { Input, Textarea } from "@/components/ui/Input";
-import { CHANGED_LEAD, cardDraftOf, changedText, changesOf, draftLabel, keptOutOf, keptOutText, linePieces, type CardDraft, type CardText, type Changes, type PeopleBefore } from "@/lib/redraftCard";
+import { CHANGED_LEAD, REOPENED_LINE, cardDraftOf, changedText, changesOf, draftLabel, keptOutOf, keptOutText, linePieces, type CardDraft, type CardText, type Changes, type PeopleBefore } from "@/lib/redraftCard";
 import {
   leftOutText,
   lineCount,
@@ -179,7 +179,9 @@ export function NudgeLine({
     >
       <Icon name="Sparkles" size={12} className="shrink-0 text-muted-foreground" />
       {edited ? (
-        <span className={lost ? "min-w-0 flex-1 text-foreground" : "text-foreground"}>{lost ? NUDGE_EDITED_AT_REST : NUDGE_EDITED}</span>
+        // The words keep a width of their own beside the icon, so at 390 px
+        // the chips wrap below them and the icon never sits alone.
+        <span className={lost ? "min-w-0 flex-1 text-foreground" : "min-w-0 flex-[1_1_14rem] text-foreground"}>{lost ? NUDGE_EDITED_AT_REST : NUDGE_EDITED}</span>
       ) : (
         <span className="text-foreground">
           <span className="font-medium">{NUDGE_LEAD}</span>{" "}
@@ -286,6 +288,11 @@ export default function NewMailCardForm({
         </div>
         {detail && <p className="mt-0.5 break-words text-[11px] text-muted-foreground">{detail}</p>}
         {changes && <ChangedLine changes={changes} />}
+        {form.reopened && (
+          <p className="break-words text-[11px] leading-relaxed text-foreground" data-redraft-reopened="" role="status">
+            {REOPENED_LINE}
+          </p>
+        )}
         <KeptOutLine names={keptOutOf(form)} />
       </div>
 

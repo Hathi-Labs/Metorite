@@ -37,7 +37,7 @@ import {
   wantLiveSteps,
   type LiveRun,
 } from "@/lib/liveRuns";
-import { isLivePhase, isRestingPhase, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
+import { isLivePhase, isRestingPhase, restConfirmed, serverHoldsRun, type RunStatus } from "@/lib/runStatus";
 import { stepOfMessage } from "@/lib/runStep";
 import { fetchMessagesFromDb } from "@/lib/sessions";
 import { planReplay, rejectFor } from "@/lib/runReplay";
@@ -1524,6 +1524,7 @@ export function useAgentChat({
   }, [threadId]);
 
   const runPhase = sessionState.run.phase;
+  const restBlind = sessionState.run.restBlind;
   // A remount's "checking" was seen, so the cards on screen came from the log.
   const wasCheckingRef = useRef(false);
   const checkingNow = sessionState.run.checking;
@@ -1568,9 +1569,10 @@ export function useAgentChat({
     if (resting) clearCardLog(threadId);
     // §18.11 step 7: a slot of a redraft ends with ANY end of a run. A Stop, a
     // failed model call and an end on the attach stream emit no
-    // `onRunFinalized`, and the slot would then spin with no button.
-    if (resting) emitAgentEvent("onRunRested", { threadId });
-  }, [runPhase, threadId]);
+    // `onRunFinalized`, and the slot would then spin with no button. A rest
+    // that only the settle of `FINISH_MAX_MS` made waits for a server list.
+    if (restConfirmed({ phase: runPhase, restBlind })) emitAgentEvent("onRunRested", { threadId });
+  }, [runPhase, restBlind, threadId]);
   // A new run (another run key) has none of the old run's cards.
   const runKeyNow = sessionState.run.runKey;
   const runKeyRef = useRef<string | null>(runKeyNow);
