@@ -14,7 +14,10 @@ network, and proves that each check of it can fail:
   context that the model never sees, and a sub-run that never reaches the
   agent;
 * the live path, with a script in place of the Router: the stand-in records
-  the delegate and no specialist runs, and the score fails a wrong delegate.
+  the delegate and no specialist runs, and the score fails a wrong delegate;
+* the guide cases (WS-OB GD-7): the score fails a case that never calls
+  ``find_guide``, or ``show_guide`` where the case shows a guide, and the
+  scripted run fails a guide case whose model never saw the guide line.
 
 Hermetic: the harness stubs the registry reads of the database and traps
 every host HTTP send. Run::
@@ -188,10 +191,19 @@ def test_without_the_handoff_seam_a_vague_task_drops_the_members_words(monkeypat
 
 
 def test_a_page_context_that_the_model_never_sees_fails(monkeypatch) -> None:
-    monkeypatch.setattr(run.shell, "system_context", lambda app, facts=(): shell.persona())
+    monkeypatch.setattr(run.shell, "system_context",
+                        lambda app, facts=(), guide=True: shell.persona())
     result = _one("P1")
     assert "the orchestrator's model did not see the page context" in result.problems, \
         result.problems
+
+
+def test_a_guide_case_without_the_guide_line_fails(monkeypatch) -> None:
+    whole = shell.system_context
+    monkeypatch.setattr(run.shell, "system_context",
+                        lambda app, facts=(), guide=True: whole(app, facts, guide=False))
+    result = _one("G1")
+    assert "the orchestrator's model did not see the guide line" in result.problems,         result.problems
 
 
 def test_a_sub_run_that_never_reaches_the_agent_fails(monkeypatch) -> None:
@@ -243,3 +255,21 @@ def test_the_live_score_fails_a_wrong_delegate() -> None:
     row = _live_row("E3", wrong)
     assert row["got"] == "crm-assistant" and row["passed"] is False, row
     assert run.summarise([row], "tier-test")["accuracy"] == 0.0
+
+
+def test_the_live_score_needs_the_guide_tools() -> None:
+    finds, shows = ds.case("G1"), ds.case("G2")
+    assert run.score_live(finds, None, False, ["find_guide"]) is True
+    assert run.score_live(finds, None, False, []) is False
+    assert run.score_live(shows, None, False, ["find_guide"]) is False
+    assert run.score_live(shows, None, False, ["find_guide", "show_guide"]) is True
+
+
+def test_the_live_path_fails_a_guide_case_that_never_calls_find_guide() -> None:
+    def no_guide(_case: Case, _form: str) -> dict[str, ReplyModel]:
+        return {ORCHESTRATOR: ReplyModel([text_turn("Open the CRM and press New deal.")])}
+
+    row = _live_row("G1", no_guide)
+    assert row["got"] is None and row["passed"] is False, row
+    good = _live_row("G1")
+    assert "find_guide" in good["tool_calls"] and good["passed"] is True, good

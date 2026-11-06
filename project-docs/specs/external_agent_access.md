@@ -1851,6 +1851,18 @@ Each row has `task_id`, `task_number`, `title`, `status`, `project_id`, `version
 
 **BUILT 2026-10-25 on `sw7-session-key-mt-5eab8fde`, not merged (Metorite task #338, which takes in the SW-6 design #337 and MCP-G4).**
 
+**MCP-G4 step 2 is BUILT 2026-11-05 on branch `l6s-mine-only`, not merged (Metorite task 358).** Incident of 2026-11-05: an answer to an ended session showed as `run_answered` for every session of the connection.
+
+Each `my_work` row now has `yours`. It is true only when the run has a session key and the key is the caller's session.
+
+The instructions, the prompt and the `my_work` text give one rule. Act on an answer only when `yours` is true. Also act only when you asked that question yourself in this session. Also act only when no later activity withdrew the answer.
+
+A claim does not make an answer yours, because a claim writes the key on a run with no key. A Resume prompt is a hand-off to continue the work, never an answer. The edge marks it with `resume` true on the activity, and only the gateway sets that mark. The task prompt and the `list_agent_runs` text carry the same rule. The server instructions carry one pointer sentence only, because the client cuts them at 4096 characters. A run with no key after a Resume is not left alone.
+
+`list_agent_runs` takes `mine_only`. It reads on past a page of sibling runs. A call with no session gets an empty list with no gateway read. A gateway fix for the adopt case is still open.
+
+While the flag is off, `yours` is false in every row. Fences: `test_mcp_edge_context.py` `TestYoursAndMineOnly` and `test_mcp_edge_prompts.py` `TestTheAnswerRule`.
+
 **Ships dark behind `agent_mcp_sessions_enabled` (default off).** Turn it on on staging, and check it with a real Claude Code: two terminals, a resume, and a 404 after a key change. Then turn it on in production.
 
 - **While it is off**, the edge mints no `Mcp-Session-Id`. It reads an id that a client still sends as no session. It never answers 404 for such an id, because the client may hold one from a time the flag was on. It signs no `X-Agent-Session`. So every client sees the transport of before SW-7.

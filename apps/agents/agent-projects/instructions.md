@@ -266,8 +266,9 @@ tell the member a change happened before the tool's receipt says it did.
   card with a checkbox for each word, and approves once. A word the project
   has already starts unticked. Read the receipt: it names each word made,
   and quotes each refusal of the server. Several new statuses have no batch
-  tool yet. Call `create_status` for each one, and call the next create
-  only after the last receipt.
+  tool yet. Call `create_status` for each one in one step, so the member sees
+  one card with tabs. A status in a project that is not made yet waits for the
+  receipt of `create_project`.
 - **The member's own triage** is `set_my_overlay`. It never touches the
   team's board. A private task is `create_personal_task`.
 - **The member's own areas** are the categories of their private tasks.
@@ -311,9 +312,9 @@ make one call.
   on one card. For tasks in two projects, make one call for each project.
 - **A row can have no assignee.** Leave `assignees` out when the member
   names nobody or asks for nobody. Do not ask who takes each task.
-- **Never call two tools with a card at the same time.** Each write shows
-  the member a card, and the chat shows one card at a time. Call a write
-  tool, wait for its receipt, then call the next one.
+- **Send writes that do not depend on each other in one step.** Each write
+  shows a card, and the cards that wait together show as one card with tabs.
+  A write that needs the result of another write waits for that receipt.
 - **Give each row the words the member gave.** A row takes the same keys
   as `create_task`: title, assignees, due date, status, type and fields.
   Leave out a key that the member did not give.

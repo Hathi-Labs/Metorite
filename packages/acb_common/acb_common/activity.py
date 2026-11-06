@@ -1,27 +1,39 @@
-"""Global activity bus — live, cross-app agent/model activation feed (E2 live).
+"""Activity bus — live, cross-app agent/model activation feed (E2 live).
 
-A single process-wide Redis stream (``cc:activity``) that EVERY agent run and
-model call publishes a small event to, so an operator UI can show a live feed
-of "who / what is running right now" across chat AND every app (email, tasks,
-…). Because the two publish sites are shared libraries — the orchestrator run
-boundary (agent activations) and ``acb_llm`` (model activations) — cross-app
-coverage is automatic: anything that runs an agent or calls a model shows up.
+One Redis stream for each tenant (``cc:<org>:activity``) that EVERY agent run
+and model call publishes a small event to, so an operator UI can show a live
+feed of "who / what is running right now" across chat AND every app (email,
+tasks, …). Because the two publish sites are shared libraries — the
+orchestrator run boundary (agent activations) and ``acb_llm`` (model
+activations) — cross-app coverage is automatic: anything that runs an agent or
+calls a model shows up.
 
-Design contract (mirrors the per-thread ``stream_relay``, but ONE global,
-low-volume stream instead of one per conversation):
+Design contract (mirrors the per-thread ``stream_relay``, but ONE low-volume
+stream for each tenant instead of one per conversation):
 
+* **Tenant-keyed (H-201c, MT-1e).** The stream and the presence keys go
+  through :mod:`acb_common.tenant_redis`, so each key starts ``cc:<org>:``.
+  A writer captures the org at call time: the explicit ``organization_id``,
+  else the bound tenant (``acb_common.db.current_tenant()``). With no org it
+  writes NOTHING. There is no global fallback and no dual read of the old
+  global ``cc:activity`` key. Each reader takes a required
+  ``organization_id`` and gives an empty answer without one.
 * **Best-effort, never blocks, never raises.** A failed publish drops the
   event; it must never affect the run that emitted it. All Redis IO is
   scheduled off the caller's path.
 * **Small, stable event shape.** One JSON object per stream entry under the
-  ``event`` field (same convention as ``stream_relay.push_event``).
-* **Presence keys** (``cc:activity:live:{run_id}``) track in-flight agent runs
-  (and, identically, in-flight Custom App AI calls — ``kind="app"``) with a
-  TTL so the "running now" panel survives a crash without leaking. The key's
-  body is the ``phase="start"`` event, so a field the run only learns about
-  *after* start (``instance``) reaches ``active_runs()`` — and therefore
-  ``/observability/active`` and ``/observability/roster`` — only via
-  :func:`refresh_run_presence`.
+  ``event`` field (same convention as ``stream_relay.push_event``). The org
+  is NOT in the event body: the key carries it.
+* **Presence keys** (``cc:<org>:activity:live:{run_id}``) track in-flight
+  agent runs (and, identically, in-flight Custom App AI calls —
+  ``kind="app"``) with a TTL so the "running now" panel survives a crash
+  without leaking. The key's body is the ``phase="start"`` event, so a field
+  the run only learns about *after* start (``instance``) reaches
+  ``active_runs()`` — and therefore ``/observability/active`` and
+  ``/observability/roster`` — only via :func:`refresh_run_presence`.
+
+The daily cost rollup (``cc:cost:{day}``) is still deployment-global on the
+raw client. Its conversion is a separate follow-up task.
 
 This is the live signal only — the durable record stays in ``agent_run``
 (migration 50) and the correlated logs. Retention here is bounded by
@@ -38,12 +50,22 @@ import redis.asyncio as aioredis
 
 from acb_common._log import get_run_context
 from acb_common.settings import get_settings
+from acb_common.tenant_redis import (
+    TenantKey,
+    TenantRedis,
+    get_tenant_redis,
+    key,
+    match,
+    organization_scope,
+)
 
 # Deliberately NOT get_logger here to avoid any import cycle surprises during
 # early process start; publish failures are silent by contract anyway.
 
-ACTIVITY_STREAM = "cc:activity"
-LIVE_PREFIX = "cc:activity:live"
+#: The tenant namespace of the stream (``cc:<org>:activity``) and of the
+#: presence keys (``cc:<org>:activity:live:<run_id>``). H-201c.
+ACTIVITY_NAMESPACE = "activity"
+LIVE_PART = "live"
 COST_PREFIX = "cc:cost"        # per-day rollup hash: cc:cost:{YYYY-MM-DD}
 STREAM_MAXLEN = 2_000          # ~ last N activations; bounds memory
 LIVE_TTL_SECONDS = 900         # presence key self-heals if an "end" is lost
@@ -62,12 +84,14 @@ _INHERIT = (
 )
 
 
-# ── Shared async client (created lazily on the running loop) ─────────────────
+# ── Raw async client: the cost rollup only (created lazily on the loop) ──────
+# The stream and presence keys go through acb_common.tenant_redis. Only
+# ``cc:cost:{day}`` stays here until its own follow-up task converts it.
 _client: aioredis.Redis | None = None
 
 
 def _get_client() -> aioredis.Redis:
-    """Return the shared pooled async Redis client (created once)."""
+    """Return the raw pooled async Redis client of the cost rollup."""
     global _client
     if _client is None:
         _client = aioredis.from_url(
@@ -79,8 +103,31 @@ def _get_client() -> aioredis.Redis:
     return _client
 
 
-def _live_key(run_id: str) -> str:
-    return f"{LIVE_PREFIX}:{run_id}"
+def _stream_key() -> TenantKey:
+    """``cc:<org>:activity``. The caller binds the org first."""
+    return key(ACTIVITY_NAMESPACE)
+
+
+def _live_key(run_id: str) -> TenantKey:
+    """``cc:<org>:activity:live:<run_id>``. The caller binds the org first."""
+    return key(ACTIVITY_NAMESPACE, LIVE_PART, run_id)
+
+
+def _capture_org(organization_id: str | None) -> str | None:
+    """The org of a write: the explicit value, else the bound tenant.
+
+    The caller's own context supplies it, at call time, because the write runs
+    later on a loop task. It never comes from request input. ``None`` means
+    that the write is dropped: there is no global fallback.
+    """
+    if organization_id:
+        return organization_id
+    try:
+        from acb_common.db import current_tenant
+
+        return current_tenant() or None
+    except Exception:
+        return None
 
 
 def _cost_key(day: str) -> str:
@@ -160,38 +207,54 @@ def _build_event(fields: dict[str, Any]) -> dict[str, Any]:
     return evt
 
 
-async def _axadd(evt: dict[str, Any]) -> None:
-    """Append one event to the global stream + maintain the presence key."""
-    r = _get_client()
-    await r.xadd(
-        ACTIVITY_STREAM,
-        {"event": json.dumps(evt, default=str)},
-        maxlen=STREAM_MAXLEN,
-        approximate=True,
-    )
-    # Presence: an agent run — or an app AI call, RFC docs/app-workshop/README.md
-    # §4.6 — is "live" between its start and end events. Apps publish through
-    # ``publish_app_activity`` (kind="app") with the same phase/run_id contract
-    # as an agent run, so this one gate covers both actor kinds identically —
-    # the office view and /active treat a working app exactly like a working
-    # agent, no separate presence mechanism needed.
-    run_id = evt.get("run_id")
-    if evt.get("kind") in ("agent", "app") and run_id:
-        if evt.get("phase") == "start":
-            await r.set(_live_key(run_id), json.dumps(evt, default=str),
-                        ex=LIVE_TTL_SECONDS)
-        elif evt.get("phase") == "end":
-            await r.delete(_live_key(run_id))
-    # Cost rollup: fold priced model calls into today's daily hash.
-    if evt.get("kind") == "model" and evt.get("cost_usd") is not None:
+def _is_cost_event(evt: dict[str, Any]) -> bool:
+    """A priced model call: the only event that folds into ``cc:cost:{day}``."""
+    return evt.get("kind") == "model" and evt.get("cost_usd") is not None
+
+
+async def _axadd(evt: dict[str, Any], organization_id: str | None) -> None:
+    """Append one event to the tenant's stream + maintain the presence key.
+
+    With no org, the stream and the presence writes are skipped, and only the
+    cost rollup runs. The rollup is deployment-global (``cc:cost:{day}``), so
+    a priced call with no bound tenant (the gateway's deployment-key
+    ``/v1/chat/completions``) still counts, exactly as before H-201c.
+    """
+    if organization_id:
+        with organization_scope(organization_id):
+            r = get_tenant_redis()
+            await r.xadd(
+                _stream_key(),
+                {"event": json.dumps(evt, default=str)},
+                maxlen=STREAM_MAXLEN,
+                approximate=True,
+            )
+            # Presence: an agent run — or an app AI call, RFC
+            # docs/app-workshop/README.md §4.6 — is "live" between its start
+            # and end events. Apps publish through ``publish_app_activity``
+            # (kind="app") with the same phase/run_id contract as an agent
+            # run, so this one gate covers both actor kinds identically — the
+            # office view and /active treat a working app exactly like a
+            # working agent, no separate presence mechanism needed.
+            run_id = evt.get("run_id")
+            if evt.get("kind") in ("agent", "app") and run_id:
+                if evt.get("phase") == "start":
+                    await r.set(_live_key(str(run_id)), json.dumps(evt, default=str),
+                                ex=LIVE_TTL_SECONDS)
+                elif evt.get("phase") == "end":
+                    await r.delete(_live_key(str(run_id)))
+    # Cost rollup: fold priced model calls into today's daily hash. It stays
+    # on the raw client (cc:cost:{day}) until its own follow-up (task 1748)
+    # converts it. It runs with or without an org.
+    if _is_cost_event(evt):
         try:
-            await _record_cost(r, evt)
+            await _record_cost(_get_client(), evt)
         except Exception:  # noqa: BLE001 — cost rollup is best-effort
             pass
 
 
-def publish_activity(**fields: Any) -> None:
-    """Publish one activation event to the global feed. Best-effort, non-blocking.
+def publish_activity(*, organization_id: str | None = None, **fields: Any) -> None:
+    """Publish one activation event to the tenant's feed. Best-effort, non-blocking.
 
     Call from anywhere (sync or async). Common fields:
       ``kind``     — "agent" | "app" | "model" (required to be useful)
@@ -201,13 +264,23 @@ def publish_activity(**fields: Any) -> None:
       ``agent``, ``user``, ``thread_id``, ``run_id``, ``source``, ``instance``
       — inherited from the current run context when omitted.
 
+    ``organization_id`` names the tenant. Without it, the bound tenant
+    (``acb_common.db.current_tenant()``) is captured NOW, in the caller's
+    context, and handed to the scheduled write. With neither, no stream or
+    presence key is written (H-201c): an event with no tenant has no key to
+    go to. A priced model call with no tenant still folds into the global
+    ``cc:cost:{day}`` rollup, as it did before H-201c.
+
     Never raises and never blocks the caller: the Redis write is scheduled onto
     the running event loop (or a throwaway loop if none is running). A drop is
     acceptable — the durable record lives in ``agent_run`` and the logs.
     """
+    org = _capture_org(organization_id)
     try:
         evt = _build_event(fields)
     except Exception:  # noqa: BLE001
+        return
+    if not org and not _is_cost_event(evt):
         return
     try:
         loop = asyncio.get_running_loop()
@@ -215,27 +288,28 @@ def publish_activity(**fields: Any) -> None:
         loop = None
     if loop is not None:
         try:
-            task = loop.create_task(_axadd(evt))
+            task = loop.create_task(_axadd(evt, org))
             # Swallow any exception so it isn't reported as "never retrieved".
             task.add_done_callback(
                 lambda t: None if t.cancelled() else t.exception()
             )
         except Exception:  # noqa: BLE001
             pass
-    else:
+    elif org:
         # No running loop (rare — e.g. a sync worker). Fire a one-shot loop
         # with its own short-lived client so we don't touch the shared one.
         async def _one_shot() -> None:
-            r = aioredis.from_url(get_settings().redis_url, decode_responses=True)
+            raw = aioredis.from_url(get_settings().redis_url, decode_responses=True)
             try:
-                await r.xadd(
-                    ACTIVITY_STREAM,
-                    {"event": json.dumps(evt, default=str)},
-                    maxlen=STREAM_MAXLEN,
-                    approximate=True,
-                )
+                with organization_scope(org):
+                    await TenantRedis(raw).xadd(
+                        _stream_key(),
+                        {"event": json.dumps(evt, default=str)},
+                        maxlen=STREAM_MAXLEN,
+                        approximate=True,
+                    )
             finally:
-                await r.aclose()
+                await raw.aclose()
         try:
             asyncio.run(_one_shot())
         except Exception:  # noqa: BLE001
@@ -243,9 +317,11 @@ def publish_activity(**fields: Any) -> None:
 
 
 async def _apply_presence_patch(
-    r: aioredis.Redis, run_id: str, patch: dict[str, Any],
+    r: TenantRedis, run_id: str, patch: dict[str, Any],
 ) -> None:
     """Merge *patch* into an EXISTING presence snapshot and refresh its TTL.
+
+    The caller binds the org, so the key is ``cc:<org>:activity:live:<run>``.
 
     A miss is a deliberate no-op: the key is absent when the run has already
     ended (or its start event was dropped), and re-creating it there would
@@ -270,11 +346,16 @@ async def _apply_presence_patch(
     )
 
 
-async def _axpresence(run_id: str, patch: dict[str, Any]) -> None:
-    await _apply_presence_patch(_get_client(), run_id, patch)
+async def _axpresence(
+    run_id: str, patch: dict[str, Any], organization_id: str,
+) -> None:
+    with organization_scope(organization_id):
+        await _apply_presence_patch(get_tenant_redis(), run_id, patch)
 
 
-def refresh_run_presence(run_id: str, **fields: Any) -> None:
+def refresh_run_presence(
+    run_id: str, *, organization_id: str | None = None, **fields: Any,
+) -> None:
     """Patch the live presence snapshot of an in-flight run. Best-effort.
 
     The presence key is written once, from the ``phase="start"`` event body.
@@ -291,7 +372,8 @@ def refresh_run_presence(run_id: str, **fields: Any) -> None:
 
     Same contract as :func:`publish_activity` — never raises, never blocks,
     a drop is acceptable. ``None``/empty values are skipped so a caller can
-    pass a field unconditionally without writing an empty one.
+    pass a field unconditionally without writing an empty one. The org is
+    captured as in :func:`publish_activity`. With no org, nothing is patched.
 
     Both writes are loop tasks, so a patch issued before its own start event
     has been flushed finds no key and is dropped. In practice the agent load
@@ -302,13 +384,16 @@ def refresh_run_presence(run_id: str, **fields: Any) -> None:
     patch = {k: v for k, v in fields.items() if v}
     if not run_id or not patch:
         return
+    org = _capture_org(organization_id)
+    if not org:
+        return
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
     if loop is not None:
         try:
-            task = loop.create_task(_axpresence(run_id, patch))
+            task = loop.create_task(_axpresence(run_id, patch, org))
             task.add_done_callback(
                 lambda t: None if t.cancelled() else t.exception()
             )
@@ -317,11 +402,12 @@ def refresh_run_presence(run_id: str, **fields: Any) -> None:
         return
 
     async def _one_shot() -> None:
-        r = aioredis.from_url(get_settings().redis_url, decode_responses=True)
+        raw = aioredis.from_url(get_settings().redis_url, decode_responses=True)
         try:
-            await _apply_presence_patch(r, run_id, patch)
+            with organization_scope(org):
+                await _apply_presence_patch(TenantRedis(raw), run_id, patch)
         finally:
-            await r.aclose()
+            await raw.aclose()
 
     try:
         asyncio.run(_one_shot())
@@ -338,12 +424,22 @@ def _parse_entry(eid: str, fields: dict[str, str]) -> dict[str, Any] | None:
     return evt
 
 
-async def recent_activity(limit: int = 100) -> list[dict[str, Any]]:
-    """Return the most recent activations, oldest-first (for backfill on load)."""
-    r = _get_client()
+async def recent_activity(
+    limit: int = 100, *, organization_id: str | None,
+) -> list[dict[str, Any]]:
+    """Return the tenant's most recent activations, oldest-first (backfill).
+
+    ``organization_id`` is required, and the caller takes it from the
+    authenticated session. A falsy org gives ``[]``.
+    """
+    if not organization_id:
+        return []
     try:
-        raw = await r.xrevrange(ACTIVITY_STREAM, count=max(1, min(limit, 500)))
-    except aioredis.ResponseError:
+        with organization_scope(organization_id):
+            raw = await get_tenant_redis().xrevrange(
+                _stream_key(), count=max(1, min(limit, 500)),
+            )
+    except (aioredis.ResponseError, ValueError):
         return []
     out: list[dict[str, Any]] = []
     for eid, fields in raw:
@@ -354,19 +450,44 @@ async def recent_activity(limit: int = 100) -> list[dict[str, Any]]:
     return out
 
 
+#: Seconds that :func:`read_activity_since` waits after a failed read, so a
+#: caller loop cannot spin. Module-level, so a test can patch it.
+READ_ERROR_BACKOFF_SECONDS = 1.0
+
+
 async def read_activity_since(
-    since_id: str = "$", *, block_ms: int = 15_000, count: int = 200,
+    since_id: str = "$",
+    *,
+    organization_id: str | None,
+    block_ms: int = 15_000,
+    count: int = 200,
 ) -> tuple[list[dict[str, Any]], str]:
-    """Block up to *block_ms* for new activations after *since_id*.
+    """Block up to *block_ms* for new activations of the tenant after *since_id*.
 
     Returns ``(events, new_cursor)``. On timeout returns ``([], since_id)`` so
-    the caller can emit a heartbeat and loop. Never raises.
+    the caller can emit a heartbeat and loop. Never raises. A falsy
+    ``organization_id`` returns ``([], since_id)`` at once. A failed read
+    waits :data:`READ_ERROR_BACKOFF_SECONDS` and then returns
+    ``([], since_id)``, so the loop of the caller cannot spin.
+
+    The blocking ``XREAD`` holds its connection for up to *block_ms*, so it
+    runs on the stream pool (``get_tenant_redis(blocking=True)``). On the
+    shared pool, a few open feeds would take every connection.
     """
-    r = _get_client()
     cursor = since_id
+    if not organization_id:
+        return [], cursor
     try:
-        raw = await r.xread({ACTIVITY_STREAM: cursor}, count=count, block=block_ms)
+        with organization_scope(organization_id):
+            raw = await get_tenant_redis(blocking=True).xread(
+                {_stream_key(): cursor}, count=count, block=block_ms,
+            )
     except Exception:  # noqa: BLE001 — stream missing / transient
+        # A failed read returns at once: a full blocking pool raises
+        # "Too many connections" with no wait. Sleep here, so a caller that
+        # loops (the SSE feed) does not spin. The normal empty answer after
+        # BLOCK already waited, so it does not sleep.
+        await asyncio.sleep(READ_ERROR_BACKOFF_SECONDS)
         return [], cursor
     events: list[dict[str, Any]] = []
     for _name, entries in raw or []:
@@ -378,35 +499,57 @@ async def read_activity_since(
     return events, cursor
 
 
-async def active_runs() -> list[dict[str, Any]]:
-    """Return the agent runs currently in flight (presence keys not yet expired).
+#: Keys read by one MGET in :func:`active_runs`.
+_ACTIVE_BATCH = 200
+
+
+async def active_runs(*, organization_id: str | None) -> list[dict[str, Any]]:
+    """Return the tenant's agent runs in flight (presence keys not yet expired).
 
     Newest-first by start time. Self-healing: a run whose "end" was lost simply
     ages out after ``LIVE_TTL_SECONDS``. Each entry is the run's start event as
     last patched by :func:`refresh_run_presence` — which is how a late-resolved
     field like ``instance`` gets here at all.
+
+    ``organization_id`` is required, and a falsy org gives ``[]``. The SCAN
+    pattern is :func:`acb_common.tenant_redis.match`, so it cannot leave the
+    tenant's prefix. Each key it gives is built again with ``key``, because the
+    client takes a ``TenantKey`` only.
     """
-    r = _get_client()
     out: list[dict[str, Any]] = []
+    if not organization_id:
+        return out
     try:
-        cursor = 0
-        while True:
-            cursor, keys = await r.scan(
-                cursor, match=f"{LIVE_PREFIX}:*", count=200,
-            )
-            if keys:
-                vals = await r.mget(keys)
-                for v in vals:
-                    if not v:
-                        continue
-                    try:
-                        out.append(json.loads(v))
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-            if cursor == 0:
-                break
+        with organization_scope(organization_id):
+            r = get_tenant_redis()
+            head = _live_key("x").value[:-1]
+            batch: list[TenantKey] = []
+            vals: list[Any] = []
+            async for raw in r.scan_iter(
+                match(ACTIVITY_NAMESPACE, LIVE_PART), count=_ACTIVE_BATCH,
+            ):
+                name = raw.decode() if isinstance(raw, bytes) else str(raw)
+                run_id = name[len(head):] if name.startswith(head) else ""
+                if not run_id:
+                    continue
+                try:
+                    batch.append(_live_key(run_id))
+                except ValueError:
+                    continue
+                if len(batch) >= _ACTIVE_BATCH:
+                    vals.extend(await r.mget(batch))
+                    batch = []
+            if batch:
+                vals.extend(await r.mget(batch))
     except Exception:  # noqa: BLE001
         return out
+    for v in vals:
+        if not v:
+            continue
+        try:
+            out.append(json.loads(v))
+        except (json.JSONDecodeError, TypeError):
+            continue
     out.sort(key=lambda e: str(e.get("ts", "")), reverse=True)
     return out
 
