@@ -659,7 +659,7 @@ class TestTheRefusals:
     async def test_a_scope_above_the_token_scope_is_422(self, live):
         """D-EA-13 rule 2, named mutation 1. The agent asked for write, the
         member granted read only, so the token carries read only."""
-        cid, tokens = live.a.connection(MEMBER, scopes=(READ,), tokens=("projects:read",),
+        cid, _ = live.a.connection(MEMBER, scopes=(READ,), tokens=("projects:read",),
                                         requested=(READ, WRITE))
         r = await _patch(live, MEMBER, cid, _grant([WRITE]))
         assert _error(r) == "scope_above_ceiling"
