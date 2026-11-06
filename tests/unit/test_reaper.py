@@ -21,21 +21,33 @@ def acts(**kw):
     return reaper.plan(reaper.Env(now=NOW, **kw))
 
 
+def _c(slug):
+    return [(f"metorite-dev-{slug}-pg", f"/home/dev/wt-{slug}"), (f"metorite-dev-{slug}-redis", f"/home/dev/wt-{slug}")]
+
+
 def test_stack_with_no_worktree_stops():
-    out = acts(containers=["metorite-dev-gone-pg", "metorite-dev-gone-redis"])
-    assert [(a["act"], a["stack"]) for a in out] == [("stop-stack", "metorite-dev-gone")]
+    out = acts(containers=_c("gone"), existing=set())
+    assert [(a["act"], a["repo"]) for a in out] == [("stop-stack", "/home/dev/wt-gone")]
 
 
 def test_idle_stack_stops_and_live_one_stays():
-    w1 = wt("old", stack="metorite-dev-old", age_h=17)
-    w2 = wt("live", stack="metorite-dev-live", age_h=17)
-    w3 = wt("fresh", stack="metorite-dev-fresh", age_h=1)
     out = acts(
-        containers=["metorite-dev-old-pg", "metorite-dev-live-pg", "metorite-dev-fresh-pg"],
-        worktrees=[w1, w2, w3],
+        containers=_c("old") + _c("live") + _c("fresh"),
+        existing={"/home/dev/wt-old", "/home/dev/wt-live", "/home/dev/wt-fresh"},
+        worktrees=[wt("old", age_h=17), wt("live", age_h=17), wt("fresh", age_h=1)],
         busy_paths={"/home/dev/wt-live/apps"},
     )
-    assert [a["stack"] for a in out] == ["metorite-dev-old"]
+    assert [a["repo"] for a in out] == ["/home/dev/wt-old"]
+
+
+def test_stack_of_the_primary_checkout_or_an_untracked_path_stays():
+    """The primary checkout is no wt-* dir. Its live stack must not read as 'worktree gone'."""
+    cs = [("metorite-dev-metorite-pg", "/home/dev/Metorite"), ("metorite-dev-preview-pg", "/tmp/x")]
+    assert acts(containers=cs, existing={"/home/dev/Metorite", "/tmp/x"}) == []
+
+
+def test_container_without_label_is_ignored_by_collect_contract():
+    assert acts(containers=[("metorite-dev-x-pg", "")]) == []
 
 
 def test_merged_clean_idle_worktree_is_removed():
@@ -53,7 +65,3 @@ def test_worktree_is_kept_when_dirty_busy_head_differs_or_unmerged():
     ]
     for w, merged, busy in cases:
         assert acts(worktrees=[w], merged_heads=merged, busy_paths=busy) == [], w.path
-
-
-def test_stack_of_strips_service_suffix():
-    assert reaper.stack_of("metorite-dev-x-redis") == "metorite-dev-x"

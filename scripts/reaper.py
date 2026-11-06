@@ -47,18 +47,12 @@ class Env:
     """Everything that touches the machine. The test swaps it for fakes."""
 
     now: float = field(default_factory=time.time)
-    containers: list[str] = field(default_factory=list)
+    # (container name, value of its `metorite.dev_up` label = the repo path)
+    containers: list[tuple[str, str]] = field(default_factory=list)
+    existing: set[str] = field(default_factory=set)  # label paths that still exist on disk
     worktrees: list[Worktree] = field(default_factory=list)
     busy_paths: set[str] = field(default_factory=set)  # a process runs here
     merged_heads: dict[str, set[str]] = field(default_factory=dict)  # branch -> merged head SHAs
-
-
-def stack_of(container: str) -> str:
-    """`metorite-dev-foo-pg` and `metorite-dev-foo-redis` both belong to `metorite-dev-foo`."""
-    for suffix in ("-pg", "-redis", "-app", "-web", "-gateway"):
-        if container.endswith(suffix):
-            return container[: -len(suffix)]
-    return container
 
 
 def _busy(env: Env, wt: Worktree) -> bool:
@@ -69,15 +63,16 @@ def _busy(env: Env, wt: Worktree) -> bool:
 def plan(env: Env, stack_hours: float = DEFAULT_STACK_HOURS) -> list[dict]:
     """Return the acts: {"act": "stop-stack"|"remove-worktree", ...}. Pure."""
     acts: list[dict] = []
-    by_stack = {w.stack_name: w for w in env.worktrees if w.stack_name}
-    stacks = sorted({stack_of(c) for c in env.containers if c.startswith(STACK_PREFIX)})
-    for stack in stacks:
-        wt = by_stack.get(stack)
-        if wt is None:
-            acts.append({"act": "stop-stack", "stack": stack, "why": "its worktree is gone"})
-        elif not _busy(env, wt) and env.now - wt.last_activity > stack_hours * 3600:
+    by_path = {str(w.path): w for w in env.worktrees}
+    for repo in sorted({label for _, label in env.containers if label}):
+        if repo not in env.existing:
+            acts.append({"act": "stop-stack", "repo": repo, "why": "its worktree is gone"})
+            continue
+        wt = by_path.get(repo)
+        # A stack of a path we do not track (the primary checkout, /tmp) stays.
+        if wt is not None and not _busy(env, wt) and env.now - wt.last_activity > stack_hours * 3600:
             hours = (env.now - wt.last_activity) / 3600
-            acts.append({"act": "stop-stack", "stack": stack, "why": f"idle {hours:.1f} h, no process", "path": str(wt.path)})
+            acts.append({"act": "stop-stack", "repo": repo, "why": f"idle {hours:.1f} h, no process"})
     for wt in env.worktrees:
         if wt.dirty or _busy(env, wt):
             continue
@@ -87,7 +82,10 @@ def plan(env: Env, stack_hours: float = DEFAULT_STACK_HOURS) -> list[dict]:
 
 
 def _run(*cmd: str, cwd: str | None = None) -> str:
-    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=120)
+    try:
+        r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return ""  # a missing docker or gh keeps everything: no act
     return r.stdout if r.returncode == 0 else ""
 
 
@@ -119,10 +117,17 @@ def _busy_paths() -> set[str]:
 
 def collect(home: Path, repo: Path) -> Env:
     env = Env(busy_paths=_busy_paths())
-    env.containers = [n for n in _run("docker", "ps", "--format", "{{.Names}}").split() if n.startswith(STACK_PREFIX)]
+    for line in _run("docker", "ps", "--format", '{{.Names}}|{{.Label "metorite.dev_up"}}').splitlines():
+        name, _, label = line.partition("|")
+        if name.startswith(STACK_PREFIX) and label.strip():
+            env.containers.append((name, label.strip()))
+            if Path(label.strip()).is_dir():
+                env.existing.add(label.strip())
+    known = _run("git", "-C", str(repo), "worktree", "list", "--porcelain")
+    ours = {l.split(" ", 1)[1].strip() for l in known.splitlines() if l.startswith("worktree ")}
     for p in sorted(home.glob(WT_GLOB)):
-        if not (p / ".git").exists():
-            continue
+        if str(p) not in ours:
+            continue  # not a worktree of this repo
         branch = _run("git", "-C", str(p), "rev-parse", "--abbrev-ref", "HEAD").strip()
         head = _run("git", "-C", str(p), "rev-parse", "HEAD").strip()
         dirty = bool(_run("git", "-C", str(p), "status", "--porcelain").strip())
@@ -138,14 +143,14 @@ def collect(home: Path, repo: Path) -> Env:
 def apply(acts: list[dict], repo: Path, log=print) -> None:
     for a in acts:
         if a["act"] == "stop-stack":
-            names = _run("docker", "ps", "-a", "--format", "{{.Names}}").split()
-            mine = [n for n in names if stack_of(n) == a["stack"]]
-            log(f"reaper: stop {a['stack']} ({a['why']}): {' '.join(mine)}")
+            names = _run("docker", "ps", "-a", "--filter", f"label=metorite.dev_up={a['repo']}", "--format", "{{.Names}}").split()
+            mine = [n for n in names if n.startswith(STACK_PREFIX)]
+            log(f"reaper: stop {a['repo']} ({a['why']}): {' '.join(mine)}")
             if mine:
                 subprocess.run(["docker", "stop", *mine], capture_output=True, timeout=120)
         else:
             log(f"reaper: remove worktree {a['path']} ({a['why']})")
-            r = subprocess.run(["bash", str(repo / "scripts" / "worktree.sh"), "remove", a["slug"]], capture_output=True, text=True, timeout=300)
+            r = subprocess.run(["bash", str(repo / "scripts" / "worktree.sh"), "remove", a["slug"]], cwd=repo, capture_output=True, text=True, timeout=300)
             if r.returncode != 0:
                 log(f"reaper: worktree.sh refused {a['slug']}: {r.stdout.strip()[-200:]}")
 
@@ -161,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     acts = plan(collect(Path(args.home), repo), args.stack_hours)
     if args.dry_run:
         for a in acts:
-            print(f"would {a['act']}: {a.get('stack') or a.get('path')} ({a['why']})")
+            print(f"would {a['act']}: {a.get('repo') or a.get('path')} ({a['why']})")
         print(f"{len(acts)} act(s), dry run")
         return 0
     apply(acts, repo)
