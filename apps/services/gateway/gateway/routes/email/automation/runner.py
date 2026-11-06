@@ -59,6 +59,7 @@ from gateway.routes.email.automation.rules import (
     proposes_only,
 )
 from gateway.routes.email.automation.senders import _maybe_block_cold
+from gateway.routes.email.provider_errors import MESSAGE_GONE_DETAIL
 from gateway.routes.email.core import (
     _assert_account_owner,
     _attachment_summaries,
@@ -437,6 +438,25 @@ async def message_timeline(
 # a bulk repair is exactly the kind of outward-facing surprise the user cannot
 # undo. If a reply was genuinely wanted, it can be drafted from the message.
 # NOTIFY_ME too: a WhatsApp message about a mail of weeks ago is noise (RE-5).
+GONE_RUN_REASON = "The mail was moved or deleted before the rule ran."
+
+
+def run_status(
+    actions_taken: list[Any], action_errors: list[dict[str, str]],
+) -> tuple[str, str | None]:
+    """The status of a rule run, and a reason when the run has its own.
+
+    No action taken and every error "message gone": SKIPPED. The mail left
+    before the rule ran, so the rule did not fail. No action taken with any
+    other error: FAILED. Anything else, including partial success: APPLIED.
+    """
+    if action_errors and not actions_taken:
+        if all(e.get("error") == MESSAGE_GONE_DETAIL for e in action_errors):
+            return "SKIPPED", GONE_RUN_REASON
+        return "FAILED", None
+    return "APPLIED", None
+
+
 _RETRY_SKIPPED_ACTIONS = frozenset({"REPLY", "DRAFT_EMAIL", "FORWARD",
                                     "SEND_EMAIL", "CALL_WEBHOOK", "NOTIFY_ME"})
 
@@ -528,17 +548,19 @@ async def retry_failed_executions(
                 account_id=account_id, errors_out=errors,
                 rule_id=str(r.rule_id),
             )
-            status = "FAILED" if (errors and not taken) else "APPLIED"
+            status, gone_reason = run_status(taken, errors)
             if status == "APPLIED":
                 repaired += 1
-            else:
+            elif status == "FAILED":
                 still_failing += 1
+            # A SKIPPED row (mail gone) is neither repaired nor failing.
             await db.execute(text(
                 "UPDATE email_executed_rules SET status = :st, "
-                "actions_taken = :acts, action_errors = CAST(:aerr AS JSONB) "
+                "actions_taken = :acts, action_errors = CAST(:aerr AS JSONB), "
+                "reason = COALESCE(:reason, reason) "
                 "WHERE id = :eid"
             ), {"eid": str(r.id), "st": status, "acts": json.dumps(taken),
-                "aerr": json.dumps(errors)})
+                "aerr": json.dumps(errors), "reason": gone_reason})
 
         await _persist_rotated_creds(db, store, account_id, provider)
         _log.info("email.retry_failed_done", account_id=account_id,
@@ -1299,6 +1321,7 @@ async def _apply_and_log_match(
                        "status is the classification.")})
         return
     action_errors: list[dict[str, str]] = []
+    gone_reason: str | None = None
     pmid = r.provider_message_id
     # 🔴 WS-17 EM-G11c2 (§12.3.13.7, G5): a rule with `automated=false`
     # proposes and never applies on its own. It logs a PENDING row, with
@@ -1332,7 +1355,7 @@ async def _apply_and_log_match(
         # assistant and let a rule that never touched the mailbox teach a
         # permanent sender pattern. Partial success stays APPLIED — the errors
         # ride along in action_errors.
-        status = "FAILED" if (action_errors and not actions_taken) else "APPLIED"
+        status, gone_reason = run_status(actions_taken, action_errors)
         # inbox-zero parity: when the AI (not a static/learned-pattern rule)
         # picks a rule, cache the sender→rule as a learned FROM pattern so future
         # mail from that sender short-circuits the LLM. Consistency-gated like
@@ -1404,7 +1427,8 @@ async def _apply_and_log_match(
         # they differ, the row was re-keyed mid-run and the log should say so.
         "mid": str(r.id), "pmid": pmid, "tid": r.thread_id,
         "subj": r.subject or "", "frm": frm.get("email", ""), "status": status,
-        "acts": json.dumps(actions_taken), "reason": match["reason"],
+        "acts": json.dumps(actions_taken),
+        "reason": gone_reason or match["reason"],
         "msrc": match.get("source"), "aerr": json.dumps(action_errors)})
 
 
