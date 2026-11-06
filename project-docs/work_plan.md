@@ -158,11 +158,11 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-CM | **Console and Money**: seats, credits, invoices | 🟡 gated · M2 | `specs/customer_console.md` | Metorite: epic 478 (Billing & Accounts) · gates H-14 and the rate card (D123) · next H-170, CP-10 |
 | WS-TO | **Trust and Operations**: enforced controls, restore, compliance | 🟢 active · M1 | `specs/box_hardening.md` | Metorite: epic 521 (Platform & CI/CD) · SBX-0 decided (D130, `specs/agent_sandbox.md`) · next WS-1e, WS-3, BH-3 with SBX-1, the WS-37 spec (D119.4) |
 | WS-PL | **Platform and CI**: delivery, staging, branch protection | 🟢 active · M1 | `specs/development_and_delivery_framework.md` · the local loop LD-7 to LD-10: `specs/engineering_practice.md` §1.3 (D145) | Metorite: project Platform & CI/CD, and epic 1100 in Developer Workflow · next LD-8c (the backup verify fails each night), LD-8a, LD-8b, LD-9, LD-10, then WS-38a, WS-38e, WS-5a |
-| WS-PT | **Projects and Tasks** | 🟢 active · M1 | `specs/project_management_app.md` · `specs/one_projects_app.md` | Metorite: project Projects/Tasks App · D170 (the inbox holds captures), D172 (the task card) · `one_projects_app.md` §9b and §9c: the phone (epic 1500), the inbox, Undo, select many, the archive · next MOB-1 and INB-1 (in build), then UNDO-1, SEL-1, MOB-2 · H-257, H-387 |
+| WS-PT | **Projects and Tasks** | 🟢 active · M1 | `specs/project_management_app.md` · `specs/one_projects_app.md` | Metorite: project Projects/Tasks App · D170 (the inbox holds captures), D172 (the task card), D181 (one record card: `specs/one_record_card.md`, ORC-2 and ORC-3) · `one_projects_app.md` §9b and §9c: the phone (epic 1500), the inbox, Undo, select many, the archive · next MOB-1 and INB-1 (in build), then UNDO-1, SEL-1, MOB-2 · H-257, H-387 |
 | WS-CAL | **Calendar**: events, reminders, external sync | 🟢 active · M1 | `specs/calendar_focus_os.md` · `specs/calendar_events_reminders.md` | Metorite: project Calendar App · CE-0 decided (D138, 2026-10-29) · RE-9b BUILT 2026-10-31 (migration 318). Not dark: it sends wherever `WEB_PUSH_ENABLED` and `CALENDAR_REMINDERS` are on (production: both on) · CE-4 BUILT, dark (2026-10-31, migration 331, `CALENDAR_EVENTS` off) · next CE-1, CE-3, CE-5, then CE-10 with CE-11 |
 | WS-PP | **People and Profile** | 🟢 active · M1 | `specs/people_center_app.md` | Metorite: project My Profile · next E-58 |
 | WS-EM | **Email** | 🟢 active · M0 | `specs/email_app_master_plan.md` · `specs/shared_mailbox.md` | Metorite: project My Email · Gmail in test mode (D122.4) · next E-05, E-09, E-11 |
-| WS-CRM | **CRM**: native mode, the Zoho mirror, and the cutover from one to the other | 🟢 active · M1 | `specs/crm_platform.md` | Metorite: epic 477, cutover sub-epic CRM-Z10 · CRM-Z10f decided (D133) · next H-333, CRM-Z10a to Z10e (the switch, owner ask 2026-10-28), CRM-U13, the whole-app UX batch, H-366· CRM-M, the CRM you talk to: `specs/crm_conversational.md` (D164 to D166), epic #1429, CRM-M1 (Change history, #1431) PR 1 merged (2026-11-04, migration 341). Next CRM-M1 PR 2 |
+| WS-CRM | **CRM**: native mode, the Zoho mirror, and the cutover from one to the other | 🟢 active · M1 | `specs/crm_platform.md` | Metorite: epic 477, cutover sub-epic CRM-Z10 · CRM-Z10f decided (D133) · next H-333, CRM-Z10a to Z10e (the switch, owner ask 2026-10-28), CRM-U13, the whole-app UX batch, H-366· CRM-M, the CRM you talk to: `specs/crm_conversational.md` (D164 to D166), epic #1429, CRM-M1 (Change history, #1431) PR 1 merged (2026-11-04, migration 341). Next CRM-M1 PR 2 · D181, one record card: `specs/one_record_card.md`, ORC-1 (#1834) |
 | WS-WA | **WhatsApp** | 🟡 gated · M2 | `specs/whatsapp_message_manager.md` · `specs/whatsapp_assistant_channel.md` | Metorite: epic 476 · D115 freeze, lifted for brief task 8 only (D122.3) · next BR-8a, E-20 |
 | WS-KB | **Knowledge** | 🟢 active · M2 | `specs/knowledge_base.md` · `specs/knowledge_curation.md` | Metorite: project Knowledge · no P0 or P1 · next H-401, KC-1 |
 | WS-KG | **Knowledge graph and retrieval**: one graph over every app, for Mira and the MCP | 🟢 active · M1 | `specs/knowledge_graph.md` · `specs/knowledge_base.md` §20 · `specs/company_context.md` | Metorite: epic 783 (Knowledge) · D128, D132 · 2026-10-29: KG-0 written, KG-1, KG-2 and KG-3a built · next KG-4 and KG-9, then KG-3b after the KG-2 backfill |
@@ -5449,6 +5449,27 @@ Item 6:  "Accept the gap: such members get Studio"
 6. **A `feature:workflows` deny no longer closes Studio.** Before J1-1, a member with a `feature:workflows` deny override got 403 on each Studio route. After J1-1 that member gets Studio, because `feature:*` decides `feature:studio`. The owner accepted this on 2026-11-06. An admin can deny `feature:studio` by hand. No agent writes that override.
 
 Fence: `tests/unit/test_studio_route_gate.py` and `tests/unit/test_studio_route_gate_r8.py` (items 1 and 2), and `tests/unit/test_org_access_control.py` (items 3 and 5), and `test_studio_route_gate.py::test_a_workflows_deny_override_no_longer_closes_studio` (item 6). Item 4 is advisory until J1-2 and J2 build their tests.
+
+### D181 — One record card: the Projects frame and the CRM tabs (2026-11-06)
+
+Owner directive, 2026-11-06, in chat. Owner spec: `specs/one_record_card.md`. Metorite: tasks 1834, 1835 and 1836.
+
+```text
+"I wanted to take the best out of both systems ... use the tab system to organize the projects card, as well as fix the system for showing all of these cards in the CRM app to have continuity of user experience across the entire app."
+"No need to build out the task card for the projects system for now, but you can just do all the relevant documentation and create the tasks for it."
+```
+
+1. **One frame.** A CRM record and a task open in one frame. It is a side panel docked beside the list by default. One toggle makes it a centered card, and on a phone it fills the screen.
+2. **One preference.** The member's choice of side or full holds across the apps.
+3. **D172.4 holds for each record card.** No record card covers the AI pill.
+4. **One header order.** The noun or the place, the copy link, the chips, the actions, expand, close, then the title.
+5. **Tabs organize the body.** The CRM keeps Overview, Timeline, Related and Fields. The task card gets Overview, Related, Files and Discussion. The owner checks those names at the ORC-3 preview.
+6. **Nothing that waits on the member hides behind a tab.**
+7. **The CRM goes first.** ORC-1 builds the frame and the CRM cards. ORC-2 and ORC-3 move the task card later.
+
+A form that makes a new record stays a dialog, and so does a confirm.
+
+This extends D172.1 from tasks to CRM records. Fence: named per slice in `one_record_card.md` §6, advisory until each slice builds.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
