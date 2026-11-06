@@ -127,7 +127,11 @@ second implementer to route around a block.
 **4b — Preview, then wait for the owner (D145).** Skip this step for a slice
 with nothing to see: docs, tests, a script, or a refactor with no change in
 behaviour.
-- Push the branch and open the PR as a draft, so `pr-check` runs now.
+- Push the branch and open the PR as a draft, so `pr-check` runs now. It runs
+  the tests that the diff can affect. A green `pr-check` does not mean the full
+  suite ran. `main` runs the full suite after the merge (the R8 suites only
+  after CIV-4b), and the CI tiers are
+  in `project-docs/specs/ci_velocity.md` §4 (D176).
 - Send the owner one message, in chat and with `post_agent_activity` as a
   `response`. It holds the local URL, what changed in three lines or fewer,
   where to click, and the `visual-review` captures for a UI change.
@@ -190,6 +194,7 @@ step, dispatch `diff-reviewer` on item 8 only (1d).
   the tip of `main` passes first, you name every merge in
   `git log <prod applied_sha>..origin/main`, and you confirm the pre-migration
   backup for a migration.
+  The home box starts the release: its timer dispatches `deploy.yml` with `nightly=true` (D178).
 - Report "merged at `<sha>`, reaches production at tonight's release". After
   the release, confirm `/version` `applied_sha`. Do not call it live before you
   see that SHA.

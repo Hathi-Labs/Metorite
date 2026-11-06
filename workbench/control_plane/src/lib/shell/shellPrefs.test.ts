@@ -274,6 +274,7 @@ describe("GD-5a: the tour mark and the guide's switch", () => {
     await saveShellPrefs(stamped);
     const body = fetches[0].body as Record<string, unknown>;
     expect("tour_seen_at" in body).toBe(false);
+    expect("buddy_hello_at" in body).toBe(false);
     expect("guide" in body).toBe(false);
     expect(Object.keys(bodyFor(stamped) ?? {}).sort()).toEqual(["answered", "cardOrder", "known", "newOrder", "pins", "preset"]);
   });

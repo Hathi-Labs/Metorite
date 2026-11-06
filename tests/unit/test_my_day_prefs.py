@@ -213,7 +213,7 @@ class TestTheLimits:
         # added `kb_gap`, 25 since WS-61 KB-9b added `doc_needs_review`
         # 26 after KB-9b slice 2, and 29 since WS-66 RM-2 added the three
         # reminder kinds (§5.9 item 10.6: a ticket that adds a kind raises the cap).
-        assert prefs.MAX_KINDS == 29 == len(prefs.feed_kinds())
+        assert prefs.MAX_KINDS == 30 == len(prefs.feed_kinds())
 
     def test_a_list_keeps_its_order_and_loses_its_repeats(self, fake: _FakeDB) -> None:
         res = _put({"key": "mutes", "value": ["block_soon", "overdue", "block_soon"]})

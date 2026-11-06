@@ -101,6 +101,7 @@ from acb_common.studio_manifest import (
 )
 from acb_common.studio_patch import PatchError, apply_patch
 
+from acb_skills.hidden_text import body_hidden_problem, find_hidden, hidden_problem, strip_hidden
 from acb_skills.tool_annotations import annotate
 
 #: The most characters of one serialized manifest in a tool call (G1 cap).
@@ -986,7 +987,17 @@ _NOT_OPEN = "AI Studio is not open for this organization."
 _NOT_YOURS = "No skill of yours has this id, or AI Studio is not open for this organization."
 _NOT_WHOLE = ("A read in chat does not show the stored {what} whole, so a save from chat could "
               "lose text. Nothing was saved. Change that text in Studio, which shows the "
-              "whole text. A save of the other fields still works here.")
+              "whole text.")
+#: The last sentence of :data:`_NOT_WHOLE` when no stored text holds a hidden
+#: character. With one it is false, because a save of another field sends
+#: that text back and the store refuses it: :data:`_NOT_WHOLE_HIDDEN` holds.
+_OTHERS_WORK = "A save of the other fields still works here."
+#: The refusal when a stored text holds a hidden character (review round 1,
+#: P3-3). It fits in :data:`MAX_ERROR_MESSAGE_CHARS`, so no cut hides the step.
+_NOT_WHOLE_HIDDEN = ("A read in chat does not show the stored {what} whole. Nothing was saved. "
+                     "The stored {held} holds hidden characters. Each save from chat sends "
+                     "that text back, and the store refuses it. Replace the whole {held} in "
+                     "Studio first.")
 _STALE = ("A save that changes the description or the instructions needs the based_on of a "
           "full read. This save has none, or an old one. Nothing was saved. Read the skill "
           "with studio_skill_list, then save again with its based_on.")
@@ -1175,6 +1186,9 @@ def _store_text_problem(value: Any, field: str, limit: int, required: bool) -> s
         value.encode("utf-8")
     except UnicodeEncodeError:
         return f"{field} must not hold a lone surrogate"
+    hidden = hidden_problem(value, field)  # WS-STU F1b, the sentence of the store
+    if hidden is not None:
+        return hidden
     if required and not value.strip():
         return f"{field} must not be empty"
     if len(value) > limit:
@@ -1192,8 +1206,9 @@ def _create_problem(name: str, body: dict[str, Any]) -> str | None:
 
 def _body_problem(body: dict[str, Any]) -> str | None:
     """The 422 text of ``check_body`` of the store for the fields that a body
-    must hold, or None. The route checks more, such as the size and the
-    catalog, and its own answer still comes back unchanged."""
+    must hold, or for a hidden character in any string or key (WS-STU F1b),
+    or None. The route checks more, such as the size and the catalog, and
+    its own answer still comes back unchanged."""
     for field in ("description", "instructions"):
         value = body.get(field)
         if not isinstance(value, str) or not value.strip():
@@ -1202,7 +1217,7 @@ def _body_problem(body: dict[str, Any]) -> str | None:
     if found is not None and (not isinstance(found, list) or not all(
             isinstance(a, str) and a.strip() for a in found)):
         return "body.actions must be a list of non-empty strings"
-    return None
+    return body_hidden_problem(body)
 
 
 def _skill_of(reply: _Reply) -> dict[str, Any]:
@@ -1226,10 +1241,14 @@ def _actions_in(body: dict[str, Any]) -> list[str]:
 
 
 def _row_of(skill: dict[str, Any]) -> dict[str, Any]:
-    """One skill as a short row. The name is member text, so it shows inside « »."""
+    """One skill as a short row. The name is member text, so it shows inside « ».
+    A store before WS-STU F1b could keep a hidden character in the name, so
+    the row leaves each one out (``hidden_text.strip_hidden``). A chat cannot
+    change a name, so the row gives no count."""
+    name = skill.get("name", "")
     return {
         "id": _tag(skill.get("id"), 40),
-        "name": _name(skill.get("name", ""), True),
+        "name": _name(strip_hidden(name) if isinstance(name, str) else name, True),
         "state": _tag(skill.get("state"), 20),
         "current_version": skill.get("current_version"),
         "updated_at": _tag(skill.get("updated_at"), 40),
@@ -1246,8 +1265,36 @@ def _framed_read(skill: dict[str, Any], version: dict[str, Any] | None) -> dict[
     """One skill with its newest version. The description and the instructions
     sit in one frame block each. A text over its limit comes back cut, with
     ``truncated: true`` and the real length. The whole result stays under the
-    cap: if a text of many escapes still goes over, the cut moves up."""
+    cap: if a text of many escapes still goes over, the cut moves up. A
+    hidden character never reaches the model (:func:`_shown_texts`)."""
     return _read_and_cuts(skill, version)[0]
+
+
+#: The note of a read that left a hidden character out (WS-STU F1b).
+_HIDDEN_READ = ("This read leaves out each character that no person sees. The hidden "
+                "key gives the count for each field.")
+#: The step that works for a stored text with a hidden character. Each save
+#: from chat copies the stored body (:func:`_merged_body`), so the store
+#: refuses each one. The editor has no mark for such a character before
+#: F1b-2 (task 1681), so the step is to replace the whole text.
+_HIDDEN_SAVE = ("Each save from chat sends the stored {what} back, and the store refuses its "
+                "hidden characters. So no save of this skill works from chat until you "
+                "replace the whole {what} in Studio.")
+
+
+def _shown_texts(body: dict[str, Any]) -> tuple[str, str, list[str], dict[str, int]]:
+    """The description, the instructions and the action ids of *body* as a
+    read shows them, and the count of the hidden characters that each one
+    held (``hidden_text``, WS-STU F1b). The store refuses such a character
+    since F1b, and a store before it could keep one. So a read leaves each
+    one out BEFORE the frame, the cut and the counts."""
+    desc = str(body.get("description") or "")
+    text = str(body.get("instructions") or "")
+    ids = _actions_in(body)
+    counts = {"description": len(find_hidden(desc)), "instructions": len(find_hidden(text)),
+              "actions": sum(len(find_hidden(a)) for a in ids)}
+    hidden = {field: n for field, n in counts.items() if n}
+    return strip_hidden(desc), strip_hidden(text), [strip_hidden(a) for a in ids], hidden
 
 
 #: The widest row and version that a read can show. Each text holds as many
@@ -1264,36 +1311,40 @@ def _read_and_cuts(
     skill: dict[str, Any], version: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], frozenset[str]]:
     """:func:`_framed_read`, and the names of the texts that it does not show
-    whole: a text that it cut, or a text that the frame changed. Both hang on
-    the body alone. Each read of a version gives ``based_on``, the content
-    hash of the stored body. A save of a text sends it, and a save of a text
-    that the read shows in part refuses (:func:`_based_on_problem`)."""
+    whole: a text that it cut, a text that the frame changed, or a text that
+    held a hidden character. Each hangs on the body alone. Each read of a
+    version gives ``based_on``, the content hash of the stored body. A save
+    of a text sends it, and a save of a text that the read shows in part
+    refuses (:func:`_based_on_problem`)."""
     from acb_skills.untrusted import UntrustedFrame, neutralise
 
     body = _body_of(version)
-    desc = str(body.get("description") or "")
-    text = str(body.get("instructions") or "")
+    shown = _shown_texts(body)  # once, for the measure and for the read
+    desc, text, _ids, hidden = shown
     # A frame breaks a run of three brackets, so the read of such a text is
-    # not the stored text, and an edit of it would change the text.
+    # not the stored text, and an edit of it would change the text. A read
+    # that left a hidden character out is not the stored text either (F1b).
     changed = frozenset(field for field, value in (("description", desc), ("instructions", text))
-                        if neutralise(value, "") != value)
+                        if field in hidden or neutralise(value, "") != value)
     frame = UntrustedFrame.new()
     limit = MAX_SKILL_TEXT_CHARS
     while version and limit > 200 and _size(
-            _read_out(frame, _WIDEST_ROW, {**_WIDEST_VERSION, "body": body}, limit)[0],
+            _read_out(frame, _WIDEST_ROW, {**_WIDEST_VERSION, "body": body}, limit, shown)[0],
     ) > MAX_MANIFEST_CHARS:
         limit = limit * 3 // 4
-    out, cut = _read_out(frame, skill, version, limit)
+    out, cut = _read_out(frame, skill, version, limit, shown)
     return out, cut | changed
 
 
 def _read_out(
     frame: Any, skill: dict[str, Any], version: dict[str, Any] | None, limit: int,
+    shown: tuple[str, str, list[str], dict[str, int]] | None = None,
 ) -> tuple[dict[str, Any], frozenset[str]]:
-    """One read at the cut *limit* of the instructions, and the texts that it cut."""
-    body = _body_of(version)
-    desc = str(body.get("description") or "")
-    text = str(body.get("instructions") or "")
+    """One read at the cut *limit* of the instructions, and the texts that it
+    cut. The texts are the texts of :func:`_shown_texts` of the body (or
+    *shown*, when the caller has them), with no hidden character. The counts
+    and the cut measure them."""
+    desc, text, ids, hidden = shown if shown is not None else _shown_texts(_body_of(version))
     cut = frozenset(field for field, over in (
         ("description", len(desc) > MAX_SKILL_DESCRIPTION_CHARS),
         ("instructions", len(text) > limit)) if over)
@@ -1301,7 +1352,7 @@ def _read_out(
         "ok": True, "errors": [], "diff": [],
         **_row_of(skill),
         "version": version.get("version") if version else None,
-        "actions": [_line_of(a, CARD_ACTION_CHARS) for a in _actions_in(body)],
+        "actions": [_line_of(a, CARD_ACTION_CHARS) for a in ids],
         "description": frame.wrap(
             "SKILL DESCRIPTION", _head(desc, MAX_SKILL_DESCRIPTION_CHARS)) if version else "",
         "instructions": frame.wrap("SKILL INSTRUCTIONS", _head(text, limit)) if version else "",
@@ -1314,8 +1365,15 @@ def _read_out(
     }
     if not version:
         out["note"] = "This skill has no version yet. Save one with studio_skill_save."
-    elif version.get("content_hash"):
+        return out, cut
+    if version.get("content_hash"):
         out["based_on"] = version["content_hash"]
+    if hidden:
+        out["hidden"] = hidden
+        texts = [field for field in ("description", "instructions") if field in hidden]
+        out["note"] += " " + _HIDDEN_READ
+        if texts:
+            out["note"] += " " + _HIDDEN_SAVE.format(what=" and ".join(texts))
     return out, cut
 
 
@@ -1393,10 +1451,16 @@ def _based_on_problem(current: _Reply, based_on: str, sent: dict[str, str]) -> s
     version = _version_of(current)
     if version is None:
         return None
-    _read, partial = _read_and_cuts(_skill_of(current), version)
+    read, partial = _read_and_cuts(_skill_of(current), version)
     shown_in_part = sorted(field for field in sent if field in partial)
     if shown_in_part:
-        return _NOT_WHOLE.format(what=" and ".join(shown_in_part))
+        # A stored text with a hidden character goes back with each save, so
+        # "the other fields still work" would be false (review round 1, P3-3).
+        held = [f for f in ("description", "instructions") if f in (read.get("hidden") or {})]
+        what = " and ".join(shown_in_part)
+        if held:
+            return _NOT_WHOLE_HIDDEN.format(what=what, held=" and ".join(held))
+        return _NOT_WHOLE.format(what=what) + " " + _OTHERS_WORK
     body = _body_of(version)
     copies = sorted(field for field, value in sent.items()
                     if _looks_like_a_card(value, str(body.get(field) or "")))
@@ -1763,10 +1827,15 @@ async def _publish_after_card(sid: str, first: _Reply) -> dict[str, Any]:
         return _route_says(409, _NO_VERSION)
     try:
         classes = _skill_classes(await _read_catalog())
-        problem = _actions_problem(_actions_in(_body_of(version)), classes)
+        stored = _body_of(version)
+        # The checks of the route, in its order: the actions, then a hidden
+        # character in the body, the name and the description (WS-STU F1b).
+        problem = (_actions_problem(_actions_in(stored), classes)
+                   or body_hidden_problem(stored)
+                   or hidden_problem(skill.get("name"), "name")
+                   or hidden_problem(skill.get("description"), "description"))
         if problem:
             return _route_says(422, problem)  # no card for a publish that the route refuses
-        stored = _body_of(version)
         refused = await _smuggle_refusal([("name", skill.get("name")),
                                           ("description", stored.get("description")),
                                           ("instructions", stored.get("instructions"))])
