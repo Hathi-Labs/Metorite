@@ -5541,10 +5541,10 @@ It extends D140 and D183. It amends five earlier rules, each in one point (items
 **What D186 amends.**
 
 10. **D140.2 and D-EA-14, by SW-75 only.** A policy may answer a reversible question on a LOW task that a person tiered. It ships only if Q16 says yes.
-11. **Non-goal 31 of `github_integration.md` §2 and EA3-39 item 5, by SW-76.** An opened pull request may move its task to review, under a policy that is off by default.
+11. **The non-goal "A status move other than to Done" of `github_integration.md` §2 and EA3-39 item 5, by SW-76.** An opened pull request may move its task to review, under a policy that is off by default.
 12. **D140.8 and D183, by SW-66.** A run may park past the lease on a merge, on another run or on a time, under the same cap (Q13).
-13. **EA3-39 item 1, by PB-2.** The edge serves more than one prompt.
-14. **The owner decision on task 1731, by SW-78.** A later release may need a wider scope. That is OWNER-GATE (Q18).
+13. **EA3-39 items 1 and 8, by PB-2.** The edge serves more than one prompt, and playbook prompts list with `projects:read`.
+14. **The owner decision on task 1731, by SW-78.** A later release uses a second token with a narrow scope (Q18, decided). Minting it on a live box is an owner act.
 
 **Re-check this number at merge.** The first merge wins a D-number. D187 and D188 were open on other branches when this record was written.
 

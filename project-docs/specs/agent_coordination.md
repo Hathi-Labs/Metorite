@@ -43,7 +43,7 @@ The next slices fix liveness first, because the board shows most agent work as i
 
 - The model of §3: the nouns, the run states, the liveness contract, wake-ups, notes, sequences and cost.
 - The design of the agent session identity and its trust limits (SW-6, §3.7).
-- The slices SW-0 to SW-36, the two liveness bugs of tasks 1045 and 1054, and the P9 slices SW-44 to SW-63 (§5).
+- The slices SW-0 to SW-36, the two liveness bugs of tasks 1045 and 1054, the P9 slices SW-44 to SW-63, and the P10 slices SW-64 to SW-99 (§5).
 - The MCP tools and arguments that these slices add, through the allowlist of `external_agent_access.md` §9.5.
 - The Projects surfaces that these slices add. These are the card states, the agent roster, the agent profile, the delegate field, guidance in Settings and the run plan.
 
@@ -479,7 +479,7 @@ Seven causes explain the 36. The owner asked that this plan fix the causes. Each
 1. **One channel to a running agent.** A steer, a watch event and a request from a peer all travel as a notice (SW-64). Nothing adds a second channel.
 2. **A notice grants nothing** (D140.2). It is untrusted text with the name of its sender. An agent follows a steer from its own member or from the app lead, as it follows an answer. It treats any other notice as information. No notice changes a scope, a tool or a rule of the server.
 3. **Pull stays the base** (D140.4). A notice also waits in the `my_work` row of its run. So an agent that never saw it live still finds it at its next session.
-4. **Declared data only warns or narrows.** A lane, a role, a label and a path claim are what the session says about itself. They show on the board and they raise warnings. They never widen what a session may do (D186.4). A rule that binds comes from the connection, the policy store (SW-94) or the member.
+4. **Declared data only warns or narrows.** A lane, a role, a label and a path claim are what the session says about itself. They show on the board and they raise warnings. They never widen what a session may do (D186.5). A rule that binds comes from the connection, the policy store (SW-94) or the member.
 5. **Warn first** (rule 3 of §3.10). A rule that refuses or stops a run ships as `off`, then `warn`, then `refuse` or `stop`. The flip to the last mode is an `enforcement-flip`.
 6. **No credential in a hook.** The runner and the plugin hold no secret beyond the box token (EA-19, task 1819). A hook never reads the OAuth token of a session (owner call, task 1731).
 7. **No HathiLabs rule in a product default** (D186.2). `orchestration_playbook.md` §4 carries the fence.
@@ -501,7 +501,7 @@ Seven causes explain the 36. The owner asked that this plan fix the causes. Each
 | **A production act record** | CLAUDE.md §3a rule 2 asks for a report of each production act in the message. The gateway writes one audit row for each door call (#150) | **SW-73.** A tool writes the act, the box, the evidence and the rollback to the task |
 | **Question policies** | SW-33 (structured questions), SW-43 (withdraw and change), `confirm: true` on a costly option, AP-5 (every agent question is an interrupt, so quiet hours add nothing), AP-15 (the circle opens after 24 hours) | **SW-74** merges duplicates and answers similar questions in one act. **SW-75** takes the recommended option after a deadline, for reversible questions only, on LOW-tier tasks that a person tiered |
 | **Recover the fleet in one step** | SW-62 releases the runs of ended sessions in one act. Task 1731 restarts a session for an answer. EA-19 removes the shared sign-out. SW-60 keeps a CI park alive across a restart | **SW-79.** After a box restart or a sign-out, one command and one button restart the sessions of the box, lane by lane |
-| **Pull a request into review when it opens** (from section B) | GH-4 links a pull request to its task. GH-6 acts on merge only | **SW-76.** An opened pull request moves its task to the review lane on the server, under its own policy key that is off by default. It works for every agent type. It amends non-goal 31 of `github_integration.md` and the routine of EA3-39 |
+| **Pull a request into review when it opens** (from section B) | GH-4 links a pull request to its task. GH-6 acts on merge only | **SW-76.** An opened pull request moves its task to the review lane on the server, under its own policy key that is off by default. It works for every agent type. It amends the non-goal "A status move other than to Done" of `github_integration.md` and the routine of EA3-39 |
 
 ##### The notice channel (SW-64, SW-65)
 
@@ -527,9 +527,10 @@ SW-60 parks a run on its CI. SW-66 gives the park three more kinds, in one new t
 | `run_done` | Another run ends | `_move_run` on a terminal status, and `_take_over`, which ends a run as `abandoned` |
 | `at` | A time passes | The sweep tick of SW-10a. No new loop |
 
-- **One cap.** Every kind obeys `AGENT_PARK_MAX_MINUTES`, 240 by default (Q13). An `at` beyond the cap gets 422. The flag is `AGENT_PARK_ORGS`, apart from the flag of SW-60. This extends the one exception of D140.8 and D183 (D186.10).
+- **One cap.** Every kind obeys `AGENT_CI_PARK_MAX_MINUTES`, 240 by default (Q13). An `at` beyond the cap gets 422. The flag is `AGENT_PARK_ORGS`, apart from the flag of SW-60. This extends the one exception of D140.8 and D183 (D186.12).
 - **A live path.** A parked run with a pending condition has a live path (§3.3). `lease_held_sql` and its Python twins `lease_expired` and `holder_free` read it through one function, `run_wake_conditions`. The `ci` park of SW-60 keeps its column `waiting_ref_id`, and the function reads it as a built-in condition. So one reader serves both stores.
 - **A wake** is idempotent on `(run, kind, ref, due)`. It reads `needs_agent` with the reason `wake`, and it holds the kind and the result. It renews the lease once through `last_signal_at`. It clears the session key, so the next session can take the run (§3.4 and SW-60).
+- **A park is a disposition.** SW-66 amends SW-61, SW-56 and SW-62: any `waiting` post with a pending wake condition counts as a disposition for the Stop hook, is named in the protocol line, and is not eligible for the bulk release.
 - **A blocker wake** stays with SW-15. A run that waits on a task adds a `blocks` link (SW-16) and parks.
 
 #### 3.11.2 Sessions (section B of the brief)
@@ -571,7 +572,7 @@ SW-60 parks a run on its CI. SW-66 gives the park three more kinds, in one new t
 
 The runner is a small program that the member installs on the member's own box. It fits kind C of `external_agent_dispatch.md` §4 ("Local"): the member's login never leaves the member's machine. It is not a server feature, and D-DX-4 stays true.
 
-- **Credential.** The box token of EA-19. The first release keeps the owner's decision on task 1731: the scope `projects:read` only, and it never wakes an old session. The heartbeat, the start of a session and the wake of a live session need a wider scope or a second token. That changes an owner decision, so it is OWNER-GATE (Q18). `external_agent_access.md` §10.9 owns the scope names. Never the OAuth token of a session. The session that the runner starts logs in with the member's own Claude login on the box.
+- **Credential.** The box token of EA-19. The first release keeps the owner's decision on task 1731: the scope `projects:read` only, and it never wakes an old session. The heartbeat, the start of a session and the wake of a live session need a second token with a narrow scope (decided, Q18). Minting it on a live box is an owner act. `external_agent_access.md` §10.9 owns the scope names. Never the OAuth token of a session. The session that the runner starts logs in with the member's own Claude login on the box.
 - **Loop.** Every 2 minutes it reads `needs_agent` runs of its lanes and the queue of SW-68. For each run it starts a session in the lane, with the run id in the prompt. Or it wakes the live session that holds the link (CIV-14a). It never starts two sessions for one run.
 - **Heartbeat.** Every minute it posts memory, load, sessions, the sign-in state, the account state and whether the CI lane is busy (SW-77). The server treats the numbers as untrusted display data.
 - **Caps.** It starts no session when the lane is full, the box lacks memory, or the account is rate-limited. Memory and account state come from the box, so those caps are advisory (R7). The lane count binds only a session that declares its lane, so it is advisory too. The review cap comes from the server and binds.
@@ -590,9 +591,9 @@ The runner is a small program that the member installs on the member's own box. 
 
 ##### One policy store (SW-94)
 
-A policy is a row. It holds the scope (organization or project), a risk tier or `any`, a key from a fixed list, a value, the author and a version. Each save adds a row, as guidance does (SW-31). One function, `policy_for(task, key)`, resolves the row. It reads the nearest project first, then each parent, then the organization, then the shipped default. A tier row wins over an `any` row at the same level.
+A policy is a row. It holds the scope (organization, project, lane, member or box), a risk tier or `any`, a key from a fixed list, a value, the author and a version. Each save adds a row, as guidance does (SW-31). One function, `policy_for(task, key)`, resolves the row. It reads the nearest project first, then each parent, then the organization, then the shipped default. A tier row wins over an `any` row at the same level.
 
-The first keys: `stages_required`, `brief_required`, `claim_scope_mode`, `review_cap`, `park_max_minutes`, `overnight_allowed`, `done_on`, `question_auto_after_minutes`, `lane_mode`, `pr_open_to_review`, `release_cutoff`, `budget_minutes_day` and `agents_paused`. A key outside the list gets 422. A row has a scope kind: organization, project, lane, member or box. Each key accepts some kinds only. A key on the auth path needs `admin:settings:manage`. A policy does not grant. It only sets how strict a warning or a refusal is (rule 5). The environment flags stay as the default of the organization. Where a flag has ordered modes, the stricter of the flag and the policy wins, and a policy cannot go above the flag. The stage list, the tier names and the release cut-off are policy defaults. The product holds no HathiLabs constant (D186.2).
+The first keys: `stages_required`, `brief_required`, `claim_scope_mode`, `review_cap`, `park_max_minutes`, `overnight_allowed`, `done_on`, `question_auto_after_minutes`, `lane_mode`, `pr_open_to_review`, `release_cutoff`, `review_required` (SW-18), `required_checks` (SW-54), `budget_mode`, `budget_minutes_day`, `budget_writes_day`, `loop_guard_repeats` and `agents_paused`. A key outside the list gets 422. A row has a scope kind: organization, project, lane, member or box. A task key resolves project, then each parent, then organization, then the default. An actor key (`agents_paused`, the lane and day budgets) resolves box, then member, then lane, then organization, then the default. The edge reads the actor form at token lookup, where no task exists. Each key accepts some kinds only. A key on the auth path needs `admin:settings:manage`. A policy does not grant. It only sets how strict a warning or a refusal is (rule 5). The environment flags stay as the default of the organization. Where a flag has ordered modes, the flag is the ceiling. A policy may choose a mode at or below the flag and never above it. The stage list, the tier names and the release cut-off are policy defaults. The product holds no HathiLabs constant (D186.2).
 
 #### 3.11.6 Learning (section F of the brief)
 
@@ -654,7 +655,7 @@ So `orchestration_playbook.md` is a new ACTIVE spec (INDEX row in the same pull 
 
 - **SW-39 (task 1065), child runs.** The index `pm_agent_runs_one_open_per_task` allows one open run for each task. A child run of a sub-agent needs a `parent_run_id` and a `kind`. The index must exclude `kind = 'child'`, in the same migration. Dispatch SW-39 with that constraint. A child holds no lease and no claim, and it shows under its parent only.
 - **SW-38 (task 1064) and SW-42 (task 1068)** have no spec text. SW-95 uses the stop signal of SW-38, and SW-98 builds on SW-42. Both wait until SW-0c (task 1069) or their own slice writes the text.
-- **SW-0c (task 1069)** copies the Hyperagent research into §3.9 of this file. P10 does not do that work.
+- **SW-0c (task 1069)** copies the Hyperagent research into the section that task 1069 names. P10 does not do that work.
 - **SW-60 (task 1902).** SW-66 reads its column `waiting_ref_id` as a built-in condition. SW-60 needs no change. SW-66 has its own flag.
 - **DX-11** of `external_agent_dispatch.md` is the local runner. One line there now points to SW-78.
 
@@ -707,7 +708,7 @@ So `orchestration_playbook.md` is a new ACTIVE spec (INDEX row in the same pull 
 
 ### 4.2 D186 — Metorite runs the fleet and teaches it (2026-11-06)
 
-`work_plan.md` §3 holds it as **D186**. It extends D140 and D183. It amends no earlier rule. It adds one owner call about product content (item 1).
+`work_plan.md` §3 holds it as **D186**. It extends D140 and D183. It amends five earlier rules, each in one point (items 10 to 14).
 
 **Owner calls (task 1906, comment of 2026-11-06 18:05 UTC).**
 
@@ -724,13 +725,13 @@ So `orchestration_playbook.md` is a new ACTIVE spec (INDEX row in the same pull 
 8. **Policies are data.** One store, resolved by app project and risk tier (SW-94). The environment flags stay as master switches.
 9. **Done may wait for the live service.** A setting, `done_on`, picks `merge` (the default, GH-6 unchanged) or `live` (SW-72). Q14 sets HathiLabs.
 
-**What D186 amends.** It amends these earlier rules, each in one point, and each amended text gets a pointer:
+**What D186 amends.** It amends these earlier rules, each in one point. The slice that builds each change adds the pointer to the amended text:
 
-8. **D140.2 and D-EA-14, by SW-75 only.** A policy may answer a reversible question on a LOW task that a person tiered, after a deadline. It ships only if Q16 says yes.
-9. **Non-goal 31 of `github_integration.md` §2 and EA3-39 item 5, by SW-76.** A pull request that opens may move its task to review, under a policy that is off by default.
-10. **D140.8 and D183, by SW-66.** A run may park past the lease on a merge, on another run or on a time, as it may on CI. The same cap applies (Q13).
-11. **EA3-39 item 1 ("one prompt"), by PB-2.** The edge serves more prompts. Playbook prompts list with `projects:read`. Prompts that write list with `projects:write`.
-12. **The owner decision on task 1731 (a read-only watcher), by SW-78.** A later release of the runner may need a wider scope. That is OWNER-GATE (Q18).
+10. **D140.2 and D-EA-14, by SW-75 only.** A policy may answer a reversible question on a LOW task that a person tiered, after a deadline. It ships only if Q16 says yes.
+11. **The non-goal "A status move other than to Done" of `github_integration.md` §2 and EA3-39 item 5, by SW-76.** A pull request that opens may move its task to review, under a policy that is off by default.
+12. **D140.8 and D183, by SW-66.** A run may park past the lease on a merge, on another run or on a time, as it may on CI. The same cap applies (Q13).
+13. **EA3-39 item 1 ("one prompt") and item 8 (prompts list only with `projects:write`), by PB-2.** The edge serves more prompts. Playbook prompts list with `projects:read`. Prompts that write list with `projects:write`.
+14. **The owner decision on task 1731 (a read-only watcher), by SW-78.** A later release of the runner may need a wider scope. That is OWNER-GATE (Q18).
 
 ---
 
@@ -774,12 +775,12 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
 
 ### 5.0b The order for P10
 
-P10 starts after the first group of §5.0a is live. Slices in one step may run in parallel.
+P10 starts after the first group of §5.0a is live. Each slice also needs its own P9 and earlier slices. SW-64 needs SW-48 and SW-56. SW-67 needs SW-45. SW-70 and SW-71 need SW-23 and SW-59. SW-81 and SW-88 need SW-51. Slices in one step may run in parallel.
 
 1. **Fix what leaks today.** Task 1731 (the answer watcher) and EA-19 (task 1819), then SW-77, then the first releases of SW-78. SW-99 follows SW-62.
 2. **Reach a running agent.** SW-64, then SW-66, then SW-65.
-3. **One store for settings, then the stages.** SW-94 first, before SW-49 and SW-54 where the order allows. Then SW-70, SW-71, SW-76, SW-73, then SW-72. SW-70 and SW-71 use a fixed default until SW-94 has merged.
-4. **Seam checks.** SW-31b before the tabs of SW-67, SW-94 and SW-98.
+3. **One store for settings, then the stages.** SW-31b first, then SW-94, before SW-49 and SW-54 where the order allows. Then SW-70, SW-71, SW-76, SW-73, then SW-72. SW-70 and SW-71 use a fixed default until SW-94 has merged.
+4. **Tabs.** The tabs of SW-67 and SW-98 follow SW-31b and SW-94.
 5. **Lanes and machines.** SW-67, SW-68, the later releases of SW-78 (it then reads lanes and caps), SW-79, SW-80, SW-85, SW-81.
 6. **Sessions.** SW-82, SW-83, and SW-84 at any time.
 7. **The platform.** SW-86, SW-87, SW-88, SW-91, SW-93.
@@ -1402,7 +1403,7 @@ They keep their own gates.
 #### SW-64 · A steer reaches a running agent
 
 - **Metorite task.** 1910.
-- **Scope.** The table `pm_agent_run_notices`. The route `POST /projects/agent-runs/{run_id}/notices` for `steer` and `pause`. Only the run's member and the app lead of the task (SW-48) may steer. The edge adds `notices` to the results named in §3.11.1. A notice leaves as `untrusted_text` with the name of the sender. The protocol line (SW-56) tells the agent to follow a steer from its own member or from the app lead, and to treat a steer from any other sender as information. The agent reads a notice by a thought that names its id. The card shows "Steer not read" after 10 minutes. `my_work` rows carry the unread count.
+- **Scope.** The table `pm_agent_run_notices`. The route `POST /projects/agent-runs/{run_id}/notices` for `steer` and `pause`. Only the run's member and the app lead of the task (SW-48) may steer. The edge adds `notices` to the results named in §3.11.1. A notice leaves as `untrusted_text` with the name of the sender. The steer rule goes in the `work_on_task` steps and in a tip (PB-4), because the protocol block of SW-56 is capped at 6 lines. It tells the agent to follow a steer from its own member or from the app lead, and to treat a steer from any other sender as information. The agent reads a notice by a thought that names its id. The card shows "Steer not read" after 10 minutes. `my_work` rows carry the unread count.
 - **Done when.** R8: the run's member posts a steer, and the next `post_agent_activity` result holds it once. A manager who is neither the member nor the lead gets 403. A run that ended gets 409. The 11th steer in an hour gets 429. A replayed key writes once.
 - **Fence.** `test_agent_notices_r8.py` (new), `test_mcp_edge_agent_runs.py`, `test_mcp_edge_prompts.py` for the protocol line, `test_tenant_coverage.py`.
 - **Risk.** HIGH (a migration, who may write to a run). **Gate.** AGENT-SAFE, dark behind `AGENT_NOTICES_ORGS`. **Depends on.** SW-7a, SW-48, SW-56.
@@ -1418,15 +1419,15 @@ They keep their own gates.
 #### SW-66 · Park on a merge, a run or a time
 
 - **Metorite task.** 1912.
-- **Scope.** The table `pm_agent_run_wakes`. `waiting` takes `wake_on`, a list of `{kind, ref, at}` with the kinds `pr_merged`, `run_done` and `at`. One function, `run_wake_conditions`, reads these and the `ci` column of SW-60. The Python twins `lease_expired` and `holder_free`, and `lease_held_sql` and the stranded clause in `filters.py`, all read it, so the gate and the SQL filter agree. A `run_done` wake has two writers: `_move_run` on a terminal status, and `_take_over`, which ends a run as `abandoned`. The cap is `AGENT_PARK_MAX_MINUTES` (Q13). The flag is `AGENT_PARK_ORGS`, apart from the CI flag of SW-60. This slice extends the one lease exception of D140.8 and D183 (D186.10).
+- **Scope.** The table `pm_agent_run_wakes`. `waiting` takes `wake_on`, a list of `{kind, ref, at}` with the kinds `pr_merged`, `run_done` and `at`. One function, `run_wake_conditions`, reads these and the `ci` column of SW-60. The Python twins `lease_expired` and `holder_free`, and `lease_held_sql` and the stranded clause in `filters.py`, all read it, so the gate and the SQL filter agree. A `run_done` wake has two writers: `_move_run` on a terminal status, and `_take_over`, which ends a run as `abandoned`. The one cap is `AGENT_CI_PARK_MAX_MINUTES` of SW-60 (Q13), for every kind of park. The policy `park_max_minutes` may lower it and never raise it. The flag is `AGENT_PARK_ORGS`, apart from the CI flag of SW-60. This slice extends the one lease exception of D140.8 and D183 (D186.12).
 - **Done when.** R8 with a moved clock: a run parked on a merge reads `waiting` past 120 minutes up to the cap, and is stranded after it. A merge writes one wake and one lease renewal. A replayed event writes nothing. A run parked on another run wakes when that run ends, also when a takeover ends it. An `at` beyond the cap gets 422. A wake clears the session key. The Python twin and the SQL agree on a moved clock.
 - **Fence.** `test_agent_runs_r8.py`, `test_agent_run_sweep_r8.py`, `test_agent_run_exclusive.py`, a webhook test beside the GitHub fences, `test_tenant_coverage.py`.
-- **Risk.** HIGH (a migration, the lease). **Gate.** AGENT-SAFE, dark behind `AGENT_PARK_ORGS`. **Depends on.** SW-60, 1045b, GH-6.
+- **Risk.** HIGH (a migration, the lease). **Gate.** AGENT-SAFE, dark behind `AGENT_PARK_ORGS`. **Depends on.** SW-60, 1045b, GH-6, Q13.
 
 #### SW-67 · Lanes as records
 
 - **Metorite task.** 1913.
-- **Scope.** The table `pm_agent_lanes`. Its columns are the name, the purpose (required, the bottleneck this lane removes), the app project, the model and a rules note of 2,000 characters. It also holds the box connection, `max_open_runs` (default 1), the owner member, a shared flag, and the template with its version (PB-9). The column `pm_agent_runs.lane_id`. `claim_task` and `start_agent_run` take an optional `lane`. A claim outside the lane's app returns a `warning`. A session that declares a lane is capped by it. A session that declares none is not, so the lane cap is advisory (R7). The hard cap stays the cap of each connection (MCP-G6). The flag `AGENT_LANE_MODES` adds `refuse` for a full declared lane (429 `lane_full`). The screen is a tab "Lanes" of the Settings, Agents screen of SW-31b. The Fleet tab groups by lane.
+- **Scope.** The table `pm_agent_lanes`. Its columns are the name, the purpose (required, the bottleneck this lane removes), the app project, the model and a rules note of 2,000 characters. It also holds the box connection, `max_open_runs` (default 1), the owner member, a shared flag. PB-9 adds the template column. The column `pm_agent_runs.lane_id`. `claim_task` and `start_agent_run` take an optional `lane`. A claim outside the lane's app returns a `warning`. A session that declares a lane is capped by it. A session that declares none is not, so the lane cap is advisory (R7). The hard cap stays the cap of each connection (MCP-G6). The flag `AGENT_LANE_MODES` adds `refuse` for a full declared lane (429 `lane_full`). The screen is a tab "Lanes" of the Settings, Agents screen of SW-31b. The Fleet tab groups by lane.
 - **Done when.** R8: two lanes of two members. A claim from a lane outside its app warns and writes one timeline line. In `refuse` the second open run of a declared lane with cap 1 gets 429. A claim with no lane is unchanged. A lane of another organization is invisible. A lane never reaches an authorization check.
 - **Fence.** `test_agent_lanes_r8.py` (new), the structural test of §3.7 extended to lane fields, `test_tenant_coverage.py`, a vitest for the tab.
 - **Risk.** HIGH (a migration, a refusal on a write). **Gate.** AGENT-SAFE dark. D145 owner preview for the tab. **Depends on.** SW-7b, SW-45, SW-31b.
@@ -1458,7 +1459,7 @@ They keep their own gates.
 #### SW-71 · The delivery pipeline on the task
 
 - **Metorite task.** 1917.
-- **Scope.** `pm_tasks.risk_tier` with a CHECK, added `NOT VALID` then `VALIDATE`. Only a person sets it, through the app. No MCP tool writes it, and a NULL tier is not LOW. The table `pm_task_stages` for reported stages. One read function joins the system stages (§3.11.7). The tool `report_stage(task_id, stage, result, evidence)`. A report of `verify` by the run that built the task is stored as a claim and never counts as `passed`. The task wire gains `stages`. The policy `stages_required` (SW-94) lists the stages for a tier. Its default list and the tier names are policy defaults and not code constants. It warns and refuses nothing. Until SW-94 merges, a fixed default list serves.
+- **Scope.** `pm_tasks.risk_tier` with a CHECK of `LOW`, `STANDARD`, `HIGH`, added `NOT VALID` then `VALIDATE`. The three tier names are product vocabulary and outside the neutral rule of D186.2. Only a person sets it, through the app. No MCP tool writes it, and a NULL tier is not LOW. The table `pm_task_stages` for reported stages. One read function joins the system stages (§3.11.7). The tool `report_stage(task_id, stage, result, evidence)`. A report of `verify` by the run that built the task is stored as a claim and never counts as `passed`. The task wire gains `stages`. The policy `stages_required` (SW-94) lists the stages for a tier. Its default list is a policy default and not a code constant. It warns and refuses nothing. Until SW-94 merges, a fixed default list serves.
 - **Done when.** R8: a task with a finished run, a merged reference and passed checks reads `build`, `ci` and `merge` as passed with no stored row. `report_stage` stores `audit`. A caller that may not write the task gets 403. An MCP call that sets `risk_tier` gets 422. A `verify` reported by the building run reads `claimed`. A task that moves to Done with a required stage open carries a warning.
 - **Fence.** `test_task_stages_r8.py` (new), `test_tenant_coverage.py`, `test_mcp_edge_coverage.py`.
 - **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE dark. **Depends on.** SW-23, SW-59, SW-18, GH-6. It reads SW-54 when it has merged, else the checks of GH-5 with no required list.
@@ -1466,15 +1467,15 @@ They keep their own gates.
 #### SW-72 · The live check closes the task
 
 - **Metorite task.** 1918.
-- **Scope.** The table `pm_release_events`. The route `POST /releases` is public and signed with HMAC over the raw body. The body names the organization. That id only selects the secret, and the HMAC proves it. The lookup follows GH-E5 (a `SECURITY DEFINER` function), and the route joins `PUBLIC_ROUTES` with `test_default_deny_auth.py`. The body holds the deployed commit, the merged pull request numbers and the live version line. Where the secret is stored is fixed at dispatch, by the pattern of GH-1. The route marks `release` and `live` on each task whose merged reference is in the list. With `done_on = live` it moves the task to Done, closes the run, and writes the evidence. "Merged, not live" shows after 36 hours, only for an organization with `done_on = live`. A person may `report_stage` `live` with evidence where no release step exists. This repository's `deploy.yml` gets the last step.
-- **Done when.** R8: a signed record for a merged task passes `live` and, in `live` mode, closes it once. A bad signature gets 401 and writes nothing. A replay writes nothing. A record for another organization's pull request touches no task. A task merged 37 hours ago with no record shows the row in `live` mode and not in `merge` mode.
+- **Scope.** The table `pm_release_events`. The route `POST /releases` is public and signed with HMAC over the raw body. The body names the organization. That id only selects the secret, and the HMAC proves it. The lookup follows GH-E5 (a `SECURITY DEFINER` function), and the route joins `PUBLIC_ROUTES` with `test_default_deny_auth.py`. The body holds the deployed commit, the merged pull request numbers and the live version line. Where the secret is stored is fixed at dispatch, by the pattern of GH-1. The route marks `release` and `live` on each task whose merged reference is in the list. With `done_on = live` it moves the task to Done, closes the run, and writes the evidence. "Merged, not live" shows after 36 hours, only for an organization with `done_on = live`. A person may set `live` with evidence in the app where no release step exists. A `release` or `live` that an MCP caller reports is a claim, like `verify`. It never passes the stage and never fires `done_on = live`. Only the signed record or a person in the app does. This repository's `deploy.yml` gets the last step.
+- **Done when.** R8: a signed record for a merged task passes `live` and, in `live` mode, closes it once. A bad signature gets 401 and writes nothing. A replay writes nothing. A record for another organization's pull request touches no task. An MCP `report_stage` of `live` reads `claimed` and closes nothing. A task merged 37 hours ago with no record shows the row in `live` mode and not in `merge` mode.
 - **Fence.** `test_release_events_r8.py` (new), `test_default_deny_auth.py`, `test_needs_attention_r8.py`, `test_github_merge_r8.py` (GH-6 unchanged in `merge` mode).
 - **Risk.** HIGH (webhook ingress, a status write, the deploy path). **Gate.** AGENT-SAFE dark. The edit of `.github/workflows/deploy.yml` is HIGH tier, because it is the deploy path. Adding the repository secret is an owner act. **Depends on.** SW-71, GH-6. Q14.
 
 #### SW-73 · A production act record
 
 - **Metorite task.** 1919.
-- **Scope.** The tool `record_act(task_id, act, box, evidence, rollback)`. It writes a `response` activity with `content.act`. No migration. `evidence` must not be empty. The evidence panel (SW-87) lists the acts. The protocol and `work_on_task` tell an agent to call it after each production act.
+- **Scope.** The tool `record_act(task_id, act, box, evidence, rollback)`. It writes a `response` activity with `content.act`. No migration. `evidence` must not be empty. The evidence panel (SW-87) lists the acts. The `work_on_task` steps tell an agent to call it after each production act.
 - **Done when.** An act with no evidence gets 422. The act shows on the task. The text leaves as `untrusted_text`. The record is self-reported and says so.
 - **Fence.** `test_mcp_edge_agent_runs.py`, `test_mcp_edge_coverage.py`. Advisory (R7).
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE.
@@ -1490,15 +1491,15 @@ They keep their own gates.
 #### SW-75 · A question taken by policy
 
 - **Metorite task.** 1921.
-- **Scope.** The policy `question_auto_after_minutes` (SW-94), null by default. After the deadline, a question that the agent marked `reversible` and `recommended` gets the recommended option. The answer writes `content.by_policy` and the card reads "Taken by policy after 4 hours: Wait for the shards". The Change button of SW-43b stays. It never applies to `purpose` `preview` or `review`, to an auth question, to a `confirm: true` option, or to a task whose tier is not LOW. A task with no tier (NULL) is excluded. Quiet hours do not apply (SW-74). The minimum is 240 minutes. This slice amends D140.2 and the answer set of D-EA-14 (D186.8), and it ships only if Q16 says yes.
+- **Scope.** The policy `question_auto_after_minutes` (SW-94), null by default. After the deadline, a question that the agent marked `reversible` and `recommended` gets the recommended option. The answer writes `content.by_policy` and the card reads "Taken by policy after 4 hours: Wait for the shards". The Change button of SW-43b stays. It never applies to `purpose` `preview` or `review`, to an auth question, to a `confirm: true` option, or to a task whose tier is not LOW. A task with no tier (NULL) is excluded. Quiet hours do not apply (SW-74). The minimum is 240 minutes. This slice amends D140.2 and the answer set of D-EA-14 (D186.10), and it ships only if Q16 says yes.
 - **Done when.** R8 with a moved clock: a reversible question on a LOW task is taken at the deadline. Each excluded case is not, and a NULL tier is one of them. The timeline names the policy and not a member. The policy off writes nothing.
 - **Fence.** `test_agent_auto_answer_r8.py` (new), one named mutation for each exclusion.
-- **Risk.** HIGH (an answer without a person). **Gate.** AGENT-SAFE dark. The turn-on is OWNER-GATE `enforcement-flip`. **Depends on.** SW-43b, SW-94, SW-71. Q16.
+- **Risk.** HIGH (an answer without a person). **Gate.** AGENT-SAFE dark. The master flag is `AGENT_AUTO_ANSWER_ORGS`, default off, and a policy can only act under it. The turn-on is OWNER-GATE `enforcement-flip`, and the slice registers the flag in `work_plan.md` §6. **Depends on.** SW-43b, SW-94, SW-71. Q16.
 
 #### SW-76 · An opened pull request moves its task to review
 
 - **Metorite task.** 1922.
-- **Scope.** The webhook path of GH-4 moves a linked task to the review lane. This happens when its pull request opens as ready for review and the task has an open run. A draft does not move it. A task already in review or Done does not move. The timeline names the pull request. The setting is its own policy key, `pr_open_to_review`, default off. It does not ride on `GITHUB_APP_ORGS`. This slice amends non-goal 31 of `github_integration.md` §2 and the routine of EA3-39 (D186.9). The agent routine still moves the task itself where the policy is off.
+- **Scope.** The webhook path of GH-4 moves a linked task to the review lane. This happens when its pull request opens as ready for review and the task has an open run. A draft does not move it. A task already in review or Done does not move. The timeline names the pull request. The setting is its own policy key, `pr_open_to_review`, default off. It does not ride on `GITHUB_APP_ORGS`. This slice amends the non-goal "A status move other than to Done" of `github_integration.md` §2 and the routine of EA3-39 (D186.11). The agent routine still moves the task itself where the policy is off.
 - **Done when.** R8: with the policy on, an opened pull request moves a linked task once. A draft, a closed task and an organization with the policy off do not. A replayed delivery writes nothing.
 - **Fence.** `test_github_webhook_r8.py` (new cases).
 - **Risk.** HIGH (a status write). **Gate.** AGENT-SAFE dark. **Depends on.** SW-53, GH-4, SW-94.
@@ -1509,22 +1510,22 @@ They keep their own gates.
 - **Scope.** The table `agent_box_health`: connection, time, free memory, load, sessions, sign-in state, account state, CI lane busy, lease counts. The MCP tool `report_box_health`, for a box token only. It joins `MCP_WRITE_ROUTES`, with a named scope in the scope list of `external_agent_access.md` §10.9. A box token authenticates at the edge (`agent_edge/bearer.py`), so there is no gateway REST route for it. The values are untrusted display data. A heartbeat older than 3 minutes reads "offline". Account state is best effort.
 - **Done when.** R8: a box token writes a heartbeat. An OAuth connection gets 403. A member reads only the boxes of the member's organization that the member may see. A revoked token writes nothing.
 - **Fence.** `test_agent_box_health_r8.py` (new), `test_mcp_edge_coverage.py`, `test_tenant_coverage.py`.
-- **Risk.** HIGH (a tenant table, token auth). **Gate.** AGENT-SAFE dark. **Depends on.** EA-19.
+- **Risk.** HIGH (a tenant table, token auth). **Gate.** AGENT-SAFE dark. **Depends on.** EA-19, and the scope slice of EA-19 in `external_agent_access.md` §10.9.
 
 #### SW-78 · The runner
 
 - **Metorite task.** 1924.
-- **Scope.** §3.11.4. The first release is task 1731 as the owner decided: a box token with the scope `projects:read` only, which never wakes an old session. Later releases add three things. They post the heartbeat (SW-77), they start a session for a queued, answered or woken run, and they wake a live session with `claude --resume <session> "prompt"` where the version allows (2.1.285). Those need a wider scope, or a second token. The name and the scope list belong to `external_agent_access.md` §10.9. The widening changes an owner decision, so it is OWNER-GATE (Q18). The runner reads lanes and caps (SW-67, SW-68) once they exist. It writes the notice file for the fast path. It never starts two sessions for one run. It keeps the secret in the box's secret store and reads no OAuth token.
-- **Done when.** A fake `list_agent_runs` and a fake `claude` show one start for one run. They show a wake for a run with a live link, and no start for a full lane. The notice file holds an unread steer within 10 seconds of the poll.
+- **Scope.** §3.11.4. The first release is task 1731 as the owner decided: a box token with the scope `projects:read` only, which never wakes an old session. Later releases add three things. They post the heartbeat (SW-77), they start a session for a queued, answered or woken run, and they wake a live session with `claude --resume <session> "prompt"` where the version allows (2.1.285). Those need a second token with a narrow scope (decided, Q18). The scope name belongs to `external_agent_access.md` §10.9, and a slice of EA-19 adds it. SW-77 and release 2 depend on that slice. Minting a token on a live box stays an owner act. The runner reads lanes and caps (SW-67, SW-68) once they exist. It writes the notice file for the fast path. It never starts two sessions for one run. It keeps the secret in the box's secret store and reads no OAuth token.
+- **Done when, release 1 (step 1 of §5.0b).** This is task 1731: a fake `list_agent_runs` shows one wake for one run, with the read-only token. **Release 2 (step 5).** It needs SW-67, SW-68, SW-64 and the runner scope of Q18. A fake `list_agent_runs` and a fake `claude` show one start for one run, a wake for a run with a live link, and no start for a full lane. The notice file holds an unread steer within 10 seconds of the poll.
 - **Fence.** A test in `scripts/home_server/`. `test_runner_no_secret.py` (new) refuses a read of an OAuth token path.
-- **Risk.** HIGH (it starts sessions with credentials). **Gate.** AGENT-SAFE to build. The scope widening is OWNER-GATE (Q18). The install on the home box is `deploy`. **Depends on.** Task 1731, EA-19, SW-77.
+- **Risk.** HIGH (it starts sessions with credentials). **Gate.** AGENT-SAFE to build. Minting the second token on a live box is an owner act. The install on the home box is `deploy`. **Depends on.** Task 1731, EA-19, SW-77.
 
 #### SW-79 · Recover the fleet in one step
 
 - **Metorite task.** 1925.
 - **Scope.** `metorite-runner recover` and a Recover button on the Machines tab. It lists the open runs of the box that have no live process, and restarts each in its lane with the reason `box_restarted`. The run keeps its task and its handoff. It shows the count first and asks one confirm.
 - **Done when.** A test box with 3 dead sessions restarts 3 runs once. A run that is parked or awaiting is not restarted. A second call restarts none.
-- **Fence.** The runner test, and a route test for the reason.
+- **Fence.** The runner test, and a test of the MCP tool that restarts a run with the reason `box_restarted`. The tool joins `MCP_WRITE_ROUTES` with the runner scope.
 - **Risk.** HIGH (it starts sessions). **Gate.** AGENT-SAFE to build. **Depends on.** SW-78, SW-62.
 
 #### SW-80 · Resource leases on the box
@@ -1538,7 +1539,7 @@ They keep their own gates.
 #### SW-81 · The Machines tab
 
 - **Metorite task.** 1926.
-- **Scope.** A Machines tab beside Fleet in the Agents panel (SW-51). One card for each box: memory, load, sessions, sign-in, account state, CI lane, leases, and the runs it holds. The Recover button (SW-79). A link to Settings, AI agents for revoke.
+- **Scope.** A Machines tab beside Fleet in the Agents panel (SW-51). One card for each box: memory, load, sessions, sign-in, account state, CI lane, leases, and the runs it holds. The Recover button (SW-79). A link to Integrations, AI agents for revoke.
 - **Done when.** `visual-review` passes at four widths. An offline box reads "offline" with its last time.
 - **Fence.** A vitest for the tab and `test_projects_agent_focus_r8.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. D145 owner preview. **Depends on.** SW-77, SW-51.
@@ -1549,7 +1550,7 @@ They keep their own gates.
 - **Scope.** A plugin that bundles four things. First, the MCP config with a bearer header from an environment variable. Second, the protocol hooks: the Stop gate of SW-61, a context hook for the notice file, and a warning on a push with no task id in the branch. Third, commands built from the prompt registry. Fourth, generic verifier and reviewer agents. The commands are `/claim`, `/park`, `/ask`, `/handoff`, `/done` and `/fleet`. `/ask` asks on the task and waits. It holds no HathiLabs rule. A fence keeps the command list equal to the registry of PB-2.
 - **Done when.** A fresh Claude Code installs the plugin and `/metorite:claim 42` claims a task. The hooks pass their tests. The package holds no token and no HathiLabs token (the denylist of PB-5).
 - **Fence.** `node` tests for each hook, `test_plugin_commands_match_prompts.py` (new), `test_playbook_org_neutral.py`.
-- **Risk.** STANDARD. **Gate.** AGENT-SAFE to build. OWNER-GATE to publish (Q15). **Depends on.** SW-61, PB-2.
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE to build. OWNER-GATE to publish (Q15). **Depends on.** SW-61, PB-2, and PB-1 for the neutral test.
 
 #### SW-83 · A status line
 
@@ -1564,6 +1565,7 @@ They keep their own gates.
 - **Metorite task.** 1929.
 - **Scope.** No build. Test two ways on a real Claude Code: a local channel server in the plugin, and the resume command of the runner. Write the finding, the version and the limits into §3.11.10. Recommend one.
 - **Done when.** The finding is in this file and on the task. An owner decision follows if it needs a build.
+- **Fence.** The finding names the Claude Code version it was tested on. The spike is advisory (R7).
 - **Risk.** LOW. **Gate.** AGENT-SAFE.
 
 #### SW-85 · A worktree for each claim
@@ -1572,7 +1574,7 @@ They keep their own gates.
 - **Scope.** When the runner starts a session for a claim, it makes a worktree from the project `repo` and `base_ref` (DX-4). It removes the worktree at Done or release, and it keeps one with uncommitted work. A VS Code panel is deferred.
 - **Done when.** A claim makes one worktree. Done removes it. A dirty worktree stays and shows in the heartbeat.
 - **Fence.** A runner test.
-- **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** SW-78, DX-4.
+- **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** SW-78. It reads the `repo` and `base_ref` setting of DX-4. WS-56 is still PROPOSED, so this slice owns a minimal setting until WS-56 decides.
 
 #### SW-86 · Card controls
 
@@ -1626,7 +1628,7 @@ They keep their own gates.
 
 - **Metorite task.** 1938.
 - **Scope.** On `/waiting`, "Approve the LOW-tier items". It lists the questions with `purpose` `preview` or `review` on tasks whose tier a person set to LOW. A NULL tier is excluded. The `verify` and `ci` stages must have passed, and `verify` must come from a run of another session than the builder (SW-59), never from `report_stage`. One confirm. It writes one answer for each, naming the member. It chooses the option the agent marked recommended. A `confirm: true` option is never in the list. The surface belongs to AP-2 and AP-4, and the request is filed in `waiting_on_me.md`.
-- **Done when.** R8: a batch of 3 writes 3 answers. A task with a failed stage, a NULL tier or a HIGH tier is not in the list. A `verify` claimed by the building run does not count. The member who is not the addressee gets 403.
+- **Done when.** R8: a batch of 3 writes 3 answers. A task with a failed stage, a NULL tier or a HIGH tier is not in the list. A `verify` claimed by the building run does not count. A member outside the answer set gets 403.
 - **Fence.** `test_agent_questions_r8.py`, a vitest.
 - **Risk.** HIGH (answers on behalf of the member). **Gate.** AGENT-SAFE dark. D145 owner preview. **Depends on.** AP-2, AP-4, SW-46, SW-71, SW-59.
 
@@ -1641,8 +1643,8 @@ They keep their own gates.
 #### SW-94 · One policy store
 
 - **Metorite task.** 1940.
-- **Scope.** §3.11.5. The table `pm_agent_policies`, with history. The function `policy_for` reuses the project-tree walk of SW-31a (`routes/agent_guidance.py`) and adds no walk of its own. A row has a scope kind: organization, project, lane, member or box. A key lists the scope kinds it accepts. A key that sits on the auth path (`agents_paused`, `claim_scope_mode`, `lane_mode`, `question_auto_after_minutes`, `pr_open_to_review`) needs the permission `admin:settings:manage`. A project lead may write the other keys for the lead's own project. Where a flag has ordered modes, the stricter of the flag and the policy wins, and a policy cannot go above the flag. The flag stays the default of the organization. The first keys are in §3.11.5, with `release_cutoff` (default none). The screen is a tab "Policies" of the Settings, Agents screen (SW-31b). SW-18, SW-49 and SW-54 read their settings through it if it has merged.
-- **Done when.** R8: the nearest project wins over the organization, and a tier row wins over `any`. An unknown key gets 422. A key on a scope kind it does not accept gets 422. A project lead writing an auth-path key gets 403. A policy cannot turn on what a flag turns off, and the stricter mode wins. Each save adds a row.
+- **Scope.** §3.11.5. The table `pm_agent_policies`, with history. The functions `policy_for(task, key)` and `policy_for_actor(org, member, box, lane, key)` reuse the project-tree walk of SW-31a (`routes/agent_guidance.py`) and add no walk of their own. A row has a scope kind: organization, project, lane, member or box. A key lists the scope kinds it accepts. A key that sits on the auth path (`claim_scope_mode`, `lane_mode`, `question_auto_after_minutes`, `pr_open_to_review`) needs the permission `admin:settings:manage`. The exception is `agents_paused` on the scope kind member, which a member may set for self (R8 case: a member pauses own agents and gets 403 on another member). The exception is `agents_paused` on the scope kind member, which a member may set for self (R8: a member pauses own agents and gets 403 on another member). A project lead may write the other keys for the lead's own project. Where a flag has ordered modes, the flag is the ceiling. A policy may choose a mode at or below the flag and never above it. The flag stays the default of the organization. The first keys are in §3.11.5, with `release_cutoff` (default none). The screen is a tab "Policies" of the Settings, Agents screen (SW-31b). `review_cap` moves from the Integrations setting of §3.10.3 to this tab, and SW-49 reads it from here. SW-18, SW-49 and SW-54 read their settings through it if it has merged.
+- **Done when.** R8: the nearest project wins over the organization, and a tier row wins over `any`. An unknown key gets 422. A key on a scope kind it does not accept gets 422. A project lead writing an auth-path key gets 403. A policy cannot turn on what a flag turns off. With the flag at `warn` and the policy at `refuse`, the result is `warn`. Each save adds a row.
 - **Fence.** `test_agent_policies_r8.py` (new), `test_tenant_coverage.py`.
 - **Risk.** HIGH (a tenant table, a write authority rule). **Gate.** AGENT-SAFE dark. D145 owner preview for the tab. Build it first in step 3 of §5.0b. **Depends on.** SW-31b.
 
@@ -1652,12 +1654,12 @@ They keep their own gates.
 - **Scope.** Budgets for each lane and each day (minutes, writes). Loop guards catch the same tool call with the same arguments repeated too many times, or too many writes in a window. The modes `off`, `warn` and `stop`. `stop` uses the stop signal of SW-38. Values come from the policy store.
 - **Done when.** R8: a run that repeats one call 20 times gets a notice in `warn` and `stopping` in `stop`. A lane over its day budget starts no new run. Cost is not needed.
 - **Fence.** `test_agent_budgets_r8.py` (new).
-- **Risk.** HIGH (it stops runs). **Gate.** AGENT-SAFE dark. The flip to `stop` is OWNER-GATE `enforcement-flip`. **Depends on.** SW-38 (task 1064), SW-94, SW-67.
+- **Risk.** HIGH (it stops runs). **Gate.** AGENT-SAFE dark. The master flag is `AGENT_BUDGET_MODES`, default off, and the policy `budget_mode` is at or below it. The flip to `stop` is OWNER-GATE `enforcement-flip`, and the slice registers the flag in `work_plan.md` §6. **Depends on.** SW-38 (task 1064), SW-94, SW-67.
 
 #### SW-96 · A kill switch
 
 - **Metorite task.** 1942.
-- **Scope.** The policy `agents_paused` for a box, a member or an organization. While it is on, the edge answers each write tool with 423 `agents_paused`, and reads work. The edge reads the pause in the same transaction as the token lookup (`read_live_connection`), as `agent_box_tokens_enabled` does, so it adds no read to a call. Open runs get `stopping`. A box also stops its runner. An admin pauses any scope. A member pauses their own. Only an admin resumes an organization. **The split.** This pauses the agent door only. The tenant kill switch of `saas_operations_doctrine.md` (WS-31, CP-8) stops the tenant. EA-19 revokes a box token for good. SW-96 pauses and resumes and revokes nothing.
+- **Scope.** The policy `agents_paused` for a box, a member or an organization. While it is on, the edge answers each write tool with 423 `agents_paused`, and reads work. The edge reads the pause in the same transaction as the token lookup (`read_live_connection`), as EA-19b will, so it adds no read to a call. Open runs get `stopping`. A box also stops its runner. An admin pauses any scope. A member pauses their own. Only an admin resumes an organization. **The split.** This pauses the agent door only. The tenant kill switch of `saas_operations_doctrine.md` (WS-31, CP-8) stops the tenant. EA-19 revokes a box token for good. SW-96 pauses and resumes and revokes nothing.
 - **Done when.** R8: a paused member's write tool gets 423 and a read works. A pause of one organization touches no other. Resume restores writes. The audit row names who paused.
 - **Fence.** `test_agent_pause_r8.py` (new), `test_mcp_edge_coverage.py`.
 - **Risk.** HIGH (auth path). **Gate.** AGENT-SAFE dark. **Depends on.** SW-94.
@@ -1674,7 +1676,7 @@ They keep their own gates.
 
 - **Metorite task.** 1944.
 - **Scope.** §3.11.6. A lesson is a rule row of the guidance table (kind `rule`, `project_alignment.md` §4.2, ALN-5, ALN-5b). It uses their states and the lead's acceptance, and ALN-11 owns `needs_review`. SW-98 adds a migration, expand only: `verify_by` and a provenance JSON (run, task, pull request, date seen) on the rule rows. It adds `propose_lessons` for an import, and the expiry rule: a lesson past `verify_by` leaves the active set. The queue is a tab of the Settings, Agents screen (SW-31b). It is owned jointly with WS-ALN, and ALN is told in `project_alignment.md`.
-- **Done when.** As §3.11.6.
+- **Done when.** A proposed lesson never reaches `get_task_context`. A lesson past `verify_by` leaves the active set. A lesson of another project never shows. An imported note is not active before a lead approves it.
 - **Fence.** `test_agent_lessons_r8.py` (new), `test_tenant_coverage.py`, `test_mcp_edge_prompts.py`.
 - **Risk.** HIGH (a migration, a channel that reaches every agent). **Gate.** AGENT-SAFE dark. D145 owner preview for the queue. **Depends on.** SW-31b, ALN-5, task 1068 (SW-42, no spec text yet).
 
@@ -1804,7 +1806,7 @@ Read at `1a5f5fd7c` of the P10 branch on 2026-11-06 (the audit commit). Line num
 | `routes/agent_guidance.py` | The project-tree walk that `policy_for` reuses (SW-94) |
 | `packages/acb_auth/acb_auth/agent_oauth.py` `MCP_ROUTES`, `MCP_WRITE_ROUTES` | The tool allowlist (SW-68, SW-77) |
 | `apps/services/agent_edge/agent_edge/bearer.py` | Where a box token authenticates (SW-77) |
-| `apps/services/agent_edge/agent_edge/prompts.py` | The prompt registry (PB-2) |
+| `apps/services/agent_edge/agent_edge/prompts.py` | The one prompt `work_on_task`. PB-2 builds the registry |
 | `apps/services/gateway/gateway/agent_run_sweep.py` | The sweep tick that fires an `at` wake (SW-66) |
 
 ---
@@ -1881,9 +1883,8 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 
 | Slice | Command |
 |---|---|
-| SW-64, SW-65 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_notices_r8.py tests/unit/test_mcp_edge_agent_runs.py tests/unit/test_mcp_edge_coverage.py` (new file first) |
-
-| SW-66 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_runs_r8.py tests/unit/test_agent_run_sweep_r8.py`, and the webhook test (new) |
+| SW-64, SW-65 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_notices_r8.py tests/unit/test_mcp_edge_agent_runs.py tests/unit/test_mcp_edge_prompts.py tests/unit/test_mcp_edge_coverage.py tests/unit/test_tenant_coverage.py` (new file first) |
+| SW-66 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_runs_r8.py tests/unit/test_agent_run_sweep_r8.py tests/unit/test_agent_run_exclusive.py tests/unit/test_tenant_coverage.py`, and the webhook test (new) |
 | SW-67 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_lanes_r8.py tests/unit/test_agent_label_fence.py tests/unit/test_tenant_coverage.py` (new file first) |
 | SW-68 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_queue_r8.py` (new) |
 | SW-69 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_path_claims_r8.py tests/unit/test_conflict_radar_r8.py` (new files first) |
@@ -1891,7 +1892,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-71 | `uv run pytest -q -p no:cacheprovider tests/unit/test_task_stages_r8.py tests/unit/test_tenant_coverage.py` (new file first) |
 | SW-72 | `uv run pytest -q -p no:cacheprovider tests/unit/test_release_events_r8.py tests/unit/test_default_deny_auth.py tests/unit/test_needs_attention_r8.py tests/unit/test_github_merge_r8.py` (new file first) |
 | SW-73 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_agent_runs.py tests/unit/test_mcp_edge_coverage.py` |
-| SW-74 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_questions_r8.py tests/unit/test_waiting_seam_r8.py` |
+| SW-74 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_questions_r8.py tests/unit/test_waiting_seam_r8.py` (new, from AP-1) |
 | SW-75 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_auto_answer_r8.py` (new) |
 | SW-76 | `uv run pytest -q -p no:cacheprovider tests/unit/test_github_webhook_r8.py` |
 | SW-77 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_box_health_r8.py tests/unit/test_tenant_coverage.py` (new file first) |
