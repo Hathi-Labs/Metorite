@@ -109,9 +109,7 @@ def test_the_required_check_name_is_the_aggregator() -> None:
     assert named == ["unit-tests"]
     # `changes` joins `needs` so the guard knows a selection run (CIV-3).
     assert jobs["unit-tests"]["needs"] == ["test", "changes"]
-    # `always()` keeps a failed shard from reading as a skip. Only a draft PR
-    # skips the check (CIV-17): it cannot merge, and ready_for_review re-runs.
-    assert jobs["unit-tests"]["if"] == "always() && github.event.pull_request.draft != true"
+    assert jobs["unit-tests"]["if"] == "always()"
     run = "\n".join(s.get("run", "") for s in jobs["unit-tests"]["steps"])
     assert "scripts/ci_unit_guard.py check" in run
     for reason in guard.DISARMED:
@@ -283,11 +281,8 @@ def test_the_shards_wait_for_changes_and_still_run_when_it_fails() -> None:
     cond = test["if"].replace("${{", "").replace("}}", "").strip()
     assert cond.startswith("!cancelled()")
     assert "always()" not in cond
-    # CIV-17: the only other terms are a draft PR and an empty selection list.
-    assert cond == (
-        "!cancelled() && github.event.pull_request.draft != true"
-        " && needs.changes.outputs.shards != '[]'"
-    )
+    # CIV-17: the only other term is an empty selection list.
+    assert cond == "!cancelled() && needs.changes.outputs.shards != '[]'"
 
 
 def test_the_changes_job_exports_the_selection_from_a_step_before_diff() -> None:
@@ -440,13 +435,13 @@ def test_an_empty_selection_skips_the_shards_and_only_that_reads_as_a_pass() -> 
     assert steps["Empty selection report"]["if"] == "needs.changes.outputs.shards == '[]'"
 
 
-def test_a_draft_runs_only_the_light_jobs() -> None:
+def test_a_draft_skips_only_jobs_that_no_branch_rule_requires() -> None:
+    """#1077. A skipped REQUIRED check on a draft's head SHA reads as passed
+    until the ready_for_review run posts its own. So only the two jobs that
+    branch protection does not require may skip on a draft."""
     jobs = _jobs()
-    heavy = ["test", "unit-tests", "backup-restore", "migrations", "frontend",
-             "frontend-operator", "e2e", "caddy"]  # fmt: skip
-    for name in heavy:
-        assert "github.event.pull_request.draft != true" in jobs[name]["if"], name
-    for name in ("changes", "lint", "secret-scan"):
-        assert "draft" not in str(jobs[name].get("if", "")), name
+    draft = "github.event.pull_request.draft != true"
+    for name, job in jobs.items():
+        assert (draft in str(job.get("if", ""))) == (name in ("e2e", "caddy")), name
     on = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))[True]
     assert "ready_for_review" in on["pull_request"]["types"]

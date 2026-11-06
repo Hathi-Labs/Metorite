@@ -7,8 +7,10 @@ name: pr-check
 
 on:
   pull_request:
-    # CIV-17: `ready_for_review` starts the full set when a draft is marked ready.
-    # The draft run skips the heavy jobs (see `draft` below).
+    # CIV-17: `ready_for_review` starts a new run when a draft is marked ready.
+    # A draft run skips ONLY the two jobs that no branch rule requires: the
+    # browser suite (3 runners) and the Caddy check. A skipped REQUIRED job
+    # would leave a passing twin on the head SHA (#1077).
     types: [opened, synchronize, reopened, ready_for_review]
     # Deliberately NOT restricted to `branches: [main]`. With that filter a
     # stacked PR (one targeting another feature branch) ran no checks at all,
@@ -292,10 +294,10 @@ jobs:
     runs-on: ubuntu-24.04
     needs: changes
     # CIV-17. No shard job starts for an empty selection (`shards` is `[]`), and
-    # none on a draft PR. GitHub fails a matrix with no values, so the `if:`
+    # GitHub fails a matrix with no values, so the `if:`
     # skips the job before the matrix is read. A failed `changes` job leaves
     # `shards` empty text, and the matrix then falls back to all six shards.
-    if: ${{ !cancelled() && github.event.pull_request.draft != true && needs.changes.outputs.shards != '[]' }}
+    if: ${{ !cancelled() && needs.changes.outputs.shards != '[]' }}
     # `fail-fast: false`: one run reports the failures of EVERY shard.
     # Fail-fast cancelled the other five and hid their failures until the
     # next round.
@@ -506,10 +508,10 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [test, changes]
     # `always()`, so a failed shard turns THIS check red instead of skipping
-    # it. A skipped required check counts as satisfied. The one exception is a
-    # draft PR (CIV-17): a draft cannot merge, and `ready_for_review` starts a
-    # new run with the full set.
-    if: always() && github.event.pull_request.draft != true
+    # it. A skipped required check counts as satisfied (#1077). So no draft
+    # rule skips this job, or any other required check: a skipped twin on the
+    # head SHA would read as passed until the `ready_for_review` run caught up.
+    if: always()
     steps:
       # CIV-17. `test` is `skipped` ONLY for an empty selection: `changes`
       # succeeded and said `shards` is `[]`. Any other skip (a cancelled run, a
@@ -679,7 +681,7 @@ jobs:
     # Its scripts live under scripts/, and the schema under infra/. A PR
     # that touches neither cannot change the result (2026-10-19).
     needs: changes
-    if: "!cancelled() && github.event.pull_request.draft != true && (needs.changes.result != 'success' || needs.changes.outputs.database == 'true')"
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.database == 'true')"
     services:
       postgres:
         image: postgres:16
@@ -745,7 +747,7 @@ jobs:
     # The ladder is infra/, and its appliers are under scripts/. The R1
     # number guard runs in the shards and in push-check on every PR anyway.
     needs: changes
-    if: "!cancelled() && github.event.pull_request.draft != true && (needs.changes.result != 'success' || needs.changes.outputs.database == 'true')"
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.database == 'true')"
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -842,8 +844,6 @@ jobs:
   frontend:
     name: "Frontend (typecheck + unit tests)"
     runs-on: ubuntu-24.04
-    # CIV-17: a draft PR waits. `ready_for_review` starts the full set.
-    if: github.event.pull_request.draft != true
     # ⚠️ NOT filtered by path. Its unit tests read files across the whole
     # repo (apps/, tests/fixtures/, project-docs/), so no path is safe to skip.
     # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
@@ -932,7 +932,7 @@ jobs:
     name: "Operator console (typecheck + unit tests)"
     runs-on: ubuntu-24.04
     needs: changes
-    if: "!cancelled() && github.event.pull_request.draft != true && (needs.changes.result != 'success' || needs.changes.outputs.operator == 'true')"
+    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.operator == 'true')"
     permissions:
       contents: read
       pull-requests: read
