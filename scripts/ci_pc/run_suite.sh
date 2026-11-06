@@ -132,9 +132,14 @@ pg "ci-ladder-$TAG" pgvector/pgvector:pg16 5432 postgres ladder postgres || exit
 pg "ci-backup-$TAG" postgres:16 5432 postgres rehearsal postgres || exit 1
 
 # ── Jobs ──────────────────────────────────────────────────────────────────
+# The local CI tests the whole commit. So it gives pr-check's `changes` job
+# (CIV-3) a FULL result: every shard runs tests/unit, and the guard checks
+# every --must-run file. Fence: tests/unit/test_ci_pc.py.
+FULL_RUN=(--ctx needs.changes.result=success --ctx needs.changes.outputs.full=true --ctx needs.changes.outputs.files=
+          --ctx steps.pick.outputs.mode=full --ctx steps.pick.outputs.paths=)
 rm -rf junit
 for i in $(seq 1 "$SHARDS"); do
-  job "shard-$i" "ci-cc-$i-$TAG" test --ctx matrix.shard=$i "--replace=--splits 6=>--splits $SHARDS"
+  job "shard-$i" "ci-cc-$i-$TAG" test --ctx matrix.shard=$i "${FULL_RUN[@]}" "--replace=--splits 6=>--splits $SHARDS"
 done
 job lint "" lint
 job migrations "ci-ladder-$TAG" migrations
@@ -151,7 +156,7 @@ wait
 # The guard reads every shard's junit, so it runs after them.
 shards_ok=success
 for i in $(seq 1 "$SHARDS"); do [ "$(cut -d' ' -f1 "$RUN/shard-$i.rc")" = 0 ] || shards_ok=failure; done
-job unit-tests "" unit-tests --ctx "needs.test.result=$shards_ok"
+job unit-tests "" unit-tests --ctx "needs.test.result=$shards_ok" "${FULL_RUN[@]}"
 wait
 
 # ── The browser suite: opt-in, AFTER the unit phase, in three parts ────────

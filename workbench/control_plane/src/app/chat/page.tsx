@@ -625,8 +625,9 @@ function ChatPageInner() {
   //
   // ⚠️ Its own state, never `recoveredInput`. The session effect below clears
   // `recoveredInput` on mount, in the same flush, and the question vanished
-  // (review, 2026-10-08). Gated on the flag, so a flag-off build reads no `q`.
-  const askParam = shellBarOn() ? searchParams?.get("q") ?? null : null;
+  // (review, 2026-10-08). It reads `q` with the bar off too (BETA-1): the Studio
+  // fallback link `/chat?q=` is the only way in when the shell chat is off.
+  const askParam = searchParams?.get("q") ?? null;
   const [askInput, setAskInput] = useState<string | undefined>();
   useEffect(() => {
     if (!askParam?.trim()) return;
