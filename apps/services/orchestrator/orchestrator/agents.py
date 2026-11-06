@@ -674,10 +674,19 @@ async def show_in_app(path: str, why: str) -> dict:
     queue = resolve_run_queue()
     if queue is None:
         return {"error": "no page to open from here"}
-    if getattr(queue, "_show_in_app_done", False):
+    mark = getattr(queue, "_show_in_app_done", False)
+    if mark == _iap.MOVE_PENDING:
+        return {"error": _iap.MOVE_PENDING_ERROR}
+    if mark:
         return {"error": "already opened a page this turn"}
+    # WS-OB GD-7 review: take the mark before the first await. MAF can run two
+    # tool calls at once (asyncio.gather), so show_guide or a second
+    # show_in_app must see it. It is pending until the check ends. A refusal
+    # gives it back.
+    queue._show_in_app_done = _iap.MOVE_PENDING  # type: ignore[attr-defined]
     reason = _iap.refusal(path, await _iap.member_features())
     if reason is not None:
+        queue._show_in_app_done = False  # type: ignore[attr-defined]
         return {"error": reason}
     queue._show_in_app_done = True  # type: ignore[attr-defined]
     # The same channel artifact_created uses. The client's live loop acts on
@@ -690,6 +699,51 @@ async def show_in_app(path: str, why: str) -> dict:
     # The note makes the model hedge: a closed assistant, or another chat
     # in front, moves nothing on the client.
     return {"opened": path, "note": "the page opens only while the member watches this chat"}
+
+
+# WS-OB GD-7 (assistant_guide.md §5.4). The two guide tools. Only the
+# orchestrator holds them, and only when GUIDE_ORGS opens the org. The logic is
+# in ``orchestrator/guide_tools.py``. Fence: tests/unit/test_guide_tools.py.
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def find_guide(question: str) -> dict:
+    """Find the guides that teach the member how to do something in Metorite.
+
+    Use it when the member asks how to do something. It returns up to three
+    guides that this member may run, each with its steps as numbered text.
+    Answer in at most three short steps from the best one. Where the chat can
+    show a page, offer Show me (show_guide) or Open. A chat with no page, such
+    as WhatsApp, gives the steps in words only. Never invent a button.
+
+    Args:
+        question: The member's words, such as "how do I add a deal".
+
+    Returns:
+        ``{"guides": [{"id", "title", "app", "steps"}]}``. With no match,
+        ``{"guides": [], "hint": ...}``: then offer to open the app.
+    """
+    from orchestrator import guide_tools
+
+    return await guide_tools.find(question)
+
+
+@_annotate_risk(read_only=True, idempotent=True, open_world=False)
+async def show_guide(guide_id: str) -> dict:
+    """Start a guide on the member's screen, after the member asks to be shown.
+
+    The guide walks the member through the steps on the real page. It moves the
+    page, so it counts as the one page move of the reply. Call it at most once
+    per reply, and never together with show_in_app.
+
+    Args:
+        guide_id: The ``id`` that find_guide returned, such as "crm.add-deal".
+
+    Returns:
+        ``{"started": id}`` when the guide starts. ``{"error": reason}`` when it
+        does not: say so in words and move on.
+    """
+    from orchestrator import guide_tools
+
+    return await guide_tools.show(guide_id)
 
 
 # H-236: open_world, because the container it starts has a network and a
@@ -1165,6 +1219,9 @@ def build_orchestrator_agent(
     # tests/unit/test_show_in_app.py, test_company_search_tool.py.
     from orchestrator.in_app_path import chat_first_tools_enabled
     page_tools: list[Any] = [show_in_app] if chat_first_tools_enabled() else []
+    # WS-OB GD-7: the guide tools, only when GUIDE_ORGS opens this org. Fails closed.
+    from orchestrator.guide_tools import guide_enabled
+    guide_tool_list: list[Any] = [find_guide, show_guide] if guide_enabled(organization_id) else []
     # WS-67 OA-9b (one_assistant_context.md §4.5, OA-9b narrowing 4): the
     # orchestrator's own, on this one path. It is in no injected set and in no
     # agent's tool_scope, so only the main assistant holds it. Dark until
@@ -1181,6 +1238,7 @@ def build_orchestrator_agent(
         *spill_tools,
         search_timeline,
         *page_tools,
+        *guide_tool_list,
         *spawn_tools,
         spawn_copilot_agent,
         delegate_to_agent,
@@ -1293,6 +1351,8 @@ __all__ = [
     "retrieve_sales_context",
     "search_timeline",
     "show_in_app",
+    "find_guide",
+    "show_guide",
     "spawn_copilot_agent",
     "delegate_to_agent",
 ]

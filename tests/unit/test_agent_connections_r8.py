@@ -113,6 +113,10 @@ def _drop_database(admin_url, name: str) -> None:
     maint.dispose()
 
 
+#: A project id on the left-out list of one seeded connection (EA-17b).
+LEFT_OUT_ID = "00000000-0000-4000-8000-0000000000a1"
+
+
 class _Seeder:
     """Admin writes with the tenant GUC set, as in test_mcp_edge_protocol.py."""
 
@@ -155,18 +159,21 @@ class _Seeder:
             " CAST(:r AS uuid)) RETURNING user_id", u=str(app_user), r=str(role))
 
     def connection(self, member: str, *, revoked: bool = False,
-                   expired: bool = False) -> tuple[str, str]:
+                   expired: bool = False,
+                   left_out: tuple[str, ...] = ()) -> tuple[str, str]:
         """A connection and one access token for it: ``(id, raw token)``."""
         cid = str(self.one(
             "INSERT INTO agent_connection (organization_id, member_email,"
             " client_id, client_name, client_origin, scopes, pinned_projects,"
-            " include_personal, expires_at, revoked_at) VALUES"
+            " include_personal, expires_at, revoked_at, left_out_projects) VALUES"
             " (CAST(:o AS uuid), :m, :client, 'Client', :origin,"
             " ARRAY['projects:read'], CAST('{}' AS uuid[]), false,"
             " now() + CAST(:life AS interval),"
-            " CASE WHEN :revoked THEN now() ELSE NULL END) RETURNING id",
+            " CASE WHEN :revoked THEN now() ELSE NULL END,"
+            " CAST(:left_out AS uuid[])) RETURNING id",
             o=self.org, m=member, client=CLIENT, origin=ORIGIN,
-            life="-1 hour" if expired else "1 day", revoked=revoked))
+            life="-1 hour" if expired else "1 day", revoked=revoked,
+            left_out="{" + ",".join(left_out) + "}"))
         raw = agent_tokens.new_token()
         self.one(
             "INSERT INTO agent_token (organization_id, connection_id, kind,"
@@ -264,7 +271,7 @@ def world():
     w = SimpleNamespace(admin=eng, a=a, b=b, org_a=org_a, org_b=org_b, c={}, tok={})
     for name, seeder, member, kw in (
         ("mine", a, MEMBER, {}),
-        ("mine2", a, MEMBER, {}),
+        ("mine2", a, MEMBER, {"left_out": (LEFT_OUT_ID,)}),
         ("mine_revoked", a, MEMBER, {"revoked": True}),
         ("mine_expired", a, MEMBER, {"expired": True}),
         ("other", a, OTHER, {}),
@@ -404,11 +411,18 @@ class TestTheMembersList:
         row = next(r for r in rows if r["id"] == live.c["mine"])
         assert set(row) == {
             "id", "member_email", "client_name", "client_origin", "scopes",
-            "pinned_projects", "include_personal", "created_at", "last_used_at",
-            "expires_at"}
+            "pinned_projects", "left_out_projects", "include_personal",
+            "created_at", "last_used_at", "expires_at"}
+        assert row["left_out_projects"] == []
         assert row["client_origin"] == ORIGIN
         assert row["scopes"] == ["projects:read"]
         assert row["include_personal"] is False
+
+    async def test_a_row_carries_its_left_out_list(self, live):
+        # EA-17b: a screen must not claim more reach than the agent has.
+        rows = (await _as(live, MEMBER, "GET", MEMBER_LIST)).json()["connections"]
+        row = next(r for r in rows if r["id"] == live.c["mine2"])
+        assert row["left_out_projects"] == [LEFT_OUT_ID]
 
     async def test_the_suite_runs_as_a_role_that_cannot_bypass_rls(self, live):
         engine = create_engine(make_url(live.app_dsn), future=True)

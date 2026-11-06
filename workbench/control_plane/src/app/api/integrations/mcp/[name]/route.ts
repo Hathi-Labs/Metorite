@@ -1,6 +1,7 @@
 /**
  * DELETE /api/integrations/mcp/[name]
- * PATCH  /api/integrations/mcp/[name]   the "always confirm" switch (H-300)
+ * PATCH  /api/integrations/mcp/[name]   the two switches of an MCP server:
+ *        "always confirm" (H-300) and the read-only key (MCP-C2)
  *
  * Proxies to the FastAPI gateway. The gateway checks `integrations:manage`
  * and takes the organization from the session, never from the body.
@@ -12,6 +13,25 @@ import { GATEWAY_URL, gatewayHeaders, requireIdentity, gatewayFetch } from "@/li
 
 export const dynamic = "force-dynamic";
 
+/** The keys that the PATCH passes on. Nothing else in the body reaches the row. */
+const SWITCH_KEYS = ["always_confirm", "read_only_key"] as const;
+
+/**
+ * The switches of the body, or the words of a 422. Either key or both. A key
+ * that is not a JSON boolean is 422, and so is a body with neither key.
+ */
+function switchesOf(raw: unknown): Record<string, boolean> | string {
+  const body = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const out: Record<string, boolean> = {};
+  for (const key of SWITCH_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(body, key)) continue;
+    const value = body[key];
+    if (typeof value !== "boolean") return `${key} must be true or false.`;
+    out[key] = value;
+  }
+  return Object.keys(out).length ? out : "Send always_confirm, read_only_key, or both.";
+}
+
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ name: string }> },
@@ -21,9 +41,9 @@ export async function PATCH(
   const { name } = await params;
   const bad = refuseBadSegment(name);
   if (bad) return bad;
-  const body = (await req.json().catch(() => ({}))) as { always_confirm?: unknown };
-  if (typeof body.always_confirm !== "boolean") {
-    return NextResponse.json({ detail: "always_confirm must be true or false." }, { status: 422 });
+  const switches = switchesOf(await req.json().catch(() => null));
+  if (typeof switches === "string") {
+    return NextResponse.json({ detail: switches }, { status: 422 });
   }
   try {
     const res = await gatewayFetch(
@@ -31,8 +51,8 @@ export async function PATCH(
       {
         method: "PATCH",
         headers: await gatewayHeaders({ "Content-Type": "application/json" }),
-        // Only the flag goes on, so nothing else in the body reaches the row.
-        body: JSON.stringify({ always_confirm: body.always_confirm }),
+        // Only the keys that the body named go on.
+        body: JSON.stringify(switches),
         signal: AbortSignal.timeout(10_000),
       },
     );

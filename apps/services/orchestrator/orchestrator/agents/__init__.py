@@ -22,6 +22,9 @@ enrich_instructions_with_memory = _mod.enrich_instructions_with_memory
 search_timeline = _mod.search_timeline
 # WS-62 CF-3: the orchestrator's page tool (tests/unit/test_show_in_app.py).
 show_in_app = _mod.show_in_app
+# WS-OB GD-7: the guide tools (tests/unit/test_guide_tools.py).
+find_guide = _mod.find_guide
+show_guide = _mod.show_guide
 # WS-67 OA-7c: the persona text of each pack owner's delegation, so that a
 # pack swaps the exact text out (``acb_skills.tool_packs.persona_for``).
 PACK_DELEGATION_BULLETS = _mod.PACK_DELEGATION_BULLETS
@@ -36,9 +39,11 @@ __all__ = [
     "build_orchestrator_agent",
     "delegate_to_agent",
     "enrich_instructions_with_memory",
+    "find_guide",
     "retrieve_entity_context",
     "retrieve_sales_context",
     "search_timeline",
+    "show_guide",
     "show_in_app",
     "spawn_copilot_agent",
 ]

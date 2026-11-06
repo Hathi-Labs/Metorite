@@ -410,3 +410,163 @@ async def post_brief(
         raise HTTPException(status_code=503, detail="The brief could not be posted. Try again.")
     await _mark(email, BRIEF_STAMP_KEY, day.isoformat())
     return {"posted": True, "message_id": message_id, "preview": lead}
+
+
+# ── BUD-1: the hello (D177, `onboarding.md` §13) ─────────────────────────────
+
+#: The row id of the hello. The stamp is the dedupe, not this id: each tab
+#: mints its own session, so a fixed id would not stop a second tab.
+HELLO_MESSAGE_ID = "buddy-hello"
+#: The template the hello draws its chips with (``genUITemplates.tsx``).
+HELLO_TEMPLATE = "buddyHello"
+#: The chat's name. The hello is the first thing a new member sees there.
+HELLO_TITLE = "Welcome"
+#: The words of the hello: ONE constant, with the member's first name as
+#: ``{name}``. It names no model and no inner service.
+HELLO_COPY = (
+    "Hi {name}, welcome to Metorite. It can look like a lot at first, and "
+    "that's okay. You don't have to learn it all today. I'm here whenever "
+    "you need me. Ask me anything, and I'll show you where it is."
+)
+#: The chips, as ids the client maps to an action (``buddyHello`` in
+#: ``genUITemplates.tsx``). The ids are the contract with the client.
+HELLO_CHIPS: tuple[dict[str, str], ...] = (
+    {"id": "tour", "label": "Show me around"},
+    {"id": "ask", "label": "What can you do here?"},
+    {"id": "look", "label": "I'll look around"},
+)
+_NAME_SQL = (
+    "SELECT NULLIF(btrim(display_name), '') FROM app_user "
+    "WHERE organization_id = CAST(:org AS uuid) AND lower(email) = lower(:m) "
+    "LIMIT 1"
+)
+
+
+def hello_text(display_name: str | None) -> str:
+    """The hello for a member: the first word of the display name, or
+    "there". Pure, so a unit test holds it."""
+    from gateway.reach.plan import first_name
+
+    # One first-name rule for the product. An empty email gives "there".
+    return HELLO_COPY.format(name=first_name(display_name, ""))
+
+
+def hello_event() -> dict[str, Any]:
+    """The custom event of the hello row. A cutoff of 0 draws the text first
+    and the chips under it (``reminder_event`` is the model)."""
+    return {
+        "name": "generative_ui",
+        "value": {
+            "type": "template",
+            "props": {"name": HELLO_TEMPLATE, "data": {"chips": list(HELLO_CHIPS)}},
+        },
+        "segmentCutoff": 0,
+    }
+
+
+def _display_name(org: str, email: str) -> str | None:
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    with tenant_session(org) as s:
+        row = s.execute(text(_NAME_SQL), {"org": org, "m": email}).first()
+    return None if row is None or row[0] is None else str(row[0])
+
+
+def _set_title(org: str, session_id: str, title: str) -> None:
+    from acb_graph import tenant_session
+    from sqlalchemy import text
+
+    with tenant_session(org) as s:
+        s.execute(
+            text("UPDATE chat_session SET title = :t WHERE id = :id"),
+            {"t": title, "id": session_id},
+        )
+
+
+async def _claim_hello(email: str) -> bool:
+    """Claim ``buddy_hello_at`` first-write-wins, in ONE statement
+    (``stamp-first``). True when this call's time is the stored one. The
+    loser sees the winner's time and posts nothing."""
+    from gateway.routes.admin import me
+
+    stamp = me._server_stamp()
+    async with me._tenant_session() as db:
+        stored = await me._write_shell(db, email, {"buddy_hello_at": stamp}, "stamp-first")
+    return me.stored_shell(stored).get("buddy_hello_at") == stamp
+
+
+async def _release_hello(email: str) -> None:
+    """Give the claim back when the post failed, so the next visit tries
+    again. Best effort: a failure here only loses the hello."""
+    from gateway.routes.admin import me
+
+    try:
+        async with me._tenant_session() as db:
+            await me._write_shell(db, email, {"buddy_hello_at": None}, "stamp")
+    except Exception as exc:
+        _log.warning("chat_brief.hello_release_failed", error=str(exc)[:160])
+
+
+@router.post(
+    "/sessions/{session_id}/buddy-hello",
+    summary="Post the first-visit hello as the first assistant turn (BUD-1)",
+)
+async def post_buddy_hello(
+    session_id: str,
+    response: Response,
+    user: UserContext = Depends(get_current_user),
+) -> Any:
+    """200 with the row's id and text, 204 for no row (the stamp is taken, or
+    the room is shared), 404 while ``GUIDE_ORGS`` is off or for a session the
+    member cannot reach. The tenant and the member come from the session."""
+    from acb_common.guide_flags import guide_allowed
+
+    org = str(getattr(user, "organization_id", None) or "")
+    email = (user.email or "").strip()
+    if not org or not email or not guide_allowed(org):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    room = await asyncio.to_thread(
+        resolve_room_access, session_id, email, organization_id=org,
+    )
+    if not room.can_read:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if not room.can_send:
+        raise HTTPException(status_code=room.refusal_status, detail=room.denied("say hello"))
+    if room.is_shared:
+        return _nothing(response)
+
+    # The stamp first, atomically: the loser gets 204 and no row.
+    try:
+        won = await _claim_hello(email)
+    except Exception as exc:
+        _log.warning("chat_brief.hello_claim_failed", error=str(exc)[:160])
+        raise HTTPException(status_code=503, detail="The hello could not be posted. Try again.") from exc
+    if not won:
+        return _nothing(response)
+
+    name = await asyncio.to_thread(_display_name, org, email)
+    lead = hello_text(name)
+    agent = (room.agent_name or "").strip() or DEFAULT_AGENT
+    posted = False
+    try:
+        posted = await asyncio.to_thread(
+            _post_row, session_id, HELLO_MESSAGE_ID, member=email, agent_name=agent,
+            organization_id=org, lead=lead, event=hello_event(),
+            now_ms=int(_now().timestamp() * 1000),
+        )
+    except Exception as exc:
+        _log.warning("chat_brief.hello_post_failed", error=str(exc)[:160])
+    if not posted:
+        await _release_hello(email)
+        raise HTTPException(status_code=503, detail="The hello could not be posted. Try again.")
+    # The row exists, so the stamp stays whatever the title does: a missing
+    # title is cheap, a second hello is not. A crash between the claim and the
+    # post leaves a stamp with no row, and that stays accepted: a lost hello
+    # is cheaper than a double one.
+    try:
+        await asyncio.to_thread(_set_title, org, session_id, HELLO_TITLE)
+    except Exception as exc:
+        _log.warning("chat_brief.hello_title_failed", error=str(exc)[:160])
+    return {"posted": True, "message_id": HELLO_MESSAGE_ID, "preview": lead, "title": HELLO_TITLE}
