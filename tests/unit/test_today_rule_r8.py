@@ -36,6 +36,13 @@ each was restored. ``R`` is ``routes/projects/today_rule.py`` and ``M`` is
   ``test_with_the_flag_off_the_chip_keeps_the_old_rule``.
 * T9. ``R`` ``due_arm_sql``: ``mine_clause`` with no arm (all three).
   ``test_the_due_arm_reuses_the_assigned_arm_of_mine``.
+
+Fix round 1 (the review of 2026-11-07), each run on a committed tree:
+
+* T10. ``R`` ``today_answer``: no ``attach_list_shape`` (the old read).
+  ``test_the_chip_lists_each_task_that_it_counts``.
+* T11. ``R`` ``focus_count_sql``: no ``live_where`` (the old count of every
+  mark). ``test_a_row_carries_the_task_its_block_and_why``.
 """
 
 from __future__ import annotations
@@ -264,14 +271,15 @@ class TestTheTodayPredicateOnARealDatabase:
             else:
                 assert h.instant(row["block"]["start"]) == h.instant(start)
                 assert h.instant(row["block"]["end"]) == h.instant(case["mine"]["scheduled_end"])
-        # The count of the cap: each mark of today, open or closed, and no One
-        # Thing (none is set). A case in the trash and a closed case count.
-        marks = h.rows(
-            w.p, "SELECT count(*) AS n FROM pm_task_personal f JOIN pm_tasks t ON t.id = f.task_id"
-            " WHERE f.member_email = :m AND f.focus_on = :d AND t.organization_id = CAST(:o AS uuid)",
-            m=MEMBER, d=TODAY, o=w.p.org_a)[0].n
-        assert answer["focus_count"] == marks
-        assert marks >= sum(c["mine"]["focus_on"] == FIXTURE["today"] for c in FIXTURE["cases"])
+        # The count of the cap reads the filter of the set (fix round 1, item
+        # 3): each mark of today on an open task that I can see, and no One
+        # Thing (none is set). A mark in the trash or on a closed task frees
+        # its place, so the count is the rows of the set that hold a mark.
+        marked = [r for r in answer["rows"] if "focus" in r["why"]]
+        assert answer["focus_count"] == len(marked)
+        closed = [c for c in FIXTURE["cases"]
+                  if c["mine"]["focus_on"] == FIXTURE["today"] and not c["why"]]
+        assert closed, "the fixture holds a mark that frees its place"
 
     async def test_the_tray_is_the_set_minus_the_blocks_of_today(self, w):
         async with h.session(w.p) as call:
@@ -330,18 +338,24 @@ class TestTheTodayPredicateOnARealDatabase:
 
     async def test_organization_b_never_shows_in_a(self, w):
         """Org B holds a task assigned to the address of A's member, with a
-        mark, a block and a day state of that address. A's member reads none
-        of it, and B's member reads none of A."""
+        mark, a block and a day state of that address that names B's task as
+        the One Thing. A's member reads none of it, and B's member reads none
+        of A."""
         p = w.p
         proj_b = h.project(p, p.org_b, B_MEMBER, grants=(B_MEMBER,))
         tid_b = h.task(p, p.org_b, proj_b, by=B_MEMBER, assignee=MEMBER, due_at=AT)
         h.overlay(p, p.org_b, tid_b, MEMBER, focus_on=TODAY, scheduled_start=AT,
                   scheduled_end=AT + timedelta(hours=1))
+        h.one_thing(p, p.org_b, MEMBER, TODAY, tid_b)
+        assert h.rows(p, "SELECT 1 FROM calendar_day_state WHERE user_id = :u"
+                      " AND organization_id = CAST(:o AS uuid)", u=MEMBER, o=p.org_b)
         own_b = h.task(p, p.org_b, proj_b, by=B_MEMBER, assignee=B_MEMBER, due_at=AT)
         async with h.session(p) as call:
-            a_rows = h.rows_by_task(await _today(call, w.member))
+            a_answer = await _today(call, w.member)
             b_rows = h.rows_by_task(await _today(call, w.b_member))
+        a_rows = h.rows_by_task(a_answer)
         assert tid_b not in a_rows and own_b not in a_rows
+        assert not any("one_thing" in r["why"] for r in a_answer["rows"])
         assert set(b_rows) == {own_b}, "B reads only its own task"
         assert not set(w.cases) & set(b_rows)
 
@@ -365,6 +379,52 @@ class TestTheTodayPredicateOnARealDatabase:
         assert by_id[blocked]["why"] == ["scheduled"]
         assert by_id[chosen]["why"] == ["one_thing"]
         assert theirs["focus_count"] == 2, "the mark plus the One Thing with no mark"
+
+    async def test_the_chip_lists_each_task_that_it_counts(self, w, monkeypatch):
+        """Fix round 1, item 1. My mark, my block and my One Thing on tasks of
+        another member are part of my day. The mine list does not hold them,
+        so the Today read gives each one in the shape of a row of the list.
+        The chip lists the list rows that the ids name plus the rows of the
+        read that the list lacks (``myTasks.ts`` ``chipRowsWithSet``), and the
+        count equals those rows."""
+        p = w.p
+        who = "cc2-chip@today.test"
+        h.member(p, p.org_a, who)
+        h.settings(p, p.org_a, who, zone="UTC")
+        proj = h.project(p, p.org_a, OWNER, grants=(who, OTHER))
+        now = datetime.now(UTC)
+        today = now.date()
+        noon = datetime.combine(today, datetime.min.time(), tzinfo=UTC) + timedelta(hours=12)
+        mine_due = h.task(p, p.org_a, proj, by=OWNER, assignee=who, due_at=now - timedelta(days=1))
+        marked = h.task(p, p.org_a, proj, by=OWNER, assignee=OTHER)
+        blocked = h.task(p, p.org_a, proj, by=OWNER, assignee=OTHER)
+        chosen = h.task(p, p.org_a, proj, by=OWNER, assignee=OTHER)
+        h.overlay(p, p.org_a, marked, who, focus_on=today)
+        h.overlay(p, p.org_a, blocked, who, scheduled_start=noon,
+                  scheduled_end=noon + timedelta(hours=1))
+        h.one_thing(p, p.org_a, who, today, chosen)
+        user = h.person(who, p.org_a)
+        monkeypatch.setattr(get_settings(), "today_rule_orgs", p.org_a)
+        monkeypatch.setattr(today_rule, "clock", lambda: datetime.now(UTC))
+        async with h.session(p) as call:
+            summary = (await call(user, "GET", "/projects/my/summary")).json()
+            listed = (await call(
+                user, "GET", "/projects/tasks?scope=mine&with_overlay=1&limit=200")).json()["rows"]
+            answer = await _today(call, user)
+        ids = set(summary["today_ids"])
+        assert ids == {mine_due, marked, blocked, chosen}
+        list_ids = {str(r["id"]) for r in listed}
+        assert {marked, blocked, chosen}.isdisjoint(list_ids), "the mine list lacks them"
+        set_rows = {str(r["task"]["id"]): r["task"] for r in answer["rows"]}
+        # The chip: the list rows that the ids name, then the rows of the read.
+        chip = [i for i in list_ids if i in ids] + [i for i in set_rows if i not in list_ids]
+        assert sorted(chip) == sorted(ids)
+        assert summary["by_disposition"]["today"] == len(chip) == answer["total"]
+        # Each added row has every key of a row of the list, so the chip draws it.
+        keys = set(listed[0])
+        for tid in (marked, blocked, chosen):
+            assert keys <= set(set_rows[tid]), sorted(keys - set(set_rows[tid]))
+        assert set_rows[marked]["is_mine"] is False and set_rows[marked]["assignees"]
 
     async def test_with_the_flag_off_the_chip_keeps_the_old_rule(self, w):
         """``by_disposition.today`` is the count of ``in_today``, and the answer

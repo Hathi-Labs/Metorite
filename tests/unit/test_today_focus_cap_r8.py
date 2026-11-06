@@ -28,6 +28,12 @@ each was restored. ``R`` is ``routes/projects/today_rule.py``, ``P`` is
   ``test_the_one_thing_counts_and_never_refuses``.
 * C4. ``R`` ``focus_count_sql``: no ``NOT EXISTS`` of a marked One Thing.
   ``test_a_marked_one_thing_counts_once``.
+* C10 (fix round 1, item 2). ``R`` ``focus_count_sql``: the One Thing term
+  outside ``live_where``. ``test_a_one_thing_on_an_unseen_task_counts_as_a_random_id``.
+* C11 (item 3). ``R`` ``focus_count_sql``: ``OPEN_SQL`` dropped.
+  ``test_a_closed_mark_frees_its_place``.
+* C12 (item 4). ``P`` ``check_focus_on``: no flag check.
+  ``test_with_the_flag_off_a_mark_and_a_clear_are_refused``.
 * C5. ``P`` ``mark_focus``: no ``FOCUS_LOCK_SQL``.
   ``test_a_second_mark_waits_for_the_first_to_commit``. The in-process client
   of ``test_marks_at_once_take_the_last_place_once`` did not race under this
@@ -44,7 +50,6 @@ each was restored. ``R`` is ``routes/projects/today_rule.py``, ``P`` is
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 from datetime import date
 from typing import Any
@@ -110,11 +115,15 @@ async def test_the_bulk_tool_refuses_focus_before_the_card() -> None:
     assert "one task at a time" in out
 
 
-def test_the_lock_comes_before_the_one_statement() -> None:
-    source = inspect.getsource(personal.mark_focus)
-    assert source.index("FOCUS_LOCK_SQL") < source.index("_upsert_personal")
-    room = today_rule.focus_room_sql()
-    assert today_rule.focus_count_sql() in room and "< :focus_cap" in room
+def test_the_count_reads_the_filter_of_the_set() -> None:
+    """Items 2 and 3 of fix round 1, the text half: the count of the cap and
+    the set read ONE filter, so a closed or an unseen task never counts."""
+    from gateway.routes.projects.core import Visibility
+
+    vis = Visibility(unrestricted=False, email="m@x.test", groups=(), organization_id="o")
+    assert today_rule.live_where(vis) in today_rule.focus_count_sql(vis)
+    assert today_rule.live_where(vis) in today_rule.today_where(vis)
+    assert today_rule.focus_count_sql(vis) in today_rule.focus_room_sql(vis)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -143,9 +152,10 @@ def world(promoted):  # noqa: F811 — a fixture
 @pytest.fixture
 def w(world, monkeypatch):
     """Each test starts at the fixture's instant with no mark, no One Thing,
-    the default cap and the flag off."""
+    the default cap and the flag ON for org A (fix round 1, item 4: a mark
+    needs the flag)."""
     monkeypatch.setattr(today_rule, "clock", lambda: AT)
-    monkeypatch.setattr(get_settings(), "today_rule_orgs", "")
+    monkeypatch.setattr(get_settings(), "today_rule_orgs", world.p.org_a)
     p = world.p
     with p.admin_engine.begin() as c:
         c.execute(text("DELETE FROM pm_task_personal"))
@@ -364,8 +374,63 @@ class TestTheMarkOnARealDatabase:
             got = await call(w.member, "GET", "/tasks/settings")
             assert got.json()["today_focus_cap"] == 10, "a read clamps again"
 
-    async def test_with_the_flag_off_the_mark_and_the_read_answer(self, w):
-        assert get_settings().today_rule_orgs == ""
+    async def test_with_the_flag_off_a_mark_and_a_clear_are_refused(self, w, monkeypatch):
+        """Fix round 1, item 4: ship dark. With the org off the list, the one
+        write seam refuses a mark and a clear, says why and what to do, and
+        writes nothing. The read still answers."""
+        tid = w.tasks[0]
+        h.overlay(w.p, w.p.org_a, tid, MEMBER, focus_on=TODAY)
+        monkeypatch.setattr(get_settings(), "today_rule_orgs", "")
         async with h.session(w.p) as call:
-            assert (await _mark(call, w.member, w.tasks[0])).status_code == 200
+            for value in (FIXTURE["today"], None):
+                got = await _mark(call, w.member, tid, value, context="@desk")
+                assert got.status_code == 403, got.text
+                detail = got.json()["detail"]
+                assert detail["error"] == today_rule.FOCUS_OFF
+                assert detail["message"].startswith(
+                    "Today's focus is not on for your organization yet.")
+            # A PATCH with no focus_on still works with the flag off.
+            assert (await call(w.member, "PATCH", f"/projects/tasks/{tid}/personal",
+                               {"context": "@desk"})).status_code == 200
             assert (await _state(call, w.member))["focus_count"] == 1
+        assert _marks(w) == {tid}, "the refused clear kept the mark"
+
+    async def test_a_one_thing_on_an_unseen_task_counts_as_a_random_id(self, w):
+        """Fix round 1, item 2. ``put_day_state`` stores any id. A One Thing on
+        a task that I cannot see must count, and refuse, exactly as a random
+        id does, so the cap tells nothing of the unseen task."""
+        import uuid
+
+        p = w.p
+        hidden = h.project(p, p.org_a, OWNER)
+        unseen = h.task(p, p.org_a, hidden, by=OWNER)
+        outcomes = []
+        _cap(w, 2)
+        async with h.session(p) as call:
+            for one_thing in (str(uuid.uuid4()), unseen):
+                with w.p.admin_engine.begin() as c:
+                    c.execute(text("UPDATE pm_task_personal SET focus_on = NULL"))
+                put = await call(w.member, "PUT", "/tasks/calendar/day-state",
+                                 {"day": FIXTURE["today"], "one_thing_id": one_thing})
+                assert put.status_code == 200, put.text
+                first = (await _mark(call, w.member, w.tasks[0])).status_code
+                count = (await _state(call, w.member))["focus_count"]
+                second = (await _mark(call, w.member, w.tasks[1])).status_code
+                outcomes.append((first, count, second))
+        assert outcomes[0] == outcomes[1] == (200, 1, 200), outcomes
+
+    async def test_a_closed_mark_frees_its_place(self, w):
+        """Fix round 1, item 3. Cap 3, marks on A, B and C, all three
+        completed: a mark on D lands, because the count reads only open tasks."""
+        p = w.p
+        shared = h.project(p, p.org_a, OWNER, grants=(MEMBER,))
+        a, b, c, d = (h.task(p, p.org_a, shared, by=OWNER, assignee=MEMBER) for _ in range(4))
+        async with h.session(p) as call:
+            for tid in (a, b, c):
+                assert (await _mark(call, w.member, tid)).status_code == 200
+            assert (await _mark(call, w.member, d)).status_code == 409
+            for tid in (a, b, c):
+                done = await call(w.member, "POST", f"/projects/tasks/{tid}/complete", {})
+                assert done.status_code == 200, done.text
+            assert (await _state(call, w.member))["focus_count"] == 0
+            assert (await _mark(call, w.member, d)).status_code == 200

@@ -322,6 +322,24 @@ export interface NodeSummary {
   today_ids?: string[];
 }
 
+/** WS-MDC CC-2: one row of the Today set. `why` names the arms that hold. */
+export interface MyTodayRow {
+  task: TaskRow;
+  block: { start: string; end: string | null } | null;
+  why: Array<"one_thing" | "focus" | "scheduled" | "due">;
+}
+
+/** WS-MDC CC-2: `GET /projects/my/today?with_tasks=true`. */
+export interface MyTodaySet {
+  today: string;
+  timezone: string;
+  rows: MyTodayRow[];
+  total: number;
+  to_fit: string[];
+  focus_cap: number;
+  focus_count: number;
+}
+
 /**
  * WS-27bk §9.12.7 — the four analytics questions, as three endpoints.
  *
@@ -2324,6 +2342,13 @@ export const projectsApi = {
    * no parameter: the member is the session's.
    */
   mySummary: () => call<NodeSummary>("my/summary"),
+  /**
+   * WS-MDC CC-2: the Today set of the one predicate,
+   * `GET /projects/my/today?with_tasks=true`. Each task has the shape of a
+   * row of the mine list. With `TODAY_RULE_ORGS` on, the Today chip of My
+   * work reads it for each task of the set that the mine list does not hold.
+   */
+  myTodaySet: () => call<MyTodaySet>("my/today?with_tasks=true"),
   outlook: (nodeId?: string) =>
     call<OutlookReport>(`analytics/outlook${scopeQuery(nodeId)}`),
   /** WS-27bm S7a. The server's default horizon (14 days) unless one is named. */

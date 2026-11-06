@@ -487,8 +487,15 @@ async def my_summary(user: UserContext = Depends(get_current_user)) -> dict[str,
 
     WS-MDC CC-2: with ``TODAY_RULE_ORGS`` on for the session's org, the Today
     count is the set of the one predicate (``today_rule.today_ids``), and the
-    answer adds ``today_rule: true`` and ``today_ids``, so the chip lists the
-    set that it counts. With the flag off, the answer is as before.
+    answer adds ``today_rule: true`` and ``today_ids``. With the flag off, the
+    answer is as before.
+
+    ⚠️ The set is not a subset of mine. A mark, a block or the One Thing on a
+    visible task of another member is part of my day. So the chip lists the
+    rows of the mine list that the ids name, and adds each row of the set
+    that the list does not hold, from ``GET /projects/my/today?with_tasks=true``
+    (``myTasks.ts`` ``todayChipRows``). The count, the rows and the set are
+    one set.
     """
     from gateway.routes.projects.personal import local_date, stored_zone, zone_name
 
@@ -536,8 +543,10 @@ async def my_summary(user: UserContext = Depends(get_current_user)) -> dict[str,
         # reads Today in this zone too, so a chip and its count agree when the
         # browser sits in another zone (WS-64 OP-11 fix round, item 8).
         "time_zone": zone,
-        # WS-MDC CC-2: the ids of the set, so the chip lists what it counts.
-        # Absent with the flag off, so that answer does not change.
+        # WS-MDC CC-2: the ids of the set. The chip lists each of them, the
+        # rows of the mine list and the rows of the Today read that the list
+        # does not hold. Absent with the flag off, so that answer does not
+        # change.
         **({"today_rule": True, "today_ids": ids} if rule_on else {}),
     }
 

@@ -29,6 +29,7 @@ import {
   chipRows,
   doneThisWeek,
   droppedStage,
+  chipRowsWithSet,
   inChip,
   todayIdsOf,
   mineStatuses,
@@ -147,6 +148,42 @@ describe("each chip is the server's rule", () => {
     expect(chipRows(rows, "next", TODAY, "UTC").map((r) => r.id)).toEqual(
       RULES.filter(([, , chips]) => chips.includes("next")).map(([name]) => name),
     );
+  });
+
+  it("the Today chip lists each task that it counts, also a task of another member (CC-2 fix round 1)", () => {
+    // The shared fixture: my mark, my block and my One Thing on tasks of
+    // another member. The mine list does not hold them. The Today read does.
+    const fixture = JSON.parse(
+      fs.readFileSync(path.join(ROOT, "..", "..", "..", "..", "..", "tests", "fixtures", "today_rule_cases.json"), "utf8"),
+    ) as {
+      today: string;
+      cases: { name: string; task: { assignee: string | null; effective: string }; why: string[] }[];
+    };
+    const others = fixture.cases.filter((c) => c.task.assignee === "other" && c.why.length > 0);
+    const arms = new Set(others.flatMap((c) => c.why));
+    expect([...arms].sort()).toEqual(["focus", "one_thing", "scheduled"]);
+    const mineRow = { ...row({ due_at: fixture.today }), id: "mine-due" };
+    const otherRows = others.map((c, i) => ({
+      ...row({ disposition: c.task.effective, is_mine: false }),
+      id: `other-${i}`,
+    }));
+    const ids = todayIdsOf({ today_rule: true, today_ids: ["mine-due", ...otherRows.map((r) => r.id)] });
+    // The flag off: no set, so the chip is the old rule over the list.
+    expect(chipRowsWithSet([mineRow], "today", fixture.today, "UTC", null, otherRows).map((r) => r.id)).toEqual([
+      "mine-due",
+    ]);
+    // The flag on: the list rows of the set, then each set row the list lacks.
+    const got = chipRowsWithSet([mineRow], "today", fixture.today, "UTC", ids, otherRows).map((r) => r.id);
+    expect(got).toEqual(["mine-due", ...otherRows.map((r) => r.id)]);
+    expect(got.length).toBe(ids?.size);
+    // A row of the set that the list also holds shows once.
+    expect(chipRowsWithSet([mineRow, ...otherRows], "today", fixture.today, "UTC", ids, otherRows)).toHaveLength(
+      ids?.size ?? 0,
+    );
+    // Another chip never takes rows of the set.
+    expect(chipRowsWithSet([mineRow], "next", fixture.today, "UTC", ids, otherRows).map((r) => r.id)).toEqual([
+      "mine-due",
+    ]);
   });
 
   it("the Today chip lists the server set only when the summary sends it (WS-MDC CC-2)", () => {
@@ -530,8 +567,9 @@ describe("Today in the member's stored zone (item 8)", () => {
   it("the space passes the summary's zone to every chip filter", () => {
     const space = code("components/MyTasksSpace.tsx");
     expect(space).toContain("summary.data?.time_zone");
-    expect(space).toContain("chipRows(list.rows, chip, today, zone, todayIds)");
-    expect(space).toContain("chipRows(month.rows, chip, today, zone, todayIds)");
+    expect(space).toContain("chipRowsWithSet(list.rows, chip, today, zone, todayIds, setRows)");
+    expect(space).toContain("chipRowsWithSet(month.rows, chip, today, zone, todayIds, setRows)");
+    expect(space).toContain('useMyTodaySet(Boolean(todayIds) && chip === "today")');
     expect(space).toContain("todayIdsOf(summary.data)");
   });
 });

@@ -42,6 +42,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from acb_auth import UserContext, get_current_user
+from acb_common.db import current_tenant
 from fastapi import Depends, HTTPException
 from gateway.routes.projects import today_rule
 from gateway.routes.projects.cascade import complete_subtree, emit_all
@@ -853,9 +854,9 @@ async def _upsert_personal(
 
     *focus* is the guard of a today's-focus mark (WS-MDC CC-2). Only
     :func:`mark_focus` passes it. The value of ``focus_on`` is then
-    ``today_rule.focus_room_sql``, so this ONE statement counts the marks of
-    the day and writes the mark. A full day writes NULL, and the caller
-    answers 409.
+    ``today_rule.focus_room_sql`` (``focus.sql``), so this ONE statement
+    counts the marks of the day and writes the mark. A full day writes NULL,
+    and the caller answers 409.
     """
     # D77's fence at the ONE writer. Every overlay write in the gateway —
     # the PATCH, bulk, organize, the planner, the AI seam — comes through
@@ -877,7 +878,7 @@ async def _upsert_personal(
     placeholders = {c: _placeholder(c) for c in values}
     binds = {"task_id": task_id, "member_email": email, **_bindable(values)}
     if focus is not None:
-        placeholders["focus_on"] = today_rule.focus_room_sql()
+        placeholders["focus_on"] = focus.sql
         binds.update(focus.binds)
     columns = ["task_id", "member_email", *values]
     assignments = ", ".join(f"{c} = EXCLUDED.{c}" for c in values)
@@ -910,11 +911,23 @@ async def _upsert_personal(
 async def check_focus_on(db: Any, email: str, values: dict[str, Any]) -> date | None:
     """The member's mark of a PATCH, checked: the date of today, or ``None``.
 
+    ⚠️ **Dark by org** (fix round 1, item 4). While ``TODAY_RULE_ORGS`` leaves
+    the session's org out, a mark AND a clear answer 403 ``today_focus_off``,
+    and nothing changes. This is the one check of the flag on a write, and
+    the chat's ``focus`` reaches it through the same PATCH.
+
     ``focus_on`` takes the member's own today (``YYYY-MM-DD`` in the stored
     zone) or null. Any other value is a 422, so a mark of another day never
-    lands. Absent from *values*, or null, reads as ``None``.
+    lands. Absent from *values* reads as ``None``, and so does a clear.
     """
-    if values.get("focus_on") is None:
+    if "focus_on" not in values:
+        return None
+    if not today_rule.today_rule_allowed(current_tenant()):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": today_rule.FOCUS_OFF, "message": today_rule.FOCUS_OFF_MESSAGE},
+        )
+    if values["focus_on"] is None:
         return None
     raw = str(values["focus_on"]).strip()
     today = local_date(await stored_zone(db, email), today_rule.clock())
@@ -942,9 +955,11 @@ async def mark_focus(
     member and the day first (``today_rule.FOCUS_LOCK_SQL``), so two marks of
     one day never count at the same time. Then ONE statement counts the other
     marks, plus the One Thing with no mark, and writes the mark when the
-    count is under the cap. A mark that the task holds already is kept. A
-    full day answers 409 ``focus_cap_reached``, and the transaction rolls
-    back. The member is the session's, and the cap is the member's own.
+    count is under the cap. The count reads only open tasks that the member
+    can see (``today_rule.focus_count_sql``). A mark that the task holds
+    already is kept. A full day answers 409 ``focus_cap_reached``, and the
+    transaction rolls back. The member is the session's, and the cap is the
+    member's own.
     """
     org = str(vis.organization_id or "")
     await db.execute(
@@ -952,16 +967,17 @@ async def mark_focus(
         {"key": today_rule.focus_lock_key(org, email, day)},
     )
     cap = await today_rule.focus_cap_of(db, email)
-    guard = today_rule.FocusGuard(who=email, organization_id=org, task_id=task_id, cap=cap)
+    guard = today_rule.FocusGuard(vis=vis, task_id=task_id, day=day, cap=cap)
     row = await _upsert_personal(db, task_id, email, {"focus_on": day}, focus=guard)
     if row is None or getattr(row, "focus_on", None) != day:
         count = await today_rule.focus_count(db, vis, day)
+        held = f"{cap} task" if cap == 1 else f"{cap} tasks"
         raise HTTPException(
             status_code=409,
             detail={
                 "error": today_rule.FOCUS_CAP_REACHED,
                 "message": (
-                    f"Today's focus holds {cap} tasks, and it is full. Unmark one "
+                    f"Today's focus holds {held}, and it is full. Unmark one "
                     "first, then mark this task."
                 ),
                 "focus_cap": cap,
@@ -1269,6 +1285,10 @@ def _apply_overlay(task: dict[str, Any], row: Any) -> None:
     # and it read as a plain bool before 188. Kept that way rather than widened
     # in passing — a wire-shape change is not a free rider on a column add.
     task["is_two_minute"] = bool(getattr(row, "p_is_two_minute", False))
+    # WS-MDC CC-2 (349): my mark of today's focus, a date or None. The chat's
+    # card reads it as the value before a change.
+    focus = getattr(row, "p_focus_on", None)
+    task["focus_on"] = focus.isoformat() if focus is not None else None
     # D78 — the matrix inputs are SHARED facts on the task, not the overlay.
     # `important` keeps its tri-state: NULL `importance` means nobody judged
     # the task, and the triage nudge looks for that. `importance` stays on
@@ -1474,6 +1494,7 @@ SELECT t.*,
        p.expected_by        AS p_expected_by,
        p.last_nudged_at     AS p_last_nudged_at,
        p.clarified_at       AS p_clarified_at,
+       p.focus_on           AS p_focus_on,
        s.name               AS workflow_stage,
        -- The lane's own colour, so My Tasks draws a custom-coloured lane in
        -- the colour its Projects board draws it (AGENTS.md rule 5).
@@ -1733,7 +1754,7 @@ async def my_today(
         if with_tasks:
             vis = await resolve_visibility(db, user)
             extra = await today_rule.today_answer(
-                db, vis, today_rule.window_of(stored, at),
+                db, user, vis, today_rule.window_of(stored, at),
             )
     zone = zone_name(stored)
     return {

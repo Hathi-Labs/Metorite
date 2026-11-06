@@ -94,6 +94,14 @@ NO_TASK = "00000000-0000-0000-0000-000000000000"
 #: mark takes it before the statement that counts and writes.
 FOCUS_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
 
+#: The code and the words of a mark while ``TODAY_RULE_ORGS`` leaves the org
+#: out (fix round 1, item 4). The words say what happened and what to do.
+FOCUS_OFF = "today_focus_off"
+FOCUS_OFF_MESSAGE = (
+    "Today's focus is not on for your organization yet. Nothing changed. Put a "
+    "block for the task on your calendar to plan it for today."
+)
+
 
 def today_rule_allowed(organization_id: str | None) -> bool:
     """True when ``TODAY_RULE_ORGS`` holds the org, or holds ``*``. Default OFF.
@@ -230,15 +238,19 @@ DUE_SQL = due_arm_sql("t")
 ARMS_SQL = f"({ONE_THING_SQL} OR {FOCUS_SQL} OR {SCHEDULED_SQL} OR {DUE_SQL})"
 
 
-def today_where(vis: Visibility) -> str:
-    """The WHERE of the set: visible, live, not parked in triage, open, and
-    one arm. The visibility is ``core.task_visibility_clause``, which carries
-    the tenant. The archive rules are the defaults of ``build_task_filters``,
-    the task and its project, as ``mine.mine_where`` composes them."""
+def live_where(vis: Visibility) -> str:
+    """The task is visible, live, not parked in triage, and open. The set and
+    the count of the cap both read it. The visibility is
+    ``core.task_visibility_clause``, which carries the tenant. The archive
+    rules are the defaults of ``build_task_filters``, the task and its
+    project, as ``mine.mine_where`` composes them."""
     live, _ = build_task_filters()
-    return " AND ".join([
-        task_visibility_clause(vis), *live, triage_exclusion_clause(), OPEN_SQL, ARMS_SQL,
-    ])
+    return " AND ".join([task_visibility_clause(vis), *live, triage_exclusion_clause(), OPEN_SQL])
+
+
+def today_where(vis: Visibility) -> str:
+    """The WHERE of the set: :func:`live_where` and one arm."""
+    return f"{live_where(vis)} AND {ARMS_SQL}"
 
 
 _FROM_SQL = (
@@ -293,36 +305,29 @@ def today_binds(vis: Visibility, window: TodayWindow) -> dict[str, Any]:
 # ── The cap ─────────────────────────────────────────────────────────────────
 
 
-def focus_count_sql() -> str:
-    """The count of the cap, as one SQL value: my marks of the day, plus the
-    One Thing when it has no mark of mine.
+def focus_count_sql(vis: Visibility) -> str:
+    """The count of the cap, as one SQL value: the tasks that hold my mark of
+    the day or that are my One Thing of the day, each task once.
 
-    ``:focus_task`` is left out of both terms, so the guard of a mark counts
-    the OTHER tasks. The read binds :data:`NO_TASK`. Binds ``:focus_who``,
-    ``:focus_org`` and ``:focus_on`` (the day). The tenant rides on the task
-    row of each term, beside FORCE RLS.
+    ⚠️ Each task passes :func:`live_where`, the filter of the set (fix round
+    1, items 2 and 3). So a done, trashed, archived or parked task frees its
+    place, and a task that the member cannot see never counts. A One Thing
+    that names a task id the member cannot see counts as a random id does,
+    so the count tells nothing of a task that the member cannot open.
+
+    ``:focus_task`` is left out, so the guard of a mark counts the OTHER
+    tasks. The read binds :data:`NO_TASK`. Binds ``:who``, ``:today`` (the
+    day), ``:focus_task`` and ``vis.params``.
     """
     return (
-        "((SELECT count(*) FROM pm_task_personal f"
-        "   JOIN pm_tasks ft ON ft.id = f.task_id"
-        "                   AND ft.organization_id = CAST(:focus_org AS uuid)"
-        "  WHERE lower(f.member_email) = :focus_who"
-        "    AND f.focus_on = CAST(:focus_on AS date)"
-        "    AND f.task_id <> CAST(:focus_task AS uuid))"
-        " + (SELECT count(DISTINCT d.one_thing_id) FROM calendar_day_state d"
-        "   JOIN pm_tasks dt ON dt.id = d.one_thing_id"
-        "                   AND dt.organization_id = CAST(:focus_org AS uuid)"
-        "  WHERE lower(d.user_id) = :focus_who"
-        "    AND d.day = CAST(:focus_on AS date)"
-        "    AND d.one_thing_id <> CAST(:focus_task AS uuid)"
-        "    AND NOT EXISTS (SELECT 1 FROM pm_task_personal g"
-        "                     WHERE g.task_id = d.one_thing_id"
-        "                       AND lower(g.member_email) = :focus_who"
-        "                       AND g.focus_on = d.day)))"
+        "(SELECT count(*)" + _FROM_SQL
+        + f" WHERE {live_where(vis)}"
+        + f" AND ({FOCUS_SQL} OR {ONE_THING_SQL})"
+        + " AND t.id <> CAST(:focus_task AS uuid))"
     )
 
 
-def focus_room_sql() -> str:
+def focus_room_sql(vis: Visibility) -> str:
     """The value of ``focus_on`` in the one statement that counts and writes.
 
     The day when the mark adds nothing to the count, or when the count of the
@@ -336,30 +341,35 @@ def focus_room_sql() -> str:
         "(SELECT CAST(:focus_on AS date) WHERE"
         " EXISTS (SELECT 1 FROM pm_task_personal k"
         "          WHERE k.task_id = CAST(:focus_task AS uuid)"
-        "            AND lower(k.member_email) = :focus_who"
+        "            AND lower(k.member_email) = :who"
         "            AND k.focus_on = CAST(:focus_on AS date))"
         " OR EXISTS (SELECT 1 FROM calendar_day_state o"
-        "             WHERE lower(o.user_id) = :focus_who"
+        "             WHERE lower(o.user_id) = :who"
         "               AND o.day = CAST(:focus_on AS date)"
         "               AND o.one_thing_id = CAST(:focus_task AS uuid))"
-        f" OR {focus_count_sql()} < :focus_cap)"
+        f" OR {focus_count_sql(vis)} < :focus_cap)"
     )
 
 
 @dataclass(frozen=True)
 class FocusGuard:
-    """The binds of :func:`focus_room_sql` for one mark. ``personal.mark_focus``
-    builds it from the session: the member, the tenant, the task and the cap."""
+    """The SQL and the binds of :func:`focus_room_sql` for one mark.
+    ``personal.mark_focus`` builds it from the session: the member's
+    visibility, the task, the day and the cap."""
 
-    who: str
-    organization_id: str
+    vis: Visibility
     task_id: str
+    day: date
     cap: int
+
+    @property
+    def sql(self) -> str:
+        return focus_room_sql(self.vis)
 
     @property
     def binds(self) -> dict[str, Any]:
         return {
-            "focus_who": self.who, "focus_org": self.organization_id,
+            **self.vis.params, "who": self.vis.email, "today": self.day,
             "focus_task": self.task_id, "focus_cap": self.cap,
         }
 
@@ -384,12 +394,11 @@ async def focus_cap_of(db: Any, email: str) -> int:
 
 
 async def focus_count(db: Any, vis: Visibility, day: date) -> int:
-    """The count of the cap for the member's *day*: every mark, plus the One
-    Thing when it has no mark."""
+    """The count of the cap for the member's *day*: the open, visible tasks
+    that hold the mark or that are the One Thing, each task once."""
     found = (await db.execute(
-        text(f"SELECT {focus_count_sql()} AS n"),
-        {"focus_who": vis.email, "focus_org": vis.organization_id,
-         "focus_on": day, "focus_task": NO_TASK},
+        text(f"SELECT {focus_count_sql(vis)} AS n"),
+        {**vis.params, "who": vis.email, "today": day, "focus_task": NO_TASK},
     )).scalar()
     return int(found or 0)
 
@@ -441,21 +450,47 @@ def _row(row: Any) -> dict[str, Any]:
     return {"task": task, "block": block, "why": why_of(row)}
 
 
-async def today_answer(db: Any, vis: Visibility, window: TodayWindow) -> dict[str, Any]:
+async def attach_list_shape(db: Any, user: Any, vis: Visibility, tasks: list[dict[str, Any]]) -> None:
+    """Give each task of the set the facts of a row of
+    ``GET /projects/tasks?scope=mine&with_overlay=1``, through the same
+    helpers, in the same order. So the Today chip of My work draws a task of
+    the set that its own list does not hold (fix round 1, item 1)."""
+    # Imported here: `tasks` imports `mine`, and `mine` imports this module.
+    from gateway.routes.projects.authority import attach_can_delete
+    from gateway.routes.projects.filters import (
+        attach_agent_state,
+        attach_assignees,
+        attach_parent_context,
+        attach_relation_counts,
+    )
+    from gateway.routes.projects.mine import attach_my_overlay
+    from gateway.routes.projects.tasks import attach_status_category
+
+    await attach_assignees(db, tasks)
+    await attach_agent_state(db, tasks)
+    await attach_relation_counts(db, tasks, vis)
+    await attach_parent_context(db, vis, tasks)
+    await attach_can_delete(db, user, tasks, kind="task")
+    await attach_status_category(db, vis, tasks)
+    await attach_my_overlay(db, vis, tasks)
+
+
+async def today_answer(
+    db: Any, user: Any, vis: Visibility, window: TodayWindow,
+) -> dict[str, Any]:
     """The Today set of ``GET /projects/my/today?with_tasks=true``.
 
     ``rows`` holds each task with its block and ``why``, at most
-    :data:`MAX_ROWS`, and ``total`` counts the whole set. ``to_fit`` is the
-    tray. ``focus_cap`` and ``focus_count`` are the cap and the count of the
-    day. It writes nothing.
+    :data:`MAX_ROWS`, and ``total`` counts the whole set. Each task has the
+    shape of a row of the mine list (:func:`attach_list_shape`). ``to_fit``
+    is the tray. ``focus_cap`` and ``focus_count`` are the cap and the count
+    of the day. It writes nothing.
     """
-    from gateway.routes.projects.filters import attach_agent_state
-
     found = (await db.execute(
         text(today_set_sql(vis)), {**today_binds(vis, window), "limit": MAX_ROWS},
     )).fetchall()
     rows = [_row(r) for r in found]
-    await attach_agent_state(db, [r["task"] for r in rows])
+    await attach_list_shape(db, user, vis, [r["task"] for r in rows])
     total = int(getattr(found[0], "total", 0) or 0) if found else 0
     return {
         "rows": rows,
@@ -472,10 +507,13 @@ __all__ = [
     "FOCUS_CAP_MIN",
     "FOCUS_CAP_REACHED",
     "FOCUS_LOCK_SQL",
+    "FOCUS_OFF",
+    "FOCUS_OFF_MESSAGE",
     "MAX_ROWS",
     "WHY_ORDER",
     "FocusGuard",
     "TodayWindow",
+    "attach_list_shape",
     "clamp_focus_cap",
     "clock",
     "due_arm_sql",
@@ -484,6 +522,7 @@ __all__ = [
     "focus_count_sql",
     "focus_lock_key",
     "focus_room_sql",
+    "live_where",
     "to_fit",
     "today_answer",
     "today_ids",

@@ -131,6 +131,12 @@
       "why": ["one_thing"]
     },
     {
+      "name": "my One Thing on a task of another member that I can see",
+      "task": {"stated": null, "effective": "WAITING", "category": "todo", "assignee": "other", "completed": false, "defer_until": null, "start_date": null, "due_at": null},
+      "mine": {"focus_on": null, "scheduled_start": null, "scheduled_end": null, "one_thing": true},
+      "why": ["one_thing"]
+    },
+    {
       "name": "the One Thing, marked, blocked and due holds every arm",
       "task": {"stated": null, "effective": "NEXT", "category": "todo", "assignee": "me", "completed": false, "defer_until": null, "start_date": null, "due_at": "2026-11-07T12:00:00Z"},
       "mine": {"focus_on": "2026-11-07", "scheduled_start": "2026-11-07T09:00:00Z", "scheduled_end": "2026-11-07T10:00:00Z", "one_thing": true},

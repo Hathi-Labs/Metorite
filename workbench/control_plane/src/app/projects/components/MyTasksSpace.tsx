@@ -36,6 +36,7 @@ import { useCachedResource } from "@/lib/useCachedResource";
 import { filenameFromDisposition, saveCsv } from "@/lib/export";
 
 import {
+  type MyTodaySet,
   type NodeSummary,
   type StatusRow,
   type TaskRow,
@@ -62,7 +63,7 @@ import {
   chipCount,
   chipNeedsEveryPage,
   MY_TASKS_EMPTY_TEXT,
-  chipRows,
+  chipRowsWithSet,
   mineStatuses,
   myTasksQuery,
   myTasksTrulyEmpty,
@@ -104,6 +105,18 @@ export function useMySummary(enabled: boolean) {
   return useCachedResource<NodeSummary>(
     enabled ? projectsKey("my/summary") : null,
     () => projectsApi.mySummary(),
+  );
+}
+
+/**
+ * WS-MDC CC-2: the Today set, read only while the Today chip shows with
+ * `TODAY_RULE_ORGS` on. The chip adds each task of the set that the mine list
+ * does not hold.
+ */
+export function useMyTodaySet(enabled: boolean) {
+  return useCachedResource<MyTodaySet>(
+    enabled ? projectsKey("my/today", { with_tasks: "true" }) : null,
+    () => projectsApi.myTodaySet(),
   );
 }
 
@@ -456,11 +469,15 @@ export default function MyTasksSpace({
     attentionRead.error && !attentionRead.data ? `Could not read the list. ${attentionRead.error}` : null;
 
   // ── What the canvases draw ──────────────────────────────────────────────
-  // WS-MDC CC-2: the server's Today set, or null for the old rule.
+  // WS-MDC CC-2: the server's Today set, or null for the old rule. With the
+  // flag on, the Today chip also reads the rows of the set, so it lists each
+  // task that it counts, also a task of another member (fix round 1, item 1).
   const todayIds = useMemo(() => todayIdsOf(summary.data), [summary.data]);
+  const todaySet = useMyTodaySet(Boolean(todayIds) && chip === "today");
+  const setRows = useMemo(() => todaySet.data?.rows.map((row) => row.task) ?? null, [todaySet.data]);
   const shown = useMemo(
-    () => chipRows(list.rows, chip, today, zone, todayIds),
-    [list.rows, chip, today, zone, todayIds],
+    () => chipRowsWithSet(list.rows, chip, today, zone, todayIds, setRows),
+    [list.rows, chip, today, zone, todayIds, setRows],
   );
   const statuses = useMemo(() => mineStatuses(list.rows, known), [list.rows, known]);
   // A status is a lane of ONE project, so the roll-up groups by stage instead.
@@ -482,8 +499,8 @@ export default function MyTasksSpace({
     [statusSets, statuses],
   );
   const calendarRows = useMemo(
-    () => chipRows(month.rows, chip, today, zone, todayIds),
-    [month.rows, chip, today, zone, todayIds],
+    () => chipRowsWithSet(month.rows, chip, today, zone, todayIds, setRows),
+    [month.rows, chip, today, zone, todayIds, setRows],
   );
 
   // A quick add files to the personal root, or nowhere: never "" (item 10).
@@ -491,6 +508,7 @@ export default function MyTasksSpace({
   const reloadAll = () => {
     again();
     summary.refresh();
+    if (todayIds && chip === "today") todaySet.refresh();
   };
 
   /**

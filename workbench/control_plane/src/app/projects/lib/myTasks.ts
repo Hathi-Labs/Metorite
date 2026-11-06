@@ -252,6 +252,34 @@ export function chipRows<T extends ChipRow>(
 }
 
 /**
+ * The rows of a chip, with the Today set (WS-MDC CC-2, fix round 1 item 1).
+ *
+ * The Today set is not a subset of mine: a mark, a block or the One Thing on
+ * a visible task of another member is part of my day. So with the flag on
+ * (`todayIds`), the Today chip lists the rows of the mine list that the set
+ * holds, and adds each task of the set that the list does not hold, from
+ * `GET /projects/my/today?with_tasks=true` (`setRows`). The count, the rows
+ * and the set are then one set. Any other chip, and the flag off, is
+ * `chipRows` as before.
+ */
+export function chipRowsWithSet<T extends ChipRow & { id: string }>(
+  rows: readonly T[],
+  chip: MyTasksChip,
+  today: string,
+  timeZone: string | undefined,
+  todayIds: ReadonlySet<string> | null,
+  setRows: readonly T[] | null | undefined,
+): T[] {
+  const listed = chipRows(rows, chip, today, timeZone, todayIds);
+  if (chip !== "today" || !todayIds || !setRows) return listed;
+  const held = new Set(rows.map((row) => row.id));
+  const added = setRows.filter(
+    (row) => !held.has(row.id) && todayIds.has(row.id) && inChip(row, chip, today, timeZone, todayIds),
+  );
+  return [...listed, ...added];
+}
+
+/**
  * The ids of the Today set, from the summary, or null for the old rule.
  * `today_ids` comes only with `TODAY_RULE_ORGS` on (WS-MDC CC-2).
  */

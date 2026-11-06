@@ -1548,6 +1548,10 @@ UI_ACTIONS: dict[str, str] = {
     "projectsApi.deleteProject": "delete_project",
     "projectsApi.convertFolder": "convert_folder_to_project",
     "projectsApi.grants": "project_access",
+    # WS-MDC CC-2: the Today set (`GET /projects/my/today?with_tasks=true`) for
+    # the Today chip of My work. my_work reads the same route for the day and
+    # the zone. The chat reads the set with its plan tools in CC-10.
+    "projectsApi.myTodaySet": "my_work",
     # ── projectsApi: analytics and reports ───────────────────────────────
     "projectsApi.stuck": "analytics_stuck",
     "projectsApi.load": "analytics_load",
