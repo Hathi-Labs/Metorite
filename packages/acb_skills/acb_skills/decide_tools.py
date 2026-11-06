@@ -9,21 +9,27 @@ returns a short line the model reads: the answer and how sure it is.
 🔴 **It never calls the Console client.** ``acb_llm.decide`` is the one seam
 (CLAUDE.md §4). A second decide client here would be a defect.
 
-🔴 **It sends NO member, on purpose (the R11 finding, §6A.14 CP-13d).** The
-run's member comes from ``event_payload["user_email"]``. Since H-337 the
-three gateway doors (``/agent/run/stream``, ``/agent/run``,
-``/agent/run/async``) drop a signed-in member's body claim
-(``routes/agent.py::_drop_identity_claims``). The two sync doors keep a
-claim of the member's own address, set to the session's address. But a
-service caller keeps its
-claim, and the webhook door spreads the sender's payload. A tool still
-cannot tell a server-bound member from a claimed one. On the deployment arm
-``X-CC-Member`` SELECTS the tenant, so a claimed member would be a tenant
-chosen by request input. So the tool sends none:
+🔴 **It sends the PROVEN member only (the R11 finding, §6A.14 CP-13d, H-165).**
+On the deployment arm ``X-CC-Member`` SELECTS the tenant, so a claimed member
+would be a tenant chosen by request input. The run's ``user`` can be a claim:
+a service caller keeps its body claim, and the webhook door spreads the
+sender's payload. So the tool reads the run binding
+(``acb_common.get_run_context``) through the one idiom,
+``write_artifact._verified_member``. It sends ``member=<user>`` and
+``member_proven=True`` only when the run binding holds ``member_verified="1"``
+and the user is an address. Only a server-side fact binds that flag (H-73):
+a signed-in session, or a member from our own tables. ``job_member_scope``,
+a workflow run and the WhatsApp link bind the second kind. A request body
+never sets it. In every other case the tool sends ``member=None,
+member_proven=False``:
 
 * the org arm names its organization by the key, and the call serves;
-* the deployment arm refuses locally in the client, with no request, and the
-  tool returns :data:`UNAVAILABLE`.
+* the deployment arm refuses an unproven member locally in the client
+  (``_require_proven_member_on_deployment``), with no request, and the tool
+  returns :data:`UNAVAILABLE`.
+
+It never reads the memory user id. That id can be a ``room:<thread>`` id or
+a service caller's claim, and it carries no proof flag.
 
 The tool still sends ``agent`` and ``run_id`` from the run context
 (``acb_common.get_run_context``), which only attribute a call.
@@ -214,6 +220,23 @@ def _attribution() -> dict[str, str | None]:
     return {"agent": ctx.get("agent") or None, "run_id": ctx.get("run_id") or None}
 
 
+def _proven_member() -> str | None:
+    """The session-proven member of the run, or ``None`` (H-165).
+
+    One idiom: ``write_artifact._verified_member`` reads ``user`` and
+    ``member_verified`` from the run binding. A body claim, a ``room:`` id and
+    an empty user never pass. A verified user with no "@" is not an address,
+    so it never names a member either. Any error reads as no member.
+    """
+    try:
+        from acb_skills.write_artifact import _verified_member
+
+        member = _verified_member()
+    except Exception:  # an unreadable binding proves nothing
+        return None
+    return member if "@" in member else None
+
+
 async def decide(
     question: str, context: str, kind: str = "yes_no", options: str = ""
 ) -> str:
@@ -259,13 +282,15 @@ async def decide(
     else:
         q = ScoreQuestion(instructions, {p: p for p in picks})
 
+    member = _proven_member()
     try:
         decision = await facade(
             context or "",
             {_QID: q},
-            # 🔴 No member. See the module docstring: the R11 finding.
-            member=None,
-            member_proven=False,
+            # 🔴 The session-proven member only, else None. See the module
+            # docstring: the R11 finding.
+            member=member,
+            member_proven=member is not None,
             **_attribution(),
         )
     except DecideUnavailable:

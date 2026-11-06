@@ -166,18 +166,25 @@ def publish_workflow_activity(
     name: str,
     *,
     user: str | None = None,
+    organization_id: str | None = None,
     **fields: Any,
 ) -> None:
-    """Publish a workflow activation to the global activity bus (best-effort).
+    """Publish a workflow activation to the tenant's activity bus (best-effort).
 
     Workflows are a distinct actor class on the feed: ``kind="workflow"`` with
     ``agent="workflow:<name>"`` so runs show up in /observability alongside
     agent and app activity (spec G6).
+
+    *organization_id* is the org of the run row (H-201c). A scheduler or a
+    resume path often has no bound tenant, so each caller passes it from the
+    row. ``None`` falls back to the bound tenant, and with neither the feed
+    drops the event.
     """
     try:
         from acb_common import publish_activity
 
         publish_activity(
+            organization_id=organization_id,
             kind="workflow",
             agent=f"workflow:{name or workflow_id}",
             user=user,

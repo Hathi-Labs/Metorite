@@ -75,7 +75,7 @@ ASK_THE_MEMBER = [
 #: OA-9c review: the tools that draw a card or move the member's page. Several
 #: say read-only. ``emit_generative_ui`` is in ``ASK_THE_MEMBER`` above.
 DRAW_A_CARD = [
-    "show_in_app", "render_board", "render_tasks", "render_timeline", "open_in_app",
+    "show_in_app", "show_guide", "render_board", "render_tasks", "render_timeline", "open_in_app",
     "show_view",
     # STU-G2: the Studio plan card waits on one confirmation card
     "studio_plan",

@@ -19,6 +19,15 @@
 > written yet — the stamp lands on logs, the Redis feed and the Redis day-hash
 > only.
 > Deep tracing is still absent (BO-5).
+> **H-201c (task 1718), built 2026-11-05, not merged.** The live feed is
+> keyed for each tenant. The stream is `cc:<org>:activity`, and the presence
+> keys are `cc:<org>:activity:live:{run_id}`. The four readers take the
+> viewer's org from the session. A member of one org sees no entry of
+> another. The daily cost rollup `cc:cost:{day}` is still global, and task
+> 1748 converts it. A priced model call with no tenant writes no feed key.
+> It still adds to `cc:cost:{day}`, so `/observability/cost` counts the
+> deployment-key `/v1/chat/completions` calls.
+> Fence: `tests/unit/test_activity_feed_tenant.py`.
 > **Verified against code on 2026-08-01** (paths, `agent_run` token columns,
 > uv.lock telemetry deps); `bind_run_context` key set re-verified 2026-08-02.
 > **Module:** E2 (core_module_map.md).
@@ -186,13 +195,20 @@ Phases 1–4 are an *engineer's post-hoc* view (logs + `agent_run` + `/debug`).
 Phase 5 adds the *operator's live* view the user asked for: "see whenever any
 agent or model is activated," across chat AND every app (email, tasks, …).
 
-- **Global activity bus** (`packages/acb_common/acb_common/activity.py`): one
-  process-wide Redis stream `cc:activity` that every activation publishes a
-  small event to. `publish_activity(**fields)` is best-effort + non-blocking +
-  never raises (a dropped event can never affect the run that emitted it — the
-  durable record stays in `agent_run`). Presence keys `cc:activity:live:{run_id}`
-  (TTL `LIVE_TTL_SECONDS`) track in-flight runs and self-heal if an "end" is
-  lost. Cross-app coverage is automatic because the two publish sites are shared
+- **Activity bus** (`packages/acb_common/acb_common/activity.py`): one Redis
+  stream for each tenant, `cc:<org>:activity`, that every activation publishes
+  a small event to. `publish_activity(organization_id=None, **fields)` is
+  best-effort + non-blocking + never raises (a dropped event can never affect
+  the run that emitted it — the durable record stays in `agent_run`). Presence
+  keys `cc:<org>:activity:live:{run_id}` (TTL `LIVE_TTL_SECONDS`) track
+  in-flight runs and self-heal if an "end" is lost.
+  - **Tenancy (H-201c, 2026-11-05).** The writer takes the explicit org, else
+    the bound tenant, at call time. With no org, it writes nothing. No global
+    key and no dual read of the old `cc:activity` key exist. Each reader takes
+    a required `organization_id`, and the route takes it from the session.
+    The SSE `XREAD BLOCK` runs on a third pool of `tenant_redis`
+    (`get_tenant_redis(blocking=True)`). Fence:
+    `tests/unit/test_activity_feed_tenant.py`. Cross-app coverage is automatic because the two publish sites are shared
   libraries:
   - **Agent activations** — the executor run boundary (`executor.py`
     `run_agent_stream`): a `kind="agent" phase="start"` event right after

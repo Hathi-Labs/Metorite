@@ -126,9 +126,16 @@ step of the dialog that exists today. Every member finds "Take the tour" in the
 account menu. Stop 4 rings My Day alone until OB-1b builds the Get started
 card. GD-5b adds the later entries when their slices land.
 
-The tour runs in the side chat. Each stop rings one part of the page, and the
-chat says one or two sentences about it. The chat shows "2 of 5", with Back,
-Next and End tour. The message field stays open the whole time.
+The tour card floats above the dimmed page, beside the ringed part. It says one
+or two sentences about the stop. It shows "2 of 5", with Back, Next and End
+tour. The side chat stays open for questions, and the message field stays open.
+
+The card is not in the chat. On a computer, the card never covers the
+assistant panel. It sits beside the ringed part. If the part fills the page
+column, it sits over a corner of the part (stop 4 at 1280 px, panel open). A
+step with no part to point at shows the card with no dim. The owner gave the
+reason on 2026-11-03: in the chat, the card mixed in with the chat's own
+buttons.
 
 | Stop | Points at | The chat says (draft) |
 |---|---|---|
@@ -166,8 +173,8 @@ gap (GD-14).
 4. The member decides. Save makes a real record. Cancel leaves nothing.
 
 On a phone, the member's tap on Show me drops the sheet to the peek strip, as
-a tapped link does now (`onChatLink`). The strip shows the step line, Next and
-End.
+a tapped link does now (`onChatLink`). The card docks to the window edge away
+from the ringed part.
 
 ### 4.4 Do it for me
 
@@ -247,20 +254,29 @@ One state machine in `src/lib/shell/guide.ts`, and one shell component,
   or an AG-UI `custom` event named `guide` from the assistant.
 - **Open.** The runner pushes the route. It checks the path with
   `isInAppPath` first, as `show_in_app` does.
-- **Point.** It waits up to 3 seconds for the anchor. Then it rings it with a
-  popover of the design system, in glass tokens (D149). It scrolls the anchor
-  into view.
+- **Point.** It waits up to 3 seconds for the anchor. Then it rings it and
+  dims the rest of the page. One tour card shows on every step, above the dim,
+  in glass tokens (D149). A step with no anchor has the card and no dim. It
+  scrolls the anchor into view.
 - **Move on.** Next, a click on the ringed part, or the route of the next step.
-- **A missing anchor.** The step shows its text, and the chat says "I can't
-  point at it on this screen". The runner logs `guide_anchor_missing`. It never
-  fails in silence.
+- **A missing anchor.** The tour card shows the step text and says "I can't
+  point at it on this screen". The dim has no hole. The runner logs
+  `guide_anchor_missing`. It never fails in silence.
 - **End.** Escape, End tour, or the last step. The page stays where it is.
 - **State.** The current guide and step live in `sessionStorage` for the tab,
   so a reload resumes. `tour_seen_at` joins the shell prefs, with no new table.
-- **Access.** The ring announces itself through `aria-live`. Focus stays on the
-  page, so the member can press the ringed button. Reduced motion turns off the
-  movement. It works in light mode, at compact density, under a changed accent
-  and at 390 px.
+- **Access.** One polite live region in `GuideHost` announces each step, at
+  every width. The card holds none. Focus stays on the page, so the member can
+  press the ringed button. The card stays mounted for the whole tour, so a
+  member who presses Next with the keyboard keeps the focus on the card. A
+  step that opens the chat is the exception: the chat's message field takes
+  the focus, so the member can type a question at once. The card's
+  buttons are natural tab stops. The ring follows its anchor with no
+  transition. One measure feeds the ring, the hole and the card. The dim has
+  one hole, the anchor, and takes no pointer. The ring stays inside the
+  window. On a phone, the card keeps clear of the notch and the home bar. It
+  works in light mode, at compact density, under a changed accent and at
+  390 px.
 
 ### 5.4 The assistant's tools
 
@@ -381,10 +397,10 @@ The design task 178 closes with this spec.
 | **GD-2** | `GuideSpotlight`: the ring, the popover, and its access rules (§5.3) | A vitest test per rule. Four captures. An e2e test rings an anchor | AGENT-SAFE · MEDIUM |
 | **GD-3** | The guide format, its loader, F2, and the tour guide `home.tour`. Its five steps are the five stops of §4.1 | F2 passes, and fails on a bad path, anchor or tool | AGENT-SAFE · LOW |
 | **GD-4** | The runner (§5.3), with the phone strip | vitest per state. An e2e test runs a guide, reloads, and resumes | AGENT-SAFE · MEDIUM |
-| **GD-5a** | The first-run tour (§4.1) before OB-4 and HLP-1: "Show me around" in the founder's welcome step, "Take the tour" in the account menu, `tour_seen_at` in the shell prefs, and `GUIDE_ORGS` on `GET /auth/me/shell` | An e2e test: a founder and a member each run it. It never starts alone. With the flag off, no entry shows | AGENT-SAFE · MEDIUM |
+| **GD-5a** | 🔨 **BUILT, dark (2026-11-02).** The first-run tour (§4.1) before OB-4 and HLP-1: "Show me around" in the founder's welcome step, "Take the tour" in the account menu, `tour_seen_at` in the shell prefs, and `GUIDE_ORGS` on `GET /auth/me/shell`. **Built:** `acb_common/guide_flags.py` is the one reader of `GUIDE_ORGS`, for the gateway and the orchestrator, and the org comes from the session. `shellPrefs.ts` passes `guide` to `guide.ts`, the ONE check: off refuses each start, resume and offer, and a start waits until the read answers. "Take the tour" is a row of `accountMenu` and of the phone drawer. Each row goes to `/?guide=home.tour`, because stop 4 rings My Day, which lives on `/` only. `tour_seen_at` is a key-only stamp with the server's time, and a layout save keeps it. It keeps the first start, in SQL. The last stop shows up to six chips of the held live apps. A chip ends the tour and opens its app (GD-10 adds the chapter). On the last stop the tour card carries the chips, above the dim and outside the chat | An e2e test: a founder and a member each run it. It never starts alone. With the flag off, no entry shows. Verify: `uv run pytest tests/unit/test_guide_flags.py tests/unit/test_auth_me_shell.py tests/unit/test_auth_me_shell_r8.py -q` and `npx playwright test e2e/guide-first-run.spec.ts e2e/guide-tour.spec.ts` | AGENT-SAFE · MEDIUM |
 | **GD-5b** | The later entries: the OB-4 dialog button, the HLP-1 Help row, the Get started card at stop 4 (OB-1b), and "give me a tour" through `show_guide` (GD-7) | Each entry lands when its slice lands. The GD-5a e2e test runs from each entry | AGENT-SAFE · LOW |
 | **GD-6** | Ask during the tour: a question pauses it, and a chip continues it | An e2e test asks at stop 3 and continues to stop 4 | AGENT-SAFE · MEDIUM |
-| **GD-7** | `find_guide` and `show_guide` (§5.4), the persona line, the eval cases | A tool test per refusal. The eval cases pass. An eval over USD 0.50 waits for the owner | AGENT-SAFE · MEDIUM |
+| **GD-7** | 🔨 **BUILT, dark (2026-11-03, review rounds 1 and 2 on 2026-11-04).** `find_guide` and `show_guide` (§5.4), the persona line, the eval cases. **Built:** two core tools of `orchestrator`. The logic is in `orchestrator/guide_tools.py`. They list only when `guide_allowed(org)` is true, and they fail closed. `find_guide` scores each ask of a guide on its own, with a token match and no model call. An ask matches when the question holds each subject word of the ask and 60% of all its words. A generic verb alone never matches. A generic verb matches a verb of its group, so "make a deal" finds "add a deal". An ask of one word matches only a question of that one word. The tour has the ask "tour". It returns three guides at most. A member may run a guide when the feature is held, an admin guide has an admin, and each `open` path passes `in_app_path.refusal`. `show_guide` shares `_show_in_app_done` with `show_in_app`. Each tool sets it before its first await, so two calls at once move the page once. A call that meets a move in progress says that another move runs, and not that the page moved. The persona line is `GUIDE_PERSONA_LINE`, joined in the dock behind `guide`. Cases G1 to G6 run in the scripted eval. The live score fails a G case with no `find_guide` call, and the eval persona carries the guide line. **Not built:** the live eval (owner), the "Do it for me" offer (GD-9) and the GD-14 gap log (one log line only). Verify: `uv run pytest tests/unit/test_guide_tools.py -q` and `uv run python -m evals.routing.run --scripted --all` | A tool test per refusal. The eval cases pass. An eval over USD 0.50 waits for the owner | AGENT-SAFE · MEDIUM |
 | **GD-8** | Sample values (§5.5), first in the CRM and Projects quick-create forms | A test per form. Save is never pressed. F3 lists the forms | AGENT-SAFE · MEDIUM |
 | **GD-9** | Do it for me (§4.4) | Offered only for a COVERED tool. An e2e test does an act and rings its result | AGENT-SAFE · MEDIUM |
 | **GD-10a, GD-10b, GD-10c** | One chapter per app: anchors, 5 to 10 guides, and the first-visit chip. GD-10a is Projects, with PC-2. GD-10b is CRM. GD-10c is the rest, one PR per app: Email, Calendar, Chat with Knowledge and Notes, WhatsApp, Admin | F1 and F2 pass for the app. Four captures of its chip | AGENT-SAFE · LOW |

@@ -125,6 +125,16 @@ class Settings(BaseSettings):
     # hold several sessions. Fence: tests/unit/test_db_background_lane.py.
     db_background_max: int = 4
 
+    # H-249 (WS-29): what `tenant_session` does when its transaction is
+    # aborted at the clean end of a block. That happens when a caller swallows
+    # a failed statement. The commit then commits nothing. `log` (the default)
+    # only logs `db.tenant_session_aborted`, and the commit runs as before.
+    # `raise` logs, rolls back and raises `TenantTransactionAborted`. Any other value reads as
+    # `log`. The one reader is `tenant_session_abort_mode` below. The flag
+    # needs a restart (`docs/flag_reload.md`). A value on a box is the grant
+    # `enforcement-flip`. Fence: tests/unit/test_tenant_session_aborted_r8.py.
+    tenant_session_abort_mode: str = "log"
+
     # The pool of the sync `acb_graph` engine. It counts against the SAME
     # pooler budget as the async pool above (see the note there).
     db_sync_pool_size: int = 2
@@ -602,6 +612,24 @@ class Settings(BaseSettings):
     # `enforcement-flip`. Spec: core_brief.md §5 and §10 row 5. Fence:
     # tests/unit/test_brief_today.py.
     brief_in_app: bool = False
+    # `brief_exceptions` (WS-BRIEF BR-5, 2026-11-04) is the switch of the
+    # exception engine, default OFF. On, only the four rules of
+    # `core_brief.md` §6 let a card interrupt in Reach (WhatsApp and the
+    # preview), and a card with no rule waits. Off, the class table of
+    # `reach/classes.py` decides, as before. It holds for an org only when
+    # `BRIEF_ENABLED` and `BRIEF_ORGS` hold too. The one reader is
+    # `gateway.brief.flags.exceptions`. A flip on a box is gate
+    # `enforcement-flip`. Fence: tests/unit/test_reach_exceptions.py.
+    brief_exceptions: bool = False
+    # `brief_compose` (WS-BRIEF BR-2a-2, 2026-11-05) is the switch of the
+    # phrase step, default OFF. On, a run with 4 claims or more makes ONE
+    # `tier-fast` call through the Console Router, and the model writes the
+    # lead. Off, or with the Router off, the lead is the template lead, as
+    # before. It holds for an org only when `BRIEF_ENABLED` and `BRIEF_ORGS`
+    # hold too. The one reader is `gateway.brief.flags.compose`. The call
+    # spends credits, so a flip on production is OWNER-GATE (core_brief.md
+    # §10 row 4). Fence: tests/unit/test_brief_phrase.py.
+    brief_compose: bool = False
 
     # ── Web push (WS-66 PN-1, 2026-10-25) ───────────────────────────────────
     #
@@ -635,6 +663,18 @@ class Settings(BaseSettings):
     # none. Reader: `gateway.routes.studio.flags.studio_allowed`. Spec:
     # ai_studio.md section 3.2.
     studio_orgs: str = ""
+    # WS-OB GD-5a: GUIDE_ORGS lists the org ids whose members see the entries
+    # of the guide's tour (the welcome button and the account menu row). `*`
+    # opens every org. Empty opens none. Reader: `acb_common.guide_flags.
+    # guide_allowed`, returned as `guide` from GET /auth/me/shell. Spec:
+    # assistant_guide.md section 7.
+    guide_orgs: str = ""
+    # WS-PKG PKG-5b: PACKAGE_HOST_ORGS lists the org ids that may read the
+    # resolved shell manifest (GET /shell/manifest). `*` opens every org.
+    # Empty opens none. Reader:
+    # `gateway.package_host.flags.package_host_allowed`. Spec:
+    # package_host.md section 10.
+    package_host_orgs: str = ""
     vapid_public_key: str = ""
     vapid_private_key: str = ""
     vapid_subject: str = ""
@@ -887,6 +927,28 @@ class Settings(BaseSettings):
     # (ALN-4b). Fence: tests/unit/test_project_authorities_r8.py.
     authority_pins_orgs: str = ""
 
+    # ── The rules of a project (WS-ALN ALN-5a) ──────────────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, each `/project-rules` route answers 404 and no rule
+    # row is written. The one reader is
+    # `gateway.routes.project_rules.project_rules_allowed`. A SIGHUP reload
+    # applies a change (`gateway/flag_reload.py`). Only the owner writes the
+    # value. Fence: tests/unit/test_project_rules.py.
+    project_rules_orgs: str = ""
+
+    # ── The app requests of agents (WS-MCP MCP-P1b-1) ──────────────────────
+    #
+    # A comma list of organization ids, or `*` for each one. Empty means off,
+    # the default. Off, the four request routes of `/agent-access` answer 404,
+    # and Integrations, AI agents shows no list "Waiting for you". It is the
+    # dark switch of the approval store, because `AGENT_ACCESS_ENABLED` is on in
+    # production. The one reader is `gateway.app_requests.requests_allowed`.
+    # A SIGHUP reload applies a change. Only the owner flips it, under a dated
+    # `enforcement-flip` grant, after MCP-P1b-2 or STU-B2c-2 can ask. Fence:
+    # tests/unit/test_app_requests_r8.py.
+    app_requests_orgs: str = ""
+
     # ── Recency in company retrieval (WS-61 CX-1, D106) ─────────────────────
     #
     # ON makes `GET /search/company` rank newer records first inside each app,
@@ -988,6 +1050,20 @@ class Settings(BaseSettings):
     # Fence: tests/unit/test_held_card_writes.py.
     held_card_writes_orgs: str = ""
 
+    # ── Continue a held chat in a fresh chat (one_assistant_context.md §9, WT-1) ─
+    #
+    # `chat_continue_orgs` lists the organization ids where
+    # `POST /chat/sessions/{id}/continue` answers, or `*` for each one. Empty
+    # means off, and the route answers 404 for each caller. The one reader is
+    # `gateway.routes.chat.continue_allowed`, and it fails closed. The name
+    # ends in `_orgs`, so a SIGHUP applies a change with no restart
+    # (`docs/flag_reload.md`).
+    #
+    # 🔴 OWNER-ONLY on a box: any value other than empty (`work_plan.md` §6
+    # D4, slice WT-5). The flip also waits for WT-1b and WT-2 (§9.3 item 9).
+    # Fence: tests/unit/test_continue_carry.py.
+    chat_continue_orgs: str = ""
+
     # ── The one email card of a new mail (email_app_master_plan.md §18.10) ──
     #
     # `email_edit_card_orgs` lists the organization ids whose chat shows a new
@@ -1017,6 +1093,12 @@ class Settings(BaseSettings):
     # is under 200 characters. Any other value means no remote reader.
     # 🔴 OWNER-ONLY on a box: `jina` sends each URL to a third party (WEB-Q3).
     web_reader_remote: str = ""
+    # `searxng_url` is the base URL of the self-hosted SearXNG (WEB-4, §3.3),
+    # for example `http://127.0.0.1:8888`. Empty means no SearXNG, and the
+    # provider list skips it. The URL is not a member input: only the operator
+    # writes it (`env_guard`, prefix `SEARXNG_`).
+    # Fence: tests/unit/test_web_search_providers.py.
+    searxng_url: str = ""
 
     # ── The per-feature `decide` modes (WS-17 EM-T5, CP-13e) ────────────────
     #
@@ -2114,6 +2196,25 @@ def crm_answer_check_mode() -> str:
         return "off"
     mode = raw.strip().lower()
     return mode if mode in CRM_ANSWER_CHECK_MODES else "off"
+
+
+#: The modes of ``TENANT_SESSION_ABORT_MODE`` (H-249).
+TENANT_SESSION_ABORT_MODES: tuple[str, ...] = ("log", "raise")
+
+
+def tenant_session_abort_mode() -> str:
+    """The ONE reader of ``TENANT_SESSION_ABORT_MODE``: ``log`` or ``raise``.
+
+    Any other value, and a settings load that fails, read as ``log``.
+    ``acb_common.db.tenant_session`` reads it only when a transaction is
+    aborted, so a clean block never pays for the read.
+    """
+    try:
+        raw = str(getattr(get_settings(), "tenant_session_abort_mode", "log") or "log")
+    except Exception:  # a broken settings load never turns the raise on
+        return "log"
+    mode = raw.strip().lower()
+    return mode if mode in TENANT_SESSION_ABORT_MODES else "log"
 
 
 #: The modes of ``TOOL_RESULT_SPILL`` (CTX-1).
