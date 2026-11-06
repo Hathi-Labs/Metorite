@@ -5424,7 +5424,7 @@ This amends D145 point 5. Fence: `tests/unit/test_daily_release.py` and `tests/u
 
 The owner asked on 2026-11-06, in chat, to "see how Metorite itself can be improved in its MCP to orchestrate multiple people's agents, approvals etc, and plan that out too". Board: **WS-MCP**. Owning spec: `specs/agent_coordination.md` §3.10, §4.1 and §5.10. Metorite: epic 321, plan task 1874.
 
-It extends D140 and changes none of its rules. It amends D-EA-14 (`external_agent_access.md` §12.8) in one point: the app lead joins the answer set.
+It extends D140. It changes one rule: SW-60 lets a run parked on its CI pass the lease of D140.8 (Q13). It amends D-EA-14 (`external_agent_access.md` §12.8) in one point: the app lead joins the answer set.
 
 **Owner calls (task 1872, 2026-11-06).** Items 1 to 3. **Agent defaults (task 1874).** Items 4 to 10. They stand unless the owner objects. The owner accepted Q1 to Q12 of the spec's §8 on 2026-11-06 at 10:33 UTC. Q13 (the CI park cap) is open.
 

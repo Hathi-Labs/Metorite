@@ -63,7 +63,7 @@ The next slices fix liveness first, because the board shows most agent work as i
 
 1. **R5, R6, R7 and R8.** A new table is tenant-scoped under FORCE ROW LEVEL SECURITY. A migration is expand only. Each rule names its fence. Each query runs on a real database.
 2. **R1.** Take each migration number at build time, and check it again at merge.
-3. **Ship dark.** New behaviour lands behind a flag, default off. A bug fix may go live at the merge under `agent_runs_enabled` when it only adds an optional argument. SW-10a part 1 did this. The slice says so.
+3. **Ship dark.** New behaviour lands behind a flag, default off. A bug fix may go live at the merge under `agent_runs_enabled`. It must only add an optional argument or an optional result field. SW-10a part 1 did this. The slice says so.
 4. **One seam each.** One link tool, one notes path through `my_work`, one sequence store, one run state SQL and one lease rule.
 5. **Every body is untrusted text.** A value that a person or another agent wrote leaves the edge as `{"untrusted_text": ...}` (`external_agent_access.md` §9.4).
 6. **Chat parity.** A new route gets a row in `skill_projects/manifest.py`, or `test_projects_chat_coverage.py` fails (D-PM-37). A new edge write route joins `MCP_WRITE_ROUTES`, or `test_mcp_edge_coverage.py` fails.
@@ -125,7 +125,7 @@ While the sweep is off, no fingerprint exists, so `stranded` is null. That is wh
 **The rule (D140.3).** Each open task that an agent holds has a live path. A live path is one of these:
 
 1. **A working run.** An activity in the last 5 minutes.
-2. **A waiting run.** A `waiting` line whose time has not passed. The time is at most 120 minutes (D140.8).
+2. **A waiting run.** A `waiting` line whose time has not passed. The time is at most 120 minutes (D140.8). A run parked on its CI (SW-60) may wait longer, up to the cap of Q13.
 3. **A question.** An `awaiting` run, addressed to a named member. It keeps the task for three leases.
 4. **A wait record** (SW-9). A named owner who can see the task, and a concrete action.
 5. **An open blocker.** An open `blocks` link from another open task.
@@ -434,7 +434,7 @@ Seven causes explain the 36. The owner asked that this plan fix the causes. Each
 
 **Cause 3: a question went only to the terminal (task 835, 16:34 UTC).** A background session has no reader.
 
-- **Already planned.** `ask_on_task` exists. The rule is in CLAUDE.md and in the lane prompt.
+- **Already planned.** `ask_on_task` exists. Step 6 of the server instructions and step 4b of `next-ticket.md` name it. The instructions are cut at 4096 characters (task 1803).
 - **New (SW-61 and SW-56).** The Stop message and the protocol block both say that a question goes through `ask_on_task`, never only to the terminal.
 
 **Cause 4: an answer woke nobody (10 tasks, some for over 10 hours).**
@@ -472,13 +472,13 @@ Seven causes explain the 36. The owner asked that this plan fix the causes. Each
 5. **A delegate field beside the assignees.** A task names at most one agent as its delegate, by the agent reference of §3.7. The human assignee stays accountable. The default holds until the owner answers Q2. A member may delegate to another member's agent only when that agent is shared. Its member or an admin shares it. Q2 stays open for the owner.
 6. **Agent guidance, nearest first.** A task gets the guidance of its project, then of each parent up to its space, then of the org. Each block names its source and its version. It leaves the edge as untrusted text, and it never overrides the server's rules.
 7. **A run plan is a whole-list replace.** Each call sends every step. At most 30 steps of 200 characters, each `pending`, `in_progress`, `completed` or `canceled`.
-8. **The `waiting` state is capped at 120 minutes.** After that time, with no new activity, the run reads `stale`. A waiting line renews the lease as any activity does, and the cap never passes one lease.
+8. **The `waiting` state is capped at 120 minutes.** After that time, with no new activity, the run reads `stale`. A waiting line renews the lease as any activity does, and the cap never passes one lease. One exception: SW-60 (D183, Q13) lets a run parked on its CI pass the lease up to a larger cap.
 9. **The stranded sweep goes on in staging first.** The nudge verb (task 1054), the `waiting` state (1045a) and the linked events (1045b) land before the flip. Production follows after the staging test of SW-10b passes.
 10. **The lease is two hours, from the newest activity of any author.** A question keeps the task for three leases. This replaces the 15-minute TTL of the first text of SW-4.
 
 ### 4.1 D183 — many people, each with their own agents (2026-11-06)
 
-`work_plan.md` §3 holds it as **D183**. It extends D140 and changes none of its rules.
+`work_plan.md` §3 holds it as **D183**. It extends D140. It changes one rule: SW-60 lets a parked run pass the lease of D140.8 (Q13).
 
 **Owner calls (task 1872, 2026-11-06).**
 
@@ -528,7 +528,7 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
    - SW-18 and SW-25, which SW-55 and SW-26 need.
    - The box token (task 1838), if the contributor uses a box.
    - Task 1731 (the answer watcher), SW-60 (park on CI), SW-61 (the Stop gate) and SW-62 (the first-sweep digest). SW-62 comes before SW-10b.
-   - SW-53 with GH-8 for the HathiLabs organization, so a merge moves the task.
+   - SW-53 with GH-8 for the HathiLabs organization, so a merge moves the task. GH-0 comes first: the owner registers the App at GitHub (OWNER-GATE). The install on the GitHub organization is OWNER-GATE too.
 2. **Routing.** SW-45, SW-46, SW-48, SW-47, then SW-49.
 3. **Seeing.** SW-50, then SW-51.
 4. **GitHub.** SW-53, then GH-8 behind the per-organization switch, then SW-54, SW-28, SW-26, SW-52, SW-55 and SW-58.
@@ -627,7 +627,7 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
   - A vitest maps `waiting` to its look in light and dark.
 - **Fence.** `test_agent_runs_r8.py`, `test_mcp_edge_agent_runs.py`, `test_mcp_edge_prompts.py`, `agentCardLook.test.ts`.
 - **Live.** It goes live at the merge under `agent_runs_enabled`. It only adds an optional argument, and the state shows only when an agent sends it.
-- **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE. D145 owner preview for the chip. **Depends on.** SW-7b, GH-5 (the head of the pull request) and SW-53.
+- **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE.
 
 #### 1045b · Linked events count as life
 
@@ -1038,7 +1038,7 @@ They keep their own gates.
 
 - **Metorite task.** 1886.
 - **Scope.** The setting `GITHUB_APP_ORGS`, a list of organizations that reloads with no restart. `github_app_enabled` stays the master. The webhook receiver, the connect flow and the reconcile poll check the list. A delivery for an organization not on the list gets 202 and writes nothing.
-- **Backfill.** After the turn-on, one pass applies the merge rule (GH-6) to tasks whose pull request merged earlier. A dry run lists them first, and the owner reads the list. Check at dispatch that the poll reads merged references.
+- **Backfill.** After the turn-on, one pass applies the merge rule (GH-6) to tasks whose pull request merged earlier. GH-6 runs only when a row moves into `merged`. A reference that `add_task_reference` wrote with no GitHub row does not trigger it. The backfill must read those too. A dry run lists the tasks first and writes nothing. The owner approves the list (OWNER-GATE, a production one-off). The apply moves only the listed agent-worked tasks. Check at dispatch that the poll reads merged references. R8 holds both: the dry run writes nothing, and the apply moves only listed tasks.
 - **Done when.** R8: with the master on and organization B off the list, a delivery for B writes nothing, and one for A links its pull request.
 - **Fence.** `test_github_webhook_r8.py` (new cases) and `test_github_reconcile_r8.py`.
 - **Risk.** HIGH (webhook ingress, tenancy). **Gate.** AGENT-SAFE dark. The turn-on is GH-8. **Depends on.** GH-4 to GH-6.
@@ -1062,7 +1062,7 @@ They keep their own gates.
 #### SW-56 · A protocol block in the results
 
 - **Metorite task.** 1892.
-- **Scope.** The results of `claim_task` and `my_work` carry `protocol: {version, lines}`. It holds at most 6 lines of 120 characters. The lines say: claim the slice, not the epic. Post a thought each minute. Ask with `ask_on_task` when blocked, and never only in the terminal. End each turn with one disposition: review or Done, a question, a park on CI, or a release. Hand off with evidence. The text is fixed server text.
+- **Scope.** The results of `claim_task` and `my_work` carry `protocol: {version, lines}`. It holds at most 6 lines of 120 characters. The lines say: claim the slice, not the epic. Post a thought each minute. Ask with `ask_on_task` when blocked, and never only in the terminal. End each turn with one disposition: review or Done, a question, a release, or (where SW-60 is on) a park on CI. Hand off with evidence. The text is fixed server text.
 - **Done when.** A client that ignores instructions and prompts still reads the block in the claim result.
 - **Fence.** `test_mcp_edge_context.py` and `test_mcp_edge_prompts.py`. The 3500-character budget fence belongs to task 1803.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** Task 1803 (no spec).
@@ -1096,43 +1096,44 @@ They keep their own gates.
 - **Metorite task.** 1902.
 - **Scope.**
   1. `post_agent_activity` `waiting` takes `on: "ci"` with a `pr`, a pull request that is already a reference of the task. A park of this kind has the cap `AGENT_CI_PARK_MAX_MINUTES`, 240 by default (Q13), and not the 120 of 1045a. Migration, expand only: `pm_agent_runs.waiting_ref_id UUID NULL`, the reference that the run waits on.
-  2. A parked run has a live path (§3.3). Its checks have not ended, and the cap has not passed. The stranded clause does not match it. The session may end.
-  3. The checks may end, or the pull request may merge or close. Then the run reads `needs_agent` with the reason `ci_done`. The result is passed, failed or merged. The GitHub path (1045b, GH-5) writes it once for each `(run, head commit, conclusion)`. It renews the lease once.
-  4. Without the GitHub connection, the box watcher (task 1731) reads the parked runs. It runs `gh pr checks` for each. It starts a session in the task's lane when the checks end. It needs no write scope.
+  2. A parked run has a live path (§3.3). Its checks have not ended, and the cap has not passed. `lease_held_sql` gains a parked arm up to the cap. It is the one lease text, so the takeover rule, the `unheld` filter and `held_by` all follow. The stranded clause follows too. The session may end.
+  3. The checks may end, or the pull request may merge or close. Then the run reads `needs_agent` with the reason `ci_done`. The result is passed, failed or merged. The GitHub path (1045b, GH-5) writes it once for each `(run, head commit, conclusion)`. It renews the lease once. The event moves `last_signal_at` only and never `last_activity_at`, so the run does not read `answered` (1045b item 4). The event also clears the `session_key`, as Resume does, so the next session can take the run.
+  4. Without the GitHub connection, the box watcher (task 1731) reads the parked runs. It runs `gh pr checks` for each. It starts a session in the task's lane when the checks end. It needs no write scope. It lists parked runs with `list_agent_runs` filtered to `needs_agent` and reason `ci_done`. Its session must use the connection of the parked run, or a connection of the same member. Check this against the box token at dispatch (task 1838).
   5. At the cap the run is an ordinary stranded run (SW-10a).
-  6. The `work_on_task` steps tell the agent what to do. With a pull request open and checks pending, post `waiting` on `ci` with the `pr`. Then end the turn.
-- **Done when.** R8 with a moved clock: a parked run reads `waiting` past 120 minutes, up to the cap. The stranded clause does not match it. A check end writes one `ci_done` and one lease renewal. A replayed event writes nothing. After the cap, the run is stranded. A watcher test with a fake `gh` starts one session for one run.
+  6. The `work_on_task` steps tell the agent what to do. With a pull request open and checks pending, post `waiting` on `ci` with the `pr`. Then end the turn. The text applies only to the organizations on the flag. Elsewhere a park strands at 120 minutes.
+- **Done when.** R8 with a moved clock: a parked run reads `waiting` past 120 minutes, up to the cap. The stranded clause does not match it. A check end writes one `ci_done` and one lease renewal. A replayed event writes nothing. A second claim at minute 130 of a parked run gets 409. After the cap, the run is stranded. A watcher test with a fake `gh` starts one session for one run.
 - **Fence.** `test_agent_runs_r8.py`, `test_agent_run_sweep_r8.py`, a webhook test beside the GitHub fences, and a test of the watcher in `scripts/home_server/`.
-- **Risk.** HIGH (a migration, the lease). **Gate.** AGENT-SAFE dark behind `AGENT_CI_PARK_ORGS`. **Depends on.** 1045a, 1045b, GH-5 for the GitHub path, task 1731 for the restart. Q13.
+- **Risk.** HIGH (a migration, the lease). **Gate.** AGENT-SAFE dark behind `AGENT_CI_PARK_ORGS`, a flag that follows `docs/flag_reload.md`. **Depends on.** 1045a, 1045b, GH-5 for the GitHub path, task 1731 for the restart. Q13.
 
 #### SW-61 · A turn does not end with a run and no disposition
 
 - **Metorite task.** 1903.
 - **Scope.**
-  1. A Stop hook for a background session, in the hook file of CIV-16 (task 1828, PR 1763). It reads the transcript of the session. It needs no token and calls no MCP.
-  2. The hook finds each `claim_task` or `start_agent_run` of the session that has no later disposition for the same task. A disposition is `finish_agent_run`, `release_task`, `ask_on_task`, a move to review or Done, or a `waiting` post with a `pr` (SW-60).
-  3. The hook blocks the stop once. The message names the four dispositions: review or Done, `ask_on_task`, park on CI, or `release_task`. It says that a question goes through `ask_on_task`, never only to the terminal. A second stop passes.
-  4. The SW-56 protocol block gains the same line.
-- **Done when.** Hook tests with transcript fixtures: a claim with no disposition blocks once and then passes. A claim with a release passes. A session with no claim passes. The message holds the four names.
-- **Fence.** `node .claude/hooks/stop-disposition.test.mjs` (new). `test_mcp_edge_context.py` for the protocol line. A hook that cannot read the transcript passes and logs, so it never traps a session.
+  1. A Stop hook for a background session, in `stop-children.mjs` of CIV-16 (task 1828, PR 1763). It reads `transcript_path` from its input. It needs no token and calls no MCP. A background session is one that the lane launcher marks with an environment variable. Name the variable at dispatch. An interactive session passes.
+  2. The hook matches tool names by their suffix, for example `mcp__metorite__claim_task`. It counts a claim only when its tool result is not an error, so a 409 does not block. It maps the run id of the result to the task. A disposition for that run is `finish_agent_run`, `release_task`, `ask_on_task`, a `waiting` post with a `pr` (SW-60), or a `set_task_status` call. The hook cannot read the status of a call with no token, so any `set_task_status` on the task counts.
+  3. The hook blocks the stop once, with the decision `block`. It passes when `stop_hook_active` is true. The message names the four dispositions: review or Done, `ask_on_task`, park on CI, or `release_task`. It says that a question goes through `ask_on_task`, never only to the terminal. A second stop passes.
+- **Done when.** Hook tests with transcript fixtures: a claim with no disposition blocks once and then passes. A claim with a release passes. A claim with a 409 passes. A session with no claim passes. An interactive session passes. The message holds the four names.
+- **Fence.** `node .claude/hooks/stop-children.test.mjs` (the test file of the hook, extended). `test_mcp_edge_context.py` holds the protocol line of SW-56. A hook that cannot read the transcript passes and logs, so it never traps a session.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE to build. OWNER-GATE `guard-write` for the entry in `.claude/settings.json`. The dated grant opens it until 2026-11-30. **Depends on.** PR 1763 (task 1828), SW-56.
 
 #### SW-62 · The first sweep writes one digest, and the owner can release the runs of ended sessions
 
 - **Metorite task.** 1904.
 - **Scope.**
-  1. The sweep may first meet more than 5 stranded runs in one organization. Then it writes one Needs attention row, "N runs have no live session". The row lists the runs and groups epic holds. The pass sends no single nudge.
-  2. A bulk act, `POST /projects/agent-runs/release-ended`. It shows the count first. After one confirm it releases each eligible run: stranded or past the lease, and not working. It never reassigns. It writes one timeline line for each run.
-  3. A chat tool does the same (class B, one confirm card).
-  4. The act uses `person_may_end_sql`. A caller releases only the runs that the caller may end.
+  1. A sweep pass may find more than 5 new strands in one organization. Then it writes one digest. The store is `pm_agent_run_strands`, with a new kind `digest` (migration, expand only: widen the CHECK as `NOT VALID`, then `VALIDATE`). Needs attention reads it as one row, "N runs have no live session". The row lists the runs and groups epic holds. The pass sends no single nudge.
+  2. The second miss rolls up too. One lease later the sweep updates the digest and writes no row for each run.
+  3. The reader of the row is a person who may end the runs (item 6). The list holds only the tasks that the reader can see (D12).
+  4. A bulk act, `POST /projects/agent-runs/release-ended`. It shows the count first. After one confirm it releases each eligible run. Eligible means stranded or past the lease, and not working. A run in `awaiting` within three leases and a run parked under SW-60 are not eligible. The act never reassigns. It writes one run activity for each run, as the release route does.
+  5. A chat tool does the same (class B, one confirm card).
+  6. The act uses both halves of the end rule. `person_may_end_sql` covers the member and the assignees. `may_end_run` with `RELEASE_ADMIN_PERMISSION` covers the admin. Q5 changes that permission to `admin:members:manage`. A caller releases only the runs that the caller may end.
 - **Done when.** R8: 36 candidate runs give 1 row and 0 nudges in the first pass. The bulk act releases the eligible runs only. A working run is never released. A second pass writes nothing.
 - **Fence.** `test_agent_run_sweep_r8.py`, `test_needs_attention_r8.py`, `test_projects_chat_coverage.py`. A named mutation: a release of a working run turns the suite red.
-- **Risk.** HIGH (a write on many runs, the sweep). **Gate.** AGENT-SAFE dark. The click on production is the owner's. D145 owner preview for the row. **Depends on.** SW-10a, SW-48. SW-10b waits for it.
+- **Risk.** HIGH (a migration, a write on many runs, the sweep). **Gate.** AGENT-SAFE dark. The click on production is the owner's. D145 owner preview for the row. **Depends on.** SW-10a, SW-48. SW-10b waits for it.
 
 #### SW-63 · A claim on an epic warns
 
 - **Metorite task.** 1905.
-- **Scope.** `claim_task` of a task with open subtasks claims it and returns a `warning`: "This task has N open subtasks. Claim the slice, not the epic." The result lists up to 5 subtask ids. It is a warning and not a refusal. It adds one optional field, so it goes live under `agent_runs_enabled` (§2.3 rule 3). The `work_on_task` steps say the same.
+- **Scope.** `claim_task` of a task with open subtasks claims it and returns a `warning`. An open subtask is one that `filters.task_closed_sql` does not match. The warning reads: "This task has N open subtasks. Claim the slice, not the epic." The result lists up to 5 subtask ids. It is a warning and not a refusal. It adds one optional field to the result. This slice widens rule 3 of §2.3 in the same edit. An optional result field may go live under `agent_runs_enabled`, as an optional argument may. The `work_on_task` steps say the same.
 - **Done when.** R8: a claim of a parent with 2 open subtasks carries the warning and works. A claim of a leaf has no warning.
 - **Fence.** `test_mcp_edge_claim.py` and `test_agent_run_exclusive.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE.
@@ -1300,7 +1301,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-58 | `uv run pytest -q -p no:cacheprovider tests/unit/test_needs_attention_r8.py tests/unit/test_projects_chat_coverage.py` |
 | SW-59 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_label_fence.py tests/unit/test_mcp_edge_coverage.py`, and the vitest of the chip (new) |
 | SW-60 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_runs_r8.py tests/unit/test_agent_run_sweep_r8.py`, the webhook test (new), and the watcher test in `scripts/home_server/` (new) |
-| SW-61 | `node .claude/hooks/stop-disposition.test.mjs` (new), and `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py` |
+| SW-61 | `node .claude/hooks/stop-children.test.mjs` (extended), and `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_context.py` |
 | SW-62 | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_run_sweep_r8.py tests/unit/test_needs_attention_r8.py tests/unit/test_projects_chat_coverage.py` |
 | SW-63 | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_claim.py tests/unit/test_agent_run_exclusive.py` |
 
