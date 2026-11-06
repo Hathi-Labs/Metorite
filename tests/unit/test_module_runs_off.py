@@ -135,6 +135,10 @@ class TestTheReader:
 
         assert flag_reload.reloadable("MODULE_RUN_ORGS")
 
+    def test_the_example_env_ships_it_empty(self) -> None:
+        body = (ROOT / ".env.example").read_text(encoding="utf-8").replace("\r\n", "\n")
+        assert "\nMODULE_RUN_ORGS=\n" in body
+
     def test_no_tenant_may_write_the_flag(self) -> None:
         from acb_common import env_guard
 
