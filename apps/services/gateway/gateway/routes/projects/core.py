@@ -314,17 +314,23 @@ async def is_runnable_with_ancestors(db: Any, project_id: Any) -> bool:
     )).scalar()
     return bool(row)
 
-#: The five stages in lifecycle order. This is the ONE list the two orders
-#: below derive from (task 1792, ``test_projects_status_order_r8.py``).
-_LIFECYCLE: tuple[str, ...] = ("backlog", "todo", "in_progress", "done", "cancelled")
-
 #: `pm_task_statuses.category` — the machine-readable half of a status. Name and
 #: colour are the owner's; this is what completion, the personal mirror (§6.1)
 #: and automation gates (§6.3) key off. `triage` (WS-27u, migration 164) is the
 #: parked-at-the-front-door value that :func:`triage_exclusion_clause` keys off.
 #: Triage sits LAST here, which is what the list sort by Status shows
 #: (``_CATEGORY_RANK_ARRAY``).
-STATUS_CATEGORIES: tuple[str, ...] = (*_LIFECYCLE, "triage")
+#:
+#: This is the ONE written list of stages (task 1792). ``_LIFECYCLE`` and
+#: ``STATUS_STAGE_ORDER`` derive from it. Keep it a literal:
+#: ``projectToolRows.test.ts`` reads this line and compares it with
+#: ``STATUS_CATEGORIES`` in ``statusCategory.ts``.
+STATUS_CATEGORIES: tuple[str, ...] = (
+    "backlog", "todo", "in_progress", "done", "cancelled", "triage",
+)
+
+#: The five stages in lifecycle order: every category but triage.
+_LIFECYCLE: tuple[str, ...] = tuple(c for c in STATUS_CATEGORIES if c != "triage")
 
 #: The order a BOARD draws its lanes (task 1792): triage first, then the
 #: lifecycle. ONE rule orders status lanes everywhere: stage rank, then

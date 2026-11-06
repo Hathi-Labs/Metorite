@@ -60,6 +60,7 @@ def test_both_orders_and_the_rank_array_derive_from_one_list():
     # Board order: triage first. List sort by Status: triage last. One source.
     assert STATUS_STAGE_ORDER == ("triage", *_LIFECYCLE)
     assert STATUS_CATEGORIES == (*_LIFECYCLE, "triage")
+    assert _LIFECYCLE == ("backlog", "todo", "in_progress", "done", "cancelled")
     expected = "ARRAY[" + ", ".join(f"'{c}'" for c in STATUS_CATEGORIES) + "]"
     assert _CATEGORY_RANK_ARRAY == expected
     assert _CATEGORY_RANK_ARRAY.index("'triage'") > _CATEGORY_RANK_ARRAY.index("'cancelled'")
