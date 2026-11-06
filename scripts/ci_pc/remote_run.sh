@@ -93,6 +93,20 @@ print(len(d["files"]))' 2>/dev/null)" || nfiles=-1
   for a in "${fwd[@]}"; do [ "$a" = --e2e ] && extra="$CI_E2E_GB"; done
   ci_slot_acquire "$want" "$min" "$extra" || return 3
   echo "ci: slot $CI_SLOT_ID, $CI_SHARDS_GRANTED shard(s), worktree $wt"
+  # CIV-6b. A dropped client (ssh gone, Ctrl-C, a killed ci_local.sh) sends this
+  # shell a HUP or TERM. Run in the foreground, the EXIT trap then removed the
+  # worktree under the live job containers, and a run that would have finished
+  # died with FileNotFoundError (measured 2026-11-06). So the suite runs in its
+  # own process group, a stop signal goes to that group, and the trap runs
+  # only after the suite has ended.
+  local suite_pid rc=0
   CI_SLOT_GRANTED=1 CI_DEPS_DIR="${CI_DEPS_DIR:-$HOME/ci-deps}" \
-    bash scripts/ci_pc/run_suite.sh --shards "$CI_SHARDS_GRANTED" "${sel_args[@]}" "${fwd[@]}"
+    setsid bash scripts/ci_pc/run_suite.sh --shards "$CI_SHARDS_GRANTED" "${sel_args[@]}" "${fwd[@]}" &
+  suite_pid=$!
+  trap 'kill -TERM -- "-$suite_pid" 2>/dev/null' HUP INT TERM
+  # `wait` returns at once when a trapped signal arrives, so wait again until
+  # the suite is really gone.
+  while kill -0 "$suite_pid" 2>/dev/null; do wait "$suite_pid"; rc=$?; done
+  trap - HUP INT TERM
+  return "$rc"
 }

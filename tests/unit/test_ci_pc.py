@@ -322,3 +322,40 @@ def test_one_backup_job_runs_at_a_time_on_the_daemon():
 def test_the_timed_frontend_tests_do_not_share_the_cpu_with_another_run():
     # bodyLook.test.ts asserts "under 100 ms". Two runs at once gave 110 ms.
     assert '[ "$label" = frontend ] && lk=(flock "$HOME/.ci-frontend.lock")' in _RUN_SUITE
+
+
+def test_a_stop_signal_ends_the_suite_before_the_worktree_goes(tmp_path: Path) -> None:
+    """CIV-6b. A dropped client sends TERM to ci_remote_run. The suite must be
+    stopped and reaped BEFORE the EXIT trap removes the worktree, or the job
+    containers lose the folder they run in. The harness runs the block of
+    remote_run.sh that starts the suite, with a stub suite that sleeps."""
+    import signal
+    import subprocess
+    import time
+
+    block = _REMOTE.split("  local suite_pid rc=0\n", 1)[1].split("\n}\n", 1)[0]
+    stub = tmp_path / "scripts" / "ci_pc"
+    stub.mkdir(parents=True)
+    (stub / "run_suite.sh").write_text(
+        'trap "echo suite-stopped >> $LOG; exit 7" TERM\n'
+        "echo suite-started >> $LOG\n"
+        "while true; do sleep 0.1; done\n",
+        encoding="utf-8",
+    )
+    log = tmp_path / "log"
+    script = (
+        f'cd "{tmp_path}"; export LOG="{log}"; CI_SHARDS_GRANTED=1; sel_args=(); fwd=()\n'
+        'f() {\n  local suite_pid rc=0\n' + block + '\n}\n'
+        'trap "echo worktree-removed >> $LOG" EXIT\n'
+        "f; echo \"f-returned $?\" >> $LOG\n"
+    )
+    proc = subprocess.Popen(["bash", "-c", script], start_new_session=True)
+    for _ in range(100):
+        if log.exists() and "suite-started" in log.read_text(encoding="utf-8"):
+            break
+        time.sleep(0.1)
+    proc.send_signal(signal.SIGTERM)
+    proc.wait(timeout=30)
+    lines = log.read_text(encoding="utf-8").split()
+    assert lines == ["suite-started", "suite-stopped", "f-returned", "7", "worktree-removed"]
+    assert lines.index("suite-stopped") < lines.index("worktree-removed")
