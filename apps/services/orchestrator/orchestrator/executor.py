@@ -10717,18 +10717,18 @@ def _context_preamble_parts(
 
     # Task 1649: the line carries the time too, in the member's own zone.
     settings_zone, people_zone = _member_zones()
-    line = today_line(
-        zone=resolve_zone(settings_zone, people_zone, profile_zone), with_time=True)
+    member_zone = resolve_zone(settings_zone, people_zone, profile_zone)
+    line = today_line(zone=member_zone, with_time=True)
     if line:
         parts.append(line)
     # WS-63 PZ-4 (personalization.md §5.2): the member's part of the day, at
-    # the zone of their People row, so a greeting fits the hour. Only beside
+    # the same resolved zone as the "now" line (PZ-39), so a greeting fits the hour. Only beside
     # a profile block whose greeting is not "none". Last, so each block above
     # keeps its place.
     if profile_block and profile_greeting != "none":
         from acb_common.today import part_of_day_line
 
-        parts.append(part_of_day_line(profile_zone or None))
+        parts.append(part_of_day_line(member_zone))
     return parts
 
 

@@ -79,32 +79,63 @@ def today_line(
     return f"Today is {local:%A}, {local.day} {local:%B %Y} ({tz.key})."
 
 
-def part_of_day(zone: str | None, now: datetime | None = None) -> str:
-    """``morning`` (5 to 11), ``afternoon`` (12 to 16), ``evening`` (17 to
-    20) or ``night``, at the hour of *zone*. A bad or missing zone reads as
-    :data:`DEFAULT_ZONE`. A naive *now* reads as UTC."""
+#: The ONE table of greetings (PZ-39). Each row is ``(first hour, part of the
+#: day, greeting)``. A row runs until the next row starts. The last row runs
+#: past midnight until the first row starts again at 05:00. The late hours
+#: read "Hello" and never "Good night", because "Good night" is a goodbye.
+#: My Day holds the same table in ``myDay.ts`` as ``GREETING_TABLE``.
+#: Fence: ``tests/unit/test_greeting_table.py``.
+GREETING_TABLE: tuple[tuple[int, str, str], ...] = (
+    (5, "morning", "Good morning"),
+    (12, "afternoon", "Good afternoon"),
+    (17, "evening", "Good evening"),
+    (21, "night", "Hello"),
+)
+
+
+def _row_at(zone: str | None, now: datetime | None) -> tuple[int, str, str]:
     tz = _zone(zone)
     moment = now or datetime.now(tz)
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=ZoneInfo("UTC"))
     hour = moment.astimezone(tz).hour
-    if 5 <= hour <= 11:
-        return "morning"
-    if 12 <= hour <= 16:
-        return "afternoon"
-    if 17 <= hour <= 20:
-        return "evening"
-    return "night"
+    row = GREETING_TABLE[-1]
+    for entry in GREETING_TABLE:
+        if entry[0] <= hour:
+            row = entry
+    return row
+
+
+def part_of_day(zone: str | None, now: datetime | None = None) -> str:
+    """``morning`` (5 to 11), ``afternoon`` (12 to 16), ``evening`` (17 to
+    20) or ``night``, at the hour of *zone*. The rows come from
+    :data:`GREETING_TABLE`. A bad or missing zone reads as
+    :data:`DEFAULT_ZONE`. A naive *now* reads as UTC."""
+    return _row_at(zone, now)[1]
+
+
+def greeting_for(zone: str | None, now: datetime | None = None) -> str:
+    """The greeting word for the hour of *zone*, from :data:`GREETING_TABLE`:
+    "Good morning", "Good afternoon", "Good evening" or "Hello"."""
+    return _row_at(zone, now)[2]
 
 
 def part_of_day_line(zone: str | None, now: datetime | None = None) -> str:
-    """"Part of the day for the member: morning." One short line.
+    """One short line: the part of the day and the greeting to use.
 
     WS-63 PZ-4 (``personalization.md`` §5.2): the greeting rule says "for the
     time of day", and :func:`today_line` gives no hour. *zone* is the
-    member's ``people.timezone``. Fence:
-    ``tests/unit/test_executor_profile_block.py``."""
-    return f"Part of the day for the member: {part_of_day(zone, now)}."
+    member's resolved zone. In the late hours the line says "Hello" or "Good
+    evening" and never "Good night". The line changes once per band, so it is
+    stable for a given hour. Fence: ``tests/unit/test_executor_profile_block.py``."""
+    part = part_of_day(zone, now)
+    word = greeting_for(zone, now)
+    if part == "night":
+        return (
+            f"Part of the day for the member: {part}. Greet with \"{word}\" "
+            "or \"Good evening\". Never say \"Good night\", because it is a goodbye."
+        )
+    return f"Part of the day for the member: {part}. Greet with \"{word}\"."
 
 
-__all__ = ["DEFAULT_ZONE", "part_of_day", "part_of_day_line", "resolve_zone", "today_line"]
+__all__ = ["DEFAULT_ZONE", "GREETING_TABLE", "greeting_for", "part_of_day", "part_of_day_line", "resolve_zone", "today_line"]
