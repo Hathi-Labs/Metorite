@@ -76,6 +76,14 @@ export const ASSISTANT_PERSONA = [
 export const CHAT_FIRST_PERSONA_LINE =
   "When the member asks to see a page, a list or a record, call show_in_app with its path. Then say what they will see, in one sentence.";
 
+/**
+ * The line that joins the persona when the guide is on for the org (WS-OB GD-7,
+ * `assistant_guide.md` §5.4, `guide` of `GET /auth/me/shell`). The dock joins it,
+ * so `ASSISTANT_PERSONA` stays what every other build sends.
+ */
+export const GUIDE_PERSONA_LINE =
+  "When the member asks how to do something in Metorite, call find_guide. Answer in at most three short steps from its result, then offer Show me (show_guide) or Open. Never invent a button.";
+
 // ── The forms ────────────────────────────────────────────────────────────────
 
 /**
@@ -354,6 +362,12 @@ export interface AssistantAsk {
    */
   join?: boolean;
   /**
+   * A draft that asked for a new chat (`fresh`): the chat that the dock held
+   * when the draft was made. The mounted chat must not take the draft. Only the
+   * chat that the fresh request starts takes it (BETA-1 fix, `draftFor`).
+   */
+  after?: string | null;
+  /**
    * WS-63 D-PZ-37: the member typed these words, in the Ask field or the
    * command bar. Only then does the send carry the typed mark
    * (`lib/typedMark.ts`). A start pill and "Get to know me" leave it unset.
@@ -383,6 +397,11 @@ export interface AssistantState {
    * message once, then takes it (`consumeReminder`).
    */
   reminder: string | null;
+  /**
+   * The next fresh chat opens with the hello (WS-BUD BUD-1). The dock asks
+   * the server for the first message once, then takes it (`consumeHello`).
+   */
+  hello: boolean;
   /** Grows when the cursor should go to the assistant's composer. */
   focusSeq: number;
   /** The side panel's width. */
@@ -428,6 +447,7 @@ const CLOSED: AssistantState = {
   draft: null,
   freshSeq: 0,
   reminder: null,
+  hello: false,
   focusSeq: 0,
   width: DOCK_DEFAULT,
 };
@@ -459,6 +479,8 @@ export interface OpenOptions {
   fresh?: boolean;
   /** A reminder id to open in the fresh chat that this open asks for (RM-4). */
   reminder?: string;
+  /** The fresh chat that this open asks for opens with the hello (BUD-1): pass `fresh` too. */
+  hello?: boolean;
   /** WS-63 D-PZ-37: the member typed `text` or `draft` in a box of the
    *  shell. Leave it unset for words that a click sends. */
   typed?: boolean;
@@ -510,10 +532,14 @@ export function openAssistant(opts: OpenOptions = {}): void {
       ? { seq: ++_askSeq, text, join: base.open, ...(opts.typed === true ? { typed: true } : {}) }
       : base.ask,
     draft: draft
-      ? { seq: ++_askSeq, text: draft, ...(opts.typed === true ? { typed: true } : {}) }
+      ? {
+        seq: ++_askSeq, text: draft, ...(opts.typed === true ? { typed: true } : {}),
+        ...(opts.fresh ? { after: base.sessionId } : {}),
+      }
       : base.draft,
     freshSeq: opts.fresh ? base.freshSeq + 1 : base.freshSeq,
     reminder: reminder || base.reminder,
+    hello: opts.hello === true ? true : base.hello,
     focusSeq: base.focusSeq + 1,
   });
 }
@@ -521,7 +547,19 @@ export function openAssistant(opts: OpenOptions = {}): void {
 /** Close the assistant. The chat it showed stays its chat for next time. */
 export function closeAssistant(): void {
   if (!_state.open) return;
-  _set({ ..._state, open: false, ask: null, draft: null, reminder: null });
+  _set({ ..._state, open: false, ask: null, draft: null, reminder: null, hello: false });
+}
+
+/**
+ * The draft that the chat on screen may take. A draft that asked for a new chat
+ * waits while the chat of the dock is still the old one. The mounted chat reads
+ * the draft in its own effect, before the dock switches to the new chat, so a
+ * draft that it took would be lost. Same race as the ask (owner report 2026-10-26).
+ */
+export function draftFor(draft: AssistantAsk | null, activeId: string | null): AssistantAsk | null {
+  if (!draft) return null;
+  if (draft.after === undefined) return draft;
+  return activeId && activeId !== draft.after ? draft : null;
 }
 
 /** The composer took the draft. */
@@ -534,6 +572,12 @@ export function consumeDraft(): void {
 export function consumeReminder(): void {
   if (!_state.reminder) return;
   _set({ ..._state, reminder: null });
+}
+
+/** The dock asked the server for the hello: drop it, so it opens once. */
+export function consumeHello(): void {
+  if (!_state.hello) return;
+  _set({ ..._state, hello: false });
 }
 
 /** Change the form of this open. Nothing is kept for the next one. */

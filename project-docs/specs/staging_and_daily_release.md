@@ -2,6 +2,8 @@
 
 **Status update, 2026-10-31:** staging is retired (D144). The daily release and the dispatch stay.
 
+**Status update, 2026-11-05:** the home box starts the daily release (D178, CIV-13, built). Its timer dispatches `deploy.yml` with `nightly=true` at 21:30 UTC. GitHub's cron is the backup (§4.1a).
+
 **Status:** 🟠 **PROPOSED, 2026-10-15. Revised 2026-10-16:** staging goes on the dev box (§5).
 
 **Built:** 🔨 phase 1, the daily clock (§5.7), 🔨 phase 2 (§5.8 and §5.9), and 🔨 the code of phases 4 and 5 (§5.11).
@@ -176,6 +178,20 @@ warning. After 30 hours, the `vps-health.yml` delivery check reports it.
 - Fence: `tests/unit/test_daily_release.py`. It runs the job's own script with a
   stubbed clock at each edge of the window.
 
+**The box starts the release** *(D178, CIV-13, 2026-11-05)*. GitHub kept starting
+the cron 3.5 to 5.5 hours late, so the window often closed first. A user timer on
+the home box now runs `scripts/home_server/nightly_release.sh` at 21:30 UTC. It
+dispatches `deploy.yml` with `nightly=true`. The cron stays as the backup.
+
+- A **nightly run** is a schedule run or a nightly dispatch. Each obeys
+  `RELEASE_HOLD` and the window. A nightly dispatch cannot skip the tests.
+- **A night ships once.** A nightly run does not publish when another nightly
+  run published since 21:00 UTC. A rerun skips that check. When the API gives
+  no answer, the run ships and warns.
+- Two nightly runs can race, and the race is benign. The same sha is a no-op
+  push, and `deploy-production` serialises the deploys.
+- `ci_velocity.md` §CIV-13 owns the detail.
+
 ### 4.2 What the promotion picks
 
 The `release-promote` workflow takes the **newest commit on `staging` that meets all
@@ -204,7 +220,10 @@ demo. The workflow reports "held" and moves nothing. Clear it to resume.
 
 ### 4.4 Hotfixes take the same road, faster
 
-There is no second lane (parent spec §2.1). A hotfix is a PR to `main` like any
+There is no second lane (parent spec §2.1). Today a hotfix is a person's PLAIN
+dispatch of `deploy.yml` (no `nightly`). No hold and no window stop it, and
+`skip_tests` is its one way past the tests (D178). The text below is the
+proposed `release-promote` design. A hotfix is a PR to `main` like any
 other. It deploys to staging within minutes. Then a person runs `release-promote`
 by hand, with that SHA and a written reason. The run still requires conditions 1,
 2 and 4. It waives only the soak floor, and it writes the reason into the run
@@ -371,9 +390,10 @@ The owner said "go ahead with the development" on 2026-10-16. Phase 1 uses the
 |---|---|---|
 | `deploy.yml`, a push | lint, then the unit tests as a signal, then `publish-staging`. No deploy | `tests/unit/test_daily_release.py` |
 | `deploy.yml`, the schedule | lint, then the unit tests as a **gate**, then `publish-release`, then the deploy of that exact commit | same |
-| `deploy.yml`, a dispatch | as the schedule, plus a `reason` input. `skip_tests` is the one way past the tests | same |
-| `RELEASE_HOLD=1` | a repository variable. The schedule moves nothing, and a `Release held` job says so. A dispatch still runs | same |
-| `release-window` (2026-10-29) | a schedule run that reaches the release outside 21:00 to 02:00 UTC moves nothing, and says so (§4.1a). A dispatch still runs | same |
+| `deploy.yml`, a dispatch | as the schedule, plus a `reason` input. On a plain dispatch, `skip_tests` is the one way past the tests. A `nightly` dispatch (D178) is a nightly run, and it cannot skip them | same |
+| `RELEASE_HOLD=1` | a repository variable. A nightly run (the schedule or a `nightly` dispatch) moves nothing, and a `Release held` job says so. A plain dispatch still runs | same |
+| `release-window` (2026-10-29) | a nightly run that reaches the release outside 21:00 to 02:00 UTC moves nothing, and says so (§4.1a). Since D178, it also holds a nightly run when another one published that night. A plain dispatch still runs | same |
+| `scripts/home_server/nightly_release.sh` (D178) | the home box's timer dispatches `deploy.yml` with `nightly=true` at 21:30 UTC. It refuses outside 21:00 to 01:00 UTC | `tests/unit/test_nightly_release_box.py` |
 | `vps_apply.sh` | deploys `DEPLOY_REF` when a caller names it, else `origin/release`. It refuses a commit that is not on `main` | `tests/unit/test_deploy_target_ref.py` |
 | `vps-health.yml`, `delivery` | compares the box with `release`. It fails when `main` holds a commit that has waited 30 hours for a release | `test_daily_release.py` |
 

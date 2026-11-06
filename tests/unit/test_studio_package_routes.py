@@ -822,10 +822,11 @@ def _handlers(tree: ast.Module) -> list[ast.AsyncFunctionDef]:
     return out
 
 
-def test_there_are_six_handlers():
+def test_there_are_eight_handlers():
+    """A5 holds six, and A5c-1 adds the delete preview and the delete."""
     names = sorted(h.name for h in _handlers(_tree()))
-    assert names == ["create_package", "get_package", "list_packages", "list_versions",
-                     "publish", "save_draft"]
+    assert names == ["create_package", "delete_package", "delete_preview", "get_package",
+                     "list_packages", "list_versions", "publish", "save_draft"]
 
 
 def test_each_handler_checks_the_switch_first():

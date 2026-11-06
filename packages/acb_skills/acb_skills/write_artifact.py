@@ -1350,7 +1350,7 @@ GENUI_TEMPLATES: frozenset[str] = frozenset({
     "weatherCard", "statDashboard", "barChart", "sparkTrend", "comparison",
     "progressTracker", "recipeCard", "flightStatus", "trainStatus", "formCard",
     "optionPicker", "timeline", "taskBoard", "dataGrid", "reportCard",
-    "planCard", "chart", "report", "reminderCard",
+    "planCard", "chart", "report", "reminderCard", "buddyHello",
 })
 
 #: The renderer drops a node deeper than this (``Node``'s depth guard).
@@ -1591,6 +1591,7 @@ GENUI_TEMPLATE_SHAPES: Mapping[str, str] = MappingProxyType({
     "chart": "{ type('bar'|'line'|'area'|'donut'|'progress'|'scatter'|'heatmap'|'radar'|'box'|'waterfall'|'funnel'|'calendar'|'gantt'), title?, subtitle?, unit?, labels?:[string], values?:[number], series?:[{name,values}], stacked?:bool, tones?:[status], totals?:[number], center?, groups?:[{name,points|values}], x_name?, y_name?, x?, y?, axes?, max?, steps?:[{label,value}|{label,total:true}], days?:[[date,n]], rows?:[{label,start,end,progress,status}], today? }",
     "report": "{ kind?('metorite.report'), path?, pdf?, title, subtitle?, for?, date?, period?, summary?(bold, italic, lists), kpis?:[{label,value,unit?,delta?,good?('up'|'down')}](8), sections:[{ heading?, text?, bullets?:[string], visual?:{ kind('chart'|'stats'|'table'|'board'|'timeline'|'gantt'|'agenda'), title?, ... } }](1-30), sources?:[string] }",
     "reminderCard": "{ reminderId, title, when?, zone?, state('scheduled'|'due'|'unconfirmed'|'done'|'dropped'|'cancelled'), resolution?, kind?('action'|'notice'), link? }",
+    "buddyHello": "{ chips:[{ id('tour'|'ask'|'look'), label }] }",
 })
 
 #: The templates that collect the member's input. Each one pairs with
@@ -1796,7 +1797,7 @@ async def emit_generative_ui(ui: str) -> dict:
        statDashboard, barChart, sparkTrend, comparison, progressTracker,
        recipeCard, flightStatus, trainStatus, formCard, optionPicker,
        timeline, taskBoard, dataGrid, reportCard, planCard, chart, report,
-       reminderCard. To get
+       reminderCard, buddyHello. To get
        the data shape of a template, call with its name and no ``data``. Nothing is
        drawn. An empty or unknown name returns the shape of each template.
 

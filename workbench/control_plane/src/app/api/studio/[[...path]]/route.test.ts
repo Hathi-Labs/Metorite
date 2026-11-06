@@ -245,6 +245,21 @@ POST
     expect(seen[1].init.body).toBeUndefined();
   });
 
+  it("forwards the JSON body of a DELETE, with its content type (the confirm token of a package)", async () => {
+    await DELETE(
+      req("http://x/api/studio/packages/p", { method: "DELETE", body: JSON.stringify({ confirm: "t0" }), headers: { "content-type": "application/json" } }),
+      ctx(["packages", "p"]),
+    );
+    expect(seen[0].init.method).toBe("DELETE");
+    expect(seen[0].init.body).toBe('{"confirm":"t0"}');
+    expect((seen[0].init.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
+  });
+
+  it("drops a DELETE body that is not JSON", async () => {
+    await DELETE(req("http://x/api/studio/a", { method: "DELETE", body: "not json" }), ctx(["a"]));
+    expect(seen[0].init.body).toBeUndefined();
+  });
+
   it("answers 401 with no identity and calls no gateway", async () => {
     state.identity = null;
     const res = await GET(req("http://x/api/studio/skills"), ctx(["skills"]));

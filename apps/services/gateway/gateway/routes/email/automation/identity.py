@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from gateway.routes.email.core import IN_ALL_INBOXES_SQL, NOT_A_COPY_FOLDERS
-from gateway.routes.email.mailbox_access import private_predicate
+from gateway.routes.email.mailbox_access import _bound_org, private_predicate
 from gateway.routes.email.mailbox_identity import display_labels
 from sqlalchemy import text
 
@@ -357,9 +357,16 @@ _PROVEN_OWN_SEND_SQL = f"""
 
 #: The same mailboxes as rows, for :func:`resolve_self`. One FROM clause, so
 #: the set in SQL and the set in Python cannot disagree.
+#:
+#: The read names the bound tenant on ``a`` (R5, H-334b). ``o`` shares the
+#: organization of ``a``, so a role that bypasses RLS reads one tenant too.
+#: Each caller reads inside ``tenant_session``, which refuses an unbound
+#: tenant. A session with no ``app.tenant_id`` compares to NULL and reads no
+#: row, so the identity is empty: it fails closed.
 _MEMBER_MAILBOXES_SQL = (
     "SELECT o.id::text AS id, o.email_address AS address, o.label AS label "
-    f"{_MEMBER_MAILBOXES_FROM} ORDER BY o.created_at, o.id")
+    f"{_MEMBER_MAILBOXES_FROM} AND a.organization_id = {_bound_org()} "
+    "ORDER BY o.created_at, o.id")
 
 
 @dataclass(frozen=True)
