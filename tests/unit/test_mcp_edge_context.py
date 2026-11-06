@@ -303,7 +303,7 @@ class TestTheContext:
 
     async def test_x6_the_call_ceiling_is_fourteen(self, board):
         """§12.4: five calls of get_task, five parents, the node and the
-        timeline. SW-31a adds the read of the guidance. MCP-G17 adds the attachments. The deepest chain,
+        timeline. SW-31a adds the read of the guidance. MCP-G18 adds the attachments. The deepest chain,
         every parent in another project, and the runs flag on. The spare calls
         are gone, so no status read more."""
         _chain(board, 7, project=OTHER_PROJECT)
@@ -995,7 +995,7 @@ class TestTheQueryParametersAreRealRouteParameters:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# MCP-G17: the attachments of a task, as metadata
+# MCP-G18: the attachments of a task, as metadata
 # ═══════════════════════════════════════════════════════════════════════════
 
 COOKIE = "/api/projects/attachments"
@@ -1010,7 +1010,7 @@ def _file(n: int, *, name: str = "spec.pdf", mime: str = "application/pdf") -> d
 
 
 class TestTheAttachments:
-    """MCP-G17 (owner decision 2026-11-06): metadata only. The name is
+    """MCP-G18 (owner decision 2026-11-06): metadata only. The name is
     ``untrusted_text``. No link, no bytes."""
 
     async def test_g17_a_row_has_the_pinned_keys_and_an_untrusted_name(self, board):

@@ -2690,7 +2690,7 @@ CONTEXT_COMMENTS = 20
 #: The most gateway calls of one ``get_task_context`` (§12.4): the five of
 #: ``get_task``, one for each parent, the project node and the timeline.
 #: SW-31a adds one, the read of the guidance (:func:`_guidance_of`), so 13.
-#: MCP-G17 adds one, the read of the attachments (:func:`_attachments_of`), so 14.
+#: MCP-G18 adds one, the read of the attachments (:func:`_attachments_of`), so 14.
 CONTEXT_CALL_CEILING = 14
 #: CIV-14c. With ``comments: "all"`` the timeline is read in pages of the
 #: route's cap, up to this many comments in total. The newest ones win.
@@ -2712,15 +2712,15 @@ CONTEXT_KEYS: tuple[str, ...] = (
     "held_by", "refs", "recent_comments", "attachments",
 )
 
-#: The most attachments that ``get_task_context`` returns (MCP-G17). The
+#: The most attachments that ``get_task_context`` returns (MCP-G18). The
 #: gateway route is not paged, so the edge cuts the list here.
 CONTEXT_ATTACHMENTS_MAX = 100
 #: Present only when the task has more attachments than that cap.
 ATTACHMENTS_TRUNCATED_KEY = "attachments_truncated"
 #: The one route of the attachments read. Its rows carry a cookie URL. The
-#: edge never copies that URL (MCP-G17).
+#: edge never copies that URL (MCP-G18).
 ATTACHMENTS_ROUTE = "/projects/tasks/{task_id}/attachments"
-#: The keys of one attachment of ``get_task_context`` (MCP-G17). No url, no bytes.
+#: The keys of one attachment of ``get_task_context`` (MCP-G18). No url, no bytes.
 ATTACHMENT_KEYS: tuple[str, ...] = (
     "attachment_id", "name", "mime", "size", "kind", "added_by", "created_at",
 )
@@ -3053,7 +3053,7 @@ _MIME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-
 
 
 def _attachment(row: Mapping[str, Any]) -> dict[str, Any]:
-    """One attachment of a task, as metadata (MCP-G17). The file name is text
+    """One attachment of a task, as metadata (MCP-G18). The file name is text
     that a person chose, so it leaves as ``untrusted_text``. The cookie URL of
     the gateway row is dropped: no link and no bytes leave the edge."""
     size = row.get("size")
@@ -3070,7 +3070,7 @@ def _attachment(row: Mapping[str, Any]) -> dict[str, Any]:
 
 async def _attachments_of(ctx: Context, where: Mapping[str, str],
                           ) -> tuple[list[dict[str, Any]], bool]:
-    """``(rows, truncated)`` of the files on a task (MCP-G17). The task was
+    """``(rows, truncated)`` of the files on a task (MCP-G18). The task was
     read just before, so a refusal here gives no rows. A busy gateway ends the
     call, as :func:`_project_of` does. The route answers every row, so the edge
     cuts the list at :data:`CONTEXT_ATTACHMENTS_MAX`."""
@@ -3187,14 +3187,15 @@ GET_TASK_CONTEXT = Tool(
         " its parents from the root down to the task, at most five levels, its"
         " project with the description, the tasks that block it (blocked_by)"
         " and the tasks it blocks (blocks), each with its status category, its"
-        " subtasks, its open agent runs, held_by, its references,"
-        " its attachments and the comments, oldest first. Each attachment has"
-        " attachment_id, name, mime, size, kind (image or file), added_by and"
-        " created_at. It has no link and no content: a person reads an image in"
-        " the app. The list holds at most 100, and attachments_truncated is"
-        " true when more exist. By default these are the newest 20. Send"
+        " subtasks, its open agent runs, held_by, its references and the"
+        " comments, oldest first. By default these are the newest 20. Send"
         " comments: \"all\" for every comment, up to 500. The result then has"
-        " comments_truncated, true when older comments did not fit. A parent that this member cannot"
+        " comments_truncated, true when older comments did not fit. The result"
+        " also has attachments. Each has attachment_id, name, mime, size, kind"
+        " (image or file), added_by and created_at. It has no link and no"
+        " content: a person reads an image in the app. The list keeps the"
+        " oldest 100, and attachments_truncated is true when more exist."
+        " A parent that this member cannot"
         " see shows as {\"hidden\": true}, and the parents above it do not"
         " show. Each parent has the first 500 characters of its description."
         " A parent in another project shows its status category only."

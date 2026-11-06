@@ -96,7 +96,7 @@ OWNER = f"owner@{DOMAIN}"
 READER = f"reader@{DOMAIN}"
 PADMIN = f"padmin@{DOMAIN}"
 MEMBER = f"member@{DOMAIN}"
-#: MCP-G17: a member of ANOTHER organization, who may read every project there.
+#: MCP-G18: a member of ANOTHER organization, who may read every project there.
 OUTSIDER = f"outsider@{DOMAIN}"
 #: A word in every task title, so one search reaches every task.
 WORD = "wombat"
@@ -254,7 +254,7 @@ def world():
     a.member(PADMIN, ["feature:projects", "projects:settings:write"])
     a.member(MEMBER, ["feature:projects"])
 
-    # MCP-G17: a second organization with one member, to try the attachment
+    # MCP-G18: a second organization with one member, to try the attachment
     # list across the tenant line.
     org2 = str(uuid.uuid4())
     with eng.begin() as c:
@@ -825,7 +825,7 @@ class TestTheScopeColumnIsTheTasksOwnNode:
 
 
 class TestTheAttachmentListOfMcpG17:
-    """MCP-G17. ``get_task_context`` reads ``GET /projects/tasks/{id}/attachments``
+    """MCP-G18. ``get_task_context`` reads ``GET /projects/tasks/{id}/attachments``
     and no other rule. The list has the one visibility read of the task.
     Mutation (R7): drop ``load_visible_task`` from ``list_attachments``, and
     the 404 tests go red."""

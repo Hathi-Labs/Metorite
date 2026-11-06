@@ -471,7 +471,7 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
   - **Routes.** They are in `gateway/routes/agent_guidance.py`, not under `/projects`: `POST /agent-guidance` (save), `GET /agent-guidance/history`, `GET /agent-guidance/tasks/{task_id}` and `GET /agent-guidance/refs`. The last two are in `MCP_ROUTES`. The router checks the flag first, then `feature:projects`, as the Projects router does.
   - **Who writes.** The save of a project or a space needs the write floor of a grant (`authority.assert_may_write_guidance`). The save of the org needs `admin:settings:manage` (`core.ORG_VOCABULARY_WRITE`), the house rule for an org-wide write. A `manager` holds `projects:settings:write` and not that permission, so a manager gets 403 on the org.
   - **Who reads.** A member who sees a task but not its space gets the space block. Its source is the stub `{"hidden": true}`, with no name and no project id, as EA-15 shows a hidden parent. The refs read each id through the visibility seam, so a hidden or an unknown project gets null.
-  - **The answer.** The edge returns `guidance` as `{blocks, dropped}`. `dropped` counts the farthest blocks that the cap cut. `get_task_context` makes 13 gateway calls at most. The blocks name their level as `project`, `space` or `company`. The chat tool for guidance is a follow-up (SW-31c).
+  - **The answer.** The edge returns `guidance` as `{blocks, dropped}`. `dropped` counts the farthest blocks that the cap cut. `get_task_context` makes 14 gateway calls at most (MCP-G18 added the attachments read). The blocks name their level as `project`, `space` or `company`. The chat tool for guidance is a follow-up (SW-31c).
 
 #### SW-32 · A plan on each run
 
