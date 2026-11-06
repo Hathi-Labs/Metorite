@@ -166,6 +166,8 @@ _TOPIC_HEADERS = {
 
 #: The build cost line of the plan card. The cost is not priced yet (G2): no
 #: credit estimator exists, and a number here would be invented.
+_PLAN_ADDED_SAVE = (
+    "Save the manifest in this result with studio_save before you publish.")
 COST_LINE = "Build cost: not priced yet. Credit limits come with a later release."
 
 #: The last line of the plan card (G1c review round 1, P2). In a clear chat
@@ -470,6 +472,112 @@ def _skeleton(brief: str) -> dict[str, Any]:
     }
 
 
+# ── The record actions of each object (STU-BETA-2) ──────────────────────────
+
+#: The rule (STU-BETA-2). A "plain" action has no ``set``: the web door skips
+#: each action with a ``set``. (a) Each object always gets a plain ``list`` and
+#: a plain ``get`` when it has none, because the page cannot open without them.
+#: (b) An object with no plain write action (``create``, ``update``, ``delete``)
+#: gets the three. An object with one or more keeps its writes as written, so a
+#: member keeps any one plain write action to opt out of the other two.
+RECORD_ACTIONS_LINE_MAX = 6
+_OBJECT_USES = r"object:([a-z][a-z0-9_]{0,47})\.(list|get|create|update|delete)"
+
+
+def with_record_actions(manifest: Any) -> tuple[Any, list[dict[str, str]]]:
+    """*manifest* with the record actions that its objects lack, and the list
+    of the actions it added, each ``{id, uses}``.
+
+    Pure. It never raises and never changes its input. Each object gets a
+    plain ``list`` and a plain ``get`` when it has none, and the three writes
+    when it has no plain write action. A plain action has no ``set``. A web
+    page reads an object only through plain actions, so an app without them
+    opens to an empty screen. An action id is ``<object>_<verb>``, cut to
+    fit, and a number follows it when the id is taken."""
+    objects = manifest.get("objects") if isinstance(manifest, dict) else None
+    actions = manifest.get("actions", []) if isinstance(manifest, dict) else None
+    if not isinstance(objects, list) or not isinstance(actions, list):
+        return manifest, []
+    plain: dict[str, set[str]] = {}
+    taken: set[str] = set()
+    for a in actions:
+        if isinstance(a, dict):
+            taken.add(str(a.get("id")))
+            m = re.fullmatch(_OBJECT_USES, str(a.get("uses")))
+            if m and a.get("set") is None:
+                plain.setdefault(m.group(1), set()).add(m.group(2))
+    added: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for obj in objects:
+        name = obj.get("name") if isinstance(obj, dict) else None
+        if (not isinstance(name, str) or name in seen
+                or not re.fullmatch(r"[a-z][a-z0-9_]{0,47}", name)):
+            continue
+        seen.add(name)  # a second object of this name adds nothing twice
+        have = plain.get(name, set())
+        writes = not have & {"create", "update", "delete"}
+        for verb in OBJECT_OPS:
+            if verb in have or (verb not in ("list", "get") and not writes):
+                continue
+            tail = f"_{verb}"
+            base = name[: 48 - len(tail)] + tail
+            ident, n = base, 1
+            while ident in taken:
+                n += 1
+                ident = base[: 48 - len(str(n))] + str(n)
+            taken.add(ident)
+            added.append({"id": ident, "uses": f"object:{name}.{verb}"})
+    if not added:
+        return manifest, []
+    return {**manifest, "actions": [*actions, *added]}, added
+
+
+def _object_of(action: dict[str, str]) -> str:
+    return action["uses"][len("object:"):].split(".")[0]
+
+
+def complete_record_actions(
+    manifest: Any,
+) -> tuple[Any, list[dict[str, str]], list[str]]:
+    """:func:`with_record_actions` with the size guard. Returns the manifest,
+    the added actions and the names of the objects that got none because the
+    result would pass the size limit. A manifest that passed before still
+    passes, so over the limit the check adds nothing and names the objects."""
+    done, added = with_record_actions(manifest)
+    if added and _too_big(done) is not None:
+        names = list(dict.fromkeys(_object_of(a) for a in added))
+        return manifest, [], names
+    return done, added, []
+
+
+def _added_diff(added: list[dict[str, str]]) -> list[str]:
+    """One diff line for each object: the record actions that a check added."""
+    by_object: dict[str, list[str]] = {}
+    for a in added:
+        by_object.setdefault(_object_of(a), []).append(a["id"])
+    return [f"add /actions (record actions of {obj}): {', '.join(ids)}"
+            for obj, ids in by_object.items()]
+
+
+def _object_names(names: list[str]) -> str:
+    shown = ", ".join(names[:RECORD_ACTIONS_LINE_MAX])
+    more = len(names) - RECORD_ACTIONS_LINE_MAX
+    return shown + (f" and {more} more" if more > 0 else "")
+
+
+def added_actions_line(added: list[dict[str, str]], skipped: list[str] | None = None) -> str:
+    """The plan card lines that name the added record actions and the objects
+    that got none because of the size limit, or ""."""
+    lines: list[str] = []
+    objs = list(dict.fromkeys(_object_of(a) for a in added))
+    if objs:
+        lines.append(f"Record actions added: {len(added)} for {_object_names(objs)}.")
+    if skipped:
+        lines.append(f"Record actions NOT added for {_object_names(skipped)}: "
+                     "the app is too big. The page cannot list them until you split the app.")
+    return "\n".join(lines)
+
+
 # ── The tools ───────────────────────────────────────────────────────────────
 
 
@@ -478,7 +586,7 @@ async def studio_draft(brief: str) -> dict[str, Any]:
     """Make a minimal valid app manifest from a short brief. Fill it with studio_patch."""
     if not isinstance(brief, str) or not brief.strip():
         return _result(False, _sentence("Give a short brief of the app."), [])
-    manifest = _skeleton(brief)
+    manifest, _added = with_record_actions(_skeleton(brief))
     errors = validate_manifest(manifest)
     if errors:
         return _result(False, _errors(errors), [])
@@ -486,19 +594,42 @@ async def studio_draft(brief: str) -> dict[str, Any]:
 
 
 async def _checked(manifest: Any, diff: list[str]) -> dict[str, Any]:
-    """Validate *manifest* with the catalog, and shape the result."""
+    """Validate *manifest* with the catalog, and shape the result. First it
+    adds the record actions that an object lacks (STU-BETA-2). The diff has
+    the lines of the added actions BEFORE *diff*, so the cut never drops them,
+    and ``added_actions`` and ``record_actions_skipped`` name them."""
     big = _too_big(manifest)
     if big is not None:
         return big
+    manifest, added, skipped = complete_record_actions(manifest)
+    extra = _record_extra(added, skipped)
+    diff = [*_record_diff(added, skipped), *diff]
     try:
         catalog = _class_map(await _read_catalog())
     except _Refused as exc:
         # The catalog checks could not run, so the manifest is not called valid.
         structural = _errors(validate_manifest(manifest))
         notice = _sentence(f"{exc} The action checks did not run.")
-        return _result(False, [*notice, *structural], diff, catalog_checked=False)
+        return _result(False, [*notice, *structural], diff, catalog_checked=False, **extra)
     errors = validate_manifest(manifest, catalog=catalog)
-    return _result(not errors, _errors(errors), diff, manifest)
+    return _result(not errors, _errors(errors), diff, manifest, **extra)
+
+
+def _record_extra(added: list[dict[str, str]], skipped: list[str]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if added:
+        out["added_actions"] = added
+    if skipped:
+        out["record_actions_skipped"] = skipped
+    return out
+
+
+def _record_diff(added: list[dict[str, str]], skipped: list[str]) -> list[str]:
+    lines = _added_diff(added)
+    if skipped:
+        lines.append("no record actions added for "
+                     f"{_object_names(skipped)}: the manifest would pass the size limit")
+    return lines
 
 
 @annotate(read_only=True, idempotent=True, open_world=False)
@@ -720,7 +851,9 @@ def structure_line(manifest: Any) -> str:
     return f"Fields: {fields} ({hot} hot, {required} required). Rules: {rules}{tail}."
 
 
-def plan_card_text(manifest: Any, held: bool = False) -> str:
+def plan_card_text(manifest: Any, held: bool = False,
+                   added: list[dict[str, str]] | None = None,
+                   skipped: list[str] | None = None) -> str:
     """The text of the plan card: the outline, the count of parts, the line of
     the tables, the cost line, and what approval does.
 
@@ -730,10 +863,12 @@ def plan_card_text(manifest: Any, held: bool = False) -> str:
     price and no turn count: no number stands next to "credit". With *held*
     (a chat that read outside mail), the last line says that a save and a
     publish each show one more card."""
+    note = added_actions_line(added or [], skipped)
     return "\n".join([
         outline_text(manifest, fence=True),
         f"Parts: {parts_count(manifest)}",
         structure_line(manifest),
+        *([note] if note else []),
         COST_LINE,
         PLAN_APPROVE_HELD if held else PLAN_APPROVE_CLEAR,
     ])
@@ -748,7 +883,9 @@ async def studio_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     in the chat), stopped, or no_card (the chat shows no card). After "stopped", write nothing and call no more
     patch. An invalid manifest shows no card. The text of the card is in
     "context", for a chat that cannot show cards. After "approved", studio_save
-    and studio_publish can publish this exact manifest.
+    and studio_publish can publish this exact manifest. When the check added
+    record actions, the result holds the completed manifest. Save that
+    manifest with studio_save before you publish.
     """
     doc, bad = _as_doc(manifest)
     if bad is not None:
@@ -756,9 +893,12 @@ async def studio_plan(manifest: dict[str, Any]) -> dict[str, Any]:
     checked = await _checked(doc, [])
     if not checked["ok"]:
         return _result(False, checked["errors"], [])  # no card for an invalid manifest
+    doc = checked["manifest"]  # with the record actions that the check added
+    added = checked.get("added_actions", [])
+    skipped = checked.get("record_actions_skipped", [])
     title = f"Build {_name(doc.get('name', '?'), True)}?"
     detail = f"{parts_count(doc)} parts. {COST_LINE}"
-    context = plan_card_text(doc, held=await _must_ask())
+    context = plan_card_text(doc, held=await _must_ask(), added=added, skipped=skipped)
     from acb_skills import ask_tools
 
     # The run's own member may answer, and no other (PZ-32). The member is the
@@ -785,7 +925,11 @@ async def studio_plan(manifest: dict[str, Any]) -> dict[str, Any]:
         # The member turned this plan down. An older approval of the same app
         # must not publish it (review round 1).
         extra["note"] = _PLAN_WITHDRAWN if await _withdraw_plan(doc) else _PLAN_NOT_WITHDRAWN
-    return _result(True, [], [], None, title=title, detail=detail, context=context,
+    extra.update(_record_extra(added, skipped))
+    if added:
+        extra["note"] = (str(extra.get("note", "")) + " " + _PLAN_ADDED_SAVE).strip()
+    # With added actions, the approval holds THIS manifest, so it comes back.
+    return _result(True, [], [], doc if added else None, title=title, detail=detail, context=context,
                    decision=decision, **extra)
 
 
@@ -2448,7 +2592,8 @@ async def studio_save(
     With no package_id, it makes a new package. With a package_id, it replaces
     the stored draft, and it needs based_on: the value that the last save of
     that package gave. The result gives the package_id, the outline and the new
-    based_on, and never the manifest text. In a chat that read outside mail,
+    based_on, and never the manifest text. It adds the record actions that an
+    object lacks, as studio_plan does, and names them. In a chat that read outside mail,
     it shows one card first and waits (decision: approved, revised, stopped or
     no_card).
     """
@@ -2463,12 +2608,18 @@ async def studio_save(
     big = _too_big(doc)
     if big is not None:
         return big
+    # The same completion as the plan, so a save and a plan hold one manifest.
+    doc, added, skipped = complete_record_actions(doc)
     try:
         if not pid:
-            return await _create(doc)
-        return await _save_draft(pid, doc, str(based_on or "").strip().lower())
+            out = await _create(doc)
+        else:
+            out = await _save_draft(pid, doc, str(based_on or "").strip().lower())
     except _Refused as exc:
         return _refusal(str(exc))
+    if out.get("ok"):
+        out.update(_record_extra(added, skipped))
+    return out
 
 
 async def _create(doc: dict[str, Any]) -> dict[str, Any]:

@@ -752,6 +752,7 @@ async def test_the_studio_filter_empties_the_pack_for_an_org_not_in_studio_orgs(
 
     async def tool_a(): ...
     tool_a.__name__ = "studio_draft"
+    _member_holds(monkeypatch, HOLDER)
     monkeypatch.setattr(ti, "_run_org_or_none", lambda: "org-1")
     monkeypatch.setattr(flags, "studio_orgs", lambda: frozenset())
     kept, dropped = await ti._drop_pack_unless_studio([tool_a], [])
@@ -762,6 +763,91 @@ async def test_the_studio_filter_empties_the_pack_for_an_org_not_in_studio_orgs(
     monkeypatch.setattr(ti, "_run_org_or_none", lambda: None)
     kept, _ = await ti._drop_pack_unless_studio([tool_a], [])
     assert kept == [], "no org fails closed"
+
+
+# -- 8b. The studio pack needs the member's feature:studio (J1-1 fix round 1)
+
+
+def _features(grants: list[str], overrides: list[tuple[str, str]] | None = None) -> frozenset[str]:
+    from acb_auth import build_access
+
+    return frozenset(build_access(grants, overrides or []).allowed_features())
+
+
+#: What ``in_app_path.member_features`` gives for each member: the real
+#: ``allowed_features`` of a guest, of a member with a deny override on
+#: ``feature:studio``, and of a member (``feature:*``).
+GUEST = _features(["feature:chat", "apps:use:*"])
+DENIED = _features(["feature:*"], [("feature:studio", "deny")])
+HOLDER = _features(["feature:*"])
+
+
+def _member_holds(monkeypatch, features: frozenset[str] | None) -> None:
+    from orchestrator import in_app_path as iap
+
+    async def _read() -> frozenset[str] | None:
+        return features
+
+    monkeypatch.setattr(iap, "member_features", _read)
+
+
+@pytest.mark.parametrize("who,features,kept", [
+    ("guest", GUEST, False), ("denied member", DENIED, False),
+    ("holder", HOLDER, True), ("no member known", None, False),
+])
+async def test_the_studio_filter_needs_the_members_studio_feature(
+    monkeypatch, who: str, features: frozenset[str] | None, kept: bool,
+) -> None:
+    """An org in ``STUDIO_ORGS`` still builds an empty pack for a member who
+    lacks ``feature:studio``, and for a member nobody can name (None fails
+    closed). So ``studio_draft`` and the other local tools never run for
+    them. Mutation: drop the member check from the filter -> the guest, the
+    denied member and None keep the tools -> red."""
+    async def tool_a(): ...
+    tool_a.__name__ = "studio_draft"
+    assert ("studio" in HOLDER) and ("studio" not in GUEST) and ("studio" not in DENIED)
+    monkeypatch.setattr(ti, "_studio_open", lambda: True)
+    _member_holds(monkeypatch, features)
+    out, dropped = await ti._drop_pack_unless_studio([tool_a], [])
+    assert (out == [tool_a]) is kept, who
+    assert (dropped == []) is kept, who
+
+
+@pytest.mark.parametrize("who,features,offered", [
+    ("guest", GUEST, False), ("denied member", DENIED, False),
+    ("holder", HOLDER, True), ("no member known", None, False),
+])
+async def test_the_loader_offers_the_studio_pack_only_to_a_member_who_holds_studio(
+    monkeypatch, who: str, features: frozenset[str] | None, offered: bool,
+) -> None:
+    """``_available`` asks the same member check as the filter. Mutation:
+    drop the member check from ``_available`` -> offered to a guest -> red."""
+    monkeypatch.setattr(ti, "_loader_agent_ok", lambda _agent: True)
+    monkeypatch.setattr(ti, "_pack_owner_module", lambda _owner: object())
+    monkeypatch.setattr(ti, "_studio_open", lambda: True)
+    _member_holds(monkeypatch, features)
+    plan = await ti._plan_pack_loader(
+        object(), frozenset({"studio"}), [], builds=[], current=40, pool=[], persona="",
+        bullets={}, agent_name="orchestrator", no_egress=False, is_authorized=None)
+    assert ("studio" in plan.offered) is offered, who
+    assert (STUDIO in plan.via_loader) is offered, who
+
+
+async def test_the_member_is_not_read_while_the_org_is_closed(monkeypatch) -> None:
+    """With ``STUDIO_ORGS`` closed, the check reads no member, so a turn on a
+    box with Studio off pays no access read."""
+    from orchestrator import in_app_path as iap
+
+    reads: list[int] = []
+
+    async def _read() -> frozenset[str] | None:
+        reads.append(1)
+        return HOLDER
+
+    monkeypatch.setattr(iap, "member_features", _read)
+    monkeypatch.setattr(ti, "_studio_open", lambda: False)
+    assert await ti._studio_member_open() is False
+    assert reads == []
 
 
 # -- 9. The studio owner is hidden and never runs (STU-G1 fix round 1) -------
@@ -942,6 +1028,7 @@ async def test_the_loader_offers_the_studio_pack_only_where_studio_orgs_holds_th
     monkeypatch.setattr(ti, "_loader_agent_ok", lambda _agent: True)
     monkeypatch.setattr(ti, "_pack_owner_module", lambda _owner: object())
     monkeypatch.setattr(ti, "_studio_open", lambda: open_)
+    _member_holds(monkeypatch, HOLDER)
     plan = await ti._plan_pack_loader(
         object(), frozenset({"studio"}), [], builds=[], current=40, pool=[], persona="",
         bullets={}, agent_name="orchestrator", no_egress=False, is_authorized=None)

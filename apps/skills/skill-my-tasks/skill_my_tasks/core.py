@@ -340,8 +340,9 @@ async def _lanes(item_id: str) -> list[dict[str, Any]]:
          "position": int(r.get("position") or 0)}
         for r in _rows(res) if r.get("name")
     ]
-    # `lib/statusCategory.ts::stageLanes`: position, then name.
-    return sorted(lanes, key=lambda s: (s["position"], s["name"]))
+    # The route answers in the one lane order: stage, position, name
+    # (`personal.MY_TASK_LANES_SQL`, task 1792). The skill keeps that order.
+    return lanes
 
 
 def _norm(value: str) -> str:
