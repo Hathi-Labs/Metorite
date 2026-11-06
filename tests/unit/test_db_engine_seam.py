@@ -795,6 +795,12 @@ H2_TENANT_DISCOVERY_SITES: dict[tuple[str, str], str] = {
         "through the SECURITY DEFINER `github_installation_org` of migration "
         "282, granted to `acb_app` alone, AFTER the HMAC check, and the route "
         "binds the org it returns",
+    ("packages/acb_memory/acb_memory/tenant_guard.py",
+     "_organizations_more_than_one"):
+        "WS-KG KG-9: the memory tenant guard asks whether two organizations "
+        "exist. It reads at most two rows of the RLS-EXEMPT `organization` "
+        "table and no other table, so it cannot run bound. A yes keeps Mem0 "
+        "and Graphiti down, and it runs only while one of their flags is on",
     ("apps/services/gateway/gateway/routes/email/memory_purge.py",
      "_organization_ids"):
         "WS-17 EM-G11f2: which organizations the mailbox purge loop sweeps. "

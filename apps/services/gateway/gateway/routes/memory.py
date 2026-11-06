@@ -14,7 +14,11 @@ mints three shapes and this router must answer for all of them:
 
     a@b.com        that person's private episodic memory
     agent:<name>   memory shared across every user of that agent
-    org:global     organisation-wide memory
+    org:<org id>   the memory of one organization (KG-9). Only its own members
+                   reach it. Another org's id answers 404
+    org:global     the OLD org key, shared by every organization. Nothing
+                   writes it after KG-9. The memory tenant guard keeps Mem0
+                   off while two organizations exist
 
 ``require_internal_auth`` was doing the whole job here, and it was the wrong
 job. It proves the CALLER IS THE PLATFORM — which the Next.js BFF is, on behalf
@@ -52,6 +56,7 @@ router = APIRouter(
 #: that fails open because an optional dependency is missing is not a gate.
 AGENT_SCOPE_PREFIX = "agent:"
 ORG_SCOPE_KEY = "org:global"
+ORG_SCOPE_PREFIX = "org:"
 ROOM_SCOPE_PREFIX = "room:"
 PREFS_SCOPE_PREFIX = "prefs:"
 
@@ -77,6 +82,20 @@ def _authorize_org(user: UserContext, *, write: bool) -> None:
     needed = "memory:write_org" if write else "memory:read_org"
     if not user.has_permission(needed):
         raise _deny(f"Forbidden: organisation memory needs '{needed}'.")
+
+
+def _authorize_own_org(scope: str, user: UserContext, *, write: bool) -> None:
+    """KG-9: ``org:<org id>`` is the memory of one organization.
+
+    The org id must be the member's own, from the session. Another org's id
+    answers 404, as an unknown scope does, so the answer says nothing about
+    that org. Then the ``memory:*_org`` rule applies as for the old key.
+    """
+    org = scope[len(ORG_SCOPE_PREFIX):].strip().lower()
+    mine = str(getattr(user, "organization_id", None) or "").strip().lower()
+    if not org or not mine or org != mine:
+        raise _deny("Unknown memory scope", 404)
+    _authorize_org(user, write=write)
 
 
 def _authorize_room(scope: str, user: UserContext, *, write: bool) -> None:
@@ -159,6 +178,8 @@ def _authorize_scope(scope: str, user: UserContext, *, write: bool) -> None:
 
     if scope == ORG_SCOPE_KEY:
         return _authorize_org(user, write=write)
+    if scope.startswith(ORG_SCOPE_PREFIX):
+        return _authorize_own_org(scope, user, write=write)
     if scope.startswith(ROOM_SCOPE_PREFIX):
         return _authorize_room(scope, user, write=write)
     if scope.startswith(PREFS_SCOPE_PREFIX):

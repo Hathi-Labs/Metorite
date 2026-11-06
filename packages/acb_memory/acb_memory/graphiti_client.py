@@ -18,6 +18,13 @@ What Graphiti adds over the Postgres entity graph:
 Episodes are added after each ingestion event (Zoho sync, Gmail webhook,
 Gmail ingest) and after each significant agent conversation turn.
 
+KG-9 (task 786). Each episode carries the ``group_id`` of its organization,
+``org_<organization id>``, and each search reads that one group. The org id
+comes from the caller or from the bound tenant, never from request input. With
+no org, a write is skipped and a search answers nothing. The memory tenant
+guard (``tenant_guard.py``) keeps the client down while two organizations
+exist. Fence: ``tests/unit/test_memory_tenant_guard.py``.
+
 Typical usage in an agent:
     facts = await search_entity_timeline("Rahul Kumar", "deal status")
     # → "2026-05-12: Deal Fracktal-ABC moved to Awaiting PO [Contact: Rahul Kumar]"
@@ -26,6 +33,7 @@ Typical usage in an agent:
 from __future__ import annotations
 
 import os
+import re
 from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any
@@ -33,8 +41,27 @@ from typing import Any
 from acb_common import get_logger, get_settings
 
 from ._gateway_env import gateway_only_env
+from .tenant_guard import memory_tenancy_ok
 
 _log = get_logger("acb_memory.graphiti")
+
+#: The prefix of the Graphiti group of one organization (KG-9).
+GROUP_PREFIX = "org_"
+
+
+def graphiti_group_id(organization_id: str | None = None) -> str:
+    """The Graphiti ``group_id`` of one organization, or ``""`` with no org.
+
+    With no *organization_id*, the bound tenant names the org. graphiti-core
+    takes ASCII letters, digits, ``-`` and ``_`` only, so the id keeps those
+    characters only. A UUID keeps all of its characters.
+    """
+    if not organization_id:
+        from acb_common.db import current_tenant
+
+        organization_id = current_tenant()
+    org = re.sub(r"[^a-z0-9_-]", "", str(organization_id or "").strip().lower())
+    return f"{GROUP_PREFIX}{org}" if org else ""
 
 
 class GraphitiClient:
@@ -53,10 +80,15 @@ class GraphitiClient:
         if self._init_attempted:
             return self._graphiti
 
-        self._init_attempted = True
         settings = get_settings()
         if not getattr(settings, "graphiti_enabled", False):
+            self._init_attempted = True
             return None
+        # KG-9: no start while two organizations exist. A refusal does not
+        # mark the start as tried, so a later call asks the guard again.
+        if not await memory_tenancy_ok():
+            return None
+        self._init_attempted = True
 
         neo4j_url: str = getattr(settings, "neo4j_url", "bolt://localhost:7687")
         neo4j_user: str = getattr(settings, "neo4j_user", "neo4j")
@@ -152,19 +184,28 @@ class GraphitiClient:
         query: str,
         center_node_uuid: str | None = None,
         num_results: int = 10,
+        organization_id: str | None = None,
     ) -> list[dict]:
         """Semantic + temporal search over the knowledge graph.
 
         Returns a list of fact dicts: {fact, source, valid_at, created_at}.
         Returns [] when Graphiti is disabled or on any error.
+
+        KG-9: the search reads the group of one organization only. With no
+        org, it returns [] and does not search.
         """
         g = await self._get_graphiti()
-        if g is None:
+        if g is None or not await memory_tenancy_ok():
+            return []
+        group = graphiti_group_id(organization_id)
+        if not group:
+            _log.info("graphiti.search_skipped_no_tenant")
             return []
         try:
             results = await g.search(
                 query=query,
                 center_node_uuid=center_node_uuid,
+                group_ids=[group],
                 num_results=num_results,
             )
             facts = []
@@ -190,7 +231,7 @@ class GraphitiClient:
         content: str,
         source_description: str = "agent_conversation",
         reference_time: datetime | None = None,
-        group_id: str = "default",
+        organization_id: str | None = None,
     ) -> None:
         """Add a textual episode (conversation turn, webhook event, ingest fact).
 
@@ -202,7 +243,10 @@ class GraphitiClient:
             content: Full text content to extract facts from.
             source_description: Origin of the episode.
             reference_time: When the event occurred (defaults to now).
-            group_id: Logical group for the episode (e.g. agent name, run_id).
+            organization_id: The org of the episode. With none, the bound
+                tenant names it. KG-9: the ``group_id`` is the org's group
+                (``org_<id>``), never ``default``. With no org, nothing is
+                written.
 
         ⚠️ **No SETUP marker of the model reaches the graph** (WS-54 fix
         round 5, item 2). This is the one write of a Graphiti episode, so the
@@ -213,7 +257,11 @@ class GraphitiClient:
         name = redact(name)
         content = redact(content)
         g = await self._get_graphiti()
-        if g is None:
+        if g is None or not await memory_tenancy_ok():
+            return
+        group_id = graphiti_group_id(organization_id)
+        if not group_id:
+            _log.info("graphiti.episode_skipped_no_tenant", name=name[:60])
             return
         # Episode worthiness gate (specs/llm_caching_memory.md Phase 4.2):
         # skip low-signal turns (greetings, status pings, bare confirmations)
@@ -276,7 +324,7 @@ async def search_entity_timeline(entity_name: str, query: str) -> str:
         "- [2026-05-28] Follow-up sent after 16 days stale\\n"
     """
     full_query = f"{entity_name} {query}".strip()
-    facts = await get_graphiti_client().search(full_query)
+    facts = await get_graphiti_client().search(full_query)  # the bound tenant's group
     if not facts:
         return ""
     lines = []
@@ -344,7 +392,7 @@ async def add_episode(
     content: str,
     source_description: str = "agent_conversation",
     reference_time: datetime | None = None,
-    group_id: str = "default",
+    organization_id: str | None = None,
 ) -> None:
     """Module-level shortcut for get_graphiti_client().add_episode(...)."""
     await get_graphiti_client().add_episode(
@@ -352,5 +400,5 @@ async def add_episode(
         content=content,
         source_description=source_description,
         reference_time=reference_time,
-        group_id=group_id,
+        organization_id=organization_id,
     )
