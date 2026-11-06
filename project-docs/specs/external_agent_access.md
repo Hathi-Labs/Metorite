@@ -2156,7 +2156,9 @@ The role test adds no third rule to `may_end_run`. "Manager" means the organizat
 - A `project` that the reader cannot see gives 404, as `needs-attention` does.
 - The route reads the open elicitation with the SQL that the run list uses (`open_elicitation` in `agent_runs.py`, and the awaiting rule of `filters.agent_focus_clause`). It reads the path with the project parent walk. It adds `task_visibility_clause`. It writes nothing.
 - With `agent_runs_enabled` off, the list is empty. With the new flag off, the route answers 404.
-- A typed archive request and a question on a closed task do not show. The generic route refuses an answer to the first, so the list could only offer a button that the route refuses. The second is a `dangling` row of Needs attention, and the sweep closes it. `listed_question_sql` in `agent_runs.py` is the one text of both. With the flag on, "Waiting on me" reads it too.
+- A question on a closed task does not show. It is a `dangling` row of Needs attention, and the sweep closes it.
+- A typed archive request on an open task shows to the run's member only, with `why` `my_agent` and `can_answer` true. Only that member approves it, through `archive-approval` (§12.1). The creator, an assignee and an owner, admin or manager do not see it, in "For me" or in "Everyone".
+- `listed_question_sql` in `agent_runs.py` is the one text of these two rules. With the flag on, "Waiting on me" reads it too, so both count the same questions.
 
 **ONE text for "who may answer".** A function `person_may_answer_sql(run)` sits in `agent_runs.py` beside `person_may_end_sql`. It holds the created, assigned and run-member tests. A second function, `may_answer_run(db, run, user)`, adds the role test from the context. The list calls the SQL for `why` and `can_answer`. `POST /projects/agent-runs/{id}/activities` calls `may_answer_run`.
 
@@ -3030,9 +3032,10 @@ The connect card of EA-4b and `docs/external_agents_connect.md` show this table.
   3. The run wire has no `can_answer`. The read-only card of EA-18b needs it, and that slice adds it.
   4. The chat has no read tool yet (D109). The manifest holds `agent_questions` in `PLANNED`, and a board task holds the gap.
 - 2026-11-06 — Fix round 1 of the EA-18a review (Metorite task 1806). The review approved the build.
-  1. With the flag on, "Waiting on me" now leaves out a typed archive request and a question on a closed task, as "For me" does. Both read `listed_question_sql`. So the run's member no longer counts a typed request there. The bell and the task pill still tell the member.
+  1. With the flag on, "Waiting on me" and "For me" read one text, `listed_question_sql`. A question on a closed task counts in neither. Fix round 2 sets the rule of a typed archive request (see item 4).
   2. The list tests `r.status = 'awaiting'` first, so the partial index `pm_agent_runs_one_open_per_task` serves it.
   3. The EA-18b row now names `can_answer` on the run wire. Without it, the run panel would need a second text of who may answer.
+  4. Fix round 2 (the coordinator's rule). A typed archive request on an open task waits on the run's member only, in "For me" and in "Waiting on me". Only that member approves it. Every other reader does not see it, and "Everyone" leaves it out. This replaces item 1 of the build entry. The write rule does not change.
 
 ## 19. One manifest, two doors: every app over the MCP (MCP-P0, D136)
 

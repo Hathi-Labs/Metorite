@@ -41,14 +41,21 @@ Fix round 1 (the review of 2026-11-06), each run on a committed tree:
 
 * M9. ``filters.py`` ``agent_focus_clause``: the flag-on branch drops the
   ``listed_question_sql`` test. ``test_waiting_on_me_and_for_me_agree_with_the_flag_on``,
-  ``test_a_typed_request_counts_in_neither_for_me_nor_waiting_on_me`` and
+  ``test_a_typed_request_waits_on_its_member_only`` and
   ``test_a_question_on_a_done_task_counts_in_neither``.
-* M10. ``R`` ``listed_question_sql``: no ``answerable_question_sql``. The typed
-  tests of the list and of the focus.
+* M10. ``R`` ``listed_question_sql``: the typed test passes each reader, so the
+  creator sees a typed request. ``test_a_typed_request_waits_on_its_member_only``,
+  ``test_a4_a_typed_archive_request_shows_to_its_member_only`` and the agree test.
 * M11. ``R`` ``listed_question_sql``: no ``task_closed_sql``. The closed tests of
   the list and of the focus.
 * M12. ``Q`` ``questions_sql``: no ``r.status = 'awaiting'``.
   ``test_the_list_names_the_status_for_the_partial_index``.
+
+Fix round 2 (the coordinator's rule of 2026-11-06), on a committed tree:
+
+* M13. ``R`` ``listed_question_sql``: no member arm, so a typed request hides
+  from the run's member. ``test_a_typed_request_waits_on_its_member_only``,
+  ``test_a4_a_typed_archive_request_shows_to_its_member_only`` and the agree test.
 
 The cases that the spec names with no M number, each red under its own mutation:
 
@@ -221,9 +228,10 @@ class TestTheOneText:
         ``listed_question_sql``, and it holds the closed test and the typed test."""
         vis = SimpleNamespace(unrestricted=True, agent=None, params={})
         assert agent_runs.listed_question_sql("r") in agent_questions.questions_sql("TRUE", vis)
-        text_ = agent_runs.listed_question_sql("qr")
+        text_ = agent_runs.listed_question_sql("qr", me=filters.AGENT_FOCUS_ME)
         assert filters.task_closed_sql("qr") in text_
         assert agent_runs.answerable_question_sql("qr.id") in text_
+        assert f"OR lower(qr.member_email) = :{filters.AGENT_FOCUS_ME})" in text_
         typed = agent_runs.answerable_question_sql("qr.id")
         assert f"<> '{agent_runs.ARCHIVE_REQUEST_KIND}'" in typed
         assert "-> 'request' ->> 'kind'" in typed and "ORDER BY oq.seq DESC LIMIT 1" in typed
@@ -235,7 +243,7 @@ class TestTheOneText:
             on = filters.agent_focus_clause("waiting")
         finally:
             release_tenant(scope)
-        assert agent_runs.listed_question_sql("qr") in on
+        assert agent_runs.listed_question_sql("qr", me=filters.AGENT_FOCUS_ME) in on
 
     def test_the_answer_set_is_the_reason_set(self) -> None:
         reason = agent_runs.answer_reason_sql("r")
@@ -512,19 +520,26 @@ class TestTheRead:
             [row] = await _rows(call, w.creator)
             assert row["question"] == {"body": "Free?", "options": [], "allow_multiple": False}
 
-    async def test_a4_a_typed_archive_request_does_not_show(self, w):
-        """Its answer has its own route, on the task card, for the run's member.
-        The generic route refuses it, so the list offers no button for it."""
+    async def test_a4_a_typed_archive_request_shows_to_its_member_only(self, w):
+        """Only the run's member approves it, through ``archive-approval`` on
+        the task card (§12.1). So it waits on that member, and on nobody else."""
         async with _session(w.p) as call:
             asked = await call(w.agent, "POST", f"/projects/tasks/{w.task}/archive-request",
                                {"idempotency_key": _key()})
             assert asked.status_code == 201, asked.text
-            for reader in (w.creator, w.assignee, w.member, w.admin):
+            got = await _list(call, w.member)
+            assert got.json()["counts"] == {"mine": 1, "everyone": None}
+            [row] = got.json()["rows"]
+            assert row["why"] == "my_agent" and row["can_answer"] is True
+            assert [o["id"] for o in row["question"]["options"]] == ["approve", "decline"]
+            for reader in (w.creator, w.assignee, w.owner, w.admin, w.manager, w.viewer):
                 got = await _list(call, reader)
                 assert got.json()["rows"] == [], reader.email
                 assert got.json()["counts"]["mine"] == 0, reader.email
-            got = await _list(call, w.admin, scope="everyone")
-            assert got.json()["rows"] == [] and got.json()["counts"]["everyone"] == 0
+            for reader in (w.owner, w.admin, w.manager):
+                got = await _list(call, reader, scope="everyone")
+                assert got.json()["rows"] == [], reader.email
+                assert got.json()["counts"]["everyone"] == 0, reader.email
 
     async def test_a_question_on_a_closed_task_does_not_show(self, w):
         """It is a ``dangling`` row of Needs attention, and the sweep closes it."""
@@ -1051,10 +1066,11 @@ class TestTheBell:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-async def _waiting_tasks(call: Any, user: Any, w: Any) -> set[str]:
+async def _waiting_tasks(call: Any, user: Any, w: Any, *, project: str | None = None) -> set[str]:
     got = await call(
         user, "GET",
-        f"/projects/tasks?project_id={w.other['id']}&include_subtree=true&agent_focus=waiting",
+        f"/projects/tasks?project_id={project or w.other['id']}"
+        "&include_subtree=true&agent_focus=waiting",
     )
     assert got.status_code == 200, got.text
     return {row["id"] for row in got.json()["rows"]}
@@ -1068,8 +1084,8 @@ def _move(w: Any, task: str, category: str) -> None:
                   {"s": w.other["lanes"][category], "t": task})
 
 
-async def _waiting_count(call: Any, user: Any, w: Any) -> int:
-    got = await call(user, "GET", f"/projects/{w.other['id']}/agent-summary")
+async def _waiting_count(call: Any, user: Any, w: Any, *, project: str | None = None) -> int:
+    got = await call(user, "GET", f"/projects/{project or w.other['id']}/agent-summary")
     assert got.status_code == 200, got.text
     return got.json()["waiting_on_you"]
 
@@ -1100,7 +1116,8 @@ class TestTheFocus:
             asked = await call(w.agent, "POST", f"/projects/tasks/{w.task_other}/archive-request",
                                {"idempotency_key": _key()})
             assert asked.status_code == 201, asked.text
-            await self._agree(w, call, {"creator": 0, "member": 0, "viewer": 0})
+            # Fix round 2: a typed request waits on the run's member only.
+            await self._agree(w, call, {"creator": 0, "member": 1, "viewer": 0})
             with w.p.admin_engine.begin() as c:
                 c.execute(text("DELETE FROM pm_agent_runs"))
             await _ask(w, call, w.task_other)
@@ -1110,18 +1127,35 @@ class TestTheFocus:
             finally:
                 _move(w, w.task_other, "todo")
 
-    async def test_a_typed_request_counts_in_neither_for_me_nor_waiting_on_me(self, w):
-        """The first proof of the review, turned into a fence. Before the fix the
-        creator read ``for_me=0 waiting_on_you=1``. Only the run's member answers
-        a typed request, on the task card, and the bell still tells them."""
+    async def test_a_typed_request_waits_on_its_member_only(self, w):
+        """The first proof of the review, turned into a fence, with the rule of
+        fix round 2. Before round 1 the creator read ``for_me=0 waiting_on_you=1``.
+        Only the run's member approves a typed request (§12.1). So it is in
+        "For me" and "Waiting on me" for that member, and for nobody else.
+
+        The task has a creator, an assignee and a run member who are three
+        people, so each one of them reads it once."""
+        leaf = w.leaf["id"]
         async with _session(w.p) as call:
-            asked = await call(w.agent, "POST", f"/projects/tasks/{w.task_other}/archive-request",
+            asked = await call(w.agent, "POST", f"/projects/tasks/{w.task}/archive-request",
                                {"idempotency_key": _key()})
             assert asked.status_code == 201, asked.text
-            listed = await _rows(call, w.creator, project=w.other["id"])
-            assert len(listed) == 0
-            assert await _waiting_count(call, w.creator, w) == 0
-            assert await _waiting_tasks(call, w.creator, w) == set()
+            [row] = await _rows(call, w.member, project=leaf)
+            assert row["task_id"] == w.task
+            assert row["why"] == "my_agent" and row["can_answer"] is True
+            assert await _waiting_tasks(call, w.member, w, project=leaf) == {w.task}
+            assert await _waiting_count(call, w.member, w, project=leaf) == 1
+            for reader in (w.creator, w.assignee, w.owner, w.admin, w.manager):
+                assert await _rows(call, reader, project=leaf) == [], reader.email
+                assert await _waiting_tasks(call, reader, w, project=leaf) == set(), reader.email
+                assert await _waiting_count(call, reader, w, project=leaf) == 0, reader.email
+            assert await _rows(call, w.admin, scope="everyone", project=leaf) == []
+            # A reviewer who is the run's member reads it on both tabs, because
+            # "For me" is a part of "Everyone".
+            reviewer = _person(MEMBER, w.org, roles=("admin",))
+            got = await _list(call, reviewer, scope="everyone", project=leaf)
+            assert [r["task_id"] for r in got.json()["rows"]] == [w.task]
+            assert got.json()["counts"] == {"mine": 1, "everyone": 1}
         assert _bells(w) == [MEMBER]
 
     async def test_a_question_on_a_done_task_counts_in_neither(self, w):

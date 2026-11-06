@@ -2261,9 +2261,9 @@ def answerable_question_sql(run_id: str) -> str:
     a person answers through the generic route. Its NEWEST open elicitation, as
     :data:`_OPEN_ELICITATIONS_SQL` picks it, is not a typed archive request.
 
-    The SQL twin of ``archive_request_of(question) is None``. Only
-    ``archive-approval`` answers a typed request, so the list and "Waiting on
-    me" leave it out.
+    The SQL twin of ``archive_request_of(question) is None``. Only the run's
+    member answers a typed request, through ``archive-approval``. So
+    :func:`listed_question_sql` shows a typed request to that member only.
     """
     return (
         "EXISTS (SELECT 1 FROM (SELECT oq.content_metadata"
@@ -2277,16 +2277,26 @@ def answerable_question_sql(run_id: str) -> str:
     )
 
 
-def listed_question_sql(run: str) -> str:
-    """ONE text of "the question of the run alias *run* is one that the list
-    shows" (WS-55 EA-18a fix round 1, spec §12.8). The task is not closed, and
-    :func:`answerable_question_sql` holds.
+def listed_question_sql(run: str, *, me: str = "me") -> str:
+    """ONE text of "the list shows the question of the run alias *run* to the
+    reader" (WS-55 EA-18a fix rounds 1 and 2, spec §12.8). It binds ``:me``,
+    or the name in *me*, to the reader's address in lower case.
+
+    * A question on a closed task shows to nobody.
+    * A typed archive request shows to the run's member only, because only
+      that member approves it (§12.1). Every other reader, the creator, an
+      assignee and an owner, admin or manager too, does not see it.
+    * Any other open question shows by the answer set of the caller.
 
     ``agent_questions.questions_sql`` and the flag-on branch of
     ``filters.agent_focus_clause("waiting")`` both read it, so "For me" and
     "Waiting on me" count the same questions.
     """
-    return f"(NOT {task_closed_sql(run)} AND {answerable_question_sql(f'{run}.id')})"
+    return (
+        f"(NOT {task_closed_sql(run)}"
+        f" AND ({answerable_question_sql(f'{run}.id')}"
+        f" OR lower({run}.member_email) = :{me}))"
+    )
 
 
 def person_may_answer_sql(run: str, *, me: str = "me") -> str:

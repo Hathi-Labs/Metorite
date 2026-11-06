@@ -16,12 +16,11 @@ it in Projects, My Day and Approvals. No door keeps a copy.
 the role test of ``agent_runs.holds_answer_role``. The path is
 ``core.visible_project_paths``.
 
-⚠️ **Two kinds of question do not show, because the list could only offer a
-button that the route refuses.** A typed archive request takes its answer only
-from ``archive-approval``, on the task card, and only from the run's member. An
-open run of a closed task is a ``dangling`` row of Needs attention, and the sweep
-closes it. ``agent_runs.listed_question_sql`` is the one text of both, and
-"Waiting on me" reads it too.
+⚠️ **Two kinds of question are narrowed** (``agent_runs.listed_question_sql``).
+A question on a closed task shows to nobody: it is a ``dangling`` row of Needs
+attention, and the sweep closes it. A typed archive request shows to the run's
+member only, with ``why`` ``my_agent``. Only that member approves it, through
+``archive-approval`` (§12.1). "Waiting on me" reads the same text.
 
 ⚠️ **Tenancy (R5).** The caller's tenant session runs each query, and each query
 carries ``task_visibility_clause``. No parameter names an organization or a
@@ -88,8 +87,9 @@ def questions_sql(scope_sql: str, vis: Any) -> str:
     ``why`` and the answer set for the reader. It binds ``:me`` and the
     visibility and scope parameters.
 
-    ``agent_runs.listed_question_sql`` leaves out a closed task and a typed
-    archive request. "Waiting on me" reads the same text.
+    ``agent_runs.listed_question_sql`` leaves out a closed task, and it shows
+    a typed archive request to the run's member only. "Waiting on me" reads
+    the same text.
 
     ``r.status = 'awaiting'`` comes before the state test, so the partial index
     ``pm_agent_runs_one_open_per_task`` serves the read. The CASE of

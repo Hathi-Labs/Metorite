@@ -1502,8 +1502,8 @@ def agent_focus_clause(focus: str) -> str:
       ``agent_runs.person_may_answer_sql`` instead, so "Waiting on me" and the
       list "For me" name the same people (§12.8, D-EA-14). The creator of the
       task then counts too. It also reads ``agent_runs.listed_question_sql``
-      over the task's one open run, so a closed task and a typed archive
-      request count in neither.
+      over the task's one open run. So a closed task counts in neither, and a
+      typed archive request counts for the run's member only, in both.
     * ``review``: an open or draft GitHub pull request, and the task is not in
       a closing category. ``merged``: a pull request merged in the last 7 days.
 
@@ -1535,7 +1535,8 @@ def agent_focus_clause(focus: str) -> str:
                 f"s.state = 'awaiting' AND {person_may_answer_sql('s', me=AGENT_FOCUS_ME)}"
                 " AND EXISTS (SELECT 1 FROM pm_agent_runs qr"
                 " WHERE qr.task_id = s.task_id AND qr.task_id IS NOT NULL"
-                f" AND qr.status = 'awaiting' AND {listed_question_sql('qr')})"
+                f" AND qr.status = 'awaiting'"
+                f" AND {listed_question_sql('qr', me=AGENT_FOCUS_ME)})"
             )
         return _state_exists(
             "s.state = 'awaiting'"
