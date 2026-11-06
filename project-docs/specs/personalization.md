@@ -19,6 +19,15 @@ other private chats, and at most 3 of their due tasks. The block shows only
 with `ASSISTANT_BRIEFING_ORGS` on for the org. See §15.4 "As built, PZ-34",
 §15.9 and D-PZ-38 in §15.11.
 
+**§16 ACCEPTED 2026-11-06 (D184). PZ-39 is built, and PZ-40 to PZ-43 are
+not built.** It adds the epic "Salutations" (Metorite task 1820). PZ-39 gives
+one greeting table for the time of day and a new greeting after 4 quiet
+hours. PZ-40 adds a sourced catalogue of Indian forms of address. PZ-41
+fixes the email drafter, so a title is not a name.
+
+PZ-42 learns what other people call the member from received mail, and asks
+first. PZ-43 adds the birthday and the festivals that the member picks (§16).
+
 **§15 ACCEPTED 2026-10-30 (D142). PZ-33a, PZ-33b, PZ-34 and PZ-35 are built
 dark, and the rest is not built.** It adds the epic "Recent chats and open
 loops" (Metorite task 1129). PZ-33 keeps chat summaries, PZ-34 opens a chat
@@ -2766,3 +2775,472 @@ answers.
 6. **A number split by a real letter (PZ-33b).** The agent's call: a real
    letter ends a digit run. So `98450x12345` stays in a summary as two runs
    of 5 digits. Default: it stands until the owner overrules it.
+
+## 16. Salutations (ACCEPTED, 2026-11-06)
+
+`work_plan.md` §3 records this section as **D184**. The epic is "Salutations"
+(Metorite task 1820). It adds five slices, PZ-39 to PZ-43. The owner answered
+all four questions of §16.8 on 2026-11-06 at 05:41 UTC. PZ-39 is built. The
+other four slices are not built.
+
+### 16.1 The owner's ask
+
+The owner wrote this in chat on 2026-11-06:
+
+```text
+"depending on the time of the day or night, when I am using the Metorite platform and chatting with the chat, it should give me an appropriate salutation that matches the time of the day. Also wanted to check if the system for reading drafts from the emails and other communications and seeing what other people call me in email can be used to also understand what exactly to call the user. In terms of their preference for naming, celebrations, etc. We should be covering Indian salutations like "Ji", "Gaaru" etc that covers all the different kinds of salutations from across the country."
+```
+
+The ask has four parts:
+
+1. **A greeting for the time of day** in the chat (PZ-39).
+2. **Indian forms of address**, such as "ji" and "garu", for the whole
+   country (PZ-40 and PZ-41).
+3. **What other people call the member**, read from mail (PZ-42).
+4. **Celebrations** (PZ-43).
+
+### 16.2 What exists (PZ-4), and the defects
+
+PZ-4 (§5.2, task 252) is built. The profile holds `address.name` (free text,
+40 characters), `formality`, and `greeting` (`none`, `brief` or `warm`). With
+`brief`, the chat greets for the time of day in the first reply of a chat.
+`acb_common.today.part_of_day` gave morning (5 to 11), afternoon (12 to 16),
+evening (17 to 20) or night.
+
+A member can already say "call me Vijay ji". The chat keeps it as
+`address.name`. The mail reader learns the member's outbound voice from sent
+mail only (WS-52 S3). Nothing reads how other people address the member.
+§12.3 says that a message from another person is never a source of the
+member's voice.
+
+Measured on `main` at 182334889, five defects:
+
+| # | Defect | Slice |
+|---|---|---|
+| D1 | Two rules for the time of day. My Day (`myDay.ts` `greeting`) said "Good morning" before 12:00, "Good afternoon" before 18:00, and "Good evening" after. It said "Good morning" at 02:00. At 17:30 My Day said afternoon and the chat said evening | PZ-39 |
+| D2 | The chat read the part of the day from `people.timezone` only. The "now" line reads the browser zone first (task 1649) | PZ-39 |
+| D3 | The word "night" invites "Good night". That phrase is a farewell in English and in Indian English | PZ-39 |
+| D4 | The email drafter greets an Indian title as a name. `_salutation_name` knows Mr, Mrs, Ms, Mx, Dr, Prof and Er. For "Shri Ramesh Kumar" it writes "Dear Shri,". Sri, Smt., Kum., Thiru and Tmt. fail the same way | PZ-41 |
+| D5 | The chat greeted once in each chat. A member who returns to the same chat the next morning got no greeting | PZ-39 |
+
+### 16.3 The time of day (PZ-39, built)
+
+PZ-39 (task 1823) is built. The owner approved the preview on 2026-11-06 at
+09:43 UTC. The pull request is https://github.com/Hathi-Labs/Metorite/pull/1775.
+
+**One table.** `acb_common.today.GREETING_TABLE` is the rule. `myDay.ts`
+holds a copy of the same table. The server and My Day read the same hours:
+
+| Hours (member's zone) | Greeting |
+|---|---|
+| 05:00 to 11:59 | "Good morning" |
+| 12:00 to 16:59 | "Good afternoon" |
+| 17:00 to 20:59 | "Good evening" |
+| 21:00 to 04:59 | "Hello" |
+
+**The zone.** The part-of-day line uses the zone of the "now" line. The
+browser zone comes first, and `people.timezone` is the fallback (D2).
+
+**When the chat greets** (`executor._prime_greet_due` and `_greet_decision`):
+
+- In the first reply of a chat.
+- In the first reply after `GREET_GAP_HOURS = 4` hours or more with no message
+  in that chat. Never in the middle of a conversation (D5).
+- The gap reads stored `chat_message` rows by their server time
+  (`created_at`). It never reads the client's history. It skips the rows of
+  this turn by id.
+- A regenerate or a retry never greets. A fault or a timeout of 1 second
+  gives no greeting, and the turn goes on.
+
+**Runs with no decision** keep the old rule. These are WhatsApp, a delegated
+run, a batch run and a group room. They greet only in the first reply of the
+conversation.
+
+**Late hours.** The chat says "Hello", or "Good evening" before midnight. It
+never says "Good night", and it uses no good-night phrase in any language (D3).
+
+**The language hello.** A profile language other than English asks for the
+common hello of that language: Namaste, Namaskaram or Vanakkam. Nothing picks
+a language from a name or a region.
+
+**The buddy hello.** The first-visit hello (`chat_brief.HELLO_COPY`) opens
+with the same greeting, for example "Good morning, Vijay. Welcome to
+Metorite." The zone comes from the member's own rows. A failed read uses the
+default zone and never fails the hello.
+
+**Cost.** One indexed read on each orchestrator turn of an org with the
+profile on. The median is 5.8 ms, and the worst case is the 1 s limit.
+
+**Fence.** `tests/unit/test_greeting_table.py` reads `myDay.ts` and fails when
+the two tables differ.
+
+### 16.4 Forms of address (PZ-40 and PZ-41)
+
+A form of address is a word that goes with the name: "ji", "garu", "sir". A
+research catalogue of forms by language is the source of this section.
+Section 16.4.1 gives the rules. Section 16.4.2 gives the list that a builder
+needs. Section 16.4.3 gives the drafter fix.
+
+#### 16.4.1 The rules
+
+1. **Source tags.** Each row has a tag. `[V]` means a fetched page confirms
+   it. `[K]` means many people use the form, with no fetched citation.
+   `[U]` means unverified.
+2. **What ships.** A `[V]` row ships as a fixed choice. A `[K]` row ships
+   only after one reviewer confirms it. A `[U]` row needs a check by a native
+   speaker first. The research file states the base rule. A row with no
+   `[V]` tag needs a human reviewer before it ships as a fixed rule.
+3. **Nothing infers a form.** No code picks a form from the name, the region,
+   the language guess or the community. Surnames such as Rao, Naidu, Singh
+   and Sheth link to a caste or a community. Greetings with a religious
+   origin come from the member or from observed mail.
+4. **No choice means the name only (Q4, D-PZ-42).** With no choice made, the
+   chat calls the member by the name alone ("Vijay"). It uses "Vijay ji" or
+   "Vijay garu" only after the member chooses it.
+5. **The name question offers "just my name" first.** The forms that fit the
+   member's language follow it. A kinship form is never a default (rule 7).
+6. **The block uses the chosen form as written.** It does not respell, split
+   or move the form.
+7. **Kinship forms imply age and rank.** Anna, akka, dada, didi, bhai, chechi,
+   chettan and tai place the speaker as younger. The list offers them only
+   when the member asks for them.
+8. **Marital titles.** Smt., Sau., Thirumathi, Begum and Mrs. imply married.
+   Kum., Kumari, Selvi and Miss imply unmarried. The list offers a neutral
+   form first.
+9. **Spelling variants are one form.** Count "garu" and "gaaru" as one. The
+   same holds for ji and jee, sahab, saheb, sahib and saab, avare and avaru,
+   and avargal, avarkal and avl.
+10. **Generic salutations carry no information.** "Dear Sir/Madam", "Team" and
+    "All" say nothing about the member.
+
+PZ-40 puts the list in one catalogue module, `acb_common.honorifics`. No
+second list may exist.
+
+#### 16.4.2 The catalogue
+
+The column "Where" says where the form goes with the name. "Suffix" means
+after the name. "Prefix" means before it. "Attached" means joined to the
+name, as in "Vijaybhai".
+
+**Pan-Indian and English**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| sir (Sar, Saar) | suffix or alone | formal, warm | [K] |
+| madam (Mam, Ma'am) | suffix or alone | formal | [K] |
+| Mr., Mrs., Ms., Miss | prefix | formal | [K] |
+| Dr. | prefix | formal | [K] |
+| name only ("Vijay") | bare | casual, the safe default | [K] |
+| initials ("VJ") | bare | casual | [K] |
+
+**Hindi belt (Hindi, Bhojpuri, Rajasthani, Haryanvi, Maithili)**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| ji (jee) | suffix, spaced or attached | respectful, warm | [K] |
+| Shri (Sri, Shree, Sree, Shrii, Shiri) | prefix | formal, male | [V] |
+| Shrimati (Smt.) | prefix | formal, female, married | [V] |
+| Sushri | prefix | formal, female, any status | [V] |
+| Kumari (Kum.) | prefix | formal, female, unmarried | [K] |
+| Sahab (Sahib, Saheb, Saab) | suffix | respectful, old style | [V] |
+| Bhaisahab | suffix | respectful kinship | [K] |
+| Bhai, Bhaiya | suffix | kinship | [K] |
+| Didi, Behenji | suffix | kinship | [K] |
+| Dada | suffix | kinship. Ambiguous: grandfather in Hindi, elder brother in Bengali and Marathi | [K] |
+| Pandit (Pt.) | prefix | title, linked to a community | [V] |
+
+Do not offer these. Sahiba and Memsahib are colonial. Uncle and Aunty carry
+an age. Sethji links to wealth and a community. Babu and Babuji sound like a
+clerk. Thakur and Chaudhary are clan names.
+
+**Punjabi and Sikh**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| ji | suffix | respectful | [K] |
+| Sardar (Sardarji) | prefix or suffix | respectful, male. Muslims in Punjab also use it | [V] |
+| Giani | prefix | title, a religious or scholarly role | [V] |
+| Bhaji | suffix | kinship | [K] |
+
+Singh and Kaur are surname parts. Never strip them. "Sat Sri Akal" and
+"Waheguru ji ka Khalsa" are religious greetings. Use them only when the
+member asks.
+
+**Gujarati**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| -bhai | attached, sometimes spaced | respectful, warm, male | [K] |
+| -ben | attached | respectful, warm, female | [K] |
+| -ji | attached | respectful | [K] |
+| Saheb | suffix | respectful | [V] |
+| Shri, Shrimati | prefix | formal | [K] |
+
+Seth, Sheth and Shah are surnames. Do not strip them.
+
+**Marathi and Konkani**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| Shri | prefix | formal, male | [K] |
+| Sau. | prefix | formal, female, married | [K] |
+| Kum. | prefix | formal, female, unmarried | [K] |
+| -rao | attached | traditional, male | [V] |
+| Saheb | suffix | respectful | [V] |
+| Tai | suffix | kinship, elder sister | [K] |
+| Dada (Anna, Bhau) | suffix | kinship, elder brother | [K] |
+
+Konkani uses the Marathi forms. The Konkani rows in the research file are
+`[K]` or `[U]`. Patil and Deshmukh are surnames.
+
+**Bengali**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| -da (Dada) | attached or suffix | kinship, elder brother | [K] |
+| -di (Didi) | attached or suffix | kinship, elder sister | [K] |
+| Babu | attached to a name | respectful, old style | [K] |
+| Moshai (Mashai) | suffix | formal, rare in business | [K] |
+| Sri (Shree) | prefix | formal, male | [V] |
+| Srimati | prefix | formal, female, married | [V] |
+
+**Odia, Assamese and the northeast**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| Sri, Srimati (Odia, Assamese) | prefix | formal | [K] |
+| Bhai, Bhaina (Odia) | suffix | kinship | [U] |
+| Apa, Bhauni (Odia) | suffix | kinship | [U] |
+| Baideo, Bhai (Assamese) | suffix | kinship | [U] |
+| Pu, Pi (Mizo) | prefix | formal, respectful | [K] |
+| Sap (Mizo) | suffix | respectful, from "sahib" | [V] |
+| Kong, Bah (Khasi) | prefix | respectful | [K] |
+
+The research file has the least confidence here. Treat Mizo, Khasi,
+Manipuri, Naga and Bodo forms as `[U]`. The Khasi particles "U" and "Ka" are
+name articles, not honorifics. Do not strip them.
+
+**Telugu**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| garu (gaaru) | suffix, spaced or attached | respectful to formal, any gender | [K] |
+| Sri ... garu | prefix and suffix | formal, male | [K] |
+| Srimathi | prefix | formal, female, married | [K] |
+| Anna, Akka | suffix | kinship | [K] |
+
+Telugu names often put the family name first. Rao, Naidu, Reddy and
+Chowdary are surnames. A parser must not assume the surname is last.
+
+**Tamil**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| Thiru (Tiru) | prefix | formal, male | [V] |
+| Thirumathi (Tmt.) | prefix | formal, female, married | [V] |
+| Selvi | prefix | formal, female, unmarried. Also a given name | [K] |
+| avargal (avarkal, Avl.) | suffix | very formal, rare in chat | [K] |
+| Anna, Akka | suffix | kinship | [K] |
+| Selvan | prefix | young men, on invitations | [U] |
+
+Many Tamil names start with initials for the father's name or the village.
+The initial is not a first name. Never use Thambi or Thangachi (younger
+person) for a member.
+
+**Kannada**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| avare (avaru) | suffix, spaced | respectful, formal or spoken | [K] |
+| Shri, Shrimathi, Kumari | prefix | formal | [K] |
+| Anna, Akka | suffix | kinship | [K] |
+
+Gowda, Shetty and Rao are surnames.
+
+**Malayalam**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| Chettan | suffix | kinship, elder brother | [K] |
+| Chechi | suffix | kinship, elder sister | [K] |
+| Shri, Smt., Kum. | prefix | formal, government use | [K] |
+| avarkal | suffix | formal | [U] |
+
+Malayalam names often carry a house name or initials first. Kutty is a name
+part. Achayan is Christian usage. Never infer it.
+
+**Urdu and Muslim usage**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| Janab | prefix | formal, male | [K] |
+| Mohtaram, Mohtarma | prefix | formal, male or female | [K] |
+| Sahab (Sahib), Sahiba | suffix | respectful | [V] |
+| Begum | suffix | traditional, female, married | [V] |
+| Haji, Hafiz, Maulana, Maulvi, Qari, Mufti | prefix | religious title | [K] |
+| Bhai jaan | suffix | kinship | [K] |
+| Apa, Baji | suffix | kinship, elder sister | [K] |
+
+Khan, Syed and Mirza are surnames. Never infer religion from a name.
+
+**Professional prefixes (all regions)**
+
+| Form | Where | Register | Tag |
+|---|---|---|---|
+| Er. (Engineer), Adv. (Advocate) | prefix | title | [K] |
+| CA, CS | prefix or suffix | regulated title | [K] |
+| Prof., Dr. | prefix | title | [K] |
+| Col., Maj., Capt., Lt., Gen., Cdr. | prefix | rank. Retired officers keep it | [K] |
+| IAS, IPS, IFS | suffix | civil service | [K] |
+| Hon'ble | prefix | judges and ministers | [K] |
+
+**Greetings by language.** In Indian business chat, the English "Good
+morning" is the common form. The native time greetings appear mostly in
+social groups and in formal letters. Examples are Suprabhat, Shubhodayam,
+Kaalai vanakkam and Suprabhatham.
+
+The generic hellos are Namaste, Namaskar (Marathi, Bengali, Odia), Vanakkam
+(Tamil), Namaskara (Kannada) and Namaskaram (Malayalam, Telugu). Every row is
+`[K]` or `[U]`. A language hello ships by the rule of §16.4.1 only. Mizo and
+Khasi use English.
+
+**Not covered.** Manipuri, Naga languages, Bodo, Kashmiri, Dogri, Sindhi,
+Nepali, Tulu and Santali have no rows. Do not claim coverage for them.
+
+#### 16.4.3 PZ-41: titles are not names
+
+D4 is a parse error. The drafter takes "Shri" as the first name of "Shri
+Ramesh Kumar". The fix strips the title first and takes the next token as
+the first name:
+
+- The titles are Shri, Sri, Shree, Sree, Shrii, Smt., Shrimati, Srimati,
+  Srimathi, Thirumathi and Tmt. They also include Kum., Kumari, Sushri, Thiru,
+  Tiru, Selvi, Pandit and Pt. The list goes on with Janab, Mohtaram, Mohtarma,
+  Haji, Maulana, Er., Adv., CA, CS and the military ranks.
+- A token is a title only when a name token follows it. A name that is only
+  "Shri" stays a name. "Sri Lakshmi" is ambiguous: Sri can be part of a given
+  name.
+- Kumari, Selvi and Selvan are also given names. They count as a title only
+  when first and followed by a name, or with a dot.
+- A surname token (Rao, Naidu, Reddy, Sharma, Gowda, Pillai, Nair, Iyer,
+  Menon, Shetty, Singh, Kaur, Kumar, Devi) is never a title.
+- For "Shri Ramesh Kumar" the drafter writes "Dear Ramesh," or "Dear Shri
+  Ramesh Kumar,". It never writes "Dear Shri,".
+- The drafter does not choose "ji", "garu", "sir" or a kinship form from the
+  region or the surname. It takes a form from a setting or from observed
+  data only.
+
+Greeting a recipient as the member does stays in PZ-13 (task 307).
+
+### 16.5 What other people call the member (PZ-42)
+
+**Decision (Q2).** The assistant may learn what other people call the member,
+from mail the member receives. It is a suggestion only.
+
+- **What it reads.** The first non-empty line of a received mail in the
+  member's connected mailboxes: "Dear Vijay sir,", "Hi VJ,", "Vijay garu,".
+  It excludes quoted replies and signatures.
+- **What it keeps.** Counts of each form, per sender group. It keeps no mail
+  text, no subject and no sender address in the count.
+- **How it parses.** It drops the greeting word, then reads `[title] name
+  [suffix]`. It splits an attached suffix ("Vijaybhai") only when the stem
+  matches the member's first name, a nickname, initials or the display name.
+  It normalizes spelling variants (§16.4.1 rule 9) before it counts. It
+  ignores generic salutations (rule 10).
+- **What it does with the counts.** When one form leads, it asks the
+  member one card: "Most people write to you as 'Vijay sir'. Should I call
+  you that, or something else?" Nothing changes without a yes. A no stops the
+  question.
+- **Why a card.** What a team calls the member ("sir") is not always what the
+  member wants from the assistant.
+- **§12.3 still holds.** A message from another person is never the member's
+  voice. This slice reads a form of address. It does not read a voice, and it
+  learns no phrase, tone or style from the sender.
+
+Tier: **HIGH**. The slice reads mail and writes the profile. The other choice
+was to read no received mail and only ask. The owner did not take it.
+
+### 16.6 Celebrations (PZ-43)
+
+**Decision (Q3).** The assistant asks. It never guesses.
+
+- The member gives a birthday as a day and a month. The profile keeps no
+  year.
+- The member picks the festivals for a greeting from an all-India list. The
+  list holds no festival by default.
+- The assistant greets once on the day.
+- It never guesses a religion or a community from the name, the region or
+  mail. That is sensitive personal data under the DPDP Act.
+- It does not suggest a festival from mail signals, such as birthday wishes
+  that the member received. That was the other choice, and the owner did not
+  take it.
+- The pick is the member's own data. It follows the rules of §7: Settings
+  shows it, Forget clears it, and export holds it.
+
+### 16.7 The slices
+
+Each slice is one PR. The tier follows `next-ticket.md` step 1b. A fence
+that does not exist yet is advisory until its slice builds (R7).
+
+| Slice | What | Done when | Fence (R7) | Gate · tier |
+|---|---|---|---|---|
+| **PZ-SAL-0** · task 1822 | This section, D184 and the INDEX sentence | The section, D184 and the INDEX sentence are in `main`. `test_decision_ids.py`, `test_index_completeness.py` and `test_doc_names_resolve.py` stay green | Advisory. Docs only | AGENT-SAFE · LOW |
+| **PZ-39** · task 1823 · **BUILT 2026-11-06** | The time-of-day table, the zone, the 4-hour gap, the late hello, the language hello and the buddy hello (§16.3) | At 02:00 My Day and the chat both say "Hello". At 17:30 both say "Good evening". The chat greets in the first reply after 4 hours or more of quiet, and never in the middle of a conversation. A regenerate, a retry and a fault give no greeting. No reply says "Good night" | `tests/unit/test_greeting_table.py` fails when `myDay.ts` and `GREETING_TABLE` differ. `test_executor_greet_due_r8.py` and `test_buddy_hello_r8.py` hold the gap rule on a real database | AGENT-SAFE · STANDARD |
+| **PZ-40** · task 1824 | `acb_common.honorifics`, the one catalogue (§16.4.2). The name question offers "just my name" first, then the forms for the member's language. The block uses the chosen form as written | A unit test: the catalogue holds the forms of §16.4.2 with their tags. A `[U]` row has no entry in the shipped choices. With no choice, the block holds the name only. A chosen form shows as written. No code reads the name, the region or the language to pick a form | Planned `tests/unit/test_honorifics.py`, advisory until PZ-40 builds. It also fails on a second list of forms outside the module | AGENT-SAFE · STANDARD |
+| **PZ-41** · task 1821 | The drafter strips an Indian title before it takes the first name (§16.4.3) | A unit test: "Shri Ramesh Kumar", "Smt. Priya Rao", "Thiru Kumar Raja", "Kum. Anita", "Pandit Mohan Lal" and "Er. Sunil Singh" each give the right first name and never a title. A name that is only "Shri" stays. Surname tokens never count as titles | Planned `tests/unit/test_salutation_titles.py`, advisory until PZ-41 builds | AGENT-SAFE · STANDARD |
+| **PZ-42** · task 1825 | The first-line reader of received mail, the counts, the suggestion card (§16.5) | An R8 test: counts form per member and per org, and a mail of another member never counts. The slice stores no mail text, subject or address. A quoted line and a signature do not count. A generic salutation does not count. Nothing changes in the profile without a yes on the card, and a no stops the question. A message from another person adds no voice sample (§12.3) | Planned `tests/unit/test_address_form_learner.py` and an R8 file, advisory until PZ-42 builds. It extends the §12.3 fence that keeps another person's message out of the voice | Q2 approved · **HIGH** (reads mail, writes the profile) |
+| **PZ-43** · task 1826 | The birthday (day and month), the festival picks, the all-India list, and one greeting on the day (§16.6) | A test: the birthday that the profile keeps holds no year. The chat greets once on the day, and not a second time that day. A member with no pick gets no festival greeting. No code reads the name, the region or mail to pick a festival. Forget and export cover the new fields | Planned `tests/unit/test_celebrations.py`, advisory until PZ-43 builds | Q3 approved · STANDARD |
+
+Verification commands. Run from the repository root. Each slice creates the
+test files that it names:
+
+```bash
+# PZ-39
+uv run pytest tests/unit/test_greeting_table.py tests/unit/test_executor_greet_due_r8.py tests/unit/test_buddy_hello_r8.py -q
+cd workbench/control_plane && npx vitest run src/lib/myDay src/app/chat/buddyHello
+# PZ-40 and PZ-41
+uv run pytest tests/unit/test_honorifics.py tests/unit/test_salutation_titles.py -q
+# PZ-42
+uv run pytest tests/unit/test_address_form_learner.py -q
+# PZ-43
+uv run pytest tests/unit/test_celebrations.py -q
+```
+
+### 16.8 Decisions
+
+`work_plan.md` §3 records these as **D184**. The owner answered all four on
+epic task 1820 on 2026-11-06 at 05:41 UTC: "Approve all four recommendations".
+The D-PZ-n ids and the PZ-n slice numbers are two separate sequences. D-PZ-39
+is not the decision of PZ-39. A check of `origin/main` at merge confirms the
+numbers (R1).
+
+| # | Question | Decision |
+|---|---|---|
+| **D-PZ-39** | When does the chat greet? (Q1) | **Decided: owner, 2026-11-06 05:41 UTC, accepted as D184.** In the first reply of a chat, and in the first reply after 4 hours or more with no message in that chat. Never in the middle of a conversation. Late at night it says "Hello" or "Good evening", never "Good night". It greets in the member's language when the profile sets one |
+| **D-PZ-40** | May the assistant learn what other people call the member, from mail? (Q2) | **Decided: owner, 2026-11-06 05:41 UTC, accepted as D184.** Yes, as a suggestion only. It reads the first line of received mail, keeps counts of each form and no mail text, and asks once. Nothing changes without a yes |
+| **D-PZ-41** | How do celebrations work? (Q3) | **Decided: owner, 2026-11-06 05:41 UTC, accepted as D184.** Ask, never guess. The member gives a birthday (no year) and picks festivals from an all-India list. One greeting on the day. No guess of religion or community, and no suggestion from mail signals |
+| **D-PZ-42** | What does the chat call the member when no choice is made? (Q4) | **Decided: owner, 2026-11-06 05:41 UTC, accepted as D184.** The name only. A form such as "ji" or "garu" comes after the member chooses it. The setup question offers the forms that fit the member's language, from a sourced list |
+
+### 16.9 Open questions
+
+These are real and open. Each has a default, and the default stands until a
+person answers.
+
+1. **Who confirms the `[K]` rows?** A row with no `[V]` tag needs a human
+   reviewer before it ships as a fixed rule. The common forms ("sir", "ji",
+   "garu") are `[K]`. Default: PZ-40 ships the `[V]` rows and the name-only
+   choice. It also ships the `[K]` rows that the owner confirms in the PZ-40
+   preview.
+2. **A native-speaker check.** Eleven languages need one check each. They are
+   Telugu, Tamil, Kannada, Malayalam, Bengali, Gujarati, Marathi, Odia,
+   Assamese, Mizo and Khasi. Their `[K]` and `[U]` rows ship after the check.
+   Default: those rows stay out of the choices until then.
+3. **The festival list (PZ-43).** The content of the all-India list needs an
+   owner or native-speaker check. Default: PZ-43 builds the picker with an
+   empty list, and the list fills after the check.
+4. **The late-evening hours.** The research file marks the exact cutoff as
+   `[U]`. PZ-39 uses 21:00 as the start of "Hello". Default: that stands.
+5. **Parser tests on real mail (PZ-42).** The research file asks to test the
+   first-line rules on real first lines from a consenting member. Default:
+   PZ-42 tests on made-up lines first, and a consenting member's mail comes
+   after the owner agrees.
