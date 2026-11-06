@@ -68,7 +68,14 @@ def test_the_gateway_seam_sends_none_not_empty_string():
         {"role": "tool", "tool_call_id": "c1", "content": "ok"},
         {"role": "user", "content": "next"},
     ]
-    for provider in ("anthropic", "claude-sonnet-4", "bedrock/anthropic.claude"):
+    # The direct path passes "<litellm provider> <model>" (see the call site).
+    for provider in (
+        "anthropic anthropic/claude-sonnet-4",
+        "bedrock bedrock/anthropic.claude-3",
+        "vertex_ai vertex_ai/claude-3-5-sonnet",
+        "anthropic",
+        "claude-sonnet-4",
+    ):
         sent = _sanitize_messages_for_provider(history, provider)
         assert sent[1]["content"] is None, provider
         assert not any(c == "" for c in _all_contents(sent))
@@ -119,20 +126,35 @@ def test_the_router_gives_each_step_the_empty_content_its_vendor_accepts():
 
 
 def test_a_failover_chain_applies_the_rule_for_the_model_it_really_calls():
-    """main._kwargs_for runs content_for_step once per step."""
+    """main._kwargs_for builds each step's messages with messages_for_step."""
+    import ast
     import inspect
 
     from customer_console import main
-    from customer_console.reasoning import content_for_step
+    from customer_console.reasoning import messages_for_step
 
-    assert "content_for_step(" in inspect.getsource(main)
-    wire = [{"role": "assistant", "content": None, "tool_calls": [TOOL_CALL]}]
-    first = content_for_step(wire, "deepseek/deepseek-chat")
-    second = content_for_step(wire, "anthropic/claude-haiku")
-    assert first[0]["content"] == ""
-    assert second[0]["content"] is None
+    wire = [{"role": "user", "content": "hi"},
+            {"role": "assistant", "content": None, "tool_calls": [TOOL_CALL]}]
+    first = messages_for_step(wire, "deepseek/deepseek-chat")
+    second = messages_for_step(wire, "anthropic/claude-haiku")
+    third = messages_for_step(wire, "deepseek/deepseek-chat")
+    assert first[1]["content"] == ""
+    assert second[1]["content"] is None
+    assert third[1]["content"] == ""
     # A step must never see the edit that the step before it made.
-    assert wire[0]["content"] is None
+    assert wire[1]["content"] is None
+    # The prefix decides, as the credential lookup does.
+    assert messages_for_step(wire, "anthropic/deepseek-x")[1]["content"] is None
+    assert messages_for_step(wire, "deepseek/claude-like")[1]["content"] == ""
+
+    # The Router route builds every step through it (wiring, not behaviour).
+    tree = ast.parse(inspect.getsource(main))
+    kwargs_for = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_kwargs_for"
+        and "messages_for_step" in ast.unparse(n)
+    ]
+    assert kwargs_for
 
 
 def test_a_last_user_turn_of_empty_blocks_is_never_sent_as_empty_list():
@@ -314,20 +336,80 @@ def test_history_builder_drops_the_placeholder_from_a_stored_turn():
     assert [m["role"] for m in out] == ["user", "assistant", "user"]
 
 
-def test_history_builder_sends_no_empty_content_for_a_tool_call_turn():
-    from acb_llm.context import assemble_run_context
+def test_a_stored_tool_call_turn_with_a_placeholder_block_is_cleaned():
+    """The fitter drops the placeholder block and keeps the tool calls."""
+    from acb_llm.context import fit_messages_to_context
 
-    out = assemble_run_context(
-        history=[
-            {"role": "user", "content": "find it"},
-            {"role": "assistant", "content": "", "tool_calls": [TOOL_CALL]},
-            {"role": "assistant", "content": "Found it."},
-        ],
-        current_message="thanks",
-    )
-    assert not any(m.get("content") == "" for m in out)
-    cleaned = clean_model_messages(out)
-    assert not any(c == "" for c in _all_contents(cleaned))
+    src = [
+        {"role": "user", "content": "find it"},
+        {"role": "assistant", "tool_calls": [TOOL_CALL], "content": [
+            {"type": "text", "text": EMPTY_TEXT_PLACEHOLDER},
+        ]},
+        {"role": "assistant", "content": f"{EMPTY_TEXT_PLACEHOLDER}\nFound it."},
+        {"role": "user", "content": "thanks"},
+    ]
+    fitted, _ = fit_messages_to_context(src, "deepseek/deepseek-chat")
+    assert EMPTY_TEXT_PLACEHOLDER not in repr(fitted)
+    assert fitted[1]["tool_calls"] == [TOOL_CALL]
+    assert fitted[2]["content"] == "Found it."
+
+
+def test_the_fitter_leaves_the_empty_content_of_a_tool_call_turn_alone():
+    """The gateway sets "" for DeepSeek and None for Anthropic. The fitter
+    must not undo either (it runs after the sanitizer on the direct path)."""
+    from acb_llm.context import fit_messages_to_context
+    from gateway.routes.v1_compat import _sanitize_messages_for_provider
+
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": None, "tool_calls": [TOOL_CALL]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+        {"role": "user", "content": "next"},
+    ]
+    cases = {
+        "deepseek deepseek/deepseek-chat": "",
+        "groq groq/llama": "",
+        "anthropic anthropic/claude-sonnet-4": None,
+        "bedrock bedrock/anthropic.claude-3": None,
+    }
+    for provider_and_model, want in cases.items():
+        model = provider_and_model.split(" ", 1)[1]
+        sent = _sanitize_messages_for_provider(history, provider_and_model)
+        assert sent[1]["content"] == want, provider_and_model
+        fitted, _ = fit_messages_to_context(sent, model)
+        assert fitted[1]["content"] == want, provider_and_model
+
+
+def test_a_placeholder_that_starts_a_line_is_removed_and_the_text_kept():
+    text = f"{EMPTY_TEXT_PLACEHOLDER} Here is the answer.\nSecond line."
+    assert strip_placeholder_lines(text) == "Here is the answer.\nSecond line."
+    for size in (1, 3, 11, 500):
+        f = PlaceholderStreamFilter()
+        out = "".join(
+            f.feed(text[i:i + size]) for i in range(0, len(text), size)
+        ) + f.flush()
+        assert out == "Here is the answer.\nSecond line.", size
+
+
+def test_a_batch_result_never_carries_the_placeholder():
+    """run_agent's answer, result and steps lose the placeholder, so the
+    WhatsApp bot and the project agent sink never send it."""
+    import asyncio
+
+    from orchestrator import executor
+
+    class Msg:
+        role = "assistant"
+        text = f"{EMPTY_TEXT_PLACEHOLDER}\nStep one."
+
+    class Resp:
+        text = f"{EMPTY_TEXT_PLACEHOLDER}\nThe answer."
+        messages = (Msg(),)
+
+    assert asyncio.iscoroutinefunction(executor.run_agent)
+    out = executor._batch_result(Resp(), "run-1", "agent-x")
+    assert out["answer"] == out["result"] == "The answer."
+    assert out["steps"] == ["Step one."]
 
 
 def test_the_string_history_block_drops_the_placeholder():

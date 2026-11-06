@@ -840,7 +840,11 @@ async def _handle_chat_completions(request: Request) -> StreamingResponse | dict
     provider = ensure_model_registered(model)
 
     # Sanitize messages for providers with strict validation (e.g. DeepSeek).
-    messages = _sanitize_messages_for_provider(messages, provider or model)
+    # litellm names the provider ("anthropic", "bedrock", "vertex_ai"), so pass
+    # the model too: a Claude model on Bedrock is Anthropic-shaped.
+    messages = _sanitize_messages_for_provider(
+        messages, f"{provider or ''} {model}",
+    )
 
     # Context-window guard (single-agent chat audit C1/CX1): fit prompt +
     # completion into the model's window BEFORE cache annotation, so an

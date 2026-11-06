@@ -176,12 +176,14 @@ def fit_messages_to_context(
     provider 4xx, but only as the last resort — audit CX5).
 
     This is also the last stop before ``acompletion`` for ``acb_llm.client``,
-    so it applies the shared message hygiene (task 1787): no ``""`` content,
-    no empty text block, no litellm placeholder line in a stored turn. A list
-    that is already clean comes back as the same object."""
+    so it applies the shared message hygiene (task 1787): no empty text block,
+    and no litellm placeholder line in a stored turn. It does NOT set the
+    empty content of a tool-call turn. That value depends on the vendor, and
+    the gateway and the Router own it. A list that is already clean comes back
+    as the same object."""
     from acb_llm.message_hygiene import clean_model_messages
 
-    _cleaned = clean_model_messages(messages)
+    _cleaned = clean_model_messages(messages, set_tool_call_content=False)
     if _cleaned != messages:
         messages = _cleaned
     budget = context_window_for(model) - max_output_tokens - safety_margin

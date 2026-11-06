@@ -3362,9 +3362,6 @@ async def _run_sub_agent_streaming(
                     text = text.get("content", str(text))
                 final_text = str(text) if text else ""
                 if final_text:
-                    from acb_llm.message_hygiene import strip_placeholder_lines
-                    final_text = strip_placeholder_lines(final_text)
-                if final_text:
                     text_parts.append(final_text)
                     await _emit_sub_event({
                         "type": "SUB_AGENT_TEXT_DELTA",
@@ -9382,9 +9379,23 @@ async def _run_with_maf_agent(
             await stack.enter_async_context(agent)
         response = await _with_tier_policy(agent, tier_policy).run(run_input)
 
-    text: str = getattr(response, "text", "") or ""
+    return _batch_result(response, run_id, agent_name)
+
+
+def _batch_result(response: Any, run_id: str, agent_name: str) -> dict[str, Any]:
+    """The dict `run_agent` returns for one batch run.
+
+    Task 1787: this is the ONE strip of litellm's empty-text placeholder for
+    every caller of a batch result (WhatsApp, the project agent sink, the
+    sub-agent). The placeholder never leaves here.
+    """
+    from acb_llm.message_hygiene import strip_placeholder_lines
+
+    text: str = strip_placeholder_lines(getattr(response, "text", "") or "")
+    steps = [t for t in (strip_placeholder_lines(x).strip()
+                         for x in _step_texts(response)) if t]
     return {"answer": text, "run_id": run_id, "agent": agent_name, "result": text,
-            "steps": _step_texts(response), "tool_calls": _tool_calls_of(response)}
+            "steps": steps, "tool_calls": _tool_calls_of(response)}
 
 
 def _tool_calls_of(response: Any) -> list[dict[str, Any]]:

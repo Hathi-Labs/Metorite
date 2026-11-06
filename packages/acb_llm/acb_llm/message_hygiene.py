@@ -16,9 +16,12 @@ model then read the sentence as its own past text and copied it.
 
 **The fix has three parts, all here:**
 
-* ``clean_model_messages`` builds the list that goes to the model. A
-  tool-call-only assistant turn carries ``content=None``. An empty text block
-  is dropped. A stored turn that holds the placeholder is cleaned.
+* ``clean_model_messages`` builds the list that goes to the model. An empty
+  text block is dropped, and a stored turn that holds the placeholder is
+  cleaned. A tool-call-only assistant turn carries ``content=None`` for an
+  Anthropic-shaped request, where litellm would turn ``""`` into the
+  placeholder. It carries ``""`` for a provider that refuses null content
+  (DeepSeek, Groq, Together), and for an unknown provider.
 * ``strip_placeholder_lines`` and ``PlaceholderStreamFilter`` remove the
   placeholder from model output, as it streams and as it is stored.
 * ``EMPTY_TEXT_PLACEHOLDER`` is the one constant.
@@ -44,6 +47,10 @@ EMPTY_TEXT_PLACEHOLDER = (
 _PLACEHOLDER_LINE_RE = re.compile(
     r"^[ \t]*\[System:[^\]\n]*sanitised to satisfy protocol\][ \t]*$"
 )
+# The placeholder at the START of a line. Any text after it is kept.
+_LEADING_PLACEHOLDER_RE = re.compile(
+    r"^[ \t]*\[System:[^\]\n]*sanitised to satisfy protocol\][ \t]*"
+)
 _LINE_SPLIT_RE = re.compile(r"[^\n]*\n|[^\n]+")
 _HOLD_PREFIX = "[System:"
 _HOLD_MAX = 200
@@ -66,22 +73,28 @@ def is_placeholder_line(line: str) -> bool:
 
 
 def strip_placeholder_lines(text: str) -> str:
-    """Remove each line of *text* that holds only the placeholder.
+    """Remove the placeholder from the start of each line of *text*.
 
-    The line break after a removed line goes with it. Text with no such line
-    comes back unchanged, byte for byte.
+    A line that holds only the placeholder goes, with its line break. A line
+    that starts with the placeholder and goes on keeps the rest. A mention in
+    the middle of a sentence stays. Text with no placeholder comes back
+    unchanged, byte for byte.
     """
     if not text or "sanitised to satisfy protocol" not in text:
         return text
-    kept = [
-        seg for seg in _LINE_SPLIT_RE.findall(text)
-        if not is_placeholder_line(seg.rstrip("\n").rstrip("\r"))
-    ]
+    kept: list[str] = []
+    for seg in _LINE_SPLIT_RE.findall(text):
+        m = _LEADING_PLACEHOLDER_RE.match(seg)
+        if m:
+            seg = seg[m.end():]
+            if not seg.strip("\r\n"):
+                continue
+        kept.append(seg)
     return "".join(kept)
 
 
 def _could_still_match(partial: str) -> bool:
-    """True when an unfinished line may yet become a placeholder line."""
+    """True when an unfinished line may yet start with the placeholder."""
     stripped = partial.strip()
     if not stripped:
         return True
@@ -89,22 +102,21 @@ def _could_still_match(partial: str) -> bool:
         return False
     if _HOLD_PREFIX.startswith(stripped):
         return True
-    return stripped.startswith(_HOLD_PREFIX) and (
-        "]" not in stripped or is_placeholder_line(stripped)
-    )
+    return stripped.startswith(_HOLD_PREFIX) and "]" not in stripped
 
 
 class PlaceholderStreamFilter:
-    """Remove placeholder lines from a stream of text deltas.
+    """Remove the placeholder from a stream of text deltas.
 
-    A line that may become a placeholder is held until it ends. Any other
-    line passes at once, so normal text streams with no delay. Call ``flush``
-    when the message ends, to release a held partial line.
+    A line that may start with the placeholder is held until it is clear. Any
+    other line passes at once, so normal text streams with no delay. Call
+    ``flush`` when the message ends, to release a held partial line.
     """
 
     def __init__(self) -> None:
         self._buf = ""
         self._passthrough = False
+        self._swallow = False  # a placeholder was just removed
 
     def feed(self, delta: str) -> str:
         if not delta:
@@ -116,11 +128,27 @@ class PlaceholderStreamFilter:
                 if seg.endswith("\n"):
                     self._passthrough = False
                 continue
+            if self._swallow:
+                seg = seg.lstrip(" \t")
+                if not seg:
+                    continue
+                self._swallow = False
+                if seg.startswith("\n"):
+                    # The line held only the placeholder. Its break goes too.
+                    seg = seg[1:]
+                    if seg:
+                        out.append(self.feed(seg))
+                    continue
             self._buf += seg
-            if self._buf.endswith("\n"):
-                line = self._buf.rstrip("\n").rstrip("\r")
-                if not is_placeholder_line(line):
-                    out.append(self._buf)
+            m = _LEADING_PLACEHOLDER_RE.match(self._buf)
+            if m:
+                rest = self._buf[m.end():]
+                self._buf = ""
+                self._swallow = True
+                if rest:
+                    out.append(self.feed(rest))
+            elif self._buf.endswith("\n"):
+                out.append(self._buf)
                 self._buf = ""
             elif not _could_still_match(self._buf):
                 out.append(self._buf)
@@ -129,10 +157,9 @@ class PlaceholderStreamFilter:
         return "".join(out)
 
     def flush(self) -> str:
-        buf, self._buf, self._passthrough = self._buf, "", False
-        if buf and not is_placeholder_line(buf):
-            return buf
-        return ""
+        buf, self._buf = self._buf, ""
+        self._passthrough = self._swallow = False
+        return buf
 
 
 def _is_blank(value: Any) -> bool:
@@ -157,15 +184,20 @@ def _clean_blocks(blocks: list[Any], role: str) -> list[Any]:
     return kept
 
 
-def clean_model_messages(
-    messages: list[dict[str, Any]], *, null_content_ok: bool = True,
+def clean_model_messages(  # noqa: C901
+    messages: list[dict[str, Any]],
+    *,
+    null_content_ok: bool = True,
+    set_tool_call_content: bool = True,
 ) -> list[dict[str, Any]]:
     """Return *messages* in the shape that is safe to send to a model.
 
-    * An assistant turn with tool calls and no text carries ``content=None``,
-      never ``""`` or whitespace. A provider that refuses null content
-      (``null_content_ok=False``) gets ``""``, and those providers do not run
-      litellm's Anthropic placeholder.
+    * An assistant turn with tool calls and no text gets the empty content its
+      vendor accepts. ``null_content_ok=True`` (an Anthropic-shaped request)
+      gives ``None``, because litellm turns ``""`` into the placeholder there.
+      ``null_content_ok=False`` gives ``""``, for a provider that refuses null
+      content. ``set_tool_call_content=False`` leaves that value as it is, for
+      a caller that cannot know the vendor (the context fitter).
     * An empty text block is dropped, not sent.
     * An assistant turn with neither text nor tool calls is dropped.
     * An empty user turn is dropped, except the last message of the list.
@@ -209,6 +241,16 @@ def clean_model_messages(
 
         if role == "assistant":
             if msg.get("tool_calls"):
+                if not set_tool_call_content:
+                    # Keep the caller's value. A block list that cleaned down
+                    # to nothing goes back to what it was, unless it held the
+                    # placeholder. Then it is "".
+                    if isinstance(msg.get("content"), list):
+                        was = original.get("content")
+                        held = EMPTY_TEXT_PLACEHOLDER in repr(was)
+                        msg = {**msg, "content": "" if held else was}
+                    out.append(msg)
+                    continue
                 want: Any = None if null_content_ok else ""
                 if msg.get("content") != want or "content" not in msg:
                     msg = {**msg, "content": want}
