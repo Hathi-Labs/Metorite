@@ -63,8 +63,9 @@ WS-24b (2026-11-06) removed that fallback.
 
 An unset ``GATEWAY_INTERNAL_TOKEN`` FAILS CLOSED outside ``ACB_ENV=dev``: no
 Bearer is service identity, ``require_internal_auth`` answers 401, and a bare
-``X-User-Email`` resolves anonymous. A dev laptop keeps the old open
-behaviour, the same rule as ``require_llm_api_auth``.
+``X-User-Email`` resolves anonymous. On ``ACB_ENV=dev`` an unset token is
+open, the same rule as ``require_llm_api_auth``. This is new: the old
+``sk-local`` default kept a dev box with no token closed.
 
 Branch 0 (WS-55 EA-3a, ``external_agent_access.md`` §10.1): a request that
 carries an ``X-Agent-*`` header or an ``mcp:`` actor stamp is an outside
