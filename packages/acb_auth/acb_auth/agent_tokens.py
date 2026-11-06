@@ -110,8 +110,11 @@ store that must work before a tenant is known.
     row first, as rule 3 says. A resource scope must be in the ceiling, the
     scopes that every live token of the connection covers
     (:func:`ceiling_of`), because the edge intersects the token scope with
-    the connection scopes. ``offline_access`` and ``requested_scopes`` never
-    change here.
+    the connection scopes. The ceiling binds a turn-on only: a scope that the
+    row holds, or that a held scope covers, needs no check. A mark that the
+    member no longer sees stays, and a new one is refused. A grant that
+    equals the row writes nothing. ``offline_access`` and
+    ``requested_scopes`` never change here.
 
 Fence: ``tests/unit/test_agent_connection_tokens.py`` (R8, a phase-4-promoted
 catalog, as a NON-privileged role). D-EA-11:
@@ -993,12 +996,15 @@ async def revoke_connection_scoped(
 #: * :data:`CHANGE_NO_SCOPE`: the new grant holds no resource scope (rule 4).
 #: * :data:`CHANGE_OFFLINE_ACCESS`: the new grant adds or drops
 #:   ``offline_access`` (rule 3).
-#: * :data:`CHANGE_ABOVE_CEILING`: a resource scope is outside
-#:   :attr:`ConnectionRow.ceiling_scopes` (rule 2).
+#: * :data:`CHANGE_ABOVE_CEILING`: the new grant turns on a resource scope
+#:   that is outside :attr:`ConnectionRow.ceiling_scopes` (rule 2).
+#: * :data:`CHANGE_PROJECT_NOT_SEEN`: the new grant adds a project that the
+#:   member of the session does not see to one of its two lists.
 CHANGE_NOT_FOUND = "not_found"
 CHANGE_NO_SCOPE = "no_scope"
 CHANGE_OFFLINE_ACCESS = "offline_access_fixed"
 CHANGE_ABOVE_CEILING = "scope_above_ceiling"
+CHANGE_PROJECT_NOT_SEEN = "project_not_seen"
 
 
 @dataclass(frozen=True)
@@ -1006,22 +1012,51 @@ class ChangeRefused:
     """A change of a grant that did not happen, and why. Nothing was written.
 
     ``scopes`` holds the scopes above the ceiling for
-    :data:`CHANGE_ABOVE_CEILING`, in the order of the request, and is empty
-    for each other reason.
+    :data:`CHANGE_ABOVE_CEILING`, in the order of the request. ``projects``
+    holds the new ids that the member does not see for
+    :data:`CHANGE_PROJECT_NOT_SEEN`. Each is empty for each other reason.
     """
 
     reason: str
     scopes: tuple[str, ...] = ()
+    projects: tuple[str, ...] = ()
 
+
+@dataclass(frozen=True)
+class GrantChange:
+    """A change that the store accepted: the row before it and after it.
+
+    ``before`` and ``after`` are equal when the new grant equals the row.
+    Then the store wrote nothing, and :attr:`changed` is false.
+    """
+
+    before: ConnectionRow
+    after: ConnectionRow
+
+    @property
+    def changed(self) -> bool:
+        return self.after is not self.before
+
+
+#: The columns of :data:`_LIST_CONNECTIONS_SQL`, for a row ``c``. The lock
+#: read and the UPDATE give the row in the same shape, so
+#: :func:`_connection_row` reads all three.
+_CONNECTION_COLUMNS = f"""CAST(c.id AS TEXT) AS id, c.member_email, c.client_name,
+       c.client_origin, c.scopes,
+       CAST(c.pinned_projects AS TEXT[]) AS pinned_projects,
+       c.include_personal, c.created_at, c.last_used_at, c.expires_at,
+       CAST(c.left_out_projects AS TEXT[]) AS left_out_projects,
+       c.requested_scopes,
+       {_LIVE_TOKEN_SCOPES_EXPR} AS token_scopes"""
 
 #: Lock the ONE live connection of this member in this organization, and
-#: read what the change needs: its scopes and the scope of each live token.
+#: read the row with the scope of each live token.
 #: ⚠️ The lock order of rule 3 holds: the connection row first
 #: (``FOR NO KEY UPDATE``, as an issue takes it), and the tokens are only
-#: read. While the lock holds, no issue and no rotation can add a token, so
-#: the ceiling that this reads stays true until the UPDATE commits.
+#: read. While the lock holds, no issue and no rotation can add a token. A
+#: code that ``mint_code`` adds meanwhile can only narrow the intersection.
 _LOCK_MEMBER_CONNECTION_SQL = f"""
-SELECT c.scopes, {_LIVE_TOKEN_SCOPES_EXPR} AS token_scopes
+SELECT {_CONNECTION_COLUMNS}
   FROM agent_connection c
  WHERE c.id = CAST(:connection_id AS UUID)
    AND c.organization_id = CAST(:org AS UUID)
@@ -1047,13 +1082,7 @@ UPDATE agent_connection c
    AND c.member_email = CAST(:member AS TEXT)
    AND c.revoked_at IS NULL
    AND c.expires_at > now()
-RETURNING CAST(c.id AS TEXT) AS id, c.member_email, c.client_name,
-          c.client_origin, c.scopes,
-          CAST(c.pinned_projects AS TEXT[]) AS pinned_projects,
-          c.include_personal, c.created_at, c.last_used_at, c.expires_at,
-          CAST(c.left_out_projects AS TEXT[]) AS left_out_projects,
-          c.requested_scopes,
-          {_LIVE_TOKEN_SCOPES_EXPR} AS token_scopes
+RETURNING {_CONNECTION_COLUMNS}
 """
 
 
@@ -1063,8 +1092,11 @@ def _scope_refusal(
     """The scope rules of D-EA-13 for a change from *held* to *asked*.
 
     Rule 4: one resource scope at least. Rule 3: ``offline_access`` is in
-    *asked* exactly when it is in *held*. Rule 2: each resource scope is in
-    *ceiling*. A scope that the server does not know is outside the ceiling.
+    *asked* exactly when it is in *held*. Rule 2: the ceiling binds a
+    turn-on only. A scope that *held* holds, or that a held write scope
+    covers (``agent_oauth.scope_holds``), adds no access at the edge, so it
+    needs no check. Each other resource scope must be in *ceiling*. A scope
+    that the server does not know is outside the ceiling.
     """
     offline = agent_oauth.OFFLINE_ACCESS
     wanted = [s for s in dict.fromkeys(asked) if s != offline]
@@ -1073,10 +1105,30 @@ def _scope_refusal(
     if (offline in asked) != (offline in held):
         return ChangeRefused(CHANGE_OFFLINE_ACCESS)
     allowed = set(ceiling)
-    above = tuple(s for s in wanted if s not in allowed)
+    above = tuple(
+        s for s in wanted
+        if not agent_oauth.scope_holds(held, s) and s not in allowed
+    )
     if above:
         return ChangeRefused(CHANGE_ABOVE_CEILING, above)
     return None
+
+
+def _same_grant(
+    row: ConnectionRow,
+    scopes: Sequence[str],
+    pins: Sequence[str],
+    left_out: Sequence[str],
+    personal: bool,
+) -> bool:
+    """True when the new grant reaches what *row* reaches now. The order of
+    a list and a copy of an id change no reach."""
+    return (
+        set(scopes) == set(row.scopes)
+        and set(pins) == set(row.pinned_projects)
+        and set(left_out) == set(row.left_out_projects)
+        and bool(personal) == row.include_personal
+    )
 
 
 async def update_connection_grant(
@@ -1088,24 +1140,33 @@ async def update_connection_grant(
     pinned_projects: Sequence[str],
     left_out_projects: Sequence[str],
     include_personal: bool,
-) -> ConnectionRow | ChangeRefused:
+    unseen_pins: Sequence[str] = (),
+    unseen_left_out: Sequence[str] = (),
+) -> GrantChange | ChangeRefused:
     """Change the grant of one connection of *member_email* (EA-17c-1).
 
     D-EA-13, spec §10.8. The caller passes the bound tenant and the member
     of the session, never request input (R11). In ONE transaction the store
     locks the live connection of this member in this organization, reads
-    the scopes of its live tokens, checks the scope rules
-    (:func:`_scope_refusal`) and writes the scopes, the pins, the left-out
-    list and the personal switch. It answers the new row, or
+    the scopes of its live tokens, and checks the rules in this order:
+
+    1. The scope rules (:func:`_scope_refusal`). The ceiling is
+       :func:`ceiling_of` the live tokens, read under the lock. It binds a
+       turn-on only, so a narrowing passes with no live token too.
+    2. The marks. *unseen_pins* and *unseen_left_out* are the ids of the
+       body that the member of the session does not see, as the caller
+       found them. The store refuses such an id only when the locked row
+       does not hold it in the same list. So a mark that the member no
+       longer sees (a deleted, sealed or lost project) never blocks a save,
+       and no change adds an unseen id.
+
+    A new grant that equals the row writes nothing (:func:`_same_grant`).
+    Else the store writes the scopes, the pins, the left-out list and the
+    personal switch. It answers :class:`GrantChange`, or
     :class:`ChangeRefused` with nothing written.
 
-    The ceiling is :func:`ceiling_of` the live tokens, read under the lock.
-    The token scope is fixed at the connect and a rotation copies it, so a
-    change can turn a scope back on only up to what the member granted then.
-
     The edge and branch 0 read the row at each call, with no cache, so the
-    next agent call sees the change. The tokens stay. The caller checks the
-    project ids first: the store keeps them as it gets them.
+    next agent call sees the change. The tokens stay.
 
     An empty member raises, because it would match no row.
     """
@@ -1119,24 +1180,35 @@ async def update_connection_grant(
     if org is None or connection is None:
         return ChangeRefused(CHANGE_NOT_FOUND)
     where = {"connection_id": connection, "org": org, "member": member}
+    new_scopes = agent_oauth.scope_string(scopes).split(" ")
+    pins = [str(p) for p in pinned_projects]
+    left_out = [str(p) for p in left_out_projects]
     async with _tenant_session(org) as db:
         locked = (
             await db.execute(text(_LOCK_MEMBER_CONNECTION_SQL), where)
         ).one_or_none()
         if locked is None:
             return ChangeRefused(CHANGE_NOT_FOUND)
-        ceiling = ceiling_of(tuple(locked.token_scopes or ()))
-        refused = _scope_refusal(list(scopes), tuple(locked.scopes or ()), ceiling)
+        before = _connection_row(locked)
+        refused = _scope_refusal(list(scopes), before.scopes, before.ceiling_scopes)
         if refused is not None:
             return refused
+        new_unseen = tuple(dict.fromkeys([
+            *(p for p in unseen_pins if p not in before.pinned_projects),
+            *(p for p in unseen_left_out if p not in before.left_out_projects),
+        ]))
+        if new_unseen:
+            return ChangeRefused(CHANGE_PROJECT_NOT_SEEN, projects=new_unseen)
+        if _same_grant(before, new_scopes, pins, left_out, include_personal):
+            return GrantChange(before=before, after=before)
         row = (
             await db.execute(
                 text(_CHANGE_GRANT_SQL),
                 {
                     **where,
-                    "scopes": agent_oauth.scope_string(scopes).split(" "),
-                    "pins": [str(p) for p in pinned_projects],
-                    "left_out": [str(p) for p in left_out_projects],
+                    "scopes": new_scopes,
+                    "pins": pins,
+                    "left_out": left_out,
                     "personal": bool(include_personal),
                 },
             )
@@ -1144,7 +1216,7 @@ async def update_connection_grant(
     if row is None:
         # The lock held the row, so only a bug reaches this line.
         return ChangeRefused(CHANGE_NOT_FOUND)
-    return _connection_row(row)
+    return GrantChange(before=before, after=_connection_row(row))
 
 
 # ── Authorization codes ─────────────────────────────────────────────────────

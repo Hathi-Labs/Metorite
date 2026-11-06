@@ -429,12 +429,6 @@ class TestTheMembersList:
         row = next(r for r in rows if r["id"] == live.c["mine2"])
         assert row["left_out_projects"] == [LEFT_OUT_ID]
 
-    async def test_a_row_carries_its_left_out_list(self, live):
-        # EA-17b: a screen must not claim more reach than the agent has.
-        rows = (await _as(live, MEMBER, "GET", MEMBER_LIST)).json()["connections"]
-        row = next(r for r in rows if r["id"] == live.c["mine2"])
-        assert row["left_out_projects"] == [LEFT_OUT_ID]
-
     async def test_the_suite_runs_as_a_role_that_cannot_bypass_rls(self, live):
         engine = create_engine(make_url(live.app_dsn), future=True)
         try:

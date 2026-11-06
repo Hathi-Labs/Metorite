@@ -15,7 +15,8 @@
 // - accept `same-site` too: the `same-site` case fails;
 // - drop `refuseBadSegment`: the dot-dot case fails;
 // - pass a gateway 3xx through: the 3xx case fails;
-// - send the browser's body as it came: the PATCH body case fails.
+// - send the browser's body as it came: the PATCH body case fails;
+// - read the body before the declared length: the two length cases fail.
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -140,13 +141,18 @@ const GRANT = {
   include_personal: true,
 };
 
-function patch(fetchSite: string | null, body: unknown = GRANT) {
+/** A PATCH as a browser sends it. *length* is the declared `Content-Length`:
+ * the real one by default, a given one, or `null` for none. */
+function patch(fetchSite: string | null, body: unknown = GRANT, length?: string | null) {
+  const text = typeof body === "string" ? body : JSON.stringify(body);
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (fetchSite !== null) headers["sec-fetch-site"] = fetchSite;
+  const declared = length === undefined ? String(Buffer.byteLength(text)) : length;
+  if (declared !== null) headers["content-length"] = declared;
   return new NextRequest(`http://app.test/api/agent-access/connections/${ID}`, {
     method: "PATCH",
     headers,
-    body: typeof body === "string" ? body : JSON.stringify(body),
+    body: text,
   });
 }
 
@@ -199,6 +205,34 @@ describe("the member's PATCH of a grant (EA-17c-1)", () => {
 
   it("refuses a body over the cap with 413 before any fetch", async () => {
     const res = await minePATCH(patch("same-origin", "x".repeat(MAX_CHANGE_BODY + 1)), params(ID));
+    expect(res.status).toBe(413);
+    expect(asked).toEqual([]);
+  });
+
+  it("refuses a PATCH with no Content-Length with 411, and never reads the body", async () => {
+    const req = patch("same-origin", GRANT, null);
+    const read = vi.spyOn(req, "text");
+    const res = await minePATCH(req, params(ID));
+    expect(res.status).toBe(411);
+    expect(await res.json()).toEqual({ error: "length_required" });
+    expect(read).not.toHaveBeenCalled();
+    expect(asked).toEqual([]);
+  });
+
+  it.each([[String(MAX_CHANGE_BODY + 1)], ["99999999999"], ["-1"], ["12abc"]])(
+    "judges the declared length %s before the read",
+    async (length) => {
+      const req = patch("same-origin", GRANT, length);
+      const read = vi.spyOn(req, "text");
+      const res = await minePATCH(req, params(ID));
+      expect([411, 413]).toContain(res.status);
+      expect(read).not.toHaveBeenCalled();
+      expect(asked).toEqual([]);
+    },
+  );
+
+  it("keeps the cap after the read when the declared length is short", async () => {
+    const res = await minePATCH(patch("same-origin", "x".repeat(MAX_CHANGE_BODY + 1), "10"), params(ID));
     expect(res.status).toBe(413);
     expect(asked).toEqual([]);
   });

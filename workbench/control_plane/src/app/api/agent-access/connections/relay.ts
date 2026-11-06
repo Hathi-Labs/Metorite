@@ -25,8 +25,10 @@
  *    (EA-17c-1, D-EA-13). The relay builds the body that it sends from
  *    `scopes`, `pinned_projects`, `left_out_projects` and `include_personal`.
  *    Any other field, such as an org or a member, never reaches the gateway.
- *    A body over `MAX_CHANGE_BODY` gets 413, and one that is not a JSON
- *    object gets 400. The gateway checks each value.
+ *    A PATCH with no `Content-Length` gets 411. A declared length over
+ *    `MAX_CHANGE_BODY` gets 413 before the read, and so does a longer body
+ *    after it. A body that is not a JSON object gets 400. The gateway checks
+ *    each value.
  * 4. **Never a 3xx, and never cached.** The relay does not follow a gateway
  *    redirect, and turns one into a 502. Each answer carries
  *    `Cache-Control: no-store`.
@@ -108,6 +110,13 @@ export async function relayRevoke(req: NextRequest, list: AgentList, id: string)
   return relay(`${list}/${encodeURIComponent(id)}`, "DELETE");
 }
 
+/** The `Content-Length` of *req* as a whole number, or `null` with none. */
+function declaredLength(req: NextRequest): number | null {
+  const value = req.headers.get("content-length");
+  if (value === null || !/^[0-9]{1,9}$/.test(value.trim())) return null;
+  return Number(value.trim());
+}
+
 /**
  * PATCH the grant of one of the member's own connections (EA-17c-1). Same
  * origin only (rule 1), and the body that leaves holds the four fields of a
@@ -118,6 +127,12 @@ export async function relayChange(req: NextRequest, id: string): Promise<NextRes
   if (!sameOrigin(req)) return refuse("cross_site", 403);
   const bad = refuseBadSegment(id);
   if (bad) return bad;
+  // The declared length bounds the read before it starts. A body with no
+  // length is 411, and one past the cap is 413. The cap after the read stays
+  // as a second check.
+  const declared = declaredLength(req);
+  if (declared === null) return refuse("length_required", 411);
+  if (declared > MAX_CHANGE_BODY) return refuse("too_large", 413);
   const raw = await req.text();
   if (raw.length > MAX_CHANGE_BODY) return refuse("too_large", 413);
   let parsed: unknown;

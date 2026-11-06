@@ -118,8 +118,12 @@ The public half (metadata, ``token``, ``revoke``) is the edge unit
     of another member, of another organization, a revoked one or an unknown
     one with 404, and a scope outside the ceiling of the live tokens, a
     grant with no scope and a change to ``offline_access`` with 422. The
-    answer is the new row. The log line ``agent_access.connection_changed``
-    holds the id and the counts. It does not call
+    ceiling binds a turn-on only, so a narrowing always passes. A mark that
+    the member no longer sees stays, and only a new unseen id is a 422. An
+    id in both lists is a 422 too. The answer is the new row. A real change
+    logs ``agent_access.connection_changed`` with the id and the counts, and
+    writes one audit row (:func:`audit_change`). A body that equals the row
+    writes nothing, logs nothing and audits nothing. It does not call
     :func:`_require_org_allowed`, as the list and the revoke do not. Fence:
     ``tests/unit/test_agent_change_access.py``.
 
@@ -149,7 +153,14 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from gateway import outbound_guard
 from gateway.db import current_tenant
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    ValidationError,
+    field_validator,
+)
 
 _log = get_logger("gateway.agent_access")
 
@@ -915,6 +926,42 @@ async def revoke_my_connection(
 # ── Change access (rule 14, EA-17c-1, D-EA-13) ──────────────────────────────
 
 
+#: The audit action of a change of a grant (rule 14).
+CHANGE_ACTION = "agent_connection.change"
+
+
+def _grant_summary(row: agent_tokens.ConnectionRow) -> dict[str, Any]:
+    """What an audit row keeps of one grant: the scopes, the two counts and
+    the personal switch. Never a project id or a project name."""
+    return {
+        "scopes": list(row.scopes),
+        "pinned": len(row.pinned_projects),
+        "left_out": len(row.left_out_projects),
+        "include_personal": row.include_personal,
+    }
+
+
+def audit_change(actor_email: str, org: str, change: agent_tokens.GrantChange) -> None:
+    """One audit row of a change of a grant, before and after (rule 14).
+
+    It never blocks the change: an audit backend that is down only logs. The
+    organization rides on the event, as in :func:`audit_revoke`.
+    """
+    try:
+        from acb_audit import AuditEvent, record
+
+        record(AuditEvent(
+            actor=f"user:{actor_email}",
+            action=CHANGE_ACTION,
+            target=f"agent_connection:{change.after.id}",
+            payload={"before": _grant_summary(change.before),
+                     "after": _grant_summary(change.after)},
+            organization_id=org,
+        ))
+    except Exception as exc:  # an audit backend that is down must not block this
+        _log.warning("agent_access.audit_failed", error=type(exc).__name__)
+
+
 #: The longest body of a change. Two lists of 50 ids and every scope need
 #: about 5 KiB, so this leaves room and still bounds the read.
 _MAX_CHANGE_BODY = 16_384
@@ -940,7 +987,8 @@ class ChangeAccessRequest(BaseModel):
         max_length=len(agent_oauth.SUPPORTED_SCOPES))
     pinned_projects: list[UUID] = Field(max_length=_MAX_PINS)
     left_out_projects: list[UUID] = Field(max_length=_MAX_PINS)
-    include_personal: bool
+    #: A JSON boolean only. ``"true"`` and ``1`` are a 422.
+    include_personal: StrictBool
 
 
 async def _require_change_access(
@@ -995,6 +1043,8 @@ _CHANGE_REFUSALS: dict[str, str] = {
     agent_tokens.CHANGE_ABOVE_CEILING: (
         "The agent's token does not carry this scope. Reconnect the agent to "
         "turn it on."),
+    agent_tokens.CHANGE_PROJECT_NOT_SEEN: (
+        "You can only choose a project that you can see."),
 }
 
 
@@ -1015,32 +1065,36 @@ async def change_my_connection(
     1. The organization on ``agent_change_access_orgs``, else 404.
     2. The member of the session (:func:`_member`), else 403. A signed
        agent is refused with 404: only its member changes a grant.
-    3. The body (:class:`ChangeAccessRequest`), else 413 or 422.
-    4. Each pin and each left-out id is a project that the member of the
-       session sees (``tree.grantable_project_ids``), else 422
-       ``project_not_seen``. The scopes of the agent play no part.
+    3. The body (:class:`ChangeAccessRequest`), else 413 or 422. A copy of
+       an id drops out, and the order stays. An id in both lists is 422
+       ``project_in_both_lists``, because such a grant reaches nothing.
+    4. The sight of the member of the session (``tree.grantable_project_ids``)
+       finds each unseen id. The scopes of the agent play no part.
     5. The store, in one transaction (``agent_tokens.update_connection_grant``):
-       a live connection of this member in this organization, else 404, then
-       the scope rules of D-EA-13, else 422.
+       a live connection of this member in this organization, else 404. Then
+       the scope rules of D-EA-13, and an unseen id that is new to its list,
+       else 422.
 
-    The answer is the new row, in the shape of the list.
+    The answer is the new row, in the shape of the list. A body that equals
+    the row writes nothing, logs no change and writes no audit row.
     """
     email = _member(user)
     if user.agent is not None:
         raise _not_found()
     change = await _change_body(request)
-    pins = [str(p) for p in change.pinned_projects]
-    left_out = [str(p) for p in change.left_out_projects]
+    pins = list(dict.fromkeys(str(p) for p in change.pinned_projects))
+    left_out = list(dict.fromkeys(str(p) for p in change.left_out_projects))
+    left_set = set(left_out)
+    both = [p for p in pins if p in left_set]
+    if both:
+        raise _unprocessable(
+            "project_in_both_lists",
+            "A project cannot be chosen and left out at once.",
+            projects=both,
+        )
     from gateway.routes.projects.tree import grantable_project_ids
 
     seen = await grantable_project_ids(user) if pins or left_out else frozenset()
-    unseen = [p for p in dict.fromkeys([*pins, *left_out]) if p not in seen]
-    if unseen:
-        raise _unprocessable(
-            "project_not_seen",
-            "You can only choose a project that you can see.",
-            projects=unseen,
-        )
     result = await agent_tokens.update_connection_grant(
         str(current_tenant()),
         str(connection_id),
@@ -1049,21 +1103,27 @@ async def change_my_connection(
         pinned_projects=pins,
         left_out_projects=left_out,
         include_personal=change.include_personal,
+        unseen_pins=[p for p in pins if p not in seen],
+        unseen_left_out=[p for p in left_out if p not in seen],
     )
     if isinstance(result, agent_tokens.ChangeRefused):
         if result.reason == agent_tokens.CHANGE_NOT_FOUND:
             raise _not_found()
-        raise _unprocessable(
-            result.reason, _CHANGE_REFUSALS[result.reason],
-            scopes=list(result.scopes),
+        extra: dict[str, Any] = (
+            {"projects": list(result.projects)}
+            if result.reason == agent_tokens.CHANGE_PROJECT_NOT_SEEN
+            else {"scopes": list(result.scopes)})
+        raise _unprocessable(result.reason, _CHANGE_REFUSALS[result.reason], **extra)
+    row = result.after
+    if result.changed:
+        # Ids and counts only. A project name never goes into a log line.
+        _log.info(
+            "agent_access.connection_changed",
+            connection_id=row.id,
+            scopes=len(row.scopes),
+            pinned=len(row.pinned_projects),
+            left_out=len(row.left_out_projects),
+            include_personal=row.include_personal,
         )
-    # Ids and counts only. A project name never goes into a log line.
-    _log.info(
-        "agent_access.connection_changed",
-        connection_id=result.id,
-        scopes=len(result.scopes),
-        pinned=len(result.pinned_projects),
-        left_out=len(result.left_out_projects),
-        include_personal=result.include_personal,
-    )
-    return JSONResponse(connection_out(result).model_dump(), headers=_NO_STORE)
+        audit_change(email, str(current_tenant()), result)
+    return JSONResponse(connection_out(row).model_dump(), headers=_NO_STORE)

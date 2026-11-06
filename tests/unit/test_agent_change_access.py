@@ -16,20 +16,27 @@ at the same gateway app.
   organization, a revoked one, an expired one and an unknown id. An admin
   with ``integrations:manage`` gets 404 on another member's connection too.
 * **C3, the 422s.** No scope, a missing field, an extra field, a change to
-  ``offline_access``, a scope above the scope of the live token, an unknown
-  scope, a project that the member does not see, a personal project that is
-  not a root, and a list over the cap. A body over the cap gets 413.
+  ``offline_access``, a turn-on above the scope of the live token, an
+  unknown scope, a new project that the member does not see, a personal
+  project that is not a root, a list over the cap, an id in both lists and a
+  switch that is not a JSON boolean. A body over the cap gets 413.
 * **C4, the next call.** A narrowing of the scopes makes the edge refuse the
   very next agent call. A turn-back-on of a scope inside the token scope is
   live on the next call. A narrowing of the pins and the left-out list
   narrows the next ``list_tasks``.
 * **C5, the ceiling.** Two live tokens with different scopes give their
   intersection, ``projects:write`` covers ``projects:read``, and a
-  connection with no live token has an empty ceiling. The list and the
-  answer carry ``requested_scopes`` and ``ceiling_scopes``.
+  connection with no live token has an empty ceiling. A dead token plays no
+  part. The ceiling binds a turn-on only, so a narrowing and a change of
+  only the marks pass with no live token. The list and the answer carry
+  ``requested_scopes`` and ``ceiling_scopes``.
+* **C5b, the stale marks.** A mark that the member no longer sees (a
+  deleted or sealed project) never blocks a save. A new unseen id does.
 * **C6, the store.** The scoped UPDATE names the member and the
   organization, and a store call for another member's connection changes
-  nothing.
+  nothing. A real change writes one audit row with the grant before and
+  after. A body that equals the row writes nothing, logs nothing and audits
+  nothing. A copy of an id drops out.
 
 Named mutations that turn this file red (spec §10.8): a scope above the
 token's scope, a change to the connection of another member, a write that
@@ -261,6 +268,33 @@ class _Seeder:
             raws.append(raw)
         return cid, raws
 
+    def dead_token(self, connection_id: str, scope: str, state: str) -> None:
+        """A refresh token of *connection_id* that is spent, revoked or
+        expired (*state* is ``used``, ``revoked`` or ``expired``)."""
+        raw = agent_tokens.new_token()
+        used = "now()" if state == "used" else "NULL"
+        revoked = "now()" if state == "revoked" else "NULL"
+        expires = ("now() - interval '1 hour'" if state == "expired"
+                   else "now() + interval '1 hour'")
+        self.one(
+            "INSERT INTO agent_token (organization_id, connection_id, kind,"
+            " token_hash, expires_at, used_at, revoked_at, client_id, resource,"
+            f" scope) VALUES (CAST(:o AS uuid), CAST(:c AS uuid), 'refresh', :h,"
+            f" {expires}, {used}, {revoked}, :client, :r, :scope) RETURNING id",
+            o=self.org, c=connection_id, h=agent_tokens.hash_token(raw),
+            client=CLIENT, r=RESOURCE, scope=scope)
+
+    def version(self, connection_id: str) -> str:
+        """The ``xmin`` of the row. Each write of the row changes it."""
+        return str(self.one(
+            "SELECT CAST(xmin AS text) FROM agent_connection"
+            " WHERE id = CAST(:c AS uuid)", c=connection_id))
+
+    def set_sealed(self, project_id: str, sealed: bool) -> None:
+        self.one(
+            "UPDATE pm_projects SET sealed_at = CASE WHEN :s THEN now() END"
+            " WHERE id = CAST(:p AS uuid) RETURNING id", s=sealed, p=project_id)
+
     def row(self, connection_id: str) -> dict[str, Any]:
         """The grant columns of one connection, as the catalog holds them."""
         with self.engine.begin() as c:
@@ -377,6 +411,17 @@ def live(monkeypatch, world):
             yield world
         finally:
             invalidate_access()
+
+
+@pytest.fixture(autouse=True)
+def audits(monkeypatch) -> list[Any]:
+    """Each audit event that a route records, in order. No event reaches a
+    database from this file."""
+    import acb_audit
+
+    seen: list[Any] = []
+    monkeypatch.setattr(acb_audit, "record", seen.append)
+    return seen
 
 
 async def _in_scope(world, work) -> Any:
@@ -582,6 +627,17 @@ class TestTheNotFounds:
         assert live.a.row(cid) == before
         assert (await _mcp(live, tokens[0])).status_code == 200
 
+    async def test_another_members_row_is_404_even_for_a_scope_above_its_ceiling(self, live):
+        """No 422 tells a member that the id of another member exists. The
+        lock read must filter by the member, not only the UPDATE."""
+        cid, _ = live.a.connection(OTHER, scopes=(READ,), tokens=("projects:read",))
+        before = live.a.row(cid)
+        for body in (_grant([WRITE]), _grant([]), _grant([READ, OFFLINE]),
+                     _grant(pins=[live.p["hidden"]])):
+            r = await _patch(live, MEMBER, cid, body)
+            assert r.status_code == 404, (body, r.status_code, r.text)
+        assert live.a.row(cid) == before
+
     async def test_an_admin_cannot_change_another_members_connection(self, live):
         cid, _ = live.a.connection(OTHER, scopes=(READ, CONTEXT),
                                    tokens=("projects:read context:read",))
@@ -682,6 +738,34 @@ class TestTheRefusals:
             assert _error(r) == "project_not_seen", (pins, left_out)
             assert set(r.json()["detail"]["projects"]) == {*pins, *left_out} - {live.p["team"]}
         assert live.a.row(cid) == before
+
+    async def test_the_cap_is_on_the_model_and_not_the_sight(self, live):
+        """51 ids that the member DOES see: only the cap can refuse them."""
+        cid, _ = live.a.connection(MEMBER)
+        many = [live.p["team"]] * (agent_access._MAX_PINS + 1)
+        for body in (_grant(pins=many), _grant(left_out=many)):
+            r = await _patch(live, MEMBER, cid, body)
+            assert r.status_code == 422, r.text
+            assert isinstance(r.json()["detail"], list), "the 422 of the model"
+        r = await _patch(live, MEMBER, cid, _grant(pins=[live.p["team"]] * agent_access._MAX_PINS))
+        assert r.status_code == 200, r.text
+
+    async def test_an_id_in_both_lists_is_422(self, live):
+        cid, _ = live.a.connection(MEMBER)
+        before = live.a.row(cid)
+        team = live.p["team"]
+        r = await _patch(live, MEMBER, cid, _grant(pins=[team, live.p["other_team"]],
+                                                   left_out=[team]))
+        assert _error(r) == "project_in_both_lists"
+        assert r.json()["detail"]["projects"] == [team]
+        assert live.a.row(cid) == before
+
+    @pytest.mark.parametrize("value", ["true", 1, 0, "false", None])
+    async def test_the_personal_switch_takes_a_json_boolean_only(self, live, value):
+        cid, _ = live.a.connection(MEMBER)
+        r = await _patch(live, MEMBER, cid, {**_grant(), "include_personal": value})
+        assert r.status_code == 422, r.text
+        assert live.a.row(cid)["personal"] is False
 
     async def test_a_list_over_the_cap_is_422_and_a_big_body_413(self, live):
         cid, _ = live.a.connection(MEMBER)
@@ -806,11 +890,55 @@ class TestTheCeiling:
         assert live.a.row(cid)["scopes"] == [WRITE]
 
     async def test_no_live_token_gives_an_empty_ceiling(self, live):
+        """No live token: a turn-on gets 422, and the list shows no ceiling."""
         cid, _ = live.a.connection(MEMBER, tokens=())
-        r = await _patch(live, MEMBER, cid, _grant([READ]))
+        r = await _patch(live, MEMBER, cid, _grant([READ, CONTEXT]))
         assert _error(r) == "scope_above_ceiling"
+        assert r.json()["detail"]["scopes"] == [CONTEXT]
+        assert live.a.row(cid)["scopes"] == [READ]
         rows = (await _as(live, MEMBER, "GET", LIST)).json()["connections"]
         assert next(x for x in rows if x["id"] == cid)["ceiling_scopes"] == []
+
+    async def test_no_live_token_still_allows_a_narrowing(self, live):
+        """Review P1. With no live token the member can still turn a scope
+        off, and change the marks of the scopes held."""
+        cid, _ = live.a.connection(MEMBER, scopes=(READ, CONTEXT), tokens=())
+        r = await _patch(live, MEMBER, cid, _grant([READ]))
+        assert r.status_code == 200, r.text
+        assert live.a.row(cid)["scopes"] == [READ]
+        r = await _patch(live, MEMBER, cid, _grant([READ], pins=[live.p["team"]]))
+        assert r.status_code == 200, r.text
+        assert live.a.row(cid)["pins"] == [live.p["team"]]
+        r = await _patch(live, MEMBER, cid, _grant([READ, CONTEXT]))
+        assert _error(r) == "scope_above_ceiling", "a turn-on still needs a token"
+
+    async def test_a_pin_change_passes_when_a_held_scope_is_above_the_ceiling(self, live):
+        """Review P1. The narrower token gives a ceiling of read, and the row
+        holds write. A change of only the pins keeps write and passes."""
+        cid, _ = live.a.connection(MEMBER, scopes=(READ, WRITE),
+                                   tokens=("projects:read projects:write", "projects:read"))
+        r = await _patch(live, MEMBER, cid, _grant([READ, WRITE], pins=[live.p["team"]]))
+        assert r.status_code == 200, r.text
+        assert r.json()["ceiling_scopes"] == [READ]
+        row = live.a.row(cid)
+        assert row["pins"] == [live.p["team"]] and row["scopes"] == [READ, WRITE]
+
+    @pytest.mark.parametrize("state", ["used", "revoked", "expired"])
+    async def test_only_dead_tokens_give_an_empty_ceiling(self, live, state):
+        """Verifier F1. A spent, revoked or expired token plays no part."""
+        cid, _ = live.a.connection(MEMBER, scopes=(READ,), tokens=())
+        live.a.dead_token(cid, "projects:read context:read", state)
+        r = await _patch(live, MEMBER, cid, _grant([READ, CONTEXT]))
+        assert _error(r) == "scope_above_ceiling"
+        assert live.a.row(cid)["scopes"] == [READ]
+
+    @pytest.mark.parametrize("state", ["used", "revoked", "expired"])
+    async def test_a_dead_narrow_token_does_not_narrow_the_ceiling(self, live, state):
+        cid, _ = live.a.connection(MEMBER, scopes=(READ,), tokens=("projects:write",))
+        live.a.dead_token(cid, "projects:read", state)
+        r = await _patch(live, MEMBER, cid, _grant([WRITE]))
+        assert r.status_code == 200, r.text
+        assert r.json()["ceiling_scopes"] == [READ, WRITE]
 
     async def test_the_answer_and_the_list_carry_the_two_fields(self, live):
         cid, _ = live.a.connection(MEMBER, scopes=(READ, CONTEXT),
@@ -834,6 +962,65 @@ class TestTheCeiling:
         assert r.status_code == 200, r.text
         assert r.json()["requested_scopes"] is None
         assert live.a.row(cid)["requested"] is None
+
+
+def _save_body(row: dict[str, Any], **over: Any) -> dict[str, Any]:
+    """The body that a view sends back for a row of the list."""
+    body = {key: row[key] for key in (
+        "scopes", "pinned_projects", "left_out_projects", "include_personal")}
+    body.update(over)
+    return body
+
+
+async def _listed(world, connection_id: str) -> dict[str, Any]:
+    rows = (await _as(world, MEMBER, "GET", LIST)).json()["connections"]
+    return next(x for x in rows if x["id"] == connection_id)
+
+
+@_DB_GATE
+class TestTheStaleMarks:
+    """C5b, review P2: a stored mark that the member no longer sees."""
+
+    async def test_a_stale_pin_does_not_block_a_save(self, live):
+        gone = str(uuid.uuid4())
+        cid, _ = live.a.connection(MEMBER, scopes=(READ, CONTEXT),
+                                   tokens=("projects:read context:read",),
+                                   pins=(live.p["team"], gone))
+        row = await _listed(live, cid)
+        r = await _patch(live, MEMBER, cid, _save_body(row))
+        assert r.status_code == 200, r.text
+        r = await _patch(live, MEMBER, cid, _save_body(row, scopes=[READ]))
+        assert r.status_code == 200, r.text
+        after = live.a.row(cid)
+        assert after["scopes"] == [READ]
+        assert after["pins"] == [live.p["team"], gone]
+
+    async def test_a_sealed_left_out_mark_does_not_block_a_save(self, live):
+        cid, _ = live.a.connection(MEMBER, pins=(live.p["team"],),
+                                   left_out=(live.p["team_child"],))
+        live.a.set_sealed(live.p["team_child"], True)
+        try:
+            row = await _listed(live, cid)
+            r = await _patch(live, MEMBER, cid, _save_body(row, include_personal=True))
+            assert r.status_code == 200, r.text
+            after = live.a.row(cid)
+            assert after["left_out"] == [live.p["team_child"]]
+            assert after["personal"] is True
+        finally:
+            live.a.set_sealed(live.p["team_child"], False)
+
+    async def test_a_stale_mark_cannot_move_to_the_other_list(self, live):
+        """An unseen id stays only where the row holds it. A pin moved to
+        the left-out list, and a new unseen pin, are 422."""
+        gone = str(uuid.uuid4())
+        cid, _ = live.a.connection(MEMBER, pins=(live.p["team"], gone))
+        before = live.a.row(cid)
+        for body in (_grant(pins=[live.p["team"]], left_out=[gone]),
+                     _grant(pins=[live.p["team"], gone, live.p["hidden"]])):
+            r = await _patch(live, MEMBER, cid, body)
+            assert _error(r) == "project_not_seen", body
+        assert r.json()["detail"]["projects"] == [live.p["hidden"]]
+        assert live.a.row(cid) == before
 
 
 @_DB_GATE
@@ -882,3 +1069,63 @@ class TestTheStoreAndTheLog:
         for project in (live.p["team"], live.p["team_child"]):
             assert project not in flat
         assert "Team" not in flat
+
+    async def test_a_change_writes_one_audit_row_with_before_and_after(self, live, audits):
+        """Review P2. A widening writes one audit row. It holds the grant
+        before and after, and no project id."""
+        cid, _ = live.a.connection(MEMBER, pins=(live.p["team"],), scopes=(READ,),
+                                   tokens=("projects:read projects:write",))
+        r = await _patch(live, MEMBER, cid, _grant([READ, WRITE], personal=True))
+        assert r.status_code == 200, r.text
+        assert len(audits) == 1
+        event = audits[0]
+        assert event.action == agent_access.CHANGE_ACTION == "agent_connection.change"
+        assert event.actor == f"user:{MEMBER}"
+        assert event.target == f"agent_connection:{cid}"
+        assert event.organization_id == live.org_a
+        assert event.payload == {
+            "before": {"scopes": [READ], "pinned": 1, "left_out": 0,
+                       "include_personal": False},
+            "after": {"scopes": [READ, WRITE], "pinned": 0, "left_out": 0,
+                      "include_personal": True},
+        }
+        assert live.p["team"] not in json.dumps(event.payload)
+        r = await _as(live, MEMBER, "DELETE", f"{LIST}/{cid}")
+        assert r.status_code == 204
+        assert [e.action for e in audits] == ["agent_connection.change",
+                                             "agent_connection.revoke"]
+
+    async def test_a_body_that_equals_the_row_writes_nothing(self, live, audits, monkeypatch):
+        """Review P3. The answer is the row, and nothing is written, logged
+        or audited. The order of a list changes no reach."""
+        seen: list[str] = []
+
+        class _Log:
+            def info(self, event: str, **kw: Any) -> None:
+                seen.append(event)
+
+            def warning(self, event: str, **kw: Any) -> None:
+                seen.append(event)
+
+        monkeypatch.setattr(agent_access, "_log", _Log())
+        cid, _ = live.a.connection(MEMBER, scopes=(READ, CONTEXT),
+                                   tokens=("projects:read context:read",),
+                                   pins=(live.p["team"], live.p["other_team"]))
+        version = live.a.version(cid)
+        r = await _patch(live, MEMBER, cid, _grant(
+            [CONTEXT, READ], pins=[live.p["other_team"], live.p["team"]]))
+        assert r.status_code == 200, r.text
+        assert r.json() == await _listed(live, cid)
+        assert live.a.version(cid) == version, "the row was written again"
+        assert "agent_access.connection_changed" not in seen
+        assert audits == []
+
+    async def test_copies_of_an_id_drop_out_and_the_order_stays(self, live):
+        cid, _ = live.a.connection(MEMBER)
+        team, other = live.p["team"], live.p["other_team"]
+        r = await _patch(live, MEMBER, cid, _grant(pins=[other, team, other, team],
+                                                   left_out=[live.p["team_child"]] * 2))
+        assert r.status_code == 200, r.text
+        row = live.a.row(cid)
+        assert row["pins"] == [other, team]
+        assert row["left_out"] == [live.p["team_child"]]
