@@ -5492,6 +5492,8 @@ Owner answer on Metorite task 1796 ("A: approve all three recommendations"), 202
 
 This supersedes the owner rule of 2026-08-31 (management controls stay out of the view chrome) for statuses only. Fields, tags and lifecycle stay behind the menu.
 
+**Re-check this number at merge.** The first merge wins a D-number, and the branches for D182 to D184 were open when this record was written.
+
 Fence: `statusSetCopy.test.ts` and `tests/unit/test_projects_status_set_read_r8.py`, named per slice in `specs/projects_settings.md` §7.1. Advisory until PST-1 builds them.
 
 ## 4. Single-owner registry (who owns duplicated work)

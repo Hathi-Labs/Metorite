@@ -1,7 +1,7 @@
 # Projects settings — one place for every setting of the Projects app
 
 **Status: ACTIVE — PS-1 and PS-2 built 2026-09-29. On 2026-11-06 the owner specified PST-1 to PST-5 (§9). Nothing of them is built.** Owner directive, 2026-09-29. Board row
-**WS-42**. This spec records **D81**. §9 records **D185**.
+**WS-42**. This spec records **D81**. §9 records **D185**. The first merge wins a D-number, so the author of the PR must re-check that D185 is still free at merge.
 
 Verified against code on 2026-09-29 at `main` `02658314`. The author checked §9 against code on 2026-11-06 at `main` `06cfc43f8`.
 
@@ -213,7 +213,9 @@ Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice ski
 
 **PST-4 (task 1790, the chat half). After PST-1. Parallel with PST-2 and PST-3.**
 
-- **Does:** `create_status`, `update_status` and `delete_status` read the §9.4 read first.
+- **Flag (decided by the session lead, 2026-11-06):** `STATUS_SET_GUARD_ORGS`, a per-organization list in `Settings`. It is off by default. A flip reloads with no restart (`docs/flag_reload.md`). The only reader is `describe_status_set` in `admin.py`, which returns `guard_on` (§9.4). With the flag off, the three tools behave as they do today: no refusal, no shared-set text on the card, and the raw `position` argument.
+- **Choice on `position`:** the server accepts `slot` and `after` at all times, and the old `position` field keeps working there (additive, so unflagged). The change in the TOOL is behind the same flag. With the flag on, the tool takes `slot` or `after` and no longer sends `position`. With the flag off, the tool keeps `position`.
+- **Does (with the flag on):** `create_status`, `update_status` and `delete_status` read the §9.4 read first.
   1. When the project does not own its set, the tool refuses. It says that the set belongs to {owner} and that N projects share it. It offers `set_status_set` mode=own first.
   2. The member can ask on purpose to change the shared set. Then the card names the set and the count: "Changes the statuses of {owner} for {N} projects".
   3. `position` becomes a 1-based `slot`, or an `after` lane name. The server renumbers. The model can no longer send a raw sort key.
@@ -223,8 +225,9 @@ Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice ski
   2. The same request with an explicit "change the shared set" shows a card with the set and N.
   3. "Put Done last" with slot 4 of 4 puts it last in its stage group. The set order stays stage, then position, then name.
   4. The server refuses a slot outside the stage of the lane, and gives the allowed range.
-  5. The tool does not send a raw position from the model any more.
-- **Fence (R7):** `tests/unit/test_projects_status_chat.py` (refusal, card text, slot and after). `tests/unit/test_projects_status_slot_r8.py` on Postgres (the renumbering keeps the stage rule). The new chat tool fence set applies: claim strings, pack summary and pinned tables.
+  5. With the flag on, the tool does not send a raw position from the model any more.
+  6. With the flag off, all five behaviours above are absent and the tools act as before this slice.
+- **Fence (R7):** `tests/unit/test_projects_status_chat.py` (refusal, card text, slot and after, and a case that the flag off keeps today's behaviour, including `position`). `tests/unit/test_flag_reload.py` gets `STATUS_SET_GUARD_ORGS` in its list of reloading flags. `tests/unit/test_projects_status_slot_r8.py` on Postgres (the renumbering keeps the stage rule). The new chat tool fence set applies: claim strings, pack summary and pinned tables.
 
 **PST-5 (task 1791, the delete flow). The server read can start after PST-1. The UI goes after PST-2.**
 
@@ -323,7 +326,9 @@ that the member can see. A line "and N more that you cannot see" covers the othe
 member can read the full impact and no hidden name leaks. The R8 test proves both.
 
 **The chat tools call the same read.** `status_edit_refusal` in `skill_projects/writes.py` already
-reads it. PST-4 adds the shared-set checks to that one place.
+reads it. PST-4 adds the shared-set checks to that one place. The read also returns `guard_on`
+(boolean). It is true when `STATUS_SET_GUARD_ORGS` holds the organization of the caller. The route is the
+ONE reader of that flag. The chat tool reads `guard_on` from the response and never reads the setting itself.
 
 ### 9.5 Each surface and its exact copy
 
@@ -425,8 +430,10 @@ All three use one flow, and each asks the same question: where do these tasks go
 | PST-4 (the chat half) | 1790 | STANDARD |
 | PST-5 (the delete flow) | 1791 | STANDARD |
 
-No slice adds a migration or a table. No slice has a feature flag, because each one changes the words
-and the place of controls that exist, and adds no new write path. The owner can overrule this.
+No slice adds a migration or a table. PST-1, PST-2, PST-3 and PST-5 have no flag, because each one changes
+only words, the place of controls that exist, or a read. **PST-4 ships dark** (decided by the session lead on
+2026-11-06, under the owner's standing instruction to follow the recommendations). Its chat refusal changes
+what a write tool does, so it sits behind the flag `STATUS_SET_GUARD_ORGS` (§7.1). The owner can change these choices.
 
 Order and parallel work:
 
