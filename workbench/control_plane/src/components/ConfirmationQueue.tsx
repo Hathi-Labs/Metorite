@@ -18,6 +18,10 @@
  *
  * The queue itself is `lib/confirmationQueue.ts`. The tab rules are
  * `lib/cardTabs.ts`, and the row is `components/ui/CardTabs.tsx`.
+ *
+ * §18.11: a new-mail card that a chat message closed keeps its tab as a slot
+ * with no buttons ("Updating the draft…"), and the new draft takes that tab.
+ * The rules are `lib/redraftCard.ts`.
  */
 
 import { useId, useReducer, useState } from "react";
@@ -33,7 +37,8 @@ import {
 } from "@/lib/confirmationQueue";
 import { cardKind, KIND_ICON, restoredFirst, tabLabel } from "@/lib/cardTabs";
 import { unfenced } from "@/lib/fencedText";
-import type { ReplyApproval } from "@/lib/replyCard";
+import type { CardDraft } from "@/lib/redraftCard";
+import { isNewMail, type NewMailEdits, type ReplyApproval } from "@/lib/replyCard";
 
 /** A plain answer, an Approve that names the ticked rows of a card with
  *  rows (WS-46 P13 one-card), or the Send or Save of a reply card (EM-CR).
@@ -49,6 +54,18 @@ interface ConfirmationQueueProps {
   initialIndex?: number;
   /** Put words in the chat box, and send nothing (a new-mail card's chips, §18.10). */
   onSuggest?: (text: string) => void;
+  /** §18.11: a new-mail card's version after each edit, by the card's key. */
+  onDraftChange?: (key: string, draft: CardDraft | null) => void;
+  /** §18.11: a message in the chat carries the member's version now. */
+  carriesEdits?: boolean;
+  /**
+   * The member's edits of a new-mail form, by key. The CHAT holds them
+   * (fix round 5), because this queue mounts again on each new message,
+   * and when its last card leaves.
+   */
+  savedEdits?: (key: string) => NewMailEdits | undefined;
+  /** A new-mail form reports the member's edits, by key. */
+  onEdits?: (key: string, edits: NewMailEdits) => void;
 }
 
 /** The index the queue shows: the one asked for, held inside the list. */
@@ -82,19 +99,32 @@ export function pickShown(cards: PendingConfirmation[], shown: Shown): number {
  * other change keeps the member's card. Pure and idempotent, so a render that
  * React runs twice reaches the same state. The component calls it, and
  * `confirmationQueue.test.ts` runs it over a real Undo.
+ *
+ * One change does move the view (§18.11). The member looks at a slot, which
+ * has no button, and the queue changes: a card arrives, or the shown card
+ * turns into a slot. The view then goes to the FIRST live card, new or not
+ * (fix round 5), because the run waits on the member there. A slot counts
+ * apart from a card in `keys`, so a card that turns into a slot is a change.
  */
+/** The mark of a slot in the keys of `reconcileShown`. No card id holds it. */
+const SLOT_MARK = "\u0000slot";
+
 export function reconcileShown(
   prevKeys: readonly string[],
   cards: PendingConfirmation[],
   shown: Shown,
 ): { keys: readonly string[]; shown: Shown } {
-  const keys = cards.map((c) => c.key);
+  const keys = cards.map((c) => (c.redraft ? `${c.key}${SLOT_MARK}` : c.key));
   if (keys.length === prevKeys.length && keys.every((k, i) => k === prevKeys[i])) return { keys: prevKeys, shown };
-  const opened = restoredFirst(prevKeys, keys);
-  return { keys, shown: opened !== null ? { key: opened, index: 0 } : shown };
+  const plain = (list: readonly string[]) => list.map((k) => k.replace(SLOT_MARK, ""));
+  const opened = restoredFirst(plain(prevKeys), plain(keys));
+  if (opened !== null) return { keys, shown: { key: opened, index: 0 } };
+  const showing = cards.find((c) => c.key === shown.key);
+  const live = showing?.redraft ? cards.findIndex((c) => !c.redraft) : -1;
+  return { keys, shown: live >= 0 ? { key: cards[live].key, index: live } : shown };
 }
 
-export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0, onSuggest }: ConfirmationQueueProps) {
+export default function ConfirmationQueue({ cards, errors, onAnswer, initialIndex = 0, onSuggest, onDraftChange, carriesEdits, savedEdits, onEdits }: ConfirmationQueueProps) {
   const [shown, setShown] = useState<Shown>({ key: null, index: initialIndex });
   // The member's ticks of every card with rows, by key. The queue holds
   // them, so a page away and back keeps them (PR #691 review). The logic is
@@ -153,6 +183,14 @@ export default function ConfirmationQueue({ cards, errors, onAnswer, initialInde
       onReject={() => onAnswer(card, "REJECT")}
       // EM-CR: a reply card answers with the member's choice and body.
       {...(card.reply !== undefined ? { reply: card.reply, onReply: (a: ReplyApproval) => onAnswer(card, a), onSuggest } : {})}
+      // §18.11: the slot of a redraft answers nothing. A new-mail card
+      // reports each edit, and a redrafted card knows the member's last version.
+      {...(card.redraft ? { slot: card.redraft } : {})}
+      {...(onDraftChange ? { onDraftChange: (d: CardDraft | null) => onDraftChange(card.key, d) } : {})}
+      {...(isNewMail(card.reply)
+        ? { carriesEdits, savedEdits: savedEdits?.(card.key), onEdits: (value: NewMailEdits) => onEdits?.(card.key, value) }
+        : {})}
+      {...(card.before ? { before: card.before } : {})}
       // The tab row sits inside the card's frame, and the card is its panel.
       {...(tabbed
         ? {
@@ -174,5 +212,7 @@ export function cardTab(card: PendingConfirmation): CardTab {
     label: tabLabel(card),
     title: card.fenced ? unfenced(summary) : summary,
     icon: KIND_ICON[cardKind(card)],
+    // A slot of a redraft is a tab, and no card waits on the member in it.
+    ...(card.redraft ? { updating: true } : {}),
   };
 }

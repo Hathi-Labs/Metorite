@@ -103,7 +103,8 @@ async def revoke_org_agent_connection(
 ) -> None:
     """Revoke any member's agent connection in the organization (rule 2)."""
     org = _org()
-    revoked = await agent_tokens.revoke_connection_scoped(org, str(connection_id))
+    revoked = await agent_tokens.revoke_connection_scoped(
+        org, str(connection_id), reason=agent_tokens.REVOKE_ADMIN)
     if not revoked:
         raise HTTPException(status_code=404, detail="No such agent connection.")
     audit_revoke(user.email or "", org, str(connection_id), admin=True)

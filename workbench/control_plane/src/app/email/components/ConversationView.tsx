@@ -53,6 +53,7 @@ export function ConversationView({
   messages,
   openedId,
   renderActions,
+  renderReplyBar,
   lightVersions,
   onSent,
 }: {
@@ -62,6 +63,9 @@ export function ConversationView({
    *  Forward and "More actions". The reading pane owns every handler, so
    *  each card acts on its own message. */
   renderActions?: (message: Email) => ReactNode;
+  /** The Reply, Reply all and Forward buttons below the body of one open card
+   *  (`MessageReplyBar`). The reading pane owns these handlers too. */
+  renderReplyBar?: (message: Email) => ReactNode;
   /** The messages whose light version the member asked for. */
   lightVersions?: ReadonlySet<string>;
   /** Called after an in-thread draft is sent so the parent can surface the
@@ -261,6 +265,17 @@ export function ConversationView({
                   {/* A direct child: the row measures this line for its width. */}
                   {renderActions?.(view)}
                 </div>
+                {/* The files of this message, on top of its body as in Outlook
+                    (owner, 2026-11-06). The same chips as the single email, so
+                    the earlier messages of a thread show their files too. The
+                    fetch below settles `hydrated`, also on a failure. */}
+                {view.hasAttachments && (
+                  <AttachmentList
+                    attachments={view.attachments}
+                    pending={!hydrated[m.id]}
+                    className="mb-3"
+                  />
+                )}
                 {view.bodyHtml || view.bodyText ? (
                   <MessageContent
                     html={view.bodyHtml}
@@ -274,15 +289,7 @@ export function ConversationView({
                     No preview text.
                   </div>
                 )}
-                {/* Per-message attachments — same card UI (with image
-                    thumbnails) as the single-message reader, so a thread's
-                    earlier messages surface their files too. */}
-                {view.hasAttachments && (
-                  <AttachmentList
-                    attachments={view.attachments}
-                    className="mt-4 pt-3 border-t border-border"
-                  />
-                )}
+                {renderReplyBar?.(view)}
               </div>
             )}
           </div>
@@ -696,6 +703,7 @@ export function DraftCard({
     <div
       ref={cardRef}
       data-email-composer=""
+      data-ask-clear=""
       style={size.rootStyle}
       className={`border border-primary/40 rounded-lg bg-primary/5 px-3 py-3 ${size.rootClass}`}
     >

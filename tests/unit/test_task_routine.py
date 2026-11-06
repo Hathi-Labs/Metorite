@@ -127,3 +127,11 @@ def test_stop_hook_is_wired_in_settings():
     cfg = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
     cmds = [h["command"] for g in cfg["hooks"]["Stop"] for h in g["hooks"]]
     assert any("stop-children.mjs" in c for c in cmds)
+
+
+def test_next_ticket_step_1_names_get_task_context_and_the_20_comment_limit():
+    """CIV-14i: a session reads the description and every comment before it builds."""
+    step = _flat(NEXT_TICKET[NEXT_TICKET.index("**1 — Select.**"):NEXT_TICKET.index("**1b")])
+    assert "`get_task_context`" in step
+    assert "more than 20 comments" in step and "`get_task_timeline`" in step
+    assert "`get_task_context`" in _task_board()

@@ -46,6 +46,11 @@ export const NOT_DECLARED_SENTENCE = "This package does not declare that action,
 export const NOT_OPEN_SENTENCE = "This action is not open on this page.";
 export const APPROVAL_SENTENCE =
   "Direct edits are not on for your workspace yet, so this change was not saved.";
+/**
+ * A 202 of the door: the change waits for an approval card, and nothing is
+ * written yet (STU-B2c-2a). It is never a save.
+ */
+export const WAITING_SENTENCE = "This change waits for an approval, so it is not saved yet.";
 export const GONE_SENTENCE = "That record is gone. Reload the list.";
 export const UNPUBLISHED_SENTENCE = "This package has no such object yet. Publish the package first.";
 export const SIGN_IN_SENTENCE = "Your session ended. Sign in again.";
@@ -154,6 +159,8 @@ export function busySentence(retryAfter: string | null | undefined): string {
  * CONTRACT). `status` is the HTTP status. `body` is the parsed JSON, or `{}`.
  */
 export function mapAnswer(status: number, body: unknown, retryAfter?: string | null): ActionResult {
+  // A 202 means a card waits and nothing is written, so it is not a save.
+  if (status === 202) return { ok: false, message: WAITING_SENTENCE };
   if (status >= 200 && status < 300) return { ok: true, data: body };
   const d = detailOf(body);
   if (status === 422) {
