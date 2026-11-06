@@ -5259,6 +5259,12 @@ function ProjectsWorkspace() {
               onToggleAll={setPicked}
               onExtendSelection={extendSelection}
               onSelect={(task) => void openWithStatuses(task)}
+              // MOB-2: the phone row. Same flag as the board above.
+              phone={compactChrome && isMobile}
+              onDrop={handleDrop}
+              projectPath={
+                compactChrome && isMobile ? (t) => [projectName(t.project_id)] : undefined
+              }
             />
           )}
           {/* OP-1: with the compact chrome the load-more row sits at the END of
