@@ -355,13 +355,14 @@ describe("the composer names the email that a message changes", () => {
     expect(chat).toContain("const changing = changingCard(confirmations.cards);");
     expect(chat).toContain('data-redraft-changing=""');
     expect(chat).toContain("{changingLine(changing)}");
-    // At 390 px (fix round 2): the status starts at its own width and can
-    // shrink, so a long step cuts its words and the ring stays in the row. The
-    // name shrinks four times as fast, so it is cut first. Mutation: give the
-    // status `min-w-fit` again (the ring leaves the row), or `flex-1` (the
-    // name squeezes the status to nothing) → red.
+    // At 390 px: the status starts at its own width and can shrink, so a long
+    // step cuts its words and the ring stays in the row. Fix round 3: the name
+    // keeps its width up to 60% of the row, because the name is the purpose of
+    // the line, and the cap keeps a part of the row for the status. Mutation:
+    // give the status `min-w-fit` again (the ring leaves the row), or `flex-1`,
+    // or let the name shrink first again → red.
     expect(chat).toContain('<div className="flex min-w-0 flex-auto items-center gap-2">');
-    expect(chat).toContain('className="min-w-0 shrink-4 truncate text-[10px] text-primary"');
+    expect(chat).toContain('className="max-w-[60%] shrink-0 truncate text-[10px] text-primary"');
     expect(chat).not.toContain("min-w-fit flex-1");
   });
 });
