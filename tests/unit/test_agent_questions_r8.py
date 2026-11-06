@@ -57,6 +57,14 @@ Fix round 2 (the coordinator's rule of 2026-11-06), on a committed tree:
   from the run's member. ``test_a_typed_request_waits_on_its_member_only``,
   ``test_a4_a_typed_archive_request_shows_to_its_member_only`` and the agree test.
 
+Fix round 3, on a committed tree:
+
+* M14. ``Q`` ``question_row``: ``kind`` is always ``"question"``.
+  ``test_a_typed_request_waits_on_its_member_only``.
+* M15. ``Q`` ``question_row``: ``kind`` is always ``"archive_request"``.
+  ``test_a1_the_creator_sees_the_question_with_why_and_the_path`` and
+  ``test_a_free_question_has_no_options``.
+
 The cases that the spec names with no M number, each red under its own mutation:
 
 * ``Q``: the route writes a row. ``test_a_read_writes_nothing``.
@@ -487,6 +495,7 @@ class TestTheRead:
             assert [o["id"] for o in row["question"]["options"]] == ["pg", "my", "sq"]
             assert row["question"]["options"][0]["recommended"] is True
             assert row["question"]["allow_multiple"] is False
+            assert row["question"]["kind"] == "question"
 
     async def test_why_takes_the_first_true_test(self, w):
         async with _session(w.p) as call:
@@ -518,7 +527,8 @@ class TestTheRead:
             asked = await _act(call, w.agent, run["id"], type="elicitation", body="Free?")
             assert asked.status_code == 201, asked.text
             [row] = await _rows(call, w.creator)
-            assert row["question"] == {"body": "Free?", "options": [], "allow_multiple": False}
+            assert row["question"] == {"kind": "question", "body": "Free?", "options": [],
+                                       "allow_multiple": False}
 
     async def test_a4_a_typed_archive_request_shows_to_its_member_only(self, w):
         """Only the run's member approves it, through ``archive-approval`` on
@@ -1143,6 +1153,9 @@ class TestTheFocus:
             [row] = await _rows(call, w.member, project=leaf)
             assert row["task_id"] == w.task
             assert row["why"] == "my_agent" and row["can_answer"] is True
+            # Fix round 3: the server types the row, so EA-18b sends the answer
+            # to `archive-approval` and never derives the kind itself.
+            assert row["question"]["kind"] == "archive_request"
             assert await _waiting_tasks(call, w.member, w, project=leaf) == {w.task}
             assert await _waiting_count(call, w.member, w, project=leaf) == 1
             for reader in (w.creator, w.assignee, w.owner, w.admin, w.manager):

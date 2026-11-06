@@ -44,6 +44,7 @@ from gateway.routes.projects.agent_runs import (
     _member,
     _parse_uuid,
     answer_reason_sql,
+    archive_request_of,
     holds_answer_role,
     listed_question_sql,
     person_may_answer_sql,
@@ -68,6 +69,13 @@ from sqlalchemy import text
 #: The most rows of one page, and the page when the caller names none (§12.8).
 MAX_LIMIT = 200
 DEFAULT_LIMIT = 100
+
+#: ``question.kind`` of a row. ``archive_request_of`` on the server decides it,
+#: so the browser never derives it. EA-18b sends Approve and Decline of an
+#: ``archive_request`` row to ``archive-approval``, never to ``/activities``,
+#: which answers 422 for a typed request.
+KIND_QUESTION = "question"
+KIND_ARCHIVE_REQUEST = "archive_request"
 
 #: The 403 of ``scope=everyone`` for a reader outside the review set.
 EVERYONE_REFUSED = (
@@ -169,6 +177,8 @@ def question_row(
         "run_started_at": wire(run.run_started_at),
         "project_path": path,
         "question": {
+            "kind": (KIND_ARCHIVE_REQUEST if archive_request_of(question) is not None
+                     else KIND_QUESTION),
             "body": (from_jsonb(question.content) or {}).get("body"),
             "options": meta.get("options") or [],
             "allow_multiple": bool(meta.get("allow_multiple")),
@@ -247,6 +257,8 @@ async def list_agent_questions(
 __all__ = [
     "DEFAULT_LIMIT",
     "EVERYONE_REFUSED",
+    "KIND_ARCHIVE_REQUEST",
+    "KIND_QUESTION",
     "MAX_LIMIT",
     "list_agent_questions",
     "question_row",
