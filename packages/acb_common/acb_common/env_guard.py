@@ -387,6 +387,9 @@ PLATFORM_ENV_PREFIXES: tuple[str, ...] = (
     "DUE_PUSH_",
     # STU-B1: STUDIO_ORGS opens the AI Studio catalog for an org.
     "STUDIO_",
+    # WS-MDC CC-5a: FOCUS_LOG_ORGS opens the focus-session log for an org,
+    # so a tenant that set it could open the log for every org on the box.
+    "FOCUS_LOG_",
     # WS-OB GD-5a: GUIDE_ORGS opens the tour's entries for an org, so a
     # tenant that set it could open them for every org on the box.
     "GUIDE_",

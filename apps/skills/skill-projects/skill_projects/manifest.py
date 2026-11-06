@@ -113,6 +113,10 @@ _UI_STATE_REASON = "Client UI state. The browser writes it, and a chat has no vi
 _PLANNER_REASON = (
     "The day planner is the Calendar app's and the Tasks assistant's (calendar_ai_review.md §4)."
 )
+#: WS-MDC CC-5a ships the focus-session log with no chat tool. CC-10 adds the
+#: tools (``my_day_command_centre.md`` §9.3), and `test_projects_chat_x_pin.py`
+#: holds these rows as pending for that slice.
+_FOCUS_LOG_REASON = "The tools come with CC-10 (my_day_command_centre.md §9.3)."
 #: A file import is an admin's upload through a wizard (project_import.md §7.7).
 _IMPORT_REASON = (
     "A file import is an admin's upload and review through the import wizard "
@@ -343,6 +347,10 @@ MANIFEST: tuple[Route, ...] = (
     Route("POST", "/projects/my/calendar/replan", "", "X", _PLANNER_REASON),
     Route("POST", "/projects/my/calendar/rollover", "", "X", _PLANNER_REASON),
     Route("GET", "/projects/my/calendar/estimate-stats", "", "X", _PLANNER_REASON),
+    # ── focus_sessions.py (WS-MDC CC-5a) ─────────────────────────────────
+    Route("POST", "/projects/my/focus-sessions", "", "X", _FOCUS_LOG_REASON),
+    Route("PATCH", "/projects/my/focus-sessions/{session_id}", "", "X", _FOCUS_LOG_REASON),
+    Route("GET", "/projects/my/focus-sessions", "", "X", _FOCUS_LOG_REASON),
     # ── calendar.py · search.py · export.py · delta.py ───────────────────
     Route("GET", "/projects/calendar", "calendar", "A"),
     Route("GET", "/projects/search", "find_tasks", "A"),

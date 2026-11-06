@@ -19,6 +19,11 @@ the value again on each call.
 it does not change who may flip it. The flip stays OWNER-GATE
 (`enforcement-flip`).
 
+`FOCUS_LOG_ORGS` opens the focus-session log of My Day for an org
+(`my_day_command_centre.md` §9.3). With the org off the list, each
+`/projects/my/focus-sessions` route answers 404 before any database work. A
+reload applies it. The flip stays OWNER-GATE (`enforcement-flip`).
+
 A reload does NOT apply any other key. The log names each one under
 `restart`. That includes:
 

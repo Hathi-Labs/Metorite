@@ -614,6 +614,8 @@ jobs:
               tests/unit/test_project_rules.py \
               tests/unit/test_crm_change_history.py \
               tests/unit/test_auto_park.py \
+              tests/unit/test_focus_sessions_r8.py \
+              tests/unit/test_focus_session_rls_r8.py \
               tests/unit/test_staging_export.py
 
       # CIV-3. A selection run holds part of the timings. Only a full run

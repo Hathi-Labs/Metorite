@@ -96,6 +96,19 @@ PENDING_OP6: dict[str, str] = {}
 #: The slices that may own a pending route. OP-6e (agent runs) owns no route.
 SLICES: frozenset[str] = frozenset()
 
+#: Routes of another workstream that ship before their chat tools. Each value
+#: is the slice that adds the tools and moves the route out of class X. That
+#: slice deletes its lines here. WS-MDC CC-5a ships the focus-session log, and
+#: CC-10 adds its tools (``my_day_command_centre.md`` §9.3).
+PENDING_TOOLS: dict[str, str] = {
+    "POST /projects/my/focus-sessions": "CC-10",
+    "PATCH /projects/my/focus-sessions/{session_id}": "CC-10",
+    "GET /projects/my/focus-sessions": "CC-10",
+}
+
+#: The slices that may own a route of :data:`PENDING_TOOLS`.
+TOOL_SLICES: frozenset[str] = frozenset({"CC-10"})
+
 
 def _class_x() -> dict[str, str]:
     return {f"{r.method} {r.path}": r.reason for r in m.MANIFEST if r.cls == "X"}
@@ -103,7 +116,7 @@ def _class_x() -> dict[str, str]:
 
 def test_the_class_x_routes_are_exactly_the_two_lists() -> None:
     now = set(_class_x())
-    pinned = set(STAYS_X) | set(PENDING_OP6)
+    pinned = set(STAYS_X) | set(PENDING_OP6) | set(PENDING_TOOLS)
     assert now - pinned == set(), (
         "a route is class X and no list names it. D-OP-9: give it a chat tool, or "
         f"add it to STAYS_X in this file with a reason in the spec: {sorted(now - pinned)}"
@@ -116,8 +129,14 @@ def test_the_class_x_routes_are_exactly_the_two_lists() -> None:
 
 def test_no_route_is_in_both_lists_and_every_value_is_known() -> None:
     assert set(STAYS_X) & set(PENDING_OP6) == set()
+    assert set(STAYS_X) & set(PENDING_TOOLS) == set()
+    assert set(PENDING_OP6) & set(PENDING_TOOLS) == set()
     assert set(STAYS_X.values()) <= GROUPS
     assert set(PENDING_OP6.values()) <= SLICES
+    assert set(PENDING_TOOLS.values()) <= TOOL_SLICES
+    # A pending route names its slice in its manifest reason.
+    for key, slice_id in PENDING_TOOLS.items():
+        assert slice_id in _class_x()[key], (key, _class_x()[key])
     # Every group is used, so a group nobody needs leaves the list.
     assert set(STAYS_X.values()) == GROUPS
 
@@ -126,10 +145,12 @@ def test_the_counts_the_spec_states() -> None:
     """39 routes were class X on 2026-10-23. OP-6a took 3, OP-6c took 3, OP-6b
     took 2 and OP-6d took 4. The 27 that remain all stay. OP-6e moved the
     archive approval INTO class X (D-OP-13), so 28 stay. WS-64 OP-11 added
-    the Overview of My tasks, a second door to a read the chat has: 29."""
+    the Overview of My tasks, a second door to a read the chat has: 29.
+    WS-MDC CC-5a added three routes that wait for the tools of CC-10."""
     assert len(STAYS_X) == 29
     assert len(PENDING_OP6) == 0
-    assert len(_class_x()) == len(STAYS_X) == 29
+    assert len(PENDING_TOOLS) == 3
+    assert len(_class_x()) == len(STAYS_X) + len(PENDING_TOOLS) == 32
 
 
 def test_the_area_routes_left_class_x_for_their_tools() -> None:
