@@ -96,6 +96,9 @@ export default function ApprovalsPage() {
       const res = await fetch("/api/actions/pending");
       const body: unknown = res.ok ? await res.json() : null;
       if (Array.isArray(body)) result = { ok: true, rows: body as PendingAction[] };
+      // Only an org admin reads the queue (AP-BUG-2). Another member sees
+      // no queue section and no error.
+      else if (res.status === 403) result = { ok: false, closed: true };
     } catch {
       // The request did not arrive. `result` stays a failed load.
     }
@@ -272,17 +275,19 @@ export default function ApprovalsPage() {
         </section>
       )}
 
-      {waiting !== null && waiting.length > 0 && (
+      {queue.load !== "closed" && waiting !== null && waiting.length > 0 && (
         <h2 className="text-sm font-semibold text-foreground">Proposed writes</h2>
       )}
-      <p className="mt-1 text-xs text-muted-foreground">
-        Outward writes an agent proposed through the Action Broker. Approving
-        runs the write; rejecting refuses it. Empty unless
-        <code className="mx-1 rounded bg-secondary/50 px-1 py-0.5 font-mono text-[11px]">
-          ACTION_BROKER_ENFORCE
-        </code>
-        is on.
-      </p>
+      {queue.load !== "closed" && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          Outward writes an agent proposed through the Action Broker. Approving
+          runs the write; rejecting refuses it. Empty unless
+          <code className="mx-1 rounded bg-secondary/50 px-1 py-0.5 font-mono text-[11px]">
+            ACTION_BROKER_ENFORCE
+          </code>
+          is on.
+        </p>
+      )}
 
       {/* One live region, always mounted, so a screen reader announces the
           line when it arrives. It is empty when there is nothing to say. */}
