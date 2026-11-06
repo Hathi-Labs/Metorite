@@ -175,6 +175,7 @@ One row for each workstream. State: 🟢 active, 🟡 gated or ⏸ after Phase 2
 | WS-AUTO | **Proactive agent**: Mira acts for each person without being asked, within limits that the person sees | 🟢 active · started 2026-11-02 (D161) · M2 | `specs/proactive_agent.md` | Metorite: project "Automations", epic 807 · D103, D124, D131, D161 and workflows G5 · AUTO-2 first slice, AUTO-3 (D131) and AUTO-7a are merged · AUTO-7b is built, dark behind `AUTO_PARK_ORGS`, in review (task 1411) · AUTO-Q1 runs on a working default, which is not an owner decision (`proactive_agent.md` §12) · H-328 parts (a) and (b) are merged, and part (c) is open · next AUTO-8 and AUTO-6, then AUTO-1, AUTO-4, AUTO-5, AUTO-9, AUTO-10 |
 | WS-PJP | **Plan with Metorite**: the AI plans projects with the member. It finds the critical path, the critical chain and its buffer, the constraint and the risks, proposes the stages that fit the work, and shows three or more changes on one card | 🟢 active · started 2026-11-02 (D168) · M2 | `specs/project_planning.md` | Metorite: project "Projects/Tasks App", epic 1476 · reports to WS-PT · D99, D145, D168 · PJP-0 is this spec · next PJP-1 (pills and swatches), PJP-2 (no hand-off to projects-assistant) and PJP-4 in parallel · PJP-2 needs the owner's `TOOL_PACKS` line before its release |
 | WS-AP | **Waiting**: one list of every agent, approval and person that waits on a member, and of every person the member waits on | 🟢 active · started 2026-11-06 · M2 | `specs/waiting_on_me.md` | Metorite: project "Proactive Intelligence", epic 1615 · D12, D87, D103, D124, D171 and ALN-Q5 · AP-0 is this spec (task 1855) · the owner accepted AP-Q1 to AP-Q8 on 2026-11-06 · AP-Q10 waits on the owner (AP-16) · next AP-BUG-1 (task 1857), then AP-1 (task 1616) and AP-8 (task 1858) · AP-15 (task 1875) routes a wait that no person owns |
+| WS-MDC | **My Day command centre**: capture, plan, start, focus and close the day from My Day, joined with Calendar and Projects | 🟢 active · started 2026-11-07 · M2 | `specs/my_day_command_centre.md` | Metorite: project "Calendar App", epic 1946 · D12, D89, D101, D170, D171 and D188 (D-MD-1 to D-MD-9) · CC-0 is this spec (task 1967) · next CC-1 (task 1968), CC-2 (task 1969) and CC-4 (task 1971) in parallel · CC-11 (task 1973) waits on PR 1789 |
 | WS-CO | **Chat organization**: topics, picking up a chat, one search, and the full-screen chat | 🟢 active · started 2026-11-02 (D162, D163) · M1 | `specs/chat_organization.md` · `specs/artifact_management.md` §6.0 | next CO-0 (AGENT-SAFE). CO-1 waits for the PZ-33b question on numbers, and its flip is owner-only |
 | WS-UX | **UX System**: the one look, the action contract and the motion vocabulary | 🟢 active · M1 | `workbench/control_plane/DESIGN_SYSTEM.md` (§4b, §11, §12) · `specs/glass_look.md` (phase GL, D143) | Metorite: epic 492, sub-epic UX-D, task 1125 (GL) · UI-G1 is built · **GL (owner, 2026-10-31): Aroh's glass look, LIVE in production since 2026-10-31 05:38 UTC behind `NEXT_PUBLIC_UI_LOOK` (GL-9 done on the owner's word; staging no longer exists). GL-0 to GL-4 built (gate and tokens, primitives, shell, chat). GL-10, GL-11 and GL-12 are built (GL-12, 2026-11-01: the Ask bar at the foot, no top bar, Needs you beside its sidebar row) (GL-11, 2026-11-01: desktop proportions, raised chat cards, the full-height sidebar with hover to expand) (cards, rail, chat edge). **GL-Z1 is built, 2026-10-31 (D149): glass is the only look, and the Design switch and the gate are gone.** Next GL-Z2 (fold each `glass:` class into a plain class, then delete the classic token blocks), then GL-5 and GL-6** · then UXD-1 to UXD-3 (the silent failures), then UXD-5 and UXD-6 (D119.3) |
 | WS-WH | **Writing Help** | ⏸ after Phase 2 · M4 | none yet | Metorite: epic 493 · next WA-1 |
@@ -5495,6 +5496,31 @@ This supersedes the owner rule of 2026-08-31 (management controls stay out of th
 **Re-check this number at merge.** The first merge wins a D-number, and the branches for D182 to D184 were open when this record was written.
 
 Fence: `statusSetCopy.test.ts` and `tests/unit/test_projects_status_set_read_r8.py`, named per slice in `specs/projects_settings.md` §7.1. Advisory until PST-1 builds them.
+
+### D188 — The My Day command centre: capture, plan, start, focus and close from one page (2026-11-07)
+
+Owner answer on Metorite task 1946 ("Approve all eight recommendations"), 2026-11-07, and an addition in chat the same day. Owner spec: `specs/my_day_command_centre.md`. Board: **WS-MDC**. Metorite: epic 1946, tasks 1967 to 1978.
+
+```text
+"My Day becomes the main operations command center dashboard for managing my day. I should be able to start work, do Pomodoro, capture tasks, etc., from just this one place." (2026-11-06)
+"Ensure that you actually use the "Needs You" tabs because there are multiple sub-apps that might need you." (2026-11-07)
+```
+
+1. **D-MD-1 (MD-Q1).** My Day is the command centre: notice, plan, start, focus and close. Calendar keeps the week, the full grid and events. Projects keeps the structure. This amends `navigation_shell.md` §4.3.
+2. **D-MD-2 (MD-Q2).** One rule for Today: the One Thing, the top 3, what is on today's calendar, and what is due or starts by today. Every surface reads one helper.
+3. **D-MD-3 (MD-Q3).** A "today's focus" mark on a task. The cap is 3, and the member sets it from 1 to 10. The One Thing is one of them.
+4. **D-MD-4 (MD-Q4).** My Day has the phases Plan, Do and Close. Plan lasts until the day starts. Close starts after 17:30 or on request. A switch lets the member pick.
+5. **D-MD-5 (MD-Q5).** A new table of focus sessions, one row for each session. It is private to the member and scoped to the organization. Only the member sees their own minutes.
+6. **D-MD-6 (MD-Q6).** Focus on a company task in a To do lane moves it to In progress, with Undo. "Done" in the check-in closes it there.
+7. **D-MD-7 (MD-Q7).** A capture goes to the Inbox. A named time also makes a block or a reminder, and the toast offers Undo.
+8. **D-MD-8 (MD-Q8).** On a phone, My Day is one column: the running session, capture and Ask at the thumb, today's plan, then what needs you.
+9. **D-MD-9 (owner addition).** "Needs you" on My Day has one tab for each app that can need the member, each with its count.
+
+This amends `navigation_shell.md` §4.3, which gave My Day only the job Notice. D101, D170, D171 and D89 stand.
+
+**Re-check this number at merge.** D186 and D187 were open on other branches when this record was written. The first merge wins a D-number.
+
+Fence: named per slice in `specs/my_day_command_centre.md` §10. Advisory until each slice builds its test.
 
 ## 4. Single-owner registry (who owns duplicated work)
 
