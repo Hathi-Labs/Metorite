@@ -29,8 +29,9 @@ each was restored. ``R`` is ``routes/projects/today_rule.py``, ``P`` is
 * C4. ``R`` ``focus_count_sql``: no ``NOT EXISTS`` of a marked One Thing.
   ``test_a_marked_one_thing_counts_once``.
 * C5. ``P`` ``mark_focus``: no ``FOCUS_LOCK_SQL``.
-  ``test_marks_at_once_take_the_last_place_once`` (it races, so the test sends
-  eight marks for one place).
+  ``test_a_second_mark_waits_for_the_first_to_commit``. The in-process client
+  of ``test_marks_at_once_take_the_last_place_once`` did not race under this
+  mutation, so that test is no fence of the lock.
 * C6. ``P`` ``check_focus_on``: no date check.
   ``test_another_date_answers_422_and_writes_nothing``.
 * C7. ``R`` ``clamp_focus_cap``: no clamp. ``test_the_cap_reads_null_as_3_and_clamps``.
@@ -282,8 +283,7 @@ class TestTheMarkOnARealDatabase:
         assert h.rows_by_task(state)[a]["why"] == ["one_thing", "focus"]
 
     async def test_marks_at_once_take_the_last_place_once(self, w):
-        """Two marks of a day never count at the same time. With one place
-        left, eight marks at once give one 200 and seven 409s."""
+        """With one place left, eight marks at once give one 200 and seven 409s."""
         taken, racing = w.tasks[:2], w.tasks[2:10]
         async with h.session(w.p) as call:
             for tid in taken:
@@ -292,6 +292,39 @@ class TestTheMarkOnARealDatabase:
         codes = sorted(a.status_code for a in answers)
         assert codes == [200] + [409] * 7, [a.text for a in answers]
         assert len(_marks(w)) == 3
+
+    async def test_a_second_mark_waits_for_the_first_to_commit(self, w):
+        """Two marks of a day never count at the same time. The first mark holds
+        the lock of the day in an open transaction. The second mark waits for
+        it, then counts the first, and the day is full (409). With no lock, the
+        second mark counts before the first commits, and the day holds 4."""
+        from acb_common.db import tenant_session
+        from gateway.routes.projects.core import Visibility
+
+        org = w.p.org_a
+        vis = Visibility(unrestricted=False, email=MEMBER, groups=(), organization_id=org)
+        first, second = w.tasks[2], w.tasks[3]
+        async with h.session(w.p) as call:
+            for tid in w.tasks[:2]:
+                assert (await _mark(call, w.member, tid)).status_code == 200
+            opened = tenant_session(org)
+            db = await opened.__aenter__()
+            try:
+                await personal.mark_focus(db, vis, first, MEMBER, TODAY)
+
+                async def _second() -> None:
+                    async with tenant_session(org) as other:
+                        await personal.mark_focus(other, vis, second, MEMBER, TODAY)
+
+                waiting = asyncio.create_task(_second())
+                await asyncio.sleep(1.0)
+                assert not waiting.done(), "the second mark ran before the first committed"
+            finally:
+                await opened.__aexit__(None, None, None)
+            with pytest.raises(HTTPException) as refused:
+                await asyncio.wait_for(waiting, timeout=30)
+            assert refused.value.status_code == 409
+        assert _marks(w) == {*w.tasks[:2], first}
 
     async def test_the_mark_is_the_members_own(self, w):
         """The other member fills their own day. It takes no place of mine, and

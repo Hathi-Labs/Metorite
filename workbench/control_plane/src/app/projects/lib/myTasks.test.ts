@@ -30,6 +30,7 @@ import {
   doneThisWeek,
   droppedStage,
   inChip,
+  todayIdsOf,
   mineStatuses,
   myTasksHref,
   applyMyTasksUpdate,
@@ -148,6 +149,22 @@ describe("each chip is the server's rule", () => {
     );
   });
 
+  it("the Today chip lists the server set only when the summary sends it (WS-MDC CC-2)", () => {
+    const rows = RULES.map(([name, r]) => ({ ...r, id: name }));
+    const old = chipRows(rows, "today", TODAY, "UTC").map((r) => r.id);
+    // The flag off: no `today_ids`, so the old rule and nothing new.
+    expect(todayIdsOf({ by_disposition: {} } as never)).toBeNull();
+    expect(todayIdsOf({ today_rule: false, today_ids: ["NEXT and mine, no date"] })).toBeNull();
+    expect(chipRows(rows, "today", TODAY, "UTC", null).map((r) => r.id)).toEqual(old);
+    // The flag on: an open row of the set joins, and a closed or trashed row never does.
+    const ids = todayIdsOf({
+      today_rule: true,
+      today_ids: ["NEXT and mine, no date", "TRASH", "DONE, due today"],
+    });
+    const got = chipRows(rows, "today", TODAY, "UTC", ids).map((r) => r.id);
+    expect(got).toEqual(rows.filter((r) => r.id === "NEXT and mine, no date" || old.includes(r.id)).map((r) => r.id));
+  });
+
   it("the server's fold counts the same five keys, by the same rules", () => {
     // The table above mirrors these lines. A change on either side fails here.
     const mine = fs.readFileSync(
@@ -167,7 +184,11 @@ describe("each chip is the server's rule", () => {
   });
 
   it("the Today chip calls the one Today rule", () => {
-    expect(code("lib/myTasks.ts")).toContain("isInToday(");
+    // WS-MDC CC-2: through `inTodayChip`, whose old-rule branch is `isInToday`.
+    expect(code("lib/myTasks.ts")).toContain("inTodayChip(");
+    expect(code("../../lib/shell/todayRule.ts")).toContain(
+      "if (!serverIds) return isInToday(item, ctx.today, ctx.timeZone);",
+    );
   });
 
   it("the chip counts come from the server summary, and All shows none", () => {
@@ -509,8 +530,9 @@ describe("Today in the member's stored zone (item 8)", () => {
   it("the space passes the summary's zone to every chip filter", () => {
     const space = code("components/MyTasksSpace.tsx");
     expect(space).toContain("summary.data?.time_zone");
-    expect(space).toContain("chipRows(list.rows, chip, today, zone)");
-    expect(space).toContain("chipRows(month.rows, chip, today, zone)");
+    expect(space).toContain("chipRows(list.rows, chip, today, zone, todayIds)");
+    expect(space).toContain("chipRows(month.rows, chip, today, zone, todayIds)");
+    expect(space).toContain("todayIdsOf(summary.data)");
   });
 });
 

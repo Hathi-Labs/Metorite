@@ -174,9 +174,8 @@ export function chipForApp(id: string | null | undefined): MyTasksChip | null {
 }
 
 /** The overlay facts a chip reads off a row (`with_overlay=1`). */
-export type ChipRow = Pick<
+export type ChipRow = Partial<Pick<TaskRow, "id">> & Pick<
   TaskRow,
-  | "id"
   | "disposition"
   | "is_mine"
   | "is_new"
@@ -226,7 +225,7 @@ export function inChip(
     case "today":
       return inTodayChip(
         {
-          id: row.id,
+          id: row.id ?? "",
           disposition: effective as never,
           isMine: Boolean(row.is_mine),
           archivedAt: row.archived_at ?? undefined,

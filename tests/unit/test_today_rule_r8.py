@@ -19,14 +19,15 @@ each was restored. ``R`` is ``routes/projects/today_rule.py`` and ``M`` is
 
 * T1. ``R`` ``ARMS_SQL``: no ``FOCUS_SQL``. The focus cases of
   ``test_each_case_of_the_fixture_reads_its_why_through_the_route``.
-* T2. ``R`` ``SCHEDULED_SQL``: ``<=`` in place of ``<`` on ``:day_end``. No
-  case moved, so the midnight cases were added: "my block starts at my
-  midnight of today" and "one minute before" fail under ``>`` for ``>=``.
+* T2. ``R`` ``SCHEDULED_SQL``: ``>`` for ``>=`` on ``:day_start``. The case
+  "my block starts at my midnight of today" of
+  ``test_each_case_of_the_fixture_reads_its_why_through_the_route``.
 * T3. ``R`` ``ONE_THING_SQL``: no ``lower(d.user_id) = :who``.
   ``test_the_marks_of_another_member_never_reach_mine``.
 * T4. ``R`` ``today_where``: no ``task_visibility_clause``.
-  ``test_a_task_that_i_cannot_see_is_out_even_with_my_mark`` and
-  ``test_organization_b_never_shows_in_a``.
+  ``test_a_task_that_i_cannot_see_is_out_even_with_my_mark``. FORCE RLS still
+  hides org B under this mutation, so ``test_organization_b_never_shows_in_a``
+  holds the tenant and not the grant.
 * T5. ``R`` ``OPEN_SQL``: no trash test. "a focus mark on a task in my trash".
 * T6. ``R`` ``to_fit``: every row. ``test_the_tray_is_the_set_minus_the_blocks_of_today``.
 * T7. ``M`` ``my_summary``: the count reads ``in_today`` with the flag on.
@@ -34,8 +35,7 @@ each was restored. ``R`` is ``routes/projects/today_rule.py`` and ``M`` is
 * T8. ``M`` ``my_summary``: the ids are sent with the flag off.
   ``test_with_the_flag_off_the_chip_keeps_the_old_rule``.
 * T9. ``R`` ``due_arm_sql``: ``mine_clause`` with no arm (all three).
-  "due today and stated Next, but assigned to nobody, is not mine" stays
-  out, but ``test_the_due_arm_reuses_the_assigned_arm_of_mine`` fails.
+  ``test_the_due_arm_reuses_the_assigned_arm_of_mine``.
 """
 
 from __future__ import annotations
@@ -316,6 +316,17 @@ class TestTheTodayPredicateOnARealDatabase:
         async with h.session(p) as call:
             got = h.rows_by_task(await _today(call, w.member))
         assert tid not in got
+
+    async def test_a_reader_of_the_whole_org_reads_the_same_arms(self, w):
+        """``data:org:read`` widens what the member may see, inside the tenant.
+        The set binds every name of that clause too, and each case keeps its
+        arms."""
+        wide = h.person(MEMBER, w.p.org_a, unrestricted=True)
+        async with h.session(w.p) as call:
+            got = h.rows_by_task(await _today(call, wide))
+        for tid, case in w.cases.items():
+            if not case["mine"]["one_thing"]:
+                assert got.get(tid, {}).get("why", []) == case["why"], case["name"]
 
     async def test_organization_b_never_shows_in_a(self, w):
         """Org B holds a task assigned to the address of A's member, with a
