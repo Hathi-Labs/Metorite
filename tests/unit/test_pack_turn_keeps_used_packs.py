@@ -625,6 +625,170 @@ def test_off_a_words_pack_is_not_spare(monkeypatch) -> None:
     assert run.spare() == ()
 
 
+# ── 6a. A load and a tool of a spare pack in one model step ─────────────────
+
+
+async def _one_step(
+    loader: tp.LoadSkillTools, live: list[Any], slug: str, *,
+    late: bool = False, marked: bool = False,
+) -> dict[str, Any]:
+    """One model step with two calls: ``load_skill_tools(slug)`` and a CRM
+    write, each on its own task, as MAF 1.19 starts them. The CRM call does
+    what ``_tool_injection._pack_call`` does: ``pack_tool_runs`` before any
+    await, then the tool, then ``note_used``. With *late*, the CRM call starts
+    only after the load has moved the packs, as a call does when its own
+    middleware waits."""
+    import asyncio
+    import contextvars
+
+    from acb_skills import egress
+    from acb_skills.write_artifact import artifact_context
+    from agent_framework import FunctionInvocationContext
+
+    if marked:
+        assert await egress.mark_untrusted_answer()
+    out: dict[str, Any] = {}
+    loaded = asyncio.Event()
+
+    async def call_next() -> None:
+        out["passed"] = True
+
+    load_ctx = FunctionInvocationContext(function=loader.tool, arguments={"pack": slug},
+                                         tools=live)
+
+    async def load() -> None:
+        await loader.process(load_ctx, call_next)
+        loaded.set()
+
+    async def crm_write() -> None:
+        if late:
+            await loaded.wait()
+        ctx = artifact_context()
+        tp.pack_tool_runs("crm-records", ctx)
+        await asyncio.sleep(0)
+        out["noted"] = await tp.note_used("crm-records", ctx)
+
+    tasks = [contextvars.copy_context().run(asyncio.create_task, call())
+             for call in (load, crm_write)]
+    await asyncio.gather(*tasks)
+    out["answer"] = str(load_ctx.result)
+    return out
+
+
+@pytest.mark.parametrize("marked", [True, False], ids=["marked-chat", "clean-chat"])
+async def test_a_load_does_not_move_out_a_pack_whose_tool_starts_in_the_same_step(
+    marked: bool, store, monkeypatch,
+) -> None:
+    """The review of round 2. The model sends ``load_skill_tools(projects)`` and
+    a CRM write in one step. In a marked chat the build returns with no
+    suspension, so the load read ``run.ran`` before the CRM call reached
+    ``pack_tool_runs``, and it moved ``crm-records`` out while its write ran.
+    D169 item 8 as amended says that a pack whose tool started stays. Now the
+    load yields once before the check, so the email pack leaves instead.
+    Mutation: drop the ``asyncio.sleep(0)`` from ``_admit_pack`` -> red."""
+    _stub_owners(monkeypatch)
+    turn = _turn(EMAIL_CRM, _st(CORE, 9, 0))
+    run, live, loader, _plan_ = await _row_run(turn, LIVE_1622)
+    with _frame(run, loader.run_key):
+        out = await _one_step(loader, live, CORE, marked=marked)
+    assert out["answer"].startswith("Loaded the Projects tools"), out["answer"]
+    assert "crm-records" not in run.left and run.left == {"email"}, run.left
+    assert "crm-records" in run.holds() and out["noted"] is True
+    assert "create_task" in _names(live) and len(live) <= tp.MAX_REQUEST_TOOLS
+
+
+async def test_a_tool_that_starts_after_the_move_makes_its_pack_sticky_again(
+    store, monkeypatch,
+) -> None:
+    """The second half of the review of round 2. A CRM call can start after the
+    check, when its own middleware waits, so the load moves ``crm-records``
+    out while the write still runs. The model's history then shows the
+    write. Before the fix ``note_used`` wrote nothing for a pack that left,
+    the next turn held no CRM pack and named none, and the next CRM call
+    answered 'Function not found'. Now the next turn holds the pack again.
+    Mutation: drop the ``run.left`` branch from ``note_used`` -> red."""
+    _stub_owners(monkeypatch)
+    first = await _begin(EMAIL_CRM)
+    run, live, loader, _plan_ = await _row_run(first, LIVE_1622)
+    with _frame(run, loader.run_key):
+        out = await _one_step(loader, live, CORE, late=True)
+    assert "crm-records" in run.left, "non-vacuity: the late call starts after the move"
+    assert out["noted"] is True
+    second = await _begin("thanks")
+    assert ("crm-records", first.turn) in [(s.slug, s.used) for s in second.sticky]
+    later = _choose(second)
+    assert "crm-records" in later.slugs or "crm-records" in later.evicted, later
+
+
+# ── 6b. The answer of a load that moved a words-only pack ───────────────────
+
+
+async def test_row_162253_the_answer_hands_the_crm_part_to_its_assistant(
+    store, monkeypatch,
+) -> None:
+    """The review of round 2. The member asked for the CRM work in this turn
+    ("add this email to the sales pipeline"), so "Do not call them in this
+    turn" left that work with no next step. The answer now says that the
+    member asked for it, and names the open hand-off. Mutation: answer
+    ``LOAD_MADE_ROOM`` for a words pack -> red."""
+    _stub_owners(monkeypatch)
+    run, live, loader, _plan_ = await _row_run(_turn(EMAIL_CRM, _st(CORE, 9, 0)), LIVE_1622)
+    with _frame(run, loader.run_key):
+        answer, _passed = await _call(loader, CORE, live)
+    room = (tp.LOAD_MADE_ROOM_ASKED.format(labels="CRM records")
+            + tp.LOAD_MADE_ROOM_HAND_OFF.format(owner="crm-assistant"))
+    assert answer.endswith(room), answer
+    assert "Do not call them in this turn" not in answer
+    assert run.refusal("crm-assistant", starts=True) is None, "the text is true"
+
+
+async def test_a_projects_words_pack_that_leaves_names_the_projects_hand_off(
+    store, monkeypatch,
+) -> None:
+    """"show the task dependencies" holds the core and plan packs by the words.
+    A structure load moves the plan pack out. The persona still says that no
+    Projects agent exists, so the answer names the hand-off that is open now,
+    as ``LOAD_NO_PATH`` does. Mutation: drop the hand-off line -> red.
+    Mutation: drop ``via_failed`` from ``PackRun.leaves`` -> the hand-off is
+    refused and the text is not true -> red."""
+    _stub_owners(monkeypatch)
+    run, live, loader, plan = await _row_run(_turn("show the task dependencies"), 104)
+    assert run.words == (CORE, PLAN) and PA in plan.via_loader, (run.words, plan)
+    with _frame(run, loader.run_key):
+        answer, _passed = await _call(loader, STRUCTURE, live)
+    assert answer.startswith(f"Loaded the {_label(STRUCTURE)} tools"), answer
+    room = (tp.LOAD_MADE_ROOM_ASKED.format(labels=_label(PLAN))
+            + tp.LOAD_MADE_ROOM_HAND_OFF.format(owner=PA))
+    assert answer.endswith(room), answer
+    assert run.refusal(PA, starts=True) is None, "the text is true"
+
+
+def test_the_answer_says_what_to_do_when_the_hand_off_stays_refused() -> None:
+    """A write of the owner in this run keeps the hand-off refused
+    (``WROTE_HANDOFF_REFUSED``), so the text must not send the model to it.
+    Mutation: name the hand-off for each owner -> red."""
+    turn = _turn("show the task dependencies")
+    choice = _choose(turn)
+    run = tp.PackRun.of(turn, choice, [(s, False) for s in choice.slugs])
+    run.wrote[PA] = "create_task"
+    run.leaves(PLAN)
+    line = tp.made_room_line(run, (PLAN,))
+    assert line == (tp.LOAD_MADE_ROOM_ASKED.format(labels=_label(PLAN))
+                    + tp.LOAD_MADE_ROOM_TELL), line
+    assert "call_agent" not in line
+
+
+def test_an_old_sticky_pack_keeps_the_old_answer() -> None:
+    """The member did not name an old sticky pack in this turn, so the old text
+    stays. Mutation: answer ``LOAD_MADE_ROOM_ASKED`` for each pack -> red."""
+    turn = _turn(NO_WORD, _st("crm-records", 5, 0))
+    choice = _choose(turn)
+    run = tp.PackRun.of(turn, choice, [(s, False) for s in choice.slugs])
+    run.leaves("crm-records")
+    assert tp.made_room_line(run, ("crm-records",)) == tp.LOAD_MADE_ROOM.format(
+        labels="CRM records")
+
+
 # ── 6. When the promise breaks, the failed load reaches the assistant ───────
 
 

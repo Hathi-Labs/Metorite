@@ -573,9 +573,12 @@ def test_off_layer_a_keeps_the_old_order_of_eviction(monkeypatch) -> None:
     assert choice.evicted[0] == "email", choice
 
 
-async def test_a_pack_that_left_is_not_noted_by_a_call_in_flight(store) -> None:
-    """A call of the batch in flight still runs, and it makes the pack sticky
-    no more. Mutation: read ``slugs`` in ``note_used`` -> red."""
+async def test_a_pack_that_left_is_noted_only_when_a_tool_of_it_started(store) -> None:
+    """A pack that left with no tool started is not sticky again. Task 1747,
+    fix round 2: a call of the batch in flight that started (``ran``) still
+    runs, and the model's history shows it, so it makes the pack sticky again
+    (``test_pack_turn_keeps_used_packs.py``). Mutation: read ``slugs`` in
+    ``note_used`` -> red. Mutation: note each pack that left -> red."""
     entries = _sticky("email")
     turn = _turn(NO_WORD, entries)
     choice = tp.Choice(slugs=("email",), layers={"email": "sticky"},
@@ -584,6 +587,8 @@ async def test_a_pack_that_left_is_not_noted_by_a_call_in_flight(store) -> None:
     run.leaves("email")
     with _tenant():
         assert await tp.note_used("email", {tp.PACKS_KEY: run}) is False
+        tp.pack_tool_runs("email", {tp.PACKS_KEY: run})
+        assert await tp.note_used("email", {tp.PACKS_KEY: run}) is True
 
 
 async def test_layer_c_moves_no_pack(store, monkeypatch) -> None:

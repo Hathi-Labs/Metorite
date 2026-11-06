@@ -1231,21 +1231,21 @@ def test_with_the_switch_off_the_cap_moves_the_older_reminders_pack_out(monkeypa
     """Fix round 3 (P3-2). With ``HELD_CARD_WRITES_ORGS`` off for the org, the
     cap does not read the words of the turn (RX-1), so the least recently used
     sticky pack leaves: the reminders pack. The plan and core packs then make
-    104 tools, and no work pack fits beside them (104 - 1 + 11 > 110). Task
-    1747: the plan pack ran in the last turn (19), and the surface named the
-    core pack, so neither steps aside (D169 item 8). With the switch off no
-    pack can leave for a load, so the owner stays unreached, and its
-    specialist stays. Mutation: let the cap read the words with the switch
-    off -> the reminders pack stays -> red. Mutation: step aside the core
-    pack that the surface named -> red."""
+    104 tools, and no work pack fits beside them (104 - 1 + 11 > 110). With
+    the switch off no pack is spare, so the order of fix round 3 applies, and
+    the org keeps its reach (D169 item 13). Task 1747 keeps one guard: the
+    plan pack ran in the last turn (19), so it stays, and the core pack of
+    the page steps aside. Mutation: let the cap read the words with the
+    switch off -> the reminders pack stays -> red. Mutation: keep the core
+    pack with the switch off -> the owner is not reached -> red."""
     from acb_common import get_settings
 
     monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "")
     choice = _case_a()
-    assert choice.slugs == ("projects-plan", "projects"), choice
+    assert choice.slugs == ("projects-plan",), choice
     assert choice.evicted == ("projects-reminders",), choice
-    assert choice.skipped == (), choice
-    assert not _owner_reached(choice)
+    assert choice.skipped == ("projects",), choice
+    assert _owner_reached(choice)
 
 
 def test_a_sticky_pack_of_another_owner_leaves_before_a_projects_pack() -> None:
@@ -1314,52 +1314,99 @@ def test_a_sticky_pack_of_another_owner_does_not_keep_the_core_pack_on_the_page(
 def test_a_sticky_pack_that_the_words_name_again_outlasts_the_core_pack(words: str) -> None:
     """Fix round 3 (P1-1). ``projects-bulk`` is sticky from the last turn, and
     the member says "archive tasks that are done" on the Projects page. The
-    words name the bulk pack again, so the bulk pack stays. A repeat turn
-    pays no load step. Task 1747: the surface named the core pack, so it
-    stays too (D169 item 8). The bulk and core packs make 102 tools. Neither
-    can leave for a load: the bulk pack is sticky and named, and the core
-    pack came in by the surface. So the owner stays unreached, and its
-    specialist stays. Before task 1747 the core pack stepped aside here.
-    Mutation: let every sticky pack go before the core pack (fix round 2) ->
-    the bulk pack leaves -> red. Mutation: step aside the core pack that the
-    surface named -> red."""
-    turn = _sticky_turn(words, "projects", tp.Sticky("projects-bulk", (19, 0), 19))
-    choice = tp.choose(turn, allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    words name the bulk pack again, so where a pack must step aside, the core
+    pack goes and the bulk pack stays. A repeat turn pays no load step.
+    At the real base the bulk and core packs make 102 tools, and no other work
+    pack fits beside them, so one steps aside. Task 1747: neither pack is
+    spare (the bulk pack is sticky and named, the core pack came by the
+    surface), so the order of fix round 3 applies. Mutation: let every sticky
+    pack go before the core pack (fix round 2) -> the bulk pack leaves -> red.
+    Mutation: keep each named pack with no spare pack -> the owner is not
+    reached -> red."""
+    choice = tp.choose(
+        _sticky_turn(words, "projects", tp.Sticky("projects-bulk", (19, 0), 19)),
+        allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
     assert tp.matched_layer("projects-bulk", words) == "words"
-    assert choice.slugs == ("projects-bulk", "projects"), choice
-    assert choice.skipped == () and choice.evicted == (), choice
-    assert not _reached_by_load(turn, choice, _BASE)
+    assert choice.slugs == ("projects-bulk",), choice
+    assert choice.skipped == ("projects",) and choice.evicted == (), choice
+    assert _owner_reached(choice)
 
 
 @pytest.mark.parametrize(("base", "by"), [
-    # Base 56: 110 tools fit the cap, and three packs keep the owner
-    # unreached. The step-aside moves crm-records out first.
-    (56, "the step-aside"),
-    # Base 57: 111 tools. The cap moves crm-records out by its order, because
-    # the words name the bulk pack and not crm-records.
-    (_BASE, "the cap"),
+    # Base 56 and base 57: since CRM-M1, crm-records holds 10 tools, so the cap
+    # moves it out at both bases (111 and 112 tools).
+    (56, "the cap at 111"),
+    (_BASE, "the cap at 112"),
 ])
 def test_an_unnamed_sticky_pack_of_another_owner_leaves_before_the_projects_packs(
     base: int, by: str,
 ) -> None:
     """Fix round 3 (P2-1). ``crm-records`` (turn 18) and ``projects-bulk`` (turn
     19) are sticky, and the member says "archive tasks that are done" on the
-    Projects page. ``crm-records``, which the words do not name, leaves
-    first: since CRM-M1 it holds 10 tools, so the cap moves it out at both
-    bases (111 and 112 tools). Task 1747: the bulk pack (named and used) and
-    the core pack (named by the surface) stay (D169 item 8). Neither can
-    leave for a load, so the owner stays unreached, and its specialist
-    stays. Before task 1747 the core pack stepped aside here. Mutation: let
-    only Projects packs step aside -> red. Mutation: step aside the core pack
-    that the surface named -> red."""
-    turn = _sticky_turn("archive tasks that are done", "projects",
-                        tp.Sticky("crm-records", (18, 0), 18),
-                        tp.Sticky("projects-bulk", (19, 1), 19))
-    choice = tp.choose(turn, allowed=EVERY, base_tools=base, specialists=_SPECIALIST)
-    assert choice.slugs == ("projects-bulk", "projects"), (by, choice)
+    Projects page. ``crm-records``, which the words do not name, leaves first.
+    Then the bulk and core packs make 101 or 102 tools, and no other work pack
+    fits beside them. Neither pack is spare, so the order of fix round 3
+    applies: the core pack steps aside (task 1747). The bulk pack, which the
+    words name and the last turn used, stays. Mutation: let only Projects
+    packs step aside -> red. Mutation: keep each named pack with no spare pack
+    -> the owner is not reached -> red."""
+    choice = tp.choose(
+        _sticky_turn("archive tasks that are done", "projects",
+                     tp.Sticky("crm-records", (18, 0), 18),
+                     tp.Sticky("projects-bulk", (19, 1), 19)),
+        allowed=EVERY, base_tools=base, specialists=_SPECIALIST)
+    assert choice.slugs == ("projects-bulk",), (by, choice)
     assert choice.evicted == ("crm-records",), (by, choice)
-    assert choice.skipped == (), (by, choice)
-    assert not _reached_by_load(turn, choice, base), (by, choice)
+    assert choice.skipped == ("projects",), (by, choice)
+    assert _owner_reached(choice, base=base)
+
+
+def _switch_off(monkeypatch) -> None:
+    from acb_common import get_settings
+
+    monkeypatch.setattr(get_settings(), "held_card_writes_orgs", "")
+
+
+@pytest.mark.parametrize(("words", "surface", "entries"), [
+    ("Who has spare team capacity?", "projects", ()),
+    ("show the burndown", "projects", ()),
+    ("show the task dependencies", "", ()),
+    ("create a task for Ravi to call Acme", "projects",
+     (tp.Sticky("projects-plan", (1, 0), 19),)),
+    ("now tidy them up", "projects",
+     (tp.Sticky("projects", (18, 0), 18), tp.Sticky("projects-plan", (18, 1), 18))),
+], ids=["capacity", "burndown", "dependencies", "a-task-plan-sticky", "tidy"])
+def test_with_the_switch_off_the_owner_is_reached_as_before(
+    words: str, surface: str, entries: tuple[tp.Sticky, ...], monkeypatch,
+) -> None:
+    """Task 1747, fix round 2. An org that ``HELD_CARD_WRITES_ORGS`` does not
+    name has no spare pack. It keeps the reach that it had before task 1747
+    (D169 item 13): the order of fix round 3 applies, so one pack steps aside.
+    The file turns the switch on for every other case. Mutation: keep each
+    named pack with no spare pack -> the owner is not reached -> red."""
+    _switch_off(monkeypatch)
+    turn = _sticky_turn(words, surface, *entries)
+    choice = tp.choose(turn, allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    assert len(choice.slugs) == 1, choice
+    assert tp.PackRun.of(turn, choice, [(s, False) for s in choice.slugs]).spare() == ()
+    assert _owner_reached(choice), choice
+
+
+def test_with_the_switch_off_a_pack_that_the_last_turn_used_stays(monkeypatch) -> None:
+    """Task 1747, fix round 2: the one guard that stays with the switch off. Both
+    packs ran in the last turn (19), so neither steps aside, and the owner
+    stays unreached. With the switch on, a spare pack reaches it. Mutation:
+    drop ``fresh`` from ``_main_order_victim`` -> a pack leaves -> red."""
+    entries = (tp.Sticky("projects", (19, 0), 19), tp.Sticky("projects-plan", (19, 1), 19))
+    turn = _sticky_turn("now tidy them up", "projects", *entries)
+    _switch_off(monkeypatch)
+    off = tp.choose(turn, allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    assert off.slugs == ("projects", "projects-plan") and off.evicted == (), off
+    assert not _owner_reached(off)
+    plan = tp.choose(_sticky_turn("show the burndown", "",
+                                  tp.Sticky("projects-structure", (19, 0), 19)),
+                     allowed=EVERY, base_tools=_BASE, specialists=_SPECIALIST)
+    assert "projects-structure" in plan.slugs, "a fresh pack stays beside a new one"
 
 
 def test_a_pack_too_small_for_work_does_not_reach_the_owner() -> None:
