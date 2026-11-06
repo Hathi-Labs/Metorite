@@ -1,6 +1,6 @@
 # Projects settings — one place for every setting of the Projects app
 
-**Status: ACTIVE — PS-1 and PS-2 built 2026-09-29. On 2026-11-06 the owner specified PST-1 to PST-5 (§9). Nothing of them is built.** Owner directive, 2026-09-29. Board row
+**Status: ACTIVE — PS-1 and PS-2 built 2026-09-29. On 2026-11-06 the owner specified PST-1 to PST-5 (§9). PST-1 built 2026-11-06. PST-2 to PST-5 are not built.** Owner directive, 2026-09-29. Board row
 **WS-42**. This spec records **D81**. §9 records **D185**. The first merge wins a D-number, so the author of the PR must re-check that D185 is still free at merge.
 
 Verified against code on 2026-09-29 at `main` `02658314`. The author checked §9 against code on 2026-11-06 at `main` `06cfc43f8`.
@@ -179,7 +179,7 @@ in a manager changes.
 
 Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice skips the audit when its Metorite task states the acceptance criteria. A slice that changes a screen needs the visual-review walk of §6. No slice adds a migration.
 
-**PST-1 (task 1798). Goes first.**
+**PST-1 (task 1798). Goes first.** ✅ built 2026-11-06, branch `mt-73383eb6-pst1`.
 
 - **Does:** the extended read of §9.4. The copy module of §9.5. The scope line on every Statuses screen (the dialog and the pane). The list of projects that own their own set, with links. The pane section gets the name "Space default statuses". The text "Client Projects's set" is fixed.
 - **Files:** `apps/services/gateway/gateway/routes/projects/admin.py` (`describe_status_set`, `_OVERRIDES_BELOW_SQL`). A count query beside `_STATUS_SCOPE_SQL` in `routes/projects/core.py`. In `workbench/control_plane/src/app/projects`: `lib/statusSetCopy.ts` (new), `components/StatusManager.tsx`, `components/StatusSetControl.tsx`, `components/ProjectsSettings.tsx:69` (the "Statuses" label), `lib/commands.ts:293` (the palette entry) and `lib/projectMenu.ts:343` (the row-menu label).
@@ -189,10 +189,11 @@ Gate label of each slice: **AGENT-SAFE**. Risk tier: STANDARD, so each slice ski
   2. The Space default statuses section of a space with 27 users shows "27 projects use these statuses." It lists the projects that own their own set. Each row links to that project's editor.
   3. The dialog of a subproject shows "Uses the statuses of {owner} (shared with {N})".
   4. A project named "Client Projects" never reads "Client Projects's set".
-  5. The section list, the heading, the palette entry and the row-menu label use "Space default statuses".
+  5. The section list, the heading and the palette entry use "Space default statuses" (§9.5). The row-menu label stays "Statuses", because the row menu opens the set of the clicked node on every level, and a subproject's set is not the space default. `projectsSettings.test.ts` pins the label.
   6. The read returns `hidden_overrides`. The screen shows "and {N} more that you cannot see" only when N is more than 0.
   7. `path` of an override never holds a name that the member cannot see.
 - **Fence (R7):** `tests/unit/test_projects_status_set_read_r8.py` on Postgres. It checks the counts for cases 1, 2 and 3. It checks a nested owner that the count must skip. It checks that tenant B cannot change the count of tenant A. It checks a hidden project that the list leaves out and the count includes, and `hidden_overrides` for it. It checks a visible override under a hidden parent: its `path` shows no hidden name. It fails when the `NOT p.owns_statuses` test leaves the recursive arm. Also `statusSetCopy.test.ts` and `projectsSettings.test.ts` (§6).
+- **Built (2026-11-06):** the read is `_status_set_reach()` in `admin.py` and `status_users()` in `core.py`. One query reads every override chain with its visibility. The palette entry opens the pane section of the space, not the dialog of the selected node. Copy where §9.5 is silent: with no visible row, the hidden line reads "You cannot see it" or "You cannot see them". Each row adds "Shared with {N} projects". `owner_name` still names an owner that the member cannot see. That is the old behaviour, and the §9.5 sentence needs the name.
 
 **PST-2 (task 1799). After PST-1. Parallel with PST-4.**
 
@@ -266,7 +267,7 @@ change is not done: nothing else tests layout.
 ## 9. Status sets: which set, who shares it
 
 Owner request: 2026-11-05, Metorite epic task 1796. Owner decisions: 2026-11-06, **D185**.
-Verified against code on 2026-11-06 at `main` `06cfc43f8`. **Nothing in this section is built yet.**
+Verified against code on 2026-11-06 at `main` `06cfc43f8`. **PST-1 is built (2026-11-06). PST-2 to PST-5 are not built.**
 Slices: PST-1 to PST-5 (§9.8). Gate label of every slice: **AGENT-SAFE**.
 
 ### 9.1 What the owner asked
