@@ -179,9 +179,9 @@ async def new_mail_card(
     from acb_skills.reply_card import clean_reply_body
     from gateway.routes.email.automation.redraft import (
         form_link,
+        kept_unticked,
         link_fields,
         start_unticked,
-        take_unticked,
     )
     from gateway.routes.email.core import _assert_account_owner
     from gateway.routes.email.transport.metorite_files import resolve_metorite_files
@@ -201,14 +201,16 @@ async def new_mail_card(
     artifacts = [a.model_dump(exclude_none=True) for a in req.artifacts]
     thread = req.card_thread_id.strip()
     # §18.11 step 6: the gateway, never the tool, links this card to the card
-    # of the thread that a chat message revised ("Draft 2").
-    linked = await link_fields(user, thread)
-    # §18.11 rule 7: a person that the member unticked on the card that a chat
+    # of the thread that a chat message revised ("Draft 2"). Only a card to
+    # the same people takes the link (fix round 3).
+    linked = await link_fields(user, thread, lists["to"])
+    # §18.11 rule 7: a person that the member unticked on a card that a chat
     # message revised starts unticked here, even when the tool names that
-    # person again (an always-copy colleague). It only unticks. The record
-    # keeps the names, so the next draft keeps them too. The act still sends
-    # only to the ticks of the member's answer.
-    start, unticked = start_unticked(lists, await take_unticked(user, thread))
+    # person again (an always-copy colleague). Each card of the member in the
+    # thread reads it, and none spends it. It only unticks. The record keeps
+    # the names, so the next draft keeps them too. The act still sends only
+    # to the ticks of the member's answer.
+    start, unticked = start_unticked(lists, await kept_unticked(user, thread))
     record = {
         "v": 1, "owner": owner.lower(), "kind": "new-mail", "account_id": req.account_id,
         "to": lists["to"], "cc": lists["cc"], "bcc": lists["bcc"],

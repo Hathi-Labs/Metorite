@@ -252,10 +252,10 @@ async def _keep_card_draft(user: UserContext, thread_id: str, raw: Any) -> None:
     the flag (``EMAIL_EDIT_CARD_ORGS``). A fault keeps nothing and never stops
     the steer."""
     try:
-        from gateway.routes.email.automation.redraft import keep_card_draft  # noqa: PLC0415
+        from gateway.routes.email.automation.redraft import keep_card_draft
 
         await keep_card_draft(user, thread_id, raw)
-    except Exception as exc:  # noqa: BLE001 - a snapshot never stops a steer
+    except Exception as exc:  # a snapshot never stops a steer
         _log.warning("agent.card_draft_failed", error=type(exc).__name__)
 
 

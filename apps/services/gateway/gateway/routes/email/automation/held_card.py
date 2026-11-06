@@ -1418,19 +1418,21 @@ async def _new_card(req: HeldCardRequest, user: UserContext) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="Too many rows for one card.")
     context = "\n".join([f"Subject: {subject or '(no subject)'}", "", "The text:", body])
     from acb_skills.reply_card import edit_card_on
-    from gateway.routes.email.automation.redraft import form_link, link_fields, take_unticked
+    from gateway.routes.email.automation.redraft import form_link, kept_unticked, link_fields
 
     edit = edit_card_on(_org_of(user))
     # §18.11 step 6: the gateway, never the tool, links this card to the card
     # of the thread that a chat message revised. The classes and the ticks of
     # the rows above come from the server alone, as for any held card: a
-    # snapshot of the revised card never ticks a new address (rule 4).
-    linked = await link_fields(user, req.card_thread_id) if edit else {}
-    # §18.11 rule 7: a person that the member unticked on the revised card
+    # snapshot of the revised card never ticks a new address (rule 4). Only a
+    # card to the same people takes the link (fix round 3).
+    linked = await link_fields(user, req.card_thread_id, lists["to"]) if edit else {}
+    # §18.11 rule 7: a person that the member unticked on a revised card
     # starts unticked. Only a row that its class ticks can be one, so a new
-    # address stays as §21 starts it. It changes the form's start only: the
-    # rows keep their classes, and the act sends only to the answer's ticks.
-    off = await take_unticked(user, req.card_thread_id) if edit else frozenset()
+    # address stays as §21 starts it. Each card reads it, and none spends it.
+    # It changes the form's start only: the rows keep their classes, and the
+    # act sends only to the answer's ticks.
+    off = await kept_unticked(user, req.card_thread_id) if edit else frozenset()
     unticked = unticked_rows(rows, off)
     out = await _person_card(user, req, rows, context, {
         "kind": "new", "account_id": req.account_id, "subject": subject, "body": body,

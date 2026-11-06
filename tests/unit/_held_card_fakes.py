@@ -228,10 +228,14 @@ class FakeRedis:
     async def hgetall(self, k: str) -> dict[str, str]:
         return dict(self.hashes.get(k, {}))
 
-    async def hincrby(self, k: str, name: str, amount: int = 1) -> int:
-        h = self.hashes.setdefault(k, {})
-        h[name] = str(int(h.get(name, "0")) + int(amount))
-        return int(h[name])
+    async def hdel(self, k: str, *names: str) -> int:
+        h = self.hashes.get(k, {})
+        gone = sum(1 for n in names if h.pop(str(n), None) is not None)
+        if k in self.hashes and not h:
+            # Redis deletes a hash with no field left.
+            del self.hashes[k]
+            self.ttls.pop(k, None)
+        return gone
 
     async def delete(self, *ks: str) -> int:
         gone = 0

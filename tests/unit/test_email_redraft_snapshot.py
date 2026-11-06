@@ -29,15 +29,28 @@ card starts them unticked. Each mutation below turned the named tests red:
 9. a new-card route that skips the apply (plain or held):
    ``test_the_next_card_starts_the_unticked_person_unticked_and_only_unticks``,
    ``test_a_held_card_starts_the_members_untick_unticked_and_never_names_a_new_address``;
-10. a hash keyed with no member, or a take with no owner check:
+10. a hash keyed with no member, or a read with no owner check:
     ``test_the_unticks_of_one_member_and_thread_change_no_other_card``;
-11. a take that spends the hash at once, in place of counting ``left``:
-    ``test_two_revised_cards_untick_each_new_card``;
-12. a revise that keeps nothing, or that counts a new address as an untick:
+11. a revise that keeps nothing, or that counts a new address as an untick:
     ``test_the_revise_keeps_the_members_unticks_for_the_member_and_the_thread``;
-13. a chain that reads only the snapshot: ``test_a_chain_of_drafts_keeps_the_untick``;
-14. a list over the cap that the gateway drops whole:
+12. a chain that reads only the snapshot: ``test_a_chain_of_drafts_keeps_the_untick``;
+13. a list over the cap that the gateway drops whole:
     ``test_a_list_over_the_cap_keeps_its_first_ones_and_a_bad_item_keeps_nothing``.
+
+Fix round 3. The design of record: no count spends the unticks, a re-tick
+clears one, and the link goes only to a card to the same people.
+
+14. a count that spends the unticks (``left``, or a delete at a read):
+    ``test_a_new_mail_to_another_person_first_spends_no_untick``,
+    ``test_every_new_card_in_the_ttl_starts_the_untick_unticked``;
+15. a re-tick that does not clear: ``test_a_chain_of_drafts_keeps_the_untick``;
+16. a link that goes to a card of other people:
+    ``test_a_new_mail_to_another_person_first_spends_no_untick``,
+    ``test_a_revise_with_no_new_card_links_no_card_of_other_people``;
+17. a compare of addresses that minds the case:
+    ``test_a_capitalised_address_is_the_same_person``;
+18. a text failure that drops the ticks:
+    ``test_a_text_that_fails_its_check_keeps_the_ticks``.
 
 The database, Redis and the provider are fakes, and no test sends a mail.
 There is no SQL, so R8 does not apply. ``TestTheOrderOnARealRedis`` runs the
@@ -114,6 +127,15 @@ class LogRedis(F.FakeRedis):
     async def hgetall(self, k: str) -> dict[str, str]:
         self._note("hgetall", k)
         return await super().hgetall(k)
+
+    async def hdel(self, k: str, *names: str) -> int:
+        self._note("hdel", k)
+        return await super().hdel(k, *names)
+
+    async def delete(self, *ks: str) -> int:
+        for k in ks:
+            self._note("delete", k)
+        return await super().delete(*ks)
 
 
 def _install_log_redis(monkeypatch) -> LogRedis:
@@ -206,29 +228,57 @@ async def test_a_good_snapshot_is_kept_for_its_card_and_thread(env) -> None:
 
 
 @pytest.mark.parametrize("bad", [
-    {"subject": "x" * 201},                       # a subject over 200 characters
-    {"subject": "Rates\nBcc: x@evil.example"},     # a line break in the subject
-    {"subject": "Ra" + chr(0x200B) + "tes"},      # a hidden character in the subject
-    {"body": "x" * (rcard.MAX_REPLY_BODY + 1)},  # a text over the limit of the path
     {"to": (F.STRANGER,)},                        # a person that the card did not offer
     {"cc": (F.KNOWN,)},                           # a person of another kind
     {"to": (F.KNOWN, F.KNOWN.upper())},           # a person named twice
     {"files": ["file-0"]},                        # a key that a snapshot has not
 ])
 async def test_a_snapshot_over_a_cap_keeps_nothing(env, bad: dict[str, Any]) -> None:
-    """§18.11 step 2, mutation 3. Mutation: drop the subject rule, the text
-    limit or the people check of ``checked_snapshot`` → red."""
+    """§18.11 step 2, mutation 3. A snapshot whose people fail keeps nothing.
+    It also deletes the snapshot that an older steer kept for the card (P2
+    of fix round 3), so the revise never reads a replaced version. Mutation:
+    drop the people check of ``checked_snapshot``, or the delete first → red."""
     card = await _card()
+    assert await _keep(card["card_id"], subject="Rates", body=TEXT, cc=()) is True
     assert await _keep(card["card_id"], **bad) is False
     assert _snapshot_keys(env["redis"]) == []
 
 
+@pytest.mark.parametrize("bad", [
+    {"subject": "x" * 201},                       # a subject over 200 characters
+    {"subject": "x" * 1001},                      # a subject over the old parse cap
+    {"subject": "Rates\nBcc: x@evil.example"},     # a line break in the subject
+    {"subject": "Ra" + chr(0x200B) + "tes"},      # a hidden character in the subject
+    {"body": "x" * (rcard.MAX_REPLY_BODY + 1)},  # a text over the limit of the path
+])
+async def test_a_text_that_fails_its_check_keeps_the_ticks(env, bad: dict[str, Any]) -> None:
+    """P2 of fix round 3. The member unticks Geo, and pastes a subject with a
+    zero-width space, or a text over the limit. The snapshot keeps the ticks
+    with no text. So the model gets no version of the text, and Draft 2
+    still starts Geo unticked. Mutation: drop the whole snapshot on a text
+    failure again → red."""
+    card = await _card()
+    assert await _keep(card["card_id"], cc=(), **bad) is True
+    [key] = _snapshot_keys(env["redis"])
+    assert json.loads(env["redis"].keys[key]) == {
+        "owner": F.MEMBER, "card_id": card["card_id"], "to": [F.KNOWN], "cc": [], "bcc": []}
+    out = await _revise(card["card_id"])
+    assert out["snapshot"] == "" and out["draft"] == 2
+    redraft = await _card()
+    assert redraft["revises"] == card["card_id"]
+    assert redraft["ticked"]["cc"] == [] and redraft["unticked"] == [F.COLLEAGUE]
+
+
 async def test_a_held_snapshot_takes_the_held_text_limit(env) -> None:
-    """A held card's act takes ``HELD_TEXT_MAX``, so its snapshot does too."""
+    """A held card's act takes ``HELD_TEXT_MAX``, so its snapshot does too. A
+    longer text keeps the ticks with no text."""
     card = await _held()
     ok = {"cc": (F.STRANGER,), "subject": "Rates"}
-    assert await _keep(card["card_id"], body="x" * (HELD_TEXT_MAX + 1), **ok) is False
+    assert await _keep(card["card_id"], body="x" * (HELD_TEXT_MAX + 1), **ok) is True
+    [key] = _snapshot_keys(env["redis"])
+    assert not rd.has_text(json.loads(env["redis"].keys[key]))
     assert await _keep(card["card_id"], body="x" * HELD_TEXT_MAX, **ok) is True
+    assert rd.has_text(json.loads(env["redis"].keys[key]))
 
 
 @pytest.mark.parametrize(("who", "thread"), [
@@ -295,12 +345,12 @@ async def test_a_whatsapp_card_names_no_thread_so_it_takes_no_snapshot_and_no_re
 
 async def test_the_revise_spends_then_takes_the_snapshot_then_links(env) -> None:
     """§18.11 step 4. Mutation: reorder the four steps → red."""
-    card = await _card()
+    card = await _card(to=["Kim@Contoso.Test"])
     cid = card["card_id"]
-    await _keep(cid)
+    await _keep(cid, to=("Kim@Contoso.Test",), cc=())
     env["redis"].ops.clear()
     out = await _revise(cid)
-    writes = [(op, k) for op, k in env["redis"].ops if op in ("getdel", "set", "hset")]
+    writes = [(op, k) for op, k in env["redis"].ops if op in ("getdel", "set", "hset", "hdel")]
     assert writes == [
         ("getdel", f"cc:{F.ORG}:new-mail-card:{cid}"),
         ("getdel", f"cc:{F.ORG}:email:card_draft:{THREAD}:{cid}"),
@@ -310,7 +360,8 @@ async def test_the_revise_spends_then_takes_the_snapshot_then_links(env) -> None
     assert out["revised"] is True and out["draft"] == 2
     assert cr.CARD_DRAFT_LABEL in out["snapshot"] and "Edited by Jane." in out["snapshot"]
     link = json.loads(env["redis"].keys[f"cc:{F.ORG}:email:card_revised:{THREAD}"])
-    assert link == {"owner": F.MEMBER, "card_id": cid, "draft": 2}
+    # Fix round 3: the link keeps the To of the revised card, in lower case.
+    assert link == {"owner": F.MEMBER, "card_id": cid, "draft": 2, "to": [F.KNOWN]}
 
 
 async def test_an_answer_to_a_revised_card_sends_nothing(env) -> None:
@@ -369,6 +420,7 @@ async def test_no_act_reads_the_snapshot(env) -> None:
     the snapshot, or send its text → red."""
     card = await _card()
     await _keep(card["card_id"], body="THE SNAPSHOT TEXT")
+    env["redis"].ops.clear()
     answer = _answer(body="The answered text.")
     await F.record_answer(card["card_id"], answer, thread=THREAD)
     await nm.new_mail_card_act(
@@ -513,7 +565,7 @@ async def test_a_card_of_another_member_takes_no_link(env) -> None:
     """A link names its member. Another member's next card is Draft 1."""
     old = await _card()
     await _revise(old["card_id"])
-    assert await rd.link_fields(F.user(F.OTHER), THREAD) == {"draft": 1}
+    assert await rd.link_fields(F.user(F.OTHER), THREAD, [F.KNOWN]) == {"draft": 1}
 
 
 async def test_the_card_of_another_member_does_not_spend_the_link(env) -> None:
@@ -522,10 +574,104 @@ async def test_the_card_of_another_member_does_not_spend_the_link(env) -> None:
     link with ``getdel`` before the owner check → red."""
     old = await _card()
     await _revise(old["card_id"])
-    assert await rd.link_fields(F.user(F.OTHER), THREAD) == {"draft": 1}
+    assert await rd.link_fields(F.user(F.OTHER), THREAD, [F.KNOWN]) == {"draft": 1}
     assert [k for k in env["redis"].keys if ":card_revised:" in k], "the link stays"
     new = await _card()
     assert new["revises"] == old["card_id"] and new["draft"] == 2
+
+
+async def test_a_revise_of_another_member_leaves_the_link_as_it_is(env) -> None:
+    """P3 of fix round 3. In a shared thread, a revise of member B finds the
+    link of member A. It writes no ``many`` over it, so A's redraft keeps
+    its "Draft 2", and B's next card is Draft 1. Mutation: write ``many``
+    over a link of another owner → red."""
+    mine = await _card()
+    await _revise(mine["card_id"])
+    link_key = f"cc:{F.ORG}:email:card_revised:{THREAD}"
+    before = env["redis"].keys[link_key]
+    other = F.user(F.OTHER)
+    rec = {"v": 1, "owner": F.OTHER, "kind": "new-mail", "account_id": F.BOX,
+           "to": [F.KNOWN], "cc": [], "bcc": [], "subject": "Rates", "body": TEXT,
+           "artifacts": [], "metorite": [], "thread": THREAD}
+    theirs = await hc.write_record(other, rec, namespace=nm.RECORD_NAMESPACE)
+    await _revise(theirs, who=F.OTHER)
+    assert env["redis"].keys[link_key] == before
+    assert await rd.link_fields(other, THREAD, [F.KNOWN]) == {"draft": 1}
+    new = await _card()
+    assert new["revises"] == mine["card_id"] and new["draft"] == 2
+
+
+# ── Fix round 3: the link goes only to a card to the same people ────────────
+
+
+CAROL = "carol@contoso.test"
+
+
+async def test_a_new_mail_to_another_person_first_spends_no_untick(env) -> None:
+    """P1 of the review of fix round 2. Kim's card names the always-copy
+    colleague Geo, and the member unticks Geo. Then the member writes "first
+    email Carol that I am late, then make this shorter". The model draws
+    Carol's card first, and Kim's redraft second.
+
+    - Carol's card takes no link: its To shares no address with Kim's.
+    - Carol's card names Geo too (always-copy), and Geo starts unticked.
+    - Kim's redraft takes the link ("Draft 2") and starts Geo unticked.
+
+    Mutation: spend the unticks by a count, or let any card take the link
+    → red."""
+    kim = await _card()
+    await _untick_geo_and_revise(kim)
+    carol = await _card(to=[CAROL])
+    assert "revises" not in carol and "draft" not in carol
+    assert carol["ticked"] == {"to": [CAROL], "cc": [], "bcc": []}
+    assert carol["unticked"] == [F.COLLEAGUE]
+    redraft = await _card()
+    assert redraft["revises"] == kim["card_id"] and redraft["draft"] == 2
+    assert redraft["ticked"]["cc"] == [] and redraft["cc"] == [F.COLLEAGUE]
+    assert redraft["unticked"] == [F.COLLEAGUE]
+
+
+async def test_a_revise_with_no_new_card_links_no_card_of_other_people(env) -> None:
+    """Finding 1 of the verifier of fix round 2. The run draws no new card,
+    and then a card "Lunch" goes To Geo only. It takes no link and shows no
+    "Draft 2". Geo still starts unticked, and the card names Geo, because
+    the member took Geo out a moment ago (an extra untick costs one click).
+    The link waits for a card to Kim. Mutation: let a card of other people
+    take the link → red."""
+    kim = await _card()
+    await _untick_geo_and_revise(kim)
+    lunch = await _card(to=[F.COLLEAGUE], cc=[], subject="Lunch")
+    assert "revises" not in lunch and "draft" not in lunch
+    assert lunch["ticked"] == {"to": [], "cc": [], "bcc": []}
+    assert lunch["unticked"] == [F.COLLEAGUE]
+    rec = json.loads(env["redis"].keys[f"cc:{F.ORG}:new-mail-card:{lunch['card_id']}"])
+    assert rec["draft"] == 1 and "revises" not in rec
+    assert [k for k in env["redis"].keys if ":card_revised:" in k], "the link waits"
+    assert (await _card())["revises"] == kim["card_id"]
+
+
+async def test_a_capitalised_address_is_the_same_person(env) -> None:
+    """Finding 2 of the verifier of fix round 2 (their mutation M7). The record
+    keeps the case that the tool sent, and the client sends the server's own
+    case. Each compare of addresses ignores the case: the member's ticks, the
+    link's To and a re-tick. Mutation: drop ``lower`` in any of them → red."""
+    kim = await _card(to=["Kim@Contoso.Test"], cc=["Geo@Acme.Test"])
+    assert await _keep(kim["card_id"], subject="Rates", body=TEXT,
+                       to=("Kim@Contoso.Test",), cc=()) is True
+    await _revise(kim["card_id"])
+    assert env["redis"].hashes[_unticked_key()] == {
+        "owner": F.MEMBER, f"p:{F.COLLEAGUE}": "1"}
+    redraft = await _card(to=["KIM@CONTOSO.TEST"], cc=["GEO@ACME.TEST"])
+    assert redraft["revises"] == kim["card_id"]
+    assert redraft["ticked"] == {"to": ["KIM@CONTOSO.TEST"], "cc": [], "bcc": []}
+    assert redraft["unticked"] == [F.COLLEAGUE]
+    # The member ticks Geo again, in the case of the record: the re-tick clears.
+    assert await _keep(redraft["card_id"], subject="Rates", body=TEXT,
+                       to=("KIM@CONTOSO.TEST",), cc=("GEO@ACME.TEST",)) is True
+    await _revise(redraft["card_id"])
+    assert f"p:{F.COLLEAGUE}" not in env["redis"].hashes.get(_unticked_key(), {})
+    assert rd.member_unticked({"kind": "new-mail", "to": ["kim@x.test"], "cc": [], "bcc": []},
+                              {"to": ["Kim@X.Test"], "cc": [], "bcc": []}) == []
 
 
 # ── P2: one steer keeps a snapshot of EACH open card ─────────────────────────
@@ -623,7 +769,8 @@ async def test_the_revise_keeps_the_members_unticks_for_the_member_and_the_threa
     old = await _card()
     await _untick_geo_and_revise(old)
     kept = env["redis"].hashes[_unticked_key()]
-    assert kept == {"owner": F.MEMBER, "left": "1", f"p:{F.COLLEAGUE}": "1"}
+    # Fix round 3: no count. The hash names its owner and each kept person.
+    assert kept == {"owner": F.MEMBER, f"p:{F.COLLEAGUE}": "1"}
     assert env["redis"].ttls[_unticked_key()] == rd.UNTICKED_TTL_S == 900
     # Kim stayed ticked on the member's version, so Kim is no untick.
     assert f"p:{F.KNOWN}" not in kept
@@ -650,10 +797,64 @@ async def test_the_next_card_starts_the_unticked_person_unticked_and_only_untick
     assert clean["ticked"]["reply_all"] == {"to": [F.KNOWN, BOB], "cc": []}
     assert clean["unticked"] == [F.COLLEAGUE]
     assert clean["recipients"]["reply_all"]["cc"] == [F.COLLEAGUE]
-    # One revised card gives one new card: the next card starts as the tool names it.
-    assert env["redis"].hashes.get(_unticked_key()) is None
-    third = await _card()
-    assert "ticked" not in third and "unticked" not in third
+
+
+async def test_every_new_card_in_the_ttl_starts_the_untick_unticked(env) -> None:
+    """Fix round 3, rule 1 of the design: no count spends the unticks. The
+    hash lives until its TTL, and each new-mail card of the member in the
+    thread reads it, plain and held, in any role. Mutation: delete the hash
+    at a read, or count it down → red."""
+    old = await _card()
+    await _untick_geo_and_revise(old)
+    for _ in range(3):
+        card = await _card()
+        assert card["ticked"]["cc"] == [] and card["unticked"] == [F.COLLEAGUE]
+    held = await _held(cc=[F.COLLEAGUE])
+    assert held["form"]["unticked"] == [F.COLLEAGUE]
+    assert held["form"]["ticked"]["reply_all"]["cc"] == []
+    bcc = await _card(cc=[], bcc=[F.COLLEAGUE])
+    assert bcc["ticked"]["bcc"] == [] and bcc["unticked"] == [F.COLLEAGUE]
+    assert env["redis"].hashes[_unticked_key()] == {"owner": F.MEMBER, f"p:{F.COLLEAGUE}": "1"}
+    assert not [op for op, k in env["redis"].ops
+                if ":card_unticked:" in k and op in ("delete", "hdel", "getdel")]
+
+
+async def test_a_failed_record_write_spends_no_untick(env, monkeypatch) -> None:
+    """P3 of the review of fix round 2. The read spends nothing, so a card
+    whose record write fails (a 503) leaves the unticks for the retry of the
+    model. Mutation: spend the unticks at the read → red."""
+    old = await _card()
+    await _untick_geo_and_revise(old)
+    real = nm.write_record
+    calls: list[int] = []
+
+    async def fails_once(*a: Any, **kw: Any) -> str:
+        calls.append(1)
+        if len(calls) == 1:
+            raise HTTPException(status_code=503, detail="Redis is down.")
+        return await real(*a, **kw)
+
+    monkeypatch.setattr(nm, "write_record", fails_once)
+    with pytest.raises(HTTPException):
+        await _card()
+    retry = await _card()
+    assert retry["ticked"]["cc"] == [] and retry["unticked"] == [F.COLLEAGUE]
+
+
+async def test_two_cards_at_once_both_read_the_unticks(env) -> None:
+    """P3 of the review of fix round 2: the old take made three calls, and a
+    revise between them lost its people. The read is one ``HGETALL`` now, so
+    two cards at the same moment both start Geo unticked. Mutation: spend
+    the hash at a read → red."""
+    import asyncio
+
+    old = await _card()
+    await _untick_geo_and_revise(old)
+    env["redis"].ops.clear()
+    a, b = await asyncio.gather(_card(), _card(to=[BOB]))
+    assert a["unticked"] == [F.COLLEAGUE] and b["unticked"] == [F.COLLEAGUE]
+    reads = [op for op, k in env["redis"].ops if ":card_unticked:" in k and op != "hset"]
+    assert reads == ["hgetall", "hgetall"]
 
 
 async def test_a_person_that_the_new_card_does_not_name_is_not_added(env) -> None:
@@ -668,24 +869,35 @@ async def test_a_person_that_the_new_card_does_not_name_is_not_added(env) -> Non
 async def test_the_send_takes_the_members_ticks_at_send_never_the_kept_list(env) -> None:
     """The kept untick changes only the START. The member can tick Geo again,
     and the act sends to Geo then. With no tick, Geo gets nothing. Mutation:
-    take a person off the record for an untick → red."""
+    take a person off the record for an untick, or send to the whole record
+    → red."""
     old = await _card()
     await _untick_geo_and_revise(old)
-    new = await _card()
-    answer = _answer(cc=(F.COLLEAGUE,))
-    await F.record_answer(new["card_id"], answer, thread=THREAD)
-    out = await nm.new_mail_card_act(
-        nm.NewMailActRequest(card_id=new["card_id"], card_thread_id=THREAD, answer=answer),
-        BackgroundTasks(), F.user())
+
+    async def send(cc: tuple[str, ...]) -> dict[str, Any]:
+        card = await _card()
+        assert card["unticked"] == [F.COLLEAGUE]
+        answer = _answer(cc=cc)
+        await F.record_answer(card["card_id"], answer, thread=THREAD)
+        return await nm.new_mail_card_act(
+            nm.NewMailActRequest(card_id=card["card_id"], card_thread_id=THREAD, answer=answer),
+            BackgroundTasks(), F.user())
+
+    # The member ticks Geo again at Send: the mail goes to Geo.
+    out = await send((F.COLLEAGUE,))
     [mail] = env["sends"].mails
     assert mail.cc == [F.COLLEAGUE] and out["cc"] == [F.COLLEAGUE]
+    # With no tick, Geo gets nothing, though the record offers Geo.
+    out = await send(())
+    [_first, mail] = env["sends"].mails
+    assert not mail.cc and not out["cc"] and mail.to == [F.KNOWN]
 
 
 async def test_two_revised_cards_untick_each_new_card(env) -> None:
     """Path 1 of the review. Two cards wait, and one message revises both,
-    so the link is ``many`` and no card takes a slot. The first new card is
-    Bob's. Kim's comes second, and Geo still starts unticked on it. Mutation:
-    take the kept people once (``GETDEL``) in place of counting ``left`` → red."""
+    so the link is ``many`` and no card takes it by a card id. The first new
+    card is Bob's. Kim's comes second, and Geo still starts unticked on it.
+    Mutation: take the kept people once (``GETDEL``), or count them → red."""
     kim, bob = await _card(), await _card(to=[BOB], cc=[])
     assert await rd.keep_card_draft(F.user(), THREAD, [
         _draft(kim["card_id"], subject="Rates", body=TEXT, cc=()),
@@ -693,13 +905,12 @@ async def test_two_revised_cards_untick_each_new_card(env) -> None:
     ]) is True
     await _revise(kim["card_id"])
     await _revise(bob["card_id"])
-    assert env["redis"].hashes[_unticked_key()]["left"] == "2"
     first = await _card(to=[BOB], cc=[])
     assert "revises" not in first and "unticked" not in first
     second = await _card()
     assert "revises" not in second
     assert second["ticked"]["cc"] == [] and second["unticked"] == [F.COLLEAGUE]
-    assert env["redis"].hashes.get(_unticked_key()) is None
+    assert env["redis"].hashes[_unticked_key()] == {"owner": F.MEMBER, f"p:{F.COLLEAGUE}": "1"}
 
 
 async def test_the_unticks_of_one_member_and_thread_change_no_other_card(env) -> None:
@@ -709,14 +920,14 @@ async def test_the_unticks_of_one_member_and_thread_change_no_other_card(env) ->
     the hash without the member, or skip the owner check → red."""
     old = await _card()
     await _untick_geo_and_revise(old)
-    assert await rd.take_unticked(F.user(F.OTHER), THREAD) == frozenset()
+    assert await rd.kept_unticked(F.user(F.OTHER), THREAD) == frozenset()
     other = await _card(thread=OTHER_THREAD)
     assert "ticked" not in other and "unticked" not in other
     # A hash that names another owner gives nothing, even under the member's key.
     forged = _unticked_key(F.OTHER)
-    env["redis"].hashes[forged] = {"owner": F.MEMBER, "left": "1", f"p:{F.KNOWN}": "1"}
-    assert await rd.take_unticked(F.user(F.OTHER), THREAD) == frozenset()
-    assert env["redis"].hashes[_unticked_key()]["left"] == "1"
+    env["redis"].hashes[forged] = {"owner": F.MEMBER, f"p:{F.KNOWN}": "1"}
+    assert await rd.kept_unticked(F.user(F.OTHER), THREAD) == frozenset()
+    assert env["redis"].hashes[_unticked_key()] == {"owner": F.MEMBER, f"p:{F.COLLEAGUE}": "1"}
     assert (await _card())["unticked"] == [F.COLLEAGUE]
 
 
@@ -748,8 +959,10 @@ async def test_a_held_card_starts_the_members_untick_unticked_and_never_names_a_
 async def test_a_chain_of_drafts_keeps_the_untick(env) -> None:
     """Draft 2 starts Geo unticked, and the member leaves it so. Draft 3 still
     starts Geo unticked: from the start the next steer sends, and with no
-    snapshot from the record's own names. Mutation: read only the snapshot,
-    or only the record → red."""
+    snapshot from the record's own names. A RE-TICK clears (fix round 3):
+    the member ticks Geo again on Draft 4, so Draft 5 and each later card
+    tick Geo. Mutation: read only the snapshot, or let a re-tick keep the
+    person in the hash → red."""
     old = await _card()
     await _untick_geo_and_revise(old)
     two = await _card()
@@ -758,14 +971,37 @@ async def test_a_chain_of_drafts_keeps_the_untick(env) -> None:
     await _revise(two["card_id"])
     three = await _card()
     assert three["draft"] == 3 and three["unticked"] == [F.COLLEAGUE]
-    # No snapshot at all (a list cut, or a dropped entry): the record names Geo.
+    # The hash expires (its TTL), and no snapshot comes (a list cut, or a
+    # dropped entry). The record of Draft 3 still names Geo.
+    del env["redis"].hashes[_unticked_key()]
     await _revise(three["card_id"])
     four = await _card()
     assert four["draft"] == 4 and four["unticked"] == [F.COLLEAGUE]
-    # The member ticks Geo again on Draft 4: Draft 5 ticks Geo.
+    # The member ticks Geo again on Draft 4: the revise clears Geo.
     assert await _keep(four["card_id"], subject="Rates", body=TEXT) is True
     await _revise(four["card_id"])
+    assert f"p:{F.COLLEAGUE}" not in env["redis"].hashes.get(_unticked_key(), {})
+    five = await _card()
+    assert five["draft"] == 5 and "unticked" not in five
     assert "unticked" not in await _card()
+
+
+async def test_a_tick_that_started_ticked_never_clears_an_untick(env) -> None:
+    """A re-tick is a tick of a person that the card started unticked for
+    rule 7. One message revises Kim's card, where the member unticked Geo,
+    and Lee's card, where Geo started ticked and stayed so. Lee's tick is no
+    re-tick, so Geo stays kept. Mutation: clear each person that a
+    snapshot ticks → red."""
+    lee = "lee@contoso.test"
+    kim, other = await _card(), await _card(to=[lee])
+    assert await rd.keep_card_draft(F.user(), THREAD, [
+        _draft(kim["card_id"], subject="Rates", body=TEXT, cc=()),
+        _draft(other["card_id"], subject="Rates", body=TEXT, to=(lee,)),
+    ]) is True
+    await _revise(kim["card_id"])
+    await _revise(other["card_id"])
+    assert env["redis"].hashes[_unticked_key()] == {"owner": F.MEMBER, f"p:{F.COLLEAGUE}": "1"}
+    assert (await _card())["unticked"] == [F.COLLEAGUE]
 
 
 async def test_a_fault_of_the_kept_unticks_never_stops_a_card(env) -> None:
@@ -1095,24 +1331,37 @@ class TestTheOrderOnARealRedis:
         assert (await _card())["revises"] == cid
         assert client.get(link_key) is None
 
-    async def test_the_kept_unticks_have_a_ttl_and_go_with_the_last_new_card(self, real) -> None:
-        """Rule 7 on a real server: one MULTI keeps the hash with its TTL, the
-        next card starts Geo unticked, and the last card deletes the hash."""
+    async def test_the_kept_unticks_have_a_ttl_and_every_new_card_reads_them(self, real) -> None:
+        """Rule 7 on a real server, fix round 3: one MULTI keeps the hash with
+        its TTL and with no count. Carol's card and Kim's redraft both start
+        Geo unticked, and only Kim's takes the link. The reads delete
+        nothing, so the hash and its TTL stay. A re-tick clears Geo with one
+        ``HDEL``. Mutation: count the hash down, or delete it at a read → red."""
         client, _sends = real
-        await _untick_geo_and_revise(await _card())
+        kim = await _card()
+        await _untick_geo_and_revise(kim)
         k = _unticked_key()
-        assert client.hgetall(k) == {"owner": F.MEMBER, "left": "1", f"p:{F.COLLEAGUE}": "1"}
+        assert client.hgetall(k) == {"owner": F.MEMBER, f"p:{F.COLLEAGUE}": "1"}
         assert 0 < client.ttl(k) <= rd.UNTICKED_TTL_S
-        assert await rd.take_unticked(F.user(F.OTHER), THREAD) == frozenset()
-        assert client.hget(k, "left") == "1"
-        new = await _card()
-        assert new["ticked"]["cc"] == [] and new["unticked"] == [F.COLLEAGUE]
-        assert client.exists(k) == 0
+        assert await rd.kept_unticked(F.user(F.OTHER), THREAD) == frozenset()
+        carol = await _card(to=[CAROL])
+        assert "revises" not in carol and carol["unticked"] == [F.COLLEAGUE]
+        redraft = await _card()
+        assert redraft["revises"] == kim["card_id"] and redraft["draft"] == 2
+        assert redraft["ticked"]["cc"] == [] and redraft["unticked"] == [F.COLLEAGUE]
+        assert client.hgetall(k) == {"owner": F.MEMBER, f"p:{F.COLLEAGUE}": "1"}
+        assert 0 < client.ttl(k) <= rd.UNTICKED_TTL_S
+        assert client.get(f"cc:{F.ORG}:email:card_revised:{THREAD}") is None
+        # The member ticks Geo again on Draft 2: the revise clears Geo.
+        assert await _keep(redraft["card_id"], subject="Rates", body=TEXT) is True
+        await _revise(redraft["card_id"])
+        assert client.hget(k, f"p:{F.COLLEAGUE}") is None
+        assert "unticked" not in await _card()
 
-    async def test_two_revises_at_once_both_count(self, real) -> None:
+    async def test_two_revises_at_once_both_keep_their_people(self, real) -> None:
         """Two tools revise at the same moment (one message closed two cards).
-        The MULTI keeps both: ``left`` is 2 and both people are kept. Mutation:
-        a read, then a write, in place of the MULTI → red."""
+        The MULTI keeps both people, with no count. Mutation: a read, then a
+        write, in place of the MULTI → red."""
         import asyncio
 
         client, _sends = real
@@ -1123,4 +1372,4 @@ class TestTheOrderOnARealRedis:
         ]) is True
         await asyncio.gather(_revise(kim["card_id"]), _revise(kim2["card_id"]))
         assert client.hgetall(_unticked_key()) == {
-            "owner": F.MEMBER, "left": "2", f"p:{F.COLLEAGUE}": "1", f"p:{F.KNOWN}": "1"}
+            "owner": F.MEMBER, f"p:{F.COLLEAGUE}": "1", f"p:{F.KNOWN}": "1"}
