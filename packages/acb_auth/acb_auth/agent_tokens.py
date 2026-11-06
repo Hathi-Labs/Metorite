@@ -859,6 +859,9 @@ class ConnectionRow:
     created_at: datetime
     last_used_at: datetime | None
     expires_at: datetime
+    #: The left-out list of D-EA-12 (EA-17b). A screen that shows the reach
+    #: of an agent needs it, or it claims more reach than the agent has.
+    left_out_projects: tuple[str, ...] = ()
 
 
 #: The live connections of one organization, or of one member in it. Runs
@@ -868,7 +871,8 @@ class ConnectionRow:
 _LIST_CONNECTIONS_SQL = """
 SELECT CAST(id AS TEXT) AS id, member_email, client_name, client_origin,
        scopes, CAST(pinned_projects AS TEXT[]) AS pinned_projects,
-       include_personal, created_at, last_used_at, expires_at
+       include_personal, created_at, last_used_at, expires_at,
+       CAST(left_out_projects AS TEXT[]) AS left_out_projects
   FROM agent_connection
  WHERE organization_id = CAST(:org AS UUID)
    AND revoked_at IS NULL
@@ -945,6 +949,7 @@ async def list_connections(
             created_at=row.created_at,
             last_used_at=row.last_used_at,
             expires_at=row.expires_at,
+            left_out_projects=tuple(str(p) for p in row.left_out_projects or ()),
         )
         for row in rows
     ]

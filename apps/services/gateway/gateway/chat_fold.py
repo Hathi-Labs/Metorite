@@ -24,6 +24,7 @@ import re
 from typing import Any
 
 from acb_common import get_logger
+from acb_llm.message_hygiene import strip_placeholder_lines
 
 _log = get_logger("gateway.chat_fold")
 
@@ -363,6 +364,12 @@ def fold_run_events(events: list[dict[str, Any]]) -> dict[str, Any] | None:
                         break
             content = _joined
 
+    # Safety net (task 1787): litellm's empty-text placeholder never reaches
+    # the stored row, even if it got past the stream filter.
+    content = strip_placeholder_lines(content)
+    for _seg in segments:
+        _seg["text"] = strip_placeholder_lines(_seg["text"])
+
     if not (
         content.strip() or tool_events or reasoning_blocks
         or latest_todos or custom_events
@@ -684,7 +691,8 @@ async def persist_channel_reply(
     from gateway.routes.chat import MessageRecord, _upsert_messages
 
     record = MessageRecord(
-        id=message_id, role="assistant", content=content, timestamp=timestamp_ms,
+        id=message_id, role="assistant",
+        content=strip_placeholder_lines(content), timestamp=timestamp_ms,
     )
     declined = await asyncio.to_thread(
         _upsert_messages, thread_id, [record],
