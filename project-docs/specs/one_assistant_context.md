@@ -1231,7 +1231,7 @@ The tools of OA-4 have the same scope (the "As built, OA-4" notes at the top of 
 - **An explicit load beats a words-only pack (D169 item 8, as amended on 2026-11-06, option A).** In three rows the cap moved the Projects pack out for packs that the member's words named (email, CRM, bulk). Then the reload did not fit. Now such a pack gives way. `PackRun.words` holds the packs of the layer "words", and `PackRun.spare` gives them after the old sticky packs, the last one first. With the room still full, the reload answers `LOAD_NO_PATH`, and the chat hands off.
 - **When a Projects pack leaves for a load.** `PackRun.leaves` opens the hand-off to the owner, as RX-1 does, because no load of that pack is on offer in this turn. Nothing steers the model to that hand-off. Row 16:37:28 is this case: the bulk pack leaves for the core pack.
 - **When the owner stays unreached.** With no spare pack, the specialist and the route line stay. The RX-1 switch is off, or each held pack came by the surface or a reference, or is sticky and named again. An example is "archive tasks that are done" on the Projects page, after a turn that used the bulk pack.
-- **Fence.** `tests/unit/test_pack_turn_keeps_used_packs.py`. Each test name starts with the row of the production table.
+- **Fences.** `tests/unit/test_pack_turn_keeps_used_packs.py`: the name of a test of a row starts with its time in the production table. `evals/trajectories/test_pack_turn_trajectory.py` runs the turns of the report.
 
 In this table, `_tool_injection.py` and `executor.py` are in `orchestrator/`. `egress.py` is in `acb_skills/`. `agents.py` is `agent-email-assistant/agents.py`.
 
