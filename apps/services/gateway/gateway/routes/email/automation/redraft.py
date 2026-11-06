@@ -12,9 +12,11 @@ its step of ``email_app_master_plan.md`` §18.11.
   keeps a good one in tenant Redis for 900 seconds. A bad one is dropped, and
   the steer goes on without it.
 * ``POST /email/new-card/revise`` (step 4). ``send_email`` calls it when its
-  card closed as REVISED. In this order it spends the record of the old card,
-  takes the snapshot once, and writes the link of the thread. It answers the
-  snapshot as a neutral data block (``chat_recovery.compose_card_draft``).
+  card closed as REVISED. It reads the record and the snapshot, keeps the
+  member's unticks and writes the link of the thread, and only then spends
+  the record (fix round 5). A fault before the spend answers 503 and spends
+  nothing. It answers the snapshot as a neutral data block
+  (``chat_recovery.compose_card_draft``).
 * :func:`link_fields` (step 6). The next ``POST /email/new-card``, or ``POST
   /email/held-card`` of kind ``new``, of the thread takes the link once, and
   puts ``revises`` and ``draft`` on the new record and its form. Only a card
@@ -397,21 +399,62 @@ def form_link(linked: dict[str, Any]) -> dict[str, Any]:
     return {"revises": linked["revises"], "draft": linked["draft"]}
 
 
-async def _take_snapshot(
+#: The detail of each 503 of the revise: nothing was spent, so a retry is safe.
+REVISE_UNREAD = "The card could not be read."
+
+
+async def _read_snapshot(
     user: UserContext, thread: str, card_id: str,
 ) -> dict[str, Any] | None:
-    """The snapshot of the card, taken once (``GETDEL``), or None. A snapshot
-    of another member or another card is None."""
+    """The snapshot of the card, read with a plain ``GET`` (fix round 5), or
+    None. A snapshot of another member or another card is None.
+
+    It is read BEFORE the spend and deleted only AFTER it, so a fault never
+    loses the member's ticks. A fault answers 503, and nothing is spent."""
     from acb_common.tenant_redis import organization_scope
 
-    with organization_scope(hc._org_of(user)):
-        raw = await hc._tenant_redis().getdel(_key(SNAPSHOT_PART, thread, card_id))
+    try:
+        with organization_scope(hc._org_of(user)):
+            raw = await hc._tenant_redis().get(_key(SNAPSHOT_PART, thread, card_id))
+    except HTTPException:
+        raise
+    except Exception as exc:  # the class only: a value never reaches a log
+        _log.warning("email.card_snapshot_read_failed", error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail=REVISE_UNREAD) from None
     snap = _parse(raw)
     if not snap or str(snap.get("owner") or "") != _member(user):
         return None
     if str(snap.get("card_id") or "") != card_id:
         return None
     return snap
+
+
+async def _drop_snapshot(user: UserContext, thread: str, card_id: str) -> None:
+    """Delete the snapshot of a spent card. A fault only logs: the TTL clears it."""
+    from acb_common.tenant_redis import organization_scope
+
+    try:
+        with organization_scope(hc._org_of(user)):
+            await hc._tenant_redis().delete(_key(SNAPSHOT_PART, thread, card_id))
+    except Exception as exc:  # the class only: a value never reaches a log
+        _log.warning("email.card_snapshot_drop_failed", error=type(exc).__name__)
+
+
+async def _drop_link(user: UserContext, thread: str, card_id: str) -> None:
+    """Delete the link that this revise wrote, when the spend found no record.
+    Only a link of the member that names *card_id* goes. A fault only logs."""
+    from acb_common.tenant_redis import organization_scope
+
+    try:
+        with organization_scope(hc._org_of(user)):
+            redis = hc._tenant_redis()
+            k = _key(LINK_PART, thread)
+            seen = _parse(await redis.get(k))
+            if (seen is not None and str(seen.get("owner") or "") == _member(user)
+                    and str(seen.get("card_id") or "") == card_id):
+                await redis.delete(k)
+    except Exception as exc:  # the class only: a value never reaches a log
+        _log.warning("email.card_link_drop_failed", error=type(exc).__name__)
 
 
 async def _write_link(
@@ -425,7 +468,8 @@ async def _write_link(
     thread was revised before the next card. The link then names no card
     (``many``), and the next card is "Draft 1". A link of ANOTHER member
     stays as it is (P3 of fix round 3): this revise writes none, and its
-    next card is "Draft 1"."""
+    next card is "Draft 1". A link that already names this card stays as it
+    is too (fix round 5): a retry of the same revise never writes ``many``."""
     from acb_common.tenant_redis import organization_scope
 
     member = _member(user)
@@ -442,6 +486,8 @@ async def _write_link(
             return
         if str(seen.get("owner") or "") != member:
             _log.info("email.card_link_kept_for_owner")
+            return
+        if str(seen.get("card_id") or "") == card_id:
             return
         await redis.set(k, json.dumps({"owner": member, "many": True}), xx=True, ex=LINK_TTL_S)
 
@@ -544,8 +590,9 @@ def _text(value: Any) -> str:
 
 
 #: The words of the 503 of :func:`kept_unticked`: what happened, and what next.
-UNTICKS_UNREAD = ("The chat could not read the people that you took off this email, "
-                  "so no card shows. Nothing was sent. Ask again in a moment.")
+#: They name no person, because the member may have taken nobody off (fix round 5).
+UNTICKS_UNREAD = ("The chat could not check this email, so no card shows. "
+                  "Nothing was sent. Ask again in a moment.")
 
 
 async def kept_unticked(user: UserContext, thread_id: str) -> frozenset[str]:
@@ -607,25 +654,29 @@ async def revise_new_mail_card(
     """Spend the old card of a redraft, and give the member's version (§18.11 step 4).
 
     ``send_email`` calls it when its card closed as REVISED. The record must
-    be the caller's own, of this thread. In this order:
+    be the caller's own, of this thread. EVERY SAFETY WRITE COMES BEFORE THE
+    SPEND (fix round 5), in this order:
 
-    1. Spend the record of the old card (``take_record``), so a late answer
-       finds no record and sends nothing.
-    2. Take the snapshot of that card once (``GETDEL``), if there is one.
+    1. Read the record of the old card WITHOUT spending it (``peek_record``).
+    2. Read the snapshot of that card with a plain ``GET``, if there is one.
     3. Keep the people that the member unticked on that card, for 900
        seconds (rule 7, :func:`member_unticked`).
     4. Write the link of the thread, ``{card_id, draft, to}``, for 900
        seconds. ``draft`` is the draft number of the old card plus one.
-    5. Answer the snapshot as a neutral data block, or "" for none. A
+    5. Spend the record (``take_record``, strict), so a late answer finds no
+       record and sends nothing.
+    6. Delete the snapshot. A fault here only logs, because the TTL clears it.
+    7. Answer the snapshot as a neutral data block, or "" for none. A
        snapshot whose text failed its check keeps only the ticks, so it
        answers "".
 
-    A fault after step 1 still answers, with no snapshot, so the tool gives
-    the model its REVISED text. Nothing here sends or saves a mail. 404 while
-    ``EMAIL_EDIT_CARD_ORGS`` leaves the org out, and for a record of another
-    member, of another thread, or of a run that draws no card to edit. 503
-    when Redis fails on the first read: nothing was spent, so the tool can try
-    once more."""
+    A fault in steps 1 to 5 answers 503 and spends nothing, so the unticks are
+    never lost: the tool tries once more, and else the card comes back. Each
+    step is safe to run twice: the hash takes the same people again, and the
+    link already names this card. Nothing here sends or saves a mail. 404
+    while ``EMAIL_EDIT_CARD_ORGS`` leaves the org out, and for a record of
+    another member, of another thread, or of a run that draws no card to edit.
+    409 when the spend finds no record: the act took it first."""
     from gateway.chat_recovery import compose_card_draft
 
     nm._off(user)
@@ -634,33 +685,31 @@ async def revise_new_mail_card(
     if found is None:
         _log.info("email.card_revise_refused", reason="no_card")
         raise HTTPException(status_code=404, detail=nm.EDIT_CARD_OFF)
-    _rec, namespace = found
-    spent = await hc.take_record(user, req.card_id, namespace=namespace)
-    if spent is None:
-        # The act took the record first, or Redis failed. Nothing more runs.
-        _log.warning("email.card_revise_refused", reason="not_spent")
-        raise HTTPException(status_code=409, detail=nm.NO_CARD)
-    nxt = min(draft_of(spent) + 1, MAX_DRAFT)
-    block = ""
-    snap: dict[str, Any] | None = None
+    rec, namespace = found
+    snap = await _read_snapshot(user, thread, req.card_id)
+    off = member_unticked(rec, snap)
+    nxt = min(draft_of(rec) + 1, MAX_DRAFT)
     try:
-        snap = await _take_snapshot(user, thread, req.card_id)
-        if snap is not None and has_text(snap):
-            block = compose_card_draft(
-                str(snap.get("subject") or ""), str(snap.get("body") or ""),
-                _strings(snap.get("to")), _strings(snap.get("cc")), _strings(snap.get("bcc")))
-    except Exception as exc:  # the old card is spent: answer with no snapshot
-        _log.warning("email.card_snapshot_take_failed", error=type(exc).__name__)
-    off: list[str] = []
-    try:
-        off = member_unticked(spent, snap)
         await _note_unticked(user, thread, off)
-    except Exception as exc:  # the next card then starts with the server's ticks
-        _log.warning("email.card_unticked_write_failed", error=type(exc).__name__)
-    try:
-        await _write_link(user, thread, req.card_id, nxt, _to_of(spent))
-    except Exception as exc:  # the next card is then "Draft 1"
-        _log.warning("email.card_link_write_failed", error=type(exc).__name__)
+        await _write_link(user, thread, req.card_id, nxt, _to_of(rec))
+    except HTTPException:
+        raise
+    except Exception as exc:  # the class only: nothing is spent, so a retry is safe
+        _log.warning("email.card_revise_write_failed", error=type(exc).__name__)
+        raise HTTPException(status_code=503, detail=REVISE_UNREAD) from None
+    spent = await hc.take_record(user, req.card_id, namespace=namespace, strict=True)
+    if spent is None:
+        # The act took the record first. The unticks stay (an extra untick is
+        # safe), and the link of this card goes.
+        _log.warning("email.card_revise_refused", reason="not_spent")
+        await _drop_link(user, thread, req.card_id)
+        raise HTTPException(status_code=409, detail=nm.NO_CARD)
+    await _drop_snapshot(user, thread, req.card_id)
+    block = ""
+    if snap is not None and has_text(snap):
+        block = compose_card_draft(
+            str(snap.get("subject") or ""), str(snap.get("body") or ""),
+            _strings(snap.get("to")), _strings(snap.get("cc")), _strings(snap.get("bcc")))
     _log.info("email.card_revised", draft=nxt, snapshot=bool(block),
               ticks=snap is not None, unticked=len(off))
     return {"revised": True, "draft": nxt, "snapshot": block}

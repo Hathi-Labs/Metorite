@@ -649,9 +649,14 @@ async def write_record(
 
 async def take_record(
     user: UserContext, card_id: str, *, namespace: str = RECORD_NAMESPACE,
+    strict: bool = False,
 ) -> dict[str, Any] | None:
     """Read and delete one card record (``GETDEL``), so a card acts once.
-    None for no record, a fault, or a record of another member."""
+    None for no record, a fault, or a record of another member.
+
+    ``strict`` (§18.11, fix round 5): a fault answers 503 and not None, so the
+    revise of a redraft never reads a fault as "the act took it first". The
+    acts keep the default."""
     from acb_common.tenant_redis import organization_scope
 
     try:
@@ -661,6 +666,8 @@ async def take_record(
         raise
     except Exception as exc:
         _log.warning("email.held_card_take_failed", error=type(exc).__name__)
+        if strict:
+            raise HTTPException(status_code=503, detail="The card could not be read.") from None
         return None
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8", errors="replace")

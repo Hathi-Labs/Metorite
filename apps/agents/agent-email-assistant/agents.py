@@ -6313,15 +6313,25 @@ _START_FROM_THE_MEMBER = (
 #: The longest data block of the member's version that the tool passes on
 #: (``chat_recovery.CARD_DRAFT_MAX``).
 _MEMBER_VERSION_MAX = 24_000
-#: §18.11 fix round 4: the answer when the revise route could not read the
-#: card, twice. The gateway then kept no untick of this card. A new card now
-#: would start that person ticked with no note, so the model draws none, and
-#: the slot of the card says that the draft did not change.
+#: §18.11 fix round 5: the words the model reads in front of the answer of a
+#: card that came back. The revise did not happen (a 409, or a 503 twice), so
+#: the gateway spent nothing, and the tool asked the SAME card again, with the
+#: member's edits still on it. The member then answered that card.
 _REVISE_UNREAD = (
-    "The member wrote in the chat while the card was open, so the card is "
-    "closed. Nothing was sent. The gateway could not read the card, so their "
-    "edits did not reach you. Do not call send_email now. Tell the member that "
-    "the draft did not change, and ask them to send their request again.")
+    "The member wrote in the chat while this card was open, but the gateway "
+    "could not read the card. So the member's card edits did not reach you, "
+    "and the card stayed open with those edits. The member then answered the "
+    "card, and the answer follows. Do not change or send this email again for "
+    "that chat message.")
+#: The most times that one card comes back in one call (fix round 5).
+_MAX_COMEBACKS = 3
+#: The answer when the card came back that many times and the revise still
+#: did not run. No card is drawn, so no card can start a person ticked.
+_REVISE_GAVE_UP = (
+    "The member wrote in the chat while this card was open, but the gateway "
+    "could not read the card again and again, so the card is closed. Nothing "
+    "was sent. Do not call send_email now. Tell the member that the email was "
+    "not sent, and ask them to try again in a moment.")
 #: The answer when the member pressed Discard, or the card closed with no answer.
 _NEW_MAIL_DISCARDED = "Send cancelled — the email was not sent."
 #: The notice of a held card with a new address (§21): it starts unticked.
@@ -6360,22 +6370,25 @@ def _run_thread() -> str:
         return ""
 
 
-async def _revised_text(lead: str, card_id: str, thread: str) -> str:
+async def _revised_text(lead: str, card_id: str, thread: str) -> str | None:
     """The REVISED answer of a new-mail card that a chat message closed (§18.11).
 
-    It spends the old card first (``POST /email/new-card/revise``), so a late
-    answer to it sends nothing. When the member had edited the card, the
-    gateway answers their version as a neutral data block, and the answer
-    adds it, so the model starts from it. A failure of the route gives *lead*
-    alone: nothing was sent, and the model asks again. A 503 means that the
-    route could not read the card, so it tries once more, and a second 503
-    tells the model to draw no card (:data:`_REVISE_UNREAD`)."""
+    It spends the old card (``POST /email/new-card/revise``), so a late answer
+    to it sends nothing. When the member had edited the card, the gateway
+    answers their version as a neutral data block, and the answer adds it, so
+    the model starts from it.
+
+    None when the revise did not happen (fix round 5): a 409, or a 503 after
+    the one more try of :func:`_revise_card`. The gateway then spent nothing,
+    so the caller asks the SAME card again (:func:`_ask_until_revised`). Any
+    other failure gives *lead* alone: nothing was sent, and the model asks
+    again."""
     if not card_id or not thread:
         return lead
     try:
         res = await _revise_card(card_id, thread)
     except GatewayError as exc:  # the card is closed either way, and nothing went
-        return _REVISE_UNREAD if exc.status == 503 else lead
+        return None if exc.status in (409, 503) else lead
     except Exception:  # the card is closed either way, and nothing went
         return lead
     block = str(res.get("snapshot") or "") if isinstance(res, dict) else ""
@@ -6384,13 +6397,53 @@ async def _revised_text(lead: str, card_id: str, thread: str) -> str:
     return f"{lead}\n\n{block[:_MEMBER_VERSION_MAX]}\n{_START_FROM_THE_MEMBER}"
 
 
+async def _ask_until_revised(
+    form: dict[str, Any], card_id: str, thread: str, lead: str,
+) -> tuple[Any, str | None, bool]:
+    """``(answer, revised, came_back)`` of a new-mail card (§18.11).
+
+    It shows the card and waits. A chat message that closes it runs the
+    revise. When the revise ran, ``revised`` is the REVISED text for the
+    model. When it did not run (fix round 5), the gateway spent nothing, so
+    this shows the SAME card again, with ``reopened`` on its form. The chat
+    then puts it back in place, with the member's edits, and a next message
+    is a steer that carries them. ``came_back`` says that it did so once.
+
+    It shows the card again at most :data:`_MAX_COMEBACKS` times, so no fault
+    can spin it. After that, the model reads :data:`_REVISE_GAVE_UP` and draws
+    no card."""
+    from acb_skills import ask_tools
+
+    comebacks = 0
+    answer = await _ask_new_mail_card(form, card_id)
+    while answer is ask_tools.REVISED:
+        revised = await _revised_text(lead, card_id, thread)
+        if revised is not None:
+            return None, revised, comebacks > 0
+        if comebacks >= _MAX_COMEBACKS:
+            return None, _REVISE_GAVE_UP, True
+        comebacks += 1
+        answer = await _ask_new_mail_card({**form, "reopened": True}, card_id)
+    return answer, None, comebacks > 0
+
+
+def _noted(out: Any, came_back: bool) -> Any:
+    """*out* with :data:`_REVISE_UNREAD` in front, when the card came back."""
+    if not came_back:
+        return out
+    if isinstance(out, dict):
+        return {**out, "chat_note": _REVISE_UNREAD}
+    return f"{_REVISE_UNREAD}\n\n{out}"
+
+
 async def _revise_card(card_id: str, thread: str) -> Any:
     """``POST /email/new-card/revise``, and ONE more try after a 503 (§18.11).
 
-    The route answers 503 when Redis fails on its first read, before it spends
-    the card. So the second try is safe, and it keeps the member's unticks
-    through a short fault. A second try after a spend answers 409, and nothing
-    runs twice."""
+    The route answers 503 for a fault in any step up to the spend, and it
+    spends nothing then (fix round 5). Each of those steps is safe to run
+    twice, so the second try keeps the member's unticks through a short
+    fault. A try after a spend finds no record and answers 404, so the card
+    is never spent twice."""
     body = {"card_id": card_id, "card_thread_id": thread}
     try:
         return await _post("/email/new-card/revise", body) or {}
@@ -6560,12 +6613,18 @@ async def _new_mail_card(
     if not card_id:
         return "Not sent. The card of this email could not be recorded. Try again."
     form = _new_mail_form(prep, notices)
-    answer = await _ask_new_mail_card(form, card_id)
-    from acb_skills import ask_tools
+    # §18.11 step 4: a chat message spends the old card, and the model starts
+    # from the member's version. A revise that did not run shows the card again.
+    answer, revised, came_back = await _ask_until_revised(
+        form, card_id, thread, _NEW_MAIL_REVISED)
+    if revised is not None:
+        return revised
+    return _noted(await _new_mail_answered(answer, sender, usual), came_back)
 
-    if answer is ask_tools.REVISED:
-        # §18.11 step 4: spend the old card, and start from the member's version.
-        return await _revised_text(_NEW_MAIL_REVISED, card_id, thread)
+
+async def _new_mail_answered(answer: Any, sender: str, usual: str) -> str:
+    """The end of a new-mail card that the member answered: the act of the
+    answer, or the words of a card that sends nothing (§18.10)."""
     if isinstance(answer, str):
         return answer
     # H-393: the member can edit the text on the card, so it is checked again.
@@ -7102,17 +7161,22 @@ async def _held_form_card(
     A chat message that closes it (§18.11) spends the record through the
     same revise route as a plain card. The next held card works out its
     classes and its ticks again, so the member's version never ticks a new
-    address."""
-    from acb_skills import ask_tools
-
+    address. A revise that did not run shows the same card again."""
     form = dict(prep["form"])
     form["notices"] = list(form.get("notices") or [])
     if any(c == "new" for c in (form.get("classes") or {}).values()):
         _form_notice(form, _NEW_MAIL_NEW_UNTICKED)
     card_id = str(prep.get("card_id") or "")
-    answer = await _ask_new_mail_card(form, card_id)
-    if answer is ask_tools.REVISED:
-        return await _revised_text(_HELD_CARD_REVISED, card_id, thread)
+    answer, revised, came_back = await _ask_until_revised(
+        form, card_id, thread, _HELD_CARD_REVISED)
+    if revised is not None:
+        return revised
+    return _noted(await _held_form_answered(answer, lead, cancelled), came_back)
+
+
+async def _held_form_answered(answer: Any, lead: str, cancelled: str) -> dict[str, Any] | str:
+    """The end of a held new-mail card that the member answered: the act of
+    the answer, or the words of a card that sends nothing (§18.10)."""
     if isinstance(answer, str):
         return cancelled if answer == _NEW_MAIL_DISCARDED else answer
     try:

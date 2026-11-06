@@ -1057,6 +1057,10 @@ def _clean_new_mail_form(form: dict) -> dict:
     # says so. Each is a person of the card that starts unticked, or no card shows.
     if "unticked" in form:
         out["unticked"] = _new_mail_unticked(form["unticked"], people, out.get("ticked"))
+    # §18.11 fix round 5: the SAME card, shown again because a revise did not
+    # run. The client puts it back in its slot, with the member's edits.
+    if form.get("reopened") is True:
+        out["reopened"] = True
     # §18.11 step 6: the card that this card replaces, and its draft number.
     # The gateway sets both, and the tool copies them from its answer. The
     # client draws the card in that card's slot, as "Draft <n>".
