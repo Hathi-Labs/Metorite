@@ -1980,6 +1980,12 @@ _RUN_SCHEMA = _object({
     "latest_line": {"anyOf": [_LINE_SCHEMA, {"type": "null"}]},
     "stranded": {"anyOf": [_STRANDED_SCHEMA, {"type": "null"}]},
 })
+#: SW-43. The answer of the member that may still change. It is OPTIONAL: the
+#: key is there only while ``agent_answer_change_enabled`` is on, so it is not
+#: in ``required`` and not in ``RUN_KEYS``.
+_RUN_SCHEMA["properties"]["answer"] = {"anyOf": [_object({
+    "id": {"type": "string"}, "seq": _NULLABLE_INTEGER, "changeable": {"type": "boolean"},
+}), {"type": "null"}]}
 _RUN_ACTIVITY_SCHEMA = _object({
     "id": {"type": "string"}, "seq": _NULLABLE_INTEGER, "type": {"type": "string"},
     "author": {"type": "string", "enum": [AUTHOR_AGENT, AUTHOR_PERSON]},
@@ -1999,7 +2005,7 @@ _RUN_ACTIVITY_SCHEMA = _object({
 #: The keys of one run and of one activity (§12.1) are the keys of the two
 #: schemas, and no other. An identity literal may appear only as a key of a
 #: dict display (EA3-9), so the tuples come from the schemas.
-RUN_KEYS: tuple[str, ...] = tuple(_RUN_SCHEMA["properties"])
+RUN_KEYS: tuple[str, ...] = tuple(_RUN_SCHEMA["required"])
 RUN_ACTIVITY_KEYS: tuple[str, ...] = tuple(_RUN_ACTIVITY_SCHEMA["properties"])
 
 
@@ -2096,13 +2102,24 @@ def _member_of(value: Any) -> str | dict[str, str] | None:
     return assignee(value) if isinstance(value, str) else None
 
 
+def _answer(raw: Any) -> dict[str, Any] | None:
+    """``answer`` of a run (SW-43): the id, the seq and whether the member
+    may still change it. ``None`` when the run has no live answer."""
+    if not isinstance(raw, dict):
+        return None
+    return {
+        "id": str(raw.get("id")), "seq": _int_or_none(raw.get("seq")),
+        "changeable": bool(raw.get("changeable")),
+    }
+
+
 def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
     """One run of ``pm_agent_runs`` (§12.1). The pinned keys, and no other.
 
     A database CHECK shapes ``status``, and the gateway derives ``state``.
     The link is (S). The question and the line hold free text, so (U).
     """
-    return {
+    out = {
         "id": str(row.get("id")),
         "task_id": str(row.get("task_id")),
         "status": _key(row.get("status")),
@@ -2117,6 +2134,9 @@ def agent_run(row: Mapping[str, Any]) -> dict[str, Any]:
         "latest_line": _line(row.get("latest_ephemeral")),
         "stranded": _stranded(row.get("stranded")),
     }
+    if "answer" in row:  # only a gateway with SW-43 on sends it
+        out["answer"] = _answer(row.get("answer"))
+    return out
 
 
 def _selected(value: Any) -> list[str | dict[str, str] | None]:

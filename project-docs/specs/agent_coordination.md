@@ -1,6 +1,6 @@
 # Agent coordination — many agents and many people on one board
 
-**Status: ACTIVE (SW-0, 2026-10-30).** This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
+**Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open.** This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
 **Verified against code on 2026-10-30** (origin/main of that day). §6 holds each anchor and the commit it was read at. Re-verify each anchor at dispatch (`work_plan.md` §1 item 4).
 
@@ -225,6 +225,19 @@ The source is the Linear research of 2026-10-30, the comment on epic 321. Append
 | Guidance | Workspace and team, team wins, with history | SW-31: org, space and project, the nearest wins, with history | One more level, because Metorite has spaces (D140.6) |
 | One worker per issue | Not stated in the sources read | One open run per task, 409 `task_held` | **Many agents of many members share one board** (D135) |
 | MCP | `/mcp` and `/mcp/readonly`, OAuth 2.1 with dynamic registration | `/mcp`, OAuth 2.1 with Client ID Metadata Documents, 25 tools, one prompt, no resources | SW-34 adds resources and `/mcp/readonly` |
+
+### 3.9 Withdraw or change an answer (SW-43)
+
+**The incident.** On 2026-11-05 the owner picked "Restart it now" by mistake. The run went to `run_answered` and `my_work` listed it to every session. The app could not take the answer back.
+
+- **Window rule.** A member may take an answer back while these facts hold. The run is `in_progress`. The answer is the newest answer of the run, written by the run's own member. No agent has read it, and no agent activity follows it. The window closes when the agent reads or posts, whichever is first. An agent write carries `actor_via`. One text decides it, `answer_changeable_sql` in `filters.py`. The route and the run wire both read it.
+- **Withdraw.** One UPDATE on the answer row. It sets `in_reply_to` to NULL, adds `content.withdrawn` (`at`, `by`) and keeps the old question id in `content_metadata.question_id`. The four open-question reads then see the question open again, with no SQL change. The run moves to `awaiting` (`member_withdraw` in `_MOVES`), so it leaves the `needs_agent` list.
+- **Read stamp.** An agent read of the run stamps `content.read_at` once on the live answer. The reads are `get_agent_run` and a claim that finds the open run. The stamp takes the lock of the run, and only while the flag is on. A read by the member stamps nothing.
+- **Marker.** A quiet member `prompt` with `content.withdraws` set to the answer id and `in_reply_to` NULL. An agent that long polls with `after` sees it. The timeline shows "Withdrew the answer".
+- **Race.** The route takes the same `FOR UPDATE` lock of the run as an agent post. The check runs under the lock. So one write wins. When the agent wins, the member gets 409 "The agent already has your answer. Send a comment instead."
+- **Protocol.** An agent posts a thought that names the answer id before it acts on an answer. The thought ends the window.
+- **Flag.** `agent_answer_change_enabled`, default off. Off: the route answers 404 and the run wire has no `answer` field. No migration.
+- **Slices.** SW-43a withdraw (built dark). SW-43b a replace route, with the option `confirm: true` and the card text "Are you sure?", and a Change button. SW-43c the chat tool, the agent text on by default, and the flag on.
 
 ---
 
@@ -626,6 +639,22 @@ Each slice names its scope, its acceptance ("done when"), its fence (R7), its ri
 - **Done when.** Three parallel sessions on the dev box run `/next-ticket` for one day, and no two build the same item.
 - **Risk.** LOW. **Gate.** AGENT-SAFE. **Depends on.** SW-19a and SW-27.
 
+#### SW-43a · Withdraw an answer
+
+- **Scope.** As §3.9. It adds the flag, `answer_changeable_sql` and the route `POST /projects/agent-runs/{run_id}/answer/withdraw`. It adds the `answer` field of the run wire and the hidden read. It adds the `member_withdraw` move, the edge schema, the agent sentence and the "Withdraw my answer" button.
+- **Done when.** A withdraw reopens the question and the run reads `awaiting`. An agent activity after the answer gives 409. Another member and an agent caller get 403. A flag-off call gets 404. A replayed key writes once. A race ends in one outcome.
+- **Risk.** HIGH (a write on a run). **Gate.** AGENT-SAFE to build dark. OWNER-GATE `enforcement-flip` to turn on.
+
+#### SW-43b · Change an answer
+
+- **Scope.** A replace route that withdraws and answers in one transaction. An option `confirm: true` asks "Are you sure?" before it writes. A Change button on the card.
+- **Depends on.** SW-43a.
+
+#### SW-43c · Chat tool and flag on
+
+- **Scope.** The chat tools `withdraw_agent_answer` and a change tool. The agent text on by default. The flag on.
+- **Depends on.** SW-43a and SW-43b.
+
 #### CIV-14a · A claim and an ask carry the session link
 
 - **Scope.** Metorite task 1726. `claim_task` and `ask_on_task` take an optional `external_link`: an https link, at most 2048 characters. It sets `pm_agent_runs.external_link` on the run that the call opens or finds. The run must belong to the caller, as the lease gate decides. A new link replaces the old link, and a call with no link keeps it. `POST /projects/tasks/{id}/claim` takes an optional body `{external_link}` with `extra="forbid"`. A link that is not https gets 422. `my_work` rows return `external_link`, and so does the run wire of `list_agent_runs` and `get_task_context`. The edge shows the link as it shows every URL of a run. The work steps of the prompt tell an agent to pass its session link, such as the Remote Control URL, at the claim.
@@ -727,6 +756,8 @@ Read at `9d41f51d4` on 2026-10-30. Line numbers move. Find each symbol by name a
 | `app/projects/components/AskAgentDialog.tsx` | "Ask an agent" (SW-30a) |
 | `app/connect/authorize/consent.ts:106` | `SCOPE_COPY` of the consent page. `scopeRows` is at :133 and `grantedScopes` at :150 (SW-34b) |
 
+**SW-43a** (find each symbol by name): `withdraw_agent_answer` and `_MOVES["member_withdraw"]` in `agent_runs.py`. `answer_changeable_sql` and `live_answer_sql` in `filters.py`. `answer_change_enabled` in `agent_oauth.py`. `agent_answer_change_enabled` in `settings.py`. `ANSWER_RULE` in `agent_edge/prompts.py`. `withdrawPayload` in `agentRuns.ts`.
+
 **Migrations** (`infra/postgres/`): `146_projects.sql:283` (the `link_type` CHECK, SW-25), `188_projects_personal_overlay_fields.sql` (`waiting_on` of the member overlay, SW-9), `267_pm_agent_runs.sql`, `289_agent_run_exclusive_claim.sql`, `302_agent_run_session_key.sql` and `305_pm_agent_run_strands.sql`. The highest number on main is 315.
 
 ---
@@ -777,6 +808,7 @@ Run the frontend checks in `workbench/control_plane`. A file that a slice adds i
 | SW-34a, SW-34b | `uv run pytest -q -p no:cacheprovider tests/unit/test_mcp_edge_session.py tests/unit/test_mcp_edge_coverage.py`, and the read-only walk (new) |
 | SW-35 | `uv run pytest -q -p no:cacheprovider tests/unit/test_triage_suggestions.py` (new) |
 | SW-36 | `uv run pytest -q -p no:cacheprovider tests/unit/test_project_update_draft.py` (new) |
+| SW-43a | `uv run pytest -q -p no:cacheprovider tests/unit/test_agent_runs_r8.py tests/unit/test_projects_chat_coverage.py tests/unit/test_projects_ui_actions.py tests/unit/test_mcp_edge_agent_runs.py`, and `npx vitest run src/app/projects/lib/agentRuns.test.ts` |
 
 ---
 
