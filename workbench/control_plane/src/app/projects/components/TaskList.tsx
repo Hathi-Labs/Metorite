@@ -503,7 +503,10 @@ export function TaskList({
                             </span>
                           </Button>
                         ) : (
-                          <span className="shrink-0" style={{ width: 8 }} aria-hidden />
+                          // The tick's own width, so a row with no tick (no done
+                          // lane, or the statuses still load) lines its title up
+                          // with its neighbours (verifier P3).
+                          <span className="shrink-0" style={{ width: PHONE_TICK_PX }} aria-hidden />
                         )}
                         <div className="min-w-0 flex-1 py-2">
                           <div className="flex min-w-0 items-start gap-1">

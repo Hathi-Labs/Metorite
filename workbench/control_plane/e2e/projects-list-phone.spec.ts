@@ -70,7 +70,14 @@ const TREE = [
     parent_project_id: null,
     kind: "project",
     children: [
-      { id: "p2", name: "Bootloader", parent_project_id: "p1", kind: "project", children: [] },
+      {
+        id: "p2",
+        name: "Bootloader",
+        parent_project_id: "p1",
+        kind: "project",
+        // A child project: its rows name it, and the rows of p2 do not.
+        children: [{ id: "p3", name: "Checksum tools", parent_project_id: "p2", kind: "project", children: [] }],
+      },
     ],
   },
 ];
@@ -78,7 +85,8 @@ const TREE = [
 const EMPTY = { rows: [], items: [], total: 0, links: [], subtasks: [], children: [], buckets: [] };
 
 async function openList(page: Page, patches: { id: string; body: unknown }[]) {
-  const tasks = Array.from({ length: 6 }, (_, i) => task(i + 1));
+  // Task 6 lives in the child project p3, so its row names the project.
+  const tasks = Array.from({ length: 6 }, (_, i) => (i === 5 ? { ...task(i + 1), project_id: "p3" } : task(i + 1)));
   const fixtures: Record<string, unknown> = {
     "auth/me": { email: "you@example.com", name: "You" },
     "projects/tree": { rows: TREE, total: 1 },
@@ -112,13 +120,18 @@ for (const size of [
   test.describe(`${size.width} x ${size.height}`, () => {
     test.use({ viewport: size, isMobile: true, hasTouch: true });
 
-    test("a row shows all five parts and nothing scrolls sideways", async ({ page }) => {
+    test("a row shows its parts, names the project only when it is not the open one, and nothing scrolls sideways", async ({ page }) => {
       test.setTimeout(120_000);
       await openList(page, []);
       const row = page.locator("[data-phone-row]").first();
       await expect(row.getByRole("button", { name: /^Mark Task number 1 .* done$/ })).toBeVisible();
       await expect(row.getByText(/^Task number 1 with/)).toBeVisible();
-      await expect(row.locator("[data-project-chip]")).toContainText("Bootloader");
+      // The open project is Bootloader, so its own rows do not repeat the name
+      // (owner preview, 2026-11-07). A row of the child project names it.
+      await expect(row.locator("[data-project-chip]")).toHaveCount(0);
+      await expect(page.locator("[data-phone-row]").nth(5).locator("[data-project-chip]")).toContainText(
+        "Checksum tools",
+      );
       await expect(row.locator("[data-phone-due]")).toBeVisible();
       await expect(row.locator("[data-phone-status]")).toContainText("Spec ready");
       // No `#` column on the phone.

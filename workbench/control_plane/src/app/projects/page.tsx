@@ -5262,8 +5262,13 @@ function ProjectsWorkspace() {
               // MOB-2: the phone row. Same flag as the board above.
               phone={compactChrome && isMobile}
               onDrop={handleDrop}
+              // The project shows only when it is not the one that is open,
+              // so the rows of one project do not repeat its name. A row of
+              // a child project still names its project.
               projectPath={
-                compactChrome && isMobile ? (t) => [projectName(t.project_id)] : undefined
+                compactChrome && isMobile
+                  ? (t) => (t.project_id === selected?.id ? null : [projectName(t.project_id)])
+                  : undefined
               }
             />
           )}
