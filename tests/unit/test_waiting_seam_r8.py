@@ -428,6 +428,7 @@ class TestTheWaitingSeam:
                     got = await call(w.one, path)
                     assert got.status_code == 404, (raw, path)
                     assert "Hidden by the flag" not in got.text
+                assert (await call(w.one, "/shell/waiting?direction=on_others")).status_code == 404, raw
             monkeypatch.setattr(get_settings(), "waiting_orgs", p.org_a.upper())
             assert (await call(w.one, "/shell/waiting")).status_code == 200
 

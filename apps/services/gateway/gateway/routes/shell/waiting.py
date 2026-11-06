@@ -58,7 +58,7 @@ from __future__ import annotations
 import asyncio
 import re
 import unicodedata
-from typing import Any, Literal
+from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from acb_common.settings import get_settings
@@ -306,11 +306,14 @@ async def waiting_run(user: UserContext) -> dict[str, Any]:
 
 @router.get("/waiting")
 async def shell_waiting(
-    direction: Literal["for_you"] = "for_you",
+    direction: str = "for_you",
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """What waits on this member, in every app the member holds."""
     _caller(user)
+    if direction != "for_you":
+        # Checked after the flag, so an org that is off still sees 404.
+        raise HTTPException(status_code=422, detail="direction must be for_you")
     return {"direction": direction, **await waiting_run(user)}
 
 
