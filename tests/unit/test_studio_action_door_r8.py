@@ -269,7 +269,7 @@ def _manifest(mid: str, wf_a: str, wf_b: str) -> dict[str, Any]:
 
 def _user(org: str, email: str) -> UserContext:
     return UserContext(email=email, role=UserRole.EMPLOYEE,
-                       access=build_access(["feature:workflows"]), organization_id=org)
+                       access=build_access(["feature:studio"]), organization_id=org)
 
 
 class _Request:
@@ -1147,7 +1147,7 @@ def test_r8_an_unset_key_makes_a_valid_looking_proof_403(dworld, monkeypatch) ->
 def test_r8_a_valid_proof_with_an_agent_scope_is_403(dworld) -> None:
     w = dworld
     user = UserContext(email=ANA, role=UserRole.EMPLOYEE, organization_id=w.a,
-                       access=build_access(["feature:workflows"]),
+                       access=build_access(["feature:studio"]),
                        agent=AgentScope(connection_id="c1"))
     count = _record_count(w, w.obj)
     status, (detail, _) = _run(

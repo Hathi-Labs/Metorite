@@ -123,6 +123,8 @@ PANES: tuple[Pane, ...] = (
     Pane("/people", "people"),
     Pane("/knowledge", "knowledge"),
     Pane("/chat", "chat"),
+    # Live since 2026-11-05 (D179). Gated on `workflows` until slice J1-1 moves it.
+    Pane("/studio", "studio"),
     Pane("/approvals", "approvals"),
     Pane("/integrations", None),
 )

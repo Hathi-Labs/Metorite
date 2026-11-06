@@ -111,6 +111,17 @@ FEATURES: tuple[str, ...] = (
     "approvals",
     "integrations",
     "workflows",
+    # AI Studio, the one library pane. Its `feature_catalog` row is in the
+    # migration named `*_studio_feature.sql` (category `apps`, sort_order 96,
+    # after Workflows). The router of `/studio` checks it (WS-STU J1,
+    # specs/ai_studio.md §9). `is_default true`, and migration 207's
+    # `feature:*` reaches every role except `guest`. ⚠️ One edge: a member
+    # with a `feature:workflows` DENY override got 403 on each Studio route
+    # before J1. After J1-1 that member gets Studio, because the deny does
+    # not match `feature:studio` and `feature:*` decides. The owner accepted
+    # this on 2026-11-06 (task 1199, D180). An admin can deny
+    # `feature:studio` to that member by hand.
+    "studio",
     "build.agents",
     "build.apps",
     # Departmental Centers (140_center_features.sql, category `centers`). Order
@@ -178,6 +189,13 @@ CAPABILITIES: tuple[str, ...] = (
     # its seed) grants it to `admin` in every organization and in
     # provision_org_roles.
     "email:shared:manage",
+    # AI Studio's share verb (WS-STU J1, specs/ai_studio.md §9). It is the
+    # right to share a package or a skill with other people, and to approve
+    # the manifest diff of that share (J2). A member builds and publishes a
+    # private app for themselves with `feature:studio` and ownership only
+    # (STU-Q4b), so no route checks this verb before J2. The owner holds it
+    # through `*`. Its seed on `admin` is J1-2 (Metorite task 1707).
+    "studio:publish",
 )
 
 #: System role slugs seeded by migration 128. `agent_service` is never

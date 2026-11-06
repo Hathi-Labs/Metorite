@@ -3,7 +3,7 @@
 ``POST /studio/apps/{app_id}/actions/{action}`` runs one action that a Studio
 package declares. The route registers on the router of ``actions.py``, as
 ``skills.py`` does, so ``main.py`` mounts no second router. The gate
-``require_feature_router("workflows")`` and the prefix ``/studio`` hold here.
+``require_feature_router("studio")`` and the prefix ``/studio`` hold here (J1).
 
 **The order of the checks.** Each check runs before the next one:
 

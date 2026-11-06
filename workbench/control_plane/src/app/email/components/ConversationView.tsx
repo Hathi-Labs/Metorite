@@ -696,6 +696,7 @@ export function DraftCard({
     <div
       ref={cardRef}
       data-email-composer=""
+      data-ask-clear=""
       style={size.rootStyle}
       className={`border border-primary/40 rounded-lg bg-primary/5 px-3 py-3 ${size.rootClass}`}
     >

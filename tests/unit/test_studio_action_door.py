@@ -283,7 +283,7 @@ def _client(world: Any, org: str | None = ORG, email: str = ANA) -> TestClient:
         # The auth layer binds the session's org. The fake session reads it.
         world.org = org
         return UserContext(email=email, role=UserRole.EMPLOYEE,
-                           access=build_access(["feature:workflows"]), organization_id=org)
+                           access=build_access(["feature:studio"]), organization_id=org)
 
     app.dependency_overrides[get_current_user] = _user
     return TestClient(app)
@@ -848,7 +848,7 @@ def _direct(world: Any, pid: str, action: str, request: Any, org: str = ORG,
     the detail of a refusal."""
     world.org = org
     user = UserContext(email=email, role=UserRole.EMPLOYEE,
-                       access=build_access(["feature:workflows"]), organization_id=org)
+                       access=build_access(["feature:studio"]), organization_id=org)
 
     async def go() -> tuple[int, Any]:
         try:
@@ -911,7 +911,7 @@ class TestTheBodyRead:
         assert _direct(world, pid, "a" * 49, body) == (404, "Not found")
         with pytest.raises(HTTPException):
             asyncio.run(invoke.invoke_action("not-a-uuid", "find", request=body, user=UserContext(
-                email=ANA, role=UserRole.EMPLOYEE, access=build_access(["feature:workflows"]),
+                email=ANA, role=UserRole.EMPLOYEE, access=build_access(["feature:studio"]),
                 organization_id=ORG)))
         assert body.reads == 0
 
@@ -1253,7 +1253,7 @@ class TestTheDirectWrites:
     def test_a_valid_proof_with_an_agent_scope_is_403(self, dw):
         pid, _, _ = _setup(dw)
         user = UserContext(email=ANA, role=UserRole.EMPLOYEE, organization_id=ORG,
-                           access=build_access(["feature:workflows"]),
+                           access=build_access(["feature:studio"]),
                            agent=AgentScope(connection_id="c1"))
         r = _post(_client_as(dw, user), pid, "add", BODIES["add"], _proof(pid, "add"))
         assert (r.status_code, _code(r)) == (403, "approval_required")
@@ -1266,7 +1266,7 @@ class TestTheDirectWrites:
         pid = _package(dw, owner=email)  # the package is theirs, so only the proof rule stops them
         _object(dw, pid)
         user = UserContext(email=email, role=role, organization_id=ORG,
-                           access=build_access(["feature:workflows"]))
+                           access=build_access(["feature:studio"]))
         r = _post(_client_as(dw, user), pid, "add", BODIES["add"],
                   _proof(pid, "add", email=email))
         assert (r.status_code, _code(r)) == (403, "approval_required")
@@ -1470,7 +1470,7 @@ def _handler_call(dw: Any, pid: str, action: str, body: Any) -> Any:
 
     _Req.headers = headers  # type: ignore[attr-defined]
     user = UserContext(email=ANA, role=UserRole.EMPLOYEE, organization_id=ORG,
-                       access=build_access(["feature:workflows"]))
+                       access=build_access(["feature:studio"]))
 
     async def go() -> tuple[int, Any, Any]:
         try:

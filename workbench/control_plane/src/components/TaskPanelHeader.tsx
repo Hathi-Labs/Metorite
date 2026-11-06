@@ -27,6 +27,8 @@
  * - `actions` — the app's own icon buttons (Archive, Delete).
  * - `expand` — the side panel, or the same panel as a full card.
  * - `onClose` — omit it where the surface draws its own close.
+ * - `noun` — what the card shows, for the close and the copy link. "task" by
+ *   default. The CRM record card says "record" (ORC-1, D181).
  *
  * Every icon button is a `Button`. Fence: `TaskPanelHeader.test.ts`.
  */
@@ -65,6 +67,7 @@ export function TaskHeaderRow({
   actions,
   expand,
   onClose,
+  noun,
 }: {
   where?: TaskWhere;
   taskRef: string;
@@ -73,6 +76,7 @@ export function TaskHeaderRow({
   actions?: ReactNode;
   expand?: TaskHeaderExpand;
   onClose?: () => void;
+  noun?: string;
 }) {
   // The copy's "it worked" flash. A copy with no acknowledgement gets
   // clicked three times.
@@ -91,6 +95,7 @@ export function TaskHeaderRow({
   }
 
   const stop = expand?.expanded ? "full" : "side";
+  const closeLabel = noun ? `Close ${noun}` : CLOSE_TASK_LABEL;
 
   const ref = (
     <>
@@ -100,8 +105,8 @@ export function TaskHeaderRow({
           variant="ghost"
           size="icon-xs"
           icon={copied ? "Check" : "Link"}
-          aria-label="Copy a link to this task"
-          title="Copy a link that opens this task"
+          aria-label={`Copy a link to this ${noun ?? "task"}`}
+          title={`Copy a link that opens this ${noun ?? "task"}`}
           onClick={() => void copy()}
         />
       ) : null}
@@ -137,8 +142,8 @@ export function TaskHeaderRow({
             variant="ghost"
             size="icon-sm"
             icon="X"
-            aria-label={CLOSE_TASK_LABEL}
-            title={CLOSE_TASK_LABEL}
+            aria-label={closeLabel}
+            title={closeLabel}
             onClick={onClose}
           />
         ) : null}
