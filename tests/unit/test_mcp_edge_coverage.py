@@ -240,6 +240,35 @@ def test_the_archive_and_its_approval_stay_off_the_edge():
     assert not reached & set(ARCHIVE_ROUTES), reached & set(ARCHIVE_ROUTES)
 
 
+#: MCP-P1b-1 (§19.5, "The member routes"). A person's decision on an app
+#: request, and the member's list of requests. Neither is ever a pair of the
+#: edge or of the app door, so branch 0 refuses a signed call to either.
+MEMBER_ONLY_REQUEST_ROUTES = (
+    ("POST", "/agent-access/requests/{request_id}/decision"),
+    ("GET", "/agent-access/requests"),
+)
+
+
+def test_decision_route_not_in_door_sets():
+    """MCP-P1b-1 (§19.5, §19.11). The decision route serves a member session
+    only. It is in no set of the door: not ``MCP_ROUTES``, not
+    ``MCP_WRITE_ROUTES`` and not ``door_routes()``, and no edge tool reaches
+    it. Mutation: put the decision pair in ``MCP_WRITE_ROUTES``, and this
+    test fails."""
+    from acb_common import app_manifests
+
+    served = _gateway_routes()
+    door = set(app_manifests.door_routes())
+    for pair in MEMBER_ONLY_REQUEST_ROUTES:
+        assert pair in served, pair
+        assert pair not in MCP_ROUTES and pair not in MCP_WRITE_ROUTES, pair
+        assert pair not in door, pair
+    from agent_edge.tools import TOOLS
+
+    reached = _reached(TOOLS)
+    assert not reached & set(MEMBER_ONLY_REQUEST_ROUTES)
+
+
 def test_rule_1_each_pair_is_a_route_the_gateway_serves():
     served = _gateway_routes()
     missing = sorted(pair for pair in MCP_ROUTES if pair not in served)
@@ -448,6 +477,9 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     # EA-15b (§12.4). The edge cuts its merged rows to this length. No route
     # of `my_work` takes it.
     ("my_work", "limit"),
+    # MCP-G4. The edge keeps the runs whose session key is the caller's. The
+    # runs route takes no such parameter.
+    ("list_agent_runs", "mine_only"),
     # MCP-G1. The edge checks the level against the parent, and the node
     # route takes no level. The key uses the slot of `create_task`.
     ("create_project", "level"),
@@ -455,6 +487,8 @@ NAMED_EDGE_INPUTS: frozenset[tuple[str, str]] = frozenset({
     # MCP-G1. The edge compares it with the id of the preview that it runs
     # again. The move route takes no such field.
     ("move_tasks", "preview_id"),
+    # CIV-14c. The edge picks the page size and pages the timeline itself.
+    ("get_task_context", "comments"),
 })
 
 #: The reads of EA-15 (§12.4). Each composes routes that are already in
@@ -478,7 +512,7 @@ def test_the_ea15_reads_are_listed_and_add_no_pair():
         for route in (tool.route, *tool.routes):
             assert ("GET", route) in MCP_ROUTES, (name, route)
     assert TOOLS["my_work"].edge_inputs == frozenset({"limit"})
-    assert TOOLS["get_task_context"].edge_inputs == frozenset()
+    assert TOOLS["get_task_context"].edge_inputs == frozenset({"comments"})
 
 
 def test_rule_4_each_input_maps_to_a_parameter_of_its_route():

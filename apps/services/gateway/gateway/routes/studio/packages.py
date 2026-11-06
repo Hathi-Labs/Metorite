@@ -1,19 +1,21 @@
-"""The package routes of AI Studio (STU-A5, ``ai_studio.md`` §14 A5).
+"""The package routes of AI Studio (STU-A5, ``ai_studio.md`` §14 A5 and A5c-1).
 
-Six routes over the package store (A3 and A4, ``studio/packages_store.py``)
+Eight routes over the package store (A3 and A4, ``studio/packages_store.py``)
 and the object store (C1, ``studio/objects_store.py``). They register on the
 router of ``actions.py``, as ``skills.py`` and ``invoke.py`` do, so
 ``main.py`` mounts no second router. The gate ``require_feature_router
 ("workflows")`` and the prefix ``/studio`` hold here too.
 
-====================================  =========================================
-``POST /packages``                    create a package from a manifest (201)
-``GET /packages``                     the packages of the caller, no manifest
-``GET /packages/{id}``                one package, with its manifest and objects
-``PUT /packages/{id}/draft``          replace the draft manifest
-``POST /packages/{id}/versions``      publish the draft, and project its objects
-``GET /packages/{id}/versions``       a page of 100 versions, no manifest
-====================================  =========================================
+=======================================  ======================================
+``POST /packages``                       create a package from a manifest (201)
+``GET /packages``                        the packages of the caller, no manifest
+``GET /packages/{id}``                   one package, its manifest and objects
+``PUT /packages/{id}/draft``             replace the draft manifest
+``POST /packages/{id}/versions``         publish the draft, project its objects
+``GET /packages/{id}/versions``          a page of 100 versions, no manifest
+``GET /packages/{id}/delete-preview``    what a delete removes, and its token
+``DELETE /packages/{id}``                delete the package (200 or 202)
+=======================================  ======================================
 
 **The switch.** The first line of each handler reads ``STUDIO_ORGS``. An org
 outside it gets 404 ``Not found`` for each body, because the handler takes
@@ -68,10 +70,54 @@ closes. ⚠️ Never ``record_app_audit``: its unbound session writes no row und
 FORCE RLS (task 1317). A draft save and a 404 write no row. The rows hold the
 op, a hash, a size and names, and no manifest text.
 
+**The expected hash (STU-G1c review round 1).** A draft save takes the query
+``?based_on=<hash>``, and a publish takes ``based_on`` in its body. The value
+is ``studio_manifest.manifest_hash`` of the draft that the caller read. The
+store compares it under the row lock: a different hash is 409
+``draft_changed``, and nothing is written. So a save that lands between the
+read of a publish and its POST cannot go live in place of the draft that was
+checked, and of two saves of one read only one writes. With no ``based_on``
+a route behaves as before. A value that is not 64 hex digits is 422.
+
 **Create.** There is no idempotency key. A second create with the same
 manifest id by the same member answers 409 ``package_exists`` with the id of
 the first. Two creates at the same moment can both pass, and that is
 accepted. A member holds at most :data:`MAX_PACKAGES_PER_MEMBER` packages.
+
+**The delete (A5c-1).** Two steps, with no state in the database. The owner
+reads ``GET /packages/{id}/delete-preview``: each object with its field
+count and its record count (up to 100,000), the versions, the installs, the
+installs that reach another member, and the token ``confirm``. Then the
+owner sends ``DELETE /packages/{id}`` with the body ``{"confirm": token}``
+(at most :data:`MAX_DELETE_BODY_BYTES`). A missing or malformed token is
+422. A token that is not the token of now is 409 ``counts_changed`` with the
+new preview, and nothing is deleted. Only the owner reaches either route:
+another member, another org and an App Workshop app get 404. No route here
+has an admin path, and no body key changes the member.
+
+Each step runs in its own ``tenant_session``: the ``apps`` row ``FOR
+UPDATE``, the org lock, then a chunk of records (``store.delete_package``).
+No lock stays between two steps, so the other writes of the org run. The
+last step of a delete deletes the ``apps`` row and writes the audit row in
+the store, in one transaction. The answer is 200 ``{deleted: true}``, and
+then each route answers 404 for the id.
+
+A call ends at :data:`DELETE_BUDGET_SECONDS`. Each purge stops at that end,
+and a step goes on only while one more step fits. Else the step is the last
+of the call. In its own transaction it writes a partial audit row (op
+``package.delete.partial``, the records of this call) and builds the
+preview of now. The answer is 202 ``{deleted: false, remaining, confirm}``,
+and the caller sends the DELETE again with the new ``confirm``. Each call
+that ends with records left logs ``studio.packages.delete_partial``.
+
+A later step checks the object names of the preview that the member
+confirmed. A name that a publish added between two steps ends the call with
+409 ``counts_changed``, the new preview, ``records_removed`` and a text that
+names that count. A ``store_busy`` on a later step ends the call with 202,
+because the earlier steps hold, or with 503 when the preview is busy too. A
+step waits at most 1 s for the ``apps`` row. When another call deleted the
+package between two steps, the answer is 404. Each of these ends writes the
+partial audit row of the earlier steps.
 """
 
 from __future__ import annotations
@@ -86,7 +132,7 @@ from typing import Any
 
 from acb_auth import UserContext, get_current_user
 from acb_common import get_logger
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, Response
 from gateway.db import tenant_session as _tenant_session
 from gateway.routes.apps._common import record_app_audit_bound
 from gateway.routes.studio import actions, flags
@@ -94,7 +140,9 @@ from gateway.routes.studio.actions import NOT_FOUND, router
 from gateway.studio import objects_store
 from gateway.studio import packages_store as store
 
-__all__ = ["MAX_BODY_BYTES", "MAX_PACKAGES_PER_MEMBER", "MAX_PROBLEMS", "VERSIONS_PAGE", "router"]
+__all__ = ["COUNTS_CHANGED", "DELETE_BUDGET_SECONDS", "DRAFT_CHANGED", "MAX_BODY_BYTES",
+           "MAX_DELETE_BODY_BYTES", "MAX_PACKAGES_PER_MEMBER", "MAX_PROBLEMS", "VERSIONS_PAGE",
+           "router"]
 
 _log = get_logger("gateway.studio.packages")
 
@@ -110,7 +158,18 @@ MAX_AUDIT_NAMES = 50
 RETRY_AFTER = "2"
 #: The most versions in one page of the versions list.
 VERSIONS_PAGE = store.MAX_VERSIONS_PAGE
+#: The most bytes of the body of a delete (4 KiB). It holds the token only.
+MAX_DELETE_BODY_BYTES = 4 * 1024
+#: The longest run of the steps of one delete call, in seconds. Each purge
+#: stops at the end of the budget, and a step goes on only while one more step
+#: (``store.STEP_SECONDS``) fits. Past it, the last step builds the token of a
+#: 202, so one count of ``objects_store.COUNT_TIMEOUT_MS`` can run after the
+#: budget. The sum stays below the client timeout of the chat tool
+#: (``acb_skills.studio_tools._send``). Fence:
+#: ``test_the_worst_call_ends_before_the_chat_tool_gives_up``.
+DELETE_BUDGET_SECONDS = 8.0
 _DIGITS = re.compile(r"[0-9]{1,10}", re.ASCII)
+_HASH = re.compile(r"[0-9a-f]{64}", re.ASCII)
 
 PACKAGE_EXISTS = "package_exists"
 PACKAGE_LIMIT = "package_limit"
@@ -118,12 +177,18 @@ OBJECTS_OUT_OF_SYNC = "objects_out_of_sync"
 CATALOG_UNAVAILABLE = "catalog_unavailable"
 STORE_BUSY = "store_busy"
 BODY_TOO_LARGE = "body_too_large"
+DRAFT_CHANGED = "draft_changed"
+COUNTS_CHANGED = "counts_changed"
 
 CATALOG_DOWN = "The action catalog is not available now, so try the publish again later."
 BODY_OVER_CAP = "This body is too large, so send a smaller manifest."
 NOT_JSON = "The body must be a JSON object."
 TOO_DEEP = "The body nests too deep to read. Flatten it."
 BAD_CURSOR = "The cursor before is a version number, so send a whole number from 1."
+BAD_HASH = ("based_on is the hash of the draft that you read: 64 hexadecimal digits. Send it, "
+            "or leave it out.")
+BAD_CONFIRM = ("confirm is the token of the delete preview: 64 hexadecimal digits. Read the "
+               "preview, then send its token.")
 
 
 def _not_found() -> HTTPException:
@@ -140,6 +205,18 @@ def _package_id(raw: str) -> str:
         return str(uuid.UUID(raw))
     except (ValueError, TypeError, AttributeError):
         raise _not_found() from None
+
+
+def _based_on(raw: object, path: str = "$.based_on") -> str | None:
+    """The expected hash of the stored draft, or None when the caller sends
+    none. Any other value than 64 hex digits is 422, and the error names
+    *path*: ``$.based_on`` in a body, ``?based_on`` in a query. It says
+    nothing about the package."""
+    if raw is None:
+        return None
+    if isinstance(raw, str) and _HASH.fullmatch(raw.strip().lower()):
+        return raw.strip().lower()
+    raise _unprocessable(BAD_HASH, [{"path": path, "message": BAD_HASH}])
 
 
 def _cursor(raw: str | None) -> int | None:
@@ -173,6 +250,9 @@ def _store_errors() -> Iterator[None]:
                 {"kind": p.kind, "object": p.object, "field": p.field, "rule": p.rule,
                  "message": p.message} for p in exc.problems[:MAX_PROBLEMS]],
         }) from None
+    except store.DraftChanged as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": DRAFT_CHANGED, "message": str(exc)}) from None
     except objects_store.StoreBusy as exc:
         raise HTTPException(
             status_code=503, detail={"code": STORE_BUSY, "message": str(exc)},
@@ -181,23 +261,23 @@ def _store_errors() -> Iterator[None]:
         raise _unprocessable(TOO_DEEP) from None
 
 
-async def _read_body(request: Request) -> bytes | None:
-    """The bytes of the body, or None past :data:`MAX_BODY_BYTES`. The read
-    stops at the first chunk past the cap."""
+async def _read_body(request: Request, cap: int = MAX_BODY_BYTES) -> bytes | None:
+    """The bytes of the body, or None past *cap*. The read stops at the
+    first chunk past the cap."""
     chunks: list[bytes] = []
     size = 0
     async for chunk in request.stream():
         size += len(chunk)
-        if size > MAX_BODY_BYTES:
+        if size > cap:
             return None
         chunks.append(chunk)
     return b"".join(chunks)
 
 
-async def _raw_body(request: Request) -> bytes:
+async def _raw_body(request: Request, cap: int = MAX_BODY_BYTES) -> bytes:
     """The bytes of the body. No session is open during the read. A body past
-    the cap is 413, before any read of the database."""
-    raw = await _read_body(request)
+    *cap* is 413, before any read of the database."""
+    raw = await _read_body(request, cap)
     if raw is None:
         raise HTTPException(status_code=413, detail={
             "code": BODY_TOO_LARGE, "message": BODY_OVER_CAP})
@@ -373,18 +453,22 @@ async def save_draft(
     package_id: str,
     request: Request,
     user: UserContext = Depends(get_current_user),
+    based_on: str | None = None,
 ) -> dict[str, Any]:
     """Replace the draft manifest of a package of the caller. No object row
-    changes: only a publish writes rows."""
+    changes: only a publish writes rows. With ``?based_on=``, the stored draft
+    must still have that hash, or the answer is 409 ``draft_changed``."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _package_id(package_id)
     raw = await _raw_body(request)
     await _require_owned(user.email, pid)
     manifest = _parse_json(raw)
+    expected = _based_on(based_on, "?based_on")
     async with _tenant_session() as db:
         with _store_errors():
-            package = await store.update_manifest(db, user.email, pid, manifest)
+            package = await store.update_manifest(db, user.email, pid, manifest,
+                                                  expected_hash=expected)
         if package is None:
             raise _not_found()
     return {"package": _package_out(package)}
@@ -397,7 +481,9 @@ async def publish(
     user: UserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Publish the draft of a package of the caller as the next version, and
-    bring the object rows to its manifest, in one transaction."""
+    bring the object rows to its manifest, in one transaction. With
+    ``based_on`` in the body, the stored draft must still have that hash, or
+    the answer is 409 ``draft_changed`` and nothing is written."""
     if not flags.studio_allowed(user.organization_id):
         raise HTTPException(status_code=404, detail=NOT_FOUND)
     pid = _package_id(package_id)
@@ -408,10 +494,12 @@ async def publish(
     if not isinstance(notes, str):
         raise _unprocessable("The release notes are text.", [
             {"path": "$.notes", "message": "The release notes are text."}])
+    expected = _based_on(body.get("based_on"))
     known = await _catalog()
     async with _tenant_session() as db:
         with _store_errors():
-            version = await store.publish_version(db, user.email, pid, notes, catalog=known)
+            version = await store.publish_version(db, user.email, pid, notes, catalog=known,
+                                                  expected_hash=expected)
             if version is None or version.manifest is None:
                 raise _not_found()
             result = await objects_store.sync_objects(
@@ -450,3 +538,124 @@ async def list_versions(
     more = len(found) == VERSIONS_PAGE and found[-1].version > 1
     return {"versions": [_version_out(v) for v in found],
             "next_before": found[-1].version if more else None}
+
+
+# ── The delete (A5c-1) ─────────────────────────────────────────────────────
+
+
+def _confirm(body: dict[str, Any]) -> str:
+    """The token of the body. A missing token, or one that is not 64 hex
+    digits, is 422. It says nothing about the package."""
+    raw = body.get("confirm")
+    if isinstance(raw, str) and _HASH.fullmatch(raw.strip().lower()):
+        return raw.strip().lower()
+    raise _unprocessable(BAD_CONFIRM, [{"path": "$.confirm", "message": BAD_CONFIRM}])
+
+
+def _preview_out(found: store.DeletePreview) -> dict[str, Any]:
+    """The preview as the answer holds it: names and counts, no manifest text."""
+    return {
+        "package": {"id": found.id, "name": found.name, "slug": found.slug},
+        "objects": [{"name": o.name, "fields": o.fields, "records": o.records,
+                     "capped": o.capped} for o in found.objects],
+        "totals": {"objects": len(found.objects), "fields": found.fields,
+                   "records": found.records, "records_capped": found.capped,
+                   "versions": found.versions, "installs": found.installs,
+                   "other_member_installs": found.other_member_installs},
+        "confirm": found.confirm,
+    }
+
+
+def _busy(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=503, detail={"code": STORE_BUSY, "message": str(exc)},
+                         headers={"Retry-After": RETRY_AFTER})
+
+
+@router.get("/packages/{package_id}/delete-preview")
+async def delete_preview(
+    package_id: str,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """What a delete of a package of the caller removes, and the token
+    ``confirm`` that the DELETE must send. A read: it changes nothing."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    pid = _package_id(package_id)
+    async with _tenant_session() as db:
+        with _store_errors():
+            found = await store.delete_preview(db, user.email, pid)
+        if found is None:
+            raise _not_found()
+    return _preview_out(found)
+
+
+@router.delete("/packages/{package_id}")
+async def delete_package(
+    package_id: str,
+    request: Request,
+    response: Response,
+    user: UserContext = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Delete a package of the caller, with the token of its delete preview.
+
+    Each step is its own transaction, and no lock stays between two steps.
+    The first step checks the token under the locks. 200 when the package is
+    gone, 202 with what is left and a new token past the budget."""
+    if not flags.studio_allowed(user.organization_id):
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    pid = _package_id(package_id)
+    raw = await _raw_body(request, MAX_DELETE_BODY_BYTES)
+    await _require_owned(user.email, pid)
+    token = _confirm(_parse_json(raw, empty_ok=True))
+    end_at = objects_store._clock() + DELETE_BUDGET_SECONDS
+    removed = 0
+    names: tuple[str, ...] | None = None
+    while True:
+        try:
+            async with _tenant_session() as db:
+                step = await store.delete_package(
+                    db, user.email, pid, confirm=token if names is None else None,
+                    names=names, removed=removed, end_at=end_at)
+        except store.CountsChanged as exc:
+            # Only the first step raises it, so the call removed nothing.
+            raise HTTPException(status_code=409, detail={
+                "code": COUNTS_CHANGED, "message": str(exc), "records_removed": 0,
+                "preview": _preview_out(exc.preview)}) from None
+        except objects_store.StoreBusy as exc:
+            if names is None:
+                # The first step: the call removed nothing yet.
+                raise _busy(exc) from None
+            # A later step waited too long for the apps row, and that wait
+            # ended its transaction. The earlier steps of the call hold, so a
+            # new session writes their partial audit row.
+            async with _tenant_session() as db:
+                await store.record_partial(db, user.email, pid, removed, "busy")
+            _log.info("studio.packages.delete_partial", package_id=pid, records=removed,
+                      changed=False, busy=True)
+            raise _busy(exc) from None
+        if step is None:
+            raise _not_found()
+        removed += step.removed
+        if step.deleted:
+            _log.info("studio.packages.deleted", package_id=pid, records=removed)
+            return {"deleted": True, "package_id": pid, "records_removed": removed}
+        names = step.names
+        if step.left is None and not step.busy and not step.gone:
+            continue
+        # The call ends with records left, or another call deleted the
+        # package. The last step wrote the partial audit row.
+        _log.info("studio.packages.delete_partial", package_id=pid, records=removed,
+                  changed=step.changed, busy=step.busy)
+        if step.gone:
+            raise _not_found()
+        if step.left is None:
+            raise _busy(objects_store.StoreBusy(objects_store._BUSY_MESSAGE))
+        if step.changed:
+            raise HTTPException(status_code=409, detail={
+                "code": COUNTS_CHANGED,
+                "message": store.COUNTS_CHANGED_LATER_TEXT.format(removed=removed),
+                "records_removed": removed, "preview": _preview_out(step.left)})
+        response.status_code = 202
+        return {"deleted": False, "package_id": pid, "remaining": step.left.records,
+                "remaining_capped": step.left.capped, "records_removed": removed,
+                "confirm": step.left.confirm}

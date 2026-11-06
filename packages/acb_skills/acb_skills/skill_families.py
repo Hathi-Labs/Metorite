@@ -745,22 +745,25 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
     },
     # STU-G1 (ai_studio.md section 6.2): the AI Studio builder tools, for the
     # one assistant to hold in a Studio turn. The owner is `studio-builder`,
-    # which is NOT a second assistant. Eight stateless tools (G1b added the describe tool, G2 the interview and the plan card): no draft store
-    # exists. A run loads a pack only where tool packs are on, and the pack
+    # which is NOT a second assistant. Eight stateless builder tools (G1b added the describe tool,
+    # G2 the interview and the plan card), three skill tools (F2d) and two package tools (G1c:
+    # save and publish over the A5 routes). A run loads a pack only where tool packs are on, and the pack
     # builds nothing for an org that STUDIO_ORGS does not hold.
     "studio": {
         "label": "AI Studio builder",
         "summary": (
             "Build an AI Studio app: draft a manifest from a brief, patch it, "
-            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save, publish, pause and list your skills, and read the records of a package."
+            "check it, outline it, list the actions it may use, read the live schema, ask the interview, show the plan card, save and publish the app, save, publish, pause and list your skills, and read the records of a package."
         ),
         "description": (
             "A tool pack: the builder tools of AI Studio, for the main "
             "assistant to load in a Studio turn. It holds the tools to draft "
             "an app manifest, patch it, validate it, outline it and list the "
-            "actions an app may use. It also holds the skill tools: save, "
-            "publish, pause and list the skills of a member. Two read tools list the packages of a member and read the records of an object. The tools keep no draft: the chat holds "
-            "the manifest. A run loads a pack only where tool packs are on, "
+            "actions an app may use. It also holds the package tools: save "
+            "an app as a draft and publish it. It also holds the skill tools: save, "
+            "publish, pause and list the skills of a member. Two read tools list the "
+            "packages of a member and read the records of an object. The tools keep no "
+            "draft: the chat holds the manifest. A run loads a pack only where tool packs are on, "
             "so until then this switch has no effect."
         ),
         "tools": (
@@ -775,6 +778,8 @@ SKILL_FAMILIES: dict[str, dict[str, Any]] = {
             "studio_skill_list",
             "studio_skill_save",
             "studio_skill_state",
+            "studio_save",
+            "studio_publish",
             "studio_package_get",
             "studio_record_list",
         ),

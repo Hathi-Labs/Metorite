@@ -31,7 +31,7 @@
  *
  * Pure of React, so a test drives it in the node environment.
  */
-import type { ActionResult, Row, StudioDataDoor, StudioSource } from "./dataDoor";
+import { type ActionResult, type Row, type StudioDataDoor, type StudioSource, withMeta } from "./dataDoor";
 import { ACTION_FAILED } from "./TypedActionButton";
 
 /** The one shape of a source that a read may name. */
@@ -236,7 +236,11 @@ export function createRealDoor(opts: RealDoorOptions): StudioDataDoor {
       }
       const rows = flattenRecords(out.body);
       if (!rows) throw new DoorReadError(ACTION_FAILED, 502);
-      return rows;
+      const b = isObject(out.body) ? out.body : {};
+      return withMeta(rows, {
+        ...(typeof b.total === "number" ? { total: b.total } : {}),
+        ...(typeof b.total_at_least === "number" ? { atLeast: b.total_at_least } : {}),
+      });
     },
 
     async run(action: string, args?: Record<string, unknown>): Promise<ActionResult> {
@@ -283,6 +287,8 @@ export interface PackageSummary {
   name: string;
   status: string;
   live_version: number | null;
+  /** The last change, as the gateway writes it. Null when the answer has none. */
+  updated_at: string | null;
 }
 
 export interface ObjectRow {
@@ -322,6 +328,7 @@ export async function listPackages(fetchImpl: typeof fetch = fetch): Promise<Pac
   return raw.filter(isObject).map((p) => ({
     id: String(p.id), name: String(p.name ?? ""), status: String(p.status ?? ""),
     live_version: typeof p.live_version === "number" ? p.live_version : null,
+    updated_at: typeof p.updated_at === "string" ? p.updated_at : null,
   }));
 }
 

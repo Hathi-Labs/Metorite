@@ -539,6 +539,10 @@ EXEMPT: dict[str, tuple[str, str]] = {
         "chat",
         "Asks the assistant for the brief as a turn of the thread.",
     ),
+    "POST /api/chat/sessions/{}/buddy-hello": (
+        "chat",
+        "Posts the hello once, on a member's first visit (BUD-1). The shell sends it, not the member.",
+    ),
     "POST /api/chat/sessions/{}/compact": (
         "chat",
         "Folds the old turns of a thread into a summary. It is the chat's own context step.",
@@ -615,6 +619,9 @@ EXEMPT: dict[str, tuple[str, str]] = {
 
 #: An action -> the wave that gives the chat a tool for it.
 DEBT: dict[str, str] = {
+    # ── AI Studio (BETA-1): the app page deletes a package. A5c-2 builds the chat tool. ──
+    "DELETE /api/studio/packages/{}": "P-9",
+    "GET /api/studio/packages/{}/delete-preview": "P-9",
     # ── Tasks ──
     "GET /api/tasks/settings": "P-1",
     "POST /api/tasks/ai/backfill-context": "P-1",
@@ -865,7 +872,6 @@ DEBT: dict[str, str] = {
     "GET /api/apps/{}/usage": "P-6",
     "GET /api/apps/{}/versions": "P-6",
     "PATCH /api/apps/{}": "P-6",
-    "POST /api/apps": "P-6",
     "POST /api/apps/{}/ai/complete": "P-6",
     "POST /api/apps/{}/build": "P-6",
     "POST /api/apps/{}/fork": "P-6",
@@ -1012,6 +1018,10 @@ DEBT: dict[str, str] = {
     "DELETE /api/integrations/github": "P-8",
     "DELETE /api/integrations/plugins/{}": "P-8",
     "GET /api/agent-access/connections": "P-8",
+    # MCP-P1b-1: the list "Waiting for you" and Approve or Decline on
+    # AppRequestCard. The chat tool and card are MCP-P1b-4 (task 1703).
+    "GET /api/agent-access/requests": "P-8",
+    "POST /api/agent-access/requests/{}/decision": "P-8",
     "GET /api/integrations/agent-connections": "P-8",
     "GET /api/integrations/connections": "P-8",
     "GET /api/integrations/github/account": "P-8",
@@ -1042,14 +1052,14 @@ DEBT_CEILING: dict[str, int] = {
     "knowledge": 17,  # The Knowledge manifest's planned rows.
     "memory": 5,
     "workflows": 24,
-    "apps": 29,
+    "apps": 28,
     "agents": 20,
     "chat": 25,
     "shell": 15,
     "settings": 26,  # PZ-35 added the three chat summary actions, and RX-7 the zone read and write.
     "admin": 36,
-    "integrations": 19,
-    "studio": 0,
+    "integrations": 21,  # MCP-P1b-1 added the app-request list and decision (task 1703).
+    "studio": 2,  # BETA-1: the delete of a package waits for the chat tool of A5c-2.
 }
 
 #: A UI file -> the most requests in it that the fence cannot read. A new
