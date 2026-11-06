@@ -7,6 +7,9 @@ name: pr-check
 
 on:
   pull_request:
+    # CIV-17: `ready_for_review` starts the full set when a draft is marked ready.
+    # The draft run skips the heavy jobs (see `draft` below).
+    types: [opened, synchronize, reopened, ready_for_review]
     # Deliberately NOT restricted to `branches: [main]`. With that filter a
     # stacked PR (one targeting another feature branch) ran no checks at all,
     # and GitHub renders "no checks" the same as "nothing failing" — so broken
@@ -86,6 +89,10 @@ jobs:
       # `ci_unit_guard.py gate-output` turns a list over 200 KB into `full`.
       full: ${{ steps.gate.outputs.full }}
       files: ${{ steps.gate.outputs.files }}
+      # CIV-17. The unit shards this selection needs, a JSON list: `[]` for
+      # an empty selection, `[1]` for a small one, `[1,2,3,4,5,6]` for a full
+      # run. The `test` matrix reads it. Empty here means `changes` failed.
+      shards: ${{ steps.gate.outputs.shards }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -100,7 +107,8 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           python3 scripts/affected_tests.py --gate --base "$BASE" > gate.json || rm -f gate.json
-          python3 scripts/ci_unit_guard.py gate-output --json gate.json | tee -a "$GITHUB_OUTPUT"
+          python3 scripts/ci_unit_guard.py gate-output --json gate.json \
+            "--ignored=$(python3 scripts/fences.py pytest-ignore)" | tee -a "$GITHUB_OUTPUT"
 
       - id: diff
         env:
@@ -280,17 +288,21 @@ jobs:
   # `unit-tests` would then read a skipped dependency. A selection NEVER
   # reaches pytest as an empty list, because pytest then collects everything.
   test:
-    name: "Unit tests (shard ${{ matrix.shard }}/6)"
+    name: "Unit tests (shard ${{ matrix.shard }})"
     runs-on: ubuntu-24.04
     needs: changes
-    if: ${{ !cancelled() }}
+    # CIV-17. No shard job starts for an empty selection (`shards` is `[]`), and
+    # none on a draft PR. GitHub fails a matrix with no values, so the `if:`
+    # skips the job before the matrix is read. A failed `changes` job leaves
+    # `shards` empty text, and the matrix then falls back to all six shards.
+    if: ${{ !cancelled() && github.event.pull_request.draft != true && needs.changes.outputs.shards != '[]' }}
     # `fail-fast: false`: one run reports the failures of EVERY shard.
     # Fail-fast cancelled the other five and hid their failures until the
     # next round.
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: ${{ fromJSON(needs.changes.outputs.shards || '[1,2,3,4,5,6]') }}
     # WS-31 CP-3. The Customer Console's suites are R8-gated: they skip themselves
     # unless CUSTOMER_CONSOLE_DATABASE_URL points at a real Postgres, because
     # hermetic fakes agree with whatever SQL they are handed. Independent
@@ -447,7 +459,7 @@ jobs:
           rc=0
           uv run python -m pytest $SHARD_TARGETS -v -rs --reruns 1 \
             $(python3 scripts/fences.py pytest-ignore) \
-            --splits 6 --group ${{ matrix.shard }} \
+            --splits ${{ steps.pick.outputs.splits }} --group ${{ matrix.shard }} \
             --splitting-algorithm duration_based_chunks \
             -o junit_family=xunit1 --junitxml=junit/shard-${{ matrix.shard }}.xml || rc=$?
           if [ "$rc" -eq 5 ] && [ "$SHARD_MODE" = "selection" ]; then
@@ -494,21 +506,41 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [test, changes]
     # `always()`, so a failed shard turns THIS check red instead of skipping
-    # it. A skipped required check counts as satisfied.
-    if: always()
+    # it. A skipped required check counts as satisfied. The one exception is a
+    # draft PR (CIV-17): a draft cannot merge, and `ready_for_review` starts a
+    # new run with the full set.
+    if: always() && github.event.pull_request.draft != true
     steps:
+      # CIV-17. `test` is `skipped` ONLY for an empty selection: `changes`
+      # succeeded and said `shards` is `[]`. Any other skip (a cancelled run, a
+      # failed `changes` job) stays red here. This is the #1077 trap.
       - name: Every shard passed
+        env:
+          TEST: ${{ needs.test.result }}
+          CHANGES: ${{ needs.changes.result }}
+          SHARDS: ${{ needs.changes.outputs.shards }}
         run: |
-          echo "shards: ${{ needs.test.result }}"
-          [ "${{ needs.test.result }}" = "success" ] || exit 1
+          echo "shards: $TEST (selection list: $SHARDS)"
+          if [ "$TEST" = "skipped" ] && [ "$CHANGES" = "success" ] && [ "$SHARDS" = "[]" ]; then
+            echo "empty selection: no shard was needed"
+            exit 0
+          fi
+          [ "$TEST" = "success" ] || exit 1
 
       - uses: actions/checkout@v5
 
       - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.shards != '[]'
         with:
           pattern: junit-shard-*
           path: junit
           merge-multiple: true
+
+      # An empty selection ran no shard, so no report exists. Write a zero-test
+      # one, and the check below then has a report to read.
+      - name: Empty selection report
+        if: needs.changes.outputs.shards == '[]'
+        run: python3 scripts/ci_unit_guard.py empty-report --out junit/shard-0.xml
 
       # CIV-3. On a selection run only the must-run files in the selection
       # have to run. `--only-selected` takes the selected paths, and an empty
@@ -647,7 +679,7 @@ jobs:
     # Its scripts live under scripts/, and the schema under infra/. A PR
     # that touches neither cannot change the result (2026-10-19).
     needs: changes
-    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.database == 'true')"
+    if: "!cancelled() && github.event.pull_request.draft != true && (needs.changes.result != 'success' || needs.changes.outputs.database == 'true')"
     services:
       postgres:
         image: postgres:16
@@ -713,7 +745,7 @@ jobs:
     # The ladder is infra/, and its appliers are under scripts/. The R1
     # number guard runs in the shards and in push-check on every PR anyway.
     needs: changes
-    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.database == 'true')"
+    if: "!cancelled() && github.event.pull_request.draft != true && (needs.changes.result != 'success' || needs.changes.outputs.database == 'true')"
     services:
       postgres:
         image: pgvector/pgvector:pg16
@@ -810,6 +842,8 @@ jobs:
   frontend:
     name: "Frontend (typecheck + unit tests)"
     runs-on: ubuntu-24.04
+    # CIV-17: a draft PR waits. `ready_for_review` starts the full set.
+    if: github.event.pull_request.draft != true
     # ⚠️ NOT filtered by path. Its unit tests read files across the whole
     # repo (apps/, tests/fixtures/, project-docs/), so no path is safe to skip.
     # `pull-requests: read` lets ci_advisory.sh read the PR's labels.
@@ -898,7 +932,7 @@ jobs:
     name: "Operator console (typecheck + unit tests)"
     runs-on: ubuntu-24.04
     needs: changes
-    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.operator == 'true')"
+    if: "!cancelled() && github.event.pull_request.draft != true && (needs.changes.result != 'success' || needs.changes.outputs.operator == 'true')"
     permissions:
       contents: read
       pull-requests: read
@@ -986,7 +1020,7 @@ jobs:
     # 2026-10-19: and only when the PR touches the control plane. A skipped
     # e2e frees three runners for the other PRs.
     needs: changes
-    if: "!cancelled() && github.event_name != 'push' && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true')"
+    if: "!cancelled() && github.event.pull_request.draft != true && github.event_name != 'push' && (needs.changes.result != 'success' || needs.changes.outputs.frontend == 'true')"
     # A hung dev server must cost minutes, not the runner's six-hour default.
     #
     # 🔴 THE CAP WAS THE FAULT, NOT THE CODE. It was 20 minutes, set when the
@@ -1054,7 +1088,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: changes
-    if: "!cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.caddy == 'true')"
+    if: "!cancelled() && github.event.pull_request.draft != true && (needs.changes.result != 'success' || needs.changes.outputs.caddy == 'true')"
     # H-60: the deploy installs deploy/hostinger/caddy/Caddyfile on the box by
     # itself. The apply validates it there and refuses a bad file, but then the
     # deploy is red AFTER the merge. This job refuses it BEFORE the merge.

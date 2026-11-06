@@ -143,14 +143,16 @@ def test_the_unit_shards_follow_the_changes_job_and_the_aggregate_is_never_skipp
     cond = jobs["test"]["if"]
     assert "!cancelled()" in cond and "always()" not in cond
     assert "needs.changes.outputs.full" not in cond, "the shards decide inside, not by an if"
-    assert jobs["unit-tests"]["if"] == "always()"
+    # CIV-17: only a draft PR skips the aggregate. `always()` stays in it.
+    assert jobs["unit-tests"]["if"] == "always() && github.event.pull_request.draft != true"
     assert jobs["unit-tests"]["name"] == "Unit tests"
     assert "paths" not in (yaml.safe_load(_PR_CHECK.read_text(encoding="utf-8"))[True]["pull_request"] or {})
 
 
 def test_the_frontend_unit_job_is_never_skipped_by_path():
     # Its tests read files across the whole repo.
-    assert "if" not in _jobs()["frontend"]
+    # CIV-17: a draft PR waits, and that is the only condition.
+    assert _jobs()["frontend"].get("if") == "github.event.pull_request.draft != true"
 
 
 def test_the_visual_review_line_runs_in_a_required_job():

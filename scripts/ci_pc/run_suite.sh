@@ -136,7 +136,8 @@ pg "ci-backup-$TAG" postgres:16 5432 postgres rehearsal postgres || exit 1
 # (CIV-3) a FULL result: every shard runs tests/unit, and the guard checks
 # every --must-run file. Fence: tests/unit/test_ci_pc.py.
 FULL_RUN=(--ctx needs.changes.result=success --ctx needs.changes.outputs.full=true --ctx needs.changes.outputs.files=
-          --ctx steps.pick.outputs.mode=full --ctx steps.pick.outputs.paths=)
+          --ctx steps.pick.outputs.mode=full --ctx steps.pick.outputs.paths= --ctx steps.pick.outputs.splits=6
+          --ctx "needs.changes.outputs.shards=[1,2,3,4,5,6]")
 rm -rf junit
 for i in $(seq 1 "$SHARDS"); do
   job "shard-$i" "ci-cc-$i-$TAG" test --ctx matrix.shard=$i "${FULL_RUN[@]}" "--replace=--splits 6=>--splits $SHARDS"
