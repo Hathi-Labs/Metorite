@@ -316,9 +316,10 @@ def live(monkeypatch, world):
             invalidate_access()
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def audits(monkeypatch) -> list[Any]:
-    """Each audit event the routes record, in order (A8)."""
+    """Each audit event the routes record, in order (A8). Autouse, so no
+    revoke of this file sends an event to a shared database."""
     seen: list[Any] = []
     monkeypatch.setattr(acb_audit, "record", seen.append)
     return seen

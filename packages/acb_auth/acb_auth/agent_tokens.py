@@ -1091,23 +1091,39 @@ def _scope_refusal(
 ) -> ChangeRefused | None:
     """The scope rules of D-EA-13 for a change from *held* to *asked*.
 
-    Rule 4: one resource scope at least. Rule 3: ``offline_access`` is in
-    *asked* exactly when it is in *held*. Rule 2: the ceiling binds a
-    turn-on only. A scope that *held* holds, or that a held write scope
-    covers (``agent_oauth.scope_holds``), adds no access at the edge, so it
-    needs no check. Each other resource scope must be in *ceiling*. A scope
-    that the server does not know is outside the ceiling.
+    A KNOWN resource scope is one of ``agent_oauth.RESOURCE_SCOPES``:
+    ``SUPPORTED_SCOPES`` less ``offline_access``. Rules 4 and 2 count known
+    resource scopes only.
+
+    - Rule 4: *asked* holds one known resource scope at least. A body of
+      only unknown scopes gets :data:`CHANGE_NO_SCOPE`, so the store never
+      writes a grant with no real scope.
+    - Rule 3: ``offline_access`` is in *asked* exactly when it is in *held*.
+    - Rule 2: the ceiling binds a turn-on only. A known scope that a known
+      held scope holds or covers (``agent_oauth.scope_holds``) adds no
+      access at the edge, so it needs no check. Each other known scope must
+      be in *ceiling*.
+    - An unknown scope that *held* holds (a scope that left the server after
+      the connect) drops out, because the store keeps known scopes only. An
+      unknown scope that *held* does not hold is a turn-on that the server
+      cannot grant, so it is above the ceiling.
     """
     offline = agent_oauth.OFFLINE_ACCESS
-    wanted = [s for s in dict.fromkeys(asked) if s != offline]
-    if not wanted:
+    known = set(agent_oauth.RESOURCE_SCOPES)
+    asked_once = list(dict.fromkeys(asked))
+    if not any(s in known for s in asked_once):
         return ChangeRefused(CHANGE_NO_SCOPE)
-    if (offline in asked) != (offline in held):
+    if (offline in asked_once) != (offline in held):
         return ChangeRefused(CHANGE_OFFLINE_ACCESS)
+    held_known = [h for h in held if h in known]
     allowed = set(ceiling)
     above = tuple(
-        s for s in wanted
-        if not agent_oauth.scope_holds(held, s) and s not in allowed
+        s for s in asked_once
+        if s != offline and (
+            (s in known and not agent_oauth.scope_holds(held_known, s)
+             and s not in allowed)
+            or (s not in known and s not in held)
+        )
     )
     if above:
         return ChangeRefused(CHANGE_ABOVE_CEILING, above)
@@ -1150,9 +1166,12 @@ async def update_connection_grant(
     locks the live connection of this member in this organization, reads
     the scopes of its live tokens, and checks the rules in this order:
 
-    1. The scope rules (:func:`_scope_refusal`). The ceiling is
-       :func:`ceiling_of` the live tokens, read under the lock. It binds a
-       turn-on only, so a narrowing passes with no live token too.
+    1. The scope rules (:func:`_scope_refusal`). Rule 4 counts the known
+       resource scopes only, so a grant never loses its last real scope.
+       The ceiling is :func:`ceiling_of` the live tokens, read under the
+       lock. It binds a turn-on only, so a narrowing passes with no live
+       token too. The store writes the known scopes only, in the canonical
+       order (``agent_oauth.scope_string``), and never an empty string.
     2. The marks. *unseen_pins* and *unseen_left_out* are the ids of the
        body that the member of the session does not see, as the caller
        found them. The store refuses such an id only when the locked row
@@ -1180,7 +1199,7 @@ async def update_connection_grant(
     if org is None or connection is None:
         return ChangeRefused(CHANGE_NOT_FOUND)
     where = {"connection_id": connection, "org": org, "member": member}
-    new_scopes = agent_oauth.scope_string(scopes).split(" ")
+    new_scopes = [s for s in agent_oauth.scope_string(scopes).split(" ") if s]
     pins = [str(p) for p in pinned_projects]
     left_out = [str(p) for p in left_out_projects]
     async with _tenant_session(org) as db:
@@ -1193,6 +1212,9 @@ async def update_connection_grant(
         refused = _scope_refusal(list(scopes), before.scopes, before.ceiling_scopes)
         if refused is not None:
             return refused
+        if not any(s in agent_oauth.RESOURCE_SCOPES for s in new_scopes):
+            # Rule 4 passed, so only a bug reaches this line. Write nothing.
+            return ChangeRefused(CHANGE_NO_SCOPE)
         new_unseen = tuple(dict.fromkeys([
             *(p for p in unseen_pins if p not in before.pinned_projects),
             *(p for p in unseen_left_out if p not in before.left_out_projects),

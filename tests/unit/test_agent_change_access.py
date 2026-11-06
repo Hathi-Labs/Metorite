@@ -679,6 +679,25 @@ class TestTheRefusals:
         assert _error(await _patch(live, MEMBER, cid, _grant([OFFLINE]))) == "no_scope"
         assert live.a.row(cid) == before
 
+    async def test_a_held_unknown_scope_cannot_empty_the_grant(self, live):
+        """Re-review N1, rule 4. A row holds a scope that the server no
+        longer knows. A body that keeps only that scope stores nothing."""
+        cid, _ = live.a.connection(MEMBER, scopes=(READ, "legacy:read"),
+                                   tokens=("projects:read",))
+        r = await _patch(live, MEMBER, cid, _grant(["legacy:read"]))
+        assert _error(r) == "no_scope"
+        assert live.a.row(cid)["scopes"] == [READ, "legacy:read"]
+
+    async def test_a_held_unknown_scope_drops_out_beside_a_known_one(self, live):
+        """N1. The store keeps the known scope and drops the unknown one,
+        and never stores an empty scope."""
+        cid, _ = live.a.connection(MEMBER, scopes=(READ, CONTEXT, "legacy:read"),
+                                   tokens=("projects:read context:read",))
+        r = await _patch(live, MEMBER, cid, _grant([READ, "legacy:read"]))
+        assert r.status_code == 200, r.text
+        assert r.json()["scopes"] == [READ]
+        assert live.a.row(cid)["scopes"] == [READ]
+
     @pytest.mark.parametrize("field", [
         "scopes", "pinned_projects", "left_out_projects", "include_personal"])
     async def test_a_missing_field_is_422(self, live, field):
@@ -721,8 +740,11 @@ class TestTheRefusals:
         assert _error(r) == "scope_above_ceiling"
         assert r.json()["detail"]["scopes"] == [WRITE]
         assert live.a.row(cid)["scopes"] == [READ]
-        r = await _patch(live, MEMBER, cid, _grant(["admin:everything"]))
+        r = await _patch(live, MEMBER, cid, _grant([READ, "admin:everything"]))
         assert _error(r) == "scope_above_ceiling"
+        assert r.json()["detail"]["scopes"] == ["admin:everything"]
+        r = await _patch(live, MEMBER, cid, _grant(["admin:everything"]))
+        assert _error(r) == "no_scope", "no known scope is no scope"
         assert live.a.row(cid)["scopes"] == [READ]
 
     async def test_a_project_the_member_does_not_see_is_422(self, live):
