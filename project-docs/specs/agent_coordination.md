@@ -1,6 +1,6 @@
 # Agent coordination — many agents and many people on one board
 
-**Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open.** **P9 (§3.10, §5.10, D183) was planned on 2026-11-06. No P9 slice is built.**
+**Status: ACTIVE (SW-0, 2026-10-30). SW-43a (withdraw an answer) is built and dark, 2026-11-05. SW-43b and SW-43c are open.** **P9 (§3.10, §5.10, D183) was planned on 2026-11-06. SW-63 is built (2026-11-07). No other P9 slice is built.**
 
 This spec gates every SW slice (D135.4). The decisions are **D140** in `work_plan.md` §3.
 
@@ -1137,6 +1137,7 @@ They keep their own gates.
 - **Done when.** R8: a claim of a parent with 2 open subtasks carries the warning and works. A claim of a leaf has no warning.
 - **Fence.** `test_mcp_edge_claim.py` and `test_agent_run_exclusive.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE.
+- **Built 2026-11-07.** SW-63 is built and live under `agent_runs_enabled`, because it only adds the optional result fields `warning` and `open_subtasks`. The gateway counts only the subtasks that the caller can see. The fence is `TestAClaimOfAnEpicWarns` in `test_mcp_edge_claim.py`.
 
 ---
 
