@@ -373,6 +373,12 @@ COVERED: dict[str, str | tuple[str, str]] = {
 
 #: An action -> (kind, reason). The kind is a key of :data:`EXEMPT_KINDS`.
 EXEMPT: dict[str, tuple[str, str]] = {
+    # ── Shell ──
+    "GET /api/shell/manifest": (
+        "stream",
+        "The shell reads the installed packages to draw the sidebar and the command bar, and reads them "
+        "again every few seconds (PKG-6). No member click sends it. The chat acts on the same records.",
+    ),
     # ── Email ──
     "GET /api/email/attachments/{}/download": (
         "download",
