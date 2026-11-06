@@ -2960,6 +2960,49 @@ async def status_scope_ids(db: Any, project_id: str) -> list[str]:
     return [str(r.id) for r in rows]
 
 
+#: How many projects use each set in ``:owners``, with the owner left out. It
+#: is ``used_by`` of ``GET /nodes/{id}/status-set`` (projects_settings.md §9.4,
+#: PST-1).
+#:
+#: The walk of :data:`_STATUS_SCOPE_SQL`, from many owners at once, with one
+#: count for each owner. So a list of N owners costs one query, not N.
+#:
+#: ⚠️ The ``NOT p.owns_statuses`` sits in the RECURSIVE arm, as it does in
+#: :data:`_STATUS_SCOPE_SQL`. A nested owner and every node under it use
+#: another set, so the walk must not go through it. A test at the end would
+#: count the children of a nested owner. Fence:
+#: ``tests/unit/test_projects_status_set_read_r8.py``.
+#:
+#: It counts every row that the tenant session reads, and Postgres RLS binds
+#: that session to one organization. A project that the caller cannot see
+#: still counts, because an edit changes its lanes too.
+_STATUS_USERS_SQL = """
+WITH RECURSIVE status_users AS (
+    SELECT id AS owner_id, id FROM pm_projects
+     WHERE id = ANY(CAST(:owners AS uuid[]))
+    UNION ALL
+    SELECT u.owner_id, p.id FROM pm_projects p
+      JOIN status_users u ON p.parent_project_id = u.id
+     WHERE NOT p.owns_statuses
+)
+SELECT owner_id, count(*) - 1 AS used_by FROM status_users GROUP BY owner_id
+"""
+
+
+async def status_users(db: Any, owner_ids: list[str]) -> dict[str, int]:
+    """``{owner id: projects that use its set, the owner left out}``.
+
+    One grouped query for every owner in ``owner_ids``. An id that has no row
+    in the tenant is not in the answer.
+    """
+    if not owner_ids:
+        return {}
+    rows = (await db.execute(
+        text(_STATUS_USERS_SQL), {"owners": list(owner_ids)},
+    )).fetchall()
+    return {str(r.owner_id): int(r.used_by) for r in rows}
+
+
 #: Where a task lands when its lane is not in the set it now resolves to.
 #:
 #: Name first, then the same category, then the first lane that is not triage.
