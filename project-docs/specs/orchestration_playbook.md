@@ -64,11 +64,11 @@ Guidance comes in layers (D140.6, SW-31). P10 adds one at the bottom. The neares
 | Organization | An admin | The organization's own rules |
 | **Metorite default** | **Metorite, shipped with the server** | **The playbook defaults and the safety rules** |
 
-**The rule (D186.2).** The Metorite default layer holds no rule that belongs to HathiLabs. These are Simplified Technical English, the R rules (R1 to R8), D numbers and the gate labels of this repository. They also include the names of its hooks and guard files, and the 21:30 UTC release. Those bind HathiLabs work. They are written in the HathiLabs organization layer, or in the repository's `CLAUDE.md`. They do not copy between the two (`CLAUDE.md` §5).
+**The rule (D186.2).** The Metorite default layer holds no rule that belongs to HathiLabs. These are Simplified Technical English, the R rules (R1 to R8), D numbers and the gate labels of this repository. They also include the names of its hooks and guard files, and the 21:30 UTC release. The product code holds none of them either: a release cut-off, a stage list and tier names are policy defaults (SW-94). Those bind HathiLabs work. They are written in the HathiLabs organization layer, or in the repository's `CLAUDE.md`. They do not copy between the two (`CLAUDE.md` §5).
 
 **An organization may switch the tips of the default layer off. It may not switch off a safety line.** The safety lines are the stopping rule, the one-disposition rule, `ask_on_task` for a question, and `record_outside_decision`.
 
-**The fence.** `tests/unit/test_playbook_org_neutral.py` (new, PB-5) reads every file of the playbook and every default tip. It fails on a token from `tests/fixtures/playbook_org_tokens.json` (new). The fixture lists the HathiLabs tokens. A second test checks that each token of the fixture still appears in `CLAUDE.md`, so the list cannot drift. The fence is a PROCESS fence in build and blocks after the `harden` pull request.
+**The fence.** `tests/unit/test_playbook_org_neutral.py` (new, PB-5) reads every file of the playbook, every default tip, the server instructions (`agent_edge/mcp.py`), the `work_on_task` text, the protocol block of SW-56 and the plugin package (SW-82). It fails on a match with an entry of `tests/fixtures/playbook_org_tokens.json` (new). An entry is a token or a regex. D numbers use a regex such as `\bD\d{2,3}(\.\d+)?\b`. A second test checks that each entry still matches text in `CLAUDE.md`, `work_plan.md` §1 or `docs/style_ste.md`, so the list cannot drift. The fence is a SAFETY fence and blocks from the first merge, because D186.2 is an owner call.
 
 **The HathiLabs layer in Metorite** (PB-10) is a pointer only: "Follow `CLAUDE.md` in the repository." It does not mirror the rules.
 
@@ -95,7 +95,7 @@ Guidance comes in layers (D140.6, SW-31). P10 adds one at the bottom. The neares
 
 ## 6. The content
 
-Files live in `apps/services/agent_edge/playbook/` as Markdown with a header: `slug`, `version`, `title`, `summary` and `audience`. The server reads them at start. A change of content is a change of version, with no migration.
+Files live in one shared package, `packages/acb_playbook/`, as Markdown with a header: `slug`, `version`, `title`, `summary` and `audience`. The edge and the gateway both read that package, so one source serves the prompts, the resources and the default guidance layer. A change of content is a change of version, with no migration.
 
 - `index`
 - `patterns/` one file for each pattern of §3, each with "when to use" and "when not"
@@ -125,8 +125,8 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 #### PB-2 · The prompts
 
 - **Metorite task.** 1948.
-- **Scope.** `set_up_agent_team`, `plan_slices`, `write_brief`, `review_my_fleet` and `run_retro` in `agent_edge/prompts.py`, and the session commands of SW-82 in the same registry. Each message is fixed text and names the tools to call. A prompt makes no gateway request.
-- **Done when.** `prompts/list` holds them. A prompt message holds no member text. The existing fences of `test_mcp_edge_prompts.py` pass.
+- **Scope.** `set_up_agent_team`, `plan_slices`, `write_brief`, `review_my_fleet` and `run_retro` in `agent_edge/prompts.py`, and the session commands of SW-82 in the same registry. Each message is fixed text and names the tools to call. A prompt makes no gateway request. This widens EA3-39 item 1 ("one prompt"). Prompts that only read list with `projects:read`. Prompts that write list with `projects:write`. `external_agent_access.md` gets a one-line pointer.
+- **Done when.** `prompts/list` holds them by scope. A prompt message holds no member text. The existing fences of `test_mcp_edge_prompts.py` pass, with EA3-39 item 1 and item 8 updated.
 - **Fence.** `test_mcp_edge_prompts.py`.
 - **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** PB-1.
 
@@ -141,17 +141,17 @@ Each names its scope, its done-when, its fence (R7), its risk tier and its gate.
 #### PB-4 · Tips in the results
 
 - **Metorite task.** 1950.
-- **Scope.** `tips` beside `protocol` (SW-56): at most 2 lines of 120 characters, chosen by a rule table on the tool and the context. Each names a topic and shows once for each run. They are separate from the safety lines.
+- **Scope.** `tips` beside `protocol` (SW-56): at most 2 lines of 120 characters, chosen by a rule table on the tool and the context. Each names a topic and shows once for each run. The edge keeps no state, so the gateway stores which tips a run has seen in a column `pm_agent_runs.tips_seen` (migration, expand only). They are separate from the safety lines.
 - **Done when.** A claim of a delegated task with no brief carries the brief tip once. The same run sees it once. An organization that switched tips off sees none, and still sees the safety lines.
 - **Fence.** `test_mcp_edge_context.py`, `test_mcp_edge_prompts.py`.
-- **Risk.** STANDARD. **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-56.
+- **Risk.** HIGH (a migration). **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-56.
 
 #### PB-5 · The default layer, and the neutral fence
 
 - **Metorite task.** 1951.
 - **Scope.** The Metorite default level in guidance (SW-31): read-only, versioned, below the organization. The setting that switches tips off. The two tests of §4 and the fixture.
 - **Done when.** `get_task_context` returns the default block last. A HathiLabs token in any playbook file fails the test. A token in the fixture that is gone from `CLAUDE.md` fails the second test.
-- **Fence.** `test_playbook_org_neutral.py` (new), `test_agent_guidance_r8.py`.
+- **Fence.** `test_playbook_org_neutral.py` (new, SAFETY), `test_agent_guidance_r8.py`.
 - **Risk.** HIGH (a channel that reaches every agent, tenancy). **Gate.** AGENT-SAFE. **Depends on.** PB-1, SW-31.
 
 #### PB-6 · Setup tools and the starter kit

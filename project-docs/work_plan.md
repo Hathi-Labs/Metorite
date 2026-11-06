@@ -5500,7 +5500,7 @@ Fence: `statusSetCopy.test.ts` and `tests/unit/test_projects_status_set_read_r8.
 
 The owner asked on 2026-11-06, in chat, for two things. First, to list every capability that the Metorite MCP needs for multi-agent orchestration, for sessions and for the platform. Second, that Metorite "contains the know-how and understanding in the system prompt to help set up multi-org orchestration systems for whoever connects the Metorite MCP". Board: **WS-MCP**. Owning specs: `specs/agent_coordination.md` §3.11, §4.2 and §5.11, and `specs/orchestration_playbook.md`. Metorite: epic 321, plan task 1906.
 
-It extends D140 and D183. It amends no earlier rule.
+It extends D140 and D183. It amends five earlier rules, each in one point (items 8 to 12 below).
 
 **Owner calls (task 1906, comment of 2026-11-06 18:05 UTC).**
 
@@ -5508,7 +5508,7 @@ It extends D140 and D183. It amends no earlier rule.
 2. **HathiLabs rules are the HathiLabs layer, never the product default.** STE, the R rules, D numbers, gate labels and the guard hooks bind HathiLabs work only.
 3. **The price is the flat seat.** The playbook and every P10 capability are part of the seat of `launch_surface.md` §4. No SKU and no add-on.
 
-**Agent defaults (task 1906).** They stand unless the owner objects. Q14 to Q17 of the spec's §8.1 are open.
+**Agent defaults (task 1906).** They stand unless the owner objects. Q14 to Q18 of the spec's §8.1 are open.
 
 4. **One channel to a running agent: the notice** (SW-64).
 5. **Declared data only warns or narrows.** A lane, a role, a label and a path claim never widen authority.
@@ -5516,6 +5516,14 @@ It extends D140 and D183. It amends no earlier rule.
 7. **A fact that spreads needs a source, an age and an approval.**
 8. **Policies are data**, in one store resolved by app project and risk tier (SW-94). The environment flags stay as master switches.
 9. **Done may wait for the live service.** The setting `done_on` is `merge` by default.
+
+**What D186 amends.**
+
+10. **D140.2 and D-EA-14, by SW-75 only.** A policy may answer a reversible question on a LOW task that a person tiered. It ships only if Q16 says yes.
+11. **Non-goal 31 of `github_integration.md` §2 and EA3-39 item 5, by SW-76.** An opened pull request may move its task to review, under a policy that is off by default.
+12. **D140.8 and D183, by SW-66.** A run may park past the lease on a merge, on another run or on a time, under the same cap (Q13).
+13. **EA3-39 item 1, by PB-2.** The edge serves more than one prompt.
+14. **The owner decision on task 1731, by SW-78.** A later release may need a wider scope. That is OWNER-GATE (Q18).
 
 **Re-check this number at merge.** The first merge wins a D-number. D182 to D184 were open when this record was written.
 
