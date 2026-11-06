@@ -3845,7 +3845,10 @@ async def _apply_tool_packs(
     current = base + len(added) - (len(pool) - len(kept))
     plan = tool_packs.LoaderPlan()
     if offer_loader:
-        # RX-1: a sticky pack gives way to a load, so the plan counts it free.
+        # RX-1: a spare pack gives way to a load, so the plan counts it free:
+        # an old sticky pack, and (task 1747, D169 item 8 as amended) a pack
+        # that came in only by the words. For the Projects owner the plan
+        # also reaches the owner through it.
         built = {b.slug: len(b.tools) for b in builds}
         plan = await _plan_pack_loader(
             agent, allow, [b.slug for b in builds], builds=builds, current=current,

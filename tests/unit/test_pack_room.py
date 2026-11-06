@@ -271,11 +271,19 @@ def test_a_full_run_with_a_spare_pack_offers_what_fits_once_it_leaves() -> None:
     assert "email" not in plan.offered
 
 
-def test_a_spare_pack_widens_the_offer_and_never_the_reach_of_an_owner() -> None:
-    """No specialist leaves on the promise of a move. Mutation: run the owner
-    loop over the wide list -> ``via_loader`` grows -> red."""
+def test_a_spare_pack_reaches_only_the_projects_owner() -> None:
+    """Task 1747 reverses the old rule of this case ("no specialist leaves on
+    the promise of a move") for an owner of ``SPECIALIST_STAYS_UNTIL_REACHED``.
+    The Projects owner is reached through a spare pack, because a turn with
+    two full Projects packs handed off without it. The reach of each other
+    owner does not change. Mutation: run the first branch of the owner loop
+    over the wide list -> ``email-assistant`` is reached -> red. Mutation: drop
+    the spare from the second branch -> the Projects owner is not reached ->
+    red."""
     held = ("email", "crm-records", "projects")
-    assert _plan(held, spare={"email": 31}).via_loader == _plan(held).via_loader
+    wide = _plan(held, spare={"email": 31}).via_loader
+    assert PA in wide and PA not in _plan(held).via_loader
+    assert wide - {PA} == _plan(held).via_loader
 
 
 def test_the_offer_counts_the_tools_that_leave() -> None:
@@ -318,7 +326,10 @@ async def _full_run(
     entries = _sticky(*sticky)
     turn = _turn(NO_WORD, entries)
     slugs = (*sticky, *new)
-    choice = tp.Choice(slugs=slugs, layers=dict.fromkeys(sticky, "sticky"),
+    # Task 1747: a pack of the layer "words" can leave for a load, so the new
+    # packs of these runs come by a reference, which stays.
+    choice = tp.Choice(slugs=slugs,
+                       layers={**dict.fromkeys(sticky, "sticky"), **dict.fromkeys(new, "reference")},
                        first={e.slug: e.first for e in entries})
     run = tp.PackRun.of(turn, choice, [(slug, False) for slug in slugs])
     key = "key-rx1"
@@ -467,8 +478,11 @@ async def test_a_pack_that_the_member_named_now_stays(store) -> None:
 
 
 async def test_three_packs_of_this_turn_keep_the_old_refusal(store, monkeypatch) -> None:
-    """No sticky pack, so no pack can leave. The load refuses as before, and its
-    answer names ``spawn_subagents``. Mutation: move a pack of this turn -> red."""
+    """No sticky pack, and each pack came by a reference, so no pack can leave.
+    The load refuses as before, and its answer names ``spawn_subagents``. A
+    pack that came in only by the words can leave since task 1747
+    (``test_pack_turn_keeps_used_packs.py``). Mutation: move a pack of a
+    reference -> red."""
     _stub_owners(monkeypatch)
     run, live, key = await _full_run((), new=("email", "crm-records", "projects"))
     before = list(live)
