@@ -396,8 +396,8 @@ flags.
 **The rating of an alert (slice 2b-1, DECIDED 2026-11-06 07:17 UTC).** The
 owner chose to store the rating on `reach_signal_log`, with the rule id.
 Migration 348 adds three nullable columns: `rule_id`, `feedback` and
-`feedback_at`. An interrupt writes the `rule_id` of the rule that matched. A
-card that two rules match gets one log row for each rule. `feedback` holds
+`feedback_at`. An interrupt writes the `rule_id` of the rule that matched, with
+one log row for each rule. `feedback` holds
 `useful` or `not_useful`. One member gives one rating for each card and rule,
 and a second rating replaces the first.
 
