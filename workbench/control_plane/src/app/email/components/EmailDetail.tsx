@@ -29,6 +29,7 @@ const POP_OUT_LOSES_FILES =
 import { useDraftSession } from "../lib/useDraftSession";
 import { ArtifactAttachPicker } from "./ArtifactAttachPicker";
 import { ComposerQuote, AiButton } from "./ComposerAI";
+import { draftCc } from "../lib/draftRecipients";
 import { DraftAssistant } from "./DraftAssistant";
 import { ComposerBody, ComposerExpandButton, useComposerSize } from "./ComposerSize";
 import { MessageContent } from "./MessageContent";
@@ -875,7 +876,7 @@ export function EmailDetail({ email }: EmailDetailProps) {
     const toArr = replyTo.split(",").map((s) => s.trim()).filter(Boolean);
     // A forward goes to the people in To and Cc, so the draft is a note to
     // them and not an answer to the sender (task 1817). A reply sends no Cc.
-    const ccArr = replyMode === "forward" ? replyCc.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+    const ccArr = draftCc(replyMode, replyCc);
     // A dashboard nudge seeds a follow-up instruction (consumed once); a
     // manual AI draft uses whatever the user typed in the AI box.
     const seeded = autoDraftInstructionRef.current;

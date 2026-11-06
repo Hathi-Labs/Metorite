@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { composeAssistBody, composeAssistStream } from "./api";
+import { draftCc } from "./draftRecipients";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -53,12 +54,35 @@ describe("composeAssistBody", () => {
   });
 });
 
+describe("draftCc", () => {
+  it("is the Cc list of a forward, trimmed and with no empty entry", () => {
+    expect(draftCc("forward", "a@x.test, b@x.test ,, ")).toEqual(["a@x.test", "b@x.test"]);
+    expect(draftCc("forward", "")).toEqual([]);
+  });
+
+  it("is nothing for a reply, so a reply sends the body it sent before", () => {
+    expect(draftCc("reply", "a@x.test")).toBeUndefined();
+    expect(draftCc(null, "a@x.test")).toBeUndefined();
+  });
+});
+
 describe("the inline composer", () => {
-  it("reads To and Cc when the member clicks, and only a forward sends Cc", () => {
-    const src = readFileSync(fileURLToPath(new URL("../components/EmailDetail.tsx", import.meta.url)), "utf-8");
-    const run = src.slice(src.indexOf("const runAiDraft = async"), src.indexOf("const forwardBlocked"));
-    expect(run).toMatch(/replyTo\.split/);
-    expect(run).toMatch(/replyMode === "forward" \? replyCc\.split/);
-    expect(run).toMatch(/cc: ccArr/);
+  const detail = () =>
+    readFileSync(fileURLToPath(new URL("../components/EmailDetail.tsx", import.meta.url)), "utf-8");
+  /** The object that the forward and reply composer gives to `ai.run`. */
+  const runArgs = () => {
+    const m = /ai\.run\(\s*\{([^}]*mode: replyMode === "forward"[^}]*)\}/.exec(detail());
+    expect(m).not.toBeNull();
+    return m![1];
+  };
+
+  it("EmailDetail passes the Cc of a forward to ai.run", () => {
+    expect(runArgs()).toMatch(/\bcc: ccArr\b/);
+    expect(detail()).toMatch(/const ccArr = draftCc\(replyMode, replyCc\);/);
+  });
+
+  it("EmailDetail passes the To it reads at the click", () => {
+    expect(runArgs()).toMatch(/\bto: toArr\b/);
+    expect(detail()).toMatch(/const toArr = replyTo\.split\(","\)[^;]*;\s*\/\/ A forward goes to the people/);
   });
 });
