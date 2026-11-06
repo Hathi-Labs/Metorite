@@ -1193,8 +1193,9 @@ def floor_trim_enabled() -> bool:
         return False
 
 
-#: A sticky pack leaves at the start of a turn when no tool of it ran in the
-#: last 8 member turns.
+#: A sticky pack leaves at the start of a turn when the chat did not use it in
+#: the last 8 member turns: no tool of it ran, and the model did not load it
+#: (task 1747).
 DECAY_TURNS = 8
 
 #: The Redis namespace of the sticky state. The key is
@@ -1212,13 +1213,15 @@ _TURN_FIELD = "~turn"
 
 @dataclass(frozen=True)
 class Sticky:
-    """One sticky pack of a chat: one of its tools ran in an earlier turn."""
+    """One sticky pack of a chat: one of its tools ran in an earlier turn, or
+    the model loaded it with ``load_skill_tools`` (task 1747)."""
 
     slug: str
     #: The turn and the place in the load order of its first load. The
     #: sticky packs keep this order, so the tool list stays byte-stable.
     first: tuple[int, int]
-    #: The last member turn in which a tool of the pack ran.
+    #: The last member turn that used the pack: a tool of it ran, or the
+    #: model loaded it (task 1747).
     used: int
 
 
@@ -1336,7 +1339,7 @@ class PackRun:
     #: RX-1. The last member turn of each pack of this run that a load may
     #: move out: a sticky pack that the member did not name in this turn.
     used: Mapping[str, int] = field(default_factory=dict, compare=False, repr=False)
-    #: RX-1. The sticky packs that left this run for a load. Only
+    #: RX-1. The packs that left this run for a load (:meth:`spare`). Only
     #: :meth:`leaves` writes it.
     left: set[str] = field(default_factory=set, compare=False, repr=False)
     #: RX-1. The packs with a tool that started in this run, also one that
@@ -1344,17 +1347,33 @@ class PackRun:
     #: so this is what keeps the pack of a waiting card in the run. Only
     #: :func:`pack_tool_runs` writes it.
     ran: set[str] = field(default_factory=set, compare=False, repr=False)
+    #: Task 1747. The sticky packs that left the chat at the start of this
+    #: turn (:attr:`Choice.evicted`), in order. :func:`left_line` names them
+    #: in the context of the turn.
+    gone: tuple[str, ...] = ()
+    #: Task 1747. The packs of :attr:`gone` that ``load_skill_tools`` offers
+    #: in this run.
+    gone_offered: frozenset[str] = frozenset()
+    #: Task 1747, D169 item 8 as amended on 2026-11-06 (option A). The packs
+    #: that came into this turn only by the member's words (the layer
+    #: "words" of :attr:`Choice.layers`), in load order. A load by the model
+    #: can move such a pack out (:meth:`spare`). A pack of the surface or of
+    #: a reference is not in it.
+    words: tuple[str, ...] = ()
 
     @classmethod
     def of(
         cls, turn: PackTurn, choice: Choice, loaded: Sequence[tuple[str, bool]],
-        via_loader: Iterable[str] = (),
+        via_loader: Iterable[str] = (), offered: Iterable[str] = (),
     ) -> PackRun:
         """The record of a run that loaded *loaded*, pairs of a slug and its
         held answer, in load order. *via_loader* names the owners that the
-        loader replaces (OA-7i, :func:`plan_loader`)."""
+        loader replaces (OA-7i, :func:`plan_loader`). *offered* names the
+        packs that the loader offers (task 1747, :attr:`gone_offered`)."""
         slugs = tuple(slug for slug, _held in loaded)
         via = frozenset(str(owner) for owner in via_loader)
+        gone = tuple(slug for slug in dict.fromkeys(choice.evicted)
+                     if slug not in slugs and pack(slug) is not None)
         replaced: set[str] = set(via)
         for slug in slugs:
             found = pack(slug)
@@ -1369,6 +1388,8 @@ class PackRun:
             refusals=_refusals_for(slugs), replaced=frozenset(replaced), via_loader=via,
             used={entry.slug: entry.used for entry in turn.sticky
                   if entry.slug in slugs and _asked_now(turn, entry.slug) is None},
+            gone=gone, gone_offered=frozenset(offered) & frozenset(gone),
+            words=tuple(slug for slug in slugs if choice.layers.get(slug) == "words"),
         )
 
     def holds(self) -> tuple[str, ...]:
@@ -1379,21 +1400,32 @@ class PackRun:
         return tuple(slug for slug in held if slug not in self.left) if self.left else held
 
     def spare(self) -> tuple[str, ...]:
-        """The packs that can leave for a load now, the least recently used
-        first (RX-1): a sticky pack that the member did not name in this turn,
-        and that no tool of it started in this run. A new need of the member
-        never loses to such a pack. With the org off
-        (``egress.held_card_writes_on``), no pack leaves."""
+        """The packs that can leave for a load now, in order (RX-1, D169 item
+        8). No tool of such a pack ran or started in this run. A new need of
+        the member never loses to such a pack.
+
+        1. A sticky pack that the member did not name in this turn, the least
+           recently used first.
+        2. Task 1747, D169 item 8 as amended on 2026-11-06 (option A): a pack
+           that came into this turn only by the member's words
+           (:attr:`words`), the last one first. An explicit load by the model
+           outranks a match of a word. A pack of the surface or of a
+           reference stays.
+
+        With the org off (``egress.held_card_writes_on``), no pack leaves."""
         from acb_skills.egress import held_card_writes_on
 
         if not held_card_writes_on(self.org):
             return ()
         now = self.holds()
-        return tuple(sorted(
-            (slug for slug in self.used
-             if slug in now and slug not in self.noted and slug not in self.ran),
-            key=lambda slug: (self.used[slug], self.first_of(slug)),
-        ))
+
+        def _free(slug: str) -> bool:
+            return slug in now and slug not in self.noted and slug not in self.ran
+
+        olds = sorted((slug for slug in self.used if _free(slug)),
+                      key=lambda slug: (self.used[slug], self.first_of(slug)))
+        news = [slug for slug in reversed(self.words) if _free(slug) and slug not in self.used]
+        return (*olds, *news)
 
     def leaves(self, slug: str) -> None:
         """Record that pack *slug* left this run for a load (RX-1). The hand-off
@@ -1720,7 +1752,9 @@ def _leave_order(
 def _step_aside(
     order: Sequence[str], layers: Mapping[str, str], sticky: Mapping[str, Sticky], *,
     allow: frozenset[str], total: Callable[[Sequence[str]], int],
-    stays: Mapping[str, int], key: Callable[[Sticky], Any], words: str,
+    stays: Mapping[str, int], key: Callable[[Sticky], Any], words: str = "",
+    named: frozenset[str] = frozenset(), fresh: frozenset[str] = frozenset(),
+    spare: Mapping[str, int] | None = None,
 ) -> list[str]:
     """The packs that step aside so that the loader reaches their owner, in order.
 
@@ -1729,57 +1763,102 @@ def _step_aside(
     leave no room for a third. The specialist then stayed, and the model
     handed off: the fault of 2026-11-02. So, for each owner of
     :data:`SPECIALIST_STAYS_UNTIL_REACHED`, while two or more of its packs in
-    *order* keep the owner unreached, one pack steps aside, in this order
-    (fix round 3):
+    *order* keep the owner unreached, one pack steps aside.
 
-    1. a sticky pack of ANY owner that the member's *words* of this turn do
-       not name (:func:`matched_layer`), in the order of the cap (*key*). An
-       old ``crm-records`` goes before a Projects pack that the turn asked
-       for (P2-1);
-    2. the core pack of the owner;
-    3. a sticky pack that the words name, or a new pack, of the owner: the
-       last one first. So a sticky pack that the member names again stays
-       longer than the core pack (P1-1).
+    Task 1747 picks one of two orders.
 
-    The steps stay only when they reach the owner within both caps. Else none
-    stay (a mixed email turn keeps email and the core pack). The model loads
-    a pack again in the run when it needs a tool of it.
+    - **The spare path.** The plan reaches the owner through a *spare* pack:
+      a load by the model moves such a pack out (:meth:`PackRun.spare`, D169
+      item 8 as amended on 2026-11-06), so :func:`plan_loader` counts it as
+      free. Then only a sticky pack that this turn does not name (*named*:
+      the surface, a reference or the words) and that the last member turn
+      did not use (*fresh*) steps aside, the least recently used first
+      (*key*). The core pack and a pack that the turn asked for stay.
+    - **No spare pack.** The RX-1 switch is off, or each held pack came by the
+      surface or a reference, or is sticky and named again. Then the order
+      of PJP-2 fix round 3 applies, as before task 1747: a sticky pack of any
+      owner that the *words* do not name (:func:`matched_layer`), then the
+      core pack, then the last named or new pack of the owner. An org that
+      ``HELD_CARD_WRITES_ORGS`` does not name keeps the reach that it had
+      (D169 item 13).
+
+    In both orders a pack of *fresh* never steps aside. The model's history
+    shows its tools, and the production chat of 2026-11-05 lost
+    ``create_tasks``, ``update_status``, ``set_status_set`` and
+    ``delete_status`` when such a pack stepped aside. A pack that this chat
+    never used can step aside in the second order, because the model saw
+    none of its tools.
+
+    The steps stay only when they reach the owner within both caps, with or
+    without the spare packs. Else none stay (a mixed email turn keeps email
+    and the core pack). The context of the turn names each sticky pack that
+    left (:func:`left_line`).
 
     :func:`choose` calls it after the cap, on the packs that the cap left.
     *total* gives the tools of a request, and *stays* the specialist tools of
     each owner in the base.
     """
+    room = dict(spare or {})
 
-    def _reached(slugs: Sequence[str], owner: str) -> bool:
+    def _reached(slugs: Sequence[str], owner: str, *, with_spare: bool = False) -> bool:
+        free = {s: n for s, n in room.items() if s in slugs} if with_spare else None
         plan = plan_loader(allow, slugs, current=total(slugs),
-                           removable={owner: stays.get(owner, 0)})
+                           removable={owner: stays.get(owner, 0)}, spare=free)
         return owner in plan.via_loader
 
     current = list(order)
     out: list[str] = []
     for owner in SPECIALIST_STAYS_UNTIL_REACHED:
         trial, gone = list(current), []
+        spare_path = any(s in room for s in trial) and _reached(trial, owner, with_spare=True)
         while not _reached(trial, owner):
             mine = [s for s in trial if (f := pack(s)) is not None and f.owner == owner]
             if len(mine) < 2:
                 break
-            unnamed = [sticky[s] for s in trial
-                       if layers.get(s) == "sticky" and matched_layer(s, words) is None]
-            cores = [s for s in mine if any(
-                (f := pack(o)) is not None and f.replaces_core == s for o in mine)]
-            if unnamed:
-                victim = min(unnamed, key=key).slug
-            elif cores:
-                victim = cores[0]
+            if spare_path:
+                olds = [sticky[s] for s in trial
+                        if layers.get(s) == "sticky" and s not in named and s not in fresh]
+                if not olds:
+                    break
+                victim = min(olds, key=key).slug
             else:
-                victim = mine[-1]
+                victim = _main_order_victim(trial, mine, layers, sticky, key=key,
+                                            words=words, fresh=fresh)
+                if not victim:
+                    break
             trial.remove(victim)
             gone.append(victim)
-        if (gone and _reached(trial, owner) and len(trial) <= MAX_PACKS
+        reached = _reached(trial, owner) or _reached(trial, owner, with_spare=True)
+        if (gone and reached and len(trial) <= MAX_PACKS
                 and total(trial) <= MAX_REQUEST_TOOLS):
             current = trial
             out.extend(gone)
     return out
+
+
+def _main_order_victim(
+    trial: Sequence[str], mine: Sequence[str], layers: Mapping[str, str],
+    sticky: Mapping[str, Sticky], *, key: Callable[[Sticky], Any], words: str,
+    fresh: frozenset[str],
+) -> str:
+    """The next pack of the step-aside when no spare pack makes the room, or "".
+
+    The order of PJP-2 fix round 3: a sticky pack of any owner that the
+    member's *words* do not name, in the order of the cap; then the core pack
+    of the owner; then the last named or new pack of the owner. Task 1747
+    keeps one guard: a pack of *fresh* (used in the last member turn) never
+    steps aside."""
+    unnamed = [sticky[s] for s in trial
+               if layers.get(s) == "sticky" and matched_layer(s, words) is None
+               and s not in fresh]
+    if unnamed:
+        return min(unnamed, key=key).slug
+    cores = [s for s in mine if s not in fresh and any(
+        (f := pack(o)) is not None and f.replaces_core == s for o in mine)]
+    if cores:
+        return cores[0]
+    rest = [s for s in mine if s not in fresh]
+    return rest[-1] if rest else ""
 
 
 def choose(
@@ -1788,8 +1867,9 @@ def choose(
 ) -> Choice:
     """The packs of this turn: layer (a), with no model call (§4.2.2).
 
-    1. The decay: a sticky pack leaves when no tool of it ran in the last
-       :data:`DECAY_TURNS` member turns.
+    1. The decay: a sticky pack leaves when the chat did not use it in the
+       last :data:`DECAY_TURNS` member turns: no tool of it ran, and the model
+       did not load it (task 1747).
     2. The sticky packs that *allowed* names, in their first-load order.
     3. Each other allowed pack whose reference or words the member sent,
        typed or tapped (D-PZ-37), in the order of :data:`PACKS`.
@@ -1807,11 +1887,13 @@ def choose(
        P1-A). Else the last new pack leaves.
     5. The step-aside (PJP-2): after the cap, the packs of an owner of
        :data:`SPECIALIST_STAYS_UNTIL_REACHED` step aside while two or more of
-       them keep the loader from reaching the owner. A sticky pack of any
-       owner that this turn's words do not name leaves first, in the order of
-       step 4. Then the core pack, then a named sticky pack or a new pack of
-       the owner, the last one first. The steps stay only when they reach the
-       owner (:func:`_step_aside`).
+       them keep the loader from reaching the owner. Task 1747: when the
+       plan reaches the owner through a spare pack, only a sticky pack that
+       this turn does not name and that the last turn did not use steps
+       aside, in the order of step 4. With no spare pack, the order of fix
+       round 3 applies: an unnamed sticky pack, the core pack, then the last
+       named or new pack. A pack that the last turn used never steps aside.
+       The steps stay only when they reach the owner (:func:`_step_aside`).
 
     *allowed* is :func:`packs_on` of the bound tenant less the families that
     an admin turned off. A slug that is no pack is dropped, and so is a pack
@@ -1895,9 +1977,20 @@ def choose(
         order.remove(victim)
         layers.pop(victim, None)
 
-    # PJP-2: the step-aside runs AFTER the cap (fix round 2, P1-2).
+    # PJP-2: the step-aside runs AFTER the cap (fix round 2, P1-2). Task 1747:
+    # a pack that this turn names, or that the last member turn used, stays.
+    # The spare packs are the ones that ``PackRun.spare`` gives at the start of
+    # the run, only with the RX-1 switch on: a sticky pack that this turn does
+    # not name, and a pack that came in only by the words (D169 item 8 as
+    # amended, option A).
+    fresh = frozenset(entry.slug for entry in live if now - entry.used <= 1)
+    named = frozenset(slug for slug in order if _asked_now(turn, slug) is not None)
+    room_rule = held_card_writes_on(turn.org)
+    spare = {slug: _tool_count(slug) for slug in order if room_rule and (
+        (slug in sticky and slug not in named) or layers.get(slug) == "words")}
     for victim in _step_aside(order, layers, sticky, allow=allow, total=_total,
-                              stays=stays, key=_sticky_key, words=turn.words):
+                              stays=stays, key=_sticky_key, words=turn.words,
+                              named=named, fresh=fresh, spare=spare):
         order.remove(victim)
         layers.pop(victim, None)
         (evicted if victim in sticky else skipped).append(victim)
@@ -2014,15 +2107,21 @@ def pack_tool_runs(slug: str, ctx: Mapping[str, Any] | None) -> None:
 
 
 async def note_used(slug: str, ctx: Mapping[str, Any] | None = None) -> bool:
-    """Make pack *slug* sticky: one of its tools ran in this turn.
+    """Make pack *slug* sticky: one of its tools ran in this turn, or the
+    model loaded it with ``load_skill_tools`` (task 1747).
 
     It writes ONE field of the state hash (``HSET``), so two pack calls at
     once lose no update, and two calls of one pack write the same value. It
     reads the :class:`PackRun` of the run context, which the server bound, and
-    writes for a pack that this run holds only: a pack of layer (a), or a
-    pack that ``load_skill_tools`` added (OA-7e), once one of its tools ran. A run
+    writes for a pack that this run holds: a pack of layer (a), or a pack
+    that ``load_skill_tools`` added (OA-7e). A run
     with no record (a test, or a run that loaded no pack) writes nothing.
     Never raises.
+
+    Task 1747: it also writes for a pack that left this run for a load
+    (:attr:`PackRun.left`) after a tool of it started. That tool still ran,
+    so the model's history shows it. The next turn then holds the pack
+    again, or names it in :func:`left_line` when the cap moves it out.
     """
     if ctx is None:
         try:
@@ -2032,7 +2131,9 @@ async def note_used(slug: str, ctx: Mapping[str, Any] | None = None) -> bool:
         except Exception:
             return False
     run = (ctx or {}).get(PACKS_KEY)
-    if not isinstance(run, PackRun) or slug not in run.holds() or not run.stored:
+    if not isinstance(run, PackRun) or not run.stored:
+        return False
+    if slug not in run.holds() and not (slug in run.left and slug in run.ran):
         return False
     if slug in run.noted:
         return True
@@ -2453,9 +2554,14 @@ def handoff_ended(
 # experimental feature), and answers the rules of the pack. The model sees
 # the new tools on its next request. The persona does not change in the turn.
 # RX-1 (D169): at a cap, a sticky pack moves out for the load, so a new need
-# never loses to an old pack. Else no tool leaves the run. The next turn holds the
-# pack by layer (a) only after one of its tools ran (:func:`note_used`, in the
-# pack call). A mere load is not sticky: a wrong pack never becomes sticky.
+# never loses to an old pack. D169 item 8 as amended on 2026-11-06 (task 1747,
+# option A): a pack that came into the turn only by the member's words, with no
+# tool of it started, moves out too. A pack of the surface or of a reference
+# stays. Else no tool leaves the run. Task 1747: the next
+# turn holds the pack by layer (a), because the load makes it sticky
+# (:func:`note_used`). The model's history then shows tools that the run still
+# holds. A pack that the model loaded and did not use is idle from then on, so
+# the cap, the step-aside and the decay can take it out.
 #
 # The pack goes through the SAME guarded builder as layer (a)
 # (``_tool_injection._pack_tools``) and the same caps. The build skips each
@@ -2511,13 +2617,44 @@ LOAD_REFUSED = "Not loaded. load_skill_tools acts only in the run that offered i
 #: The line before the old lines of :attr:`Pack.handoff_swap`, when a load
 #: completes the packs of an owner.
 LOAD_COMPLETES = "Each tool of {owner} is now yours."
-#: RX-1. The line after a load that moved a sticky pack out. The persona keeps
+#: RX-1. The line after a load that moved a spare pack out. The persona keeps
 #: the rules of that pack until the next turn, so the line says that its tools
 #: are gone, and the model does not call them.
 LOAD_MADE_ROOM = (
     "To make room, the {labels} tools left this chat. Do not call them in this "
     "turn. When the member needs them again, they come back."
 )
+#: Task 1747. The line after a load that moved out a pack that came in only by
+#: the member's words (:attr:`PackRun.words`, D169 item 8 as amended). The
+#: member asked for that work in this turn, so the line gives the next step.
+LOAD_MADE_ROOM_ASKED = (
+    "To make room, the {labels} tools left this chat. The member's words in "
+    "this turn asked for that work."
+)
+#: Task 1747. Added for each owner whose hand-off is open after the move
+#: (:meth:`PackRun.refusal` gives None). It names the hand-off as
+#: :data:`LOAD_NO_PATH` does.
+LOAD_MADE_ROOM_HAND_OFF = (
+    " To finish that work, call call_agent with agent_name \"{owner}\" and "
+    "that part of the task. That hand-off is open now."
+)
+#: Task 1747. Added when the hand-off to an owner stays refused.
+LOAD_MADE_ROOM_TELL = (
+    " Do not call those tools in this turn. Tell the member which part of the "
+    "work did not run, and that the next message can do it."
+)
+#: Task 1747. The line of the context of a turn that a sticky pack left at its
+#: start (:attr:`PackRun.gone`). Production, 2026-11-05: the model's history
+#: showed ``create_task``, the pack had left, and nothing said so. The model
+#: called the tool and got 'Function "create_task" not found'.
+PACKS_LEFT = "At the start of this turn, the {labels} tools left this chat."
+#: Task 1747. Added when ``load_skill_tools`` offers the packs that left.
+PACKS_LEFT_LOAD = (
+    " Before you call one of their tools, call load_skill_tools with the pack "
+    "that holds it: {slugs}."
+)
+#: Task 1747. Added for the packs that left and that no load offers.
+PACKS_LEFT_OFF = " Do not call the {labels} tools in this turn."
 #: OA-7i. The answer to a hand-off to an owner whose packs the loader reaches
 #: in this run (:func:`plan_loader`). It names the packs that the run does not
 #: hold yet.
@@ -2668,11 +2805,20 @@ def plan_loader(
     packs, and *current* plus the tools of the pack fits :data:`MAX_REQUEST_TOOLS`.
     It is the admission of ``LoadSkillTools._admit`` for one pack on its own.
 
-    RX-1: *spare* gives the tools of each sticky pack that can leave for a load
+    RX-1: *spare* gives the tools of each pack that can leave for a load
     (:meth:`PackRun.spare`). With a spare pack, a run at either cap still offers
     a pack that fits once they leave, so a need of the member never loses to an
-    old sticky pack. *spare* widens the offer only. The reach of an owner stays
-    as it was, so no specialist leaves on the promise of a move.
+    old sticky pack.
+
+    Task 1747 reverses the old RX-1 note "spare widens the offer only". For an
+    owner of :data:`SPECIALIST_STAYS_UNTIL_REACHED`, the reach counts the spare
+    packs as free too. So the Projects owner is reached, its specialist and
+    route line leave, and the loader is on offer, on the promise that a load
+    moves a spare pack out. The trade: when that promise breaks in the turn
+    (a tool of the spare pack started, so it may not leave), the load refuses
+    on the cap. ``_admit`` then marks ``via_failed`` and answers
+    :data:`LOAD_NO_PATH`, so the hand-off to the owner opens for the rest of
+    the run. The reach of every other owner does not change.
 
     An owner is **reached** (``via_loader``) when it has a pack that replaces
     its specialist (:attr:`Pack.delegation_refusal`), the run does not hold
@@ -2693,6 +2839,8 @@ def plan_loader(
     cut = dict(removable or {})
     freed = sum((spare or {}).values())
     pool = () if len(held_set) >= MAX_PACKS else loadable(allow, held_set)
+    # RX-1: a spare pack frees a place at the pack cap too.
+    wide = pool or (loadable(allow, held_set) if spare else ())
 
     def _fits(slug: str, discount: int) -> bool:
         return current - discount + _tool_count(slug) <= MAX_REQUEST_TOOLS
@@ -2712,8 +2860,8 @@ def plan_loader(
         if all(slug in pool and _fits(slug, cut.get(owner, 0)) for slug in rest):
             via.add(owner)
         elif (owner in SPECIALIST_STAYS_UNTIL_REACHED
-              and all(slug in pool for slug in rest)
-              and any(_fits(slug, cut.get(owner, 0)) for slug in rest
+              and all(slug in wide for slug in rest)
+              and any(_fits(slug, cut.get(owner, 0) + freed) for slug in rest
                       if _tool_count(slug) >= REACH_MIN_TOOLS)):
             # PJP-2 (project_planning.md §3.3): the Projects owner is reached
             # when each of its packs is allowed and one of them fits. Only two
@@ -2723,10 +2871,12 @@ def plan_loader(
             # `via_failed` and opens the hand-off (LOAD_NO_PATH). Fix round 4:
             # only a pack of REACH_MIN_TOOLS or more counts, because a pack
             # this small cannot carry a work request (projects-authority).
+            # Task 1747: a spare pack counts as free, because a load moves it
+            # out (RX-1, D169 item 8). A promise that breaks gives LOAD_NO_PATH.
             via.add(owner)
             by_load.add(owner)
     offered: list[str] = []
-    for slug in pool or (loadable(allow, held_set) if spare else ()):
+    for slug in wide:
         owner = SKILL_FAMILIES[slug].get("owner")
         # OA-8b: an owner that the run holds no pack of, and that cannot load
         # (a covered org, no module), offers nothing: its load would only
@@ -2765,6 +2915,64 @@ def load_tool(offered: Sequence[str]) -> Any:
 
 def _label(slug: str) -> str:
     return str(SKILL_FAMILIES.get(slug, {}).get("label") or slug)
+
+
+def made_room_line(run: PackRun, leaving: Sequence[str]) -> str:
+    """The text for the answer of a load that moved the packs *leaving* out,
+    or "" (RX-1, task 1747).
+
+    An old sticky pack gets :data:`LOAD_MADE_ROOM`. A pack that came in only
+    by the member's words gets :data:`LOAD_MADE_ROOM_ASKED`, because the
+    member asked for that work in this turn. For each owner of such a pack,
+    the text adds the hand-off when :meth:`PackRun.refusal` gives None, or
+    tells the model to say which part did not run. So the text is true for
+    the email, CRM and Projects owners. Call it after :meth:`PackRun.leaves`,
+    which can open the hand-off."""
+    if not leaving:
+        return ""
+    asked = [slug for slug in leaving if slug in run.words]
+    old = [slug for slug in leaving if slug not in run.words]
+    parts: list[str] = []
+    if old:
+        parts.append(LOAD_MADE_ROOM.format(labels=", ".join(_label(slug) for slug in old)))
+    if asked:
+        line = LOAD_MADE_ROOM_ASKED.format(labels=", ".join(_label(slug) for slug in asked))
+        owners = dict.fromkeys(found.owner for slug in asked if (found := pack(slug)) is not None)
+        shut = False
+        for owner in owners:
+            # A pack-only owner (studio-builder) takes no hand-off at all, so
+            # ``call_agent`` would refuse it (``pack_only_refusal``). Ask that
+            # first: it records nothing, and ``run.refusal`` may.
+            if pack_only_refusal(owner) is None and run.refusal(owner, starts=True) is None:
+                line += LOAD_MADE_ROOM_HAND_OFF.format(owner=owner)
+            else:
+                shut = True
+        if shut or not owners:
+            line += LOAD_MADE_ROOM_TELL
+        parts.append(line)
+    return "\n\n".join(parts)
+
+
+def left_line(run: Any) -> str:
+    """Task 1747. The ONE line of the context of a turn that sticky packs
+    left at its start (:attr:`PackRun.gone`), or "".
+
+    It names the packs, as :data:`LOAD_MADE_ROOM` does after a load. For each
+    pack that ``load_skill_tools`` offers, it tells the model to load the
+    pack before it calls a tool of it. For each other pack, it tells the
+    model not to call its tools in this turn. *run* is the record of the run
+    (:data:`PACKS_KEY`). A delegated run holds no record, so it gets no line.
+    """
+    if not isinstance(run, PackRun) or not run.gone:
+        return ""
+    line = PACKS_LEFT.format(labels=", ".join(_label(slug) for slug in run.gone))
+    load = [slug for slug in run.gone if slug in run.gone_offered]
+    off = [slug for slug in run.gone if slug not in run.gone_offered]
+    if load:
+        line += PACKS_LEFT_LOAD.format(slugs=", ".join(load))
+    if off:
+        line += PACKS_LEFT_OFF.format(labels=", ".join(_label(slug) for slug in off))
+    return line
 
 
 def _pack_argument(arguments: Any) -> str:
@@ -2877,10 +3085,12 @@ class LoadSkillTools(FunctionMiddleware):
     3. A pack that the run did not offer answers :data:`LOAD_UNKNOWN`.
     4. The caps: at most :data:`MAX_PACKS` packs, :data:`MAX_PACK_TOOLS`
        tools a pack and :data:`MAX_REQUEST_TOOLS` tools in the live list.
-       RX-1: past a cap, the sticky packs of :meth:`PackRun.spare` leave, the
-       least recently used first, until the load fits. With none left, a load
-       past a cap answers :data:`LOAD_PAST_CAP`, which names
-       ``spawn_subagents``.
+       RX-1: past a cap, the packs of :meth:`PackRun.spare` leave in its
+       order until the load fits: the old sticky packs, then the packs that
+       came in only by the words (D169 item 8 as amended, task 1747). With
+       none left, a load past a cap answers :data:`LOAD_PAST_CAP`, which
+       names ``spawn_subagents``, or :data:`LOAD_NO_PATH` for an owner that
+       the loader reached.
     5. A pack of an owner that reads stranger text never joins a run that
        holds an MCP tool (:data:`LOAD_BESIDE_MCP`).
     6. The build: *build*, the guarded builder of layer (a), with the names
@@ -2888,8 +3098,9 @@ class LoadSkillTools(FunctionMiddleware):
     7. ``context.add_tools``. It raises ``ValueError`` for another object of
        a name in the list, and ``RuntimeError`` with no live list. Either
        loads nothing.
-    8. The record: :meth:`PackRun.add`. A load makes no pack sticky. The pack
-       becomes sticky when one of its tools runs (:func:`note_used`).
+    8. The record: :meth:`PackRun.add`. Task 1747: a load by the model makes
+       the pack sticky for the next turn (:func:`note_used`), also when none
+       of its tools runs. A load by layer (c) does not.
     9. RX-1: ``context.remove_tools`` takes the tools of each pack that leaves,
        and :func:`drop_sticky` takes it from the state of the chat. Layer (c)
        moves no pack, because MAF copied the tool list before ``before_run``.
@@ -2964,7 +3175,12 @@ class LoadSkillTools(FunctionMiddleware):
         if build is None or not tools:
             return _refused(slug, "unavailable", LOAD_UNAVAILABLE.format(label=_label(slug)))
         # RX-1: the build awaited, so a tool of a spare pack may have started.
-        # Nothing awaits from this line until the pack leaves.
+        # Task 1747: a build can finish with no suspension (a held pack returns
+        # at once), and MAF starts each call of a step as its own task. So this
+        # yields once, and each sibling call of the step reaches
+        # ``pack_tool_runs`` before the check. Nothing awaits from the check
+        # until the pack leaves.
+        await asyncio.sleep(0)
         leaving = _room_for(run, live, len(tools), [s for s in spare if s not in run.ran])
         if leaving is None:
             return _refused(slug, "cap_tools", _past_cap(found, run))
@@ -2993,10 +3209,12 @@ class LoadSkillTools(FunctionMiddleware):
         context.remove_tools(gone)
         for slug in leaving:
             run.leaves(slug)
-        await drop_sticky(run, leaving)
+        # Task 1747: a pack whose tool started after the check keeps its state.
+        # ``note_used`` writes it again when that tool returns.
+        await drop_sticky(run, [slug for slug in leaving if slug not in run.ran])
         _log.info("tool_packs.pack_left", packs=list(leaving), tools=len(gone),
                   live_tools=len(live), kept=list(run.holds()))
-        return LOAD_MADE_ROOM.format(labels=", ".join(_label(slug) for slug in leaving))
+        return made_room_line(run, leaving)
 
     def set_early(self, slugs: Iterable[str]) -> tuple[str, ...]:
         """Name the packs that layer (c) loads before the first request (OA-7f).
@@ -3016,8 +3234,10 @@ class LoadSkillTools(FunctionMiddleware):
         on its first request and no model call is added. Each pack goes through
         :meth:`_admit`, the guards of a load by the model. The rules ride as
         an instruction of the turn, in place of the answer of a call. A
-        refused pack loads nothing and the others go on. A load is not sticky
-        (:func:`note_used`). A second call, for a retry of the same turn, adds
+        refused pack loads nothing and the others go on. A load of layer (c)
+        is not sticky until one of its tools runs (:func:`note_used`). Only a
+        load that the model asks for is sticky at once (task 1747). A second
+        call, for a retry of the same turn, adds
         the same tools and text again and builds nothing."""
         async with self._lock:
             if self._early_out is None:
@@ -3102,6 +3322,11 @@ class LoadSkillTools(FunctionMiddleware):
         room = await self._make_room(context, run, leaving, live)
         if room:
             answer += "\n\n" + room
+        # Task 1747: the model asked for this pack, so the next turn holds it
+        # too, also when none of its tools ran in this turn. In production a
+        # pack that a load added and the next turn lost gave 'Function
+        # "create_status" not found'. The one writer of the state writes it.
+        await note_used(slug, ctx)
         _log.info(
             "tool_packs.loaded", pack=slug, tools=len(tools), held=held,
             live_tools=len(live), packs=list(run.holds()),
