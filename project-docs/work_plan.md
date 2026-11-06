@@ -5508,7 +5508,7 @@ It extends D140 and D183. It amends five earlier rules, each in one point (items
 2. **HathiLabs rules are the HathiLabs layer, never the product default.** STE, the R rules, D numbers, gate labels and the guard hooks bind HathiLabs work only.
 3. **The price is the flat seat.** The playbook and every P10 capability are part of the seat of `launch_surface.md` §4. No SKU and no add-on.
 
-**Agent defaults (task 1906).** They stand unless the owner objects. Q14 to Q18 of the spec's §8.1 are open.
+**Agent defaults (task 1906).** They stand unless the owner objects. The owner accepted Q14 to Q17 and chose the recommended answer to Q18 on 2026-11-06 (spec §8.1).
 
 4. **One channel to a running agent: the notice** (SW-64).
 5. **Declared data only warns or narrows.** A lane, a role, a label and a path claim never widen authority.

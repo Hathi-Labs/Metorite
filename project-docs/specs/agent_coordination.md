@@ -477,7 +477,7 @@ So `orchestration_playbook.md` is a new ACTIVE spec (INDEX row in the same pull 
 2. **HathiLabs rules are the HathiLabs layer, never the product default.** STE, the R rules, D numbers, gate labels and the guard hooks bind HathiLabs work. The default layer has none of them. `orchestration_playbook.md` §4 names the fence.
 3. **The price is the flat seat.** The playbook and every P10 capability are part of ₹500 per user per month (`launch_surface.md` §4). No SKU and no add-on. AI credits still meter AI work, as they do today.
 
-**Agent defaults (task 1906).** The coordinator accepted the recommended options of the brief. They stand unless the owner objects. Q14 to Q18 are open.
+**Agent defaults (task 1906).** The coordinator accepted the recommended options of the brief. They stand unless the owner objects. Q14 to Q18 are decided (§8.1).
 
 4. **One channel to a running agent: the notice** (SW-64). A steer, a watch event and a request from a peer all use it.
 5. **Declared data only warns or narrows.** A lane, a role, a label and a path claim never widen authority (extends D140.2).
@@ -1429,7 +1429,9 @@ Each question carries a recommendation. A slice that waits on one says so.
 | Q4 | Do cost attribution and goals wait for H-42? (The open question of epic 321) | **Cost waits for H-42. Goals fold into WM-5** (task 984, goals and key results), so Projects gets one goal object | SW-20, SW-21 |
 | Q5 | May a person with `admin:members:read` end another member's run? (H-409 item 2) | **No. Use `admin:members:manage`.** Ending a run is a write | H-409, SW-29b Stop all |
 
-### 8.1 Open owner questions of P10
+### 8.1 Owner questions of P10
+
+**Decided 2026-11-06 at 18:29 and 18:37 UTC (owner, task 1906).** The owner accepted the recommended answer to Q14 to Q17, and chose "a second narrow token" for Q18. A slice that waits on a question says so.
 
 | # | Question | Recommendation | Blocks |
 |---|---|---|---|
