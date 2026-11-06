@@ -166,6 +166,9 @@ CASES: tuple[Case, ...] = (
          "/chat", "app-builder",
          note="App Workshop is a preview pane, so the page does not move. "
               "app-builder is the one Copilot specialist left (owner, 2026-10-19)"),
+    Case("B2", "Build me an app to track site visits.",
+         "/studio", "app-builder",
+         note="Studio is a live pane since 2026-11-05 (D179), and app-builder is its agent"),
 
     # ── orchestrator answers itself ────────────────────────────────────────
     Case("N1", "What can you do?", "/chat", None),

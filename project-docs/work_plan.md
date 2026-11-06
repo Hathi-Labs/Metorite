@@ -5420,6 +5420,43 @@ GitHub starts the `30 21 * * *` cron of `deploy.yml` 3.5 to 5.5 h late, each nig
 
 This amends D145 point 5. Fence: `tests/unit/test_daily_release.py` and `tests/unit/test_nightly_release_box.py`.
 
+### D179 — Studio opens to every beta org, the members bleed it out, and the build continues on top of it (2026-11-05)
+
+Owner directive, 2026-11-05, in chat. Metorite task 1795 (`mt-8bfa6cb4`). Owning spec: `specs/ai_studio.md` §14 A1.
+
+```text
+"You can build this for everybody. Let all my beta customers be able to try it
+out and bleed it out, and continue to build features onto it."
+```
+
+1. **The nav entry is live.** The `/studio` pane in `nav.ts` goes from `preview` to `live`. Every member who holds its feature sees Studio in the AI Studio section. `launch_surface.md` §2 lists it, and `nav.test.ts` fences the set.
+2. **The routes still wait for the switch-on.** The Studio routes answer only for an org on `STUDIO_ORGS`. An org outside the list sees a plain "not open for your organization yet" state. The supervisor turns it on after the gates of task 1795: `STUDIO_ORGS=*` and the `studio` pack in `TOOL_PACKS`. This decision does not flip either one.
+3. **The kill switch.** `STUDIO_ORGS` reloads with no restart (`docs/flag_reload.md`). An empty value closes the routes for every org at once. The nav entry stays, and the pane then shows the not-open state.
+4. **The build goes on.** Each later Studio slice lands on this live pane, behind its own flag where it needs one. D178 and the J1 slices keep their own gates.
+
+**Why.** The owner wants the beta customers to use Studio and find its faults, so the next slices come from real use.
+
+**Fence.** `src/lib/nav.test.ts` fails when `/studio` is `preview` and when the live count is wrong. It also holds the one allowed exception to the job rule (`NO_JOB_YET`).
+
+### D180 — Every member builds and publishes private Studio apps, and `studio:publish` gates the share to others (2026-11-05)
+
+Owner answers in a Metorite run on task 1199 (STU-J1): STU-Q4 on 2026-11-04, STU-Q4b on 2026-11-05, and the edge of item 6 on 2026-11-06. Owner spec: `specs/ai_studio.md` §9, §12 and §14 J1. Board: **WS-STU**.
+
+```text
+STU-Q4:  "Every member builds private apps. Owners and admins publish and can grant publish."
+STU-Q4b: "Yes: a member publishes their own private app for themselves. `studio:publish` gates sharing to others."
+Item 6:  "Accept the gap: such members get Studio"
+```
+
+1. **Who builds.** Each person who holds `feature:studio` builds private packages and skills. A member, a manager and an admin hold it through `feature:*`, and the owner through `*`. A guest does not. An admin can deny it to one person with an override.
+2. **Publish to self needs no publish right.** The owner of a private package or skill publishes its versions with `feature:studio` and ownership only. That covers the version snapshot, the object sync and the skill state change. It also covers a rollback or a delete of the member's own object.
+3. **`studio:publish` gates the share to others.** It covers the share of an app to other people and the review of a manifest diff (J2, task 1200). The owner holds it through `*`. J1-2 (task 1707) seeds it on `admin`. Then owners and admins can grant it.
+4. **A group carries no permission grant.** The access model reads roles and per-person overrides only. So a grant of `studio:publish` goes to one person (an override) or to a custom role. A share of an app to a group is the object grant `group:<slug>` of J2 (D12), not a permission.
+5. **One vocabulary.** Studio adds `feature:studio` and `studio:publish` only. No `studio:*` family, no reuse of `apps:publish`, and no new table.
+6. **A `feature:workflows` deny no longer closes Studio.** Before J1-1, a member with a `feature:workflows` deny override got 403 on each Studio route. After J1-1 that member gets Studio, because `feature:*` decides `feature:studio`. The owner accepted this on 2026-11-06. An admin can deny `feature:studio` by hand. No agent writes that override.
+
+Fence: `tests/unit/test_studio_route_gate.py` and `tests/unit/test_studio_route_gate_r8.py` (items 1 and 2), and `tests/unit/test_org_access_control.py` (items 3 and 5), and `test_studio_route_gate.py::test_a_workflows_deny_override_no_longer_closes_studio` (item 6). Item 4 is advisory until J1-2 and J2 build their tests.
+
 ### D181 — One record card: the Projects frame and the CRM tabs (2026-11-06)
 
 Owner directive, 2026-11-06, in chat. Owner spec: `specs/one_record_card.md`. Metorite: tasks 1834, 1835 and 1836.

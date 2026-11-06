@@ -57,8 +57,8 @@ from gateway.routes.projects.core import (
     _tenant_session,
     actor,
     assert_holds_tasks,
-    assert_not_archived,
     assert_move_keeps_privacy,
+    assert_not_archived,
     emit,
     from_jsonb,
     load_visible_project,
@@ -70,6 +70,7 @@ from gateway.routes.projects.core import (
     resolve_visibility,
     root_project_id,
     router,
+    status_order_sql,
     status_owner_id,
     update_row,
     vocabulary_scope,
@@ -608,7 +609,7 @@ async def _plan(
             text(
                 "SELECT id, name, category FROM pm_task_statuses "
                 " WHERE project_id = CAST(:owner AS uuid) "
-                " ORDER BY position, name"
+                " ORDER BY " + status_order_sql()
             ),
             {"owner": dest_home},
         )).fetchall()
