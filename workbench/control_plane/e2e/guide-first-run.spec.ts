@@ -46,6 +46,10 @@ const SKIPPED = {
   newOrder: null,
   chat_first_message_at: null,
   tour_seen_at: null,
+  // These members were greeted already (WS-BUD BUD-1). This spec is about the
+  // tour's entries, so no hello opens the panel over them. `buddy-hello.spec.ts`
+  // owns the hello.
+  buddy_hello_at: "2026-11-01T12:00:00.000Z",
 };
 const SERVER_TIME = "2026-11-02T12:00:00.000Z";
 

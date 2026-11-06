@@ -519,6 +519,23 @@ export function upsertSession(session: ChatSession): void {
   _syncSessionToDb(session).catch(() => {});
 }
 
+/**
+ * Put back a chat that THIS page made, when the list in storage lost it.
+ * Two tabs of one member share the list, and each save reads the whole list,
+ * changes it and writes it back, so a save of one tab can drop the new chat of
+ * the other (two fresh chats in the same few milliseconds: WS-BUD BUD-1). The
+ * chat then has no row for the dock to show. The list is the only place the
+ * dock reads, so the owner of the chat puts it back. A local write only: the
+ * server already holds the chat. True when it wrote.
+ */
+export function keepSession(session: ChatSession): boolean {
+  const sessions = getSessions();
+  if (sessions.some((s) => s.id === session.id)) return false;
+  sessions.unshift(session);
+  writeList(sessions);
+  return true;
+}
+
 export function deleteSession(id: string): void {
   const sessions = getSessions().filter((s) => s.id !== id);
   writeList(sessions);
