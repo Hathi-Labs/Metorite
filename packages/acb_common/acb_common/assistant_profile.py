@@ -1817,13 +1817,13 @@ NO_NAME_LINE = "Do not address them by name. Never write a placeholder."
 #: "at most once a day", because the model keeps no day of its own (R7).
 GREETING_LINES: dict[str, str] = {
     "none": "Greeting: none. Open with the answer.",
-    "brief": ("Greeting: brief. Greet only when the part-of-day line says "
-              "\"Greet now.\" Then open with one short greeting. Otherwise do "
-              "not greet."),
-    "warm": ("Greeting: warm. Greet only when the part-of-day line says "
-             "\"Greet now.\" Then open with a greeting and one personal line "
-             "from a fact in this block. Do this at most once a day. Otherwise "
-             "do not greet."),
+    "brief": ("Greeting: brief. Follow the greeting rule of the part-of-day line. "
+              "When it allows a greeting, open with one short greeting. Otherwise "
+              "do not greet."),
+    "warm": ("Greeting: warm. Follow the greeting rule of the part-of-day line. "
+             "When it allows a greeting, open with a greeting and one personal "
+             "line from a fact in this block. Do this at most once a day. "
+             "Otherwise do not greet."),
 }
 #: The rule of each answer length (§5.3, the WS-52 brevity rule).
 LENGTH_LINES: dict[str, str] = {

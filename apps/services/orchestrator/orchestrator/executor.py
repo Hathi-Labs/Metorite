@@ -1602,42 +1602,70 @@ def _member_briefing_block(agent_name: str) -> str:
 # own, so it never greets. Fences: ``tests/unit/test_executor_greet_due.py``
 # and ``tests/unit/test_executor_greet_due_r8.py`` (R8).
 
-#: The run-binding key of the answer of THIS run: ``(run_id, org, member, due)``.
+#: The run-binding key of the answer of THIS run: ``(run_id, org, member,
+#: due)``. ``due`` is True or False. A run with NO entry has no decision.
 _GREET_KEY = "greet_due"
 #: The longest wait of a turn for the read. A slower turn does not greet.
 _GREET_TIMEOUT_S = 1.0
-#: The newest stored time before this turn. The turn's own rows are the newest
-#: ``user`` row (the run route writes it before the run starts) and the empty
-#: minted reply, so both stay out. ``content <> ''`` drops the mint.
-_GREET_LAST_SQL = (
-    "SELECT timestamp_ms FROM chat_message "
-    "WHERE session_id = :sid AND content <> '' "
-    "AND id NOT IN (SELECT id FROM chat_message "
-    "WHERE session_id = :sid AND role = 'user' "
-    "ORDER BY timestamp_ms DESC, id DESC LIMIT 1) "
-    "ORDER BY timestamp_ms DESC LIMIT 1"
+#: One read, two answers. First: the server-set time (``created_at``, never the
+#: browser's ``timestamp_ms``) of the newest row of this chat that has content,
+#: leaving out the rows of THIS turn BY ID: the minted reply (``:rid``) and the
+#: member's prompt (``:pid``). Never "the newest user row": a failed prompt
+#: write would then hide the previous prompt (PZ-39 repair F1). Second: the
+#: server time of the prompt row itself, when it exists. An old prompt row is a
+#: re-send, not a new message (F2).
+_GREET_READ_SQL = (
+    "SELECT "
+    "(SELECT (EXTRACT(EPOCH FROM max(created_at)) * 1000)::bigint "
+    " FROM chat_message WHERE session_id = :sid AND content <> '' "
+    " AND id NOT IN (:rid, :pid)), "
+    "(SELECT (EXTRACT(EPOCH FROM created_at) * 1000)::bigint "
+    " FROM chat_message WHERE session_id = :sid AND id = :pid AND :pid <> '')"
 )
 
 
-async def _greet_read(org: str, session: str) -> tuple[bool, int | None]:
-    """``(first_reply, last_ms)`` of the stored chat before this turn."""
+async def _greet_read(
+    org: str, session: str, reply_id: str = "", prompt_id: str = "",
+) -> tuple[int | None, int | None]:
+    """``(last_ms, prompt_ms)``: the server time of the newest earlier row with
+    content, and of this turn's prompt row. Each is None when absent."""
     from acb_common.db import tenant_session
     from sqlalchemy import text
 
     async with tenant_session(org) as db:
-        row = (await db.execute(text(_GREET_LAST_SQL), {"sid": session})).first()
-    return (row is None, None if row is None else int(row[0]))
+        row = (await db.execute(text(_GREET_READ_SQL), {
+            "sid": session, "rid": reply_id or "", "pid": prompt_id or ""})).first()
+    last, prompt = (row[0], row[1]) if row else (None, None)
+    return (None if last is None else int(last), None if prompt is None else int(prompt))
 
 
-async def _greet_decision(org: str, session: str) -> bool:
-    """True when this turn opens a conversation. False on any fault."""
-    from acb_common.today import greet_due
+async def _greet_decision(
+    org: str, session: str, turn_ids: tuple[str, ...] = (),
+) -> bool:
+    """True when this turn opens a conversation. False on any fault.
 
+    *turn_ids* is ``(reply_id, prompt_id)``, set by the gateway route from its
+    own mint, never read from the payload. A payload field may SUPPRESS a
+    greeting and never cause one (R5). A turn with no new member message (no
+    prompt id, or a prompt row older than the gap: a regenerate or a retry)
+    never greets (F2). The gap is measured on ``chat_message.created_at``,
+    which the database sets for EVERY row (``DEFAULT now()``, and no writer
+    sets it). So a browser clock cannot move it (F3). A row that a bulk
+    import wrote reads as the time of the import."""
+    from acb_common.today import GREET_GAP_HOURS, greet_due
+
+    reply_id = turn_ids[0] if len(turn_ids) > 0 else ""
+    prompt_id = turn_ids[1] if len(turn_ids) > 1 else ""
+    if not prompt_id:
+        return False
     try:
-        first, last_ms = await asyncio.wait_for(
-            _greet_read(org, session), timeout=_GREET_TIMEOUT_S)
+        last_ms, prompt_ms = await asyncio.wait_for(
+            _greet_read(org, session, reply_id, prompt_id),
+            timeout=_GREET_TIMEOUT_S)
         now_ms = int(_briefing_now().timestamp() * 1000)
-        return greet_due(last_ms, now_ms, first_reply=first)
+        if prompt_ms is not None and now_ms - prompt_ms >= GREET_GAP_HOURS * 3600 * 1000:
+            return False
+        return greet_due(last_ms, now_ms, first_reply=last_ms is None)
     except Exception as exc:
         _log.warning("executor.greet_read_failed", error=type(exc).__name__)
         return False
@@ -1651,13 +1679,16 @@ async def _prime_greet_due(
     delegated: bool,
     shows_cards: bool,
     batch_thread: bool,
+    turn_ids: tuple[str, ...] = (),
 ) -> None:
-    """Bind "greet now" for this turn into the run, or bind nothing.
+    """Bind the greeting decision of this turn into the run, or bind nothing.
 
     Same gates as the briefing without its flag: the orchestrator, a run that
     is not delegated, not batch and that shows cards, the run's own org, a
-    verified member and a solo room. All from the run boundary (R5). Never
-    raises, apart from a cancel of the turn."""
+    verified member and a solo room. All from the run boundary (R5). A run
+    that fails a gate gets NO decision, and its part-of-day line keeps the old
+    rule (first reply of the conversation only). A decided run binds True or
+    False. Never raises, apart from a cancel of the turn."""
     if agent_name != _PROFILE_AGENT or delegated or batch_thread or not shows_cards:
         return
     org = str(organization_id or "").strip()
@@ -1679,31 +1710,34 @@ async def _prime_greet_due(
             return
         if str(ctx.get("session_id") or "") != session:
             return
-        if await _greet_decision(org, session):
-            derive_artifact_context(**{_GREET_KEY: (run_id, org, member, True)})
+        due = await _greet_decision(org, session, tuple(turn_ids))
+        derive_artifact_context(**{_GREET_KEY: (run_id, org, member, due)})
     except ImportError:
         return
 
 
-def _greet_due_now() -> bool:
-    """True when the run binding says this turn greets. Reads no database."""
+def _greet_due_now() -> bool | None:
+    """The decision of this run: True, False, or None when none was made.
+    Reads no database."""
     try:
         from acb_skills.write_artifact import artifact_context
 
         org = str(_current_run_org() or "").strip()
         member = _verified_run_member()
         if not org or not member or _RUN_SOLO_ROOM.get() is not True:
-            return False
+            return None
         ctx = artifact_context()
         entry = ctx.get(_GREET_KEY)
         if not isinstance(entry, tuple) or len(entry) != 4:
-            return False
+            return None
         run_id, bound_org, bound_member, due = entry
         if not run_id or run_id != ctx.get("run_id") or ctx.get("batch_thread") is True:
-            return False
-        return bound_org == org and bound_member == member and due is True
+            return None
+        if bound_org != org or bound_member != member or not isinstance(due, bool):
+            return None
+        return due
     except Exception:
-        return False
+        return None
 
 
 # ── The tool packs of the one assistant (WS-67 OA-7c) ───────────────────────
@@ -6342,6 +6376,10 @@ async def run_agent_stream(
     #: WS-63 PZ-2: True when the caller's run boundary knows the room is the
     #: member's own. ``None`` keeps the parent's value. See `_RUN_SOLO_ROOM`.
     solo_room: bool | None = None,
+    #: PZ-39: ``(reply_id, prompt_id)``, the ids of THIS turn's own rows, set by
+    #: the gateway route from its own mint. The greeting decision leaves them
+    #: out of the gap. Empty means no decision.
+    turn_row_ids: tuple[str, ...] = (),
 ) -> AsyncIterator[str]:
     """Load a named agent and yield AG-UI SSE events while it runs.
 
@@ -6958,7 +6996,7 @@ async def run_agent_stream(
             await _prime_greet_due(
                 agent_name, organization_id=organization_id, thread_id=thread_id,
                 delegated=_delegated_run, shows_cards=shows_cards,
-                batch_thread=_batch_thread,
+                batch_thread=_batch_thread, turn_ids=turn_row_ids,
             )
             try:
                 # Ensure the three visible workspace directories exist so the

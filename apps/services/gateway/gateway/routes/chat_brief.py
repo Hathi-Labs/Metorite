@@ -584,7 +584,7 @@ async def post_buddy_hello(
 
     name = await asyncio.to_thread(_display_name, org, email)
     zone = await asyncio.to_thread(_member_zone, org, email)
-    lead = hello_text(name, zone)
+    lead = hello_text(name, zone, _now())
     agent = (room.agent_name or "").strip() or DEFAULT_AGENT
     posted = False
     try:

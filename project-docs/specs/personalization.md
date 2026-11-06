@@ -14,9 +14,13 @@ Fence: `tests/unit/test_greeting_table.py`. The part-of-day line uses the zone
 of the "now" line. The late hours say "Hello", never "Good night".
 
 The chat greets in the first reply and after a gap of 4 hours or more
-(`today.GREET_GAP_HOURS`). The gap comes from the stored `chat_message` rows.
-The `brief` and `warm` greetings wait for "Greet now." in the part-of-day line.
-So §5.1 and D-PZ-6 below read "first reply of a chat" as that rule. The buddy
+(`today.GREET_GAP_HOURS`). The gap comes from the server time `created_at` of the stored `chat_message`
+rows. A regenerate never greets.
+
+The `brief` and `warm` greetings follow the greeting rule of the part-of-day
+line. A run with no decision (WhatsApp, delegated, batch, group) keeps the old
+rule: the first reply of the conversation only. So §5.1 and D-PZ-6 below read
+"first reply of a chat" as that rule. The buddy
 hello opens with the greeting for the member's time of day.
 
 **PZ-35 BUILT 2026-11-01, dark** (task 1133). The switch `apps.chat.summaries`,

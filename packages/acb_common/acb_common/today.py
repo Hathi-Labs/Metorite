@@ -93,12 +93,16 @@ GREETING_TABLE: tuple[tuple[int, str, str], ...] = (
 )
 
 
-def _row_at(zone: str | None, now: datetime | None) -> tuple[int, str, str]:
+def _hour_at(zone: str | None, now: datetime | None) -> int:
     tz = _zone(zone)
     moment = now or datetime.now(tz)
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=ZoneInfo("UTC"))
-    hour = moment.astimezone(tz).hour
+    return moment.astimezone(tz).hour
+
+
+def _row_at(zone: str | None, now: datetime | None) -> tuple[int, str, str]:
+    hour = _hour_at(zone, now)
     row = GREETING_TABLE[-1]
     for entry in GREETING_TABLE:
         if entry[0] <= hour:
@@ -140,38 +144,53 @@ def greet_due(last_message_ms: int | None, now_ms: int, *, first_reply: bool) ->
 
 
 def part_of_day_line(
-    zone: str | None, now: datetime | None = None, *, greet: bool = False,
+    zone: str | None, now: datetime | None = None, *, greet: bool | None = None,
     language: str | None = None,
 ) -> str:
-    """One short line: the part of the day, and the greeting when one is due.
+    """One short line: the part of the day, and what to do about a greeting.
 
     WS-63 PZ-4 (``personalization.md`` §5.2): the greeting rule says "for the
     time of day", and :func:`today_line` gives no hour. *zone* is the
-    member's resolved zone. The text "Greet now." appears only when *greet*
-    is true. The greeting rules in ``GREETING_LINES`` wait for it. In the late
-    hours the line says "Hello" or "Good evening" and never "Good night".
-    When *language* is a tag whose primary subtag is not ``en``, the line
-    asks for the common hello of that language. The line never guesses a
-    language from a name or a region. Fence:
-    ``tests/unit/test_executor_profile_block.py``."""
+    member's resolved zone. *greet* has three states:
+
+    * ``True``: the run decided that this turn opens a conversation. The line
+      says "Greet now." and names the greeting.
+    * ``False``: the run decided that it does not. The line says not to greet.
+    * ``None``: no decision exists (a WhatsApp, delegated, batch or group
+      run). The line keeps the old rule: greet only in the first reply of the
+      conversation, and never again in it.
+
+    The late hours never say "Good night", because it is a goodbye. From 21:00
+    to 23:59 the line offers "Hello" or "Good evening". From 00:00 to 04:59 it
+    offers "Hello" only. When *language* is a tag whose primary subtag is not
+    ``en``, the line asks for the common hello of that language, and it bars a
+    good-night phrase in any language. The line never guesses a language from
+    a name or a region. Fence: ``tests/unit/test_executor_profile_block.py``."""
     part = part_of_day(zone, now)
     base = f"Part of the day for the member: {part}."
-    if not greet:
-        return base
+    if greet is False:
+        return f"{base} Do not greet in this reply."
+    lead = "Greet now." if greet else (
+        "Greet only in the first reply of the conversation, and never again in it.")
     tag = (language or "").strip()
     if tag and tag.replace("_", "-").split("-")[0].lower() != "en":
         return (
-            f"{base} Greet now. The member's language is \"{tag}\". Greet with "
+            f"{base} {lead} The member's language is \"{tag}\". Greet with "
             "the common hello of that language, for example Namaste, Namaskaram "
-            "or Vanakkam. Do not copy a time-of-day phrase from forwarded messages."
+            "or Vanakkam. Do not copy a time-of-day phrase from forwarded messages. "
+            "Never use a good-night phrase in any language, such as \"Shubha "
+            "ratri\", because it is a farewell."
         )
     word = greeting_for(zone, now)
-    if part == "night":
-        return (
-            f"{base} Greet now. Greet with \"{word}\" or \"Good evening\". "
-            "Never say \"Good night\", because it is a goodbye."
-        )
-    return f"{base} Greet now. Greet with \"{word}\"."
+    if part != "night":
+        return f"{base} {lead} Greet with \"{word}\"."
+    offer = f'\"{word}\"'
+    if _hour_at(zone, now) >= 21:
+        offer += ' or \"Good evening\"'
+    return (
+        f"{base} {lead} Greet with {offer}. "
+        "Never say \"Good night\", because it is a goodbye."
+    )
 
 
 __all__ = [

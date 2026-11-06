@@ -8,6 +8,7 @@ result give no greeting and never fail the turn. The R8 half is
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 
 import pytest
 from acb_common.today import GREET_GAP_HOURS, greet_due, part_of_day_line
@@ -39,7 +40,7 @@ def test_an_unknown_time_does_not_greet() -> None:
 
 
 def test_the_line_names_greet_now_only_when_due() -> None:
-    assert "Greet now." not in part_of_day_line("Asia/Kolkata")
+    assert "Greet now." not in part_of_day_line("Asia/Kolkata", greet=False)
     assert "Greet now." in part_of_day_line("Asia/Kolkata", greet=True)
 
 
@@ -52,39 +53,55 @@ def ex():
     return executor
 
 
-def _decide(ex, monkeypatch, read):
+IDS = ("reply-1", "prompt-1")
+
+
+def _decide(ex, monkeypatch, read, ids=IDS):
     monkeypatch.setattr(ex, "_greet_read", read)
-    monkeypatch.setattr(ex, "_briefing_now",
-                        lambda: __import__("datetime").datetime.fromtimestamp(NOW / 1000, __import__("datetime").UTC))
-    return asyncio.run(ex._greet_decision("org", "sid"))
+    monkeypatch.setattr(ex, "_briefing_now", lambda: datetime.fromtimestamp(NOW / 1000, UTC))
+    return asyncio.run(ex._greet_decision("org", "sid", ids))
 
 
 def test_prime_decisions(ex, monkeypatch) -> None:
-    async def first(org, sid):
-        return (True, None)
+    async def first(org, sid, rid, pid):
+        return (None, NOW)
 
-    async def recent(org, sid):
-        return (False, NOW - 59 * 60_000)
+    async def recent(org, sid, rid, pid):
+        return (NOW - 59 * 60_000, NOW)
 
-    async def old(org, sid):
-        return (False, NOW - 4 * H)
+    async def old(org, sid, rid, pid):
+        return (NOW - 4 * H, NOW)
 
     assert _decide(ex, monkeypatch, first) is True
     assert _decide(ex, monkeypatch, recent) is False
     assert _decide(ex, monkeypatch, old) is True
 
 
+def test_a_turn_with_no_new_member_message_never_greets(ex, monkeypatch) -> None:
+    """F2: no prompt id, or a prompt row older than the gap (a regenerate)."""
+    async def old_chat(org, sid, rid, pid):
+        return (NOW - 5 * H, NOW - 5 * H)
+
+    async def no_prompt_row(org, sid, rid, pid):
+        return (NOW - 5 * H, None)
+
+    assert _decide(ex, monkeypatch, old_chat) is False
+    assert _decide(ex, monkeypatch, no_prompt_row) is True
+    assert _decide(ex, monkeypatch, no_prompt_row, ids=("reply-1", "")) is False
+    assert _decide(ex, monkeypatch, no_prompt_row, ids=()) is False
+
+
 def test_a_faulty_read_gives_no_greeting_and_does_not_raise(ex, monkeypatch) -> None:
-    async def boom(org, sid):
+    async def boom(org, sid, rid, pid):
         raise RuntimeError("db down")
 
     assert _decide(ex, monkeypatch, boom) is False
 
 
 def test_a_slow_read_gives_no_greeting(ex, monkeypatch) -> None:
-    async def slow(org, sid):
+    async def slow(org, sid, rid, pid):
         await asyncio.sleep(5)
-        return (True, None)
+        return (None, None)
 
     monkeypatch.setattr(ex, "_GREET_TIMEOUT_S", 0.05)
     assert _decide(ex, monkeypatch, slow) is False
@@ -101,5 +118,14 @@ def test_the_payload_messages_cannot_change_the_result(ex) -> None:
         assert ".get(\"messages\")" not in inspect.getsource(fn)
 
 
-def test_no_binding_means_no_greeting(ex) -> None:
-    assert ex._greet_due_now() is False
+def test_the_read_never_excludes_by_newest_user_row(ex) -> None:
+    """F1: the turn's rows leave by id. "The newest user row" never decides."""
+    assert "ORDER BY" not in ex._GREET_READ_SQL
+    assert "role = 'user'" not in ex._GREET_READ_SQL
+    assert "id NOT IN (:rid, :pid)" in ex._GREET_READ_SQL
+    assert "created_at" in ex._GREET_READ_SQL      # F3: the server's time
+    assert "timestamp_ms" not in ex._GREET_READ_SQL
+
+
+def test_no_binding_means_no_decision(ex) -> None:
+    assert ex._greet_due_now() is None
