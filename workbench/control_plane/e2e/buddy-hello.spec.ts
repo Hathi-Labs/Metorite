@@ -425,6 +425,9 @@ test.describe("the visual review rig", () => {
   test.use({ viewport: { width: Number(process.env.HELLO_WIDTH ?? 1440), height: Number(process.env.HELLO_HEIGHT ?? 900) } });
 
   test("capture the hello", async ({ page }) => {
+    // The stubbed hello says "Good morning", so the clock reads 09:30. Then
+    // My Day's title greets for the same hour as the hello (PZ-39).
+    await page.clock.setFixedTime(new Date(2026, 10, 6, 9, 30));
     const server = makeServer();
     await stub(page, server);
     await page.goto("/");
