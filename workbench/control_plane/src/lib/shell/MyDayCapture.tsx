@@ -39,7 +39,7 @@ import { createReminder, createdWords, REMINDER_TITLE_MAX } from "@/lib/reminder
 import { gridZone, instantIso } from "@/lib/reminderClock";
 import { useCachedResource } from "@/lib/useCachedResource";
 
-import { captureToast, namedTimeToday, type NamedTime } from "./captureTime";
+import { captureToast, namedTimeToday, skippedTimeReason, type NamedTime } from "./captureTime";
 import { runReminderAct } from "./reminderOpen";
 
 const TOAST_KEY = "my-day-capture";
@@ -137,9 +137,12 @@ export default function MyDayCapture({ className = "" }: { className?: string })
       await ensureLive();
       const store = useTaskStore.getState();
       store.captureLine(text, { targets: [] });
-      const named: NamedTime | null = text.length <= REMINDER_TITLE_MAX ? namedTimeToday(text, new Date()) : null;
+      const now = new Date();
+      const named: NamedTime | null = text.length <= REMINDER_TITLE_MAX ? namedTimeToday(text, now) : null;
       let reminderId: string | undefined;
       let reminderFailed: string | undefined;
+      // A line that looks timed but got no reminder says so in the toast.
+      const reminderSkipped = named ? undefined : (skippedTimeReason(text) ?? undefined);
       if (named) {
         const zone = gridZone(browserTimeZone());
         const got = await createReminder({ title: text, kind: "action", fireAt: instantIso(named.ms, zone), tz: zone });
@@ -149,7 +152,7 @@ export default function MyDayCapture({ className = "" }: { className?: string })
       }
       setValue("");
       refreshCount();
-      const words = captureToast({ reminder: reminderId ? named! : undefined, reminderFailed });
+      const words = captureToast({ reminder: reminderId ? named! : undefined, reminderFailed, reminderSkipped });
       toast.show({
         key: TOAST_KEY,
         ...words,

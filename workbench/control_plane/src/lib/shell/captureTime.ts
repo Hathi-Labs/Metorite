@@ -20,9 +20,19 @@ export interface NamedTime {
 const AMPM = /\b(?:at|@)\s*(\d{1,2})(?::([0-5]\d))?\s*([ap])\.?m\.?(?![a-z])/i;
 const H24 = /\b(?:at|@)\s*([01]?\d|2[0-3]):([0-5]\d)\b(?!\s*[ap]\.?m)/i;
 const WORD = /\bat\s+(noon|midnight)\b/i;
-/** A line about another day names no time of today. */
-const OTHER_DAY =
-  /\b(?:tomorrow|tmrw|yesterday|next\s+\w+|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}(?:st|nd|rd|th))\b/i;
+/**
+ * A line about another day names no time of today. "next" counts only before
+ * a day, a week, a month or a year, so "next steps" is a plain phrase. A day
+ * name followed by ".com" is a name, so "Monday.com" is not a day (verifier
+ * P2, 2026-11-07).
+ */
+const DAY = "monday|tuesday|wednesday|thursday|friday|saturday|sunday";
+const OTHER_DAY = new RegExp(
+  `\\b(?:tomorrow|tmrw|yesterday|next\\s+(?:week|month|year|${DAY})|(?:${DAY})(?!\\.\\w)|\\d{1,2}(?:st|nd|rd|th))\\b`,
+  "i",
+);
+/** "at 3" with no am or pm: an hour that the line does not pin down. */
+const BARE_HOUR = /\b(?:at|@)\s*(\d{1,2})\b(?!\s*(?::\d|[ap]\.?m))/i;
 
 /**
  * The clock time that `text` names for today, or null. Null also when the
@@ -60,17 +70,39 @@ export function namedTimeToday(text: string, now: Date): NamedTime | null {
   return { ms: at.getTime(), said };
 }
 
+/**
+ * Why a line that looks like it names a time got no reminder, or null when
+ * the line names no time at all. Call it only when `namedTimeToday` gave
+ * null. The member typed a time, so the toast must say that nothing was set
+ * (verifier P2, 2026-11-07).
+ */
+export function skippedTimeReason(text: string): string | null {
+  const timed = AMPM.test(text) || H24.test(text) || WORD.test(text);
+  if (!timed) {
+    return BARE_HOUR.test(text) ? "Add am or pm to set a reminder." : null;
+  }
+  if (OTHER_DAY.test(text)) return "The line names another day. Plan it from your Inbox.";
+  if (/\bat\s+midnight\b/i.test(text)) return "Midnight names no time today.";
+  // A real clock time on this day that is not ahead of now.
+  const m = AMPM.exec(text);
+  if (m && (Number(m[1]) < 1 || Number(m[1]) > 12)) return "That is not a time of day.";
+  return "That time has passed today.";
+}
+
 /** What the capture box did, for the toast. */
 export interface CaptureOutcome {
   /** The reminder was made, at this time. */
   reminder?: NamedTime;
   /** The reminder was refused or failed, with the words of why. */
   reminderFailed?: string;
+  /** The line looked like it named a time, and no reminder was tried, with the words of why. */
+  reminderSkipped?: string;
 }
 
 /** The title and the description of the toast. Undo undoes everything it names. */
 export function captureToast(o: CaptureOutcome): { title: string; description?: string } {
   if (o.reminder) return { title: "Filed to your Inbox", description: `A reminder is set for ${o.reminder.said} today.` };
   if (o.reminderFailed) return { title: "Filed to your Inbox", description: `No reminder was set. ${o.reminderFailed}` };
+  if (o.reminderSkipped) return { title: "Filed to your Inbox", description: `No reminder was set. ${o.reminderSkipped}` };
   return { title: "Filed to your Inbox" };
 }

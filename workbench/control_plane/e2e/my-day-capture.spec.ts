@@ -198,6 +198,8 @@ test.describe("My Day capture, desktop", () => {
     await box(page).fill("call the bank at 9 am");
     await box(page).press("Enter");
     await expect(page.getByText("Filed to your Inbox")).toBeVisible();
+    // The member typed a time, so the toast says that nothing was set (verifier P2).
+    await expect(page.getByText("No reminder was set. That time has passed today.")).toBeVisible();
     await expect(box(page)).toHaveValue("");
     expect(store.creates).toHaveLength(1);
     expect(store.reminders).toHaveLength(0);

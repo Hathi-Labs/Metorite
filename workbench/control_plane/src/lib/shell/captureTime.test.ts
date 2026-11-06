@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { captureToast, namedTimeToday } from "./captureTime";
+import { captureToast, namedTimeToday, skippedTimeReason } from "./captureTime";
 
 // The browser clock for every case: 10:00 on a Saturday, in the test zone.
 const NOW = new Date(2026, 10, 7, 10, 0, 0);
@@ -37,6 +37,28 @@ describe("namedTimeToday (CC-1)", () => {
   it("keeps a word like may as a plain word", () => {
     expect(namedTimeToday("I may call the bank at 3 pm", NOW)?.ms).toBe(at(15));
   });
+  // Verifier P2, 2026-11-07: these named a time today, and the old day rule
+  // dropped them.
+  it("reads 'next steps' and a '.com' name as plain words, not as another day", () => {
+    expect(namedTimeToday("Review next steps at 3 pm", NOW)?.ms).toBe(at(15));
+    expect(namedTimeToday("Monday.com sync at 3 pm", NOW)?.ms).toBe(at(15));
+    expect(namedTimeToday("call next week at 3 pm", NOW)).toBeNull();
+    expect(namedTimeToday("call next Friday at 3 pm", NOW)).toBeNull();
+  });
+});
+
+describe("skippedTimeReason (CC-1, verifier P2)", () => {
+  it("names nothing for a line with no time", () => {
+    expect(skippedTimeReason("buy milk")).toBeNull();
+    expect(skippedTimeReason("room 3 pm")).toBeNull();
+  });
+  it("says why a timed line got no reminder", () => {
+    expect(skippedTimeReason("call at 9 am")).toBe("That time has passed today.");
+    expect(skippedTimeReason("call the bank tomorrow at 3 pm")).toBe("The line names another day. Plan it from your Inbox.");
+    expect(skippedTimeReason("call at 3")).toBe("Add am or pm to set a reminder.");
+    expect(skippedTimeReason("call at midnight")).toBe("Midnight names no time today.");
+    expect(skippedTimeReason("call at 13 pm")).toBe("That is not a time of day.");
+  });
 });
 
 describe("captureToast (CC-1)", () => {
@@ -49,6 +71,9 @@ describe("captureToast (CC-1)", () => {
   it("says why no reminder was made", () => {
     expect(captureToast({ reminderFailed: "Reminders are not available for you." }).description).toBe(
       "No reminder was set. Reminders are not available for you.",
+    );
+    expect(captureToast({ reminderSkipped: "That time has passed today." }).description).toBe(
+      "No reminder was set. That time has passed today.",
     );
   });
 });
